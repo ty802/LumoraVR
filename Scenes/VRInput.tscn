@@ -1,0 +1,21 @@
+[gd_scene load_steps=2 format=3 uid="uid://d1b2xr42bthfg"]
+
+[ext_resource type="Script" path="res://Source/Input/VRInput.cs" id="1_b7nsa"]
+
+[node name="VRInput" type="Node3D" node_paths=PackedStringArray("_origin", "_leftHand", "_rightHand", "_head")]
+script = ExtResource("1_b7nsa")
+_origin = NodePath("XROrigin3D")
+_leftHand = NodePath("XROrigin3D/LeftHand")
+_rightHand = NodePath("XROrigin3D/RightHand")
+_head = NodePath("XROrigin3D/Head")
+
+[node name="XROrigin3D" type="XROrigin3D" parent="."]
+
+[node name="Head" type="XRCamera3D" parent="XROrigin3D"]
+current = true
+
+[node name="LeftHand" type="XRController3D" parent="XROrigin3D"]
+tracker = &"left_hand"
+
+[node name="RightHand" type="XRController3D" parent="XROrigin3D"]
+tracker = &"right_hand"

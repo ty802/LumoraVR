@@ -1,0 +1,13 @@
+[gd_scene load_steps=3 format=3 uid="uid://d37lm476vrp1e"]
+
+[ext_resource type="Script" path="res://Source/Management/ClientManager.cs" id="1_bw0gq"]
+[ext_resource type="PackedScene" uid="uid://dtempfuf1571n" path="res://Scenes/World/MultiplayerScene.tscn" id="2_40xba"]
+
+[node name="Root" type="Node" node_paths=PackedStringArray("_inputRoot", "_multiplayerScene")]
+script = ExtResource("1_bw0gq")
+_inputRoot = NodePath("InputRoot")
+_multiplayerScene = NodePath("Scene")
+
+[node name="InputRoot" type="Node3D" parent="."]
+
+[node name="Scene" parent="." instance=ExtResource("2_40xba")]

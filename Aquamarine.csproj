@@ -1,0 +1,13 @@
+<Project Sdk="Godot.NET.Sdk/4.3.0">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <LangVersion>preview</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <Folder Include="Source\Networking\" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Wasmtime" Version="22.0.0" />
+  </ItemGroup>
+</Project>

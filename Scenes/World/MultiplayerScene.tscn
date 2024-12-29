@@ -1,0 +1,56 @@
+[gd_scene load_steps=9 format=3 uid="uid://dtempfuf1571n"]
+
+[ext_resource type="Script" path="res://Source/Management/MultiplayerScene.cs" id="1_yl1ag"]
+[ext_resource type="Shader" path="res://Assets/Shaders/DebugGrid.gdshader" id="2_q775b"]
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_bkyq3"]
+render_priority = 0
+shader = ExtResource("2_q775b")
+
+[sub_resource type="BoxMesh" id="BoxMesh_8a1u3"]
+material = SubResource("ShaderMaterial_bkyq3")
+size = Vector3(64, 1, 64)
+subdivide_width = 3
+subdivide_depth = 3
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_ibhoa"]
+size = Vector3(64, 1, 64)
+
+[sub_resource type="PhysicalSkyMaterial" id="PhysicalSkyMaterial_yceyn"]
+
+[sub_resource type="Sky" id="Sky_nr6pj"]
+sky_material = SubResource("PhysicalSkyMaterial_yceyn")
+
+[sub_resource type="Environment" id="Environment_voyb6"]
+background_mode = 2
+sky = SubResource("Sky_nr6pj")
+
+[node name="Scene" type="Node" node_paths=PackedStringArray("Spawner", "PlayerRoot")]
+script = ExtResource("1_yl1ag")
+Spawner = NodePath("MultiplayerSpawner")
+PlayerRoot = NodePath("Level/PlayerRoot")
+
+[node name="MultiplayerSpawner" type="MultiplayerSpawner" parent="."]
+_spawnable_scenes = PackedStringArray("res://Scenes/Objects/RootObjects/PlayerCharacterController.tscn")
+spawn_path = NodePath("../Level")
+
+[node name="Level" type="Node" parent="."]
+
+[node name="PlayerRoot" type="Node3D" parent="Level"]
+
+[node name="TestPlatform" type="Node3D" parent="Level"]
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Level/TestPlatform"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.5, 0)
+mesh = SubResource("BoxMesh_8a1u3")
+
+[node name="StaticBody3D" type="StaticBody3D" parent="Level/TestPlatform/MeshInstance3D"]
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Level/TestPlatform/MeshInstance3D/StaticBody3D"]
+shape = SubResource("BoxShape3D_ibhoa")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="Level"]
+transform = Transform3D(1, 0, 0, 0, -0.567024, 0.823701, 0, -0.823701, -0.567024, 0, 0, 0)
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_voyb6")

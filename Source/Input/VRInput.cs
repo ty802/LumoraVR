@@ -1,4 +1,5 @@
 using System;
+using Aquamarine.Source.Logging;
 using Godot;
 
 namespace Aquamarine.Source.Input;
@@ -15,16 +16,26 @@ public partial class VRInput : Node3D, IInputProvider
 
     public override void _Ready()
     {
-        base._Ready();
+        try
+        {
+            base._Ready();
 
-        IInputProvider.Instance = this;
+            IInputProvider.Instance = this;
 
-        ProcessPriority = -9;
-        _origin.ProcessPriority = -10;
-        _head.ProcessPriority = -10;
-        _leftHand.ProcessPriority = -10;
-        _rightHand.ProcessPriority = -10;
+            ProcessPriority = -9;
+            _origin.ProcessPriority = -10;
+            _head.ProcessPriority = -10;
+            _leftHand.ProcessPriority = -10;
+            _rightHand.ProcessPriority = -10;
+
+            Logger.Log("XRInput initialized successfully.");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"Error during XRInput initialization: {ex.Message}");
+        }
     }
+
 
     public override void _Process(double delta)
     {

@@ -62,6 +62,7 @@ public partial class PlayerCharacterController : CharacterBody3D, IRootObject, I
 
         var deltaf = (float)delta;
         
+        //temp
         ClientSync.SetMultiplayerAuthority(Authority);
 
         var authority = ClientSync.IsMultiplayerAuthority();
@@ -90,10 +91,6 @@ public partial class PlayerCharacterController : CharacterBody3D, IRootObject, I
         if (authority) IInputProvider.Move(GlobalTransform);
         else DebugDraw3D.DrawPosition(GlobalTransform * new Transform3D(new Basis(HeadRotation), HeadPosition));
     }
-
-    //public void SendChanges() => this.InternalSendChanges();
-    //[Rpc(CallLocal = false, TransferChannel = SerializationHelpers.WorldUpdateChannel, TransferMode = MultiplayerPeer.TransferModeEnum.Reliable)]
-    //public void ReceiveChanges(byte[] data) => this.InternalReceiveChanges(data);
     public Vector3 GetLimbPosition(IInputProvider.InputLimb limb) =>
         limb switch
         {

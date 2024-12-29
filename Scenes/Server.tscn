@@ -7,11 +7,11 @@
 script = ExtResource("1_xq85o")
 _multiplayerScene = NodePath("Scene")
 
-[node name="Scene" parent="." instance=ExtResource("2_d7401")]
-
 [node name="Camera3D" type="Camera3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 0.707107, 0.707107, 0, -0.707107, 0.707107, 0, 4, 4)
 fov = 100.0
+
+[node name="Scene" parent="." instance=ExtResource("2_d7401")]
 
 [node name="DebugInterface" type="Control" parent="."]
 layout_mode = 3

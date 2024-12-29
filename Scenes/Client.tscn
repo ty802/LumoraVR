@@ -8,6 +8,6 @@ script = ExtResource("1_bw0gq")
 _inputRoot = NodePath("InputRoot")
 _multiplayerScene = NodePath("Scene")
 
-[node name="InputRoot" type="Node3D" parent="."]
-
 [node name="Scene" parent="." instance=ExtResource("2_40xba")]
+
+[node name="InputRoot" type="Node3D" parent="."]

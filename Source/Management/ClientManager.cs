@@ -9,7 +9,7 @@ namespace Aquamarine.Source.Management
     public partial class ClientManager : Node
     {
         private XRInterface _xrInterface;
-        private VRInput _vrInput;
+        private IInputProvider _input;
         [Export] private Node3D _inputRoot;
         [Export] private MultiplayerScene _multiplayerScene;
 
@@ -27,13 +27,17 @@ namespace Aquamarine.Source.Management
                     DisplayServer.WindowSetVsyncMode(DisplayServer.VSyncMode.Disabled);
                     GetViewport().UseXR = true;
 
-                    _vrInput = VRInput.PackedScene.Instantiate<VRInput>();
-                    _inputRoot.AddChild(_vrInput);
+                    var vrInput = VRInput.PackedScene.Instantiate<VRInput>();
+                    _input = vrInput;
+                    _inputRoot.AddChild(vrInput);
                     Logger.Log("XR interface initialized successfully.");
                 }
                 else
                 {
-                    Logger.Warn("XR interface is not valid or not initialized.");
+                    var desktopInput = DesktopInput.PackedScene.Instantiate<DesktopInput>();
+                    _input = desktopInput;
+                    _inputRoot.AddChild(desktopInput);
+                    Logger.Log("Desktop interface initialized successfully.");
                 }
 
                 this.CreateTimer(3, JoinServer);

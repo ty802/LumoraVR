@@ -26,57 +26,6 @@ public static class SerializationHelpers
     public static void Write(this BinaryWriter writer, DirtyFlags32 value) => writer.Write(value.Value);
     public static void Write(this BinaryWriter writer, DirtyFlags64 value) => writer.Write(value.Value);
     
-    /*
-    public static (BinaryWriter writer, MemoryStream stream) StartSerialize(this IRootObject obj)
-    {
-        var stream = new MemoryStream(0xFF);
-        var writer = new BinaryWriter(stream);
-        return (writer, stream);
-    }
-    public static (BinaryReader reader, MemoryStream stream) StartDeserialize(this IRootObject obj, byte[] data)
-    {
-        var stream = new MemoryStream(data);
-        var reader = new BinaryReader(stream);
-        return (reader, stream);
-    }
-    public static void InternalSendChanges(this IRootObject obj)
-    {
-        var (writer, stream) = StartSerialize(obj);
-        
-        obj.Serialize(writer);
-        
-        foreach (var item in obj.ChildObjects.Where(i => i.Value.Dirty))
-        {
-            writer.Write(item.Key);
-            item.Value.Serialize(writer);
-        }
-        var bytes = stream.ToArray();
-        obj.Self.Rpc(ReceiveChangesName, bytes);
-        obj.Dirty = false;
-    }
-    
-    public static void InternalReceiveChanges(this IRootObject obj, byte[] data)
-    {
-        try
-        {
-            var (reader, stream) = obj.StartDeserialize(data);
-
-            obj.Deserialize(reader);
-
-            while (stream.Position < stream.Length)
-            {
-                var index = reader.ReadUInt16();
-                obj.ChildObjects[index].Deserialize(reader);
-            }
-        }
-        catch (Exception e)
-        {
-            GD.Print(e);
-        }
-    }
-    */
-    
-    // TODO: a lot of this can probably be optimized with unsafe operations, but i don't feel like doing that right now
     public delegate void WriteAction<T>(BinaryWriter stream, T value);
     
     public static void WriteArray<T>(this BinaryWriter stream, ICollection<T> collection, WriteAction<T> writer) where T : struct

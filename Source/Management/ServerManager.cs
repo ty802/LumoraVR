@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Aquamarine.Source.Logging;
 using System.Linq;
 using Aquamarine.Source.Scene.ObjectTypes;
@@ -12,6 +13,8 @@ namespace Aquamarine.Source.Management
 
         private const int Port = 7000;
         private const int MaxConnections = 20;
+
+        private List<int> _currentPeers = [];
 
         public override void _Ready()
         {
@@ -36,7 +39,9 @@ namespace Aquamarine.Source.Management
         {
             try
             {
-                _multiplayerScene.SpawnPlayer((int)id);
+                var idInt = (int)id;
+                _multiplayerScene.SpawnPlayer(idInt);
+                _currentPeers.Add(idInt);
                 Logger.Log($"Peer connected with ID: {id}.");
             }
             catch (Exception ex)
@@ -49,7 +54,8 @@ namespace Aquamarine.Source.Management
         {
             try
             {
-                _multiplayerScene.RemovePlayer((int)id);
+                var idInt = (int)id;
+                _multiplayerScene.RemovePlayer(idInt);
                 Logger.Log($"Peer disconnected with ID: {id}.");
             }
             catch (Exception ex)

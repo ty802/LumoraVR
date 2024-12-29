@@ -61,6 +61,8 @@ public partial class PlayerCharacterController : CharacterBody3D, IRootObject, I
         base._Process(delta);
 
         var deltaf = (float)delta;
+        
+        ClientSync.SetMultiplayerAuthority(Authority);
 
         var authority = ClientSync.IsMultiplayerAuthority();
         

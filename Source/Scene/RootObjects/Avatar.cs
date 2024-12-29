@@ -16,7 +16,6 @@ public enum AvatarAnimationType : byte
 public partial class Avatar : Node3D, IRootObject
 {
     public Node Self => this;
-    //public bool Dirty { get; set; }
     public IReadOnlyDictionary<ushort,IChildObject> ChildObjects => _children;
     private readonly Dictionary<ushort,IChildObject> _children = new();
     public DirtyFlags64 DirtyFlags;
@@ -31,12 +30,6 @@ public partial class Avatar : Node3D, IRootObject
     public string RightFootBone;
     public string HipBone;
     public string HeadBone;
-    
-    /*
-    public void SendChanges() => this.InternalSendChanges();
-    [Rpc(CallLocal = false, TransferChannel = SerializationHelpers.WorldUpdateChannel, TransferMode = MultiplayerPeer.TransferModeEnum.Reliable)]
-    public void ReceiveChanges(byte[] data) => this.InternalReceiveChanges(data);
-    */
 
     public void SetPlayerAuthority(int id)
     {

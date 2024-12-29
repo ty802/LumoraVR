@@ -20,8 +20,8 @@ namespace Aquamarine.Source.Management
             Instance = this;
             Logger.Log("MultiplayerScene initialized.");
         }
-
-        [Rpc(CallLocal = true, TransferMode = MultiplayerPeer.TransferModeEnum.Reliable, TransferChannel = SerializationHelpers.WorldUpdateChannel)]
+        
+        //[Rpc(CallLocal = true, TransferMode = MultiplayerPeer.TransferModeEnum.Reliable, TransferChannel = SerializationHelpers.WorldUpdateChannel)]
         private void InternalSpawnPlayer(int authority, Vector3 position)
         {
             try
@@ -39,7 +39,7 @@ namespace Aquamarine.Source.Management
             }
         }
 
-        [Rpc(CallLocal = true, TransferMode = MultiplayerPeer.TransferModeEnum.Reliable, TransferChannel = SerializationHelpers.WorldUpdateChannel)]
+        //[Rpc(CallLocal = true, TransferMode = MultiplayerPeer.TransferModeEnum.Reliable, TransferChannel = SerializationHelpers.WorldUpdateChannel)]
         private void InternalRemovePlayer(int authority)
         {
             try
@@ -59,12 +59,12 @@ namespace Aquamarine.Source.Management
                 Logger.Error($"Error removing player with authority {authority}: {ex.Message}");
             }
         }
-
         public void SpawnPlayer(int authority, Vector3? position = null)
         {
             if (IsMultiplayerAuthority())
             {
-                Rpc(MethodName.InternalSpawnPlayer, authority, position ?? Vector3.Zero);
+                InternalSpawnPlayer(authority, position ?? Vector3.Zero);
+                //Rpc(MethodName.InternalSpawnPlayer, authority, position ?? Vector3.Zero);
                 Logger.Log($"SpawnPlayer called for authority {authority}.");
             }
             else
@@ -77,7 +77,8 @@ namespace Aquamarine.Source.Management
         {
             if (IsMultiplayerAuthority())
             {
-                Rpc(MethodName.InternalRemovePlayer, authority);
+                InternalRemovePlayer(authority);
+                //Rpc(MethodName.InternalRemovePlayer, authority);
                 Logger.Log($"RemovePlayer called for authority {authority}.");
             }
             else

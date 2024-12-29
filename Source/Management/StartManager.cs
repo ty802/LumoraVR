@@ -1,24 +1,33 @@
 using System.Linq;
+using Aquamarine.Source.Logging;
 using Bones.Core;
 using Godot;
 
-namespace Aquamarine.Source.Management;
-
-public partial class StartManager : Node
+namespace Aquamarine.Source.Management
 {
-    [Export] public Label Text;
-    public override void _Process(double delta)
+    public partial class StartManager : Node
     {
-        base._Process(delta);
-        var args = OS.GetCmdlineArgs();
+        [Export] public Label Text;
 
-        var isServer = args.Any(i => i.Equals("--run-server", System.StringComparison.CurrentCultureIgnoreCase));
+        public override void _Process(double delta)
+        {
+            try
+            {
+                base._Process(delta);
 
-        Text.Text = isServer.ToString();
-        
-        //GD.Print("CLAPCLAPCLAPFUCK");
-        //GD.Print(isServer);
-        
-        GetTree().ChangeSceneToFile(isServer ? "res://Scenes/Server.tscn" : "res://Scenes/Client.tscn");
+                var args = OS.GetCmdlineArgs();
+                var isServer = args.Any(i => i.Equals("--run-server", System.StringComparison.CurrentCultureIgnoreCase));
+
+                Text.Text = isServer.ToString();
+                Logger.Log($"Application started in {(isServer ? "server" : "client")} mode.");
+
+                GetTree().ChangeSceneToFile(isServer ? "res://Scenes/Server.tscn" : "res://Scenes/Client.tscn");
+                Logger.Log($"Scene changed to {(isServer ? "Server.tscn" : "Client.tscn")}.");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error in StartManager: {ex.Message}");
+            }
+        }
     }
 }

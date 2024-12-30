@@ -37,11 +37,11 @@ public partial class Avatar : Node3D, IRootObject
     {
         throw new NotImplementedException();
     }
-    public void Initialize(Dictionary<string, Variant> data)
+    public void Initialize(Godot.Collections.Dictionary<string, Variant> data)
     {
         throw new NotImplementedException();
     }
-    public void AddChild(Node node)
+    public void AddChildObject(ISceneObject obj)
     {
         throw new NotImplementedException();
     }

@@ -1,9 +1,10 @@
 using System;
 using System.Linq;
-using Aquamarine.Source.Helpers;
 using Aquamarine.Source.Logging;
+using Aquamarine.Source.Scene;
 using Aquamarine.Source.Scene.ObjectTypes;
 using Godot;
+using Godot.Collections;
 
 namespace Aquamarine.Source.Management
 {
@@ -14,12 +15,60 @@ namespace Aquamarine.Source.Management
         [Export] public MultiplayerSpawner Spawner;
         [Export] public MultiplayerSpawner PlayerSpawner;
         [Export] public Node3D PlayerRoot;
+        [Export] public Array<int> PlayerList = [];
 
+        public System.Collections.Generic.Dictionary<string, Prefab> Prefabs = new();
+        
         public override void _Ready()
         {
             base._Ready();
             Instance = this;
             Logger.Log("MultiplayerScene initialized.");
+        }
+        [Rpc]
+        public void UpdatePlayerList(int[] playerList) => PlayerList = new(playerList);
+        public void AddPrefab(string name, string prefab, int? blacklist = null)
+        {
+            if (!IsMultiplayerAuthority()) return;
+            
+            var parsed = Prefab.Deserialize(prefab);
+            if (!parsed.Valid()) return;
+            
+            Prefabs[name] = parsed;
+
+            if (blacklist.HasValue)
+            {
+                foreach (var player in PlayerList)
+                {
+                    if (player == blacklist.Value) continue;
+                    RpcId(player, MethodName.InternalAddPrefab, name, prefab);
+                }
+            }
+            else Rpc(MethodName.InternalAddPrefab, name, prefab);
+        }
+        public void SendAllPrefabs(int? player = null)
+        {
+            if (!IsMultiplayerAuthority()) return;
+            
+            var dict = new Dictionary();
+            foreach (var (name, prefab) in Prefabs) dict[name] = prefab.Serialize();
+            var json = Json.Stringify(dict);
+
+            if (player.HasValue) RpcId(player.Value, MethodName.InternalReceiveAllPrefabs, json);
+            else Rpc(MethodName.InternalReceiveAllPrefabs, json);
+        }
+        [Rpc]
+        private void InternalReceiveAllPrefabs(string json)
+        {
+            var parsed = Json.ParseString(json);
+            if (parsed.VariantType is not Variant.Type.Dictionary) return;
+            foreach (var (name, prefab) in parsed.AsGodotDictionary<string,string>()) Prefabs[name] = Prefab.Deserialize(prefab);
+        }
+        [Rpc]
+        private void InternalAddPrefab(string name, string prefab)
+        {
+            var parsed = Prefab.Deserialize(prefab);
+            Prefabs[name] = parsed;
         }
         
         //[Rpc(CallLocal = true, TransferMode = MultiplayerPeer.TransferModeEnum.Reliable, TransferChannel = SerializationHelpers.WorldUpdateChannel)]

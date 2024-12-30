@@ -14,8 +14,6 @@ namespace Aquamarine.Source.Management
         private const int Port = 7000;
         private const int MaxConnections = 20;
 
-        private List<int> _currentPeers = [];
-
         public override void _Ready()
         {
             try
@@ -41,7 +39,9 @@ namespace Aquamarine.Source.Management
             {
                 var idInt = (int)id;
                 _multiplayerScene.SpawnPlayer(idInt);
-                _currentPeers.Add(idInt);
+                _multiplayerScene.PlayerList.Add(idInt);
+                _multiplayerScene.Rpc(MultiplayerScene.MethodName.UpdatePlayerList);
+                _multiplayerScene.SendAllPrefabs(idInt);
                 Logger.Log($"Peer connected with ID: {id}.");
             }
             catch (Exception ex)
@@ -56,6 +56,8 @@ namespace Aquamarine.Source.Management
             {
                 var idInt = (int)id;
                 _multiplayerScene.RemovePlayer(idInt);
+                _multiplayerScene.PlayerList.Remove(idInt);
+                _multiplayerScene.Rpc(MultiplayerScene.MethodName.UpdatePlayerList);
                 Logger.Log($"Peer disconnected with ID: {id}.");
             }
             catch (Exception ex)

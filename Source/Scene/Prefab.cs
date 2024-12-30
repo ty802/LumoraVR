@@ -1,4 +1,5 @@
 using System;
+using Aquamarine.Source.Scene.ChildObjects;
 using Aquamarine.Source.Scene.ObjectTypes;
 using Bones.Core;
 using Godot;
@@ -12,7 +13,8 @@ public class Prefab
     public RootObjectType Type;
     public Dictionary<string, Variant> Data = new();
     public System.Collections.Generic.Dictionary<ushort, PrefabChild> Children = new();
-
+    public string CachedString { get; private set; }
+    public void ClearCache() => CachedString = null;
     public static Prefab Deserialize(string json)
     {
         var prefab = new Prefab();
@@ -31,7 +33,6 @@ public class Prefab
         }
         return prefab;
     }
-
     public IRootObject Instantiate()
     {
         if (!Valid()) return null;
@@ -43,16 +44,24 @@ public class Prefab
         };
 
         var children = new System.Collections.Generic.Dictionary<PrefabChild, IChildObject>();
+        //instantiate all children
         foreach (var (index, prefabChild) in Children)
         {
             var child = prefabChild.Instantiate();
             obj.ChildObjects.Add(index, child);
             children.Add(prefabChild, child);
         }
+        //parent children
         foreach (var (prefabChild, childObj) in children)
         {
-            
+            var parentIndex = prefabChild.Parent;
+            if (parentIndex < 0) obj.AddChildObject(childObj);
+            else obj.ChildObjects[(ushort)parentIndex].AddChildObject(childObj);
         }
+        //apply data to root
+        obj.Initialize(Data);
+        //apply data to children
+        foreach (var (prefabChild, childObj) in children) childObj.Initialize(prefabChild.Data);
 
         return obj;
     }
@@ -66,6 +75,8 @@ public class Prefab
     
     public string Serialize()
     {
+        if (CachedString is not null) return CachedString;
+        
         var dict = new Dictionary();
         dict["version"] = Version;
         dict["type"] = EnumHelpers<RootObjectType>.ToStringLowerCached(Type);
@@ -75,8 +86,9 @@ public class Prefab
         foreach (var pair in Children) childrenDict[pair.Key] = pair.Value.Serialize();
         dict["children"] = childrenDict;
         
-        var str = Json.Stringify(dict);
-        return str;
+        CachedString = Json.Stringify(dict);
+        
+        return CachedString;
     }
 }
 
@@ -98,7 +110,18 @@ public class PrefabChild
     }
     public IChildObject Instantiate()
     {
-        return null;
+        if (!Valid()) return null;
+        return Type switch
+        {
+            //ChildObjectType.Node => expr,
+            //ChildObjectType.Mesh => expr,
+            ChildObjectType.Armature => new Armature(),
+            _ => null,
+        };
+    }
+    public bool Valid()
+    {
+        return true;
     }
     public Dictionary Serialize()
     {

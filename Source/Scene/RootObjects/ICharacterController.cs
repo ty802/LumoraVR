@@ -3,7 +3,7 @@ using Godot;
 
 namespace Aquamarine.Source.Scene.ObjectTypes;
 
-public interface ICharacterController
+public interface ICharacterController : IRootObject
 {
     public Vector3 GetLimbPosition(IInputProvider.InputLimb limb);
     public Quaternion GetLimbRotation(IInputProvider.InputLimb limb);

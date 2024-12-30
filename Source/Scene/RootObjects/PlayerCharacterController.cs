@@ -8,7 +8,7 @@ using Godot;
 
 namespace Aquamarine.Source.Scene.ObjectTypes;
 
-public partial class PlayerCharacterController : CharacterBody3D, IRootObject, ICharacterController
+public partial class PlayerCharacterController : CharacterBody3D, ICharacterController
 {
     public Node Self => this;
     //public bool Dirty { get; set; }
@@ -113,11 +113,11 @@ public partial class PlayerCharacterController : CharacterBody3D, IRootObject, I
             _ => Quaternion.Identity,
         };
     public void SetPlayerAuthority(int id) => Authority = id;
-    public void Initialize(Dictionary<string, Variant> data)
+    public void Initialize(Godot.Collections.Dictionary<string, Variant> data)
     {
         throw new NotImplementedException();
     }
-    public void AddChild(Node node)
+    public void AddChildObject(ISceneObject obj)
     {
         throw new NotImplementedException();
     }

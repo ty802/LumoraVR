@@ -1,6 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
 using Godot;
 
 namespace Aquamarine.Source.Scene;
@@ -15,6 +12,6 @@ public interface ISceneObject
         return false;
     }
     public void SetPlayerAuthority(int id);
-    public void Initialize(Dictionary<string, Variant> data);
-    public void AddChild(Node node);
+    public void Initialize(Godot.Collections.Dictionary<string, Variant> data);
+    public void AddChildObject(ISceneObject obj);
 }

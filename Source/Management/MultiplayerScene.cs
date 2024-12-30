@@ -12,6 +12,7 @@ namespace Aquamarine.Source.Management
         public static MultiplayerScene Instance;
 
         [Export] public MultiplayerSpawner Spawner;
+        [Export] public MultiplayerSpawner PlayerSpawner;
         [Export] public Node3D PlayerRoot;
 
         public override void _Ready()

@@ -16,12 +16,12 @@ public enum AvatarAnimationType : byte
 public partial class Avatar : Node3D, IRootObject
 {
     public Node Self => this;
-    public IReadOnlyDictionary<ushort,IChildObject> ChildObjects => _children;
+    public IDictionary<ushort,IChildObject> ChildObjects => _children;
     private readonly Dictionary<ushort,IChildObject> _children = new();
     public DirtyFlags64 DirtyFlags;
 
     public ICharacterController Parent;
-    
+    /*
     public AvatarAnimationType AvatarAnimationType;
     public Skeleton3D Skeleton;
     public string LeftHandBone;
@@ -30,21 +30,18 @@ public partial class Avatar : Node3D, IRootObject
     public string RightFootBone;
     public string HipBone;
     public string HeadBone;
+    */
 
     public void SetPlayerAuthority(int id)
     {
         throw new NotImplementedException();
     }
-    public void Serialize(BinaryWriter writer)
+    public void Initialize(Dictionary<string, Variant> data)
     {
-        writer.Write(DirtyFlags);
-        
-        DirtyFlags.Clear();
+        throw new NotImplementedException();
     }
-    public void Deserialize(BinaryReader reader)
+    public void AddChild(Node node)
     {
-        var dirty = reader.ReadDirtyFlags64();
-        
-        DirtyFlags.Clear();
+        throw new NotImplementedException();
     }
 }

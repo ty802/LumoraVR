@@ -2,7 +2,10 @@
 
 [ext_resource type="Script" path="res://Source/Scene/RootObjects/PlayerCharacterController.cs" id="1_0nv1q"]
 
-[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_820w7"]
+[sub_resource type="SceneReplicationConfig" id="SceneReplicationConfig_h7fwk"]
+properties/0/path = NodePath(".:Authority")
+properties/0/spawn = true
+properties/0/replication_mode = 0
 
 [sub_resource type="SceneReplicationConfig" id="SceneReplicationConfig_c22g5"]
 properties/0/path = NodePath(".:HeadPosition")
@@ -33,23 +36,21 @@ properties/8/path = NodePath(".:MovementInput")
 properties/8/spawn = true
 properties/8/replication_mode = 1
 
-[sub_resource type="SceneReplicationConfig" id="SceneReplicationConfig_h7fwk"]
-properties/0/path = NodePath(".:Authority")
-properties/0/spawn = true
-properties/0/replication_mode = 0
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_820w7"]
 
 [node name="PlayerCharacterController" type="CharacterBody3D" node_paths=PackedStringArray("ClientSync")]
+collision_layer = 2
 script = ExtResource("1_0nv1q")
 ClientSync = NodePath("ClientSynchronizer")
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0)
-shape = SubResource("CapsuleShape3D_820w7")
+[node name="ServerSynchronizer" type="MultiplayerSynchronizer" parent="."]
+replication_config = SubResource("SceneReplicationConfig_h7fwk")
 
 [node name="ClientSynchronizer" type="MultiplayerSynchronizer" parent="."]
 replication_interval = 0.1
 delta_interval = 0.1
 replication_config = SubResource("SceneReplicationConfig_c22g5")
 
-[node name="ServerSynchronizer" type="MultiplayerSynchronizer" parent="."]
-replication_config = SubResource("SceneReplicationConfig_h7fwk")
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0)
+shape = SubResource("CapsuleShape3D_820w7")

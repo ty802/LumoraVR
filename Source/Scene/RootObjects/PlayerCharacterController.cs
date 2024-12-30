@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using Aquamarine.Source.Helpers;
 using Aquamarine.Source.Input;
+using Bones.Core;
 using Godot;
 
 namespace Aquamarine.Source.Scene.ObjectTypes;
@@ -11,10 +12,8 @@ public partial class PlayerCharacterController : CharacterBody3D, IRootObject, I
 {
     public Node Self => this;
     //public bool Dirty { get; set; }
-    /*
-    public IReadOnlyDictionary<ushort,IChildObject> ChildObjects => _children;
+    public IDictionary<ushort,IChildObject> ChildObjects => _children;
     private readonly Dictionary<ushort,IChildObject> _children = new();
-    */
 
     public static readonly PackedScene PackedScene = ResourceLoader.Load<PackedScene>("res://Scenes/Objects/RootObjects/PlayerCharacterController.tscn");
 
@@ -49,21 +48,21 @@ public partial class PlayerCharacterController : CharacterBody3D, IRootObject, I
         get => Velocity;
         set => Velocity = value;
     }
-
-    [Export] public int Authority;
-    public override void _EnterTree()
+    [Export]
+    public int Authority
     {
-        base._EnterTree();
-        ClientSync.SetMultiplayerAuthority(Authority);
+        get;
+        set
+        {
+            field = value;
+            ClientSync.SetMultiplayerAuthority(value);
+        }
     }
     public override void _Process(double delta)
     {
         base._Process(delta);
 
         var deltaf = (float)delta;
-        
-        //temp
-        ClientSync.SetMultiplayerAuthority(Authority);
 
         var authority = ClientSync.IsMultiplayerAuthority();
         
@@ -79,7 +78,7 @@ public partial class PlayerCharacterController : CharacterBody3D, IRootObject, I
         
         var headRotationFlat = ((HeadRotation * Vector3.Right) * new Vector3(1, 0, 1)).Normalized();
         var headRotation = new Vector2(headRotationFlat.X, headRotationFlat.Z).Angle();
-        var movementRotated = MovementInput.Rotated(headRotation) * 2;
+        var movementRotated = MovementInput.Rotated(headRotation) * 5;
         
         Velocity = new Vector3(movementRotated.X, yVel, movementRotated.Y);
 
@@ -114,6 +113,12 @@ public partial class PlayerCharacterController : CharacterBody3D, IRootObject, I
             _ => Quaternion.Identity,
         };
     public void SetPlayerAuthority(int id) => Authority = id;
-    public void Serialize(BinaryWriter writer) => throw new NotImplementedException();
-    public void Deserialize(BinaryReader reader) => throw new NotImplementedException();
+    public void Initialize(Dictionary<string, Variant> data)
+    {
+        throw new NotImplementedException();
+    }
+    public void AddChild(Node node)
+    {
+        throw new NotImplementedException();
+    }
 }

@@ -15,9 +15,6 @@ public interface ISceneObject
         return false;
     }
     public void SetPlayerAuthority(int id);
-    public void Serialize(BinaryWriter writer);
-    public void Deserialize(BinaryReader reader);
-    
-    //public void SerializeAll(BinaryWriter writer);
-    //public void DeserializeAll(BinaryReader reader);
+    public void Initialize(Dictionary<string, Variant> data);
+    public void AddChild(Node node);
 }

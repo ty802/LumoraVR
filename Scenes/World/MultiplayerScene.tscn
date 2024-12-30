@@ -49,6 +49,7 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.5, 0)
 mesh = SubResource("BoxMesh_8a1u3")
 
 [node name="StaticBody3D" type="StaticBody3D" parent="Level/TestPlatform/MeshInstance3D"]
+collision_mask = 7
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="Level/TestPlatform/MeshInstance3D/StaticBody3D"]
 shape = SubResource("BoxShape3D_ibhoa")

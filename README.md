@@ -6,7 +6,7 @@ PLEASE use the [Trello Board](https://trello.com/invite/b/6772b86787e9b8d936afa4
 
 ## Features
 - N/A 
-- Not Implimented
+- Not Implemented
 - This wont be public 
 
 ## Support

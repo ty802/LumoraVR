@@ -6,3 +6,5 @@
 .idea/
 *.DotSettings.*
 *.vsidx
+*.v2
+/.vs

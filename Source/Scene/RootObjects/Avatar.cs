@@ -21,6 +21,7 @@ public partial class Avatar : Node3D, IRootObject
     public DirtyFlags64 DirtyFlags;
 
     public ICharacterController Parent;
+    
     /*
     public AvatarAnimationType AvatarAnimationType;
     public Skeleton3D Skeleton;

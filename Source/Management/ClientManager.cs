@@ -40,7 +40,7 @@ namespace Aquamarine.Source.Management
                     Logger.Log("Desktop interface initialized successfully.");
                 }
 
-                this.CreateTimer(3, JoinServer);
+                this.CreateTimer(2, JoinServer);
             }
             catch (Exception ex)
             {

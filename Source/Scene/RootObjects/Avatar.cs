@@ -21,17 +21,6 @@ public partial class Avatar : Node3D, IRootObject
     public DirtyFlags64 DirtyFlags;
 
     public ICharacterController Parent;
-    
-    /*
-    public AvatarAnimationType AvatarAnimationType;
-    public Skeleton3D Skeleton;
-    public string LeftHandBone;
-    public string RightHandBone;
-    public string LeftFootBone;
-    public string RightFootBone;
-    public string HipBone;
-    public string HeadBone;
-    */
 
     public void SetPlayerAuthority(int id)
     {

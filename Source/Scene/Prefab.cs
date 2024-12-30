@@ -37,7 +37,7 @@ public class Prefab
     {
         if (!Valid()) return null;
 
-        var obj = Type switch
+        IRootObject obj = Type switch
         {
             RootObjectType.Avatar => new Avatar(),
             _ => throw new ArgumentOutOfRangeException(),
@@ -48,6 +48,7 @@ public class Prefab
         foreach (var (index, prefabChild) in Children)
         {
             var child = prefabChild.Instantiate();
+            child.Root = obj;
             obj.ChildObjects.Add(index, child);
             children.Add(prefabChild, child);
         }

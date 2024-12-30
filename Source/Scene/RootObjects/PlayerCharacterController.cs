@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using Aquamarine.Source.Helpers;
 using Aquamarine.Source.Input;
+using Aquamarine.Source.Management;
 using Bones.Core;
 using Godot;
 
@@ -20,6 +21,21 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
     public bool Debug = true;
     
     public Avatar Avatar;
+    public string AvatarPrefab
+    {
+        get;
+        set
+        {
+            if (field == value) return;
+            field = value;
+            if (Avatar is not null)
+            {
+                RemoveChild(Avatar);
+                Avatar.QueueFree();
+                Avatar = null;
+            }
+        }
+    } = "DefaultAvatar";
 
     [Export] public MultiplayerSynchronizer ClientSync;
     [Export] public MultiplayerSynchronizer ServerSync;
@@ -63,6 +79,15 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
         base._Process(delta);
 
         var deltaf = (float)delta;
+
+        if (Avatar is null)
+        {
+            if (MultiplayerScene.Instance.Prefabs.TryGetValue(AvatarPrefab, out var prefab) && prefab.Type == RootObjectType.Avatar && prefab.Valid())
+            {
+                Avatar = prefab.Instantiate() as Avatar;
+                AddChild(Avatar);
+            }
+        }
 
         var authority = ClientSync.IsMultiplayerAuthority();
         

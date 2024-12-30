@@ -1,5 +1,4 @@
 using Aquamarine.Source.Input;
-using Aquamarine.Source.Scene;
 using Aquamarine.Source.Scene.RootObjects;
 using Godot;
 using Godot.Collections;

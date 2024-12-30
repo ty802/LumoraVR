@@ -1,5 +1,3 @@
-using System;
-
 namespace Aquamarine.Source.Scene;
 
 public enum RootObjectType

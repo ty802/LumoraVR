@@ -1,4 +1,4 @@
-using Aquamarine.Source.Scene.ObjectTypes;
+using Aquamarine.Source.Scene;
 
 namespace Aquamarine.Source.Scripting.Interop;
 

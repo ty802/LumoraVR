@@ -1,10 +1,10 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using Aquamarine.Source.Helpers;
+using Aquamarine.Source.Scene;
 using Godot;
 
-namespace Aquamarine.Source.Scene.ObjectTypes;
+namespace Aquamarine.Source.Scene.RootObjects;
 
 public enum AvatarAnimationType : byte
 {

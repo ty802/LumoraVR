@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using Aquamarine.Source.Logging;
 using System.Linq;
-using Aquamarine.Source.Scene.ObjectTypes;
+using Aquamarine.Source.Scene;
 using Godot;
 
 namespace Aquamarine.Source.Management

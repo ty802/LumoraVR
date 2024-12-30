@@ -1,12 +1,10 @@
-using System.IO;
-using Aquamarine.Source.Scene.ObjectTypes;
-
 namespace Aquamarine.Source.Scene;
 
 public interface IChildObject : ISceneObject
 {
     public bool Dirty { get; }
     public IRootObject Root { get; set; }
+    public ISceneObject Parent { get; set; }
 
     public void PopulateRoot()
     {

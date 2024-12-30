@@ -1,13 +1,10 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
-using Aquamarine.Source.Helpers;
 using Aquamarine.Source.Input;
 using Aquamarine.Source.Management;
-using Bones.Core;
 using Godot;
 
-namespace Aquamarine.Source.Scene.ObjectTypes;
+namespace Aquamarine.Source.Scene.RootObjects;
 
 public partial class PlayerCharacterController : CharacterBody3D, ICharacterController
 {
@@ -84,7 +81,7 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
         {
             if (MultiplayerScene.Instance.Prefabs.TryGetValue(AvatarPrefab, out var prefab) && prefab.Type == RootObjectType.Avatar && prefab.Valid())
             {
-                Avatar = prefab.Instantiate() as Avatar;
+                Avatar = prefab.Instantiate() as RootObjects.Avatar;
                 AddChild(Avatar);
             }
         }

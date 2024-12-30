@@ -1,9 +1,10 @@
 using System;
 using Aquamarine.Source.Scene.ChildObjects;
-using Aquamarine.Source.Scene.ObjectTypes;
+using Aquamarine.Source.Scene;
 using Bones.Core;
 using Godot;
 using Godot.Collections;
+using Avatar = Aquamarine.Source.Scene.RootObjects.Avatar;
 
 namespace Aquamarine.Source.Scene;
 
@@ -56,8 +57,16 @@ public class Prefab
         foreach (var (prefabChild, childObj) in children)
         {
             var parentIndex = prefabChild.Parent;
-            if (parentIndex < 0) obj.AddChildObject(childObj);
-            else obj.ChildObjects[(ushort)parentIndex].AddChildObject(childObj);
+            if (parentIndex < 0 || !obj.ChildObjects.TryGetValue((ushort)parentIndex, out var parent))
+            {
+                obj.AddChildObject(childObj);
+                childObj.Parent = obj;
+            }
+            else
+            {
+                parent.AddChildObject(childObj);
+                childObj.Parent = parent;
+            }
         }
         //apply data to root
         obj.Initialize(Data);

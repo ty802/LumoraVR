@@ -2,9 +2,10 @@ using System;
 using System.Linq;
 using Aquamarine.Source.Logging;
 using Aquamarine.Source.Scene;
-using Aquamarine.Source.Scene.ObjectTypes;
+using Aquamarine.Source.Scene;
 using Godot;
 using Godot.Collections;
+using PlayerCharacterController = Aquamarine.Source.Scene.RootObjects.PlayerCharacterController;
 
 namespace Aquamarine.Source.Management
 {

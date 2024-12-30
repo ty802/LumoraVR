@@ -1,7 +1,7 @@
 using Aquamarine.Source.Input;
 using Godot;
 
-namespace Aquamarine.Source.Scene.ObjectTypes;
+namespace Aquamarine.Source.Scene.RootObjects;
 
 public interface ICharacterController : IRootObject
 {

@@ -13,6 +13,8 @@ public partial class Armature : Skeleton3D, IChildObject
     {
         if (data.TryGetValue("bones", out var bones) && bones.VariantType == Variant.Type.Array)
         {
+            ClearBones();
+            
             var bo = new List<(string name, Transform3D rest, int parent)>();
             
             var boneList = bones.AsGodotArray();
@@ -20,8 +22,6 @@ public partial class Armature : Skeleton3D, IChildObject
             {
                 bo.Add((bone["n"].AsString(), bone["r"].AsTransform3D(), bone["p"].AsInt32()));
             }
-            
-            ClearBones();
             
             foreach (var bone in bo) AddBone(bone.name);
             for (var index = 0; index < bo.Count; index++)
@@ -38,4 +38,5 @@ public partial class Armature : Skeleton3D, IChildObject
     }
     public bool Dirty { get; }
     public IRootObject Root { get; set; }
+    public ISceneObject Parent { get; set; }
 }

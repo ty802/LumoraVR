@@ -1,4 +1,5 @@
 using System;
+using Aquamarine.Source.Scene.Assets;
 using Aquamarine.Source.Scene.ChildObjects;
 using Bones.Core;
 using Godot;
@@ -130,6 +131,7 @@ public class PrefabChild
     }
     public bool Valid()
     {
+        //TODO
         return true;
     }
     public Dictionary Serialize()
@@ -137,6 +139,44 @@ public class PrefabChild
         var dict = new Dictionary();
         dict["p"] = Parent;
         dict["t"] = EnumHelpers<ChildObjectType>.ToStringLowerCached(Type);
+        dict["d"] = Data;
+        return dict;
+    }
+}
+
+public class PrefabAsset
+{
+    public AssetProviderType Type;
+    public Dictionary<string, Variant> Data = new();
+    
+    public static PrefabAsset Deserialize(Dictionary dict)
+    {
+        var prefab = new PrefabAsset();
+        
+        if (dict.TryGetValue("t", out var t)) prefab.Type = Enum.Parse<AssetProviderType>(t.AsString(), true);
+        if (dict.TryGetValue("d", out var d)) prefab.Data = d.AsGodotDictionary<string, Variant>();
+        
+        return prefab;
+    }
+    public IAssetProvider Instantiate()
+    {
+        if (!Valid()) return null;
+        return Type switch
+        {
+            AssetProviderType.ImageTextureProvider => new ImageTextureProvider(),
+            AssetProviderType.NoiseTextureProvider => new NoiseTextureProvider(),
+            _ => null,
+        };
+    }
+    public bool Valid()
+    {
+        //TODO
+        return true;
+    }
+    public Dictionary Serialize()
+    {
+        var dict = new Dictionary();
+        dict["t"] = EnumHelpers<AssetProviderType>.ToStringLowerCached(Type);
         dict["d"] = Data;
         return dict;
     }

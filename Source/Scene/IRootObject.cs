@@ -2,6 +2,11 @@ using System.Collections.Generic;
 
 namespace Aquamarine.Source.Scene;
 
+public enum RootObjectType
+{
+    Avatar,
+    PlayerCharacterController,
+}
 public interface IRootObject : ISceneObject
 {
     //public bool Dirty { get; set; }

@@ -1,5 +1,12 @@
 namespace Aquamarine.Source.Scene;
 
+public enum ChildObjectType
+{
+    Node,
+    Mesh,
+    Armature,
+}
+
 public interface IChildObject : ISceneObject
 {
     public bool Dirty { get; }

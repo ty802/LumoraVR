@@ -6,7 +6,9 @@ namespace Aquamarine.Source.Input;
 
 public enum InputButton
 {
-    Temp,
+    Crouch,
+    Sprint,
+    Jump
 }
 
 public static class InputButtonExtensions

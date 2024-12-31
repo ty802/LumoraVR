@@ -23,7 +23,7 @@ public interface IInputProvider
     public Quaternion GetLimbRotation(InputLimb limb);
     public void MoveTransform(Transform3D transform);
 
-    public static Vector3 PlayespaceMovementDelta => Instance?.GetPlayspaceMovementDelta ?? Vector3.Zero;
+    public static Vector3 PlayspaceMovementDelta => Instance?.GetPlayspaceMovementDelta ?? Vector3.Zero;
     public static Vector3 LimbPosition(InputLimb limb) => Instance?.GetLimbPosition(limb) ?? Vector3.Zero;
     public static Quaternion LimbRotation(InputLimb limb) => Instance?.GetLimbRotation(limb) ?? Quaternion.Identity;
 

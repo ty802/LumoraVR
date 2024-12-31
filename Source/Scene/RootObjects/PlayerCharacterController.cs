@@ -34,20 +34,16 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
 		}
 	} = "DefaultAvatar";
 
-	public enum MoveState {
-		idle,
-		crouching,
-		crouchWalking,
-		walking,
-		running,
-		air
-	}
-
 	[Export] public MultiplayerSynchronizer ClientSync;
 	[Export] public MultiplayerSynchronizer ServerSync;
 
+	[Export] public float UserHeight;
 	[Export] public Vector2 MovementInput;
-	
+	[Export] public byte MovementButtons; // 0 = jump, 1 = sprint
+    
+	public bool JumpInput => (MovementButtons & (1 << 0)) > 0;
+	public bool SprintInput => (MovementButtons & (1 << 1)) > 0;
+    
 	[Export] public Vector3 HeadPosition;
 	[Export] public Quaternion HeadRotation = Quaternion.Identity;
 	
@@ -81,12 +77,13 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
 		}
 	}
 
-	[Export] public MoveState moveState = MoveState.idle;
-	[Export] public float crouchSpeed = 2f;
-	[Export] public float walkSpeed = 5f;
-	[Export] public float runSpeed = 8f;
-	[Export] public float jumpHeight = 1f;
-	[Export] public Label debugLabel;
+	[Export] public float CrouchRatio = 0.5f;
+	[Export] public float CrouchSpeed = 2f;
+	[Export] public float WalkSpeed = 5f;
+	[Export] public float RunSpeed = 8f;
+	[Export] public float JumpHeight = 1f;
+	
+	[Export] public Label DebugLabel;
 
 	public override void _Process(double delta)
 	{
@@ -98,7 +95,7 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
 		{
 			if (MultiplayerScene.Instance.Prefabs.TryGetValue(AvatarPrefab, out var prefab) && prefab.Type == RootObjectType.Avatar && prefab.Valid())
 			{
-				Avatar = prefab.Instantiate() as RootObjects.Avatar;
+				Avatar = prefab.Instantiate() as Avatar;
 				AddChild(Avatar);
 			}
 		}
@@ -110,6 +107,8 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
 			(HeadPosition, HeadRotation) = IInputProvider.LimbTransform(IInputProvider.InputLimb.Head);
 			(LeftHandPosition, LeftHandRotation) = IInputProvider.LimbTransform(IInputProvider.InputLimb.LeftHand);
 			(RightHandPosition, RightHandRotation) = IInputProvider.LimbTransform(IInputProvider.InputLimb.RightHand);
+			UserHeight = IInputProvider.Height;
+			MovementButtons = (byte)(((InputButton.Jump.Held() ? 1 : 0) << 0) | ((InputButton.Sprint.Held() ? 1 : 0) << 1));
 			MovementInput = IInputProvider.MovementInputAxis;
 		}
 
@@ -119,25 +118,22 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
 		var headRotation = new Vector2(headRotationFlat.X, headRotationFlat.Z).Angle();
 		var movementRotated = MovementInput.Rotated(headRotation);
 
-		moveState = InputButton.Crouch.Held() ? MoveState.crouching : InputButton.Sprint.Held() ? MoveState.running : InputManager.ActiveMovement ? MoveState.walking : MoveState.idle; 
-        var moveSpeed = moveState switch
-        {
-            MoveState.crouching => crouchSpeed,
-            MoveState.walking => walkSpeed,
-            MoveState.running => runSpeed,
-            _ => 0
-        };
-        var movementAccelerated = movementRotated * moveSpeed;
+		var moveSpeed = WalkSpeed;
+		if (HeadPosition.Y < (UserHeight * CrouchRatio)) moveSpeed = CrouchSpeed;
+		else if (SprintInput) moveSpeed = RunSpeed;
+		
+		var movementAccelerated = movementRotated * moveSpeed;
 		
 		Velocity = new Vector3(movementAccelerated.X, yVel, movementAccelerated.Y);
 
-        if (IsOnFloor() && InputButton.Jump.Pressed()) {
-            var height = Mathf.Sqrt(-2f * -9.8f * jumpHeight);
+        if (IsOnFloor() && JumpInput) 
+        {
+	        //panda magic math
+            var height = Mathf.Sqrt(2f * 9.8f * JumpHeight);
             Velocity += new Vector3(0, height, 0);
         }
         
-		debugLabel.Text = authority ?
-		$"MoveState: {moveState}\n" + 
+		DebugLabel.Text = authority ?
 		$"Velocity: {Velocity}\n" +
 		$"IsOnFloor: {IsOnFloor()}" : "";
 

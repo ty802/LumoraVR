@@ -37,7 +37,7 @@ namespace Aquamarine.Source.Management
                 var idInt = (int)id;
                 _multiplayerScene.SpawnPlayer(idInt);
                 _multiplayerScene.PlayerList.Add(idInt);
-                _multiplayerScene.Rpc(MultiplayerScene.MethodName.UpdatePlayerList);
+                _multiplayerScene.SendUpdatedPlayerList();
                 _multiplayerScene.SendAllPrefabs(idInt);
                 Logger.Log($"Peer connected with ID: {id}.");
             }
@@ -54,7 +54,7 @@ namespace Aquamarine.Source.Management
                 var idInt = (int)id;
                 _multiplayerScene.RemovePlayer(idInt);
                 _multiplayerScene.PlayerList.Remove(idInt);
-                _multiplayerScene.Rpc(MultiplayerScene.MethodName.UpdatePlayerList);
+                _multiplayerScene.SendUpdatedPlayerList();
                 Logger.Log($"Peer disconnected with ID: {id}.");
             }
             catch (Exception ex)

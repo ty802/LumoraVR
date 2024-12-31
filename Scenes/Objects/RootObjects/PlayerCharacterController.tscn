@@ -35,21 +35,27 @@ properties/7/replication_mode = 1
 properties/8/path = NodePath(".:MovementInput")
 properties/8/spawn = true
 properties/8/replication_mode = 1
+properties/9/path = NodePath(".:UserHeight")
+properties/9/spawn = true
+properties/9/replication_mode = 1
+properties/10/path = NodePath(".:MovementButtons")
+properties/10/spawn = true
+properties/10/replication_mode = 1
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_820w7"]
 
-[node name="PlayerCharacterController" type="CharacterBody3D" node_paths=PackedStringArray("ClientSync", "debugLabel")]
+[node name="PlayerCharacterController" type="CharacterBody3D" node_paths=PackedStringArray("ClientSync", "DebugLabel")]
 collision_layer = 2
 script = ExtResource("1_0nv1q")
 ClientSync = NodePath("ClientSynchronizer")
-debugLabel = NodePath("Label")
+DebugLabel = NodePath("Label")
 
 [node name="ServerSynchronizer" type="MultiplayerSynchronizer" parent="."]
 replication_config = SubResource("SceneReplicationConfig_h7fwk")
 
 [node name="ClientSynchronizer" type="MultiplayerSynchronizer" parent="."]
-replication_interval = 0.1
-delta_interval = 0.1
+replication_interval = 0.05
+delta_interval = 0.05
 replication_config = SubResource("SceneReplicationConfig_c22g5")
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="."]

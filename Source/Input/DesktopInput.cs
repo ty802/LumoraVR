@@ -1,5 +1,6 @@
 using System;
 using Aquamarine.Source.Logging;
+using Bones.Core;
 using Godot;
 
 namespace Aquamarine.Source.Input;
@@ -37,17 +38,21 @@ public partial class DesktopInput : Node3D, IInputProvider
 
         _headRotation = new Vector2(horizontal, vertical);
 
+        CurrentHeadHeight = CurrentHeadHeight.Damp((InputButton.Crouch.Held() ? 0.45f : 1) * GetHeight, 5, deltaf);
+
         _camera.Quaternion = Quaternion.FromEuler(new Vector3(_headRotation.Y, _headRotation.X, 0));
-        _camera.Position = Vector3.Up * 1.8f;
+        _camera.Position = Vector3.Up * CurrentHeadHeight;
     }
 
     public static readonly PackedScene PackedScene = ResourceLoader.Load<PackedScene>("res://Scenes/DesktopInput.tscn");
     public bool IsVR => false;
     public Vector3 GetPlayspaceMovementDelta => Vector3.Zero;
     public Vector2 GetMovementInputAxis => InputManager.Movement;
+    public float GetHeight => 1.8f; //TODO
+    public float CurrentHeadHeight = 1.8f;
     public Vector3 GetLimbPosition(IInputProvider.InputLimb limb) => limb switch
     {
-        IInputProvider.InputLimb.Head => Vector3.Up * 1.8f,
+        IInputProvider.InputLimb.Head => Vector3.Up * CurrentHeadHeight,
         //IInputProvider.InputLimb.LeftHand => expr,
         //IInputProvider.InputLimb.RightHand => expr,
         //IInputProvider.InputLimb.Hip => expr,

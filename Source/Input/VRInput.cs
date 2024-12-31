@@ -50,6 +50,7 @@ public partial class VRInput : Node3D, IInputProvider
     public bool IsVR => true;
     public Vector3 GetPlayspaceMovementDelta => _playspaceDelta;
     public Vector2 GetMovementInputAxis => _leftHand.GetVector2("primary") * new Vector2(1, -1);
+    public float GetHeight => 1.8f; //TODO
     public Vector3 GetLimbPosition(IInputProvider.InputLimb limb) => _origin.Position + limb switch
     {
         IInputProvider.InputLimb.Head => _head.Position,

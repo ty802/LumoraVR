@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using Aquamarine.Source.Helpers;
 using Aquamarine.Source.Logging;
 using Aquamarine.Source.Scene;
 using Aquamarine.Source.Scene.RootObjects;
@@ -25,8 +26,13 @@ namespace Aquamarine.Source.Management
             Instance = this;
             Logger.Log("MultiplayerScene initialized.");
         }
-        [Rpc]
-        public void UpdatePlayerList(int[] playerList) => PlayerList = new(playerList);
+        public void SendUpdatedPlayerList()
+        {
+            if (IsMultiplayerAuthority()) Rpc(MethodName.UpdatePlayerList, PlayerList.ToArray());
+        }
+
+        [Rpc(CallLocal = false, TransferChannel = SerializationHelpers.WorldUpdateChannel, TransferMode = MultiplayerPeer.TransferModeEnum.Reliable)]
+        private void UpdatePlayerList(int[] playerList) => PlayerList = new Array<int>(playerList);
         public void AddPrefab(string name, string prefab, int? blacklist = null)
         {
             if (!IsMultiplayerAuthority()) return;

@@ -7,7 +7,7 @@ namespace Aquamarine.Source.Networking;
 
 public static class BuiltinAssetHelper
 {
-    private static readonly string BuiltinSchema = "builtin://";
+    private const string BuiltinSchema = "builtin://";
     private static readonly List<string> BuiltinAssets = new[]
     {
         "Textures/Dot.png",

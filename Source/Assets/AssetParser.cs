@@ -1,13 +1,12 @@
 using Godot;
 
-namespace Aquamarine.Source.Scene.Assets;
+namespace Aquamarine.Source.Assets;
 
 public static class AssetParser
 {
     public static ImageTexture ParseImage(string path, byte[] data)
     {
         var lower = path.ToLowerInvariant();
-        //TODO TODO TODO TODO
         if (lower.EndsWith(".png"))
         {
             var img = new Image();

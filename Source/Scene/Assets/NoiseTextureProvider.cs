@@ -1,3 +1,4 @@
+using System;
 using Godot;
 using Godot.Collections;
 
@@ -7,8 +8,10 @@ public class NoiseTextureProvider : ITextureProvider
 {
     public Texture2D Texture => _texture;
     private NoiseTexture2D _texture = new();
+    public bool AssetReady => true;
     public void Initialize(Dictionary<string, Variant> data)
     {
         throw new System.NotImplementedException();
     }
+    public void Set(Action<Texture2D> setAction) => setAction(_texture);
 }

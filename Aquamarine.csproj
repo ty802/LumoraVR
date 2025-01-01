@@ -5,9 +5,6 @@
     <LangVersion>preview</LangVersion>
   </PropertyGroup>
   <ItemGroup>
-    <Folder Include="Source\Networking\" />
-  </ItemGroup>
-  <ItemGroup>
     <PackageReference Include="Wasmtime" Version="22.0.0" />
   </ItemGroup>
 </Project>

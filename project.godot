@@ -18,6 +18,7 @@ config/icon="res://icon.svg"
 [autoload]
 
 InputManager="*res://Source/Input/InputManager.cs"
+AssetFetch="*res://Source/Networking/AssetFetcher.cs"
 
 [dotnet]
 

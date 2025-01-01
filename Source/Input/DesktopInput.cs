@@ -21,7 +21,8 @@ public partial class DesktopInput : Node3D, IInputProvider
         {
             base._Ready();
 
-			ProcessPriority = -9;
+            IInputProvider.Instance = this;
+            
             ProcessPriority = -9;
 
             Logger.Log("DesktopInput initialized successfully.");

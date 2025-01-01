@@ -23,6 +23,7 @@ size_flags_horizontal = 3
 size_flags_vertical = 3
 
 [node name="Label" type="Label" parent="PlayerHud"]
+layout_mode = 0
 offset_right = 40.0
 offset_bottom = 22.3333
 

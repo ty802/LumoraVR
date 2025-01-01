@@ -52,6 +52,7 @@ namespace Aquamarine.Source.Management
             }
             else Rpc(MethodName.InternalAddPrefab, name, prefab);
         }
+
         public void SendAllPrefabs(int? player = null)
         {
             if (!IsMultiplayerAuthority()) return;
@@ -63,6 +64,7 @@ namespace Aquamarine.Source.Management
             if (player.HasValue) RpcId(player.Value, MethodName.InternalReceiveAllPrefabs, json);
             else Rpc(MethodName.InternalReceiveAllPrefabs, json);
         }
+
         [Rpc]
         private void InternalReceiveAllPrefabs(string json)
         {
@@ -70,6 +72,7 @@ namespace Aquamarine.Source.Management
             if (parsed.VariantType is not Variant.Type.Dictionary) return;
             foreach (var (name, prefab) in parsed.AsGodotDictionary<string,string>()) Prefabs[name] = Prefab.Deserialize(prefab);
         }
+
         [Rpc]
         private void InternalAddPrefab(string name, string prefab)
         {

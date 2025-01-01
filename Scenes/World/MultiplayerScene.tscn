@@ -1,20 +1,30 @@
-[gd_scene load_steps=9 format=3 uid="uid://dtempfuf1571n"]
+[gd_scene load_steps=13 format=3 uid="uid://dtempfuf1571n"]
 
 [ext_resource type="Script" path="res://Source/Management/MultiplayerScene.cs" id="1_yl1ag"]
 [ext_resource type="Shader" path="res://Assets/Shaders/DebugGrid.gdshader" id="2_q775b"]
+[ext_resource type="Shader" uid="uid://c0t1sbem66elw" path="res://Assets/Shaders/TestGrid.tres" id="3_dp4rw"]
 
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_bkyq3"]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_mla0q"]
 render_priority = 0
 shader = ExtResource("2_q775b")
 
 [sub_resource type="BoxMesh" id="BoxMesh_8a1u3"]
-material = SubResource("ShaderMaterial_bkyq3")
 size = Vector3(64, 1, 64)
 subdivide_width = 3
 subdivide_depth = 3
 
 [sub_resource type="BoxShape3D" id="BoxShape3D_ibhoa"]
 size = Vector3(64, 1, 64)
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_m2atf"]
+render_priority = 0
+shader = ExtResource("3_dp4rw")
+
+[sub_resource type="BoxMesh" id="BoxMesh_7prxa"]
+size = Vector3(2, 0.25, 2)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_tlvjq"]
+size = Vector3(2, 0.25, 2)
 
 [sub_resource type="PhysicalSkyMaterial" id="PhysicalSkyMaterial_yceyn"]
 
@@ -46,6 +56,7 @@ spawn_path = NodePath("../Level/PlayerRoot")
 
 [node name="MeshInstance3D" type="MeshInstance3D" parent="Level/TestPlatform"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.5, 0)
+material_override = SubResource("ShaderMaterial_mla0q")
 mesh = SubResource("BoxMesh_8a1u3")
 
 [node name="StaticBody3D" type="StaticBody3D" parent="Level/TestPlatform/MeshInstance3D"]
@@ -56,6 +67,50 @@ shape = SubResource("BoxShape3D_ibhoa")
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="Level"]
 transform = Transform3D(1, 0, 0, 0, -0.567024, 0.823701, 0, -0.823701, -0.567024, 0, 0, 0)
+
+[node name="Platforms" type="Node3D" parent="Level"]
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Level/Platforms"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 3, 1, -15)
+material_override = SubResource("ShaderMaterial_m2atf")
+instance_shader_parameters/gridLineColour = Color(0.176419, 0.176419, 0.176419, 1)
+instance_shader_parameters/gridPrimaryColour = Color(1, 0.501961, 0.501961, 1)
+instance_shader_parameters/lineOffset = Vector2(0, 0)
+instance_shader_parameters/lineWidth = 0.02
+mesh = SubResource("BoxMesh_7prxa")
+
+[node name="StaticBody3D" type="StaticBody3D" parent="Level/Platforms/MeshInstance3D"]
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Level/Platforms/MeshInstance3D/StaticBody3D"]
+shape = SubResource("BoxShape3D_tlvjq")
+
+[node name="MeshInstance3D2" type="MeshInstance3D" parent="Level/Platforms"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, -15)
+material_override = SubResource("ShaderMaterial_m2atf")
+instance_shader_parameters/gridLineColour = Color(0.176419, 0.176419, 0.176419, 1)
+instance_shader_parameters/gridPrimaryColour = Color(0.501961, 1, 0.501961, 1)
+instance_shader_parameters/lineOffset = Vector2(1, 0)
+instance_shader_parameters/lineWidth = 0.02
+mesh = SubResource("BoxMesh_7prxa")
+
+[node name="StaticBody3D" type="StaticBody3D" parent="Level/Platforms/MeshInstance3D2"]
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Level/Platforms/MeshInstance3D2/StaticBody3D"]
+shape = SubResource("BoxShape3D_tlvjq")
+
+[node name="MeshInstance3D3" type="MeshInstance3D" parent="Level/Platforms"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -3, 1, -15)
+material_override = SubResource("ShaderMaterial_m2atf")
+instance_shader_parameters/gridLineColour = Color(0.176419, 0.176419, 0.176419, 1)
+instance_shader_parameters/gridPrimaryColour = Color(0.501961, 0.501961, 1, 1)
+instance_shader_parameters/lineOffset = Vector2(0, 0)
+instance_shader_parameters/lineWidth = 0.02
+mesh = SubResource("BoxMesh_7prxa")
+
+[node name="StaticBody3D" type="StaticBody3D" parent="Level/Platforms/MeshInstance3D3"]
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Level/Platforms/MeshInstance3D3/StaticBody3D"]
+shape = SubResource("BoxShape3D_tlvjq")
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("Environment_voyb6")

@@ -40,10 +40,10 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
 	[Export] public float UserHeight;
 	[Export] public Vector2 MovementInput;
 	[Export] public byte MovementButtons; // 0 = jump, 1 = sprint
-    
+	
 	public bool JumpInput => (MovementButtons & (1 << 0)) > 0;
 	public bool SprintInput => (MovementButtons & (1 << 1)) > 0;
-    
+	
 	[Export] public Vector3 HeadPosition;
 	[Export] public Quaternion HeadRotation = Quaternion.Identity;
 	
@@ -82,8 +82,6 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
 	[Export] public float WalkSpeed = 5f;
 	[Export] public float RunSpeed = 8f;
 	[Export] public float JumpHeight = 1f;
-	
-	[Export] public Label DebugLabel;
 
 	public override void _Process(double delta)
 	{
@@ -126,16 +124,12 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
 		
 		Velocity = new Vector3(movementAccelerated.X, yVel, movementAccelerated.Y);
 
-        if (IsOnFloor() && JumpInput) 
-        {
-	        //panda magic math
-            var height = Mathf.Sqrt(2f * 9.8f * JumpHeight);
-            Velocity += new Vector3(0, height, 0);
-        }
-        
-		DebugLabel.Text = authority ?
-		$"Velocity: {Velocity}\n" +
-		$"IsOnFloor: {IsOnFloor()}" : "";
+		if (IsOnFloor() && JumpInput) 
+		{
+			//panda magic math
+			var height = Mathf.Sqrt(2f * 9.8f * JumpHeight);
+			Velocity += new Vector3(0, height, 0);
+		}
 
 		MoveAndSlide();
 		

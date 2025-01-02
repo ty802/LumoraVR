@@ -1,6 +1,24 @@
-[gd_scene load_steps=2 format=3 uid="uid://f4us2q07n48a"]
+[gd_scene load_steps=5 format=3 uid="uid://f4us2q07n48a"]
 
 [ext_resource type="Script" path="res://Source/Test/MeshDataTest.cs" id="1_g61kh"]
 
+[sub_resource type="PhysicalSkyMaterial" id="PhysicalSkyMaterial_mds7y"]
+
+[sub_resource type="Sky" id="Sky_q172e"]
+sky_material = SubResource("PhysicalSkyMaterial_mds7y")
+
+[sub_resource type="Environment" id="Environment_vthhs"]
+background_mode = 2
+sky = SubResource("Sky_q172e")
+
 [node name="MeshDataTest" type="Node3D"]
 script = ExtResource("1_g61kh")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 3.09271, 12.8139)
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_vthhs")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.756048, 0.580008, 0.303286, 0, -0.463373, 0.886163, 0.654517, -0.669982, -0.350332, 0, 0, 0)

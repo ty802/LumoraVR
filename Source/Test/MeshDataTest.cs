@@ -1,9 +1,10 @@
 using System.Linq;
+using Aquamarine.Source.Assets;
 using Godot;
 
 namespace Aquamarine.Source.Test;
 
-public partial class MeshDataTest : Node
+public partial class MeshDataTest : Node3D
 {
     public override void _Ready()
     {
@@ -15,20 +16,13 @@ public partial class MeshDataTest : Node
 
         if (meshInstance?.Mesh is ArrayMesh mesh)
         {
-            var blendShapeCount = mesh.GetBlendShapeCount();
-            GD.Print($"Blend Shape Count: {mesh.GetBlendShapeCount()}");
-            for (var i = 0; i < blendShapeCount; i++)
-            {
-                GD.Print($"{mesh.GetBlendShapeName(i)}");
-            }
+            var meshFile = MeshFile.FromArrayMesh(mesh);
+            var returnedMesh = meshFile.Instantiate();
 
-            var surfaceCount = mesh.GetSurfaceCount();
-            for (var i = 0; i < surfaceCount; i++)
-            {
-                var blendShapes = mesh.SurfaceGetBlendShapeArrays(i);
-                GD.Print(mesh.SurfaceGetArrays(i)[(int)Mesh.ArrayType.Index].VariantType);
-                GD.Print($"{mesh.SurfaceGetPrimitiveType(i)}, {blendShapes.Count}");
-            }
+            var instance = new MeshInstance3D();
+            AddChild(instance);
+            
+            instance.Mesh = returnedMesh;
         }
     }
 }

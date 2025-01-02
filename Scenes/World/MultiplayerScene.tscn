@@ -21,7 +21,7 @@ render_priority = 0
 shader = ExtResource("3_dp4rw")
 
 [sub_resource type="BoxMesh" id="BoxMesh_7prxa"]
-size = Vector3(2, 0.25, 2)
+size = Vector3(2.1, 0.25, 2.1)
 
 [sub_resource type="BoxShape3D" id="BoxShape3D_tlvjq"]
 size = Vector3(2, 0.25, 2)
@@ -71,7 +71,7 @@ transform = Transform3D(1, 0, 0, 0, -0.567024, 0.823701, 0, -0.823701, -0.567024
 [node name="Platforms" type="Node3D" parent="Level"]
 
 [node name="MeshInstance3D" type="MeshInstance3D" parent="Level/Platforms"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 3, 1, -15)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4, 1, -15)
 material_override = SubResource("ShaderMaterial_m2atf")
 instance_shader_parameters/gridLineColour = Color(0.176419, 0.176419, 0.176419, 1)
 instance_shader_parameters/gridPrimaryColour = Color(1, 0.501961, 0.501961, 1)
@@ -99,7 +99,7 @@ mesh = SubResource("BoxMesh_7prxa")
 shape = SubResource("BoxShape3D_tlvjq")
 
 [node name="MeshInstance3D3" type="MeshInstance3D" parent="Level/Platforms"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -3, 1, -15)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -4, 1, -15)
 material_override = SubResource("ShaderMaterial_m2atf")
 instance_shader_parameters/gridLineColour = Color(0.176419, 0.176419, 0.176419, 1)
 instance_shader_parameters/gridPrimaryColour = Color(0.501961, 0.501961, 1, 1)

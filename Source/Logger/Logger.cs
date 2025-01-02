@@ -30,12 +30,32 @@ namespace Aquamarine.Source.Logging
             Task.Run(() => ProcessLogQueue(_cancellationTokenSource.Token));
         }
 
-        private static void WriteLog(string level, string message)
+        public static event Action<string> OnFormattedLogMessageWritten;
+        public static event Action<string> OnPrettyLogMessageWritten;
+
+        private static void WriteLog(LogLevel level, string message)
         {
             string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
             string logEntry = $"[{timestamp}] [{level}] {message}";
             _logQueue.Enqueue(logEntry);
             _logEvent.Set();
+            Godot.GD.Print(logEntry);
+            OnFormattedLogMessageWritten?.Invoke(message);
+            switch (level)
+            {
+                case LogLevel.LOG:
+                    OnPrettyLogMessageWritten?.Invoke($" [[color=lime_green]{DateTime.Now:HH:mm:ss}[/color]] [[color=deep_sky_blue]{level}[/color]] [color=sky_blue]{message}[/color]");
+                    break;
+                case LogLevel.WARN:
+                    OnPrettyLogMessageWritten?.Invoke($" [[color=lime_green]{DateTime.Now:HH:mm:ss}[/color]] [[color=gold]{level}[/color]] [color=goldenrod]{message}[/color]");
+                    break;
+                case LogLevel.ERROR:
+                    OnPrettyLogMessageWritten?.Invoke($" [[color=lime_green]{DateTime.Now:HH:mm:ss}[/color]] [[color=red]{level}[/color]] [color=indian_red]{message}[/color]");
+                    break;
+                case LogLevel.DEBUG:
+                    OnPrettyLogMessageWritten?.Invoke($" [[color=lime_green]{DateTime.Now:HH:mm:ss}[/color]] [[color=dark_orchid]{level}[/color]] [color=orchid]{message}[/color]");
+                    break;
+            }
         }
 
         private static void ProcessLogQueue(CancellationToken cancellationToken)
@@ -80,17 +100,27 @@ namespace Aquamarine.Source.Logging
 
         public static void Log(string message)
         {
-            WriteLog("LOG", message);
+            WriteLog(LogLevel.LOG, message);
         }
-
         public static void Warn(string message)
         {
-            WriteLog("WARN", message);
+            WriteLog(LogLevel.WARN, message);
         }
-
         public static void Error(string message)
         {
-            WriteLog("ERROR", message);
+            WriteLog(LogLevel.ERROR, message);
+        }
+        public static void Debug(string message)
+        {
+            WriteLog(LogLevel.DEBUG, message);
+        }
+
+        public enum LogLevel
+        {
+            LOG,
+            WARN,
+            ERROR,
+            DEBUG
         }
     }
 }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Aquamarine.Source.Input;
+using Aquamarine.Source.Logging;
 using Aquamarine.Source.Management;
 using Godot;
 
@@ -83,7 +84,20 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
 	[Export] public float RunSpeed = 8f;
 	[Export] public float JumpHeight = 1f;
 
-	public override void _Process(double delta)
+    [Export] public Label3D Nametag;
+    public override void _Ready()
+    {
+        base._Ready();
+
+        if (ClientSync.IsMultiplayerAuthority())
+        {
+            Nametag.Text = System.Environment.MachineName;
+        }
+
+        Logger.Log("PlayerCharacterController initialized.");
+    }
+
+    public override void _Process(double delta)
 	{
 		base._Process(delta);
 
@@ -138,8 +152,27 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
 
 		if (authority) IInputProvider.Move(GlobalTransform);
 		else DebugDraw3D.DrawPosition(GlobalTransform * new Transform3D(new Basis(HeadRotation), HeadPosition));
-	}
-	public Vector3 GetLimbPosition(IInputProvider.InputLimb limb) =>
+
+        if (Position.Y < -100)
+        {
+            Position = Vector3.Zero;
+        }
+    }
+    public override void _Input(InputEvent @event)
+    {
+        base._Input(@event);
+
+        if (!ClientSync.IsMultiplayerAuthority())
+        {
+            return;
+        }
+
+        if (@event.IsActionPressed("Respawn"))
+        {
+            Position = Vector3.Zero;
+        }
+    }
+    public Vector3 GetLimbPosition(IInputProvider.InputLimb limb) =>
 		limb switch
 		{
 			IInputProvider.InputLimb.Head => HeadPosition,

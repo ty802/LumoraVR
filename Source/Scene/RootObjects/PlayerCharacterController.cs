@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Aquamarine.Source.Input;
+using Aquamarine.Source.Logging;
 using Aquamarine.Source.Management;
 using Godot;
 
@@ -83,7 +84,17 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
 	[Export] public float RunSpeed = 8f;
 	[Export] public float JumpHeight = 1f;
 
-	public override void _Process(double delta)
+    [Export] public Label3D Nametag;
+    public override void _Ready()
+    {
+        base._Ready();
+
+        Nametag.Text = System.Environment.MachineName;
+
+        Logger.Log("PlayerCharacterController initialized.");
+    }
+
+    public override void _Process(double delta)
 	{
 		base._Process(delta);
 

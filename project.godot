@@ -24,6 +24,10 @@ AssetFetch="*res://Source/Networking/AssetFetcher.cs"
 
 project/assembly_name="Aquamarine"
 
+[editor]
+
+run/main_run_args="--xr-mode off"
+
 [gui]
 
 theme/default_font_multichannel_signed_distance_field=true

@@ -89,7 +89,10 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
     {
         base._Ready();
 
-        Nametag.Text = System.Environment.MachineName;
+        if (ClientSync.IsMultiplayerAuthority())
+        {
+            Nametag.Text = System.Environment.MachineName;
+        }
 
         Logger.Log("PlayerCharacterController initialized.");
     }
@@ -150,7 +153,21 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
 		if (authority) IInputProvider.Move(GlobalTransform);
 		else DebugDraw3D.DrawPosition(GlobalTransform * new Transform3D(new Basis(HeadRotation), HeadPosition));
 	}
-	public Vector3 GetLimbPosition(IInputProvider.InputLimb limb) =>
+    public override void _Input(InputEvent @event)
+    {
+        base._Input(@event);
+
+        if (!ClientSync.IsMultiplayerAuthority())
+        {
+            return;
+        }
+
+        if (@event.IsActionPressed("Respawn"))
+        {
+            Position = Vector3.Zero;
+        }
+    }
+    public Vector3 GetLimbPosition(IInputProvider.InputLimb limb) =>
 		limb switch
 		{
 			IInputProvider.InputLimb.Head => HeadPosition,

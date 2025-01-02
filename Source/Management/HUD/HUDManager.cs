@@ -13,6 +13,10 @@ public partial class HUDManager : Control
     {
         base._Ready();
         Instance = this;
+
+        DebugOverlay.Visible = false;
+        DebugOverlay.ProcessMode = ProcessModeEnum.Disabled;
+
         Logger.Log("HUD initialized.");
     }
 

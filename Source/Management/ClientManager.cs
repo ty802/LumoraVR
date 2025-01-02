@@ -1,6 +1,7 @@
 using System;
 using Aquamarine.Source.Logging;
 using Aquamarine.Source.Input;
+using Aquamarine.Source.Networking;
 using Bones.Core;
 using Godot;
 
@@ -52,7 +53,8 @@ namespace Aquamarine.Source.Management
         {
             try
             {
-                var peer = new ENetMultiplayerPeer();
+                //var peer = new ENetMultiplayerPeer();
+                var peer = new LiteNetLibMultiplayerPeer();
                 peer.CreateClient(DefaultServerIP, Port);
                 Multiplayer.MultiplayerPeer = peer;
 

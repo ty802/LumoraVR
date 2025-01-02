@@ -1,7 +1,5 @@
 using System;
-using System.Net.Sockets;
 using Aquamarine.Source.Logging;
-using Aquamarine.Source.Management;
 using Bones.Core;
 using Godot;
 
@@ -10,9 +8,6 @@ namespace Aquamarine.Source.Input;
 public partial class DesktopInput : Node3D, IInputProvider
 {
     [Export] private Camera3D _camera;
-
-    [Export] public Control Hud;
-    [Export] public Label DebugLabel;
     
     private Vector2 _headRotation;
 
@@ -47,16 +42,6 @@ public partial class DesktopInput : Node3D, IInputProvider
 
         _camera.Quaternion = Quaternion.FromEuler(new Vector3(_headRotation.Y, _headRotation.X, 0));
         _camera.Position = Vector3.Up * CurrentHeadHeight;
-
-        DebugLabel.Text = 
-        $"Game\n" +
-        $"├─ FPS: {Engine.GetFramesPerSecond()}\n" +
-        $"└─ PTPS: {Engine.PhysicsTicksPerSecond}\n" +
-        $"\nNetworking\n" +
-        $"└─ Player Count: {MultiplayerScene.Instance.PlayerList.Count}\n" +
-        $"\nPlayer\n" +
-        $"├─ Velocity: DUMMY\n" +
-        $"└─ IsOnFloor: DUMMY";
     }
 
     public static readonly PackedScene PackedScene = ResourceLoader.Load<PackedScene>("res://Scenes/DesktopInput.tscn");

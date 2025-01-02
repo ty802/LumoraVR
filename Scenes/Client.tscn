@@ -1,7 +1,10 @@
-[gd_scene load_steps=3 format=3 uid="uid://d37lm476vrp1e"]
+[gd_scene load_steps=6 format=3 uid="uid://d37lm476vrp1e"]
 
 [ext_resource type="Script" path="res://Source/Management/ClientManager.cs" id="1_bw0gq"]
 [ext_resource type="PackedScene" uid="uid://dtempfuf1571n" path="res://Scenes/World/MultiplayerScene.tscn" id="2_40xba"]
+[ext_resource type="Texture2D" uid="uid://jdjeattbqj2g" path="res://Assets/Textures/Dot.png" id="3_1i8qj"]
+[ext_resource type="Script" path="res://Source/Management/HUD/HUDManager.cs" id="3_16xj1"]
+[ext_resource type="Script" path="res://Source/Management/HUD/DebugOverlay.cs" id="5_w13h7"]
 
 [node name="Root" type="Node" node_paths=PackedStringArray("_inputRoot", "_multiplayerScene")]
 script = ExtResource("1_bw0gq")
@@ -11,3 +14,64 @@ _multiplayerScene = NodePath("Scene")
 [node name="Scene" parent="." instance=ExtResource("2_40xba")]
 
 [node name="InputRoot" type="Node3D" parent="."]
+
+[node name="HUDManager" type="Control" parent="." node_paths=PackedStringArray("DebugOverlay")]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+script = ExtResource("3_16xj1")
+DebugOverlay = NodePath("Debug Overlay")
+
+[node name="Label" type="Label" parent="HUDManager"]
+visible = false
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 22.3333
+text = "Lorem Ipsum
+├─ Lorem ipsum dolor sit amet
+└─ consectetur adipiscing elit"
+
+[node name="Crosshair" type="TextureRect" parent="HUDManager"]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -32.0
+offset_top = -32.0
+offset_right = 32.0
+offset_bottom = 32.0
+grow_horizontal = 2
+grow_vertical = 2
+scale = Vector2(0.05, 0.05)
+pivot_offset = Vector2(32, 32)
+texture = ExtResource("3_1i8qj")
+expand_mode = 1
+stretch_mode = 4
+
+[node name="Debug Overlay" type="Control" parent="HUDManager" node_paths=PackedStringArray("Text")]
+process_mode = 4
+visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("5_w13h7")
+Text = NodePath("Text")
+
+[node name="Text" type="RichTextLabel" parent="HUDManager/Debug Overlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+bbcode_enabled = true

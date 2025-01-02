@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
@@ -38,6 +39,7 @@ public partial class LiteNetLibMultiplayerPeer : MultiplayerPeerExtension
     
     public readonly NetManager NetManager;
     public readonly EventBasedNetListener Listener;
+    public readonly EventBasedNatPunchListener NatPunchListener;
 
     [Signal]
     public delegate void ClientConnectionSuccessEventHandler();
@@ -65,6 +67,16 @@ public partial class LiteNetLibMultiplayerPeer : MultiplayerPeerExtension
 
     private bool _refuseNewConnections;
 
+    private bool NatPunch
+    {
+        get => NetManager.NatPunchEnabled;
+        set => NetManager.NatPunchEnabled = value;
+    }
+    
+    public float PunchthroughTimeout = 10;
+
+    private Stopwatch _punchthroughTimer = new();
+
     public LiteNetLibMultiplayerPeer()
     {
         Listener = new EventBasedNetListener();
@@ -74,12 +86,31 @@ public partial class LiteNetLibMultiplayerPeer : MultiplayerPeerExtension
             IPv6Enabled = true,
             AutoRecycle = true,
         };
+        
+        NatPunchListener = new EventBasedNatPunchListener();
+        NetManager.NatPunchModule.Init(NatPunchListener);
+        NetManager.NatPunchModule.UnsyncedEvents = true;
+        
+        //NatPunchListener.NatIntroductionRequest += NatPunchListenerOnNatIntroductionRequest;
+        NatPunchListener.NatIntroductionSuccess += NatPunchListenerOnNatIntroductionSuccess;
 
         Listener.NetworkReceiveEvent += ListenerOnNetworkReceiveEvent;
         Listener.PeerConnectedEvent += ListenerOnPeerConnectedEvent;
         Listener.PeerDisconnectedEvent += ListenerOnPeerDisconnectedEvent;
         Listener.ConnectionRequestEvent += ListenerOnConnectionRequestEvent;
         Listener.NetworkErrorEvent += ListenerOnNetworkErrorEvent;
+    }
+    private void NatPunchListenerOnNatIntroductionSuccess(IPEndPoint targetendpoint, NatAddressType type, string token)
+    {
+        _punchthroughTimer.Reset();
+        if (IsServer)
+        {
+            
+        }
+        else
+        {
+            NetManager.Connect(targetendpoint, token);
+        }
     }
     private void ListenerOnNetworkErrorEvent(IPEndPoint endpoint, SocketError socketerror) => GD.PrintErr(socketerror);
     private void UpdateIdToPeer()
@@ -130,10 +161,7 @@ public partial class LiteNetLibMultiplayerPeer : MultiplayerPeerExtension
         {
             if (_peerToId.TryGetValue(peer, out var peerId))
             {
-                if (disconnectinfo.Reason is not DisconnectReason.DisconnectPeerCalled)
-                {
-                    EmitSignal(MultiplayerPeer.SignalName.PeerDisconnected, peerId);
-                }
+                if (disconnectinfo.Reason is not DisconnectReason.DisconnectPeerCalled) EmitSignal(MultiplayerPeer.SignalName.PeerDisconnected, peerId);
 
                 _peerToId.Remove(peer);
                 UpdateIdToPeer();
@@ -211,33 +239,95 @@ public partial class LiteNetLibMultiplayerPeer : MultiplayerPeerExtension
         }
         _packetQueue.Enqueue(new Packet(peer, reader, channel, deliveryMethod));
     }
-
-    public Error CreateServer(int port, int maxClients = 32, bool natPunch = true)
+    /// <summary>
+    /// Instructs the server to send a NAT Punchthrough request
+    /// </summary>
+    /// <param name="address">The address of the punchthrough server</param>
+    /// <param name="port">The port of the punchthrough server</param>
+    /// <param name="roomKey">The token to send to the punchthrough server, should be some sort of identifier that this is the server for a session</param>
+    public void ServerSendNatPunchthrough(string address, int port, string roomKey)
+    {
+        if (!NatPunch) return;
+        _punchthroughTimer.Start();
+        NetManager.NatPunchModule.SendNatIntroduceRequest(address, port, roomKey);
+    }
+    public Error CreateServer(int port, int maxClients = 32)
     {
         if (NetManager.IsRunning) return Error.AlreadyInUse;
         
         //GD.Print($"Creating server on port {port}");
 
+        NatPunch = false;
+
         MaxClients = maxClients;
-        NetManager.NatPunchEnabled = natPunch;
-        //NetManager.AllowPeerAddressChange = false;
+        NetManager.NatPunchEnabled = NatPunch;
         _localNetworkId = 1;
         
         NetManager.Start(port);
         
         return Error.Ok;
     }
+    public Error CreateServerNat(int port, int maxClients = 32)
+    {
+        if (NetManager.IsRunning) return Error.AlreadyInUse;
+        
+        //GD.Print($"Creating server on port {port}");
 
-    public Error CreateClient(string address, int port, bool natPunch = true)
+        NatPunch = true;
+
+        MaxClients = maxClients;
+        NetManager.NatPunchEnabled = NatPunch;
+        _localNetworkId = 1;
+        
+        NetManager.Start(port);
+        
+        return Error.Ok;
+    }
+    /// <summary>
+    /// Create a client that directly connects to a server
+    /// </summary>
+    /// <param name="address">The address of the target server</param>
+    /// <param name="port">The port of the target server</param>
+    /// <param name="roomKey">The token to send to the target server, should be something like a password</param>
+    /// <returns></returns>
+    public Error CreateClient(string address, int port, string roomKey = RoomKey)
     {
         if (NetManager.IsRunning) return Error.AlreadyInUse;
         
         //GD.Print($"Connecting to server {address} on port {port}");
 
-        NetManager.NatPunchEnabled = natPunch;
+        NatPunch = false;
         
         NetManager.Start();
-        NetManager.Connect(address, port, RoomKey);
+        NetManager.Connect(address, port, roomKey);
+
+        _clientConnectionStatus = ConnectionStatus.Connecting;
+
+        return Error.Ok;
+    }
+    /// <summary>
+    /// Create a client that performs NAT Punchthrough to arrive at a destination server
+    /// </summary>
+    /// <param name="address">The address of the punchthrough server</param>
+    /// <param name="port">The port of the punchthrough server</param>
+    /// <param name="roomKey">The token to send to the punchthrough server, should be some sort of session ID</param>
+    /// <returns></returns>
+    public Error CreateClientNatPunch(string address, int port, string roomKey = RoomKey)
+    {
+        if (NetManager.IsRunning) return Error.AlreadyInUse;
+        
+        //GD.Print($"Connecting to server {address} on port {port}");
+
+        NatPunch = true;
+        
+        NetManager.Start();
+
+        if (NatPunch)
+        {
+            NetManager.NatPunchModule.SendNatIntroduceRequest(address, port, roomKey);
+            _punchthroughTimer.Start();
+        }
+        else NetManager.Connect(address, port, roomKey);
 
         _clientConnectionStatus = ConnectionStatus.Connecting;
 
@@ -336,5 +426,13 @@ public partial class LiteNetLibMultiplayerPeer : MultiplayerPeerExtension
     }
     public override bool _IsRefusingNewConnections() => _refuseNewConnections;
     public override void _SetRefuseNewConnections(bool pEnable) => _refuseNewConnections = pEnable;
-    public override void _Poll() => NetManager.PollEvents();
+    public override void _Poll()
+    {
+        NetManager.PollEvents();
+        if(NatPunch && _punchthroughTimer.IsRunning)
+        {
+            NetManager.NatPunchModule.PollEvents();
+            if (_punchthroughTimer.Elapsed.TotalSeconds >= PunchthroughTimeout) _punchthroughTimer.Stop();
+        }
+    }
 }

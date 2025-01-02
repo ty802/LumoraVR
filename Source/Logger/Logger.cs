@@ -38,8 +38,6 @@ namespace Aquamarine.Source.Logging
             string logEntry = $"[{timestamp}] [{level}] {message}";
             _logQueue.Enqueue(logEntry);
             _logEvent.Set();
-            
-            GD.Print(logEntry);
         }
 
         private static void ProcessLogQueue(CancellationToken cancellationToken)

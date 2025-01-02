@@ -2,6 +2,8 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
+using System.Net.Sockets;
 using Godot;
 using LiteNetLib;
 using LiteNetLib.Utils;
@@ -36,6 +38,11 @@ public partial class LiteNetLibMultiplayerPeer : MultiplayerPeerExtension
     
     public readonly NetManager NetManager;
     public readonly EventBasedNetListener Listener;
+
+    [Signal]
+    public delegate void ClientConnectionSuccessEventHandler();
+    [Signal]
+    public delegate void ClientConnectionFailEventHandler();
 
     private readonly ConcurrentQueue<Packet> _packetQueue = new();
     
@@ -72,7 +79,9 @@ public partial class LiteNetLibMultiplayerPeer : MultiplayerPeerExtension
         Listener.PeerConnectedEvent += ListenerOnPeerConnectedEvent;
         Listener.PeerDisconnectedEvent += ListenerOnPeerDisconnectedEvent;
         Listener.ConnectionRequestEvent += ListenerOnConnectionRequestEvent;
+        Listener.NetworkErrorEvent += ListenerOnNetworkErrorEvent;
     }
+    private void ListenerOnNetworkErrorEvent(IPEndPoint endpoint, SocketError socketerror) => GD.PrintErr(socketerror);
     private void UpdateIdToPeer()
     {
         _idToPeer = _peerToId.ToDictionary(i => i.Value, i => i.Key);
@@ -132,6 +141,9 @@ public partial class LiteNetLibMultiplayerPeer : MultiplayerPeerExtension
         }
         else
         {
+            var connectionFail = _clientConnectionStatus is ConnectionStatus.Connecting;
+            //GD.Print($"Disconnected: {disconnectinfo.Reason}");
+            
             _peerToId.Clear();
             _idToPeer.Clear();
             _clientConnectionStatus = ConnectionStatus.Disconnected;
@@ -143,6 +155,7 @@ public partial class LiteNetLibMultiplayerPeer : MultiplayerPeerExtension
             {
                 EmitSignal(MultiplayerPeer.SignalName.PeerDisconnected, peerId);
             }
+            if (connectionFail) EmitSignal(SignalName.ClientConnectionFail);
         }
     }
 
@@ -184,6 +197,7 @@ public partial class LiteNetLibMultiplayerPeer : MultiplayerPeerExtension
                             _localNetworkId = reader.GetInt();
                             _clientConnectionStatus = ConnectionStatus.Connected;
                             EmitSignal(MultiplayerPeer.SignalName.PeerConnected, 1);
+                            EmitSignal(SignalName.ClientConnectionSuccess);
                         }
                         return;
                     }

@@ -3,6 +3,8 @@ using System.Collections.Concurrent;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using Godot;
+using Environment = System.Environment;
 
 namespace Aquamarine.Source.Logging
 {
@@ -36,6 +38,8 @@ namespace Aquamarine.Source.Logging
             string logEntry = $"[{timestamp}] [{level}] {message}";
             _logQueue.Enqueue(logEntry);
             _logEvent.Set();
+            
+            GD.Print(logEntry);
         }
 
         private static void ProcessLogQueue(CancellationToken cancellationToken)

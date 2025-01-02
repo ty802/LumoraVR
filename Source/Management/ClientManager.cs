@@ -16,6 +16,7 @@ namespace Aquamarine.Source.Management
 	{
 		private XRInterface _xrInterface;
 		private IInputProvider _input;
+        private LiteNetLibMultiplayerPeer _peer;
 		[Export] private Node3D _inputRoot;
 		[Export] private MultiplayerScene _multiplayerScene;
 
@@ -79,33 +80,24 @@ namespace Aquamarine.Source.Management
 				Logger.Log($"Server details fetched: WorldName={serverInfo.WorldName}, IP={serverInfo.IP}, Port={serverInfo.Port}");
 
 				var peer = new LiteNetLibMultiplayerPeer();
-
+                _peer = peer;
 				try
 				{
 					Logger.Log("Attempting direct connection...");
 					// Attempt direct connection
+                    
 					peer.CreateClient(serverInfo.IP, serverInfo.Port);
-					Multiplayer.MultiplayerPeer = peer;
+                    Multiplayer.MultiplayerPeer = peer;
 					_isDirectConnection = true;
-					Logger.Log($"Direct connection established: Server={serverInfo.IP}:{serverInfo.Port}, World={serverInfo.WorldName}");
-				}
+
+                    peer.ClientConnectionFail += RetryOnRelay;
+                    peer.ClientConnectionSuccess += SuccessConnection;
+
+                    //Logger.Log($"Direct connection established: Server={serverInfo.IP}:{serverInfo.Port}, World={serverInfo.WorldName}");
+                }
 				catch (Exception ex)
 				{
-					Logger.Warn($"Direct connection failed: {ex.Message}. Falling back to relay.");
-
-					try
-					{
-						Logger.Log("Attempting connection via relay...");
-						// Fallback to relay server
-						peer.CreateClient("relay.xlinka.com", serverInfo.Port);
-						Multiplayer.MultiplayerPeer = peer;
-						_isDirectConnection = false;
-						Logger.Log($"Relay connection established: Relay=relay.xlinka.com:{serverInfo.Port}, World={serverInfo.WorldName}");
-					}
-					catch (Exception relayEx)
-					{
-						Logger.Error($"Relay connection failed: {relayEx.Message}");
-					}
+					Logger.Warn($"Direct connection failed: {ex.Message}.");
 				}
 			}
 			catch (Exception ex)
@@ -113,8 +105,24 @@ namespace Aquamarine.Source.Management
 				Logger.Error($"Unexpected error while joining server: {ex.Message}");
 			}
 		}
+        
 
+        private void SuccessConnection()
+        {
+            _peer.ClientConnectionFail -= RetryOnRelay;
+            _peer.ClientConnectionSuccess -= SuccessConnection;
+        }
 
+        private void RetryOnRelay()
+        {
+            SuccessConnection();
+            
+            Logger.Log("Attempting relay connection...");
+            
+            _peer.CreateClient("relay.xlinka.com", 8000);
+            Multiplayer.MultiplayerPeer = _peer;
+            _isDirectConnection = false;
+        }
 
 		private async Task<SessionInfo> FetchServerInfo()
 		{

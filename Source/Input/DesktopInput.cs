@@ -1,4 +1,5 @@
 using System;
+using System.Net.Sockets;
 using Aquamarine.Source.Logging;
 using Aquamarine.Source.Management;
 using Bones.Core;
@@ -48,9 +49,14 @@ public partial class DesktopInput : Node3D, IInputProvider
         _camera.Position = Vector3.Up * CurrentHeadHeight;
 
         DebugLabel.Text = 
-        $"Player Count: {MultiplayerScene.Instance.PlayerList.Count}\n" +
-        $"Velocity: DUMMY\n" +
-        $"IsOnFloor: DUMMY";
+        $"Game\n" +
+        $"├─ FPS: {Engine.GetFramesPerSecond()}\n" +
+        $"└─ PTPS: {Engine.PhysicsTicksPerSecond}\n" +
+        $"\nNetworking\n" +
+        $"└─ Player Count: {MultiplayerScene.Instance.PlayerList.Count}\n" +
+        $"\nPlayer\n" +
+        $"├─ Velocity: DUMMY\n" +
+        $"└─ IsOnFloor: DUMMY";
     }
 
     public static readonly PackedScene PackedScene = ResourceLoader.Load<PackedScene>("res://Scenes/DesktopInput.tscn");

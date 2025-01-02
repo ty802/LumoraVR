@@ -26,6 +26,9 @@ size_flags_vertical = 3
 layout_mode = 0
 offset_right = 40.0
 offset_bottom = 22.3333
+text = "Lorem Ipsum
+├─ Lorem ipsum dolor sit amet
+└─ consectetur adipiscing elit"
 
 [node name="TextureRect" type="TextureRect" parent="PlayerHud"]
 layout_mode = 1

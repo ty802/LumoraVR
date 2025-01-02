@@ -23,6 +23,12 @@ public partial class MeshDataTest : Node
             }
 
             var surfaceCount = mesh.GetSurfaceCount();
+            for (var i = 0; i < surfaceCount; i++)
+            {
+                var blendShapes = mesh.SurfaceGetBlendShapeArrays(i);
+                GD.Print(mesh.SurfaceGetArrays(i)[(int)Mesh.ArrayType.Index].VariantType);
+                GD.Print($"{mesh.SurfaceGetPrimitiveType(i)}, {blendShapes.Count}");
+            }
         }
     }
 }

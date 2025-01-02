@@ -152,7 +152,12 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
 
 		if (authority) IInputProvider.Move(GlobalTransform);
 		else DebugDraw3D.DrawPosition(GlobalTransform * new Transform3D(new Basis(HeadRotation), HeadPosition));
-	}
+
+        if (Position.Y < -100)
+        {
+            Position = Vector3.Zero;
+        }
+    }
     public override void _Input(InputEvent @event)
     {
         base._Input(@event);

@@ -30,5 +30,13 @@ public partial class HUDManager : Control
             DebugOverlay.ProcessMode = DebugOverlay.Visible ? ProcessModeEnum.Inherit : ProcessModeEnum.Disabled;
             Logger.Log($"Debug overlay toggled: {DebugOverlay.Visible}.");
         }
+
+        if (@event.IsActionPressed("ui_home"))
+        {
+            Logger.Log($"Sample log message.");
+            Logger.Warn($"Sample warn message.");
+            Logger.Error($"Sample error message.");
+            Logger.Debug($"Sample debug message.");
+        }
     }
 }

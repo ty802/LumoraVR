@@ -96,5 +96,8 @@ text = "
 [color=silver]bool[/color] [color=indian_red]false[/color]
 [color=lime_green]int[/color] [color=pale_green]5[/color]
 [color=deep_sky_blue]float[/color] [color=sky_blue]5.30[/color]
-[color=red]string[/color] [color=indian_red]\"Hello World\"[/color]"
+[color=red]string[/color] [color=indian_red]\"Hello World\"[/color]
+
+[color=blue_violet]Log message[/color] [color=orchid]Log message[/color]
+[color=dark_orange]Log message[/color] [color=sandy_brown]Log message[/color]"
 fit_content = true

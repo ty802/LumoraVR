@@ -29,7 +29,19 @@ public partial class DebugOverlay : Control
     public override void _Ready()
     {
         base._Ready();
+
+        Logger.OnPrettyLogMessageWritten += OnLogMessageWritten;
+
         Logger.Log("DebugOverlay initialized.");
+    }
+    string[] recentEntries = new string[7];
+    void OnLogMessageWritten(string message)
+    {
+        for (int i = recentEntries.Length - 1; i > 0; i--)
+        {
+            recentEntries[i] = recentEntries[i - 1];
+        }
+        recentEntries[0] = message;
     }
 
     public override void _Process(double delta)
@@ -59,6 +71,15 @@ public partial class DebugOverlay : Control
         stringBuilder.AppendLine($"{boolLabel} {"Jumping:"} {(InputButton.Jump.Held() ? string.Format(boolTrueValue, true) : string.Format(boolFalseValue, false))}");
         //stringBuilder.AppendLine($"{vector3Label + "Velocity:"} {string.Format(vector3Value, [1f, 2f, 3f])}");
         //stringBuilder.AppendLine($"{boolLabel + "Grounded:"} {(true ? string.Format(boolTrueValue, true) : string.Format(boolFalseValue, false))}");
+        stringBuilder.AppendLine();
+
+        //stringBuilder.AppendLine("[right]");
+        stringBuilder.AppendLine("[font_size=16]Recent Log Entries[/font_size]");
+        for (int i = 0; i < recentEntries.Length; i++)
+        {
+            stringBuilder.AppendLine(recentEntries[i]);
+        }
+        //stringBuilder.AppendLine("[/right]");
 
         stringBuilder.AppendLine("[/code]");
 

@@ -133,6 +133,11 @@ public partial class LiteNetLibMultiplayerPeer : MultiplayerPeerExtension
                 request.Reject("Refusing new connections"u8.ToArray());
                 return;
             }
+            if (NatPunch && request.RemoteEndPoint.Address.ToString() == "127.0.0.1")
+            {
+                request.Reject("Localhost NAT punches are unsupported"u8.ToArray());
+                return;
+            }
             
             var usedIds = _idToPeer.Select(i => i.Key).ToArray();
             var unusedId = Random.Shared.Next(2, int.MaxValue);

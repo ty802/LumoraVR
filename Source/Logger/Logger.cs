@@ -3,6 +3,8 @@ using System.Collections.Concurrent;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using Godot;
+using Environment = System.Environment;
 
 namespace Aquamarine.Source.Logging
 {

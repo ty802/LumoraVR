@@ -151,7 +151,15 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
 		DebugDraw3D.DrawPosition(GlobalTransform * new Transform3D(new Basis(RightHandRotation), RightHandPosition));
 
 		if (authority) IInputProvider.Move(GlobalTransform);
-		else DebugDraw3D.DrawPosition(GlobalTransform * new Transform3D(new Basis(HeadRotation), HeadPosition));
+		else  
+		{
+			Transform3D pos = GlobalTransform * new Transform3D(new Basis(HeadRotation), HeadPosition);
+			DebugDraw3D.DrawPosition(pos);
+			DebugDraw3D.DrawSphere(pos.Origin + (HeadRotation * new Vector3(0.1f, 0.1f, -0.15f)), 0.0125f, Colors.Black);
+			DebugDraw3D.DrawSphere(pos.Origin + (HeadRotation * new Vector3(0.1f, 0.1f, -0.1f)), 0.05f, Colors.White);
+			DebugDraw3D.DrawSphere(pos.Origin + (HeadRotation * new Vector3(-0.1f, 0.1f, -0.15f)), 0.0125f, Colors.Black);
+			DebugDraw3D.DrawSphere(pos.Origin + (HeadRotation * new Vector3(-0.1f, 0.1f, -0.1f)), 0.05f, Colors.White);
+		}
 
         if (Position.Y < -100)
         {

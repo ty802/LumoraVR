@@ -135,7 +135,7 @@ public partial class LiteNetLibMultiplayerPeer : MultiplayerPeerExtension
             }
             if (NatPunch && request.RemoteEndPoint.Address.ToString() == "127.0.0.1")
             {
-                request.Reject("Localhost NAT punches are unsupported"u8.ToArray());
+                request.Reject("Localhost NAT punches are unsupported"u8.ToArray()); //TODO fix this properly, this wont work forever
                 return;
             }
             

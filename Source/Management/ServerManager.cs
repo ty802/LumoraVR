@@ -98,8 +98,6 @@ namespace Aquamarine.Source.Management
 			*/
 		}
 
-		private bool _natPunchthroughCompleted = false;
-
 		private void SessionListListenerOnNetworkReceiveEvent(NetPeer peer, NetPacketReader reader, byte channel, DeliveryMethod deliverymethod)
 		{
 			var opcode = reader.GetByte();
@@ -118,19 +116,12 @@ namespace Aquamarine.Source.Management
 					break;
 
 				case 0x02:
-					if (_natPunchthroughCompleted)
-					{
-						GD.Print("NAT punchthrough already completed. Skipping.");
-						return;
-					}
-
 					GD.Print("Sending NAT punchthrough message");
 					MultiplayerPeer.ServerSendNatPunchthrough(
 						SessionInfo.SessionServer.Address.ToString(),
 						SessionInfo.SessionServer.Port,
 						$"server:{_sessionSecret}"
 					);
-					_natPunchthroughCompleted = true;
 					break;
 			}
 		}

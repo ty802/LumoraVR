@@ -5,8 +5,8 @@ namespace Aquamarine.Source.Management;
 
 public class SessionInfo
 {
-    public static IPEndPoint SessionServer = NetUtils.MakeEndPoint("127.0.0.1", 8000);
-    public static string SessionList = "http://127.0.0.1:8001";
+    public static IPEndPoint SessionServer = NetUtils.MakeEndPoint("relay.xlinka.com", 8000);
+    public static string SessionList = "https://api.xlinka.com/sessions/";
     
     public string Name { get; set; }
     public bool PublicIP { get; set; }

@@ -32,7 +32,22 @@ namespace Aquamarine.Source.Management
 				InitializeInput();
 
 				// Delay and attempt to join a server
-				this.CreateTimer(2, JoinServer);
+				this.CreateTimer(1, () =>
+                {
+                    var info = FetchServerInfo();
+                    
+                    this.CreateTimer(1, () =>
+                    {
+                        if (info.IsCompleted)
+                        {
+                            JoinNatServer(info.Result.SessionIdentifier);
+                        }
+                        else
+                        {
+                            GD.Print("went too slowly");
+                        }
+                    });
+                });
 			}
 			catch (Exception ex)
 			{
@@ -63,47 +78,22 @@ namespace Aquamarine.Source.Management
 			}
 		}
 
-		public async void JoinServer()
+        public void JoinNatServer(string identifier)
+        {
+            _peer = new LiteNetLibMultiplayerPeer();
+
+            _peer.CreateClientNat(SessionInfo.SessionServer.Address.ToString(), SessionInfo.SessionServer.Port, $"client:{identifier}");
+            Multiplayer.MultiplayerPeer = _peer;
+            _isDirectConnection = true;
+        }
+
+		public void JoinServer(string address, int port)
 		{
-			try
-			{
-				Logger.Log("Fetching server details from the session API...");
-				// Fetch the server details from the session API
-				var serverInfo = await FetchServerInfo();
-
-				if (serverInfo == null)
-				{
-					Logger.Error("No available servers to connect to.");
-					return;
-				}
-
-				Logger.Log($"Server details fetched: WorldName={serverInfo.WorldName}, IP={serverInfo.IP}, Port={serverInfo.Port}");
-
-				var peer = new LiteNetLibMultiplayerPeer();
-                _peer = peer;
-				try
-				{
-					Logger.Log("Attempting direct connection...");
-					// Attempt direct connection
-                    
-					peer.CreateClient(serverInfo.IP, serverInfo.Port);
-                    Multiplayer.MultiplayerPeer = peer;
-					_isDirectConnection = true;
-
-                    peer.ClientConnectionFail += RetryOnRelay;
-                    peer.ClientConnectionSuccess += SuccessConnection;
-
-                    //Logger.Log($"Direct connection established: Server={serverInfo.IP}:{serverInfo.Port}, World={serverInfo.WorldName}");
-                }
-				catch (Exception ex)
-				{
-					Logger.Warn($"Direct connection failed: {ex.Message}.");
-				}
-			}
-			catch (Exception ex)
-			{
-				Logger.Error($"Unexpected error while joining server: {ex.Message}");
-			}
+            _peer = new LiteNetLibMultiplayerPeer();
+            
+            _peer.CreateClient(address, port);
+            Multiplayer.MultiplayerPeer = _peer;
+            _isDirectConnection = true;
 		}
         
 
@@ -127,19 +117,24 @@ namespace Aquamarine.Source.Management
 		private async Task<SessionInfo> FetchServerInfo()
 		{
 			try
-			{
+            {
+                GD.Print("Trying to get session list");
+                
 				using var client = new System.Net.Http.HttpClient();
-				var response = await client.GetStringAsync(RelayApiUrl);
+				var response = await client.GetStringAsync(SessionInfo.SessionList);
+                
+                GD.Print($"Got the session list");
+                GD.Print(response);
 
 				// Deserialize the JSON response
 				var sessions = JsonSerializer.Deserialize<List<SessionInfo>>(response, new JsonSerializerOptions
 				{
-					PropertyNameCaseInsensitive = true // Allow case-insensitive deserialization
+					PropertyNameCaseInsensitive = true, // Allow case-insensitive deserialization
 				});
 
 				if (sessions != null && sessions.Any())
 				{
-					Logger.Log($"Fetched {sessions.Count} sessions. First session: {sessions[0].WorldName}, IP: {sessions[0].IP}, Port: {sessions[0].Port}");
+					//Logger.Log($"Fetched {sessions.Count} sessions. First session: {sessions[0].WorldName}, IP: {sessions[0].IP}, Port: {sessions[0].Port}");
 					return sessions.FirstOrDefault(); // Get the first available session
 				}
 
@@ -151,14 +146,6 @@ namespace Aquamarine.Source.Management
 				Logger.Error($"Error fetching server info: {ex.Message}");
 				return null;
 			}
-		}
-
-
-		private class SessionInfo
-		{
-			public string WorldName { get; set; }
-			public string IP { get; set; }
-			public int Port { get; set; }
 		}
 	}
 }

@@ -102,6 +102,7 @@ public partial class LiteNetLibMultiplayerPeer : MultiplayerPeerExtension
     }
     private void NatPunchListenerOnNatIntroductionSuccess(IPEndPoint targetendpoint, NatAddressType type, string token)
     {
+        if (!NatPunch) return;
         _punchthroughTimer.Reset();
         if (IsServer)
         {
@@ -109,7 +110,7 @@ public partial class LiteNetLibMultiplayerPeer : MultiplayerPeerExtension
         }
         else
         {
-            NetManager.Connect(targetendpoint, token);
+            if (_clientConnectionStatus == ConnectionStatus.Connecting) NetManager.Connect(targetendpoint, token);
         }
     }
     private void ListenerOnNetworkErrorEvent(IPEndPoint endpoint, SocketError socketerror) => GD.PrintErr(socketerror);
@@ -189,6 +190,8 @@ public partial class LiteNetLibMultiplayerPeer : MultiplayerPeerExtension
 
     private void ListenerOnPeerConnectedEvent(NetPeer peer)
     {
+        GD.Print($"Peer {peer} connected to {(IsServer ? "server" : "client")}");
+        
         if (IsServer)
         {
             
@@ -312,7 +315,7 @@ public partial class LiteNetLibMultiplayerPeer : MultiplayerPeerExtension
     /// <param name="port">The port of the punchthrough server</param>
     /// <param name="roomKey">The token to send to the punchthrough server, should be some sort of session ID</param>
     /// <returns></returns>
-    public Error CreateClientNatPunch(string address, int port, string roomKey = RoomKey)
+    public Error CreateClientNat(string address, int port, string roomKey = RoomKey)
     {
         if (NetManager.IsRunning) return Error.AlreadyInUse;
         
@@ -322,12 +325,8 @@ public partial class LiteNetLibMultiplayerPeer : MultiplayerPeerExtension
         
         NetManager.Start();
 
-        if (NatPunch)
-        {
-            NetManager.NatPunchModule.SendNatIntroduceRequest(address, port, roomKey);
-            _punchthroughTimer.Start();
-        }
-        else NetManager.Connect(address, port, roomKey);
+        NetManager.NatPunchModule.SendNatIntroduceRequest(address, port, roomKey);
+        _punchthroughTimer.Start();
 
         _clientConnectionStatus = ConnectionStatus.Connecting;
 

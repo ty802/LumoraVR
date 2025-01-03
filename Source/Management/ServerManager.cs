@@ -68,13 +68,6 @@ namespace Aquamarine.Source.Management
 
 					SessionListManager.Start(SessionListPort);
 					ConnectToSessionServer();
-
-					// Retrieve public IP and advertise to the session API
-					_publicIp = await GetPublicIP();
-					if (!string.IsNullOrEmpty(_publicIp))
-					{
-						await AdvertiseSessionToApi();
-					}
 				}
 			}
 			catch (Exception ex)
@@ -97,10 +90,12 @@ namespace Aquamarine.Source.Management
 			GD.Print("Attempting to connect to session server...");
 			MainServer = SessionListManager.Connect(SessionInfo.SessionServer, "Private");
 
+            /*
 			this.CreateTimer(10, () =>
 			{
 				GD.Print($"{MainServer.ConnectionState}");
 			});
+			*/
 		}
 
 		private bool _natPunchthroughCompleted = false;
@@ -148,16 +143,16 @@ namespace Aquamarine.Source.Management
 			try
 			{
 				_multiplayerScene.SpawnPlayer((int)id); // Spawn the player
-				Logger.Log($"Player spawned successfully for ID: {id}.");
+				//Logger.Log($"Player spawned successfully for ID: {id}.");
 
 				_multiplayerScene.PlayerList.Add((int)id); // Add to player list
-				Logger.Log("Player added to the player list.");
+				//Logger.Log("Player added to the player list.");
 
 				_multiplayerScene.SendUpdatedPlayerList(); // Notify others of the new player
-				Logger.Log("Updated player list sent.");
+				//Logger.Log("Updated player list sent.");
 
 				_multiplayerScene.SendAllPrefabs((int)id); // Send prefabs to the new player
-				Logger.Log("Prefabs sent to the new player.");
+				//Logger.Log("Prefabs sent to the new player.");
 			}
 			catch (Exception ex)
 			{
@@ -182,7 +177,7 @@ namespace Aquamarine.Source.Management
 				Logger.Error($"Error handling peer disconnection (ID: {id}): {ex.Message}");
 			}
 		}
-
+/*
 		private async Task<string> GetPublicIP()
 		{
 			try
@@ -198,40 +193,6 @@ namespace Aquamarine.Source.Management
 				return null;
 			}
 		}
-
-		private async Task AdvertiseSessionToApi()
-		{
-			try
-			{
-				var sessionIdentifier = Guid.NewGuid().ToString(); // Generate a unique identifier
-
-				var sessionData = new
-				{
-					WorldName = _worldName,
-					IP = _publicIp,
-					Port = Port,
-					SessionIdentifier = sessionIdentifier // Include the identifier
-				};
-
-				using var client = new System.Net.Http.HttpClient();
-				var jsonData = JsonSerializer.Serialize(sessionData);
-				var content = new StringContent(jsonData, Encoding.UTF8, "application/json");
-
-				var response = await client.PostAsync(SessionApiUrl, content);
-				if (response.IsSuccessStatusCode)
-				{
-					Logger.Log($"Session advertised successfully with identifier: {sessionIdentifier}");
-				}
-				else
-				{
-					Logger.Error($"Failed to advertise session: {response.ReasonPhrase}");
-				}
-			}
-			catch (Exception ex)
-			{
-				Logger.Error($"Error advertising session: {ex.Message}");
-			}
-		}
-
+*/
 	}
 }

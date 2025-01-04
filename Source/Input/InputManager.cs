@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using Aquamarine.Source.Management;
 using Godot;
 
 namespace Aquamarine.Source.Input;
@@ -32,6 +34,9 @@ public partial class InputManager : Node
     public static float MouseSensitivity = 20f;
     private static Vector2 _previousMouseMovement;
     private Window _window;
+
+    private bool _isServer;
+    
     public StringName this[InputButton button]
     {
         get
@@ -44,6 +49,10 @@ public partial class InputManager : Node
     {
         base._Ready();
         Instance = this;
+        
+        _isServer = ServerManager.CurrentServerType != ServerManager.ServerType.NotAServer;
+        if (_isServer) return;
+        
         _window = GetViewport().GetWindow();
         Godot.Input.MouseMode = Godot.Input.MouseModeEnum.Captured;
         foreach (var i in Enum.GetValues<InputButton>()) Buttons.Add(i, i.ToString());
@@ -51,8 +60,10 @@ public partial class InputManager : Node
 
     public override void _Process(double delta)
     {
+        if (_isServer) return;
+        
         base._Process(delta);
-
+        
         MouseMovement -= _previousMouseMovement;
         _previousMouseMovement = MouseMovement;
         
@@ -60,6 +71,8 @@ public partial class InputManager : Node
     }
     public override void _Input(InputEvent @event)
     {
+        if (_isServer) return;
+        
         base._Input(@event);
         if (@event is InputEventMouseMotion motion) MouseMovement += -(motion.ScreenRelative / _window.Size.Y);
     }

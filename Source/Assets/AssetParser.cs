@@ -45,4 +45,9 @@ public static class AssetParser
         }
         return null;
     }
+    public static ArrayMesh ParseMesh(byte[] data)
+    {
+        var meshFile = MeshFile.Deserialize(data);
+        return meshFile.Valid() ? meshFile.Instantiate() : null;
+    }
 }

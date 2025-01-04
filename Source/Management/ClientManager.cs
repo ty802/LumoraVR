@@ -1,69 +1,174 @@
 using System;
+using System.Net.Http;
+using System.Text.Json;
 using Aquamarine.Source.Logging;
 using Aquamarine.Source.Input;
 using Aquamarine.Source.Networking;
 using Bones.Core;
 using Godot;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using System.Linq;
 
 namespace Aquamarine.Source.Management
 {
-    public partial class ClientManager : Node
-    {
-        private XRInterface _xrInterface;
-        private IInputProvider _input;
-        [Export] private Node3D _inputRoot;
-        [Export] private MultiplayerScene _multiplayerScene;
+	public partial class ClientManager : Node
+	{
+		private XRInterface _xrInterface;
+		private IInputProvider _input;
+		private LiteNetLibMultiplayerPeer _peer;
+		[Export] private Node3D _inputRoot;
+		[Export] private MultiplayerScene _multiplayerScene;
 
-        private const int Port = 7000;
-        private const string DefaultServerIP = "127.0.0.1"; // IPv4 localhost
-        private const int MaxConnections = 20;
+		private const int Port = 7000; // Default port for LiteNetLib
+		private const string RelayApiUrl = "https://api.xlinka.com/sessions";
 
-        public override void _Ready()
+		private bool _isDirectConnection = false;
+
+		public override void _Ready()
+		{
+			try
+			{
+				InitializeInput();
+                
+                SpawnLocalHome();
+                
+                this.CreateTimer(5, () =>
+                {
+                    var info = FetchServerInfo();
+
+                    this.CreateTimer(2, () =>
+                    {
+                        if (info.IsCompletedSuccessfully && info.Result is not null && !string.IsNullOrEmpty(info.Result.SessionIdentifier))
+                        {
+                            GD.Print($"Fetched session identifier: {info.Result.SessionIdentifier}");
+                            JoinNatServer(info.Result.SessionIdentifier);
+                        }
+                        else
+                        {
+                            GD.Print("Failed to fetch a valid session identifier in time.");
+                        }
+                        GD.Print(Multiplayer.GetUniqueId());
+                    });
+                });
+			}
+			catch (Exception ex)
+			{
+				Logger.Error($"Error initializing ClientManager: {ex.Message}");
+			}
+		}
+
+        private void SpawnLocalHome()
         {
-            try
+            OS.CreateProcess(OS.GetExecutablePath(), ["--run-home-server", "--xr-mode", "off", "--headless"]);
+            
+            this.CreateTimer(0.5f, () =>
             {
-                _xrInterface = XRServer.FindInterface("OpenXR");
-                if (IsInstanceValid(_xrInterface) && _xrInterface.IsInitialized())
-                {
-                    DisplayServer.WindowSetVsyncMode(DisplayServer.VSyncMode.Disabled);
-                    GetViewport().UseXR = true;
-
-                    var vrInput = VRInput.PackedScene.Instantiate<VRInput>();
-                    _input = vrInput;
-                    _inputRoot.AddChild(vrInput);
-                    Logger.Log("XR interface initialized successfully.");
-                }
-                else
-                {
-                    var desktopInput = DesktopInput.PackedScene.Instantiate<DesktopInput>();
-                    _input = desktopInput;
-                    _inputRoot.AddChild(desktopInput);
-                    Logger.Log("Desktop interface initialized successfully.");
-                }
-
-                this.CreateTimer(2, JoinServer);
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"Error initializing ClientManager: {ex.Message}");
-            }
+                JoinServer("localhost", 6000);
+            });
         }
 
-        public void JoinServer()
-        {
-            try
-            {
-                //var peer = new ENetMultiplayerPeer();
-                var peer = new LiteNetLibMultiplayerPeer();
-                peer.CreateClient(DefaultServerIP, Port);
-                Multiplayer.MultiplayerPeer = peer;
+		private void InitializeInput()
+		{
+			_xrInterface = XRServer.FindInterface("OpenXR");
 
-                Logger.Log($"Client joined server at {DefaultServerIP}:{Port}.");
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"Error joining server: {ex.Message}");
-            }
+			if (IsInstanceValid(_xrInterface) && _xrInterface.IsInitialized())
+			{
+				DisplayServer.WindowSetVsyncMode(DisplayServer.VSyncMode.Disabled);
+				GetViewport().UseXR = true;
+
+				var vrInput = VRInput.PackedScene.Instantiate<VRInput>();
+				_input = vrInput;
+				_inputRoot.AddChild(vrInput);
+				Logger.Log("XR interface initialized successfully.");
+			}
+			else
+			{
+				var desktopInput = DesktopInput.PackedScene.Instantiate<DesktopInput>();
+				_input = desktopInput;
+				_inputRoot.AddChild(desktopInput);
+				Logger.Log("Desktop interface initialized successfully.");
+			}
+		}
+
+		public void JoinNatServer(string identifier)
+		{
+            if (string.IsNullOrEmpty(identifier))
+			{
+				Logger.Error("Session identifier is null or empty. Cannot join NAT server.");
+				return;
+			}
+            
+            _peer?.Close();
+            Multiplayer.MultiplayerPeer = null;
+            
+			var token = $"client:{identifier}";
+			GD.Print($"Attempting NAT punchthrough with token: {token}");
+
+			_peer = new LiteNetLibMultiplayerPeer();
+			_peer.CreateClientNat(SessionInfo.SessionServer.Address.ToString(), SessionInfo.SessionServer.Port, token);
+			Multiplayer.MultiplayerPeer = _peer;
+			_isDirectConnection = true;
+            
+            _peer.PeerDisconnected += PeerOnPeerDisconnected;
+		}
+        private void PeerOnPeerDisconnected(long id)
+        {
+            GD.Print($"{id} disconnected");
+            if (id == 1) SpawnLocalHome();
         }
-    }
+
+
+        public void JoinServer(string address, int port)
+		{
+			_peer = new LiteNetLibMultiplayerPeer();
+			_peer.CreateClient(address, port);
+            Multiplayer.MultiplayerPeer = _peer;
+			_isDirectConnection = true;
+		}
+
+		private async Task<SessionInfo> FetchServerInfo()
+		{
+			try
+			{
+				GD.Print("Trying to get session list");
+
+				using var client = new System.Net.Http.HttpClient();
+				var response = await client.GetStringAsync(SessionInfo.SessionList);
+
+				GD.Print("Got the session list");
+				GD.Print(response);
+
+				var sessions = JsonSerializer.Deserialize<List<SessionInfo>>(response, new JsonSerializerOptions
+				{
+					PropertyNameCaseInsensitive = true,
+				});
+
+				if (sessions != null && sessions.Count != 0)
+				{
+					foreach (var session in sessions)
+					{
+						GD.Print($"Session: {session.Name}, IP: {session.IP}, Port: {session.Port}, Identifier: {session.SessionIdentifier}");
+
+						if (string.IsNullOrEmpty(session.SessionIdentifier))
+						{
+							Logger.Error($"Session {session.Name} is missing an identifier. Skipping.");
+							continue;
+						}
+
+						return session; // Return the first valid session
+					}
+				}
+
+				Logger.Error("No valid sessions available in the API response.");
+				return null;
+			}
+			catch (Exception ex)
+			{
+				Logger.Error($"Error fetching server info: {ex.Message}");
+				return null;
+			}
+		}
+
+	}
 }

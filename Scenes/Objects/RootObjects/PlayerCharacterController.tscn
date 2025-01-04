@@ -44,10 +44,11 @@ properties/10/replication_mode = 1
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_820w7"]
 
-[node name="PlayerCharacterController" type="CharacterBody3D" node_paths=PackedStringArray("ClientSync", "Nametag")]
+[node name="PlayerCharacterController" type="CharacterBody3D" node_paths=PackedStringArray("ClientSync", "ServerSync", "Nametag")]
 collision_layer = 2
 script = ExtResource("1_0nv1q")
 ClientSync = NodePath("ClientSynchronizer")
+ServerSync = NodePath("ServerSynchronizer")
 Nametag = NodePath("Nametag")
 
 [node name="ServerSynchronizer" type="MultiplayerSynchronizer" parent="."]

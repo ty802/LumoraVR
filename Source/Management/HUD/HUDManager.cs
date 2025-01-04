@@ -9,6 +9,8 @@ public partial class HUDManager : Control
 
     [Export] public Control DebugOverlay;
 
+    [Export] public Control WorldsTab;
+
     public override void _Ready()
     {
         base._Ready();

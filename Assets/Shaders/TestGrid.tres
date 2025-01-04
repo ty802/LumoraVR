@@ -149,6 +149,7 @@ void fragment() {
 
 }
 "
+graph_offset = Vector2(-644.608, -12.1258)
 varyings/WorldPos = "0,4"
 nodes/vertex/2/node = SubResource("VisualShaderNodeInput_xeyod")
 nodes/vertex/2/position = Vector2(-1010.41, 324.039)
@@ -159,6 +160,7 @@ nodes/vertex/4/position = Vector2(-1020, 440)
 nodes/vertex/5/node = SubResource("VisualShaderNodeVaryingSetter_yp0o3")
 nodes/vertex/5/position = Vector2(-420, 400)
 nodes/vertex/connections = PackedInt32Array(4, 0, 3, 1, 3, 0, 5, 0, 2, 0, 3, 0)
+nodes/fragment/0/position = Vector2(160, 220)
 nodes/fragment/2/node = SubResource("VisualShaderNodeExpression_jdkse")
 nodes/fragment/2/position = Vector2(-600, 220)
 nodes/fragment/2/size = Vector2(740, 560)

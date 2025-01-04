@@ -1,4 +1,4 @@
-[gd_scene load_steps=13 format=3 uid="uid://dtempfuf1571n"]
+[gd_scene load_steps=14 format=3 uid="uid://dtempfuf1571n"]
 
 [ext_resource type="Script" path="res://Source/Management/MultiplayerScene.cs" id="1_yl1ag"]
 [ext_resource type="Shader" path="res://Assets/Shaders/DebugGrid.gdshader" id="2_q775b"]
@@ -8,7 +8,12 @@
 render_priority = 0
 shader = ExtResource("2_q775b")
 
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_4i31r"]
+render_priority = 0
+shader = ExtResource("3_dp4rw")
+
 [sub_resource type="BoxMesh" id="BoxMesh_8a1u3"]
+material = SubResource("ShaderMaterial_4i31r")
 size = Vector3(64, 1, 64)
 subdivide_width = 3
 subdivide_depth = 3
@@ -66,7 +71,8 @@ collision_mask = 7
 shape = SubResource("BoxShape3D_ibhoa")
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="Level"]
-transform = Transform3D(1, 0, 0, 0, -0.567024, 0.823701, 0, -0.823701, -0.567024, 0, 0, 0)
+transform = Transform3D(-0.707107, -0.582445, -0.400947, 0, -0.567024, 0.823701, -0.707107, 0.582445, 0.400947, 0, 0, 0)
+shadow_enabled = true
 
 [node name="Platforms" type="Node3D" parent="Level"]
 

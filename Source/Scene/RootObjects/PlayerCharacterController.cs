@@ -85,6 +85,11 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
 	[Export] public float JumpHeight = 1f;
 
     [Export] public Label3D Nametag;
+
+	[Export] private Node3D _head;
+	[Export] private Node3D _leftHand;
+	[Export] private Node3D _rightHand;
+
     public override void _Ready()
     {
         base._Ready();
@@ -144,19 +149,54 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
 		}
 
 		MoveAndSlide();
-		
-		DebugDraw3D.DrawPosition(GlobalTransform * new Transform3D(new Basis(LeftHandRotation), LeftHandPosition));
-		DebugDraw3D.DrawPosition(GlobalTransform * new Transform3D(new Basis(RightHandRotation), RightHandPosition));
-
-		if (authority) IInputProvider.Move(GlobalTransform);
+	
+		// All the debug code is John Aquamarine
+		// Head
+		if (authority) {
+			IInputProvider.Move(GlobalTransform);
+			_head.Scale = Vector3.Zero;
+		}
 		else  
 		{
-			var pos = GlobalTransform * new Transform3D(new Basis(HeadRotation), HeadPosition);
-			DebugDraw3D.DrawPosition(pos);
-			DebugDraw3D.DrawSphere(pos.Origin + (HeadRotation * new Vector3(0.1f, 0.1f, -0.15f)), 0.0125f, Colors.Black);
-			DebugDraw3D.DrawSphere(pos.Origin + (HeadRotation * new Vector3(0.1f, 0.1f, -0.1f)), 0.05f, Colors.White);
-			DebugDraw3D.DrawSphere(pos.Origin + (HeadRotation * new Vector3(-0.1f, 0.1f, -0.15f)), 0.0125f, Colors.Black);
-			DebugDraw3D.DrawSphere(pos.Origin + (HeadRotation * new Vector3(-0.1f, 0.1f, -0.1f)), 0.05f, Colors.White);
+			var headPos = GlobalTransform * new Transform3D(new Basis(HeadRotation), HeadPosition);
+			_head.GlobalTransform = headPos;
+			_head.Scale = ClientManager.ShowDebug ? Vector3.Zero :  Vector3.One;
+			//DebugDraw3D.DrawPosition(headPos);
+			if (ClientManager.ShowDebug) {
+				DebugDraw3D.DrawPosition(headPos);
+				DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(0.085f, 0.0f, -0.175f)), 0.0125f, Colors.Black);
+				DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(0.085f, 0.0f, -0.125f)), 0.05f, Colors.White);
+				DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(-0.085f, 0.0f, -0.175f)), 0.0125f, Colors.Black);
+				DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(-0.085f, 0.0f, -0.125f)), 0.05f, Colors.White);
+			}
+		}
+
+		var palmSize = new Vector3(0.15f, 0.075f, 0.15f);
+		var fingerSize = new Vector3(0.025f, 0.025f, 0.2f);
+		var thumbSize = new Vector3(0.1f, 0.025f, 0.025f);
+
+		// Left
+		var leftHandPos = GlobalTransform * new Transform3D(new Basis(LeftHandRotation), LeftHandPosition);
+		_leftHand.GlobalTransform = leftHandPos; 
+		_leftHand.Scale = ClientManager.ShowDebug ? Vector3.Zero : Vector3.One;
+		if (ClientManager.ShowDebug) {
+			DebugDraw3D.DrawBox(leftHandPos.Origin - (LeftHandRotation * (palmSize / 2)), LeftHandRotation, palmSize, Colors.White);
+			DebugDraw3D.DrawBox(leftHandPos.Origin - (LeftHandRotation * ((fingerSize / 2) + new Vector3(0, 0, 0.2f))), LeftHandRotation, fingerSize, Colors.White);
+			DebugDraw3D.DrawBox(leftHandPos.Origin - (LeftHandRotation * ((fingerSize / 2) + new Vector3(-0.065f, 0, 0.185f))), LeftHandRotation, fingerSize, Colors.White);
+			DebugDraw3D.DrawBox(leftHandPos.Origin - (LeftHandRotation * ((fingerSize / 2) + new Vector3(0.065f, 0, 0.185f))), LeftHandRotation, fingerSize, Colors.White);
+			DebugDraw3D.DrawBox(leftHandPos.Origin - (LeftHandRotation * ((thumbSize / 2) +  new Vector3(-0.15f, 0, 0))), LeftHandRotation, thumbSize, Colors.White);
+		}
+
+		// Right
+		var rightHandPos = GlobalTransform * new Transform3D(new Basis(RightHandRotation), RightHandPosition);
+		_rightHand.GlobalTransform = rightHandPos; 
+		_rightHand.Scale = ClientManager.ShowDebug ? Vector3.Zero : Vector3.One;
+		if (ClientManager.ShowDebug) {
+			DebugDraw3D.DrawBox(rightHandPos.Origin - (RightHandRotation * (palmSize / 2)), RightHandRotation, palmSize, Colors.White);
+			DebugDraw3D.DrawBox(rightHandPos.Origin - (RightHandRotation * ((fingerSize / 2) + new Vector3(0, 0, 0.2f))), RightHandRotation, fingerSize, Colors.White);
+			DebugDraw3D.DrawBox(rightHandPos.Origin - (RightHandRotation * ((fingerSize / 2) + new Vector3(-0.065f, 0, 0.185f))), RightHandRotation, fingerSize, Colors.White);
+			DebugDraw3D.DrawBox(rightHandPos.Origin - (RightHandRotation * ((fingerSize / 2) + new Vector3(0.065f, 0, 0.185f))), RightHandRotation, fingerSize, Colors.White);
+			DebugDraw3D.DrawBox(rightHandPos.Origin - (RightHandRotation * ((thumbSize / 2) +  new Vector3(0.15f, 0, 0))), RightHandRotation, thumbSize, Colors.White);
 		}
 
         if (Position.Y < -100)

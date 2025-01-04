@@ -9,6 +9,8 @@ public partial class HUDManager : Control
 
     [Export] public Control DebugOverlay;
 
+    [Export] public Control WorldsTab;
+
     public override void _Ready()
     {
         base._Ready();
@@ -29,6 +31,11 @@ public partial class HUDManager : Control
             DebugOverlay.Visible = !DebugOverlay.Visible;
             DebugOverlay.ProcessMode = DebugOverlay.Visible ? ProcessModeEnum.Inherit : ProcessModeEnum.Disabled;
             Logger.Log($"Debug overlay toggled: {DebugOverlay.Visible}.");
+        }
+
+        if (@event.IsActionPressed("ui_focus_next"))
+        {
+            
         }
 
         if (@event.IsActionPressed("ui_home"))

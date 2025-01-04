@@ -1,5 +1,5 @@
-# "Aquamarine" Project Summary
-Aquamarine is a feature-rich Social VR Platform designed for mid-range PC users with VR capabilities built using Godot Engine and written in C#.
+# Lumora VR Project Summary
+Lumora VR is a feature-rich Social VR Platform designed for mid-range PC users with VR capabilities built using Godot Engine and written in C#.
 
 ## Editor Mode
 - Real-time collaborative environment for building and sharing Avatars, Worlds, and Gadgets.

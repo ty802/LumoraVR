@@ -35,6 +35,18 @@ public partial class InputManager : Node
     private static Vector2 _previousMouseMovement;
     private Window _window;
 
+    private static bool _movementLocked;
+    public static bool MovementLocked
+    {
+        get => _movementLocked;
+        set
+        {
+            _movementLocked = value;
+
+            Godot.Input.MouseMode = value ? Godot.Input.MouseModeEnum.Visible : Godot.Input.MouseModeEnum.Captured;
+        }
+    }
+
     private bool _isServer;
     
     public StringName this[InputButton button]
@@ -54,13 +66,14 @@ public partial class InputManager : Node
         if (_isServer) return;
         
         _window = GetViewport().GetWindow();
-        Godot.Input.MouseMode = Godot.Input.MouseModeEnum.Captured;
+        MovementLocked = false;
         foreach (var i in Enum.GetValues<InputButton>()) Buttons.Add(i, i.ToString());
     }
 
     public override void _Process(double delta)
     {
         if (_isServer) return;
+        if (_movementLocked) return;
         
         base._Process(delta);
         
@@ -72,7 +85,8 @@ public partial class InputManager : Node
     public override void _Input(InputEvent @event)
     {
         if (_isServer) return;
-        
+        if (_movementLocked) return;
+
         base._Input(@event);
         if (@event is InputEventMouseMotion motion) MouseMovement += -(motion.ScreenRelative / _window.Size.Y);
     }

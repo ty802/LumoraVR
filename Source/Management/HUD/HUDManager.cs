@@ -1,4 +1,5 @@
-﻿using Aquamarine.Source.Logging;
+﻿using Aquamarine.Source.Input;
+using Aquamarine.Source.Logging;
 using Godot;
 
 namespace Aquamarine.Source.Management.HUD;
@@ -9,6 +10,7 @@ public partial class HUDManager : Control
 
     [Export] public Control DebugOverlay;
 
+    [Export] public Control MainMenu;
     [Export] public Control WorldsTab;
 
     public override void _Ready()
@@ -33,9 +35,10 @@ public partial class HUDManager : Control
             Logger.Log($"Debug overlay toggled: {DebugOverlay.Visible}.");
         }
 
-        if (@event.IsActionPressed("ui_focus_next"))
+        if (@event.IsActionPressed("ui_cancel"))
         {
-            
+            InputManager.MovementLocked = !InputManager.MovementLocked;
+            MainMenu.Visible = InputManager.MovementLocked;
         }
 
         if (@event.IsActionPressed("ui_home"))

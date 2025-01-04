@@ -1,4 +1,4 @@
-[gd_scene load_steps=11 format=3 uid="uid://d37lm476vrp1e"]
+[gd_scene load_steps=12 format=3 uid="uid://d37lm476vrp1e"]
 
 [ext_resource type="Script" path="res://Source/Management/ClientManager.cs" id="1_bw0gq"]
 [ext_resource type="PackedScene" uid="uid://dtempfuf1571n" path="res://Scenes/World/MultiplayerScene.tscn" id="2_40xba"]
@@ -28,7 +28,7 @@ _multiplayerScene = NodePath("Scene")
 
 [node name="InputRoot" type="Node3D" parent="."]
 
-[node name="HUDManager" type="Control" parent="." node_paths=PackedStringArray("DebugOverlay", "WorldsTab")]
+[node name="HUDManager" type="Control" parent="." node_paths=PackedStringArray("DebugOverlay", "MainMenu")]
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
@@ -39,7 +39,7 @@ size_flags_horizontal = 3
 size_flags_vertical = 3
 script = ExtResource("3_16xj1")
 DebugOverlay = NodePath("Debug Overlay")
-WorldsTab = NodePath("")
+MainMenu = NodePath("Main Menu")
 
 [node name="Crosshair" type="TextureRect" parent="HUDManager"]
 visible = false
@@ -62,6 +62,7 @@ expand_mode = 1
 stretch_mode = 4
 
 [node name="Main Menu" parent="HUDManager" instance=ExtResource("5_saa3o")]
+visible = false
 layout_mode = 1
 
 [node name="Debug Overlay" type="Control" parent="HUDManager" node_paths=PackedStringArray("Text")]

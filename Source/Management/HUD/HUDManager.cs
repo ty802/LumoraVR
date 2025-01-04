@@ -31,6 +31,11 @@ public partial class HUDManager : Control
             Logger.Log($"Debug overlay toggled: {DebugOverlay.Visible}.");
         }
 
+        if (@event.IsActionPressed("ui_focus_next"))
+        {
+            
+        }
+
         if (@event.IsActionPressed("ui_home"))
         {
             Logger.Log($"Sample log message.");

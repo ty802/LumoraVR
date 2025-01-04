@@ -1,11 +1,31 @@
-[gd_scene load_steps=7 format=3 uid="uid://d37lm476vrp1e"]
+[gd_scene load_steps=18 format=3 uid="uid://d37lm476vrp1e"]
 
 [ext_resource type="Script" path="res://Source/Management/ClientManager.cs" id="1_bw0gq"]
 [ext_resource type="PackedScene" uid="uid://dtempfuf1571n" path="res://Scenes/World/MultiplayerScene.tscn" id="2_40xba"]
 [ext_resource type="Texture2D" uid="uid://jdjeattbqj2g" path="res://Assets/Textures/Dot.png" id="3_1i8qj"]
 [ext_resource type="Script" path="res://Source/Management/HUD/HUDManager.cs" id="3_16xj1"]
+[ext_resource type="Theme" uid="uid://bk8eop2660llo" path="res://Assets/Themes/lackluster_theme/main_ui_theme.tres" id="5_jo7c1"]
 [ext_resource type="Script" path="res://Source/Management/HUD/DebugOverlay.cs" id="5_w13h7"]
 [ext_resource type="FontFile" uid="uid://dne06dcdmx5hj" path="res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf" id="6_18vxb"]
+[ext_resource type="Texture2D" uid="uid://bgwfrcvu7sa0q" path="res://Assets/Test/bongbongportrait.jpg" id="6_q8m0b"]
+[ext_resource type="Script" path="res://Source/Management/HUD/RichTextLabelAutoSizeNode.cs" id="6_v0h3m"]
+[ext_resource type="Script" path="res://Source/Management/HUD/RichTextLabelAutoSize.cs" id="7_2ke0v"]
+[ext_resource type="StyleBox" uid="uid://cuj640210x1mn" path="res://Assets/Themes/lackluster_theme/secondary_style_box_flat.tres" id="8_2nnlg"]
+[ext_resource type="Script" path="res://Source/Management/HUD/GridContainerAutoSizeNode.cs" id="8_p8el6"]
+[ext_resource type="Shader" path="res://Assets/Shaders/rounded_corders.gdshader" id="10_oehtv"]
+[ext_resource type="StyleBox" uid="uid://b5q6d4m52i0sj" path="res://Assets/Themes/lackluster_theme/main_style_chips.tres" id="12_3o5s4"]
+[ext_resource type="StyleBox" uid="uid://cvfjyfpc88d0o" path="res://Assets/Themes/lackluster_theme/main_style_frame.tres" id="12_son8c"]
+[ext_resource type="StyleBox" uid="uid://yh3n2pqpaf6n" path="res://Assets/Themes/lackluster_theme/main_style_small_buttons.tres" id="13_iyl6g"]
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_0mthw"]
+shader = ExtResource("10_oehtv")
+shader_parameter/radius_scale = 1.0
+shader_parameter/rounded_corner_top_left = true
+shader_parameter/rounded_corner_top_right = true
+shader_parameter/rounded_corner_bottom_left = true
+shader_parameter/rounded_corner_bottom_right = true
+shader_parameter/width = 4.0
+shader_parameter/height = 1.0
 
 [node name="Root" type="Node" node_paths=PackedStringArray("_inputRoot", "_multiplayerScene")]
 script = ExtResource("1_bw0gq")
@@ -28,16 +48,8 @@ size_flags_vertical = 3
 script = ExtResource("3_16xj1")
 DebugOverlay = NodePath("Debug Overlay")
 
-[node name="Label" type="Label" parent="HUDManager"]
-visible = false
-layout_mode = 0
-offset_right = 40.0
-offset_bottom = 22.3333
-text = "Lorem Ipsum
-├─ Lorem ipsum dolor sit amet
-└─ consectetur adipiscing elit"
-
 [node name="Crosshair" type="TextureRect" parent="HUDManager"]
+visible = false
 layout_mode = 1
 anchors_preset = 8
 anchor_left = 0.5
@@ -56,7 +68,423 @@ texture = ExtResource("3_1i8qj")
 expand_mode = 1
 stretch_mode = 4
 
+[node name="Quick Menu" type="Control" parent="HUDManager"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme = ExtResource("5_jo7c1")
+
+[node name="MarginContainer" type="MarginContainer" parent="HUDManager/Quick Menu"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/margin_left = 128
+theme_override_constants/margin_top = 64
+theme_override_constants/margin_right = 128
+theme_override_constants/margin_bottom = 64
+
+[node name="HBoxContainer" type="HBoxContainer" parent="HUDManager/Quick Menu/MarginContainer"]
+layout_mode = 2
+
+[node name="Side Panel" type="PanelContainer" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_stretch_ratio = 0.25
+
+[node name="MarginContainer" type="MarginContainer" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Side Panel"]
+layout_mode = 2
+
+[node name="VBoxContainer2" type="VBoxContainer" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Side Panel/MarginContainer"]
+layout_mode = 2
+
+[node name="VBoxContainer2" type="VBoxContainer" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2"]
+layout_mode = 2
+
+[node name="Button2" type="Button" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/VBoxContainer2"]
+custom_minimum_size = Vector2(0, 80)
+layout_mode = 2
+
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/VBoxContainer2/Button2"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_vertical = 3
+mouse_filter = 2
+script = ExtResource("6_v0h3m")
+
+[node name="@RichTextLabel@61502" type="RichTextLabel" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/VBoxContainer2/Button2/RichTextLabelAutoSizeNode"]
+layout_mode = 1
+anchors_preset = -1
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_top = 8.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+theme_override_font_sizes/bold_italics_font_size = 42
+theme_override_font_sizes/italics_font_size = 42
+theme_override_font_sizes/mono_font_size = 42
+theme_override_font_sizes/normal_font_size = 42
+theme_override_font_sizes/bold_font_size = 42
+bbcode_enabled = true
+text = "[center]Account 💻[/center]"
+script = ExtResource("7_2ke0v")
+MinMaxSize = Vector2(8, 42)
+
+[node name="VBoxContainer" type="VBoxContainer" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2"]
+layout_mode = 2
+size_flags_vertical = 3
+alignment = 1
+
+[node name="Button3" type="Button" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/VBoxContainer"]
+custom_minimum_size = Vector2(0, 80)
+layout_mode = 2
+
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/VBoxContainer/Button3"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_vertical = 3
+mouse_filter = 2
+script = ExtResource("6_v0h3m")
+
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/VBoxContainer/Button3/RichTextLabelAutoSizeNode"]
+layout_mode = 1
+anchors_preset = -1
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_top = 8.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+theme_override_font_sizes/bold_italics_font_size = 42
+theme_override_font_sizes/italics_font_size = 42
+theme_override_font_sizes/mono_font_size = 42
+theme_override_font_sizes/normal_font_size = 42
+theme_override_font_sizes/bold_font_size = 42
+bbcode_enabled = true
+text = "[center]Avatars 👤[/center]"
+script = ExtResource("7_2ke0v")
+MinMaxSize = Vector2(8, 42)
+
+[node name="Button4" type="Button" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/VBoxContainer"]
+custom_minimum_size = Vector2(0, 80)
+layout_mode = 2
+
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/VBoxContainer/Button4"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_vertical = 3
+mouse_filter = 2
+script = ExtResource("6_v0h3m")
+
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/VBoxContainer/Button4/RichTextLabelAutoSizeNode"]
+layout_mode = 1
+anchors_preset = -1
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_top = 8.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+theme_override_font_sizes/bold_italics_font_size = 42
+theme_override_font_sizes/italics_font_size = 42
+theme_override_font_sizes/mono_font_size = 42
+theme_override_font_sizes/normal_font_size = 42
+theme_override_font_sizes/bold_font_size = 42
+bbcode_enabled = true
+text = "[center]Worlds 🌐[/center]"
+script = ExtResource("7_2ke0v")
+MinMaxSize = Vector2(8, 42)
+
+[node name="HBoxContainer" type="HBoxContainer" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2"]
+layout_mode = 2
+
+[node name="Button2" type="Button" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/HBoxContainer"]
+custom_minimum_size = Vector2(0, 80)
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/HBoxContainer/Button2"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_vertical = 3
+mouse_filter = 2
+script = ExtResource("6_v0h3m")
+
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/HBoxContainer/Button2/RichTextLabelAutoSizeNode"]
+layout_mode = 1
+anchors_preset = -1
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_top = 8.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+theme_override_font_sizes/bold_italics_font_size = 42
+theme_override_font_sizes/italics_font_size = 42
+theme_override_font_sizes/mono_font_size = 42
+theme_override_font_sizes/normal_font_size = 42
+theme_override_font_sizes/bold_font_size = 42
+bbcode_enabled = true
+text = "[center]Close[/center]"
+script = ExtResource("7_2ke0v")
+MinMaxSize = Vector2(8, 42)
+
+[node name="Main Panel" type="PanelContainer" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/panel = ExtResource("8_2nnlg")
+
+[node name="MarginContainer" type="MarginContainer" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel"]
+layout_mode = 2
+
+[node name="VBoxContainer" type="VBoxContainer" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer"]
+layout_mode = 2
+theme_override_constants/separation = 16
+
+[node name="HBoxContainer" type="HBoxContainer" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="TextEdit" type="TextEdit" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+placeholder_text = " Search..."
+
+[node name="Button2" type="Button" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/HBoxContainer"]
+custom_minimum_size = Vector2(0, 80)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_stretch_ratio = 0.1
+
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/HBoxContainer/Button2"]
+layout_mode = 1
+anchor_top = 0.05
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_vertical = 3
+mouse_filter = 2
+script = ExtResource("6_v0h3m")
+
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/HBoxContainer/Button2/RichTextLabelAutoSizeNode"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+theme_override_font_sizes/bold_italics_font_size = 48
+theme_override_font_sizes/italics_font_size = 48
+theme_override_font_sizes/mono_font_size = 48
+theme_override_font_sizes/normal_font_size = 48
+theme_override_font_sizes/bold_font_size = 48
+bbcode_enabled = true
+text = "[center] ⚙️ [/center]"
+script = ExtResource("7_2ke0v")
+MinMaxSize = Vector2(8, 48)
+
+[node name="Button3" type="Button" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/HBoxContainer"]
+custom_minimum_size = Vector2(0, 80)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_stretch_ratio = 0.1
+
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/HBoxContainer/Button3"]
+layout_mode = 1
+anchor_top = 0.05
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_vertical = 3
+mouse_filter = 2
+script = ExtResource("6_v0h3m")
+
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/HBoxContainer/Button3/RichTextLabelAutoSizeNode"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+theme_override_font_sizes/bold_italics_font_size = 48
+theme_override_font_sizes/italics_font_size = 48
+theme_override_font_sizes/mono_font_size = 48
+theme_override_font_sizes/normal_font_size = 48
+theme_override_font_sizes/bold_font_size = 48
+bbcode_enabled = true
+text = "[center] 🔎 [/center]"
+script = ExtResource("7_2ke0v")
+MinMaxSize = Vector2(8, 48)
+
+[node name="ScrollContainer" type="ScrollContainer" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+horizontal_scroll_mode = 0
+
+[node name="GridContainer" type="GridContainer" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/ScrollContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+columns = 4
+script = ExtResource("8_p8el6")
+CellSize = 300
+
+[node name="PanelContainer" type="PanelContainer" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/ScrollContainer/GridContainer"]
+custom_minimum_size = Vector2(0, 300)
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="MarginContainer" type="MarginContainer" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/ScrollContainer/GridContainer/PanelContainer"]
+layout_mode = 2
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_top = 6
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_bottom = 10
+
+[node name="VBoxContainer" type="VBoxContainer" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+size_flags_stretch_ratio = 0.2
+script = ExtResource("6_v0h3m")
+
+[node name="@RichTextLabel@284213" type="RichTextLabel" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer/RichTextLabelAutoSizeNode"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_font_sizes/bold_italics_font_size = 18
+theme_override_font_sizes/italics_font_size = 18
+theme_override_font_sizes/mono_font_size = 18
+theme_override_font_sizes/normal_font_size = 18
+theme_override_font_sizes/bold_font_size = 18
+bbcode_enabled = true
+text = "[center]Skibidi World[/center]"
+script = ExtResource("7_2ke0v")
+MinMaxSize = Vector2(8, 32)
+
+[node name="Control" type="Control" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+size_flags_stretch_ratio = 1.5
+
+[node name="TextureRect" type="TextureRect" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer/Control"]
+material = SubResource("ShaderMaterial_0mthw")
+layout_mode = 1
+anchors_preset = -1
+anchor_left = 0.02
+anchor_top = 0.015
+anchor_right = 0.98
+anchor_bottom = 0.95
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_vertical = 3
+texture = ExtResource("6_q8m0b")
+expand_mode = 1
+stretch_mode = 6
+
+[node name="MarginContainer" type="MarginContainer" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer/Control/TextureRect"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/margin_left = 5
+theme_override_constants/margin_top = 5
+theme_override_constants/margin_right = 5
+theme_override_constants/margin_bottom = 5
+
+[node name="HBoxContainer" type="HBoxContainer" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer/Control/TextureRect/MarginContainer"]
+layout_mode = 2
+
+[node name="PanelContainer" type="PanelContainer" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer/Control/TextureRect/MarginContainer/HBoxContainer"]
+custom_minimum_size = Vector2(64, 24)
+layout_mode = 2
+size_flags_vertical = 0
+theme_override_styles/panel = ExtResource("12_3o5s4")
+
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer/Control/TextureRect/MarginContainer/HBoxContainer/PanelContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+script = ExtResource("6_v0h3m")
+
+[node name="@RichTextLabel@729751" type="RichTextLabel" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer/Control/TextureRect/MarginContainer/HBoxContainer/PanelContainer/RichTextLabelAutoSizeNode"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+theme_override_font_sizes/bold_italics_font_size = 15
+theme_override_font_sizes/italics_font_size = 15
+theme_override_font_sizes/mono_font_size = 15
+theme_override_font_sizes/normal_font_size = 15
+theme_override_font_sizes/bold_font_size = 15
+bbcode_enabled = true
+text = "[center]👤 1.2k [/center]"
+script = ExtResource("7_2ke0v")
+MinMaxSize = Vector2(12, 15)
+
+[node name="PanelContainer" type="PanelContainer" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer/Control"]
+clip_children = 2
+clip_contents = true
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_vertical = 3
+theme_override_styles/panel = ExtResource("12_son8c")
+
+[node name="HBoxContainer" type="HBoxContainer" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer"]
+layout_mode = 2
+alignment = 1
+
+[node name="Button" type="Button" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/normal = ExtResource("13_iyl6g")
+text = "Details"
+
+[node name="Button2" type="Button" parent="HUDManager/Quick Menu/MarginContainer/HBoxContainer/Main Panel/MarginContainer/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/normal = ExtResource("13_iyl6g")
+text = "Quick Join"
+
 [node name="Debug Overlay" type="Control" parent="HUDManager" node_paths=PackedStringArray("Text")]
+visible = false
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0

@@ -1,0 +1,28 @@
+[gd_resource type="Theme" load_steps=3 format=3 uid="uid://bk8eop2660llo"]
+
+[ext_resource type="StyleBox" uid="uid://fo8atkxkkm4g" path="res://Assets/Themes/lackluster_theme/main_style_box_flat.tres" id="1_6bvlg"]
+[ext_resource type="StyleBox" uid="uid://pmvuj543xol" path="res://Assets/Themes/lackluster_theme/main_style_buttons.tres" id="1_uoaf0"]
+
+[resource]
+/colors/candy = Color(0.862745, 0.14902, 0.498039, 1)
+/colors/candy_dark = Color(0.5, 0.085, 0.285583, 1)
+/colors/dusk = Color(0.996078, 0.380392, 0, 1)
+/colors/dusk_dark = Color(0.5, 0.191667, 0, 1)
+/colors/gold = Color(1, 0.690196, 0, 1)
+/colors/gold_dark = Color(0.5, 0.341667, 0, 1)
+/colors/sky = Color(0.392157, 0.560784, 1, 1)
+/colors/sky_dark = Color(0.195, 0.281417, 0.5, 1)
+/colors/twilight = Color(0.470588, 0.368627, 0.941176, 1)
+/colors/twilight_dark = Color(0.125458, 0.0975, 0.25, 1)
+Button/styles/normal = ExtResource("1_uoaf0")
+GridContainer/constants/h_separation = 16
+GridContainer/constants/v_separation = 16
+MarginContainer/constants/margin_bottom = 16
+MarginContainer/constants/margin_left = 16
+MarginContainer/constants/margin_right = 16
+MarginContainer/constants/margin_top = 16
+Panel/styles/panel = ExtResource("1_6bvlg")
+PanelContainer/colors/a = Color(1, 1, 0, 1)
+PanelContainer/styles/panel = ExtResource("1_6bvlg")
+TextEdit/font_sizes/font_size = 48
+TextEdit/styles/normal = ExtResource("1_uoaf0")

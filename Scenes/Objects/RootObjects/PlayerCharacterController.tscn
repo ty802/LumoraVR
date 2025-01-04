@@ -1,6 +1,9 @@
-[gd_scene load_steps=5 format=3 uid="uid://fnsfbtgsl6df"]
+[gd_scene load_steps=8 format=3 uid="uid://fnsfbtgsl6df"]
 
 [ext_resource type="Script" path="res://Source/Scene/RootObjects/PlayerCharacterController.cs" id="1_0nv1q"]
+[ext_resource type="PackedScene" uid="uid://cnipfulvhw6yr" path="res://Assets/Models/headset.gltf" id="2_63sjc"]
+[ext_resource type="PackedScene" uid="uid://bbyi2f0brc7tu" path="res://Assets/Models/LeftHand.gltf" id="3_xm4n5"]
+[ext_resource type="PackedScene" uid="uid://bc7nsneikvbkk" path="res://Assets/Models/RightHand.gltf" id="4_ca683"]
 
 [sub_resource type="SceneReplicationConfig" id="SceneReplicationConfig_h7fwk"]
 properties/0/path = NodePath(".:Authority")
@@ -44,12 +47,15 @@ properties/10/replication_mode = 1
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_820w7"]
 
-[node name="PlayerCharacterController" type="CharacterBody3D" node_paths=PackedStringArray("ClientSync", "ServerSync", "Nametag")]
+[node name="PlayerCharacterController" type="CharacterBody3D" node_paths=PackedStringArray("ClientSync", "ServerSync", "Nametag", "_head", "_leftHand", "_rightHand")]
 collision_layer = 2
 script = ExtResource("1_0nv1q")
 ClientSync = NodePath("ClientSynchronizer")
 ServerSync = NodePath("ServerSynchronizer")
 Nametag = NodePath("Nametag")
+_head = NodePath("Limbs/Head")
+_leftHand = NodePath("Limbs/Left Hand")
+_rightHand = NodePath("Limbs/Right Hand")
 
 [node name="ServerSynchronizer" type="MultiplayerSynchronizer" parent="."]
 replication_config = SubResource("SceneReplicationConfig_h7fwk")
@@ -68,3 +74,22 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.4014, 0)
 billboard = 2
 text = "John Aquamarine"
 outline_size = 2
+
+[node name="Limbs" type="Node3D" parent="."]
+
+[node name="Head" type="Node3D" parent="Limbs"]
+
+[node name="headset" parent="Limbs/Head" instance=ExtResource("2_63sjc")]
+transform = Transform3D(0.1, 0, 0, 0, 0.1, 0, 0, 0, 0.1, 0, 0.02, 0)
+
+[node name="Left Hand" type="Node3D" parent="Limbs"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.5, 0, 0)
+
+[node name="LeftHand" parent="Limbs/Left Hand" instance=ExtResource("3_xm4n5")]
+transform = Transform3D(0.1, 0, 0, 0, 0.1, 0, 0, 0, 0.1, 0, 0, 0)
+
+[node name="Right Hand" type="Node3D" parent="Limbs"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.5, 0, 0)
+
+[node name="RightHand" parent="Limbs/Right Hand" instance=ExtResource("4_ca683")]
+transform = Transform3D(0.1, 0, 0, 0, 0.1, 0, 0, 0, 0.1, 0, 0, 0)

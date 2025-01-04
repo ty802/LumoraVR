@@ -8,6 +8,7 @@ public static class SerializationHelpers
 {
     public const int WorldUpdateChannel = 8;
     public const int AssetChannel = 16;
+    public const int PrefabChannel = 15;
     
     public static readonly StringName ReceiveChangesName = "ReceiveChanges";
 

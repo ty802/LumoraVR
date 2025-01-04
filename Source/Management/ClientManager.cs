@@ -9,11 +9,14 @@ using Godot;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Linq;
+using System.Runtime.CompilerServices;
 
 namespace Aquamarine.Source.Management
 {
 	public partial class ClientManager : Node
 	{
+		public static bool ShowDebug = false;
+
 		private XRInterface _xrInterface;
 		private IInputProvider _input;
 		private LiteNetLibMultiplayerPeer _peer;
@@ -57,6 +60,16 @@ namespace Aquamarine.Source.Management
 				Logger.Error($"Error initializing ClientManager: {ex.Message}");
 			}
 		}
+
+        public override void _Input(InputEvent @event)
+        {
+            base._Input(@event);
+
+			if (@event.IsActionPressed("ToggleDebug"))
+			{
+				ShowDebug = !ShowDebug;
+			}
+        }
 
         private void SpawnLocalHome()
         {

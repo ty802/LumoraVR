@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode world_vertex_coords; 
+render_mode world_vertex_coords;
 
 varying vec3 pos;
 
@@ -8,7 +8,7 @@ void vertex()
 	pos = VERTEX;
 }
 
-void fragment() 
+void fragment()
 {
 	//ALBEDO = pos / 10.0;
 	vec3 modulo = mod(floor(pos), 2.0);

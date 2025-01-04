@@ -48,13 +48,15 @@ public partial class DesktopInput : Node3D, IInputProvider
 	public bool IsVR => false;
 	public Vector3 GetPlayspaceMovementDelta => Vector3.Zero;
 	public Vector2 GetMovementInputAxis => InputManager.Movement;
-	public float GetHeight => 1.8f; //TODO
+    public bool GetJumpInput => InputButton.Jump.Held();
+    public bool GetSprintInput => InputButton.Sprint.Held();
+    public float GetHeight => 1.8f; //TODO
 	public float CurrentHeadHeight = 1.8f;
 	public Vector3 GetLimbPosition(IInputProvider.InputLimb limb) => limb switch
 	{
 		IInputProvider.InputLimb.Head => Vector3.Up * CurrentHeadHeight,
-		//IInputProvider.InputLimb.LeftHand => expr,
-		//IInputProvider.InputLimb.RightHand => expr,
+		IInputProvider.InputLimb.LeftHand => Vector3.Up * CurrentHeadHeight + (_camera.Quaternion * new Vector3(-0.5f, -0.5f, -1f)),
+		IInputProvider.InputLimb.RightHand => Vector3.Up * CurrentHeadHeight + (_camera.Quaternion * new Vector3(0.5f, -0.5f, -1f)),
 		//IInputProvider.InputLimb.Hip => expr,
 		//IInputProvider.InputLimb.LeftFoot => expr,
 		//IInputProvider.InputLimb.RightFoot => expr,
@@ -63,8 +65,8 @@ public partial class DesktopInput : Node3D, IInputProvider
 	public Quaternion GetLimbRotation(IInputProvider.InputLimb limb) => limb switch
 	{
 		IInputProvider.InputLimb.Head => Quaternion.FromEuler(new Vector3(_headRotation.Y, _headRotation.X, 0)),
-		//IInputProvider.InputLimb.LeftHand => expr,
-		//IInputProvider.InputLimb.RightHand => expr,
+		IInputProvider.InputLimb.LeftHand => Quaternion.FromEuler(new Vector3(_headRotation.Y + 45f, _headRotation.X, 0)),
+		IInputProvider.InputLimb.RightHand => Quaternion.FromEuler(new Vector3(_headRotation.Y + 45f, _headRotation.X, 0)),
 		//IInputProvider.InputLimb.Hip => expr,
 		//IInputProvider.InputLimb.LeftFoot => expr,
 		//IInputProvider.InputLimb.RightFoot => expr,

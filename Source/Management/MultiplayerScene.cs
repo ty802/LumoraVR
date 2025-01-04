@@ -20,8 +20,6 @@ namespace Aquamarine.Source.Management
 
 		public System.Collections.Generic.Dictionary<string, Prefab> Prefabs = new();
         
-        
-		
 		public override void _Ready()
 		{
 			base._Ready();
@@ -35,52 +33,29 @@ namespace Aquamarine.Source.Management
 
 		[Rpc(CallLocal = false, TransferChannel = SerializationHelpers.WorldUpdateChannel, TransferMode = MultiplayerPeer.TransferModeEnum.Reliable)]
 		private void UpdatePlayerList(int[] playerList) => PlayerList = new Array<int>(playerList);
-		public void AddPrefab(string name, string prefab, int? blacklist = null)
-		{
-			if (!IsMultiplayerAuthority()) return;
-			
-			var parsed = Prefab.Deserialize(prefab);
-			if (!parsed.Valid()) return;
-			
-			Prefabs[name] = parsed;
+        
+        public void SendAllPrefabs(int? user = null)
+        {
+            if (!IsMultiplayerAuthority()) return;
 
-			if (blacklist.HasValue)
-			{
-				foreach (var player in PlayerList)
-				{
-					if (player == blacklist.Value) continue;
-					RpcId(player, MethodName.InternalAddPrefab, name, prefab);
-				}
-			}
-			else Rpc(MethodName.InternalAddPrefab, name, prefab);
-		}
-
-		public void SendAllPrefabs(int? player = null)
-		{
-			if (!IsMultiplayerAuthority()) return;
-			
-			var dict = new Dictionary();
-			foreach (var (name, prefab) in Prefabs) dict[name] = prefab.Serialize();
-			var json = Json.Stringify(dict);
-
-			if (player.HasValue) RpcId(player.Value, MethodName.InternalReceiveAllPrefabs, json);
-			else Rpc(MethodName.InternalReceiveAllPrefabs, json);
-		}
-
-		[Rpc]
-		private void InternalReceiveAllPrefabs(string json)
-		{
-			var parsed = Json.ParseString(json);
-			if (parsed.VariantType is not Variant.Type.Dictionary) return;
-			foreach (var (name, prefab) in parsed.AsGodotDictionary<string,string>()) Prefabs[name] = Prefab.Deserialize(prefab);
-		}
-
-		[Rpc]
-		private void InternalAddPrefab(string name, string prefab)
-		{
-			var parsed = Prefab.Deserialize(prefab);
-			Prefabs[name] = parsed;
-		}
+            foreach (var prefab in Prefabs) SendPrefab(prefab.Key, user);
+        }
+        public void SendPrefab(string prefabName, int? user = null)
+        {
+            if (user.HasValue) RpcId(user.Value, MethodName.RecievePrefab, prefabName);
+            else Rpc(MethodName.RecievePrefab, prefabName);
+        }
+        [Rpc(TransferChannel = SerializationHelpers.PrefabChannel)]
+        private void RecievePrefab(string prefabName)
+        {
+            
+        }
+        
+        public void RequestPrefab(string prefabName)
+        {
+            
+        }
+        
 		
 		//[Rpc(CallLocal = true, TransferMode = MultiplayerPeer.TransferModeEnum.Reliable, TransferChannel = SerializationHelpers.WorldUpdateChannel)]
 		private void InternalSpawnPlayer(int authority, Vector3 position)

@@ -48,7 +48,9 @@ public partial class DesktopInput : Node3D, IInputProvider
 	public bool IsVR => false;
 	public Vector3 GetPlayspaceMovementDelta => Vector3.Zero;
 	public Vector2 GetMovementInputAxis => InputManager.Movement;
-	public float GetHeight => 1.8f; //TODO
+    public bool GetJumpInput => InputButton.Jump.Held();
+    public bool GetSprintInput => InputButton.Sprint.Held();
+    public float GetHeight => 1.8f; //TODO
 	public float CurrentHeadHeight = 1.8f;
 	public Vector3 GetLimbPosition(IInputProvider.InputLimb limb) => limb switch
 	{

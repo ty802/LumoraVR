@@ -117,9 +117,10 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
 			(LeftHandPosition, LeftHandRotation) = IInputProvider.LimbTransform(IInputProvider.InputLimb.LeftHand);
 			(RightHandPosition, RightHandRotation) = IInputProvider.LimbTransform(IInputProvider.InputLimb.RightHand);
 			UserHeight = IInputProvider.Height;
-			MovementButtons = (byte)(((InputButton.Jump.Held() ? 1 : 0) << 0) | ((InputButton.Sprint.Held() ? 1 : 0) << 1));
+			MovementButtons = (byte)(((IInputProvider.JumpInput ? 1 : 0) << 0) | ((IInputProvider.SprintInput ? 1 : 0) << 1));
 			MovementInput = IInputProvider.MovementInputAxis;
-		}
+            Position += IInputProvider.PlayspaceMovementDelta;
+        }
 
 		var yVel = IsOnFloor() ? 0 : Velocity.Y - (9.8f * deltaf);
 		

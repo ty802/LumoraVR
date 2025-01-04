@@ -1,4 +1,4 @@
-[gd_resource type="VisualShader" load_steps=13 format=3 uid="uid://c0t1sbem66elw"]
+[gd_resource type="VisualShader" load_steps=13 format=3 uid="uid://drcbjbss62tm5"]
 
 [sub_resource type="VisualShaderNodeFloatParameter" id="VisualShaderNodeFloatParameter_lka3i"]
 parameter_name = "lineWidth"

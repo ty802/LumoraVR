@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Aquamarine.Source.Management;
 using Godot;
 
 namespace Aquamarine.Source.Input;
@@ -49,9 +50,7 @@ public partial class InputManager : Node
         base._Ready();
         Instance = this;
         
-        var args = OS.GetCmdlineArgs();
-        _isServer = args.Any(i => i.Equals("--run-server", System.StringComparison.CurrentCultureIgnoreCase));
-
+        _isServer = ServerManager.CurrentServerType != ServerManager.ServerType.NotAServer;
         if (_isServer) return;
         
         _window = GetViewport().GetWindow();

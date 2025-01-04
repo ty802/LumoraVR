@@ -25,5 +25,6 @@ environment = SubResource("Environment_vthhs")
 transform = Transform3D(0.756048, 0.580008, 0.303286, 0, -0.463373, 0.886163, 0.654517, -0.669982, -0.350332, 0, 0, 0)
 
 [node name="socialvrtestmodel" parent="." instance=ExtResource("2_3oupd")]
+visible = false
 
 [editable path="socialvrtestmodel"]

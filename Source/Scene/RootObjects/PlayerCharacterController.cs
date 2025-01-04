@@ -89,10 +89,7 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
     {
         base._Ready();
 
-        if (ClientSync.IsMultiplayerAuthority())
-        {
-            Nametag.Text = System.Environment.MachineName;
-        }
+        if (Authority == Multiplayer.GetUniqueId()) Nametag.Text = System.Environment.MachineName;
 
         Logger.Log("PlayerCharacterController initialized.");
     }
@@ -153,7 +150,7 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
 		if (authority) IInputProvider.Move(GlobalTransform);
 		else  
 		{
-			Transform3D pos = GlobalTransform * new Transform3D(new Basis(HeadRotation), HeadPosition);
+			var pos = GlobalTransform * new Transform3D(new Basis(HeadRotation), HeadPosition);
 			DebugDraw3D.DrawPosition(pos);
 			DebugDraw3D.DrawSphere(pos.Origin + (HeadRotation * new Vector3(0.1f, 0.1f, -0.15f)), 0.0125f, Colors.Black);
 			DebugDraw3D.DrawSphere(pos.Origin + (HeadRotation * new Vector3(0.1f, 0.1f, -0.1f)), 0.05f, Colors.White);

@@ -1,11 +1,11 @@
 using System;
-using System.Collections.Generic;
 using Aquamarine.Source.Assets;
-using Aquamarine.Source.Networking;
 using Godot;
+using Godot.Collections;
 
 namespace Aquamarine.Source.Scene.Assets;
 
+/*
 public class ImageTextureProvider : ITextureProvider
 {
     public static Dictionary<string,Texture2D> Cache = new();
@@ -47,4 +47,15 @@ public class ImageTextureProvider : ITextureProvider
             });
         }
     }
+}
+*/
+
+public class ImageTextureProvider : ITextureProvider, IFileAssetProvider<Texture2D>
+{
+    public void Set(Action<Texture2D> setAction) => SimpleAssetCache<Texture2D>.DoSet(this, setAction);
+    public bool AssetReady => Asset is not null;
+    public void Initialize(Dictionary<string, Variant> data) => SimpleAssetCache<Texture2D>.DoInitialize(this, data);
+    public string Path { get; set; }
+    public Texture2D Asset { get; set; }
+    public Texture2D ParseAsset(byte[] data) => AssetParser.ParseImage(Path, data);
 }

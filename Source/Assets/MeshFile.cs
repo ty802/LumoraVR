@@ -1,5 +1,7 @@
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using Aquamarine.Source.Helpers;
 using Godot;
 using Godot.Collections;
 
@@ -20,6 +22,35 @@ public class MeshFile
         public Vertex()
         {
         }
+        
+        public void Serialize(BinaryWriter writer, bool color, bool uv2, bool skinned)
+        {
+            writer.Write(Position);
+            writer.Write(Normal);
+            writer.Write(UV);
+
+            if (color) writer.Write(Color);
+            if (uv2) writer.Write(UV2);
+            if (skinned)
+            {
+                writer.Write(Bones);
+                writer.Write(Weights);
+            }
+        }
+        public void Deserialize(BinaryReader reader, bool color, bool uv2, bool skinned)
+        {
+            Position = reader.ReadVector3();
+            Normal = reader.ReadVector3();
+            UV = reader.ReadVector2();
+
+            if (color) Color = reader.ReadColor();
+            if (uv2) UV2 = reader.ReadVector2();
+            if (skinned)
+            {
+                Bones = reader.ReadVector4I();
+                Weights = reader.ReadVector4();
+            }
+        }
     }
     public struct BlendshapeVertex
     {
@@ -28,6 +59,17 @@ public class MeshFile
         
         public BlendshapeVertex()
         {
+        }
+        
+        public void Serialize(BinaryWriter writer)
+        {
+            writer.Write(Position);
+            writer.Write(Normal);
+        }
+        public void Deserialize(BinaryReader reader)
+        {
+            Position = reader.ReadVector3();
+            Normal = reader.ReadVector3();
         }
     }
     public class MeshPart
@@ -40,13 +82,82 @@ public class MeshFile
         public bool UseVertexColors;
         public bool UseUV2;
         public bool Skinned;
+
+        public void Serialize(BinaryWriter writer)
+        {
+            writer.Write(UseVertexColors);
+            writer.Write(UseUV2);
+            writer.Write(Skinned);
+            
+            writer.WriteCollection(Vertices, (stream, value) =>
+            {
+                value.Serialize(stream, UseVertexColors, UseUV2, Skinned);
+            });
+            
+            writer.WriteCollection(Indices, (stream, value) =>
+            {
+                stream.Write(value);
+            });
+            
+            writer.WriteCollection(BlendshapeVertices, (stream, value) =>
+            {
+                stream.WriteCollection(value, (binaryWriter, vertex) =>
+                {
+                    vertex.Serialize(binaryWriter);
+                });
+            });
+        }
+        public void Deserialize(BinaryReader reader)
+        {
+            UseVertexColors = reader.ReadBoolean();
+            UseUV2 = reader.ReadBoolean();
+            Skinned = reader.ReadBoolean();
+            
+            reader.ReadArray(out Vertices, (BinaryReader stream, out Vertex value) =>
+            {
+                value = new Vertex();
+                value.Deserialize(stream, UseVertexColors, UseUV2, Skinned);
+            });
+            
+            reader.ReadArray(out Indices, (BinaryReader stream, out Vector3I value) =>
+            {
+                value = stream.ReadVector3I();
+            });
+            
+            reader.ReadArray(out BlendshapeVertices, (BinaryReader stream, out BlendshapeVertex[] value) =>
+            {
+                stream.ReadArray(out value, (BinaryReader binaryReader, out BlendshapeVertex vertex) =>
+                {
+                    vertex = new BlendshapeVertex();
+                    vertex.Deserialize(binaryReader);
+                });
+            });
+        }
     }
     public class LODGroup
     {
         public float Distance;
         public Vector3I[] Indices;
+        
+        public void Serialize(BinaryWriter writer)
+        {
+            writer.Write(Distance);
+            writer.WriteCollection(Indices, (stream, value) =>
+            {
+                stream.Write(value);
+            });
+        }
+        public void Deserialize(BinaryReader reader)
+        {
+            Distance = reader.ReadSingle();
+            reader.ReadArray(out Indices, (BinaryReader stream, out Vector3I value) =>
+            {
+                value = stream.ReadVector3I();
+            });
+        }
     }
 
+    public int Version = 1;
     public string[] Blendshapes = [];
     public MeshPart[] MeshParts = [];
 
@@ -55,23 +166,48 @@ public class MeshFile
         if (MeshParts.Length == 0) return false;
         foreach (var part in MeshParts)
         {
-            if (part.BlendshapeVertices.Length < Blendshapes.Length) return false;
-            if (part.BlendshapeVertices.Any(i => i.Length < part.Vertices.Length)) return false;
+            if (part.BlendshapeVertices.Length != Blendshapes.Length) return false;
+            if (part.BlendshapeVertices.Any(i => i.Length != part.Vertices.Length)) return false;
             if (part.Indices
                 .Concat(part.LODs.SelectMany(i => i.Indices))
                 .SelectMany(i => new[] { i.X, i.Y, i.Z })
                 .Any(i => i < 0 || i >= part.Vertices.Length)) 
                 return false;
-            /*
-            if (part.Vertices
-                .Select(i => i.Bones)
-                .SelectMany(i => new[]{i.X, i.Y, i.Z, i.W})
-                .Any(i => i != -1 && i >= BoneCount)) 
-                return false;
-                */
         }
         return true;
     }
+
+    public byte[] Serialize()
+    {
+        var mem = new MemoryStream();
+        var writer = new BinaryWriter(mem);
+
+        writer.Write(Version);
+        writer.WriteCollection(Blendshapes, (stream, value) => { stream.Write(value); });
+        writer.WriteCollection(MeshParts, (stream, value) => { value.Serialize(stream); });
+
+        return mem.GetBuffer();
+    }
+    public static MeshFile Deserialize(byte[] data)
+    {
+        var mem = new MemoryStream(data);
+        var reader = new BinaryReader(mem);
+
+        var file = new MeshFile { Version = reader.ReadInt32() };
+
+        reader.ReadArray(out file.Blendshapes, (BinaryReader stream, out string value) =>
+        {
+            value = stream.ReadString();
+        });
+        reader.ReadArray(out file.MeshParts, (BinaryReader stream, out MeshPart value) =>
+        {
+            value = new MeshPart();
+            value.Deserialize(stream);
+        });
+
+        return file;
+    }
+    
     public static MeshFile FromArrayMesh(ArrayMesh arrayMesh)
     {
         var mesh = new MeshFile();
@@ -92,7 +228,12 @@ public class MeshFile
             var positionArray = array[(int)Mesh.ArrayType.Vertex].AsVector3Array();
             
             var verts = positionArray.Length;
+            
             var vertArray = new Vertex[verts];
+
+            part.UseVertexColors = (format & Mesh.ArrayFormat.FormatColor) > 0;
+            part.UseUV2 = (format & Mesh.ArrayFormat.FormatTexUV2) > 0;
+            part.Skinned = (format & (Mesh.ArrayFormat.FormatBones | Mesh.ArrayFormat.FormatWeights)) > 0;
             
             for (var x = 0; x < verts; x++) vertArray[x].Position = positionArray[x];
 
@@ -175,6 +316,8 @@ public class MeshFile
 
                 part.BlendshapeVertices[x] = blendVertArray;
             }
+
+            part.Vertices = vertArray;
         }
 
         return mesh;
@@ -227,11 +370,11 @@ public class MeshFile
                 
                 blendshapeArray.Add(blend);
             }
-            
             mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, meshArray, blendshapeArray, hasLods ? lodDict : null, flags);
         }
         
-        mesh.RegenNormalMaps(); //thanks
+        //TODO this doesnt work for some reason
+        //mesh.RegenNormalMaps(); //thanks
         
         return mesh;
     }

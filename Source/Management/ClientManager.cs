@@ -24,38 +24,49 @@ namespace Aquamarine.Source.Management
 		private const string RelayApiUrl = "https://api.xlinka.com/sessions";
 
 		private bool _isDirectConnection = false;
-		private string _lastUsedToken;
 
 		public override void _Ready()
 		{
 			try
 			{
 				InitializeInput();
+                
+                SpawnLocalHome();
+                
+                this.CreateTimer(5, () =>
+                {
+                    var info = FetchServerInfo();
 
-				// Delay and attempt to join a server
-				this.CreateTimer(1, () =>
-				{
-					var info = FetchServerInfo();
-
-					this.CreateTimer(2, () =>
-					{
-						if (info.IsCompletedSuccessfully && !string.IsNullOrEmpty(info.Result.SessionIdentifier))
-						{
-							GD.Print($"Fetched session identifier: {info.Result.SessionIdentifier}");
-							JoinNatServer(info.Result.SessionIdentifier);
-						}
-						else
-						{
-							GD.Print("Failed to fetch a valid session identifier in time.");
-						}
-					});
-				});
+                    this.CreateTimer(2, () =>
+                    {
+                        if (info.IsCompletedSuccessfully && info.Result is not null && !string.IsNullOrEmpty(info.Result.SessionIdentifier))
+                        {
+                            GD.Print($"Fetched session identifier: {info.Result.SessionIdentifier}");
+                            JoinNatServer(info.Result.SessionIdentifier);
+                        }
+                        else
+                        {
+                            GD.Print("Failed to fetch a valid session identifier in time.");
+                        }
+                        GD.Print(Multiplayer.GetUniqueId());
+                    });
+                });
 			}
 			catch (Exception ex)
 			{
 				Logger.Error($"Error initializing ClientManager: {ex.Message}");
 			}
 		}
+
+        private void SpawnLocalHome()
+        {
+            OS.CreateProcess(OS.GetExecutablePath(), ["--run-home-server", "--xr-mode", "off", "--headless"]);
+            
+            this.CreateTimer(0.5f, () =>
+            {
+                JoinServer("localhost", 6000);
+            });
+        }
 
 		private void InitializeInput()
 		{
@@ -82,11 +93,14 @@ namespace Aquamarine.Source.Management
 
 		public void JoinNatServer(string identifier)
 		{
-			if (string.IsNullOrEmpty(identifier))
+            if (string.IsNullOrEmpty(identifier))
 			{
 				Logger.Error("Session identifier is null or empty. Cannot join NAT server.");
 				return;
 			}
+            
+            _peer?.Close();
+            Multiplayer.MultiplayerPeer = null;
             
 			var token = $"client:{identifier}";
 			GD.Print($"Attempting NAT punchthrough with token: {token}");
@@ -95,14 +109,21 @@ namespace Aquamarine.Source.Management
 			_peer.CreateClientNat(SessionInfo.SessionServer.Address.ToString(), SessionInfo.SessionServer.Port, token);
 			Multiplayer.MultiplayerPeer = _peer;
 			_isDirectConnection = true;
+            
+            _peer.PeerDisconnected += PeerOnPeerDisconnected;
 		}
+        private void PeerOnPeerDisconnected(long id)
+        {
+            GD.Print($"{id} disconnected");
+            if (id == 1) SpawnLocalHome();
+        }
 
 
-		public void JoinServer(string address, int port)
+        public void JoinServer(string address, int port)
 		{
 			_peer = new LiteNetLibMultiplayerPeer();
 			_peer.CreateClient(address, port);
-			Multiplayer.MultiplayerPeer = _peer;
+            Multiplayer.MultiplayerPeer = _peer;
 			_isDirectConnection = true;
 		}
 

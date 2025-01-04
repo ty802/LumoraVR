@@ -3,7 +3,7 @@ using Godot;
 
 namespace Aquamarine.Source.Scene.Assets;
 
-public interface ITextureProvider : IAssetProvider
+public interface ITextureProvider : IAssetProvider<Texture2D>
 {
-    public void Set(Action<Texture2D> setAction);
+    //public void Set(Action<Texture2D> setAction);
 }

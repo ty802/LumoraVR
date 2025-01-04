@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text;
@@ -34,26 +35,82 @@ namespace Aquamarine.Source.Management
 		private string _publicIp;
 		private string _worldName = "My World";
 
+        public enum ServerType
+        {
+            NotAServer,
+            Standard,
+            Local
+        }
+
+        //TODO: move this somewhere else?
+        public static ServerType CurrentServerType
+        {
+            get
+            {
+                if (_serverType.HasValue) return _serverType.Value;
+                
+                var args = OS.GetCmdlineArgs();
+                var isLocalHomeServer = args.Any(i => i.Equals("--run-home-server", StringComparison.CurrentCultureIgnoreCase));
+                if (isLocalHomeServer)
+                {
+                    _serverType = ServerType.Local;
+                    return ServerType.Local;
+                }
+                
+                var isServer = args.Any(i => i.Equals("--run-server", System.StringComparison.CurrentCultureIgnoreCase));
+                if (isServer)
+                {
+                    _serverType = ServerType.Standard;
+                    return ServerType.Standard;
+                }
+
+                _serverType = ServerType.NotAServer;
+                return ServerType.NotAServer;
+            }
+        }
+        private static ServerType? _serverType;
+
 		public override void _Process(double delta)
 		{
 			base._Process(delta);
 			SessionListManager.PollEvents();
 		}
 
-		public override async void _Ready()
+		public override void _Ready()
 		{
 			try
-			{
+            {
+                var serverType = CurrentServerType;
+                
 				MultiplayerPeer = new LiteNetLibMultiplayerPeer();
-				MultiplayerPeer.CreateServerNat(Port, MaxConnections);
-				Multiplayer.MultiplayerPeer = MultiplayerPeer;
+
+                if (serverType is ServerType.Local)
+                {
+                    /*
+                    var args = OS.GetCmdlineArgs().ToList();
+                    var runHomeIndex = args.IndexOf("--run-home-server");
+
+                    var port = int.Parse(args[runHomeIndex][2..]);
+                    
+                    Logger.Log(port.ToString());
+                    */
+                    
+                    MultiplayerPeer.CreateServer(6000, 1);
+                    Logger.Log($"Local server started on port {6000}.");
+                }
+                else
+                {
+                    MultiplayerPeer.CreateServerNat(Port, MaxConnections);
+                    Logger.Log($"Server started on port {Port} with a maximum of {MaxConnections} connections.");
+                }
+                
+                Multiplayer.MultiplayerPeer = MultiplayerPeer;
 
 				MultiplayerPeer.PeerConnected += OnPeerConnected;
 				MultiplayerPeer.PeerDisconnected += OnPeerDisconnected;
+                
 
-				Logger.Log($"Server started on port {Port} with a maximum of {MaxConnections} connections.");
-
-				if (Advertise)
+				if (serverType is ServerType.Standard)
 				{
 					// Initialize session list manager
 					SessionListListener = new EventBasedNetListener();
@@ -72,7 +129,7 @@ namespace Aquamarine.Source.Management
 			}
 			catch (Exception ex)
 			{
-				Logger.Error($"Error initializing ServerManager: {ex.Message}");
+				Logger.Error($"Error initializing ServerManager: {ex}");
 			}
 		}
 
@@ -167,6 +224,13 @@ namespace Aquamarine.Source.Management
 			{
 				Logger.Error($"Error handling peer disconnection (ID: {id}): {ex.Message}");
 			}
+
+            if (CurrentServerType is ServerType.Local)
+            {
+                Logger.Log("Quitting local server");
+                MultiplayerPeer.Close();
+                GetTree().Quit();
+            }
 		}
 /*
 		private async Task<string> GetPublicIP()

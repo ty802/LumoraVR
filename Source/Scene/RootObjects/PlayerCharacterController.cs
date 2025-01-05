@@ -92,7 +92,7 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
     [Export] private Node3D _hip;
     [Export] private Node3D _leftFoot;
     [Export] private Node3D _rightFoot;
-    [Export] public string Name { get; set; } = "Player";
+    [Export] public string Name { get; set; } = "John Aquamarine";
 
     public override void _Ready()
     {

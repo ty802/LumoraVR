@@ -92,13 +92,16 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
     [Export] private Node3D _hip;
     [Export] private Node3D _leftFoot;
     [Export] private Node3D _rightFoot;
-    [Export] public string Name { get; set; } = "John Aquamarine";
+    [Export] public string PlayerName { get; set; } = "John Aquamarine";
 
     public override void _Ready()
     {
         base._Ready();
 
-        if (Authority == Multiplayer.GetUniqueId()) Name = System.Environment.MachineName;
+        if (Authority == Multiplayer.GetUniqueId()) {
+            PlayerName = System.Environment.MachineName;
+            Nametag.Text = PlayerName;
+        }
 
         Logger.Log("PlayerCharacterController initialized.");
     }
@@ -107,7 +110,6 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
     {
         base._Process(delta);
 
-        Nametag.Text = Name;
 
         var deltaf = (float)delta;
 

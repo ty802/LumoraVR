@@ -42,7 +42,6 @@ DebugOverlay = NodePath("Debug Overlay")
 MainMenu = NodePath("Main Menu")
 
 [node name="Crosshair" type="TextureRect" parent="HUDManager"]
-visible = false
 layout_mode = 1
 anchors_preset = 8
 anchor_left = 0.5

@@ -44,6 +44,9 @@ public partial class InputManager : Node
             _movementLocked = value;
 
             Godot.Input.MouseMode = value ? Godot.Input.MouseModeEnum.Visible : Godot.Input.MouseModeEnum.Captured;
+
+            Movement = Vector2.Zero;
+            MouseMovement = Vector2.Zero;
         }
     }
 

@@ -2,8 +2,9 @@ namespace Aquamarine.Source.Scene;
 
 public enum ChildObjectType
 {
-    Node,
-    Mesh,
+    None,
+    //Node,
+    MeshRenderer,
     Armature,
 }
 
@@ -13,6 +14,7 @@ public interface IChildObject : ISceneObject
     public IRootObject Root { get; set; }
     public ISceneObject Parent { get; set; }
 
+    /*
     public void PopulateRoot()
     {
         if (Root is not null) return;
@@ -27,4 +29,5 @@ public interface IChildObject : ISceneObject
             parent = parent.GetParent();
         }
     }
+    */
 }

@@ -13,26 +13,26 @@ using System.Runtime.CompilerServices;
 
 namespace Aquamarine.Source.Management
 {
-	public partial class ClientManager : Node
-	{
-		public static bool ShowDebug = false;
+    public partial class ClientManager : Node
+    {
+        public static bool ShowDebug = false;
 
-		private XRInterface _xrInterface;
-		private IInputProvider _input;
-		private LiteNetLibMultiplayerPeer _peer;
-		[Export] private Node3D _inputRoot;
-		[Export] private MultiplayerScene _multiplayerScene;
+        private XRInterface _xrInterface;
+        private IInputProvider _input;
+        private LiteNetLibMultiplayerPeer _peer;
+        [Export] private Node3D _inputRoot;
+        [Export] private MultiplayerScene _multiplayerScene;
 
-		private const int Port = 7000; // Default port for LiteNetLib
-		private const string RelayApiUrl = "https://api.xlinka.com/sessions";
+        private const int Port = 7000; // Default port for LiteNetLib
+        private const string RelayApiUrl = "https://api.xlinka.com/sessions";
 
-		private bool _isDirectConnection = false;
+        private bool _isDirectConnection = false;
 
-		public override void _Ready()
-		{
-			try
-			{
-				InitializeInput();
+        public override void _Ready()
+        {
+            try
+            {
+                InitializeInput();
                 
                 SpawnLocalHome();
                 
@@ -54,21 +54,21 @@ namespace Aquamarine.Source.Management
                         GD.Print(Multiplayer.GetUniqueId());
                     });
                 });
-			}
-			catch (Exception ex)
-			{
-				Logger.Error($"Error initializing ClientManager: {ex.Message}");
-			}
-		}
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error initializing ClientManager: {ex.Message}");
+            }
+        }
 
         public override void _Input(InputEvent @event)
         {
             base._Input(@event);
 
-			if (@event.IsActionPressed("ToggleDebug"))
-			{
-				ShowDebug = !ShowDebug;
-			}
+            if (@event.IsActionPressed("ToggleDebug"))
+            {
+                ShowDebug = !ShowDebug;
+            }
         }
 
         private void SpawnLocalHome()
@@ -81,50 +81,56 @@ namespace Aquamarine.Source.Management
             });
         }
 
-		private void InitializeInput()
-		{
-			_xrInterface = XRServer.FindInterface("OpenXR");
+        private void InitializeInput()
+        {
+            _xrInterface = XRServer.FindInterface("OpenXR");
 
-			if (IsInstanceValid(_xrInterface) && _xrInterface.IsInitialized())
-			{
-				DisplayServer.WindowSetVsyncMode(DisplayServer.VSyncMode.Disabled);
-				GetViewport().UseXR = true;
+            if (IsInstanceValid(_xrInterface) && _xrInterface.IsInitialized())
+            {
+                DisplayServer.WindowSetVsyncMode(DisplayServer.VSyncMode.Disabled);
+                GetViewport().UseXR = true;
 
-				var vrInput = VRInput.PackedScene.Instantiate<VRInput>();
-				_input = vrInput;
-				_inputRoot.AddChild(vrInput);
-				Logger.Log("XR interface initialized successfully.");
-			}
-			else
-			{
-				var desktopInput = DesktopInput.PackedScene.Instantiate<DesktopInput>();
-				_input = desktopInput;
-				_inputRoot.AddChild(desktopInput);
-				Logger.Log("Desktop interface initialized successfully.");
-			}
-		}
+                var vrInput = VRInput.PackedScene.Instantiate<VRInput>();
+                _input = vrInput;
+                _inputRoot.AddChild(vrInput);
+                Logger.Log("XR interface initialized successfully.");
+            }
+            else
+            {
+                var desktopInput = DesktopInput.PackedScene.Instantiate<DesktopInput>();
+                _input = desktopInput;
+                _inputRoot.AddChild(desktopInput);
+                Logger.Log("Desktop interface initialized successfully.");
+            }
+        }
 
-		public void JoinNatServer(string identifier)
-		{
+        public void JoinNatServer(string identifier)
+        {
             if (string.IsNullOrEmpty(identifier))
-			{
-				Logger.Error("Session identifier is null or empty. Cannot join NAT server.");
-				return;
-			}
+            {
+                Logger.Error("Session identifier is null or empty. Cannot join NAT server.");
+                return;
+            }
             
             _peer?.Close();
             Multiplayer.MultiplayerPeer = null;
             
-			var token = $"client:{identifier}";
-			GD.Print($"Attempting NAT punchthrough with token: {token}");
+            var token = $"client:{identifier}";
+            GD.Print($"Attempting NAT punchthrough with token: {token}");
 
-			_peer = new LiteNetLibMultiplayerPeer();
-			_peer.CreateClientNat(SessionInfo.SessionServer.Address.ToString(), SessionInfo.SessionServer.Port, token);
-			Multiplayer.MultiplayerPeer = _peer;
-			_isDirectConnection = true;
+            _peer = new LiteNetLibMultiplayerPeer();
+            _peer.CreateClientNat(SessionInfo.SessionServer.Address.ToString(), SessionInfo.SessionServer.Port, token);
+            Multiplayer.MultiplayerPeer = _peer;
+            _isDirectConnection = true;
             
             _peer.PeerDisconnected += PeerOnPeerDisconnected;
-		}
+            _peer.ClientConnectionSuccess += PeerOnClientConnectionSuccess;
+        }
+        private void PeerOnClientConnectionSuccess()
+        {
+            MultiplayerScene.Instance.Rpc(MultiplayerScene.MethodName.SetPlayerName, System.Environment.MachineName);
+            _peer.ClientConnectionSuccess -= PeerOnClientConnectionSuccess;
+        }
         private void PeerOnPeerDisconnected(long id)
         {
             GD.Print($"{id} disconnected");
@@ -133,55 +139,57 @@ namespace Aquamarine.Source.Management
 
 
         public void JoinServer(string address, int port)
-		{
-			_peer = new LiteNetLibMultiplayerPeer();
-			_peer.CreateClient(address, port);
+        {
+            _peer = new LiteNetLibMultiplayerPeer();
+            _peer.CreateClient(address, port);
             Multiplayer.MultiplayerPeer = _peer;
-			_isDirectConnection = true;
-		}
+            _isDirectConnection = true;
+            
+            _peer.ClientConnectionSuccess += PeerOnClientConnectionSuccess;
+        }
 
-		private async Task<SessionInfo> FetchServerInfo()
-		{
-			try
-			{
-				GD.Print("Trying to get session list");
+        private async Task<SessionInfo> FetchServerInfo()
+        {
+            try
+            {
+                GD.Print("Trying to get session list");
 
-				using var client = new System.Net.Http.HttpClient();
-				var response = await client.GetStringAsync(SessionInfo.SessionList);
+                using var client = new System.Net.Http.HttpClient();
+                var response = await client.GetStringAsync(SessionInfo.SessionList);
 
-				GD.Print("Got the session list");
-				GD.Print(response);
+                GD.Print("Got the session list");
+                GD.Print(response);
 
-				var sessions = JsonSerializer.Deserialize<List<SessionInfo>>(response, new JsonSerializerOptions
-				{
-					PropertyNameCaseInsensitive = true,
-				});
+                var sessions = JsonSerializer.Deserialize<List<SessionInfo>>(response, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true,
+                });
 
-				if (sessions != null && sessions.Count != 0)
-				{
-					foreach (var session in sessions)
-					{
-						GD.Print($"Session: {session.Name}, IP: {session.IP}, Port: {session.Port}, Identifier: {session.SessionIdentifier}");
+                if (sessions != null && sessions.Count != 0)
+                {
+                    foreach (var session in sessions)
+                    {
+                        GD.Print($"Session: {session.Name}, IP: {session.IP}, Port: {session.Port}, Identifier: {session.SessionIdentifier}");
 
-						if (string.IsNullOrEmpty(session.SessionIdentifier))
-						{
-							Logger.Error($"Session {session.Name} is missing an identifier. Skipping.");
-							continue;
-						}
+                        if (string.IsNullOrEmpty(session.SessionIdentifier))
+                        {
+                            Logger.Error($"Session {session.Name} is missing an identifier. Skipping.");
+                            continue;
+                        }
 
-						return session; // Return the first valid session
-					}
-				}
+                        return session; // Return the first valid session
+                    }
+                }
 
-				Logger.Error("No valid sessions available in the API response.");
-				return null;
-			}
-			catch (Exception ex)
-			{
-				Logger.Error($"Error fetching server info: {ex.Message}");
-				return null;
-			}
-		}
+                Logger.Error("No valid sessions available in the API response.");
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error fetching server info: {ex.Message}");
+                return null;
+            }
+        }
 
-	}
+    }
 }

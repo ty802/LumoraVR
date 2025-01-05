@@ -8,7 +8,7 @@ public partial class MeshRenderer : MeshInstance3D, IChildObject
 {
     public IMeshProvider MeshProvider
     {
-        get => field;
+        get;
         set
         {
             if (field == value) return;
@@ -21,7 +21,18 @@ public partial class MeshRenderer : MeshInstance3D, IChildObject
                 });
         }
     }
-    
+    public Armature Armature
+    {
+        get;
+        set
+        {
+            if (field == value) return;
+            field = value;
+            Skeleton = value == null ? null : GetPathTo(field);
+            Skin = value == null ? null : field.Skin;
+        }
+    }
+
     public Node Self => this;
     public void SetPlayerAuthority(int id)
     {
@@ -31,10 +42,7 @@ public partial class MeshRenderer : MeshInstance3D, IChildObject
     {
         
     }
-    public void AddChildObject(ISceneObject obj)
-    {
-        
-    }
+    public void AddChildObject(ISceneObject obj) => AddChild(obj.Self);
     public bool Dirty { get; }
     public IRootObject Root { get; set; }
     public ISceneObject Parent { get; set; }

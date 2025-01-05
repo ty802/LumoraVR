@@ -8,18 +8,18 @@ namespace Aquamarine.Source.Management.HUD;
 [GlobalClass, Tool]
 public partial class RichTextLabelAutoSizeNode : Control
 {
-	public override void _Ready()
-	{
-		if (GetChildCount() > 0)
-		{
-			return;
-		}
+    public override void _Ready()
+    {
+        if (GetChildCount() > 0)
+        {
+            return;
+        }
 
-		SizeFlagsHorizontal = SizeFlags.Fill;
-		SizeFlagsVertical = SizeFlags.ExpandFill;
+        SizeFlagsHorizontal = SizeFlags.Fill;
+        SizeFlagsVertical = SizeFlags.ExpandFill;
 
-		var text = new RichTextLabelAutoSize();
-		AddChild(text);
-		text.Owner = GetTree().EditedSceneRoot;
-	}
+        var text = new RichTextLabelAutoSize();
+        AddChild(text);
+        text.Owner = GetTree().EditedSceneRoot;
+    }
 }

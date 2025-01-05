@@ -44,6 +44,24 @@ properties/9/replication_mode = 1
 properties/10/path = NodePath(".:MovementButtons")
 properties/10/spawn = true
 properties/10/replication_mode = 1
+properties/11/path = NodePath(".:HipPosition")
+properties/11/spawn = true
+properties/11/replication_mode = 1
+properties/12/path = NodePath(".:HipRotation")
+properties/12/spawn = true
+properties/12/replication_mode = 1
+properties/13/path = NodePath(".:LeftFootPosition")
+properties/13/spawn = true
+properties/13/replication_mode = 1
+properties/14/path = NodePath(".:LeftFootRotation")
+properties/14/spawn = true
+properties/14/replication_mode = 1
+properties/15/path = NodePath(".:RightFootPosition")
+properties/15/spawn = true
+properties/15/replication_mode = 1
+properties/16/path = NodePath(".:RightFootRotation")
+properties/16/spawn = true
+properties/16/replication_mode = 1
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_820w7"]
 

@@ -144,6 +144,8 @@ namespace Aquamarine.Source.Management
             _peer.CreateClient(address, port);
             Multiplayer.MultiplayerPeer = _peer;
             _isDirectConnection = true;
+            
+            _peer.ClientConnectionSuccess += PeerOnClientConnectionSuccess;
         }
 
         private async Task<SessionInfo> FetchServerInfo()

@@ -56,31 +56,31 @@ public partial class DebugOverlay : Control
         stringBuilder.AppendLine("[code]");
 
         stringBuilder.AppendLine("Game");
-        stringBuilder.AppendLine($"{intLabel} {"FPS:"} {string.Format(intValue, Engine.GetFramesPerSecond())}");
-        stringBuilder.AppendLine($"{intLabel} {"Physics TPS:"} {string.Format(intValue, Engine.PhysicsTicksPerSecond)}");
+        stringBuilder.AppendLine($"{intLabel} FPS: {string.Format(intValue, Engine.GetFramesPerSecond())}");
+        stringBuilder.AppendLine($"{intLabel} Physics TPS: {string.Format(intValue, Engine.PhysicsTicksPerSecond)}");
         stringBuilder.AppendLine();
 
         stringBuilder.AppendLine("Networking");
-        stringBuilder.AppendLine($"{intLabel} {"Player Count:"} {string.Format(intValue, MultiplayerScene.Instance.PlayerList.Count)}");
+        stringBuilder.AppendLine($"{intLabel} Player Count: {string.Format(intValue, MultiplayerScene.Instance.PlayerList.Count)}");
         stringBuilder.AppendLine();
 
         var player = MultiplayerScene.Instance.GetLocalPlayer();
 
-        stringBuilder.AppendLine("Player");
-        stringBuilder.AppendLine($"{vector2Label} {"Movement:"} {string.Format(vector2Value, [MathF.Round(InputManager.Movement.X, 2), MathF.Round(InputManager.Movement.Y, 2)])}");
-        stringBuilder.AppendLine($"{boolLabel} {"Crouching:"} {(InputButton.Crouch.Held() ? string.Format(boolTrueValue, true) : string.Format(boolFalseValue, false))}");
-        stringBuilder.AppendLine($"{boolLabel} {"Sprinting:"} {(InputButton.Sprint.Held() ? string.Format(boolTrueValue, true) : string.Format(boolFalseValue, false))}");
-        stringBuilder.AppendLine($"{boolLabel} {"Jumping:"} {(InputButton.Jump.Held() ? string.Format(boolTrueValue, true) : string.Format(boolFalseValue, false))}");
-        stringBuilder.AppendLine($"{vector3Label + "Velocity:"} {string.Format(vector3Value, [MathF.Round(player.Velocity.X, 2), MathF.Round(player.Velocity.Y, 2), MathF.Round(player.Velocity.Z, 2)])}");
-        stringBuilder.AppendLine($"{boolLabel + "Grounded:"} {(player.IsOnFloor() ? string.Format(boolTrueValue, true) : string.Format(boolFalseValue, false))}");
-        stringBuilder.AppendLine();
+        if (player is not null)
+        {
+            stringBuilder.AppendLine("Player");
+            stringBuilder.AppendLine($"{vector2Label} Movement: {string.Format(vector2Value, [InputManager.Movement.X.ToString("F2"), InputManager.Movement.Y.ToString("F2")])}");
+            stringBuilder.AppendLine($"{boolLabel} Crouching: {(InputButton.Crouch.Held() ? string.Format(boolTrueValue, true) : string.Format(boolFalseValue, false))}");
+            stringBuilder.AppendLine($"{boolLabel} Sprinting: {(InputButton.Sprint.Held() ? string.Format(boolTrueValue, true) : string.Format(boolFalseValue, false))}");
+            stringBuilder.AppendLine($"{boolLabel} Jumping: {(InputButton.Jump.Held() ? string.Format(boolTrueValue, true) : string.Format(boolFalseValue, false))}");
+            stringBuilder.AppendLine($"{vector3Label} Velocity: {string.Format(vector3Value, [player.Velocity.X.ToString("F2"), player.Velocity.Y.ToString("F2"), player.Velocity.Z.ToString("F2")])}");
+            stringBuilder.AppendLine($"{boolLabel} Grounded: {(player.IsOnFloor() ? string.Format(boolTrueValue, true) : string.Format(boolFalseValue, false))}");
+            stringBuilder.AppendLine();
+        }
 
         //stringBuilder.AppendLine("[right]");
         stringBuilder.AppendLine("[font_size=16]Recent Log Entries[/font_size]");
-        for (int i = 0; i < recentEntries.Length; i++)
-        {
-            stringBuilder.AppendLine(recentEntries[i]);
-        }
+        foreach (var t in recentEntries) stringBuilder.AppendLine(t);
         //stringBuilder.AppendLine("[/right]");
 
         stringBuilder.AppendLine("[/code]");

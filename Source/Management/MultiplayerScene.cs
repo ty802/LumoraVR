@@ -23,16 +23,16 @@ namespace Aquamarine.Source.Management
 
         public PlayerCharacterController GetPlayer(int id)
         {
-            var tryFind = PlayerRoot.FindChildren("*").OfType<PlayerCharacterController>().FirstOrDefault(i => i.Authority == id);
+            var tryFind = PlayerRoot.GetChildren().OfType<PlayerCharacterController>().FirstOrDefault(i => i.Authority == id);
             return tryFind;
         }
 
         public PlayerCharacterController GetLocalPlayer()
         {
-            if (_local is not null) return _local;
+            if (IsInstanceValid(_local)) return _local;
 
             var local = Multiplayer.GetUniqueId();
-            _local = PlayerRoot.FindChildren("*").OfType<PlayerCharacterController>().FirstOrDefault(i => i.Authority == local);
+            _local = PlayerRoot.GetChildren().OfType<PlayerCharacterController>().FirstOrDefault(i => i.Authority == local);
 
             return _local;
         }
@@ -70,6 +70,7 @@ namespace Aquamarine.Source.Management
             {
                 var controller = GetPlayer(player.Key);
                 if (controller is null) continue;
+                //GD.Print(player.Value.Name);
                 controller.Nametag.Text = player.Value.Name;
             }
         }
@@ -81,9 +82,11 @@ namespace Aquamarine.Source.Management
 
             foreach (var pair in playerList)
             {
+                var valueDict = pair.Value.AsGodotDictionary();
+                
                 var player = new PlayerInfo
                 {
-                    Name = pair.Value.AsGodotDictionary()["name"].AsString(),
+                    Name = valueDict["name"].AsString(),
                 };
                 newList[pair.Key.AsInt32()] = player;
             }
@@ -93,9 +96,11 @@ namespace Aquamarine.Source.Management
             UpdatePlayerNametags();
         }
 
-        [Rpc(MultiplayerApi.RpcMode.AnyPeer, TransferChannel = SerializationHelpers.SessionControlChannel)]
+        [Rpc(MultiplayerApi.RpcMode.AnyPeer, TransferChannel = SerializationHelpers.SessionControlChannel, CallLocal = false)]
         public void SetPlayerName(string name)
         {
+            if (!IsMultiplayerAuthority()) return;
+            
             if (!PlayerList.TryGetValue(Multiplayer.GetRemoteSenderId(), out var player)) return;
             
             player.Name = name;

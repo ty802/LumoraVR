@@ -110,7 +110,6 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
     {
         base._Process(delta);
 
-
         var deltaf = (float)delta;
 
         if (Avatar is null)

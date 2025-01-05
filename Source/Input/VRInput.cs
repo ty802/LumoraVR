@@ -9,6 +9,9 @@ public partial class VRInput : Node3D, IInputProvider
     [Export] private XROrigin3D _origin;
     [Export] private XRController3D _leftHand;
     [Export] private XRController3D _rightHand;
+    [Export] private XRController3D _hip;
+    [Export] private XRController3D _leftFoot;
+    [Export] private XRController3D _rightFoot;
     [Export] private XRCamera3D _head;
     private Vector3 _playspaceDelta;
     private float _rotation;
@@ -28,6 +31,9 @@ public partial class VRInput : Node3D, IInputProvider
             _head.ProcessPriority = -10;
             _leftHand.ProcessPriority = -10;
             _rightHand.ProcessPriority = -10;
+            _hip.ProcessPriority = -10;
+            _leftFoot.ProcessPriority = -10;
+            _rightFoot.ProcessPriority = -10;
 
             Logger.Log("XRInput initialized successfully.");
         }
@@ -71,9 +77,9 @@ public partial class VRInput : Node3D, IInputProvider
         IInputProvider.InputLimb.Head => _head.Position,
         IInputProvider.InputLimb.LeftHand => _leftHand.Position,
         IInputProvider.InputLimb.RightHand => _rightHand.Position,
-        //IInputProvider.InputLimb.Hip => expr,
-        //IInputProvider.InputLimb.LeftFoot => expr,
-        //IInputProvider.InputLimb.RightFoot => expr,
+        IInputProvider.InputLimb.Hip => _hip.Position,
+        IInputProvider.InputLimb.LeftFoot => _leftFoot.Position,
+        IInputProvider.InputLimb.RightFoot => _rightFoot.Position,
         _ => -_origin.Position,
     }).Origin;
     public Quaternion GetLimbRotation(IInputProvider.InputLimb limb) => _origin.Quaternion * limb switch

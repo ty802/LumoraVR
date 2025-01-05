@@ -1,4 +1,4 @@
-[gd_scene load_steps=8 format=3 uid="uid://fnsfbtgsl6df"]
+[gd_scene load_steps=12 format=3 uid="uid://fnsfbtgsl6df"]
 
 [ext_resource type="Script" path="res://Source/Scene/RootObjects/PlayerCharacterController.cs" id="1_0nv1q"]
 [ext_resource type="PackedScene" uid="uid://cnipfulvhw6yr" path="res://Assets/Models/headset.gltf" id="2_63sjc"]
@@ -47,7 +47,17 @@ properties/10/replication_mode = 1
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_820w7"]
 
-[node name="PlayerCharacterController" type="CharacterBody3D" node_paths=PackedStringArray("ClientSync", "ServerSync", "Nametag", "_head", "_leftHand", "_rightHand")]
+[sub_resource type="SphereMesh" id="SphereMesh_xr80d"]
+radius = 0.05
+height = 0.1
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_840t6"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_7aq1u"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_qi8q8"]
+
+[node name="PlayerCharacterController" type="CharacterBody3D" node_paths=PackedStringArray("ClientSync", "ServerSync", "Nametag", "_head", "_leftHand", "_rightHand", "_hip", "_leftFoot", "_rightFoot")]
 collision_layer = 2
 script = ExtResource("1_0nv1q")
 ClientSync = NodePath("ClientSynchronizer")
@@ -56,6 +66,9 @@ Nametag = NodePath("Nametag")
 _head = NodePath("Limbs/Head")
 _leftHand = NodePath("Limbs/Left Hand")
 _rightHand = NodePath("Limbs/Right Hand")
+_hip = NodePath("Limbs/Hips")
+_leftFoot = NodePath("Limbs/Left Foot")
+_rightFoot = NodePath("Limbs/Right Foot")
 
 [node name="ServerSynchronizer" type="MultiplayerSynchronizer" parent="."]
 replication_config = SubResource("SceneReplicationConfig_h7fwk")
@@ -78,18 +91,40 @@ outline_size = 2
 [node name="Limbs" type="Node3D" parent="."]
 
 [node name="Head" type="Node3D" parent="Limbs"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.8, 0)
 
 [node name="headset" parent="Limbs/Head" instance=ExtResource("2_63sjc")]
 transform = Transform3D(0.1, 0, 0, 0, 0.1, 0, 0, 0, 0.1, 0, 0.02, 0)
 
 [node name="Left Hand" type="Node3D" parent="Limbs"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.5, 0, 0)
+transform = Transform3D(1, 0, 0, 0, -4.37114e-08, 1, 0, -1, -4.37114e-08, -0.5, 0.9, 0)
 
 [node name="LeftHand" parent="Limbs/Left Hand" instance=ExtResource("3_xm4n5")]
 transform = Transform3D(-2.18557e-09, -0.05, 0, 0.05, -2.18557e-09, 0, 0, 0, 0.05, 0, 0, 0)
 
 [node name="Right Hand" type="Node3D" parent="Limbs"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.5, 0, 0)
+transform = Transform3D(1, 0, 0, 0, -4.37114e-08, 1, 0, -1, -4.37114e-08, 0.5, 0.9, 0)
 
 [node name="RightHand" parent="Limbs/Right Hand" instance=ExtResource("4_ca683")]
 transform = Transform3D(-3.23774e-06, 0.05, 9.59303e-07, -0.05, -3.23774e-06, -6.11144e-06, -6.11144e-06, -9.59303e-07, 0.05, 0, 0, 0)
+
+[node name="Hips" type="Node3D" parent="Limbs"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
+
+[node name="CSGMesh3D" type="CSGMesh3D" parent="Limbs/Hips"]
+mesh = SubResource("SphereMesh_xr80d")
+material = SubResource("StandardMaterial3D_840t6")
+
+[node name="Left Foot" type="Node3D" parent="Limbs"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.25, 0, 0)
+
+[node name="CSGMesh3D" type="CSGMesh3D" parent="Limbs/Left Foot"]
+mesh = SubResource("SphereMesh_xr80d")
+material = SubResource("StandardMaterial3D_7aq1u")
+
+[node name="Right Foot" type="Node3D" parent="Limbs"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.25, 0, 0)
+
+[node name="CSGMesh3D" type="CSGMesh3D" parent="Limbs/Right Foot"]
+mesh = SubResource("SphereMesh_xr80d")
+material = SubResource("StandardMaterial3D_qi8q8")

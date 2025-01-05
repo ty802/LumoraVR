@@ -89,6 +89,9 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
     [Export] private Node3D _head;
     [Export] private Node3D _leftHand;
     [Export] private Node3D _rightHand;
+    [Export] private Node3D _hip;
+    [Export] private Node3D _leftFoot;
+    [Export] private Node3D _rightFoot;
 
     public override void _Ready()
     {
@@ -121,6 +124,9 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
             (HeadPosition, HeadRotation) = IInputProvider.LimbTransform(IInputProvider.InputLimb.Head);
             (LeftHandPosition, LeftHandRotation) = IInputProvider.LimbTransform(IInputProvider.InputLimb.LeftHand);
             (RightHandPosition, RightHandRotation) = IInputProvider.LimbTransform(IInputProvider.InputLimb.RightHand);
+            (HipPosition, HipRotation) = IInputProvider.LimbTransform(IInputProvider.InputLimb.Hip);
+            (LeftFootPosition, LeftFootRotation) = IInputProvider.LimbTransform(IInputProvider.InputLimb.LeftFoot);
+            (RightFootPosition, RightFootRotation) = IInputProvider.LimbTransform(IInputProvider.InputLimb.RightFoot);
             UserHeight = IInputProvider.Height;
             MovementButtons = (byte)(((IInputProvider.JumpInput ? 1 : 0) << 0) | ((IInputProvider.SprintInput ? 1 : 0) << 1));
             MovementInput = IInputProvider.MovementInputAxis;
@@ -173,12 +179,25 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
 
         _leftHand.Transform = new Transform3D(new Basis(LeftHandRotation), LeftHandPosition); 
         _leftHand.Scale = ClientManager.ShowDebug ? Vector3.Zero : Vector3.One;
+
         _rightHand.Transform = new Transform3D(new Basis(RightHandRotation), RightHandPosition); 
         _rightHand.Scale = ClientManager.ShowDebug ? Vector3.Zero : Vector3.One;
+
+        _hip.Transform = new Transform3D(new Basis(HipRotation), HipPosition); 
+        _hip.Scale = ClientManager.ShowDebug ? Vector3.Zero : Vector3.One;
+
+        _leftFoot.Transform = new Transform3D(new Basis(LeftFootRotation), LeftFootPosition); 
+        _leftFoot.Scale = ClientManager.ShowDebug ? Vector3.Zero : Vector3.One;
+
+        _rightFoot.Transform = new Transform3D(new Basis(RightFootRotation), RightFootPosition); 
+        _rightFoot.Scale = ClientManager.ShowDebug ? Vector3.Zero : Vector3.One;
         
         if (ClientManager.ShowDebug) {
             DebugDraw3D.DrawSphere(GlobalTransform * new Transform3D(new Basis(LeftHandRotation), LeftHandPosition).Origin, 0.025f, Colors.White);
             DebugDraw3D.DrawSphere(GlobalTransform * new Transform3D(new Basis(RightHandRotation), RightHandPosition).Origin, 0.025f, Colors.White);
+            DebugDraw3D.DrawSphere(GlobalTransform * new Transform3D(new Basis(HipRotation), HipPosition).Origin, 0.025f, Colors.White);
+            DebugDraw3D.DrawSphere(GlobalTransform * new Transform3D(new Basis(LeftFootRotation), LeftFootPosition).Origin, 0.025f, Colors.White);
+            DebugDraw3D.DrawSphere(GlobalTransform * new Transform3D(new Basis(RightFootRotation), RightFootPosition).Origin, 0.025f, Colors.White);
         }
 
         if (Position.Y < -100)

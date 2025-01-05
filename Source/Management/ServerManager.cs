@@ -193,7 +193,7 @@ namespace Aquamarine.Source.Management
                 _multiplayerScene.SpawnPlayer((int)id); // Spawn the player
                 //Logger.Log($"Player spawned successfully for ID: {id}.");
 
-                _multiplayerScene.PlayerList.Add((int)id); // Add to player list
+                _multiplayerScene.PlayerList.Add((int)id, new PlayerInfo()); // Add to player list
                 //Logger.Log("Player added to the player list.");
 
                 _multiplayerScene.SendUpdatedPlayerList(); // Notify others of the new player

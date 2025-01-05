@@ -6,6 +6,7 @@ using Aquamarine.Source.Scene;
 using Aquamarine.Source.Scene.RootObjects;
 using Godot;
 using Godot.Collections;
+using Array = Godot.Collections.Array;
 
 namespace Aquamarine.Source.Management
 {
@@ -16,9 +17,27 @@ namespace Aquamarine.Source.Management
         [Export] public MultiplayerSpawner Spawner;
         [Export] public MultiplayerSpawner PlayerSpawner;
         [Export] public Node3D PlayerRoot;
-        [Export] public Array<int> PlayerList = [];
 
+        public System.Collections.Generic.Dictionary<int, PlayerInfo> PlayerList = new();
         public System.Collections.Generic.Dictionary<string, Prefab> Prefabs = new();
+
+        public PlayerCharacterController GetPlayer(int id)
+        {
+            var tryFind = PlayerRoot.FindChildren("*").OfType<PlayerCharacterController>().FirstOrDefault(i => i.Authority == id);
+            return tryFind;
+        }
+
+        public PlayerCharacterController GetLocalPlayer()
+        {
+            if (_local is not null) return _local;
+
+            var local = Multiplayer.GetUniqueId();
+            _local = PlayerRoot.FindChildren("*").OfType<PlayerCharacterController>().FirstOrDefault(i => i.Authority == local);
+
+            return _local;
+        }
+
+        private PlayerCharacterController _local;
         
         public override void _Ready()
         {
@@ -28,11 +47,60 @@ namespace Aquamarine.Source.Management
         }
         public void SendUpdatedPlayerList()
         {
-            if (IsMultiplayerAuthority()) Rpc(MethodName.UpdatePlayerList, PlayerList.ToArray());
+            if (!IsMultiplayerAuthority()) return;
+            
+            var dict = new Dictionary();
+
+            foreach (var playerPair in PlayerList)
+            {
+                dict[playerPair.Key] = new Dictionary
+                {
+                    {"name", playerPair.Value.Name },
+                };
+            }
+                
+            Rpc(MethodName.UpdatePlayerList, dict);
+            
+            UpdatePlayerNametags();
         }
 
+        private void UpdatePlayerNametags()
+        {
+            foreach (var player in PlayerList)
+            {
+                var controller = GetPlayer(player.Key);
+                if (controller is null) continue;
+                controller.Nametag.Text = player.Value.Name;
+            }
+        }
+        
         [Rpc(CallLocal = false, TransferChannel = SerializationHelpers.WorldUpdateChannel, TransferMode = MultiplayerPeer.TransferModeEnum.Reliable)]
-        private void UpdatePlayerList(int[] playerList) => PlayerList = new Array<int>(playerList);
+        private void UpdatePlayerList(Dictionary playerList)
+        {
+            var newList = new System.Collections.Generic.Dictionary<int, PlayerInfo>();
+
+            foreach (var pair in playerList)
+            {
+                var player = new PlayerInfo
+                {
+                    Name = pair.Value.AsGodotDictionary()["name"].AsString(),
+                };
+                newList[pair.Key.AsInt32()] = player;
+            }
+
+            PlayerList = newList;
+            
+            UpdatePlayerNametags();
+        }
+
+        [Rpc(MultiplayerApi.RpcMode.AnyPeer, TransferChannel = SerializationHelpers.SessionControlChannel)]
+        public void SetPlayerName(string name)
+        {
+            if (!PlayerList.TryGetValue(Multiplayer.GetRemoteSenderId(), out var player)) return;
+            
+            player.Name = name;
+            SendUpdatedPlayerList();
+        }
         
         public void SendAllPrefabs(int? user = null)
         {

@@ -14,6 +14,7 @@ public class Prefab
     public RootObjectType Type;
     public Dictionary<string, Variant> Data = new();
     public System.Collections.Generic.Dictionary<ushort, PrefabChild> Children = new();
+    public System.Collections.Generic.Dictionary<ushort, PrefabAsset> Assets = new();
     public string CachedString { get; private set; }
     public void ClearCache() => CachedString = null;
     public static Prefab Deserialize(string json)
@@ -30,6 +31,11 @@ public class Prefab
             {
                 var childrenDict = c.AsGodotDictionary<ushort, Dictionary>();
                 foreach (var pair in childrenDict) prefab.Children[pair.Key] = PrefabChild.Deserialize(pair.Value);
+            }
+            if (dict.TryGetValue("assets", out var a))
+            {
+                var childrenDict = a.AsGodotDictionary<ushort, Dictionary>();
+                foreach (var pair in childrenDict) prefab.Assets[pair.Key] = PrefabAsset.Deserialize(pair.Value);
             }
         }
         return prefab;
@@ -78,7 +84,7 @@ public class Prefab
 
     public bool Valid()
     {
-        //TODO: more validity checks, like the content of data
+        //TODO: more validity checks, like the content of data and the parent hierarchy
         if (!Type.CanInstantiate()) return false;
         return true;
     }
@@ -104,7 +110,7 @@ public class Prefab
 
 public class PrefabChild
 {
-    public int Parent; //-1 if parented to the root object, otherwise the ushort index of the parent
+    public int Parent = -1; //-1 if parented to the root object, otherwise the ushort index of the parent
     public ChildObjectType Type;
     public Dictionary<string, Variant> Data = new();
     
@@ -124,7 +130,7 @@ public class PrefabChild
         return Type switch
         {
             //ChildObjectType.Node => expr,
-            //ChildObjectType.Mesh => expr,
+            ChildObjectType.MeshRenderer => new MeshRenderer(),
             ChildObjectType.Armature => new Armature(),
             _ => null,
         };
@@ -132,6 +138,7 @@ public class PrefabChild
     public bool Valid()
     {
         //TODO
+        if (Type is ChildObjectType.None) return false;
         return true;
     }
     public Dictionary Serialize()

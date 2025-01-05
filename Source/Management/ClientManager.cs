@@ -124,6 +124,12 @@ namespace Aquamarine.Source.Management
             _isDirectConnection = true;
             
             _peer.PeerDisconnected += PeerOnPeerDisconnected;
+            _peer.ClientConnectionSuccess += PeerOnClientConnectionSuccess;
+        }
+        private void PeerOnClientConnectionSuccess()
+        {
+            MultiplayerScene.Instance.Rpc(MultiplayerScene.MethodName.SetPlayerName, System.Environment.MachineName);
+            _peer.ClientConnectionSuccess -= PeerOnClientConnectionSuccess;
         }
         private void PeerOnPeerDisconnected(long id)
         {

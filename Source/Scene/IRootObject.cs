@@ -4,6 +4,7 @@ namespace Aquamarine.Source.Scene;
 
 public enum RootObjectType
 {
+    None,
     Avatar,
     PlayerCharacterController,
 }

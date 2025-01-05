@@ -1,15 +1,22 @@
 using System.Collections.Generic;
 using System.Linq;
 using Godot;
+using Godot.Collections;
 
 namespace Aquamarine.Source.Scene.ChildObjects;
 
 public partial class Armature : Skeleton3D, IChildObject
 {
     public Node Self => this;
+
+    public Skin Skin;
     public void SetPlayerAuthority(int id) { }
     public void Initialize(Godot.Collections.Dictionary<string, Variant> data)
     {
+        if (data.TryGetValue("transform", out var pos))
+        {
+            Transform = pos.AsTransform3D();
+        }
         if (data.TryGetValue("bones", out var bones) && bones.VariantType == Variant.Type.Array)
         {
             ClearBones();
@@ -29,12 +36,37 @@ public partial class Armature : Skeleton3D, IChildObject
                 SetBoneParent(index, bone.parent);
                 SetBoneRest(index, bone.rest);
             }
+
+            Skin = CreateSkinFromRestTransforms();
         }
     }
-    public void AddChildObject(ISceneObject obj)
+
+    //TEMP
+    public static Godot.Collections.Dictionary<string, Variant> GenerateData(Skeleton3D skeleton)
     {
-        throw new System.NotImplementedException();
+        var dict = new Godot.Collections.Dictionary<string, Variant>();
+
+        if (!skeleton.Position.IsEqualApprox(Vector3.Zero) || !skeleton.Quaternion.IsEqualApprox(Quaternion.Identity) || !skeleton.Scale.IsEqualApprox(Vector3.Zero)) dict["transform"] = skeleton.Transform;
+
+        var count = skeleton.GetBoneCount();
+
+        var boneArray = new Array();
+        
+        for (var i = 0; i < count; i++)
+        {
+            var boneDict = new Dictionary();
+            boneDict["n"] = skeleton.GetBoneName(i);
+            boneDict["r"] = skeleton.GetBoneRest(i);
+            boneDict["p"] = skeleton.GetBoneParent(i);
+            boneArray.Add(boneDict);
+        }
+
+        dict["bones"] = boneArray;
+
+        return dict;
     }
+    
+    public void AddChildObject(ISceneObject obj) => AddChild(obj.Self);
     public bool Dirty { get; }
     public IRootObject Root { get; set; }
     public ISceneObject Parent { get; set; }

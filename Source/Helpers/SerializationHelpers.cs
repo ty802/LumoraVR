@@ -6,6 +6,7 @@ namespace Aquamarine.Source.Helpers;
 
 public static class SerializationHelpers
 {
+    public const int SessionControlChannel = 7;
     public const int WorldUpdateChannel = 8;
     public const int AssetChannel = 16;
     public const int PrefabChannel = 15;

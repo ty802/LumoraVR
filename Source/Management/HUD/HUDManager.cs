@@ -11,7 +11,6 @@ public partial class HUDManager : Control
     [Export] public Control DebugOverlay;
 
     [Export] public Control MainMenu;
-    [Export] public Control WorldsTab;
 
     public override void _Ready()
     {

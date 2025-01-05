@@ -38,7 +38,8 @@ public partial class DesktopInput : Node3D, IInputProvider
 
 		_headRotation = new Vector2(horizontal, vertical);
 
-		CurrentHeadHeight = CurrentHeadHeight.Damp((InputButton.Crouch.Held() ? 0.45f : 1) * GetHeight, 5, deltaf);
+        var isCrouching = !InputManager.MovementLocked && InputButton.Crouch.Held();
+        CurrentHeadHeight = CurrentHeadHeight.Damp((isCrouching ? 0.45f : 1) * GetHeight, 5, deltaf);
 
 		_camera.Quaternion = Quaternion.FromEuler(new Vector3(_headRotation.Y, _headRotation.X, 0));
 		_camera.Position = Vector3.Up * CurrentHeadHeight;
@@ -48,7 +49,7 @@ public partial class DesktopInput : Node3D, IInputProvider
 	public bool IsVR => false;
 	public Vector3 GetPlayspaceMovementDelta => Vector3.Zero;
 	public Vector2 GetMovementInputAxis => InputManager.Movement;
-    public bool GetJumpInput => InputButton.Jump.Held();
+    public bool GetJumpInput => !InputManager.MovementLocked && InputButton.Jump.Held();
     public bool GetSprintInput => InputButton.Sprint.Held();
     public float GetHeight => 1.8f; //TODO
 	public float CurrentHeadHeight = 1.8f;

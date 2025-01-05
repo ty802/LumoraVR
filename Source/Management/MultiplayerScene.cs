@@ -129,7 +129,6 @@ namespace Aquamarine.Source.Management
             
         }
         
-        
         //[Rpc(CallLocal = true, TransferMode = MultiplayerPeer.TransferModeEnum.Reliable, TransferChannel = SerializationHelpers.WorldUpdateChannel)]
         private void InternalSpawnPlayer(int authority, Vector3 position)
         {

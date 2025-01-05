@@ -187,7 +187,6 @@ namespace Aquamarine.Source.Management
         private void OnPeerConnected(long id)
         {
             Logger.Log($"Peer connected with ID: {id}. Attempting to spawn player...");
-
             try
             {
                 _multiplayerScene.SpawnPlayer((int)id); // Spawn the player

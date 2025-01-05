@@ -34,8 +34,11 @@ public partial class HeadAndHandsAnimator : Node, IChildObject
         if (Root is not ICharacterController charController) return;
         CharacterController = charController;
 
-        var skeletonIndex = data["armature"].AsInt32();
-        if (skeletonIndex >= 0 && Root.ChildObjects.TryGetValue((ushort)skeletonIndex, out var v) && v is Armature armature) Armature = armature;
+        if (data.TryGetValue("armature", out var index) && index.VariantType == Variant.Type.Int)
+        {
+            var skeletonIndex = index.AsInt32();
+            if (skeletonIndex >= 0 && Root.ChildObjects.TryGetValue((ushort)skeletonIndex, out var v) && v is Armature armature) Armature = armature;
+        }
     }
     private void UpdateBoneIndices()
     {

@@ -40,7 +40,20 @@ public partial class MeshRenderer : MeshInstance3D, IChildObject
     }
     public void Initialize(Dictionary<string, Variant> data)
     {
-        
+        if (data.TryGetValue("transform", out var pos))
+        {
+            Transform = pos.AsTransform3D();
+        }
+        if (data.TryGetValue("armature", out var index) && index.VariantType == Variant.Type.Int)
+        {
+            var skeletonIndex = index.AsInt32();
+            if (skeletonIndex >= 0 && Root.ChildObjects.TryGetValue((ushort)skeletonIndex, out var v) && v is Armature armature) Armature = armature;
+        }
+        if (data.TryGetValue("mesh", out var mIndex) && mIndex.VariantType == Variant.Type.Int)
+        {
+            var meshIndex = mIndex.AsInt32();
+            if (meshIndex >= 0 && Root.AssetProviders.TryGetValue((ushort)meshIndex, out var v) && v is IMeshProvider meshProvider) MeshProvider = meshProvider;
+        }
     }
     public void AddChildObject(ISceneObject obj) => AddChild(obj.Self);
     public bool Dirty { get; }

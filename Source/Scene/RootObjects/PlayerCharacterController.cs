@@ -152,6 +152,8 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
         
         Velocity = new Vector3(movementAccelerated.X, yVel, movementAccelerated.Y);
 
+        Nametag.Position = HeadPosition + new Vector3(0, 0.5f, 0);
+
         if (IsOnFloor() && JumpInput) 
         {
             //panda magic math

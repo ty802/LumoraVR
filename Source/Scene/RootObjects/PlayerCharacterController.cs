@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Aquamarine.Source.Input;
 using Aquamarine.Source.Logging;
 using Aquamarine.Source.Management;
+using Aquamarine.Source.Scene.Assets;
 using Godot;
 
 namespace Aquamarine.Source.Scene.RootObjects;
@@ -11,8 +12,8 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
 {
     public Node Self => this;
     //public bool Dirty { get; set; }
-    public IDictionary<ushort,IChildObject> ChildObjects => _children;
-    private readonly Dictionary<ushort,IChildObject> _children = new();
+    public IDictionary<ushort,IChildObject> ChildObjects { get; } = new Dictionary<ushort, IChildObject>();
+    public IDictionary<ushort, IAssetProvider> AssetProviders { get; } = new Dictionary<ushort, IAssetProvider>();
 
     public static readonly PackedScene PackedScene = ResourceLoader.Load<PackedScene>("res://Scenes/Objects/RootObjects/PlayerCharacterController.tscn");
 

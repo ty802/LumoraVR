@@ -50,6 +50,13 @@ public class Prefab
             _ => throw new ArgumentOutOfRangeException(),
         };
 
+        foreach (var (index, asset) in Assets)
+        {
+            var a = asset.Instantiate();
+            a.Initialize(asset.Data);
+            obj.AssetProviders.Add(index, a);
+        }
+
         var children = new System.Collections.Generic.Dictionary<PrefabChild, IChildObject>();
         //instantiate all children
         foreach (var (index, prefabChild) in Children)
@@ -101,6 +108,10 @@ public class Prefab
         var childrenDict = new Dictionary<ushort, Dictionary>();
         foreach (var pair in Children) childrenDict[pair.Key] = pair.Value.Serialize();
         dict["children"] = childrenDict;
+
+        var assetDict = new Dictionary<ushort, Dictionary>();
+        foreach (var pair in Assets) assetDict[pair.Key] = pair.Value.Serialize();
+        dict["assets"] = assetDict;
         
         CachedString = Json.Stringify(dict);
         
@@ -172,6 +183,7 @@ public class PrefabAsset
         {
             AssetProviderType.ImageTextureProvider => new ImageTextureProvider(),
             AssetProviderType.NoiseTextureProvider => new NoiseTextureProvider(),
+            AssetProviderType.MeshFileProvider => new MeshFileProvider(),
             _ => null,
         };
     }

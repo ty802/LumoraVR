@@ -11,6 +11,12 @@ public static class BuiltinAssetHelper
     private static readonly List<string> BuiltinAssets = new[]
     {
         "Textures/Dot.png",
+        "Assets/Models/headset.gltf",
+        
+        //John Aquamarine John Aquamarine
+        "Assets/Prefabs/johnaquamarine.prefab",
+        "Assets/Models/johnaquamarine.glb",
+        "Assets/Models/johnaquamarine.meshfile",
     }.Select(i => $"builtin://{i}").ToList();
     public static bool ValidPath(string path)
     {

@@ -68,8 +68,19 @@ public partial class MeshDataTest : Node3D
         
         var johnsModel = getJohnsModel.Instantiate<Node3D>();
         
-        var meshInstance = johnsModel.FindChildren("*").OfType<MeshInstance3D>().FirstOrDefault();
-        var skeleton = johnsModel.FindChildren("*").OfType<Skeleton3D>().FirstOrDefault();
+        var meshInstance = johnsModel.FindChildren("*", owned:false).OfType<MeshInstance3D>().FirstOrDefault();
+        var skeleton = johnsModel.FindChildren("*",owned:false).OfType<Skeleton3D>().FirstOrDefault();
+
+        if (meshInstance is null)
+        {
+            GD.Print("mesh is null");
+            return;
+        }
+        if (meshInstance.Mesh is not ArrayMesh)
+        {
+            GD.Print(meshInstance.Mesh.GetType().ToString());
+            return;
+        }
 
         var meshFile = MeshFile.FromArrayMesh(meshInstance.Mesh as ArrayMesh);
 
@@ -88,11 +99,15 @@ public partial class MeshDataTest : Node3D
         var meshRenderer = new PrefabChild();
         prefab.Children[1] = meshRenderer;
         meshRenderer.Type = ChildObjectType.MeshRenderer;
+        meshRenderer.Data = new Dictionary<string, Variant>
+        {
+            {"mesh", Variant.CreateFrom(0)},
+            {"armature", Variant.CreateFrom(0)},
+        };
 
         var meshProvider = new PrefabAsset();
         prefab.Assets[0] = meshProvider;
         meshProvider.Type = AssetProviderType.MeshFileProvider;
-        
         meshProvider.Data = new Dictionary<string, Variant>
         {
             {"path", "res://Assets/Models/johnaquamarine.meshfile"},
@@ -101,6 +116,12 @@ public partial class MeshDataTest : Node3D
         var prefabFileAccess = FileAccess.Open("res://Assets/Prefabs/johnaquamarine.prefab", FileAccess.ModeFlags.Write);
         prefabFileAccess.StoreBuffer(prefab.Serialize().ToUtf8Buffer());
         prefabFileAccess.Close();
+
+        var prefabRead = FileAccess.Open("res://Assets/Prefabs/johnaquamarine.prefab", FileAccess.ModeFlags.Read);
+        var serialized = prefabRead.GetBuffer((long)prefabRead.GetLength()).GetStringFromUtf8();
+        var pre = Prefab.Deserialize(serialized);
+        
+        GD.Print(pre.Children.Count);
     }
     public override void _Ready()
     {

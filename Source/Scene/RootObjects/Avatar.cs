@@ -23,8 +23,5 @@ public partial class Avatar : Node3D, IRootObject
     {
         
     }
-    public void AddChildObject(ISceneObject obj)
-    {
-        
-    }
+    public void AddChildObject(ISceneObject obj) => AddChild(obj.Self);
 }

@@ -15,7 +15,7 @@ namespace Aquamarine.Source.Management
 {
     public partial class ClientManager : Node
     {
-        public static bool ShowDebug = false;
+        public static bool ShowDebug = true;
 
         private XRInterface _xrInterface;
         private IInputProvider _input;
@@ -35,7 +35,6 @@ namespace Aquamarine.Source.Management
                 InitializeInput();
                 
                 SpawnLocalHome();
-                
                 this.CreateTimer(5, () =>
                 {
                     var info = FetchServerInfo();
@@ -111,7 +110,8 @@ namespace Aquamarine.Source.Management
                 Logger.Error("Session identifier is null or empty. Cannot join NAT server.");
                 return;
             }
-            
+
+            if (_peer?.GetConnectionStatus() == MultiplayerPeer.ConnectionStatus.Connected) _multiplayerScene.Rpc(MultiplayerScene.MethodName.DisconnectPlayer);
             _peer?.Close();
             Multiplayer.MultiplayerPeer = null;
             

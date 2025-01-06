@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Godot;
 using FileAccess = Godot.FileAccess;
 
 namespace Aquamarine.Source.Networking;
@@ -30,7 +31,9 @@ public static class BuiltinAssetHelper
         {
             var realPath = path.Replace(BuiltinSchema, "res://");
             var file = FileAccess.Open(realPath, FileAccess.ModeFlags.Read);
-            return file.GetBuffer((long)file.GetLength());
+            var buffer = file.GetBuffer((long)file.GetLength());
+            file.Close();
+            return buffer;
         }
         return null;
     }

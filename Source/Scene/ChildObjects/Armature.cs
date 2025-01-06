@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
+using Aquamarine.Source.Helpers;
 using Godot;
 using Godot.Collections;
 
@@ -9,7 +10,7 @@ public partial class Armature : Skeleton3D, IChildObject
 {
     public Node Self => this;
 
-    public Skin Skin;
+    //public Skin Skin;
     public void SetPlayerAuthority(int id) { }
     public void Initialize(Godot.Collections.Dictionary<string, Variant> data)
     {
@@ -26,18 +27,23 @@ public partial class Armature : Skeleton3D, IChildObject
             var boneList = bones.AsGodotArray();
             foreach (var bone in boneList.Select(i => i.AsGodotDictionary()))
             {
-                bo.Add((bone["n"].AsString(), bone["r"].AsTransform3D(), bone["p"].AsInt32()));
+                bo.Add((bone["n"].AsString(), bone["r"].AsFloat32Array().ToTransform3D(), bone["p"].AsInt32()));
             }
             
-            foreach (var bone in bo) AddBone(bone.name);
+            foreach (var bone in bo)
+            {
+                AddBone(bone.name);
+            }
             for (var index = 0; index < bo.Count; index++)
             {
                 var bone = bo[index];
                 SetBoneParent(index, bone.parent);
                 SetBoneRest(index, bone.rest);
             }
+            
+            ResetBonePoses();
 
-            Skin = CreateSkinFromRestTransforms();
+            //Skin = CreateSkinFromRestTransforms();
         }
     }
 
@@ -46,7 +52,7 @@ public partial class Armature : Skeleton3D, IChildObject
     {
         var dict = new Godot.Collections.Dictionary<string, Variant>();
 
-        if (!skeleton.Position.IsEqualApprox(Vector3.Zero) || !skeleton.Quaternion.IsEqualApprox(Quaternion.Identity) || !skeleton.Scale.IsEqualApprox(Vector3.Zero)) dict["transform"] = skeleton.Transform;
+        if (!skeleton.Transform.IsEqualApprox(Transform3D.Identity)) dict["transform"] = skeleton.Transform.AsFloatArray();
 
         var count = skeleton.GetBoneCount();
 
@@ -56,7 +62,7 @@ public partial class Armature : Skeleton3D, IChildObject
         {
             var boneDict = new Dictionary();
             boneDict["n"] = skeleton.GetBoneName(i);
-            boneDict["r"] = skeleton.GetBoneRest(i);
+            boneDict["r"] = skeleton.GetBoneRest(i).AsFloatArray();
             boneDict["p"] = skeleton.GetBoneParent(i);
             boneArray.Add(boneDict);
         }

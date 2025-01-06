@@ -5,12 +5,12 @@ using Godot.Collections;
 
 namespace Aquamarine.Source.Scene.Assets;
 
-public class MeshFileProvider : IMeshProvider, IFileAssetProvider<Mesh>
+public class MeshFileProvider : IMeshProvider, IFileAssetProvider<MeshAsset>
 {
-    public void Set(Action<Mesh> setAction) => SimpleAssetCache<Mesh>.DoSet(this, setAction);
+    public void Set(Action<MeshAsset> setAction) => SimpleAssetCache<MeshAsset>.DoSet(this, setAction);
     public bool AssetReady => Asset is not null;
-    public void Initialize(Dictionary<string, Variant> data) => SimpleAssetCache<Mesh>.DoInitialize(this, data);
+    public void Initialize(Dictionary<string, Variant> data) => SimpleAssetCache<MeshAsset>.DoInitialize(this, data);
     public string Path { get; set; }
-    public Mesh Asset { get; set; }
-    public Mesh ParseAsset(byte[] data) => AssetParser.ParseMesh(data);
+    public MeshAsset Asset { get; set; }
+    public MeshAsset ParseAsset(byte[] data) => AssetParser.ParseMesh(data);
 }

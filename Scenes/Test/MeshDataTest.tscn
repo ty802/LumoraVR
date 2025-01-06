@@ -1,7 +1,8 @@
-[gd_scene load_steps=6 format=3 uid="uid://f4us2q07n48a"]
+[gd_scene load_steps=7 format=3 uid="uid://f4us2q07n48a"]
 
 [ext_resource type="Script" path="res://Source/Test/MeshDataTest.cs" id="1_g61kh"]
 [ext_resource type="PackedScene" uid="uid://wbed8gbcymlv" path="res://Assets/Test/socialvrtestmodel.glb" id="2_3oupd"]
+[ext_resource type="PackedScene" uid="uid://hx43joc40usp" path="res://Assets/Models/johnaquamarine.glb" id="3_uwnsn"]
 
 [sub_resource type="PhysicalSkyMaterial" id="PhysicalSkyMaterial_mds7y"]
 
@@ -16,7 +17,7 @@ sky = SubResource("Sky_q172e")
 script = ExtResource("1_g61kh")
 
 [node name="Camera3D" type="Camera3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 3.09271, 12.8139)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.200185, 3.46127)
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("Environment_vthhs")
@@ -25,6 +26,9 @@ environment = SubResource("Environment_vthhs")
 transform = Transform3D(0.756048, 0.580008, 0.303286, 0, -0.463373, 0.886163, 0.654517, -0.669982, -0.350332, 0, 0, 0)
 
 [node name="socialvrtestmodel" parent="." instance=ExtResource("2_3oupd")]
+visible = false
+
+[node name="johnaquamarine" parent="." instance=ExtResource("3_uwnsn")]
 visible = false
 
 [editable path="socialvrtestmodel"]

@@ -156,10 +156,16 @@ public class MeshFile
             });
         }
     }
+    public struct SkinLayer
+    {
+        public string BoneName;
+        public Transform3D BoneRest;
+    }
 
     public int Version = 1;
     public string[] Blendshapes = [];
     public MeshPart[] MeshParts = [];
+    public SkinLayer[] Skin;
 
     public bool Valid()
     {
@@ -185,8 +191,13 @@ public class MeshFile
         writer.Write(Version);
         writer.WriteCollection(Blendshapes, (stream, value) => { stream.Write(value); });
         writer.WriteCollection(MeshParts, (stream, value) => { value.Serialize(stream); });
+        writer.WriteCollection(Skin, (stream, value) =>
+        {
+            stream.Write(value.BoneName);
+            stream.Write(value.BoneRest);
+        });
 
-        return mem.GetBuffer();
+        return mem.GetBuffer()[..(int)mem.Length];
     }
     public static MeshFile Deserialize(byte[] data)
     {
@@ -204,11 +215,19 @@ public class MeshFile
             value = new MeshPart();
             value.Deserialize(stream);
         });
+        reader.ReadArray(out file.Skin, (BinaryReader stream, out SkinLayer value) =>
+        {
+            value = new SkinLayer
+            {
+                BoneName = stream.ReadString(),
+                BoneRest = stream.ReadTransform3D(),
+            };
+        });
 
         return file;
     }
     
-    public static MeshFile FromArrayMesh(ArrayMesh arrayMesh)
+    public static MeshFile FromArrayMesh(ArrayMesh arrayMesh, Skin skin = null)
     {
         var mesh = new MeshFile();
         
@@ -320,9 +339,25 @@ public class MeshFile
             part.Vertices = vertArray;
         }
 
+        if (skin is not null)
+        {
+            var count = skin.GetBindCount();
+
+            var layers = new SkinLayer[count];
+            
+            for (var i = 0; i < count; i++)
+                layers[i] = new SkinLayer
+                {
+                    BoneName = skin.GetBindName(i),
+                    BoneRest = skin.GetBindPose(i),
+                };
+
+            mesh.Skin = layers;
+        }
+
         return mesh;
     }
-    public ArrayMesh Instantiate()
+    public (ArrayMesh, Skin) Instantiate()
     {
         var mesh = new ArrayMesh();
 
@@ -372,11 +407,18 @@ public class MeshFile
             }
             mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, meshArray, blendshapeArray, hasLods ? lodDict : null, flags);
         }
+
+        Skin skin = null;
+        if (Skin is not null)
+        {
+            skin = new Skin();
+            foreach (var layer in Skin) skin.AddNamedBind(layer.BoneName, layer.BoneRest);
+        }
         
         //TODO this doesnt work for some reason
         //mesh.RegenNormalMaps(); //thanks
         
-        return mesh;
+        return (mesh, skin);
     }
 }
 

@@ -1,4 +1,5 @@
 using System;
+using Aquamarine.Source.Networking;
 using Aquamarine.Source.Scene.Assets;
 using Aquamarine.Source.Scene.ChildObjects;
 using Bones.Core;
@@ -10,18 +11,52 @@ namespace Aquamarine.Source.Scene;
 
 public class Prefab
 {
+    public static readonly System.Collections.Generic.Dictionary<string,Prefab> Cache = new();
+    public static void ClearCache() => Cache.Clear();
+    public static void SpawnObject(IRootObject root, string prefab)
+    {
+        if (root is null) return;
+        
+        GD.Print("spawn obj");
+        
+        if (Cache.TryGetValue(prefab, out var p)) AssignPrefab(root, p);
+        else
+        {
+            AssetFetcher.FetchAsset(prefab, bytes =>
+            {
+                if (Cache.TryGetValue(prefab, out var result))
+                {
+                    AssignPrefab(root, result);
+                    return;
+                }
+                var parsed = Deserialize(bytes.GetStringFromUtf8());
+                Cache[prefab] = parsed;
+                AssignPrefab(root, parsed);
+            });
+        }
+    }
+    private static void AssignPrefab(IRootObject root, Prefab prefab)
+    {
+        if (root is null) return;
+        if (prefab is null) return;
+        if (!prefab.Valid()) return;
+        if (!prefab.Type.MatchesObject(root)) return;
+        prefab.Instantiate(root);
+    }
+
+
     public int Version;
     public RootObjectType Type;
     public Dictionary<string, Variant> Data = new();
     public System.Collections.Generic.Dictionary<ushort, PrefabChild> Children = new();
     public System.Collections.Generic.Dictionary<ushort, PrefabAsset> Assets = new();
     public string CachedString { get; private set; }
-    public void ClearCache() => CachedString = null;
+    public void ClearStringCache() => CachedString = null;
     public static Prefab Deserialize(string json)
     {
         var prefab = new Prefab();
         var collection = Json.ParseString(json);
-        if (collection.VariantType == Variant.Type.Dictionary)
+        if (collection.VariantType is Variant.Type.Dictionary)
         {
             var dict = collection.AsGodotDictionary();
             if (dict.TryGetValue("version", out var v)) prefab.Version = v.AsInt32();
@@ -40,11 +75,11 @@ public class Prefab
         }
         return prefab;
     }
-    public IRootObject Instantiate()
+    public IRootObject Instantiate(IRootObject onto = null)
     {
         if (!Valid()) return null;
 
-        IRootObject obj = Type switch
+        var obj = onto ?? Type switch
         {
             RootObjectType.Avatar => new Avatar(),
             _ => throw new ArgumentOutOfRangeException(),
@@ -56,7 +91,6 @@ public class Prefab
             a.Initialize(asset.Data);
             obj.AssetProviders.Add(index, a);
         }
-
         var children = new System.Collections.Generic.Dictionary<PrefabChild, IChildObject>();
         //instantiate all children
         foreach (var (index, prefabChild) in Children)
@@ -72,6 +106,7 @@ public class Prefab
             var parentIndex = prefabChild.Parent;
             if (parentIndex < 0 || !obj.ChildObjects.TryGetValue((ushort)parentIndex, out var parent))
             {
+                //GD.Print($"Adding {childObj.GetType()} to root");
                 obj.AddChildObject(childObj);
                 childObj.Parent = obj;
             }
@@ -143,6 +178,7 @@ public class PrefabChild
             //ChildObjectType.Node => expr,
             ChildObjectType.MeshRenderer => new MeshRenderer(),
             ChildObjectType.Armature => new Armature(),
+            ChildObjectType.HeadAndHandsAnimator => new HeadAndHandsAnimator(),
             _ => null,
         };
     }

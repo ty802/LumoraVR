@@ -95,7 +95,16 @@ namespace Aquamarine.Source.Management
             
             UpdatePlayerNametags();
         }
+        [Rpc(MultiplayerApi.RpcMode.AnyPeer, TransferChannel = SerializationHelpers.SessionControlChannel, CallLocal = false)]
+        public void DisconnectPlayer()
+        {
+            if (!IsMultiplayerAuthority()) return;
 
+            var id = Multiplayer.GetRemoteSenderId();
+            Logger.Log($"Player {id} has disconnected");
+            
+            Multiplayer.MultiplayerPeer.DisconnectPeer(id);
+        }
         [Rpc(MultiplayerApi.RpcMode.AnyPeer, TransferChannel = SerializationHelpers.SessionControlChannel, CallLocal = false)]
         public void SetPlayerName(string name)
         {

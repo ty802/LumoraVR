@@ -9,20 +9,19 @@ namespace Aquamarine.Source.Networking;
 [GlobalClass]
 public partial class AssetFetcher : Node
 {
-    public delegate void OnLoaded(byte[] data);
+    private static readonly Dictionary<string, (Task<byte[]> task, List<Action<byte[]>> callback)> ActiveFetchTasks = new();
     
-    private static readonly Dictionary<string, (Task<byte[]> task, OnLoaded callback)> ActiveFetchTasks = new();
-    
-    public static void FetchAsset(string path, OnLoaded callback)
+    public static void FetchAsset(string path, Action<byte[]> callback)
     {
         if (ActiveFetchTasks.TryGetValue(path, out var data))
         {
-            data.callback += callback;
+            data.callback.Add(callback);
             return;
         }
-        ActiveFetchTasks[path] = (StartFetchAsset(path, callback), _ => { });
+        (Task<byte[]> task, List<Action<byte[]>> callback) task = (StartFetchAsset(path), [callback]);
+        ActiveFetchTasks[path] = task;
     }
-    public static async Task<byte[]> StartFetchAsset(string path, OnLoaded callback)
+    public static async Task<byte[]> StartFetchAsset(string path)
     {
         var uri = new Uri(path);
         var scheme = uri.Scheme;
@@ -33,12 +32,21 @@ public partial class AssetFetcher : Node
     public override void _Process(double delta)
     {
         base._Process(delta);
-        
-        foreach (var pair in ActiveFetchTasks)
+
+        var toRemove = new List<string>();
+
+        var tasks = new Dictionary<string, (Task<byte[]> task, List<Action<byte[]>> callback)>(ActiveFetchTasks);
+        foreach (var pair in tasks)
         {
             var task = pair.Value.task;
             var callback = pair.Value.callback;
-            if (task.IsCompleted) callback(task.Result);
+            if (task.IsCompleted)
+            {
+                foreach (var c in callback) c(task.Result);
+                toRemove.Add(pair.Key);
+            }
         }
+
+        foreach (var remove in toRemove) ActiveFetchTasks.Remove(remove);
     }
 }

@@ -94,7 +94,6 @@ namespace Aquamarine.Source.Management
                     
                     Logger.Log(port.ToString());
                     */
-                    
                     MultiplayerPeer.CreateServer(6000, 1);
                     Logger.Log($"Local server started on port {6000}.");
                 }

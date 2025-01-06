@@ -1,5 +1,6 @@
 using System.Linq;
 using Aquamarine.Source.Assets;
+using Aquamarine.Source.Helpers;
 using Aquamarine.Source.Scene;
 using Aquamarine.Source.Scene.Assets;
 using Aquamarine.Source.Scene.ChildObjects;
@@ -34,7 +35,7 @@ public partial class MeshDataTest : Node3D
             var meshFileDeserialized = MeshFile.Deserialize(meshFileRaw);
             
             //this is the formatted mesh converted back to a godot mesh
-            var returnedMesh = meshFileDeserialized.Instantiate();
+            var (returnedMesh, _) = meshFileDeserialized.Instantiate();
             //returnedMesh.BlendShapeMode = Mesh.BlendShapeMode.Relative;
 
             var instance = new MeshInstance3D();
@@ -82,7 +83,7 @@ public partial class MeshDataTest : Node3D
             return;
         }
 
-        var meshFile = MeshFile.FromArrayMesh(meshInstance.Mesh as ArrayMesh);
+        var meshFile = MeshFile.FromArrayMesh(meshInstance.Mesh as ArrayMesh, meshInstance.Skin);
 
         var meshFileAccess = FileAccess.Open("res://Assets/Models/johnaquamarine.meshfile", FileAccess.ModeFlags.Write);
         meshFileAccess.StoreBuffer(meshFile.Serialize());
@@ -101,8 +102,23 @@ public partial class MeshDataTest : Node3D
         meshRenderer.Type = ChildObjectType.MeshRenderer;
         meshRenderer.Data = new Dictionary<string, Variant>
         {
-            {"mesh", Variant.CreateFrom(0)},
-            {"armature", Variant.CreateFrom(0)},
+            {"mesh", 0},
+            {"armature", 0},
+        };
+        
+        var animator = new PrefabChild();
+        prefab.Children[2] = animator;
+        animator.Type = ChildObjectType.HeadAndHandsAnimator;
+        var offset = Mathf.Pi / 2;
+        animator.Data = new Dictionary<string, Variant>
+        {
+            {"headBone", "Head"},
+            {"leftHandBone", "L_Hand"},
+            {"rightHandBone", "R_Hand"},
+            {"headOffset", new Transform3D(new Basis(Quaternion.FromEuler(new Vector3(0, Mathf.Pi, 0))), Vector3.Zero).AsFloatArray()},
+            {"leftHandOffset", new Transform3D(new Basis(Quaternion.FromEuler(new Vector3(Mathf.DegToRad(180), Mathf.DegToRad(90), Mathf.DegToRad(-90)))), Vector3.Zero).AsFloatArray()},
+            {"rightHandOffset", new Transform3D(new Basis(Quaternion.FromEuler(new Vector3(Mathf.DegToRad(180), Mathf.DegToRad(-90), Mathf.DegToRad(90)))), Vector3.Zero).AsFloatArray()},
+            {"armature", 0},
         };
 
         var meshProvider = new PrefabAsset();
@@ -110,7 +126,7 @@ public partial class MeshDataTest : Node3D
         meshProvider.Type = AssetProviderType.MeshFileProvider;
         meshProvider.Data = new Dictionary<string, Variant>
         {
-            {"path", "res://Assets/Models/johnaquamarine.meshfile"},
+            {"path", "builtin://Assets/Models/johnaquamarine.meshfile"},
         };
 
         var prefabFileAccess = FileAccess.Open("res://Assets/Prefabs/johnaquamarine.prefab", FileAccess.ModeFlags.Write);
@@ -120,6 +136,10 @@ public partial class MeshDataTest : Node3D
         var prefabRead = FileAccess.Open("res://Assets/Prefabs/johnaquamarine.prefab", FileAccess.ModeFlags.Read);
         var serialized = prefabRead.GetBuffer((long)prefabRead.GetLength()).GetStringFromUtf8();
         var pre = Prefab.Deserialize(serialized);
+
+        var prefabInstantiated = pre.Instantiate();
+        
+        AddChild(prefabInstantiated.Self);
         
         GD.Print(pre.Children.Count);
     }

@@ -35,7 +35,6 @@ namespace Aquamarine.Source.Management
                 InitializeInput();
                 
                 SpawnLocalHome();
-                /*
                 this.CreateTimer(5, () =>
                 {
                     var info = FetchServerInfo();
@@ -54,7 +53,6 @@ namespace Aquamarine.Source.Management
                         GD.Print(Multiplayer.GetUniqueId());
                     });
                 });
-                */
             }
             catch (Exception ex)
             {

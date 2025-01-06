@@ -79,6 +79,7 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
     [Export] public float WalkSpeed = 5f;
     [Export] public float RunSpeed = 8f;
     [Export] public float JumpHeight = 1f;
+    private float moveSpeed;
 
     [Export] public Label3D Nametag;
 
@@ -154,10 +155,12 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
         var headRotation = new Vector2(headRotationFlat.X, headRotationFlat.Z).Angle();
         var movementRotated = MovementInput.Rotated(headRotation);
 
-        var moveSpeed = WalkSpeed;
-        if (HeadPosition.Y < (UserHeight * CrouchRatio)) moveSpeed = CrouchSpeed;
-        else if (SprintInput) moveSpeed = RunSpeed;
+        var targetSpeed = WalkSpeed;
+        if (HeadPosition.Y < (UserHeight * CrouchRatio)) targetSpeed = CrouchSpeed;
+        else if (SprintInput) targetSpeed = RunSpeed;
         
+        moveSpeed = Mathf.Lerp(moveSpeed, targetSpeed, deltaf * 10);
+
         var movementAccelerated = movementRotated * moveSpeed;
         
         Velocity = new Vector3(movementAccelerated.X, yVel, movementAccelerated.Y);

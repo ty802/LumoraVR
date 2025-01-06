@@ -39,7 +39,7 @@ public partial class DesktopInput : Node3D, IInputProvider
         _headRotation = new Vector2(horizontal, vertical);
 
         var isCrouching = !InputManager.MovementLocked && InputButton.Crouch.Held();
-        CurrentHeadHeight = CurrentHeadHeight.Damp((isCrouching ? 0.45f : 1) * GetHeight, 5, deltaf);
+        CurrentHeadHeight = CurrentHeadHeight.Damp((isCrouching ? 0.45f : 1) * GetHeight, 10, deltaf);
 
         _camera.Quaternion = Quaternion.FromEuler(new Vector3(_headRotation.Y, _headRotation.X, 0));
         _camera.Position = Vector3.Up * CurrentHeadHeight;

@@ -40,7 +40,7 @@ public static class SimpleAssetCache
 {
     public static void ClearAllCaches()
     {
-        SimpleAssetCache<Mesh>.Cache.Clear();
+        SimpleAssetCache<MeshAsset>.Cache.Clear();
         SimpleAssetCache<Texture2D>.Cache.Clear();
     }
 }
@@ -62,6 +62,11 @@ public static class SimpleAssetCache<T>
     public static void DoSet(IFileAssetProvider<T> provider, Action<T> setAction)
     {
         if (provider.AssetReady) setAction(provider.Asset);
+        else if (Cache.TryGetValue(provider.Path, out var cache))
+        {
+            provider.Asset = cache;
+            setAction(provider.Asset);
+        }
         else
         {
             var path = provider.Path;
@@ -73,11 +78,12 @@ public static class SimpleAssetCache<T>
                     setAction(result);
                     return;
                 }
-
+                
                 var parsed = provider.ParseAsset(bytes);
                 
                 provider.Asset = parsed;
                 Cache[path] = parsed;
+                
                 setAction(parsed);
             });
         }

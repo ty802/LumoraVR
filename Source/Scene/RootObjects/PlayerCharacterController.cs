@@ -27,14 +27,9 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
         {
             if (field == value) return;
             field = value;
-            if (Avatar is not null)
-            {
-                RemoveChild(Avatar);
-                Avatar.QueueFree();
-                Avatar = null;
-            }
+            UpdateAvatar();
         }
-    } = "DefaultAvatar";
+    } = "builtin://Assets/Prefabs/johnaquamarine.prefab";
 
     [Export] public MultiplayerSynchronizer ClientSync;
     [Export] public MultiplayerSynchronizer ServerSync;
@@ -95,6 +90,20 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
     [Export] private Node3D _rightFoot;
     [Export] public string PlayerName { get; set; } = "John Aquamarine";
 
+    private void UpdateAvatar()
+    {
+        if (Avatar is not null)
+        {
+            RemoveChild(Avatar);
+            Avatar.QueueFree();
+            Avatar = null;
+        }
+        Avatar = new Avatar();
+        AddChild(Avatar);
+        Avatar.Parent = this;
+        Prefab.SpawnObject(Avatar, AvatarPrefab);
+    }
+
     public override void _Ready()
     {
         base._Ready();
@@ -103,6 +112,8 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
             PlayerName = System.Environment.MachineName;
             Nametag.Text = PlayerName;
         }
+
+        UpdateAvatar();
 
         Logger.Log("PlayerCharacterController initialized.");
     }

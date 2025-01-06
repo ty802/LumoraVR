@@ -45,9 +45,24 @@ public static class AssetParser
         }
         return null;
     }
-    public static ArrayMesh ParseMesh(byte[] data)
+    public static MeshAsset ParseMesh(byte[] data)
     {
         var meshFile = MeshFile.Deserialize(data);
-        return meshFile.Valid() ? meshFile.Instantiate() : null;
+
+        if (meshFile.Valid())
+        {
+            GD.Print("valid mesh");
+            var (mesh, skin) = meshFile.Instantiate();
+            return new MeshAsset()
+            {
+                Mesh = mesh,
+                Skin = skin,
+            };
+        }
+        else
+        {
+            GD.Print("not valid mesh");
+        }
+        return null;
     }
 }

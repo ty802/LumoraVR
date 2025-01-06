@@ -1,12 +1,11 @@
-[gd_scene load_steps=12 format=3 uid="uid://d37lm476vrp1e"]
+[gd_scene load_steps=11 format=3 uid="uid://d37lm476vrp1e"]
 
 [ext_resource type="Script" path="res://Source/Management/ClientManager.cs" id="1_bw0gq"]
 [ext_resource type="PackedScene" uid="uid://dtempfuf1571n" path="res://Scenes/World/MultiplayerScene.tscn" id="2_40xba"]
 [ext_resource type="Texture2D" uid="uid://jdjeattbqj2g" path="res://Assets/Textures/Dot.png" id="3_1i8qj"]
 [ext_resource type="Script" path="res://Source/Management/HUD/HUDManager.cs" id="3_16xj1"]
 [ext_resource type="PackedScene" uid="uid://cglyi2p1kqyfy" path="res://Scenes/UI/main_menu.tscn" id="5_saa3o"]
-[ext_resource type="Script" path="res://Source/Management/HUD/DebugOverlay.cs" id="5_w13h7"]
-[ext_resource type="FontFile" uid="uid://dne06dcdmx5hj" path="res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf" id="6_18vxb"]
+[ext_resource type="PackedScene" uid="uid://bkr4n38tjwye3" path="res://Scenes/UI/debug_overlay.tscn" id="6_01jeo"]
 [ext_resource type="Shader" uid="uid://drcbjbss62tm5" path="res://Assets/Shaders/TestGrid.tres" id="7_daa5c"]
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_5e4va"]
@@ -64,52 +63,9 @@ stretch_mode = 4
 visible = false
 layout_mode = 1
 
-[node name="Debug Overlay" type="Control" parent="HUDManager" node_paths=PackedStringArray("Text")]
+[node name="Debug Overlay" parent="HUDManager" instance=ExtResource("6_01jeo")]
 visible = false
 layout_mode = 1
-anchors_preset = 15
-anchor_right = 1.0
-anchor_bottom = 1.0
-grow_horizontal = 2
-grow_vertical = 2
-script = ExtResource("5_w13h7")
-Text = NodePath("Text")
-
-[node name="ColorRect" type="ColorRect" parent="HUDManager/Debug Overlay"]
-layout_mode = 1
-anchors_preset = -1
-anchor_left = 0.03
-anchor_top = 0.05
-anchor_right = 0.97
-anchor_bottom = 0.95
-grow_horizontal = 2
-grow_vertical = 2
-color = Color(0, 0, 0, 0.3)
-
-[node name="Text" type="RichTextLabel" parent="HUDManager/Debug Overlay"]
-layout_mode = 1
-anchors_preset = -1
-anchor_left = 0.05
-anchor_top = 0.08
-anchor_right = 0.95
-anchor_bottom = 0.92
-grow_horizontal = 2
-grow_vertical = 2
-theme_override_fonts/mono_font = ExtResource("6_18vxb")
-bbcode_enabled = true
-text = "
-[center][font_size=24][color=aqua]DEBUG[/color] OVERLAY[/font_size][/center]
-
-[code]
-[color=silver]bool[/color] [color=pale_green]true[/color]
-[color=silver]bool[/color] [color=indian_red]false[/color]
-[color=lime_green]int[/color] [color=pale_green]5[/color]
-[color=deep_sky_blue]float[/color] [color=sky_blue]5.30[/color]
-[color=red]string[/color] [color=indian_red]\"Hello World\"[/color]
-
-[color=blue_violet]Log message[/color] [color=orchid]Log message[/color]
-[color=dark_orange]Log message[/color] [color=sandy_brown]Log message[/color]"
-fit_content = true
 
 [node name="MeshInstance3D2" type="MeshInstance3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, -15)

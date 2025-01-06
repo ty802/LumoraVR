@@ -223,8 +223,12 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
 
         if (@event.IsActionPressed("Respawn"))
         {
-            Position = Vector3.Zero;
+            Respawn();
         }
+    }
+    public void Respawn()
+    {
+        Position = Vector3.Zero;
     }
     public Vector3 GetLimbPosition(IInputProvider.InputLimb limb) =>
         limb switch

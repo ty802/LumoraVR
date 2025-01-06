@@ -1,0 +1,89 @@
+[gd_scene load_steps=6 format=3 uid="uid://bkr4n38tjwye3"]
+
+[ext_resource type="Script" path="res://Source/Management/HUD/DebugOverlay.cs" id="1_jnyeq"]
+[ext_resource type="Theme" uid="uid://bk8eop2660llo" path="res://Assets/Themes/lackluster_theme/main_ui_theme.tres" id="1_sbq1b"]
+[ext_resource type="StyleBox" uid="uid://pmvuj543xol" path="res://Assets/Themes/lackluster_theme/main_style_buttons_normal.tres" id="3_js1hg"]
+[ext_resource type="Script" path="res://Source/Management/HUD/RichTextLabelAutoSizeNode.cs" id="4_wk7ua"]
+[ext_resource type="Script" path="res://Source/Management/HUD/RichTextLabelAutoSize.cs" id="5_43rqh"]
+
+[node name="Debug Overlay" type="Control" node_paths=PackedStringArray("StatsText", "ConsoleText", "ConsoleInput")]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme = ExtResource("1_sbq1b")
+script = ExtResource("1_jnyeq")
+StatsText = NodePath("MarginContainer/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer/Stats Text")
+ConsoleText = NodePath("MarginContainer/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer/VBoxContainer/Debug Text")
+ConsoleInput = NodePath("MarginContainer/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer/VBoxContainer/LineEdit")
+
+[node name="MarginContainer" type="MarginContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/margin_left = 128
+theme_override_constants/margin_top = 64
+theme_override_constants/margin_right = 128
+theme_override_constants/margin_bottom = 64
+
+[node name="PanelContainer" type="PanelContainer" parent="MarginContainer"]
+layout_mode = 2
+theme_override_styles/panel = ExtResource("3_js1hg")
+
+[node name="MarginContainer" type="MarginContainer" parent="MarginContainer/PanelContainer"]
+layout_mode = 2
+
+[node name="VBoxContainer" type="VBoxContainer" parent="MarginContainer/PanelContainer/MarginContainer"]
+layout_mode = 2
+
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/PanelContainer/MarginContainer/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+size_flags_stretch_ratio = 0.1
+script = ExtResource("4_wk7ua")
+
+[node name="@RichTextLabel@137603" type="RichTextLabel" parent="MarginContainer/PanelContainer/MarginContainer/VBoxContainer/RichTextLabelAutoSizeNode"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+theme_override_font_sizes/bold_italics_font_size = 57
+theme_override_font_sizes/italics_font_size = 57
+theme_override_font_sizes/mono_font_size = 57
+theme_override_font_sizes/normal_font_size = 57
+theme_override_font_sizes/bold_font_size = 57
+bbcode_enabled = true
+text = "[center][color=aqua]DEBUG[/color] OVERLAY[/center]"
+script = ExtResource("5_43rqh")
+
+[node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/PanelContainer/MarginContainer/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 16
+
+[node name="Stats Text" type="RichTextLabel" parent="MarginContainer/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+bbcode_enabled = true
+
+[node name="VBoxContainer" type="VBoxContainer" parent="MarginContainer/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Debug Text" type="RichTextLabel" parent="MarginContainer/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer/VBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+bbcode_enabled = true
+
+[node name="LineEdit" type="LineEdit" parent="MarginContainer/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+size_flags_stretch_ratio = 0.1
+placeholder_text = "Command..."
+caret_blink = true

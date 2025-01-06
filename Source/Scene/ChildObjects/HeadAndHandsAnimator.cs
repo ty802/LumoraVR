@@ -48,9 +48,9 @@ public partial class HeadAndHandsAnimator : Node, IChildObject
         if (data.TryGetValue("headBone", out var bone)) HeadBone = bone.AsString();
         if (data.TryGetValue("leftHandBone", out var lbone)) LeftHandBone = lbone.AsString();
         if (data.TryGetValue("rightHandBone", out var rbone)) RightHandBone = rbone.AsString();
-        if (data.TryGetValue("headOffset", out var offset) && offset.VariantType == Variant.Type.PackedFloat32Array) HeadBoneOffset = offset.AsFloat32Array().ToTransform3D();
-        if (data.TryGetValue("leftHandOffset", out var loffset) && offset.VariantType == Variant.Type.PackedFloat32Array) LeftHandBoneOffset = loffset.AsFloat32Array().ToTransform3D();
-        if (data.TryGetValue("rightHandOffset", out var roffset) && offset.VariantType == Variant.Type.PackedFloat32Array) RightHandBoneOffset = roffset.AsFloat32Array().ToTransform3D();
+        if (data.TryGetValue("headOffset", out var offset) && offset.TryGetFloat32Array(out var offsetArray)) HeadBoneOffset = offsetArray.ToTransform3D();
+        if (data.TryGetValue("leftHandOffset", out var loffset) && loffset.TryGetFloat32Array(out var loffsetArray)) LeftHandBoneOffset = loffsetArray.ToTransform3D();
+        if (data.TryGetValue("rightHandOffset", out var roffset) && roffset.TryGetFloat32Array(out var roffsetArray)) RightHandBoneOffset = roffsetArray.ToTransform3D();
         
         if (Root is not Avatar avi || avi.Parent is not ICharacterController charController) return;
         CharacterController = charController;

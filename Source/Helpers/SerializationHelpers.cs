@@ -153,8 +153,26 @@ public static class SerializationHelpers
                 return false;
         }
     }
-
-    
+    public static bool TryGetFloat32Array(this Variant variant, out float[] value)
+    {
+        if (variant.VariantType is Variant.Type.Array or Variant.Type.PackedFloat32Array)
+        {
+            value = variant.AsFloat32Array();
+            return true;
+        }
+        value = null;
+        return false;
+    }
+    public static bool TryGetFloat64Array(this Variant variant, out double[] value)
+    {
+        if (variant.VariantType is Variant.Type.Array or Variant.Type.PackedFloat64Array)
+        {
+            value = variant.AsFloat64Array();
+            return true;
+        }
+        value = null;
+        return false;
+    }
     public static float[] AsFloatArray(this Transform3D transform)
     {
         var basis = transform.Basis;

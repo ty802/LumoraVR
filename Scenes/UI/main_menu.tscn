@@ -720,34 +720,34 @@ script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(8, 48)
 
 [node name="Context Container" type="MarginContainer" parent="MarginContainer/HBoxContainer/Main Panel"]
+layout_mode = 2
+mouse_filter = 0
+
+[node name="Worlds Context" type="PanelContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container"]
 visible = false
 layout_mode = 2
-mouse_filter = 0
 
-[node name="PanelContainer" type="PanelContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container"]
-layout_mode = 2
-
-[node name="MarginContainer" type="MarginContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer"]
+[node name="MarginContainer" type="MarginContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context"]
 layout_mode = 2
 mouse_filter = 0
 
-[node name="World Details" type="VBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer"]
+[node name="World Details" type="VBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer"]
 layout_mode = 2
 mouse_filter = 0
 
-[node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details"]
+[node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details"]
 layout_mode = 2
 size_flags_vertical = 3
 size_flags_stretch_ratio = 0.1
 mouse_filter = 0
 
-[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer"]
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer"]
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_231741" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer/RichTextLabelAutoSizeNode"]
+[node name="_RichTextLabel_231741" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer/RichTextLabelAutoSizeNode"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -763,14 +763,14 @@ bbcode_enabled = true
 text = "Skibidi World"
 script = ExtResource("3_b74oo")
 
-[node name="RichTextLabelAutoSizeNode2" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer"]
+[node name="RichTextLabelAutoSizeNode2" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer"]
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
 size_flags_stretch_ratio = 0.2
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_231741" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer/RichTextLabelAutoSizeNode2"]
+[node name="_RichTextLabel_231741" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer/RichTextLabelAutoSizeNode2"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -786,23 +786,23 @@ bbcode_enabled = true
 text = "[right]24 MB[/right]"
 script = ExtResource("3_b74oo")
 
-[node name="HBoxContainer3" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details"]
+[node name="HBoxContainer3" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details"]
 layout_mode = 2
 size_flags_vertical = 3
 mouse_filter = 0
 
-[node name="VBoxContainer" type="VBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3"]
+[node name="VBoxContainer" type="VBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3"]
 layout_mode = 2
 size_flags_horizontal = 3
 mouse_filter = 0
 
-[node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer"]
+[node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer"]
 layout_mode = 2
 size_flags_vertical = 3
 mouse_filter = 0
 theme_override_constants/separation = 12
 
-[node name="TextureRect" type="TextureRect" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer"]
+[node name="TextureRect" type="TextureRect" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer"]
 layout_mode = 2
 size_flags_vertical = 3
 mouse_filter = 0
@@ -810,28 +810,28 @@ texture = ExtResource("7_3g5ht")
 expand_mode = 3
 stretch_mode = 4
 
-[node name="PanelContainer" type="PanelContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer"]
+[node name="PanelContainer" type="PanelContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer"]
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_styles/panel = ExtResource("12_muik5")
 
-[node name="MarginContainer" type="MarginContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer"]
+[node name="MarginContainer" type="MarginContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer"]
 layout_mode = 2
 mouse_filter = 0
 
-[node name="VBoxContainer" type="VBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer"]
+[node name="VBoxContainer" type="VBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer"]
 layout_mode = 2
 size_flags_horizontal = 3
 mouse_filter = 0
 
-[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer"]
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer"]
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
 size_flags_stretch_ratio = 0.1
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_375674" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/RichTextLabelAutoSizeNode"]
+[node name="_RichTextLabel_375674" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/RichTextLabelAutoSizeNode"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -848,14 +848,14 @@ text = "Author: [color=cyan][u]John Aquamarine[/u][/color]"
 script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(24, 64)
 
-[node name="RichTextLabelAutoSizeNode3" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer"]
+[node name="RichTextLabelAutoSizeNode3" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer"]
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
 size_flags_stretch_ratio = 0.1
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_375674" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/RichTextLabelAutoSizeNode3"]
+[node name="_RichTextLabel_375674" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/RichTextLabelAutoSizeNode3"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -872,14 +872,14 @@ text = "Tags: [color=sky_blue]Chill, Skibidi, Ohio, Rizz[/color]"
 script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(24, 64)
 
-[node name="RichTextLabelAutoSizeNode4" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer"]
+[node name="RichTextLabelAutoSizeNode4" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer"]
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
 size_flags_stretch_ratio = 0.1
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_375674" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/RichTextLabelAutoSizeNode4"]
+[node name="_RichTextLabel_375674" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/RichTextLabelAutoSizeNode4"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -896,14 +896,14 @@ text = "Published: [color=sky_blue]February 1, 2025[/color]"
 script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(24, 64)
 
-[node name="RichTextLabelAutoSizeNode5" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer"]
+[node name="RichTextLabelAutoSizeNode5" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer"]
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
 size_flags_stretch_ratio = 0.1
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_375674" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/RichTextLabelAutoSizeNode5"]
+[node name="_RichTextLabel_375674" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/RichTextLabelAutoSizeNode5"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -920,14 +920,14 @@ text = "Updated: [color=sky_blue]February 7, 2025[/color]"
 script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(24, 64)
 
-[node name="RichTextLabelAutoSizeNode2" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer"]
+[node name="RichTextLabelAutoSizeNode2" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer"]
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
 size_flags_stretch_ratio = 0.4
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_375674" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/RichTextLabelAutoSizeNode2"]
+[node name="_RichTextLabel_375674" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/RichTextLabelAutoSizeNode2"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -944,19 +944,19 @@ text = "Description: [color=silver]This is one of the worlds of all time created
 script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(24, 64)
 
-[node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer"]
+[node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer"]
 layout_mode = 2
 size_flags_vertical = 3
 size_flags_stretch_ratio = 0.1
 mouse_filter = 0
 
-[node name="RichTextLabelAutoSizeNode6" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer"]
+[node name="RichTextLabelAutoSizeNode6" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer"]
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_375674" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer/RichTextLabelAutoSizeNode6"]
+[node name="_RichTextLabel_375674" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer/RichTextLabelAutoSizeNode6"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -973,13 +973,13 @@ text = "Visits: [color=sky_blue]32,767[/color]"
 script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(24, 64)
 
-[node name="RichTextLabelAutoSizeNode7" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer"]
+[node name="RichTextLabelAutoSizeNode7" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer"]
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_375674" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer/RichTextLabelAutoSizeNode7"]
+[node name="_RichTextLabel_375674" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer/RichTextLabelAutoSizeNode7"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -996,7 +996,7 @@ text = "[right]Favorites: [color=sky_blue]8,192[/color][/right]"
 script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(24, 64)
 
-[node name="MarginContainer" type="MarginContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer"]
+[node name="MarginContainer" type="MarginContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer"]
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
@@ -1005,7 +1005,7 @@ mouse_filter = 0
 theme_override_constants/margin_left = 0
 theme_override_constants/margin_right = 0
 
-[node name="ScrollContainer" type="ScrollContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer"]
+[node name="ScrollContainer" type="ScrollContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer"]
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
@@ -1014,39 +1014,39 @@ mouse_filter = 0
 horizontal_scroll_mode = 0
 script = ExtResource("15_emikj")
 
-[node name="VBoxContainer" type="VBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer"]
+[node name="VBoxContainer" type="VBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer"]
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
 
-[node name="Session Instance" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer"]
+[node name="Session Instance" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer"]
 layout_mode = 2
 size_flags_stretch_ratio = 0.1
 theme_override_constants/separation = 8
 alignment = 1
 
-[node name="PanelContainer" type="PanelContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance"]
+[node name="PanelContainer" type="PanelContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance"]
 layout_mode = 2
 size_flags_horizontal = 3
 mouse_filter = 1
 theme_override_styles/panel = ExtResource("12_muik5")
 
-[node name="MarginContainer" type="MarginContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/PanelContainer"]
+[node name="MarginContainer" type="MarginContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/PanelContainer"]
 layout_mode = 2
 theme_override_constants/margin_top = 0
 theme_override_constants/margin_bottom = 0
 
-[node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/PanelContainer/MarginContainer"]
+[node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/PanelContainer/MarginContainer"]
 layout_mode = 2
 
-[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/PanelContainer/MarginContainer/HBoxContainer"]
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/PanelContainer/MarginContainer/HBoxContainer"]
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
 mouse_filter = 1
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/PanelContainer/MarginContainer/HBoxContainer/RichTextLabelAutoSizeNode"]
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/PanelContainer/MarginContainer/HBoxContainer/RichTextLabelAutoSizeNode"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -1064,7 +1064,7 @@ text = "Public Instance"
 script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(8, 64)
 
-[node name="RichTextLabelAutoSizeNode2" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/PanelContainer/MarginContainer/HBoxContainer"]
+[node name="RichTextLabelAutoSizeNode2" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/PanelContainer/MarginContainer/HBoxContainer"]
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
@@ -1072,7 +1072,7 @@ size_flags_stretch_ratio = 0.3
 mouse_filter = 1
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/PanelContainer/MarginContainer/HBoxContainer/RichTextLabelAutoSizeNode2"]
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/PanelContainer/MarginContainer/HBoxContainer/RichTextLabelAutoSizeNode2"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -1090,14 +1090,14 @@ text = "[right][color=sky_blue]8[/color] / [color=sky_blue]16[/color][/right]"
 script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(8, 64)
 
-[node name="Button5" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance"]
+[node name="Button5" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance"]
 custom_minimum_size = Vector2(0, 80)
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_stretch_ratio = 0.15
 mouse_filter = 1
 
-[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/Button5"]
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/Button5"]
 layout_mode = 1
 anchor_top = 0.05
 anchor_right = 1.0
@@ -1108,7 +1108,7 @@ size_flags_vertical = 3
 mouse_filter = 1
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/Button5/RichTextLabelAutoSizeNode"]
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/Button5/RichTextLabelAutoSizeNode"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -1126,14 +1126,14 @@ text = "[center]Join[/center]"
 script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(8, 64)
 
-[node name="Button3" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance"]
+[node name="Button3" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance"]
 custom_minimum_size = Vector2(0, 80)
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_stretch_ratio = 0.2
 mouse_filter = 1
 
-[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/Button3"]
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/Button3"]
 layout_mode = 1
 anchor_top = 0.05
 anchor_right = 1.0
@@ -1144,7 +1144,7 @@ size_flags_vertical = 3
 mouse_filter = 1
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/Button3/RichTextLabelAutoSizeNode"]
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/Button3/RichTextLabelAutoSizeNode"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -1162,7 +1162,7 @@ text = "[center]Portal[/center]"
 script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(8, 64)
 
-[node name="HBoxContainer2" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details"]
+[node name="HBoxContainer2" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details"]
 layout_mode = 2
 size_flags_vertical = 3
 size_flags_stretch_ratio = 0.1
@@ -1170,13 +1170,13 @@ mouse_filter = 0
 theme_override_constants/separation = 16
 alignment = 1
 
-[node name="Button2" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer2"]
+[node name="Button2" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2"]
 custom_minimum_size = Vector2(0, 80)
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_stretch_ratio = 1.6
 
-[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer2/Button2"]
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2/Button2"]
 layout_mode = 1
 anchor_top = 0.05
 anchor_right = 1.0
@@ -1187,7 +1187,7 @@ size_flags_vertical = 3
 mouse_filter = 1
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer2/Button2/RichTextLabelAutoSizeNode"]
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2/Button2/RichTextLabelAutoSizeNode"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -1205,12 +1205,12 @@ text = "[center]New Instance[/center]"
 script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(8, 64)
 
-[node name="Button4" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer2"]
+[node name="Button4" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2"]
 custom_minimum_size = Vector2(0, 80)
 layout_mode = 2
 size_flags_horizontal = 3
 
-[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer2/Button4"]
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2/Button4"]
 layout_mode = 1
 anchor_top = 0.05
 anchor_right = 1.0
@@ -1221,7 +1221,7 @@ size_flags_vertical = 3
 mouse_filter = 1
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer2/Button4/RichTextLabelAutoSizeNode"]
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2/Button4/RichTextLabelAutoSizeNode"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -1239,12 +1239,12 @@ text = "[center]Favorite[/center]"
 script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(8, 64)
 
-[node name="Button5" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer2"]
+[node name="Button5" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2"]
 custom_minimum_size = Vector2(0, 80)
 layout_mode = 2
 size_flags_horizontal = 3
 
-[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer2/Button5"]
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2/Button5"]
 layout_mode = 1
 anchor_top = 0.05
 anchor_right = 1.0
@@ -1255,7 +1255,7 @@ size_flags_vertical = 3
 mouse_filter = 1
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer2/Button5/RichTextLabelAutoSizeNode"]
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2/Button5/RichTextLabelAutoSizeNode"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -1273,12 +1273,12 @@ text = "[center]Report[/center]"
 script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(8, 64)
 
-[node name="Button3" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer2"]
+[node name="Button3" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2"]
 custom_minimum_size = Vector2(0, 80)
 layout_mode = 2
 size_flags_horizontal = 3
 
-[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer2/Button3"]
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2/Button3"]
 layout_mode = 1
 anchor_top = 0.05
 anchor_right = 1.0
@@ -1289,7 +1289,7 @@ size_flags_vertical = 3
 mouse_filter = 1
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/PanelContainer/MarginContainer/World Details/HBoxContainer2/Button3/RichTextLabelAutoSizeNode"]
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2/Button3/RichTextLabelAutoSizeNode"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0

@@ -46,16 +46,16 @@ namespace Aquamarine.Source.Logging
             switch (level)
             {
                 case LogLevel.LOG:
-                    OnPrettyLogMessageWritten?.Invoke($" [[color=lime_green]{DateTime.Now:HH:mm:ss}[/color]] [[color=deep_sky_blue]{level}[/color]] [color=sky_blue]{message}[/color]");
+                    OnPrettyLogMessageWritten?.Invoke($"  [[color=lime_green]{DateTime.Now:HH:mm:ss}[/color]] [[color=deep_sky_blue]{level}[/color]] [color=sky_blue]{message}[/color]");
                     break;
                 case LogLevel.WARN:
-                    OnPrettyLogMessageWritten?.Invoke($" [[color=lime_green]{DateTime.Now:HH:mm:ss}[/color]] [[color=gold]{level}[/color]] [color=goldenrod]{message}[/color]");
+                    OnPrettyLogMessageWritten?.Invoke($"  [[color=lime_green]{DateTime.Now:HH:mm:ss}[/color]] [[color=gold]{level}[/color]] [color=goldenrod]{message}[/color]");
                     break;
                 case LogLevel.ERROR:
-                    OnPrettyLogMessageWritten?.Invoke($" [[color=lime_green]{DateTime.Now:HH:mm:ss}[/color]] [[color=red]{level}[/color]] [color=indian_red]{message}[/color]");
+                    OnPrettyLogMessageWritten?.Invoke($"  [[color=lime_green]{DateTime.Now:HH:mm:ss}[/color]] [[color=red]{level}[/color]] [color=indian_red]{message}[/color]");
                     break;
                 case LogLevel.DEBUG:
-                    OnPrettyLogMessageWritten?.Invoke($" [[color=lime_green]{DateTime.Now:HH:mm:ss}[/color]] [[color=dark_orchid]{level}[/color]] [color=orchid]{message}[/color]");
+                    OnPrettyLogMessageWritten?.Invoke($"  [[color=lime_green]{DateTime.Now:HH:mm:ss}[/color]] [[color=dark_orchid]{level}[/color]] [color=orchid]{message}[/color]");
                     break;
             }
         }

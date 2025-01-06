@@ -1,6 +1,7 @@
-[gd_scene load_steps=12 format=3 uid="uid://cglyi2p1kqyfy"]
+[gd_scene load_steps=15 format=3 uid="uid://cglyi2p1kqyfy"]
 
 [ext_resource type="Theme" uid="uid://bk8eop2660llo" path="res://Assets/Themes/lackluster_theme/main_ui_theme.tres" id="1_w8ygr"]
+[ext_resource type="Script" path="res://Source/Management/HUD/MainMenu.cs" id="2_0b1nr"]
 [ext_resource type="Script" path="res://Source/Management/HUD/RichTextLabelAutoSizeNode.cs" id="2_f8m7n"]
 [ext_resource type="Script" path="res://Source/Management/HUD/RichTextLabelAutoSize.cs" id="3_b74oo"]
 [ext_resource type="StyleBox" uid="uid://cuj640210x1mn" path="res://Assets/Themes/lackluster_theme/secondary_style_box_flat.tres" id="4_80j4g"]
@@ -10,6 +11,8 @@
 [ext_resource type="StyleBox" uid="uid://b5q6d4m52i0sj" path="res://Assets/Themes/lackluster_theme/main_style_chips.tres" id="8_duul1"]
 [ext_resource type="StyleBox" uid="uid://cvfjyfpc88d0o" path="res://Assets/Themes/lackluster_theme/main_style_frame.tres" id="9_ils4w"]
 [ext_resource type="StyleBox" uid="uid://yh3n2pqpaf6n" path="res://Assets/Themes/lackluster_theme/main_style_small_buttons.tres" id="10_k1ppd"]
+[ext_resource type="StyleBox" uid="uid://pmvuj543xol" path="res://Assets/Themes/lackluster_theme/main_style_buttons_normal.tres" id="12_muik5"]
+[ext_resource type="Script" path="res://Source/Management/HUD/ScrollContainerWithDrag.cs" id="15_emikj"]
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_0mthw"]
 shader = ExtResource("6_dlsud")
@@ -18,10 +21,10 @@ shader_parameter/rounded_corner_top_left = true
 shader_parameter/rounded_corner_top_right = true
 shader_parameter/rounded_corner_bottom_left = true
 shader_parameter/rounded_corner_bottom_right = true
-shader_parameter/width = 4.0
-shader_parameter/height = 1.0
+shader_parameter/width = 3.0
+shader_parameter/height = 1.08
 
-[node name="Main Menu" type="Control"]
+[node name="Main Menu" type="Control" node_paths=PackedStringArray("CloseButton")]
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
@@ -29,6 +32,8 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 theme = ExtResource("1_w8ygr")
+script = ExtResource("2_0b1nr")
+CloseButton = NodePath("MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/HBoxContainer/Close Button")
 
 [node name="MarginContainer" type="MarginContainer" parent="."]
 layout_mode = 1
@@ -37,6 +42,7 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+mouse_filter = 0
 theme_override_constants/margin_left = 128
 theme_override_constants/margin_top = 64
 theme_override_constants/margin_right = 128
@@ -44,6 +50,7 @@ theme_override_constants/margin_bottom = 64
 
 [node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer"]
 layout_mode = 2
+mouse_filter = 0
 
 [node name="Side Panel" type="PanelContainer" parent="MarginContainer/HBoxContainer"]
 layout_mode = 2
@@ -52,12 +59,15 @@ size_flags_stretch_ratio = 0.25
 
 [node name="MarginContainer" type="MarginContainer" parent="MarginContainer/HBoxContainer/Side Panel"]
 layout_mode = 2
+mouse_filter = 0
 
 [node name="VBoxContainer2" type="VBoxContainer" parent="MarginContainer/HBoxContainer/Side Panel/MarginContainer"]
 layout_mode = 2
+mouse_filter = 0
 
 [node name="VBoxContainer2" type="VBoxContainer" parent="MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2"]
 layout_mode = 2
+mouse_filter = 0
 
 [node name="Button2" type="Button" parent="MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/VBoxContainer2"]
 custom_minimum_size = Vector2(0, 80)
@@ -71,7 +81,7 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 size_flags_vertical = 3
-mouse_filter = 2
+mouse_filter = 1
 script = ExtResource("2_f8m7n")
 
 [node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/VBoxContainer2/Button2/RichTextLabelAutoSizeNode"]
@@ -82,7 +92,7 @@ anchor_bottom = 1.0
 offset_top = 8.0
 grow_horizontal = 2
 grow_vertical = 2
-mouse_filter = 2
+mouse_filter = 1
 theme_override_font_sizes/bold_italics_font_size = 42
 theme_override_font_sizes/italics_font_size = 42
 theme_override_font_sizes/mono_font_size = 42
@@ -96,6 +106,7 @@ MinMaxSize = Vector2(8, 42)
 [node name="VBoxContainer" type="VBoxContainer" parent="MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2"]
 layout_mode = 2
 size_flags_vertical = 3
+mouse_filter = 0
 alignment = 1
 
 [node name="Button3" type="Button" parent="MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/VBoxContainer"]
@@ -110,7 +121,7 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 size_flags_vertical = 3
-mouse_filter = 2
+mouse_filter = 1
 script = ExtResource("2_f8m7n")
 
 [node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/VBoxContainer/Button3/RichTextLabelAutoSizeNode"]
@@ -121,7 +132,7 @@ anchor_bottom = 1.0
 offset_top = 8.0
 grow_horizontal = 2
 grow_vertical = 2
-mouse_filter = 2
+mouse_filter = 1
 theme_override_font_sizes/bold_italics_font_size = 42
 theme_override_font_sizes/italics_font_size = 42
 theme_override_font_sizes/mono_font_size = 42
@@ -144,7 +155,7 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 size_flags_vertical = 3
-mouse_filter = 2
+mouse_filter = 1
 script = ExtResource("2_f8m7n")
 
 [node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/VBoxContainer/Button4/RichTextLabelAutoSizeNode"]
@@ -155,7 +166,7 @@ anchor_bottom = 1.0
 offset_top = 8.0
 grow_horizontal = 2
 grow_vertical = 2
-mouse_filter = 2
+mouse_filter = 1
 theme_override_font_sizes/bold_italics_font_size = 42
 theme_override_font_sizes/italics_font_size = 42
 theme_override_font_sizes/mono_font_size = 42
@@ -178,7 +189,7 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 size_flags_vertical = 3
-mouse_filter = 2
+mouse_filter = 1
 script = ExtResource("2_f8m7n")
 
 [node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/VBoxContainer/Button5/RichTextLabelAutoSizeNode"]
@@ -189,7 +200,7 @@ anchor_bottom = 1.0
 offset_top = 8.0
 grow_horizontal = 2
 grow_vertical = 2
-mouse_filter = 2
+mouse_filter = 1
 theme_override_font_sizes/bold_italics_font_size = 42
 theme_override_font_sizes/italics_font_size = 42
 theme_override_font_sizes/mono_font_size = 42
@@ -212,7 +223,7 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 size_flags_vertical = 3
-mouse_filter = 2
+mouse_filter = 1
 script = ExtResource("2_f8m7n")
 
 [node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/VBoxContainer/Button6/RichTextLabelAutoSizeNode"]
@@ -223,7 +234,7 @@ anchor_bottom = 1.0
 offset_top = 8.0
 grow_horizontal = 2
 grow_vertical = 2
-mouse_filter = 2
+mouse_filter = 1
 theme_override_font_sizes/bold_italics_font_size = 42
 theme_override_font_sizes/italics_font_size = 42
 theme_override_font_sizes/mono_font_size = 42
@@ -236,13 +247,14 @@ MinMaxSize = Vector2(8, 42)
 
 [node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2"]
 layout_mode = 2
+mouse_filter = 0
 
-[node name="Button2" type="Button" parent="MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/HBoxContainer"]
+[node name="Close Button" type="Button" parent="MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/HBoxContainer"]
 custom_minimum_size = Vector2(0, 80)
 layout_mode = 2
 size_flags_horizontal = 3
 
-[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/HBoxContainer/Button2"]
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/HBoxContainer/Close Button"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -250,10 +262,10 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 size_flags_vertical = 3
-mouse_filter = 2
+mouse_filter = 1
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/HBoxContainer/Button2/RichTextLabelAutoSizeNode"]
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/HBoxContainer/Close Button/RichTextLabelAutoSizeNode"]
 layout_mode = 1
 anchors_preset = -1
 anchor_right = 1.0
@@ -261,7 +273,7 @@ anchor_bottom = 1.0
 offset_top = 8.0
 grow_horizontal = 2
 grow_vertical = 2
-mouse_filter = 2
+mouse_filter = 1
 theme_override_font_sizes/bold_italics_font_size = 42
 theme_override_font_sizes/italics_font_size = 42
 theme_override_font_sizes/mono_font_size = 42
@@ -277,23 +289,26 @@ layout_mode = 2
 size_flags_horizontal = 3
 theme_override_styles/panel = ExtResource("4_80j4g")
 
-[node name="MarginContainer" type="MarginContainer" parent="MarginContainer/HBoxContainer/Main Panel"]
+[node name="Primary Container" type="MarginContainer" parent="MarginContainer/HBoxContainer/Main Panel"]
 layout_mode = 2
+mouse_filter = 0
 
-[node name="Worlds Tab" type="VBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer"]
+[node name="Worlds Tab" type="VBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container"]
 layout_mode = 2
+mouse_filter = 0
 theme_override_constants/separation = 16
 
-[node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab"]
+[node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab"]
 layout_mode = 2
+mouse_filter = 0
 theme_override_constants/separation = 12
 
-[node name="Button2" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/HBoxContainer"]
+[node name="Button2" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/HBoxContainer"]
 custom_minimum_size = Vector2(0, 80)
 layout_mode = 2
 size_flags_horizontal = 3
 
-[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/HBoxContainer/Button2"]
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/HBoxContainer/Button2"]
 layout_mode = 1
 anchor_top = 0.05
 anchor_right = 1.0
@@ -301,17 +316,17 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 size_flags_vertical = 3
-mouse_filter = 2
+mouse_filter = 1
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/HBoxContainer/Button2/RichTextLabelAutoSizeNode"]
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/HBoxContainer/Button2/RichTextLabelAutoSizeNode"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-mouse_filter = 2
+mouse_filter = 1
 theme_override_font_sizes/bold_italics_font_size = 48
 theme_override_font_sizes/italics_font_size = 48
 theme_override_font_sizes/mono_font_size = 48
@@ -322,12 +337,12 @@ text = "[center]Popular[/center]"
 script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(8, 48)
 
-[node name="Button3" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/HBoxContainer"]
+[node name="Button3" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/HBoxContainer"]
 custom_minimum_size = Vector2(0, 80)
 layout_mode = 2
 size_flags_horizontal = 3
 
-[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/HBoxContainer/Button3"]
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/HBoxContainer/Button3"]
 layout_mode = 1
 anchor_top = 0.05
 anchor_right = 1.0
@@ -335,17 +350,17 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 size_flags_vertical = 3
-mouse_filter = 2
+mouse_filter = 1
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/HBoxContainer/Button3/RichTextLabelAutoSizeNode"]
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/HBoxContainer/Button3/RichTextLabelAutoSizeNode"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-mouse_filter = 2
+mouse_filter = 1
 theme_override_font_sizes/bold_italics_font_size = 48
 theme_override_font_sizes/italics_font_size = 48
 theme_override_font_sizes/mono_font_size = 48
@@ -356,12 +371,12 @@ text = "[center]Recent[/center]"
 script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(8, 48)
 
-[node name="Button4" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/HBoxContainer"]
+[node name="Button4" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/HBoxContainer"]
 custom_minimum_size = Vector2(0, 80)
 layout_mode = 2
 size_flags_horizontal = 3
 
-[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/HBoxContainer/Button4"]
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/HBoxContainer/Button4"]
 layout_mode = 1
 anchor_top = 0.05
 anchor_right = 1.0
@@ -369,17 +384,17 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 size_flags_vertical = 3
-mouse_filter = 2
+mouse_filter = 1
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/HBoxContainer/Button4/RichTextLabelAutoSizeNode"]
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/HBoxContainer/Button4/RichTextLabelAutoSizeNode"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-mouse_filter = 2
+mouse_filter = 1
 theme_override_font_sizes/bold_italics_font_size = 48
 theme_override_font_sizes/italics_font_size = 48
 theme_override_font_sizes/mono_font_size = 48
@@ -390,12 +405,12 @@ text = "[center]Chill[/center]"
 script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(8, 48)
 
-[node name="Button5" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/HBoxContainer"]
+[node name="Button5" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/HBoxContainer"]
 custom_minimum_size = Vector2(0, 80)
 layout_mode = 2
 size_flags_horizontal = 3
 
-[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/HBoxContainer/Button5"]
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/HBoxContainer/Button5"]
 layout_mode = 1
 anchor_top = 0.05
 anchor_right = 1.0
@@ -403,17 +418,17 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 size_flags_vertical = 3
-mouse_filter = 2
+mouse_filter = 1
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/HBoxContainer/Button5/RichTextLabelAutoSizeNode"]
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/HBoxContainer/Button5/RichTextLabelAutoSizeNode"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-mouse_filter = 2
+mouse_filter = 1
 theme_override_font_sizes/bold_italics_font_size = 48
 theme_override_font_sizes/italics_font_size = 48
 theme_override_font_sizes/mono_font_size = 48
@@ -424,12 +439,12 @@ text = "[center]Game[/center]"
 script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(8, 48)
 
-[node name="Button6" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/HBoxContainer"]
+[node name="Button6" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/HBoxContainer"]
 custom_minimum_size = Vector2(0, 80)
 layout_mode = 2
 size_flags_horizontal = 3
 
-[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/HBoxContainer/Button6"]
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/HBoxContainer/Button6"]
 layout_mode = 1
 anchor_top = 0.05
 anchor_right = 1.0
@@ -437,17 +452,17 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 size_flags_vertical = 3
-mouse_filter = 2
+mouse_filter = 1
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/HBoxContainer/Button6/RichTextLabelAutoSizeNode"]
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/HBoxContainer/Button6/RichTextLabelAutoSizeNode"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-mouse_filter = 2
+mouse_filter = 1
 theme_override_font_sizes/bold_italics_font_size = 48
 theme_override_font_sizes/italics_font_size = 48
 theme_override_font_sizes/mono_font_size = 48
@@ -458,18 +473,21 @@ text = "[center]Event[/center]"
 script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(8, 48)
 
-[node name="VBoxContainer" type="VBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab"]
+[node name="VBoxContainer" type="VBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab"]
 layout_mode = 2
 size_flags_vertical = 3
+mouse_filter = 0
 
-[node name="ScrollContainer" type="ScrollContainer" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/VBoxContainer"]
+[node name="ScrollContainer" type="ScrollContainer" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/VBoxContainer"]
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
 size_flags_stretch_ratio = 0.8
+mouse_filter = 0
 horizontal_scroll_mode = 0
+script = ExtResource("15_emikj")
 
-[node name="GridContainer" type="GridContainer" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/VBoxContainer/ScrollContainer"]
+[node name="GridContainer" type="GridContainer" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/VBoxContainer/ScrollContainer"]
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
@@ -477,51 +495,55 @@ columns = 4
 script = ExtResource("5_bqc4u")
 CellSize = 300
 
-[node name="PanelContainer" type="PanelContainer" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer"]
-custom_minimum_size = Vector2(0, 300)
+[node name="World" type="PanelContainer" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer"]
+custom_minimum_size = Vector2(0, 350)
 layout_mode = 2
 size_flags_horizontal = 3
+mouse_filter = 1
 
-[node name="MarginContainer" type="MarginContainer" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/PanelContainer"]
+[node name="MarginContainer" type="MarginContainer" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/World"]
 layout_mode = 2
 theme_override_constants/margin_left = 10
 theme_override_constants/margin_top = 6
 theme_override_constants/margin_right = 10
 theme_override_constants/margin_bottom = 10
 
-[node name="VBoxContainer" type="VBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer"]
+[node name="VBoxContainer" type="VBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/World/MarginContainer"]
 layout_mode = 2
 theme_override_constants/separation = 8
 
-[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer"]
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/World/MarginContainer/VBoxContainer"]
 layout_mode = 2
 size_flags_vertical = 3
-size_flags_stretch_ratio = 0.2
+size_flags_stretch_ratio = 0.3
+mouse_filter = 1
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_284213" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer/RichTextLabelAutoSizeNode"]
+[node name="_RichTextLabel_284213" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/World/MarginContainer/VBoxContainer/RichTextLabelAutoSizeNode"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-theme_override_font_sizes/bold_italics_font_size = 18
-theme_override_font_sizes/italics_font_size = 18
-theme_override_font_sizes/mono_font_size = 18
-theme_override_font_sizes/normal_font_size = 18
-theme_override_font_sizes/bold_font_size = 18
+mouse_filter = 1
+theme_override_font_sizes/bold_italics_font_size = 29
+theme_override_font_sizes/italics_font_size = 29
+theme_override_font_sizes/mono_font_size = 29
+theme_override_font_sizes/normal_font_size = 29
+theme_override_font_sizes/bold_font_size = 29
 bbcode_enabled = true
 text = "[center]Skibidi World[/center]"
 script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(8, 32)
 
-[node name="Control" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer"]
+[node name="Control" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/World/MarginContainer/VBoxContainer"]
 layout_mode = 2
 size_flags_vertical = 3
 size_flags_stretch_ratio = 1.5
+mouse_filter = 1
 
-[node name="TextureRect" type="TextureRect" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer/Control"]
+[node name="TextureRect" type="TextureRect" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/World/MarginContainer/VBoxContainer/Control"]
 material = SubResource("ShaderMaterial_0mthw")
 layout_mode = 1
 anchors_preset = -1
@@ -536,7 +558,7 @@ texture = ExtResource("7_3g5ht")
 expand_mode = 1
 stretch_mode = 6
 
-[node name="MarginContainer" type="MarginContainer" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer/Control/TextureRect"]
+[node name="MarginContainer" type="MarginContainer" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/World/MarginContainer/VBoxContainer/Control/TextureRect"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -548,27 +570,30 @@ theme_override_constants/margin_top = 5
 theme_override_constants/margin_right = 5
 theme_override_constants/margin_bottom = 5
 
-[node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer/Control/TextureRect/MarginContainer"]
+[node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/World/MarginContainer/VBoxContainer/Control/TextureRect/MarginContainer"]
 layout_mode = 2
 
-[node name="PanelContainer" type="PanelContainer" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer/Control/TextureRect/MarginContainer/HBoxContainer"]
+[node name="PanelContainer" type="PanelContainer" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/World/MarginContainer/VBoxContainer/Control/TextureRect/MarginContainer/HBoxContainer"]
 custom_minimum_size = Vector2(64, 24)
 layout_mode = 2
 size_flags_vertical = 0
+mouse_filter = 1
 theme_override_styles/panel = ExtResource("8_duul1")
 
-[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer/Control/TextureRect/MarginContainer/HBoxContainer/PanelContainer"]
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/World/MarginContainer/VBoxContainer/Control/TextureRect/MarginContainer/HBoxContainer/PanelContainer"]
 layout_mode = 2
 size_flags_vertical = 3
+mouse_filter = 1
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_729751" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer/Control/TextureRect/MarginContainer/HBoxContainer/PanelContainer/RichTextLabelAutoSizeNode"]
+[node name="_RichTextLabel_729751" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/World/MarginContainer/VBoxContainer/Control/TextureRect/MarginContainer/HBoxContainer/PanelContainer/RichTextLabelAutoSizeNode"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+mouse_filter = 1
 theme_override_font_sizes/bold_italics_font_size = 15
 theme_override_font_sizes/italics_font_size = 15
 theme_override_font_sizes/mono_font_size = 15
@@ -579,7 +604,7 @@ text = "[center]👤 1.2k [/center]"
 script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(12, 15)
 
-[node name="PanelContainer" type="PanelContainer" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer/Control"]
+[node name="PanelContainer" type="PanelContainer" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/World/MarginContainer/VBoxContainer/Control"]
 clip_children = 2
 clip_contents = true
 layout_mode = 1
@@ -589,40 +614,48 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 size_flags_vertical = 3
+mouse_filter = 1
 theme_override_styles/panel = ExtResource("9_ils4w")
 
-[node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer"]
+[node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/World/MarginContainer/VBoxContainer"]
 layout_mode = 2
+size_flags_vertical = 3
+size_flags_stretch_ratio = 0.3
 alignment = 1
 
-[node name="Button" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer"]
+[node name="Button" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/World/MarginContainer/VBoxContainer/HBoxContainer"]
 layout_mode = 2
 size_flags_horizontal = 3
+mouse_filter = 1
 theme_override_styles/normal = ExtResource("10_k1ppd")
 text = "Details"
 
-[node name="Button2" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer"]
+[node name="Button2" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/VBoxContainer/ScrollContainer/GridContainer/World/MarginContainer/VBoxContainer/HBoxContainer"]
 layout_mode = 2
 size_flags_horizontal = 3
+mouse_filter = 1
 theme_override_styles/normal = ExtResource("10_k1ppd")
 text = "Quick Join"
 
-[node name="HBoxContainer2" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab"]
+[node name="HBoxContainer2" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab"]
 layout_mode = 2
+mouse_filter = 0
 theme_override_constants/separation = 12
 
-[node name="TextEdit" type="TextEdit" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/HBoxContainer2"]
+[node name="LineEdit" type="LineEdit" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/HBoxContainer2"]
 layout_mode = 2
 size_flags_horizontal = 3
-placeholder_text = " Search..."
+size_flags_vertical = 3
+placeholder_text = "Search..."
+caret_blink = true
 
-[node name="Button3" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/HBoxContainer2"]
+[node name="Button3" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/HBoxContainer2"]
 custom_minimum_size = Vector2(0, 80)
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_stretch_ratio = 0.1
 
-[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/HBoxContainer2/Button3"]
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/HBoxContainer2/Button3"]
 layout_mode = 1
 anchor_top = 0.05
 anchor_right = 1.0
@@ -630,17 +663,17 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 size_flags_vertical = 3
-mouse_filter = 2
+mouse_filter = 1
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/HBoxContainer2/Button3/RichTextLabelAutoSizeNode"]
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/HBoxContainer2/Button3/RichTextLabelAutoSizeNode"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-mouse_filter = 2
+mouse_filter = 1
 theme_override_font_sizes/bold_italics_font_size = 48
 theme_override_font_sizes/italics_font_size = 48
 theme_override_font_sizes/mono_font_size = 48
@@ -651,13 +684,13 @@ text = "[center] 🔎 [/center]"
 script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(8, 48)
 
-[node name="Button2" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/HBoxContainer2"]
+[node name="Button2" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/HBoxContainer2"]
 custom_minimum_size = Vector2(0, 80)
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_stretch_ratio = 0.1
 
-[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/HBoxContainer2/Button2"]
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/HBoxContainer2/Button2"]
 layout_mode = 1
 anchor_top = 0.05
 anchor_right = 1.0
@@ -665,17 +698,17 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 size_flags_vertical = 3
-mouse_filter = 2
+mouse_filter = 1
 script = ExtResource("2_f8m7n")
 
-[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/MarginContainer/Worlds Tab/HBoxContainer2/Button2/RichTextLabelAutoSizeNode"]
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Primary Container/Worlds Tab/HBoxContainer2/Button2/RichTextLabelAutoSizeNode"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-mouse_filter = 2
+mouse_filter = 1
 theme_override_font_sizes/bold_italics_font_size = 48
 theme_override_font_sizes/italics_font_size = 48
 theme_override_font_sizes/mono_font_size = 48
@@ -685,3 +718,591 @@ bbcode_enabled = true
 text = "[center] ⚙️ [/center]"
 script = ExtResource("3_b74oo")
 MinMaxSize = Vector2(8, 48)
+
+[node name="Context Container" type="MarginContainer" parent="MarginContainer/HBoxContainer/Main Panel"]
+layout_mode = 2
+mouse_filter = 0
+
+[node name="Worlds Context" type="PanelContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container"]
+visible = false
+layout_mode = 2
+
+[node name="MarginContainer" type="MarginContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context"]
+layout_mode = 2
+mouse_filter = 0
+
+[node name="World Details" type="VBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer"]
+layout_mode = 2
+mouse_filter = 0
+
+[node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details"]
+layout_mode = 2
+size_flags_vertical = 3
+size_flags_stretch_ratio = 0.1
+mouse_filter = 0
+
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+script = ExtResource("2_f8m7n")
+
+[node name="_RichTextLabel_231741" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer/RichTextLabelAutoSizeNode"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_font_sizes/bold_italics_font_size = 48
+theme_override_font_sizes/italics_font_size = 48
+theme_override_font_sizes/mono_font_size = 48
+theme_override_font_sizes/normal_font_size = 48
+theme_override_font_sizes/bold_font_size = 48
+bbcode_enabled = true
+text = "Skibidi World"
+script = ExtResource("3_b74oo")
+
+[node name="RichTextLabelAutoSizeNode2" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+size_flags_stretch_ratio = 0.2
+script = ExtResource("2_f8m7n")
+
+[node name="_RichTextLabel_231741" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer/RichTextLabelAutoSizeNode2"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_font_sizes/bold_italics_font_size = 48
+theme_override_font_sizes/italics_font_size = 48
+theme_override_font_sizes/mono_font_size = 48
+theme_override_font_sizes/normal_font_size = 48
+theme_override_font_sizes/bold_font_size = 48
+bbcode_enabled = true
+text = "[right]24 MB[/right]"
+script = ExtResource("3_b74oo")
+
+[node name="HBoxContainer3" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details"]
+layout_mode = 2
+size_flags_vertical = 3
+mouse_filter = 0
+
+[node name="VBoxContainer" type="VBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3"]
+layout_mode = 2
+size_flags_horizontal = 3
+mouse_filter = 0
+
+[node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+mouse_filter = 0
+theme_override_constants/separation = 12
+
+[node name="TextureRect" type="TextureRect" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+mouse_filter = 0
+texture = ExtResource("7_3g5ht")
+expand_mode = 3
+stretch_mode = 4
+
+[node name="PanelContainer" type="PanelContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/panel = ExtResource("12_muik5")
+
+[node name="MarginContainer" type="MarginContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer"]
+layout_mode = 2
+mouse_filter = 0
+
+[node name="VBoxContainer" type="VBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+mouse_filter = 0
+
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+size_flags_stretch_ratio = 0.1
+script = ExtResource("2_f8m7n")
+
+[node name="_RichTextLabel_375674" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/RichTextLabelAutoSizeNode"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_font_sizes/bold_italics_font_size = 24
+theme_override_font_sizes/italics_font_size = 24
+theme_override_font_sizes/mono_font_size = 24
+theme_override_font_sizes/normal_font_size = 24
+theme_override_font_sizes/bold_font_size = 24
+bbcode_enabled = true
+text = "Author: [color=cyan][u]John Aquamarine[/u][/color]"
+script = ExtResource("3_b74oo")
+MinMaxSize = Vector2(24, 64)
+
+[node name="RichTextLabelAutoSizeNode3" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+size_flags_stretch_ratio = 0.1
+script = ExtResource("2_f8m7n")
+
+[node name="_RichTextLabel_375674" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/RichTextLabelAutoSizeNode3"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_font_sizes/bold_italics_font_size = 24
+theme_override_font_sizes/italics_font_size = 24
+theme_override_font_sizes/mono_font_size = 24
+theme_override_font_sizes/normal_font_size = 24
+theme_override_font_sizes/bold_font_size = 24
+bbcode_enabled = true
+text = "Tags: [color=sky_blue]Chill, Skibidi, Ohio, Rizz[/color]"
+script = ExtResource("3_b74oo")
+MinMaxSize = Vector2(24, 64)
+
+[node name="RichTextLabelAutoSizeNode4" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+size_flags_stretch_ratio = 0.1
+script = ExtResource("2_f8m7n")
+
+[node name="_RichTextLabel_375674" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/RichTextLabelAutoSizeNode4"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_font_sizes/bold_italics_font_size = 24
+theme_override_font_sizes/italics_font_size = 24
+theme_override_font_sizes/mono_font_size = 24
+theme_override_font_sizes/normal_font_size = 24
+theme_override_font_sizes/bold_font_size = 24
+bbcode_enabled = true
+text = "Published: [color=sky_blue]February 1, 2025[/color]"
+script = ExtResource("3_b74oo")
+MinMaxSize = Vector2(24, 64)
+
+[node name="RichTextLabelAutoSizeNode5" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+size_flags_stretch_ratio = 0.1
+script = ExtResource("2_f8m7n")
+
+[node name="_RichTextLabel_375674" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/RichTextLabelAutoSizeNode5"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_font_sizes/bold_italics_font_size = 24
+theme_override_font_sizes/italics_font_size = 24
+theme_override_font_sizes/mono_font_size = 24
+theme_override_font_sizes/normal_font_size = 24
+theme_override_font_sizes/bold_font_size = 24
+bbcode_enabled = true
+text = "Updated: [color=sky_blue]February 7, 2025[/color]"
+script = ExtResource("3_b74oo")
+MinMaxSize = Vector2(24, 64)
+
+[node name="RichTextLabelAutoSizeNode2" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+size_flags_stretch_ratio = 0.4
+script = ExtResource("2_f8m7n")
+
+[node name="_RichTextLabel_375674" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/RichTextLabelAutoSizeNode2"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_font_sizes/bold_italics_font_size = 24
+theme_override_font_sizes/italics_font_size = 24
+theme_override_font_sizes/mono_font_size = 24
+theme_override_font_sizes/normal_font_size = 24
+theme_override_font_sizes/bold_font_size = 24
+bbcode_enabled = true
+text = "Description: [color=silver]This is one of the worlds of all time created by none other than John Aquamarine.[/color]"
+script = ExtResource("3_b74oo")
+MinMaxSize = Vector2(24, 64)
+
+[node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+size_flags_stretch_ratio = 0.1
+mouse_filter = 0
+
+[node name="RichTextLabelAutoSizeNode6" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+script = ExtResource("2_f8m7n")
+
+[node name="_RichTextLabel_375674" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer/RichTextLabelAutoSizeNode6"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_font_sizes/bold_italics_font_size = 24
+theme_override_font_sizes/italics_font_size = 24
+theme_override_font_sizes/mono_font_size = 24
+theme_override_font_sizes/normal_font_size = 24
+theme_override_font_sizes/bold_font_size = 24
+bbcode_enabled = true
+text = "Visits: [color=sky_blue]32,767[/color]"
+script = ExtResource("3_b74oo")
+MinMaxSize = Vector2(24, 64)
+
+[node name="RichTextLabelAutoSizeNode7" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+script = ExtResource("2_f8m7n")
+
+[node name="_RichTextLabel_375674" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer/PanelContainer/MarginContainer/VBoxContainer/HBoxContainer/RichTextLabelAutoSizeNode7"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_font_sizes/bold_italics_font_size = 24
+theme_override_font_sizes/italics_font_size = 24
+theme_override_font_sizes/mono_font_size = 24
+theme_override_font_sizes/normal_font_size = 24
+theme_override_font_sizes/bold_font_size = 24
+bbcode_enabled = true
+text = "[right]Favorites: [color=sky_blue]8,192[/color][/right]"
+script = ExtResource("3_b74oo")
+MinMaxSize = Vector2(24, 64)
+
+[node name="MarginContainer" type="MarginContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+size_flags_stretch_ratio = 0.9
+mouse_filter = 0
+theme_override_constants/margin_left = 0
+theme_override_constants/margin_right = 0
+
+[node name="ScrollContainer" type="ScrollContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+size_flags_stretch_ratio = 0.8
+mouse_filter = 0
+horizontal_scroll_mode = 0
+script = ExtResource("15_emikj")
+
+[node name="VBoxContainer" type="VBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="Session Instance" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer"]
+layout_mode = 2
+size_flags_stretch_ratio = 0.1
+theme_override_constants/separation = 8
+alignment = 1
+
+[node name="PanelContainer" type="PanelContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance"]
+layout_mode = 2
+size_flags_horizontal = 3
+mouse_filter = 1
+theme_override_styles/panel = ExtResource("12_muik5")
+
+[node name="MarginContainer" type="MarginContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/PanelContainer"]
+layout_mode = 2
+theme_override_constants/margin_top = 0
+theme_override_constants/margin_bottom = 0
+
+[node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/PanelContainer/MarginContainer"]
+layout_mode = 2
+
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/PanelContainer/MarginContainer/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+mouse_filter = 1
+script = ExtResource("2_f8m7n")
+
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/PanelContainer/MarginContainer/HBoxContainer/RichTextLabelAutoSizeNode"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 1
+theme_override_font_sizes/bold_italics_font_size = 52
+theme_override_font_sizes/italics_font_size = 52
+theme_override_font_sizes/mono_font_size = 52
+theme_override_font_sizes/normal_font_size = 52
+theme_override_font_sizes/bold_font_size = 52
+bbcode_enabled = true
+text = "Public Instance"
+script = ExtResource("3_b74oo")
+MinMaxSize = Vector2(8, 64)
+
+[node name="RichTextLabelAutoSizeNode2" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/PanelContainer/MarginContainer/HBoxContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+size_flags_stretch_ratio = 0.3
+mouse_filter = 1
+script = ExtResource("2_f8m7n")
+
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/PanelContainer/MarginContainer/HBoxContainer/RichTextLabelAutoSizeNode2"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 1
+theme_override_font_sizes/bold_italics_font_size = 52
+theme_override_font_sizes/italics_font_size = 52
+theme_override_font_sizes/mono_font_size = 52
+theme_override_font_sizes/normal_font_size = 52
+theme_override_font_sizes/bold_font_size = 52
+bbcode_enabled = true
+text = "[right][color=sky_blue]8[/color] / [color=sky_blue]16[/color][/right]"
+script = ExtResource("3_b74oo")
+MinMaxSize = Vector2(8, 64)
+
+[node name="Button5" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance"]
+custom_minimum_size = Vector2(0, 80)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_stretch_ratio = 0.15
+mouse_filter = 1
+
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/Button5"]
+layout_mode = 1
+anchor_top = 0.05
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_vertical = 3
+mouse_filter = 1
+script = ExtResource("2_f8m7n")
+
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/Button5/RichTextLabelAutoSizeNode"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 1
+theme_override_font_sizes/bold_italics_font_size = 52
+theme_override_font_sizes/italics_font_size = 52
+theme_override_font_sizes/mono_font_size = 52
+theme_override_font_sizes/normal_font_size = 52
+theme_override_font_sizes/bold_font_size = 52
+bbcode_enabled = true
+text = "[center]Join[/center]"
+script = ExtResource("3_b74oo")
+MinMaxSize = Vector2(8, 64)
+
+[node name="Button3" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance"]
+custom_minimum_size = Vector2(0, 80)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_stretch_ratio = 0.2
+mouse_filter = 1
+
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/Button3"]
+layout_mode = 1
+anchor_top = 0.05
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_vertical = 3
+mouse_filter = 1
+script = ExtResource("2_f8m7n")
+
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer3/VBoxContainer/MarginContainer/ScrollContainer/VBoxContainer/Session Instance/Button3/RichTextLabelAutoSizeNode"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 1
+theme_override_font_sizes/bold_italics_font_size = 52
+theme_override_font_sizes/italics_font_size = 52
+theme_override_font_sizes/mono_font_size = 52
+theme_override_font_sizes/normal_font_size = 52
+theme_override_font_sizes/bold_font_size = 52
+bbcode_enabled = true
+text = "[center]Portal[/center]"
+script = ExtResource("3_b74oo")
+MinMaxSize = Vector2(8, 64)
+
+[node name="HBoxContainer2" type="HBoxContainer" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details"]
+layout_mode = 2
+size_flags_vertical = 3
+size_flags_stretch_ratio = 0.1
+mouse_filter = 0
+theme_override_constants/separation = 16
+alignment = 1
+
+[node name="Button2" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2"]
+custom_minimum_size = Vector2(0, 80)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_stretch_ratio = 1.6
+
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2/Button2"]
+layout_mode = 1
+anchor_top = 0.05
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_vertical = 3
+mouse_filter = 1
+script = ExtResource("2_f8m7n")
+
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2/Button2/RichTextLabelAutoSizeNode"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 1
+theme_override_font_sizes/bold_italics_font_size = 52
+theme_override_font_sizes/italics_font_size = 52
+theme_override_font_sizes/mono_font_size = 52
+theme_override_font_sizes/normal_font_size = 52
+theme_override_font_sizes/bold_font_size = 52
+bbcode_enabled = true
+text = "[center]New Instance[/center]"
+script = ExtResource("3_b74oo")
+MinMaxSize = Vector2(8, 64)
+
+[node name="Button4" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2"]
+custom_minimum_size = Vector2(0, 80)
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2/Button4"]
+layout_mode = 1
+anchor_top = 0.05
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_vertical = 3
+mouse_filter = 1
+script = ExtResource("2_f8m7n")
+
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2/Button4/RichTextLabelAutoSizeNode"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 1
+theme_override_font_sizes/bold_italics_font_size = 52
+theme_override_font_sizes/italics_font_size = 52
+theme_override_font_sizes/mono_font_size = 52
+theme_override_font_sizes/normal_font_size = 52
+theme_override_font_sizes/bold_font_size = 52
+bbcode_enabled = true
+text = "[center]Favorite[/center]"
+script = ExtResource("3_b74oo")
+MinMaxSize = Vector2(8, 64)
+
+[node name="Button5" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2"]
+custom_minimum_size = Vector2(0, 80)
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2/Button5"]
+layout_mode = 1
+anchor_top = 0.05
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_vertical = 3
+mouse_filter = 1
+script = ExtResource("2_f8m7n")
+
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2/Button5/RichTextLabelAutoSizeNode"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 1
+theme_override_font_sizes/bold_italics_font_size = 52
+theme_override_font_sizes/italics_font_size = 52
+theme_override_font_sizes/mono_font_size = 52
+theme_override_font_sizes/normal_font_size = 52
+theme_override_font_sizes/bold_font_size = 52
+bbcode_enabled = true
+text = "[center]Report[/center]"
+script = ExtResource("3_b74oo")
+MinMaxSize = Vector2(8, 64)
+
+[node name="Button3" type="Button" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2"]
+custom_minimum_size = Vector2(0, 80)
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2/Button3"]
+layout_mode = 1
+anchor_top = 0.05
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_vertical = 3
+mouse_filter = 1
+script = ExtResource("2_f8m7n")
+
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="MarginContainer/HBoxContainer/Main Panel/Context Container/Worlds Context/MarginContainer/World Details/HBoxContainer2/Button3/RichTextLabelAutoSizeNode"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 1
+theme_override_font_sizes/bold_italics_font_size = 52
+theme_override_font_sizes/italics_font_size = 52
+theme_override_font_sizes/mono_font_size = 52
+theme_override_font_sizes/normal_font_size = 52
+theme_override_font_sizes/bold_font_size = 52
+bbcode_enabled = true
+text = "[center]Back[/center]"
+script = ExtResource("3_b74oo")
+MinMaxSize = Vector2(8, 64)

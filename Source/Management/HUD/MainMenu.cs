@@ -1,5 +1,4 @@
 ﻿using Aquamarine.Source.Input;
-using Aquamarine.Source.Logging;
 using Godot;
 
 namespace Aquamarine.Source.Management.HUD;
@@ -7,15 +6,19 @@ namespace Aquamarine.Source.Management.HUD;
 public partial class MainMenu : Control
 {
     public static MainMenu Instance;
+    [Export] public Button CloseButton;
 
     public override void _Ready()
     {
         base._Ready();
         Instance = this;
+
+        CloseButton.Pressed += ToggleMenu;
     }
 
-    public override void _Input(InputEvent @event)
+    void ToggleMenu()
     {
-        base._Input(@event);
+        InputManager.MovementLocked = !InputManager.MovementLocked;
+        Visible = InputManager.MovementLocked;
     }
 }

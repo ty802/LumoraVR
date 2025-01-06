@@ -29,16 +29,7 @@ public partial class WindowSwitchButton : Button
 
         foreach (Control child in _windows)
         {
-            if (child != Window)
-            {
-                child.Visible = false;
-                child.ProcessMode = ProcessModeEnum.Disabled;
-            }
-            else
-            {
-                child.Visible = true;
-                child.ProcessMode = ProcessModeEnum.Inherit;
-            }
+            child.Visible = child == Window;
         }
     }
 }

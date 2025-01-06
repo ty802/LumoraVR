@@ -195,11 +195,13 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
         if (ClientManager.ShowDebug) {
             // John Aquamarines head and eyes
             var headPos = GlobalTransform * new Transform3D(new Basis(HeadRotation), HeadPosition);
-            DebugDraw3D.DrawPosition(headPos);
-            DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(0.085f, 0.0f, -0.175f)), 0.0125f, Colors.Black);
-            DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(0.085f, 0.0f, -0.125f)), 0.05f, Colors.White);
-            DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(-0.085f, 0.0f, -0.175f)), 0.0125f, Colors.Black);
-            DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(-0.085f, 0.0f, -0.125f)), 0.05f, Colors.White);
+            if (!authority) {
+                DebugDraw3D.DrawPosition(headPos);
+                DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(0.085f, 0.0f, -0.175f)), 0.0125f, Colors.Black);
+                DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(0.085f, 0.0f, -0.125f)), 0.05f, Colors.White);
+                DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(-0.085f, 0.0f, -0.175f)), 0.0125f, Colors.Black);
+                DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(-0.085f, 0.0f, -0.125f)), 0.05f, Colors.White);
+            }
 
             // Limb debug point visuals
             DebugDraw3D.DrawSphere(GlobalTransform * new Transform3D(new Basis(LeftHandRotation), LeftHandPosition).Origin, 0.025f, Colors.White);

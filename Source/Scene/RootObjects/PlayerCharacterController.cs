@@ -139,6 +139,7 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
             Position += IInputProvider.PlayspaceMovementDelta;
         }
 
+        if (Avatar is null)
         {
             if (MultiplayerScene.Instance.Prefabs.TryGetValue(AvatarPrefab, out var prefab) && prefab.Type == RootObjectType.Avatar && prefab.Valid())
             {

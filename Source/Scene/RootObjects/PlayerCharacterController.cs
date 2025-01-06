@@ -123,18 +123,8 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
         base._Process(delta);
 
         var deltaf = (float)delta;
-
-        if (Avatar is null)
-        {
-            if (MultiplayerScene.Instance.Prefabs.TryGetValue(AvatarPrefab, out var prefab) && prefab.Type == RootObjectType.Avatar && prefab.Valid())
-            {
-                Avatar = prefab.Instantiate() as Avatar;
-                AddChild(Avatar);
-            }
-        }
-
         var authority = ClientSync.IsMultiplayerAuthority();
-        
+
         if (authority)
         {
             (HeadPosition, HeadRotation) = IInputProvider.LimbTransform(IInputProvider.InputLimb.Head);
@@ -147,6 +137,14 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
             MovementButtons = (byte)(((IInputProvider.JumpInput ? 1 : 0) << 0) | ((IInputProvider.SprintInput ? 1 : 0) << 1));
             MovementInput = IInputProvider.MovementInputAxis;
             Position += IInputProvider.PlayspaceMovementDelta;
+        }
+
+        {
+            if (MultiplayerScene.Instance.Prefabs.TryGetValue(AvatarPrefab, out var prefab) && prefab.Type == RootObjectType.Avatar && prefab.Valid())
+            {
+                Avatar = prefab.Instantiate() as Avatar;
+                AddChild(Avatar);
+            }
         }
 
         var yVel = IsOnFloor() ? 0 : Velocity.Y - (9.8f * deltaf);
@@ -167,34 +165,51 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
 
         if (IsOnFloor() && JumpInput) 
         {
-            //panda magic math
+            // Math to make the player jump a prcise height in this case JumpHeight
             var height = Mathf.Sqrt(2f * 9.8f * JumpHeight);
             Velocity += new Vector3(0, height, 0);
         }
 
         MoveAndSlide();
     
-        // All the debug code is John Aquamarine
-        // Head
         if (authority) {
             IInputProvider.Move(GlobalTransform);
             _head.Scale = Vector3.Zero;
         }
         else  
         {
-            var headPos = GlobalTransform * new Transform3D(new Basis(HeadRotation), HeadPosition);
             _head.Transform = new Transform3D(new Basis(HeadRotation), HeadPosition);
             _head.Scale = ClientManager.ShowDebug ? Vector3.Zero :  Vector3.One;
-            //DebugDraw3D.DrawPosition(headPos);
-            if (ClientManager.ShowDebug) {
-                DebugDraw3D.DrawPosition(headPos);
-                DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(0.085f, 0.0f, -0.175f)), 0.0125f, Colors.Black);
-                DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(0.085f, 0.0f, -0.125f)), 0.05f, Colors.White);
-                DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(-0.085f, 0.0f, -0.175f)), 0.0125f, Colors.Black);
-                DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(-0.085f, 0.0f, -0.125f)), 0.05f, Colors.White);
-            }
+        }
+        
+        if (Position.Y < -100)
+        {
+            Position = Vector3.Zero;
+        }
+        
+        // Debug limb position code
+        // TODO: Don't remove this is John Aquamarines debug visuals, if you must remove it, please replace the top section with the code below
+        // DebugDraw3D.DrawSphere(GlobalTransform * new Transform3D(new Basis(HeadRotation), HeadPosition).Origin, 0.025f, Colors.White);
+        // we want to keep debug code just incase something happens or as a fallback if we end up keeping the library in the release build.
+        if (ClientManager.ShowDebug) {
+            // John Aquamarines head and eyes
+            var headPos = GlobalTransform * new Transform3D(new Basis(HeadRotation), HeadPosition);
+            DebugDraw3D.DrawPosition(headPos);
+            DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(0.085f, 0.0f, -0.175f)), 0.0125f, Colors.Black);
+            DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(0.085f, 0.0f, -0.125f)), 0.05f, Colors.White);
+            DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(-0.085f, 0.0f, -0.175f)), 0.0125f, Colors.Black);
+            DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(-0.085f, 0.0f, -0.125f)), 0.05f, Colors.White);
+
+            // Limb debug point visuals
+            DebugDraw3D.DrawSphere(GlobalTransform * new Transform3D(new Basis(LeftHandRotation), LeftHandPosition).Origin, 0.025f, Colors.White);
+            DebugDraw3D.DrawSphere(GlobalTransform * new Transform3D(new Basis(RightHandRotation), RightHandPosition).Origin, 0.025f, Colors.White);
+            DebugDraw3D.DrawSphere(GlobalTransform * new Transform3D(new Basis(HipRotation), HipPosition).Origin, 0.025f, Colors.White);
+            DebugDraw3D.DrawSphere(GlobalTransform * new Transform3D(new Basis(LeftFootRotation), LeftFootPosition).Origin, 0.025f, Colors.White);
+            DebugDraw3D.DrawSphere(GlobalTransform * new Transform3D(new Basis(RightFootRotation), RightFootPosition).Origin, 0.025f, Colors.White);
         }
 
+        // Temp proxy code
+        // TODO: Please remove this once avatars are properly implemented, this was a temp solution to have a "Head and Hands" avatar.
         _leftHand.Transform = new Transform3D(new Basis(LeftHandRotation), LeftHandPosition); 
         _leftHand.Scale = ClientManager.ShowDebug ? Vector3.Zero : Vector3.One;
 
@@ -209,19 +224,6 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
 
         _rightFoot.Transform = new Transform3D(new Basis(RightFootRotation), RightFootPosition); 
         _rightFoot.Scale = ClientManager.ShowDebug ? Vector3.Zero : Vector3.One;
-        
-        if (ClientManager.ShowDebug) {
-            DebugDraw3D.DrawSphere(GlobalTransform * new Transform3D(new Basis(LeftHandRotation), LeftHandPosition).Origin, 0.025f, Colors.White);
-            DebugDraw3D.DrawSphere(GlobalTransform * new Transform3D(new Basis(RightHandRotation), RightHandPosition).Origin, 0.025f, Colors.White);
-            DebugDraw3D.DrawSphere(GlobalTransform * new Transform3D(new Basis(HipRotation), HipPosition).Origin, 0.025f, Colors.White);
-            DebugDraw3D.DrawSphere(GlobalTransform * new Transform3D(new Basis(LeftFootRotation), LeftFootPosition).Origin, 0.025f, Colors.White);
-            DebugDraw3D.DrawSphere(GlobalTransform * new Transform3D(new Basis(RightFootRotation), RightFootPosition).Origin, 0.025f, Colors.White);
-        }
-
-        if (Position.Y < -100)
-        {
-            Position = Vector3.Zero;
-        }
     }
     public override void _Input(InputEvent @event)
     {

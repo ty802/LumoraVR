@@ -109,14 +109,15 @@ public partial class MeshDataTest : Node3D
         var animator = new PrefabChild();
         prefab.Children[2] = animator;
         animator.Type = ChildObjectType.HeadAndHandsAnimator;
+        var offset = Mathf.Pi / 2;
         animator.Data = new Dictionary<string, Variant>
         {
             {"headBone", "Head"},
             {"leftHandBone", "L_Hand"},
             {"rightHandBone", "R_Hand"},
-            {"headOffset", Transform3D.Identity.AsFloatArray()},
-            {"leftHandOffset", Transform3D.Identity.AsFloatArray()},
-            {"rightHandOffset", Transform3D.Identity.AsFloatArray()},
+            {"headOffset", new Transform3D(new Basis(Quaternion.FromEuler(new Vector3(0, Mathf.Pi, 0))), Vector3.Zero).AsFloatArray()},
+            {"leftHandOffset", new Transform3D(new Basis(Quaternion.FromEuler(new Vector3(Mathf.DegToRad(180), Mathf.DegToRad(90), Mathf.DegToRad(-90)))), Vector3.Zero).AsFloatArray()},
+            {"rightHandOffset", new Transform3D(new Basis(Quaternion.FromEuler(new Vector3(Mathf.DegToRad(180), Mathf.DegToRad(-90), Mathf.DegToRad(90)))), Vector3.Zero).AsFloatArray()},
             {"armature", 0},
         };
 

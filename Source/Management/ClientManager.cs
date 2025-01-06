@@ -15,7 +15,7 @@ namespace Aquamarine.Source.Management
 {
     public partial class ClientManager : Node
     {
-        public static bool ShowDebug = false;
+        public static bool ShowDebug = true;
 
         private XRInterface _xrInterface;
         private IInputProvider _input;

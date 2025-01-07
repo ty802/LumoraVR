@@ -169,7 +169,7 @@ namespace Aquamarine.Source.Management
                 {
                     foreach (var session in sessions)
                     {
-                        GD.Print($"Session: {session.Name}, IP: {session.IP}, Port: {session.Port}, Identifier: {session.SessionIdentifier}");
+                        GD.Print($"Session: {session.Name}, Identifier: {session.SessionIdentifier}");
 
                         if (string.IsNullOrEmpty(session.SessionIdentifier))
                         {

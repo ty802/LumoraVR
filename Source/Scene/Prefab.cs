@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using Aquamarine.Source.Networking;
 using Aquamarine.Source.Scene.Assets;
 using Aquamarine.Source.Scene.ChildObjects;
@@ -85,12 +86,22 @@ public class Prefab
             _ => throw new ArgumentOutOfRangeException(),
         };
 
+        var assets = new System.Collections.Generic.Dictionary<PrefabAsset, IAssetProvider>();
+        
         foreach (var (index, asset) in Assets)
         {
             var a = asset.Instantiate();
-            a.Initialize(asset.Data);
+            a.Initialize(obj, asset.Data);
             obj.AssetProviders.Add(index, a);
         }
+        //i put this here for a reason, forgot why though, so i'm leaving it here in case i remember
+        /*
+        foreach (var (prefab, asset) in assets.OrderBy(i => (int)i.Key.Type))
+        {
+            
+        }
+        */
+        
         var children = new System.Collections.Generic.Dictionary<PrefabChild, IChildObject>();
         //instantiate all children
         foreach (var (index, prefabChild) in Children)

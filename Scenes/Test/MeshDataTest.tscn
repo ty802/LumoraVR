@@ -1,4 +1,4 @@
-[gd_scene load_steps=7 format=3 uid="uid://f4us2q07n48a"]
+[gd_scene load_steps=9 format=3 uid="uid://f4us2q07n48a"]
 
 [ext_resource type="Script" path="res://Source/Test/MeshDataTest.cs" id="1_g61kh"]
 [ext_resource type="PackedScene" uid="uid://wbed8gbcymlv" path="res://Assets/Test/socialvrtestmodel.glb" id="2_3oupd"]
@@ -12,6 +12,12 @@ sky_material = SubResource("PhysicalSkyMaterial_mds7y")
 [sub_resource type="Environment" id="Environment_vthhs"]
 background_mode = 2
 sky = SubResource("Sky_q172e")
+
+[sub_resource type="BoxMesh" id="BoxMesh_d3mbv"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_6v7j7"]
+ao_enabled = true
+grow_amount = 0.1
 
 [node name="MeshDataTest" type="Node3D"]
 script = ExtResource("1_g61kh")
@@ -30,5 +36,10 @@ visible = false
 
 [node name="johnaquamarine" parent="." instance=ExtResource("3_uwnsn")]
 visible = false
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="."]
+visible = false
+mesh = SubResource("BoxMesh_d3mbv")
+surface_material_override/0 = SubResource("StandardMaterial3D_6v7j7")
 
 [editable path="socialvrtestmodel"]

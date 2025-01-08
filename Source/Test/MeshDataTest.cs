@@ -115,9 +115,9 @@ public partial class MeshDataTest : Node3D
             {"headBone", "Head"},
             {"leftHandBone", "L_Hand"},
             {"rightHandBone", "R_Hand"},
-            {"headOffset", new Transform3D(new Basis(Quaternion.FromEuler(new Vector3(0, Mathf.Pi, 0))), Vector3.Zero).AsFloatArray()},
-            {"leftHandOffset", new Transform3D(new Basis(Quaternion.FromEuler(new Vector3(Mathf.DegToRad(180), Mathf.DegToRad(90), Mathf.DegToRad(-90)))), Vector3.Zero).AsFloatArray()},
-            {"rightHandOffset", new Transform3D(new Basis(Quaternion.FromEuler(new Vector3(Mathf.DegToRad(180), Mathf.DegToRad(-90), Mathf.DegToRad(90)))), Vector3.Zero).AsFloatArray()},
+            {"headOffset", new Transform3D(new Basis(Quaternion.FromEuler(new Vector3(0, Mathf.Pi, 0))), Vector3.Zero).ToFloatArray()},
+            {"leftHandOffset", new Transform3D(new Basis(Quaternion.FromEuler(new Vector3(Mathf.DegToRad(180), Mathf.DegToRad(90), Mathf.DegToRad(-90)))), Vector3.Zero).ToFloatArray()},
+            {"rightHandOffset", new Transform3D(new Basis(Quaternion.FromEuler(new Vector3(Mathf.DegToRad(180), Mathf.DegToRad(-90), Mathf.DegToRad(90)))), Vector3.Zero).ToFloatArray()},
             {"armature", 0},
         };
 

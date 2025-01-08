@@ -52,7 +52,7 @@ public partial class Armature : Skeleton3D, IChildObject
     {
         var dict = new Godot.Collections.Dictionary<string, Variant>();
 
-        if (!skeleton.Transform.IsEqualApprox(Transform3D.Identity)) dict["transform"] = skeleton.Transform.AsFloatArray();
+        if (!skeleton.Transform.IsEqualApprox(Transform3D.Identity)) dict["transform"] = skeleton.Transform.ToFloatArray();
 
         var count = skeleton.GetBoneCount();
 
@@ -62,7 +62,7 @@ public partial class Armature : Skeleton3D, IChildObject
         {
             var boneDict = new Dictionary();
             boneDict["n"] = skeleton.GetBoneName(i);
-            boneDict["r"] = skeleton.GetBoneRest(i).AsFloatArray();
+            boneDict["r"] = skeleton.GetBoneRest(i).ToFloatArray();
             boneDict["p"] = skeleton.GetBoneParent(i);
             boneArray.Add(boneDict);
         }

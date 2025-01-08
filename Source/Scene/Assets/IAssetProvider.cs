@@ -15,12 +15,13 @@ public enum AssetProviderType
     //meshes
     MeshFileProvider,
     
-    
+    //materials
+    BasicMaterialProvider,
 }
 public interface IAssetProvider
 {
     public bool AssetReady { get; }
-    public void Initialize(Godot.Collections.Dictionary<string, Variant> data);
+    public void Initialize(IRootObject owner, Godot.Collections.Dictionary<string, Variant> data);
 }
 
 public interface IAssetProvider<T> : IAssetProvider

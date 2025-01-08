@@ -75,7 +75,7 @@ public partial class MeshRenderer : MeshInstance3D, IChildObject
                 Armature = armature;
             }
         }
-        if (data.TryGetValue("materials", out var mats) && index.TryGetInt32Array(out var materialArray))
+        if (data.TryGetValue("materials", out var mats) && mats.TryGetInt32Array(out var materialArray))
         {
             var count = materialArray.Length;
             _materials = new IMaterialProvider[materialArray.Length];

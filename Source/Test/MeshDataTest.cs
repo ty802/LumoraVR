@@ -104,6 +104,7 @@ public partial class MeshDataTest : Node3D
         {
             {"mesh", 0},
             {"armature", 0},
+            {"materials", new[]{ 1, 2, 3 }},
         };
         
         var animator = new PrefabChild();
@@ -129,6 +130,28 @@ public partial class MeshDataTest : Node3D
             {"path", "builtin://Assets/Models/johnaquamarine.meshfile"},
         };
 
+        var material = new PrefabAsset();
+        prefab.Assets[1] = material;
+        material.Type = AssetProviderType.BasicMaterialProvider;
+        material.Data = new Dictionary<string, Variant>
+        {
+            {"albedoColor", Colors.Red.ToFloatArray()},
+        };
+        var material2 = new PrefabAsset();
+        prefab.Assets[2] = material2;
+        material2.Type = AssetProviderType.BasicMaterialProvider;
+        material2.Data = new Dictionary<string, Variant>
+        {
+            {"albedoColor", Colors.White.ToFloatArray()},
+        };
+        var material3 = new PrefabAsset();
+        prefab.Assets[3] = material3;
+        material3.Type = AssetProviderType.BasicMaterialProvider;
+        material3.Data = new Dictionary<string, Variant>
+        {
+            {"albedoColor", Colors.Black.ToFloatArray()},
+        };
+
         var prefabFileAccess = FileAccess.Open("res://Assets/Prefabs/johnaquamarine.prefab", FileAccess.ModeFlags.Write);
         prefabFileAccess.StoreBuffer(prefab.Serialize().ToUtf8Buffer());
         prefabFileAccess.Close();
@@ -141,7 +164,7 @@ public partial class MeshDataTest : Node3D
         
         AddChild(prefabInstantiated.Self);
         
-        GD.Print(pre.Children.Count);
+        GD.Print(serialized);
     }
     public override void _Ready()
     {

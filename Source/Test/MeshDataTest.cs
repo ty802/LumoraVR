@@ -135,7 +135,9 @@ public partial class MeshDataTest : Node3D
         material.Type = AssetProviderType.BasicMaterialProvider;
         material.Data = new Dictionary<string, Variant>
         {
-            {"albedoColor", Colors.Red.ToFloatArray()},
+            {"albedoColor", new Color("#e11545").ToFloatArray()},
+            {"emissionColor", new Color("#e11545").ToFloatArray()},
+            {"emissionStrength", 1f},
         };
         var material2 = new PrefabAsset();
         prefab.Assets[2] = material2;

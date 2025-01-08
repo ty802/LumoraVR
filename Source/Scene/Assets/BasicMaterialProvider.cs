@@ -124,10 +124,10 @@ public class BasicMaterialProvider : IMaterialProvider
     }
     public float EmissionStrength
     {
-        get => _mat.EmissionIntensity;
+        get => _mat.EmissionEnergyMultiplier;
         set
         {
-            _mat.EmissionIntensity = value;
+            _mat.EmissionEnergyMultiplier = value;
             UpdateEmissionStatus();
         }
     }
@@ -266,7 +266,7 @@ public class BasicMaterialProvider : IMaterialProvider
 
     private void UpdateEmissionStatus()
     {
-        if (EmissionColor.IsEqualApprox(Colors.Black) || EmissionStrength <= 0) _mat.EmissionEnabled = false;
+        _mat.EmissionEnabled = !(EmissionColor.IsEqualApprox(Colors.Black) || EmissionStrength <= 0);
     }
     
     public void Initialize(IRootObject owner, Dictionary<string, Variant> data)

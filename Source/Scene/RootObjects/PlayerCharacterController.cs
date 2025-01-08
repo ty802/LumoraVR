@@ -79,6 +79,7 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
     [Export] public float WalkSpeed = 5f;
     [Export] public float RunSpeed = 8f;
     [Export] public float JumpHeight = 1f;
+    private Vector3 targetVelocity;
     private float moveSpeed;
 
     [Export] public Label3D Nametag;
@@ -160,18 +161,28 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
         else if (SprintInput) targetSpeed = RunSpeed;
         
         moveSpeed = Mathf.Lerp(moveSpeed, targetSpeed, deltaf * 10);
-
-        var movementAccelerated = movementRotated * moveSpeed;
+       
+        if (IsOnFloor()) {
+            if (movementRotated.Length() > 0) {
+                targetVelocity = new Vector3(movementRotated.X, 0, movementRotated.Y) * moveSpeed;
+            } else {
+                targetVelocity.X = Mathf.Lerp(targetVelocity.X, movementRotated.X * moveSpeed, deltaf * 10);
+                targetVelocity.Z = Mathf.Lerp(targetVelocity.Z, movementRotated.Y * moveSpeed, deltaf * 10);
+            }
+        } else {
+            if (movementRotated.Length() > 0) {
+                targetVelocity.X = Mathf.Lerp(targetVelocity.X, movementRotated.X * moveSpeed, deltaf * 10);
+                targetVelocity.Z = Mathf.Lerp(targetVelocity.Z, movementRotated.Y * moveSpeed, deltaf * 10);
+            }
+        }
         
-        Velocity = new Vector3(movementAccelerated.X, yVel, movementAccelerated.Y);
-
-        Nametag.Position = HeadPosition + new Vector3(0, 0.5f, 0);
-
-        if (IsOnFloor() && JumpInput) 
+        Velocity = targetVelocity;
+        Velocity += new Vector3(0, yVel, 0);
+        
+        if (IsOnFloor() && JumpInput)
         {
             // Math to make the player jump a prcise height in this case JumpHeight
-            var height = Mathf.Sqrt(2f * 9.8f * JumpHeight);
-            Velocity += new Vector3(0, height, 0);
+            Velocity += new Vector3(0, Mathf.Sqrt(2f * 9.8f * JumpHeight), 0);
         }
 
         MoveAndSlide();
@@ -186,6 +197,8 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
             _head.Scale = ClientManager.ShowDebug ? Vector3.Zero :  Vector3.One;
         }
         
+        Nametag.Position = HeadPosition + new Vector3(0, 0.5f, 0);
+
         if (Position.Y < -100)
         {
             Position = Vector3.Zero;

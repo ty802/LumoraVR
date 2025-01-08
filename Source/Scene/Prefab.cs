@@ -91,16 +91,13 @@ public class Prefab
         foreach (var (index, asset) in Assets)
         {
             var a = asset.Instantiate();
-            a.Initialize(obj, asset.Data);
             obj.AssetProviders.Add(index, a);
+            assets.Add(asset, a);
         }
-        //i put this here for a reason, forgot why though, so i'm leaving it here in case i remember
-        /*
         foreach (var (prefab, asset) in assets.OrderBy(i => (int)i.Key.Type))
         {
-            
+            asset.Initialize(obj, prefab.Data);
         }
-        */
         
         var children = new System.Collections.Generic.Dictionary<PrefabChild, IChildObject>();
         //instantiate all children
@@ -231,6 +228,7 @@ public class PrefabAsset
             AssetProviderType.ImageTextureProvider => new ImageTextureProvider(),
             AssetProviderType.NoiseTextureProvider => new NoiseTextureProvider(),
             AssetProviderType.MeshFileProvider => new MeshFileProvider(),
+            AssetProviderType.BasicMaterialProvider => new BasicMaterialProvider(),
             _ => null,
         };
     }

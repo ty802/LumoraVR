@@ -1,0 +1,47 @@
+[gd_scene load_steps=5 format=3 uid="uid://clq7k2b44i7so"]
+
+[ext_resource type="PackedScene" uid="uid://dm83la0w1wbx7" path="res://Scenes/Editors/AssetEditor.tscn" id="1_tc4cm"]
+[ext_resource type="Theme" uid="uid://bk8eop2660llo" path="res://Assets/Themes/lackluster_theme/main_ui_theme.tres" id="1_tt01f"]
+[ext_resource type="PackedScene" uid="uid://bbq15pny4kh5o" path="res://Scenes/Editors/HierarchyEditor.tscn" id="2_25b3i"]
+[ext_resource type="Script" path="res://Source/Scene/Editors/AvatarEditor.cs" id="2_xic7d"]
+
+[node name="AvatarEditor" type="PanelContainer" node_paths=PackedStringArray("AssetEditor", "HierarchyEditor")]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme = ExtResource("1_tt01f")
+script = ExtResource("2_xic7d")
+AssetEditor = NodePath("HSplitContainer/TabContainer/Assets/AssetEditor")
+HierarchyEditor = NodePath("HSplitContainer/HierarchyEditor")
+
+[node name="HSplitContainer" type="HSplitContainer" parent="."]
+layout_mode = 2
+
+[node name="HierarchyEditor" parent="HSplitContainer" instance=ExtResource("2_25b3i")]
+layout_mode = 2
+size_flags_horizontal = 3
+RootType = 1
+
+[node name="TabContainer" type="TabContainer" parent="HSplitContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+current_tab = 2
+
+[node name="Objects" type="PanelContainer" parent="HSplitContainer/TabContainer"]
+visible = false
+layout_mode = 2
+metadata/_tab_index = 0
+
+[node name="Properties" type="PanelContainer" parent="HSplitContainer/TabContainer"]
+visible = false
+layout_mode = 2
+metadata/_tab_index = 1
+
+[node name="Assets" type="PanelContainer" parent="HSplitContainer/TabContainer"]
+layout_mode = 2
+metadata/_tab_index = 2
+
+[node name="AssetEditor" parent="HSplitContainer/TabContainer/Assets" instance=ExtResource("1_tc4cm")]
+layout_mode = 2

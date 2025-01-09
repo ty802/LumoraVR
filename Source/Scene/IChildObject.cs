@@ -7,6 +7,7 @@ public enum ChildObjectType
     MeshRenderer,
     Armature,
     HeadAndHandsAnimator,
+    SpineAnimator,
 }
 
 public interface IChildObject : ISceneObject

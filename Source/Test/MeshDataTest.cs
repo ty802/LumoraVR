@@ -44,23 +44,23 @@ public partial class MeshDataTest : Node3D
             instance.Mesh = returnedMesh;
             instance.SetBlendShapeValue(1, 1);
             
-            instance.SetSurfaceOverrideMaterial(0, new StandardMaterial3D()
+            instance.SetSurfaceOverrideMaterial(0, new StandardMaterial3D
             {
-                AlbedoColor = Colors.Red
+                AlbedoColor = Colors.Red,
             });
-            instance.SetSurfaceOverrideMaterial(1, new StandardMaterial3D()
+            instance.SetSurfaceOverrideMaterial(1, new StandardMaterial3D
             {
-                AlbedoColor = Colors.Green
+                AlbedoColor = Colors.Green,
             });
-            instance.SetSurfaceOverrideMaterial(2, new StandardMaterial3D()
+            instance.SetSurfaceOverrideMaterial(2, new StandardMaterial3D
             {
-                AlbedoColor = Colors.Blue
+                AlbedoColor = Colors.Blue,
             });
-            instance.SetSurfaceOverrideMaterial(3, new StandardMaterial3D()
+            instance.SetSurfaceOverrideMaterial(3, new StandardMaterial3D
             {
-                AlbedoColor = Colors.White
+                AlbedoColor = Colors.White,
             });
-            GD.Print(instance.GetBlendShapeCount());
+            //GD.Print(instance.GetBlendShapeCount());
         }
     }
     public void TurnJohnAquamarineIntoAPrefab()
@@ -89,16 +89,20 @@ public partial class MeshDataTest : Node3D
         meshFileAccess.StoreBuffer(meshFile.Serialize());
         meshFileAccess.Close();
         
-        var prefab = new Prefab();
-        prefab.Type = RootObjectType.Avatar;
+        var prefab = new Prefab
+        {
+            Type = RootObjectType.Avatar,
+        };
 
         var armature = new PrefabChild();
         prefab.Children[0] = armature;
+        armature.Name = "Skeleton";
         armature.Type = ChildObjectType.Armature;
         armature.Data = Armature.GenerateData(skeleton);
 
         var meshRenderer = new PrefabChild();
         prefab.Children[1] = meshRenderer;
+        meshRenderer.Name = "Mesh";
         meshRenderer.Type = ChildObjectType.MeshRenderer;
         meshRenderer.Data = new Dictionary<string, Variant>
         {
@@ -109,6 +113,7 @@ public partial class MeshDataTest : Node3D
         
         var animator = new PrefabChild();
         prefab.Children[2] = animator;
+        animator.Name = "Animator";
         animator.Type = ChildObjectType.HeadAndHandsAnimator;
         var offset = Mathf.Pi / 2;
         animator.Data = new Dictionary<string, Variant>

@@ -166,6 +166,7 @@ public class PrefabChild
 {
     public int Parent = -1; //-1 if parented to the root object, otherwise the ushort index of the parent
     public ChildObjectType Type;
+    public string Name;
     public Dictionary<string, Variant> Data = new();
     
     public static PrefabChild Deserialize(Dictionary dict)
@@ -173,6 +174,7 @@ public class PrefabChild
         var prefab = new PrefabChild();
         
         if (dict.TryGetValue("p", out var v)) prefab.Parent = v.AsInt32();
+        if (dict.TryGetValue("n", out var n)) prefab.Name = n.AsString();
         if (dict.TryGetValue("t", out var t)) prefab.Type = Enum.Parse<ChildObjectType>(t.AsString(), true);
         if (dict.TryGetValue("d", out var d)) prefab.Data = d.AsGodotDictionary<string, Variant>();
         
@@ -200,6 +202,7 @@ public class PrefabChild
     {
         var dict = new Dictionary();
         dict["p"] = Parent;
+        dict["n"] = Name;
         dict["t"] = EnumHelpers<ChildObjectType>.ToStringLowerCached(Type);
         dict["d"] = Data;
         return dict;

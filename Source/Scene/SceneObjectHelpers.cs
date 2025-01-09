@@ -1,10 +1,18 @@
 using System;
+using System.Collections.Generic;
 using Aquamarine.Source.Scene.RootObjects;
 
 namespace Aquamarine.Source.Scene;
 
 public static class SceneObjectHelpers
 {
+    public static readonly Dictionary<RootObjectType, ChildObjectType[]> AllowedChildTypes = new()
+    {
+        {
+            RootObjectType.Avatar, 
+            [ ChildObjectType.Armature, ChildObjectType.MeshRenderer, ChildObjectType.HeadAndHandsAnimator, ChildObjectType.SpineAnimator ]
+        },
+    };
     public static bool CanInstantiate(this RootObjectType type) =>
         type switch
         {
@@ -18,5 +26,6 @@ public static class SceneObjectHelpers
             RootObjectType.PlayerCharacterController => typeof(PlayerCharacterController),
             _ => null,
         };
+    public static ChildObjectType[] AllowedChildObjects(this RootObjectType type) => AllowedChildTypes.TryGetValue(type, out var list) ? list : [];
     public static bool MatchesObject(this RootObjectType type, IRootObject obj) => obj.GetType() == type.GetCorrespondingType();
 }

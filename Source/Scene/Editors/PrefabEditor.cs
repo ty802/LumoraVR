@@ -18,12 +18,17 @@ public partial class PrefabEditor : PanelContainer
     public override void _Ready()
     {
         base._Ready();
-        AssetEditor.PrefabEditor = this;
-        HierarchyEditor.PrefabEditor = this;
         
         //TEMP
         var prefabRead = FileAccess.Open("res://Assets/Prefabs/johnaquamarine.prefab", FileAccess.ModeFlags.Read);
         var serialized = prefabRead.GetBuffer((long)prefabRead.GetLength()).GetStringFromUtf8();
         EditingPrefab = Prefab.Deserialize(serialized);
+
+        CallDeferred(MethodName.DeferInit);
+    }
+
+    private void DeferInit()
+    {
+        HierarchyChanged();
     }
 }

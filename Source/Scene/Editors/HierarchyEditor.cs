@@ -7,10 +7,12 @@ namespace Aquamarine.Source.Scene.Editors;
 
 public partial class HierarchyEditor : PanelContainer
 {
+    [Export] public PrefabEditor PrefabEditor;
+    [ExportGroup("Internal")]
     [Export] public Tree Tree;
     [Export] public OptionButton AddOption;
     [Export] public Button AddButton;
-    [Export] public PrefabEditor PrefabEditor;
+    
     public RootObjectType RootType => PrefabEditor.Type;
     public Prefab Prefab => PrefabEditor.EditingPrefab;
 
@@ -53,6 +55,8 @@ public partial class HierarchyEditor : PanelContainer
         var root = Tree.CreateItem();
 
         Tree.HideRoot = true;
+
+        if (prefab is null) return;
 
         var items = new Dictionary<int, TreeItem>();
 

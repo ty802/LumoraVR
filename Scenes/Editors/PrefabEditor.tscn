@@ -1,6 +1,5 @@
-[gd_scene load_steps=5 format=3 uid="uid://co1rx4gycn78a"]
+[gd_scene load_steps=4 format=3 uid="uid://co1rx4gycn78a"]
 
-[ext_resource type="Theme" uid="uid://bk8eop2660llo" path="res://Assets/Themes/lackluster_theme/main_ui_theme.tres" id="1_3rt3i"]
 [ext_resource type="Script" path="res://Source/Scene/Editors/PrefabEditor.cs" id="2_fkqd0"]
 [ext_resource type="PackedScene" uid="uid://bbq15pny4kh5o" path="res://Scenes/Editors/HierarchyEditor.tscn" id="3_ds1o5"]
 [ext_resource type="PackedScene" uid="uid://dm83la0w1wbx7" path="res://Scenes/Editors/AssetEditor.tscn" id="4_6ssst"]
@@ -11,22 +10,23 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-theme = ExtResource("1_3rt3i")
 script = ExtResource("2_fkqd0")
+Type = 1
 AssetEditor = NodePath("HSplitContainer/TabContainer/Assets/AssetEditor")
 HierarchyEditor = NodePath("HSplitContainer/HierarchyEditor")
 
 [node name="HSplitContainer" type="HSplitContainer" parent="."]
 layout_mode = 2
 
-[node name="HierarchyEditor" parent="HSplitContainer" instance=ExtResource("3_ds1o5")]
+[node name="HierarchyEditor" parent="HSplitContainer" node_paths=PackedStringArray("PrefabEditor") instance=ExtResource("3_ds1o5")]
 layout_mode = 2
 size_flags_horizontal = 3
+PrefabEditor = NodePath("../..")
 
 [node name="TabContainer" type="TabContainer" parent="HSplitContainer"]
 layout_mode = 2
 size_flags_horizontal = 3
-current_tab = 1
+current_tab = 2
 
 [node name="Objects" type="PanelContainer" parent="HSplitContainer/TabContainer"]
 visible = false
@@ -34,6 +34,7 @@ layout_mode = 2
 metadata/_tab_index = 0
 
 [node name="Properties" type="PanelContainer" parent="HSplitContainer/TabContainer"]
+visible = false
 layout_mode = 2
 metadata/_tab_index = 1
 
@@ -71,9 +72,9 @@ layout_mode = 2
 text = "Save to Inventory"
 
 [node name="Assets" type="PanelContainer" parent="HSplitContainer/TabContainer"]
-visible = false
 layout_mode = 2
 metadata/_tab_index = 2
 
-[node name="AssetEditor" parent="HSplitContainer/TabContainer/Assets" instance=ExtResource("4_6ssst")]
+[node name="AssetEditor" parent="HSplitContainer/TabContainer/Assets" node_paths=PackedStringArray("PrefabEditor") instance=ExtResource("4_6ssst")]
 layout_mode = 2
+PrefabEditor = NodePath("../../../..")

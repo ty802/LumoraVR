@@ -33,7 +33,6 @@ gui_embed_subwindows = true
 size = Vector2i(1024, 1024)
 
 [node name="PrefabEditor" parent="SubViewport" instance=ExtResource("2_ohtv5")]
-Type = 1
 
 [node name="Pedestal" type="Node3D" parent="."]
 

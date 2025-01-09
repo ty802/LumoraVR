@@ -165,7 +165,7 @@ public class MeshFile
     public int Version = 1;
     public string[] Blendshapes = [];
     public MeshPart[] MeshParts = [];
-    public SkinLayer[] Skin;
+    public SkinLayer[] Skin = [];
 
     public bool Valid()
     {

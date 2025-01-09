@@ -15,9 +15,15 @@ public static class SceneObjectHelpers
         },
     };
     public static readonly AssetProviderType[] StaticAssetTypes = 
-        [
-            AssetProviderType.BasicMaterialProvider,
-        ];
+    [
+        AssetProviderType.BasicMaterialProvider,
+        AssetProviderType.NoiseTextureProvider,
+    ];
+    public static readonly AssetProviderType[] FileAssetTypes = 
+    [
+        AssetProviderType.MeshFileProvider,
+        AssetProviderType.ImageTextureProvider,
+    ];
     public static bool CanInstantiate(this RootObjectType type) =>
         type switch
         {

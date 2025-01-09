@@ -10,21 +10,21 @@ public partial class HierarchyEditor : PanelContainer
     [Export] public Tree Tree;
     [Export] public OptionButton AddOption;
     [Export] public Button AddButton;
-    [Export] public RootObjectType RootType;
-    public IPrefabEditor PrefabEditor;
+    [Export] public PrefabEditor PrefabEditor;
+    public RootObjectType RootType => PrefabEditor.Type;
     public Prefab Prefab => PrefabEditor.EditingPrefab;
 
     public override void _Ready()
     {
         base._Ready();
-
-        CallDeferred(MethodName.GenerateHierarchy);
-
+        
+        PrefabEditor.HierarchyChanged += GenerateHierarchy;
         var allowedAdd = RootType.AllowedChildObjects().OrderBy(i => (int)i);
         foreach (var item in allowedAdd) AddOption.AddItem(item.ToString(), (int)item);
         
         AddButton.Pressed += AddButtonOnPressed;
-        PrefabEditor.HierarchyChanged += GenerateHierarchy;
+        
+        GenerateHierarchy();
     }
     private void AddButtonOnPressed()
     {

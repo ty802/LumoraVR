@@ -4,5 +4,13 @@ namespace Aquamarine.Source.Scene.Editors;
 
 public partial class AssetEditor : PanelContainer
 {
-    public IPrefabEditor PrefabEditor;
+    [Export] public PrefabEditor PrefabEditor;
+    [Export] public OptionButton AssetTypeOptions;
+    [Export] public Button AssetAddButton;
+
+    public override void _Ready()
+    {
+        base._Ready();
+        
+    }
 }

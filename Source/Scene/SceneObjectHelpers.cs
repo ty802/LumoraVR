@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Aquamarine.Source.Scene.Assets;
 using Aquamarine.Source.Scene.RootObjects;
 
 namespace Aquamarine.Source.Scene;
@@ -13,6 +14,10 @@ public static class SceneObjectHelpers
             [ ChildObjectType.Armature, ChildObjectType.MeshRenderer, ChildObjectType.HeadAndHandsAnimator, ChildObjectType.SpineAnimator ]
         },
     };
+    public static readonly AssetProviderType[] StaticAssetTypes = 
+        [
+            AssetProviderType.BasicMaterialProvider,
+        ];
     public static bool CanInstantiate(this RootObjectType type) =>
         type switch
         {

@@ -18,17 +18,17 @@ public partial class AssetFetcher : Node
             data.callback.Add(callback);
             return;
         }
-        (Task<byte[]> task, List<Action<byte[]>> callback) task = (StartFetchAsset(path), [callback]);
+        (Task<byte[]> task, List<Action<byte[]>> callback) task = (Task.Run(() => StartFetchAsset(path)), [callback]);
         ActiveFetchTasks[path] = task;
     }
-    public static async Task<byte[]> StartFetchAsset(string path)
+    private static byte[] StartFetchAsset(string path)
     {
-        var uri = new Uri(path);
-        var scheme = uri.Scheme;
+        //var uri = new Uri(path);
+        //var scheme = uri.Scheme;
         if (BuiltinAssetHelper.ValidPath(path)) return BuiltinAssetHelper.GetBuiltinAssetData(path);
+        if (LocalTestAssetHelper.ValidPath(path)) return LocalTestAssetHelper.GetLocalTestAssetData(path);
         return null;
     }
-    public static byte[] GetBuiltinAsset(string path) => BuiltinAssetHelper.GetBuiltinAssetData(path);
     public override void _Process(double delta)
     {
         base._Process(delta);

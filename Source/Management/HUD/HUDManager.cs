@@ -23,7 +23,7 @@ public partial class HUDManager : Control
     {
         base._Input(@event);
 
-        if (@event.IsActionPressed("ui_debug"))
+        if (@event.IsActionPressed("ToggleDebugUI"))
         {
             InputManager.MovementLocked = !InputManager.MovementLocked;
             DebugOverlay.Visible = InputManager.MovementLocked;

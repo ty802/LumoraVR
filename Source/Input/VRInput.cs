@@ -69,9 +69,7 @@ public partial class VRInput : Node3D, IInputProvider
     public bool IsVR => true;
     public Vector3 GetPlayspaceMovementDelta => _playspaceDelta;
     public Vector2 GetMovementInputAxis => _leftHand.GetVector2("primary") * new Vector2(1, -1);
-    // Hopefully this works
     public bool GetJumpInput => !InputManager.MovementLocked && ((bool) _leftHand.Get("ax_button") == true);
-    // This too
     public bool GetSprintInput => !InputManager.MovementLocked && ((_leftHand.GetVector2("primary") * new Vector2(1, -1)).LengthSquared() >= 0.5f) && ((_rightHand.GetVector2("primary") * new Vector2(1, -1)).LengthSquared() >= 0.5f);
     public float GetHeight => 1.8f; //TODO
     public Vector3 GetLimbPosition(IInputProvider.InputLimb limb) => _origin.Transform.TranslatedLocal(limb switch

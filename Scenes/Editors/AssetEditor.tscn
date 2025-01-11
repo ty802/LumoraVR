@@ -121,10 +121,6 @@ size_flags_vertical = 3
 theme_override_constants/h_separation = 8
 theme_override_constants/v_separation = 8
 
-[node name="HSeparator2" type="HSeparator" parent="VBoxContainer/TabContainer/Collection/Container"]
-layout_mode = 2
-theme_override_constants/separation = 8
-
 [node name="Configuration" type="PanelContainer" parent="VBoxContainer/TabContainer"]
 visible = false
 layout_mode = 2

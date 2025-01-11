@@ -2,12 +2,16 @@ namespace Aquamarine.Source.Scene;
 
 public enum ChildObjectType
 {
+    //these should be ordered based on which should be loaded first
+    //ie, the animators have a dependency on Armature, so they should
+    //be loaded later than Armature
+    
     None,
     //Node,
     MeshRenderer,
     Armature,
     HeadAndHandsAnimator,
-    SpineAnimator,
+    HumanoidAnimator,
 }
 
 public interface IChildObject : ISceneObject

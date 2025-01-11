@@ -29,7 +29,7 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
             field = value;
             UpdateAvatar();
         }
-    } = "builtin://Assets/Prefabs/johnaquamarine.prefab";
+    } = "builtin://Assets/Prefabs/johnaquamarinehumanoid.prefab";
 
     [Export] public MultiplayerSynchronizer ClientSync;
     [Export] public MultiplayerSynchronizer ServerSync;

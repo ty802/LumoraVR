@@ -16,8 +16,11 @@ public static class BuiltinAssetHelper
         
         //John Aquamarine John Aquamarine
         "Assets/Prefabs/johnaquamarine.prefab",
+        "Assets/Prefabs/johnaquamarinehumanoid.prefab",
         "Assets/Models/johnaquamarine.glb",
+        "Assets/Models/johnaquamarinehumanoid.glb",
         "Assets/Models/johnaquamarine.meshfile",
+        "Assets/Models/johnaquamarinehumanoid.meshfile",
     }.Select(i => $"builtin://{i}").ToList();
     public static bool ValidPath(string path)
     {

@@ -21,8 +21,6 @@ public partial class HeadAndHandsAnimator : Node, IChildObject
         } 
     }
     public ICharacterController CharacterController;
-
-    public bool Valid;
     
     public string HeadBone;
     public string LeftHandBone;
@@ -31,6 +29,8 @@ public partial class HeadAndHandsAnimator : Node, IChildObject
     public Transform3D HeadBoneOffset = Transform3D.Identity;
     public Transform3D LeftHandBoneOffset = Transform3D.Identity;
     public Transform3D RightHandBoneOffset = Transform3D.Identity;
+    
+    public bool Valid;
 
     public int HeadBoneIndex;
     public int LeftHandBoneIndex;

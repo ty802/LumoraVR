@@ -11,7 +11,23 @@ public static class SceneObjectHelpers
     {
         {
             RootObjectType.Avatar, 
-            [ ChildObjectType.Armature, ChildObjectType.MeshRenderer, ChildObjectType.HeadAndHandsAnimator, ChildObjectType.SpineAnimator ]
+            [ ChildObjectType.Armature, ChildObjectType.MeshRenderer, ChildObjectType.HeadAndHandsAnimator, ChildObjectType.HumanoidAnimator ]
+        },
+    };
+    public static readonly Dictionary<ChildObjectType, ChildObjectType[]> AllowedSubChildTypes = new()
+    {
+        {
+            ChildObjectType.Armature, 
+            [ ChildObjectType.MeshRenderer, ChildObjectType.HeadAndHandsAnimator, ChildObjectType.HumanoidAnimator ]
+        },
+        //neither of the animators should have children
+        {
+            ChildObjectType.HumanoidAnimator,
+            []
+        },
+        {
+            ChildObjectType.HeadAndHandsAnimator,
+            []
         },
     };
     public static readonly AssetProviderType[] StaticAssetTypes = 
@@ -38,5 +54,6 @@ public static class SceneObjectHelpers
             _ => null,
         };
     public static ChildObjectType[] AllowedChildObjects(this RootObjectType type) => AllowedChildTypes.TryGetValue(type, out var list) ? list : [];
+    public static ChildObjectType[] AllowedChildObjects(this ChildObjectType type) => AllowedSubChildTypes.TryGetValue(type, out var list) ? list : [];
     public static bool MatchesObject(this RootObjectType type, IRootObject obj) => obj.GetType() == type.GetCorrespondingType();
 }

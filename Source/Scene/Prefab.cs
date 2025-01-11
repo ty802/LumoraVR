@@ -127,7 +127,7 @@ public class Prefab
         //apply data to root
         obj.Initialize(Data);
         //apply data to children
-        foreach (var (prefabChild, childObj) in children) childObj.Initialize(prefabChild.Data);
+        foreach (var (prefabChild, childObj) in children.OrderBy(i => (int)i.Key.Type)) childObj.Initialize(prefabChild.Data);
 
         return obj;
     }
@@ -189,6 +189,7 @@ public class PrefabChild
             ChildObjectType.MeshRenderer => new MeshRenderer(),
             ChildObjectType.Armature => new Armature(),
             ChildObjectType.HeadAndHandsAnimator => new HeadAndHandsAnimator(),
+            ChildObjectType.HumanoidAnimator => new HumanoidAnimator(),
             _ => null,
         };
     }

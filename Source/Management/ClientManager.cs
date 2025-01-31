@@ -36,7 +36,8 @@ namespace Aquamarine.Source.Management
             try
             {
                 InitializeInput();
-                
+                InitializeDiscordManager();
+
                 SpawnLocalHome();
                 this.CreateTimer(5, () =>
                 {
@@ -63,6 +64,19 @@ namespace Aquamarine.Source.Management
             {
                 Logger.Error($"Error initializing ClientManager: {ex.Message}");
             }
+        }
+        private void InitializeDiscordManager()
+        {
+            if (DiscordManager.Instance == null)
+            {
+                Logger.Log("DiscordManager instance not found. Creating one...");
+
+                var discordManager = new DiscordManager();
+                AddChild(discordManager); // Add it to the scene tree
+                discordManager.InitializeDiscord(); 
+            }
+
+            DiscordManager.Instance.UpdatePresence("Starting Game", "Main Menu", "lumoravralpha", "Lumora VR");
         }
 
         public override void _Input(InputEvent @event)

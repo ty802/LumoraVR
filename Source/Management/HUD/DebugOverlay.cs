@@ -1,4 +1,4 @@
-﻿using Aquamarine.Source.Helpers;
+using Aquamarine.Source.Helpers;
 using Aquamarine.Source.Input;
 using Aquamarine.Source.Logging;
 using Godot;
@@ -12,7 +12,7 @@ public partial class DebugOverlay : Control
     [Export] public RichTextLabel StatsText;
     [Export] public RichTextLabel ConsoleText;
     [Export] public LineEdit ConsoleInput;
-    
+
     private readonly StringBuilder _statsTextStringBuilder = new();
     private readonly StringBuilder _consoleTextStringBuilder = new();
 
@@ -42,10 +42,10 @@ public partial class DebugOverlay : Control
         Logger.Log("DebugOverlay initialized.");
     }
 
-    private void OnConsoleInputSubmitted(string newText)
+    private async void OnConsoleInputSubmitted(string newText)
     {
         ConsoleInput.Clear();
-        var strings = newText.ToLower().Split(' ');
+        var strings = newText.Split(' ');  // Remove .ToLower() cus password shenanigans 
         if (strings.Length == 0) return;
         var player = MultiplayerScene.Instance.GetLocalPlayer();
         try
@@ -57,6 +57,34 @@ public partial class DebugOverlay : Control
                     {
                         _recentEntries[i] = string.Empty;
                     }
+                    break;
+                case "login":
+                    if (strings.Length < 3)
+                    {
+                        Logger.Warn("Usage: login <username> <password>");
+                        return;
+                    }
+                    var success = await LoginManager.Instance.LoginAsync(strings[1], strings[2]);
+                    if (success)
+                        Logger.Log($"Successfully logged in as {strings[1]}");
+                    else
+                        Logger.Error("Login failed");
+                    break;
+                case "register":
+                    if (strings.Length < 4)
+                    {
+                        Logger.Warn("Usage: register <username> <email> <password>");
+                        return;
+                    }
+                    var regSuccess = await LoginManager.Instance.RegisterAsync(strings[1], strings[2], strings[3]);
+                    if (regSuccess)
+                        Logger.Log($"Successfully registered user {strings[1]}");
+                    else
+                        Logger.Error("Registration failed");
+                    break;
+                case "logout":
+                    LoginManager.Instance.Logout();
+                    Logger.Log("Logged out successfully");
                     break;
                 case "connect":
                     if (strings.Length < 3)
@@ -77,8 +105,6 @@ public partial class DebugOverlay : Control
                     {
                         ClientManager.Instance.JoinNatServer(strings[2]);
                     }
-                    
-                    //MultiplayerScene.Instance.ConnectToServer(strings[1]);
                     break;
                 case "respawn":
                     player?.Respawn();
@@ -118,6 +144,34 @@ public partial class DebugOverlay : Control
         _statsTextStringBuilder.AppendLine("Game");
         _statsTextStringBuilder.AppendLine($"{IntLabel} FPS: {string.Format(IntValue, Engine.GetFramesPerSecond())}");
         _statsTextStringBuilder.AppendLine($"{IntLabel} Physics TPS: {string.Format(IntValue, Engine.PhysicsTicksPerSecond)}");
+        _statsTextStringBuilder.AppendLine();
+
+        _statsTextStringBuilder.AppendLine("Account");
+        _statsTextStringBuilder.AppendLine($"{BoolLabel} Logged In: {DoBoolLabel(LoginManager.Instance.IsLoggedIn)}");
+        if (LoginManager.Instance.IsLoggedIn)
+        {
+            var profile = LoginManager.Instance.GetUserProfile();
+            if (profile != null)
+            {
+                _statsTextStringBuilder.AppendLine($"{StringLabel} Username: {string.Format(StringValue, profile.Username)}");
+                _statsTextStringBuilder.AppendLine($"{StringLabel} User ID: {string.Format(StringValue, profile.Id)}");
+                _statsTextStringBuilder.AppendLine($"{BoolLabel} Verified: {DoBoolLabel(profile.IsVerified)}");
+                _statsTextStringBuilder.AppendLine($"{BoolLabel} 2FA Enabled: {DoBoolLabel(profile.TwoFactorEnabled)}");
+                _statsTextStringBuilder.AppendLine($"{StringLabel} Name Color: {string.Format(StringValue, profile.NameColor)}");
+
+                if (profile.PatreonData != null)
+                {
+                    _statsTextStringBuilder.AppendLine($"\n  Patreon Status");
+                    _statsTextStringBuilder.AppendLine($"{BoolLabel} Active Supporter: {DoBoolLabel(profile.PatreonData.IsActiveSupporter)}");
+                    _statsTextStringBuilder.AppendLine($"{IntLabel} Support Months: {string.Format(IntValue, profile.PatreonData.TotalSupportMonths)}");
+                    _statsTextStringBuilder.AppendLine($"{IntLabel} Last Tier (¢): {string.Format(IntValue, profile.PatreonData.LastTierCents)}");
+                }
+            }
+            else
+            {
+                _statsTextStringBuilder.AppendLine($"{StringLabel} Username: {string.Format(StringValue, LoginManager.Instance.GetCurrentUsername())}");
+            }
+        }
         _statsTextStringBuilder.AppendLine();
 
         _statsTextStringBuilder.AppendLine("Networking");

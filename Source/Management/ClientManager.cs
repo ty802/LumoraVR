@@ -35,8 +35,11 @@ namespace Aquamarine.Source.Management
             
             try
             {
+                InitializeLocalDatabase();
+                InitializeLoginManager();
                 InitializeInput();
                 InitializeDiscordManager();
+
 
                 SpawnLocalHome();
                 this.CreateTimer(5, () =>
@@ -63,6 +66,39 @@ namespace Aquamarine.Source.Management
             catch (Exception ex)
             {
                 Logger.Error($"Error initializing ClientManager: {ex.Message}");
+            }
+        }
+
+        private void InitializeLocalDatabase()
+        {
+            if (LocalDatabase.Instance == null)
+            {
+                Logger.Log("LocalDatabase instance not found. Creating one...");
+
+                var database = new LocalDatabase();
+                AddChild(database);
+                Logger.Log("LocalDatabase initialized successfully.");
+            }
+        }
+
+        private void InitializeLoginManager()
+        {
+            if (LoginManager.Instance == null)
+            {
+                Logger.Log("LoginManager instance not found. Creating one...");
+
+                var loginManager = new LoginManager();
+                AddChild(loginManager);
+
+                loginManager.OnLoginStatusChanged += (isLoggedIn) =>
+                {
+                    if (isLoggedIn)
+                        Logger.Log("User logged in successfully.");
+                    else
+                        Logger.Log("User logged out.");
+                };
+
+                Logger.Log("LoginManager initialized successfully.");
             }
         }
         private void InitializeDiscordManager()

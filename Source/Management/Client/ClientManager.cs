@@ -15,7 +15,7 @@ namespace Aquamarine.Source.Management
 
         private XRInterface _xrInterface;
         private IInputProvider _input;
-        private LiteNetLibMultiplayerPeer _peer;
+        private LiteNetLibMultiplayerPeer  _peer;
         [Export] private Node3D _inputRoot;
         [Export] private MultiplayerScene _multiplayerScene;
 

@@ -1,6 +1,6 @@
 [gd_scene load_steps=11 format=3 uid="uid://d37lm476vrp1e"]
 
-[ext_resource type="Script" path="res://Source/Management/ClientManager.cs" id="1_bw0gq"]
+[ext_resource type="Script" path="res://Source/Management/Client/ClientManager.cs" id="1_enrkg"]
 [ext_resource type="PackedScene" uid="uid://dtempfuf1571n" path="res://Scenes/World/MultiplayerScene.tscn" id="2_40xba"]
 [ext_resource type="Texture2D" uid="uid://jdjeattbqj2g" path="res://Assets/Textures/Dot.png" id="3_1i8qj"]
 [ext_resource type="Script" path="res://Source/Management/HUD/HUDManager.cs" id="3_16xj1"]
@@ -19,7 +19,7 @@ size = Vector3(2.1, 0.25, 2.1)
 size = Vector3(2, 0.25, 2)
 
 [node name="Root" type="Node" node_paths=PackedStringArray("_inputRoot", "_multiplayerScene")]
-script = ExtResource("1_bw0gq")
+script = ExtResource("1_enrkg")
 _inputRoot = NodePath("InputRoot")
 _multiplayerScene = NodePath("Scene")
 

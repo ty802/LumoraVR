@@ -61,27 +61,54 @@ public partial class DebugOverlay : Control
                 case "login":
                     if (strings.Length < 3)
                     {
-                        Logger.Warn("Usage: login <username> <password>");
+                        Logger.Warn("Usage: login <username> <password> [2fa_code]");
                         return;
                     }
-                    var success = await LoginManager.Instance.LoginAsync(strings[1], strings[2]);
-                    if (success)
+
+                    var loginResult = await LoginManager.Instance.LoginAsync(
+                        strings[1],
+                        strings[2],
+                        strings.Length > 3 ? strings[3] : null
+                    );
+
+                    if (loginResult.Requires2FA)
+                    {
+                        Logger.Warn("2FA code required. Please use: login <username> <password> <2fa_code>");
+                        return;
+                    }
+
+                    if (loginResult.Success)
+                    {
                         Logger.Log($"Successfully logged in as {strings[1]}");
+                    }
                     else
-                        Logger.Error("Login failed");
+                    {
+                        Logger.Error($"Login failed: {loginResult.Error}");
+                    }
                     break;
+
                 case "register":
                     if (strings.Length < 4)
                     {
                         Logger.Warn("Usage: register <username> <email> <password>");
                         return;
                     }
-                    var regSuccess = await LoginManager.Instance.RegisterAsync(strings[1], strings[2], strings[3]);
-                    if (regSuccess)
+
+                    var registerResponse = await LoginManager.Instance.RegisterAsync(strings[1], strings[2], strings[3]);
+                    if (registerResponse.Success)
+                    {
                         Logger.Log($"Successfully registered user {strings[1]}");
+                        if (!string.IsNullOrEmpty(registerResponse.Message))
+                        {
+                            Logger.Log(registerResponse.Message);
+                        }
+                    }
                     else
-                        Logger.Error("Registration failed");
+                    {
+                        Logger.Error($"Registration failed: {registerResponse.Message}");
+                    }
                     break;
+
                 case "logout":
                     LoginManager.Instance.Logout();
                     Logger.Log("Logged out successfully");

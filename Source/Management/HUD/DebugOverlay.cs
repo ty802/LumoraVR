@@ -116,21 +116,23 @@ public partial class DebugOverlay : Control
                 case "connect":
                     if (strings.Length < 3)
                     {
-                        Logger.Warn("Usage: connect <{direct}/{nat}> <{ip:port}/{identifier}>");
+                        Logger.Warn("Usage: connect <{direct/nat/relay}> <{ip:port}/{identifier}>");
                         return;
                     }
-
                     var method = strings[1];
-
                     if (method.StartsWith('d')) //direct
                     {
                         var split = strings[2].Split(":");
-                        if (split.Length != 2 || int.TryParse(split[1], out var port)) return;
+                        if (split.Length != 2 || !int.TryParse(split[1], out var port)) return;
                         ClientManager.Instance.JoinServer(split[0], port);
                     }
                     else if (method.StartsWith('n')) //nat
                     {
                         ClientManager.Instance.JoinNatServer(strings[2]);
+                    }
+                    else if (method.StartsWith('r')) //relay
+                    {
+                        ClientManager.Instance.JoinNatServerRelay(strings[2]);
                     }
                     break;
                 case "respawn":

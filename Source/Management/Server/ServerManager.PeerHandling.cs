@@ -1,4 +1,4 @@
-﻿using Aquamarine.Source.Logging;
+using Aquamarine.Source.Logging;
 using Godot;
 using System;
 

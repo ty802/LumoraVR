@@ -6,6 +6,8 @@ using System.Threading.Tasks;
 using Godot;
 using Aquamarine.Source.Logging;
 using Aquamarine.Source.Networking;
+using LiteNetLib.Utils;
+using LiteNetLib;
 
 namespace Aquamarine.Source.Management
 {
@@ -56,8 +58,11 @@ namespace Aquamarine.Source.Management
         public void JoinNatServerRelay(string identifier)
         {
             _peer = new LiteNetLibMultiplayerPeer();
+            // Connect to relay server using identifier as the connection key
             _peer.CreateClient(SessionInfo.RelayServer.Address.ToString(),
-                             SessionInfo.RelayServer.Port, identifier);
+                              SessionInfo.RelayServer.Port,
+                              $"session:{identifier}"); // Pass session identifier in the initial connection
+
             Multiplayer.MultiplayerPeer = _peer;
             _isDirectConnection = false;
 

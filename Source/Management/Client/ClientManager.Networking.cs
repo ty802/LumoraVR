@@ -57,6 +57,8 @@ namespace Aquamarine.Source.Management
 
         public void JoinNatServerRelay(string identifier)
         {
+            DisconnectFromCurrentServer();
+
             _peer = new LiteNetLibMultiplayerPeer();
             // Connect to relay server using identifier as the connection key
             _peer.CreateClient(SessionInfo.RelayServer.Address.ToString(),

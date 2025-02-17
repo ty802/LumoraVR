@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Net.Http;
 using System.Text.Json;
 using System.Collections.Generic;
@@ -63,10 +63,20 @@ namespace Aquamarine.Source.Management
             // Connect to relay server using identifier as the connection key
             _peer.CreateClient(SessionInfo.RelayServer.Address.ToString(),
                               SessionInfo.RelayServer.Port,
-                              $"session:{identifier}"); // Pass session identifier in the initial connection
+                              $"Lum"); // Pass session identifier in the initial connection
 
             Multiplayer.MultiplayerPeer = _peer;
             _isDirectConnection = false;
+            
+            void PeerConnected(NetPeer peer)
+            {
+                NetDataWriter writer = new NetDataWriter();
+                writer.Put($"session:{identifier}");
+                peer.Send(writer, DeliveryMethod.ReliableOrdered);
+                _peer.Listener.PeerConnectedEvent -= PeerConnected;
+            }
+            
+            _peer.Listener.PeerConnectedEvent += PeerConnected;
 
             RegisterPeerEvents();
         }

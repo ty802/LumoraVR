@@ -1,0 +1,69 @@
+[gd_scene load_steps=5 format=3 uid="uid://ddkrrw6g4phsx"]
+
+[ext_resource type="Script" path="res://Source/Scene/RootObjects/Nameplate.cs" id="1_script"]
+[ext_resource type="Theme" uid="uid://brpxf2y12vme8" path="res://Assets/Themes/lackluster_theme/nameplate_theme.tres" id="2_theme"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_n8m3p"]
+bg_color = Color(0.1, 0.2, 0.3, 0.8)
+border_width_left = 4
+border_width_top = 4
+border_width_right = 4
+border_width_bottom = 4
+border_color = Color(0.2, 0.4, 0.6, 1)
+corner_radius_top_left = 12
+corner_radius_top_right = 12
+corner_radius_bottom_right = 12
+corner_radius_bottom_left = 12
+shadow_color = Color(0.1, 0.15, 0.2, 0.9)
+shadow_size = 4
+shadow_offset = Vector2(2, 2)
+
+[sub_resource type="ViewportTexture" id="ViewportTexture_vwxin"]
+viewport_path = NodePath("SubViewport")
+
+[node name="Nameplate" type="Node3D"]
+script = ExtResource("1_script")
+
+[node name="SubViewport" type="SubViewport" parent="."]
+transparent_bg = true
+size = Vector2i(512, 128)
+
+[node name="NameplateContainer" type="Control" parent="SubViewport"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_horizontal = 3
+mouse_filter = 2
+
+[node name="Panel" type="Panel" parent="SubViewport/NameplateContainer"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+theme = ExtResource("2_theme")
+theme_override_styles/panel = SubResource("StyleBoxFlat_n8m3p")
+
+[node name="Label" type="Label" parent="SubViewport/NameplateContainer/Panel"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme = ExtResource("2_theme")
+text = "Player Name"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="Sprite3D" type="Sprite3D" parent="."]
+pixel_size = 0.002
+billboard = 1
+double_sided = false
+no_depth_test = true
+texture = SubResource("ViewportTexture_vwxin")

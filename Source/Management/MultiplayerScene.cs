@@ -4,6 +4,7 @@ using Aquamarine.Source.Helpers;
 using Aquamarine.Source.Logging;
 using Aquamarine.Source.Scene;
 using Aquamarine.Source.Scene.RootObjects;
+using Aquamarine.Source.Scene.UI;
 using Godot;
 using Godot.Collections;
 using Array = Godot.Collections.Array;
@@ -69,12 +70,13 @@ namespace Aquamarine.Source.Management
             foreach (var player in PlayerList)
             {
                 var controller = GetPlayer(player.Key);
-                if (controller is null) continue;
-                //GD.Print(player.Value.Name);
-                controller.Nametag.Text = player.Value.Name;
+                if (controller?.Nametag is Nameplate nameplate)
+                {
+                    nameplate.SetText(player.Value.Name);
+                }
             }
         }
-        
+
         [Rpc(CallLocal = false, TransferChannel = SerializationHelpers.WorldUpdateChannel, TransferMode = MultiplayerPeer.TransferModeEnum.Reliable)]
         private void UpdatePlayerList(Dictionary playerList)
         {

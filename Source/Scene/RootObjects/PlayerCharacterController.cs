@@ -4,6 +4,7 @@ using Aquamarine.Source.Input;
 using Aquamarine.Source.Logging;
 using Aquamarine.Source.Management;
 using Aquamarine.Source.Scene.Assets;
+using Aquamarine.Source.Scene.UI;
 using Godot;
 
 namespace Aquamarine.Source.Scene.RootObjects;
@@ -82,8 +83,7 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
     private Vector3 targetVelocity;
     private float moveSpeed;
 
-    [Export] public Label3D Nametag;
-
+    [Export] public Node3D Nametag;  
     [Export] private Node3D _head;
     [Export] private Node3D _leftHand;
     [Export] private Node3D _rightHand;
@@ -110,9 +110,10 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
     {
         base._Ready();
 
-        if (Authority == Multiplayer.GetUniqueId()) {
+        if (Authority == Multiplayer.GetUniqueId())
+        {
             PlayerName = System.Environment.MachineName;
-            Nametag.Text = PlayerName;
+            (Nametag as Nameplate)?.SetText(PlayerName);
         }
 
         UpdateAvatar();
@@ -196,8 +197,9 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
             _head.Transform = new Transform3D(new Basis(HeadRotation), HeadPosition);
             _head.Scale = ClientManager.ShowDebug ? Vector3.Zero :  Vector3.One;
         }
-        
-        Nametag.Position = HeadPosition + new Vector3(0, 0.5f, 0);
+
+       Nametag.Position = HeadPosition + new Vector3(0, 0.5f, 0);
+        Nametag.SetVisible(true);
 
         if (Position.Y < -100)
         {

@@ -31,7 +31,7 @@ namespace Aquamarine.Source.Management
                 InitializeLoginManager();
                 InitializeInput();
                 InitializeDiscordManager();
-
+                FetchServerInfo();
                 SpawnLocalHome();
             }
             catch (Exception ex)

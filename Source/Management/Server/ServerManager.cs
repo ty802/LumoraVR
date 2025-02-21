@@ -40,7 +40,7 @@ namespace Aquamarine.Source.Management
         public override void _Process(double delta)
         {
             base._Process(delta);
-            SessionListManager.PollEvents();
+            SessionListManager?.PollEvents();
         }
 
         public override void _Ready()

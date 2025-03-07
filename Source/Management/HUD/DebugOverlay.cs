@@ -1,6 +1,7 @@
 using Aquamarine.Source.Helpers;
 using Aquamarine.Source.Input;
 using Aquamarine.Source.Logging;
+using Aquamarine.Source.Networking;
 using Godot;
 using System;
 using System.Text;
@@ -205,6 +206,33 @@ public partial class DebugOverlay : Control
 
         _statsTextStringBuilder.AppendLine("Networking");
         _statsTextStringBuilder.AppendLine($"{IntLabel} Player Count: {string.Format(IntValue, MultiplayerScene.Instance.PlayerList.Count)}");
+
+        // Add network stats
+        var multiplayerPeer = Multiplayer.MultiplayerPeer as LiteNetLibMultiplayerPeer;
+        if (multiplayerPeer != null)
+        {
+            var serverPing = multiplayerPeer.GetServerPing();
+            _statsTextStringBuilder.AppendLine($"{IntLabel} Ping: {string.Format(serverPing >= 0 ? IntValue : "[color=indian_red]Unknown[/color]", serverPing)}");
+            _statsTextStringBuilder.AppendLine($"{IntLabel} Packets Sent: {string.Format(IntValue, multiplayerPeer.PacketsSent)}");
+            _statsTextStringBuilder.AppendLine($"{IntLabel} Packets Received: {string.Format(IntValue, multiplayerPeer.PacketsReceived)}");
+
+            // Show detailed peer pings if in server mode
+            if (multiplayerPeer._IsServer() && ClientManager.ShowDebug)
+            {
+                var peerPings = multiplayerPeer.GetAllPeerPings();
+                if (peerPings.Count > 0)
+                {
+                    _statsTextStringBuilder.AppendLine("\n  Peer Pings");
+                    foreach (var peerPing in peerPings)
+                    {
+                        var playerInfo = MultiplayerScene.Instance.PlayerList.TryGetValue(peerPing.Key, out var info) ? info : null;
+                        var playerName = playerInfo?.Name ?? $"Player {peerPing.Key}";
+                        _statsTextStringBuilder.AppendLine($"  {IntLabel} {playerName}: {string.Format(IntValue, peerPing.Value)}");
+                    }
+                }
+            }
+        }
+
         _statsTextStringBuilder.AppendLine();
 
         var player = MultiplayerScene.Instance.GetLocalPlayer();

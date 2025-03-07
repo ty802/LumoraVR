@@ -126,7 +126,10 @@ namespace Aquamarine.Source.Networking
 
         private void ListenerOnNetworkReceiveEvent(NetPeer peer, NetPacketReader reader, byte channel, DeliveryMethod deliveryMethod)
         {
-            //GD.Print($"Received packet of length {reader.AvailableBytes} on channel {channel}");
+            // Increment the received packets counter
+            PacketsReceived++;
+
+            // Process the packet as before
             if (channel == ControlChannel)
             {
                 if (IsServer)

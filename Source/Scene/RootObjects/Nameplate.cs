@@ -14,7 +14,35 @@ namespace Aquamarine.Source.Scene.UI
         {
             _viewport = GetNode<SubViewport>("SubViewport");
             _sprite3D = GetNode<Sprite3D>("Sprite3D");
-            _label = GetNode<Label>("SubViewport/NameplateContainer/Panel/Label");
+
+            // Fixed path - using GetNodeOrNull to avoid crashing if not found
+            _label = GetNodeOrNull<Label>("SubViewport/NameplateContainer/MarginContainer/Label");
+
+            // Fallback method to find the label by searching children
+            if (_label == null)
+            {
+                // Search for the Label within the viewport's children
+                foreach (var child in _viewport.GetChildren())
+                {
+                    if (child is Control container)
+                    {
+                        // Try to find a label in this container or its children
+                        var foundLabel = FindLabelInChildren(container);
+                        if (foundLabel != null)
+                        {
+                            _label = foundLabel;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // If we still can't find a label, log the error and create one
+            if (_label == null)
+            {
+                GD.PrintErr("Could not find Label in Nameplate. Creating a fallback label.");
+                CreateFallbackLabel();
+            }
 
             // High res viewport
             _viewport.Size = new Vector2I(512, 128);
@@ -27,6 +55,55 @@ namespace Aquamarine.Source.Scene.UI
             UpdateSpriteSize();
         }
 
+        // Helper method to recursively find a Label in children
+        private Label FindLabelInChildren(Node node)
+        {
+            if (node is Label label)
+                return label;
+
+            foreach (var child in node.GetChildren())
+            {
+                var result = FindLabelInChildren(child);
+                if (result != null)
+                    return result;
+            }
+
+            return null;
+        }
+
+        // Create a fallback label if we can't find the original
+        private void CreateFallbackLabel()
+        {
+            var container = new Control();
+            container.Name = "NameplateContainer";
+            _viewport.AddChild(container);
+            container.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+
+            var panel = new Panel();
+            panel.Name = "Panel";
+            container.AddChild(panel);
+            panel.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+
+            var marginContainer = new MarginContainer();
+            marginContainer.Name = "MarginContainer";
+            panel.AddChild(marginContainer);
+            marginContainer.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+            marginContainer.AddThemeConstantOverride("margin_left", 32);
+            marginContainer.AddThemeConstantOverride("margin_top", 16);
+            marginContainer.AddThemeConstantOverride("margin_right", 32);
+            marginContainer.AddThemeConstantOverride("margin_bottom", 16);
+
+            _label = new Label();
+            _label.Name = "Label";
+            marginContainer.AddChild(_label);
+            _label.Text = "Player";
+            _label.HorizontalAlignment = HorizontalAlignment.Center;
+            _label.VerticalAlignment = VerticalAlignment.Center;
+            _label.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0, 0.7f));
+            _label.AddThemeConstantOverride("outline_size", 10);
+            _label.AddThemeFontSizeOverride("font_size", 72);
+        }
+
         public void SetText(string newText)
         {
             if (_label != null)
@@ -34,6 +111,10 @@ namespace Aquamarine.Source.Scene.UI
                 _label.Text = newText;
                 // Clamp the sprite scale after setting text
                 ClampScale();
+            }
+            else
+            {
+                GD.PrintErr("Cannot set text: Label is null in Nameplate");
             }
         }
 

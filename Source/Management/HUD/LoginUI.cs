@@ -132,33 +132,85 @@ public partial class LoginUI : Control
         if (!loginManager.IsLoggedIn) return;
 
         var username = loginManager.GetCurrentUsername();
-        ProfileUsernameLabel.Text = username;
-
         var profile = loginManager.GetUserProfile();
+
         if (profile != null)
         {
-            // Format dates to be more readable
+            // Get the name color - use the Patreon tier color if available, otherwise use the specific name color
+            Color nameColor = Colors.White; // Default white
+
+            if (profile.PatreonData != null && profile.PatreonData.IsActiveSupporter && !string.IsNullOrEmpty(profile.PatreonData.TierColor))
+            {
+                nameColor = StringToColor(profile.PatreonData.TierColor);
+            }
+            else if (!string.IsNullOrEmpty(profile.NameColor) && profile.NameColor != "#FFFFFF")
+            {
+                nameColor = StringToColor(profile.NameColor);
+            }
+
+            // Apply the color to the username
+            ProfileUsernameLabel.Text = username;
+            ProfileUsernameLabel.AddThemeColorOverride("font_color", nameColor);
+
+            // Format registration date
             var formattedDate = profile.RegistrationDate.ToString("MMMM d, yyyy");
             ProfileMemberSinceLabel.Text = $"Member since: {formattedDate}";
 
             // Display Patreon status if available
             if (profile.PatreonData != null && profile.PatreonData.IsActiveSupporter)
             {
-                int tier = profile.PatreonData.LastTierCents / 100;
-                ProfilePatreonStatusLabel.Text = $"Patreon: Active - Tier ${tier} - {profile.PatreonData.TotalSupportMonths} months";
+                // Use tier name if available, otherwise use dollar amount
+                string tierName = !string.IsNullOrEmpty(profile.PatreonData.TierName) ?
+                    profile.PatreonData.TierName :
+                    $"${profile.PatreonData.LastTierCents / 100}";
+
+                // Create patron display string
+                ProfilePatreonStatusLabel.Text = $"Patreon: {tierName}";
+                ProfilePatreonStatusLabel.AddThemeColorOverride("font_color", nameColor);
                 ProfilePatreonStatusLabel.Visible = true;
             }
             else
             {
                 ProfilePatreonStatusLabel.Text = "Not a Patreon supporter";
+                ProfilePatreonStatusLabel.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
                 ProfilePatreonStatusLabel.Visible = true;
             }
         }
         else
         {
+            // Fallback for when profile isn't available
+            ProfileUsernameLabel.Text = username;
             ProfileMemberSinceLabel.Text = "Member since: Unknown";
             ProfilePatreonStatusLabel.Visible = false;
         }
+    }
+
+    // Helper to convert hex color string to Godot Color
+    private Color StringToColor(string hexColor)
+    {
+        if (string.IsNullOrEmpty(hexColor)) return Colors.White;
+
+        try
+        {
+            // Remove # if present
+            if (hexColor.StartsWith("#"))
+                hexColor = hexColor.Substring(1);
+
+            // Parse hex values
+            if (hexColor.Length == 6)
+            {
+                int r = Convert.ToInt32(hexColor.Substring(0, 2), 16);
+                int g = Convert.ToInt32(hexColor.Substring(2, 2), 16);
+                int b = Convert.ToInt32(hexColor.Substring(4, 2), 16);
+                return new Color(r / 255f, g / 255f, b / 255f);
+            }
+        }
+        catch
+        {
+            // Fallback to default on parsing error
+        }
+
+        return Colors.White; // Default color
     }
 
     /// <summary>

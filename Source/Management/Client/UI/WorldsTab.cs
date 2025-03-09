@@ -118,10 +118,9 @@ public partial class WorldsTab : Control
         
         }
     }
+    // TODO Fix later
     /// <summary>
     /// Joins the session with the given id
-    /// 
-    /// !!not currently working!!
     /// </summary>
     /// <param name="id"></param>
     internal async void joinSession(string id)

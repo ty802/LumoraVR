@@ -28,7 +28,7 @@ public partial class SessionInstance : HBoxContainer
 #else
         _detailsText.Text = info.SessionName;
 #endif
-
+        _tab = tab;
     }
     public void OnJoinButtonPressed()
     {

@@ -130,6 +130,19 @@ public partial class MainMenu : Control
             });
         }
     }
+    // Clean up out of tree nodes when the main menu is removed
+    public override void _Notification(int what)
+    {
+        base._Notification(what);
+        if (what == NotificationPredelete)
+        {
+            foreach (var item in Tabs)
+            {
+                Tabs.Remove(item.Key);
+                item.Value.QueueFree();
+            }
+        }
+    }
 
     public override void _ExitTree()
     {
@@ -150,11 +163,6 @@ public partial class MainMenu : Control
         InputManager.MovementLocked = !InputManager.MovementLocked;
         Visible = InputManager.MovementLocked;
 
-        // Hide the login UI and restore main content when closing the menu
-        if (!Visible)
-        {
-            HideLoginUI();
-        }
     }
 
     /// <summary>

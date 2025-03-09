@@ -46,11 +46,11 @@ Spawner = NodePath("MultiplayerSpawner")
 PlayerRoot = NodePath("Level/PlayerRoot")
 
 [node name="MultiplayerSpawner" type="MultiplayerSpawner" parent="."]
-_spawnable_scenes = PackedStringArray("res://Scenes/Objects/RootObjects/PlayerCharacterController.tscn")
+_spawnable_scenes = PackedStringArray("uid://fnsfbtgsl6df")
 spawn_path = NodePath("../Level")
 
 [node name="PlayerSync" type="MultiplayerSpawner" parent="."]
-_spawnable_scenes = PackedStringArray("res://Scenes/Objects/RootObjects/PlayerCharacterController.tscn")
+_spawnable_scenes = PackedStringArray("uid://fnsfbtgsl6df")
 spawn_path = NodePath("../Level/PlayerRoot")
 
 [node name="Level" type="Node" parent="."]

@@ -18,6 +18,8 @@ namespace Aquamarine.Source.Management
         private LiteNetLibMultiplayerPeer  _peer;
         [Export] private Node3D _inputRoot;
         [Export] private MultiplayerScene _multiplayerScene;
+        private string _targetWorldPath = null;
+
 
         private bool _isDirectConnection = false;
 
@@ -59,5 +61,14 @@ namespace Aquamarine.Source.Management
                 JoinServer("localhost", 6000);
             });
         }
+
+        public void LoadLocalScene()
+        {
+            DisconnectFromCurrentServer();
+
+            GetTree().ChangeSceneToFile("res://Scenes/World/LocalHome.tscn");
+            Logger.Log("Switched to local scene.");
+        }
+
     }
 }

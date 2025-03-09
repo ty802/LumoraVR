@@ -1,17 +1,18 @@
-[gd_scene load_steps=3 format=3 uid="uid://bqoqe72r7ln6v"]
+[gd_scene load_steps=4 format=3 uid="uid://bqoqe72r7ln6v"]
 
 [ext_resource type="Script" uid="uid://btwis85m8rytv" path="res://Source/Management/Server/ServerManager.cs" id="1_or8wb"]
-[ext_resource type="PackedScene" uid="uid://dtempfuf1571n" path="res://Scenes/World/MultiplayerScene.tscn" id="2_d7401"]
+[ext_resource type="Script" uid="uid://beum44yjstvne" path="res://Source/Management/PlayerManager.cs" id="2_ruubs"]
+[ext_resource type="Script" uid="uid://bhyoymspo68w" path="res://Source/Management/WorldManager.cs" id="3_ruubs"]
 
-[node name="Root" type="Node" node_paths=PackedStringArray("_multiplayerScene")]
+[node name="Root" type="Node"]
 script = ExtResource("1_or8wb")
-_multiplayerScene = NodePath("Scene")
+
+[node name="PlayerRoot" type="Node3D" parent="."]
+script = ExtResource("2_ruubs")
 
 [node name="Camera3D" type="Camera3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.8, 5)
 fov = 100.0
-
-[node name="Scene" parent="." instance=ExtResource("2_d7401")]
 
 [node name="DebugInterface" type="Control" parent="."]
 layout_mode = 3
@@ -24,3 +25,11 @@ layout_mode = 0
 offset_right = 40.0
 offset_bottom = 23.0
 text = "Server"
+
+[node name="WorldRoot" type="Node3D" parent="."]
+
+[node name="PlayerManager" type="Node" parent="."]
+script = ExtResource("2_ruubs")
+
+[node name="WorldManager" type="Node" parent="."]
+script = ExtResource("3_ruubs")

@@ -13,7 +13,11 @@ namespace Aquamarine.Source.Management
 {
     public partial class ClientManager
     {
-        private void DisconnectFromCurrentServer()
+        public void SetTargetWorldPath(string path)
+        {
+            _targetWorldPath = path;
+        }
+        public void DisconnectFromCurrentServer()
         {
             if (_peer?.GetConnectionStatus() == MultiplayerPeer.ConnectionStatus.Connected)
                 _multiplayerScene.Rpc(MultiplayerScene.MethodName.DisconnectPlayer);
@@ -43,8 +47,13 @@ namespace Aquamarine.Source.Management
             RegisterPeerEvents();
         }
 
-        public void JoinServer(string address, int port)
+        public void JoinServer(string address, int port, string worldPath = null)
         {
+            if (worldPath != null)
+            {
+                _targetWorldPath = worldPath;
+            }
+
             DisconnectFromCurrentServer();
 
             _peer = new LiteNetLibMultiplayerPeer();
@@ -96,11 +105,15 @@ namespace Aquamarine.Source.Management
 
         private void PeerOnClientConnectionSuccess()
         {
-            MultiplayerScene.Instance.Rpc(MultiplayerScene.MethodName.SetPlayerName,
-                                        System.Environment.MachineName);
+            MultiplayerScene.Instance.Rpc(MultiplayerScene.MethodName.SetPlayerName,System.Environment.MachineName);
             UnregisterPeerEvents();
-        }
 
+            if (_targetWorldPath != null)
+            {
+                WorldManager.Instance.LoadWorld(_targetWorldPath, false);
+                _targetWorldPath = null;
+            }
+        }
         private void PeerOnPeerDisconnected(long id)
         {
             GD.Print($"{id} disconnected");

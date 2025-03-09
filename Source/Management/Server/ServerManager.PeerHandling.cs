@@ -1,4 +1,5 @@
 using Aquamarine.Source.Logging;
+using Aquamarine.Source.Scene.RootObjects;
 using Godot;
 using System;
 
@@ -19,7 +20,7 @@ namespace Aquamarine.Source.Management
 
                 _multiplayerScene.SendUpdatedPlayerList(); // Notify others of the new player
                 //Logger.Log("Updated player list sent.");
-
+                
                 _multiplayerScene.SendAllPrefabs((int)id); // Send prefabs to the new player
                 //Logger.Log("Prefabs sent to the new player.");
             }

@@ -1,6 +1,7 @@
-[gd_scene load_steps=9 format=3 uid="uid://dkagai8lawv51"]
+[gd_scene load_steps=10 format=3 uid="uid://dkagai8lawv51"]
 
 [ext_resource type="Shader" uid="uid://drcbjbss62tm5" path="res://Assets/Shaders/TestGrid.tres" id="1_4m34k"]
+[ext_resource type="Script" uid="uid://cev0tf3rr068k" path="res://Source/Management/MultiplayerScene.cs" id="1_gvnn8"]
 [ext_resource type="Texture2D" uid="uid://jdjeattbqj2g" path="res://Assets/Textures/Dot.png" id="2_af4yu"]
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_nk84i"]
@@ -47,14 +48,19 @@ volumetric_fog_density = 0.1
 volumetric_fog_albedo = Color(0, 0, 0, 1)
 
 [node name="Scene" type="Node"]
+script = ExtResource("1_gvnn8")
+
+[node name="MultiplayerSpawner" type="MultiplayerSpawner" parent="."]
+_spawnable_scenes = PackedStringArray("uid://fnsfbtgsl6df")
+spawn_path = NodePath("../Level")
+
+[node name="PlayerSync" type="MultiplayerSpawner" parent="."]
+_spawnable_scenes = PackedStringArray("uid://fnsfbtgsl6df")
+spawn_path = NodePath("../Level/PlayerRoot")
 
 [node name="Level" type="Node" parent="."]
 
 [node name="CSGMesh3D" type="CSGMesh3D" parent="Level"]
-instance_shader_parameters/gridLineColour = Color(1, 1, 1, 1)
-instance_shader_parameters/gridPrimaryColour = Color(0.0784314, 0.0784314, 0.117647, 1)
-instance_shader_parameters/gridSecondaryColour = Color(0.123749, 0.123761, 0.176038, 1)
-instance_shader_parameters/lineWidth = 0.0
 use_collision = true
 mesh = SubResource("PlaneMesh_m6bx0")
 

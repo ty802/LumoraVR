@@ -90,7 +90,12 @@ public partial class WorldsTab : Control
 		if (SessionListUpdated is not null)
 			SessionListUpdated();
 	}
-
+    /// <summary>
+    /// Loads the world info into the details modal
+    /// 
+    /// Called by the details button on the world entry
+    /// </summary>
+    /// <param name="worldid"></param>
     internal void LoadWorldInfo(string worldid)
     {
         if (_contextContainer is Control con)
@@ -113,7 +118,12 @@ public partial class WorldsTab : Control
         
         }
     }
-    //danger
+    /// <summary>
+    /// Joins the session with the given id
+    /// 
+    /// !!not currently working!!
+    /// </summary>
+    /// <param name="id"></param>
     internal async void joinSession(string id)
     {
         bool connected =false;

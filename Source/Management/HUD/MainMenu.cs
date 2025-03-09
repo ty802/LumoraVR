@@ -16,11 +16,21 @@ public partial class MainMenu : Control
     [Export] public Button CloseButton;
     private static readonly Dictionary<string, Node> Tabs = new();
     [Signal]
+    /// <summary> Signal emitted when the active tab is changed </summary>
     public delegate void TabChangedEventHandler(string name);
+    /// <summary>
+    /// Returns the tab with the given name
+    /// </summary>
+    /// <param name="name"></param>
+    /// <returns></returns>
     public Node GetTab(string name)
     {
         return Tabs.TryGetValue(name, out var tab) ? tab : default;
     }
+    /// <summary>
+    /// Changes the active tab to the one with the given name
+    /// </summary>
+    /// <param name="name"></param>
     public void ChangeTab(string name)
     {
         Node node = GetNode("%MainPanelContent");
@@ -34,10 +44,20 @@ public partial class MainMenu : Control
             EmitSignal(SignalName.TabChanged, name);
         }
     }
+    /// <summary>
+    /// Registers a node as a tab with the given name
+    /// </summary>
+    /// <param name="name"></param>
+    /// <param name="tab"></param>
     public void AddTab(string name, Node tab)
     {
         Tabs.Add(name, tab);
     }
+    /// <summary>
+    /// Adds a tab with the given name by resource URI
+    /// </summary>
+    /// <param name="name"></param>
+    /// <param name="resourceURI"></param>
     public void AddTab(string name, string resourceURI)
     {
         try
@@ -58,6 +78,9 @@ public partial class MainMenu : Control
         AddTab("Worlds", "res://Scenes/UI/Manu/WorldTab/WorldsTab.tscn");
         AddTab("Login", "res://Scenes/UI/login_ui.tscn");
     }
+    /// <summary>
+    /// Reinstantiates all default tabs
+    /// </summary>
     public void ReloadTabs()
     {
         foreach(var item in Tabs)

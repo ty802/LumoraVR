@@ -15,6 +15,11 @@ public partial class SessionInstance : HBoxContainer
         _detailsText = GetNode("%DetailsText") as RichTextLabel;
         _sessionUsersLabel = GetNode("%PlayersText") as RichTextLabel;
     }
+    /// <summary>
+    /// Updates the session instance with the given session info
+    /// </summary>
+    /// <param name="info"></param>
+    /// <param name="tab"></param>
     internal void UpdateData(SessionInfo info,WorldsTab tab)
     {
         _id = info.SessionIdentifier;

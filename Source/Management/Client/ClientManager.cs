@@ -18,6 +18,7 @@ namespace Aquamarine.Source.Management
         private LiteNetLibMultiplayerPeer  _peer;
         [Export] private Node3D _inputRoot;
         [Export] private MultiplayerScene _multiplayerScene;
+        private int _localHomePid = 0;
 
         private bool _isDirectConnection = false;
 
@@ -52,12 +53,19 @@ namespace Aquamarine.Source.Management
 
         private void SpawnLocalHome()
         {
-            OS.CreateProcess(OS.GetExecutablePath(), ["--run-home-server", "--xr-mode", "off", "--headless"]);
+            _localHomePid = OS.CreateProcess(OS.GetExecutablePath(), ["--run-home-server", "--xr-mode", "off", "--headless"]);
 
             this.CreateTimer(0.5f, () =>
             {
                 JoinServer("localhost", 6000);
             });
+        }
+        ~ClientManager()
+        {
+            if (_localHomePid != 0)
+            {
+                OS.Kill(_localHomePid);
+            }
         }
     }
 }

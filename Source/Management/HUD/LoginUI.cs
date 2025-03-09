@@ -73,13 +73,17 @@ public partial class LoginUI : Control
         // Initial state
         UpdateUIState();
     }
-
-    public override void _ExitTree()
+    public override void _Notification(int what)
     {
-        // Clean up event subscription when the node is removed
-        if (LoginManager.Instance != null)
+        base._Notification(what);
+        switch (what)
         {
-            LoginManager.Instance.OnLoginStatusChanged -= OnLoginStatusChanged;
+            case (int)NotificationPredelete:
+                if (LoginManager.Instance != null)
+                {
+                    LoginManager.Instance.OnLoginStatusChanged -= OnLoginStatusChanged;
+                }
+                break;
         }
     }
 

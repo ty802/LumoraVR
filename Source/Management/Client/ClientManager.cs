@@ -20,6 +20,7 @@ namespace Aquamarine.Source.Management
         [Export] private MultiplayerScene _multiplayerScene;
         private string _targetWorldPath = null;
 
+        private int _localHomePid = 0;
 
         private bool _isDirectConnection = false;
 
@@ -54,7 +55,7 @@ namespace Aquamarine.Source.Management
 
         private void SpawnLocalHome()
         {
-            OS.CreateProcess(OS.GetExecutablePath(), ["--run-home-server", "--xr-mode", "off", "--headless"]);
+            _localHomePid = OS.CreateProcess(OS.GetExecutablePath(), ["--run-home-server", "--xr-mode", "off", "--headless"]);
 
             this.CreateTimer(0.5f, () =>
             {
@@ -70,5 +71,12 @@ namespace Aquamarine.Source.Management
             Logger.Log("Switched to local scene.");
         }
 
+        ~ClientManager()
+        {
+            if (_localHomePid != 0)
+            {
+                OS.Kill(_localHomePid);
+            }
+        }
     }
 }

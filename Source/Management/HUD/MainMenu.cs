@@ -1,64 +1,153 @@
-using Godot;
-using System;
 using Aquamarine.Source.Input;
 using Aquamarine.Source.Management;
 using Aquamarine.Source.Logging;
-
+using System.Collections.Generic;
+using Godot;
+using System;
+using System.Diagnostics;
+using System.Threading.Tasks;
+using Aquamarine.Source.Helpers;
 namespace Aquamarine.Source.Management.HUD;
-
 /// <summary>
 /// Enhanced main menu with account login functionality
 /// </summary>
 public partial class MainMenu : Control
 {
     [Export] public Button CloseButton;
-
+    private static readonly Dictionary<string, Node> Tabs = new();
+    [Signal]
+    /// <summary> Signal emitted when the active tab is changed </summary>
+    public delegate void TabChangedEventHandler(string name);
+    /// <summary>
+    /// Returns the tab with the given name
+    /// </summary>
+    /// <param name="name"></param>
+    /// <returns></returns>
+    public Node GetTab(string name)
+    {
+        return Tabs.TryGetValue(name, out var tab) ? tab : default;
+    }
+    /// <summary>
+    /// Changes the active tab to the one with the given name
+    /// </summary>
+    /// <param name="name"></param>
+    public void ChangeTab(string name)
+    {
+        Node node = GetNode("%MainPanelContent");
+        if (node is PanelContainer)
+        {
+            for (int i = 0; i < node.GetChildCount(); i++)
+            {
+                node.RemoveChild(node.GetChild(i));
+            }
+            node.AddChild(GetTab(name));
+            EmitSignal(SignalName.TabChanged, name);
+        }
+    }
+    /// <summary>
+    /// Registers a node as a tab with the given name
+    /// </summary>
+    /// <param name="name"></param>
+    /// <param name="tab"></param>
+    public void AddTab(string name, Node tab)
+    {
+        Tabs.Add(name, tab);
+    }
+    /// <summary>
+    /// Adds a tab with the given name by resource URI
+    /// </summary>
+    /// <param name="name"></param>
+    /// <param name="resourceURI"></param>
+    public void AddTab(string name, string resourceURI)
+    {
+        try
+        {
+            PackedScene packed = ResourceLoader.Load<PackedScene>(resourceURI);
+            Node tab = packed.Instantiate();
+            Tabs.Add(name, tab);
+        }
+        catch (System.Exception e)
+        {
+            GD.PrintErr("Failed to load tab: " + name + " from URI: " + resourceURI);
+            GD.PrintErr(e.Message);
+        }
+    }
+    private void LoadTabs()
+    {
+        // load the worlds tab 
+        AddTab("Worlds", "res://Scenes/UI/Manu/WorldTab/WorldsTab.tscn");
+        AddTab("Login", "res://Scenes/UI/login_ui.tscn");
+    }
+    /// <summary>
+    /// Reinstantiates all default tabs
+    /// </summary>
+    public void ReloadTabs()
+    {
+        foreach(var item in Tabs)
+        {
+            Tabs.Remove(item.Key);
+            item.Value.QueueFree();
+        }
+        LoadTabs();
+    }
     // We'll need to reference the account button in the sidebar
     [Export] public Button AccountButton;
 
     // Reference main content area to hide when showing login UI
     [Export] public Control MainPanel;
 
-    private Control _loginUI;
-    private PackedScene _loginUIScene;
-    private Control _mainPanelContent;
-
     public override void _Ready()
     {
         base._Ready();
         CloseButton.Pressed += ToggleMenu;
         Visible = false;
-
-        // Load the login UI scene
-        _loginUIScene = ResourceLoader.Load<PackedScene>("res://Scenes/UI/login_ui.tscn");
-
+        LoadTabs();
+        ChangeTab("Worlds");
         // Find the account button by path if not explicitly set
-        if (AccountButton == null)
+        if (AccountButton is null)
         {
-            AccountButton = GetNode<Button>("MarginContainer/HBoxContainer/Side Panel/MarginContainer/VBoxContainer2/VBoxContainer2/Button2");
+            AccountButton = GetNode<Button>("%AccountsButton");
         }
-
-        // Connect the account button to show login UI
-        if (AccountButton != null)
-        {
-            AccountButton.Pressed += ShowLoginUI;
-        }
-        else
-        {
-            Logger.Error("Failed to find Account button in MainMenu");
-        }
-
+    }
+    public override void _EnterTree()
+    {
+        base._EnterTree();
         // Listen for login status changes to update the account button text
-        if (LoginManager.Instance != null)
+        if (LoginManager.Instance is not null)
         {
             LoginManager.Instance.OnLoginStatusChanged += UpdateAccountButtonText;
+        }
+        // shitty workaround do it later
+        else { 
+            Task.Delay(1000).ContinueWith((task) =>
+            {
+                if (LoginManager.Instance is not null)
+                {
+                    LoginManager.Instance.OnLoginStatusChanged += UpdateAccountButtonText;
+                    this.RunOnNodeAsync(() => { UpdateAccountButtonText(LoginManager.Instance.IsLoggedIn); });
+                }
+                else { Debugger.Break(); }
+            });
+        }
+    }
+    // Clean up out of tree nodes when the main menu is removed
+    public override void _Notification(int what)
+    {
+        base._Notification(what);
+        if (what == NotificationPredelete)
+        {
+            foreach (var item in Tabs)
+            {
+                Tabs.Remove(item.Key);
+                item.Value.QueueFree();
+            }
         }
     }
 
     public override void _ExitTree()
     {
         // Clean up event listener
-        if (LoginManager.Instance != null)
+        if (LoginManager.Instance is not null)
         {
             LoginManager.Instance.OnLoginStatusChanged -= UpdateAccountButtonText;
         }
@@ -74,11 +163,6 @@ public partial class MainMenu : Control
         InputManager.MovementLocked = !InputManager.MovementLocked;
         Visible = InputManager.MovementLocked;
 
-        // Hide the login UI and restore main content when closing the menu
-        if (!Visible)
-        {
-            HideLoginUI();
-        }
     }
 
     /// <summary>
@@ -86,57 +170,13 @@ public partial class MainMenu : Control
     /// </summary>
     void ShowLoginUI()
     {
-        // Find the main panel content if not already referenced
-        if (MainPanel == null)
+        if (!LoginManager.Instance?.IsLoggedIn ?? true)
         {
-            MainPanel = GetNode<Control>("MarginContainer/HBoxContainer/Main Panel");
+            ChangeTab("Login");
+            return;
         }
-
-        if (_mainPanelContent == null && MainPanel != null)
-        {
-            // Find the current main content (primary container)
-            _mainPanelContent = MainPanel.GetNode<Control>("Primary Container");
-        }
-
-        // Create the login UI if it doesn't exist yet
-        if (_loginUI == null)
-        {
-            if (_loginUIScene != null)
-            {
-                _loginUI = _loginUIScene.Instantiate<Control>();
-
-                // Add the login UI to the main panel
-                if (MainPanel != null)
-                {
-                    MainPanel.AddChild(_loginUI);
-                }
-                else
-                {
-                    // Fallback to adding as a direct child if main panel not found
-                    AddChild(_loginUI);
-                }
-
-                // Make the login UI fill the main panel area
-                _loginUI.AnchorRight = 1;
-                _loginUI.AnchorBottom = 1;
-                _loginUI.SizeFlagsHorizontal = SizeFlags.Fill;
-                _loginUI.SizeFlagsVertical = SizeFlags.Fill;
-            }
-            else
-            {
-                Logger.Error("Login UI scene could not be loaded");
-                return;
-            }
-        }
-
-        // Hide the main content and show the login UI
-        if (_mainPanelContent != null)
-        {
-            _mainPanelContent.Visible = false;
-        }
-
-        // Show the login UI
-        _loginUI.Visible = true;
+        //fix this
+        ChangeTab("Login");
     }
 
     /// <summary>
@@ -144,15 +184,8 @@ public partial class MainMenu : Control
     /// </summary>
     public void HideLoginUI()
     {
-        if (_loginUI != null)
-        {
-            _loginUI.Visible = false;
-        }
-
-        if (_mainPanelContent != null)
-        {
-            _mainPanelContent.Visible = true;
-        }
+        Node login = GetTab("Login");
+        login.GetParent().RemoveChild(login);
     }
 
     /// <summary>
@@ -160,14 +193,14 @@ public partial class MainMenu : Control
     /// </summary>
     public void UpdateAccountButtonText(bool isLoggedIn)
     {
-        if (AccountButton == null) return;
+        if (AccountButton is null) return;
 
         // If we have a RichTextLabelAutoSizeNode as a child of the button, update its text
         var textNode = AccountButton.GetNode<Control>("RichTextLabelAutoSizeNode");
-        if (textNode == null) return;
+        if (textNode is null) return;
 
-        var textLabel = textNode.GetNode<RichTextLabel>("_RichTextLabel_61502");
-        if (textLabel == null) return;
+        var textLabel = textNode.GetNode<RichTextLabel>("AccountsButtonLabel");
+        if (textLabel is null) return;
 
         // Update the text based on login status
         if (isLoggedIn && LoginManager.Instance != null)

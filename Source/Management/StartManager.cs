@@ -8,13 +8,12 @@ namespace Aquamarine.Source.Management
     public partial class StartManager : Node
     {
         [Export] public Label Text;
-        public override void _Ready()
-        {
+
+        public override void _Ready(){
             base._Ready();
             try
             {
                 var isServer = ServerManager.CurrentServerType is not ServerManager.ServerType.NotAServer;
-
                 Text.Text = isServer.ToString();
                 Logger.Log($"Application started in {(isServer ? "server" : "client")} mode.");
 

@@ -61,11 +61,11 @@ texture = ExtResource("3_1i8qj")
 expand_mode = 1
 stretch_mode = 4
 
-[node name="Main Menu" parent="HUDManager" instance=ExtResource("5_saa3o")]
+[node name="Debug Overlay" parent="HUDManager" instance=ExtResource("6_01jeo")]
 visible = false
 layout_mode = 1
 
-[node name="Debug Overlay" parent="HUDManager" instance=ExtResource("6_01jeo")]
+[node name="Main Menu" parent="HUDManager" instance=ExtResource("5_saa3o")]
 visible = false
 layout_mode = 1
 

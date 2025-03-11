@@ -41,7 +41,7 @@ namespace Aquamarine.Source.Management
         public override void _Process(double delta)
         {
             base._Process(delta);
-            if (CurrentServerType == ServerType.Local && MultiplayerPeer != null)
+            if (ServerManager.CurrentServerType == ServerType.Local && MultiplayerPeer != null)
             {
                 MultiplayerPeer.Poll(); // Poll network events manually
             }
@@ -52,7 +52,7 @@ namespace Aquamarine.Source.Management
         {
             try
             {
-                var serverType = CurrentServerType;
+                var serverType = ServerManager.CurrentServerType;
 
                 // Initialize MultiplayerPeer
                 MultiplayerPeer = new LiteNetLibMultiplayerPeer();

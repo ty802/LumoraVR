@@ -26,14 +26,14 @@ public partial class WorldsTab : Control
     private Node _activeSessionsList;
     private Node _contextContainer;
     private readonly System.Net.Http.HttpClient client = new();
-	private readonly PeriodicTimer timer = new(new TimeSpan(0, 0, 20));
+    private readonly PeriodicTimer timer = new(new TimeSpan(0, 0, 20));
     private PackedScene _worldEntry;
     private PackedScene _sessionEntry;
     public delegate void SessionListUpdate();
-	public event SessionListUpdate SessionListUpdated;
-	public override void _Ready()
-	{
-		base._Ready();
+    public event SessionListUpdate SessionListUpdated;
+    public override void _Ready()
+    {
+        base._Ready();
         Sessions = _sessions.AsReadOnly();
         _worldEntry = ResourceLoader.Load<PackedScene>("res://Scenes/UI/Manu/WorldTab/WorldEntry.tscn");
         _sessionEntry = ResourceLoader.Load<PackedScene>("res://Scenes/UI/Manu/WorldTab/session_instance.tscn");
@@ -42,32 +42,32 @@ public partial class WorldsTab : Control
         _activeSessionsList = GetNode("%SeessionList");
         _contextContainer = GetNode("%ContextContainer");
         Task.Run(async () => { while (true) { await GetSessions(); await timer.WaitForNextTickAsync(); } });
-	}
-	private async Task GetSessions()
-	{
-		// TODO Fix this its stupid
-		CancellationTokenSource can = new();
-		Task.Run(async () => { await Task.Delay(8000);if(!can.Token.IsCancellationRequested) can.Cancel(); });
-		string json = await client.GetStringAsync(SessionInfo.SessionList,can.Token);
-		if (!can.Token.IsCancellationRequested) can.Cancel();
+    }
+    private async Task GetSessions()
+    {
+        // TODO Fix this its stupid
+        CancellationTokenSource can = new();
+        Task.Run(async () => { await Task.Delay(8000);if(!can.Token.IsCancellationRequested) can.Cancel(); });
+        string json = await client.GetStringAsync(SessionInfo.SessionList,can.Token);
+        if (!can.Token.IsCancellationRequested) can.Cancel();
         //end stupid
-		Dictionary<string, List<SessionInfo>> infos = new();
+        Dictionary<string, List<SessionInfo>> infos = new();
         Dictionary<string, string> worldnames = new();
         var list = System.Text.Json.JsonSerializer.Deserialize<List<SessionInfo>>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
             list.ForEach(sessionInfo => {
                 if (sessionInfo.WorldIdentifier == "") return;
-			if (!infos.TryGetValue(sessionInfo.WorldIdentifier, out List<SessionInfo> sessionsForWorld))
-			{
-				sessionsForWorld = new();
-				infos.Add(sessionInfo.WorldIdentifier, sessionsForWorld);
+            if (!infos.TryGetValue(sessionInfo.WorldIdentifier, out List<SessionInfo> sessionsForWorld))
+            {
+                sessionsForWorld = new();
+                infos.Add(sessionInfo.WorldIdentifier, sessionsForWorld);
                     worldnames.Add(sessionInfo.WorldIdentifier, sessionInfo.Name);
-			}
-			sessionsForWorld.Add(sessionInfo);
-		});
+            }
+            sessionsForWorld.Add(sessionInfo);
+        });
         HashSet<string> keys = new HashSet<string>(_sessions.Keys);
-		_sessions.Clear();
+        _sessions.Clear();
         foreach (var item in infos)
-		{
+        {
             if (!worldnames.TryGetValue(item.Key, out string name))
                 continue;
             _sessions.Add(item.Key, new Data.WorldEntry(item.Key,name,item.Value.ToArray()) );
@@ -86,10 +86,10 @@ public partial class WorldsTab : Control
                 tree.ProcessFrame -= add;
 
             }
-		}
-		if (SessionListUpdated is not null)
-			SessionListUpdated();
-	}
+        }
+        if (SessionListUpdated is not null)
+            SessionListUpdated();
+    }
     /// <summary>
     /// Loads the world info into the details modal
     /// 

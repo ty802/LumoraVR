@@ -18,10 +18,23 @@ namespace Aquamarine.Source.Management
             try
             {
                 // Find the PlayerRoot
-                PlayerRoot = GetNode<Node3D>("%PlayerRoot");
+                PlayerRoot = GetNodeOrNull<Node3D>("%PlayerRoot");
                 if (PlayerRoot == null)
                 {
-                    Logger.Error("Where is PlayerRoot pie...?");
+                    // Try to find PlayerRoot in the scene
+                    PlayerRoot = GetNodeOrNull<Node3D>("/root/Scene/Level/PlayerRoot");
+                    
+                    if (PlayerRoot == null)
+                    {
+                        // Create a new PlayerRoot if it doesn't exist
+                        PlayerRoot = new Node3D { Name = "PlayerRoot" };
+                        AddChild(PlayerRoot);
+                        Logger.Log("Created new PlayerRoot node");
+                    }
+                    else
+                    {
+                        Logger.Log("Found PlayerRoot in scene");
+                    }
                 }
                 else
                 {
@@ -76,21 +89,14 @@ namespace Aquamarine.Source.Management
                 }
 
                 // Create a new CustomPlayerSpawner
-                if (PlayerRoot != null)
+                PlayerSpawner = new CustomPlayerSpawner
                 {
-                    PlayerSpawner = new CustomPlayerSpawner
-                    {
-                        Name = "CustomPlayerSpawner",
-                        SpawnRootPath = PlayerRoot.GetPath(),
-                        PlayerScene = PlayerCharacterController.PackedScene
-                    };
-                    AddChild(PlayerSpawner);
-                    Logger.Log("Created new CustomPlayerSpawner");
-                }
-                else
-                {
-                    Logger.Error("Cannot create CustomPlayerSpawner: PlayerRoot is null");
-                }
+                    Name = "CustomPlayerSpawner",
+                    SpawnRootPath = PlayerRoot.GetPath(),
+                    PlayerScene = PlayerCharacterController.PackedScene
+                };
+                AddChild(PlayerSpawner);
+                Logger.Log("Created new CustomPlayerSpawner");
             }
             catch (Exception ex)
             {

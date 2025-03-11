@@ -1,6 +1,7 @@
-using Aquamarine.Source.Logging;
-using Godot;
 using System;
+using Aquamarine.Source.Logging;
+using Aquamarine.Source.Scene.RootObjects;
+using Godot;
 
 namespace Aquamarine.Source.Management
 {
@@ -8,35 +9,72 @@ namespace Aquamarine.Source.Management
     {
         private void OnPeerConnected(long id)
         {
-            Logger.Log($"Peer connected with ID: {id}. Attempting to spawn player...");
             try
             {
-                // Spawn the player using our updated spawning system
-                if (_multiplayerScene == null)
+                Logger.Log($"Server: Peer connected: {id}");
+
+                // Spawn player for the connected peer
+                if (_multiplayerScene != null)
                 {
-                    Logger.Error($"MultiplayerScene is null during OnPeerConnected for ID {id}");
-                    return;
+                    Logger.Log($"Server: Spawning player for peer {id}");
+                    _multiplayerScene.SpawnPlayer((int)id);
                 }
-
-                // Spawn the player
-                _multiplayerScene.SpawnPlayer((int)id);
-                Logger.Log($"Player spawned successfully for ID: {id}.");
-
-                // Add to player list
-                _multiplayerScene.PlayerList.Add((int)id, new PlayerInfo());
-                Logger.Log("Player added to the player list.");
-
-                // Notify others of the new player
-                _multiplayerScene.SendUpdatedPlayerList();
-                Logger.Log("Updated player list sent.");
-
-                // Send prefabs to the new player
-                _multiplayerScene.SendAllPrefabs((int)id);
-                Logger.Log("Prefabs sent to the new player.");
+                else
+                {
+                    Logger.Error($"Server: Cannot spawn player for peer {id}: MultiplayerScene is null");
+                    
+                    // Try to find MultiplayerScene again
+                    var multiplayerScene = FindMultiplayerSceneInChildren(GetTree().CurrentScene);
+                    if (multiplayerScene != null)
+                    {
+                        _multiplayerScene = multiplayerScene;
+                        Logger.Log($"Server: Found MultiplayerScene, spawning player for peer {id}");
+                        _multiplayerScene.SpawnPlayer((int)id);
+                    }
+                    else
+                    {
+                        Logger.Error("Server: MultiplayerScene still not found, trying direct player spawning");
+                        
+                        // Try direct player spawning as a last resort
+                        if (PlayerManager.Instance != null)
+                        {
+                            Logger.Log($"Server: Attempting to spawn player via PlayerManager for peer {id}");
+                            PlayerManager.Instance.SpawnPlayer((int)id, Vector3.Zero);
+                        }
+                        else
+                        {
+                            // Try to find PlayerRoot directly
+                            var playerRoot = GetTree().Root.GetNodeOrNull<Node3D>("//PlayerRoot");
+                            if (playerRoot != null)
+                            {
+                                Logger.Log($"Server: Found PlayerRoot directly, spawning player for peer {id}");
+                                
+                                // Instantiate player directly
+                                var playerScene = ResourceLoader.Load<PackedScene>("res://Scenes/Objects/RootObjects/PlayerCharacterController.tscn");
+                                if (playerScene != null)
+                                {
+                                    var player = playerScene.Instantiate<PlayerCharacterController>();
+                                    player.SetPlayerAuthority((int)id);
+                                    player.Name = id.ToString();
+                                    playerRoot.AddChild(player);
+                                    Logger.Log($"Server: Player spawned directly for peer {id}");
+                                }
+                                else
+                                {
+                                    Logger.Error("Server: Could not load player scene");
+                                }
+                            }
+                            else
+                            {
+                                Logger.Error("Server: Could not find PlayerRoot, cannot spawn player");
+                            }
+                        }
+                    }
+                }
             }
             catch (Exception ex)
             {
-                Logger.Error($"Error during OnPeerConnected for ID {id}: {ex.Message}\nStack trace: {ex.StackTrace}");
+                Logger.Error($"Server: Error in OnPeerConnected: {ex.Message}\nStack trace: {ex.StackTrace}");
             }
         }
 
@@ -44,44 +82,22 @@ namespace Aquamarine.Source.Management
         {
             try
             {
-                var idInt = (int)id;
+                Logger.Log($"Server: Peer disconnected: {id}");
 
-                if (_multiplayerScene == null)
+                // Remove player for the disconnected peer
+                if (_multiplayerScene != null)
                 {
-                    Logger.Error($"MultiplayerScene is null during OnPeerDisconnected for ID {id}");
-                    return;
-                }
-
-                // Remove the player
-                _multiplayerScene.RemovePlayer(idInt);
-                Logger.Log($"Player with ID {id} removed from scene.");
-
-                // Remove from player list
-                if (_multiplayerScene.PlayerList.Remove(idInt))
-                {
-                    Logger.Log($"Player with ID {id} removed from player list.");
+                    Logger.Log($"Server: Removing player for peer {id}");
+                    _multiplayerScene.RemovePlayer((int)id);
                 }
                 else
                 {
-                    Logger.Warn($"Player with ID {id} not found in player list.");
+                    Logger.Error($"Server: Cannot remove player for peer {id}: MultiplayerScene is null");
                 }
-
-                // Update player list for remaining players
-                _multiplayerScene.SendUpdatedPlayerList();
-                Logger.Log("Updated player list sent after disconnection.");
-
-                Logger.Log($"Peer disconnected with ID: {id}. Cleanup complete.");
             }
             catch (Exception ex)
             {
-                Logger.Error($"Error handling peer disconnection (ID: {id}): {ex.Message}\nStack trace: {ex.StackTrace}");
-            }
-
-            if (CurrentServerType is ServerType.Local)
-            {
-                Logger.Log("Quitting local server");
-                MultiplayerPeer?.Close();
-                GetTree().Quit();
+                Logger.Error($"Server: Error in OnPeerDisconnected: {ex.Message}\nStack trace: {ex.StackTrace}");
             }
         }
     }

@@ -1,4 +1,4 @@
-﻿using System;
+﻿﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Aquamarine.Source.Logging;
@@ -32,13 +32,43 @@ namespace Aquamarine.Source.Management
             // Get the spawn root node
             if (!string.IsNullOrEmpty(SpawnRootPath))
             {
-                _spawnRootNode = GetNode(SpawnRootPath);
-                Logger.Log($"CustomPlayerSpawner: Using SpawnRootPath: {SpawnRootPath}");
+                try
+                {
+                    _spawnRootNode = GetNode(SpawnRootPath);
+                    Logger.Log($"CustomPlayerSpawner: Using SpawnRootPath: {SpawnRootPath}");
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"CustomPlayerSpawner: Error getting node at path {SpawnRootPath}: {ex.Message}");
+                    
+                    // Try to find PlayerRoot in common locations
+                    _spawnRootNode = FindPlayerRoot();
+                    if (_spawnRootNode != null)
+                    {
+                        Logger.Log($"CustomPlayerSpawner: Found PlayerRoot at {_spawnRootNode.GetPath()}");
+                        SpawnRootPath = _spawnRootNode.GetPath();
+                    }
+                    else
+                    {
+                        _spawnRootNode = this; // Use self as spawn root if none found
+                        Logger.Log("CustomPlayerSpawner: No PlayerRoot found, using self as spawn root");
+                    }
+                }
             }
             else
             {
-                _spawnRootNode = this; // Use self as spawn root if none specified
-                Logger.Log("CustomPlayerSpawner: No SpawnRootPath set, using self as spawn root");
+                // Try to find PlayerRoot in common locations
+                _spawnRootNode = FindPlayerRoot();
+                if (_spawnRootNode != null)
+                {
+                    Logger.Log($"CustomPlayerSpawner: Found PlayerRoot at {_spawnRootNode.GetPath()}");
+                    SpawnRootPath = _spawnRootNode.GetPath();
+                }
+                else
+                {
+                    _spawnRootNode = this; // Use self as spawn root if none found
+                    Logger.Log("CustomPlayerSpawner: No SpawnRootPath set and no PlayerRoot found, using self as spawn root");
+                }
             }
 
             // Validate player scene 
@@ -56,6 +86,78 @@ namespace Aquamarine.Source.Management
             }
 
             Logger.Log("CustomPlayerSpawner initialized.");
+        }
+        
+        private Node FindPlayerRoot()
+        {
+            // Try to find PlayerRoot in common locations
+            string[] possiblePaths = new[] {
+                "/root/Scene/PlayerRoot",
+                "/root/Root/WorldRoot/Scene/PlayerRoot",
+                "/root/Root/Scene/PlayerRoot",
+                "/root/Root/PlayerRoot",
+                "../PlayerRoot",
+                "PlayerRoot",
+                "%PlayerRoot"
+            };
+            
+            foreach (var path in possiblePaths)
+            {
+                try
+                {
+                    if (path.StartsWith("%"))
+                    {
+                        // Try to find by unique name
+                        var node = GetNode(path);
+                        if (node != null)
+                        {
+                            return node;
+                        }
+                    }
+                    else
+                    {
+                        // Try to find by path
+                        var node = GetNodeOrNull(path);
+                        if (node != null)
+                        {
+                            return node;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"Error checking path {path}: {ex.Message}");
+                }
+            }
+            
+            // Try to find in the scene tree by name
+            var root = GetTree().Root;
+            var playerRoot = FindNodeByName(root, "PlayerRoot");
+            if (playerRoot != null)
+            {
+                return playerRoot;
+            }
+            
+            return null;
+        }
+        
+        private Node FindNodeByName(Node root, string name)
+        {
+            if (root.Name == name)
+            {
+                return root;
+            }
+            
+            foreach (var child in root.GetChildren())
+            {
+                var result = FindNodeByName(child, name);
+                if (result != null)
+                {
+                    return result;
+                }
+            }
+            
+            return null;
         }
 
         /// <summary>

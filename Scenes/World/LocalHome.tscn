@@ -1,8 +1,10 @@
-[gd_scene load_steps=10 format=3 uid="uid://dkagai8lawv51"]
+[gd_scene load_steps=12 format=3 uid="uid://dkagai8lawv51"]
 
 [ext_resource type="Shader" uid="uid://drcbjbss62tm5" path="res://Assets/Shaders/TestGrid.tres" id="1_4m34k"]
 [ext_resource type="Script" uid="uid://cev0tf3rr068k" path="res://Source/Management/MultiplayerScene.cs" id="1_gvnn8"]
 [ext_resource type="Texture2D" uid="uid://jdjeattbqj2g" path="res://Assets/Textures/Dot.png" id="2_af4yu"]
+[ext_resource type="Script" uid="uid://cslh78hdd5kro" path="res://Source/Management/CustomPlayerSpawner.cs" id="4_ixnqm"]
+[ext_resource type="Script" uid="uid://c2kfk74b5ovt7" path="res://Source/Management/CustomPlayerSync.cs" id="5_ixnqm"]
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_nk84i"]
 render_priority = 0
@@ -47,16 +49,23 @@ volumetric_fog_enabled = true
 volumetric_fog_density = 0.1
 volumetric_fog_albedo = Color(0, 0, 0, 1)
 
-[node name="Scene" type="Node" node_paths=PackedStringArray("Spawner", "PlayerSpawner")]
+[node name="Scene" type="Node" node_paths=PackedStringArray("PlayerSpawner", "PlayerRoot")]
 script = ExtResource("1_gvnn8")
-Spawner = NodePath("MultiplayerSpawner")
-PlayerSpawner = NodePath("PlayerSync")
+PlayerSpawner = NodePath("CustomPlayerSpawner")
+PlayerRoot = NodePath("PlayerRoot")
 
-[node name="MultiplayerSpawner" type="MultiplayerSpawner" parent="."]
-_spawnable_scenes = PackedStringArray("uid://fnsfbtgsl6df")
+[node name="CustomPlayerSpawner" type="Node" parent="." node_paths=PackedStringArray("SpawnPoints")]
+unique_name_in_owner = true
+script = ExtResource("4_ixnqm")
+SpawnRootPath = NodePath("../PlayerRoot")
+SpawnPoints = []
 
-[node name="PlayerSync" type="MultiplayerSpawner" parent="."]
-_spawnable_scenes = PackedStringArray("uid://fnsfbtgsl6df")
+[node name="CustomPlayerSync" type="Node" parent="."]
+unique_name_in_owner = true
+script = ExtResource("5_ixnqm")
+
+[node name="PlayerRoot" type="Node3D" parent="."]
+unique_name_in_owner = true
 
 [node name="Level" type="Node" parent="."]
 

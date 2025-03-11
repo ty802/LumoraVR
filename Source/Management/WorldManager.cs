@@ -1,303 +1,232 @@
+using Aquamarine.Source.Logging;
+using Bones.Core;
+using Godot;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Aquamarine.Source.Logging;
-using Aquamarine.Source.Scene.RootObjects;
-using Bones.Core;
-using Godot;
+using System.Resources;
+using System.Text;
+using System.Threading.Tasks;
 
 namespace Aquamarine.Source.Management
 {
-    [GlobalClass]
-    public partial class CustomPlayerSpawner : Node
+    public partial class WorldManager : Node
     {
-        [Export] public NodePath SpawnRootPath;
-        [Export] public PackedScene PlayerScene { get; set; }
+        public static WorldManager Instance;
 
-        private Node _spawnRootNode;
-        private Dictionary<int, PlayerCharacterController> _players = new();
+        [Export] private Node _worldContainer;
+        [Export] private Control _loadingScreen;
+        [Export] private ProgressBar _progressBar;
 
-        // Optional - can be used to apply different spawn locations
-        [Export] public Node3D[] SpawnPoints { get; set; }
-        private int _currentSpawnPointIndex = 0;
-
-        [Signal]
-        public delegate void PlayerSpawnedEventHandler(PlayerCharacterController player);
-
-        [Signal]
-        public delegate void PlayerRemovedEventHandler(int playerId);
+        private string _currentWorldPath = "";
+        private PackedScene _loadedWorld;
+        private bool _isLoading = false;
+        private float[] _progress = new float[1];
 
         public override void _Ready()
         {
-            // Get the spawn root node
-            if (!string.IsNullOrEmpty(SpawnRootPath))
-            {
-                _spawnRootNode = GetNode(SpawnRootPath);
-                Logger.Log($"CustomPlayerSpawner: Using SpawnRootPath: {SpawnRootPath}");
-            }
-            else
-            {
-                _spawnRootNode = this; // Use self as spawn root if none specified
-                Logger.Log("CustomPlayerSpawner: No SpawnRootPath set, using self as spawn root");
-            }
+            Instance = this;
 
-            // Validate player scene 
-            if (PlayerScene == null)
+            // Defer node finding to prevent errors if nodes don't exist yet
+            CallDeferred(nameof(InitializeComponents));
+
+            // Start loading local home immediately
+            LoadLocalHome();
+        }
+
+        private void InitializeComponents()
+        {
+            try
             {
-                PlayerScene = ResourceLoader.Load<PackedScene>("res://Scenes/Objects/RootObjects/PlayerCharacterController.tscn");
-                if (PlayerScene == null)
+                // Try to find components, but don't crash if they don't exist
+                _worldContainer = GetNodeOrNull<Node>("/root/Root/WorldRoot");
+                if (_worldContainer == null)
                 {
-                    Logger.Error("CustomPlayerSpawner: No player scene specified and default scene couldn't be loaded.");
+                    Logger.Error("WorldRoot node not found! World loading may not work properly.");
+                }
+
+                _loadingScreen = GetNodeOrNull<Control>("/root/Root/HUDManager/LoadingMenu");
+                if (_loadingScreen == null)
+                {
+                    Logger.Error("LoadingMenu not found! Loading screen will not be displayed.");
                 }
                 else
                 {
-                    Logger.Log("CustomPlayerSpawner: Loaded default player scene");
-                }
-            }
+                    _loadingScreen.Visible = false;
 
-            Logger.Log("CustomPlayerSpawner initialized.");
-        }
-
-        /// <summary>
-        /// Spawn a player for the given peer ID
-        /// </summary>
-        public PlayerCharacterController SpawnPlayer(int peerId, Vector3 position = default)
-        {
-            if (PlayerScene == null)
-            {
-                Logger.Error($"Cannot spawn player for ID {peerId}: No player scene available");
-                return null;
-            }
-
-            if (_spawnRootNode == null)
-            {
-                Logger.Error($"Cannot spawn player for ID {peerId}: Spawn root node is null");
-                return null;
-            }
-
-            // Remove existing player with this ID if it exists
-            if (_players.TryGetValue(peerId, out var existingPlayer))
-            {
-                Logger.Log($"Player with ID {peerId} already exists, removing first");
-                RemovePlayer(peerId);
-            }
-
-            try
-            {
-                var player = PlayerScene.Instantiate<PlayerCharacterController>();
-                if (player == null)
-                {
-                    Logger.Error($"Failed to instantiate player for ID {peerId}: Invalid scene type");
-                    return null;
+                    _progressBar = _loadingScreen.GetNodeOrNull<ProgressBar>("ProgressBar");
+                    if (_progressBar == null)
+                    {
+                        Logger.Error("ProgressBar not found in LoadingMenu! Progress will not be displayed.");
+                    }
                 }
 
-                // Set up player properties
-                player.SetPlayerAuthority(peerId);
-                player.Name = peerId.ToString();
-
-                // Handle spawn position
-                Vector3 spawnPosition = position;
-                if (spawnPosition == Vector3.Zero && SpawnPoints != null && SpawnPoints.Length > 0)
-                {
-                    // Use spawn points if available and position was not specified
-                    spawnPosition = GetNextSpawnPoint()?.GlobalPosition ?? Vector3.Zero;
-                }
-
-                // Add to scene
-                _spawnRootNode.AddChild(player);
-                player.GlobalPosition = spawnPosition;
-
-                // Track the player
-                _players[peerId] = player;
-
-                Logger.Log($"Player {peerId} spawned at position {spawnPosition}");
-                EmitSignal(SignalName.PlayerSpawned, player);
-
-                return player;
+                Logger.Log("WorldManager components initialized.");
             }
             catch (Exception ex)
             {
-                Logger.Error($"Error spawning player for ID {peerId}: {ex.Message}\nStack trace: {ex.StackTrace}");
-                return null;
+                Logger.Error($"Error initializing WorldManager components: {ex.Message}");
             }
         }
 
-        /// <summary>
-        /// Spawn a player and then call a setup action when it's ready
-        /// </summary>
-        public PlayerCharacterController SpawnPlayerWithSetup(int peerId, Vector3 position, Action<PlayerCharacterController> setupAction)
+        public void LoadWorld(string worldPath, bool disconnectFromCurrent = true)
         {
-            var player = SpawnPlayer(peerId, position);
+            if (_isLoading) return;
 
-            if (player != null && setupAction != null)
+            _isLoading = true;
+            _currentWorldPath = worldPath;
+
+            if (disconnectFromCurrent && ClientManager.Instance != null)
             {
-                this.CreateTimer(0.1f, () => {
-                    if (IsInstanceValid(player))
-                    {
-                        setupAction(player);
-                    }
-                });
+                ClientManager.Instance.DisconnectFromCurrentServer();
             }
 
-            return player;
+            // Only show loading screen if it exists
+            if (_loadingScreen != null)
+            {
+                _loadingScreen.Visible = true;
+            }
+
+            // Only update progress bar if it exists
+            if (_progressBar != null)
+            {
+                _progressBar.Value = 0;
+            }
+
+            ResourceLoader.LoadThreadedRequest(worldPath, "", true, ResourceLoader.CacheMode.Reuse);
+            Logger.Log($"Started loading world: {worldPath}");
         }
 
-        /// <summary>
-        /// Remove a player with the given peer ID
-        /// </summary>
-        public void RemovePlayer(int peerId)
+        public override void _Process(double delta)
         {
-            if (!_players.TryGetValue(peerId, out var player))
+            if (_isLoading)
             {
-                Logger.Log($"RemovePlayer: Player {peerId} not found in tracking dictionary");
+                UpdateLoadingProgress();
+            }
+        }
 
-                // Try to find the player in the spawn root's children as a fallback
-                if (_spawnRootNode != null)
+        private void UpdateLoadingProgress()
+        {
+            // Create a Godot.Collections.Array for the progress parameter
+            var progressArray = new Godot.Collections.Array();
+            progressArray.Add(0.0f); // Initialize with 0 progress
+
+            var status = ResourceLoader.LoadThreadedGetStatus(_currentWorldPath, progressArray);
+
+            // Extract the progress value from the Godot array
+            float progress = 0;
+            if (progressArray.Count > 0)
+            {
+                progress = (float)progressArray[0];
+            }
+
+            // Only update progress bar if it exists
+            if (_progressBar != null)
+            {
+                _progressBar.Value = progress * 100;
+            }
+
+            if (status == ResourceLoader.ThreadLoadStatus.Loaded)
+            {
+                FinishWorldLoading();
+            }
+            else if (status == ResourceLoader.ThreadLoadStatus.Failed)
+            {
+                HandleLoadError();
+            }
+        }
+
+        private void FinishWorldLoading()
+        {
+            _isLoading = false;
+
+            try
+            {
+                _loadedWorld = ResourceLoader.LoadThreadedGet(_currentWorldPath) as PackedScene;
+
+                if (_worldContainer == null)
                 {
-                    var foundPlayer = _spawnRootNode.GetChildren()
-                        .OfType<PlayerCharacterController>()
-                        .FirstOrDefault(p => p.Authority == peerId);
+                    // Try one more time to find world container
+                    _worldContainer = GetNodeOrNull<Node>("/root/Root/WorldRoot");
 
-                    if (foundPlayer != null)
+                    if (_worldContainer == null)
                     {
-                        Logger.Log($"RemovePlayer: Found player {peerId} in spawn root children despite not being tracked");
-                        player = foundPlayer;
-                    }
-                    else
-                    {
-                        Logger.Log($"RemovePlayer: Player {peerId} not found in spawn root children either");
+                        Logger.Error("WorldRoot node still not found! Cannot load world.");
                         return;
                     }
                 }
-                else
-                {
-                    return; // No player and no spawn root
-                }
-            }
 
-            try
-            {
-                // Remove from tracking
-                _players.Remove(peerId);
-
-                // Remove from scene
-                if (player != null && IsInstanceValid(player))
+                foreach (Node child in _worldContainer.GetChildren())
                 {
-                    player.GetParent().RemoveChild(player);
-                    player.QueueFree();
-                    Logger.Log($"Player {peerId} removed successfully");
-                }
-                else
-                {
-                    Logger.Warn($"Player {peerId} was tracked but not valid/attached to scene");
+                    child.QueueFree();
                 }
 
-                EmitSignal(SignalName.PlayerRemoved, peerId);
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"Error removing player for ID {peerId}: {ex.Message}");
-            }
-        }
+                Node newWorld = _loadedWorld.Instantiate();
+                _worldContainer.AddChild(newWorld);
 
-        /// <summary>
-        /// Get a player by peer ID
-        /// </summary>
-        public PlayerCharacterController GetPlayer(int peerId)
-        {
-            // First check the tracking dictionary
-            if (_players.TryGetValue(peerId, out var player) && IsInstanceValid(player))
-            {
-                return player;
-            }
-
-            // Fallback: try to find in the spawn root's children
-            if (_spawnRootNode != null)
-            {
-                var foundPlayer = _spawnRootNode.GetChildren()
-                    .OfType<PlayerCharacterController>()
-                    .FirstOrDefault(p => p.Authority == peerId);
-
-                if (foundPlayer != null)
+                // Hide loading screen if it exists
+                if (_loadingScreen != null)
                 {
-                    // Update the tracking dictionary for future lookups
-                    _players[peerId] = foundPlayer;
-                    return foundPlayer;
+                    _loadingScreen.Visible = false;
                 }
-            }
 
-            return null;
-        }
-
-        /// <summary>
-        /// Get all currently spawned players
-        /// </summary>
-        public IReadOnlyDictionary<int, PlayerCharacterController> GetAllPlayers()
-        {
-            // If spawn root exists, refresh the player cache first
-            if (_spawnRootNode != null)
-            {
-                var foundPlayers = _spawnRootNode.GetChildren()
-                    .OfType<PlayerCharacterController>()
-                    .ToDictionary(p => p.Authority);
-
-                // Add players from spawn root that aren't already tracked
-                foreach (var kvp in foundPlayers)
+                if (IsServerMode())
                 {
-                    if (!_players.ContainsKey(kvp.Key))
+                    var multiplayerScene = newWorld.GetNodeOrNull("MultiplayerScene");
+                    if (multiplayerScene != null)
                     {
-                        _players[kvp.Key] = kvp.Value;
+                        multiplayerScene.Call("InitializeForServer");
+                        Logger.Log("서버용 멀티플레이어 컴포넌트 초기화 완료.");
+                    }
+                    else
+                    {
+                        Logger.Error("MultiplayerScene을 찾을 수 없습니다.");
                     }
                 }
 
-                // Remove players from tracking that are no longer in the scene
-                var keysToRemove = _players.Keys
-                    .Where(k => !foundPlayers.ContainsKey(k))
-                    .ToList();
+                Logger.Log($"World loaded successfully: {_currentWorldPath}");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error loading world: {ex.Message}");
 
-                foreach (var key in keysToRemove)
+                // Hide loading screen if it exists
+                if (_loadingScreen != null)
                 {
-                    _players.Remove(key);
+                    _loadingScreen.Visible = false;
                 }
             }
-
-            return _players;
         }
 
-        /// <summary>
-        /// Clear all spawned players
-        /// </summary>
-        public void ClearAllPlayers()
+        private bool IsServerMode()
         {
-            foreach (var peerId in _players.Keys.ToArray())
+            return OS.HasFeature("server"); // 서버 모드 체크
+        }
+
+        private void HandleLoadError()
+        {
+            _isLoading = false;
+            Logger.Error($"Filed to LoadWorld: {_currentWorldPath}");
+
+            // Hide loading screen if it exists
+            if (_loadingScreen != null)
             {
-                RemovePlayer(peerId);
+                _loadingScreen.Visible = false;
             }
 
-            _players.Clear();
-            Logger.Log("All players cleared");
+            LoadLocalHome();
         }
 
-        /// <summary>
-        /// Update the spawn root node path (useful if it changes during runtime)
-        /// </summary>
-        public void SetSpawnRoot(NodePath path)
+        public void LoadLocalHome()
         {
-            SpawnRootPath = path;
-            _spawnRootNode = GetNode(path);
-            Logger.Log($"CustomPlayerSpawner: Updated spawn root to {path}");
-        }
+            LoadWorld("res://Scenes/World/LocalHome.tscn", false);
 
-        private Node3D GetNextSpawnPoint()
-        {
-            if (SpawnPoints == null || SpawnPoints.Length == 0)
-            {
-                return null;
-            }
-
-            var spawnPoint = SpawnPoints[_currentSpawnPointIndex];
-            _currentSpawnPointIndex = (_currentSpawnPointIndex + 1) % SpawnPoints.Length;
-            return spawnPoint;
+            this.CreateTimer(0.5f, () => {
+                if (ClientManager.Instance != null)
+                {
+                    ClientManager.Instance.JoinServer("localhost", 6000);
+                }
+            });
         }
     }
 }

@@ -1,8 +1,9 @@
-[gd_scene load_steps=4 format=3 uid="uid://bqoqe72r7ln6v"]
+[gd_scene load_steps=5 format=3 uid="uid://bqoqe72r7ln6v"]
 
 [ext_resource type="Script" uid="uid://btwis85m8rytv" path="res://Source/Management/Server/ServerManager.cs" id="1_or8wb"]
 [ext_resource type="Script" uid="uid://beum44yjstvne" path="res://Source/Management/PlayerManager.cs" id="2_ruubs"]
 [ext_resource type="Script" uid="uid://bhyoymspo68w" path="res://Source/Management/WorldManager.cs" id="3_ruubs"]
+[ext_resource type="Script" uid="uid://cslh78hdd5kro" path="res://Source/Management/CustomPlayerSpawner.cs" id="4_ixnqm"]
 
 [node name="Root" type="Node"]
 script = ExtResource("1_or8wb")
@@ -28,8 +29,16 @@ text = "Server"
 [node name="PlayerRoot" type="Node3D" parent="."]
 unique_name_in_owner = true
 
-[node name="PlayerManager" type="Node" parent="."]
+[node name="PlayerManager" type="Node" parent="." node_paths=PackedStringArray("PlayerRoot", "PlayerSpawner")]
 script = ExtResource("2_ruubs")
+PlayerRoot = NodePath("../PlayerRoot")
+PlayerSpawner = NodePath("../CustomPlayerSpawner")
 
 [node name="WorldManager" type="Node" parent="."]
 script = ExtResource("3_ruubs")
+
+[node name="CustomPlayerSpawner" type="Node" parent="." node_paths=PackedStringArray("SpawnPoints")]
+unique_name_in_owner = true
+script = ExtResource("4_ixnqm")
+SpawnRootPath = NodePath("../PlayerRoot")
+SpawnPoints = []

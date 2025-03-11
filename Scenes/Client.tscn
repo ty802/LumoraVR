@@ -1,4 +1,4 @@
-[gd_scene load_steps=13 format=3 uid="uid://d37lm476vrp1e"]
+[gd_scene load_steps=12 format=3 uid="uid://d37lm476vrp1e"]
 
 [ext_resource type="Script" uid="uid://bc5gbrtubsc4y" path="res://Source/Management/Client/ClientManager.cs" id="1_enrkg"]
 [ext_resource type="Script" uid="uid://bhyoymspo68w" path="res://Source/Management/WorldManager.cs" id="2_u2316"]
@@ -8,7 +8,6 @@
 [ext_resource type="PackedScene" uid="uid://bkr4n38tjwye3" path="res://Scenes/UI/debug_overlay.tscn" id="6_01jeo"]
 [ext_resource type="Shader" uid="uid://drcbjbss62tm5" path="res://Assets/Shaders/TestGrid.tres" id="7_daa5c"]
 [ext_resource type="PackedScene" uid="uid://dq14glqs4ogf1" path="res://Scenes/UI/LoadingMenu.tscn" id="7_u2316"]
-[ext_resource type="Script" uid="uid://beum44yjstvne" path="res://Source/Management/PlayerManager.cs" id="9_uxag1"]
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_5e4va"]
 render_priority = 0
@@ -85,12 +84,6 @@ mesh = SubResource("BoxMesh_kwn4u")
 shape = SubResource("BoxShape3D_ifne4")
 
 [node name="WorldRoot" type="Node3D" parent="."]
-
-[node name="PlayerRoot" type="Node3D" parent="."]
-unique_name_in_owner = true
-
-[node name="PlayerManager" type="Node" parent="."]
-script = ExtResource("9_uxag1")
 
 [node name="WorldManager" type="Node" parent="."]
 script = ExtResource("2_u2316")

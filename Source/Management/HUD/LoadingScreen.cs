@@ -12,7 +12,7 @@ public partial class LoadingScreen : Control
     [Export] private Label _statusLabel;
     [Export] private AnimationPlayer _animationPlayer;
 
-    public float Progress
+    public double Progress
     {
         get => _progressBar.Value;
         set => _progressBar.Value = value;

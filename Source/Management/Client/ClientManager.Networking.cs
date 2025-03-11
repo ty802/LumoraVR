@@ -56,12 +56,14 @@ namespace Aquamarine.Source.Management
 
             DisconnectFromCurrentServer();
 
+            Logger.Log($"Creating client peer to connect to {address}:{port}");
             _peer = new LiteNetLibMultiplayerPeer();
             _peer.CreateClient(address, port);
             Multiplayer.MultiplayerPeer = _peer;
             _isDirectConnection = true;
 
             RegisterPeerEvents();
+            Logger.Log("Client peer created and events registered");
         }
 
         public void JoinNatServerRelay(string identifier)
@@ -99,13 +101,15 @@ namespace Aquamarine.Source.Management
 
         private void PeerOnClientConnectionFail()
         {
+            Logger.Error("Failed to connect to server");
             UnregisterPeerEvents();
             SpawnLocalHome();
         }
 
         private void PeerOnClientConnectionSuccess()
         {
-            MultiplayerScene.Instance.Rpc(MultiplayerScene.MethodName.SetPlayerName,System.Environment.MachineName);
+            Logger.Log("Successfully connected to server");
+            MultiplayerScene.Instance.Rpc(MultiplayerScene.MethodName.SetPlayerName, System.Environment.MachineName);
             UnregisterPeerEvents();
 
             if (_targetWorldPath != null)

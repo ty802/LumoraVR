@@ -92,6 +92,25 @@ namespace Aquamarine.Source.Management
             _worldContainer.AddChild(newWorld);
 
             _loadingScreen.Visible = false;
+
+            if (IsServerMode())
+            {
+                var multiplayerScene = newWorld.GetNode("MultiplayerScene");
+                if (multiplayerScene != null)
+                {
+                    multiplayerScene.Call("InitializeForServer");
+                    Logger.Log("서버용 멀티플레이어 컴포넌트 초기화 완료.");
+                }
+                else
+                {
+                    Logger.Error("MultiplayerScene을 찾을 수 없습니다.");
+                }
+            }
+        }
+
+        private bool IsServerMode()
+        {
+            return OS.HasFeature("server"); // 서버 모드 체크
         }
 
         private void HandleLoadError()

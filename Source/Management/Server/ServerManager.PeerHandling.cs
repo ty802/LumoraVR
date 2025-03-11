@@ -10,19 +10,30 @@ namespace Aquamarine.Source.Management
         private void OnPeerConnected(long id)
         {
             Logger.Log($"Peer connected with ID: {id}. Attempting to spawn player...");
+            if (PlayerManager.Instance.PlayerRoot == null)
+            {
+                Logger.Error("PlayerRoot is null during peer connection.");
+                return;
+            }
+            if (_multiplayerScene == null)
+            {
+                Logger.Error("_multiplayerScene is null in OnPeerConnected.");
+                return;
+            }
             try
             {
-                _multiplayerScene.SpawnPlayer((int)id); // Spawn the player
-                //Logger.Log($"Player spawned successfully for ID: {id}.");
+                Logger.Log($"Calling SpawnPlayer for ID: {id}");
+                _multiplayerScene.SpawnPlayer((int)id);
+                Logger.Log($"Player spawned successfully for ID: {id}.");
 
-                _multiplayerScene.PlayerList.Add((int)id, new PlayerInfo()); // Add to player list
-                //Logger.Log("Player added to the player list.");
+                _multiplayerScene.PlayerList.Add((int)id, new PlayerInfo());
+                Logger.Log("Player added to the player list.");
 
-                _multiplayerScene.SendUpdatedPlayerList(); // Notify others of the new player
-                //Logger.Log("Updated player list sent.");
-                
-                _multiplayerScene.SendAllPrefabs((int)id); // Send prefabs to the new player
-                //Logger.Log("Prefabs sent to the new player.");
+                _multiplayerScene.SendUpdatedPlayerList();
+                Logger.Log("Updated player list sent.");
+
+                _multiplayerScene.SendAllPrefabs((int)id);
+                Logger.Log("Prefabs sent to the new player.");
             }
             catch (Exception ex)
             {
@@ -32,6 +43,11 @@ namespace Aquamarine.Source.Management
 
         private void OnPeerDisconnected(long id)
         {
+            if (_multiplayerScene == null)
+            {
+                Logger.Error("_multiplayerScene is null in OnPeerDisconnected.");
+                return;
+            }
             try
             {
                 var idInt = (int)id;

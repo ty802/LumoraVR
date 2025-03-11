@@ -47,16 +47,16 @@ volumetric_fog_enabled = true
 volumetric_fog_density = 0.1
 volumetric_fog_albedo = Color(0, 0, 0, 1)
 
-[node name="Scene" type="Node"]
+[node name="Scene" type="Node" node_paths=PackedStringArray("Spawner", "PlayerSpawner")]
 script = ExtResource("1_gvnn8")
+Spawner = NodePath("MultiplayerSpawner")
+PlayerSpawner = NodePath("PlayerSync")
 
 [node name="MultiplayerSpawner" type="MultiplayerSpawner" parent="."]
 _spawnable_scenes = PackedStringArray("uid://fnsfbtgsl6df")
-spawn_path = NodePath("../Level")
 
 [node name="PlayerSync" type="MultiplayerSpawner" parent="."]
 _spawnable_scenes = PackedStringArray("uid://fnsfbtgsl6df")
-spawn_path = NodePath("../Level/PlayerRoot")
 
 [node name="Level" type="Node" parent="."]
 

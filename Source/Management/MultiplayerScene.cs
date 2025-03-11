@@ -22,41 +22,38 @@ namespace Aquamarine.Source.Management
 
 		public System.Collections.Generic.Dictionary<int, PlayerInfo> PlayerList = new();
 		public System.Collections.Generic.Dictionary<string, Prefab> Prefabs = new();
-        
+
+        private PlayerCharacterController _local;
+
         public PlayerCharacterController GetPlayer(int id)
 		{
 			var tryFind = PlayerRoot.GetChildren().OfType<PlayerCharacterController>().FirstOrDefault(i => i.Authority == id);
 			return tryFind;
 		}
 
-		public PlayerCharacterController GetLocalPlayer()
-		{
-			try
-			{
-				if (!IsInstanceValid(_local))
-				{
-					var local = Multiplayer.GetUniqueId();
+        public PlayerCharacterController GetLocalPlayer()
+        {
+            if (!IsInstanceValid(_local))
+            {
+                if (PlayerRoot == null)
+                {
+                    Logger.Warn("PlayerRoot is null"); // Log only once or less frequently
+                    return null;
+                }
 
-					if (PlayerRoot == null || PlayerRoot.GetChildCount() == 0)
-					{
-						Logger.Log("PlayerRoot is null or has no children");
-						return null;
-					}
+                if (PlayerRoot.GetChildCount() == 0)
+                {
+                    Logger.Log("PlayerRoot has no children"); // Consider throttling this log
+                    return null;
+                }
 
-					_local = PlayerRoot.GetChildren().OfType<PlayerCharacterController>()
-						.FirstOrDefault(i => i.Authority == local);
-				}
-
-				return _local;
-			}
-			catch (Exception ex)
-			{
-				Logger.Error($"Error in GetLocalPlayer: {ex.Message}");
-				return null;
-			}
-		}
-
-		private PlayerCharacterController _local;
+                var localId = Multiplayer.GetUniqueId();
+                _local = PlayerRoot.GetChildren()
+                    .OfType<PlayerCharacterController>()
+                    .FirstOrDefault(i => i.Authority == localId);
+            }
+            return _local;
+        }
 
         public override void _Ready()
         {
@@ -65,35 +62,88 @@ namespace Aquamarine.Source.Management
 
             try
             {
-                if (PlayerRoot == null)
-                {
-                    var playerManager = GetNode<PlayerManager>("/root/Root/PlayerManager");
-                    if (playerManager != null && playerManager.PlayerRoot != null)
-                    {
-                        PlayerRoot = playerManager.PlayerRoot;
-                        Logger.Log("PlayerRoot set from PlayerManager: " + (PlayerRoot != null));
-                    }
-                    else
-                    {
-                        PlayerRoot = GetNodeOrNull<Node3D>("/root/Root/PlayerRoot");
-                        Logger.Log("PlayerRoot direct lookup result: " + (PlayerRoot != null));
-                    }
-                }
+                SetupPlayerRoot();
 
-                // PlayerSpawner 
-                if (PlayerRoot != null && PlayerSpawner != null)
+                SetupPlayerSpawner();
+
+                if (Spawner != null)
                 {
-                    PlayerSpawner.SpawnPath = new NodePath("../" + PlayerRoot.Name);
-                    PlayerSpawner.SpawnFunction = new Callable(this, nameof(SpawnPlayerCustom));
-                    Logger.Log("PlayerSpawner configured");
+                    Logger.Log("Spawner is assigned.");
+                }
+                else
+                {
+                    Logger.Warn("Spawner is not assigned!");
                 }
             }
             catch (Exception ex)
             {
-                Logger.Error($"Error initializing MultiplayerScene: {ex.Message}");
+                Logger.Error($"Error initializing MultiplayerScene: {ex.Message}\nStack trace: {ex.StackTrace}");
             }
 
             Logger.Log("MultiplayerScene initialized.");
+        }
+        public void InitializeForServer()
+        {
+            Logger.Log("MultiplayerScene initialized for server.");
+        }
+        private void SetupPlayerRoot()
+        {
+            if (PlayerManager.Instance != null)
+            {
+                PlayerRoot = PlayerManager.Instance.PlayerRoot;
+                Logger.Log("PlayerRoot set from PlayerManager: " + (PlayerRoot != null));
+            }
+            else
+            {
+                PlayerRoot = GetNodeOrNull<Node3D>("%PlayerRoot") ?? GetNodeOrNull<Node3D>("/root/Root/PlayerRoot");
+                if (PlayerRoot == null)
+                {
+                    Logger.Error("PlayerRoot not found at %PlayerRoot or /root/Root/PlayerRoot");
+                    LogSceneTree(GetTree().Root);
+                    return;
+                }
+                Logger.Log("PlayerRoot found: " + PlayerRoot.Name);
+            }
+        }
+        private void SetupPlayerSpawner()
+        {
+            if (PlayerSpawner != null)
+            {
+                if (PlayerManager.Instance != null && PlayerManager.Instance.PlayerRoot != null)
+                {
+                    PlayerSpawner.SpawnPath = PlayerManager.Instance.PlayerRoot.GetPath();
+                    PlayerSpawner.SpawnFunction = new Callable(this, nameof(SpawnPlayerCustom));
+                    Logger.Log("PlayerSpawner configured with SpawnPath: " + PlayerSpawner.SpawnPath);
+                }
+                else
+                {
+                    Logger.Error("Cannot set SpawnPath: PlayerManager.Instance or PlayerRoot is null");
+                }
+            }
+            else
+            {
+                Logger.Warn("PlayerSpawner is not assigned!");
+            }
+        }
+
+        private void SetUpSpawner()
+        {
+            if (Spawner != null)
+            {
+                if (PlayerManager.Instance != null && PlayerManager.Instance.PlayerRoot != null)
+                {
+                    Spawner.SpawnPath = PlayerManager.Instance.PlayerRoot.GetPath();
+                    Logger.Log("Spawner configured with SpawnPath: " + Spawner.SpawnPath);
+                }
+                else
+                {
+                    Logger.Error("Cannot set SpawnPath for Spawner: PlayerManager.Instance or PlayerRoot is null");
+                }
+            }
+            else
+            {
+                Logger.Warn("Spawner is not assigned!");
+            }
         }
         private Node SpawnPlayerCustom(Variant data)
 		{

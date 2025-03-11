@@ -7,9 +7,6 @@
 [node name="Root" type="Node"]
 script = ExtResource("1_or8wb")
 
-[node name="PlayerRoot" type="Node3D" parent="."]
-script = ExtResource("2_ruubs")
-
 [node name="Camera3D" type="Camera3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.8, 5)
 fov = 100.0
@@ -27,6 +24,9 @@ offset_bottom = 23.0
 text = "Server"
 
 [node name="WorldRoot" type="Node3D" parent="."]
+
+[node name="PlayerRoot" type="Node3D" parent="."]
+unique_name_in_owner = true
 
 [node name="PlayerManager" type="Node" parent="."]
 script = ExtResource("2_ruubs")

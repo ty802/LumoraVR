@@ -40,6 +40,10 @@ namespace Aquamarine.Source.Management
         public override void _Process(double delta)
         {
             base._Process(delta);
+            if (CurrentServerType == ServerType.Local && MultiplayerPeer != null)
+            {
+                MultiplayerPeer.Poll(); // Poll network events manually
+            }
             SessionListManager?.PollEvents();
         }
 
@@ -49,46 +53,40 @@ namespace Aquamarine.Source.Management
             {
                 var serverType = CurrentServerType;
 
+                // Initialize MultiplayerPeer
                 MultiplayerPeer = new LiteNetLibMultiplayerPeer();
-
-                if (serverType is ServerType.Local)
-                {
-                    /*
-                    var args = OS.GetCmdlineArgs().ToList();
-                    var runHomeIndex = args.IndexOf("--run-home-server");
-
-                    var port = int.Parse(args[runHomeIndex][2..]);
-                    
-                    Logger.Log(port.ToString());
-                    */
-                    MultiplayerPeer.CreateServer(6000, 1);
-                    Logger.Log($"Local server started on port {6000}.");
-                }
-                else
-                {
-                    MultiplayerPeer.CreateServerNat(Port, MaxConnections);
-                    Logger.Log($"Server started on port {Port} with a maximum of {MaxConnections} connections.");
-                }
-
                 Multiplayer.MultiplayerPeer = MultiplayerPeer;
-
                 MultiplayerPeer.PeerConnected += OnPeerConnected;
                 MultiplayerPeer.PeerDisconnected += OnPeerDisconnected;
 
-
-                if (serverType is ServerType.Standard)
+                if (serverType == ServerType.Local)
                 {
-                    // Initialize session list manager
+                    // Switch scene
+                    GetTree().ChangeSceneToFile("res://Scenes/World/LocalHome.tscn");
+                    Logger.Log("LocalHome Loaded.");
+
+                    // Defer MultiplayerScene initialization until scene is fully loaded
+                    CallDeferred(nameof(InitializeMultiplayerScene));
+
+                    // Start local server
+                    MultiplayerPeer.CreateServer(6000, 1);
+                    Logger.Log("Local server started on port 6000.");
+                }
+                else if (serverType == ServerType.Standard)
+                {
+                    // Start standard server
+                    MultiplayerPeer.CreateServerNat(Port, MaxConnections);
+                    Logger.Log($"Server started on port {Port} with max connections {MaxConnections}.");
+
+                    // Initialize session manager
                     SessionListListener = new EventBasedNetListener();
                     SessionListManager = new NetManager(SessionListListener)
                     {
                         IPv6Enabled = true,
                         PingInterval = 10000,
                     };
-
                     SessionListListener.NetworkReceiveEvent += SessionListListenerOnNetworkReceiveEvent;
                     SessionListListener.PeerDisconnectedEvent += SessionListListenerOnPeerDisconnectedEvent;
-
                     SessionListManager.Start(SessionListPort);
                     ConnectToSessionServer();
                 }
@@ -96,6 +94,54 @@ namespace Aquamarine.Source.Management
             catch (Exception ex)
             {
                 Logger.Error($"Error initializing ServerManager: {ex}");
+            }
+
+            // Verify PlayerRoot
+            if (PlayerManager.Instance.PlayerRoot == null)
+            {
+                Logger.Error("PlayerRoot is not initialized in PlayerManager! Check Autoload settings.");
+            }
+            else
+            {
+                Logger.Log("PlayerRoot initialized successfully.");
+            }
+        }
+
+        // Deferred method to initialize MultiplayerScene
+        private void InitializeMultiplayerScene()
+        {
+            var multiplayerScene = GetTree().CurrentScene.GetNode<MultiplayerScene>("MultiplayerScene");
+            if (multiplayerScene != null)
+            {
+                multiplayerScene.InitializeForServer();
+                Logger.Log("MultiplayerScene initialized for server.");
+            }
+            else
+            {
+                Logger.Error("MultiplayerScene not found in the loaded world.");
+            }
+        }
+        private void OnSceneChanged()
+        {
+            var multiplayerScene = GetTree().CurrentScene.GetNode<MultiplayerScene>("MultiplayerScene");
+            if (multiplayerScene != null)
+            {
+                multiplayerScene.InitializeForServer();
+                Logger.Log("MultiplayerScene initialized for server.");
+            }
+            else
+            {
+                Logger.Error("MultiplayerScene not found in the loaded world.");
+            }
+        }
+
+        private void OnChildEnteredTree(Node node)
+        {
+            if (node is MultiplayerScene multiplayerScene)
+            {
+                multiplayerScene.InitializeForServer();
+                Logger.Log("MultiplayerScene initialized.");
+                GetTree().Root.ChildEnteredTree -= OnChildEnteredTree;
             }
         }
     }

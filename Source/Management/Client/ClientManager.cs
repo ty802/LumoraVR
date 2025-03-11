@@ -56,9 +56,11 @@ namespace Aquamarine.Source.Management
         private void SpawnLocalHome()
         {
             _localHomePid = OS.CreateProcess(OS.GetExecutablePath(), ["--run-home-server", "--xr-mode", "off", "--headless"]);
+            Logger.Log($"Started local server process with PID: {_localHomePid}");
 
-            this.CreateTimer(0.5f, () =>
+            this.CreateTimer(2.0f, () =>
             {
+                Logger.Log("Attempting to connect to server at localhost:6000");
                 JoinServer("localhost", 6000);
             });
         }

@@ -1,58 +1,89 @@
-﻿using Godot;
+using Godot;
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
-namespace Aquamarine.Source.Management.HUD
+namespace Aquamarine.Source.Management.HUD;
+
+/// <summary>
+/// Manages the loading screen UI and animations.
+/// </summary>
+public partial class LoadingScreen : Control
 {
-    public partial class LoadingScreen : Control
+    [Export] private ProgressBar _progressBar;
+    [Export] private Label _statusLabel;
+    [Export] private AnimationPlayer _animationPlayer;
+
+    public float Progress
     {
-        [Export] private ProgressBar _progressBar;
-        [Export] private Label _statusLabel;
-        [Export] private AnimationPlayer _animationPlayer;
+        get => _progressBar.Value;
+        set => _progressBar.Value = value;
+    }
 
-        private bool _isShown = false;
+    public string StatusText
+    {
+        get => _statusLabel.Text;
+        set => _statusLabel.Text = value;
+    }
 
-        public override void _Ready()
+    public override void _Ready()
+    {
+        base._Ready();
+        Visible = false;
+        _progressBar.Value = 0;
+        _statusLabel.Text = "Loading...";
+    }
+
+    /// <summary>
+    /// Shows the loading screen with an optional initial status message.
+    /// </summary>
+    /// <param name="statusMessage">The status message to display</param>
+    public void Show(string statusMessage = "Loading...")
+    {
+        _statusLabel.Text = statusMessage;
+        _progressBar.Value = 0;
+        Visible = true;
+        if (_animationPlayer.HasAnimation("fade_in"))
+        {
+            _animationPlayer.Play("fade_in");
+        }
+    }
+
+    /// <summary>
+    /// Updates the loading progress and optional status message.
+    /// </summary>
+    /// <param name="progress">Progress value between 0 and 100</param>
+    /// <param name="statusMessage">Optional new status message</param>
+    public void UpdateProgress(float progress, string statusMessage = null)
+    {
+        _progressBar.Value = progress;
+
+        if (statusMessage != null)
+        {
+            _statusLabel.Text = statusMessage;
+        }
+    }
+
+    /// <summary>
+    /// Hides the loading screen with an optional fade out animation.
+    /// </summary>
+    public void Hide()
+    {
+        if (_animationPlayer.HasAnimation("fade_out"))
+        {
+            _animationPlayer.Play("fade_out");
+            _animationPlayer.AnimationFinished += OnFadeOutFinished;
+        }
+        else
         {
             Visible = false;
         }
+    }
 
-        public void Show(string statusText = "LoadingWorld...")
+    private void OnFadeOutFinished(StringName animName)
+    {
+        if (animName == "fade_out")
         {
-            if (_isShown) return;
-
-            _statusLabel.Text = statusText;
-            _progressBar.Value = 0;
-            Visible = true;
-
-            _animationPlayer.Play("FadeIn");
-            _isShown = true;
-        }
-
-        public void Hide()
-        {
-            if (!_isShown) return;
-
-            _animationPlayer.Play("FadeOut");
-            _animationPlayer.AnimationFinished += OnFadeOutFinished;
-            _isShown = false;
-        }
-
-        private void OnFadeOutFinished(StringName animName)
-        {
-            if (animName == "FadeOut")
-            {
-                Visible = false;
-                _animationPlayer.AnimationFinished -= OnFadeOutFinished;
-            }
-        }
-
-        public void UpdateProgress(float progress)
-        {
-            _progressBar.Value = progress * 100;
+            Visible = false;
+            _animationPlayer.AnimationFinished -= OnFadeOutFinished;
         }
     }
 }

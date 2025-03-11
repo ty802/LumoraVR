@@ -1,4 +1,4 @@
-﻿using Aquamarine.Source.Logging;
+using Aquamarine.Source.Logging;
 using Bones.Core;
 using Godot;
 using System;
@@ -26,13 +26,47 @@ namespace Aquamarine.Source.Management
         public override void _Ready()
         {
             Instance = this;
-            _worldContainer = GetNode<Node>("/root/Root/WorldRoot");
-            _loadingScreen = GetNode<Control>("/root/Root/HUDManager/LoadingMenu");
-            _progressBar = GetNode<ProgressBar>("/root/Root/HUDManager/LoadingMenu/ProgressBar");
 
-            _loadingScreen.Visible = false;
+            // Defer node finding to prevent errors if nodes don't exist yet
+            CallDeferred(nameof(InitializeComponents));
 
+            // Start loading local home immediately
             LoadLocalHome();
+        }
+
+        private void InitializeComponents()
+        {
+            try
+            {
+                // Try to find components, but don't crash if they don't exist
+                _worldContainer = GetNodeOrNull<Node>("/root/Root/WorldRoot");
+                if (_worldContainer == null)
+                {
+                    Logger.Error("WorldRoot node not found! World loading may not work properly.");
+                }
+
+                _loadingScreen = GetNodeOrNull<Control>("/root/Root/HUDManager/LoadingMenu");
+                if (_loadingScreen == null)
+                {
+                    Logger.Error("LoadingMenu not found! Loading screen will not be displayed.");
+                }
+                else
+                {
+                    _loadingScreen.Visible = false;
+
+                    _progressBar = _loadingScreen.GetNodeOrNull<ProgressBar>("ProgressBar");
+                    if (_progressBar == null)
+                    {
+                        Logger.Error("ProgressBar not found in LoadingMenu! Progress will not be displayed.");
+                    }
+                }
+
+                Logger.Log("WorldManager components initialized.");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error initializing WorldManager components: {ex.Message}");
+            }
         }
 
         public void LoadWorld(string worldPath, bool disconnectFromCurrent = true)
@@ -47,10 +81,20 @@ namespace Aquamarine.Source.Management
                 ClientManager.Instance.DisconnectFromCurrentServer();
             }
 
-            _loadingScreen.Visible = true;
-            _progressBar.Value = 0;
+            // Only show loading screen if it exists
+            if (_loadingScreen != null)
+            {
+                _loadingScreen.Visible = true;
+            }
+
+            // Only update progress bar if it exists
+            if (_progressBar != null)
+            {
+                _progressBar.Value = 0;
+            }
 
             ResourceLoader.LoadThreadedRequest(worldPath, "", true, ResourceLoader.CacheMode.Reuse);
+            Logger.Log($"Started loading world: {worldPath}");
         }
 
         public override void _Process(double delta)
@@ -63,9 +107,24 @@ namespace Aquamarine.Source.Management
 
         private void UpdateLoadingProgress()
         {
-            var status = ResourceLoader.LoadThreadedGetStatus(_currentWorldPath);
+            // Create a Godot.Collections.Array for the progress parameter
+            var progressArray = new Godot.Collections.Array();
+            progressArray.Add(0.0f); // Initialize with 0 progress
 
-            _progressBar.Value = _progress[0] * 100;
+            var status = ResourceLoader.LoadThreadedGetStatus(_currentWorldPath, progressArray);
+
+            // Extract the progress value from the Godot array
+            float progress = 0;
+            if (progressArray.Count > 0)
+            {
+                progress = (float)progressArray[0];
+            }
+
+            // Only update progress bar if it exists
+            if (_progressBar != null)
+            {
+                _progressBar.Value = progress * 100;
+            }
 
             if (status == ResourceLoader.ThreadLoadStatus.Loaded)
             {
@@ -81,29 +140,60 @@ namespace Aquamarine.Source.Management
         {
             _isLoading = false;
 
-            _loadedWorld = ResourceLoader.LoadThreadedGet(_currentWorldPath) as PackedScene;
-
-            foreach (Node child in _worldContainer.GetChildren())
+            try
             {
-                child.QueueFree();
-            }
+                _loadedWorld = ResourceLoader.LoadThreadedGet(_currentWorldPath) as PackedScene;
 
-            Node newWorld = _loadedWorld.Instantiate();
-            _worldContainer.AddChild(newWorld);
-
-            _loadingScreen.Visible = false;
-
-            if (IsServerMode())
-            {
-                var multiplayerScene = newWorld.GetNode("MultiplayerScene");
-                if (multiplayerScene != null)
+                if (_worldContainer == null)
                 {
-                    multiplayerScene.Call("InitializeForServer");
-                    Logger.Log("서버용 멀티플레이어 컴포넌트 초기화 완료.");
+                    // Try one more time to find world container
+                    _worldContainer = GetNodeOrNull<Node>("/root/Root/WorldRoot");
+
+                    if (_worldContainer == null)
+                    {
+                        Logger.Error("WorldRoot node still not found! Cannot load world.");
+                        return;
+                    }
                 }
-                else
+
+                foreach (Node child in _worldContainer.GetChildren())
                 {
-                    Logger.Error("MultiplayerScene을 찾을 수 없습니다.");
+                    child.QueueFree();
+                }
+
+                Node newWorld = _loadedWorld.Instantiate();
+                _worldContainer.AddChild(newWorld);
+
+                // Hide loading screen if it exists
+                if (_loadingScreen != null)
+                {
+                    _loadingScreen.Visible = false;
+                }
+
+                if (IsServerMode())
+                {
+                    var multiplayerScene = newWorld.GetNodeOrNull("MultiplayerScene");
+                    if (multiplayerScene != null)
+                    {
+                        multiplayerScene.Call("InitializeForServer");
+                        Logger.Log("서버용 멀티플레이어 컴포넌트 초기화 완료.");
+                    }
+                    else
+                    {
+                        Logger.Error("MultiplayerScene을 찾을 수 없습니다.");
+                    }
+                }
+
+                Logger.Log($"World loaded successfully: {_currentWorldPath}");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error loading world: {ex.Message}");
+
+                // Hide loading screen if it exists
+                if (_loadingScreen != null)
+                {
+                    _loadingScreen.Visible = false;
                 }
             }
         }
@@ -117,6 +207,12 @@ namespace Aquamarine.Source.Management
         {
             _isLoading = false;
             Logger.Error($"Filed to LoadWorld: {_currentWorldPath}");
+
+            // Hide loading screen if it exists
+            if (_loadingScreen != null)
+            {
+                _loadingScreen.Visible = false;
+            }
 
             LoadLocalHome();
         }
@@ -133,5 +229,4 @@ namespace Aquamarine.Source.Management
             });
         }
     }
-
 }

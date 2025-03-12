@@ -45,12 +45,17 @@ public partial class WorldsTab : Control
     }
     private async Task GetSessions()
     {
-        // TODO Fix this its stupid
         CancellationTokenSource can = new();
-        Task.Run(async () => { await Task.Delay(8000);if(!can.Token.IsCancellationRequested) can.Cancel(); });
-        string json = await client.GetStringAsync(SessionInfo.SessionList,can.Token);
-        if (!can.Token.IsCancellationRequested) can.Cancel();
-        //end stupid
+        Task<string> result = client.GetStringAsync(SessionInfo.SessionList, can.Token);
+        Task delay = Task.Delay(8000);
+        Task done = await Task.WhenAny(result, delay);
+        if(done is not Task<string> jsontask)
+        {
+            can.Cancel();
+            Logger.Error("Failed to get session list");
+            return;
+        }
+        string json = jsontask.Result;
         Dictionary<string, List<SessionInfo>> infos = new();
         Dictionary<string, string> worldnames = new();
         var list = System.Text.Json.JsonSerializer.Deserialize<List<SessionInfo>>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });

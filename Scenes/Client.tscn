@@ -85,6 +85,7 @@ mesh = SubResource("BoxMesh_kwn4u")
 shape = SubResource("BoxShape3D_ifne4")
 
 [node name="WorldRoot" type="Node3D" parent="."]
+unique_name_in_owner = true
 
 [node name="WorldManager" type="Node" parent="."]
 script = ExtResource("2_u2316")

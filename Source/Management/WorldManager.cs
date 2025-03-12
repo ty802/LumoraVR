@@ -29,9 +29,6 @@ namespace Aquamarine.Source.Management
 
             // Defer node finding to prevent errors if nodes don't exist yet
             CallDeferred(nameof(InitializeComponents));
-
-            // Start loading local home immediately
-            LoadLocalHome();
         }
 
         private void InitializeComponents()
@@ -214,19 +211,8 @@ namespace Aquamarine.Source.Management
                 _loadingScreen.Visible = false;
             }
 
-            LoadLocalHome();
+            ClientManager.Instance?.JoinLocalHome();
         }
 
-        public void LoadLocalHome()
-        {
-            LoadWorld("res://Scenes/World/LocalHome.tscn", false);
-
-            this.CreateTimer(0.5f, () => {
-                if (ClientManager.Instance != null)
-                {
-                    ClientManager.Instance.JoinServer("localhost", 6000);
-                }
-            });
-        }
     }
 }

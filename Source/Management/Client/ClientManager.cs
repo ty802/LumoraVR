@@ -6,6 +6,7 @@ using Aquamarine.Source.Logging;
 using Aquamarine.Source.Networking;
 using Bones.Core;
 using System.Threading;
+using Aquamarine.Source.Helpers;
 
 namespace Aquamarine.Source.Management
 {
@@ -22,7 +23,7 @@ namespace Aquamarine.Source.Management
         private string _targetWorldPath = null;
         private readonly CancellationTokenSource _cancellationTokenSource = new CancellationTokenSource();
         private int _localHomePid = 0;
-
+        private int _localhomePort = 6000;
         private bool _isDirectConnection = false;
         [Signal]
         public delegate bool OnConnectSucsessEventHandler();
@@ -38,6 +39,7 @@ namespace Aquamarine.Source.Management
                 InitializeInput();
                 InitializeDiscordManager();
                 FetchServerInfo();
+                LoadLocalScene();
                 SpawnLocalHome();
             }
             catch (Exception ex)
@@ -58,7 +60,7 @@ namespace Aquamarine.Source.Management
 
         // Flag to track if we're already connecting to a local home server
         private bool _connectingToLocalHome = false;
-        
+        //this should only ever need to be called once
         private void SpawnLocalHome()
         {
             // Check if we're already connecting to a local home server
@@ -67,28 +69,26 @@ namespace Aquamarine.Source.Management
                 Logger.Log("Already connecting to local home server, not starting another connection");
                 return;
             }
-
-            _connectingToLocalHome = true;
-
-            // Check if we already have a local home server running
             if (_localHomePid != 0)
             {
-                Logger.Log($"Local home server already running with PID: {_localHomePid}, not starting another one");
-                throw new Exception("wtf");
-            }
+                JoinLocalHome();
+                return;
+            };
+            _connectingToLocalHome = true;
             // find a free port
-            int port = Helpers.SimpleIpHelpers.GetAvailablePortUdp(10) ?? 6000;
+            _localhomePort = Helpers.SimpleIpHelpers.GetAvailablePortUdp(10) ?? _localhomePort;
             // Start a new local home server
-            _localHomePid = OS.CreateProcess(OS.GetExecutablePath(), ["--run-home-server", "--xr-mode", "off", "--headless","--port",port.ToString()]);
+            _localHomePid = OS.CreateProcess(OS.GetExecutablePath(), ["--run-home-server", "--xr-mode", "off", "--headless","--port",_localhomePort.ToString()]);
             Logger.Log($"Started local server process with PID: {_localHomePid}");
             Task.Run(async () => {
                 while (!_cancellationTokenSource.Token.IsCancellationRequested)
                 {
                     await Task.Delay(1000);
-                    if(IPGlobalProperties.GetIPGlobalProperties().GetActiveUdpListeners().Any(endp => endp.Port == port))
+                    if(IPGlobalProperties.GetIPGlobalProperties().GetActiveUdpListeners().Any(endp => endp.Port == _localhomePort))
                     {
                         Logger.Log("Local server is running, attempting to connect");
-                        JoinServer("localhost", port);
+                        this.RunOnNodeAsync(JoinLocalHome);
+                        _connectingToLocalHome = false;
                         break;
                     }
                     Logger.Log("Waiting for local server");
@@ -98,9 +98,7 @@ namespace Aquamarine.Source.Management
 
         public void LoadLocalScene()
         {
-            DisconnectFromCurrentServer();
-
-            GetTree().ChangeSceneToFile("res://Scenes/World/LocalHome.tscn");
+            WorldManager.Instance?.LoadWorld("res://Scenes/World/LocalHome.tscn");
             Logger.Log("Switched to local scene.");
         }
 
@@ -113,15 +111,20 @@ namespace Aquamarine.Source.Management
             }
             _cancellationTokenSource.Cancel();
         }
-        public override void _EnterTree()
+        public override void _ExitTree()
         {
-            base._EnterTree();
+            base._ExitTree();
             if (_localHomePid != 0)
             {
                 OS.Kill(_localHomePid);
                 _localHomePid = 0;
             }
             _cancellationTokenSource.Cancel();
+        }
+        public void JoinLocalHome()
+        {
+            LoadLocalScene();
+            JoinServer("localhost", _localhomePort);
         }
     }
 }

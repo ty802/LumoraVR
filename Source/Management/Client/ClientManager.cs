@@ -5,6 +5,7 @@ using Aquamarine.Source.Input;
 using Aquamarine.Source.Logging;
 using Aquamarine.Source.Networking;
 using Bones.Core;
+using System.Threading;
 
 namespace Aquamarine.Source.Management
 {
@@ -19,7 +20,7 @@ namespace Aquamarine.Source.Management
         [Export] private Node3D _inputRoot;
         [Export] private MultiplayerScene _multiplayerScene;
         private string _targetWorldPath = null;
-
+        private readonly CancellationTokenSource _cancellationTokenSource = new CancellationTokenSource();
         private int _localHomePid = 0;
 
         private bool _isDirectConnection = false;
@@ -66,32 +67,33 @@ namespace Aquamarine.Source.Management
                 Logger.Log("Already connecting to local home server, not starting another connection");
                 return;
             }
-            
+
             _connectingToLocalHome = true;
-            
+
             // Check if we already have a local home server running
             if (_localHomePid != 0)
             {
                 Logger.Log($"Local home server already running with PID: {_localHomePid}, not starting another one");
-                
-                // Just try to connect to the existing server
-                this.CreateTimer(0.5f, () =>
-                {
-                    Logger.Log("Attempting to connect to existing local server at localhost:6000");
-                    JoinServer("localhost", 6000);
-                });
-                return;
+                throw new Exception("wtf");
             }
-            
+            // find a free port
+            int port = Helpers.SimpleIpHelpers.GetAvailablePortUdp(10) ?? 6000;
             // Start a new local home server
-            _localHomePid = OS.CreateProcess(OS.GetExecutablePath(), ["--run-home-server", "--xr-mode", "off", "--headless"]);
+            _localHomePid = OS.CreateProcess(OS.GetExecutablePath(), ["--run-home-server", "--xr-mode", "off", "--headless","--port",port.ToString()]);
             Logger.Log($"Started local server process with PID: {_localHomePid}");
-
-            this.CreateTimer(2.0f, () =>
-            {
-                Logger.Log("Attempting to connect to server at localhost:6000");
-                JoinServer("localhost", 6000);
-            });
+            Task.Run(async () => {
+                while (!_cancellationTokenSource.Token.IsCancellationRequested)
+                {
+                    await Task.Delay(1000);
+                    if(IPGlobalProperties.GetIPGlobalProperties().GetActiveUdpListeners().Any(endp => endp.Port == port))
+                    {
+                        Logger.Log("Local server is running, attempting to connect");
+                        JoinServer("localhost", port);
+                        break;
+                    }
+                    Logger.Log("Waiting for local server");
+                }
+            },_cancellationTokenSource.Token);
         }
 
         public void LoadLocalScene()
@@ -107,7 +109,19 @@ namespace Aquamarine.Source.Management
             if (_localHomePid != 0)
             {
                 OS.Kill(_localHomePid);
+                _localHomePid = 0;
             }
+            _cancellationTokenSource.Cancel();
+        }
+        public override void _EnterTree()
+        {
+            base._EnterTree();
+            if (_localHomePid != 0)
+            {
+                OS.Kill(_localHomePid);
+                _localHomePid = 0;
+            }
+            _cancellationTokenSource.Cancel();
         }
     }
 }

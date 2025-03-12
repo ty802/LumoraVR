@@ -29,8 +29,7 @@ namespace Aquamarine.Source.Management
         private string _sessionSecret;
         private bool _running = true;
 
-        private const int Port = 7000;
-        private const int SessionListPort = Port + 7001;
+        private int Port = 7000;
         private const int MaxConnections = 20;
         private const string SessionApiUrl = "https://api.xlinka.com/sessions";
 
@@ -56,12 +55,23 @@ namespace Aquamarine.Source.Management
 
                 // Initialize MultiplayerPeer
                 MultiplayerPeer = new LiteNetLibMultiplayerPeer();
-
+                // get port
+                {
+                    string[] args = OS.GetCmdlineArgs();
+                    int index = Array.IndexOf(args, "--port");
+                    if (index != -1 && args.Length > index + 1)
+                    {
+                        if (int.TryParse(args[index + 1], out int port))
+                        {
+                            Port = port;
+                        }
+                    }
+                }
                 Error error;
                 switch (serverType) {
                     case ServerType.Local:
                     // Start local server
-                    error = MultiplayerPeer.CreateServer(6000, 1);
+                    error = MultiplayerPeer.CreateServer(Port, 1);
 
                     // Check if server started successfully before setting it as the multiplayer peer
                     if (error == Error.Ok)
@@ -73,10 +83,10 @@ namespace Aquamarine.Source.Management
                         MultiplayerPeer.PeerConnected += OnPeerConnected;
                         MultiplayerPeer.PeerDisconnected += OnPeerDisconnected;
 
-                        Logger.Log("Local server started on port 6000.");
+                        Logger.Log($"Local server started on port {Port}.");
 
                         // Switch scene
-                        GetTree().ChangeSceneToFile("res://Scenes/World/LocalHome.tscn");
+                        GetNode("%WorldRoot")?.AddChild(ResourceLoader.Load<PackedScene>("res://Scenes/World/LocalHome.tscn").Instantiate());
                         Logger.Log("LocalHome Loaded.");
 
                         // Defer MultiplayerScene initialization until scene is fully loaded
@@ -115,7 +125,8 @@ namespace Aquamarine.Source.Management
                         };
                         SessionListListener.NetworkReceiveEvent += SessionListListenerOnNetworkReceiveEvent;
                         SessionListListener.PeerDisconnectedEvent += SessionListListenerOnPeerDisconnectedEvent;
-                        SessionListManager.Start(SessionListPort);
+                        if(Helpers.SimpleIpHelpers.GetAvailablePortUdp(10) is not int port) throw new Exception("Failed to find available port (shit)");
+                        SessionListManager.Start();
                         ConnectToSessionServer();
                     }
                     else

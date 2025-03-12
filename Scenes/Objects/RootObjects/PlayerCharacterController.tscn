@@ -1,68 +1,10 @@
-[gd_scene load_steps=11 format=3 uid="uid://fnsfbtgsl6df"]
+[gd_scene load_steps=9 format=3 uid="uid://fnsfbtgsl6df"]
 
 [ext_resource type="Script" uid="uid://cce7fps2tjg0y" path="res://Source/Scene/RootObjects/PlayerCharacterController.cs" id="1_0nv1q"]
 [ext_resource type="PackedScene" uid="uid://cnipfulvhw6yr" path="res://Assets/Models/headset.gltf" id="2_63sjc"]
 [ext_resource type="PackedScene" uid="uid://ddkrrw6g4phsx" path="res://Scenes/UI/Nameplate.tscn" id="2_x6dpg"]
 [ext_resource type="PackedScene" uid="uid://bbyi2f0brc7tu" path="res://Assets/Models/LeftHand.gltf" id="3_xm4n5"]
 [ext_resource type="PackedScene" uid="uid://bc7nsneikvbkk" path="res://Assets/Models/RightHand.gltf" id="4_ca683"]
-
-[sub_resource type="SceneReplicationConfig" id="SceneReplicationConfig_h7fwk"]
-properties/0/path = NodePath(".:Authority")
-properties/0/spawn = true
-properties/0/replication_mode = 0
-
-[sub_resource type="SceneReplicationConfig" id="SceneReplicationConfig_c22g5"]
-properties/0/path = NodePath(".:HeadPosition")
-properties/0/spawn = true
-properties/0/replication_mode = 1
-properties/1/path = NodePath(".:HeadRotation")
-properties/1/spawn = true
-properties/1/replication_mode = 1
-properties/2/path = NodePath(".:LeftHandPosition")
-properties/2/spawn = true
-properties/2/replication_mode = 1
-properties/3/path = NodePath(".:LeftHandRotation")
-properties/3/spawn = true
-properties/3/replication_mode = 1
-properties/4/path = NodePath(".:RightHandPosition")
-properties/4/spawn = true
-properties/4/replication_mode = 1
-properties/5/path = NodePath(".:RightHandRotation")
-properties/5/spawn = true
-properties/5/replication_mode = 1
-properties/6/path = NodePath(".:position")
-properties/6/spawn = true
-properties/6/replication_mode = 1
-properties/7/path = NodePath(".:SyncVelocity")
-properties/7/spawn = true
-properties/7/replication_mode = 1
-properties/8/path = NodePath(".:MovementInput")
-properties/8/spawn = true
-properties/8/replication_mode = 1
-properties/9/path = NodePath(".:UserHeight")
-properties/9/spawn = true
-properties/9/replication_mode = 1
-properties/10/path = NodePath(".:MovementButtons")
-properties/10/spawn = true
-properties/10/replication_mode = 1
-properties/11/path = NodePath(".:HipPosition")
-properties/11/spawn = true
-properties/11/replication_mode = 1
-properties/12/path = NodePath(".:HipRotation")
-properties/12/spawn = true
-properties/12/replication_mode = 1
-properties/13/path = NodePath(".:LeftFootPosition")
-properties/13/spawn = true
-properties/13/replication_mode = 1
-properties/14/path = NodePath(".:LeftFootRotation")
-properties/14/spawn = true
-properties/14/replication_mode = 1
-properties/15/path = NodePath(".:RightFootPosition")
-properties/15/spawn = true
-properties/15/replication_mode = 1
-properties/16/path = NodePath(".:RightFootRotation")
-properties/16/spawn = true
-properties/16/replication_mode = 1
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_820w7"]
 
@@ -72,11 +14,9 @@ properties/16/replication_mode = 1
 radius = 0.05
 height = 0.1
 
-[node name="PlayerCharacterController" type="CharacterBody3D" node_paths=PackedStringArray("ClientSync", "ServerSync", "Nametag", "_head", "_leftHand", "_rightHand", "_hip", "_leftFoot", "_rightFoot")]
+[node name="PlayerCharacterController" type="CharacterBody3D" node_paths=PackedStringArray("Nametag", "_head", "_leftHand", "_rightHand", "_hip", "_leftFoot", "_rightFoot")]
 collision_layer = 2
 script = ExtResource("1_0nv1q")
-ClientSync = NodePath("ClientSynchronizer")
-ServerSync = NodePath("ServerSynchronizer")
 Nametag = NodePath("Nameplate")
 _head = NodePath("Limbs/Head")
 _leftHand = NodePath("Limbs/Left Hand")
@@ -84,14 +24,6 @@ _rightHand = NodePath("Limbs/Right Hand")
 _hip = NodePath("Limbs/Hips")
 _leftFoot = NodePath("Limbs/Left Foot")
 _rightFoot = NodePath("Limbs/Right Foot")
-
-[node name="ServerSynchronizer" type="MultiplayerSynchronizer" parent="."]
-replication_config = SubResource("SceneReplicationConfig_h7fwk")
-
-[node name="ClientSynchronizer" type="MultiplayerSynchronizer" parent="."]
-replication_interval = 0.05
-delta_interval = 0.05
-replication_config = SubResource("SceneReplicationConfig_c22g5")
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0)

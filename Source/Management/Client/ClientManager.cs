@@ -18,8 +18,13 @@ namespace Aquamarine.Source.Management
         private LiteNetLibMultiplayerPeer  _peer;
         [Export] private Node3D _inputRoot;
         [Export] private MultiplayerScene _multiplayerScene;
+        private string _targetWorldPath = null;
+
+        private int _localHomePid = 0;
 
         private bool _isDirectConnection = false;
+        [Signal]
+        public delegate bool OnConnectSucsessEventHandler();
 
         public override void _Ready()
         {
@@ -52,12 +57,30 @@ namespace Aquamarine.Source.Management
 
         private void SpawnLocalHome()
         {
-            OS.CreateProcess(OS.GetExecutablePath(), ["--run-home-server", "--xr-mode", "off", "--headless"]);
+            _localHomePid = OS.CreateProcess(OS.GetExecutablePath(), ["--run-home-server", "--xr-mode", "off", "--headless"]);
+            Logger.Log($"Started local server process with PID: {_localHomePid}");
 
-            this.CreateTimer(0.5f, () =>
+            this.CreateTimer(2.0f, () =>
             {
+                Logger.Log("Attempting to connect to server at localhost:6000");
                 JoinServer("localhost", 6000);
             });
+        }
+
+        public void LoadLocalScene()
+        {
+            DisconnectFromCurrentServer();
+
+            GetTree().ChangeSceneToFile("res://Scenes/World/LocalHome.tscn");
+            Logger.Log("Switched to local scene.");
+        }
+
+        ~ClientManager()
+        {
+            if (_localHomePid != 0)
+            {
+                OS.Kill(_localHomePid);
+            }
         }
     }
 }

@@ -1,0 +1,338 @@
+using System;
+using System.Collections.Generic;
+using Aquamarine.Source.Logging;
+using Aquamarine.Source.Scene.RootObjects;
+using Godot;
+
+namespace Aquamarine.Source.Management
+{
+    [GlobalClass]
+    public partial class CustomPlayerSync : Node
+    {
+        private CustomPlayerSpawner _playerSpawner;
+        private Dictionary<int, PlayerSyncData> _playerSyncData = new Dictionary<int, PlayerSyncData>();
+        private const float SyncInterval = 1.0f / 20.0f; // 20 Hz sync rate
+        private float _timeSinceLastSync = 0;
+        private bool _isServer;
+
+        // Class to hold sync data for each player
+        private class PlayerSyncData
+        {
+            public Vector3 Position;
+            public Vector3 Velocity;
+            public Vector3 HeadPosition;
+            public Quaternion HeadRotation;
+            public Vector3 LeftHandPosition;
+            public Quaternion LeftHandRotation;
+            public Vector3 RightHandPosition;
+            public Quaternion RightHandRotation;
+            public Vector3 HipPosition;
+            public Quaternion HipRotation;
+            public Vector3 LeftFootPosition;
+            public Quaternion LeftFootRotation;
+            public Vector3 RightFootPosition;
+            public Quaternion RightFootRotation;
+            public float UserHeight;
+            public Vector2 MovementInput;
+            public byte MovementButtons;
+            public double LastUpdateTime;
+        }
+
+        public override void _Ready()
+        {
+            // Find the CustomPlayerSpawner
+            _playerSpawner = GetNodeOrNull<CustomPlayerSpawner>("%CustomPlayerSpawner");
+            if (_playerSpawner == null)
+            {
+                _playerSpawner = GetNodeOrNull<CustomPlayerSpawner>("../CustomPlayerSpawner");
+            }
+            
+            if (_playerSpawner != null)
+            {
+                Logger.Log("CustomPlayerSync: Found CustomPlayerSpawner");
+                
+                // Connect to player spawned/removed signals
+                _playerSpawner.PlayerSpawned += OnPlayerSpawned;
+                _playerSpawner.PlayerRemoved += OnPlayerRemoved;
+            }
+            else
+            {
+                Logger.Error("CustomPlayerSync: Could not find CustomPlayerSpawner");
+            }
+            
+            // Determine if we're the server
+            _isServer = Multiplayer.IsServer();
+            
+            // Connect to network peer connected signal
+            Multiplayer.PeerConnected += OnPeerConnected;
+            Multiplayer.PeerDisconnected += OnPeerDisconnected;
+            
+            Logger.Log("CustomPlayerSync initialized");
+        }
+
+        public override void _Process(double delta)
+        {
+            _timeSinceLastSync += (float)delta;
+            
+            // Only sync at the specified interval
+            if (_timeSinceLastSync >= SyncInterval)
+            {
+                _timeSinceLastSync = 0;
+                
+                // Get local player ID
+                int localId = Multiplayer.GetUniqueId();
+                
+                // If we have authority over any players, send their data
+                if (_playerSpawner != null)
+                {
+                    foreach (var player in _playerSpawner.GetAllPlayers())
+                    {
+                        // Only sync players we have authority over
+                        if (player.Value.Authority == localId)
+                        {
+                            // Send player data to all peers
+                            RpcId(1, MethodName.SyncPlayerData, 
+                                player.Key, 
+                                player.Value.GlobalPosition,
+                                player.Value.Velocity,
+                                player.Value.HeadPosition,
+                                player.Value.HeadRotation,
+                                player.Value.LeftHandPosition,
+                                player.Value.LeftHandRotation,
+                                player.Value.RightHandPosition,
+                                player.Value.RightHandRotation,
+                                player.Value.HipPosition,
+                                player.Value.HipRotation,
+                                player.Value.LeftFootPosition,
+                                player.Value.LeftFootRotation,
+                                player.Value.RightFootPosition,
+                                player.Value.RightFootRotation,
+                                player.Value.UserHeight,
+                                player.Value.MovementInput,
+                                player.Value.MovementButtons);
+                        }
+                    }
+                }
+            }
+            
+            // Apply interpolation for remote players
+            foreach (var syncData in _playerSyncData)
+            {
+                // Skip if this is our local player
+                if (syncData.Key == Multiplayer.GetUniqueId())
+                    continue;
+                
+                // Find the player
+                var player = _playerSpawner?.GetPlayer(syncData.Key);
+                if (player != null)
+                {
+                    // Apply the sync data
+                    player.GlobalPosition = syncData.Value.Position;
+                    player.Velocity = syncData.Value.Velocity;
+                    player.HeadPosition = syncData.Value.HeadPosition;
+                    player.HeadRotation = syncData.Value.HeadRotation;
+                    player.LeftHandPosition = syncData.Value.LeftHandPosition;
+                    player.LeftHandRotation = syncData.Value.LeftHandRotation;
+                    player.RightHandPosition = syncData.Value.RightHandPosition;
+                    player.RightHandRotation = syncData.Value.RightHandRotation;
+                    player.HipPosition = syncData.Value.HipPosition;
+                    player.HipRotation = syncData.Value.HipRotation;
+                    player.LeftFootPosition = syncData.Value.LeftFootPosition;
+                    player.LeftFootRotation = syncData.Value.LeftFootRotation;
+                    player.RightFootPosition = syncData.Value.RightFootPosition;
+                    player.RightFootRotation = syncData.Value.RightFootRotation;
+                    player.UserHeight = syncData.Value.UserHeight;
+                    player.MovementInput = syncData.Value.MovementInput;
+                    player.MovementButtons = syncData.Value.MovementButtons;
+                }
+            }
+        }
+
+        private void OnPlayerSpawned(PlayerCharacterController player)
+        {
+            // Initialize sync data for this player
+            if (!_playerSyncData.ContainsKey(player.Authority))
+            {
+                _playerSyncData[player.Authority] = new PlayerSyncData
+                {
+                    Position = player.GlobalPosition,
+                    Velocity = player.Velocity,
+                    HeadPosition = player.HeadPosition,
+                    HeadRotation = player.HeadRotation,
+                    LeftHandPosition = player.LeftHandPosition,
+                    LeftHandRotation = player.LeftHandRotation,
+                    RightHandPosition = player.RightHandPosition,
+                    RightHandRotation = player.RightHandRotation,
+                    HipPosition = player.HipPosition,
+                    HipRotation = player.HipRotation,
+                    LeftFootPosition = player.LeftFootPosition,
+                    LeftFootRotation = player.LeftFootRotation,
+                    RightFootPosition = player.RightFootPosition,
+                    RightFootRotation = player.RightFootRotation,
+                    UserHeight = player.UserHeight,
+                    MovementInput = player.MovementInput,
+                    MovementButtons = player.MovementButtons,
+                    LastUpdateTime = Time.GetTicksMsec() / 1000.0
+                };
+                
+                Logger.Log($"CustomPlayerSync: Initialized sync data for player {player.Authority}");
+            }
+        }
+
+        private void OnPlayerRemoved(int playerId)
+        {
+            // Remove sync data for this player
+            if (_playerSyncData.ContainsKey(playerId))
+            {
+                _playerSyncData.Remove(playerId);
+                Logger.Log($"CustomPlayerSync: Removed sync data for player {playerId}");
+            }
+        }
+
+        private void OnPeerConnected(long id)
+        {
+            Logger.Log($"CustomPlayerSync: Peer connected: {id}");
+        }
+
+        private void OnPeerDisconnected(long id)
+        {
+            // Remove sync data for this peer
+            if (_playerSyncData.ContainsKey((int)id))
+            {
+                _playerSyncData.Remove((int)id);
+                Logger.Log($"CustomPlayerSync: Removed sync data for disconnected peer {id}");
+            }
+        }
+
+        [Rpc(MultiplayerApi.RpcMode.AnyPeer, CallLocal = false)]
+        private void SyncPlayerData(
+            int playerId, 
+            Vector3 position,
+            Vector3 velocity,
+            Vector3 headPosition,
+            Quaternion headRotation,
+            Vector3 leftHandPosition,
+            Quaternion leftHandRotation,
+            Vector3 rightHandPosition,
+            Quaternion rightHandRotation,
+            Vector3 hipPosition,
+            Quaternion hipRotation,
+            Vector3 leftFootPosition,
+            Quaternion leftFootRotation,
+            Vector3 rightFootPosition,
+            Quaternion rightFootRotation,
+            float userHeight,
+            Vector2 movementInput,
+            byte movementButtons)
+        {
+            // Only the server should receive this RPC
+            if (!_isServer)
+                return;
+                
+            // Update the sync data
+            if (!_playerSyncData.ContainsKey(playerId))
+            {
+                _playerSyncData[playerId] = new PlayerSyncData();
+            }
+            
+            var syncData = _playerSyncData[playerId];
+            syncData.Position = position;
+            syncData.Velocity = velocity;
+            syncData.HeadPosition = headPosition;
+            syncData.HeadRotation = headRotation;
+            syncData.LeftHandPosition = leftHandPosition;
+            syncData.LeftHandRotation = leftHandRotation;
+            syncData.RightHandPosition = rightHandPosition;
+            syncData.RightHandRotation = rightHandRotation;
+            syncData.HipPosition = hipPosition;
+            syncData.HipRotation = hipRotation;
+            syncData.LeftFootPosition = leftFootPosition;
+            syncData.LeftFootRotation = leftFootRotation;
+            syncData.RightFootPosition = rightFootPosition;
+            syncData.RightFootRotation = rightFootRotation;
+            syncData.UserHeight = userHeight;
+            syncData.MovementInput = movementInput;
+            syncData.MovementButtons = movementButtons;
+            syncData.LastUpdateTime = Time.GetTicksMsec() / 1000.0;
+            
+            // Broadcast to all other peers
+            foreach (var peerId in Multiplayer.GetPeers())
+            {
+                if (peerId != Multiplayer.GetRemoteSenderId() && peerId != 1) // Skip sender and server
+                {
+                    RpcId(peerId, MethodName.ReceivePlayerData, 
+                        playerId, 
+                        position,
+                        velocity,
+                        headPosition,
+                        headRotation,
+                        leftHandPosition,
+                        leftHandRotation,
+                        rightHandPosition,
+                        rightHandRotation,
+                        hipPosition,
+                        hipRotation,
+                        leftFootPosition,
+                        leftFootRotation,
+                        rightFootPosition,
+                        rightFootRotation,
+                        userHeight,
+                        movementInput,
+                        movementButtons);
+                }
+            }
+        }
+
+        [Rpc(MultiplayerApi.RpcMode.Authority, CallLocal = false)]
+        private void ReceivePlayerData(
+            int playerId, 
+            Vector3 position,
+            Vector3 velocity,
+            Vector3 headPosition,
+            Quaternion headRotation,
+            Vector3 leftHandPosition,
+            Quaternion leftHandRotation,
+            Vector3 rightHandPosition,
+            Quaternion rightHandRotation,
+            Vector3 hipPosition,
+            Quaternion hipRotation,
+            Vector3 leftFootPosition,
+            Quaternion leftFootRotation,
+            Vector3 rightFootPosition,
+            Quaternion rightFootRotation,
+            float userHeight,
+            Vector2 movementInput,
+            byte movementButtons)
+        {
+            // Skip if this is our local player
+            if (playerId == Multiplayer.GetUniqueId())
+                return;
+                
+            // Update the sync data
+            if (!_playerSyncData.ContainsKey(playerId))
+            {
+                _playerSyncData[playerId] = new PlayerSyncData();
+            }
+            
+            var syncData = _playerSyncData[playerId];
+            syncData.Position = position;
+            syncData.Velocity = velocity;
+            syncData.HeadPosition = headPosition;
+            syncData.HeadRotation = headRotation;
+            syncData.LeftHandPosition = leftHandPosition;
+            syncData.LeftHandRotation = leftHandRotation;
+            syncData.RightHandPosition = rightHandPosition;
+            syncData.RightHandRotation = rightHandRotation;
+            syncData.HipPosition = hipPosition;
+            syncData.HipRotation = hipRotation;
+            syncData.LeftFootPosition = leftFootPosition;
+            syncData.LeftFootRotation = leftFootRotation;
+            syncData.RightFootPosition = rightFootPosition;
+            syncData.RightFootRotation = rightFootRotation;
+            syncData.UserHeight = userHeight;
+            syncData.MovementInput = movementInput;
+            syncData.MovementButtons = movementButtons;
+            syncData.LastUpdateTime = Time.GetTicksMsec() / 1000.0;
+        }
+    }
+}

@@ -1,6 +1,7 @@
 using Godot;
 using LiteNetLib.Utils;
 using LiteNetLib;
+using Aquamarine.Source.Logging;
 
 namespace Aquamarine.Source.Management
 {
@@ -9,6 +10,7 @@ namespace Aquamarine.Source.Management
         private void SessionListListenerOnPeerDisconnectedEvent(NetPeer peer, DisconnectInfo disconnectinfo)
         {
             GD.Print($"Disconnected from the session server: {disconnectinfo.Reason}");
+            Logger.Log($"Disconnected from the session server: {disconnectinfo.Reason}");
             if (_running)
             {
                 ConnectToSessionServer();
@@ -18,6 +20,7 @@ namespace Aquamarine.Source.Management
         private void ConnectToSessionServer()
         {
             GD.Print("Attempting to connect to session server...");
+            Logger.Log("Attempting to connect to session server...");
             MainServer = SessionListManager.Connect(SessionInfo.SessionServer, "Private");
 
             /*
@@ -33,12 +36,14 @@ namespace Aquamarine.Source.Management
             var opcode = reader.GetByte();
 
             GD.Print($"Received session list message, opcode: {opcode}");
+            Logger.Log($"Received session list message, opcode: {opcode}");
 
             switch (opcode)
             {
                 case 0x01:
                     _sessionSecret = reader.GetString();
                     GD.Print($"Set session secret to {_sessionSecret}");
+                    Logger.Log($"Set session secret to {_sessionSecret}");
                     var writer = new NetDataWriter();
                     writer.Put((byte)0x01);
                     writer.Put(_worldName);
@@ -48,6 +53,7 @@ namespace Aquamarine.Source.Management
 
                 case 0x02:
                     GD.Print("Sending NAT punchthrough message");
+                    Logger.Log("Sending NAT punchthrough message");
                     MultiplayerPeer.ServerSendNatPunchthrough(
                         SessionInfo.SessionServer.Address.ToString(),
                         SessionInfo.SessionServer.Port,

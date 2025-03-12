@@ -1,6 +1,7 @@
-using Aquamarine.Source.Logging;
-using Godot;
 using System;
+using Aquamarine.Source.Logging;
+using Aquamarine.Source.Scene.RootObjects;
+using Godot;
 
 namespace Aquamarine.Source.Management
 {
@@ -8,24 +9,72 @@ namespace Aquamarine.Source.Management
     {
         private void OnPeerConnected(long id)
         {
-            Logger.Log($"Peer connected with ID: {id}. Attempting to spawn player...");
             try
             {
-                _multiplayerScene.SpawnPlayer((int)id); // Spawn the player
-                //Logger.Log($"Player spawned successfully for ID: {id}.");
+                Logger.Log($"Server: Peer connected: {id}");
 
-                _multiplayerScene.PlayerList.Add((int)id, new PlayerInfo()); // Add to player list
-                //Logger.Log("Player added to the player list.");
-
-                _multiplayerScene.SendUpdatedPlayerList(); // Notify others of the new player
-                //Logger.Log("Updated player list sent.");
-
-                _multiplayerScene.SendAllPrefabs((int)id); // Send prefabs to the new player
-                //Logger.Log("Prefabs sent to the new player.");
+                // Spawn player for the connected peer
+                if (_multiplayerScene != null)
+                {
+                    Logger.Log($"Server: Spawning player for peer {id}");
+                    _multiplayerScene.SpawnPlayer((int)id);
+                }
+                else
+                {
+                    Logger.Error($"Server: Cannot spawn player for peer {id}: MultiplayerScene is null");
+                    
+                    // Try to find MultiplayerScene again
+                    var multiplayerScene = FindMultiplayerSceneInChildren(GetTree().CurrentScene);
+                    if (multiplayerScene != null)
+                    {
+                        _multiplayerScene = multiplayerScene;
+                        Logger.Log($"Server: Found MultiplayerScene, spawning player for peer {id}");
+                        _multiplayerScene.SpawnPlayer((int)id);
+                    }
+                    else
+                    {
+                        Logger.Error("Server: MultiplayerScene still not found, trying direct player spawning");
+                        
+                        // Try direct player spawning as a last resort
+                        if (PlayerManager.Instance != null)
+                        {
+                            Logger.Log($"Server: Attempting to spawn player via PlayerManager for peer {id}");
+                            PlayerManager.Instance.SpawnPlayer((int)id, Vector3.Zero);
+                        }
+                        else
+                        {
+                            // Try to find PlayerRoot directly
+                            var playerRoot = GetTree().Root.GetNodeOrNull<Node3D>("//PlayerRoot");
+                            if (playerRoot != null)
+                            {
+                                Logger.Log($"Server: Found PlayerRoot directly, spawning player for peer {id}");
+                                
+                                // Instantiate player directly
+                                var playerScene = ResourceLoader.Load<PackedScene>("res://Scenes/Objects/RootObjects/PlayerCharacterController.tscn");
+                                if (playerScene != null)
+                                {
+                                    var player = playerScene.Instantiate<PlayerCharacterController>();
+                                    player.SetPlayerAuthority((int)id);
+                                    player.Name = id.ToString();
+                                    playerRoot.AddChild(player);
+                                    Logger.Log($"Server: Player spawned directly for peer {id}");
+                                }
+                                else
+                                {
+                                    Logger.Error("Server: Could not load player scene");
+                                }
+                            }
+                            else
+                            {
+                                Logger.Error("Server: Could not find PlayerRoot, cannot spawn player");
+                            }
+                        }
+                    }
+                }
             }
             catch (Exception ex)
             {
-                Logger.Error($"Error during OnPeerConnected for ID {id}: {ex.Message}");
+                Logger.Error($"Server: Error in OnPeerConnected: {ex.Message}\nStack trace: {ex.StackTrace}");
             }
         }
 
@@ -33,41 +82,23 @@ namespace Aquamarine.Source.Management
         {
             try
             {
-                var idInt = (int)id;
-                _multiplayerScene.RemovePlayer(idInt);
-                _multiplayerScene.PlayerList.Remove(idInt);
-                _multiplayerScene.SendUpdatedPlayerList();
-                Logger.Log($"Peer disconnected with ID: {id}.");
+                Logger.Log($"Server: Peer disconnected: {id}");
+
+                // Remove player for the disconnected peer
+                if (_multiplayerScene != null)
+                {
+                    Logger.Log($"Server: Removing player for peer {id}");
+                    _multiplayerScene.RemovePlayer((int)id);
+                }
+                else
+                {
+                    Logger.Error($"Server: Cannot remove player for peer {id}: MultiplayerScene is null");
+                }
             }
             catch (Exception ex)
             {
-                Logger.Error($"Error handling peer disconnection (ID: {id}): {ex.Message}");
-            }
-
-            if (CurrentServerType is ServerType.Local)
-            {
-                Logger.Log("Quitting local server");
-                MultiplayerPeer.Close();
-                GetTree().Quit();
+                Logger.Error($"Server: Error in OnPeerDisconnected: {ex.Message}\nStack trace: {ex.StackTrace}");
             }
         }
-
-        /*
-        private async Task<string> GetPublicIP()
-        {
-            try
-            {
-                using var client = new System.Net.Http.HttpClient();
-                var publicIp = await client.GetStringAsync("https://api.ipify.org");
-                Logger.Log($"Retrieved public IP: {publicIp}");
-                return publicIp.Trim();
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"Error fetching public IP: {ex.Message}");
-                return null;
-            }
-        }
-        */
     }
 }

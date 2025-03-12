@@ -32,8 +32,9 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
         }
     } = "builtin://Assets/Prefabs/johnaquamarinehumanoid.prefab";
 
-    [Export] public MultiplayerSynchronizer ClientSync;
-    [Export] public MultiplayerSynchronizer ServerSync;
+    // We'll use CustomPlayerSync instead of these
+    // [Export] public MultiplayerSynchronizer ClientSync;
+    // [Export] public MultiplayerSynchronizer ServerSync;
 
     [Export] public float UserHeight;
     [Export] public Vector2 MovementInput;
@@ -71,7 +72,6 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
         set
         {
             field = value;
-            ClientSync.SetMultiplayerAuthority(value);
         }
     }
 
@@ -126,7 +126,7 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
         base._Process(delta);
 
         var deltaf = (float)delta;
-        var authority = ClientSync.IsMultiplayerAuthority();
+        var authority = Authority == Multiplayer.GetUniqueId();
 
         if (authority)
         {
@@ -250,7 +250,7 @@ public partial class PlayerCharacterController : CharacterBody3D, ICharacterCont
     {
         base._Input(@event);
 
-        if (!ClientSync.IsMultiplayerAuthority())
+        if (Authority != Multiplayer.GetUniqueId())
         {
             return;
         }

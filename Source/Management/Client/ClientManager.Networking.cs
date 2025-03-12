@@ -13,10 +13,14 @@ namespace Aquamarine.Source.Management
 {
     public partial class ClientManager
     {
-        private void DisconnectFromCurrentServer()
+        public void SetTargetWorldPath(string path)
+        {
+            _targetWorldPath = path;
+        }
+        public void DisconnectFromCurrentServer()
         {
             if (_peer?.GetConnectionStatus() == MultiplayerPeer.ConnectionStatus.Connected)
-                _multiplayerScene.Rpc(MultiplayerScene.MethodName.DisconnectPlayer);
+                _multiplayerScene?.Rpc(MultiplayerScene.MethodName.DisconnectPlayer);
             _peer?.Close();
             Multiplayer.MultiplayerPeer = null;
         }
@@ -43,16 +47,23 @@ namespace Aquamarine.Source.Management
             RegisterPeerEvents();
         }
 
-        public void JoinServer(string address, int port)
+        public void JoinServer(string address, int port, string worldPath = null)
         {
+            if (worldPath != null)
+            {
+                _targetWorldPath = worldPath;
+            }
+
             DisconnectFromCurrentServer();
 
+            Logger.Log($"Creating client peer to connect to {address}:{port}");
             _peer = new LiteNetLibMultiplayerPeer();
             _peer.CreateClient(address, port);
             Multiplayer.MultiplayerPeer = _peer;
             _isDirectConnection = true;
 
             RegisterPeerEvents();
+            Logger.Log("Client peer created and events registered");
         }
 
         public void JoinNatServerRelay(string identifier)
@@ -90,17 +101,24 @@ namespace Aquamarine.Source.Management
 
         private void PeerOnClientConnectionFail()
         {
+            Logger.Error("Failed to connect to server");
             UnregisterPeerEvents();
             SpawnLocalHome();
         }
 
         private void PeerOnClientConnectionSuccess()
         {
-            MultiplayerScene.Instance.Rpc(MultiplayerScene.MethodName.SetPlayerName,
-                                        System.Environment.MachineName);
+            Logger.Log("Successfully connected to server");
+            MultiplayerScene.Instance.Rpc(MultiplayerScene.MethodName.SetPlayerName, System.Environment.MachineName);
             UnregisterPeerEvents();
-        }
 
+            if (_targetWorldPath != null)
+            {
+                WorldManager.Instance.LoadWorld(_targetWorldPath, false);
+                _targetWorldPath = null;
+            }
+            EmitSignal(SignalName.OnConnectSucsess);
+        }
         private void PeerOnPeerDisconnected(long id)
         {
             GD.Print($"{id} disconnected");

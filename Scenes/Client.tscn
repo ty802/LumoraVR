@@ -1,12 +1,13 @@
-[gd_scene load_steps=11 format=3 uid="uid://d37lm476vrp1e"]
+[gd_scene load_steps=12 format=3 uid="uid://d37lm476vrp1e"]
 
 [ext_resource type="Script" uid="uid://bc5gbrtubsc4y" path="res://Source/Management/Client/ClientManager.cs" id="1_enrkg"]
-[ext_resource type="PackedScene" uid="uid://dtempfuf1571n" path="res://Scenes/World/MultiplayerScene.tscn" id="2_40xba"]
+[ext_resource type="Script" uid="uid://bhyoymspo68w" path="res://Source/Management/WorldManager.cs" id="2_u2316"]
 [ext_resource type="Texture2D" uid="uid://jdjeattbqj2g" path="res://Assets/Textures/Dot.png" id="3_1i8qj"]
 [ext_resource type="Script" uid="uid://dkvhcndqncss0" path="res://Source/Management/HUD/HUDManager.cs" id="3_16xj1"]
-[ext_resource type="PackedScene" uid="uid://cglyi2p1kqyfy" path="res://Scenes/UI/main_menu.tscn" id="5_saa3o"]
+[ext_resource type="PackedScene" uid="uid://733y82fx2o6k" path="res://Scenes/UI/main_menu.tscn" id="5_saa3o"]
 [ext_resource type="PackedScene" uid="uid://bkr4n38tjwye3" path="res://Scenes/UI/debug_overlay.tscn" id="6_01jeo"]
 [ext_resource type="Shader" uid="uid://drcbjbss62tm5" path="res://Assets/Shaders/TestGrid.tres" id="7_daa5c"]
+[ext_resource type="PackedScene" uid="uid://dq14glqs4ogf1" path="res://Scenes/UI/LoadingMenu.tscn" id="7_u2316"]
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_5e4va"]
 render_priority = 0
@@ -18,12 +19,9 @@ size = Vector3(2.1, 0.25, 2.1)
 [sub_resource type="BoxShape3D" id="BoxShape3D_ifne4"]
 size = Vector3(2, 0.25, 2)
 
-[node name="Root" type="Node" node_paths=PackedStringArray("_inputRoot", "_multiplayerScene")]
+[node name="Root" type="Node" node_paths=PackedStringArray("_inputRoot")]
 script = ExtResource("1_enrkg")
 _inputRoot = NodePath("InputRoot")
-_multiplayerScene = NodePath("Scene")
-
-[node name="Scene" parent="." instance=ExtResource("2_40xba")]
 
 [node name="InputRoot" type="Node3D" parent="."]
 
@@ -59,11 +57,15 @@ texture = ExtResource("3_1i8qj")
 expand_mode = 1
 stretch_mode = 4
 
+[node name="Debug Overlay" parent="HUDManager" instance=ExtResource("6_01jeo")]
+visible = false
+layout_mode = 1
+
 [node name="Main Menu" parent="HUDManager" instance=ExtResource("5_saa3o")]
 visible = false
 layout_mode = 1
 
-[node name="Debug Overlay" parent="HUDManager" instance=ExtResource("6_01jeo")]
+[node name="LoadingMenu" parent="HUDManager" instance=ExtResource("7_u2316")]
 visible = false
 layout_mode = 1
 
@@ -80,3 +82,8 @@ mesh = SubResource("BoxMesh_kwn4u")
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="MeshInstance3D2/StaticBody3D"]
 shape = SubResource("BoxShape3D_ifne4")
+
+[node name="WorldRoot" type="Node3D" parent="."]
+
+[node name="WorldManager" type="Node" parent="."]
+script = ExtResource("2_u2316")

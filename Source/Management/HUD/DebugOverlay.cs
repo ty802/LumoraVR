@@ -2,9 +2,12 @@ using Aquamarine.Source.Helpers;
 using Aquamarine.Source.Input;
 using Aquamarine.Source.Logging;
 using Aquamarine.Source.Networking;
+using Aquamarine.Source.Scene.RootObjects;
 using Godot;
 using System;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace Aquamarine.Source.Management.HUD;
 
@@ -46,11 +49,24 @@ public partial class DebugOverlay : Control
     private const string Vector3Value = "([color=sky_blue]{0},{1},{2}[/color])";
     private const string StringValue = "[color=indian_red]\"{0}\"[/color]";
 
-    private static string DoBoolLabel(bool value) => value ? BoolTrueValue : BoolFalseValue;
+    private WeakReference<PlayerCharacterController> playerref;
+    private readonly PeriodicTimer _playerTimer = new(new(0,0,10));
+    private CancellationTokenSource _cts;
 
+    private static string DoBoolLabel(bool value) => value ? BoolTrueValue : BoolFalseValue;
+    public override void _Notification(int what)
+    {
+        base._Notification(what);
+        if (what == (int)NotificationPredelete){ 
+            Logger.OnPrettyLogMessageWritten -= OnLogMessageWritten;
+            ConsoleInput.TextSubmitted -= OnConsoleInputSubmitted;
+            _cts?.Cancel();
+        }
+    }
     public override void _Ready()
     {
         base._Ready();
+        _cts = new();
         Logger.OnPrettyLogMessageWritten += OnLogMessageWritten;
         ConsoleInput.TextSubmitted += OnConsoleInputSubmitted;
         Visible = false;
@@ -58,6 +74,22 @@ public partial class DebugOverlay : Control
 
         // Initialize settings on first showing
         this.VisibilityChanged += OnVisibilityChanged;
+        Task.Run(async () => {
+            await _playerTimer.WaitForNextTickAsync();
+            while(!_cts.Token.IsCancellationRequested)
+            {
+                if( (playerref is not null ? !playerref.TryGetTarget(out var _): true ) && MultiplayerScene.Instance is MultiplayerScene mm)
+                {
+                    mm.RunOnNodeAsync(() =>
+                    {
+                        var thing = MultiplayerScene.Instance?.GetLocalPlayer();
+                        if (thing is not null)
+                            playerref = new(thing);
+                    });
+                }
+                await _playerTimer.WaitForNextTickAsync();
+            }
+        });
     }
 
     private void OnVisibilityChanged()
@@ -419,7 +451,7 @@ public partial class DebugOverlay : Control
         _statsTextStringBuilder.AppendLine();
 
         _statsTextStringBuilder.AppendLine("Networking");
-        _statsTextStringBuilder.AppendLine($"{IntLabel} Player Count: {string.Format(IntValue, MultiplayerScene.Instance.PlayerList.Count)}");
+        //_statsTextStringBuilder.AppendLine($"{IntLabel} Player Count: {string.Format(IntValue, MultiplayerScene.Instance.PlayerList.Count)}");
 
         // Add network stats
         var multiplayerPeer = Multiplayer.MultiplayerPeer as LiteNetLibMultiplayerPeer;
@@ -449,10 +481,8 @@ public partial class DebugOverlay : Control
 
         _statsTextStringBuilder.AppendLine();
 
-        var player = MultiplayerScene.Instance.GetLocalPlayer();
-
         _statsTextStringBuilder.AppendLine("Player");
-        if (player is not null)
+        if (playerref?.TryGetTarget(out PlayerCharacterController player) ??false)
         {
             _statsTextStringBuilder.AppendLine($"{Vector2Label} Movement: {string.Format(Vector2Value, InputManager.Movement.X.ToString("F2"), InputManager.Movement.Y.ToString("F2"))}");
             _statsTextStringBuilder.AppendLine($"{Vector3Label} Velocity: {string.Format(Vector3Value, player.Velocity.X.ToString("F2"), player.Velocity.Y.ToString("F2"), player.Velocity.Z.ToString("F2"))}");

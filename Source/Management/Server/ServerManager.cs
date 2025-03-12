@@ -57,10 +57,11 @@ namespace Aquamarine.Source.Management
                 // Initialize MultiplayerPeer
                 MultiplayerPeer = new LiteNetLibMultiplayerPeer();
 
-                if (serverType == ServerType.Local)
-                {
+                Error error;
+                switch (serverType) {
+                    case ServerType.Local:
                     // Start local server
-                    var error = MultiplayerPeer.CreateServer(6000, 1);
+                    error = MultiplayerPeer.CreateServer(6000, 1);
 
                     // Check if server started successfully before setting it as the multiplayer peer
                     if (error == Error.Ok)
@@ -85,11 +86,10 @@ namespace Aquamarine.Source.Management
                     {
                         Logger.Error($"Failed to start local server: {error}");
                     }
-                }
-                else if (serverType == ServerType.Standard)
-                {
+                        break;
+                    case ServerType.Standard:
                     // Start standard server
-                    var error = MultiplayerPeer.CreateServerNat(Port, MaxConnections);
+                    error = MultiplayerPeer.CreateServerNat(Port, MaxConnections);
 
                     // Check if server started successfully before setting it as the multiplayer peer
                     if (error == Error.Ok)
@@ -122,6 +122,10 @@ namespace Aquamarine.Source.Management
                     {
                         Logger.Error($"Failed to start standard server: {error}");
                     }
+                    break;
+                    default:
+                        Logger.Error("Server type not recognized.");
+                    break;
                 }
             }
             catch (Exception ex)

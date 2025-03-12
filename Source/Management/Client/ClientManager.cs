@@ -23,6 +23,8 @@ namespace Aquamarine.Source.Management
         private int _localHomePid = 0;
 
         private bool _isDirectConnection = false;
+        [Signal]
+        public delegate bool OnConnectSucsessEventHandler();
 
         public override void _Ready()
         {

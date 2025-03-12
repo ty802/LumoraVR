@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Threading.Tasks;
 using Aquamarine.Source.Helpers;
 using Aquamarine.Source.Logging;
 using Aquamarine.Source.Scene;
@@ -59,9 +60,6 @@ namespace Aquamarine.Source.Management
 
         public PlayerCharacterController GetLocalPlayer()
         {
-            var localId = Multiplayer.GetUniqueId();
-            Logger.Log($"GetLocalPlayer: Local ID is {localId}");
-            
             if (IsInstanceValid(_local))
             {
                 Logger.Log("GetLocalPlayer: Using cached local player");
@@ -69,44 +67,28 @@ namespace Aquamarine.Source.Management
             }
             
             Logger.Log("GetLocalPlayer: Local player not cached, searching...");
-            
-            if (PlayerRoot == null)
+            if (Multiplayer is not null)
             {
-                Logger.Error("GetLocalPlayer: PlayerRoot is null");
-                return null;
-            }
-
-            if (PlayerRoot.GetChildCount() == 0)
-            {
-                Logger.Log("GetLocalPlayer: PlayerRoot has no children");
-                return null;
-            }
-
-            // First try to get local player via CustomPlayerSpawner if available
-            if (_customPlayerSpawner != null)
-            {
-                _local = _customPlayerSpawner.GetPlayer(localId);
-                if (_local != null)
+                var localId = Multiplayer.GetUniqueId();
+                string message;
+                if (_customPlayerSpawner is not null)
                 {
-                    Logger.Log("GetLocalPlayer: Found local player via CustomPlayerSpawner");
-                    return _local;
+                    Logger.Log($"GetLocalPlayer: Local ID is {localId}");
+                    _local = _customPlayerSpawner.GetPlayer(localId);
+                    message = "GetLocalPlayer: Found local player via CustomPlayerSpawner";
+                }
+                else
+                {
+                    _local = PlayerRoot.GetChildren()
+        .OfType<PlayerCharacterController>()
+        .FirstOrDefault(i => i.Authority == localId);
+                    message = "GetLocalPlayer: Found local player via direct PlayerRoot search";
+                }
+                if(_local is not null)
+                {
+                    Logger.Log(message);
                 }
             }
-
-            // Fallback to old method
-            _local = PlayerRoot.GetChildren()
-                .OfType<PlayerCharacterController>()
-                .FirstOrDefault(i => i.Authority == localId);
-                
-            if (_local != null)
-            {
-                Logger.Log("GetLocalPlayer: Found local player via direct PlayerRoot search");
-            }
-            else
-            {
-                Logger.Log("GetLocalPlayer: Local player not found");
-            }
-            
             return _local;
         }
 

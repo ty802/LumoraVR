@@ -20,7 +20,7 @@ namespace Aquamarine.Source.Management
         public void DisconnectFromCurrentServer()
         {
             if (_peer?.GetConnectionStatus() == MultiplayerPeer.ConnectionStatus.Connected)
-                _multiplayerScene.Rpc(MultiplayerScene.MethodName.DisconnectPlayer);
+                _multiplayerScene?.Rpc(MultiplayerScene.MethodName.DisconnectPlayer);
             _peer?.Close();
             Multiplayer.MultiplayerPeer = null;
         }
@@ -117,6 +117,7 @@ namespace Aquamarine.Source.Management
                 WorldManager.Instance.LoadWorld(_targetWorldPath, false);
                 _targetWorldPath = null;
             }
+            EmitSignal(SignalName.OnConnectSucsess);
         }
         private void PeerOnPeerDisconnected(long id)
         {

@@ -24,7 +24,7 @@ public partial class WorldsTab : Control
     private Node _holdernode;
     private Node _worldnameText;
     private Node _activeSessionsList;
-    private Node _contextContainer;
+	private Control _contextContainer;
     private readonly System.Net.Http.HttpClient client = new();
     private readonly PeriodicTimer timer = new(new TimeSpan(0, 0, 20));
     private PackedScene _worldEntry;
@@ -40,9 +40,19 @@ public partial class WorldsTab : Control
         _holdernode = GetNode("%WorldHolder");
         _worldnameText = GetNode("%WorldName");
         _activeSessionsList = GetNode("%SeessionList");
-        _contextContainer = GetNode("%ContextContainer");
+		_contextContainer = GetNode<Control>("%ContextContainer");
         Task.Run(async () => { while (true) { await GetSessions(); await timer.WaitForNextTickAsync(); } });
     }
+	public override void _EnterTree()
+	{
+		base._EnterTree();
+		if(_contextContainer is Control ctrl)
+		{
+			ctrl.Hide();
+		}
+		if (SessionListUpdated is not null)
+			SessionListUpdated();
+	}
     private async Task GetSessions()
     {
         CancellationTokenSource can = new();

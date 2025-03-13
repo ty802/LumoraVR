@@ -20,6 +20,14 @@ namespace Aquamarine.Source.Management
         }
         public void DisconnectFromCurrentServer()
         {
+            Node root = GetNode("/root/Root/WorldRoot");
+            if (root.GetChildCount() > 0)
+            {
+                foreach (Node child in root.GetChildren())
+                {
+                    child.QueueFree();
+                }
+            }
             if (_peer?.GetConnectionStatus() == MultiplayerPeer.ConnectionStatus.Connected)
                 _multiplayerScene?.Rpc(MultiplayerScene.MethodName.DisconnectPlayer);
             _peer?.Close();
@@ -104,7 +112,7 @@ namespace Aquamarine.Source.Management
         {
             Logger.Error("Failed to connect to server");
             UnregisterPeerEvents();
-            SpawnLocalHome();
+            JoinLocalHome();
         }
 
         private void PeerOnClientConnectionSuccess()
@@ -157,7 +165,7 @@ namespace Aquamarine.Source.Management
         private void PeerOnPeerDisconnected(long id)
         {
             GD.Print($"{id} disconnected");
-            if (id == 1) SpawnLocalHome();
+            if (id == 1) JoinLocalHome();
         }
 
         private void UnregisterPeerEvents()

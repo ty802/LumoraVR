@@ -67,7 +67,7 @@ namespace Aquamarine.Source.Management
             }
             
             Logger.Log("GetLocalPlayer: Local player not cached, searching...");
-            if (Multiplayer is not null)
+            if (Multiplayer?.MultiplayerPeer is not null)
             {
                 var localId = Multiplayer.GetUniqueId();
                 string message;

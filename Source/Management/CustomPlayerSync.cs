@@ -73,7 +73,7 @@ namespace Aquamarine.Source.Management
         public override void _Process(double delta)
         {
             _timeSinceLastSync += (float)delta;
-            
+            if (Multiplayer?.MultiplayerPeer is null) return;
             // Only sync at the specified interval
             if (_timeSinceLastSync >= SyncInterval)
             {

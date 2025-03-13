@@ -17,6 +17,7 @@ config/icon="res://Assets/Textures/lumoravricon.svg"
 
 [autoload]
 
+AgrumentCache="*res://Source/Management/AgrumentCache.cs"
 InputManager="*res://Source/Input/InputManager.cs"
 AssetFetch="*res://Source/Networking/AssetFetcher.cs"
 

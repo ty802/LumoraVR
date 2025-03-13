@@ -1,15 +1,7 @@
 using System;
-using System.Linq;
-using System.Net.Http;
-using System.Text.Json;
-using System.Text;
 using Aquamarine.Source.Logging;
 using Godot;
 using LiteNetLib;
-using LiteNetLib.Utils;
-using Bones.Core;
-using System.Threading.Tasks;
-using static LiteNetLib.EventBasedNetListener;
 using Aquamarine.Source.Networking;
 
 namespace Aquamarine.Source.Management
@@ -79,7 +71,7 @@ namespace Aquamarine.Source.Management
                         Logger.Log($"Local server started on port {Port}.");
 
                         // Switch scene
-                        GetNode("%WorldRoot")?.AddChild(ResourceLoader.Load<PackedScene>("res://Scenes/World/LocalHome.tscn").Instantiate());
+                        WorldManager.Instance?.LoadWorld("res://Scenes/World/LocalHome.tscn");
                         Logger.Log("LocalHome Loaded.");
 
                         // Defer MultiplayerScene initialization until scene is fully loaded

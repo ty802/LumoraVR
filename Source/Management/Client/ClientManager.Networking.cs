@@ -21,13 +21,6 @@ namespace Aquamarine.Source.Management
         public void DisconnectFromCurrentServer()
         {
             Node root = GetNode("/root/Root/WorldRoot");
-            if (root.GetChildCount() > 0)
-            {
-                foreach (Node child in root.GetChildren())
-                {
-                    child.QueueFree();
-                }
-            }
             if (_peer?.GetConnectionStatus() == MultiplayerPeer.ConnectionStatus.Connected)
                 _multiplayerScene?.Rpc(MultiplayerScene.MethodName.DisconnectPlayer);
             _peer?.Close();

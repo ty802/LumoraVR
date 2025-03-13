@@ -56,17 +56,10 @@ namespace Aquamarine.Source.Management
                 // Initialize MultiplayerPeer
                 MultiplayerPeer = new LiteNetLibMultiplayerPeer();
                 // get port
-                {
-                    string[] args = OS.GetCmdlineArgs();
-                    int index = Array.IndexOf(args, "--port");
-                    if (index != -1 && args.Length > index + 1)
-                    {
-                        if (int.TryParse(args[index + 1], out int port))
-                        {
-                            Port = port;
-                        }
-                    }
-                }
+                if ((ArgumentCache.Instance?.Arguments.TryGetValue("port", out string portstring) ?? false) &&
+                    int.TryParse(portstring, out int parsed))
+                    Port = parsed;  
+
                 Error error;
                 switch (serverType) {
                     case ServerType.Local:
@@ -104,6 +97,11 @@ namespace Aquamarine.Source.Management
                     // Check if server started successfully before setting it as the multiplayer peer
                     if (error == Error.Ok)
                     {
+                        string worlduri;
+                        if (ArgumentCache.Instance?.Arguments.TryGetValue("worlduri", out string uri)??false)
+                            worlduri = uri;
+                        else
+                            worlduri = "res://Scenes/World/MultiplayerScene.tscn";
                         // Only set the multiplayer peer after it's properly initialized
                         Multiplayer.MultiplayerPeer = MultiplayerPeer;
 
@@ -112,7 +110,7 @@ namespace Aquamarine.Source.Management
                         MultiplayerPeer.PeerDisconnected += OnPeerDisconnected;
 
                         Logger.Log($"Server started on port {Port} with max connections {MaxConnections}.");
-
+                        WorldManager.Instance?.LoadWorld(worlduri);
                         // Defer MultiplayerScene initialization
                         CallDeferred(nameof(InitializeMultiplayerScene));
 

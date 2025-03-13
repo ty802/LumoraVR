@@ -8,6 +8,7 @@ namespace Aquamarine.Source.Management
 {
     public partial class ArgumentCache : Node
     {
+        public static ArgumentCache Instance { get; private set; }
         private readonly Dictionary<string, string> _argCache = new();
         private readonly HashSet<String> _flagCache = new();
         public readonly IReadOnlyDictionary<string, string> Arguments;
@@ -15,6 +16,8 @@ namespace Aquamarine.Source.Management
         ArgumentCache()
         {
             Arguments = _argCache.AsReadOnly();
+            if (Instance is not null) throw new("wtf");
+            Instance = this;
         }
 
         public bool IsFlagActive(string name)

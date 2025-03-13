@@ -104,22 +104,85 @@ public partial class DebugOverlay : Control
     {
         try
         {
-            // Find the WorldEnvironment
-            _worldEnvironment = GetViewport().GetNode<WorldEnvironment>("../WorldEnvironment");
-
-            // Init settings with current values
-            VSyncCheckBox.ButtonPressed = DisplayServer.WindowGetVsyncMode() != DisplayServer.VSyncMode.Disabled;
-            DebugLinesCheckBox.ButtonPressed = ClientManager.ShowDebug;
-            MaxFPSSpinBox.Value = Engine.MaxFps;
-
-            if (_worldEnvironment != null && _worldEnvironment.Environment != null)
+            // Find the WorldEnvironment - search in the scene tree
+            try
             {
-                var env = _worldEnvironment.Environment;
-                ShadowsCheckBox.ButtonPressed = env.SsrEnabled;
-                AmbientOcclusionCheckBox.ButtonPressed = env.SsaoEnabled;
-                SSReflectionsCheckBox.ButtonPressed = env.SsrEnabled;
-                SSAOCheckBox.ButtonPressed = env.SsaoEnabled;
-                BloomCheckBox.ButtonPressed = env.GlowEnabled;
+                // Try to find in common locations
+                string[] possiblePaths = new[] {
+                    "../WorldEnvironment",
+                    "../../WorldEnvironment",
+                    "/root/Root/WorldRoot/Scene/WorldEnvironment",
+                    "/root/Scene/WorldEnvironment"
+                };
+                
+                foreach (var path in possiblePaths)
+                {
+                    try
+                    {
+                        var node = GetNodeOrNull(path);
+                        if (node is WorldEnvironment worldEnv)
+                        {
+                            _worldEnvironment = worldEnv;
+                            Logger.Log($"Found WorldEnvironment at path: {path}");
+                            break;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // Continue to next path
+                    }
+                }
+                
+                // If not found by path, search the entire scene tree
+                if (_worldEnvironment == null)
+                {
+                    _worldEnvironment = FindNodeByType<WorldEnvironment>(GetTree().Root);
+                    if (_worldEnvironment != null)
+                    {
+                        Logger.Log($"Found WorldEnvironment by searching scene tree at {_worldEnvironment.GetPath()}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error finding WorldEnvironment: {ex.Message}");
+            }
+
+            try
+            {
+                // Init settings with current values
+                if (VSyncCheckBox != null)
+                    VSyncCheckBox.ButtonPressed = DisplayServer.WindowGetVsyncMode() != DisplayServer.VSyncMode.Disabled;
+                
+                if (DebugLinesCheckBox != null)
+                    DebugLinesCheckBox.ButtonPressed = ClientManager.ShowDebug;
+                
+                if (MaxFPSSpinBox != null)
+                    MaxFPSSpinBox.Value = Engine.MaxFps;
+
+                if (_worldEnvironment != null && _worldEnvironment.Environment != null)
+                {
+                    var env = _worldEnvironment.Environment;
+                    
+                    if (ShadowsCheckBox != null)
+                        ShadowsCheckBox.ButtonPressed = env.SsrEnabled;
+                    
+                    if (AmbientOcclusionCheckBox != null)
+                        AmbientOcclusionCheckBox.ButtonPressed = env.SsaoEnabled;
+                    
+                    if (SSReflectionsCheckBox != null)
+                        SSReflectionsCheckBox.ButtonPressed = env.SsrEnabled;
+                    
+                    if (SSAOCheckBox != null)
+                        SSAOCheckBox.ButtonPressed = env.SsaoEnabled;
+                    
+                    if (BloomCheckBox != null)
+                        BloomCheckBox.ButtonPressed = env.GlowEnabled;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error initializing UI settings: {ex.Message}");
             }
 
             _settingsInitialized = true;
@@ -398,6 +461,27 @@ public partial class DebugOverlay : Control
         }
     }
 
+    private T FindNodeByType<T>(Node root) where T : class
+    {
+        // Check if the current node is of the desired type
+        if (root is T result)
+        {
+            return result;
+        }
+        
+        // Recursively search through all children
+        foreach (var child in root.GetChildren())
+        {
+            var found = FindNodeByType<T>(child);
+            if (found != null)
+            {
+                return found;
+            }
+        }
+        
+        return null;
+    }
+
     private string[] _recentEntries = new string[24];
     private void OnLogMessageWritten(string message)
     {
@@ -484,6 +568,9 @@ public partial class DebugOverlay : Control
         _statsTextStringBuilder.AppendLine("Player");
         if (playerref?.TryGetTarget(out PlayerCharacterController player) ??false)
         {
+            _statsTextStringBuilder.AppendLine($"{IntLabel} Authority ID: {string.Format(IntValue, player.Authority)}");
+            _statsTextStringBuilder.AppendLine($"{IntLabel} Local ID: {string.Format(IntValue, Multiplayer.GetUniqueId())}");
+            _statsTextStringBuilder.AppendLine($"{BoolLabel} Is Local Player: {DoBoolLabel(player.Authority == Multiplayer.GetUniqueId())}");
             _statsTextStringBuilder.AppendLine($"{Vector2Label} Movement: {string.Format(Vector2Value, InputManager.Movement.X.ToString("F2"), InputManager.Movement.Y.ToString("F2"))}");
             _statsTextStringBuilder.AppendLine($"{Vector3Label} Velocity: {string.Format(Vector3Value, player.Velocity.X.ToString("F2"), player.Velocity.Y.ToString("F2"), player.Velocity.Z.ToString("F2"))}");
             _statsTextStringBuilder.AppendLine($"{BoolLabel} Crouching: {DoBoolLabel(InputButton.Crouch.Held())}");

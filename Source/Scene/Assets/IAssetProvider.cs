@@ -62,6 +62,12 @@ public static class SimpleAssetCache<T>
     }
     public static void DoSet(IFileAssetProvider<T> provider, Action<T> setAction)
     {
+        // Add this check to prevent callbacks on disposed objects
+        if (provider is GodotObject gObj && !GodotObject.IsInstanceValid(gObj))
+        {
+            return; // Don't proceed if the provider has been disposed
+        }
+
         if (provider.AssetReady) setAction(provider.Asset);
         else if (Cache.TryGetValue(provider.Path, out var cache))
         {
@@ -73,6 +79,12 @@ public static class SimpleAssetCache<T>
             var path = provider.Path;
             AssetFetcher.FetchAsset(path, bytes =>
             {
+                // Add another check here to validate before callback
+                if (provider is GodotObject gObj2 && !GodotObject.IsInstanceValid(gObj2))
+                {
+                    return; // Provider was disposed while waiting for asset
+                }
+
                 if (Cache.TryGetValue(path, out var result))
                 {
                     provider.Asset = result;

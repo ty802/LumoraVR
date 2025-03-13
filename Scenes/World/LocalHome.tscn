@@ -57,10 +57,11 @@ script = ExtResource("1_gvnn8")
 PlayerSpawner = NodePath("CustomPlayerSpawner")
 PlayerRoot = NodePath("PlayerRoot")
 
-[node name="CustomPlayerSpawner" type="Node" parent="."]
+[node name="CustomPlayerSpawner" type="Node" parent="." node_paths=PackedStringArray("SpawnPoints")]
 unique_name_in_owner = true
 script = ExtResource("4_ixnqm")
 SpawnRootPath = NodePath("../PlayerRoot")
+SpawnPoints = []
 
 [node name="CustomPlayerSync" type="Node" parent="."]
 unique_name_in_owner = true

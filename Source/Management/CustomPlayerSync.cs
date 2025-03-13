@@ -192,6 +192,61 @@ namespace Aquamarine.Source.Management
         private void OnPeerConnected(long id)
         {
             Logger.Log($"CustomPlayerSync: Peer connected: {id}");
+            
+            // Send existing player data to the new peer after a short delay
+            // to ensure they're fully connected and ready
+            if (_isServer)
+            {
+                // Create a one-shot timer to delay sending player data
+                var timer = new Timer
+                {
+                    WaitTime = 0.5f,
+                    OneShot = true,
+                    Autostart = true
+                };
+                AddChild(timer);
+                timer.Timeout += () => {
+                    SendAllPlayerDataTo((int)id);
+                    timer.QueueFree();
+                };
+            }
+        }
+        
+        // Method to send all existing player data to a newly connected peer
+        public void SendAllPlayerDataTo(int targetPeerId)
+        {
+            if (!_isServer)
+                return;
+            
+            Logger.Log($"CustomPlayerSync: Sending existing player data to peer {targetPeerId}");
+            
+            // Loop through all players and send their data to the new player
+            foreach (var syncData in _playerSyncData)
+            {
+                // Skip if this is the target player (they don't need their own data)
+                if (syncData.Key == targetPeerId)
+                    continue;
+                    
+                RpcId(targetPeerId, MethodName.ReceivePlayerData, 
+                    syncData.Key, 
+                    syncData.Value.Position,
+                    syncData.Value.Velocity,
+                    syncData.Value.HeadPosition,
+                    syncData.Value.HeadRotation,
+                    syncData.Value.LeftHandPosition,
+                    syncData.Value.LeftHandRotation,
+                    syncData.Value.RightHandPosition,
+                    syncData.Value.RightHandRotation,
+                    syncData.Value.HipPosition,
+                    syncData.Value.HipRotation,
+                    syncData.Value.LeftFootPosition,
+                    syncData.Value.LeftFootRotation,
+                    syncData.Value.RightFootPosition,
+                    syncData.Value.RightFootRotation,
+                    syncData.Value.UserHeight,
+                    syncData.Value.MovementInput,
+                    syncData.Value.MovementButtons);
+            }
         }
 
         private void OnPeerDisconnected(long id)
@@ -283,7 +338,7 @@ namespace Aquamarine.Source.Management
             }
         }
 
-        [Rpc(MultiplayerApi.RpcMode.Authority, CallLocal = false)]
+        [Rpc(MultiplayerApi.RpcMode.AnyPeer, CallLocal = false)]
         private void ReceivePlayerData(
             int playerId, 
             Vector3 position,

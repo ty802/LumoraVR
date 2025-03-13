@@ -1,4 +1,4 @@
-﻿﻿using System;
+﻿﻿﻿﻿﻿﻿﻿﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Aquamarine.Source.Logging;
@@ -177,11 +177,26 @@ namespace Aquamarine.Source.Management
                 return null;
             }
 
-            // Remove existing player with this ID if it exists
-            if (_players.TryGetValue(peerId, out var existingPlayer))
+            // Check if player already exists in the tracking dictionary
+            if (_players.TryGetValue(peerId, out var existingPlayer) && IsInstanceValid(existingPlayer))
             {
-                Logger.Log($"Player with ID {peerId} already exists, removing first");
-                RemovePlayer(peerId);
+                Logger.Log($"Player with ID {peerId} already exists in tracking dictionary, returning existing player");
+                return existingPlayer;
+            }
+            
+            // Check if player exists in the scene but not in our tracking dictionary
+            if (_spawnRootNode != null)
+            {
+                var foundPlayer = _spawnRootNode.GetChildren()
+                    .OfType<PlayerCharacterController>()
+                    .FirstOrDefault(p => p.Authority == peerId);
+
+                if (foundPlayer != null && IsInstanceValid(foundPlayer))
+                {
+                    Logger.Log($"Player with ID {peerId} found in scene but not in tracking dictionary, adding to tracking");
+                    _players[peerId] = foundPlayer;
+                    return foundPlayer;
+                }
             }
 
             try
@@ -233,12 +248,21 @@ namespace Aquamarine.Source.Management
 
             if (player != null && setupAction != null)
             {
-                this.CreateTimer(0.1f, () => {
+                // Create a one-shot timer to delay setup
+                var timer = new Timer
+                {
+                    WaitTime = 0.1f,
+                    OneShot = true,
+                    Autostart = true
+                };
+                AddChild(timer);
+                timer.Timeout += () => {
                     if (IsInstanceValid(player))
                     {
                         setupAction(player);
                     }
-                });
+                    timer.QueueFree();
+                };
             }
 
             return player;
@@ -249,56 +273,82 @@ namespace Aquamarine.Source.Management
         /// </summary>
         public void RemovePlayer(int peerId)
         {
-            if (!_players.TryGetValue(peerId, out var player))
+            try
             {
-                Logger.Log($"RemovePlayer: Player {peerId} not found in tracking dictionary");
-
-                // Try to find the player in the spawn root's children as a fallback
-                if (_spawnRootNode != null)
+                if (!_players.TryGetValue(peerId, out var player))
                 {
-                    var foundPlayer = _spawnRootNode.GetChildren()
-                        .OfType<PlayerCharacterController>()
-                        .FirstOrDefault(p => p.Authority == peerId);
+                    Logger.Log($"RemovePlayer: Player {peerId} not found in tracking dictionary");
 
-                    if (foundPlayer != null)
+                    // Try to find the player in the spawn root's children as a fallback
+                    if (_spawnRootNode != null)
                     {
-                        Logger.Log($"RemovePlayer: Found player {peerId} in spawn root children despite not being tracked");
-                        player = foundPlayer;
+                        var foundPlayer = _spawnRootNode.GetChildren()
+                            .OfType<PlayerCharacterController>()
+                            .FirstOrDefault(p => p.Authority == peerId);
+
+                        if (foundPlayer != null)
+                        {
+                            Logger.Log($"RemovePlayer: Found player {peerId} in spawn root children despite not being tracked");
+                            player = foundPlayer;
+                        }
+                        else
+                        {
+                            Logger.Log($"RemovePlayer: Player {peerId} not found in spawn root children either");
+                            return;
+                        }
                     }
                     else
                     {
-                        Logger.Log($"RemovePlayer: Player {peerId} not found in spawn root children either");
-                        return;
+                        return; // No player and no spawn root
                     }
                 }
-                else
-                {
-                    return; // No player and no spawn root
-                }
-            }
 
-            try
-            {
-                // Remove from tracking
-                _players.Remove(peerId);
-
-                // Remove from scene
-                if (player != null && IsInstanceValid(player))
+                try
                 {
-                    player.GetParent().RemoveChild(player);
-                    player.QueueFree();
-                    Logger.Log($"Player {peerId} removed successfully");
-                }
-                else
-                {
-                    Logger.Warn($"Player {peerId} was tracked but not valid/attached to scene");
-                }
+                    // Remove from tracking
+                    _players.Remove(peerId);
 
-                EmitSignal(SignalName.PlayerRemoved, peerId);
+                    // Remove from scene safely
+                    if (player != null && IsInstanceValid(player))
+                    {
+                        // First clean up any assets and child objects to avoid dangling references
+                        if (player is PlayerCharacterController charController)
+                        {
+                            if (charController.Avatar != null && IsInstanceValid(charController.Avatar))
+                            {
+                                // Clean up avatar
+                                foreach (var childObj in charController.Avatar.ChildObjects.Values.ToList())
+                                {
+                                    if (childObj != null && IsInstanceValid(childObj.Self))
+                                    {
+                                        childObj.Self.QueueFree();
+                                    }
+                                }
+                                charController.Avatar.ChildObjects.Clear();
+                                charController.Avatar.AssetProviders.Clear();
+                                charController.Avatar.QueueFree();
+                            }
+                        }
+                        
+                        player.GetParent().RemoveChild(player);
+                        player.QueueFree();
+                        Logger.Log($"Player {peerId} removed successfully");
+                    }
+                    else
+                    {
+                        Logger.Warn($"Player {peerId} was tracked but not valid/attached to scene");
+                    }
+
+                    EmitSignal(SignalName.PlayerRemoved, peerId);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"Error removing player for ID {peerId}: {ex.Message}");
+                }
             }
             catch (Exception ex)
             {
-                Logger.Error($"Error removing player for ID {peerId}: {ex.Message}");
+                Logger.Error($"Error in RemovePlayer: {ex.Message}");
             }
         }
 

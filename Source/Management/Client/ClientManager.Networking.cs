@@ -8,6 +8,7 @@ using Aquamarine.Source.Logging;
 using Aquamarine.Source.Networking;
 using LiteNetLib.Utils;
 using LiteNetLib;
+using Bones.Core;
 
 namespace Aquamarine.Source.Management
 {
@@ -111,6 +112,40 @@ namespace Aquamarine.Source.Management
             Logger.Log("Successfully connected to server");
             MultiplayerScene.Instance.Rpc(MultiplayerScene.MethodName.SetPlayerName, System.Environment.MachineName);
             UnregisterPeerEvents();
+
+            // Force spawn local player for LocalHome server
+            if (_isDirectConnection && _peer.GetConnectionStatus() == MultiplayerPeer.ConnectionStatus.Connected)
+            {
+                // Create a timer to spawn the local player after a short delay
+                this.CreateTimer(0.5f, () => {
+                    var localId = Multiplayer.GetUniqueId();
+                    
+                    // Check if player already exists
+                    bool playerExists = false;
+                    if (MultiplayerScene.Instance != null)
+                    {
+                        var existingPlayer = MultiplayerScene.Instance.GetLocalPlayer();
+                        playerExists = existingPlayer != null;
+                        
+                        if (playerExists)
+                        {
+                            Logger.Log($"Client: Local player already exists with ID {localId}, not spawning again");
+                        }
+                        else
+                        {
+                            Logger.Log($"Client: Force spawning local player with ID {localId}");
+                            
+                            // Try to spawn the player directly
+                            MultiplayerScene.Instance.SpawnPlayer(localId);
+                            Logger.Log($"Client: Local player spawned with ID {localId}");
+                        }
+                    }
+                    else
+                    {
+                        Logger.Error("Client: Cannot spawn local player - MultiplayerScene.Instance is null");
+                    }
+                });
+            }
 
             if (_targetWorldPath != null)
             {

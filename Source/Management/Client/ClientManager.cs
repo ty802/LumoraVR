@@ -55,8 +55,35 @@ namespace Aquamarine.Source.Management
             }
         }
 
+        // Flag to track if we're already connecting to a local home server
+        private bool _connectingToLocalHome = false;
+        
         private void SpawnLocalHome()
         {
+            // Check if we're already connecting to a local home server
+            if (_connectingToLocalHome)
+            {
+                Logger.Log("Already connecting to local home server, not starting another connection");
+                return;
+            }
+            
+            _connectingToLocalHome = true;
+            
+            // Check if we already have a local home server running
+            if (_localHomePid != 0)
+            {
+                Logger.Log($"Local home server already running with PID: {_localHomePid}, not starting another one");
+                
+                // Just try to connect to the existing server
+                this.CreateTimer(0.5f, () =>
+                {
+                    Logger.Log("Attempting to connect to existing local server at localhost:6000");
+                    JoinServer("localhost", 6000);
+                });
+                return;
+            }
+            
+            // Start a new local home server
             _localHomePid = OS.CreateProcess(OS.GetExecutablePath(), ["--run-home-server", "--xr-mode", "off", "--headless"]);
             Logger.Log($"Started local server process with PID: {_localHomePid}");
 

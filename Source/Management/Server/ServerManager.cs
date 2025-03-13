@@ -157,12 +157,72 @@ namespace Aquamarine.Source.Management
                     // If not found directly, try deep search
                     multiplayerScene = FindMultiplayerSceneInChildren(GetTree().CurrentScene);
                 }
+                
+                // If still not found, try to find it directly in the scene tree
+                if (multiplayerScene == null)
+                {
+                    // Check if this is the LocalHome scene
+                    if (GetTree().CurrentScene.Name == "Scene" && GetTree().CurrentScene.SceneFilePath.Contains("LocalHome.tscn"))
+                    {
+                        // For LocalHome.tscn, the scene itself is the MultiplayerScene
+                        if (GetTree().CurrentScene is MultiplayerScene localHomeScene)
+                        {
+                            multiplayerScene = localHomeScene;
+                            Logger.Log("Found MultiplayerScene: LocalHome scene is itself a MultiplayerScene");
+                        }
+                    }
+                    
+                    // Try to find it at a common path
+                    if (multiplayerScene == null)
+                    {
+                        var scene = GetTree().Root.GetNodeOrNull("Root/WorldRoot/Scene");
+                        if (scene is MultiplayerScene sceneAsMultiplayer)
+                        {
+                            multiplayerScene = sceneAsMultiplayer;
+                            Logger.Log("Found MultiplayerScene at Root/WorldRoot/Scene");
+                        }
+                    }
+                }
 
                 if (multiplayerScene != null)
                 {
                     _multiplayerScene = multiplayerScene;
                     multiplayerScene.InitializeForServer();
                     Logger.Log("MultiplayerScene found and initialized for server.");
+                    
+                    // Force spawn local player for LocalHome
+                    if (ServerManager.CurrentServerType == ServerType.Local)
+                    {
+                        // Create a timer to spawn the local player after a short delay
+                        var timer = new Timer
+                        {
+                            WaitTime = 0.5f,
+                            OneShot = true,
+                            Autostart = true
+                        };
+                        AddChild(timer);
+                        timer.Timeout += () => {
+                            // Check if player already exists
+                            bool playerExists = false;
+                            if (_multiplayerScene != null)
+                            {
+                                var existingPlayer = _multiplayerScene.GetPlayer(1);
+                                playerExists = existingPlayer != null;
+                                
+                                if (playerExists)
+                                {
+                                    Logger.Log("LocalHome: Server player (ID 1) already exists, not spawning again");
+                                }
+                                else
+                                {
+                                    // Spawn a player for the server itself (ID 1)
+                                    _multiplayerScene.SpawnPlayer(1);
+                                    Logger.Log("LocalHome: Spawned player for server (ID 1)");
+                                }
+                            }
+                            timer.QueueFree();
+                        };
+                    }
                 }
                 else
                 {
@@ -262,6 +322,28 @@ namespace Aquamarine.Source.Management
             {
                 Logger.Error($"Error in OnWorldLoaded: {ex.Message}");
             }
+        }
+        
+        // Helper method to find a node of a specific type in the scene tree
+        private T FindNodeByType<T>(Node root) where T : class
+        {
+            // Check if the current node is of the desired type
+            if (root is T result)
+            {
+                return result;
+            }
+            
+            // Recursively search through all children
+            foreach (var child in root.GetChildren())
+            {
+                var found = FindNodeByType<T>(child);
+                if (found != null)
+                {
+                    return found;
+                }
+            }
+            
+            return null;
         }
     }
 }

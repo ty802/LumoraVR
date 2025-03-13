@@ -329,6 +329,40 @@ namespace Aquamarine.Source.Management
 
             UpdatePlayerNametags();
         }
+        
+        public void SendUpdatedPlayerListTo(int targetPeerId)
+        {
+            if (!IsMultiplayerAuthority()) return;
+
+            var dict = new Dictionary();
+
+            foreach (var playerPair in PlayerList)
+            {
+                dict[playerPair.Key] = new Dictionary
+                {
+                    {"name", playerPair.Value.Name },
+                };
+            }
+
+            RpcId(targetPeerId, MethodName.UpdatePlayerList, dict);
+            
+            // Also ensure their player is spawned
+            if (PlayerList.TryGetValue(targetPeerId, out _) && !IsPlayerSpawned(targetPeerId))
+            {
+                SpawnPlayer(targetPeerId);
+            }
+        }
+        
+        [Rpc(MultiplayerApi.RpcMode.AnyPeer, TransferChannel = SerializationHelpers.SessionControlChannel, CallLocal = false)]
+        public void RequestPlayerList()
+        {
+            if (!IsMultiplayerAuthority()) return;
+
+            int requesterId = Multiplayer.GetRemoteSenderId();
+            Logger.Log($"Received player list request from peer {requesterId}");
+            
+            SendUpdatedPlayerListTo(requesterId);
+        }
 
         private void UpdatePlayerNametags()
         {
@@ -504,6 +538,53 @@ namespace Aquamarine.Source.Management
                 {
                     Logger.Log($"Player with authority {authority} already exists, not spawning again");
                     return;
+                }
+                
+                // Check if this is a duplicate spawn request
+                // This can happen when both client and server try to spawn the same player
+                var allPlayers = PlayerRoot?.GetChildren().OfType<PlayerCharacterController>().ToList();
+                if (allPlayers != null && allPlayers.Count > 0)
+                {
+                    foreach (var player in allPlayers)
+                    {
+                        if (player.Authority == authority)
+                        {
+                            Logger.Log($"Player with ID {authority} already exists, not spawning again");
+                            return;
+                        }
+                    }
+                }
+
+                // Special handling for LocalHome server
+                bool isLocalHomeServer = ServerManager.CurrentServerType == ServerManager.ServerType.Local;
+                bool isLocalClient = authority == Multiplayer.GetUniqueId();
+                
+                // For LocalHome server, force spawn the player for the client
+                if (isLocalHomeServer && isLocalClient)
+                {
+                    Logger.Log($"LocalHome server: Force spawning local player with authority {authority}");
+                    
+                    // Use the CustomPlayerSpawner
+                    if (_customPlayerSpawner != null)
+                    {
+                        var player = _customPlayerSpawner.SpawnPlayer(authority, position ?? Vector3.Zero);
+                        if (player != null)
+                        {
+                            Logger.Log($"LocalHome: Local player with authority {authority} spawned via CustomPlayerSpawner");
+                            
+                            // Add to player list if not there already
+                            if (!PlayerList.ContainsKey(authority))
+                            {
+                                PlayerList[authority] = new PlayerInfo { Name = $"Player {authority}" };
+                                SendUpdatedPlayerList();
+                            }
+                            
+                            // Cache the local player
+                            _local = player;
+                            
+                            return;
+                        }
+                    }
                 }
 
                 // Use the CustomPlayerSpawner

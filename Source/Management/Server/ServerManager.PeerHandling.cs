@@ -13,11 +13,58 @@ namespace Aquamarine.Source.Management
             {
                 Logger.Log($"Server: Peer connected: {id}");
 
+                // Try to find MultiplayerScene again if it's null
+                if (_multiplayerScene == null)
+                {
+                    _multiplayerScene = FindMultiplayerSceneInChildren(GetTree().CurrentScene);
+                    
+                    // If still null, try to find it directly in the scene tree
+                    if (_multiplayerScene == null)
+                    {
+                        var scene = GetTree().Root.GetNodeOrNull("Root/WorldRoot/Scene");
+                        if (scene is MultiplayerScene multiplayerScene)
+                        {
+                            _multiplayerScene = multiplayerScene;
+                            Logger.Log("Server: Found MultiplayerScene at Root/WorldRoot/Scene");
+                        }
+                    }
+                }
+
                 // Spawn player for the connected peer
                 if (_multiplayerScene != null)
                 {
                     Logger.Log($"Server: Spawning player for peer {id}");
                     _multiplayerScene.SpawnPlayer((int)id);
+                    
+                    // Add this section to send existing players
+                    // Delay slightly to ensure player is fully set up
+                    var timer = new Timer
+                    {
+                        WaitTime = 0.2f,
+                        OneShot = true,
+                        Autostart = true
+                    };
+                    AddChild(timer);
+                    timer.Timeout += () => {
+                        var playerSync = GetNodeOrNull<CustomPlayerSync>("%CustomPlayerSync");
+                        
+                        // If not found directly, try to find it in the scene tree
+                        if (playerSync == null)
+                        {
+                            playerSync = FindNodeByType<CustomPlayerSync>(GetTree().Root);
+                        }
+                        
+                        if (playerSync != null)
+                        {
+                            Logger.Log($"Server: Sending existing player data to new peer {id}");
+                            playerSync.SendAllPlayerDataTo((int)id);
+                        }
+                        else
+                        {
+                            Logger.Error($"Server: Could not find CustomPlayerSync to sync player data to {id}");
+                        }
+                        timer.QueueFree();
+                    };
                 }
                 else
                 {

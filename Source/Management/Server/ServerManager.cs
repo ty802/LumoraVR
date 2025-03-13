@@ -1,15 +1,7 @@
 using System;
-using System.Linq;
-using System.Net.Http;
-using System.Text.Json;
-using System.Text;
 using Aquamarine.Source.Logging;
 using Godot;
 using LiteNetLib;
-using LiteNetLib.Utils;
-using Bones.Core;
-using System.Threading.Tasks;
-using static LiteNetLib.EventBasedNetListener;
 using Aquamarine.Source.Networking;
 
 namespace Aquamarine.Source.Management
@@ -56,17 +48,10 @@ namespace Aquamarine.Source.Management
                 // Initialize MultiplayerPeer
                 MultiplayerPeer = new LiteNetLibMultiplayerPeer();
                 // get port
-                {
-                    string[] args = OS.GetCmdlineArgs();
-                    int index = Array.IndexOf(args, "--port");
-                    if (index != -1 && args.Length > index + 1)
-                    {
-                        if (int.TryParse(args[index + 1], out int port))
-                        {
-                            Port = port;
-                        }
-                    }
-                }
+                if ((ArgumentCache.Instance?.Arguments.TryGetValue("port", out string portstring) ?? false) &&
+                    int.TryParse(portstring, out int parsed))
+                    Port = parsed;  
+
                 Error error;
                 switch (serverType) {
                     case ServerType.Local:
@@ -86,7 +71,7 @@ namespace Aquamarine.Source.Management
                         Logger.Log($"Local server started on port {Port}.");
 
                         // Switch scene
-                        GetNode("%WorldRoot")?.AddChild(ResourceLoader.Load<PackedScene>("res://Scenes/World/LocalHome.tscn").Instantiate());
+                        WorldManager.Instance?.LoadWorld("res://Scenes/World/LocalHome.tscn");
                         Logger.Log("LocalHome Loaded.");
 
                         // Defer MultiplayerScene initialization until scene is fully loaded
@@ -104,6 +89,11 @@ namespace Aquamarine.Source.Management
                     // Check if server started successfully before setting it as the multiplayer peer
                     if (error == Error.Ok)
                     {
+                        string worlduri;
+                        if (ArgumentCache.Instance?.Arguments.TryGetValue("worlduri", out string uri)??false)
+                            worlduri = uri;
+                        else
+                            worlduri = "res://Scenes/World/MultiplayerScene.tscn";
                         // Only set the multiplayer peer after it's properly initialized
                         Multiplayer.MultiplayerPeer = MultiplayerPeer;
 
@@ -112,7 +102,7 @@ namespace Aquamarine.Source.Management
                         MultiplayerPeer.PeerDisconnected += OnPeerDisconnected;
 
                         Logger.Log($"Server started on port {Port} with max connections {MaxConnections}.");
-
+                        WorldManager.Instance?.LoadWorld(worlduri);
                         // Defer MultiplayerScene initialization
                         CallDeferred(nameof(InitializeMultiplayerScene));
 

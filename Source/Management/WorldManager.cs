@@ -167,12 +167,11 @@ namespace Aquamarine.Source.Management
                     _loadingScreen.Visible = false;
                 }
 
-                if (IsServerMode())
+                if (ServerManager.CurrentServerType  != ServerManager.ServerType.NotAServer)
                 {
-                    var multiplayerScene = newWorld.GetNodeOrNull("MultiplayerScene");
-                    if (multiplayerScene != null)
+                    if (newWorld is MultiplayerScene multiplayerScene)
                     {
-                        multiplayerScene.Call("InitializeForServer");
+                        multiplayerScene.InitializeForServer();
                         Logger.Log("서버용 멀티플레이어 컴포넌트 초기화 완료.");
                     }
                     else
@@ -180,7 +179,6 @@ namespace Aquamarine.Source.Management
                         Logger.Error("MultiplayerScene을 찾을 수 없습니다.");
                     }
                 }
-
                 Logger.Log($"World loaded successfully: {_currentWorldPath}");
             }
             catch (Exception ex)
@@ -194,12 +192,6 @@ namespace Aquamarine.Source.Management
                 }
             }
         }
-
-        private bool IsServerMode()
-        {
-            return OS.HasFeature("server"); // 서버 모드 체크
-        }
-
         private void HandleLoadError()
         {
             _isLoading = false;

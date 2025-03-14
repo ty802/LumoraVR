@@ -396,7 +396,7 @@ namespace Aquamarine.Source.Management
                         old.Remove(id);
                     }
 
-                    x
+                    
                     else
                     {
                         Logger.Log($"new player {id}");

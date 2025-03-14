@@ -1,15 +1,13 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
-using System.Threading.Tasks;
 using Aquamarine.Source.Helpers;
 using Aquamarine.Source.Logging;
 using Aquamarine.Source.Scene;
 using Aquamarine.Source.Scene.RootObjects;
 using Aquamarine.Source.Scene.UI;
-using Bones.Core;
 using Godot;
 using Godot.Collections;
-using Array = Godot.Collections.Array;
 
 namespace Aquamarine.Source.Management
 {
@@ -376,25 +374,44 @@ namespace Aquamarine.Source.Management
             }
         }
 
-        [Rpc(CallLocal = false, TransferChannel = SerializationHelpers.WorldUpdateChannel, TransferMode = MultiplayerPeer.TransferModeEnum.Reliable)]
+        [Rpc(CallLocal = false, TransferChannel = SerializationHelpers.WorldUpdateChannel,
+            TransferMode = MultiplayerPeer.TransferModeEnum.Reliable)]
         private void UpdatePlayerList(Dictionary playerList)
         {
-            var newList = new System.Collections.Generic.Dictionary<int, PlayerInfo>();
-
-            foreach (var pair in playerList)
+            lock (PlayerList)
             {
-                var valueDict = pair.Value.AsGodotDictionary();
-
-                var player = new PlayerInfo
+                HashSet<int> old = PlayerList.Keys.ToHashSet();
+                PlayerList.Clear();
+                foreach (var pair in playerList)
                 {
-                    Name = valueDict["name"].AsString(),
-                };
-                newList[pair.Key.AsInt32()] = player;
+                    var valueDict = pair.Value.AsGodotDictionary();
+
+                    var player = new PlayerInfo
+                    {
+                        Name = valueDict["name"].AsString(),
+                    };
+                    int id = pair.Key.AsInt32();
+                    if (old.Contains(id))
+                    {
+                        old.Remove(id);
+                    }
+
+                    x
+                    else
+                    {
+                        Logger.Log($"new player {id}");
+                        this.SpawnPlayer(id);
+                    }
+                    PlayerList.Add(id, player);
+                }
+
+                foreach (var oldp in old)
+                {
+                    this.RemovePlayer(oldp);
+                }
+
+                UpdatePlayerNametags();
             }
-
-            PlayerList = newList;
-
-            UpdatePlayerNametags();
         }
 
         [Rpc(MultiplayerApi.RpcMode.AnyPeer, TransferChannel = SerializationHelpers.SessionControlChannel, CallLocal = false)]
@@ -651,7 +668,7 @@ namespace Aquamarine.Source.Management
 
         public void RemovePlayer(int authority)
         {
-            if (IsMultiplayerAuthority())
+            if (IsMultiplayerAuthority() || (Multiplayer.MultiplayerPeer is not null && Multiplayer.GetRemoteSenderId() == 1))
             {
                 try
                 {

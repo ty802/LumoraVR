@@ -400,13 +400,14 @@ namespace Aquamarine.Source.Management
                     else
                     {
                         Logger.Log($"new player {id}");
+                        this.SpawnPlayer(id);
                     }
                     PlayerList.Add(id, player);
                 }
 
                 foreach (var oldp in old)
                 {
-                    _customPlayerSpawner.RemovePlayer(oldp);
+                    this.RemovePlayer(oldp);
                 }
 
                 UpdatePlayerNametags();
@@ -667,7 +668,7 @@ namespace Aquamarine.Source.Management
 
         public void RemovePlayer(int authority)
         {
-            if (IsMultiplayerAuthority())
+            if (IsMultiplayerAuthority() || (Multiplayer.MultiplayerPeer is not null && Multiplayer.GetRemoteSenderId() == 1))
             {
                 try
                 {

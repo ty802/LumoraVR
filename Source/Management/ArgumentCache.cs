@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using Aquamarine.Source.Logging;
 using Godot;
@@ -56,6 +57,11 @@ namespace Aquamarine.Source.Management
 
                     key = null;
                 }
+                else
+                {
+                    Logger.Warn("Argument key is null");
+                    value.Clear(); 
+                }
             }
 
             while (args.MoveNext())
@@ -80,8 +86,17 @@ namespace Aquamarine.Source.Management
 
                 value.Append(arg);
             }
-
             Add();
+#if DEBUG
+            foreach(var pair in _argCache)
+            {
+                Logger.Log($"[ARGPARSE] {pair.Key} = {pair.Value}");
+            }
+            foreach(string flag in _flagCache)
+            {
+                Logger.Log($"[ARGPARSE] Flag: {flag}");
+            }
+#endif
         }
     }
 }

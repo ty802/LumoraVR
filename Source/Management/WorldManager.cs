@@ -133,7 +133,7 @@ namespace Aquamarine.Source.Management
             }
         }
 
-        private void FinishWorldLoading()
+        private async void FinishWorldLoading()
         {
             _isLoading = false;
 
@@ -153,13 +153,32 @@ namespace Aquamarine.Source.Management
                     }
                 }
 
+                // First, clear existing world
                 foreach (Node child in _worldContainer.GetChildren())
                 {
                     child.QueueFree();
                 }
 
+                // Wait a frame to ensure all nodes are properly freed
+                await ToSignal(GetTree(), "process_frame");
+
+                // Instantiate the new world
                 Node newWorld = _loadedWorld.Instantiate();
+                
+                // Ensure the world has a unique name to avoid conflicts
+                if (newWorld is MultiplayerScene)
+                {
+                    // If it's a MultiplayerScene, make sure it has a unique name
+                    newWorld.Name = "Scene";
+                    Logger.Log($"Instantiated MultiplayerScene with name: {newWorld.Name}");
+                }
+                
+                // Add the new world to the container
                 _worldContainer.AddChild(newWorld);
+                
+                // Comment out scene tree logging to reduce console spam
+                // Logger.Log("Scene tree after loading world:");
+                // LogSceneTree(GetTree().Root, "");
 
                 // Hide loading screen if it exists
                 if (_loadingScreen != null)
@@ -167,29 +186,84 @@ namespace Aquamarine.Source.Management
                     _loadingScreen.Visible = false;
                 }
 
-                if (ServerManager.CurrentServerType  != ServerManager.ServerType.NotAServer)
+                // Initialize server components if needed
+                if (ServerManager.CurrentServerType != ServerManager.ServerType.NotAServer)
                 {
-                    if (newWorld is MultiplayerScene multiplayerScene)
+                    // First try to get the MultiplayerScene directly
+                    MultiplayerScene multiplayerScene = null;
+                    
+                    if (newWorld is MultiplayerScene directScene)
                     {
-                        multiplayerScene.InitializeForServer();
-                        Logger.Log("서버용 멀티플레이어 컴포넌트 초기화 완료.");
+                        multiplayerScene = directScene;
                     }
                     else
                     {
-                        Logger.Error("MultiplayerScene을 찾을 수 없습니다.");
+                        // Try to find it in the children
+                        multiplayerScene = FindNodeByType<MultiplayerScene>(newWorld);
+                    }
+                    
+                    if (multiplayerScene != null)
+                    {
+                        // Initialize the server components
+                        multiplayerScene.InitializeForServer();
+                        Logger.Log("Server multiplayer components initialized successfully.");
+                        
+                        // Notify ServerManager about the new world
+                        var serverManager = GetNode<ServerManager>("/root/ServerManager");
+                        if (serverManager != null)
+                        {
+                            serverManager.OnWorldLoaded(newWorld);
+                        }
+                    }
+                    else
+                    {
+                        Logger.Error("MultiplayerScene not found in the loaded world.");
                     }
                 }
+                
                 Logger.Log($"World loaded successfully: {_currentWorldPath}");
             }
             catch (Exception ex)
             {
-                Logger.Error($"Error loading world: {ex.Message}");
+                Logger.Error($"Error loading world: {ex.Message}\nStack trace: {ex.StackTrace}");
 
                 // Hide loading screen if it exists
                 if (_loadingScreen != null)
                 {
                     _loadingScreen.Visible = false;
                 }
+            }
+        }
+        
+        // Helper method to find a node of a specific type in the scene tree
+        private T FindNodeByType<T>(Node root) where T : class
+        {
+            // Check if the current node is of the desired type
+            if (root is T result)
+            {
+                return result;
+            }
+            
+            // Recursively search through all children
+            foreach (var child in root.GetChildren())
+            {
+                var found = FindNodeByType<T>(child);
+                if (found != null)
+                {
+                    return found;
+                }
+            }
+            
+            return null;
+        }
+        
+        // Helper method to log the scene tree for debugging
+        private void LogSceneTree(Node node, string indent)
+        {
+            Logger.Log(indent + node.Name + " (" + node.GetType().Name + ")");
+            foreach (var child in node.GetChildren())
+            {
+                LogSceneTree(child, indent + "  ");
             }
         }
         private void HandleLoadError()

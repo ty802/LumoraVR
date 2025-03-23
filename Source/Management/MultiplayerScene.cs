@@ -32,6 +32,7 @@ namespace Aquamarine.Source.Management
                 var player = _customPlayerSpawner.GetPlayer(id);
                 if (player != null)
                 {
+                    // Debug log only when player is found to reduce noise
                     Logger.Log($"GetPlayer({id}): Found player via CustomPlayerSpawner");
                     return player;
                 }
@@ -51,6 +52,7 @@ namespace Aquamarine.Source.Management
             }
             else
             {
+                // Reduced logging level to avoid spam when called frequently
                 Logger.Log($"GetPlayer({id}): Player not found");
             }
             return tryFind;
@@ -93,24 +95,58 @@ namespace Aquamarine.Source.Management
         public override void _Ready()
         {
             base._Ready();
-            Instance = this;
-            Logger.Log($"MultiplayerScene._Ready: Scene name = {Name}, Path = {GetPath()}");
-
+            
             try
             {
+                // Check if Instance is already set to avoid duplicate initialization
+                if (Instance != null && Instance != this)
+                {
+                    // If the existing instance is invalid or not in the tree, replace it
+                    if (!GodotObject.IsInstanceValid(Instance) || !Instance.IsInsideTree())
+                    {
+                        Logger.Warn($"MultiplayerScene._Ready: Existing instance at {Instance.GetPath()} is invalid or not in tree, replacing with this instance at {GetPath()}");
+                        Instance = this;
+                    }
+                    else
+                    {
+                        Logger.Warn($"MultiplayerScene._Ready: Another instance already exists at {Instance.GetPath()}, this instance at {GetPath()} will not override it");
+                        
+                        // Don't return early - still set up this instance, just don't make it the global Instance
+                        // This ensures this instance is still functional even if it's not the global singleton
+                    }
+                }
+                else
+                {
+                    // Set this as the global instance
+                    Instance = this;
+                    Logger.Log($"MultiplayerScene._Ready: Set as global instance. Scene name = {Name}, Path = {GetPath()}");
+                }
+                
                 SetupPlayerRoot();
                 SetupCustomPlayerSpawner();
                 
-                // Log the scene tree after setup
-                Logger.Log("Scene tree after setup:");
-                LogSceneTree(GetTree().Root);
+                // Comment out scene tree logging to reduce console spam
+                // Logger.Log("Scene tree after setup:");
+                // LogSceneTree(GetTree().Root);
+                
+                Logger.Log("MultiplayerScene initialized.");
             }
             catch (Exception ex)
             {
                 Logger.Error($"Error initializing MultiplayerScene: {ex.Message}\nStack trace: {ex.StackTrace}");
             }
-
-            Logger.Log("MultiplayerScene initialized.");
+        }
+        
+        public override void _ExitTree()
+        {
+            base._ExitTree();
+            
+            // If this is the global instance, clear it when removed from tree
+            if (Instance == this)
+            {
+                Logger.Log($"MultiplayerScene._ExitTree: Global instance at {GetPath()} is being removed from tree, clearing reference");
+                Instance = null;
+            }
         }
 
         public void InitializeForServer()
@@ -378,39 +414,61 @@ namespace Aquamarine.Source.Management
             TransferMode = MultiplayerPeer.TransferModeEnum.Reliable)]
         private void UpdatePlayerList(Dictionary playerList)
         {
-            lock (PlayerList)
+            try
             {
-                HashSet<int> old = PlayerList.Keys.ToHashSet();
-                PlayerList.Clear();
-                foreach (var pair in playerList)
+                lock (PlayerList)
                 {
-                    var valueDict = pair.Value.AsGodotDictionary();
-
-                    var player = new PlayerInfo
-                    {
-                        Name = valueDict["name"].AsString(),
-                    };
-                    int id = pair.Key.AsInt32();
-                    if (old.Contains(id))
-                    {
-                        old.Remove(id);
-                    }
-
+                    // Store old player IDs to track which ones are removed
+                    HashSet<int> oldPlayerIds = PlayerList.Keys.ToHashSet();
                     
-                    else
+                    // Clear the player list but don't remove players yet
+                    PlayerList.Clear();
+                    
+                    // Process the new player list
+                    foreach (var pair in playerList)
                     {
-                        Logger.Log($"new player {id}");
-                        this.SpawnPlayer(id);
+                        var valueDict = pair.Value.AsGodotDictionary();
+                        int id = pair.Key.AsInt32();
+                        
+                        // Create player info
+                        var playerInfo = new PlayerInfo
+                        {
+                            Name = valueDict["name"].AsString(),
+                        };
+                        
+                        // Add to player list
+                        PlayerList.Add(id, playerInfo);
+                        
+                        // Mark as processed
+                        if (oldPlayerIds.Contains(id))
+                        {
+                            oldPlayerIds.Remove(id);
+                        }
+                        else
+                        {
+                            // This is a new player in the list
+                            Logger.Log($"New player in list: {id}");
+                            
+                            // Check if the player is already spawned
+                            if (!IsPlayerSpawned(id))
+                            {
+                                // Only spawn if we're the server or if this is our local player
+                                if (IsMultiplayerAuthority() || id == Multiplayer.GetUniqueId())
+                                {
+                                    Logger.Log($"Spawning player {id} because they're in the player list but not spawned");
+                                    SpawnPlayer(id);
+                                }
+                            }
+                        }
                     }
-                    PlayerList.Add(id, player);
+                    
+                    // Update nametags for all players
+                    UpdatePlayerNametags();
                 }
-
-                foreach (var oldp in old)
-                {
-                    this.RemovePlayer(oldp);
-                }
-
-                UpdatePlayerNametags();
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error in UpdatePlayerList: {ex.Message}\nStack trace: {ex.StackTrace}");
             }
         }
 
@@ -538,10 +596,7 @@ namespace Aquamarine.Source.Management
             {
                 Logger.Log($"SpawnPlayer: Attempting to spawn player with authority {authority} at position {position ?? Vector3.Zero}");
                 
-                // Force spawn regardless of authority when called directly
-                // This is needed for server-side spawning when a client connects
-                
-                // PlayerRoot
+                // Ensure PlayerRoot exists
                 if (PlayerRoot == null)
                 {
                     Logger.Error("SpawnPlayer: PlayerRoot is null, creating a new one");
@@ -549,68 +604,35 @@ namespace Aquamarine.Source.Management
                     AddChild(PlayerRoot);
                 }
 
-                // Check if player already exists
+                // Consolidated player existence check - only use GetPlayer as the single source of truth
                 var existingPlayer = GetPlayer(authority);
                 if (existingPlayer != null)
                 {
                     Logger.Log($"Player with authority {authority} already exists, not spawning again");
                     return;
                 }
-                
-                // Check if this is a duplicate spawn request
-                // This can happen when both client and server try to spawn the same player
-                var allPlayers = PlayerRoot?.GetChildren().OfType<PlayerCharacterController>().ToList();
-                if (allPlayers != null && allPlayers.Count > 0)
-                {
-                    foreach (var player in allPlayers)
-                    {
-                        if (player.Authority == authority)
-                        {
-                            Logger.Log($"Player with ID {authority} already exists, not spawning again");
-                            return;
-                        }
-                    }
-                }
 
                 // Special handling for LocalHome server
                 bool isLocalHomeServer = ServerManager.CurrentServerType == ServerManager.ServerType.Local;
                 bool isLocalClient = authority == Multiplayer.GetUniqueId();
                 
-                // For LocalHome server, force spawn the player for the client
-                if (isLocalHomeServer && isLocalClient)
-                {
-                    Logger.Log($"LocalHome server: Force spawning local player with authority {authority}");
-                    
-                    // Use the CustomPlayerSpawner
-                    if (_customPlayerSpawner != null)
-                    {
-                        var player = _customPlayerSpawner.SpawnPlayer(authority, position ?? Vector3.Zero);
-                        if (player != null)
-                        {
-                            Logger.Log($"LocalHome: Local player with authority {authority} spawned via CustomPlayerSpawner");
-                            
-                            // Add to player list if not there already
-                            if (!PlayerList.ContainsKey(authority))
-                            {
-                                PlayerList[authority] = new PlayerInfo { Name = $"Player {authority}" };
-                                SendUpdatedPlayerList();
-                            }
-                            
-                            // Cache the local player
-                            _local = player;
-                            
-                            return;
-                        }
-                    }
-                }
-
-                // Use the CustomPlayerSpawner
+                // Primary spawning path - always try CustomPlayerSpawner first
                 if (_customPlayerSpawner != null)
                 {
-                    var player = _customPlayerSpawner.SpawnPlayer(authority, position ?? Vector3.Zero);
+                    Vector3 spawnPos = position ?? Vector3.Zero;
+                    Logger.Log($"Spawning player {authority} via CustomPlayerSpawner at {spawnPos}");
+                    
+                    var player = _customPlayerSpawner.SpawnPlayer(authority, spawnPos);
                     if (player != null)
                     {
                         Logger.Log($"Player with authority {authority} spawned via CustomPlayerSpawner");
+                        
+                        // For local player in LocalHome server, cache the reference
+                        if (isLocalHomeServer && isLocalClient)
+                        {
+                            _local = player;
+                            Logger.Log($"LocalHome server: Cached local player with authority {authority}");
+                        }
                         
                         // Add to player list if not there already
                         if (!PlayerList.ContainsKey(authority))
@@ -622,7 +644,7 @@ namespace Aquamarine.Source.Management
                         // Send RPC to other clients if we have authority
                         if (IsMultiplayerAuthority())
                         {
-                            Rpc(MethodName.InternalSpawnPlayer, authority, position ?? Vector3.Zero);
+                            Rpc(MethodName.InternalSpawnPlayer, authority, spawnPos);
                             Logger.Log($"SpawnPlayer RPC sent for authority {authority}");
                         }
                         
@@ -630,22 +652,39 @@ namespace Aquamarine.Source.Management
                     }
                     else
                     {
-                        Logger.Error($"CustomPlayerSpawner failed to spawn player with authority {authority}");
+                        Logger.Error($"CustomPlayerSpawner failed to spawn player with authority {authority}, trying fallback methods");
                     }
                 }
                 
-                // PlayerManager fallback
+                // Fallback path #1: PlayerManager
                 if (PlayerManager.Instance != null)
                 {
+                    Logger.Log($"Attempting to spawn player {authority} via PlayerManager fallback");
                     PlayerManager.Instance.SpawnPlayer(authority, position ?? Vector3.Zero);
                     Logger.Log($"Player with authority {authority} spawned via PlayerManager");
+                    
+                    // Add to player list if not there already
+                    if (!PlayerList.ContainsKey(authority))
+                    {
+                        PlayerList[authority] = new PlayerInfo { Name = $"Player {authority}" };
+                        SendUpdatedPlayerList();
+                    }
+                    
+                    // Send RPC to other clients if we have authority
+                    if (IsMultiplayerAuthority())
+                    {
+                        Rpc(MethodName.InternalSpawnPlayer, authority, position ?? Vector3.Zero);
+                        Logger.Log($"SpawnPlayer RPC sent for authority {authority}");
+                    }
+                    
+                    return;
                 }
-                else
-                {
-                    InternalSpawnPlayer(authority, position ?? Vector3.Zero);
-                    Logger.Log($"Player with authority {authority} spawned directly via fallback");
-                }
-
+                
+                // Fallback path #2: Direct instantiation
+                Logger.Log($"Attempting to spawn player {authority} via direct instantiation fallback");
+                InternalSpawnPlayer(authority, position ?? Vector3.Zero);
+                Logger.Log($"Player with authority {authority} spawned directly via fallback");
+                
                 // Add to player list if not there already
                 if (!PlayerList.ContainsKey(authority))
                 {
@@ -673,10 +712,16 @@ namespace Aquamarine.Source.Management
                 try
                 {
                     // Use the CustomPlayerSpawner
-                    if (PlayerSpawner != null)
+                    if (_customPlayerSpawner != null)
                     {
-                        PlayerSpawner.RemovePlayer(authority);
+                        _customPlayerSpawner.RemovePlayer(authority);
                         Logger.Log($"Player with authority {authority} removed via CustomPlayerSpawner");
+                    }
+                    // Try PlayerSpawner as fallback
+                    else if (PlayerSpawner != null && PlayerSpawner is CustomPlayerSpawner customSpawner)
+                    {
+                        customSpawner.RemovePlayer(authority);
+                        Logger.Log($"Player with authority {authority} removed via fallback PlayerSpawner");
                     }
                     // Fallback
                     else
@@ -714,13 +759,23 @@ namespace Aquamarine.Source.Management
         {
             Logger.Log($"IsPlayerSpawned: Checking if player with authority {authority} is spawned");
             
-            if (PlayerSpawner != null)
+            // First check using our cached CustomPlayerSpawner reference for consistency
+            if (_customPlayerSpawner != null)
             {
-                var result = PlayerSpawner.GetPlayer(authority) != null;
-                Logger.Log($"IsPlayerSpawned: Player with authority {authority} is {(result ? "spawned" : "not spawned")} according to CustomPlayerSpawner");
+                var result = _customPlayerSpawner.GetPlayer(authority) != null;
+                Logger.Log($"IsPlayerSpawned: Player with authority {authority} is {(result ? "spawned" : "not spawned")} according to _customPlayerSpawner");
+                return result;
+            }
+            
+            // Fallback to PlayerSpawner if the cached reference is null
+            if (PlayerSpawner != null && PlayerSpawner is CustomPlayerSpawner customSpawner)
+            {
+                var result = customSpawner.GetPlayer(authority) != null;
+                Logger.Log($"IsPlayerSpawned: Player with authority {authority} is {(result ? "spawned" : "not spawned")} according to PlayerSpawner");
                 return result;
             }
 
+            // Last resort: check PlayerRoot directly
             if (!IsPlayerRootValid())
             {
                 Logger.Error("IsPlayerSpawned: PlayerRoot is not valid");

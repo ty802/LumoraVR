@@ -40,79 +40,157 @@ namespace Aquamarine.Source.Management
 
         public override void _Ready()
         {
-            // Find the CustomPlayerSpawner
-            _playerSpawner = GetNodeOrNull<CustomPlayerSpawner>("%CustomPlayerSpawner");
-            if (_playerSpawner == null)
+            try
             {
-                _playerSpawner = GetNodeOrNull<CustomPlayerSpawner>("../CustomPlayerSpawner");
-            }
-            
-            if (_playerSpawner != null)
-            {
-                Logger.Log("CustomPlayerSync: Found CustomPlayerSpawner");
+                // Find the CustomPlayerSpawner
+                _playerSpawner = GetNodeOrNull<CustomPlayerSpawner>("%CustomPlayerSpawner");
+                if (_playerSpawner == null)
+                {
+                    _playerSpawner = GetNodeOrNull<CustomPlayerSpawner>("../CustomPlayerSpawner");
+                    
+                    // Try one more fallback - search in the scene tree
+                    if (_playerSpawner == null)
+                    {
+                        _playerSpawner = FindNodeByType<CustomPlayerSpawner>(GetTree().Root);
+                        if (_playerSpawner != null)
+                        {
+                            Logger.Log($"CustomPlayerSync: Found CustomPlayerSpawner by searching scene tree at {_playerSpawner.GetPath()}");
+                        }
+                    }
+                }
                 
-                // Connect to player spawned/removed signals
-                _playerSpawner.PlayerSpawned += OnPlayerSpawned;
-                _playerSpawner.PlayerRemoved += OnPlayerRemoved;
+                if (_playerSpawner != null)
+                {
+                    Logger.Log("CustomPlayerSync: Found CustomPlayerSpawner");
+                    
+                    // Connect to player spawned/removed signals
+                    _playerSpawner.PlayerSpawned += OnPlayerSpawned;
+                    _playerSpawner.PlayerRemoved += OnPlayerRemoved;
+                }
+                else
+                {
+                    Logger.Error("CustomPlayerSync: Could not find CustomPlayerSpawner");
+                }
+                
+                // Defer server role determination to _Process to ensure multiplayer is initialized
+                _isServer = false; // Default to false, will be updated in _Process
+                
+                // Connect to network peer connected signal - only if multiplayer is available
+                if (Multiplayer != null)
+                {
+                    Multiplayer.PeerConnected += OnPeerConnected;
+                    Multiplayer.PeerDisconnected += OnPeerDisconnected;
+                }
+                
+                Logger.Log("CustomPlayerSync initialized");
             }
-            else
+            catch (Exception ex)
             {
-                Logger.Error("CustomPlayerSync: Could not find CustomPlayerSpawner");
+                Logger.Error($"Error in CustomPlayerSync._Ready: {ex.Message}");
+            }
+        }
+        
+        // Helper method to find a node of a specific type in the scene tree
+        private T FindNodeByType<T>(Node root) where T : class
+        {
+            // Check if the current node is of the desired type
+            if (root is T result)
+            {
+                return result;
             }
             
-            // Determine if we're the server
-            _isServer = Multiplayer.IsServer();
+            // Recursively search through all children
+            foreach (var child in root.GetChildren())
+            {
+                var found = FindNodeByType<T>(child);
+                if (found != null)
+                {
+                    return found;
+                }
+            }
             
-            // Connect to network peer connected signal
-            Multiplayer.PeerConnected += OnPeerConnected;
-            Multiplayer.PeerDisconnected += OnPeerDisconnected;
-            
-            Logger.Log("CustomPlayerSync initialized");
+            return null;
         }
 
         public override void _Process(double delta)
         {
-            _timeSinceLastSync += (float)delta;
-            if (Multiplayer?.MultiplayerPeer is null) return;
-            // Only sync at the specified interval
-            if (_timeSinceLastSync >= SyncInterval)
+            try
             {
-                _timeSinceLastSync = 0;
-                
-                // Get local player ID
-                int localId = Multiplayer.GetUniqueId();
-                
-                // If we have authority over any players, send their data
-                if (_playerSpawner != null)
+                // Check if multiplayer is initialized
+                if (Multiplayer?.MultiplayerPeer != null)
                 {
-                    foreach (var player in _playerSpawner.GetAllPlayers())
+                    // Update server status if needed
+                    if (!_isServer)
                     {
-                        // Only sync players we have authority over
-                        if (player.Value.Authority == localId)
+                        try
                         {
-                            // Send player data to all peers
-                            RpcId(1, MethodName.SyncPlayerData, 
-                                player.Key, 
-                                player.Value.GlobalPosition,
-                                player.Value.Velocity,
-                                player.Value.HeadPosition,
-                                player.Value.HeadRotation,
-                                player.Value.LeftHandPosition,
-                                player.Value.LeftHandRotation,
-                                player.Value.RightHandPosition,
-                                player.Value.RightHandRotation,
-                                player.Value.HipPosition,
-                                player.Value.HipRotation,
-                                player.Value.LeftFootPosition,
-                                player.Value.LeftFootRotation,
-                                player.Value.RightFootPosition,
-                                player.Value.RightFootRotation,
-                                player.Value.UserHeight,
-                                player.Value.MovementInput,
-                                player.Value.MovementButtons);
+                            _isServer = Multiplayer.IsServer();
+                            if (_isServer)
+                            {
+                                Logger.Log("CustomPlayerSync: Determined we are the server");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            // Still not ready, will try again next frame
+                            Logger.Log($"CustomPlayerSync: Not ready to determine server status: {ex.Message}");
+                        }
+                    }
+                    
+                    _timeSinceLastSync += (float)delta;
+                    
+                    // Only sync at the specified interval
+                    if (_timeSinceLastSync >= SyncInterval)
+                    {
+                        _timeSinceLastSync = 0;
+                        
+                        try
+                        {
+                            // Get local player ID
+                            int localId = Multiplayer.GetUniqueId();
+                            
+                            // If we have authority over any players, send their data
+                            if (_playerSpawner != null)
+                            {
+                                foreach (var player in _playerSpawner.GetAllPlayers())
+                                {
+                                    // Only sync players we have authority over
+                                    if (player.Value.Authority == localId)
+                                    {
+                                        // Send player data to all peers
+                                        RpcId(1, MethodName.SyncPlayerData, 
+                                            player.Key, 
+                                            player.Value.GlobalPosition,
+                                            player.Value.Velocity,
+                                            player.Value.HeadPosition,
+                                            player.Value.HeadRotation,
+                                            player.Value.LeftHandPosition,
+                                            player.Value.LeftHandRotation,
+                                            player.Value.RightHandPosition,
+                                            player.Value.RightHandRotation,
+                                            player.Value.HipPosition,
+                                            player.Value.HipRotation,
+                                            player.Value.LeftFootPosition,
+                                            player.Value.LeftFootRotation,
+                                            player.Value.RightFootPosition,
+                                            player.Value.RightFootRotation,
+                                            player.Value.UserHeight,
+                                            player.Value.MovementInput,
+                                            player.Value.MovementButtons);
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Error($"Error in CustomPlayerSync sync: {ex.Message}");
                         }
                     }
                 }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error in CustomPlayerSync._Process: {ex.Message}");
             }
             
             // Apply interpolation for remote players

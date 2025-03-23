@@ -1,4 +1,4 @@
-[gd_scene load_steps=13 format=3 uid="uid://d37lm476vrp1e"]
+[gd_scene load_steps=12 format=3 uid="uid://d37lm476vrp1e"]
 
 [ext_resource type="Script" uid="uid://bc5gbrtubsc4y" path="res://Source/Management/Client/ClientManager.cs" id="1_enrkg"]
 [ext_resource type="Script" uid="uid://bhyoymspo68w" path="res://Source/Management/WorldManager.cs" id="2_u2316"]
@@ -6,19 +6,11 @@
 [ext_resource type="Script" uid="uid://dkvhcndqncss0" path="res://Source/Management/HUD/HUDManager.cs" id="3_16xj1"]
 [ext_resource type="PackedScene" uid="uid://733y82fx2o6k" path="res://Scenes/UI/main_menu.tscn" id="5_saa3o"]
 [ext_resource type="PackedScene" uid="uid://bkr4n38tjwye3" path="res://Scenes/UI/debug_overlay.tscn" id="6_01jeo"]
-[ext_resource type="Shader" uid="uid://drcbjbss62tm5" path="res://Assets/Shaders/TestGrid.tres" id="7_daa5c"]
 [ext_resource type="PackedScene" uid="uid://dq14glqs4ogf1" path="res://Scenes/UI/LoadingMenu.tscn" id="7_u2316"]
 [ext_resource type="PackedScene" uid="uid://c8yvxqnvjbgxs" path="res://Scenes/Client/ClientConnectionHandler.tscn" id="8_yjnkr"]
-
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_5e4va"]
-render_priority = 0
-shader = ExtResource("7_daa5c")
-
-[sub_resource type="BoxMesh" id="BoxMesh_kwn4u"]
-size = Vector3(2.1, 0.25, 2.1)
-
-[sub_resource type="BoxShape3D" id="BoxShape3D_ifne4"]
-size = Vector3(2, 0.25, 2)
+[ext_resource type="Script" uid="uid://c6c3vit8g0h42" path="res://Source/Management/DiscordManager.cs" id="9_yjnkr"]
+[ext_resource type="Script" uid="uid://c1hqgqm8cd0kq" path="res://Source/Management/Account/LoginManager.cs" id="10_yjnkr"]
+[ext_resource type="Script" uid="uid://cq7r1bkh3p031" path="res://Source/Assets/Database/LocalDatabase.cs" id="11_yjnkr"]
 
 [node name="Root" type="Node" node_paths=PackedStringArray("_inputRoot")]
 script = ExtResource("1_enrkg")
@@ -70,20 +62,6 @@ layout_mode = 1
 visible = false
 layout_mode = 1
 
-[node name="MeshInstance3D2" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, -15)
-material_override = SubResource("ShaderMaterial_5e4va")
-instance_shader_parameters/gridLineColour = Color(0.176419, 0.176419, 0.176419, 1)
-instance_shader_parameters/gridPrimaryColour = Color(0.501961, 1, 0.501961, 1)
-instance_shader_parameters/lineOffset = Vector2(1, 0)
-instance_shader_parameters/lineWidth = 0.02
-mesh = SubResource("BoxMesh_kwn4u")
-
-[node name="StaticBody3D" type="StaticBody3D" parent="MeshInstance3D2"]
-
-[node name="CollisionShape3D" type="CollisionShape3D" parent="MeshInstance3D2/StaticBody3D"]
-shape = SubResource("BoxShape3D_ifne4")
-
 [node name="WorldRoot" type="Node3D" parent="."]
 unique_name_in_owner = true
 
@@ -91,3 +69,15 @@ unique_name_in_owner = true
 script = ExtResource("2_u2316")
 
 [node name="ClientConnectionHandler" parent="." instance=ExtResource("8_yjnkr")]
+
+[node name="DiscordManager" type="Node" parent="."]
+unique_name_in_owner = true
+script = ExtResource("9_yjnkr")
+
+[node name="LoginManager" type="Node" parent="."]
+unique_name_in_owner = true
+script = ExtResource("10_yjnkr")
+
+[node name="LocalDatabase" type="Node" parent="."]
+unique_name_in_owner = true
+script = ExtResource("11_yjnkr")

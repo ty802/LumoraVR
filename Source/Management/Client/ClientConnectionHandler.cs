@@ -90,124 +90,171 @@ namespace Aquamarine.Source.Management.Client
             
             Logger.Log("Client: Requesting player list from server");
             
-            // Try to find the MultiplayerScene again in case it was loaded after this component
-            if (_multiplayerScene == null)
-            {
-                _multiplayerScene = FindMultiplayerScene();
-            }
+            // Always get a fresh reference to MultiplayerScene to avoid using a disposed object
+            _multiplayerScene = null; // Clear any potentially disposed reference
+            _multiplayerScene = FindMultiplayerScene();
             
             // Request player list from the server
-            if (_multiplayerScene != null)
+            if (_multiplayerScene != null && IsInstanceValid(_multiplayerScene))
             {
                 try
                 {
-                    _multiplayerScene.Rpc(MultiplayerScene.MethodName.RequestPlayerList);
-                    Logger.Log("Client: Player list request sent via MultiplayerScene");
-                    _playerListRequested = true;
+                    // Check if the node is still in the tree
+                    if (_multiplayerScene.IsInsideTree())
+                    {
+                        _multiplayerScene.Rpc(MultiplayerScene.MethodName.RequestPlayerList);
+                        Logger.Log("Client: Player list request sent via MultiplayerScene");
+                        _playerListRequested = true;
+                        return;
+                    }
+                    else
+                    {
+                        Logger.Warn("Client: MultiplayerScene found but not in tree, cannot send RPC");
+                    }
+                }
+                catch (ObjectDisposedException)
+                {
+                    Logger.Warn("Client: MultiplayerScene was disposed, getting a new reference");
+                    _multiplayerScene = null;
                 }
                 catch (Exception ex)
                 {
                     Logger.Error($"Client: Error requesting player list: {ex.Message}");
-                    
-                    // Try to find the MultiplayerScene directly in the scene tree
-                    var scene = GetTree().Root.GetNodeOrNull("Root/WorldRoot/Scene");
-                    if (scene is MultiplayerScene multiplayerScene)
-                    {
-                        _multiplayerScene = multiplayerScene;
-                        Logger.Log($"Client: Found MultiplayerScene at Root/WorldRoot/Scene");
-                        
-                        try
-                        {
-                            _multiplayerScene.Rpc(MultiplayerScene.MethodName.RequestPlayerList);
-                            Logger.Log("Client: Player list request sent via newly found MultiplayerScene");
-                            _playerListRequested = true;
-                        }
-                        catch (Exception ex2)
-                        {
-                            Logger.Error($"Client: Error requesting player list from newly found MultiplayerScene: {ex2.Message}");
-                        }
-                    }
                 }
             }
-            else
+            
+            // If we get here, we need to try a direct approach
+            try
             {
-                Logger.Error("Client: Cannot request player list - MultiplayerScene not found");
+                // Try to find the current active scene directly
+                var currentScene = GetTree().CurrentScene;
+                if (currentScene is MultiplayerScene currentMultiplayerScene)
+                {
+                    _multiplayerScene = currentMultiplayerScene;
+                    Logger.Log("Client: Using current scene as MultiplayerScene");
+                    _multiplayerScene.Rpc(MultiplayerScene.MethodName.RequestPlayerList);
+                    Logger.Log("Client: Player list request sent via current scene");
+                    _playerListRequested = true;
+                    return;
+                }
                 
-                // Try one more time with direct path
+                // Try direct path as last resort
                 var scene = GetTree().Root.GetNodeOrNull("Root/WorldRoot/Scene");
-                if (scene is MultiplayerScene multiplayerScene)
+                if (scene is MultiplayerScene multiplayerScene && IsInstanceValid(scene))
                 {
                     _multiplayerScene = multiplayerScene;
-                    Logger.Log($"Client: Found MultiplayerScene at Root/WorldRoot/Scene");
+                    Logger.Log("Client: Found MultiplayerScene at Root/WorldRoot/Scene");
                     
-                    try
+                    if (scene.IsInsideTree())
                     {
                         _multiplayerScene.Rpc(MultiplayerScene.MethodName.RequestPlayerList);
                         Logger.Log("Client: Player list request sent via direct path MultiplayerScene");
                         _playerListRequested = true;
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Error($"Client: Error requesting player list from direct path MultiplayerScene: {ex.Message}");
+                        return;
                     }
                 }
+                
+                // If all else fails, try to send the RPC directly without a MultiplayerScene reference
+                Logger.Log("Client: Attempting to send RequestPlayerList RPC directly");
+                Rpc(MultiplayerScene.MethodName.RequestPlayerList);
+                Logger.Log("Client: Player list request sent directly");
+                _playerListRequested = true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Client: Failed to request player list: {ex.Message}");
             }
         }
         
         private MultiplayerScene FindMultiplayerScene()
         {
-            // Try to find using MultiplayerScene.Instance first (most reliable)
-            if (MultiplayerScene.Instance != null)
+            try
             {
-                Logger.Log("ClientConnectionHandler: Found MultiplayerScene using MultiplayerScene.Instance");
-                return MultiplayerScene.Instance;
-            }
-            
-            // Try to find in the scene tree
-            var multiplayerScene = GetNodeOrNull<MultiplayerScene>("%MultiplayerScene");
-            if (multiplayerScene != null)
-            {
-                Logger.Log("ClientConnectionHandler: Found MultiplayerScene using %MultiplayerScene");
-                return multiplayerScene;
-            }
-            
-            // Search in the entire scene tree
-            var root = GetTree().Root;
-            multiplayerScene = FindNodeByType<MultiplayerScene>(root);
-            if (multiplayerScene != null)
-            {
-                Logger.Log($"ClientConnectionHandler: Found MultiplayerScene by searching scene tree at {multiplayerScene.GetPath()}");
-                return multiplayerScene;
-            }
-            
-            // Try to find in common locations
-            string[] possiblePaths = new[] {
-                "/root/Root/WorldRoot/Scene",
-                "/root/Scene",
-                "/root/Root/Scene",
-                "../Scene",
-                "../../Scene"
-            };
-            
-            foreach (var path in possiblePaths)
-            {
-                try
+                // Try to find using MultiplayerScene.Instance first
+                if (MultiplayerScene.Instance != null && IsInstanceValid(MultiplayerScene.Instance))
                 {
-                    var node = GetNodeOrNull(path);
-                    if (node is MultiplayerScene scene)
+                    // Make sure it's not disposed and still in the tree
+                    try
                     {
-                        Logger.Log($"ClientConnectionHandler: Found MultiplayerScene at path: {path}");
-                        return scene;
+                        if (MultiplayerScene.Instance.IsInsideTree())
+                        {
+                            Logger.Log("ClientConnectionHandler: Found valid MultiplayerScene using MultiplayerScene.Instance");
+                            return MultiplayerScene.Instance;
+                        }
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        Logger.Warn("ClientConnectionHandler: MultiplayerScene.Instance was disposed");
                     }
                 }
-                catch (Exception ex)
+                
+                // Try to find the current active scene
+                var currentScene = GetTree().CurrentScene;
+                if (currentScene is MultiplayerScene currentMultiplayerScene)
                 {
-                    Logger.Error($"Error checking path {path}: {ex.Message}");
+                    Logger.Log("ClientConnectionHandler: Current scene is a MultiplayerScene");
+                    return currentMultiplayerScene;
                 }
+                
+                // Try to find in the scene tree with unique name
+                var multiplayerScene = GetNodeOrNull<MultiplayerScene>("%MultiplayerScene");
+                if (multiplayerScene != null && IsInstanceValid(multiplayerScene))
+                {
+                    Logger.Log("ClientConnectionHandler: Found MultiplayerScene using %MultiplayerScene");
+                    return multiplayerScene;
+                }
+                
+                // Try to find at the most common path
+                var sceneNode = GetTree().Root.GetNodeOrNull("Root/WorldRoot/Scene");
+                if (sceneNode is MultiplayerScene sceneAsMultiplayer && IsInstanceValid(sceneNode))
+                {
+                    Logger.Log("ClientConnectionHandler: Found MultiplayerScene at Root/WorldRoot/Scene");
+                    return sceneAsMultiplayer;
+                }
+                
+                // Search in the entire scene tree as last resort
+                var root = GetTree().Root;
+                multiplayerScene = FindNodeByType<MultiplayerScene>(root);
+                if (multiplayerScene != null && IsInstanceValid(multiplayerScene))
+                {
+                    Logger.Log($"ClientConnectionHandler: Found MultiplayerScene by searching scene tree at {multiplayerScene.GetPath()}");
+                    return multiplayerScene;
+                }
+                
+                // Try to find in other common locations
+                string[] possiblePaths = new[] {
+                    "/root/Root/WorldRoot/@Node@119", // Based on the logs, this is where it might be
+                    "/root/Scene",
+                    "/root/Root/Scene",
+                    "../Scene",
+                    "../../Scene"
+                };
+                
+                foreach (var path in possiblePaths)
+                {
+                    try
+                    {
+                        var node = GetNodeOrNull(path);
+                        if (node is MultiplayerScene scene && IsInstanceValid(node))
+                        {
+                            Logger.Log($"ClientConnectionHandler: Found MultiplayerScene at path: {path}");
+                            return scene;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Error($"Error checking path {path}: {ex.Message}");
+                    }
+                }
+                
+                Logger.Error("ClientConnectionHandler: Could not find MultiplayerScene");
+                return null;
             }
-            
-            Logger.Error("ClientConnectionHandler: Could not find MultiplayerScene");
-            return null;
+            catch (Exception ex)
+            {
+                Logger.Error($"ClientConnectionHandler: Error in FindMultiplayerScene: {ex.Message}");
+                return null;
+            }
         }
         
         private T FindNodeByType<T>(Node root) where T : class

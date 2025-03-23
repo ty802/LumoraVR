@@ -242,13 +242,16 @@ namespace Aquamarine.Source.Management
         // Helper method to recursively search for MultiplayerScene in children
         private MultiplayerScene FindMultiplayerSceneInChildren(Node node)
         {
+            // First check if the current node has the MultiplayerScene script attached
+            if (node is MultiplayerScene scene)
+            {
+                Logger.Log($"Found MultiplayerScene on node: {node.Name}, Path: {node.GetPath()}");
+                return scene;
+            }
+            
+            // Then check all children recursively
             foreach (var child in node.GetChildren())
             {
-                if (child is MultiplayerScene scene)
-                {
-                    return scene;
-                }
-
                 var result = FindMultiplayerSceneInChildren(child);
                 if (result != null)
                 {

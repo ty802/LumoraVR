@@ -16,55 +16,115 @@ namespace Aquamarine.Source.Management
                 // Try to find MultiplayerScene again if it's null
                 if (_multiplayerScene == null)
                 {
-                    _multiplayerScene = FindMultiplayerSceneInChildren(GetTree().CurrentScene);
-                    
-                    // If still null, try to find it directly in the scene tree
-                    if (_multiplayerScene == null)
+                    // First check if the current scene itself is a MultiplayerScene
+                    if (GetTree().CurrentScene is MultiplayerScene currentSceneAsMultiplayer)
                     {
-                        var scene = GetTree().Root.GetNodeOrNull("Root/WorldRoot/Scene");
-                        if (scene is MultiplayerScene multiplayerScene)
+                        _multiplayerScene = currentSceneAsMultiplayer;
+                        Logger.Log($"Server: Current scene is a MultiplayerScene: {GetTree().CurrentScene.Name}");
+                    }
+                    else
+                    {
+                        // Try recursive search
+                        _multiplayerScene = FindMultiplayerSceneInChildren(GetTree().CurrentScene);
+                        
+                        // If still null, try to find it directly in the scene tree at common paths
+                        if (_multiplayerScene == null)
                         {
-                            _multiplayerScene = multiplayerScene;
-                            Logger.Log("Server: Found MultiplayerScene at Root/WorldRoot/Scene");
+                            string[] commonPaths = new[] {
+                                "Root/WorldRoot/Scene",
+                                "Scene",
+                                "Root/Scene"
+                            };
+                            
+                            foreach (var path in commonPaths)
+                            {
+                                var scene = GetTree().Root.GetNodeOrNull(path);
+                                if (scene is MultiplayerScene multiplayerScene)
+                                {
+                                    _multiplayerScene = multiplayerScene;
+                                    Logger.Log($"Server: Found MultiplayerScene at {path}");
+                                    break;
+                                }
+                            }
                         }
+                    }
+                    
+                    if (_multiplayerScene != null)
+                    {
+                        Logger.Log($"Server: Successfully found MultiplayerScene: {_multiplayerScene.Name} at {_multiplayerScene.GetPath()}");
                     }
                 }
 
                 // Spawn player for the connected peer
                 if (_multiplayerScene != null)
                 {
-                    Logger.Log($"Server: Spawning player for peer {id}");
-                    _multiplayerScene.SpawnPlayer((int)id);
-                    
-                    // Add this section to send existing players
-                    // Delay slightly to ensure player is fully set up
-                    var timer = new Timer
+                    try
                     {
-                        WaitTime = 0.2f,
-                        OneShot = true,
-                        Autostart = true
-                    };
-                    AddChild(timer);
-                    timer.Timeout += () => {
-                        var playerSync = GetNodeOrNull<CustomPlayerSync>("%CustomPlayerSync");
+                        // First check if the player is already spawned
+                        bool playerAlreadySpawned = _multiplayerScene.IsPlayerSpawned((int)id);
                         
-                        // If not found directly, try to find it in the scene tree
-                        if (playerSync == null)
+                        if (!playerAlreadySpawned)
                         {
-                            playerSync = FindNodeByType<CustomPlayerSync>(GetTree().Root);
-                        }
-                        
-                        if (playerSync != null)
-                        {
-                            Logger.Log($"Server: Sending existing player data to new peer {id}");
-                            playerSync.SendAllPlayerDataTo((int)id);
+                            Logger.Log($"Server: Spawning player for peer {id}");
+                            _multiplayerScene.SpawnPlayer((int)id);
                         }
                         else
                         {
-                            Logger.Error($"Server: Could not find CustomPlayerSync to sync player data to {id}");
+                            Logger.Log($"Server: Player for peer {id} is already spawned, not spawning again");
                         }
-                        timer.QueueFree();
-                    };
+                        
+                        // Make sure the player is in the player list
+                        if (!_multiplayerScene.PlayerList.ContainsKey((int)id))
+                        {
+                            _multiplayerScene.PlayerList[(int)id] = new PlayerInfo { Name = $"Player {id}" };
+                            _multiplayerScene.SendUpdatedPlayerList();
+                            Logger.Log($"Server: Added peer {id} to player list");
+                        }
+                        
+                        // Delay slightly to ensure player is fully set up before syncing
+                        var timer = new Timer
+                        {
+                            WaitTime = 0.5f, // Increased delay for better reliability
+                            OneShot = true,
+                            Autostart = true
+                        };
+                        AddChild(timer);
+                        timer.Timeout += () => {
+                            try
+                            {
+                                // Find the CustomPlayerSync component
+                                var playerSync = GetNodeOrNull<CustomPlayerSync>("%CustomPlayerSync");
+                                
+                                // If not found directly, try to find it in the scene tree
+                                if (playerSync == null)
+                                {
+                                    playerSync = FindNodeByType<CustomPlayerSync>(GetTree().Root);
+                                }
+                                
+                                if (playerSync != null && GodotObject.IsInstanceValid(playerSync))
+                                {
+                                    Logger.Log($"Server: Sending existing player data to new peer {id}");
+                                    playerSync.SendAllPlayerDataTo((int)id);
+                                }
+                                else
+                                {
+                                    Logger.Error($"Server: Could not find CustomPlayerSync to sync player data to {id}");
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.Error($"Server: Error in timer callback: {ex.Message}");
+                            }
+                            finally
+                            {
+                                timer.QueueFree();
+                            }
+                        };
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Error($"Server: Error spawning player for peer {id}: {ex.Message}");
+                    }
                 }
                 else
                 {

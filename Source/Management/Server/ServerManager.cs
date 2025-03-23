@@ -28,6 +28,20 @@ namespace Aquamarine.Source.Management
         private string _publicIp;
         private string _worldName = "My World";
         private string _worldIdentifier = "placeholder";
+        
+        // Debug UI references
+        private Label _serverTypeLabel;
+        private Label _fpsLabel;
+        private Label _playersLabel;
+        private Label _portLabel;
+        private Label _uptimeLabel;
+        
+        // Server stats
+        private float _startTime;
+        private float _elapsedTime;
+        private int _frameCount;
+        private float _fpsUpdateTimer;
+        private float _currentFps;
 
         public override void _Process(double delta)
         {
@@ -37,12 +51,75 @@ namespace Aquamarine.Source.Management
                 MultiplayerPeer.Poll(); // Poll network events manually
             }
             SessionListManager?.PollEvents();
+            
+            // Update server stats
+            _elapsedTime = (float)(Time.GetTicksMsec() / 1000.0) - _startTime;
+            _frameCount++;
+            _fpsUpdateTimer += (float)delta;
+            
+            // Update FPS every 0.5 seconds
+            if (_fpsUpdateTimer >= 0.5f)
+            {
+                _currentFps = _frameCount / _fpsUpdateTimer;
+                _frameCount = 0;
+                _fpsUpdateTimer = 0;
+                
+                // Update debug UI
+                UpdateDebugLabels();
+            }
+        }
+        
+        private void UpdateDebugLabels()
+        {
+            if (_fpsLabel != null)
+            {
+                _fpsLabel.Text = $"FPS: {_currentFps:F1}";
+            }
+            
+            if (_uptimeLabel != null)
+            {
+                TimeSpan uptime = TimeSpan.FromSeconds(_elapsedTime);
+                _uptimeLabel.Text = $"Uptime: {uptime:hh\\:mm\\:ss}";
+            }
+            
+            if (_playersLabel != null && _multiplayerScene != null)
+            {
+                int playerCount = _multiplayerScene.PlayerList?.Count ?? 0;
+                _playersLabel.Text = $"Players: {playerCount}";
+                
+                // Add player names if there are any
+                if (playerCount > 0)
+                {
+                    _playersLabel.Text += " (";
+                    int count = 0;
+                    foreach (var player in _multiplayerScene.PlayerList)
+                    {
+                        _playersLabel.Text += player.Value.Name;
+                        if (++count < playerCount)
+                            _playersLabel.Text += ", ";
+                    }
+                    _playersLabel.Text += ")";
+                }
+            }
         }
 
         public override void _Ready()
         {
             try
             {
+                // Initialize debug UI references
+                _serverTypeLabel = GetNodeOrNull<Label>("%ServerTypeLabel");
+                _fpsLabel = GetNodeOrNull<Label>("%FpsLabel");
+                _playersLabel = GetNodeOrNull<Label>("%PlayersLabel");
+                _portLabel = GetNodeOrNull<Label>("%PortLabel");
+                _uptimeLabel = GetNodeOrNull<Label>("%UptimeLabel");
+                
+                // Initialize server stats
+                _startTime = (float)(Time.GetTicksMsec() / 1000.0);
+                _frameCount = 0;
+                _fpsUpdateTimer = 0;
+                _currentFps = 0;
+                
                 var serverType = ServerManager.CurrentServerType;
 
                 // Initialize MultiplayerPeer
@@ -50,7 +127,19 @@ namespace Aquamarine.Source.Management
                 // get port
                 if ((ArgumentCache.Instance?.Arguments.TryGetValue("port", out string portstring) ?? false) &&
                     int.TryParse(portstring, out int parsed))
-                    Port = parsed;  
+                    Port = parsed;
+                
+                // Update port label
+                if (_portLabel != null)
+                {
+                    _portLabel.Text = $"Port: {Port}";
+                }
+                
+                // Update server type label
+                if (_serverTypeLabel != null)
+                {
+                    _serverTypeLabel.Text = $"Server Type: {serverType}";
+                }
 
                 Error error;
                 switch (serverType) {

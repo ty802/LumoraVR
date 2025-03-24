@@ -45,7 +45,11 @@ namespace Aquamarine.Source.Management
                 // Flag to track if we're already connecting to a local home server
                 if (ArgumentCache.Instance?.Arguments.TryGetValue("port", out string port) ?? false)
                     _localhomePort = int.Parse(port);
-                SpawnLocalHome();
+                if (ArgumentCache.Instance?.IsFlagActive("nolocal") ?? false) ;
+                else
+                    SpawnLocalHome();
+                if (ArgumentCache.Instance?.IsFlagActive("autoconnect") ?? false)
+                    JoinLocalHome();
             }
             catch (Exception ex)
             {

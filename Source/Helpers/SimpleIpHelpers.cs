@@ -8,6 +8,8 @@ namespace Aquamarine.Source.Helpers
 {
     internal class SimpleIpHelpers
     {
+        private static readonly int minPort = 49152;
+        private static readonly int maxPort = 65535;
         public static int GetAvailablePortUdpOrThrow(int maxAtemptsint) 
         {
             var rand = new Random();
@@ -15,7 +17,7 @@ namespace Aquamarine.Source.Helpers
             var udpConnInfoArray = ipGlobalProperties.GetActiveUdpListeners();
             for (var i = 0; i < maxAtemptsint; i++)
             {
-                var port = rand.Next(49152, 65535);
+                var port = rand.Next(minPort, maxPort);
                 if (!udpConnInfoArray.Any(ucpi => ucpi.Port == port))
                 {
                     return port;
@@ -30,7 +32,7 @@ namespace Aquamarine.Source.Helpers
             var tcpConnInfoArray = ipGlobalProperties.GetActiveTcpListeners();
             for (var i = 0; i < maxAtemptsint; i++)
             {
-                var port = rand.Next(49152, 65535);
+                var port = rand.Next(minPort, maxPort);
                 if (!tcpConnInfoArray.Any(ucpi => ucpi.Port == port))
                 {
                     return port;
@@ -45,7 +47,7 @@ namespace Aquamarine.Source.Helpers
             var udpConnInfoArray = ipGlobalProperties.GetActiveUdpListeners();
             for (var i = 0; i < maxAtemptsint; i++)
             {
-                var port = rand.Next(49152, 65535);
+                var port = rand.Next(minPort, maxPort);
                 if (!udpConnInfoArray.Any(ucpi => ucpi.Port == port))
                 {
                     return port;
@@ -60,7 +62,7 @@ namespace Aquamarine.Source.Helpers
             var TcpConnInfoArray = ipGlobalProperties.GetActiveTcpListeners();
             for (var i = 0; i < maxAtemptsint; i++)
             {
-                var port = rand.Next(49152, 65535);
+                var port = rand.Next(minPort, maxPort);
                 if (!TcpConnInfoArray.Any(ucpi => ucpi.Port == port))
                 {
                     return port;
@@ -73,7 +75,7 @@ namespace Aquamarine.Source.Helpers
             var random = new Random();
             for (var i = 0; i < maxAtempts; i++)
             {
-                var port = random.Next(49152, 65535);
+                var port = random.Next(minPort, maxPort);
                 if (IsPortAvailableUdp(port))
                 {
                     return port;
@@ -86,7 +88,7 @@ namespace Aquamarine.Source.Helpers
             var random = new Random();
             for (var i = 0; i < maxAtempts; i++)
             {
-                var port = random.Next(49152, 65535);
+                var port = random.Next(minPort, maxPort);
                 if (IsPortAvailableTcp(port))
                 {
                     return port;

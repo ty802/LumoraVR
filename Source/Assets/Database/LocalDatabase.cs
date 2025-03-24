@@ -57,7 +57,10 @@ namespace Aquamarine.Source.Management
                 // Default Godot path for other platforms
                 basePath = Path.Combine(OS.GetUserDataDir(), "LumoraVR");
             }
-
+            if(ArgumentCache.Instance?.Arguments.TryGetValue("dbpath", out string dbpath) ?? false)
+            {
+                basePath = dbpath;
+            }
             _databasePath = Path.Combine(basePath, DATABASE_FILENAME);
             _lockFilePath = Path.Combine(basePath, LOCK_FILENAME);
             Directory.CreateDirectory(basePath);

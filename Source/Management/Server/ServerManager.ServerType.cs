@@ -5,6 +5,7 @@ namespace Aquamarine.Source.Management
 {
     public partial class ServerManager
     {
+        private static ServerType _currentServerType = ServerType.None;
         // Server type enum
         public enum ServerType
         {
@@ -19,16 +20,21 @@ namespace Aquamarine.Source.Management
         {
             get
             {
-                var args = OS.GetCmdlineArgs();
-                if (args.Contains("--run-home-server"))
+                if(_currentServerType == ServerType.None)
                 {
-                    return ServerType.Local;
+                    if (ArgumentCache.Instance?.IsFlagActive("run-home-server") ?? false)
+                    {
+                        _currentServerType = ServerType.Local;
+                        return _currentServerType;
+                    }
+                    if (ArgumentCache.Instance?.IsFlagActive("run-server") ?? false)
+                    {
+                        _currentServerType = ServerType.Standard;
+                        return _currentServerType;
+                    }
+                    _currentServerType = ServerType.NotAServer;
                 }
-                else if (args.Contains("--run-server"))
-                {
-                    return ServerType.Standard;
-                }
-                return ServerType.NotAServer;
+                return _currentServerType;
             }
         }
     }

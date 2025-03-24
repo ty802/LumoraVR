@@ -23,6 +23,8 @@ namespace Aquamarine.Source.Management
         private bool _isLoading = false;
         private float[] _progress = new float[1];
 
+        [Signal]
+        public delegate void WorldLoadedEventHandler();
         public override void _Ready()
         {
             Instance = this;
@@ -222,6 +224,7 @@ namespace Aquamarine.Source.Management
                 }
                 
                 Logger.Log($"World loaded successfully: {_currentWorldPath}");
+                EmitSignal(SignalName.WorldLoaded);
             }
             catch (Exception ex)
             {

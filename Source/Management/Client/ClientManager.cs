@@ -42,7 +42,6 @@ namespace Aquamarine.Source.Management
                 InitializeInput();
                 InitializeDiscordManager();
                 FetchServerInfo();
-                // Flag to track if we're already connecting to a local home server
                 if (ArgumentCache.Instance?.Arguments.TryGetValue("port", out string port) ?? false)
                     _localhomePort = int.Parse(port);
                 if (ArgumentCache.Instance?.IsFlagActive("nolocal") ?? false) ;

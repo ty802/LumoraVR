@@ -25,7 +25,7 @@ namespace Aquamarine.Source.Management
         private string _targetWorldPath = null;
         private readonly CancellationTokenSource _cancellationTokenSource = new CancellationTokenSource();
         private int _localHomePid = 0;
-        private int _localhomePort = 6000;
+        private int? _localhomePort;
         private bool _isDirectConnection = false;
         [Signal]
         public delegate bool OnConnectSucsessEventHandler();
@@ -78,7 +78,8 @@ namespace Aquamarine.Source.Management
             };
             _connectingToLocalHome = true;
             // find a free port
-            _localhomePort = Helpers.SimpleIpHelpers.GetAvailablePortUdp(10) ?? _localhomePort;
+            if (_localhomePort is null)
+                _localhomePort = Helpers.SimpleIpHelpers.GetAvailablePortUdp(10) ?? 6000;
             // Start a new local home server
             _localHomePid = OS.CreateProcess(OS.GetExecutablePath(), ["--run-home-server", "--xr-mode", "off", "--headless","--port",_localhomePort.ToString()]);
             Logger.Log($"Started local server process with PID: {_localHomePid}");
@@ -123,10 +124,13 @@ namespace Aquamarine.Source.Management
             }
             _cancellationTokenSource.Cancel();
         }
-        public void JoinLocalHome()
+        public async void JoinLocalHome()
         {
-            LoadLocalScene();
-            JoinServer("localhost", _localhomePort);
+            if (WorldManager.Instance is not null && _localHomePid != 0 && _localhomePort is int port)
+            {
+                await ToSignal(GetTree(), "process_frame");
+                JoinServer("localhost", port, "res://Scenes/World/LocalHome.tscn");
+            }
         }
     }
 }

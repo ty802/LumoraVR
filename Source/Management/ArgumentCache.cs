@@ -1,5 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
+#if DEBUG
+using System.Diagnostics;
+#endif
 using System.Linq;
 using System.Text;
 using Aquamarine.Source.Logging;
@@ -95,6 +98,10 @@ namespace Aquamarine.Source.Management
             foreach(string flag in _flagCache)
             {
                 Logger.Log($"[ARGPARSE] Flag: {flag}");
+            }
+            if (IsFlagActive("vs-debug"))
+            {
+                Debugger.Launch();
             }
 #endif
         }

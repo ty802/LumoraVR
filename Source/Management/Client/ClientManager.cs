@@ -9,6 +9,7 @@ using System.Net.NetworkInformation;
 using System.Linq;
 using System.Threading;
 using Aquamarine.Source.Helpers;
+using System.Collections.Generic;
 
 namespace Aquamarine.Source.Management
 {
@@ -41,7 +42,9 @@ namespace Aquamarine.Source.Management
                 InitializeInput();
                 InitializeDiscordManager();
                 FetchServerInfo();
-                LoadLocalScene();
+                // Flag to track if we're already connecting to a local home server
+                if (ArgumentCache.Instance?.Arguments.TryGetValue("port", out string port) ?? false)
+                    _localhomePort = int.Parse(port);
                 SpawnLocalHome();
             }
             catch (Exception ex)
@@ -80,9 +83,15 @@ namespace Aquamarine.Source.Management
             // find a free port
             _localhomePort = Helpers.SimpleIpHelpers.GetAvailablePortUdp(10) ?? _localhomePort;
             // Start a new local home server
-            _localHomePid = OS.CreateProcess(OS.GetExecutablePath(), ["--run-home-server", "--xr-mode", "off", "--headless","--port",_localhomePort.ToString()]);
+            List<string> args = ["--run-home-server", "--xr-mode", "off", "--headless", "--port", _localhomePort.ToString()];
+            if (ArgumentCache.Instance?.Arguments.TryGetValue("remote-debug-local", out string endPoint) ?? false)
+                args.AddRange(["--remote-debug", endPoint]);
+            if (ArgumentCache.Instance?.IsFlagActive("vs-debug-local")??false)
+                args.Add("--vs-debug");
+            _localHomePid = OS.CreateProcess(OS.GetExecutablePath(), args.ToArray());
             Logger.Log($"Started local server process with PID: {_localHomePid}");
-            Task.Run(async () => {
+            Task.Run(async () =>
+            {
                 while (!_cancellationTokenSource.Token.IsCancellationRequested)
                 {
                     await Task.Delay(1000);

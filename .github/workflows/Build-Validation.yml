@@ -12,16 +12,14 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-        # Don't try to fetch submodules automatically as they may be private
+        # Don't fetch submodules automatically
         submodules: 'false'
+        token: ${{ secrets.GH_PAT }}
     
-    - name: Clone Bones repository with token
-      # Use a personal access token with repo scope to access private repositories
+    - name: Initialize submodules with PAT
       run: |
-        git config --global url."https://${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
+        git config --global url."https://${{ secrets.GH_PAT }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
         git submodule update --init --recursive
-      env:
-        GH_PAT: ${{ secrets.GH_PAT }}
     
     - name: Setup .NET
       uses: actions/setup-dotnet@v4

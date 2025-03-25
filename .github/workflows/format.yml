@@ -1,0 +1,46 @@
+name: .NET Format Validation
+on:
+  pull_request:
+    branches: 
+      - main
+jobs:
+  format-check:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '9.0.x'
+    
+    - name: Install dotnet-format
+      run: dotnet tool install -g dotnet-format
+    
+    - name: Run dotnet format check
+      run: |
+        # Check formatting across the entire solution
+        dotnet format --verify-no-changes
+      
+    - name: Add format-issues label if formatting issues found
+      if: failure()
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          github.rest.issues.addLabels({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            labels: ['format-issues']
+          })
+          
+    - name: Fail if formatting issues found
+      if: failure()
+      run: |
+        echo "::error::Code formatting check failed. Please run 'dotnet format' and commit the changes."
+        exit 1

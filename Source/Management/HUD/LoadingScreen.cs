@@ -65,7 +65,7 @@ public partial class LoadingScreen : Control
     /// <summary>
     /// Hides the loading screen with an optional fade out animation.
     /// </summary>
-    public void Hide()
+    new public void Hide()
     {
         if (_animationPlayer.HasAnimation("fade_out"))
         {

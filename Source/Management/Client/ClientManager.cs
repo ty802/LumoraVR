@@ -41,10 +41,10 @@ namespace Aquamarine.Source.Management
                 InitializeLoginManager();
                 InitializeInput();
                 InitializeDiscordManager();
-                FetchServerInfo();
+                _ = FetchServerInfo();
                 if (ArgumentCache.Instance?.Arguments.TryGetValue("port", out string port) ?? false)
                     _localhomePort = int.Parse(port);
-                if (ArgumentCache.Instance?.IsFlagActive("nolocal") ?? false) ;
+                if (ArgumentCache.Instance?.IsFlagActive("nolocal") ?? false) Logger.Log("nolocal specified skiping local home");
                 else
                     SpawnLocalHome();
                 if (ArgumentCache.Instance?.IsFlagActive("autoconnect") ?? false)

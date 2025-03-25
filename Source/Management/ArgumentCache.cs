@@ -20,7 +20,7 @@ namespace Aquamarine.Source.Management
         ArgumentCache()
         {
             Arguments = _argCache.AsReadOnly();
-            if (Instance is not null) throw new("wtf");
+            if (Instance is not null) throw new("wtf"); //just realised this why - Linka 
             Instance = this;
         }
 
@@ -63,7 +63,7 @@ namespace Aquamarine.Source.Management
                 else
                 {
                     Logger.Warn("Argument key is null");
-                    value.Clear(); 
+                    value.Clear();
                 }
             }
 
@@ -91,11 +91,11 @@ namespace Aquamarine.Source.Management
             }
             Add();
 #if DEBUG
-            foreach(var pair in _argCache)
+            foreach (var pair in _argCache)
             {
                 Logger.Log($"[ARGPARSE] {pair.Key} = {pair.Value}");
             }
-            foreach(string flag in _flagCache)
+            foreach (string flag in _flagCache)
             {
                 Logger.Log($"[ARGPARSE] Flag: {flag}");
             }

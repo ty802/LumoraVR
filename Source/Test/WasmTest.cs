@@ -7,7 +7,7 @@ public class WasmTest
     public static void Test()
     {
         using var engine = new Engine();
-        
+
         using var module = Module.FromText(
             engine,
             "hello",

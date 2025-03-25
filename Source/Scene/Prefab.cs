@@ -12,14 +12,14 @@ namespace Aquamarine.Source.Scene;
 
 public class Prefab
 {
-    public static readonly System.Collections.Generic.Dictionary<string,Prefab> Cache = new();
+    public static readonly System.Collections.Generic.Dictionary<string, Prefab> Cache = new();
     public static void ClearCache() => Cache.Clear();
     public static void SpawnObject(IRootObject root, string prefab)
     {
         if (root is null) return;
-        
+
         //GD.Print("spawn obj");
-        
+
         if (Cache.TryGetValue(prefab, out var p)) AssignPrefab(root, p);
         else
         {
@@ -87,7 +87,7 @@ public class Prefab
         };
 
         var assets = new System.Collections.Generic.Dictionary<PrefabAsset, IAssetProvider>();
-        
+
         foreach (var (index, asset) in Assets)
         {
             var a = asset.Instantiate();
@@ -98,7 +98,7 @@ public class Prefab
         {
             asset.Initialize(obj, prefab.Data);
         }
-        
+
         var children = new System.Collections.Generic.Dictionary<PrefabChild, IChildObject>();
         //instantiate all children
         foreach (var (index, prefabChild) in Children)
@@ -138,11 +138,11 @@ public class Prefab
         if (!Type.CanInstantiate()) return false;
         return true;
     }
-    
+
     public string Serialize()
     {
         if (CachedString is not null) return CachedString;
-        
+
         var dict = new Dictionary();
         dict["version"] = Version;
         dict["type"] = EnumHelpers<RootObjectType>.ToStringLowerCached(Type);
@@ -155,9 +155,9 @@ public class Prefab
         var assetDict = new Dictionary<ushort, Dictionary>();
         foreach (var pair in Assets) assetDict[pair.Key] = pair.Value.Serialize();
         dict["assets"] = assetDict;
-        
+
         CachedString = Json.Stringify(dict);
-        
+
         return CachedString;
     }
 }
@@ -168,16 +168,16 @@ public class PrefabChild
     public ChildObjectType Type;
     public string Name;
     public Dictionary<string, Variant> Data = new();
-    
+
     public static PrefabChild Deserialize(Dictionary dict)
     {
         var prefab = new PrefabChild();
-        
+
         if (dict.TryGetValue("p", out var v)) prefab.Parent = v.AsInt32();
         if (dict.TryGetValue("n", out var n)) prefab.Name = n.AsString();
         if (dict.TryGetValue("t", out var t)) prefab.Type = Enum.Parse<ChildObjectType>(t.AsString(), true);
         if (dict.TryGetValue("d", out var d)) prefab.Data = d.AsGodotDictionary<string, Variant>();
-        
+
         return prefab;
     }
     public IChildObject Instantiate()
@@ -214,14 +214,14 @@ public class PrefabAsset
 {
     public AssetProviderType Type;
     public Dictionary<string, Variant> Data = new();
-    
+
     public static PrefabAsset Deserialize(Dictionary dict)
     {
         var prefab = new PrefabAsset();
-        
+
         if (dict.TryGetValue("t", out var t)) prefab.Type = Enum.Parse<AssetProviderType>(t.AsString(), true);
         if (dict.TryGetValue("d", out var d)) prefab.Data = d.AsGodotDictionary<string, Variant>();
-        
+
         return prefab;
     }
     public IAssetProvider Instantiate()

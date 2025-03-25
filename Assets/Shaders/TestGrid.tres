@@ -72,7 +72,7 @@ varying vec3 var_WorldPos;
 instance uniform vec4 gridPrimaryColour : source_color = vec4(1.000000, 1.000000, 1.000000, 1.000000);
 instance uniform vec4 gridSecondaryColour : source_color = vec4(0.000000, 0.000000, 0.000000, 1.000000);
 instance uniform vec4 gridLineColour : source_color = vec4(0.176419, 0.176419, 0.176419, 1.000000);
-instance uniform float lineWidth : hint_range(0, 1) = 0.01999999955297;
+instance uniform float lineWidth : hint_range(0.0, 1.0) = 0.01999999955297;
 instance uniform vec2 lineOffset;
 
 

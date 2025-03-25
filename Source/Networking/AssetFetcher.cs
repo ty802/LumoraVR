@@ -10,7 +10,7 @@ namespace Aquamarine.Source.Networking;
 public partial class AssetFetcher : Node
 {
     private static readonly Dictionary<string, (Task<byte[]> task, List<Action<byte[]>> callback)> ActiveFetchTasks = new();
-    
+
     public static void FetchAsset(string path, Action<byte[]> callback)
     {
         if (ActiveFetchTasks.TryGetValue(path, out var data))

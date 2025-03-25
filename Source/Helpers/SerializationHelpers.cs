@@ -36,8 +36,8 @@ public static class SerializationHelpers
 
     public static bool TryGetAsset<T>(this Godot.Collections.Dictionary<string, Variant> dict, string path, IRootObject root, out T asset) where T : class
     {
-        if (dict.TryGetValue(path, out var variant) && 
-            variant.TryGetInt32(out var index) && 
+        if (dict.TryGetValue(path, out var variant) &&
+            variant.TryGetInt32(out var index) &&
             root.TryGetAsset(index, out T a))
         {
             asset = a;
@@ -58,7 +58,7 @@ public static class SerializationHelpers
     }
 
     #endregion
-    
+
     #region SerializedVariantTryGet
 
     public static bool TryGetEnum<T>(this Variant variant, out T value) where T : struct, Enum
@@ -80,25 +80,25 @@ public static class SerializationHelpers
         switch (variant.VariantType)
         {
             case Variant.Type.Bool:
-            {
-                value = variant.AsBool();
-                return true;
-            }
+                {
+                    value = variant.AsBool();
+                    return true;
+                }
             case Variant.Type.String or Variant.Type.StringName:
-            {
-                var str = variant.AsString().ToLowerInvariant();
-                if (str.StartsWith('t'))
                 {
-                    value = true;
-                    return true;
+                    var str = variant.AsString().ToLowerInvariant();
+                    if (str.StartsWith('t'))
+                    {
+                        value = true;
+                        return true;
+                    }
+                    if (str.StartsWith('f'))
+                    {
+                        value = false;
+                        return true;
+                    }
+                    break;
                 }
-                if (str.StartsWith('f'))
-                {
-                    value = false;
-                    return true;
-                }
-                break;
-            }
         }
         value = false;
         return false;
@@ -335,15 +335,15 @@ public static class SerializationHelpers
         value = Basis.Identity;
         return false;
     }
-    
+
     #endregion
-    
+
     #region FloatArraySerialization
 
-    public static float[] ToFloatArray(this Vector2 vector) => [ vector.X, vector.Y ];
-    public static float[] ToFloatArray(this Vector3 vector) => [ vector.X, vector.Y, vector.Z ];
-    public static float[] ToFloatArray(this Vector4 vector) => [ vector.X, vector.Y, vector.Z, vector.W ];
-    public static float[] ToFloatArray(this Color color) => [ color.R, color.G, color.B, color.A ];
+    public static float[] ToFloatArray(this Vector2 vector) => [vector.X, vector.Y];
+    public static float[] ToFloatArray(this Vector3 vector) => [vector.X, vector.Y, vector.Z];
+    public static float[] ToFloatArray(this Vector4 vector) => [vector.X, vector.Y, vector.Z, vector.W];
+    public static float[] ToFloatArray(this Color color) => [color.R, color.G, color.B, color.A];
     public static float[] ToFloatArray(this Transform3D transform)
     {
         var basis = transform.Basis;
@@ -395,24 +395,24 @@ public static class SerializationHelpers
     {
         if (a.Length != 12) return Transform3D.Identity;
         return new Transform3D(
-            new Vector3(a[0], a[1], a[2]), 
-            new Vector3(a[3], a[4], a[5]), 
-            new Vector3(a[6], a[7], a[8]), 
+            new Vector3(a[0], a[1], a[2]),
+            new Vector3(a[3], a[4], a[5]),
+            new Vector3(a[6], a[7], a[8]),
             new Vector3(a[9], a[10], a[11]));
     }
     public static Basis ToBasis(this float[] a)
     {
         if (a.Length != 9) return Basis.Identity;
         return new Basis(
-            new Vector3(a[0], a[1], a[2]), 
-            new Vector3(a[3], a[4], a[5]), 
+            new Vector3(a[0], a[1], a[2]),
+            new Vector3(a[3], a[4], a[5]),
             new Vector3(a[6], a[7], a[8]));
     }
-    
+
     #endregion
 
     #region SerializeDirtyFlags
-    
+
     //DirtyFlags
     public static DirtyFlags8 ReadDirtyFlags8(this BinaryReader reader) => new(reader.ReadByte());
     public static DirtyFlags16 ReadDirtyFlags16(this BinaryReader reader) => new(reader.ReadUInt16());
@@ -423,11 +423,11 @@ public static class SerializationHelpers
     public static void Write(this BinaryWriter writer, DirtyFlags16 value) => writer.Write(value.Value);
     public static void Write(this BinaryWriter writer, DirtyFlags32 value) => writer.Write(value.Value);
     public static void Write(this BinaryWriter writer, DirtyFlags64 value) => writer.Write(value.Value);
-    
+
     #endregion
 
     #region SerializeGodotTypes
-    
+
     //Godot types
     public static Vector2 ReadVector2(this BinaryReader reader) => new(reader.ReadSingle(), reader.ReadSingle());
     public static Vector3 ReadVector3(this BinaryReader reader) => new(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
@@ -438,7 +438,7 @@ public static class SerializationHelpers
     public static Vector4I ReadVector4I(this BinaryReader reader) => new(reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32());
     public static Basis ReadBasis(this BinaryReader reader) => new(reader.ReadVector3(), reader.ReadVector3(), reader.ReadVector3());
     public static Transform3D ReadTransform3D(this BinaryReader reader) => new(reader.ReadBasis(), reader.ReadVector3());
-    
+
     public static void Write(this BinaryWriter writer, Vector2 value)
     {
         writer.Write(value.X);
@@ -494,10 +494,10 @@ public static class SerializationHelpers
         writer.Write(value.Origin);
     }
     #endregion
-    
+
     #region SerializeCollections
     public delegate void WriteAction<T>(BinaryWriter stream, T value);
-    
+
     public static void WriteCollection<T>(this BinaryWriter stream, ICollection<T> collection, WriteAction<T> writer)
     {
         stream.Write(collection.Count);
@@ -505,7 +505,7 @@ public static class SerializationHelpers
     }
 
     public delegate void ReadAction<T>(BinaryReader stream, out T value);
-    
+
     public static void ReadCollection<T>(this BinaryReader stream, ICollection<T> collection, ReadAction<T> reader)
     {
         collection.Clear();

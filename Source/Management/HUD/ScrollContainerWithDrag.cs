@@ -35,7 +35,7 @@ public partial class ScrollContainerWithDrag : ScrollContainer
     public override void _Input(InputEvent @event)
     {
         base._Input(@event);
-        
+
         if (@event is InputEventMouseButton mouseEvent)
         {
             if (mouseEvent.Pressed)
@@ -51,7 +51,7 @@ public partial class ScrollContainerWithDrag : ScrollContainer
             {
                 swipeMouseTimes.Add(Time.GetTicksMsec());
                 swipeMousePositions.Add(mouseEvent.Position);
-                Vector2 source = new (GetHScroll(), GetVScroll());
+                Vector2 source = new(GetHScroll(), GetVScroll());
                 int idx = swipeMouseTimes.Count - 1;
                 ulong now = Time.GetTicksMsec();
                 ulong cutoff = now - 100;

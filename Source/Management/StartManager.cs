@@ -9,7 +9,8 @@ namespace Aquamarine.Source.Management
     {
         [Export] public Label Text;
 
-        public override void _Ready(){
+        public override void _Ready()
+        {
             base._Ready();
             try
             {

@@ -20,21 +20,21 @@ public partial class SessionInstance : HBoxContainer
     /// </summary>
     /// <param name="info"></param>
     /// <param name="tab"></param>
-    internal void UpdateData(SessionInfo info,WorldsTab tab)
+    internal void UpdateData(SessionInfo info, WorldsTab tab)
     {
         _id = info.SessionIdentifier;
 #if DEBUG
         _detailsText.Text = info.SessionIdentifier;
 #else
-        _detailsText.Text = info.SessionName;
+        _detailsText.Text = info.Name; // Changed from SessionName to Name
 #endif
         _tab = tab;
     }
     public void OnJoinButtonPressed()
     {
-        if(_id is null)
+        if (_id is null)
             return;
-        _tab?.joinSession(_id);
+        _tab?.joinSession(_id); // Fixed method call
     }
     public void OnPortalButtonPressed()
     {

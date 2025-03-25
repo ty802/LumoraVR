@@ -51,7 +51,7 @@ public partial class InputManager : Node
     }
 
     private bool _isServer;
-    
+
     public StringName this[InputButton button]
     {
         get
@@ -64,10 +64,10 @@ public partial class InputManager : Node
     {
         base._Ready();
         Instance = this;
-        
+
         _isServer = ServerManager.CurrentServerType != ServerManager.ServerType.NotAServer;
         if (_isServer) return;
-        
+
         _window = GetViewport().GetWindow();
         MovementLocked = false;
         foreach (var i in Enum.GetValues<InputButton>()) Buttons.Add(i, i.ToString());
@@ -77,12 +77,12 @@ public partial class InputManager : Node
     {
         if (_isServer) return;
         if (_movementLocked) return;
-        
+
         base._Process(delta);
-        
+
         MouseMovement -= _previousMouseMovement;
         _previousMouseMovement = MouseMovement;
-        
+
         Movement = Godot.Input.GetVector("MoveLeft", "MoveRight", "MoveForward", "MoveBackward");
     }
     public override void _Input(InputEvent @event)

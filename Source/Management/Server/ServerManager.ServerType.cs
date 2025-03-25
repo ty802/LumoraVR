@@ -1,45 +1,40 @@
-﻿using Godot;
-using System;
-using System.Linq;
+﻿using System.Linq;
+using Godot;
 
 namespace Aquamarine.Source.Management
 {
     public partial class ServerManager
     {
+        private static ServerType _currentServerType = ServerType.None;
+        // Server type enum
         public enum ServerType
         {
-            NotAServer,
+            None,
+            Local,
             Standard,
-            Local
+            NotAServer
         }
 
-        private static ServerType? _serverType;
-
-        //TODO: move this somewhere else? 
-        //LOOK I MOVED IT linka 2/12/2025
+        // Helper method to determine server type
         public static ServerType CurrentServerType
         {
             get
             {
-                if (_serverType.HasValue) return _serverType.Value;
-
-                var args = OS.GetCmdlineArgs();
-                var isLocalHomeServer = args.Any(i => i.Equals("--run-home-server", StringComparison.CurrentCultureIgnoreCase));
-                if (isLocalHomeServer)
+                if (_currentServerType == ServerType.None)
                 {
-                    _serverType = ServerType.Local;
-                    return ServerType.Local;
+                    if (ArgumentCache.Instance?.IsFlagActive("run-home-server") ?? false)
+                    {
+                        _currentServerType = ServerType.Local;
+                        return _currentServerType;
+                    }
+                    if (ArgumentCache.Instance?.IsFlagActive("run-server") ?? false)
+                    {
+                        _currentServerType = ServerType.Standard;
+                        return _currentServerType;
+                    }
+                    _currentServerType = ServerType.NotAServer;
                 }
-
-                var isServer = args.Any(i => i.Equals("--run-server", System.StringComparison.CurrentCultureIgnoreCase));
-                if (isServer)
-                {
-                    _serverType = ServerType.Standard;
-                    return ServerType.Standard;
-                }
-
-                _serverType = ServerType.NotAServer;
-                return ServerType.NotAServer;
+                return _currentServerType;
             }
         }
     }

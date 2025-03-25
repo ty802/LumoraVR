@@ -115,7 +115,7 @@ public partial class MeshDataTest : Node3D
         prefab.Children[2] = animator;
         animator.Name = "Animator";
         animator.Type = ChildObjectType.HumanoidAnimator;
-        var offset = Mathf.Pi / 2;
+        //var offset = Mathf.Pi / 2;
         animator.Data = new Dictionary<string, Variant>
         {
             {"headBone", "Head"},
@@ -229,7 +229,7 @@ public partial class MeshDataTest : Node3D
         prefab.Children[2] = animator;
         animator.Name = "Animator";
         animator.Type = ChildObjectType.HeadAndHandsAnimator;
-        var offset = Mathf.Pi / 2;
+        //var offset = Mathf.Pi / 2;
         animator.Data = new Dictionary<string, Variant>
         {
             {"headBone", "Head"},

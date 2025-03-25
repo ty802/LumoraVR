@@ -24,7 +24,7 @@ jobs:
     
     - name: Build project
       id: build
-      run: dotnet build Aquamarine.csproj --no-restore --configuration Release
+      run: dotnet build Aquamarine.csproj --no-restore --configuration ExportRelease
       continue-on-error: true
     
     - name: Add build-error label if build fails

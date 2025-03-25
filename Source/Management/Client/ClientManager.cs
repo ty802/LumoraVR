@@ -81,7 +81,8 @@ namespace Aquamarine.Source.Management
             {
                 JoinLocalHome();
                 return;
-            };
+            }
+            ;
             _connectingToLocalHome = true;
             // find a free port
             if (_localhomePort is null)

@@ -26,7 +26,7 @@ public partial class SessionInstance : HBoxContainer
 #if DEBUG
         _detailsText.Text = info.SessionIdentifier;
 #else
-        _detailsText.Text = info.Name;
+        _detailsText.Text = info.Name; // Changed from SessionName to Name
 #endif
         _tab = tab;
     }
@@ -34,7 +34,7 @@ public partial class SessionInstance : HBoxContainer
     {
         if (_id is null)
             return;
-        _tab?.joinSession(_id);
+        _tab?.joinSession(_id); // Fixed method call
     }
     public void OnPortalButtonPressed()
     {

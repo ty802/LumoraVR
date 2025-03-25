@@ -129,7 +129,7 @@ public partial class DebugOverlay : Control
                             break;
                         }
                     }
-                    catch (Exception ex)
+                    catch
                     {
                         // Continue to next path
                     }

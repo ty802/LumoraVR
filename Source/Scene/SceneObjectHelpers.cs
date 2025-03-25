@@ -10,14 +10,14 @@ public static class SceneObjectHelpers
     public static readonly Dictionary<RootObjectType, ChildObjectType[]> AllowedChildTypes = new()
     {
         {
-            RootObjectType.Avatar, 
+            RootObjectType.Avatar,
             [ ChildObjectType.Armature, ChildObjectType.MeshRenderer, ChildObjectType.HeadAndHandsAnimator, ChildObjectType.HumanoidAnimator ]
         },
     };
     public static readonly Dictionary<ChildObjectType, ChildObjectType[]> AllowedSubChildTypes = new()
     {
         {
-            ChildObjectType.Armature, 
+            ChildObjectType.Armature,
             [ ChildObjectType.MeshRenderer, ChildObjectType.HeadAndHandsAnimator, ChildObjectType.HumanoidAnimator ]
         },
         //neither of the animators should have children
@@ -30,12 +30,12 @@ public static class SceneObjectHelpers
             []
         },
     };
-    public static readonly AssetProviderType[] StaticAssetTypes = 
+    public static readonly AssetProviderType[] StaticAssetTypes =
     [
         AssetProviderType.BasicMaterialProvider,
         AssetProviderType.NoiseTextureProvider,
     ];
-    public static readonly AssetProviderType[] FileAssetTypes = 
+    public static readonly AssetProviderType[] FileAssetTypes =
     [
         AssetProviderType.MeshFileProvider,
         AssetProviderType.ImageTextureProvider,
@@ -46,7 +46,7 @@ public static class SceneObjectHelpers
             RootObjectType.Avatar => true,
             _ => false,
         };
-    public static Type GetCorrespondingType(this RootObjectType type) => 
+    public static Type GetCorrespondingType(this RootObjectType type) =>
         type switch
         {
             RootObjectType.Avatar => typeof(Avatar),

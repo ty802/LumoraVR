@@ -50,14 +50,15 @@ public partial class DebugOverlay : Control
     private const string StringValue = "[color=indian_red]\"{0}\"[/color]";
 
     private WeakReference<PlayerCharacterController> playerref;
-    private readonly PeriodicTimer _playerTimer = new(new(0,0,10));
+    private readonly PeriodicTimer _playerTimer = new(new(0, 0, 10));
     private CancellationTokenSource _cts;
 
     private static string DoBoolLabel(bool value) => value ? BoolTrueValue : BoolFalseValue;
     public override void _Notification(int what)
     {
         base._Notification(what);
-        if (what == (int)NotificationPredelete){ 
+        if (what == (int)NotificationPredelete)
+        {
             Logger.OnPrettyLogMessageWritten -= OnLogMessageWritten;
             ConsoleInput.TextSubmitted -= OnConsoleInputSubmitted;
             _cts?.Cancel();
@@ -74,11 +75,12 @@ public partial class DebugOverlay : Control
 
         // Initialize settings on first showing
         this.VisibilityChanged += OnVisibilityChanged;
-        Task.Run(async () => {
+        Task.Run(async () =>
+        {
             await _playerTimer.WaitForNextTickAsync();
-            while(!_cts.Token.IsCancellationRequested)
+            while (!_cts.Token.IsCancellationRequested)
             {
-                if( (playerref is not null ? !playerref.TryGetTarget(out var _): true ) && MultiplayerScene.Instance is MultiplayerScene mm)
+                if ((playerref is not null ? !playerref.TryGetTarget(out var _) : true) && MultiplayerScene.Instance is MultiplayerScene mm)
                 {
                     mm.RunOnNodeAsync(() =>
                     {
@@ -114,7 +116,7 @@ public partial class DebugOverlay : Control
                     "/root/Root/WorldRoot/Scene/WorldEnvironment",
                     "/root/Scene/WorldEnvironment"
                 };
-                
+
                 foreach (var path in possiblePaths)
                 {
                     try
@@ -132,7 +134,7 @@ public partial class DebugOverlay : Control
                         // Continue to next path
                     }
                 }
-                
+
                 // If not found by path, search the entire scene tree
                 if (_worldEnvironment == null)
                 {
@@ -153,29 +155,29 @@ public partial class DebugOverlay : Control
                 // Init settings with current values
                 if (VSyncCheckBox != null)
                     VSyncCheckBox.ButtonPressed = DisplayServer.WindowGetVsyncMode() != DisplayServer.VSyncMode.Disabled;
-                
+
                 if (DebugLinesCheckBox != null)
                     DebugLinesCheckBox.ButtonPressed = ClientManager.ShowDebug;
-                
+
                 if (MaxFPSSpinBox != null)
                     MaxFPSSpinBox.Value = Engine.MaxFps;
 
                 if (_worldEnvironment != null && _worldEnvironment.Environment != null)
                 {
                     var env = _worldEnvironment.Environment;
-                    
+
                     if (ShadowsCheckBox != null)
                         ShadowsCheckBox.ButtonPressed = env.SsrEnabled;
-                    
+
                     if (AmbientOcclusionCheckBox != null)
                         AmbientOcclusionCheckBox.ButtonPressed = env.SsaoEnabled;
-                    
+
                     if (SSReflectionsCheckBox != null)
                         SSReflectionsCheckBox.ButtonPressed = env.SsrEnabled;
-                    
+
                     if (SSAOCheckBox != null)
                         SSAOCheckBox.ButtonPressed = env.SsaoEnabled;
-                    
+
                     if (BloomCheckBox != null)
                         BloomCheckBox.ButtonPressed = env.GlowEnabled;
                 }
@@ -468,7 +470,7 @@ public partial class DebugOverlay : Control
         {
             return result;
         }
-        
+
         // Recursively search through all children
         foreach (var child in root.GetChildren())
         {
@@ -478,7 +480,7 @@ public partial class DebugOverlay : Control
                 return found;
             }
         }
-        
+
         return null;
     }
 
@@ -566,7 +568,7 @@ public partial class DebugOverlay : Control
         _statsTextStringBuilder.AppendLine();
 
         _statsTextStringBuilder.AppendLine("Player");
-        if (playerref?.TryGetTarget(out PlayerCharacterController player) ??false)
+        if (playerref?.TryGetTarget(out PlayerCharacterController player) ?? false)
         {
             _statsTextStringBuilder.AppendLine($"{IntLabel} Authority ID: {string.Format(IntValue, player.Authority)}");
             _statsTextStringBuilder.AppendLine($"{IntLabel} Local ID: {string.Format(IntValue, Multiplayer.GetUniqueId())}");

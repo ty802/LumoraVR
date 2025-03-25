@@ -5,7 +5,7 @@ namespace Aquamarine.Source.Networking;
 public static class LocalTestAssetHelper
 {
     private const bool EnableLocalTest = true; //DISABLE THIS IN PROD
-    
+
     private const string LocalTestSchema = "localtest://";
     public static bool ValidPath(string path)
     {

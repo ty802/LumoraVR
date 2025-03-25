@@ -28,14 +28,14 @@ namespace Aquamarine.Source.Management
         private string _publicIp;
         private string _worldName = "My World";
         private string _worldIdentifier = "placeholder";
-        
+
         // Debug UI references
         private Label _serverTypeLabel;
         private Label _fpsLabel;
         private Label _playersLabel;
         private Label _portLabel;
         private Label _uptimeLabel;
-        
+
         // Server stats
         private float _startTime;
         private float _elapsedTime;
@@ -51,42 +51,42 @@ namespace Aquamarine.Source.Management
                 MultiplayerPeer.Poll(); // Poll network events manually
             }
             SessionListManager?.PollEvents();
-            
+
             // Update server stats
             _elapsedTime = (float)(Time.GetTicksMsec() / 1000.0) - _startTime;
             _frameCount++;
             _fpsUpdateTimer += (float)delta;
-            
+
             // Update FPS every 0.5 seconds
             if (_fpsUpdateTimer >= 0.5f)
             {
                 _currentFps = _frameCount / _fpsUpdateTimer;
                 _frameCount = 0;
                 _fpsUpdateTimer = 0;
-                
+
                 // Update debug UI
                 UpdateDebugLabels();
             }
         }
-        
+
         private void UpdateDebugLabels()
         {
             if (_fpsLabel != null)
             {
                 _fpsLabel.Text = $"FPS: {_currentFps:F1}";
             }
-            
+
             if (_uptimeLabel != null)
             {
                 TimeSpan uptime = TimeSpan.FromSeconds(_elapsedTime);
                 _uptimeLabel.Text = $"Uptime: {uptime:hh\\:mm\\:ss}";
             }
-            
+
             if (_playersLabel != null && _multiplayerScene != null)
             {
                 int playerCount = _multiplayerScene.PlayerList?.Count ?? 0;
                 _playersLabel.Text = $"Players: {playerCount}";
-                
+
                 // Add player names if there are any
                 if (playerCount > 0)
                 {
@@ -113,13 +113,13 @@ namespace Aquamarine.Source.Management
                 _playersLabel = GetNodeOrNull<Label>("%PlayersLabel");
                 _portLabel = GetNodeOrNull<Label>("%PortLabel");
                 _uptimeLabel = GetNodeOrNull<Label>("%UptimeLabel");
-                
+
                 // Initialize server stats
                 _startTime = (float)(Time.GetTicksMsec() / 1000.0);
                 _frameCount = 0;
                 _fpsUpdateTimer = 0;
                 _currentFps = 0;
-                
+
                 var serverType = ServerManager.CurrentServerType;
 
                 // Initialize MultiplayerPeer
@@ -128,13 +128,13 @@ namespace Aquamarine.Source.Management
                 if ((ArgumentCache.Instance?.Arguments.TryGetValue("port", out string portstring) ?? false) &&
                     int.TryParse(portstring, out int parsed))
                     Port = parsed;
-                
+
                 // Update port label
                 if (_portLabel != null)
                 {
                     _portLabel.Text = $"Port: {Port}";
                 }
-                
+
                 // Update server type label
                 if (_serverTypeLabel != null)
                 {
@@ -142,80 +142,81 @@ namespace Aquamarine.Source.Management
                 }
 
                 Error error;
-                switch (serverType) {
+                switch (serverType)
+                {
                     case ServerType.Local:
-                    // Start local server
-                    error = MultiplayerPeer.CreateServer(Port, 1);
+                        // Start local server
+                        error = MultiplayerPeer.CreateServer(Port, 1);
 
-                    // Check if server started successfully before setting it as the multiplayer peer
-                    if (error == Error.Ok)
-                    {
-                        // Only set the multiplayer peer after it's properly initialized
-                        Multiplayer.MultiplayerPeer = MultiplayerPeer;
+                        // Check if server started successfully before setting it as the multiplayer peer
+                        if (error == Error.Ok)
+                        {
+                            // Only set the multiplayer peer after it's properly initialized
+                            Multiplayer.MultiplayerPeer = MultiplayerPeer;
 
-                        // Now connect event handlers
-                        MultiplayerPeer.PeerConnected += OnPeerConnected;
-                        MultiplayerPeer.PeerDisconnected += OnPeerDisconnected;
+                            // Now connect event handlers
+                            MultiplayerPeer.PeerConnected += OnPeerConnected;
+                            MultiplayerPeer.PeerDisconnected += OnPeerDisconnected;
 
-                        Logger.Log($"Local server started on port {Port}.");
+                            Logger.Log($"Local server started on port {Port}.");
 
-                        // Switch scene
-                        WorldManager.Instance?.LoadWorld("res://Scenes/World/LocalHome.tscn");
-                        Logger.Log("LocalHome Loaded.");
+                            // Switch scene
+                            WorldManager.Instance?.LoadWorld("res://Scenes/World/LocalHome.tscn");
+                            Logger.Log("LocalHome Loaded.");
 
-                        // Defer MultiplayerScene initialization until scene is fully loaded
-                        CallDeferred(nameof(InitializeMultiplayerScene));
-                    }
-                    else
-                    {
-                        Logger.Error($"Failed to start local server: {error}");
-                    }
+                            // Defer MultiplayerScene initialization until scene is fully loaded
+                            CallDeferred(nameof(InitializeMultiplayerScene));
+                        }
+                        else
+                        {
+                            Logger.Error($"Failed to start local server: {error}");
+                        }
                         break;
                     case ServerType.Standard:
-                    // Start standard server
-                    error = MultiplayerPeer.CreateServerNat(Port, MaxConnections);
+                        // Start standard server
+                        error = MultiplayerPeer.CreateServerNat(Port, MaxConnections);
 
-                    // Check if server started successfully before setting it as the multiplayer peer
-                    if (error == Error.Ok)
-                    {
-                        string worlduri;
-                        if (ArgumentCache.Instance?.Arguments.TryGetValue("worlduri", out string uri)??false)
-                            worlduri = uri;
-                        else
-                            worlduri = "res://Scenes/World/MultiplayerScene.tscn";
-                        // Only set the multiplayer peer after it's properly initialized
-                        Multiplayer.MultiplayerPeer = MultiplayerPeer;
-
-                        // Now connect event handlers
-                        MultiplayerPeer.PeerConnected += OnPeerConnected;
-                        MultiplayerPeer.PeerDisconnected += OnPeerDisconnected;
-
-                        Logger.Log($"Server started on port {Port} with max connections {MaxConnections}.");
-                        WorldManager.Instance?.LoadWorld(worlduri);
-                        // Defer MultiplayerScene initialization
-                        CallDeferred(nameof(InitializeMultiplayerScene));
-
-                        // Initialize session manager
-                        SessionListListener = new EventBasedNetListener();
-                        SessionListManager = new NetManager(SessionListListener)
+                        // Check if server started successfully before setting it as the multiplayer peer
+                        if (error == Error.Ok)
                         {
-                            IPv6Enabled = true,
-                            PingInterval = 10000,
-                        };
-                        SessionListListener.NetworkReceiveEvent += SessionListListenerOnNetworkReceiveEvent;
-                        SessionListListener.PeerDisconnectedEvent += SessionListListenerOnPeerDisconnectedEvent;
-                        if(Helpers.SimpleIpHelpers.GetAvailablePortUdp(10) is not int port) throw new Exception("Failed to find available port (shit)");
-                        SessionListManager.Start();
-                        ConnectToSessionServer();
-                    }
-                    else
-                    {
-                        Logger.Error($"Failed to start standard server: {error}");
-                    }
-                    break;
+                            string worlduri;
+                            if (ArgumentCache.Instance?.Arguments.TryGetValue("worlduri", out string uri) ?? false)
+                                worlduri = uri;
+                            else
+                                worlduri = "res://Scenes/World/MultiplayerScene.tscn";
+                            // Only set the multiplayer peer after it's properly initialized
+                            Multiplayer.MultiplayerPeer = MultiplayerPeer;
+
+                            // Now connect event handlers
+                            MultiplayerPeer.PeerConnected += OnPeerConnected;
+                            MultiplayerPeer.PeerDisconnected += OnPeerDisconnected;
+
+                            Logger.Log($"Server started on port {Port} with max connections {MaxConnections}.");
+                            WorldManager.Instance?.LoadWorld(worlduri);
+                            // Defer MultiplayerScene initialization
+                            CallDeferred(nameof(InitializeMultiplayerScene));
+
+                            // Initialize session manager
+                            SessionListListener = new EventBasedNetListener();
+                            SessionListManager = new NetManager(SessionListListener)
+                            {
+                                IPv6Enabled = true,
+                                PingInterval = 10000,
+                            };
+                            SessionListListener.NetworkReceiveEvent += SessionListListenerOnNetworkReceiveEvent;
+                            SessionListListener.PeerDisconnectedEvent += SessionListListenerOnPeerDisconnectedEvent;
+                            if (Helpers.SimpleIpHelpers.GetAvailablePortUdp(10) is not int port) throw new Exception("Failed to find available port (shit)");
+                            SessionListManager.Start();
+                            ConnectToSessionServer();
+                        }
+                        else
+                        {
+                            Logger.Error($"Failed to start standard server: {error}");
+                        }
+                        break;
                     default:
                         Logger.Error("Server type not recognized.");
-                    break;
+                        break;
                 }
             }
             catch (Exception ex)
@@ -247,7 +248,7 @@ namespace Aquamarine.Source.Management
                     // If not found directly, try deep search
                     multiplayerScene = FindMultiplayerSceneInChildren(GetTree().CurrentScene);
                 }
-                
+
                 // If still not found, try to find it directly in the scene tree
                 if (multiplayerScene == null)
                 {
@@ -261,7 +262,7 @@ namespace Aquamarine.Source.Management
                             Logger.Log("Found MultiplayerScene: LocalHome scene is itself a MultiplayerScene");
                         }
                     }
-                    
+
                     // Try to find it at a common path
                     if (multiplayerScene == null)
                     {
@@ -279,7 +280,7 @@ namespace Aquamarine.Source.Management
                     _multiplayerScene = multiplayerScene;
                     multiplayerScene.InitializeForServer();
                     Logger.Log("MultiplayerScene found and initialized for server.");
-                    
+
                     // Force spawn local player for LocalHome
                     if (ServerManager.CurrentServerType == ServerType.Local)
                     {
@@ -291,14 +292,15 @@ namespace Aquamarine.Source.Management
                             Autostart = true
                         };
                         AddChild(timer);
-                        timer.Timeout += () => {
+                        timer.Timeout += () =>
+                        {
                             // Check if player already exists
                             bool playerExists = false;
                             if (_multiplayerScene != null)
                             {
                                 var existingPlayer = _multiplayerScene.GetPlayer(1);
                                 playerExists = existingPlayer != null;
-                                
+
                                 if (playerExists)
                                 {
                                     Logger.Log("LocalHome: Server player (ID 1) already exists, not spawning again");
@@ -337,7 +339,7 @@ namespace Aquamarine.Source.Management
                 Logger.Log($"Found MultiplayerScene on node: {node.Name}, Path: {node.GetPath()}");
                 return scene;
             }
-            
+
             // Then check all children recursively
             foreach (var child in node.GetChildren())
             {
@@ -416,7 +418,7 @@ namespace Aquamarine.Source.Management
                 Logger.Error($"Error in OnWorldLoaded: {ex.Message}");
             }
         }
-        
+
         // Helper method to find a node of a specific type in the scene tree
         private T FindNodeByType<T>(Node root) where T : class
         {
@@ -425,7 +427,7 @@ namespace Aquamarine.Source.Management
             {
                 return result;
             }
-            
+
             // Recursively search through all children
             foreach (var child in root.GetChildren())
             {
@@ -435,7 +437,7 @@ namespace Aquamarine.Source.Management
                     return found;
                 }
             }
-            
+
             return null;
         }
     }

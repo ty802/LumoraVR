@@ -10,7 +10,7 @@ namespace Aquamarine.Source.Helpers
     {
         private static readonly int minPort = 49152;
         private static readonly int maxPort = 65535;
-        public static int GetAvailablePortUdpOrThrow(int maxAtemptsint) 
+        public static int GetAvailablePortUdpOrThrow(int maxAtemptsint)
         {
             var rand = new Random();
             var ipGlobalProperties = System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties();

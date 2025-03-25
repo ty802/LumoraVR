@@ -23,27 +23,27 @@ public partial class MeshDataTest : Node3D
         {
             //this is our mesh, converted to a format better suited to serialization
             var meshFile = MeshFile.FromArrayMesh(mesh);
-            
+
             GD.Print(meshFile.Valid());
 
             //this is our mesh converted to raw bytes
             var meshFileRaw = meshFile.Serialize();
-            
+
             GD.Print(meshFileRaw.Length);
 
             //this is our mesh converted back to the format
             var meshFileDeserialized = MeshFile.Deserialize(meshFileRaw);
-            
+
             //this is the formatted mesh converted back to a godot mesh
             var (returnedMesh, _) = meshFileDeserialized.Instantiate();
             //returnedMesh.BlendShapeMode = Mesh.BlendShapeMode.Relative;
 
             var instance = new MeshInstance3D();
             AddChild(instance);
-            
+
             instance.Mesh = returnedMesh;
             instance.SetBlendShapeValue(1, 1);
-            
+
             instance.SetSurfaceOverrideMaterial(0, new StandardMaterial3D
             {
                 AlbedoColor = Colors.Red,
@@ -66,11 +66,11 @@ public partial class MeshDataTest : Node3D
     public void TurnJohnAquamarineHumanoidIntoAPrefab()
     {
         var getJohnsModel = ResourceLoader.Load<PackedScene>("res://Assets/Models/johnaquamarinehumanoid.glb");
-        
+
         var johnsModel = getJohnsModel.Instantiate<Node3D>();
-        
-        var meshInstance = johnsModel.FindChildren("*", owned:false).OfType<MeshInstance3D>().FirstOrDefault();
-        var skeleton = johnsModel.FindChildren("*",owned:false).OfType<Skeleton3D>().FirstOrDefault();
+
+        var meshInstance = johnsModel.FindChildren("*", owned: false).OfType<MeshInstance3D>().FirstOrDefault();
+        var skeleton = johnsModel.FindChildren("*", owned: false).OfType<Skeleton3D>().FirstOrDefault();
 
         if (meshInstance is null)
         {
@@ -88,7 +88,7 @@ public partial class MeshDataTest : Node3D
         var meshFileAccess = FileAccess.Open("res://Assets/Models/johnaquamarinehumanoid.meshfile", FileAccess.ModeFlags.Write);
         meshFileAccess.StoreBuffer(meshFile.Serialize());
         meshFileAccess.Close();
-        
+
         var prefab = new Prefab
         {
             Type = RootObjectType.Avatar,
@@ -110,7 +110,7 @@ public partial class MeshDataTest : Node3D
             {"armature", 0},
             {"materials", new[]{ 1, 2, 3 }},
         };
-        
+
         var animator = new PrefabChild();
         prefab.Children[2] = animator;
         animator.Name = "Animator";
@@ -172,19 +172,19 @@ public partial class MeshDataTest : Node3D
         var pre = Prefab.Deserialize(serialized);
 
         var prefabInstantiated = pre.Instantiate();
-        
+
         AddChild(prefabInstantiated.Self);
-        
+
         GD.Print(serialized);
     }
     public void TurnJohnAquamarineIntoAPrefab()
     {
         var getJohnsModel = ResourceLoader.Load<PackedScene>("res://Assets/Models/johnaquamarine.glb");
-        
+
         var johnsModel = getJohnsModel.Instantiate<Node3D>();
-        
-        var meshInstance = johnsModel.FindChildren("*", owned:false).OfType<MeshInstance3D>().FirstOrDefault();
-        var skeleton = johnsModel.FindChildren("*",owned:false).OfType<Skeleton3D>().FirstOrDefault();
+
+        var meshInstance = johnsModel.FindChildren("*", owned: false).OfType<MeshInstance3D>().FirstOrDefault();
+        var skeleton = johnsModel.FindChildren("*", owned: false).OfType<Skeleton3D>().FirstOrDefault();
 
         if (meshInstance is null)
         {
@@ -202,7 +202,7 @@ public partial class MeshDataTest : Node3D
         var meshFileAccess = FileAccess.Open("res://Assets/Models/johnaquamarine.meshfile", FileAccess.ModeFlags.Write);
         meshFileAccess.StoreBuffer(meshFile.Serialize());
         meshFileAccess.Close();
-        
+
         var prefab = new Prefab
         {
             Type = RootObjectType.Avatar,
@@ -224,7 +224,7 @@ public partial class MeshDataTest : Node3D
             {"armature", 0},
             {"materials", new[]{ 1, 2, 3 }},
         };
-        
+
         var animator = new PrefabChild();
         prefab.Children[2] = animator;
         animator.Name = "Animator";
@@ -282,9 +282,9 @@ public partial class MeshDataTest : Node3D
         var pre = Prefab.Deserialize(serialized);
 
         var prefabInstantiated = pre.Instantiate();
-        
+
         AddChild(prefabInstantiated.Self);
-        
+
         GD.Print(serialized);
     }
     public override void _Ready()

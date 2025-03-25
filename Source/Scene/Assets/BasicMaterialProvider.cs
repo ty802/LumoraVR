@@ -30,7 +30,7 @@ public class BasicMaterialProvider : IMaterialProvider
     #endregion
 
     private StandardMaterial3D _mat = new();
-    
+
     #region AlbedoAndAlpha
 
     public ITextureProvider AlbedoTexture
@@ -54,13 +54,13 @@ public class BasicMaterialProvider : IMaterialProvider
         get => _mat.AlbedoColor;
         set => _mat.AlbedoColor = value;
     }
-    
+
     public bool VertexColors
     {
         get => _mat.VertexColorUseAsAlbedo;
         set => _mat.VertexColorUseAsAlbedo = value;
     }
-    
+
     public AlphaMode Alpha
     {
         get;
@@ -260,7 +260,7 @@ public class BasicMaterialProvider : IMaterialProvider
     }
 
     #endregion
-    
+
     public void Set(Action<Material> setAction) => setAction(_mat);
     public bool AssetReady => true;
 
@@ -268,7 +268,7 @@ public class BasicMaterialProvider : IMaterialProvider
     {
         _mat.EmissionEnabled = !(EmissionColor.IsEqualApprox(Colors.Black) || EmissionStrength <= 0);
     }
-    
+
     public void Initialize(IRootObject owner, Dictionary<string, Variant> data)
     {
         //reuse these so we don't have a giant mess of local variables
@@ -279,14 +279,14 @@ public class BasicMaterialProvider : IMaterialProvider
         Color c;
         ITextureProvider tex;
         ColorChannel cc;
-        
+
         //assets
         if (data.TryGetAsset("albedoTexture", owner, out tex)) AlbedoTexture = tex;
         if (data.TryGetAsset("emissionTexture", owner, out tex)) EmissionTexture = tex;
         if (data.TryGetAsset("normalMap", owner, out tex)) NormalMap = tex;
         if (data.TryGetAsset("roughnessMap", owner, out tex)) RoughnessMap = tex;
         if (data.TryGetAsset("metallicMap", owner, out tex)) MetallicMap = tex;
-        
+
         //values
         //albedo & alpha
         if (data.TryGetValue("albedoColor", out v) && v.TryGetColor(out c)) AlbedoColor = c;

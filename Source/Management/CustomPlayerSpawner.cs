@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Aquamarine.Source.Logging;
@@ -40,7 +40,7 @@ namespace Aquamarine.Source.Management
                 catch (Exception ex)
                 {
                     Logger.Error($"CustomPlayerSpawner: Error getting node at path {SpawnRootPath}: {ex.Message}");
-                    
+
                     // Try to find PlayerRoot in common locations
                     _spawnRootNode = FindPlayerRoot();
                     if (_spawnRootNode != null)
@@ -87,7 +87,7 @@ namespace Aquamarine.Source.Management
 
             Logger.Log("CustomPlayerSpawner initialized.");
         }
-        
+
         private Node FindPlayerRoot()
         {
             // Try to find PlayerRoot in common locations
@@ -100,7 +100,7 @@ namespace Aquamarine.Source.Management
                 "PlayerRoot",
                 "%PlayerRoot"
             };
-            
+
             foreach (var path in possiblePaths)
             {
                 try
@@ -129,7 +129,7 @@ namespace Aquamarine.Source.Management
                     Logger.Error($"Error checking path {path}: {ex.Message}");
                 }
             }
-            
+
             // Try to find in the scene tree by name
             var root = GetTree().Root;
             var playerRoot = FindNodeByName(root, "PlayerRoot");
@@ -137,17 +137,17 @@ namespace Aquamarine.Source.Management
             {
                 return playerRoot;
             }
-            
+
             return null;
         }
-        
+
         private Node FindNodeByName(Node root, string name)
         {
             if (root.Name == name)
             {
                 return root;
             }
-            
+
             foreach (var child in root.GetChildren())
             {
                 var result = FindNodeByName(child, name);
@@ -156,7 +156,7 @@ namespace Aquamarine.Source.Management
                     return result;
                 }
             }
-            
+
             return null;
         }
 
@@ -183,7 +183,7 @@ namespace Aquamarine.Source.Management
                 Logger.Log($"Player with ID {peerId} already exists in tracking dictionary, returning existing player");
                 return existingPlayer;
             }
-            
+
             // Check if player exists in the scene but not in our tracking dictionary
             if (_spawnRootNode != null)
             {
@@ -256,7 +256,8 @@ namespace Aquamarine.Source.Management
                     Autostart = true
                 };
                 AddChild(timer);
-                timer.Timeout += () => {
+                timer.Timeout += () =>
+                {
                     if (IsInstanceValid(player))
                     {
                         setupAction(player);
@@ -329,7 +330,7 @@ namespace Aquamarine.Source.Management
                                 charController.Avatar.QueueFree();
                             }
                         }
-                        
+
                         player.GetParent().RemoveChild(player);
                         player.QueueFree();
                         Logger.Log($"Player {peerId} removed successfully");

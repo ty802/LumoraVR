@@ -19,8 +19,8 @@ public partial class WorldsTab : Control
     /* this api is stupid and we need to do a "big rewrite".. Mabye
        we may need a redis for sessions (or somting similer) may try realm or dragonfly
     */
-    private readonly Dictionary<string, Data.WorldEntry>  _sessions = new();
-    public IReadOnlyDictionary<string, Data.WorldEntry> Sessions { get;private set; }
+    private readonly Dictionary<string, Data.WorldEntry> _sessions = new();
+    public IReadOnlyDictionary<string, Data.WorldEntry> Sessions { get; private set; }
     private Node _holdernode;
     private Node _worldnameText;
     private Node _activeSessionsList;
@@ -46,7 +46,7 @@ public partial class WorldsTab : Control
     public override void _EnterTree()
     {
         base._EnterTree();
-        if(_contextContainer is Control ctrl)
+        if (_contextContainer is Control ctrl)
         {
             ctrl.Hide();
         }
@@ -59,7 +59,7 @@ public partial class WorldsTab : Control
         Task<string> result = client.GetStringAsync(SessionInfo.SessionList, can.Token);
         Task delay = Task.Delay(8000);
         Task done = await Task.WhenAny(result, delay);
-        if(done is not Task<string> jsontask)
+        if (done is not Task<string> jsontask)
         {
             can.Cancel();
             Logger.Error("Failed to get session list");
@@ -69,13 +69,14 @@ public partial class WorldsTab : Control
         Dictionary<string, List<SessionInfo>> infos = new();
         Dictionary<string, string> worldnames = new();
         var list = System.Text.Json.JsonSerializer.Deserialize<List<SessionInfo>>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-            list.ForEach(sessionInfo => {
-                if (sessionInfo.WorldIdentifier == "") return;
+        list.ForEach(sessionInfo =>
+        {
+            if (sessionInfo.WorldIdentifier == "") return;
             if (!infos.TryGetValue(sessionInfo.WorldIdentifier, out List<SessionInfo> sessionsForWorld))
             {
                 sessionsForWorld = new();
                 infos.Add(sessionInfo.WorldIdentifier, sessionsForWorld);
-                    worldnames.Add(sessionInfo.WorldIdentifier, sessionInfo.Name);
+                worldnames.Add(sessionInfo.WorldIdentifier, sessionInfo.Name);
             }
             sessionsForWorld.Add(sessionInfo);
         });
@@ -85,13 +86,14 @@ public partial class WorldsTab : Control
         {
             if (!worldnames.TryGetValue(item.Key, out string name))
                 continue;
-            _sessions.Add(item.Key, new Data.WorldEntry(item.Key,name,item.Value.ToArray()) );
+            _sessions.Add(item.Key, new Data.WorldEntry(item.Key, name, item.Value.ToArray()));
             if (_worldEntry is not null && !keys.Contains(item.Key))
             {
                 WorldEntry entry = (WorldEntry)_worldEntry.Instantiate();
-                entry.assignEvent(this,item.Key);
+                entry.assignEvent(this, item.Key);
                 SemaphoreSlim sem = new(0, 1);
-                Action add = () =>{
+                Action add = () =>
+                {
                     _holdernode.AddChild(entry);
                     sem.Release();
                 };
@@ -124,13 +126,13 @@ public partial class WorldsTab : Control
                 child.QueueFree();
 
             foreach (var session in worldEntry.Sessions)
-           {
-               if (_sessionEntry is null) break;
-               var inst = _sessionEntry.Instantiate<SessionInstance>();
-               _activeSessionsList.AddChild(inst);
+            {
+                if (_sessionEntry is null) break;
+                var inst = _sessionEntry.Instantiate<SessionInstance>();
+                _activeSessionsList.AddChild(inst);
                 inst.UpdateData(session, this);
             }
-        
+
         }
     }
     // TODO Fix later
@@ -140,9 +142,9 @@ public partial class WorldsTab : Control
     /// <param name="id"></param>
     internal async void joinSession(string id)
     {
-        bool connected =false;
+        bool connected = false;
         MultiplayerApi.PeerConnectedEventHandler updateconnected = (long id) => connected = true;
-        Multiplayer.PeerConnected += updateconnected; 
+        Multiplayer.PeerConnected += updateconnected;
         var cm = ClientManager.Instance;
         cm.JoinNatServer(id);
         await Task.Delay(5000);

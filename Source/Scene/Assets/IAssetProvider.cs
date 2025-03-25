@@ -11,10 +11,10 @@ public enum AssetProviderType
     //textures
     ImageTextureProvider,
     NoiseTextureProvider,
-    
+
     //meshes
     MeshFileProvider,
-    
+
     //materials
     BasicMaterialProvider,
 }
@@ -47,7 +47,7 @@ public static class SimpleAssetCache
 }
 public static class SimpleAssetCache<T>
 {
-    public static readonly Dictionary<string,T> Cache = new();
+    public static readonly Dictionary<string, T> Cache = new();
 
     public static void DoInitialize(IFileAssetProvider<T> provider, Godot.Collections.Dictionary<string, Variant> data)
     {
@@ -91,12 +91,12 @@ public static class SimpleAssetCache<T>
                     setAction(result);
                     return;
                 }
-                
+
                 var parsed = provider.ParseAsset(bytes);
-                
+
                 provider.Asset = parsed;
                 Cache[path] = parsed;
-                
+
                 setAction(parsed);
             });
         }

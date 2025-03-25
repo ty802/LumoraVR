@@ -5,9 +5,9 @@ namespace Aquamarine.Source.Input;
 public interface IInputProvider
 {
     public static IInputProvider Instance;
-    
+
     public bool IsVR { get; }
-    
+
     public enum InputLimb
     {
         Head,

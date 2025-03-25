@@ -47,7 +47,7 @@ namespace Aquamarine.Source.Management
                 if (_playerSpawner == null)
                 {
                     _playerSpawner = GetNodeOrNull<CustomPlayerSpawner>("../CustomPlayerSpawner");
-                    
+
                     // Try one more fallback - search in the scene tree
                     if (_playerSpawner == null)
                     {
@@ -58,11 +58,11 @@ namespace Aquamarine.Source.Management
                         }
                     }
                 }
-                
+
                 if (_playerSpawner != null)
                 {
                     Logger.Log("CustomPlayerSync: Found CustomPlayerSpawner");
-                    
+
                     // Connect to player spawned/removed signals
                     _playerSpawner.PlayerSpawned += OnPlayerSpawned;
                     _playerSpawner.PlayerRemoved += OnPlayerRemoved;
@@ -71,17 +71,17 @@ namespace Aquamarine.Source.Management
                 {
                     Logger.Error("CustomPlayerSync: Could not find CustomPlayerSpawner");
                 }
-                
+
                 // Defer server role determination to _Process to ensure multiplayer is initialized
                 _isServer = false; // Default to false, will be updated in _Process
-                
+
                 // Connect to network peer connected signal - only if multiplayer is available
                 if (Multiplayer != null)
                 {
                     Multiplayer.PeerConnected += OnPeerConnected;
                     Multiplayer.PeerDisconnected += OnPeerDisconnected;
                 }
-                
+
                 Logger.Log("CustomPlayerSync initialized");
             }
             catch (Exception ex)
@@ -89,7 +89,7 @@ namespace Aquamarine.Source.Management
                 Logger.Error($"Error in CustomPlayerSync._Ready: {ex.Message}");
             }
         }
-        
+
         // Helper method to find a node of a specific type in the scene tree
         private T FindNodeByType<T>(Node root) where T : class
         {
@@ -98,7 +98,7 @@ namespace Aquamarine.Source.Management
             {
                 return result;
             }
-            
+
             // Recursively search through all children
             foreach (var child in root.GetChildren())
             {
@@ -108,7 +108,7 @@ namespace Aquamarine.Source.Management
                     return found;
                 }
             }
-            
+
             return null;
         }
 
@@ -136,19 +136,19 @@ namespace Aquamarine.Source.Management
                             Logger.Log($"CustomPlayerSync: Not ready to determine server status: {ex.Message}");
                         }
                     }
-                    
+
                     _timeSinceLastSync += (float)delta;
-                    
+
                     // Only sync at the specified interval
                     if (_timeSinceLastSync >= SyncInterval)
                     {
                         _timeSinceLastSync = 0;
-                        
+
                         try
                         {
                             // Get local player ID
                             int localId = Multiplayer.GetUniqueId();
-                            
+
                             // If we have authority over any players, send their data
                             if (_playerSpawner != null)
                             {
@@ -158,8 +158,8 @@ namespace Aquamarine.Source.Management
                                     if (player.Value.Authority == localId)
                                     {
                                         // Send player data to all peers
-                                        RpcId(1, MethodName.SyncPlayerData, 
-                                            player.Key, 
+                                        RpcId(1, MethodName.SyncPlayerData,
+                                            player.Key,
                                             player.Value.GlobalPosition,
                                             player.Value.Velocity,
                                             player.Value.HeadPosition,
@@ -192,14 +192,14 @@ namespace Aquamarine.Source.Management
             {
                 Logger.Error($"Error in CustomPlayerSync._Process: {ex.Message}");
             }
-            
+
             // Apply interpolation for remote players
             foreach (var syncData in _playerSyncData)
             {
                 // Skip if this is our local player
                 if (syncData.Key == Multiplayer.GetUniqueId())
                     continue;
-                
+
                 // Find the player
                 var player = _playerSpawner?.GetPlayer(syncData.Key);
                 if (player != null)
@@ -252,7 +252,7 @@ namespace Aquamarine.Source.Management
                     MovementButtons = player.MovementButtons,
                     LastUpdateTime = Time.GetTicksMsec() / 1000.0
                 };
-                
+
                 Logger.Log($"CustomPlayerSync: Initialized sync data for player {player.Authority}");
             }
         }
@@ -270,7 +270,7 @@ namespace Aquamarine.Source.Management
         private void OnPeerConnected(long id)
         {
             Logger.Log($"CustomPlayerSync: Peer connected: {id}");
-            
+
             // Send existing player data to the new peer after a short delay
             // to ensure they're fully connected and ready
             if (_isServer)
@@ -283,30 +283,31 @@ namespace Aquamarine.Source.Management
                     Autostart = true
                 };
                 AddChild(timer);
-                timer.Timeout += () => {
+                timer.Timeout += () =>
+                {
                     SendAllPlayerDataTo((int)id);
                     timer.QueueFree();
                 };
             }
         }
-        
+
         // Method to send all existing player data to a newly connected peer
         public void SendAllPlayerDataTo(int targetPeerId)
         {
             if (!_isServer)
                 return;
-            
+
             Logger.Log($"CustomPlayerSync: Sending existing player data to peer {targetPeerId}");
-            
+
             // Loop through all players and send their data to the new player
             foreach (var syncData in _playerSyncData)
             {
                 // Skip if this is the target player (they don't need their own data)
                 if (syncData.Key == targetPeerId)
                     continue;
-                    
-                RpcId(targetPeerId, MethodName.ReceivePlayerData, 
-                    syncData.Key, 
+
+                RpcId(targetPeerId, MethodName.ReceivePlayerData,
+                    syncData.Key,
                     syncData.Value.Position,
                     syncData.Value.Velocity,
                     syncData.Value.HeadPosition,
@@ -339,7 +340,7 @@ namespace Aquamarine.Source.Management
 
         [Rpc(MultiplayerApi.RpcMode.AnyPeer, CallLocal = false)]
         private void SyncPlayerData(
-            int playerId, 
+            int playerId,
             Vector3 position,
             Vector3 velocity,
             Vector3 headPosition,
@@ -361,13 +362,13 @@ namespace Aquamarine.Source.Management
             // Only the server should receive this RPC
             if (!_isServer)
                 return;
-                
+
             // Update the sync data
             if (!_playerSyncData.ContainsKey(playerId))
             {
                 _playerSyncData[playerId] = new PlayerSyncData();
             }
-            
+
             var syncData = _playerSyncData[playerId];
             syncData.Position = position;
             syncData.Velocity = velocity;
@@ -387,14 +388,14 @@ namespace Aquamarine.Source.Management
             syncData.MovementInput = movementInput;
             syncData.MovementButtons = movementButtons;
             syncData.LastUpdateTime = Time.GetTicksMsec() / 1000.0;
-            
+
             // Broadcast to all other peers
             foreach (var peerId in Multiplayer.GetPeers())
             {
                 if (peerId != Multiplayer.GetRemoteSenderId() && peerId != 1) // Skip sender and server
                 {
-                    RpcId(peerId, MethodName.ReceivePlayerData, 
-                        playerId, 
+                    RpcId(peerId, MethodName.ReceivePlayerData,
+                        playerId,
                         position,
                         velocity,
                         headPosition,
@@ -418,7 +419,7 @@ namespace Aquamarine.Source.Management
 
         [Rpc(MultiplayerApi.RpcMode.AnyPeer, CallLocal = false)]
         private void ReceivePlayerData(
-            int playerId, 
+            int playerId,
             Vector3 position,
             Vector3 velocity,
             Vector3 headPosition,
@@ -440,13 +441,13 @@ namespace Aquamarine.Source.Management
             // Skip if this is our local player
             if (playerId == Multiplayer.GetUniqueId())
                 return;
-                
+
             // Update the sync data
             if (!_playerSyncData.ContainsKey(playerId))
             {
                 _playerSyncData[playerId] = new PlayerSyncData();
             }
-            
+
             var syncData = _playerSyncData[playerId];
             syncData.Position = position;
             syncData.Velocity = velocity;

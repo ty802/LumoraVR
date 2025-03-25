@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿using System.Linq;
+﻿using System.Linq;
 using Godot;
 
 namespace Aquamarine.Source.Management
@@ -20,7 +20,7 @@ namespace Aquamarine.Source.Management
         {
             get
             {
-                if(_currentServerType == ServerType.None)
+                if (_currentServerType == ServerType.None)
                 {
                     if (ArgumentCache.Instance?.IsFlagActive("run-home-server") ?? false)
                     {

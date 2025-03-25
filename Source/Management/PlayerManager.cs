@@ -23,7 +23,7 @@ namespace Aquamarine.Source.Management
                 {
                     // Try to find PlayerRoot in the scene
                     PlayerRoot = GetNodeOrNull<Node3D>("/root/Scene/Level/PlayerRoot");
-                    
+
                     if (PlayerRoot == null)
                     {
                         // Create a new PlayerRoot if it doesn't exist

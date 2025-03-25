@@ -20,7 +20,7 @@ public partial class SessionInstance : HBoxContainer
     /// </summary>
     /// <param name="info"></param>
     /// <param name="tab"></param>
-    internal void UpdateData(SessionInfo info,WorldsTab tab)
+    internal void UpdateData(SessionInfo info, WorldsTab tab)
     {
         _id = info.SessionIdentifier;
 #if DEBUG
@@ -32,7 +32,7 @@ public partial class SessionInstance : HBoxContainer
     }
     public void OnJoinButtonPressed()
     {
-        if(_id is null)
+        if (_id is null)
             return;
         _tab?.joinSession(_id);
     }

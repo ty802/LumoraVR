@@ -12,20 +12,20 @@ public partial class HierarchyEditor : PanelContainer
     [Export] public Tree Tree;
     [Export] public OptionButton AddOption;
     [Export] public Button AddButton;
-    
+
     public RootObjectType RootType => PrefabEditor.Type;
     public Prefab Prefab => PrefabEditor.EditingPrefab;
 
     public override void _Ready()
     {
         base._Ready();
-        
+
         PrefabEditor.HierarchyChanged += GenerateHierarchy;
         var allowedAdd = RootType.AllowedChildObjects().OrderBy(i => (int)i);
         foreach (var item in allowedAdd) AddOption.AddItem(item.ToString(), (int)item);
-        
+
         AddButton.Pressed += AddButtonOnPressed;
-        
+
         GenerateHierarchy();
     }
     private void AddButtonOnPressed()
@@ -50,7 +50,7 @@ public partial class HierarchyEditor : PanelContainer
     public void GenerateHierarchy()
     {
         var prefab = Prefab;
-        
+
         Tree.Clear();
         var root = Tree.CreateItem();
 
@@ -61,7 +61,7 @@ public partial class HierarchyEditor : PanelContainer
         var items = new Dictionary<int, TreeItem>();
 
         var childrenToDo = prefab.Children.ToDictionary(i => i.Key, i => i.Value);
-        
+
         for (var i = 0; i < 64; i++)
         {
             foreach (var (index, child) in childrenToDo.ToList())

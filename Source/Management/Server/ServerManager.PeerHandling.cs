@@ -26,7 +26,7 @@ namespace Aquamarine.Source.Management
                     {
                         // Try recursive search
                         _multiplayerScene = FindMultiplayerSceneInChildren(GetTree().CurrentScene);
-                        
+
                         // If still null, try to find it directly in the scene tree at common paths
                         if (_multiplayerScene == null)
                         {
@@ -35,7 +35,7 @@ namespace Aquamarine.Source.Management
                                 "Scene",
                                 "Root/Scene"
                             };
-                            
+
                             foreach (var path in commonPaths)
                             {
                                 var scene = GetTree().Root.GetNodeOrNull(path);
@@ -48,7 +48,7 @@ namespace Aquamarine.Source.Management
                             }
                         }
                     }
-                    
+
                     if (_multiplayerScene != null)
                     {
                         Logger.Log($"Server: Successfully found MultiplayerScene: {_multiplayerScene.Name} at {_multiplayerScene.GetPath()}");
@@ -62,7 +62,7 @@ namespace Aquamarine.Source.Management
                     {
                         // First check if the player is already spawned
                         bool playerAlreadySpawned = _multiplayerScene.IsPlayerSpawned((int)id);
-                        
+
                         if (!playerAlreadySpawned)
                         {
                             Logger.Log($"Server: Spawning player for peer {id}");
@@ -72,7 +72,7 @@ namespace Aquamarine.Source.Management
                         {
                             Logger.Log($"Server: Player for peer {id} is already spawned, not spawning again");
                         }
-                        
+
                         // Make sure the player is in the player list
                         if (!_multiplayerScene.PlayerList.ContainsKey((int)id))
                         {
@@ -80,7 +80,7 @@ namespace Aquamarine.Source.Management
                             _multiplayerScene.SendUpdatedPlayerList();
                             Logger.Log($"Server: Added peer {id} to player list");
                         }
-                        
+
                         // Delay slightly to ensure player is fully set up before syncing
                         var timer = new Timer
                         {
@@ -89,18 +89,19 @@ namespace Aquamarine.Source.Management
                             Autostart = true
                         };
                         AddChild(timer);
-                        timer.Timeout += () => {
+                        timer.Timeout += () =>
+                        {
                             try
                             {
                                 // Find the CustomPlayerSync component
                                 var playerSync = GetNodeOrNull<CustomPlayerSync>("%CustomPlayerSync");
-                                
+
                                 // If not found directly, try to find it in the scene tree
                                 if (playerSync == null)
                                 {
                                     playerSync = FindNodeByType<CustomPlayerSync>(GetTree().Root);
                                 }
-                                
+
                                 if (playerSync != null && GodotObject.IsInstanceValid(playerSync))
                                 {
                                     Logger.Log($"Server: Sending existing player data to new peer {id}");
@@ -129,7 +130,7 @@ namespace Aquamarine.Source.Management
                 else
                 {
                     Logger.Error($"Server: Cannot spawn player for peer {id}: MultiplayerScene is null");
-                    
+
                     // Try to find MultiplayerScene again
                     var multiplayerScene = FindMultiplayerSceneInChildren(GetTree().CurrentScene);
                     if (multiplayerScene != null)
@@ -141,7 +142,7 @@ namespace Aquamarine.Source.Management
                     else
                     {
                         Logger.Error("Server: MultiplayerScene still not found, trying direct player spawning");
-                        
+
                         // Try direct player spawning as a last resort
                         if (PlayerManager.Instance != null)
                         {
@@ -155,7 +156,7 @@ namespace Aquamarine.Source.Management
                             if (playerRoot != null)
                             {
                                 Logger.Log($"Server: Found PlayerRoot directly, spawning player for peer {id}");
-                                
+
                                 // Instantiate player directly
                                 var playerScene = ResourceLoader.Load<PackedScene>("res://Scenes/Objects/RootObjects/PlayerCharacterController.tscn");
                                 if (playerScene != null)

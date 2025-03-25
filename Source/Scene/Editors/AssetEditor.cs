@@ -23,13 +23,13 @@ public partial class AssetEditor : PanelContainer
     public override void _Ready()
     {
         base._Ready();
-        
+
         AssetImportButton.Pressed += AssetImportButtonOnPressed;
         PrefabEditor.HierarchyChanged += HierarchyChanged;
-        
+
         var allowedAdd = SceneObjectHelpers.StaticAssetTypes.OrderBy(i => (int)i);
         foreach (var item in allowedAdd) AssetTypeOptions.AddItem(item.ToString(), (int)item);
-        
+
         AssetAddButton.Pressed += AssetAddButtonOnPressed;
     }
     private void AssetAddButtonOnPressed()
@@ -76,7 +76,7 @@ public partial class AssetEditor : PanelContainer
             var fileNameMinusExtension = Path.GetFileNameWithoutExtension(p);
             var data = file.GetBuffer((long)file.GetLength());
             file.Close();
-            
+
             if (fileName.EndsWith(".gltf") || fileName.EndsWith(".glb"))
             {
                 var gltfDoc = new GltfDocument();
@@ -88,7 +88,7 @@ public partial class AssetEditor : PanelContainer
                 foreach (var m in meshes)
                 {
                     if (m.Mesh is not ArrayMesh arrMesh) continue;
-                    
+
                     var name = m.Mesh.ResourceName;
                     var meshFile = MeshFile.FromArrayMesh(arrMesh);
                     var toLocation = FileAccess.Open($"user://{fileNameMinusExtension}.{name}.meshfile", FileAccess.ModeFlags.Write);
@@ -120,7 +120,7 @@ public partial class AssetEditor : PanelContainer
             {
                 icon.NameLabel.Text = asset.Value.Data["path"].AsString();
             }
-            
+
             CurrentAssetContainer.AddChild(icon);
         }
     }

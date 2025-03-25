@@ -166,7 +166,7 @@ namespace Aquamarine.Source.Management
 
                 // Instantiate the new world
                 Node newWorld = _loadedWorld.Instantiate();
-                
+
                 // Ensure the world has a unique name to avoid conflicts
                 if (newWorld is MultiplayerScene)
                 {
@@ -174,10 +174,10 @@ namespace Aquamarine.Source.Management
                     newWorld.Name = "Scene";
                     Logger.Log($"Instantiated MultiplayerScene with name: {newWorld.Name}");
                 }
-                
+
                 // Add the new world to the container
                 _worldContainer.AddChild(newWorld);
-                
+
                 // Comment out scene tree logging to reduce console spam
                 // Logger.Log("Scene tree after loading world:");
                 // LogSceneTree(GetTree().Root, "");
@@ -193,7 +193,7 @@ namespace Aquamarine.Source.Management
                 {
                     // First try to get the MultiplayerScene directly
                     MultiplayerScene multiplayerScene = null;
-                    
+
                     if (newWorld is MultiplayerScene directScene)
                     {
                         multiplayerScene = directScene;
@@ -203,13 +203,13 @@ namespace Aquamarine.Source.Management
                         // Try to find it in the children
                         multiplayerScene = FindNodeByType<MultiplayerScene>(newWorld);
                     }
-                    
+
                     if (multiplayerScene != null)
                     {
                         // Initialize the server components
                         multiplayerScene.InitializeForServer();
                         Logger.Log("Server multiplayer components initialized successfully.");
-                        
+
                         // Notify ServerManager about the new world
                         var serverManager = GetNode<ServerManager>("/root/ServerManager");
                         if (serverManager != null)
@@ -222,7 +222,7 @@ namespace Aquamarine.Source.Management
                         Logger.Error("MultiplayerScene not found in the loaded world.");
                     }
                 }
-                
+
                 Logger.Log($"World loaded successfully: {_currentWorldPath}");
                 EmitSignal(SignalName.WorldLoaded);
             }
@@ -237,7 +237,7 @@ namespace Aquamarine.Source.Management
                 }
             }
         }
-        
+
         // Helper method to find a node of a specific type in the scene tree
         private T FindNodeByType<T>(Node root) where T : class
         {
@@ -246,7 +246,7 @@ namespace Aquamarine.Source.Management
             {
                 return result;
             }
-            
+
             // Recursively search through all children
             foreach (var child in root.GetChildren())
             {
@@ -256,10 +256,10 @@ namespace Aquamarine.Source.Management
                     return found;
                 }
             }
-            
+
             return null;
         }
-        
+
         // Helper method to log the scene tree for debugging
         private void LogSceneTree(Node node, string indent)
         {

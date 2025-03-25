@@ -20,7 +20,7 @@ namespace Aquamarine.Source.Management
 
         private XRInterface _xrInterface;
         private IInputProvider _input;
-        private LiteNetLibMultiplayerPeer  _peer;
+        private LiteNetLibMultiplayerPeer _peer;
         [Export] private Node3D _inputRoot;
         [Export] private MultiplayerScene _multiplayerScene;
         private string _targetWorldPath = null;
@@ -90,7 +90,7 @@ namespace Aquamarine.Source.Management
             List<string> args = ["--run-home-server", "--xr-mode", "off", "--headless", "--port", _localhomePort.ToString()];
             if (ArgumentCache.Instance?.Arguments.TryGetValue("remote-debug-local", out string endPoint) ?? false)
                 args.AddRange(["--remote-debug", endPoint]);
-            if (ArgumentCache.Instance?.IsFlagActive("vs-debug-local")??false)
+            if (ArgumentCache.Instance?.IsFlagActive("vs-debug-local") ?? false)
                 args.Add("--vs-debug");
             _localHomePid = OS.CreateProcess(OS.GetExecutablePath(), args.ToArray());
             Logger.Log($"Started local server process with PID: {_localHomePid}");
@@ -99,7 +99,7 @@ namespace Aquamarine.Source.Management
                 while (!_cancellationTokenSource.Token.IsCancellationRequested)
                 {
                     await Task.Delay(1000);
-                    if(IPGlobalProperties.GetIPGlobalProperties().GetActiveUdpListeners().Any(endp => endp.Port == _localhomePort))
+                    if (IPGlobalProperties.GetIPGlobalProperties().GetActiveUdpListeners().Any(endp => endp.Port == _localhomePort))
                     {
                         Logger.Log("Local server is running, attempting to connect");
                         this.RunOnNodeAsync(JoinLocalHome);
@@ -108,7 +108,7 @@ namespace Aquamarine.Source.Management
                     }
                     Logger.Log("Waiting for local server");
                 }
-            },_cancellationTokenSource.Token);
+            }, _cancellationTokenSource.Token);
         }
 
         public void LoadLocalScene()

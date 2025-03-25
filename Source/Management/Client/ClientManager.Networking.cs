@@ -80,7 +80,7 @@ namespace Aquamarine.Source.Management
 
             Multiplayer.MultiplayerPeer = _peer;
             _isDirectConnection = false;
-            
+
             void PeerConnected(NetPeer peer)
             {
                 NetDataWriter writer = new NetDataWriter();
@@ -88,7 +88,7 @@ namespace Aquamarine.Source.Management
                 peer.Send(writer, DeliveryMethod.ReliableOrdered);
                 _peer.Listener.PeerConnectedEvent -= PeerConnected;
             }
-            
+
             _peer.Listener.PeerConnectedEvent += PeerConnected;
 
             RegisterPeerEvents();

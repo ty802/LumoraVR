@@ -83,7 +83,7 @@ public partial class MainMenu : Control
     /// </summary>
     public void ReloadTabs()
     {
-        foreach(var item in Tabs)
+        foreach (var item in Tabs)
         {
             Tabs.Remove(item.Key);
             item.Value.QueueFree();
@@ -118,7 +118,8 @@ public partial class MainMenu : Control
             LoginManager.Instance.OnLoginStatusChanged += UpdateAccountButtonText;
         }
         // shitty workaround do it later
-        else { 
+        else
+        {
             Task.Delay(1000).ContinueWith((task) =>
             {
                 if (LoginManager.Instance is not null)

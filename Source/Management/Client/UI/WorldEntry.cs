@@ -14,13 +14,13 @@ public partial class WorldEntry : PanelContainer
     /// </summary>
     /// <param name="tab"></param>
     /// <param name="worldid"></param>
-    public void assignEvent(WorldsTab tab,string worldid)
+    public void assignEvent(WorldsTab tab, string worldid)
     {
         _worldid = worldid;
         _tab = tab;
         tab.SessionListUpdated += Tab_SessionListUpdated;
-        if(tab.Sessions.TryGetValue(worldid,out var worldEntry))
-        GetNode<RichTextLabel>("%WorldNameLabel").Text = $"[center]{worldEntry.WorldName}[/center]";
+        if (tab.Sessions.TryGetValue(worldid, out var worldEntry))
+            GetNode<RichTextLabel>("%WorldNameLabel").Text = $"[center]{worldEntry.WorldName}[/center]";
     }
     /// <summary>
     /// Should be called when the session list is updated

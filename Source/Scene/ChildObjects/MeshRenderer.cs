@@ -27,7 +27,7 @@ public partial class MeshRenderer : MeshInstance3D, IChildObject
                     // Check if this object is still valid
                     if (!GodotObject.IsInstanceValid(this)) return;
                     if (MeshProvider != value) return;
-                    
+
                     Mesh = m.Mesh;
                     Skin = m.Skin;
 
@@ -37,7 +37,7 @@ public partial class MeshRenderer : MeshInstance3D, IChildObject
                         var index = i;
                         if (_materials[i] != null)
                         {
-                            _materials[i].Set(mat => 
+                            _materials[i].Set(mat =>
                             {
                                 // Check again if still valid
                                 if (GodotObject.IsInstanceValid(this))
@@ -69,11 +69,11 @@ public partial class MeshRenderer : MeshInstance3D, IChildObject
         if (mat is not null) mat.Set(m => SetSurfaceOverrideMaterial(index, m));
         else SetSurfaceOverrideMaterial(index, null);
     }
-    
+
     public Node Self => this;
     public void SetPlayerAuthority(int id)
     {
-        
+
     }
     public void Initialize(Godot.Collections.Dictionary<string, Variant> data)
     {

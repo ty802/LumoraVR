@@ -16,7 +16,7 @@ public struct DirtyFlags8 : IDirtyFlags
     private const byte One = 1;
     public static readonly DirtyFlags8 None = new();
     public static readonly DirtyFlags8 All = new(byte.MaxValue);
-    
+
     public DirtyFlags8()
     {
     }
@@ -28,8 +28,8 @@ public struct DirtyFlags8 : IDirtyFlags
     public void SetFlag(byte position) => Value |= (byte)(One << position);
     public void UnsetFlag(byte position) => Value = (byte)(Value & ~(One << position));
     public void ValueFlag(byte position, bool value) =>
-        Value = (byte)(value ? 
-                Value | (One << position) : 
+        Value = (byte)(value ?
+                Value | (One << position) :
                 Value & ~(One << position)
             );
 }
@@ -40,7 +40,7 @@ public struct DirtyFlags16 : IDirtyFlags
     private const ushort One = 1;
     public static readonly DirtyFlags16 None = new();
     public static readonly DirtyFlags16 All = new(ushort.MaxValue);
-    
+
     public DirtyFlags16()
     {
     }
@@ -52,19 +52,19 @@ public struct DirtyFlags16 : IDirtyFlags
     public void SetFlag(byte position) => Value |= (ushort)(One << position);
     public void UnsetFlag(byte position) => Value = (ushort)(Value & ~(One << position));
     public void ValueFlag(byte position, bool value) =>
-        Value = (ushort)(value ? 
-                Value | (One << position) : 
+        Value = (ushort)(value ?
+                Value | (One << position) :
                 Value & ~(One << position)
             );
 }
 public struct DirtyFlags32 : IDirtyFlags
 {
     public uint Value { get; private set; } = 0;
-    
+
     private const uint One = 1;
     public static readonly DirtyFlags32 None = new();
     public static readonly DirtyFlags32 All = new(uint.MaxValue);
-    
+
     public DirtyFlags32()
     {
     }
@@ -76,19 +76,19 @@ public struct DirtyFlags32 : IDirtyFlags
     public void SetFlag(byte position) => Value |= (One << position);
     public void UnsetFlag(byte position) => Value = (Value & ~(One << position));
     public void ValueFlag(byte position, bool value) =>
-        Value = (value ? 
-                Value | (One << position) : 
+        Value = (value ?
+                Value | (One << position) :
                 Value & ~(One << position)
             );
 }
 public struct DirtyFlags64 : IDirtyFlags
 {
     public ulong Value { get; private set; } = 0;
-    
+
     private const ulong One = 1;
     public static readonly DirtyFlags64 None = new();
     public static readonly DirtyFlags64 All = new(ulong.MaxValue);
-    
+
     public DirtyFlags64()
     {
     }
@@ -100,8 +100,8 @@ public struct DirtyFlags64 : IDirtyFlags
     public void SetFlag(byte position) => Value |= (One << position);
     public void UnsetFlag(byte position) => Value = (Value & ~(One << position));
     public void ValueFlag(byte position, bool value) =>
-        Value = (value ? 
-                Value | (One << position) : 
+        Value = (value ?
+                Value | (One << position) :
                 Value & ~(One << position)
             );
 }

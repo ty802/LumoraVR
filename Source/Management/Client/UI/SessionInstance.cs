@@ -26,7 +26,7 @@ public partial class SessionInstance : HBoxContainer
 #if DEBUG
         _detailsText.Text = info.SessionIdentifier;
 #else
-        _detailsText.Text = info.SessionName;
+        _detailsText.Text = info.Name;
 #endif
         _tab = tab;
     }

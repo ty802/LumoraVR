@@ -3,9 +3,11 @@ using System.Linq;
 using Aquamarine.Source.Helpers;
 using Aquamarine.Source.Input;
 using Aquamarine.Source.Scene.RootObjects;
+using Aquamarine.Source.Logging;
 using Bones.Core;
 using Bones.InverseKinematics;
 using Godot;
+using Aquamarine.Source.Management;
 
 namespace Aquamarine.Source.Scene.ChildObjects;
 
@@ -37,7 +39,6 @@ public partial class HumanoidAnimator : Node3D, IChildObject
     public Transform3D RightFootBoneOffset = Transform3D.Identity;
 
     public bool Digitigrade;
-
     public bool Valid;
 
     private int[] _spineBones;
@@ -51,7 +52,8 @@ public partial class HumanoidAnimator : Node3D, IChildObject
     private Skeleton3DTwoBoneIK _leftLeg;
     private Skeleton3DTwoBoneIK _rightLeg;
 
-    //private Node3D _childRoot;
+    // Debug mode to enable visual debugging of bone placements
+    [Export] public bool DebugBones = false;
 
     public Node Self => this;
     public void SetPlayerAuthority(int id)
@@ -86,6 +88,7 @@ public partial class HumanoidAnimator : Node3D, IChildObject
 
         ProcessPriority = 1;
 
+        // Initialize IK for arms and legs
         (_leftArm, _, _) = InitChain<Skeleton3DTwoBoneIK>("LeftArmIK");
         (_rightArm, _, _) = InitChain<Skeleton3DTwoBoneIK>("RightArmIK");
 
@@ -99,6 +102,15 @@ public partial class HumanoidAnimator : Node3D, IChildObject
             (_leftLeg, _, _) = InitChain<Skeleton3DTwoBoneIK>("LeftLegIK");
             (_rightLeg, _, _) = InitChain<Skeleton3DTwoBoneIK>("RightLegIK");
         }
+
+        // Log bone offsets for debugging
+        Logger.Log($"HumanoidAnimator initialized with bone offsets:");
+        Logger.Log($"  - Head: {HeadBoneOffset}");
+        Logger.Log($"  - Hip: {HipBoneOffset}");
+        Logger.Log($"  - Left Hand: {LeftHandBoneOffset}");
+        Logger.Log($"  - Right Hand: {RightHandBoneOffset}");
+        Logger.Log($"  - Left Foot: {LeftFootBoneOffset}");
+        Logger.Log($"  - Right Foot: {RightFootBoneOffset}");
 
         return;
 
@@ -126,14 +138,7 @@ public partial class HumanoidAnimator : Node3D, IChildObject
     }
     public void AddChildObject(ISceneObject obj)
     {
-        /*
-        if (_childRoot is null)
-        {
-            _childRoot = new Node3D { Name = "ChildRoot" };
-            AddChild(_childRoot);
-        }
-        _childRoot.AddChild(obj.Self);
-        */
+        AddChild(obj.Self);
     }
     private void UpdateBoneIndices()
     {
@@ -145,9 +150,18 @@ public partial class HumanoidAnimator : Node3D, IChildObject
         _rightLeg.Tip = RightFootBone;
 
         var headBone = Armature.FindBone(HeadBone);
-        if (headBone < 0) return;
+        if (headBone < 0) 
+        {
+            Logger.Error($"Failed to find head bone '{HeadBone}'");
+            return;
+        }
+        
         var hipBone = Armature.FindBone(HipBone);
-        if (hipBone < 0) return;
+        if (hipBone < 0) 
+        {
+            Logger.Error($"Failed to find hip bone '{HipBone}'");
+            return;
+        }
 
         var boneList = new List<int>();
         var currentBone = headBone;
@@ -156,7 +170,12 @@ public partial class HumanoidAnimator : Node3D, IChildObject
             boneList.Add(currentBone);
             currentBone = Armature.GetBoneParent(currentBone);
         }
-        if (currentBone < 0 || currentBone != hipBone) return;
+        if (currentBone < 0 || currentBone != hipBone) 
+        {
+            Logger.Error("Failed to find spine bone chain from head to hip");
+            return;
+        }
+        
         boneList.Add(hipBone);
 
         var vectorList = new List<Vector3> { Vector3.Zero };
@@ -178,38 +197,88 @@ public partial class HumanoidAnimator : Node3D, IChildObject
         _spineBoneLengths = lengthList;
         _spineBonePosition = positionList.ToArray();
 
+        Logger.Log($"Spine bone chain established with {_spineBones.Length} bones");
         Valid = true;
     }
+    
     public override void _Process(double delta)
     {
         base._Process(delta);
 
         if (!Valid) return;
 
-        _leftArm.Target.GlobalTransform = CharacterController.GlobalTransform * CharacterController.GetLimbTransform3D(IInputProvider.InputLimb.LeftHand);
-        _rightArm.Target.GlobalTransform = CharacterController.GlobalTransform * CharacterController.GetLimbTransform3D(IInputProvider.InputLimb.RightHand);
-        _leftLeg.Target.GlobalTransform = CharacterController.GlobalTransform * CharacterController.GetLimbTransform3D(IInputProvider.InputLimb.LeftFoot);
-        _rightLeg.Target.GlobalTransform = CharacterController.GlobalTransform * CharacterController.GetLimbTransform3D(IInputProvider.InputLimb.RightFoot);
+        // Get transforms for all limbs
+        var headTransform = CharacterController.GetLimbTransform3D(IInputProvider.InputLimb.Head);
+        var hipTransform = CharacterController.GetLimbTransform3D(IInputProvider.InputLimb.Hip);
+        var leftHandTransform = CharacterController.GetLimbTransform3D(IInputProvider.InputLimb.LeftHand);
+        var rightHandTransform = CharacterController.GetLimbTransform3D(IInputProvider.InputLimb.RightHand);
+        var leftFootTransform = CharacterController.GetLimbTransform3D(IInputProvider.InputLimb.LeftFoot);
+        var rightFootTransform = CharacterController.GetLimbTransform3D(IInputProvider.InputLimb.RightFoot);
+
+        // Apply bone offsets
+        headTransform = headTransform * HeadBoneOffset;
+        hipTransform = hipTransform * HipBoneOffset;
+        
+        // Apply special rotation adjustments for VR mode if needed
+        bool isVR = IInputProvider.Instance?.IsVR ?? false;
+        if (isVR)
+        {
+            // VR-specific rotational adjustments could be applied here
+            // This helps align the controller orientation with the avatar's hand bones
+        }
+        
+        // Apply IK target transformations
+        _leftArm.Target.GlobalTransform = CharacterController.GlobalTransform * leftHandTransform * LeftHandBoneOffset;
+        _rightArm.Target.GlobalTransform = CharacterController.GlobalTransform * rightHandTransform * RightHandBoneOffset;
+        _leftLeg.Target.GlobalTransform = CharacterController.GlobalTransform * leftFootTransform * LeftFootBoneOffset;
+        _rightLeg.Target.GlobalTransform = CharacterController.GlobalTransform * rightFootTransform * RightFootBoneOffset;
 
         var length = _spineBones.Length - 1;
 
-        //TODO: use bezier curves to get a better shape
-
-        var headTransform = CharacterController.GetLimbTransform3D(IInputProvider.InputLimb.Head) * HeadBoneOffset;
-        var hipTransform = CharacterController.GetLimbTransform3D(IInputProvider.InputLimb.Hip) * HipBoneOffset;
-
+        // Get rotation quaternions
         var headRotation = headTransform.Basis.GetRotationQuaternion();
         var hipRotation = hipTransform.Basis.GetRotationQuaternion();
 
-        for (var i = length; i >= 0; i--) Armature.SetBoneGlobalPoseRotation(_spineBones[i], headRotation.Slerp(hipRotation, _spineBonePosition[i]));
+        // Set spine bone rotations - interpolate between head and hip rotations
+        for (var i = length; i >= 0; i--)
+        {
+            Armature.SetBoneGlobalPoseRotation(_spineBones[i], headRotation.Slerp(hipRotation, _spineBonePosition[i]));
+        }
 
+        // Apply head position offset
         var currentHeadPosition = Armature.GetBoneGlobalPose(_spineBones.First()).Origin;
         var wishHeadPosition = headTransform.Origin;
-
         var offset = wishHeadPosition - currentHeadPosition;
-
         Armature.SetBoneGlobalPosePosition(_spineBones.Last(), Armature.GetBoneGlobalPose(_spineBones.Last()).Origin + offset);
+        
+        // Debug visualization
+        if (DebugBones && ClientManager.ShowDebug)
+        {
+            // Calculate global transforms for visualization
+            var globalHead = CharacterController.GlobalTransform * headTransform;
+            var globalHip = CharacterController.GlobalTransform * hipTransform;
+            var globalLeftHand = CharacterController.GlobalTransform * leftHandTransform * LeftHandBoneOffset;
+            var globalRightHand = CharacterController.GlobalTransform * rightHandTransform * RightHandBoneOffset;
+            var globalLeftFoot = CharacterController.GlobalTransform * leftFootTransform * LeftFootBoneOffset;
+            var globalRightFoot = CharacterController.GlobalTransform * rightFootTransform * RightFootBoneOffset;
+            
+            // Draw spheres at key points
+            DebugDraw3D.DrawSphere(globalHead.Origin, 0.05f, Colors.Cyan);
+            DebugDraw3D.DrawSphere(globalHip.Origin, 0.05f, Colors.Green);
+            DebugDraw3D.DrawSphere(globalLeftHand.Origin, 0.05f, Colors.Magenta);
+            DebugDraw3D.DrawSphere(globalRightHand.Origin, 0.05f, Colors.Yellow);
+            DebugDraw3D.DrawSphere(globalLeftFoot.Origin, 0.05f, Colors.Blue);
+            DebugDraw3D.DrawSphere(globalRightFoot.Origin, 0.05f, Colors.Red);
+            
+            // Draw lines connecting key points
+            DebugDraw3D.DrawLine(globalHead.Origin, globalHip.Origin, Colors.White);
+            DebugDraw3D.DrawLine(globalHip.Origin, globalLeftFoot.Origin, Colors.Blue);
+            DebugDraw3D.DrawLine(globalHip.Origin, globalRightFoot.Origin, Colors.Red);
+            DebugDraw3D.DrawLine(globalHead.Origin, globalLeftHand.Origin, Colors.Magenta);
+            DebugDraw3D.DrawLine(globalHead.Origin, globalRightHand.Origin, Colors.Yellow);
+        }
     }
+    
     public bool Dirty { get; }
     public IRootObject Root { get; set; }
     public ISceneObject Parent { get; set; }

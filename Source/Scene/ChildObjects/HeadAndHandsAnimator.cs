@@ -1,6 +1,8 @@
 using System.Linq;
 using Aquamarine.Source.Helpers;
 using Aquamarine.Source.Input;
+using Aquamarine.Source.Logging;
+using Aquamarine.Source.Management;
 using Aquamarine.Source.Scene.RootObjects;
 using Godot;
 using Godot.Collections;
@@ -36,11 +38,14 @@ public partial class HeadAndHandsAnimator : Node, IChildObject
     public int LeftHandBoneIndex;
     public int RightHandBoneIndex;
 
+    // Debug mode to enable visual debugging of bone placements
+    [Export] public bool DebugBones = false;
 
     public void SetPlayerAuthority(int id)
     {
 
     }
+
     public void Initialize(Dictionary<string, Variant> data)
     {
         //GD.Print(data);
@@ -59,7 +64,13 @@ public partial class HeadAndHandsAnimator : Node, IChildObject
         {
             if (skeletonIndex >= 0 && Root.ChildObjects.TryGetValue((ushort)skeletonIndex, out var v) && v is Armature armature) Armature = armature;
         }
+
+        // Log bone offsets for debugging
+        Logger.Log($"Head bone offset: {HeadBoneOffset}");
+        Logger.Log($"Left hand bone offset: {LeftHandBoneOffset}");
+        Logger.Log($"Right hand bone offset: {RightHandBoneOffset}");
     }
+
     private void UpdateBoneIndices()
     {
         HeadBoneIndex = Armature.FindBone(HeadBone);
@@ -70,25 +81,55 @@ public partial class HeadAndHandsAnimator : Node, IChildObject
 
         if (HeadBoneIndex < 0 || HeadBoneIndex >= count || LeftHandBoneIndex < 0 || LeftHandBoneIndex >= count || RightHandBoneIndex < 0 || RightHandBoneIndex >= count) return;
         Valid = true;
+
+        Logger.Log($"Bone indices found - Head: {HeadBoneIndex}, Left Hand: {LeftHandBoneIndex}, Right Hand: {RightHandBoneIndex}");
     }
+
     public override void _Process(double delta)
     {
         base._Process(delta);
 
         if (!Valid) return;
 
+        // Get limb positions and rotations from the controller
         var headPose = CharacterController.GetLimbTransform(IInputProvider.InputLimb.Head);
         var leftHandPose = CharacterController.GetLimbTransform(IInputProvider.InputLimb.LeftHand);
         var rightHandPose = CharacterController.GetLimbTransform(IInputProvider.InputLimb.RightHand);
 
-        Armature.SetBoneGlobalPose(HeadBoneIndex, new Transform3D(new Basis(headPose.rot), headPose.pos) * HeadBoneOffset);
-        Armature.SetBoneGlobalPose(LeftHandBoneIndex, new Transform3D(new Basis(leftHandPose.rot), leftHandPose.pos) * LeftHandBoneOffset);
-        Armature.SetBoneGlobalPose(RightHandBoneIndex, new Transform3D(new Basis(rightHandPose.rot), rightHandPose.pos) * RightHandBoneOffset);
+        // Create transforms from the poses
+        var headTransform = new Transform3D(new Basis(headPose.rot), headPose.pos) * HeadBoneOffset;
+        var leftHandTransform = new Transform3D(new Basis(leftHandPose.rot), leftHandPose.pos) * LeftHandBoneOffset;
+        var rightHandTransform = new Transform3D(new Basis(rightHandPose.rot), rightHandPose.pos) * RightHandBoneOffset;
+
+        // Handle VR-specific adjustments if needed
+        if (IInputProvider.Instance?.IsVR ?? false)
+        {
+        }
+
+        // Set bone poses using the calculated transforms
+        Armature.SetBoneGlobalPose(HeadBoneIndex, headTransform);
+        Armature.SetBoneGlobalPose(LeftHandBoneIndex, leftHandTransform);
+        Armature.SetBoneGlobalPose(RightHandBoneIndex, rightHandTransform);
+
+        // Debug visualization if enabled
+        if (DebugBones && ClientManager.ShowDebug)
+        {
+            // Draw debug spheres at bone positions
+            var globalHeadPos = CharacterController.GlobalTransform * headTransform.Origin;
+            var globalLeftHandPos = CharacterController.GlobalTransform * leftHandTransform.Origin;
+            var globalRightHandPos = CharacterController.GlobalTransform * rightHandTransform.Origin;
+
+            DebugDraw3D.DrawSphere(globalHeadPos, 0.05f, Colors.Cyan);
+            DebugDraw3D.DrawSphere(globalLeftHandPos, 0.05f, Colors.Magenta);
+            DebugDraw3D.DrawSphere(globalRightHandPos, 0.05f, Colors.Yellow);
+        }
     }
+
     public void AddChildObject(ISceneObject obj)
     {
         AddChild(obj.Self);
     }
+
     public bool Dirty => false;
     public IRootObject Root { get; set; }
     public ISceneObject Parent { get; set; }

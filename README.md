@@ -21,5 +21,3 @@ Lumora VR is a feature-rich Social VR Platform designed for mid-range PC users w
 ## Support
 For questions or issues, please open an issue or make a PR.
 
-## Trello Board
-PLEASE use the [Trello Board](https://trello.com/invite/b/6772b86787e9b8d936afa420/ATTI2b6cfb4f15b5e95eaa880b1bab74d96759ECE02A/lackluster-labs), we should do our best to remain organized.

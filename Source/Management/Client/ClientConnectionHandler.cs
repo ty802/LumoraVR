@@ -1,7 +1,9 @@
 using System;
+using Aquamarine.Source.Core;
 using Aquamarine.Source.Helpers;
 using Aquamarine.Source.Logging;
 using Godot;
+using Logger = Aquamarine.Source.Logging.Logger;
 
 namespace Aquamarine.Source.Management.Client
 {
@@ -9,7 +11,6 @@ namespace Aquamarine.Source.Management.Client
     public partial class ClientConnectionHandler : Node
     {
         private MultiplayerScene _multiplayerScene;
-        private CustomPlayerSync _playerSync;
         private bool _isConnected = false;
 
         public override void _Ready()
@@ -18,15 +19,10 @@ namespace Aquamarine.Source.Management.Client
             Multiplayer.PeerConnected += OnPeerConnected;
             Multiplayer.PeerDisconnected += OnPeerDisconnected;
 
-            // Find the MultiplayerScene
-            _multiplayerScene = FindMultiplayerScene();
+            WorldManager.Instance?.Connect(WorldManager.SignalName.WorldAdded, Callable.From<World>(OnWorldAdded));
+            WorldsManager.Instance?.Connect(WorldsManager.SignalName.WorldSwitched, Callable.From<string>(OnWorldSwitched));
 
-            // Find the CustomPlayerSync
-            _playerSync = GetNodeOrNull<CustomPlayerSync>("%CustomPlayerSync");
-            if (_playerSync == null)
-            {
-                _playerSync = GetNodeOrNull<CustomPlayerSync>("../CustomPlayerSync");
-            }
+            RefreshMultiplayerScene();
 
             Logger.Log("ClientConnectionHandler initialized");
         }
@@ -60,6 +56,31 @@ namespace Aquamarine.Source.Management.Client
                     timer.QueueFree();
                 };
             }
+        }
+
+        private void RefreshMultiplayerScene()
+        {
+            _multiplayerScene = FindMultiplayerScene();
+            if (_multiplayerScene != null)
+            {
+                Logger.Log($"ClientConnectionHandler: Bound MultiplayerScene at {_multiplayerScene.GetPath()}");
+            }
+            else
+            {
+                Logger.Warn("ClientConnectionHandler: MultiplayerScene not found in the current world.");
+            }
+        }
+
+        private void OnWorldAdded(World world)
+        {
+            _playerListRequested = false;
+            RefreshMultiplayerScene();
+        }
+
+        private void OnWorldSwitched(string worldId)
+        {
+            _playerListRequested = false;
+            RefreshMultiplayerScene();
         }
 
         private void OnPeerDisconnected(long id)

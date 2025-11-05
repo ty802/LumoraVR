@@ -2,6 +2,8 @@ using System;
 using System.Linq;
 using Aquamarine.Source.Logging;
 using Godot;
+using RuntimeEngine = Aquamarine.Source.Core.Engine;
+using Logger = Aquamarine.Source.Logging.Logger;
 
 namespace Aquamarine.Source.Management
 {
@@ -14,7 +16,7 @@ namespace Aquamarine.Source.Management
             base._Ready();
             try
             {
-                var isServer = ServerManager.CurrentServerType is not ServerManager.ServerType.NotAServer;
+                var isServer = RuntimeEngine.IsDedicatedServer;
                 Text.Text = isServer.ToString();
                 Logger.Log($"Application started in {(isServer ? "server" : "client")} mode.");
 
@@ -29,8 +31,10 @@ namespace Aquamarine.Source.Management
 
         private void ChangeScene(bool isServer)
         {
-            GetTree().ChangeSceneToFile(isServer ? "res://Scenes/Server.tscn" : "res://Scenes/Client.tscn");
-            Logger.Log($"Scene changed to {(isServer ? "Server.tscn" : "Client.tscn")}.");
+            GetTree().ChangeSceneToFile("res://Scenes/Client.tscn");
+            Logger.Log(isServer
+                ? "Dedicated server flag detected - running unified client scene in host mode."
+                : "Scene changed to Client.tscn.");
         }
     }
 }

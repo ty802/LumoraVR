@@ -14,10 +14,10 @@
 radius = 0.05
 height = 0.1
 
-[node name="PlayerCharacterController" type="CharacterBody3D" node_paths=PackedStringArray("Nametag", "_head", "_leftHand", "_rightHand", "_hip", "_leftFoot", "_rightFoot")]
+[node name="PlayerCharacterController" type="CharacterBody3D" node_paths=PackedStringArray("_nametagPath", "_head", "_leftHand", "_rightHand", "_hip", "_leftFoot", "_rightFoot")]
 collision_layer = 2
 script = ExtResource("1_0nv1q")
-Nametag = NodePath("Nameplate")
+_nametagPath = NodePath("Nameplate")
 _head = NodePath("Limbs/Head")
 _leftHand = NodePath("Limbs/Left Hand")
 _rightHand = NodePath("Limbs/Right Hand")

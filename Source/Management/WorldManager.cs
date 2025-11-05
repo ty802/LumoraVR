@@ -1,287 +1,493 @@
-using Aquamarine.Source.Logging;
-using Bones.Core;
-using Godot;
 using System;
+using System.IO;
 using System.Collections.Generic;
-using System.Linq;
-using System.Resources;
-using System.Text;
-using System.Threading.Tasks;
+using Godot;
+using Aquamarine.Source.Core;
+using Aquamarine.Source.Core.WorldTemplates;
+using Aquamarine.Source.Logging;
+using AquaLogger = Aquamarine.Source.Logging.Logger;
+using AquaEngine = Aquamarine.Source.Core.Engine;
 
 namespace Aquamarine.Source.Management
 {
-    public partial class WorldManager : Node
-    {
-        public static WorldManager Instance;
+	/// <summary>
+	/// Manages all worlds (local, hosted sessions, joined sessions) without special-casing.
+	/// Replaces the old ServerManager/ClientManager split architecture.
+	/// </summary>
+	public partial class WorldManager : Node, IDisposable
+	{
+		public static WorldManager Instance;
 
-        [Export] private Node _worldContainer;
-        [Export] private Control _loadingScreen;
-        [Export] private ProgressBar _progressBar;
+		private Control _loadingScreen;
+		private ProgressBar _progressBar;
+		private WorldsManager _worldsManager;
+		private bool _initialized = false;
 
-        private string _currentWorldPath = "";
-        private PackedScene _loadedWorld;
-        private bool _isLoading = false;
-        private float[] _progress = new float[1];
+		private readonly List<World> _worlds = new List<World>();
+		private readonly object _worldsLock = new object();
 
-        [Signal]
-        public delegate void WorldLoadedEventHandler();
-        public override void _Ready()
-        {
-            Instance = this;
+		private AquaEngine _engine;
 
-            // Defer node finding to prevent errors if nodes don't exist yet
-            CallDeferred(nameof(InitializeComponents));
-        }
+		[Signal]
+		public delegate void WorldAddedEventHandler(World world);
 
-        private void InitializeComponents()
-        {
-            try
-            {
-                // Try to find components, but don't crash if they don't exist
-                _worldContainer = GetNodeOrNull<Node>("/root/Root/WorldRoot");
-                if (_worldContainer == null)
-                {
-                    Logger.Error("WorldRoot node not found! World loading may not work properly.");
-                }
+		/// <summary>
+		/// Currently active world instance (null if no world is active).
+		/// </summary>
+		public WorldInstance ActiveWorldInstance => _worldsManager?.ActiveWorld;
 
-                _loadingScreen = GetNodeOrNull<Control>("/root/Root/HUDManager/LoadingMenu");
-                if (_loadingScreen == null)
-                {
-                    Logger.Error("LoadingMenu not found! Loading screen will not be displayed.");
-                }
-                else
-                {
-                    _loadingScreen.Visible = false;
+		/// <summary>
+		/// Convenience access to the active world node.
+		/// </summary>
+		public World ActiveWorld => ActiveWorldInstance?.World;
 
-                    _progressBar = _loadingScreen.GetNodeOrNull<ProgressBar>("ProgressBar");
-                    if (_progressBar == null)
-                    {
-                        Logger.Error("ProgressBar not found in LoadingMenu! Progress will not be displayed.");
-                    }
-                }
+		/// <summary>
+		/// Get all managed worlds.
+		/// </summary>
+		public IReadOnlyList<World> Worlds
+		{
+			get
+			{
+				lock (_worldsLock)
+				{
+					return _worlds.AsReadOnly();
+				}
+			}
+		}
 
-                Logger.Log("WorldManager components initialized.");
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"Error initializing WorldManager components: {ex.Message}");
-            }
-        }
+		public override void _Ready()
+		{
+			Instance = this;
+			// Don't auto-initialize - let Engine call Initialize()
+		}
 
-        public void LoadWorld(string worldPath, bool disconnectFromCurrent = true)
-        {
-            if (_isLoading) return;
+		/// <summary>
+		/// Initialize the WorldManager. Called by Engine.
+		/// </summary>
+		public void Initialize(AquaEngine engine)
+		{
+			if (_initialized)
+			{
+				AquaLogger.Warn("WorldManager already initialized.");
+				return;
+			}
 
-            _isLoading = true;
-            _currentWorldPath = worldPath;
+			_engine = engine;
 
-            if (disconnectFromCurrent && ClientManager.Instance != null)
-            {
-                ClientManager.Instance.DisconnectFromCurrentServer();
-            }
+			try
+			{
+				_worldsManager = FindWorldsManager();
+				if (_worldsManager == null)
+				{
+					AquaLogger.Error("WorldManager: WorldsManager not found in scene tree. World loading will fail.");
+				}
 
-            // Only show loading screen if it exists
-            if (_loadingScreen != null)
-            {
-                _loadingScreen.Visible = true;
-            }
+				_loadingScreen = GetNodeOrNull<Control>("/root/Root/HUDManager/LoadingMenu");
+				if (_loadingScreen != null)
+				{
+					_loadingScreen.Visible = false;
+					_progressBar = _loadingScreen.GetNodeOrNull<ProgressBar>("ProgressBar");
+					if (_progressBar != null)
+					{
+						_progressBar.Value = 0;
+					}
+				}
 
-            // Only update progress bar if it exists
-            if (_progressBar != null)
-            {
-                _progressBar.Value = 0;
-            }
+				_initialized = true;
+				AquaLogger.Log("WorldManager initialized.");
+			}
+			catch (Exception ex)
+			{
+				AquaLogger.Error($"WorldManager.Initialize failed: {ex.Message}");
+			}
+		}
 
-            ResourceLoader.LoadThreadedRequest(worldPath, "", true, ResourceLoader.CacheMode.Reuse);
-            Logger.Log($"Started loading world: {worldPath}");
-        }
+		/// <summary>
+		/// Update all worlds. Called by Engine.
+		/// </summary>
+		public void Update(double delta)
+		{
+			// Update logic for worlds if needed
+		}
 
-        public override void _Process(double delta)
-        {
-            if (_isLoading)
-            {
-                UpdateLoadingProgress();
-            }
-        }
+		/// <summary>
+		/// </summary>
+		public World StartLocal(string worldName, string templateName = "Grid")
+		{
+			try
+			{
+				AquaLogger.Log($"WorldManager: Starting local world '{worldName}' with template '{templateName}'");
 
-        private void UpdateLoadingProgress()
-        {
-            // Create a Godot.Collections.Array for the progress parameter
-            var progressArray = new Godot.Collections.Array();
-            progressArray.Add(0.0f); // Initialize with 0 progress
+				// Create the world instance
+				var worldInstance = EnsureWorld(worldName, templateName);
+				if (worldInstance == null)
+				{
+					throw new InvalidOperationException($"Failed to create world '{worldName}'");
+				}
 
-            var status = ResourceLoader.LoadThreadedGetStatus(_currentWorldPath, progressArray);
+				var world = worldInstance.World;
 
-            // Extract the progress value from the Godot array
-            float progress = 0;
-            if (progressArray.Count > 0)
-            {
-                progress = (float)progressArray[0];
-            }
+				// Add to managed worlds
+				lock (_worldsLock)
+				{
+					if (!_worlds.Contains(world))
+					{
+						_worlds.Add(world);
+					}
+				}
 
-            // Only update progress bar if it exists
-            if (_progressBar != null)
-            {
-                _progressBar.Value = progress * 100;
-            }
+				// Switch to the world
+				_worldsManager.SwitchToWorld(worldInstance.WorldId);
 
-            if (status == ResourceLoader.ThreadLoadStatus.Loaded)
-            {
-                FinishWorldLoading();
-            }
-            else if (status == ResourceLoader.ThreadLoadStatus.Failed)
-            {
-                HandleLoadError();
-            }
-        }
+				// Configure world
+				ConfigureWorld(world);
 
-        private async void FinishWorldLoading()
-        {
-            _isLoading = false;
+				// Emit event
+				EmitSignal(SignalName.WorldAdded, world);
 
-            try
-            {
-                _loadedWorld = ResourceLoader.LoadThreadedGet(_currentWorldPath) as PackedScene;
+				AquaLogger.Log($"WorldManager: Local world '{worldName}' started successfully");
+				return world;
+			}
+			catch (Exception ex)
+			{
+				AquaLogger.Error($"WorldManager: Failed to start local world '{worldName}': {ex.Message}");
+				return null;
+			}
+		}
 
-                if (_worldContainer == null)
-                {
-                    // Try one more time to find world container
-                    _worldContainer = GetNodeOrNull<Node>("/root/Root/WorldRoot");
+		/// <summary>
+		/// </summary>
+		public World StartSession(string worldName, string templateName = "Grid", ushort port = 7000, string hostUserName = null)
+		{
+			try
+			{
+				AquaLogger.Log($"WorldManager: Starting session '{worldName}' on port {port}");
 
-                    if (_worldContainer == null)
-                    {
-                        Logger.Error("WorldRoot node still not found! Cannot load world.");
-                        return;
-                    }
-                }
+				// Create the world instance
+				var worldInstance = EnsureWorld(worldName, templateName);
+				if (worldInstance == null)
+				{
+					throw new InvalidOperationException($"Failed to create world '{worldName}'");
+				}
 
-                // First, clear existing world
-                foreach (Node child in _worldContainer.GetChildren())
-                {
-                    child.QueueFree();
-                }
+				var world = worldInstance.World;
 
-                // Wait a frame to ensure all nodes are properly freed
-                await ToSignal(GetTree(), "process_frame");
+				// Start networking session
+				world.StartSession(port, hostUserName);
 
-                // Instantiate the new world
-                Node newWorld = _loadedWorld.Instantiate();
+				// Add to managed worlds
+				lock (_worldsLock)
+				{
+					if (!_worlds.Contains(world))
+					{
+						_worlds.Add(world);
+					}
+				}
 
-                // Ensure the world has a unique name to avoid conflicts
-                if (newWorld is MultiplayerScene)
-                {
-                    // If it's a MultiplayerScene, make sure it has a unique name
-                    newWorld.Name = "Scene";
-                    Logger.Log($"Instantiated MultiplayerScene with name: {newWorld.Name}");
-                }
+				// Switch to the world
+				_worldsManager.SwitchToWorld(worldInstance.WorldId);
 
-                // Add the new world to the container
-                _worldContainer.AddChild(newWorld);
+				// Configure world
+				ConfigureWorld(world);
 
-                // Comment out scene tree logging to reduce console spam
-                // Logger.Log("Scene tree after loading world:");
-                // LogSceneTree(GetTree().Root, "");
+				// Initialize multiplayer scene
+				CallDeferred(nameof(InitializeMultiplayerSceneForWorld), world);
 
-                // Hide loading screen if it exists
-                if (_loadingScreen != null)
-                {
-                    _loadingScreen.Visible = false;
-                }
+				// Emit event
+				EmitSignal(SignalName.WorldAdded, world);
 
-                // Initialize server components if needed
-                if (ServerManager.CurrentServerType != ServerManager.ServerType.NotAServer)
-                {
-                    // First try to get the MultiplayerScene directly
-                    MultiplayerScene multiplayerScene = null;
+				AquaLogger.Log($"WorldManager: Session '{worldName}' started successfully on port {port}");
+				return world;
+			}
+			catch (Exception ex)
+			{
+				AquaLogger.Error($"WorldManager: Failed to start session '{worldName}': {ex.Message}");
+				return null;
+			}
+		}
 
-                    if (newWorld is MultiplayerScene directScene)
-                    {
-                        multiplayerScene = directScene;
-                    }
-                    else
-                    {
-                        // Try to find it in the children
-                        multiplayerScene = FindNodeByType<MultiplayerScene>(newWorld);
-                    }
+		/// <summary>
+		/// </summary>
+		public World JoinSession(string worldName, string address, ushort port)
+		{
+			try
+			{
+				AquaLogger.Log($"WorldManager: Joining session at {address}:{port}");
 
-                    if (multiplayerScene != null)
-                    {
-                        // Initialize the server components
-                        multiplayerScene.InitializeForServer();
-                        Logger.Log("Server multiplayer components initialized successfully.");
+				// Create a temporary world instance for the joined session
+				var worldInstance = EnsureWorld(worldName, "Grid");
+				if (worldInstance == null)
+				{
+					throw new InvalidOperationException($"Failed to create world for joining session");
+				}
 
-                        // Notify ServerManager about the new world
-                        var serverManager = GetNode<ServerManager>("/root/ServerManager");
-                        if (serverManager != null)
-                        {
-                            serverManager.OnWorldLoaded(newWorld);
-                        }
-                    }
-                    else
-                    {
-                        Logger.Error("MultiplayerScene not found in the loaded world.");
-                    }
-                }
+				var world = worldInstance.World;
 
-                Logger.Log($"World loaded successfully: {_currentWorldPath}");
-                EmitSignal(SignalName.WorldLoaded);
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"Error loading world: {ex.Message}\nStack trace: {ex.StackTrace}");
+				// Join the session
+				var uriBuilder = new UriBuilder("lnl", address, port);
+				world.JoinSession(uriBuilder.Uri);
 
-                // Hide loading screen if it exists
-                if (_loadingScreen != null)
-                {
-                    _loadingScreen.Visible = false;
-                }
-            }
-        }
+				// Add to managed worlds
+				lock (_worldsLock)
+				{
+					if (!_worlds.Contains(world))
+					{
+						_worlds.Add(world);
+					}
+				}
 
-        // Helper method to find a node of a specific type in the scene tree
-        private T FindNodeByType<T>(Node root) where T : class
-        {
-            // Check if the current node is of the desired type
-            if (root is T result)
-            {
-                return result;
-            }
+				// Switch to the world
+				_worldsManager.SwitchToWorld(worldInstance.WorldId);
 
-            // Recursively search through all children
-            foreach (var child in root.GetChildren())
-            {
-                var found = FindNodeByType<T>(child);
-                if (found != null)
-                {
-                    return found;
-                }
-            }
+				// Configure world
+				ConfigureWorld(world);
 
-            return null;
-        }
+				// Initialize multiplayer scene
+				CallDeferred(nameof(InitializeMultiplayerSceneForWorld), world);
 
-        // Helper method to log the scene tree for debugging
-        private void LogSceneTree(Node node, string indent)
-        {
-            Logger.Log(indent + node.Name + " (" + node.GetType().Name + ")");
-            foreach (var child in node.GetChildren())
-            {
-                LogSceneTree(child, indent + "  ");
-            }
-        }
-        private void HandleLoadError()
-        {
-            _isLoading = false;
-            Logger.Error($"Filed to LoadWorld: {_currentWorldPath}");
+				// Emit event
+				EmitSignal(SignalName.WorldAdded, world);
 
-            // Hide loading screen if it exists
-            if (_loadingScreen != null)
-            {
-                _loadingScreen.Visible = false;
-            }
+				AquaLogger.Log($"WorldManager: Successfully joined session at {address}:{port}");
+				return world;
+			}
+			catch (Exception ex)
+			{
+				AquaLogger.Error($"WorldManager: Failed to join session at {address}:{port}: {ex.Message}");
+				return null;
+			}
+		}
 
-            ClientManager.Instance?.JoinLocalHome();
-        }
+		/// <summary>
+		/// Get a world by name.
+		/// </summary>
+		public World GetWorldByName(string name)
+		{
+			lock (_worldsLock)
+			{
+				return _worlds.Find(w => w.WorldName.Value == name);
+			}
+		}
 
-    }
+		/// <summary>
+		/// Switch active world to the provided world instance.
+		/// </summary>
+		public void SwitchToWorld(World world)
+		{
+			if (world == null || _worldsManager == null)
+				return;
+
+			var instance = _worldsManager.GetWorldByName(world.WorldName.Value);
+			if (instance != null)
+			{
+				_worldsManager.SwitchToWorld(instance.WorldId);
+			}
+		}
+
+		/// <summary>
+		/// Remove a world from management.
+		/// </summary>
+		public void RemoveWorld(World world)
+		{
+			lock (_worldsLock)
+			{
+				_worlds.Remove(world);
+			}
+		}
+
+		// ===== LEGACY COMPATIBILITY METHODS =====
+
+		/// <summary>
+		/// Legacy method for loading worlds. Maps to appropriate StartLocal/StartSession.
+		/// </summary>
+		[Obsolete("Use StartLocal() or StartSession() instead")]
+		public void LoadWorld(string worldPath, bool disconnectFromCurrent = true)
+		{
+			try
+			{
+				var descriptor = ParseWorldDescriptor(worldPath);
+
+				// For now, treat all as local worlds
+				StartLocal(descriptor.Name, descriptor.Template);
+			}
+			catch (Exception ex)
+			{
+				AquaLogger.Error($"WorldManager: Error loading world '{worldPath}': {ex.Message}");
+			}
+		}
+
+		// ===== PRIVATE HELPER METHODS =====
+
+		private WorldInstance EnsureWorld(string worldName, string templateName)
+		{
+			// Check if world already exists
+			var existing = _worldsManager.GetWorldByName(worldName);
+			if (existing != null)
+			{
+				AquaLogger.Log($"WorldManager: World '{worldName}' already exists, reusing");
+				return existing;
+			}
+
+			// Validate template
+			if (TemplateManager.GetTemplate(templateName) == null)
+			{
+				AquaLogger.Warn($"WorldManager: Template '{templateName}' not registered. Defaulting to Grid.");
+				templateName = "Grid";
+			}
+
+			// Create new world
+			var created = _worldsManager.CreateWorld(worldName, templateName);
+			AquaLogger.Log($"WorldManager: Created new world '{worldName}' with template '{templateName}'");
+			return created;
+		}
+
+		private void ConfigureWorld(World world)
+		{
+			if (world == null)
+				return;
+
+			// Ensure UserRoot and spawn points exist
+			var userRoot = world.GetOrCreateUserRoot();
+			world.GetSpawnPoints();
+
+			AquaLogger.Log($"WorldManager: Configured world '{world.WorldName.Value}'");
+		}
+
+		private void InitializeMultiplayerSceneForWorld(World world)
+		{
+			try
+			{
+				var multiplayerScene = FindMultiplayerSceneInTree();
+				if (multiplayerScene != null)
+				{
+					if (world.IsAuthority)
+					{
+						multiplayerScene.InitializeForServer();
+						AquaLogger.Log($"WorldManager: Initialized MultiplayerScene for host in world '{world.WorldName.Value}'");
+
+						// Spawn host player
+						CallDeferred(nameof(SpawnHostPlayer), multiplayerScene);
+					}
+					else
+					{
+						AquaLogger.Log($"WorldManager: MultiplayerScene ready for client in world '{world.WorldName.Value}'");
+					}
+				}
+				else
+				{
+					AquaLogger.Warn("WorldManager: MultiplayerScene not found in tree");
+				}
+			}
+			catch (Exception ex)
+			{
+				AquaLogger.Error($"WorldManager: Error initializing MultiplayerScene: {ex.Message}");
+			}
+		}
+
+		private static void SpawnHostPlayer(MultiplayerScene scene)
+		{
+			try
+			{
+				// Check if player already exists
+				var existingPlayer = scene.GetPlayer(1);
+				if (existingPlayer != null)
+				{
+					AquaLogger.Log("WorldManager: Host player already exists, skipping spawn");
+					return;
+				}
+
+				// Spawn host player (authority ID 1)
+				scene.SpawnPlayer(1);
+				AquaLogger.Log("WorldManager: Spawned host player (ID 1)");
+			}
+			catch (Exception ex)
+			{
+				AquaLogger.Error($"WorldManager: Error spawning host player: {ex.Message}");
+			}
+		}
+
+		private struct WorldDescriptor
+		{
+			public string Name;
+			public string Template;
+		}
+
+		private WorldDescriptor ParseWorldDescriptor(string worldPath)
+		{
+			if (string.IsNullOrEmpty(worldPath))
+			{
+				return new WorldDescriptor { Name = "UntitledWorld", Template = "Grid" };
+			}
+
+			var fileName = Path.GetFileNameWithoutExtension(worldPath);
+			if (string.IsNullOrEmpty(fileName))
+			{
+				fileName = "UntitledWorld";
+			}
+
+			string template = "Grid";
+			if (fileName.Contains("Social", StringComparison.OrdinalIgnoreCase))
+			{
+				template = "Social Space";
+			}
+			else if (fileName.Contains("Empty", StringComparison.OrdinalIgnoreCase))
+			{
+				template = "Empty";
+			}
+
+			return new WorldDescriptor { Name = fileName, Template = template };
+		}
+
+		private WorldsManager FindWorldsManager()
+		{
+			return FindNodeRecursive<WorldsManager>(GetTree().Root);
+		}
+
+		private MultiplayerScene FindMultiplayerSceneInTree()
+		{
+			return FindNodeRecursive<MultiplayerScene>(GetTree().Root);
+		}
+
+		private T FindNodeRecursive<T>(Node root) where T : class
+		{
+			if (root is T match)
+			{
+				return match;
+			}
+
+			foreach (Node child in root.GetChildren())
+			{
+				var result = FindNodeRecursive<T>(child);
+				if (result != null)
+				{
+					return result;
+				}
+			}
+
+			return null;
+		}
+
+		public new void Dispose()
+		{
+			AquaLogger.Log("WorldManager: Disposing...");
+
+			lock (_worldsLock)
+			{
+				foreach (var world in _worlds)
+				{
+					try
+					{
+						world?.LeaveSession();
+					}
+					catch (Exception ex)
+					{
+						AquaLogger.Error($"WorldManager: Error disposing world: {ex.Message}");
+					}
+				}
+				_worlds.Clear();
+			}
+
+			_initialized = false;
+		}
+	}
 }

@@ -2,308 +2,387 @@ using System;
 using System.Collections.Generic;
 using Aquamarine.Source.Input;
 using Aquamarine.Source.Logging;
-using Aquamarine.Source.Management;
+using Aquamarine.Source.Scene;
 using Aquamarine.Source.Scene.Assets;
 using Aquamarine.Source.Scene.UI;
 using Godot;
+using Logger = Aquamarine.Source.Logging.Logger;
 
 namespace Aquamarine.Source.Scene.RootObjects;
 
-public partial class PlayerCharacterController : CharacterBody3D, ICharacterController
+/// <summary>
+/// Character controller responsible for representing a player inside a world.
+/// Combines locomotion, avatar parenting and limb pose sampling so child animators
+/// can drive bones using runtime input data.
+/// </summary>
+public partial class PlayerCharacterController : CharacterBody3D, IRootObject, ICharacterController
 {
-    public Node Self => this;
-    //public bool Dirty { get; set; }
-    public IDictionary<ushort, IChildObject> ChildObjects { get; } = new Dictionary<ushort, IChildObject>();
-    public IDictionary<ushort, IAssetProvider> AssetProviders { get; } = new Dictionary<ushort, IAssetProvider>();
+	private const float DefaultGravity = -24.0f;
 
-    public static readonly PackedScene PackedScene = ResourceLoader.Load<PackedScene>("res://Scenes/Objects/RootObjects/PlayerCharacterController.tscn");
+	[Export] private NodePath _nametagPath;
+	[Export] private NodePath _head;
+	[Export] private NodePath _leftHand;
+	[Export] private NodePath _rightHand;
+	[Export] private NodePath _hip;
+	[Export] private NodePath _leftFoot;
+	[Export] private NodePath _rightFoot;
 
-    public bool Debug = true;
+	[Export] public float WalkSpeed { get; set; } = 4.5f;
+	[Export] public float SprintSpeed { get; set; } = 7.5f;
+	[Export] public float Acceleration { get; set; } = 12.0f;
+	[Export] public float JumpVelocity { get; set; } = 6.5f;
+	[Export] public float Gravity { get; set; } = DefaultGravity;
+	[Export] public float PlayspaceFollowStrength { get; set; } = 8.0f;
 
-    public Avatar Avatar;
-    public string AvatarPrefab
-    {
-        get;
-        set
-        {
-            if (field == value) return;
-            field = value;
-            UpdateAvatar();
-        }
-    } = "builtin://Assets/Prefabs/johnaquamarinehumanoid.prefab";
+	public static PackedScene PackedScene { get; } =
+		ResourceLoader.Load<PackedScene>("res://Scenes/Objects/RootObjects/PlayerCharacterController.tscn");
 
-    // We'll use CustomPlayerSync instead of these
-    // [Export] public MultiplayerSynchronizer ClientSync;
-    // [Export] public MultiplayerSynchronizer ServerSync;
+	public Node Self => this;
+	public IDictionary<ushort, IChildObject> ChildObjects { get; } = new Dictionary<ushort, IChildObject>();
+	public IDictionary<ushort, IAssetProvider> AssetProviders { get; } = new Dictionary<ushort, IAssetProvider>();
 
-    [Export] public float UserHeight;
-    [Export] public Vector2 MovementInput;
-    [Export] public byte MovementButtons; // 0 = jump, 1 = sprint
+	public Avatar Avatar { get; private set; }
+	public Nameplate Nametag { get; private set; }
+	public string DisplayName { get; private set; }
+	public int Authority { get; private set; }
 
-    public bool JumpInput => (MovementButtons & (1 << 0)) > 0;
-    public bool SprintInput => (MovementButtons & (1 << 1)) > 0;
+	private Node3D _headNode;
+	private Node3D _leftHandNode;
+	private Node3D _rightHandNode;
+	private Node3D _hipNode;
+	private Node3D _leftFootNode;
+	private Node3D _rightFootNode;
 
-    [Export] public Vector3 HeadPosition;
-    [Export] public Quaternion HeadRotation = Quaternion.Identity;
+	private Vector3 _targetHorizontalVelocity;
+	private Vector3 _playspaceOffset;
+	private Camera3D _cachedCamera;
+	private bool _ready;
 
-    [Export] public Vector3 LeftHandPosition;
-    [Export] public Quaternion LeftHandRotation = Quaternion.Identity;
+	public override void _Ready()
+	{
+		base._Ready();
 
-    [Export] public Vector3 RightHandPosition;
-    [Export] public Quaternion RightHandRotation = Quaternion.Identity;
+		CacheNodes();
+		UpdateNametagVisibility();
+		_ready = true;
+	}
 
-    [Export] public Vector3 HipPosition;
-    [Export] public Quaternion HipRotation = Quaternion.Identity;
+	public override void _Process(double delta)
+	{
+		base._Process(delta);
 
-    [Export] public Vector3 LeftFootPosition;
-    [Export] public Quaternion LeftFootRotation = Quaternion.Identity;
+		if (!IsInstanceValid(this))
+		{
+			return;
+		}
 
-    [Export] public Vector3 RightFootPosition;
-    [Export] public Quaternion RightFootRotation = Quaternion.Identity;
-    [Export]
-    public Vector3 SyncVelocity
-    {
-        get => Velocity;
-        set => Velocity = value;
-    }
-    [Export]
-    public int Authority
-    {
-        get;
-        set
-        {
-            field = value;
-        }
-    }
+		UpdateLocalLimbNodes();
+		UpdateNametagBillboard();
+	}
 
-    [Export] public float CrouchRatio = 0.5f;
-    [Export] public float CrouchSpeed = 2f;
-    [Export] public float WalkSpeed = 5f;
-    [Export] public float RunSpeed = 8f;
-    [Export] public float JumpHeight = 1f;
-    private Vector3 targetVelocity;
-    private float moveSpeed;
+	public override void _PhysicsProcess(double delta)
+	{
+		base._PhysicsProcess(delta);
 
-    [Export] public Node3D Nametag;
-    [Export] private Node3D _head;
-    [Export] private Node3D _leftHand;
-    [Export] private Node3D _rightHand;
-    [Export] private Node3D _hip;
-    [Export] private Node3D _leftFoot;
-    [Export] private Node3D _rightFoot;
-    [Export] public string PlayerName { get; set; } = "John Aquamarine";
+		if (!HasLocalAuthority())
+		{
+			return;
+		}
 
-    private void UpdateAvatar()
-    {
-        if (Avatar is not null)
-        {
-            RemoveChild(Avatar);
-            Avatar.QueueFree();
-            Avatar = null;
-        }
-        Avatar = new Avatar();
-        AddChild(Avatar);
-        Avatar.Parent = this;
-        Prefab.SpawnObject(Avatar, AvatarPrefab);
-    }
+		var provider = IInputProvider.Instance;
+		if (provider == null)
+		{
+			return;
+		}
 
-    public override void _Ready()
-    {
-        base._Ready();
+		var dt = (float)delta;
+		ApplyHorizontalMovement(provider, dt);
+		ApplyVerticalMovement(provider, dt);
+		ApplyPlayspaceOffset(provider, dt);
 
-        if (Authority == Multiplayer.GetUniqueId())
-        {
-            PlayerName = System.Environment.MachineName;
-            (Nametag as Nameplate)?.SetText(PlayerName);
-        }
+		try
+		{
+			MoveAndSlide();
+		}
+		catch (Exception ex)
+		{
+			Logger.Error($"PlayerCharacterController.MoveAndSlide failed: {ex.Message}");
+		}
+	}
 
-        UpdateAvatar();
+	public void SetPlayerAuthority(int id)
+	{
+		Authority = id;
+		UpdateNametagVisibility();
+	}
 
-        Logger.Log("PlayerCharacterController initialized.");
-    }
+	public void Initialize(Godot.Collections.Dictionary<string, Variant> data)
+	{
+		if (data == null)
+		{
+			return;
+		}
 
-    public override void _Process(double delta)
-    {
-        base._Process(delta);
+		if (data.TryGetValue("name", out var nameValue) && nameValue.VariantType == Variant.Type.String)
+		{
+			SetDisplayName(nameValue.AsString());
+		}
+	}
 
-        var deltaf = (float)delta;
-        var authority = Authority == Multiplayer.GetUniqueId();
+	public void AddChildObject(ISceneObject obj)
+	{
+		if (obj?.Self is not Node node)
+		{
+			return;
+		}
 
-        if (authority)
-        {
-            (HeadPosition, HeadRotation) = IInputProvider.LimbTransform(IInputProvider.InputLimb.Head);
-            (LeftHandPosition, LeftHandRotation) = IInputProvider.LimbTransform(IInputProvider.InputLimb.LeftHand);
-            (RightHandPosition, RightHandRotation) = IInputProvider.LimbTransform(IInputProvider.InputLimb.RightHand);
-            (HipPosition, HipRotation) = IInputProvider.LimbTransform(IInputProvider.InputLimb.Hip);
-            (LeftFootPosition, LeftFootRotation) = IInputProvider.LimbTransform(IInputProvider.InputLimb.LeftFoot);
-            (RightFootPosition, RightFootRotation) = IInputProvider.LimbTransform(IInputProvider.InputLimb.RightFoot);
-            UserHeight = IInputProvider.Height;
-            MovementButtons = (byte)(((IInputProvider.JumpInput ? 1 : 0) << 0) | ((IInputProvider.SprintInput ? 1 : 0) << 1));
-            MovementInput = IInputProvider.MovementInputAxis;
-            Position += IInputProvider.PlayspaceMovementDelta;
-        }
+		switch (obj)
+		{
+			case Avatar avatar:
+				if (IsInstanceValid(Avatar) && Avatar != avatar)
+				{
+					Avatar.QueueFree();
+				}
 
-        if (Avatar is null)
-        {
-            if (MultiplayerScene.Instance.Prefabs.TryGetValue(AvatarPrefab, out var prefab) && prefab.Type == RootObjectType.Avatar && prefab.Valid())
-            {
-                Avatar = prefab.Instantiate() as Avatar;
-                AddChild(Avatar);
-            }
-        }
+				Avatar = avatar;
+				Avatar.Parent = this;
+				AddChild(avatar);
+				break;
 
-        var yVel = IsOnFloor() ? 0 : Velocity.Y - (9.8f * deltaf);
+			case IChildObject childObject when Avatar != null:
+				Avatar.AddChildObject(childObject);
+				break;
 
-        var headRotationFlat = ((HeadRotation * Vector3.Right) * new Vector3(1, 0, 1)).Normalized();
-        var headRotation = new Vector2(headRotationFlat.X, headRotationFlat.Z).Angle();
-        var movementRotated = MovementInput.Rotated(headRotation);
+			default:
+				AddChild(node);
+				break;
+		}
+	}
 
-        var targetSpeed = WalkSpeed;
-        if (HeadPosition.Y < (UserHeight * CrouchRatio)) targetSpeed = CrouchSpeed;
-        else if (SprintInput) targetSpeed = RunSpeed;
+	public Vector3 GetLimbPosition(IInputProvider.InputLimb limb) =>
+		GetLimbNode(limb)?.GlobalPosition ?? GlobalPosition;
 
-        moveSpeed = Mathf.Lerp(moveSpeed, targetSpeed, deltaf * 10);
+	public Quaternion GetLimbRotation(IInputProvider.InputLimb limb) =>
+		GetLimbNode(limb)?.GlobalTransform.Basis.GetRotationQuaternion() ?? GlobalTransform.Basis.GetRotationQuaternion();
 
-        if (IsOnFloor())
-        {
-            if (movementRotated.Length() > 0)
-            {
-                targetVelocity = new Vector3(movementRotated.X, 0, movementRotated.Y) * moveSpeed;
-            }
-            else
-            {
-                targetVelocity.X = Mathf.Lerp(targetVelocity.X, movementRotated.X * moveSpeed, deltaf * 10);
-                targetVelocity.Z = Mathf.Lerp(targetVelocity.Z, movementRotated.Y * moveSpeed, deltaf * 10);
-            }
-        }
-        else
-        {
-            if (movementRotated.Length() > 0)
-            {
-                targetVelocity.X = Mathf.Lerp(targetVelocity.X, movementRotated.X * moveSpeed, deltaf * 10);
-                targetVelocity.Z = Mathf.Lerp(targetVelocity.Z, movementRotated.Y * moveSpeed, deltaf * 10);
-            }
-        }
+	public void SetDisplayName(string name)
+	{
+		DisplayName = name ?? string.Empty;
 
-        Velocity = targetVelocity;
-        Velocity += new Vector3(0, yVel, 0);
+		if (Nametag != null && !string.IsNullOrEmpty(DisplayName))
+		{
+			Nametag.SetText(DisplayName);
+		}
+	}
 
-        if (IsOnFloor() && JumpInput)
-        {
-            // Math to make the player jump a prcise height in this case JumpHeight
-            Velocity += new Vector3(0, Mathf.Sqrt(2f * 9.8f * JumpHeight), 0);
-        }
+	/// <summary>
+	/// Simple respawn helper used by debug tooling. Resets velocity and moves to the given position.
+	/// </summary>
+	public void Respawn(Vector3? position = null)
+	{
+		var target = position ?? Vector3.Zero;
+		GlobalPosition = target;
+		Velocity = Vector3.Zero;
+		_targetHorizontalVelocity = Vector3.Zero;
+		_playspaceOffset = Vector3.Zero;
+	}
 
-        MoveAndSlide();
+	private void CacheNodes()
+	{
+		if (_ready)
+		{
+			return;
+		}
 
-        if (authority)
-        {
-            IInputProvider.Move(GlobalTransform);
-            _head.Scale = Vector3.Zero;
-        }
-        else
-        {
-            _head.Transform = new Transform3D(new Basis(HeadRotation), HeadPosition);
-            _head.Scale = ClientManager.ShowDebug ? Vector3.Zero : Vector3.One;
-        }
+		Nametag = GetNodeOrNull<Nameplate>(_nametagPath);
+		_headNode = GetNodeOrNull<Node3D>(_head);
+		_leftHandNode = GetNodeOrNull<Node3D>(_leftHand);
+		_rightHandNode = GetNodeOrNull<Node3D>(_rightHand);
+		_hipNode = GetNodeOrNull<Node3D>(_hip);
+		_leftFootNode = GetNodeOrNull<Node3D>(_leftFoot);
+		_rightFootNode = GetNodeOrNull<Node3D>(_rightFoot);
 
-        Nametag.Position = HeadPosition + new Vector3(0, 0.5f, 0);
-        Nametag.SetVisible(true);
+		if (Nametag == null)
+		{
+			Logger.Warn($"{nameof(PlayerCharacterController)}: Nametag node not assigned.");
+		}
+	}
 
-        if (Position.Y < -100)
-        {
-            Position = Vector3.Zero;
-        }
+	private void ApplyHorizontalMovement(IInputProvider provider, float delta)
+	{
+		var input = provider.GetMovementInputAxis;
+		var hasInput = input.LengthSquared() > 0.0001f;
 
-        // Debug limb position code
-        // TODO: Don't remove this is John Aquamarines debug visuals, if you must remove it, please replace the top section with the code below
-        // DebugDraw3D.DrawSphere(GlobalTransform * new Transform3D(new Basis(HeadRotation), HeadPosition).Origin, 0.025f, Colors.White);
-        // we want to keep debug code just incase something happens or as a fallback if we end up keeping the library in the release build.
-        if (ClientManager.ShowDebug)
-        {
-            // John Aquamarines head and eyes
-            var headPos = GlobalTransform * new Transform3D(new Basis(HeadRotation), HeadPosition);
-            if (!authority)
-            {
-                DebugDraw3D.DrawPosition(headPos);
-                DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(0.085f, 0.0f, -0.175f)), 0.0125f, Colors.Black);
-                DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(0.085f, 0.0f, -0.125f)), 0.05f, Colors.White);
-                DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(-0.085f, 0.0f, -0.175f)), 0.0125f, Colors.Black);
-                DebugDraw3D.DrawSphere(headPos.Origin + (HeadRotation * new Vector3(-0.085f, 0.0f, -0.125f)), 0.05f, Colors.White);
-            }
+		if (!hasInput)
+		{
+			_targetHorizontalVelocity = _targetHorizontalVelocity.Lerp(Vector3.Zero, Acceleration * delta);
+		}
+		else
+		{
+			var headBasis = _headNode?.GlobalBasis ?? GlobalTransform.Basis;
+			var forward = -headBasis.Z;
+			var right = headBasis.X;
 
-            // Limb debug point visuals
-            DebugDraw3D.DrawSphere(GlobalTransform * new Transform3D(new Basis(LeftHandRotation), LeftHandPosition).Origin, 0.025f, Colors.White);
-            DebugDraw3D.DrawSphere(GlobalTransform * new Transform3D(new Basis(RightHandRotation), RightHandPosition).Origin, 0.025f, Colors.White);
-            DebugDraw3D.DrawSphere(GlobalTransform * new Transform3D(new Basis(HipRotation), HipPosition).Origin, 0.025f, Colors.White);
-            DebugDraw3D.DrawSphere(GlobalTransform * new Transform3D(new Basis(LeftFootRotation), LeftFootPosition).Origin, 0.025f, Colors.White);
-            DebugDraw3D.DrawSphere(GlobalTransform * new Transform3D(new Basis(RightFootRotation), RightFootPosition).Origin, 0.025f, Colors.White);
-        }
+			var desiredDirection = (forward * input.Y) + (right * input.X);
+			if (desiredDirection.LengthSquared() > 0.001f)
+			{
+				desiredDirection = desiredDirection.Normalized();
+			}
 
-        // Temp proxy code
-        // TODO: Please remove this once avatars are properly implemented, this was a temp solution to have a "Head and Hands" avatar.
-        _leftHand.Transform = new Transform3D(new Basis(LeftHandRotation), LeftHandPosition);
-        _leftHand.Scale = ClientManager.ShowDebug ? Vector3.Zero : Vector3.One;
+			var targetSpeed = provider.GetSprintInput ? SprintSpeed : WalkSpeed;
+			var desiredVelocity = desiredDirection * targetSpeed;
+			_targetHorizontalVelocity = _targetHorizontalVelocity.Lerp(desiredVelocity, Acceleration * delta);
+		}
 
-        _rightHand.Transform = new Transform3D(new Basis(RightHandRotation), RightHandPosition);
-        _rightHand.Scale = ClientManager.ShowDebug ? Vector3.Zero : Vector3.One;
+		Velocity = new Vector3(_targetHorizontalVelocity.X, Velocity.Y, _targetHorizontalVelocity.Z);
+	}
 
-        _hip.Transform = new Transform3D(new Basis(HipRotation), HipPosition);
-        _hip.Scale = ClientManager.ShowDebug ? Vector3.Zero : Vector3.One;
+	private void ApplyVerticalMovement(IInputProvider provider, float delta)
+	{
+		var velocity = Velocity;
 
-        _leftFoot.Transform = new Transform3D(new Basis(LeftFootRotation), LeftFootPosition);
-        _leftFoot.Scale = ClientManager.ShowDebug ? Vector3.Zero : Vector3.One;
+		if (!IsOnFloor())
+		{
+			velocity.Y += Gravity * delta;
+		}
+		else if (provider.GetJumpInput)
+		{
+			velocity.Y = JumpVelocity;
+		}
+		else if (velocity.Y < 0)
+		{
+			velocity.Y = 0;
+		}
 
-        _rightFoot.Transform = new Transform3D(new Basis(RightFootRotation), RightFootPosition);
-        _rightFoot.Scale = ClientManager.ShowDebug ? Vector3.Zero : Vector3.One;
-    }
-    public override void _Input(InputEvent @event)
-    {
-        base._Input(@event);
+		Velocity = velocity;
+	}
 
-        if (Authority != Multiplayer.GetUniqueId())
-        {
-            return;
-        }
+	private void ApplyPlayspaceOffset(IInputProvider provider, float delta)
+	{
+		var deltaOffset = provider.GetPlayspaceMovementDelta;
+		if (deltaOffset == Vector3.Zero)
+		{
+			_playspaceOffset = _playspaceOffset.Lerp(Vector3.Zero, PlayspaceFollowStrength * delta);
+		}
+		else
+		{
+			_playspaceOffset += deltaOffset;
+		}
 
-        if (@event.IsActionPressed("Respawn"))
-        {
-            Respawn();
-        }
-    }
-    public void Respawn()
-    {
-        Position = Vector3.Zero;
-    }
-    public Vector3 GetLimbPosition(IInputProvider.InputLimb limb) =>
-        limb switch
-        {
-            IInputProvider.InputLimb.Head => HeadPosition,
-            IInputProvider.InputLimb.LeftHand => LeftHandPosition,
-            IInputProvider.InputLimb.RightHand => RightHandPosition,
-            IInputProvider.InputLimb.Hip => HipPosition,
-            IInputProvider.InputLimb.LeftFoot => LeftFootPosition,
-            IInputProvider.InputLimb.RightFoot => RightFootPosition,
-            _ => Vector3.Zero,
-        };
-    public Quaternion GetLimbRotation(IInputProvider.InputLimb limb) =>
-        limb switch
-        {
-            IInputProvider.InputLimb.Head => HeadRotation,
-            IInputProvider.InputLimb.LeftHand => LeftHandRotation,
-            IInputProvider.InputLimb.RightHand => RightHandRotation,
-            IInputProvider.InputLimb.Hip => HipRotation,
-            IInputProvider.InputLimb.LeftFoot => LeftFootRotation,
-            IInputProvider.InputLimb.RightFoot => RightFootRotation,
-            _ => Quaternion.Identity,
-        };
-    public void SetPlayerAuthority(int id) => Authority = id;
-    public void Initialize(Godot.Collections.Dictionary<string, Variant> data)
-    {
-        throw new NotImplementedException();
-    }
-    public void AddChildObject(ISceneObject obj)
-    {
-        throw new NotImplementedException();
-    }
+		if (_playspaceOffset != Vector3.Zero)
+		{
+			GlobalPosition += _playspaceOffset;
+			_playspaceOffset = Vector3.Zero;
+		}
+	}
+
+	private void UpdateLocalLimbNodes()
+	{
+		if (!HasLocalAuthority())
+		{
+			return;
+		}
+
+		var provider = IInputProvider.Instance;
+		if (provider == null)
+		{
+			return;
+		}
+
+		UpdateLimbNode(_headNode, provider, IInputProvider.InputLimb.Head);
+		UpdateLimbNode(_leftHandNode, provider, IInputProvider.InputLimb.LeftHand);
+		UpdateLimbNode(_rightHandNode, provider, IInputProvider.InputLimb.RightHand);
+		UpdateLimbNode(_hipNode, provider, IInputProvider.InputLimb.Hip);
+		UpdateLimbNode(_leftFootNode, provider, IInputProvider.InputLimb.LeftFoot);
+		UpdateLimbNode(_rightFootNode, provider, IInputProvider.InputLimb.RightFoot);
+	}
+
+	private void UpdateLimbNode(Node3D node, IInputProvider provider, IInputProvider.InputLimb limb)
+	{
+		if (node == null)
+		{
+			return;
+		}
+
+		var (pos, rot) = IInputProvider.LimbTransform(limb);
+		node.Transform = new Transform3D(new Basis(rot), pos);
+	}
+
+	private void UpdateNametagBillboard()
+	{
+		if (Nametag == null || _headNode == null)
+		{
+			return;
+		}
+
+		Nametag.GlobalPosition = _headNode.GlobalPosition + Vector3.Up * 0.15f;
+
+		var camera = GetActiveCamera();
+		if (camera != null)
+		{
+			Nametag.LookAt(camera.GlobalPosition, Vector3.Up);
+		}
+	}
+
+	private Camera3D GetActiveCamera()
+	{
+		if (_cachedCamera != null && IsInstanceValid(_cachedCamera))
+		{
+			return _cachedCamera;
+		}
+
+		_cachedCamera = GetViewport()?.GetCamera3D();
+		return _cachedCamera;
+	}
+
+	private Node3D GetLimbNode(IInputProvider.InputLimb limb) =>
+		limb switch
+		{
+			IInputProvider.InputLimb.Head => _headNode,
+			IInputProvider.InputLimb.LeftHand => _leftHandNode,
+			IInputProvider.InputLimb.RightHand => _rightHandNode,
+			IInputProvider.InputLimb.Hip => _hipNode,
+			IInputProvider.InputLimb.LeftFoot => _leftFootNode,
+			IInputProvider.InputLimb.RightFoot => _rightFootNode,
+			_ => null
+		};
+
+	private bool HasLocalAuthority()
+	{
+		if (!IsInsideTree())
+		{
+			return false;
+		}
+
+		var peer = Multiplayer?.MultiplayerPeer;
+		if (peer == null)
+		{
+			// No networking – treat as local authority.
+			return true;
+		}
+
+		try
+		{
+			return Multiplayer.GetUniqueId() == Authority;
+		}
+		catch (InvalidOperationException)
+		{
+			return true;
+		}
+	}
+
+	private void UpdateNametagVisibility()
+	{
+		if (Nametag == null)
+		{
+			return;
+		}
+
+		Nametag.SetVisible(!HasLocalAuthority());
+
+		if (!string.IsNullOrEmpty(DisplayName))
+		{
+			Nametag.SetText(DisplayName);
+		}
+	}
 }

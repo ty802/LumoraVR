@@ -1,6 +1,6 @@
-[gd_scene load_steps=12 format=3 uid="uid://d37lm476vrp1e"]
+[gd_scene load_steps=13 format=3 uid="uid://d37lm476vrp1e"]
 
-[ext_resource type="Script" uid="uid://bc5gbrtubsc4y" path="res://Source/Management/Client/ClientManager.cs" id="1_enrkg"]
+[ext_resource type="Script" path="res://Source/Core/Engine.cs" id="1_engine"]
 [ext_resource type="Script" uid="uid://bhyoymspo68w" path="res://Source/Management/WorldManager.cs" id="2_u2316"]
 [ext_resource type="Texture2D" uid="uid://jdjeattbqj2g" path="res://Assets/Textures/Dot.png" id="3_1i8qj"]
 [ext_resource type="Script" uid="uid://dkvhcndqncss0" path="res://Source/Management/HUD/HUDManager.cs" id="3_16xj1"]
@@ -11,10 +11,12 @@
 [ext_resource type="Script" uid="uid://c6c3vit8g0h42" path="res://Source/Management/DiscordManager.cs" id="9_yjnkr"]
 [ext_resource type="Script" uid="uid://c1hqgqm8cd0kq" path="res://Source/Management/Account/LoginManager.cs" id="10_yjnkr"]
 [ext_resource type="Script" uid="uid://cq7r1bkh3p031" path="res://Source/Assets/Database/LocalDatabase.cs" id="11_yjnkr"]
+[ext_resource type="Script" path="res://Source/Core/WorldsManager.cs" id="12_worlds"]
+[ext_resource type="Script" path="res://Source/Tools/DevToolManager.cs" id="13_devtool"]
 
-[node name="Root" type="Node" node_paths=PackedStringArray("_inputRoot")]
-script = ExtResource("1_enrkg")
-_inputRoot = NodePath("InputRoot")
+[node name="Root" type="Node" node_paths=PackedStringArray("InputRootPath")]
+script = ExtResource("1_engine")
+InputRootPath = NodePath("InputRoot")
 
 [node name="InputRoot" type="Node3D" parent="."]
 
@@ -65,8 +67,16 @@ layout_mode = 1
 [node name="WorldRoot" type="Node3D" parent="."]
 unique_name_in_owner = true
 
+[node name="Worlds" type="Node" parent="WorldRoot"]
+unique_name_in_owner = true
+script = ExtResource("12_worlds")
+
 [node name="WorldManager" type="Node" parent="."]
+unique_name_in_owner = true
 script = ExtResource("2_u2316")
+
+[node name="DevToolManager" type="Node" parent="."]
+script = ExtResource("13_devtool")
 
 [node name="ClientConnectionHandler" parent="." instance=ExtResource("8_yjnkr")]
 

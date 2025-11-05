@@ -4,8 +4,11 @@ using Aquamarine.Source.Input;
 using Aquamarine.Source.Logging;
 using Aquamarine.Source.Management;
 using Aquamarine.Source.Scene.RootObjects;
+using RuntimeEngine = Aquamarine.Source.Core.Engine;
+using Aquamarine.Source.Core;
 using Godot;
 using Godot.Collections;
+using Logger = Aquamarine.Source.Logging.Logger;
 
 namespace Aquamarine.Source.Scene.ChildObjects;
 
@@ -112,7 +115,7 @@ public partial class HeadAndHandsAnimator : Node, IChildObject
         Armature.SetBoneGlobalPose(RightHandBoneIndex, rightHandTransform);
 
         // Debug visualization if enabled
-        if (DebugBones && ClientManager.ShowDebug)
+        if (DebugBones && RuntimeEngine.ShowDebug)
         {
             // Draw debug spheres at bone positions
             var globalHeadPos = CharacterController.GlobalTransform * headTransform.Origin;

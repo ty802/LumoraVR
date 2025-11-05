@@ -1,46 +1,47 @@
 using Aquamarine.Source.Input;
 using Aquamarine.Source.Logging;
 using Godot;
+using Logger = Aquamarine.Source.Logging.Logger;
 
 namespace Aquamarine.Source.Management.HUD;
 
 public partial class HUDManager : Control
 {
-    public static HUDManager Instance;
+	public static HUDManager Instance;
 
-    [Export] public Control DebugOverlay;
+	[Export] public Control DebugOverlay;
 
-    [Export] public Control MainMenu;
+	[Export] public Control MainMenu;
 
-    public override void _Ready()
-    {
-        base._Ready();
-        Instance = this;
-        Logger.Log("HUD initialized.");
-    }
+	public override void _Ready()
+	{
+		base._Ready();
+		Instance = this;
+		Logger.Log("HUD initialized.");
+	}
 
-    public override void _Input(InputEvent @event)
-    {
-        base._Input(@event);
+	public override void _Input(InputEvent @event)
+	{
+		base._Input(@event);
 
-        if (@event.IsActionPressed("ToggleDebugUI"))
-        {
-            InputManager.MovementLocked = !InputManager.MovementLocked;
-            DebugOverlay.Visible = InputManager.MovementLocked;
-        }
+		if (@event.IsActionPressed("ToggleDebugUI"))
+		{
+			InputManager.MovementLocked = !InputManager.MovementLocked;
+			DebugOverlay.Visible = InputManager.MovementLocked;
+		}
 
-        if (@event.IsActionPressed("ui_cancel"))
-        {
-            InputManager.MovementLocked = !InputManager.MovementLocked;
-            MainMenu.Visible = InputManager.MovementLocked;
-        }
+		if (@event.IsActionPressed("ui_cancel"))
+		{
+			InputManager.MovementLocked = !InputManager.MovementLocked;
+			MainMenu.Visible = InputManager.MovementLocked;
+		}
 
-        if (@event.IsActionPressed("ui_home"))
-        {
-            Logger.Log($"Sample log message.");
-            Logger.Warn($"Sample warn message.");
-            Logger.Error($"Sample error message.");
-            Logger.Debug($"Sample debug message.");
-        }
-    }
+		if (@event.IsActionPressed("ui_home"))
+		{
+			Logger.Log($"Sample log message.");
+			Logger.Warn($"Sample warn message.");
+			Logger.Error($"Sample error message.");
+			Logger.Debug($"Sample debug message.");
+		}
+	}
 }

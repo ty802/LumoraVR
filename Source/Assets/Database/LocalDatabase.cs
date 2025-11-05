@@ -3,6 +3,7 @@ using System.IO;
 using System.Collections.Generic;
 using Godot;
 using Aquamarine.Source.Logging;
+using Logger = Aquamarine.Source.Logging.Logger;
 
 namespace Aquamarine.Source.Management
 {
@@ -32,7 +33,7 @@ namespace Aquamarine.Source.Management
                 HandleLockFile();
                 GenerateEncryptionKey();
                 LoadDatabase();
-                Logger.Log("Local database initialized successfully");
+                Logging.Logger.Log("Local database initialized successfully");
             }
             catch (Exception ex)
             {

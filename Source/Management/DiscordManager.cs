@@ -3,6 +3,7 @@ using Godot;
 using Aquamarine.Source.Logging;
 using System.Diagnostics;
 using DiscordRPC;
+using Logger = Aquamarine.Source.Logging.Logger;
 
 namespace Aquamarine.Source.Management
 {

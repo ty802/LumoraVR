@@ -20,7 +20,7 @@ namespace Aquamarine.Source.Management
                 }
                 catch (IOException)
                 {
-                    Logger.Error("Another instance of LumoraVR is running. Multiple instances are not supported.");
+                    Logging.Logger.Error("Another instance of LumoraVR is running. Multiple instances are not supported.");
                     GetTree().Quit();
                     return;
                 }

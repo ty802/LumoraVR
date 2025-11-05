@@ -269,6 +269,42 @@ text = "[center] 🔎 [/center]"
 script = ExtResource("3_b7g3j")
 MinMaxSize = Vector2(8, 48)
 
+[node name="ButtonPlus" type="Button" parent="Primary Container/Worlds Tab/HBoxContainer2"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 80)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_stretch_ratio = 0.1
+
+[node name="RichTextLabelAutoSizeNode" type="Control" parent="Primary Container/Worlds Tab/HBoxContainer2/ButtonPlus"]
+layout_mode = 1
+anchor_top = 0.05
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_vertical = 3
+mouse_filter = 1
+script = ExtResource("2_p0jjy")
+
+[node name="_RichTextLabel_61502" type="RichTextLabel" parent="Primary Container/Worlds Tab/HBoxContainer2/ButtonPlus/RichTextLabelAutoSizeNode"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 1
+theme_override_font_sizes/bold_italics_font_size = 48
+theme_override_font_sizes/italics_font_size = 48
+theme_override_font_sizes/mono_font_size = 48
+theme_override_font_sizes/normal_font_size = 48
+theme_override_font_sizes/bold_font_size = 48
+bbcode_enabled = true
+text = "[center] ➕ [/center]"
+script = ExtResource("3_b7g3j")
+MinMaxSize = Vector2(8, 48)
+
 [node name="Button2" type="Button" parent="Primary Container/Worlds Tab/HBoxContainer2"]
 custom_minimum_size = Vector2(0, 80)
 layout_mode = 2
@@ -391,7 +427,8 @@ size_flags_vertical = 3
 mouse_filter = 0
 theme_override_constants/separation = 12
 
-[node name="TextureRect" type="TextureRect" parent="ContextContainer/WorldsContext/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer"]
+[node name="WorldPreview" type="TextureRect" parent="ContextContainer/WorldsContext/MarginContainer/World Details/HBoxContainer3/VBoxContainer/HBoxContainer"]
+unique_name_in_owner = true
 layout_mode = 2
 size_flags_vertical = 3
 mouse_filter = 0

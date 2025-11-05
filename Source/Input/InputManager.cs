@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Aquamarine.Source.Management;
 using Godot;
+using RuntimeEngine = Aquamarine.Source.Core.Engine;
 
 namespace Aquamarine.Source.Input;
 
@@ -65,7 +65,7 @@ public partial class InputManager : Node
         base._Ready();
         Instance = this;
 
-        _isServer = ServerManager.CurrentServerType != ServerManager.ServerType.NotAServer;
+        _isServer = RuntimeEngine.IsDedicatedServer;
         if (_isServer) return;
 
         _window = GetViewport().GetWindow();

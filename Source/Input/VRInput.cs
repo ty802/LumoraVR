@@ -35,11 +35,11 @@ public partial class VRInput : Node3D, IInputProvider
             _leftFoot.ProcessPriority = -10;
             _rightFoot.ProcessPriority = -10;
 
-            Logger.Log("XRInput initialized successfully.");
+            Logging.Logger.Log("XRInput initialized successfully.");
         }
         catch (Exception ex)
         {
-            Logger.Error($"Error during XRInput initialization: {ex.Message}");
+            Logging.Logger.Error($"Error during XRInput initialization: {ex.Message}");
         }
     }
 

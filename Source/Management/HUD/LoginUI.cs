@@ -3,6 +3,7 @@ using System.Threading.Tasks;
 using Aquamarine.Source.Management;
 using Aquamarine.Source.Logging;
 using Godot;
+using Logger = Aquamarine.Source.Logging.Logger;
 
 namespace Aquamarine.Source.Management.HUD;
 

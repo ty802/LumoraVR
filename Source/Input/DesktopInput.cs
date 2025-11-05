@@ -21,11 +21,11 @@ public partial class DesktopInput : Node3D, IInputProvider
 
             ProcessPriority = -9;
 
-            Logger.Log("DesktopInput initialized successfully.");
+            Logging.Logger.Log("DesktopInput initialized successfully.");
         }
         catch (Exception ex)
         {
-            Logger.Error($"Error during DesktopInput initialization: {ex.Message}");
+            Logging.Logger.Error($"Error during DesktopInput initialization: {ex.Message}");
         }
     }
     public override void _Process(double delta)

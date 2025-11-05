@@ -3,11 +3,14 @@ using System.Linq;
 using Aquamarine.Source.Helpers;
 using Aquamarine.Source.Input;
 using Aquamarine.Source.Scene.RootObjects;
+using RuntimeEngine = Aquamarine.Source.Core.Engine;
+using Aquamarine.Source.Core;
 using Aquamarine.Source.Logging;
 using Bones.Core;
 using Bones.InverseKinematics;
 using Godot;
 using Aquamarine.Source.Management;
+using Logger = Aquamarine.Source.Logging.Logger;
 
 namespace Aquamarine.Source.Scene.ChildObjects;
 
@@ -252,7 +255,7 @@ public partial class HumanoidAnimator : Node3D, IChildObject
         Armature.SetBoneGlobalPosePosition(_spineBones.Last(), Armature.GetBoneGlobalPose(_spineBones.Last()).Origin + offset);
         
         // Debug visualization
-        if (DebugBones && ClientManager.ShowDebug)
+        if (DebugBones && RuntimeEngine.ShowDebug)
         {
             // Calculate global transforms for visualization
             var globalHead = CharacterController.GlobalTransform * headTransform;

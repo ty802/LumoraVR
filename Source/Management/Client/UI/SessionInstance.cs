@@ -1,42 +1,74 @@
 using Aquamarine.Source.Management;
 using Godot;
 using System;
-using System.Data;
+
 namespace Aquamarine.Source.Management.Client.UI;
+
 public partial class SessionInstance : HBoxContainer
 {
     private RichTextLabel _detailsText;
     private RichTextLabel _sessionUsersLabel;
     private string _id;
     private WorldsTab _tab;
+    private Action _joinAction;
+    private bool _isLocal;
+
     public override void _Ready()
     {
         base._Ready();
         _detailsText = GetNode("%DetailsText") as RichTextLabel;
         _sessionUsersLabel = GetNode("%PlayersText") as RichTextLabel;
     }
+
     /// <summary>
-    /// Updates the session instance with the given session info
+    /// Updates the session instance with the given session info.
     /// </summary>
-    /// <param name="info"></param>
-    /// <param name="tab"></param>
     internal void UpdateData(SessionInfo info, WorldsTab tab)
     {
         _id = info.SessionIdentifier;
+        _tab = tab;
+        _isLocal = false;
 #if DEBUG
         _detailsText.Text = info.SessionIdentifier;
 #else
-        _detailsText.Text = info.Name; // Changed from SessionName to Name
+        _detailsText.Text = info.Name;
 #endif
-        _tab = tab;
+        if (_sessionUsersLabel != null)
+        {
+            _sessionUsersLabel.Text = info.Direct ? "Direct session" : "Relay session";
+        }
+        _joinAction = () =>
+        {
+            if (!string.IsNullOrEmpty(_id))
+            {
+                _tab?.joinSession(_id);
+            }
+        };
     }
+
+    /// <summary>
+    /// Updates this instance to represent a local world entry.
+    /// </summary>
+    internal void UpdateLocal(string title, string subtitle, Action joinAction)
+    {
+        _id = null;
+        _tab = null;
+        _isLocal = true;
+        _detailsText.Text = title;
+        if (_sessionUsersLabel != null)
+        {
+            _sessionUsersLabel.Text = subtitle;
+        }
+        _joinAction = joinAction;
+    }
+
     public void OnJoinButtonPressed()
     {
-        if (_id is null)
-            return;
-        _tab?.joinSession(_id); // Fixed method call
+        _joinAction?.Invoke();
     }
+
     public void OnPortalButtonPressed()
     {
+        // Portals for local worlds are not yet implemented.
     }
 }

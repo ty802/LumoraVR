@@ -16,7 +16,7 @@ namespace Aquamarine.Source.Helpers
             // Safety check for null or disposed objects
             if (GDobject == null || !IsInstanceValid(GDobject))
             {
-                Logger.Error("RunOnNodeSync: Node is null or disposed");
+                Logging.Logger.Error("RunOnNodeSync: Node is null or disposed");
                 return;
             }
 
@@ -33,7 +33,7 @@ namespace Aquamarine.Source.Helpers
                     }
                     catch (Exception ex)
                     {
-                        Logger.Error($"RunOnNodeSync: Exception in action: {ex.Message}");
+                        Logging.Logger.Error($"RunOnNodeSync: Exception in action: {ex.Message}");
                     }
                     finally
                     {
@@ -44,14 +44,14 @@ namespace Aquamarine.Source.Helpers
                 // Check if node is still in tree
                 if (!GDobject.IsInsideTree())
                 {
-                    Logger.Error("RunOnNodeSync: Node is not in scene tree");
+                    Logging.Logger.Error("RunOnNodeSync: Node is not in scene tree");
                     return;
                 }
 
                 var tree = GDobject.GetTree();
                 if (tree == null)
                 {
-                    Logger.Error("RunOnNodeSync: Could not get SceneTree");
+                    Logging.Logger.Error("RunOnNodeSync: Could not get SceneTree");
                     return;
                 }
 
@@ -66,11 +66,11 @@ namespace Aquamarine.Source.Helpers
             }
             catch (ObjectDisposedException)
             {
-                Logger.Error("RunOnNodeSync: Node was disposed during operation");
+                Logging.Logger.Error("RunOnNodeSync: Node was disposed during operation");
             }
             catch (Exception ex)
             {
-                Logger.Error($"RunOnNodeSync: Unexpected error: {ex.Message}");
+                Logging.Logger.Error($"RunOnNodeSync: Unexpected error: {ex.Message}");
             }
         }
 
@@ -79,7 +79,7 @@ namespace Aquamarine.Source.Helpers
             // Safety check for null or disposed objects
             if (GDobject == null || !IsInstanceValid(GDobject))
             {
-                Logger.Error("RunOnNodeAsync: Node is null or disposed");
+                Logging.Logger.Error("RunOnNodeAsync: Node is null or disposed");
                 return;
             }
 
@@ -96,7 +96,7 @@ namespace Aquamarine.Source.Helpers
                     }
                     catch (Exception ex)
                     {
-                        Logger.Error($"RunOnNodeAsync: Exception in action: {ex.Message}");
+                        Logging.Logger.Error($"RunOnNodeAsync: Exception in action: {ex.Message}");
                     }
                     finally
                     {
@@ -107,14 +107,14 @@ namespace Aquamarine.Source.Helpers
                 // Check if node is still in tree
                 if (!GDobject.IsInsideTree())
                 {
-                    Logger.Error("RunOnNodeAsync: Node is not in scene tree");
+                    Logging.Logger.Error("RunOnNodeAsync: Node is not in scene tree");
                     return;
                 }
 
                 var tree = GDobject.GetTree();
                 if (tree == null)
                 {
-                    Logger.Error("RunOnNodeAsync: Could not get SceneTree");
+                    Logging.Logger.Error("RunOnNodeAsync: Could not get SceneTree");
                     return;
                 }
 
@@ -126,7 +126,7 @@ namespace Aquamarine.Source.Helpers
                 }
                 catch (Exception ex)
                 {
-                    Logger.Error($"RunOnNodeAsync: Error waiting for semaphore: {ex.Message}");
+                    Logging.Logger.Error($"RunOnNodeAsync: Error waiting for semaphore: {ex.Message}");
                 }
 
                 // Check again if tree is valid before removing the callback
@@ -139,17 +139,17 @@ namespace Aquamarine.Source.Helpers
                     catch (ObjectDisposedException)
                     {
                         // Tree was disposed, nothing we can do
-                        Logger.Error("RunOnNodeAsync: Tree was disposed when removing callback");
+                        Logging.Logger.Error("RunOnNodeAsync: Tree was disposed when removing callback");
                     }
                 }
             }
             catch (ObjectDisposedException)
             {
-                Logger.Error("RunOnNodeAsync: Node was disposed during operation");
+                Logging.Logger.Error("RunOnNodeAsync: Node was disposed during operation");
             }
             catch (Exception ex)
             {
-                Logger.Error($"RunOnNodeAsync: Unexpected error: {ex.Message}");
+                Logging.Logger.Error($"RunOnNodeAsync: Unexpected error: {ex.Message}");
             }
         }
 

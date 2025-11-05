@@ -7,6 +7,7 @@ using System.Linq;
 using System.Text;
 using Aquamarine.Source.Logging;
 using Godot;
+using Logger = Aquamarine.Source.Logging.Logger;
 
 namespace Aquamarine.Source.Management
 {

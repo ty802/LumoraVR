@@ -1,12 +1,13 @@
-[gd_scene load_steps=5 format=3 uid="uid://bqoqe72r7ln6v"]
+[gd_scene load_steps=5 format=3 uid="uid://bb4fijcdpjsdg"]
 
-[ext_resource type="Script" uid="uid://btwis85m8rytv" path="res://Source/Management/Server/ServerManager.cs" id="1_or8wb"]
+[ext_resource type="Script" path="res://Source/Management/Server/ServerManager.cs" id="1_or8wb"]
 [ext_resource type="Script" uid="uid://beum44yjstvne" path="res://Source/Management/PlayerManager.cs" id="2_ruubs"]
 [ext_resource type="Script" uid="uid://bhyoymspo68w" path="res://Source/Management/WorldManager.cs" id="3_ruubs"]
 [ext_resource type="Script" uid="uid://cslh78hdd5kro" path="res://Source/Management/CustomPlayerSpawner.cs" id="4_ixnqm"]
 
 [node name="Root" type="Node"]
 script = ExtResource("1_or8wb")
+Advertise = null
 
 [node name="Camera3D" type="Camera3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.8, 5)

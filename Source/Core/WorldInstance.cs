@@ -13,138 +13,130 @@ namespace Aquamarine.Source.Core;
 /// </summary>
 public partial class WorldInstance : Node
 {
-    public World World { get; private set; }
-    public string WorldId { get; private set; }
-    public string WorldName { get; set; }
-    public string TemplateName { get; set; }
-    public bool IsActive { get; private set; }
-    public Texture2D PreviewTexture { get; private set; }
+	public enum WorldPrivacyLevel
+	{
+		Hidden,
+		Private,
+		Public
+	}
 
-    public WorldInstance()
-    {
-        WorldId = System.Guid.NewGuid().ToString();
-    }
+	public World World { get; private set; }
+	public string WorldId { get; private set; }
+	public string WorldName { get; set; }
+	public string TemplateName { get; set; }
+	public bool IsActive { get; private set; }
+	public Texture2D PreviewTexture { get; private set; }
+	public WorldPrivacyLevel Privacy { get; set; } = WorldPrivacyLevel.Hidden;
 
-    public override void _Ready()
-    {
-        base._Ready();
+	public WorldInstance()
+	{
+		WorldId = System.Guid.NewGuid().ToString();
+	}
 
-        // Create the World if it doesn't exist
-        if (World == null)
-        {
-            World = new World();
-            AddChild(World);
-            AquaLogger.Log($"WorldInstance created: {WorldId}");
-        }
+	public override void _Ready()
+	{
+		base._Ready();
 
-        EnsureMultiplayerInfrastructure();
-    }
+		// Create the World if it doesn't exist
+		if (World == null)
+		{
+			World = new World();
+			World.Name = "World"; // Set descriptive name instead of @Node@XXX
+			AddChild(World);
+			AquaLogger.Log($"WorldInstance created: {WorldId}");
+		}
 
-    /// <summary>
-    /// Apply a template to this world instance.
-    /// </summary>
-    public void ApplyTemplate(string templateName)
-    {
-        if (World == null)
-        {
-            AquaLogger.Error("Cannot apply template: World is null");
-            return;
-        }
+		EnsureUserSpawnInfrastructure();
+	}
 
-        var template = TemplateManager.GetTemplate(templateName);
-        if (template == null)
-        {
-            AquaLogger.Error($"Template '{templateName}' not found");
-            return;
-        }
+	/// <summary>
+	/// Apply a template to this world instance.
+	/// </summary>
+	public void ApplyTemplate(string templateName)
+	{
+		if (World == null)
+		{
+			AquaLogger.Error("Cannot apply template: World is null");
+			return;
+		}
 
-        template.ApplyWithSetup(World);
-        TemplateName = templateName;
-        AquaLogger.Log($"Applied template '{templateName}' to world '{WorldName}' with automatic UserRoot and SpawnPoints");
-        PreviewTexture = template.GetPreviewTexture();
-        EnsureMultiplayerInfrastructure();
-    }
+		var template = TemplateManager.GetTemplate(templateName);
+		if (template == null)
+		{
+			AquaLogger.Error($"Template '{templateName}' not found");
+			return;
+		}
 
-    /// <summary>
-    /// Activate this world (make it visible and process).
-    /// </summary>
-    public void Activate()
-    {
-        ProcessMode = ProcessModeEnum.Inherit;
-        if (World != null)
-        {
-            World.ProcessMode = ProcessModeEnum.Inherit;
-            // World.RootSlot is a Node3D which has Show()
-            if (World.RootSlot != null)
-            {
-                World.RootSlot.Show();
-            }
-        }
-        IsActive = true;
-        AquaLogger.Log($"World '{WorldName}' activated");
-    }
+		template.ApplyWithSetup(World);
+		TemplateName = templateName;
+		AquaLogger.Log($"Applied template '{templateName}' to world '{WorldName}' with automatic UserRoot and SpawnPoints");
+		PreviewTexture = template.GetPreviewTexture();
+		EnsureUserSpawnInfrastructure();
+	}
 
-    /// <summary>
-    /// Deactivate this world (hide and pause processing).
-    /// </summary>
-    public void Deactivate()
-    {
-        ProcessMode = ProcessModeEnum.Disabled;
-        if (World != null)
-        {
-            World.ProcessMode = ProcessModeEnum.Disabled;
-            // World.RootSlot is a Node3D which has Hide()
-            if (World.RootSlot != null)
-            {
-                World.RootSlot.Hide();
-            }
-        }
-        IsActive = false;
-        AquaLogger.Log($"World '{WorldName}' deactivated");
-    }
+	/// <summary>
+	/// Activate this world (make it visible and process).
+	/// </summary>
+	public void Activate()
+	{
+		ProcessMode = ProcessModeEnum.Inherit;
+		if (World != null)
+		{
+			World.ProcessMode = ProcessModeEnum.Inherit;
+			// World.RootSlot is a Node3D which has Show()
+			if (World.RootSlot != null)
+			{
+				World.RootSlot.Show();
+			}
+		}
+		IsActive = true;
+		AquaLogger.Log($"World '{WorldName}' activated");
+	}
 
-    private void EnsureMultiplayerInfrastructure()
-    {
-        var multiplayerScene = GetNodeOrNull<MultiplayerScene>("MultiplayerScene");
-        if (multiplayerScene == null)
-        {
-            multiplayerScene = new MultiplayerScene
-            {
-                Name = "MultiplayerScene"
-            };
-            AddChild(multiplayerScene);
-            AquaLogger.Log("Created MultiplayerScene node for world instance.");
-        }
+	/// <summary>
+	/// Deactivate this world (hide and pause processing).
+	/// </summary>
+	public void Deactivate()
+	{
+		ProcessMode = ProcessModeEnum.Disabled;
+		if (World != null)
+		{
+			World.ProcessMode = ProcessModeEnum.Disabled;
+			// World.RootSlot is a Node3D which has Hide()
+			if (World.RootSlot != null)
+			{
+				World.RootSlot.Hide();
+			}
+		}
+		IsActive = false;
+		AquaLogger.Log($"World '{WorldName}' deactivated");
+	}
 
-        var playerRoot = multiplayerScene.GetNodeOrNull<Node3D>("PlayerRoot");
-        if (playerRoot == null)
-        {
-            playerRoot = new Node3D { Name = "PlayerRoot" };
-            multiplayerScene.AddChild(playerRoot);
-            AquaLogger.Log("Created PlayerRoot for MultiplayerScene.");
-        }
-        multiplayerScene.PlayerRoot = playerRoot;
+	/// <summary>
+	/// Setup user spawning infrastructure in the world by ensuring a SimpleUserSpawn component is present.
+	/// </summary>
+	private void EnsureUserSpawnInfrastructure()
+	{
+		if (World == null || World.RootSlot == null)
+		{
+			AquaLogger.Warn("WorldInstance: Cannot setup user spawn - World or RootSlot is null");
+			return;
+		}
 
-        var spawner = multiplayerScene.GetNodeOrNull<CustomPlayerSpawner>("CustomPlayerSpawner");
-        if (spawner == null)
-        {
-            spawner = new CustomPlayerSpawner
-            {
-                Name = "CustomPlayerSpawner"
-            };
-            multiplayerScene.AddChild(spawner);
-            AquaLogger.Log("Created CustomPlayerSpawner for MultiplayerScene.");
-        }
-        spawner.PlayerScene = PlayerCharacterController.PackedScene;
-        spawner.SetSpawnRoot(playerRoot.GetPath());
-        multiplayerScene.PlayerSpawner = spawner;
+		// Look for existing SimpleUserSpawn component
+		var spawnSlot = World.RootSlot.FindChild("UserSpawner", false);
+		if (spawnSlot == null)
+		{
+			spawnSlot = World.RootSlot.AddSlot("UserSpawner");
+			AquaLogger.Log("WorldInstance: Created UserSpawner slot");
+		}
 
-        var playerSync = multiplayerScene.GetNodeOrNull<Node>("CustomPlayerSync");
-        if (playerSync == null)
-        {
-            playerSync = new Node { Name = "CustomPlayerSync" };
-            multiplayerScene.AddChild(playerSync);
-            AquaLogger.Log("Created placeholder CustomPlayerSync node.");
-        }
-    }
+		var userSpawn = spawnSlot.GetComponent<Components.SimpleUserSpawn>();
+		if (userSpawn == null)
+		{
+			userSpawn = spawnSlot.AttachComponent<Components.SimpleUserSpawn>();
+			userSpawn.PlayerScene.Value = PlayerCharacterController.PackedScene;
+			AquaLogger.Log("WorldInstance: Added SimpleUserSpawn component");
+		}
+	}
 }

@@ -17,6 +17,8 @@
 [node name="Root" type="Node" node_paths=PackedStringArray("InputRootPath")]
 script = ExtResource("1_engine")
 InputRootPath = NodePath("InputRoot")
+AutoHostLocalHome = true
+AutoConnectLocalHome = true
 
 [node name="InputRoot" type="Node3D" parent="."]
 

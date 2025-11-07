@@ -1,8 +1,17 @@
 using Godot;
-using Aquamarine.Source.Tools;
+// using Aquamarine.Source.Tools; // REMOVED: Tools system temporarily disabled
 using AquaLogger = Aquamarine.Source.Logging.Logger;
 
 namespace Aquamarine.Source.Interaction;
+
+/// <summary>
+/// Specifies which hand this controller represents.
+/// </summary>
+public enum HandSide
+{
+    Left,
+    Right
+}
 
 /// <summary>
 /// Controls a VR hand with grab laser, tool slot, and input handling.
@@ -19,13 +28,13 @@ public partial class HandController : Node3D
     [Export] public string TriggerAction { get; set; } = "trigger";
 
     private GrabLaser _grabLaser;
-    private ToolSlot _toolSlot;
+    // private ToolSlot _toolSlot; // REMOVED: Tools system temporarily disabled
     private XRController3D _xrController;
     private bool _isGripping;
     private bool _isTriggeringTool;
 
     public GrabLaser GrabLaser => _grabLaser;
-    public ToolSlot ToolSlot => _toolSlot;
+    // public ToolSlot ToolSlot => _toolSlot; // REMOVED: Tools system temporarily disabled
 
     public override void _Ready()
     {
@@ -37,7 +46,7 @@ public partial class HandController : Node3D
         }
 
         SetupGrabLaser();
-        SetupToolSlot();
+        // SetupToolSlot(); // REMOVED: Tools system temporarily disabled
 
         AquaLogger.Log($"HandController {Hand} initialized");
     }
@@ -57,26 +66,27 @@ public partial class HandController : Node3D
         }
     }
 
-    private void SetupToolSlot()
-    {
-        if (!EnableToolSlot)
-            return;
-
-        _toolSlot = GetNodeOrNull<ToolSlot>("ToolSlot");
-        if (_toolSlot == null)
-        {
-            _toolSlot = new ToolSlot();
-            _toolSlot.Name = "ToolSlot";
-            _toolSlot.Hand = Hand;
-            AddChild(_toolSlot);
-            AquaLogger.Log($"Created ToolSlot for {Hand} hand");
-        }
-    }
+    // REMOVED: Tools system temporarily disabled
+    // private void SetupToolSlot()
+    // {
+    //     if (!EnableToolSlot)
+    //         return;
+    //
+    //     _toolSlot = GetNodeOrNull<ToolSlot>("ToolSlot");
+    //     if (_toolSlot == null)
+    //     {
+    //         _toolSlot = new ToolSlot();
+    //         _toolSlot.Name = "ToolSlot";
+    //         _toolSlot.Hand = Hand;
+    //         AddChild(_toolSlot);
+    //         AquaLogger.Log($"Created ToolSlot for {Hand} hand");
+    //     }
+    // }
 
     public override void _Process(double delta)
     {
         HandleGripInput();
-        HandleTriggerInput();
+        // HandleTriggerInput(); // REMOVED: Tools system temporarily disabled
     }
 
     private void HandleGripInput()
@@ -103,29 +113,30 @@ public partial class HandController : Node3D
         }
     }
 
-    private void HandleTriggerInput()
-    {
-        if (_toolSlot == null || !_toolSlot.HasTool)
-            return;
-
-        string actionName = Hand == HandSide.Left ? $"{TriggerAction}_left" : $"{TriggerAction}_right";
-
-        // Check if trigger is pressed
-        bool triggerPressed = Godot.Input.IsActionPressed(actionName);
-
-        if (triggerPressed && !_isTriggeringTool)
-        {
-            // Trigger just pressed
-            _toolSlot.TriggerPrimaryAction();
-            _isTriggeringTool = true;
-        }
-        else if (!triggerPressed && _isTriggeringTool)
-        {
-            // Trigger released
-            _toolSlot.ReleasePrimaryAction();
-            _isTriggeringTool = false;
-        }
-    }
+    // REMOVED: Tools system temporarily disabled
+    // private void HandleTriggerInput()
+    // {
+    //     if (_toolSlot == null || !_toolSlot.HasTool)
+    //         return;
+    //
+    //     string actionName = Hand == HandSide.Left ? $"{TriggerAction}_left" : $"{TriggerAction}_right";
+    //
+    //     // Check if trigger is pressed
+    //     bool triggerPressed = Godot.Input.IsActionPressed(actionName);
+    //
+    //     if (triggerPressed && !_isTriggeringTool)
+    //     {
+    //         // Trigger just pressed
+    //         _toolSlot.TriggerPrimaryAction();
+    //         _isTriggeringTool = true;
+    //     }
+    //     else if (!triggerPressed && _isTriggeringTool)
+    //     {
+    //         // Trigger released
+    //         _toolSlot.ReleasePrimaryAction();
+    //         _isTriggeringTool = false;
+    //     }
+    // }
 
     /// <summary>
     /// Set whether the grab laser is visible.
@@ -138,21 +149,22 @@ public partial class HandController : Node3D
         }
     }
 
-    /// <summary>
-    /// Equip a tool to this hand.
-    /// </summary>
-    public void EquipTool(ITool tool)
-    {
-        _toolSlot?.EquipTool(tool);
-    }
-
-    /// <summary>
-    /// Unequip the current tool from this hand.
-    /// </summary>
-    public void UnequipTool()
-    {
-        _toolSlot?.UnequipTool();
-    }
+    // REMOVED: Tools system temporarily disabled
+    // /// <summary>
+    // /// Equip a tool to this hand.
+    // /// </summary>
+    // public void EquipTool(ITool tool)
+    // {
+    //     _toolSlot?.EquipTool(tool);
+    // }
+    //
+    // /// <summary>
+    // /// Unequip the current tool from this hand.
+    // /// </summary>
+    // public void UnequipTool()
+    // {
+    //     _toolSlot?.UnequipTool();
+    // }
 
     /// <summary>
     /// Force release any grabbed object.

@@ -125,6 +125,7 @@ namespace Aquamarine.Source.Management
 					throw new InvalidOperationException($"Failed to create world '{worldName}'");
 				}
 
+				worldInstance.Privacy = WorldInstance.WorldPrivacyLevel.Hidden;
 				var world = worldInstance.World;
 
 				// Add to managed worlds
@@ -170,6 +171,7 @@ namespace Aquamarine.Source.Management
 					throw new InvalidOperationException($"Failed to create world '{worldName}'");
 				}
 
+				worldInstance.Privacy = WorldInstance.WorldPrivacyLevel.Public;
 				var world = worldInstance.World;
 
 				// Start networking session
@@ -189,9 +191,6 @@ namespace Aquamarine.Source.Management
 
 				// Configure world
 				ConfigureWorld(world);
-
-				// Initialize multiplayer scene
-				CallDeferred(nameof(InitializeMultiplayerSceneForWorld), world);
 
 				// Emit event
 				EmitSignal(SignalName.WorldAdded, world);
@@ -221,6 +220,7 @@ namespace Aquamarine.Source.Management
 					throw new InvalidOperationException($"Failed to create world for joining session");
 				}
 
+				worldInstance.Privacy = WorldInstance.WorldPrivacyLevel.Public;
 				var world = worldInstance.World;
 
 				// Join the session
@@ -241,9 +241,6 @@ namespace Aquamarine.Source.Management
 
 				// Configure world
 				ConfigureWorld(world);
-
-				// Initialize multiplayer scene
-				CallDeferred(nameof(InitializeMultiplayerSceneForWorld), world);
 
 				// Emit event
 				EmitSignal(SignalName.WorldAdded, world);
@@ -353,58 +350,6 @@ namespace Aquamarine.Source.Management
 			AquaLogger.Log($"WorldManager: Configured world '{world.WorldName.Value}'");
 		}
 
-		private void InitializeMultiplayerSceneForWorld(World world)
-		{
-			try
-			{
-				var multiplayerScene = FindMultiplayerSceneInTree();
-				if (multiplayerScene != null)
-				{
-					if (world.IsAuthority)
-					{
-						multiplayerScene.InitializeForServer();
-						AquaLogger.Log($"WorldManager: Initialized MultiplayerScene for host in world '{world.WorldName.Value}'");
-
-						// Spawn host player
-						CallDeferred(nameof(SpawnHostPlayer), multiplayerScene);
-					}
-					else
-					{
-						AquaLogger.Log($"WorldManager: MultiplayerScene ready for client in world '{world.WorldName.Value}'");
-					}
-				}
-				else
-				{
-					AquaLogger.Warn("WorldManager: MultiplayerScene not found in tree");
-				}
-			}
-			catch (Exception ex)
-			{
-				AquaLogger.Error($"WorldManager: Error initializing MultiplayerScene: {ex.Message}");
-			}
-		}
-
-		private static void SpawnHostPlayer(MultiplayerScene scene)
-		{
-			try
-			{
-				// Check if player already exists
-				var existingPlayer = scene.GetPlayer(1);
-				if (existingPlayer != null)
-				{
-					AquaLogger.Log("WorldManager: Host player already exists, skipping spawn");
-					return;
-				}
-
-				// Spawn host player (authority ID 1)
-				scene.SpawnPlayer(1);
-				AquaLogger.Log("WorldManager: Spawned host player (ID 1)");
-			}
-			catch (Exception ex)
-			{
-				AquaLogger.Error($"WorldManager: Error spawning host player: {ex.Message}");
-			}
-		}
 
 		private struct WorldDescriptor
 		{
@@ -441,11 +386,6 @@ namespace Aquamarine.Source.Management
 		private WorldsManager FindWorldsManager()
 		{
 			return FindNodeRecursive<WorldsManager>(GetTree().Root);
-		}
-
-		private MultiplayerScene FindMultiplayerSceneInTree()
-		{
-			return FindNodeRecursive<MultiplayerScene>(GetTree().Root);
 		}
 
 		private T FindNodeRecursive<T>(Node root) where T : class

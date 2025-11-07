@@ -103,6 +103,9 @@ public partial class Slot : Node3D, IWorldElement
 	{
 		RefID = _nextRefID++;
 		InitializeSyncFields();
+		
+		// Set Godot node name to match SlotName for better debugging
+		Name = "Slot";
 	}
 
 	private void InitializeSyncFields()
@@ -119,6 +122,9 @@ public partial class Slot : Node3D, IWorldElement
 		LocalPosition.OnChanged += (val) => Position = val;
 		LocalRotation.OnChanged += (val) => Quaternion = val;
 		LocalScale.OnChanged += (val) => Scale = val;
+		
+		// Hook up name synchronization - update Godot node name when SlotName changes
+		SlotName.OnChanged += (val) => Name = val ?? "Slot";
 	}
 
 	/// <summary>
@@ -188,7 +194,14 @@ public partial class Slot : Node3D, IWorldElement
 	{
 		var slot = new Slot();
 		slot.SlotName.Value = name;
-		slot.World = World;
+		slot.Name = name; // Set Godot node name immediately
+		
+		// Initialize the slot if this slot is initialized
+		if (World != null)
+		{
+			slot.Initialize(World);
+		}
+		
 		slot.Parent = this;
 		return slot;
 	}

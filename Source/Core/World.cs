@@ -51,16 +51,36 @@ public partial class World : Node
 		Destroyed
 	}
 
+	public enum WorldFocus
+	{
+		Background,
+		Focused,
+		Overlay
+	}
+
+	public enum WorldEvent
+	{
+		OnFocusChanged,
+		OnUserJoined,
+		OnUserLeft,
+		OnWorldDestroy
+	}
+
 	private readonly Dictionary<ulong, IWorldElement> _elements = new();
 	private readonly HashSet<IWorldElement> _dirtyElements = new();
 	private readonly Dictionary<string, List<Slot>> _slotsByTag = new();
 	private readonly List<Slot> _rootSlots = new();
 	private readonly List<User> _users = new();
+	private readonly List<User> _joinedUsers = new();
+	private readonly List<User> _leftUsers = new();
+	private readonly List<IWorldEventReceiver>[] _worldEventReceivers;
 	private WorldState _state = WorldState.Created;
 	private Session _session;
 	private ConnectorManager _connectorManager;
 	private TrashBin _trashBin;
 	private RefIDAllocator _refIDAllocator;
+	private WorldFocus _focus = WorldFocus.Background;
+	private static int _worldEventTypeCount = Enum.GetValues(typeof(WorldEvent)).Length;
 
 	/// <summary>
 	/// Current state of the World.
@@ -157,6 +177,14 @@ public partial class World : Node
 		_connectorManager = new ConnectorManager(this);
 		_trashBin = new TrashBin(this);
 		_refIDAllocator = new RefIDAllocator(this);
+		
+		// Initialize event receiver arrays
+		int length = Enum.GetValues(typeof(WorldEvent)).Length;
+		_worldEventReceivers = new List<IWorldEventReceiver>[length];
+		for (int i = 0; i < length; i++)
+		{
+			_worldEventReceivers[i] = new List<IWorldEventReceiver>();
+		}
 	}
 
 	public override void _Ready()
@@ -370,23 +398,6 @@ public partial class World : Node
 	}
 
 	/// <summary>
-	/// Process the World update loop.
-	/// </summary>
-	public override void _Process(double delta)
-	{
-		if (_state != WorldState.Running) return;
-
-		var scaledDelta = delta * TimeScale;
-		TotalTime += scaledDelta;
-
-		// Update trash bin (clean up expired entries)
-		_trashBin?.Update();
-
-		// Note: Slots and Components handle their own updates via _Process
-		// This is where we would batch network synchronization
-	}
-
-	/// <summary>
 	/// Destroy the World and all its contents.
 	/// </summary>
 	public void DestroyWorld()
@@ -428,6 +439,9 @@ public partial class World : Node
 				_users.Add(user);
 				_elements[user.ReferenceID] = user;
 				AquaLogger.Log($"User added to world: {user.UserName.Value}");
+				
+				// Trigger user joined event
+				TriggerUserJoinedEvent(user);
 			}
 		}
 	}
@@ -444,6 +458,9 @@ public partial class World : Node
 			_users.Remove(user);
 			_elements.Remove(user.ReferenceID);
 			AquaLogger.Log($"User removed from world: {user.UserName.Value}");
+			
+			// Trigger user left event
+			TriggerUserLeftEvent(user);
 		}
 	}
 
@@ -606,5 +623,126 @@ public partial class World : Node
 	public void SetStateVersion(ulong version)
 	{
 		StateVersion = version;
+	}
+
+	/// <summary>
+	/// Process the World update loop.
+	/// </summary>
+	public override void _Process(double delta)
+	{
+		if (_state != WorldState.Running) return;
+
+		var scaledDelta = delta * TimeScale;
+		TotalTime += scaledDelta;
+
+		// Run world events (user joined/left, etc.)
+		RunWorldEvents();
+
+		// Update trash bin (clean up expired entries)
+		_trashBin?.Update();
+
+		// Note: Slots and Components handle their own updates via _Process
+		// This is where we would batch network synchronization
+	}
+
+	/// <summary>
+	/// Register a component to receive world events.
+	/// </summary>
+	public void RegisterEventReceiver(IWorldEventReceiver receiver)
+	{
+		foreach (WorldEvent eventType in Enum.GetValues(typeof(WorldEvent)))
+		{
+			if (receiver.HasEventHandler(eventType))
+			{
+				_worldEventReceivers[(int)eventType].Add(receiver);
+			}
+		}
+	}
+
+	/// <summary>
+	/// Unregister a component from receiving world events.
+	/// </summary>
+	public void UnregisterEventReceiver(IWorldEventReceiver receiver)
+	{
+		foreach (WorldEvent eventType in Enum.GetValues(typeof(WorldEvent)))
+		{
+			if (receiver.HasEventHandler(eventType))
+			{
+				_worldEventReceivers[(int)eventType].Remove(receiver);
+			}
+		}
+	}
+
+	/// <summary>
+	/// Trigger user joined events to all registered receivers.
+	/// Should be called from AddUser.
+	/// </summary>
+	private void TriggerUserJoinedEvent(User user)
+	{
+		_joinedUsers.Add(user);
+	}
+
+	/// <summary>
+	/// Trigger user left events to all registered receivers.
+	/// Should be called from RemoveUser.
+	/// </summary>
+	private void TriggerUserLeftEvent(User user)
+	{
+		_leftUsers.Add(user);
+	}
+
+	/// <summary>
+	/// Process all pending world events and notify receivers.
+	/// Called during world update cycle.
+	/// </summary>
+	private void RunWorldEvents()
+	{
+		// Process user joined events
+		if (_joinedUsers.Count > 0)
+		{
+			foreach (var user in _joinedUsers)
+			{
+				foreach (var receiver in _worldEventReceivers[(int)WorldEvent.OnUserJoined])
+				{
+					try
+					{
+						receiver.OnUserJoined(user);
+					}
+					catch (Exception ex)
+					{
+						AquaLogger.Error($"Error in OnUserJoined handler: {ex.Message}");
+					}
+				}
+			}
+			_joinedUsers.Clear();
+		}
+
+		// Process user left events
+		if (_leftUsers.Count > 0)
+		{
+			foreach (var user in _leftUsers)
+			{
+				foreach (var receiver in _worldEventReceivers[(int)WorldEvent.OnUserLeft])
+				{
+					try
+					{
+						receiver.OnUserLeft(user);
+					}
+					catch (Exception ex)
+					{
+						AquaLogger.Error($"Error in OnUserLeft handler: {ex.Message}");
+					}
+				}
+			}
+			_leftUsers.Clear();
+		}
+	}
+
+	/// <summary>
+	/// Add a slot to the world.
+	/// </summary>
+	public Slot AddSlot(string name = "Slot")
+	{
+		return RootSlot.AddSlot(name);
 	}
 }

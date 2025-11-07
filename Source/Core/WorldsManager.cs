@@ -189,53 +189,28 @@ public partial class WorldsManager : Node
         return _worlds.Values.ToList();
     }
 
-    /// <summary>
-    /// Update UserSpace to follow the player in the active world.
-    /// Also updates the player spawner to spawn players INSIDE the active world's UserRoot.
-    /// players are children of World/Root/Users/User_[Name].
-    /// </summary>
-    private void UpdateUserSpace()
-    {
-        if (_activeWorld == null || _activeWorld.World == null)
-            return;
+	/// <summary>
+	/// Update UserSpace for the active world.
+	/// Players are spawned by the world's SimpleUserSpawn component.
+	/// </summary>
+	private void UpdateUserSpace()
+	{
+		if (_activeWorld == null || _activeWorld.World == null)
+			return;
 
-        // Get or create UserRoot in the active world 
-        var userRoot = _activeWorld.World.GetOrCreateUserRoot();
-        if (userRoot == null || userRoot.Slot == null)
-        {
-            AquaLogger.Error("Failed to get UserRoot for active world");
-            return;
-        }
+		// Ensure the world has user spawning infrastructure
+		var userRoot = _activeWorld.World.GetOrCreateUserRoot();
+		if (userRoot == null || userRoot.Slot == null)
+		{
+			AquaLogger.Error("Failed to get UserRoot for active world");
+			return;
+		}
 
-        // Find CustomPlayerSpawner - check both client and server scenes
-        var playerSpawner = GetTree().Root.GetNodeOrNull<Aquamarine.Source.Management.CustomPlayerSpawner>("%CustomPlayerSpawner");
+		AquaLogger.Log($"WorldsManager: Active world '{_activeWorld.WorldName}' has UserRoot at {userRoot.Slot.GetPath()}");
 
-        if (playerSpawner != null)
-        {
-            // Update spawner to use the UserRoot slot (players spawn INSIDE the world)
-            playerSpawner.SetSpawnRoot(userRoot.Slot.GetPath());
-            AquaLogger.Log($"Updated player spawner to use UserRoot in world '{_activeWorld.WorldName}' at {userRoot.Slot.GetPath()}");
-        }
-        else
-        {
-            AquaLogger.Warn("CustomPlayerSpawner not found - players may not spawn correctly");
-        }
-
-        // Update UserSpace if available
-        if (_userSpace != null)
-        {
-            var multiplayerScene = GetTree().Root.GetNodeOrNull<Aquamarine.Source.Management.MultiplayerScene>("MultiplayerScene");
-            if (multiplayerScene != null)
-            {
-                var localPlayer = multiplayerScene.GetLocalPlayer();
-                if (localPlayer != null)
-                {
-                    _userSpace.Initialize(_activeWorld.World, localPlayer);
-                    AquaLogger.Log("UserSpace updated for new world");
-                }
-            }
-        }
-    }
+		// UserSpace will update itself based on the active world
+		// Player spawning is now handled by SimpleUserSpawn component in the world
+	}
 
     /// <summary>
     /// Get the UserSpace instance.

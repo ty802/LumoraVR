@@ -11,23 +11,18 @@
 unique_name_in_owner = true
 script = ExtResource("1")
 
-[node name="MultiplayerScene" type="Node" parent="." node_paths=PackedStringArray("PlayerSpawner", "PlayerRoot")]
+[node name="MultiplayerScene" type="Node" parent="." node_paths=PackedStringArray("PlayerSpawner")]
 script = ExtResource("2")
 PlayerSpawner = NodePath("CustomPlayerSpawner")
-PlayerRoot = NodePath("PlayerRoot")
 
 [node name="CustomPlayerSpawner" type="Node" parent="MultiplayerScene" node_paths=PackedStringArray("SpawnPoints")]
 unique_name_in_owner = true
 script = ExtResource("3")
-SpawnRootPath = NodePath("../PlayerRoot")
 SpawnPoints = []
 
 [node name="CustomPlayerSync" type="Node" parent="MultiplayerScene"]
 unique_name_in_owner = true
 script = ExtResource("4")
-
-[node name="PlayerRoot" type="Node3D" parent="MultiplayerScene"]
-unique_name_in_owner = true
 
 [node name="Camera3D" type="Camera3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 0.866025, 0.5, 0, -0.5, 0.866025, 0, 3, 5)

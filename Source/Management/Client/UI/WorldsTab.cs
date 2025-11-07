@@ -160,13 +160,7 @@ public partial class WorldsTab : Control
 
         var updated = new Dictionary<string, LocalWorldInfo>();
 
-        var localHome = BuildLocalHomeInfo();
-        if (localHome != null)
-        {
-            updated[localHome.WorldId] = localHome;
-            EnsureLocalWorldCard(localHome);
-        }
-
+        // Don't create a separate "local_home" entry - just list actual worlds from WorldsManager
         var worldsManager = WorldsManager.Instance;
         if (worldsManager != null)
         {
@@ -182,13 +176,20 @@ public partial class WorldsTab : Control
                     preview = TemplateManager.GetTemplate(instance.TemplateName)?.GetPreviewTexture();
                 }
 
+                // Special display name for LocalHome
+                var displayName = instance.WorldName;
+                if (instance.WorldName == "LocalHome")
+                {
+                    displayName = $"{System.Environment.UserName}'s Local Home";
+                }
+
                 var description = string.IsNullOrEmpty(instance.TemplateName)
                     ? "Locally hosted world"
                     : $"Locally hosted world based on {instance.TemplateName}";
 
                 var info = new LocalWorldInfo(
                     instance.WorldId,
-                    instance.WorldName,
+                    displayName,
                     preview ?? _defaultPreview,
                     () => WorldsManager.Instance?.SwitchToWorld(instance.WorldId),
                     description);
@@ -214,17 +215,8 @@ public partial class WorldsTab : Control
         }
     }
 
-    private LocalWorldInfo BuildLocalHomeInfo()
-    {
-        var displayName = $"{System.Environment.UserName}'s Local Home";
-        var preview = TemplateManager.GetTemplate("Grid")?.GetPreviewTexture() ?? _defaultPreview;
-        return new LocalWorldInfo(
-            "local_home",
-            displayName,
-            preview,
-            () => Engine.Instance?.JoinLocalHome(),
-            "Your personal home space hosted locally.");
-    }
+    // REMOVED: BuildLocalHomeInfo() - was creating duplicate LocalHome entry
+    // LocalHome now shown directly from WorldsManager.Worlds
 
     private void OnWorldChanged(string worldId)
     {

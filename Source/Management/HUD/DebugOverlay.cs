@@ -82,15 +82,19 @@ public partial class DebugOverlay : Control
 			await _playerTimer.WaitForNextTickAsync();
 			while (!_cts.Token.IsCancellationRequested)
 			{
-				if ((playerref is not null ? !playerref.TryGetTarget(out var _) : true) && MultiplayerScene.Instance is MultiplayerScene mm)
+				// REMOVED: MultiplayerScene reference
+				// TODO: Implement player tracking through World.LocalUser
+				/*
+				if ((playerref is not null ? !playerref.TryGetTarget(out var _) : true))
 				{
-					mm.RunOnNodeAsync(() =>
+					// Get player from active world
+					var world = WorldManager.Instance?.ActiveWorld;
+					if (world?.LocalUser != null)
 					{
-						var thing = MultiplayerScene.Instance?.GetLocalPlayer();
-						if (thing is not null)
-							playerref = new(thing);
-					});
+						// TODO: Get PlayerCharacterController from LocalUser's UserRoot
+					}
 				}
+				*/
 				await _playerTimer.WaitForNextTickAsync();
 			}
 		});
@@ -308,7 +312,14 @@ public partial class DebugOverlay : Control
 		ConsoleInput.Clear();
 		var strings = newText.Split(' ');  // Remove .ToLower() cus password shenanigans 
 		if (strings.Length == 0) return;
-		var player = MultiplayerScene.Instance.GetLocalPlayer();
+		
+		// REMOVED: MultiplayerScene reference
+		PlayerCharacterController player = null;
+		if (playerref?.TryGetTarget(out player) ?? false)
+		{
+			// Use cached player reference
+		}
+		
 		try
 		{
 			switch (strings[0])
@@ -539,7 +550,14 @@ public partial class DebugOverlay : Control
 		_statsTextStringBuilder.AppendLine();
 
 		_statsTextStringBuilder.AppendLine("Networking");
-		//_statsTextStringBuilder.AppendLine($"{IntLabel} Player Count: {string.Format(IntValue, MultiplayerScene.Instance.PlayerList.Count)}");
+		
+		// REMOVED: MultiplayerScene.PlayerList reference
+		// Get player count from active world
+		var world = WorldManager.Instance?.ActiveWorld;
+		if (world != null)
+		{
+			_statsTextStringBuilder.AppendLine($"{IntLabel} Player Count: {string.Format(IntValue, world.GetAllUsers().Count)}");
+		}
 
 		// Add network stats
 		var multiplayerPeer = Multiplayer.MultiplayerPeer;

@@ -1,7 +1,7 @@
 using Godot;
 using Aquamarine.Source.Core;
 using Aquamarine.Source.Core.Components;
-using Aquamarine.Source.Inspector;
+// using Aquamarine.Source.Inspector; // REMOVED: Inspector system temporarily disabled
 using AquaLogger = Aquamarine.Source.Logging.Logger;
 
 namespace Aquamarine.Source.Examples;
@@ -13,8 +13,8 @@ namespace Aquamarine.Source.Examples;
 public partial class ComponentArchitectureDemo : Node3D
 {
     private World _demoWorld;
-    private InspectorSystem _inspector;
-    private HierarchyBrowser _hierarchy;
+    // private InspectorSystem _inspector; // REMOVED: Inspector system temporarily disabled
+    // private HierarchyBrowser _hierarchy; // REMOVED: Inspector system temporarily disabled
 
     public override void _Ready()
     {
@@ -22,7 +22,7 @@ public partial class ComponentArchitectureDemo : Node3D
         AquaLogger.Log("Demonstrating Slot-Component architecture");
 
         CreateDemoWorld();
-        SetupInspectorUI();
+        // SetupInspectorUI(); // REMOVED: Inspector system temporarily disabled
         CreateDemoContent();
     }
 
@@ -38,31 +38,32 @@ public partial class ComponentArchitectureDemo : Node3D
         AquaLogger.Log($"Created world: {_demoWorld.WorldName.Value}");
     }
 
-    /// <summary>
-    /// Setup the inspector UI for viewing and editing.
-    /// </summary>
-    private void SetupInspectorUI()
-    {
-        // Create inspector panel
-        _inspector = new InspectorSystem();
-        _inspector.Position = new Vector2(10, 10);
-
-        // Create hierarchy browser
-        _hierarchy = new HierarchyBrowser();
-        _hierarchy.Position = new Vector2(10, 450);
-        _hierarchy.SetWorld(_demoWorld);
-
-        // Connect signals
-        _hierarchy.SlotSelected += (slot) => _inspector.SelectSlot(slot);
-
-        // Add to UI layer (would normally go in a CanvasLayer)
-        var canvas = new CanvasLayer();
-        AddChild(canvas);
-        canvas.AddChild(_inspector);
-        canvas.AddChild(_hierarchy);
-
-        AquaLogger.Log("Inspector UI created");
-    }
+    // REMOVED: Inspector system temporarily disabled
+    // /// <summary>
+    // /// Setup the inspector UI for viewing and editing.
+    // /// </summary>
+    // private void SetupInspectorUI()
+    // {
+    //     // Create inspector panel
+    //     _inspector = new InspectorSystem();
+    //     _inspector.Position = new Vector2(10, 10);
+    //
+    //     // Create hierarchy browser
+    //     _hierarchy = new HierarchyBrowser();
+    //     _hierarchy.Position = new Vector2(10, 450);
+    //     _hierarchy.SetWorld(_demoWorld);
+    //
+    //     // Connect signals
+    //     _hierarchy.SlotSelected += (slot) => _inspector.SelectSlot(slot);
+    //
+    //     // Add to UI layer (would normally go in a CanvasLayer)
+    //     var canvas = new CanvasLayer();
+    //     AddChild(canvas);
+    //     canvas.AddChild(_inspector);
+    //     canvas.AddChild(_hierarchy);
+    //
+    //     AquaLogger.Log("Inspector UI created");
+    // }
 
     /// <summary>
     /// Create demo content to showcase the architecture.
@@ -131,7 +132,7 @@ public partial class ComponentArchitectureDemo : Node3D
         cubeSlot.LocalPosition.Value = new Vector3(0, 2, 0);
 
         AquaLogger.Log("\n=== Demo Content Created ===");
-        AquaLogger.Log("Use the hierarchy browser and inspector to explore!");
+        AquaLogger.Log("Demo content ready!");
     }
 
     /// <summary>
@@ -170,11 +171,11 @@ public partial class ComponentArchitectureDemo : Node3D
             CreateRandomCube();
         }
 
-        // Press F3 to expand all hierarchy
-        if (@event is InputEventKey keyEvent3 && keyEvent3.Pressed && keyEvent3.Keycode == Key.F3)
-        {
-            _hierarchy.ExpandAll();
-        }
+        // Press F3 to expand all hierarchy - REMOVED: Inspector system temporarily disabled
+        // if (@event is InputEventKey keyEvent3 && keyEvent3.Pressed && keyEvent3.Keycode == Key.F3)
+        // {
+        //     _hierarchy.ExpandAll();
+        // }
     }
 
     private void CreateRandomCube()
@@ -201,6 +202,6 @@ public partial class ComponentArchitectureDemo : Node3D
         };
 
         AquaLogger.Log($"Created random cube at {slot.LocalPosition.Value}");
-        _hierarchy.FocusSlot(slot);
+        // _hierarchy.FocusSlot(slot); // REMOVED: Inspector system temporarily disabled
     }
 }

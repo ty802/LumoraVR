@@ -1,7 +1,7 @@
-[gd_scene load_steps=5 format=3 uid="uid://bb4fijcdpjsdg"]
+[gd_scene load_steps=5 format=3 uid="uid://ckmhrs83myq4"]
 
 [ext_resource type="Script" path="res://Source/Management/Server/ServerManager.cs" id="1_or8wb"]
-[ext_resource type="Script" uid="uid://beum44yjstvne" path="res://Source/Management/PlayerManager.cs" id="2_ruubs"]
+[ext_resource type="Script" path="res://Source/Management/PlayerManager.cs" id="2_ruubs"]
 [ext_resource type="Script" uid="uid://bhyoymspo68w" path="res://Source/Management/WorldManager.cs" id="3_ruubs"]
 [ext_resource type="Script" uid="uid://cslh78hdd5kro" path="res://Source/Management/CustomPlayerSpawner.cs" id="4_ixnqm"]
 

@@ -5,16 +5,11 @@
 
 [node name="LocalHome" type="Node"]
 
-[node name="MultiplayerScene" type="Node" parent="." node_paths=PackedStringArray("PlayerSpawner", "PlayerRoot")]
+[node name="MultiplayerScene" type="Node" parent="." node_paths=PackedStringArray("PlayerSpawner")]
 script = ExtResource("1_gvnn8")
 PlayerSpawner = NodePath("CustomPlayerSpawner")
-PlayerRoot = NodePath("PlayerRoot")
 
 [node name="CustomPlayerSpawner" type="Node" parent="MultiplayerScene" node_paths=PackedStringArray("SpawnPoints")]
 unique_name_in_owner = true
 script = ExtResource("4_ixnqm")
-SpawnRootPath = NodePath("../PlayerRoot")
 SpawnPoints = []
-
-[node name="PlayerRoot" type="Node3D" parent="MultiplayerScene"]
-unique_name_in_owner = true

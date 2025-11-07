@@ -66,14 +66,16 @@ public partial class Engine : Node
 
 		_instance = this;
 
-		if (InputRootPath != null && !InputRootPath.IsEmpty)
-		{
-			_inputRoot = GetNodeOrNull<Node3D>(InputRootPath);
-		}
-
+		// Get InputRoot directly by name (more reliable than NodePath)
+		_inputRoot = GetNodeOrNull<Node3D>("InputRoot");
+		
 		if (_inputRoot == null)
 		{
-			AquaLogger.Warn("Engine: InputRoot not assigned. Input devices will not be initialized.");
+			AquaLogger.Error("Engine: InputRoot node not found! Input will not work.");
+		}
+		else
+		{
+			AquaLogger.Log($"Engine: InputRoot found at {_inputRoot.GetPath()}");
 		}
 
 		Initialize();
@@ -186,7 +188,10 @@ public partial class Engine : Node
 	private void InitializeInput()
 	{
 		if (_inputRoot == null)
+		{
+			AquaLogger.Warn("Engine: InputRoot is null, cannot initialize input");
 			return;
+		}
 
 		_xrInterface = XRServer.FindInterface("OpenXR");
 
@@ -198,14 +203,32 @@ public partial class Engine : Node
 			var vrInput = VRInput.PackedScene.Instantiate<VRInput>();
 			_inputProvider = vrInput;
 			_inputRoot.AddChild(vrInput);
+			
+			// Set the global singleton so PlayerCharacterController can access it
+			IInputProvider.Instance = _inputProvider;
 			AquaLogger.Log("Engine: XR interface initialized successfully.");
 		}
 		else
 		{
+			// Create input drivers
+			var mouseDriver = new Aquamarine.Source.Input.Drivers.MouseDriver();
+			var keyboardDriver = new Aquamarine.Source.Input.Drivers.KeyboardDriver();
+			
+			_inputRoot.AddChild(mouseDriver);
+			_inputRoot.AddChild(keyboardDriver);
+			
 			var desktopInput = DesktopInput.PackedScene.Instantiate<DesktopInput>();
 			_inputProvider = desktopInput;
+			
+			// Inject drivers into input provider
+			desktopInput.MouseDriver = mouseDriver;
+			desktopInput.KeyboardDriver = keyboardDriver;
+			
 			_inputRoot.AddChild(desktopInput);
-			AquaLogger.Log("Engine: Desktop interface initialized successfully.");
+			
+			// Set the global singleton so PlayerCharacterController can access it
+			IInputProvider.Instance = _inputProvider;
+			AquaLogger.Log("Engine: Desktop input initialized with MouseDriver and KeyboardDriver");
 		}
 	}
 

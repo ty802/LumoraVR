@@ -55,13 +55,15 @@ public partial class PlayerCharacterController : CharacterBody3D, IRootObject, I
 
 	private Vector3 _targetHorizontalVelocity;
 	private Vector3 _playspaceOffset;
-	private Camera3D _cachedCamera;
 	private bool _ready;
 
 	public override void _Ready()
 	{
 		base._Ready();
 
+		// Add to "players" group so input system can find us
+		AddToGroup("players");
+		
 		CacheNodes();
 		UpdateNametagVisibility();
 		_ready = true;
@@ -194,19 +196,31 @@ public partial class PlayerCharacterController : CharacterBody3D, IRootObject, I
 			return;
 		}
 
-		Nametag = GetNodeOrNull<Nameplate>(_nametagPath);
-		_headNode = GetNodeOrNull<Node3D>(_head);
-		_leftHandNode = GetNodeOrNull<Node3D>(_leftHand);
-		_rightHandNode = GetNodeOrNull<Node3D>(_rightHand);
-		_hipNode = GetNodeOrNull<Node3D>(_hip);
-		_leftFootNode = GetNodeOrNull<Node3D>(_leftFoot);
-		_rightFootNode = GetNodeOrNull<Node3D>(_rightFoot);
+		// Find nodes by name instead of using exports (works when instantiated via code)
+		Nametag = GetNodeOrNull<Nameplate>("Nameplate");
+		
+		var limbsNode = GetNodeOrNull<Node3D>("Limbs");
+		if (limbsNode != null)
+		{
+			_headNode = limbsNode.GetNodeOrNull<Node3D>("Head");
+			_leftHandNode = limbsNode.GetNodeOrNull<Node3D>("Left Hand");
+			_rightHandNode = limbsNode.GetNodeOrNull<Node3D>("Right Hand");
+			_hipNode = limbsNode.GetNodeOrNull<Node3D>("Hips");
+			_leftFootNode = limbsNode.GetNodeOrNull<Node3D>("Left Foot");
+			_rightFootNode = limbsNode.GetNodeOrNull<Node3D>("Right Foot");
+		}
 
 		if (Nametag == null)
 		{
-			Logger.Warn($"{nameof(PlayerCharacterController)}: Nametag node not assigned.");
+			Logger.Warn($"{nameof(PlayerCharacterController)}: Nametag node not found.");
+		}
+		
+		if (_headNode == null)
+		{
+			Logger.Warn($"{nameof(PlayerCharacterController)}: Head node not found.");
 		}
 	}
+
 
 	private void ApplyHorizontalMovement(IInputProvider provider, float delta)
 	{
@@ -219,11 +233,14 @@ public partial class PlayerCharacterController : CharacterBody3D, IRootObject, I
 		}
 		else
 		{
-			var headBasis = _headNode?.GlobalBasis ?? GlobalTransform.Basis;
-			var forward = -headBasis.Z;
-			var right = headBasis.X;
+			// Get camera rotation instead of head node (camera determines look direction)
+			var camera = GetViewport()?.GetCamera3D();
+			var basis = camera != null ? camera.GlobalBasis : GlobalTransform.Basis;
+			
+			var forward = -basis.Z;
+			var right = basis.X;
 
-			var desiredDirection = (forward * input.Y) + (right * input.X);
+			var desiredDirection = (forward * -input.Y) + (right * input.X);
 			if (desiredDirection.LengthSquared() > 0.001f)
 			{
 				desiredDirection = desiredDirection.Normalized();
@@ -310,29 +327,33 @@ public partial class PlayerCharacterController : CharacterBody3D, IRootObject, I
 
 	private void UpdateNametagBillboard()
 	{
-		if (Nametag == null || _headNode == null)
+		if (Nametag == null)
 		{
 			return;
 		}
 
-		Nametag.GlobalPosition = _headNode.GlobalPosition + Vector3.Up * 0.15f;
+		// Position nametag above player's head
+		if (_headNode != null)
+		{
+			Nametag.GlobalPosition = _headNode.GlobalPosition + Vector3.Up * 0.3f;
+		}
+		else
+		{
+			Nametag.GlobalPosition = GlobalPosition + Vector3.Up * 2.0f;
+		}
 
-		var camera = GetActiveCamera();
+		// Billboard to face viewport camera
+		var camera = GetViewport()?.GetCamera3D();
 		if (camera != null)
 		{
-			Nametag.LookAt(camera.GlobalPosition, Vector3.Up);
+			var direction = camera.GlobalPosition - Nametag.GlobalPosition;
+			
+			// Only billboard if direction is valid and not aligned with up vector
+			if (direction.LengthSquared() > 0.01f && Mathf.Abs(direction.Normalized().Dot(Vector3.Up)) < 0.99f)
+			{
+				Nametag.LookAt(camera.GlobalPosition, Vector3.Up);
+			}
 		}
-	}
-
-	private Camera3D GetActiveCamera()
-	{
-		if (_cachedCamera != null && IsInstanceValid(_cachedCamera))
-		{
-			return _cachedCamera;
-		}
-
-		_cachedCamera = GetViewport()?.GetCamera3D();
-		return _cachedCamera;
 	}
 
 	private Node3D GetLimbNode(IInputProvider.InputLimb limb) =>
@@ -378,7 +399,7 @@ public partial class PlayerCharacterController : CharacterBody3D, IRootObject, I
 			return;
 		}
 
-		Nametag.SetVisible(!HasLocalAuthority());
+		Nametag.SetVisible(true);
 
 		if (!string.IsNullOrEmpty(DisplayName))
 		{

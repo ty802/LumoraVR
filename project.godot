@@ -29,6 +29,9 @@ settings/3d/volumetric_defaults/thickness=0.0
 
 window/size/viewport_width=1920
 window/size/viewport_height=1080
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+window/size/always_on_top.editor=true
 
 [dotnet]
 

@@ -23,10 +23,15 @@ namespace Aquamarine.Source.Helpers
             try
             {
                 SemaphoreSlim semaphore = new SemaphoreSlim(0, 1);
+                int invoked = 0;
                 Action thisAction = null;
 
                 thisAction = () =>
                 {
+                    if (Interlocked.Exchange(ref invoked, 1) == 1)
+                    {
+                        return;
+                    }
                     try
                     {
                         action();
@@ -86,10 +91,15 @@ namespace Aquamarine.Source.Helpers
             try
             {
                 SemaphoreSlim semaphore = new SemaphoreSlim(0, 1);
+                int invoked = 0;
                 Action thisAction = null;
 
                 thisAction = () =>
                 {
+                    if (Interlocked.Exchange(ref invoked, 1) == 1)
+                    {
+                        return;
+                    }
                     try
                     {
                         action();

@@ -64,7 +64,10 @@ public partial class DesktopInput : Node3D, IInputProvider
         // Update head rotation from mouse + arrow keys
         var mouseDelta = MouseDriver.NormalizedMouseDelta;
         var keyboardCamera = KeyboardDriver.CameraInput * Mathf.Pi;
-        var camMovement = (mouseDelta + keyboardCamera) * deltaf;
+
+        const float referenceFrameRate = 60f;
+        var mouseScale = Mathf.Clamp(deltaf * referenceFrameRate, 0.02f, 0.5f);
+        var camMovement = (mouseDelta * mouseScale) + (keyboardCamera * deltaf);
         
         var horizontal = Mathf.Wrap(_headRotation.X + camMovement.X, 0, Mathf.Tau);
         var vertical = Mathf.Clamp(_headRotation.Y + camMovement.Y, -Mathf.Pi / 2, Mathf.Pi / 2);

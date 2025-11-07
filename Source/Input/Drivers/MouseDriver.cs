@@ -12,7 +12,7 @@ public partial class MouseDriver : Node
 	private Vector2 _mouseDelta;
 	private Vector2 _previousMouseDelta;
 	
-	public static float Sensitivity { get; set; } = 20f;
+	public static float Sensitivity { get; set; } = 6f;
 	
 	public Vector2 MouseDelta => _mouseDelta;
 	public Vector2 NormalizedMouseDelta => _mouseDelta * Mathf.Pi * Sensitivity;

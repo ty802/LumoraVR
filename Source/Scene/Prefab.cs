@@ -3,7 +3,6 @@ using System.Linq;
 using Aquamarine.Source.Networking;
 using Aquamarine.Source.Scene.Assets;
 using Aquamarine.Source.Scene.ChildObjects;
-using Bones.Core;
 using Godot;
 using Godot.Collections;
 using Avatar = Aquamarine.Source.Scene.RootObjects.Avatar;
@@ -145,7 +144,7 @@ public class Prefab
 
         var dict = new Dictionary();
         dict["version"] = Version;
-        dict["type"] = EnumHelpers<RootObjectType>.ToStringLowerCached(Type);
+        dict["type"] = Type.ToString().ToLowerInvariant();
         dict["data"] = Data;
 
         var childrenDict = new Dictionary<ushort, Dictionary>();
@@ -204,7 +203,7 @@ public class PrefabChild
         var dict = new Dictionary();
         dict["p"] = Parent;
         dict["n"] = Name;
-        dict["t"] = EnumHelpers<ChildObjectType>.ToStringLowerCached(Type);
+        dict["t"] = Type.ToString().ToLowerInvariant();
         dict["d"] = Data;
         return dict;
     }
@@ -244,7 +243,7 @@ public class PrefabAsset
     public Dictionary Serialize()
     {
         var dict = new Dictionary();
-        dict["t"] = EnumHelpers<AssetProviderType>.ToStringLowerCached(Type);
+        dict["t"] = Type.ToString().ToLowerInvariant();
         dict["d"] = Data;
         return dict;
     }

@@ -148,20 +148,24 @@ public class PhosTriangleSubmesh : PhosSubmesh
 	/// <summary>
 	/// Create a quad from two triangles.
 	/// Returns both triangle references.
+	/// Godot uses clockwise winding for front faces.
 	/// </summary>
 	public (PhosTriangle first, PhosTriangle second) AddQuadAsTriangles(int v0, int v1, int v2, int v3)
 	{
-		PhosTriangle t0 = AddTriangle(v0, v1, v2);
-		PhosTriangle t1 = AddTriangle(v0, v2, v3);
+		// Reverse winding order for Godot (clockwise when viewed from outside)
+		PhosTriangle t0 = AddTriangle(v0, v2, v1);
+		PhosTriangle t1 = AddTriangle(v0, v3, v2);
 		return (t0, t1);
 	}
 
 	/// <summary>
 	/// Set a quad as two triangles.
+	/// Godot uses clockwise winding for front faces.
 	/// </summary>
 	public void SetQuadAsTriangles(int v0, int v1, int v2, int v3, int triangle0, int triangle1)
 	{
-		SetTriangle(triangle0, v0, v1, v2);
-		SetTriangle(triangle1, v0, v2, v3);
+		// Reverse winding order for Godot (clockwise when viewed from outside)
+		SetTriangle(triangle0, v0, v2, v1);
+		SetTriangle(triangle1, v0, v3, v2);
 	}
 }

@@ -65,12 +65,6 @@ public class BoxMesh : ProceduralMesh
 
 		if (box == null)
 		{
-			// Enable required vertex attributes BEFORE creating geometry
-			// This ensures arrays are properly sized when vertices are added
-			mesh.HasNormals = true;
-			mesh.HasTangents = true;
-			mesh.HasUV0s = true;
-
 			// Create submesh and box
 			var submesh = new PhosTriangleSubmesh(mesh);
 			mesh.Submeshes.Add(submesh);

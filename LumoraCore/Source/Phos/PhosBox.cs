@@ -42,10 +42,13 @@ public class PhosBox : PhosShape
 	/// </summary>
 	public PhosBox(PhosTriangleSubmesh submesh) : base(submesh.Mesh)
 	{
-		FirstVertex = AddCubeGeometry(submesh, AllTriangles);
+		// Enable required vertex attributes BEFORE adding vertices
+		// This ensures arrays are properly sized when vertices are added
 		Mesh.HasNormals = true;
 		Mesh.HasTangents = true;
 		Mesh.HasUV0s = true;
+
+		FirstVertex = AddCubeGeometry(submesh, AllTriangles);
 	}
 
 	// ===== Box Methods =====
@@ -134,17 +137,18 @@ public class PhosBox : PhosShape
 
 	/// <summary>
 	/// Get vertex offset from box center based on face and corner.
+	/// Corner ranges from -1 to 1 in each dimension.
 	/// </summary>
 	private static float3 GetVertexOffset(float2 corner, float3 halfSize, int face)
 	{
 		return face switch
 		{
-			0 => new float3(-corner.y * halfSize.y, corner.x * halfSize.y, halfSize.z),   // Front (+Z)
-			1 => new float3(corner.x * halfSize.x, corner.y * halfSize.y, -halfSize.z),   // Back (-Z)
-			2 => new float3(corner.x * halfSize.x, halfSize.y, -corner.y * halfSize.z),   // Top (+Y)
-			3 => new float3(corner.y * halfSize.x, -halfSize.y, corner.x * halfSize.z),   // Bottom (-Y)
-			4 => new float3(halfSize.x, corner.y * halfSize.y, corner.x * halfSize.z),    // Right (+X)
-			5 => new float3(-halfSize.x, corner.x * halfSize.y, corner.y * halfSize.z),   // Left (-X)
+			0 => new float3(corner.y * halfSize.x, corner.x * halfSize.y, 0f),    // Forward (+Z)
+			1 => new float3(corner.x * halfSize.x, corner.y * halfSize.y, 0f),    // Backward (-Z)
+			2 => new float3(corner.x * halfSize.x, 0f, corner.y * halfSize.z),    // Up (+Y)
+			3 => new float3(corner.y * halfSize.x, 0f, corner.x * halfSize.z),    // Down (-Y)
+			4 => new float3(0f, corner.y * halfSize.y, corner.x * halfSize.z),    // Right (+X)
+			5 => new float3(0f, corner.x * halfSize.y, corner.y * halfSize.z),    // Left (-X)
 			_ => float3.Zero,
 		};
 	}

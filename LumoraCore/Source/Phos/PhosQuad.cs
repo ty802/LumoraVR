@@ -97,6 +97,12 @@ public class PhosQuad : PhosShape
 	{
 		Submesh = submesh;
 
+		// Enable required vertex attributes BEFORE adding vertices
+		// This ensures arrays are properly sized when vertices are added
+		Mesh.HasUV0s = true;
+		Mesh.HasNormals = true;
+		Mesh.HasTangents = true;
+
 		// Add 4 vertices
 		Mesh.IncreaseVertexCount(TOTAL_VERTICES);
 		FirstVertex = Mesh.GetVertex(Mesh.VertexCount - TOTAL_VERTICES);
@@ -111,11 +117,6 @@ public class PhosQuad : PhosShape
 		);
 		Triangle0 = quadTriangles.first;
 		Triangle1 = quadTriangles.second;
-
-		// Enable required vertex attributes
-		Mesh.HasUV0s = true;
-		Mesh.HasNormals = true;
-		Mesh.HasTangents = true;
 	}
 
 	// ===== Quad Methods =====

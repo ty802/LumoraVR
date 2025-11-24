@@ -8,3 +8,7 @@
 *.vsidx
 *.v2
 /.vs
+/LumoraGodot/addons/lumora/bin
+/LumoraGodot/.vs
+/LumoraCore/bin
+/LumoraCore/obj

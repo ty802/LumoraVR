@@ -26,23 +26,29 @@ public partial class LoadingScreen : Control
 	private const float PROGRESS_SMOOTH_SPEED = 2.0f; // How fast progress bar animates
 	private const float SPINNER_ROTATION_SPEED = 2.0f; // Radians per second
 
-	public override void _Ready()
-	{
-		// Cache node references
-		_statusLabel = GetNode<Label>("CenterContainer/VBoxContainer/ProgressContainer/StatusLabel");
-		_percentageLabel = GetNode<Label>("CenterContainer/VBoxContainer/ProgressContainer/PercentageLabel");
-		_progressBar = GetNode<ProgressBar>("CenterContainer/VBoxContainer/ProgressContainer/ProgressBarContainer/ProgressBar");
-		_animationPlayer = GetNode<AnimationPlayer>("AnimationPlayer");
-		_loadingSpinner = GetNode<Control>("CenterContainer/VBoxContainer/LoadingSpinner");
+    public override void _Ready()
+    {
+        // IMPORTANT: Make immediately visible - no fade in!
+        // This prevents the "flash" where screen is empty before animation starts
+        Visible = true;
+        Modulate = Colors.White; // Full opacity immediately
+        _isVisible = true;
 
-		// Start animations
-		_animationPlayer.Play("pulse");
+        // Cache node references
+        _statusLabel = GetNode<Label>("CenterContainer/VBoxContainer/ProgressContainer/StatusLabel");
+        _percentageLabel = GetNode<Label>("CenterContainer/VBoxContainer/ProgressContainer/PercentageLabel");
+        _progressBar = GetNode<ProgressBar>("CenterContainer/VBoxContainer/ProgressContainer/ProgressBarContainer/ProgressBar");
+        _animationPlayer = GetNode<AnimationPlayer>("AnimationPlayer");
+        _loadingSpinner = GetNode<Control>("CenterContainer/VBoxContainer/LoadingSpinner");
 
-		// Initialize progress
-		UpdateProgressDisplay(0f);
-	}
+        // Start pulse animation (NOT fade_in - we're already visible)
+        _animationPlayer.Play("pulse");
 
-	public override void _Process(double delta)
+        // Initialize progress
+        UpdateProgressDisplay(0f);
+    }
+
+    public override void _Process(double delta)
 	{
 		// Smoothly interpolate progress bar
 		if (_currentProgress < _targetProgress)

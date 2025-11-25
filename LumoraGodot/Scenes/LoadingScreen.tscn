@@ -1,15 +1,11 @@
-[gd_scene load_steps=17 format=3 uid="uid://cqx7y3n8m4pj5"]
+[gd_scene load_steps=11 format=3 uid="uid://cqx7y3n8m4pj5"]
 
-[ext_resource type="Script" path="res://Source/Godot/UI/LoadingScreen.cs" id="1_loading"]
-[ext_resource type="Texture2D" uid="uid://4e2n1dmnw5hg" path="res://Assets/Textures/lumoravricon.svg" id="2_logo"]
-[ext_resource type="FontFile" uid="uid://dqoxqf52blr5y" path="res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf" id="3_font"]
+[ext_resource type="Script" uid="uid://dgojwxd44m8xu" path="res://Source/Godot/UI/LoadingScreen.cs" id="1_loading"]
+[ext_resource type="Texture2D" uid="uid://cnr803pygny8k" path="res://Assets/Textures/lumoravricon.svg" id="2_logo"]
+[ext_resource type="FontFile" uid="uid://dne06dcdmx5hj" path="res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf" id="3_font"]
 
 [sub_resource type="StyleBoxFlat" id="background_panel"]
 bg_color = Color(0.05, 0.04, 0.1, 1)
-border_width_left = 0
-border_width_top = 0
-border_width_right = 0
-border_width_bottom = 0
 
 [sub_resource type="StyleBoxFlat" id="progress_background"]
 bg_color = Color(0.125, 0.098, 0.251, 0.6)
@@ -25,52 +21,10 @@ corner_radius_bottom_left = 8
 
 [sub_resource type="StyleBoxFlat" id="progress_fill"]
 bg_color = Color(0.47, 0.37, 0.94, 1)
-border_width_left = 0
-border_width_top = 0
-border_width_right = 0
-border_width_bottom = 0
 corner_radius_top_left = 6
 corner_radius_top_right = 6
 corner_radius_bottom_right = 6
 corner_radius_bottom_left = 6
-
-[sub_resource type="Gradient" id="gradient_glow"]
-offsets = PackedFloat32Array(0, 0.5, 1)
-colors = PackedColorArray(0.47, 0.37, 0.94, 0, 0.47, 0.37, 0.94, 0.8, 0.47, 0.37, 0.94, 0)
-
-[sub_resource type="GradientTexture2D" id="glow_texture"]
-gradient = SubResource("gradient_glow")
-fill = 1
-fill_from = Vector2(0.5, 0.5)
-
-[sub_resource type="Animation" id="pulse_animation"]
-resource_name = "pulse"
-length = 2.0
-loop_mode = 1
-tracks/0/type = "value"
-tracks/0/imported = false
-tracks/0/enabled = true
-tracks/0/path = NodePath("CenterContainer/VBoxContainer/LogoContainer/Logo:modulate")
-tracks/0/interp = 1
-tracks/0/loop_wrap = true
-tracks/0/keys = {
-"times": PackedFloat32Array(0, 1, 2),
-"transitions": PackedFloat32Array(1, 1, 1),
-"update": 0,
-"values": [Color(1, 1, 1, 0.8), Color(1, 1, 1, 1), Color(1, 1, 1, 0.8)]
-}
-tracks/1/type = "value"
-tracks/1/imported = false
-tracks/1/enabled = true
-tracks/1/path = NodePath("CenterContainer/VBoxContainer/LoadingSpinner:rotation")
-tracks/1/interp = 1
-tracks/1/loop_wrap = true
-tracks/1/keys = {
-"times": PackedFloat32Array(0, 2),
-"transitions": PackedFloat32Array(1, 1),
-"update": 0,
-"values": [0.0, 6.28319]
-}
 
 [sub_resource type="Animation" id="fade_in"]
 resource_name = "fade_in"
@@ -104,34 +58,29 @@ tracks/0/keys = {
 "values": [Color(1, 1, 1, 1), Color(1, 1, 1, 0)]
 }
 
+[sub_resource type="Animation" id="pulse_animation"]
+resource_name = "pulse"
+length = 2.0
+loop_mode = 1
+tracks/0/type = "value"
+tracks/0/imported = false
+tracks/0/enabled = true
+tracks/0/path = NodePath("CenterContainer/VBoxContainer/LogoContainer/Logo:modulate")
+tracks/0/interp = 1
+tracks/0/loop_wrap = true
+tracks/0/keys = {
+"times": PackedFloat32Array(0, 1, 2),
+"transitions": PackedFloat32Array(1, 1, 1),
+"update": 0,
+"values": [Color(1, 1, 1, 0.8), Color(1, 1, 1, 1), Color(1, 1, 1, 0.8)]
+}
+
 [sub_resource type="AnimationLibrary" id="animation_library"]
 _data = {
 &"fade_in": SubResource("fade_in"),
 &"fade_out": SubResource("fade_out"),
 &"pulse": SubResource("pulse_animation")
 }
-
-[sub_resource type="StandardMaterial3D" id="spinner_material_1"]
-shading_mode = 0
-albedo_color = Color(0.47, 0.37, 0.94, 1)
-
-[sub_resource type="TorusMesh" id="torus_mesh_1"]
-material = SubResource("spinner_material_1")
-inner_radius = 0.08
-outer_radius = 0.12
-rings = 32
-ring_segments = 8
-
-[sub_resource type="StandardMaterial3D" id="spinner_material_2"]
-shading_mode = 0
-albedo_color = Color(0.39, 0.56, 1, 1)
-
-[sub_resource type="TorusMesh" id="torus_mesh_2"]
-material = SubResource("spinner_material_2")
-inner_radius = 0.08
-outer_radius = 0.12
-rings = 32
-ring_segments = 8
 
 [node name="LoadingScreen" type="Control"]
 layout_mode = 3
@@ -171,6 +120,7 @@ alignment = 1
 layout_mode = 2
 
 [node name="Logo" type="TextureRect" parent="CenterContainer/VBoxContainer/LogoContainer"]
+modulate = Color(1, 1, 1, 0.9694911)
 custom_minimum_size = Vector2(256, 256)
 layout_mode = 2
 texture = ExtResource("2_logo")
@@ -190,42 +140,12 @@ layout_mode = 2
 theme_override_colors/font_color = Color(0.6, 0.6, 0.7, 1)
 theme_override_fonts/font = ExtResource("3_font")
 theme_override_font_sizes/font_size = 20
-text = "Powered by Aquamarine Engine"
+text = "Powered by LumoraCore Engine"
 horizontal_alignment = 1
 
 [node name="Spacer" type="Control" parent="CenterContainer/VBoxContainer"]
 custom_minimum_size = Vector2(0, 32)
 layout_mode = 2
-
-[node name="LoadingSpinner" type="Control" parent="CenterContainer/VBoxContainer"]
-custom_minimum_size = Vector2(64, 64)
-layout_mode = 2
-
-[node name="Ring1" type="ColorRect" parent="CenterContainer/VBoxContainer/LoadingSpinner"]
-layout_mode = 1
-anchors_preset = 8
-anchor_left = 0.5
-anchor_top = 0.5
-anchor_right = 0.5
-anchor_bottom = 0.5
-offset_left = -32.0
-offset_top = -32.0
-offset_right = 32.0
-offset_bottom = 32.0
-grow_horizontal = 2
-grow_vertical = 2
-pivot_offset = Vector2(32, 32)
-color = Color(0.47, 0.37, 0.94, 0)
-metadata/_edit_use_anchors_ = true
-
-[node name="TextureRect" type="TextureRect" parent="CenterContainer/VBoxContainer/LoadingSpinner/Ring1"]
-layout_mode = 1
-anchors_preset = 15
-anchor_right = 1.0
-anchor_bottom = 1.0
-grow_horizontal = 2
-grow_vertical = 2
-texture = SubResource("glow_texture")
 
 [node name="ProgressContainer" type="VBoxContainer" parent="CenterContainer/VBoxContainer"]
 custom_minimum_size = Vector2(600, 0)
@@ -252,7 +172,6 @@ custom_minimum_size = Vector2(0, 24)
 layout_mode = 2
 theme_override_styles/background = SubResource("progress_background")
 theme_override_styles/fill = SubResource("progress_fill")
-value = 0.0
 show_percentage = false
 
 [node name="PercentageLabel" type="Label" parent="CenterContainer/VBoxContainer/ProgressContainer"]

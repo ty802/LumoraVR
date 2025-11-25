@@ -89,8 +89,10 @@ public partial class LumoraEngineRunner : Node
 			GD.Print("InitializeLoadingScreen: Scene loaded, instantiating...");
 			_loadingScreen = loadingScreenScene.Instantiate<LoadingScreen>();
 			AddChild(_loadingScreen);
-			_loadingScreen.Show();
-			GD.Print("InitializeLoadingScreen: Loading screen displayed");
+            //_loadingScreen.Show();
+            // No need to call Show() - it's already visible from _Ready()
+            //forgor
+            GD.Print("InitializeLoadingScreen: Loading screen displayed");
 			AquaLogger.Log("LoadingScreen: Initialized and displayed");
 		}
 		else
@@ -100,10 +102,10 @@ public partial class LumoraEngineRunner : Node
 		}
 	}
 
-	/// <summary>
-	/// Main initialization sequence (async).
-	/// </summary>
-	private async void StartInitialization()
+    /// <summary>
+    /// Main initialization sequence (async).
+    /// </summary>
+    private async void StartInitialization()
 	{
 		GD.Print("StartInitialization: Beginning async initialization...");
 		try

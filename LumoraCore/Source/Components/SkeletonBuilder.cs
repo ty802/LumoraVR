@@ -80,6 +80,15 @@ public class SkeletonBuilder : ImplementableComponent
 	public override void OnUpdate(float delta)
 	{
 		base.OnUpdate(delta);
+
+		// Register for hook update if we have bones - this ensures ApplyChanges runs
+		// to sync bones to Godot Skeleton3D. The hook will check if rebuild is needed.
+		if (IsBuilt.Value && BoneCount > 0)
+		{
+			RunApplyChanges();
+		}
+
+		// Clear the flag AFTER registering for hook update
 		BoneHierarchyChanged = false;
 	}
 

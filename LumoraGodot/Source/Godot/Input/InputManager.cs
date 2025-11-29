@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Godot;
 using RuntimeEngine = Lumora.Core.Engine;
+using LocomotionController = Lumora.Core.Components.LocomotionController;
 
 namespace Aquamarine.Source.Input;
 
@@ -76,6 +77,25 @@ public partial class InputManager : Node
     public override void _Process(double delta)
     {
         if (_isServer) return;
+
+        // Check if LocomotionController is requesting mouse capture
+        if (LocomotionController.MouseCaptureRequested)
+        {
+            // MovementLocked = false means mouse is captured (inverted logic)
+            if (_movementLocked)
+            {
+                MovementLocked = false;  // Capture the mouse
+            }
+        }
+        else if (!LocomotionController.MouseCaptureRequested)
+        {
+            // Release mouse if LocomotionController doesn't want it captured
+            if (!_movementLocked)
+            {
+                MovementLocked = true;  // Release the mouse
+            }
+        }
+
         if (_movementLocked) return;
 
         base._Process(delta);
@@ -88,6 +108,10 @@ public partial class InputManager : Node
     public override void _Input(InputEvent @event)
     {
         if (_isServer) return;
+
+        // Always pass input events to the engine's input drivers
+        // even if movement is locked (for UI interactions, etc.)
+
         if (_movementLocked) return;
 
         base._Input(@event);

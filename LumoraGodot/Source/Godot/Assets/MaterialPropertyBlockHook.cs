@@ -57,10 +57,10 @@ public class MaterialPropertyBlockHook : IMaterialPropertyBlockHook
 		onDone?.Invoke();
 	}
 
-	private string ConvertPropertyName(string unityName)
+	private string ConvertPropertyName(string propertyName)
 	{
 		// Same conversion as MaterialHook
-		string name = unityName.TrimStart('_');
+		string name = propertyName.TrimStart('_');
 		return ToSnakeCase(name);
 	}
 

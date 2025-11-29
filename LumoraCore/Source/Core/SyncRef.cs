@@ -5,8 +5,9 @@ namespace Lumora.Core;
 /// <summary>
 /// Synchronized reference to another world element.
 /// Handles network synchronization and change tracking.
+/// Implements IChangeable for reactive change tracking.
 /// </summary>
-public class SyncRef<T> where T : class, IWorldElement
+public class SyncRef<T> : IChangeable where T : class, IWorldElement
 {
 	private T? _target;
 	private IWorldElement _owner;
@@ -16,6 +17,11 @@ public class SyncRef<T> where T : class, IWorldElement
 	/// Event triggered when the reference changes.
 	/// </summary>
 	public event Action<SyncRef<T>>? OnChanged;
+
+	/// <summary>
+	/// Event fired when this sync reference changes (IChangeable implementation).
+	/// </summary>
+	public event Action<IChangeable> Changed;
 
 	/// <summary>
 	/// The referenced target element.
@@ -38,6 +44,15 @@ public class SyncRef<T> where T : class, IWorldElement
 			if (!_isSyncing && _owner != null)
 			{
 				_owner.World?.MarkElementDirty(_owner);
+
+				// Notify the parent component that this sync reference changed
+				if (_owner is Component component)
+				{
+					component.NotifyChanged();
+				}
+
+				// Fire the IChangeable Changed event
+				Changed?.Invoke(this);
 			}
 		}
 	}
@@ -88,4 +103,35 @@ public class SyncRef<T> where T : class, IWorldElement
 	public static implicit operator T?(SyncRef<T> syncRef) => syncRef?._target;
 
 	public override string ToString() => $"SyncRef<{typeof(T).Name}>({_target?.ToString() ?? "null"})";
+
+	// IWorldElement implementation (forwarded to owner)
+
+	/// <summary>
+	/// The World this reference belongs to.
+	/// </summary>
+	public World World => _owner?.World;
+
+	/// <summary>
+	/// Unique reference ID for this reference within the world.
+	/// </summary>
+	public ulong RefID => _owner?.RefID ?? 0;
+
+	/// <summary>
+	/// Whether this reference has been destroyed.
+	/// </summary>
+	public bool IsDestroyed => _owner?.IsDestroyed ?? false;
+
+	/// <summary>
+	/// Whether this reference has been initialized.
+	/// </summary>
+	public bool IsInitialized => _owner?.IsInitialized ?? false;
+
+	/// <summary>
+	/// Destroy this reference (cannot be destroyed directly, owner must be destroyed).
+	/// </summary>
+	public void Destroy()
+	{
+		// SyncRef fields cannot be destroyed directly
+		// They are destroyed when their owner is destroyed
+	}
 }

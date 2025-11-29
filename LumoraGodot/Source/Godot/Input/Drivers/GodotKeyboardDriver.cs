@@ -94,7 +94,13 @@ public class GodotKeyboardDriver : IKeyboardDriver, IInputDriver
 	{
 		if (_keyMap.TryGetValue(key, out global::Godot.Key godotKey))
 		{
-			return global::Godot.Input.IsKeyPressed(godotKey);
+			bool isPressed = global::Godot.Input.IsKeyPressed(godotKey);
+			// Commented out for less spam - uncomment for debugging
+			// if (isPressed)
+			// {
+			// 	GD.Print($"[GodotKeyboardDriver] Key pressed: {key} (Godot: {godotKey})");
+			// }
+			return isPressed;
 		}
 		return false;
 	}
@@ -129,5 +135,36 @@ public class GodotKeyboardDriver : IKeyboardDriver, IInputDriver
 	public void UpdateInputs(float deltaTime)
 	{
 		// Keyboard state is polled directly via GetKeyState()
+	}
+
+	public void UpdateKeyboard(Keyboard keyboard)
+	{
+		// Update the keyboard device with current state
+		// This method is called by the InputInterface to update the keyboard state
+		if (keyboard == null)
+			return;
+
+		// Build set of currently pressed keys
+		var pressedKeys = new HashSet<EngineKey>();
+		foreach (var kvp in _keyMap)
+		{
+			if (global::Godot.Input.IsKeyPressed(kvp.Value))
+			{
+				pressedKeys.Add(kvp.Key);
+			}
+		}
+
+		// Commented out for less spam - uncomment for debugging
+		// if (pressedKeys.Count > 0)
+		// {
+		// 	var keyList = string.Join(", ", pressedKeys);
+		// 	GD.Print($"[GodotKeyboardDriver.UpdateKeyboard] Pressed keys: {keyList}");
+		// }
+
+		// Get typed text for this frame
+		string typedText = GetTypeDelta();
+
+		// Update the keyboard device
+		keyboard.UpdateFromDriver(pressedKeys, typedText);
 	}
 }

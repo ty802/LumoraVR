@@ -217,9 +217,27 @@ public struct float4x4 : IEquatable<float4x4>
 	}
 
 	/// <summary>
+	/// Transform a float3 position by this matrix (w=1) - ref version.
+	/// </summary>
+	public float3 MultiplyPoint(in float3 point)
+	{
+		float4 v = this * new float4(point.x, point.y, point.z, 1);
+		return new float3(v.x / v.w, v.y / v.w, v.z / v.w);
+	}
+
+	/// <summary>
 	/// Transform a float3 direction by this matrix (w=0).
 	/// </summary>
 	public float3 MultiplyVector(float3 vector)
+	{
+		float4 v = this * new float4(vector.x, vector.y, vector.z, 0);
+		return new float3(v.x, v.y, v.z);
+	}
+
+	/// <summary>
+	/// Transform a float3 direction by this matrix (w=0) - ref version.
+	/// </summary>
+	public float3 MultiplyVector(in float3 vector)
 	{
 		float4 v = this * new float4(vector.x, vector.y, vector.z, 0);
 		return new float3(v.x, v.y, v.z);
@@ -264,6 +282,55 @@ public struct float4x4 : IEquatable<float4x4>
 				   b * (e * kp_lo - g * ip_lm + h * io_km) +
 				   c * (e * jp_ln - f * ip_lm + h * in_jm) -
 				   d * (e * jo_kn - f * io_km + g * in_jm);
+		}
+	}
+
+	/// <summary>
+	/// Returns the inverse of this matrix using affine transformation optimization.
+	/// Assumes the matrix is an affine transformation (bottom row is 0,0,0,1).
+	/// </summary>
+	public float4x4 Inverse
+	{
+		get
+		{
+			// Extract the 3x3 rotation/scale part
+			float m00 = c0.x, m01 = c1.x, m02 = c2.x;
+			float m10 = c0.y, m11 = c1.y, m12 = c2.y;
+			float m20 = c0.z, m21 = c1.z, m22 = c2.z;
+
+			// Calculate determinant of 3x3 matrix
+			float det = m00 * (m11 * m22 - m12 * m21)
+					  - m01 * (m10 * m22 - m12 * m20)
+					  + m02 * (m10 * m21 - m11 * m20);
+
+			if (System.Math.Abs(det) < 1e-10f)
+				return Identity; // Return identity if matrix is singular
+
+			float invDet = 1.0f / det;
+
+			// Calculate inverse of 3x3 rotation/scale part
+			float i00 = (m11 * m22 - m12 * m21) * invDet;
+			float i01 = (m02 * m21 - m01 * m22) * invDet;
+			float i02 = (m01 * m12 - m02 * m11) * invDet;
+			float i10 = (m12 * m20 - m10 * m22) * invDet;
+			float i11 = (m00 * m22 - m02 * m20) * invDet;
+			float i12 = (m02 * m10 - m00 * m12) * invDet;
+			float i20 = (m10 * m21 - m11 * m20) * invDet;
+			float i21 = (m01 * m20 - m00 * m21) * invDet;
+			float i22 = (m00 * m11 - m01 * m10) * invDet;
+
+			// Calculate inverse translation: -inv(R) * T
+			float tx = c3.x, ty = c3.y, tz = c3.z;
+			float i03 = -(i00 * tx + i01 * ty + i02 * tz);
+			float i13 = -(i10 * tx + i11 * ty + i12 * tz);
+			float i23 = -(i20 * tx + i21 * ty + i22 * tz);
+
+			return new float4x4(
+				new float4(i00, i10, i20, 0),
+				new float4(i01, i11, i21, 0),
+				new float4(i02, i12, i22, 0),
+				new float4(i03, i13, i23, 1)
+			);
 		}
 	}
 

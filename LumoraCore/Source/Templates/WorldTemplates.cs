@@ -4,6 +4,8 @@ using Lumora.Core.Math;
 using Lumora.Core.Components;
 using Lumora.Core.Components.Meshes;
 using Lumora.Core.Logging;
+using Lumora.Core.Physics;
+using Lumora.Core.HelioUI;
 
 namespace Lumora.Core.Templates;
 
@@ -70,6 +72,12 @@ public static class WorldTemplates
 		groundMesh.Size.Value = new float3(20f, 0.1f, 20f);
 		groundMesh.UVScale.Value = new float3(20f, 1f, 20f);
 
+		// Add static collider matching the ground mesh
+		var groundCollider = groundSlot.AttachComponent<BoxCollider>();
+		groundCollider.Type.Value = ColliderType.Static;
+		groundCollider.Size.Value = groundMesh.Size.Value;
+		groundCollider.Offset.Value = new float3(0f, -groundMesh.Size.Value.y * 0.5f, 0f);
+
 		// Create test cubes to visualize the world
 		CreateTestCube(world, "TestCube1", new float3(0f, 1f, 2f));
 		CreateTestCube(world, "TestCube2", new float3(-2f, 1f, 2f));
@@ -79,7 +87,47 @@ public static class WorldTemplates
 		var ambientLightSlot = world.RootSlot.AddSlot("AmbientLight");
 		ambientLightSlot.LocalPosition.Value = new float3(0f, 3f, 0f);
 
+		// Create UI Panels container
+		var uiPanelsSlot = world.RootSlot.AddSlot("UIPanels");
+		uiPanelsSlot.LocalPosition.Value = new float3(0f, 1.4f, -1.2f);
+
+		// Create User Inspector Wizard
+		CreateUserInspectorPanel(uiPanelsSlot, new float3(-1.2f, 0f, 0f));
+
+		// Create Engine Debug Wizard
+		CreateEngineDebugPanel(uiPanelsSlot, new float3(1.2f, 0f, 0f));
+
 		Logger.Log($"WorldTemplates: LocalHome initialized with {world.RootSlot.ChildCount} root slots");
+	}
+
+	/// <summary>
+	/// Helper: Create User Inspector panel in world space.
+	/// </summary>
+	private static void CreateUserInspectorPanel(Slot parent, float3 offset)
+	{
+		var panelSlot = parent.AddSlot("UserInspector");
+		panelSlot.LocalPosition.Value = offset;
+		panelSlot.LocalRotation.Value = floatQ.Euler(0f, 0f, 0f);
+		panelSlot.LocalScale.Value = new float3(0.35f, 0.35f, 0.35f); // World-space UI scale
+
+		panelSlot.AttachComponent<UserInspectorWizard>();
+
+		Logger.Log("WorldTemplates: Created User Inspector panel");
+	}
+
+	/// <summary>
+	/// Helper: Create Engine Debug panel in world space.
+	/// </summary>
+	private static void CreateEngineDebugPanel(Slot parent, float3 offset)
+	{
+		var panelSlot = parent.AddSlot("EngineDebug");
+		panelSlot.LocalPosition.Value = offset;
+		panelSlot.LocalRotation.Value = floatQ.Euler(0f, 0f, 0f);
+		panelSlot.LocalScale.Value = new float3(0.35f, 0.35f, 0.35f); // World-space UI scale
+
+		panelSlot.AttachComponent<EngineDebugWizard>();
+
+		Logger.Log("WorldTemplates: Created Engine Debug panel");
 	}
 
 	/// <summary>
@@ -109,6 +157,12 @@ public static class WorldTemplates
 		groundMesh.Size.Value = new float3(100f, 0.1f, 100f);
 		groundMesh.UVScale.Value = new float3(100f, 1f, 100f);
 
+		// Add static collider matching the ground mesh
+		var groundCollider = groundSlot.AttachComponent<BoxCollider>();
+		groundCollider.Type.Value = ColliderType.Static;
+		groundCollider.Size.Value = groundMesh.Size.Value;
+		groundCollider.Offset.Value = new float3(0f, -groundMesh.Size.Value.y * 0.5f, 0f);
+
 		Logger.Log($"WorldTemplates: GridSpace initialized with {world.RootSlot.ChildCount} root slots");
 	}
 
@@ -137,6 +191,12 @@ public static class WorldTemplates
 		var groundMesh = groundSlot.AttachComponent<BoxMesh>();
 		groundMesh.Size.Value = new float3(40f, 0.1f, 40f);
 		groundMesh.UVScale.Value = new float3(40f, 1f, 40f);
+
+		// Add static collider matching the ground mesh
+		var groundCollider = groundSlot.AttachComponent<BoxCollider>();
+		groundCollider.Type.Value = ColliderType.Static;
+		groundCollider.Size.Value = groundMesh.Size.Value;
+		groundCollider.Offset.Value = new float3(0f, -groundMesh.Size.Value.y * 0.5f, 0f);
 
 		Logger.Log($"WorldTemplates: SocialSpace initialized with {world.RootSlot.ChildCount} root slots");
 	}

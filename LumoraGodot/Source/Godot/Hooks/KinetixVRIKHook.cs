@@ -57,46 +57,66 @@ public class KinetixVRIKHook : ComponentHook<KinetixVRIK>
 
 		AquaLogger.Log($"KinetixVRIKHook: Initializing for slot '{Owner.Slot.SlotName.Value}'");
 
-		// Find the SkeletonHook
-		if (Owner.Skeleton.Target != null)
-		{
-			_skeletonHook = Owner.Skeleton.Target.Hook as SkeletonHook;
-			if (_skeletonHook != null)
-			{
-				_skeleton = _skeletonHook.GetSkeleton();
-			}
-		}
+		TryResolveSkeleton();
 
+		// Defer full setup until skeleton exists
 		if (_skeleton == null)
 		{
-			AquaLogger.Error("KinetixVRIKHook: No Skeleton3D found - cannot initialize IK");
+			AquaLogger.Warn("KinetixVRIKHook: Skeleton not ready yet, will retry in ApplyChanges");
 			return;
 		}
 
-		// Create IK targets as Node3D children
 		CreateIKTargets();
-
-		// Setup IK solvers
 		SetupIKSolvers();
-
 		_isInitialized = true;
 
 		AquaLogger.Log($"KinetixVRIKHook: Initialized successfully");
 	}
 
+	// ApplyChanges call counter for logging
+	private int _applyChangesCallCount = 0;
+
 	public override void ApplyChanges()
 	{
-		if (!_isInitialized || _skeleton == null || !GodotObject.IsInstanceValid(_skeleton))
+		_applyChangesCallCount++;
+		bool shouldLogApply = _applyChangesCallCount == 1 || _applyChangesCallCount % 60 == 0;
+
+		if (shouldLogApply)
+		{
+			AquaLogger.Log($"KinetixVRIKHook: ApplyChanges called (#{_applyChangesCallCount}), skeleton={_skeleton != null}, ikSetup={_ikSetupComplete}");
+		}
+
+		if (_skeleton == null || !GodotObject.IsInstanceValid(_skeleton))
+		{
+			TryResolveSkeleton();
+		}
+
+		if (_skeleton == null || !GodotObject.IsInstanceValid(_skeleton))
 			return;
+
+		// If we deferred initialization until the skeleton existed, do it now
+		if (!_isInitialized && _skeleton.GetBoneCount() > 0)
+		{
+			AquaLogger.Log($"KinetixVRIKHook: Late init starting - creating IK targets and solvers");
+			CreateIKTargets();
+			SetupIKSolvers();
+			_isInitialized = true;
+			AquaLogger.Log("KinetixVRIKHook: Late initialization complete");
+		}
 
 		// Setup IK if not done yet (needs to wait for skeleton to be built)
 		if (!_ikSetupComplete && _skeleton.GetBoneCount() > 0)
 		{
+			AquaLogger.Log($"KinetixVRIKHook: Attempting IK setup with {_skeleton.GetBoneCount()} bones");
 			bool success = SetupIKSolvers();
 			if (success)
 			{
 				_ikSetupComplete = true;
-				AquaLogger.Log("KinetixVRIKHook: IK setup complete");
+				AquaLogger.Log("KinetixVRIKHook: IK setup complete - avatar should now track!");
+			}
+			else
+			{
+				AquaLogger.Warn("KinetixVRIKHook: IK setup failed - check bone names");
 			}
 		}
 
@@ -255,11 +275,21 @@ public class KinetixVRIKHook : ComponentHook<KinetixVRIK>
 		return ik;
 	}
 
+	// Debug: Only log once per second to avoid spam
+	private float _lastLogTime = 0;
+	private const float LOG_INTERVAL = 1.0f;
+
 	/// <summary>
 	/// Update IK target positions from tracking data.
 	/// </summary>
 	private void UpdateIKTargets()
 	{
+		bool shouldLog = (Time.GetTicksMsec() / 1000f) - _lastLogTime > LOG_INTERVAL;
+		if (shouldLog)
+		{
+			_lastLogTime = Time.GetTicksMsec() / 1000f;
+		}
+
 		// Update head target
 		if (_headTarget != null && Owner.HeadTarget.Target != null)
 		{
@@ -267,6 +297,11 @@ public class KinetixVRIKHook : ComponentHook<KinetixVRIK>
 			var headRot = Owner.GetHeadTargetRotation();
 			_headTarget.GlobalPosition = new Vector3(headPos.x, headPos.y, headPos.z);
 			_headTarget.GlobalBasis = new Basis(new Quaternion(headRot.x, headRot.y, headRot.z, headRot.w));
+
+			if (shouldLog)
+			{
+				AquaLogger.Log($"KinetixVRIKHook: HeadTarget pos={headPos} slot={Owner.HeadTarget.Target.SlotName.Value}");
+			}
 		}
 
 		// Update hand targets
@@ -282,6 +317,11 @@ public class KinetixVRIKHook : ComponentHook<KinetixVRIK>
 			{
 				_leftElbowPole.GlobalPosition = _leftHandTarget.GlobalPosition + new Vector3(-0.2f, 0f, -0.3f);
 			}
+
+			if (shouldLog)
+			{
+				AquaLogger.Log($"KinetixVRIKHook: LeftHandTarget pos={pos} slot={Owner.LeftHandTarget.Target.SlotName.Value}");
+			}
 		}
 
 		if (_rightHandTarget != null && Owner.RightHandTarget.Target != null)
@@ -295,6 +335,11 @@ public class KinetixVRIKHook : ComponentHook<KinetixVRIK>
 			if (_rightElbowPole != null)
 			{
 				_rightElbowPole.GlobalPosition = _rightHandTarget.GlobalPosition + new Vector3(0.2f, 0f, -0.3f);
+			}
+
+			if (shouldLog)
+			{
+				AquaLogger.Log($"KinetixVRIKHook: RightHandTarget pos={pos} slot={Owner.RightHandTarget.Target.SlotName.Value}");
 			}
 		}
 
@@ -322,6 +367,144 @@ public class KinetixVRIKHook : ComponentHook<KinetixVRIK>
 				_rightKneePole.GlobalPosition = _rightFootTarget.GlobalPosition + new Vector3(0f, 0.5f, 0.5f);
 			}
 		}
+	}
+
+	// Throttle skeleton search logging
+	private int _skeletonSearchAttempts = 0;
+
+	private void TryResolveSkeleton()
+	{
+		_skeletonSearchAttempts++;
+		bool shouldLog = _skeletonSearchAttempts <= 5 || _skeletonSearchAttempts % 60 == 0; // Log first 5, then every 60 frames
+
+		// Strategy 1: Get skeleton from SkeletonBuilder component hook
+		if (Owner.Skeleton.Target != null)
+		{
+			if (shouldLog) AquaLogger.Log($"KinetixVRIKHook: Strategy 1 - SkeletonBuilder exists, checking hook...");
+			_skeletonHook = Owner.Skeleton.Target.Hook as SkeletonHook;
+			if (_skeletonHook != null)
+			{
+				_skeleton = _skeletonHook.GetSkeleton();
+				if (_skeleton != null && GodotObject.IsInstanceValid(_skeleton) && _skeleton.GetBoneCount() > 0)
+				{
+					AquaLogger.Log($"KinetixVRIKHook: Found skeleton via SkeletonBuilder hook with {_skeleton.GetBoneCount()} bones");
+					LogSkeletonBones();
+					return;
+				}
+				else if (shouldLog)
+				{
+					AquaLogger.Log($"KinetixVRIKHook: Strategy 1 failed - skeleton={_skeleton != null}, valid={_skeleton != null && GodotObject.IsInstanceValid(_skeleton)}, bones={_skeleton?.GetBoneCount() ?? 0}");
+				}
+			}
+			else if (shouldLog)
+			{
+				AquaLogger.Log($"KinetixVRIKHook: Strategy 1 failed - SkeletonHook is null. Hook type: {Owner.Skeleton.Target.Hook?.GetType().Name ?? "null"}");
+			}
+		}
+		else if (shouldLog)
+		{
+			AquaLogger.Log($"KinetixVRIKHook: Strategy 1 skipped - Owner.Skeleton.Target is null");
+		}
+
+		// Strategy 2: Search under the attached node hierarchy
+		if (shouldLog) AquaLogger.Log($"KinetixVRIKHook: Strategy 2 - Searching under attachedNode '{attachedNode?.Name}'...");
+		_skeleton = FindSkeletonNode(attachedNode);
+		if (_skeleton != null && GodotObject.IsInstanceValid(_skeleton) && _skeleton.GetBoneCount() > 0)
+		{
+			AquaLogger.Log($"KinetixVRIKHook: Found skeleton under attachedNode with {_skeleton.GetBoneCount()} bones");
+			LogSkeletonBones();
+			return;
+		}
+
+		// Strategy 3: Search parent hierarchy (the skeleton might be a sibling)
+		if (shouldLog) AquaLogger.Log($"KinetixVRIKHook: Strategy 3 - Searching parent hierarchy...");
+		var parent = attachedNode?.GetParent();
+		while (parent != null)
+		{
+			_skeleton = FindSkeletonNode(parent);
+			if (_skeleton != null && GodotObject.IsInstanceValid(_skeleton) && _skeleton.GetBoneCount() > 0)
+			{
+				AquaLogger.Log($"KinetixVRIKHook: Found skeleton in parent hierarchy with {_skeleton.GetBoneCount()} bones");
+				LogSkeletonBones();
+				return;
+			}
+			parent = parent.GetParent();
+		}
+
+		// Strategy 4: Search the entire UserRoot slot hierarchy
+		if (Owner.UserRoot.Target != null && Owner.UserRoot.Target.Slot?.Hook is SlotHook userRootHook)
+		{
+			if (shouldLog) AquaLogger.Log($"KinetixVRIKHook: Strategy 4 - Searching under UserRoot...");
+			var userRootNode = userRootHook.ForceGetNode3D();
+			if (userRootNode != null)
+			{
+				_skeleton = FindSkeletonNode(userRootNode);
+				if (_skeleton != null && GodotObject.IsInstanceValid(_skeleton) && _skeleton.GetBoneCount() > 0)
+				{
+					AquaLogger.Log($"KinetixVRIKHook: Found skeleton under UserRoot with {_skeleton.GetBoneCount()} bones");
+					LogSkeletonBones();
+					return;
+				}
+			}
+		}
+
+		// Strategy 5: GLOBAL SEARCH - Search entire scene tree from root
+		if (shouldLog) AquaLogger.Log($"KinetixVRIKHook: Strategy 5 - GLOBAL scene tree search...");
+		var sceneRoot = attachedNode?.GetTree()?.Root;
+		if (sceneRoot != null)
+		{
+			_skeleton = FindSkeletonNode(sceneRoot);
+			if (_skeleton != null && GodotObject.IsInstanceValid(_skeleton) && _skeleton.GetBoneCount() > 0)
+			{
+				AquaLogger.Log($"KinetixVRIKHook: Found skeleton via GLOBAL search with {_skeleton.GetBoneCount()} bones at path: {_skeleton.GetPath()}");
+				LogSkeletonBones();
+				return;
+			}
+		}
+
+		if (shouldLog)
+		{
+			AquaLogger.Warn($"KinetixVRIKHook: Could not find Skeleton3D after {_skeletonSearchAttempts} attempts. " +
+				$"SkeletonBuilder={Owner.Skeleton.Target != null}, SkeletonHook={_skeletonHook != null}, " +
+				$"attachedNode={attachedNode?.Name ?? "null"}, sceneRoot={sceneRoot?.Name ?? "null"}");
+		}
+	}
+
+	private void LogSkeletonBones()
+	{
+		if (_skeleton == null)
+			return;
+
+		var boneNames = new List<string>();
+		for (int i = 0; i < _skeleton.GetBoneCount(); i++)
+		{
+			boneNames.Add(_skeleton.GetBoneName(i));
+		}
+		AquaLogger.Log($"KinetixVRIKHook: Skeleton bones: {string.Join(", ", boneNames)}");
+
+		// Log bone indices for IK targets
+		int leftHand = _skeleton.FindBone("LeftHand");
+		int rightHand = _skeleton.FindBone("RightHand");
+		int leftFoot = _skeleton.FindBone("LeftFoot");
+		int rightFoot = _skeleton.FindBone("RightFoot");
+		AquaLogger.Log($"KinetixVRIKHook: IK bone indices - LeftHand:{leftHand}, RightHand:{rightHand}, LeftFoot:{leftFoot}, RightFoot:{rightFoot}");
+	}
+
+	private Skeleton3D FindSkeletonNode(Node node)
+	{
+		if (node == null)
+			return null;
+
+		if (node is Skeleton3D sk && sk.GetBoneCount() > 0)
+			return sk;
+
+		foreach (Node child in node.GetChildren())
+		{
+			var found = FindSkeletonNode(child);
+			if (found != null)
+				return found;
+		}
+		return null;
 	}
 
 	public override void Destroy(bool destroyingWorld)

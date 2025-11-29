@@ -9,6 +9,7 @@ using Lumora.Core.Templates;
 using Aquamarine.Source.Godot.Input.Drivers;
 using Aquamarine.Godot.Hooks;
 using Aquamarine.Source.Godot.UI;
+using Aquamarine.Source.Input;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
 namespace Aquamarine.Source.Godot.Bootstrap;
@@ -35,6 +36,7 @@ public partial class LumoraEngineRunner : Node
 	// ===== INPUT DRIVERS =====
 	private GodotMouseDriver _mouseDriver;
 	private GodotKeyboardDriver _keyboardDriver;
+	private GodotVRDriver _vrDriver;
 
 	// ===== STATE =====
 	private bool _engineInitialized = false;
@@ -191,10 +193,30 @@ public partial class LumoraEngineRunner : Node
 		_loadingScreen?.UpdatePhase(1); // Phase index 1
 
 		var xrInterface = XRServer.FindInterface("OpenXR");
-		if (xrInterface != null && xrInterface.IsInitialized())
+		if (xrInterface != null)
 		{
-			AquaLogger.Log("XR Device: OpenXR (Active)");
+			// Ensure the interface is initialized (some runtimes need an explicit call)
+			if (!xrInterface.IsInitialized())
+			{
+				AquaLogger.Log("XR: OpenXR interface found but not initialized. Attempting Initialize()...");
+				if (!xrInterface.Initialize())
+				{
+					AquaLogger.Warn("XR: OpenXR Initialize() failed - falling back to screen mode");
+					return;
+				}
+			}
+
+			// Make it the primary interface if none is set
+			if (XRServer.PrimaryInterface == null)
+			{
+				XRServer.PrimaryInterface = xrInterface;
+			}
+
+			// Switch viewport to XR rendering
+			GetViewport().UseXR = true;
 			DisplayServer.WindowSetVsyncMode(DisplayServer.VSyncMode.Disabled);
+
+			AquaLogger.Log("XR Device: OpenXR (Active) - viewport switched to XR");
 		}
 		else
 		{
@@ -227,8 +249,8 @@ public partial class LumoraEngineRunner : Node
 
 		// Create HeadOutput system
 		_headOutput = new HeadOutput();
-		_headOutput.Initialize(_mainCamera);
 		AddChild(_headOutput);
+		_headOutput.Initialize(_mainCamera);
 
 		AquaLogger.Log($"HeadOutput initialized with camera: {_mainCamera.Name}");
 
@@ -308,15 +330,11 @@ public partial class LumoraEngineRunner : Node
 		AquaLogger.Log("[Phase 5/6] System Integration");
 		_loadingScreen?.UpdatePhase(4); // Phase index 4
 
-		// Create InputInterface
-		_inputInterface = new InputInterface(_engine);
-		_engine.InputInterface = _inputInterface;
-		AquaLogger.Log("Created InputInterface");
+		// Get InputInterface from Engine (it's already initialized in Engine.InitializeAsync)
+		_inputInterface = _engine.InputInterface;
 
 		// Register input drivers
 		RegisterInputDrivers();
-
-		AquaLogger.Log("System integration complete");
 
 		await Task.Delay(150); // Artificial delay to show phase message
 	}
@@ -326,19 +344,25 @@ public partial class LumoraEngineRunner : Node
 	/// </summary>
 	private void RegisterInputDrivers()
 	{
-		AquaLogger.Log("Registering input drivers...");
+		// Create InputManager for handling Godot input and mouse capture
+		var inputManager = new InputManager();
+		AddChild(inputManager);
 
 		// Keyboard driver - must use RegisterKeyboardDriver
 		_keyboardDriver = new GodotKeyboardDriver();
 		_inputInterface.RegisterKeyboardDriver(_keyboardDriver);
-		AquaLogger.Log("  - Registered GodotKeyboardDriver");
 
 		// Mouse driver - must use RegisterMouseDriver to create Mouse device
 		_mouseDriver = new GodotMouseDriver();
 		_inputInterface.RegisterMouseDriver(_mouseDriver);
-		AquaLogger.Log("  - Registered GodotMouseDriver");
 
-		AquaLogger.Log("Input driver registration complete");
+		// VR driver - handles head and controller tracking
+		_vrDriver = new GodotVRDriver();
+		_inputInterface.RegisterVRDriver(_vrDriver);
+		_vrDriver.InitializeVR();
+
+		// Find XR nodes in scene tree for proper Godot 4.x VR tracking
+		_vrDriver.FindXRNodes(GetTree().Root);
 	}
 
 	/// <summary>
@@ -421,11 +445,19 @@ public partial class LumoraEngineRunner : Node
 		if (!_engineInitialized || _shutdownRequested)
 			return;
 
-		// Run engine update loop
-		_engine?.Update(delta);
+		// Update input interface FIRST so tracking data is ready for world update
+		// This ensures TrackedDevicePositioner updates slots BEFORE SlotHooks sync to Godot
+		if (_inputInterface != null)
+		{
+			_inputInterface.UpdateInputs((float)delta);
+		}
+		else
+		{
+			AquaLogger.Log("[LumoraEngineRunner._Process] WARNING: No InputInterface!");
+		}
 
-		// Update input interface
-		_inputInterface?.UpdateInputs((float)delta);
+		// Run engine update loop (world updates, slot hooks sync to Godot)
+		_engine?.Update(delta);
 
 		// Update HeadOutput camera positioning
 		_headOutput?.UpdatePositioning(_engine);
@@ -481,6 +513,7 @@ public partial class LumoraEngineRunner : Node
 
 		// Register mesh hooks (use fully qualified names to avoid ambiguity with Godot types)
 		Lumora.Core.World.HookTypes.Register<ProceduralMesh, Aquamarine.Godot.Hooks.MeshHook>();
+		Lumora.Core.World.HookTypes.Register<Lumora.Core.HelioUI.Rendering.HelioUIMesh, Aquamarine.Godot.Hooks.MeshHook>();
 		Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.Meshes.BoxMesh, Aquamarine.Godot.Hooks.MeshHook>();
 		Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.Meshes.QuadMesh, Aquamarine.Godot.Hooks.MeshHook>();
 
@@ -495,8 +528,9 @@ public partial class LumoraEngineRunner : Node
 		Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.HeadOutput, Aquamarine.Godot.Hooks.HeadOutputHook>();
 
 		// Register physics hooks
-		// NOTE: Colliders (CapsuleCollider, BoxCollider, etc.) do NOT have hooks.
-		// CharacterController's hook reads collider data and creates Godot shapes directly.
+		Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.BoxCollider, Aquamarine.Godot.Hooks.PhysicsColliderHook>();
+		Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.CapsuleCollider, Aquamarine.Godot.Hooks.PhysicsColliderHook>();
+		Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.SphereCollider, Aquamarine.Godot.Hooks.PhysicsColliderHook>();
 		Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.CharacterController, Aquamarine.Godot.Hooks.CharacterControllerHook>();
 
 		AquaLogger.Log("Hook registration complete");

@@ -39,10 +39,7 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
 	/// </summary>
 	private void InitializeHook()
 	{
-		Logging.Logger.Log($"ImplementableComponent.InitializeHook: Called for {GetType().Name}");
-		Logging.Logger.Log($"ImplementableComponent.InitializeHook: World = {World != null}");
 		Hook = InstantiateHook();
-		Logging.Logger.Log($"ImplementableComponent.InitializeHook: Hook = {Hook != null}, Type = {Hook?.GetType().Name ?? "NULL"}");
 		Hook?.AssignOwner(this);
 	}
 
@@ -52,7 +49,6 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
 	/// </summary>
 	protected virtual C InstantiateHook()
 	{
-		Logging.Logger.Log($"ImplementableComponent.InstantiateHook: Called for {GetType().Name}");
 		if (World == null)
 		{
 			Logging.Logger.Warn($"ImplementableComponent.InstantiateHook: World is NULL for {GetType().Name}!");
@@ -60,9 +56,7 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
 		}
 
 		Type componentType = GetType();
-		Logging.Logger.Log($"ImplementableComponent.InstantiateHook: Looking up hook for type {componentType.FullName}");
 		Type hookType = World.HookTypes.GetHookType(componentType);
-		Logging.Logger.Log($"ImplementableComponent.InstantiateHook: Found hook type = {hookType?.FullName ?? "NULL"}");
 
 		if (hookType == null)
 		{
@@ -70,9 +64,7 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
 			return null;
 		}
 
-		Logging.Logger.Log($"ImplementableComponent.InstantiateHook: Creating hook instance of type {hookType.Name}");
 		var hook = (C)Activator.CreateInstance(hookType);
-		Logging.Logger.Log($"ImplementableComponent.InstantiateHook: Hook created successfully");
 		return hook;
 	}
 
@@ -103,7 +95,6 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
 		base.OnAwake();
 
 		// Now that Initialize() has been called and World is set, create the hook
-		Logging.Logger.Log($"ImplementableComponent.OnAwake: Creating hook for {GetType().Name}");
 		InitializeHook();
 	}
 
@@ -112,16 +103,12 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
 	/// </summary>
 	public override void OnStart()
 	{
-		Logging.Logger.Log($"ImplementableComponent.OnStart: Called for {GetType().Name} on slot '{Slot?.SlotName?.Value ?? "NULL"}'");
-		Logging.Logger.Log($"ImplementableComponent.OnStart: Hook = {Hook != null}, Hook type = {Hook?.GetType().Name ?? "NULL"}");
 		base.OnStart();
 		try
 		{
 			if (Hook != null)
 			{
-				Logging.Logger.Log($"ImplementableComponent.OnStart: Calling Hook.Initialize() for {GetType().Name}");
 				Hook.Initialize();
-				Logging.Logger.Log($"ImplementableComponent.OnStart: Hook.Initialize() completed for {GetType().Name}");
 			}
 			else
 			{

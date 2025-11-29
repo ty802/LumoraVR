@@ -243,6 +243,14 @@ public class PhosMesh
 		flags = new BitArray(0);
 		vertexIDs = Array.Empty<int>();
 
+		// Reset metadata flags so arrays get properly recreated
+		HasNormals = false;
+		HasTangents = false;
+		HasColors = false;
+		HasBoneBindings = false;
+		HasFlags = false;
+		UVChannelCount = 0;
+
 		for (int i = 0; i < 4; i++)
 			uvChannels[i] = new PhosUVArray();
 

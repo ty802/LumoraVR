@@ -1,4 +1,5 @@
 using Godot;
+using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
 using System.Collections.Generic;
@@ -9,6 +10,7 @@ namespace Aquamarine.Godot.Hooks;
 /// <summary>
 /// Hook for CharacterController component → Godot CharacterBody3D.
 /// Platform physics hook for Godot.
+/// Also syncs XROrigin3D position with UserRoot for proper VR tracking.
 /// </summary>
 public class CharacterControllerHook : ComponentHook<CharacterController>
 {
@@ -17,6 +19,8 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
 	private Vector3 _velocity;
 	private Vector3 _moveDirection;
 	private bool _jumpRequested;
+	private XROrigin3D _xrOrigin;
+	private bool _isLocalUser;
 
 	public CharacterBody3D GodotCharacterBody => _characterBody;
 
@@ -24,17 +28,59 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
 	{
 		base.Initialize();
 
-		AquaLogger.Log($"CharacterControllerHook: Initialize called, attachedNode={attachedNode != null}");
-
 		_characterBody = new CharacterBody3D();
 		_characterBody.Name = "CharacterController";
-		attachedNode.AddChild(_characterBody);
+
+		// Parent the physics body under the world root (not the slot) to avoid double transforms
+		Node3D worldRoot = Owner?.World?.GodotSceneRoot as Node3D;
+		Node parentNode = (Node)worldRoot ?? attachedNode;
+		parentNode.AddChild(_characterBody);
+
+		// Spawn the body at the slot's current transform so we start where the slot is placed
+		_characterBody.GlobalTransform = attachedNode.GlobalTransform;
 
 		_characterBody.FloorStopOnSlope = true;
 		_characterBody.FloorMaxAngle = Mathf.DegToRad(45f);
 		_characterBody.WallMinSlideAngle = Mathf.DegToRad(15f);
 
-		AquaLogger.Log($"CharacterControllerHook: CharacterBody3D created and added to scene tree (IsInsideTree={_characterBody.IsInsideTree()})");
+		// Check if this is the local user
+		var userRoot = Owner.Slot.GetComponent<UserRoot>();
+		_isLocalUser = userRoot?.ActiveUser == Owner.World?.LocalUser;
+
+		// Find XROrigin3D in scene tree for VR tracking sync
+		if (_isLocalUser)
+		{
+			_xrOrigin = FindXROrigin();
+
+			// Do initial VR tracking sync at spawn position
+			var spawnPos = Owner.Slot.GlobalPosition;
+			SyncVRTracking(spawnPos);
+		}
+	}
+
+	/// <summary>
+	/// Find the XROrigin3D in the scene tree.
+	/// </summary>
+	private XROrigin3D FindXROrigin()
+	{
+		// Search from scene root
+		var root = attachedNode?.GetTree()?.Root;
+		if (root == null) return null;
+		return FindNodeOfType<XROrigin3D>(root);
+	}
+
+	private T FindNodeOfType<T>(Node node) where T : Node
+	{
+		if (node is T result)
+			return result;
+
+		foreach (var child in node.GetChildren())
+		{
+			var found = FindNodeOfType<T>(child);
+			if (found != null)
+				return found;
+		}
+		return null;
 	}
 
 	public override void ApplyChanges()
@@ -42,7 +88,8 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
 		if (_characterBody == null || !_characterBody.IsInsideTree())
 			return;
 
-		float delta = (float)Engine.GetPhysicsInterpolationFraction();
+		// Get delta time from the UpdateManager
+		float delta = Owner?.World?.UpdateManager?.DeltaTime ?? (1f / 60f);
 
 		// Apply gravity
 		if (_characterBody.IsOnFloor())
@@ -85,11 +132,43 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
 		_velocity = _characterBody.Velocity;
 
 		// Sync position back to slot
-		Owner.Slot.GlobalPosition = new float3(
+		var newPos = new float3(
 			_characterBody.GlobalPosition.X,
 			_characterBody.GlobalPosition.Y,
 			_characterBody.GlobalPosition.Z
 		);
+		Owner.Slot.GlobalPosition = newPos;
+
+		// Sync XROrigin3D and GlobalTrackingSpace for VR (local user only)
+		if (_isLocalUser)
+		{
+			SyncVRTracking(newPos);
+		}
+
+		// Immediately propagate the new slot transform so child visuals/cameras follow the body this frame
+		slotHook?.ApplyChanges();
+	}
+
+	/// <summary>
+	/// Sync XROrigin3D position and GlobalTrackingSpace with UserRoot position.
+	/// This ensures VR tracking is relative to the user's locomotion position.
+	/// </summary>
+	private void SyncVRTracking(float3 userPosition)
+	{
+		// Update XROrigin3D position so VR camera follows user locomotion
+		if (_xrOrigin != null && GodotObject.IsInstanceValid(_xrOrigin))
+		{
+			_xrOrigin.GlobalPosition = new Vector3(userPosition.x, userPosition.y, userPosition.z);
+		}
+
+		// Update GlobalTrackingSpace so tracked device positions are transformed correctly
+		var inputInterface = Lumora.Core.Engine.Current?.InputInterface;
+		if (inputInterface?.GlobalTrackingSpace != null)
+		{
+			inputInterface.GlobalTrackingSpace.Position = userPosition;
+			// Also sync rotation if UserRoot has rotation
+			inputInterface.GlobalTrackingSpace.Rotation = Owner.Slot.GlobalRotation;
+		}
 	}
 
 	public void SetMovementDirection(float3 direction)
@@ -118,11 +197,8 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
 
 	public void AddColliderShape(object collider)
 	{
-		AquaLogger.Log($"CharacterControllerHook: AddColliderShape called for {collider?.GetType().Name ?? "null"}");
-
 		if (_collisionShapes.ContainsKey(collider))
 		{
-			AquaLogger.Log("CharacterControllerHook: Collider already has a shape, skipping");
 			return;
 		}
 
@@ -134,15 +210,12 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
 
 		CollisionShape3D collisionShape = new CollisionShape3D();
 		collisionShape.Name = $"Shape_{collider.GetType().Name}";
-		AquaLogger.Log($"CharacterControllerHook: Created CollisionShape3D named '{collisionShape.Name}'");
-
 		if (collider is BoxCollider boxCollider)
 		{
 			BoxShape3D boxShape = new BoxShape3D();
 			float3 size = boxCollider.Size.Value;
 			boxShape.Size = new Vector3(size.x, size.y, size.z);
 			collisionShape.Shape = boxShape;
-			AquaLogger.Log($"CharacterControllerHook: Created BoxShape3D with size {size}");
 		}
 		else if (collider is CapsuleCollider capsuleCollider)
 		{
@@ -150,25 +223,27 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
 			capsuleShape.Height = capsuleCollider.Height.Value;
 			capsuleShape.Radius = capsuleCollider.Radius.Value;
 			collisionShape.Shape = capsuleShape;
-			AquaLogger.Log($"CharacterControllerHook: Created CapsuleShape3D with Height={capsuleShape.Height}, Radius={capsuleShape.Radius}");
 		}
 		else if (collider is SphereCollider sphereCollider)
 		{
 			SphereShape3D sphereShape = new SphereShape3D();
 			sphereShape.Radius = sphereCollider.Radius.Value;
 			collisionShape.Shape = sphereShape;
-			AquaLogger.Log($"CharacterControllerHook: Created SphereShape3D with Radius={sphereShape.Radius}");
 		}
 		else
 		{
 			AquaLogger.Warn($"CharacterControllerHook: Unknown collider type {collider.GetType().Name}");
 		}
 
-		AquaLogger.Log($"CharacterControllerHook: Adding collision shape to CharacterBody3D (IsInsideTree={_characterBody.IsInsideTree()})");
+		// Apply collider offset so shapes line up with the avatar body
+		if (collider is Collider baseCollider)
+		{
+			var offset = baseCollider.Offset.Value;
+			collisionShape.Position = new Vector3(offset.x, offset.y, offset.z);
+		}
+
 		_characterBody.AddChild(collisionShape);
 		_collisionShapes[collider] = collisionShape;
-
-		AquaLogger.Log($"CharacterControllerHook: Successfully added {collisionShape.Name} to CharacterBody3D");
 	}
 
 	public void RemoveColliderShape(object collider)

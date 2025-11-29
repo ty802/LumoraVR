@@ -24,10 +24,23 @@ public class LocomotionController : Component
 	private UserRoot _userRoot;
 	private Mouse _mouse;
 	private IKeyboardDriver _keyboardDriver;
+	private InputInterface _inputInterface;
+	private readonly System.Collections.Generic.List<ILocomotionModule> _modules = new();
+	private ILocomotionModule _activeModule;
+	private int _activeModuleIndex = -1;
+	private bool _nextModuleHeld;
+	private bool _prevModuleHeld;
+	private readonly LocomotionPermissions _permissions = new LocomotionPermissions();
 
 	private float _pitch = 0.0f;
 	private float _yaw = 0.0f;
 	private bool _mouseCaptured = false;
+	private bool _escapeWasPressed = false;
+
+	/// <summary>
+	/// Property for platform layer to check if mouse should be captured
+	/// </summary>
+	public static bool MouseCaptureRequested { get; private set; } = false;
 
 	// ===== INITIALIZATION =====
 
@@ -55,25 +68,35 @@ public class LocomotionController : Component
 		}
 
 		// Get input devices from InputInterface
-		var inputInterface = Lumora.Core.Engine.Instance.InputInterface;
-		if (inputInterface != null)
+		_inputInterface = Lumora.Core.Engine.Instance.InputInterface;
+		if (_inputInterface != null)
 		{
-			_mouse = inputInterface.Mouse;
-			_keyboardDriver = inputInterface.GetKeyboardDriver();
+			_mouse = _inputInterface.Mouse;
+			_keyboardDriver = _inputInterface.GetKeyboardDriver();
+			// Input devices resolved
+		}
+		else
+		{
+			AquaLogger.Warn("[LocomotionController] No InputInterface found!");
 		}
 
-		// Capture mouse
-		CaptureMouse();
+		// Initialize modules (Froox-style delegation)
+		_modules.Add(new VRLocomotionModule());
+		_modules.Add(new DesktopLocomotionModule());
+		_modules.Add(new NullLocomotionModule()); // placeholder fallback
+		ActivateModule(0);
 
-		AquaLogger.Log($"LocomotionController: Initialized for local user '{_userRoot.ActiveUser.UserName.Value}'");
+		// Initialized
 	}
 
 	private void CaptureMouse()
 	{
 		_mouseCaptured = true;
-		// Mouse capture is handled by platform-specific input manager
-		// For Godot: InputManager.Instance.MovementLocked = false
-		AquaLogger.Log("LocomotionController: Mouse captured for camera control");
+		MouseCaptureRequested = true;
+		// Mouse capture needs to be handled by the platform layer
+		// The platform InputManager should detect when a LocomotionController
+		// is active and capture the mouse accordingly
+		// Request mouse capture (platform layer handles actual capture)
 	}
 
 	// ===== UPDATE =====
@@ -82,38 +105,77 @@ public class LocomotionController : Component
 	{
 		base.OnUpdate(delta);
 
+		// Late-bind InputInterface if it was not ready during Awake
+		if (_inputInterface == null && Lumora.Core.Engine.Instance.InputInterface != null)
+		{
+			_inputInterface = Lumora.Core.Engine.Instance.InputInterface;
+			_mouse = _inputInterface.Mouse;
+			_keyboardDriver = _inputInterface.GetKeyboardDriver();
+		}
+
 		if (_characterController == null || _userRoot?.ActiveUser != World.LocalUser)
 			return;
+
+		HandleModuleSwitching();
 
 		// Always handle mouse look (updates head rotation)
 		HandleMouseLook(delta);
 
+		// Apply head/body rotation before movement so basis uses latest look
+		UpdateHead();
+
 		// Only send movement/jump commands if CharacterController is ready
-		if (_characterController.IsReady)
+		_activeModule?.Update(delta);
+	}
+
+	private void HandleModuleSwitching()
+	{
+		if (_keyboardDriver == null || _modules.Count <= 1)
+			return;
+
+		// Simple next/prev with Q/E
+		bool nextDown = _keyboardDriver.GetKeyState(EngineKey.E);
+		bool prevDown = _keyboardDriver.GetKeyState(EngineKey.Q);
+
+		if (nextDown && !_nextModuleHeld)
 		{
-			HandleMovement(delta);
-			HandleJump();
+			ActivateModule((_activeModuleIndex + 1) % _modules.Count);
+		}
+		if (prevDown && !_prevModuleHeld)
+		{
+			int idx = _activeModuleIndex - 1;
+			if (idx < 0) idx = _modules.Count - 1;
+			ActivateModule(idx);
 		}
 
-		UpdateHead();
+		_nextModuleHeld = nextDown;
+		_prevModuleHeld = prevDown;
 	}
 
 	private void HandleMouseLook(float delta)
 	{
-		// Check for Escape to toggle mouse capture
-		if (_keyboardDriver != null && _keyboardDriver.GetKeyState(EngineKey.Escape))
+		// Check for Escape to toggle mouse capture (only on key press, not hold)
+		bool escapePressed = _keyboardDriver != null && _keyboardDriver.GetKeyState(EngineKey.Escape);
+		if (escapePressed && !_escapeWasPressed)
 		{
 			_mouseCaptured = !_mouseCaptured;
+			MouseCaptureRequested = _mouseCaptured;
 			// Platform-specific mouse capture toggle handled by input manager
-			// For Godot: InputManager.Instance.MovementLocked = !_mouseCaptured
-			AquaLogger.Log($"LocomotionController: Mouse capture toggled: {_mouseCaptured}");
+			// toggled capture
 		}
+		_escapeWasPressed = escapePressed;
 
 		if (_mouse == null || !_mouseCaptured)
 			return;
 
 		// Get mouse delta from input driver
 		var mouseDelta = _mouse.DirectDelta.Value;
+
+		// Commented out for less spam - uncomment for debugging
+		// if (mouseDelta.LengthSquared > 0.001f)
+		// {
+		// 	// Debug mouse delta
+		// }
 
 		// Update yaw/pitch
 		_yaw -= mouseDelta.x * MouseSensitivity;
@@ -122,89 +184,111 @@ public class LocomotionController : Component
 		_pitch = System.Math.Clamp(_pitch, -maxPitchRad, maxPitchRad);
 	}
 
-	private void HandleMovement(float delta)
-	{
-		if (_keyboardDriver == null || !_characterController.IsReady)
-			return;
-
-		// Get WASD input
-		float2 inputDir = float2.Zero;
-		if (_keyboardDriver.GetKeyState(EngineKey.W)) inputDir.y += 1;
-		if (_keyboardDriver.GetKeyState(EngineKey.S)) inputDir.y -= 1;
-		if (_keyboardDriver.GetKeyState(EngineKey.A)) inputDir.x -= 1;
-		if (_keyboardDriver.GetKeyState(EngineKey.D)) inputDir.x += 1;
-		inputDir = inputDir.Normalized;
-
-		if (inputDir.LengthSquared > 0.001f)
-		{
-			// Calculate movement direction relative to yaw (no pitch)
-			floatQ yawRotation = floatQ.AxisAngle(float3.Up, _yaw);
-			float3 forward = yawRotation * float3.Forward;
-			float3 right = yawRotation * float3.Right;
-
-			// Project onto horizontal plane
-			forward.y = 0;
-			right.y = 0;
-			forward = forward.Normalized;
-			right = right.Normalized;
-
-			// Calculate movement direction in world space
-			float3 moveDir = (forward * inputDir.y + right * inputDir.x).Normalized;
-
-			// Send to CharacterController
-			_characterController.SetMovementDirection(moveDir);
-		}
-		else
-		{
-			_characterController.SetMovementDirection(float3.Zero);
-		}
-	}
-
-	// TODO: Input driver system - Move to input hook
-	private void HandleJump()
-	{
-		if (_keyboardDriver == null)
-			return;
-
-		// Space to jump
-		if (_keyboardDriver.GetKeyState(EngineKey.Space))
-		{
-			_characterController.RequestJump();
-		}
-	}
-
 	// TODO: Physics driver system - Move to physics hook
 	private void UpdateHead()
 	{
 		if (_userRoot?.HeadSlot == null)
 			return;
 
-		// TODO: Physics driver - Update head rotation with pitch + yaw
-		// var headRotation = floatQ.FromEuler(new float3(_pitch, _yaw, 0));
-		// _userRoot.HeadSlot.GlobalTransform = new Transform(
-		// 	new Basis(headRotation),
-		// 	_userRoot.HeadSlot.GlobalPosition
-		// );
-		//
-		// // Update slot rotation (yaw only, no pitch)
-		// Slot.GlobalRotation = new float3(0, _yaw, 0);
+		// If head tracking is available and active, do not override rotation
+		// VRLocomotionModule handles snap turns by modifying _yaw directly
+		bool headTracked = _inputInterface?.HeadDevice?.IsTracked == true;
 
-		// Simplified - just set rotation directly
-		_userRoot.HeadSlot.GlobalRotation = floatQ.FromEuler(new float3(_pitch, _yaw, 0));
-		Slot.GlobalRotation = floatQ.FromEuler(new float3(0, _yaw, 0));
+		if (!headTracked)
+		{
+			// Desktop mode only: apply yaw to body, pitch to head
+			Slot.GlobalRotation = floatQ.FromEuler(new float3(0, _yaw, 0));
+			_userRoot.HeadSlot.LocalRotation.Value = floatQ.FromEuler(new float3(_pitch, 0, 0));
+		}
+		// VR mode: Don't touch rotation - VRLocomotionModule controls it via snap turns
 	}
+
+	/// <summary>
+	/// Apply a snap turn by modifying internal yaw (for VR snap turns).
+	/// </summary>
+	public void ApplySnapTurn(float deltaYaw)
+	{
+		_yaw += deltaYaw;
+		// Apply immediately to slot
+		Slot.GlobalRotation *= floatQ.AxisAngle(float3.Up, deltaYaw);
+	}
+
+	/// <summary>
+	/// Compute horizontal movement basis using head tracking if available, otherwise fall back to yaw.
+	/// Movement is always on the horizontal plane in the direction the head is facing.
+	/// </summary>
+	public void GetMovementBasis(out float3 forward, out float3 right)
+	{
+		// Get head body node from InputInterface for VR head tracking
+		var headDevice = _inputInterface?.GetBodyNode(Input.BodyNode.Head) as ITrackedDevice;
+
+		if (headDevice != null && headDevice.IsTracking)
+		{
+			// VR mode: use head rotation to get forward direction
+			// In Godot/OpenXR, -Z is forward, so we use float3.Back (0,0,-1) or negate Forward
+			floatQ headRot = headDevice.RawRotation;
+			forward = headRot * new float3(0, 0, -1); // -Z is forward in Godot
+		}
+		else if (_userRoot != null && _userRoot.HeadSlot != null)
+		{
+			// Use UserRoot head slot direction
+			forward = _userRoot.HeadFacingDirection;
+		}
+		else
+		{
+			// Desktop fallback: use yaw
+			floatQ yawRotation = floatQ.AxisAngle(float3.Up, _yaw);
+			forward = yawRotation * new float3(0, 0, -1); // -Z is forward
+		}
+
+		// Flatten to horizontal plane (remove vertical component)
+		forward.y = 0;
+		if (forward.LengthSquared < 1e-4f)
+			forward = new float3(0, 0, -1); // Default forward is -Z
+		forward = forward.Normalized;
+
+		// Right as perpendicular on horizontal plane (cross product order matters for handedness)
+		right = float3.Cross(float3.Up, forward);
+		if (right.LengthSquared < 1e-4f)
+			right = float3.Right;
+		right = right.Normalized;
+	}
+
+	/// <summary>
+	/// Activate module by index.
+	/// </summary>
+	private void ActivateModule(int index)
+	{
+		if (index < 0 || index >= _modules.Count)
+			return;
+
+		// Permissions placeholder (allow all for now)
+		if (!_permissions.CanUseLocomotion(_modules[index]))
+			return;
+
+		_activeModule?.Deactivate();
+		_activeModule = _modules[index];
+		_activeModuleIndex = index;
+		_activeModule?.Activate(this);
+	}
+
+	/// <summary>
+	/// Expose CharacterController for modules.
+	/// </summary>
+	public CharacterController CharacterController => _characterController;
 
 	// ===== CLEANUP =====
 
 	public override void OnDestroy()
 	{
-		// TODO: Input driver - Release mouse
-		// if (_mouseCaptured)
-		// {
-		// 	InputSystem.MouseMode = MouseModeEnum.Visible;
-		// }
+		// Release mouse capture request
+		if (_mouseCaptured)
+		{
+			MouseCaptureRequested = false;
+			_mouseCaptured = false;
+		}
 
 		base.OnDestroy();
-		AquaLogger.Log("LocomotionController: Destroyed");
+		// Destroyed
 	}
 }

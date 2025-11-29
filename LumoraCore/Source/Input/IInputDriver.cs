@@ -31,6 +31,7 @@ public interface IKeyboardDriver
 {
 	bool GetKeyState(Key key);
 	string GetTypeDelta();  // Typed characters this frame
+	void UpdateKeyboard(Keyboard keyboard);  // Update keyboard state
 }
 
 /// <summary>

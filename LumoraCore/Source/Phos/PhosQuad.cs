@@ -150,6 +150,10 @@ public class PhosQuad : PhosShape
 		PhosMesh mesh = Mesh;
 		float2 halfSize = Size / 2f;
 
+		// Ensure color buffer exists when using vertex colors (IncreaseVertexCount was called before UseColors was set)
+		if (UseColors)
+			mesh.CheckColors();
+
 		for (int i = 0; i < 4; i++)
 		{
 			// Corner position and UV
@@ -199,6 +203,12 @@ public class PhosQuad : PhosShape
 
 			if (UseColors)
 			{
+				// Safety: if color array was sized before HasColors was enabled, resize it now
+				if (mesh.RawColors.Length <= vertexIndex)
+				{
+					mesh.HasColors = false;
+					mesh.CheckColors();
+				}
 				mesh.RawColors[vertexIndex] = GetColor(i);
 			}
 		}

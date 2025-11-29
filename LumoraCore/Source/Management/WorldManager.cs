@@ -44,6 +44,20 @@ public class WorldManager : IDisposable
 	public World FocusedWorld => _focusedWorld;
 
 	/// <summary>
+	/// Number of worlds currently managed.
+	/// </summary>
+	public int WorldCount
+	{
+		get
+		{
+			lock (_worldsLock)
+			{
+				return _worlds.Count;
+			}
+		}
+	}
+
+	/// <summary>
 	/// Get all managed worlds (readonly).
 	/// </summary>
 	public IReadOnlyList<World> Worlds
@@ -325,6 +339,32 @@ public class WorldManager : IDisposable
 	}
 
 	/// <summary>
+	/// Fixed update for physics and deterministic operations.
+	/// Called at fixed intervals defined by the physics timestep.
+	/// </summary>
+	public void FixedUpdate(double fixedDelta)
+	{
+		if (!_initialized)
+			return;
+
+		// Fixed update all running worlds
+		FixedUpdateWorlds(fixedDelta);
+	}
+
+	/// <summary>
+	/// Late update for cameras and final positioning.
+	/// Called after all regular updates have completed.
+	/// </summary>
+	public void LateUpdate(double delta)
+	{
+		if (!_initialized)
+			return;
+
+		// Late update all running worlds
+		LateUpdateWorlds(delta);
+	}
+
+	/// <summary>
 	/// Process queued focus change.
 	/// Handles world focus transitions and notifications.
 	/// </summary>
@@ -468,7 +508,74 @@ public class WorldManager : IDisposable
 			}
 			catch (Exception ex)
 			{
-				LumoraLogger.Error($"WorldManager: Error updating world '{world.WorldName.Value}': {ex.Message}");
+				// Include stack trace so we can pinpoint UI/layout failures during development.
+				LumoraLogger.Error($"WorldManager: Error updating world '{world.WorldName.Value}': {ex}");
+			}
+		}
+	}
+
+	/// <summary>
+	/// Fixed update all running worlds.
+	/// Runs fixed update cycle for physics on all active worlds.
+	/// </summary>
+	private void FixedUpdateWorlds(double fixedDelta)
+	{
+		// Get snapshot of running worlds
+		List<World> runningWorlds = new List<World>();
+		lock (_worldsLock)
+		{
+			foreach (var world in _worlds)
+			{
+				if (world.State == World.WorldState.Running && !world.IsDestroyed)
+				{
+					runningWorlds.Add(world);
+				}
+			}
+		}
+
+		// Fixed update each world
+		foreach (var world in runningWorlds)
+		{
+			try
+			{
+				world.FixedUpdate(fixedDelta);
+			}
+			catch (Exception ex)
+			{
+				LumoraLogger.Error($"WorldManager: Error in fixed update for world '{world.WorldName.Value}': {ex.Message}");
+			}
+		}
+	}
+
+	/// <summary>
+	/// Late update all running worlds.
+	/// Runs late update cycle for cameras on all active worlds.
+	/// </summary>
+	private void LateUpdateWorlds(double delta)
+	{
+		// Get snapshot of running worlds
+		List<World> runningWorlds = new List<World>();
+		lock (_worldsLock)
+		{
+			foreach (var world in _worlds)
+			{
+				if (world.State == World.WorldState.Running && !world.IsDestroyed)
+				{
+					runningWorlds.Add(world);
+				}
+			}
+		}
+
+		// Late update each world
+		foreach (var world in runningWorlds)
+		{
+			try
+			{
+				world.LateUpdate(delta);
+			}
+			catch (Exception ex)
+			{
+				LumoraLogger.Error($"WorldManager: Error in late update for world '{world.WorldName.Value}': {ex.Message}");
 			}
 		}
 	}

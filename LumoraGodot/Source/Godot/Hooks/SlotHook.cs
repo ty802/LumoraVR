@@ -59,7 +59,6 @@ public class SlotHook : Hook<Slot>, ISlotHook
 	public Node3D RequestNode3D()
 	{
 		_node3DRequests++;
-		Lumora.Core.Logging.Logger.Log($"SlotHook.RequestNode3D: Slot '{Owner.SlotName.Value}' (requests: {_node3DRequests})");
 		return ForceGetNode3D();
 	}
 
@@ -70,7 +69,6 @@ public class SlotHook : Hook<Slot>, ISlotHook
 	public void FreeNode3D()
 	{
 		_node3DRequests--;
-		Lumora.Core.Logging.Logger.Log($"SlotHook.FreeNode3D: Slot '{Owner.SlotName.Value}' (requests: {_node3DRequests})");
 		TryDestroy();
 	}
 
@@ -105,8 +103,7 @@ public class SlotHook : Hook<Slot>, ISlotHook
 	/// </summary>
 	private void GenerateNode3D()
 	{
-		Lumora.Core.Logging.Logger.Log($"SlotHook.GenerateNode3D: Creating Node3D for slot '{Owner.SlotName.Value}'");
-		
+
 		GeneratedNode3D = new Node3D();
 		GeneratedNode3D.Name = Owner.SlotName.Value;
 
@@ -211,15 +208,20 @@ public class SlotHook : Hook<Slot>, ISlotHook
 	private void UpdateData()
 	{
 		if (GeneratedNode3D == null) return;
-		
+
 		if (Owner.ActiveSelf.GetWasChangedAndClear())
 		{
 			GeneratedNode3D.Visible = Owner.ActiveSelf.Value;
 		}
 
+		// Check dirty flag BEFORE clearing
+		bool positionDirty = Owner.LocalPosition.IsDirty;
+		bool rotationDirty = Owner.LocalRotation.IsDirty;
+
 		if (Owner.LocalPosition.GetWasChangedAndClear())
 		{
-			GeneratedNode3D.Position = ToGodotVector3(Owner.LocalPosition.Value);
+			var newPos = ToGodotVector3(Owner.LocalPosition.Value);
+			GeneratedNode3D.Position = newPos;
 		}
 
 		if (Owner.LocalRotation.GetWasChangedAndClear())

@@ -11,6 +11,7 @@ namespace Lumora.Core.Components;
 /// Standard VRIK avatar pattern.
 /// </summary>
 [ComponentCategory("Avatar")]
+[DefaultUpdateOrder(-5000)] // Runs early - after tracking but before most other components
 public class KinetixVRIK : ImplementableComponent
 {
 	// ===== REFERENCES =====
@@ -157,6 +158,20 @@ public class KinetixVRIK : ImplementableComponent
 	public override void OnUpdate(float delta)
 	{
 		base.OnUpdate(delta);
+
+		// Late-init if skeleton was assigned after OnStart
+		if (!_isInitialized && Skeleton.Target != null)
+		{
+			_isInitialized = true;
+			AquaLogger.Log($"KinetixVRIK: Late-start with skeleton '{Skeleton.Target.Slot.SlotName.Value}'");
+		}
+
+		// CRITICAL: Always register for hook update every frame
+		// This ensures the hook's ApplyChanges runs to:
+		// 1. Resolve the skeleton if not found yet
+		// 2. Update IK targets from tracking data
+		// Without this, the hook never gets a chance to run!
+		RunApplyChanges();
 
 		if (!Enabled.Value || !_isInitialized)
 			return;

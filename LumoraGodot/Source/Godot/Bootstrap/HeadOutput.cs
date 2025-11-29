@@ -90,17 +90,27 @@ public partial class HeadOutput : Node
 	/// </summary>
 	private void SetupVRCamera()
 	{
+		// Check if we're in the scene tree yet
+		var parent = GetParent();
+		if (parent == null)
+		{
+			// Defer VR setup until we're added to the scene tree
+			AquaLogger.Log("HeadOutput: Deferring VR setup until added to scene tree");
+			CallDeferred(MethodName.SetupVRCamera);
+			return;
+		}
+
 		// Create XR Origin if it doesn't exist
-		_xrOrigin = GetNode<XROrigin3D>("../XROrigin3D");
+		_xrOrigin = GetNodeOrNull<XROrigin3D>("../XROrigin3D");
 		if (_xrOrigin == null)
 		{
 			_xrOrigin = new XROrigin3D();
 			_xrOrigin.Name = "XROrigin3D";
-			GetParent().AddChild(_xrOrigin);
+			parent.AddChild(_xrOrigin);
 		}
 
 		// Create or find XR Camera
-		_vrCamera = _xrOrigin.GetNode<XRCamera3D>("XRCamera3D");
+		_vrCamera = _xrOrigin.GetNodeOrNull<XRCamera3D>("XRCamera3D");
 		if (_vrCamera == null)
 		{
 			_vrCamera = new XRCamera3D();
@@ -170,12 +180,21 @@ public partial class HeadOutput : Node
 		if (world.LocalUser == null)
 			return;
 
-		// TODO: Get user's avatar root position
-		// For now, keep origin at world origin
+		// Align the XR origin to the local user's root so HMD/controllers match avatar transforms
+		var userRootSlot = world.LocalUser.UserRootSlot;
 		if (_xrOrigin != null)
 		{
-			_xrOrigin.GlobalPosition = Vector3.Zero;
-			_xrOrigin.GlobalRotation = Vector3.Zero;
+			if (userRootSlot != null)
+			{
+				var originPosition = userRootSlot.GlobalPosition.ToGodot();
+				var originRotation = new Basis(userRootSlot.GlobalRotation.ToGodot());
+				_xrOrigin.GlobalTransform = new Transform3D(originRotation, originPosition);
+			}
+			else
+			{
+				_xrOrigin.GlobalPosition = Vector3.Zero;
+				_xrOrigin.GlobalRotation = Vector3.Zero;
+			}
 		}
 	}
 

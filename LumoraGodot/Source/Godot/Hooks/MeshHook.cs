@@ -18,6 +18,7 @@ public class MeshHook : ComponentHook<ProceduralMesh>
 	private MeshInstance3D? meshInstance;
 	private SlotHook? slotHook;
 	private Node3D? parentNode;
+	private bool _uiMaterialApplied;
 
 	/// <summary>
 	/// Factory method for creating mesh hooks.
@@ -43,6 +44,21 @@ public class MeshHook : ComponentHook<ProceduralMesh>
 		material.Roughness = 0.7f;
 		material.ShadingMode = BaseMaterial3D.ShadingModeEnum.PerPixel;
 		meshInstance.MaterialOverride = material;
+
+		// UI meshes use vertex colors and unshaded rendering
+		if (Owner is Lumora.Core.HelioUI.Rendering.HelioUIMesh)
+		{
+			material = new StandardMaterial3D
+			{
+				ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+				Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+				VertexColorUseAsAlbedo = true,
+				CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+				AlbedoColor = Colors.White
+			};
+			meshInstance.MaterialOverride = material;
+			_uiMaterialApplied = true;
+		}
 
 		// Get slot hook and request Node3D
 		if (Owner.Slot?.Hook is SlotHook hook)
@@ -71,6 +87,21 @@ public class MeshHook : ComponentHook<ProceduralMesh>
 		{
 			UploadMesh(Owner.PhosMesh, Owner.UploadHint);
 			Owner.ClearDirty();
+		}
+
+		// Ensure UI materials stay unshaded even if material override gets cleared
+		if (!_uiMaterialApplied && Owner is Lumora.Core.HelioUI.Rendering.HelioUIMesh && meshInstance != null)
+		{
+			var mat = new StandardMaterial3D
+			{
+				ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+				Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+				VertexColorUseAsAlbedo = true,
+				CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+				AlbedoColor = Colors.White
+			};
+			meshInstance.MaterialOverride = mat;
+			_uiMaterialApplied = true;
 		}
 	}
 
@@ -175,10 +206,19 @@ public class MeshHook : ComponentHook<ProceduralMesh>
 		if (phosMesh.HasColors && uploadHint[MeshUploadHint.Flag.Colors])
 		{
 			var colors = new Color[phosMesh.VertexCount];
+			var rawColors = phosMesh.RawColors;
 			for (int i = 0; i < phosMesh.VertexCount; i++)
 			{
-				var c = phosMesh.RawColors[i];
-				colors[i] = new Color(c.r, c.g, c.b, c.a);
+				// Safety: use white if color array is undersized
+				if (i < rawColors.Length)
+				{
+					var c = rawColors[i];
+					colors[i] = new Color(c.r, c.g, c.b, c.a);
+				}
+				else
+				{
+					colors[i] = Colors.White;
+				}
 			}
 			arrays[(int)Mesh.ArrayType.Color] = colors;
 		}

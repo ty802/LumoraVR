@@ -23,6 +23,16 @@ public class Slot : IImplementable<IHook<Slot>>
 	private bool _visible = true;
 	private string _name = "Slot";
 
+	// Transform caching with dirty flags
+	// Dirty flags: bit 0=TRS, bit 1=LocalToWorld, bit 2=WorldToLocal, bit 3=GlobalPos, bit 4=GlobalRot, bit 5=GlobalScale
+	private int _transformDirty = 0;
+	private float4x4 _cachedTRS = float4x4.Identity;
+	private float4x4 _cachedLocalToWorld = float4x4.Identity;
+	private float4x4 _cachedWorldToLocal = float4x4.Identity;
+	private float3 _cachedGlobalPosition = float3.Zero;
+	private floatQ _cachedGlobalRotation = floatQ.Identity;
+	private float3 _cachedGlobalScale = float3.One;
+
 	/// <summary>
 	/// Unique reference ID for network synchronization.
 	/// </summary>
@@ -71,6 +81,9 @@ public class Slot : IImplementable<IHook<Slot>>
 			_parent?.RemoveChild(this);
 			_parent = value;
 			_parent?.AddChild(this);
+
+			// Invalidate global transforms when parent changes
+			InvalidateGlobalTransforms();
 		}
 	}
 
@@ -88,6 +101,11 @@ public class Slot : IImplementable<IHook<Slot>>
 	/// Read-only list of Components attached to this Slot.
 	/// </summary>
 	public IReadOnlyList<Component> Components => _components.AsReadOnly();
+
+	/// <summary>
+	/// Number of Components attached to this Slot.
+	/// </summary>
+	public int ComponentCount => _components.Count;
 
 	/// <summary>
 	/// Name of this Slot (synchronized across network).
@@ -119,10 +137,98 @@ public class Slot : IImplementable<IHook<Slot>>
 	/// </summary>
 	public Sync<string> Tag { get; private set; }
 
+	// Transform cache constants
+	private const int DIRTY_TRS = 1;
+	private const int DIRTY_LOCAL_TO_WORLD = 2;
+	private const int DIRTY_WORLD_TO_LOCAL = 4;
+	private const int DIRTY_GLOBAL_POSITION = 8;
+	private const int DIRTY_GLOBAL_ROTATION = 16;
+	private const int DIRTY_GLOBAL_SCALE = 32;
+	private const int DIRTY_ALL_GLOBAL = DIRTY_LOCAL_TO_WORLD | DIRTY_WORLD_TO_LOCAL |
+	                                      DIRTY_GLOBAL_POSITION | DIRTY_GLOBAL_ROTATION | DIRTY_GLOBAL_SCALE;
+
 	/// <summary>
 	/// Whether this Slot and its contents should persist when saved.
 	/// </summary>
 	public Sync<bool> Persistent { get; private set; }
+
+	/// <summary>
+	/// Invalidates the transform cache and propagates to all children.
+	/// </summary>
+	private void InvalidateTransformCache()
+	{
+		// Mark TRS as dirty
+		_transformDirty |= DIRTY_TRS;
+
+		// Mark all global transforms as dirty
+		InvalidateGlobalTransforms();
+	}
+
+	/// <summary>
+	/// Invalidates global transform caches (called when local transform or parent changes).
+	/// </summary>
+	private void InvalidateGlobalTransforms()
+	{
+		// If already dirty, no need to propagate
+		if ((_transformDirty & DIRTY_ALL_GLOBAL) == DIRTY_ALL_GLOBAL)
+			return;
+
+		// Mark all global transforms as dirty
+		_transformDirty |= DIRTY_ALL_GLOBAL;
+
+		// Propagate to all children
+		foreach (var child in _children)
+		{
+			child.InvalidateGlobalTransforms();
+		}
+	}
+
+	/// <summary>
+	/// Ensures the TRS matrix is valid.
+	/// </summary>
+	private void EnsureValidTRS()
+	{
+		if ((_transformDirty & DIRTY_TRS) != 0)
+		{
+			_cachedTRS = float4x4.TRS(LocalPosition.Value, LocalRotation.Value, LocalScale.Value);
+			_transformDirty &= ~DIRTY_TRS;
+		}
+	}
+
+	/// <summary>
+	/// Ensures the LocalToWorld matrix is valid.
+	/// </summary>
+	private void EnsureValidLocalToWorld()
+	{
+		if ((_transformDirty & DIRTY_LOCAL_TO_WORLD) != 0)
+		{
+			if (_parent == null)
+			{
+				EnsureValidTRS();
+				_cachedLocalToWorld = _cachedTRS;
+			}
+			else
+			{
+				_parent.EnsureValidLocalToWorld();
+				EnsureValidTRS();
+				_cachedLocalToWorld = _parent._cachedLocalToWorld * _cachedTRS;
+			}
+			_transformDirty &= ~DIRTY_LOCAL_TO_WORLD;
+		}
+	}
+
+	/// <summary>
+	/// Ensures the WorldToLocal matrix is valid.
+	/// </summary>
+	private void EnsureValidWorldToLocal()
+	{
+		if ((_transformDirty & DIRTY_WORLD_TO_LOCAL) != 0)
+		{
+			EnsureValidLocalToWorld();
+			_cachedWorldToLocal = _cachedLocalToWorld.Inverse;
+			_transformDirty &= ~DIRTY_WORLD_TO_LOCAL;
+		}
+	}
 
 	/// <summary>
 	/// Position in global/world space.
@@ -131,11 +237,50 @@ public class Slot : IImplementable<IHook<Slot>>
 	{
 		get
 		{
-			return LocalPosition.Value;
+			if ((_transformDirty & DIRTY_GLOBAL_POSITION) != 0)
+			{
+				EnsureValidLocalToWorld();
+				// Extract position from the last column of the matrix
+				_cachedGlobalPosition = new float3(_cachedLocalToWorld.c3.x, _cachedLocalToWorld.c3.y, _cachedLocalToWorld.c3.z);
+				_transformDirty &= ~DIRTY_GLOBAL_POSITION;
+			}
+			return _cachedGlobalPosition;
 		}
 		set
 		{
-			LocalPosition.Value = value;
+			if (_parent == null)
+			{
+				LocalPosition.Value = value;
+				// Cache the value since we know it's already in global space
+				_cachedGlobalPosition = value;
+				_transformDirty &= ~DIRTY_GLOBAL_POSITION;
+				return;
+			}
+
+			var parentScale = _parent.GlobalScale;
+			var invParentRot = _parent.GlobalRotation.Inverse;
+			var delta = value - _parent.GlobalPosition;
+			var unrotated = invParentRot * delta;
+
+			// Avoid division by zero by clamping scale
+			float3 safeScale = new float3(
+				parentScale.x == 0 ? 1 : parentScale.x,
+				parentScale.y == 0 ? 1 : parentScale.y,
+				parentScale.z == 0 ? 1 : parentScale.z
+			);
+
+			LocalPosition.Value = new float3(
+				unrotated.x / safeScale.x,
+				unrotated.y / safeScale.y,
+				unrotated.z / safeScale.z
+			);
+
+			// Cache the global position since we just set it
+			if ((_parent._transformDirty & DIRTY_ALL_GLOBAL) == 0)
+			{
+				_cachedGlobalPosition = value;
+				_transformDirty &= ~DIRTY_GLOBAL_POSITION;
+			}
 		}
 	}
 
@@ -146,11 +291,39 @@ public class Slot : IImplementable<IHook<Slot>>
 	{
 		get
 		{
-			return LocalRotation.Value;
+			if ((_transformDirty & DIRTY_GLOBAL_ROTATION) != 0)
+			{
+				if (_parent == null)
+				{
+					_cachedGlobalRotation = LocalRotation.Value;
+				}
+				else
+				{
+					_cachedGlobalRotation = _parent.GlobalRotation * LocalRotation.Value;
+				}
+				_transformDirty &= ~DIRTY_GLOBAL_ROTATION;
+			}
+			return _cachedGlobalRotation;
 		}
 		set
 		{
-			LocalRotation.Value = value;
+			if (_parent == null)
+			{
+				LocalRotation.Value = value;
+				// Cache the value since we know it's already in global space
+				_cachedGlobalRotation = value;
+				_transformDirty &= ~DIRTY_GLOBAL_ROTATION;
+				return;
+			}
+			var invParentRot = _parent.GlobalRotation.Inverse;
+			LocalRotation.Value = invParentRot * value;
+
+			// Cache the global rotation since we just set it
+			if ((_parent._transformDirty & DIRTY_GLOBAL_ROTATION) == 0)
+			{
+				_cachedGlobalRotation = value;
+				_transformDirty &= ~DIRTY_GLOBAL_ROTATION;
+			}
 		}
 	}
 
@@ -162,6 +335,150 @@ public class Slot : IImplementable<IHook<Slot>>
 	{
 		get => LocalScale.Value;
 		set => LocalScale.Value = value;
+	}
+
+	/// <summary>
+	/// Scale in global/world space (component-wise multiplied up the hierarchy).
+	/// </summary>
+	public float3 GlobalScale
+	{
+		get
+		{
+			if ((_transformDirty & DIRTY_GLOBAL_SCALE) != 0)
+			{
+				if (_parent == null)
+				{
+					_cachedGlobalScale = LocalScale.Value;
+				}
+				else
+				{
+					var parentScale = _parent.GlobalScale;
+					var local = LocalScale.Value;
+					_cachedGlobalScale = new float3(parentScale.x * local.x, parentScale.y * local.y, parentScale.z * local.z);
+				}
+				_transformDirty &= ~DIRTY_GLOBAL_SCALE;
+			}
+			return _cachedGlobalScale;
+		}
+	}
+
+	/// <summary>
+	/// Full local TRS matrix.
+	/// </summary>
+	public float4x4 LocalTransform
+	{
+		get
+		{
+			EnsureValidTRS();
+			return _cachedTRS;
+		}
+	}
+
+	/// <summary>
+	/// Full global TRS matrix (parent * local).
+	/// Alias for LocalToWorld for consistency.
+	/// </summary>
+	public float4x4 GlobalTransform
+	{
+		get
+		{
+			EnsureValidLocalToWorld();
+			return _cachedLocalToWorld;
+		}
+	}
+
+	/// <summary>
+	/// Transformation matrix from local space to world space.
+	/// </summary>
+	public float4x4 LocalToWorld
+	{
+		get
+		{
+			EnsureValidLocalToWorld();
+			return _cachedLocalToWorld;
+		}
+	}
+
+	/// <summary>
+	/// Transformation matrix from world space to local space.
+	/// </summary>
+	public float4x4 WorldToLocal
+	{
+		get
+		{
+			EnsureValidWorldToLocal();
+			return _cachedWorldToLocal;
+		}
+	}
+
+	/// <summary>
+	/// Transform a point from global (world) space to this slot's local space.
+	/// </summary>
+	public float3 GlobalPointToLocal(float3 globalPoint)
+	{
+		EnsureValidWorldToLocal();
+		return _cachedWorldToLocal.MultiplyPoint(globalPoint);
+	}
+
+	/// <summary>
+	/// Transform a point from global (world) space to this slot's local space (ref version).
+	/// </summary>
+	public float3 GlobalPointToLocal(in float3 globalPoint)
+	{
+		EnsureValidWorldToLocal();
+		return _cachedWorldToLocal.MultiplyPoint(in globalPoint);
+	}
+
+	/// <summary>
+	/// Transform a point from this slot's local space to global (world) space.
+	/// </summary>
+	public float3 LocalPointToGlobal(float3 localPoint)
+	{
+		EnsureValidLocalToWorld();
+		return _cachedLocalToWorld.MultiplyPoint(localPoint);
+	}
+
+	/// <summary>
+	/// Transform a point from this slot's local space to global (world) space (ref version).
+	/// </summary>
+	public float3 LocalPointToGlobal(in float3 localPoint)
+	{
+		EnsureValidLocalToWorld();
+		return _cachedLocalToWorld.MultiplyPoint(in localPoint);
+	}
+
+	/// <summary>
+	/// Transform a direction from global (world) space to this slot's local space.
+	/// </summary>
+	public float3 GlobalDirectionToLocal(float3 globalDirection)
+	{
+		EnsureValidWorldToLocal();
+		return _cachedWorldToLocal.MultiplyVector(globalDirection);
+	}
+
+	/// <summary>
+	/// Transform a direction from this slot's local space to global (world) space.
+	/// </summary>
+	public float3 LocalDirectionToGlobal(float3 localDirection)
+	{
+		EnsureValidLocalToWorld();
+		return _cachedLocalToWorld.MultiplyVector(localDirection);
+	}
+
+	/// <summary>
+	/// Transform a rotation from global (world) space to this slot's local space.
+	/// </summary>
+	public floatQ GlobalRotationToLocal(floatQ globalRotation)
+	{
+		return GlobalRotation.Inverse * globalRotation;
+	}
+
+	/// <summary>
+	/// Transform a rotation from this slot's local space to global (world) space.
+	/// </summary>
+	public floatQ LocalRotationToGlobal(floatQ localRotation)
+	{
+		return GlobalRotation * localRotation;
 	}
 
 	/// <summary>
@@ -222,10 +539,24 @@ public class Slot : IImplementable<IHook<Slot>>
 		Tag = new Sync<string>(this, string.Empty);
 		Persistent = new Sync<bool>(this, true);
 
-		// Hook up transform synchronization
-		LocalPosition.OnChanged += (val) => _position = val;
-		LocalRotation.OnChanged += (val) => _rotation = val;
-		LocalScale.OnChanged += (val) => _scale = val;
+		// Hook up transform synchronization and cache invalidation
+		LocalPosition.OnChanged += (val) =>
+		{
+			_position = val;
+			InvalidateTransformCache();
+		};
+
+		LocalRotation.OnChanged += (val) =>
+		{
+			_rotation = val;
+			InvalidateTransformCache();
+		};
+
+		LocalScale.OnChanged += (val) =>
+		{
+			_scale = val;
+			InvalidateTransformCache();
+		};
 
 		// Hook up visibility synchronization
 		ActiveSelf.OnChanged += (val) =>
@@ -249,6 +580,18 @@ public class Slot : IImplementable<IHook<Slot>>
 		// (may be local or user context depending on caller)
 		RefID = World?.RefIDAllocator?.AllocateID() ?? 0;
 		IsInitialized = true;
+
+		// Root slots have all transforms valid initially
+		if (IsRootSlot)
+		{
+			_transformDirty = 0; // All caches are valid for root
+			_cachedTRS = float4x4.TRS(LocalPosition.Value, LocalRotation.Value, LocalScale.Value);
+			_cachedLocalToWorld = _cachedTRS;
+			_cachedWorldToLocal = _cachedTRS.Inverse;
+			_cachedGlobalPosition = LocalPosition.Value;
+			_cachedGlobalRotation = LocalRotation.Value;
+			_cachedGlobalScale = LocalScale.Value;
+		}
 
 		InitializeHook();
 

@@ -9,25 +9,40 @@ namespace Lumora.Core.Components;
 /// Box-shaped collider (rectangular prism).
 /// </summary>
 [ComponentCategory("Physics/Colliders")]
-public class BoxCollider : ImplementableComponent
+public class BoxCollider : Collider
 {
 	// ===== SYNC FIELDS =====
 
 	public readonly Sync<float3> Size;
-	public readonly Sync<float3> Offset;
 
 	// ===== INITIALIZATION =====
 
 	public BoxCollider()
 	{
 		Size = new Sync<float3>(this, float3.One);
-		Offset = new Sync<float3>(this, float3.Zero);
 	}
 
 	public override void OnAwake()
 	{
 		base.OnAwake();
 		AquaLogger.Log($"BoxCollider: Initialized with Size={Size.Value}");
+	}
+
+	// ===== ABSTRACT METHOD IMPLEMENTATIONS =====
+
+	public override object CreateGodotShape()
+	{
+		// Created by PhysicsColliderHook
+		return null;
+	}
+
+	public override object GetLocalBounds()
+	{
+		// Axis-aligned bounds centered at Offset with extents Size/2
+		var half = Size.Value * 0.5f;
+		float3 min = Offset.Value - half;
+		float3 max = Offset.Value + half;
+		return new { Min = min, Max = max };
 	}
 
 }

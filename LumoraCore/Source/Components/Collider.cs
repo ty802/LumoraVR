@@ -9,11 +9,9 @@ namespace Lumora.Core.Components;
 /// <summary>
 /// Base class for all physics colliders.
 /// Standard collider component pattern.
-/// NOTE: Collider inherits from Component (NOT ImplementableComponent) because it doesn't
-/// need a hook - CharacterController's hook handles the physics bodies.
 /// </summary>
 [ComponentCategory("Physics/Colliders")]
-public abstract class Collider : Component
+public abstract class Collider : ImplementableComponent
 {
 	// ===== SYNC FIELDS =====
 
@@ -66,6 +64,13 @@ public abstract class Collider : Component
 	{
 		base.OnAwake();
 
+		// Keep hook in sync when collider properties change
+		Offset.OnChanged += _ => RunApplyChanges();
+		Type.OnChanged += _ => RunApplyChanges();
+		Mass.OnChanged += _ => RunApplyChanges();
+		CharacterCollider.OnChanged += _ => RunApplyChanges();
+		IgnoreRaycasts.OnChanged += _ => RunApplyChanges();
+
 		// Lumora Pattern: If this is a CharacterController collider,
 		// notify CharacterController components in the SAME slot (not parent slots)
 		if (Type.Value == ColliderType.CharacterController)
@@ -88,6 +93,7 @@ public abstract class Collider : Component
 		}
 		// For non-CharacterController colliders, register with physics system directly
 		// (handled by physics hook)
+		RunApplyChanges();
 	}
 
 	// ===== UPDATE =====

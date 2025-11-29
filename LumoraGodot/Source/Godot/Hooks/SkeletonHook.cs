@@ -40,9 +40,15 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
 		if (_skeleton == null || !GodotObject.IsInstanceValid(_skeleton))
 			return;
 
-		// Rebuild skeleton if hierarchy changed
-		if (Owner.BoneHierarchyChanged && Owner.IsBuilt.Value)
+		// Rebuild skeleton if:
+		// 1. Hierarchy changed flag is set, OR
+		// 2. Lumora has bones but Godot skeleton doesn't (late initialization case)
+		bool needsRebuild = Owner.BoneHierarchyChanged ||
+			(Owner.IsBuilt.Value && Owner.BoneCount > 0 && _skeleton.GetBoneCount() == 0);
+
+		if (needsRebuild && Owner.IsBuilt.Value)
 		{
+			AquaLogger.Log($"SkeletonHook: Triggering rebuild - hierarchyChanged={Owner.BoneHierarchyChanged}, lumoraBones={Owner.BoneCount}, godotBones={_skeleton.GetBoneCount()}");
 			RebuildSkeleton();
 		}
 
@@ -131,13 +137,28 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
 	}
 
 	/// <summary>
-	/// Update bone transforms from slot transforms.
+	/// Update bone transforms bidirectionally.
+	/// First sync FROM slots TO skeleton, then sync FROM skeleton BACK TO slots.
+	/// This ensures IK results are reflected in the slot hierarchy.
 	/// </summary>
 	private void UpdateBoneTransforms()
 	{
 		if (_skeleton == null || Owner.BoneCount == 0)
 			return;
 
+		// STEP 1: Sync slot transforms TO skeleton (for non-IK bones)
+		SyncSlotsToSkeleton();
+
+		// STEP 2: Sync skeleton transforms BACK TO slots (for IK-driven bones)
+		SyncSkeletonToSlots();
+	}
+
+	/// <summary>
+	/// Sync slot local transforms to Skeleton3D bone poses.
+	/// Used for bones not driven by IK (manual animation).
+	/// </summary>
+	private void SyncSlotsToSkeleton()
+	{
 		for (int i = 0; i < Owner.BoneCount; i++)
 		{
 			var boneSlot = Owner.BoneSlots[i];
@@ -148,11 +169,55 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
 			if (!_boneNameToIndex.TryGetValue(boneName, out int boneIndex))
 				continue;
 
+			// Skip bones that are being driven by IK
+			// TODO: Add a way to mark bones as IK-driven to skip this step
+			
 			// Convert slot local transform to Godot Transform3D
 			Transform3D boneTransform = ConvertSlotLocalTransform(boneSlot);
 
 			// Set bone pose (relative to parent)
 			_skeleton.SetBonePose(boneIndex, boneTransform);
+		}
+	}
+
+	/// <summary>
+	/// Sync Skeleton3D bone poses back to slot transforms.
+	/// This is crucial for IK systems - after IK solving, we need to update
+	/// the slot transforms so the visual representation matches.
+	/// </summary>
+	private void SyncSkeletonToSlots()
+	{
+		for (int i = 0; i < Owner.BoneCount; i++)
+		{
+			var boneSlot = Owner.BoneSlots[i];
+			if (boneSlot == null)
+				continue;
+
+			string boneName = Owner.BoneNames[i];
+			if (!_boneNameToIndex.TryGetValue(boneName, out int boneIndex))
+				continue;
+
+			// Get the current bone pose from Skeleton3D (after IK solving)
+			Transform3D currentBonePose = _skeleton.GetBonePose(boneIndex);
+
+			// Convert back to Lumora math types
+			var position = new float3(currentBonePose.Origin.X, currentBonePose.Origin.Y, currentBonePose.Origin.Z);
+			var rotation = new floatQ(
+				currentBonePose.Basis.GetRotationQuaternion().X,
+				currentBonePose.Basis.GetRotationQuaternion().Y,
+				currentBonePose.Basis.GetRotationQuaternion().Z,
+				currentBonePose.Basis.GetRotationQuaternion().W
+			);
+			var scale = new float3(
+				currentBonePose.Basis.Scale.X,
+				currentBonePose.Basis.Scale.Y,
+				currentBonePose.Basis.Scale.Z
+			);
+
+			// Update slot local transform (this makes the visual move!)
+			boneSlot.LocalPosition.Value = position;
+			boneSlot.LocalRotation.Value = rotation;
+			boneSlot.LocalScale.Value = scale;
 		}
 	}
 

@@ -1,0 +1,62 @@
+using Lumora.Core.Math;
+
+namespace Lumora.Core.HelioUI;
+
+/// <summary>
+/// Helio panel component.
+/// Visual container with background color and optional border styling.
+/// </summary>
+[ComponentCategory("HelioUI")]
+public class HelioPanel : Component
+{
+	/// <summary>
+	/// Background fill color.
+	/// </summary>
+	public Sync<color> BackgroundColor { get; private set; }
+
+	/// <summary>
+	/// Corner radius for rounded corners (x=topLeft, y=topRight, z=bottomRight, w=bottomLeft).
+	/// </summary>
+	public Sync<float4> BorderRadius { get; private set; }
+
+	/// <summary>
+	/// Border stroke color.
+	/// </summary>
+	public Sync<color> BorderColor { get; private set; }
+
+	/// <summary>
+	/// Border stroke width.
+	/// </summary>
+	public Sync<float> BorderWidth { get; private set; }
+
+	public override void OnAwake()
+	{
+		base.OnAwake();
+		BackgroundColor = new Sync<color>(this, new color(0.2f, 0.2f, 0.2f, 1f));
+		BorderRadius = new Sync<float4>(this, float4.Zero);
+		BorderColor = new Sync<color>(this, new color(0.4f, 0.4f, 0.4f, 1f));
+		BorderWidth = new Sync<float>(this, 0f);
+
+		// Request rebuild on visual changes
+		BackgroundColor.OnChanged += _ => RequestCanvasRebuild();
+		BorderRadius.OnChanged += _ => RequestCanvasRebuild();
+		BorderColor.OnChanged += _ => RequestCanvasRebuild();
+		BorderWidth.OnChanged += _ => RequestCanvasRebuild();
+	}
+
+	private void RequestCanvasRebuild()
+	{
+		// Traverse up the slot hierarchy to find a HelioCanvas
+		var current = Slot;
+		while (current != null)
+		{
+			var canvas = current.GetComponent<HelioCanvas>();
+			if (canvas != null)
+			{
+				canvas.RequestRebuild();
+				return;
+			}
+			current = current.Parent;
+		}
+	}
+}

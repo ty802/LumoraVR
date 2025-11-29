@@ -30,7 +30,6 @@ public class WorldManagerHook : IWorldManagerHook
 		if (sceneRoot is Node node)
 		{
 			node.AddChild(Root);
-			GD.Print($"WorldManagerHook: Added Root to scene tree under '{node.Name}'");
 		}
 
 		// Reset transform
@@ -41,29 +40,22 @@ public class WorldManagerHook : IWorldManagerHook
 		// Subscribe to world events to create WorldHooks
 		Owner.WorldAdded += OnWorldAdded;
 		Owner.WorldRemoved += OnWorldRemoved;
-		GD.Print($"WorldManagerHook: Subscribed to world events");
 
 		// Initialize hooks for existing worlds
-		GD.Print($"WorldManagerHook: Initializing hooks for {Owner.Worlds.Count} existing worlds");
 		foreach (var world in Owner.Worlds)
 		{
-			GD.Print($"WorldManagerHook: Creating hook for existing world '{world.WorldName.Value}'");
 			OnWorldAdded(world);
 		}
 	}
 
 	private void OnWorldAdded(Lumora.Core.World world)
 	{
-		GD.Print($"WorldManagerHook: OnWorldAdded called for world '{world.WorldName.Value}'");
-		
 		// Create WorldHook for the new world IMMEDIATELY
 		// This must happen before any slots are created
 		var worldHook = WorldHook.Constructor();
 		world.Hook = worldHook;  // Set hook FIRST
 		worldHook.Initialize(world);   // Then initialize it
 		
-		GD.Print($"WorldManagerHook: Created hook for world '{world.WorldName.Value}'");
-		GD.Print($"WorldManagerHook: World.GodotSceneRoot is set: {world.GodotSceneRoot != null}");
 	}
 
 	private void OnWorldRemoved(Lumora.Core.World world)
@@ -75,7 +67,6 @@ public class WorldManagerHook : IWorldManagerHook
 			world.Hook = null;
 		}
 
-		GD.Print($"WorldManagerHook: Removed hook for world '{world.WorldName.Value}'");
 	}
 
 	public void Destroy()

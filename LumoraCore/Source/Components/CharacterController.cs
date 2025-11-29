@@ -129,6 +129,11 @@ public class CharacterController : ImplementableComponent, IColliderOwner
 							AquaLogger.Error($"CharacterController: Method AddColliderShape NOT found on hook type {Hook.GetType().Name}");
 						}
 					}
+
+					// IMPORTANT: Register for hook updates so physics actually runs!
+					RunApplyChanges();
+					_isReady = true;
+					AquaLogger.Log("CharacterController: Registered for hook updates - physics enabled!");
 				}
 				catch (System.Exception ex)
 				{
@@ -233,30 +238,11 @@ public class CharacterController : ImplementableComponent, IColliderOwner
 		if (_userRoot?.ActiveUser != World.LocalUser)
 			return;
 
-		// TODO: Physics driver - Create controller if not ready yet
-		// if (!_isReady && !_creationAttempted && World.PhysicsSceneRoot != null)
-		// {
-		// 	CreateGodotController();
-		// 	_creationAttempted = true;
-		// }
-		//
-		// // Don't run physics if not ready
-		// if (!_isReady || _characterBody == null)
-		// 	return;
-		//
-		// // Check if in tree before using physics methods
-		// if (!_characterBody.IsInsideTree())
-		// 	return;
-		//
-		// ApplyGravity(delta);
-		// ApplyMovement(delta);
-		// ApplyJump();
-		//
-		// _characterBody.Velocity = _velocity;
-		// _characterBody.MoveAndSlide();
-		// _velocity = _characterBody.Velocity;
-		//
-		// SyncToSlot();
+		// Keep registering for hook updates every frame so physics runs continuously
+		if (_isReady && Hook != null)
+		{
+			RunApplyChanges();
+		}
 	}
 
 	// TODO: Physics driver system - Move to physics hook

@@ -24,21 +24,15 @@ public class WorldHook : IWorldHook
 
 		// Get WorldManager hook to parent under
 		var worldManagerHook = Owner.WorldManager.Hook as WorldManagerHook;
-		GD.Print($"WorldHook.Initialize: WorldManager.Hook = {worldManagerHook != null}");
-		GD.Print($"WorldHook.Initialize: WorldManagerHook.Root = {worldManagerHook?.Root != null}");
-
 		// Create world root node
 		WorldRoot = new Node3D();
 		WorldRoot.Name = $"World_{Owner.WorldName.Value}";
 		WorldRoot.Visible = false; // Start inactive
-		GD.Print($"WorldHook.Initialize: Created WorldRoot node '{WorldRoot.Name}'");
 
 		// Parent under WorldManager root
 		if (worldManagerHook?.Root != null)
 		{
 			worldManagerHook.Root.AddChild(WorldRoot);
-			GD.Print($"WorldHook.Initialize: Added WorldRoot to WorldManager.Root");
-			GD.Print($"WorldHook.Initialize: WorldManager.Root.GetChildCount() = {worldManagerHook.Root.GetChildCount()}");
 		}
 		else
 		{
@@ -52,7 +46,6 @@ public class WorldHook : IWorldHook
 
 		// Store reference in World for hooks to access
 		Owner.GodotSceneRoot = WorldRoot;
-		GD.Print($"WorldHook.Initialize: Set World.GodotSceneRoot");
 
 		// Reparent any existing slot Node3Ds that were created before world root existed
 		ReparentExistingSlots(Owner.RootSlot);
@@ -70,8 +63,6 @@ public class WorldHook : IWorldHook
 		if (slot.Hook is SlotHook slotHook && slotHook.GeneratedNode3D != null)
 		{
 			Node3D node3D = slotHook.GeneratedNode3D;
-			GD.Print($"WorldHook: Reparenting existing Node3D for slot '{slot.SlotName.Value}' (has parent: {node3D.GetParent() != null})");
-
 			// For root slot, add directly to WorldRoot
 			if (slot.Parent == null || slot.IsRootSlot)
 			{

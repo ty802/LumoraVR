@@ -208,6 +208,35 @@ public class World
 	public bool IsDisposed { get; private set; }
 
 	/// <summary>
+	/// Last frame delta time (seconds).
+	/// </summary>
+	public float LastDelta { get; private set; }
+
+	/// <summary>
+	/// Convenience property for WorldName.Value.
+	/// </summary>
+	public string Name => WorldName?.Value ?? "Unknown";
+
+	/// <summary>
+	/// Whether this world is currently focused.
+	/// </summary>
+	public bool IsFocused => _focus == WorldFocus.Focused;
+
+	/// <summary>
+	/// Number of users in the world.
+	/// </summary>
+	public int UserCount
+	{
+		get
+		{
+			lock (_users)
+			{
+				return _users.Count;
+			}
+		}
+	}
+
+	/// <summary>
 	/// Current focus mode of this world.
 	/// </summary>
 	public WorldFocus Focus
@@ -270,11 +299,11 @@ public class World
 		// Initialize world
 		world.Initialize();
 
-		// Create local user
-		world.CreateHostUser("LocalUser");
-
-		// Run initialization callback
+		// Run initialization callback first so event receivers (like SimpleUserSpawn) are registered
 		init?.Invoke(world);
+
+		// Create local user (this triggers OnUserJoined after SimpleUserSpawn is ready)
+		world.CreateHostUser("LocalUser");
 
 		// Start running
 		world._state = WorldState.Running;
@@ -299,12 +328,15 @@ public class World
 		// Initialize world
 		world.Initialize();
 
-		// Start session (creates LNL listener)
+		// Start session network (creates LNL listener) but don't create user yet
 		world._state = WorldState.InitializingNetwork;
-		world.StartSession(port, hostUserName);
+		world.StartSessionNetwork(port);
 
-		// Run initialization callback
+		// Run initialization callback first so event receivers (like SimpleUserSpawn) are registered
 		init?.Invoke(world);
+
+		// Now create the host user (triggers OnUserJoined after SimpleUserSpawn is ready)
+		world.CreateHostUser(hostUserName);
 
 		// Start running
 		world._state = WorldState.Running;
@@ -618,6 +650,16 @@ public class World
 	/// </summary>
 	public void StartSession(ushort port = 7777, string hostUserName = null)
 	{
+		StartSessionNetwork(port);
+		CreateHostUser(hostUserName);
+	}
+
+	/// <summary>
+	/// Start the session network without creating the host user.
+	/// Used internally to allow init callback to run before user creation.
+	/// </summary>
+	private void StartSessionNetwork(ushort port)
+	{
 		if (_session != null)
 		{
 			AquaLogger.Warn("Session already started");
@@ -633,7 +675,6 @@ public class World
 			AuthorityID = -1; // This is the host
 
 			_refIDAllocator.Reset();
-			CreateHostUser(hostUserName);
 
 			// Host doesn't need to wait for join grant, go straight to running
 			if (_state == WorldState.InitializingNetwork)
@@ -641,11 +682,11 @@ public class World
 				_state = WorldState.Running;
 			}
 
-			AquaLogger.Log($"Started session as host on port {port} - now Running");
+			AquaLogger.Log($"Started session network on port {port}");
 		}
 		catch (Exception ex)
 		{
-			AquaLogger.Error($"Failed to start session: {ex.Message}");
+			AquaLogger.Error($"Failed to start session network: {ex.Message}");
 			_state = WorldState.Failed;
 		}
 	}
@@ -668,6 +709,7 @@ public class World
 		hostUser.IsSilenced.Value = false;
 
 		SetLocalUser(hostUser);
+		AddUser(hostUser); // Add user to world and trigger OnUserJoined
 		AquaLogger.Log($"Created host user '{resolvedName}' with RefID {rangeStart:X16}");
 		return hostUser;
 	}
@@ -789,7 +831,8 @@ public class World
 	}
 
 	/// <summary>
-	/// Process the World update loop.
+	/// Process the World update loop with comprehensive stages.
+	/// Handles all update phases for the world simulation.
 	/// Called by EngineDriver or similar wrapper.
 	/// </summary>
 	public void Update(double delta)
@@ -798,18 +841,257 @@ public class World
 
 		var scaledDelta = delta * TimeScale;
 		TotalTime += scaledDelta;
+		LastDelta = (float)scaledDelta;
 
-		// Process queued synchronous actions
+		// Stage 1: Process synchronous actions (immediate state changes)
 		ProcessSynchronousActions();
 
-		// Run world events (user joined/left, etc.)
+		// Stage 2: Process world events (user joined/left, focus changes)
 		RunWorldEvents();
 
-		// Update trash bin (clean up expired entries)
+		// Stage 3: Process input for this world (if focused)
+		if (_focus == WorldFocus.Focused)
+		{
+			ProcessInput((float)scaledDelta);
+		}
+
+		// Stage 4: Update coroutines
+		UpdateCoroutines((float)scaledDelta);
+
+		// Stage 5: Update components (main update)
+		UpdateComponents((float)scaledDelta);
+
+		// Stage 5.5: Sync slot hooks so transforms propagate to the platform scene graph
+		UpdateSlotHooks(RootSlot);
+
+		// Stage 6: Process changed elements
+		ProcessChangedElements();
+
+		// Stage 7: Process destructions
+		ProcessDestructions();
+
+		// Stage 8: Update hooks (sync with platform layer)
+		_updateManager?.ProcessHookUpdates((float)scaledDelta);
+
+		// Stage 9: Clean up trash bin
 		_trashBin?.Update();
 
-		// Process hook updates (creates/updates Godot nodes)
-		_updateManager?.ProcessHookUpdates();
+		// Stage 10: Network synchronization
+		if (_session != null)
+		{
+			ProcessNetworkSync();
+		}
+
+		// Increment sync tick
+		SyncTick++;
+	}
+
+	/// <summary>
+	/// Fixed update for physics and deterministic operations.
+	/// </summary>
+	public void FixedUpdate(double fixedDelta)
+	{
+		if (_state != WorldState.Running) return;
+
+		var scaledDelta = fixedDelta * TimeScale;
+
+		// Update physics for all physics components
+		UpdatePhysics((float)scaledDelta);
+	}
+
+	/// <summary>
+	/// Late update for cameras and final positioning.
+	/// </summary>
+	public void LateUpdate(double delta)
+	{
+		if (_state != WorldState.Running) return;
+
+		var scaledDelta = delta * TimeScale;
+
+		// Update cameras and final transforms
+		UpdateCameras((float)scaledDelta);
+	}
+
+	/// <summary>
+	/// Process input for this world.
+	/// </summary>
+	private void ProcessInput(float delta)
+	{
+		// Process input through input manager
+		// This would handle VR controllers, keyboard, mouse for this world
+	}
+
+	/// <summary>
+	/// Update coroutines for this world.
+	/// </summary>
+	private void UpdateCoroutines(float delta)
+	{
+		// Update world-specific coroutines
+	}
+
+	/// <summary>
+	/// Update all components in the world.
+	/// </summary>
+	private void UpdateComponents(float delta)
+	{
+		// Update all components that need updating
+		UpdateSlotsRecursive(RootSlot, delta);
+	}
+
+	/// <summary>
+	/// Recursively apply slot hook updates so Node3D transforms stay in sync.
+	/// </summary>
+	private void UpdateSlotHooks(Slot slot)
+	{
+		if (slot == null)
+			return;
+
+		slot.Hook?.ApplyChanges();
+
+		foreach (var child in slot.Children)
+		{
+			UpdateSlotHooks(child);
+		}
+	}
+
+	/// <summary>
+	/// Recursively update slots and their components.
+	/// </summary>
+	private void UpdateSlotsRecursive(Slot slot, float delta)
+	{
+		if (slot == null || !slot.ActiveSelf)
+			return;
+
+		// Update components on this slot
+		foreach (var component in slot.Components)
+		{
+			if (component.Enabled)
+			{
+				component.OnUpdate(delta);
+			}
+		}
+
+		// Update child slots
+		foreach (var child in slot.Children)
+		{
+			UpdateSlotsRecursive(child, delta);
+		}
+	}
+
+	/// <summary>
+	/// Process elements that have changed this frame.
+	/// </summary>
+	private void ProcessChangedElements()
+	{
+		lock (_syncLock)
+		{
+			foreach (var element in _dirtyElements)
+			{
+				// Process changed elements for network sync
+				if (_session != null && IsAuthority)
+				{
+					// Queue state changes for network broadcast
+				}
+			}
+			_dirtyElements.Clear();
+		}
+	}
+
+	/// <summary>
+	/// Process pending destructions.
+	/// </summary>
+	private void ProcessDestructions()
+	{
+		// Process any pending component/slot destructions
+		// This ensures destructions happen at a consistent time
+	}
+
+	/// <summary>
+	/// Process network synchronization.
+	/// </summary>
+	private void ProcessNetworkSync()
+	{
+		if (_session == null || _session.Sync == null) return;
+
+		// Signal that world update is finished
+		// This triggers the sync manager to send any pending updates
+		_session.Sync.SignalWorldUpdateFinished();
+
+		// Increment state version if we're the authority
+		if (IsAuthority)
+		{
+			StateVersion++;
+		}
+	}
+
+	/// <summary>
+	/// Update physics components.
+	/// </summary>
+	private void UpdatePhysics(float fixedDelta)
+	{
+		// Update all physics components with fixed timestep
+		// This will be called by physics components that register for fixed updates
+		UpdatePhysicsRecursive(RootSlot, fixedDelta);
+	}
+
+	/// <summary>
+	/// Recursively update physics on slots.
+	/// </summary>
+	private void UpdatePhysicsRecursive(Slot slot, float fixedDelta)
+	{
+		if (slot == null || !slot.ActiveSelf)
+			return;
+
+		// Update physics components on this slot
+		foreach (var component in slot.Components)
+		{
+			if (component.Enabled)
+			{
+				// Check if component has physics
+				// For now, call a virtual method that components can override
+				component.OnFixedUpdate(fixedDelta);
+			}
+		}
+
+		// Update child slots
+		foreach (var child in slot.Children)
+		{
+			UpdatePhysicsRecursive(child, fixedDelta);
+		}
+	}
+
+	/// <summary>
+	/// Update camera components.
+	/// </summary>
+	private void UpdateCameras(float delta)
+	{
+		// Update all camera components for final positioning
+		UpdateCamerasRecursive(RootSlot, delta);
+	}
+
+	/// <summary>
+	/// Recursively update cameras on slots.
+	/// </summary>
+	private void UpdateCamerasRecursive(Slot slot, float delta)
+	{
+		if (slot == null || !slot.ActiveSelf)
+			return;
+
+		// Update camera components on this slot
+		foreach (var component in slot.Components)
+		{
+			if (component.Enabled)
+			{
+				// Call late update for cameras and final positioning
+				component.OnLateUpdate(delta);
+			}
+		}
+
+		// Update child slots
+		foreach (var child in slot.Children)
+		{
+			UpdateCamerasRecursive(child, delta);
+		}
 	}
 
 	/// <summary>

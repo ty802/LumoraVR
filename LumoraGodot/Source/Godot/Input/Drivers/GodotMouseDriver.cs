@@ -43,11 +43,21 @@ public class GodotMouseDriver : IMouseDriver, IInputDriver
 
 		// Use accumulated motion from InputEventMouseMotion events (not position delta)
 		// This works correctly when mouse is captured
-		mouse.DirectDelta.UpdateValue(new float2(_accumulatedMotion.X, _accumulatedMotion.Y), deltaTime);
+		float2 delta = new float2(_accumulatedMotion.X, _accumulatedMotion.Y);
+		// Commented out for less spam - uncomment for debugging
+		// if (delta.LengthSquared > 0.001f)
+		// {
+		// 	GD.Print($"[GodotMouseDriver.UpdateMouse] Mouse delta: ({delta.x:F2}, {delta.y:F2})");
+		// }
+		mouse.DirectDelta.UpdateValue(delta, deltaTime);
 		_accumulatedMotion = Vector2.Zero; // Reset for next frame
 
 		// Update scroll wheel
 		float scrollDelta = _lastScrollDelta;
+		if (scrollDelta != 0)
+		{
+			GD.Print($"[GodotMouseDriver.UpdateMouse] Scroll delta: {scrollDelta}");
+		}
 		mouse.ScrollWheelDelta.UpdateValue(scrollDelta, deltaTime);
 		_lastScrollDelta = 0f; // Reset for next frame
 	}
@@ -61,6 +71,11 @@ public class GodotMouseDriver : IMouseDriver, IInputDriver
 		if (@event is InputEventMouseMotion mouseMotion)
 		{
 			_accumulatedMotion += mouseMotion.Relative;
+			// Commented out for less spam - uncomment for debugging
+			// if (mouseMotion.Relative.Length() > 0.01f)
+			// {
+			// 	GD.Print($"[GodotMouseDriver.HandleInputEvent] Mouse motion: Relative({mouseMotion.Relative.X:F2}, {mouseMotion.Relative.Y:F2})");
+			// }
 		}
 		// Capture scroll wheel
 		else if (@event is InputEventMouseButton mouseButton)
@@ -68,10 +83,12 @@ public class GodotMouseDriver : IMouseDriver, IInputDriver
 			if (mouseButton.ButtonIndex == MouseButton.WheelUp)
 			{
 				_lastScrollDelta += 1f;
+				GD.Print("[GodotMouseDriver.HandleInputEvent] Mouse wheel up");
 			}
 			else if (mouseButton.ButtonIndex == MouseButton.WheelDown)
 			{
 				_lastScrollDelta -= 1f;
+				GD.Print("[GodotMouseDriver.HandleInputEvent] Mouse wheel down");
 			}
 		}
 	}

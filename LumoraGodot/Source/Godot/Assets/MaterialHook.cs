@@ -62,10 +62,10 @@ public class MaterialHook : IMaterialHook
 	/// <summary>
 	/// Convert property names to Godot shader parameter format.
 	/// </summary>
-	private string ConvertPropertyName(string unityName)
+	private string ConvertPropertyName(string propertyName)
 	{
 		// Remove leading underscore and convert to snake_case
-		string name = unityName.TrimStart('_');
+		string name = propertyName.TrimStart('_');
 
 		// Property name mappings for Godot
 		var mappings = new Dictionary<string, string>

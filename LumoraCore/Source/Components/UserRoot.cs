@@ -58,7 +58,10 @@ public class UserRoot : Component
 		{
 			if ((_cachedHeadSlot == null || _cachedHeadSlot.IsDestroyed) && !IsDestroyed)
 			{
-				_cachedHeadSlot = Slot.FindChild("Avatar", recursive: false)?.FindChild("Head", recursive: false);
+				// Prefer Body Nodes tracking slots, then fall back to avatar bones
+				_cachedHeadSlot = Slot.FindChild("Body Nodes", recursive: false)?.FindChild("Head", recursive: false) ??
+				                  Slot.FindChild("Head", recursive: false) ??
+				                  Slot.FindChild("Avatar", recursive: false)?.FindChild("Head", recursive: false);
 			}
 			return _cachedHeadSlot;
 		}
@@ -88,7 +91,10 @@ public class UserRoot : Component
 		{
 			if ((_cachedLeftHandSlot == null || _cachedLeftHandSlot.IsDestroyed) && !IsDestroyed)
 			{
-				_cachedLeftHandSlot = Slot.FindChild("Avatar", recursive: false)?.FindChild("LeftHand", recursive: false);
+				_cachedLeftHandSlot =
+					Slot.FindChild("Body Nodes", recursive: false)?.FindChild("LeftHand", recursive: false) ??
+					Slot.FindChild("LeftHand", recursive: false) ??
+					Slot.FindChild("Avatar", recursive: false)?.FindChild("LeftHand", recursive: false);
 			}
 			return _cachedLeftHandSlot;
 		}
@@ -103,7 +109,10 @@ public class UserRoot : Component
 		{
 			if ((_cachedRightHandSlot == null || _cachedRightHandSlot.IsDestroyed) && !IsDestroyed)
 			{
-				_cachedRightHandSlot = Slot.FindChild("Avatar", recursive: false)?.FindChild("RightHand", recursive: false);
+				_cachedRightHandSlot =
+					Slot.FindChild("Body Nodes", recursive: false)?.FindChild("RightHand", recursive: false) ??
+					Slot.FindChild("RightHand", recursive: false) ??
+					Slot.FindChild("Avatar", recursive: false)?.FindChild("RightHand", recursive: false);
 			}
 			return _cachedRightHandSlot;
 		}
@@ -118,7 +127,10 @@ public class UserRoot : Component
 		{
 			if ((_cachedLeftFootSlot == null || _cachedLeftFootSlot.IsDestroyed) && !IsDestroyed)
 			{
-				_cachedLeftFootSlot = Slot.FindChild("Avatar", recursive: false)?.FindChild("LeftFoot", recursive: false);
+				_cachedLeftFootSlot =
+					Slot.FindChild("Body Nodes", recursive: false)?.FindChild("LeftFoot", recursive: false) ??
+					Slot.FindChild("LeftFoot", recursive: false) ??
+					Slot.FindChild("Avatar", recursive: false)?.FindChild("LeftFoot", recursive: false);
 			}
 			return _cachedLeftFootSlot;
 		}
@@ -133,7 +145,10 @@ public class UserRoot : Component
 		{
 			if ((_cachedRightFootSlot == null || _cachedRightFootSlot.IsDestroyed) && !IsDestroyed)
 			{
-				_cachedRightFootSlot = Slot.FindChild("Avatar", recursive: false)?.FindChild("RightFoot", recursive: false);
+				_cachedRightFootSlot =
+					Slot.FindChild("Body Nodes", recursive: false)?.FindChild("RightFoot", recursive: false) ??
+					Slot.FindChild("RightFoot", recursive: false) ??
+					Slot.FindChild("Avatar", recursive: false)?.FindChild("RightFoot", recursive: false);
 			}
 			return _cachedRightFootSlot;
 		}
@@ -214,6 +229,39 @@ public class UserRoot : Component
 		}
 	}
 
+	/// <summary>
+	/// Check if we've received first positional tracking data.
+	/// Used to know when VR tracking has started.
+	/// </summary>
+	public bool ReceivedFirstPositionalData
+	{
+		get
+		{
+			if (HeadSlot != null)
+			{
+				var headPos = HeadSlot.LocalPosition.Value;
+				var headRot = HeadSlot.LocalRotation.Value;
+				// If head has moved from default position, we have tracking
+				if (headPos != float3.Zero || headRot != floatQ.Identity)
+					return true;
+			}
+
+			// Check if we have a TrackedDevicePositioner that is tracking
+			var headPositioner = HeadSlot?.GetComponent<TrackedDevicePositioner>();
+			if (headPositioner != null)
+				return headPositioner.IsTracking.Value;
+
+			// For desktop mode, we consider it always tracked
+			if (ActiveUser != null && Engine.Current?.InputInterface != null)
+			{
+				var headDevice = Engine.Current.InputInterface.HeadDevice;
+				return headDevice == null || !headDevice.IsTracked; // Desktop mode
+			}
+
+			return false;
+		}
+	}
+
 	// ===== INITIALIZATION =====
 
 	/// <summary>
@@ -268,6 +316,33 @@ public class UserRoot : Component
 			UserNode.RightFoot => RightFootSlot?.GlobalRotation ?? floatQ.Identity,
 			_ => throw new ArgumentException($"Invalid UserNode: {node}")
 		};
+	}
+
+	/// <summary>
+	/// Forward direction the user is facing (from head), flattened for locomotion.
+	/// </summary>
+	public float3 HeadFacingDirection
+	{
+		get
+		{
+			floatQ headRot = HeadSlot?.GlobalRotation ?? Slot.GlobalRotation;
+			float3 forward = headRot * float3.Forward;
+			forward.y = 0;
+			return forward.LengthSquared < 1e-6f ? float3.Forward : forward.Normalized;
+		}
+	}
+
+	/// <summary>
+	/// Full head-facing rotation (uses head slot if available).
+	/// </summary>
+	public floatQ HeadFacingRotation
+	{
+		get
+		{
+			if (HeadSlot != null)
+				return HeadSlot.GlobalRotation;
+			return Slot.GlobalRotation;
+		}
 	}
 
 	/// <summary>

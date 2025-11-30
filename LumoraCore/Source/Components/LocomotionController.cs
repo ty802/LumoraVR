@@ -1,3 +1,4 @@
+using System;
 using Lumora.Core;
 using Lumora.Core.Math;
 using Lumora.Core.Input;
@@ -15,7 +16,7 @@ public class LocomotionController : Component
 {
 	// ===== PARAMETERS =====
 
-	public float MouseSensitivity { get; set; } = 0.003f;
+	public float MouseSensitivity { get; set; } = 0.007f;
 	public float MaxPitch { get; set; } = 89.0f;
 
 	// ===== STATE =====
@@ -41,6 +42,14 @@ public class LocomotionController : Component
 	/// Property for platform layer to check if mouse should be captured
 	/// </summary>
 	public static bool MouseCaptureRequested { get; private set; } = false;
+
+	/// <summary>
+	/// Allow modules/platform to request mouse capture state.
+	/// </summary>
+	public static void SetMouseCaptureRequested(bool state)
+	{
+		MouseCaptureRequested = state;
+	}
 
 	// ===== INITIALIZATION =====
 
@@ -80,12 +89,16 @@ public class LocomotionController : Component
 			AquaLogger.Warn("[LocomotionController] No InputInterface found!");
 		}
 
-		// Initialize modules (Froox-style delegation)
+		// Initialize modules (desktop/VR delegation)
 		_modules.Add(new VRLocomotionModule());
 		_modules.Add(new DesktopLocomotionModule());
 		_modules.Add(new NullLocomotionModule()); // placeholder fallback
 		// Pick module based on current platform state
 		ActivateModule(IsVRActive() ? 0 : 1);
+
+		// Desktop default: request mouse capture so look works immediately
+		if (!IsVRActive())
+			SetMouseCaptureRequested(true);
 
 		// Initialized
 	}
@@ -94,10 +107,6 @@ public class LocomotionController : Component
 	{
 		_mouseCaptured = true;
 		MouseCaptureRequested = true;
-		// Mouse capture needs to be handled by the platform layer
-		// The platform InputManager should detect when a LocomotionController
-		// is active and capture the mouse accordingly
-		// Request mouse capture (platform layer handles actual capture)
 	}
 
 	// ===== UPDATE =====
@@ -196,22 +205,15 @@ public class LocomotionController : Component
 		{
 			_mouseCaptured = !_mouseCaptured;
 			MouseCaptureRequested = _mouseCaptured;
-			// Platform-specific mouse capture toggle handled by input manager
-			// toggled capture
+			AquaLogger.Log($"[LocomotionController] Mouse capture toggled: {_mouseCaptured}");
 		}
 		_escapeWasPressed = escapePressed;
 
 		if (_mouse == null || !_mouseCaptured)
 			return;
 
-		// Get mouse delta from input driver
-		var mouseDelta = _mouse.DirectDelta.Value;
-
-		// Commented out for less spam - uncomment for debugging
-		// if (mouseDelta.LengthSquared > 0.001f)
-		// {
-		// 	// Debug mouse delta
-		// }
+		// Use Mouse.DirectDelta - now populated via GodotMouseDriver.HandleInputEvent
+		float2 mouseDelta = _mouse.DirectDelta.Value;
 
 		// Update yaw/pitch
 		_yaw -= mouseDelta.x * MouseSensitivity;
@@ -220,23 +222,32 @@ public class LocomotionController : Component
 		_pitch = System.Math.Clamp(_pitch, -maxPitchRad, maxPitchRad);
 	}
 
-	// TODO: Physics driver system - Move to physics hook
+	// Simulates head position/rotation in desktop mode
 	private void UpdateHead()
 	{
 		if (_userRoot?.HeadSlot == null)
+		{
+			AquaLogger.Warn("[LocomotionController] UpdateHead: HeadSlot is null!");
 			return;
+		}
 
-		// If head tracking is available and active, do not override rotation
+		// If head tracking is available and active, do not override
 		// VRLocomotionModule handles snap turns by modifying _yaw directly
 		bool headTracked = _inputInterface?.HeadDevice?.IsTracked == true;
 
 		if (!headTracked)
 		{
-			// Desktop mode only: apply yaw to body, pitch to head
+			// Desktop mode: simulate head position and rotation
+			// Set head height from UserHeight (minus eye offset)
+			float userHeight = _inputInterface?.UserHeight ?? InputInterface.DEFAULT_USER_HEIGHT;
+			float headHeight = userHeight - InputInterface.EYE_HEAD_OFFSET;
+			_userRoot.HeadSlot.LocalPosition.Value = new float3(0, headHeight, 0);
+
+			// Apply yaw to body, pitch to head
 			Slot.GlobalRotation = floatQ.FromEuler(new float3(0, _yaw, 0));
 			_userRoot.HeadSlot.LocalRotation.Value = floatQ.FromEuler(new float3(_pitch, 0, 0));
 		}
-		// VR mode: Don't touch rotation - VRLocomotionModule controls it via snap turns
+		// VR mode: Don't touch - TrackedDevicePositioner handles it
 	}
 
 	/// <summary>

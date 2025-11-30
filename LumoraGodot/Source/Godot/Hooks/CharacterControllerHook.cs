@@ -88,6 +88,10 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
 		if (_characterBody == null || !_characterBody.IsInsideTree())
 			return;
 
+		// If the owner is not ready, skip processing
+		if (Owner == null)
+			return;
+
 		// Get delta time from the UpdateManager
 		float delta = Owner?.World?.UpdateManager?.DeltaTime ?? (1f / 60f);
 

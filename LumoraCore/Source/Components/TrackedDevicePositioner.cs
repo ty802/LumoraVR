@@ -243,9 +243,12 @@ public class TrackedDevicePositioner : Component, IInputUpdateReceiver
 
 		if (device != null && BodyNodeRoot.Target != null)
 		{
-			// Update body node root position/rotation offsets from device
-			BodyNodeRoot.Target.LocalPosition.Value = device.BodyNodePositionOffset;
-			BodyNodeRoot.Target.LocalRotation.Value = device.BodyNodeRotationOffset;
+			// Only override authored pose when device is actually tracking; keeps desktop defaults intact.
+			if (device.IsTracking)
+			{
+				BodyNodeRoot.Target.LocalPosition.Value = device.BodyNodePositionOffset;
+				BodyNodeRoot.Target.LocalRotation.Value = device.BodyNodeRotationOffset;
+			}
 
 			if (ObjectSlot.Target != null)
 			{
@@ -282,18 +285,28 @@ public class TrackedDevicePositioner : Component, IInputUpdateReceiver
 
 		if (device != null)
 		{
-			// Use RawPosition directly as local position
-			// RawPosition is in playspace/tracking space relative to user origin
-			pos = device.RawPosition;
-			rot = device.RawRotation;
 			tracking = device.IsTracking;
 			isActive = device.IsDeviceActive;
 
-			if (!tracking)
+			if (tracking)
 			{
-				// Keep last position if not tracking
+				// Use tracked pose when available
+				pos = device.RawPosition;
+				rot = device.RawRotation;
+			}
+			else
+			{
+				// Keep authored/default pose when not tracking (important for desktop height)
 				pos = Slot.LocalPosition.Value;
 				rot = Slot.LocalRotation.Value;
+
+				// If head/body defaults were zeroed, restore sane desktop height for head
+				if (node == BodyNode.Head && pos.LengthSquared < 0.0001f)
+				{
+					var input = Engine.Current?.InputInterface;
+					float height = input?.UserHeight ?? InputInterface.DEFAULT_USER_HEIGHT;
+					pos = new float3(0f, height, 0f);
+				}
 			}
 
 			node = device.CorrespondingBodyNode;

@@ -49,8 +49,9 @@ public class HeadDevice : InputDevice
 
 	/// <summary>
 	/// Check if this device is currently tracked.
+	/// Default false - VR driver must set to true when headset is actually tracked.
 	/// </summary>
-	public bool IsTracked { get; set; } = true;
+	public bool IsTracked { get; set; } = false;
 
 	/// <summary>
 	/// Get the forward direction of the head.

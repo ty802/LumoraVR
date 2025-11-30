@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using Godot;
 using RuntimeEngine = Lumora.Core.Engine;
 using LocomotionController = Lumora.Core.Components.LocomotionController;
@@ -96,25 +95,20 @@ public partial class InputManager : Node
             }
         }
 
-        if (_movementLocked) return;
-
         base._Process(delta);
 
         MouseMovement -= _previousMouseMovement;
         _previousMouseMovement = MouseMovement;
 
-        Movement = global::Godot.Input.GetVector("MoveLeft", "MoveRight", "MoveForward", "MoveBackward");
+        Movement = global::Godot.Input.GetVector("MoveLeft", "MoveRight", "MoveBackward", "MoveForward");
     }
     public override void _Input(InputEvent @event)
     {
         if (_isServer) return;
 
-        // Always pass input events to the engine's input drivers
-        // even if movement is locked (for UI interactions, etc.)
-
-        if (_movementLocked) return;
-
         base._Input(@event);
+
+        // Note: Mouse events are forwarded to GodotMouseDriver by LumoraEngineRunner._Input()
         if (@event is InputEventMouseMotion motion) MouseMovement += -(motion.ScreenRelative / _window.Size.Y);
     }
 }

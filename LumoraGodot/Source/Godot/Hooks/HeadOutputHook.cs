@@ -47,7 +47,8 @@ public class HeadOutputHook : ComponentHook<HeadOutput>
 			var headHook = userRoot.HeadSlot.Hook as SlotHook;
 			if (headHook != null)
 			{
-				targetNode = headHook.GeneratedNode3D;
+				// Ensure a Node3D exists for the head slot
+				targetNode = headHook.RequestNode3D();
 				AquaLogger.Log($"HeadOutputHook: Attaching camera to head slot");
 			}
 		}

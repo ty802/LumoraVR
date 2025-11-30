@@ -244,7 +244,8 @@ public class GodotVRDriver : IVRDriver, IInputDriver
 		floatQ rotation = floatQ.Identity;
 
 		// Try XRCamera3D first (proper Godot 4.x pattern)
-		if (_xrCamera != null && GodotObject.IsInstanceValid(_xrCamera))
+		// Only use XR tracking if VR interface is actually active
+		if (IsVRActive && _xrCamera != null && GodotObject.IsInstanceValid(_xrCamera))
 		{
 			// Get position relative to XROrigin (playspace-relative)
 			var pos = _xrCamera.Position;

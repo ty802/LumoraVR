@@ -326,9 +326,10 @@ public class UserRoot : Component
 		get
 		{
 			floatQ headRot = HeadSlot?.GlobalRotation ?? Slot.GlobalRotation;
-			float3 forward = headRot * float3.Forward;
+			// Godot uses -Z as forward; align locomotion basis accordingly
+			float3 forward = headRot * float3.Backward;
 			forward.y = 0;
-			return forward.LengthSquared < 1e-6f ? float3.Forward : forward.Normalized;
+			return forward.LengthSquared < 1e-6f ? float3.Backward : forward.Normalized;
 		}
 	}
 

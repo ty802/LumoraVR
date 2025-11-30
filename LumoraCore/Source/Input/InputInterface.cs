@@ -487,6 +487,7 @@ public class InputInterface : IDisposable
 	}
 
 	public IKeyboardDriver GetKeyboardDriver() => _keyboardDriver;
+	public IMouseDriver GetMouseDriver() => _mouseDriver;
 
 	#endregion
 

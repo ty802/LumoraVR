@@ -12,14 +12,45 @@ public class GodotMouseDriver : IMouseDriver, IInputDriver
 {
 	public int UpdateOrder => 0;
 	private Vector2 _lastMousePosition = Vector2.Zero;
-	private float _lastScrollDelta = 0f;
+	private float _pendingScrollDelta = 0f;
 	private double _lastFrameTime = 0;
-	private Vector2 _accumulatedMotion = Vector2.Zero;
+
+	// Accumulated motion - only cleared when consumed
+	private Vector2 _pendingMotion = Vector2.Zero;
+	private bool _mouseMotionReceived = false;
+	private Vector2 _lastVelocitySample = Vector2.Zero; // Used to detect stale velocities
+	private double _lastVelocitySampleTime = 0;
+
+	private int _instanceId;
+	private static int _nextInstanceId = 0;
+
+	public GodotMouseDriver()
+	{
+		_instanceId = _nextInstanceId++;
+		// Ensure Godot accumulates mouse motion between frames so we don't lose deltas
+		global::Godot.Input.UseAccumulatedInput = true;
+		GD.Print($"[GodotMouseDriver] Created instance {_instanceId}");
+	}
 
 	public void UpdateMouse(Mouse mouse)
 	{
 		if (mouse == null)
 			return;
+
+		bool hadMotionEvent = _mouseMotionReceived;
+		_mouseMotionReceived = false;
+
+		// Honor capture requests from locomotion
+		if (Lumora.Core.Components.LocomotionController.MouseCaptureRequested)
+		{
+			if (global::Godot.Input.MouseMode != global::Godot.Input.MouseModeEnum.Captured)
+				global::Godot.Input.MouseMode = global::Godot.Input.MouseModeEnum.Captured;
+		}
+		else
+		{
+			if (global::Godot.Input.MouseMode != global::Godot.Input.MouseModeEnum.Visible)
+				global::Godot.Input.MouseMode = global::Godot.Input.MouseModeEnum.Visible;
+		}
 
 		// Calculate delta time manually since we can't access Engine's delta
 		double currentTime = Time.GetTicksMsec() / 1000.0;
@@ -41,25 +72,53 @@ public class GodotMouseDriver : IMouseDriver, IInputDriver
 		mouse.DesktopPosition.UpdateValue(position, deltaTime);
 		mouse.Position.UpdateValue(position, deltaTime);
 
-		// Use accumulated motion from InputEventMouseMotion events (not position delta)
-		// This works correctly when mouse is captured
-		float2 delta = new float2(_accumulatedMotion.X, _accumulatedMotion.Y);
-		// Commented out for less spam - uncomment for debugging
-		// if (delta.LengthSquared > 0.001f)
-		// {
-		// 	GD.Print($"[GodotMouseDriver.UpdateMouse] Mouse delta: ({delta.x:F2}, {delta.y:F2})");
-		// }
+		// Pull motion gathered from _Input; fall back to Godot's velocity if no events reached us
+		Vector2 motion = _pendingMotion;
+		_pendingMotion = Vector2.Zero;
+		Vector2 lastVelocity = global::Godot.Input.GetLastMouseVelocity();
+		bool usedFallback = false;
+		bool usedPosDelta = false;
+
+		if (motion == Vector2.Zero)
+		{
+			bool velocityFresh = (currentTime - _lastVelocitySampleTime) < 0.25 || lastVelocity != _lastVelocitySample;
+			if (!hadMotionEvent && velocityFresh && lastVelocity.LengthSquared() > 0.0001f)
+			{
+				// Normalize velocity to a 60 FPS reference so mouse feel stays stable at high frame rates
+				const float referenceDelta = 1f / 60f;
+				const float fallbackBoost = 3.0f;
+				motion = lastVelocity * referenceDelta * fallbackBoost;
+				usedFallback = true;
+				_lastVelocitySample = lastVelocity;
+				_lastVelocitySampleTime = currentTime;
+			}
+			else if (_lastMousePosition != Vector2.Zero)
+			{
+				// As an extra safety net, look at position delta in case events were eaten
+				Vector2 posDelta = mousePos - _lastMousePosition;
+				if (posDelta.LengthSquared() > 0.0001f)
+				{
+					motion = posDelta;
+					usedPosDelta = true;
+				}
+			}
+		}
+		else
+		{
+			_lastVelocitySample = lastVelocity;
+			_lastVelocitySampleTime = currentTime;
+		}
+
+		_lastMousePosition = mousePos;
+
+		float2 delta = new float2(motion.X, motion.Y);
+
 		mouse.DirectDelta.UpdateValue(delta, deltaTime);
-		_accumulatedMotion = Vector2.Zero; // Reset for next frame
 
 		// Update scroll wheel
-		float scrollDelta = _lastScrollDelta;
-		if (scrollDelta != 0)
-		{
-			GD.Print($"[GodotMouseDriver.UpdateMouse] Scroll delta: {scrollDelta}");
-		}
+		float scrollDelta = _pendingScrollDelta;
+		_pendingScrollDelta = 0f;
 		mouse.ScrollWheelDelta.UpdateValue(scrollDelta, deltaTime);
-		_lastScrollDelta = 0f; // Reset for next frame
 	}
 
 	/// <summary>
@@ -67,28 +126,22 @@ public class GodotMouseDriver : IMouseDriver, IInputDriver
 	/// </summary>
 	public void HandleInputEvent(InputEvent @event)
 	{
-		// Capture mouse motion (works correctly with captured mouse)
+		// Capture mouse motion - reset consumed flag so next UpdateMouse will read it
 		if (@event is InputEventMouseMotion mouseMotion)
 		{
-			_accumulatedMotion += mouseMotion.Relative;
-			// Commented out for less spam - uncomment for debugging
-			// if (mouseMotion.Relative.Length() > 0.01f)
-			// {
-			// 	GD.Print($"[GodotMouseDriver.HandleInputEvent] Mouse motion: Relative({mouseMotion.Relative.X:F2}, {mouseMotion.Relative.Y:F2})");
-			// }
+			_pendingMotion += mouseMotion.Relative;
+			_mouseMotionReceived = true;
 		}
 		// Capture scroll wheel
 		else if (@event is InputEventMouseButton mouseButton)
 		{
 			if (mouseButton.ButtonIndex == MouseButton.WheelUp)
 			{
-				_lastScrollDelta += 1f;
-				GD.Print("[GodotMouseDriver.HandleInputEvent] Mouse wheel up");
+				_pendingScrollDelta += 1f;
 			}
 			else if (mouseButton.ButtonIndex == MouseButton.WheelDown)
 			{
-				_lastScrollDelta -= 1f;
-				GD.Print("[GodotMouseDriver.HandleInputEvent] Mouse wheel down");
+				_pendingScrollDelta -= 1f;
 			}
 		}
 	}

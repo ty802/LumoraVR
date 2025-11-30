@@ -3,7 +3,7 @@ using System;
 namespace Lumora.Core.Components;
 
 /// <summary>
-/// Minimal locomotion module interface (Froox-style delegation).
+/// Minimal locomotion module interface for desktop/VR locomotion delegation.
 /// Implementations handle movement/jump logic and drive CharacterController.
 /// </summary>
 public interface ILocomotionModule : IDisposable

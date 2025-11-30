@@ -173,6 +173,10 @@ public partial class LumoraEngineRunner : Node
 		AquaLogger.Log("[Phase 1/6] Environment Setup");
 		_loadingScreen?.UpdatePhase(0); // Phase index 0
 
+		// Leave vsync off but allow high framerates; mouse driver normalizes deltas to 60 Hz feel
+		global::Godot.Engine.MaxFps = 0;
+		DisplayServer.WindowSetVsyncMode(DisplayServer.VSyncMode.Disabled);
+
 		// Prevent screen sleep
 		DisplayServer.ScreenSetKeepOn(true);
 

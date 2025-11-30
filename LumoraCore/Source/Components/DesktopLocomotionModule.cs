@@ -19,6 +19,8 @@ public class DesktopLocomotionModule : ILocomotionModule
 		_characterController = owner?.CharacterController;
 		_inputInterface = Engine.Current?.InputInterface;
 		_keyboardDriver = _inputInterface?.GetKeyboardDriver();
+		// Capture mouse for desktop look by default
+		LocomotionController.SetMouseCaptureRequested(true);
 	}
 
 	public void Deactivate()

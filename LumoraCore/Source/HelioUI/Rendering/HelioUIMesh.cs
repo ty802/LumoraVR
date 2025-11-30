@@ -8,7 +8,7 @@ using Lumora.Core.Logging;
 namespace Lumora.Core.HelioUI.Rendering;
 
 /// <summary>
-/// Froox-style UI mesh generator. Builds a batched quad mesh for Helio UI elements.
+/// UI mesh generator. Builds a batched quad mesh for Helio UI elements.
 /// Panels, images, and text are drawn as colored quads.
 /// Text uses an optimized 8x12 bitmap font with run-length merging for efficiency.
 /// </summary>

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Lumora.Core.Networking.Session;
+using Lumora.Core.Networking.Sync;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
@@ -144,6 +145,11 @@ public class World
 	/// Session for networking.
 	/// </summary>
 	public Session Session => _session;
+
+	/// <summary>
+	/// Synchronization controller for this world.
+	/// </summary>
+	public SyncController SyncController { get; private set; }
 
 	/// <summary>
 	/// Thread-safe hook manager for world modifications.
@@ -387,6 +393,10 @@ public class World
 		RootSlot.Initialize(this);
 		RegisterSlot(RootSlot);
 
+		// Create sync controller
+		SyncController = new SyncController(this);
+		AquaLogger.Log("SyncController initialized");
+
 		// Note: Godot scene attachment handled by WorldDriver wrapper
 		// World itself is pure C# and doesn't use AddChild
 
@@ -512,6 +522,14 @@ public class World
 	public void ClearDirtyElements()
 	{
 		_dirtyElements.Clear();
+	}
+
+	/// <summary>
+	/// Get all elements in the world.
+	/// </summary>
+	public IEnumerable<KeyValuePair<ulong, IWorldElement>> GetAllElements()
+	{
+		return _elements;
 	}
 
 	/// <summary>
@@ -876,14 +894,11 @@ public class World
 		// Stage 9: Clean up trash bin
 		_trashBin?.Update();
 
-		// Stage 10: Network synchronization
-		if (_session != null)
+		// Stage 10: Signal sync manager
+		if (_session?.Sync != null)
 		{
-			ProcessNetworkSync();
+			_session.Sync.SignalWorldUpdateFinished();
 		}
-
-		// Increment sync tick
-		SyncTick++;
 	}
 
 	/// <summary>
@@ -1004,24 +1019,6 @@ public class World
 	{
 		// Process any pending component/slot destructions
 		// This ensures destructions happen at a consistent time
-	}
-
-	/// <summary>
-	/// Process network synchronization.
-	/// </summary>
-	private void ProcessNetworkSync()
-	{
-		if (_session == null || _session.Sync == null) return;
-
-		// Signal that world update is finished
-		// This triggers the sync manager to send any pending updates
-		_session.Sync.SignalWorldUpdateFinished();
-
-		// Increment state version if we're the authority
-		if (IsAuthority)
-		{
-			StateVersion++;
-		}
 	}
 
 	/// <summary>
@@ -1238,6 +1235,17 @@ public class World
 		catch (Exception ex)
 		{
 			AquaLogger.Error($"World: Error disposing session: {ex.Message}");
+		}
+
+		// Dispose sync controller
+		try
+		{
+			SyncController?.Dispose();
+			SyncController = null;
+		}
+		catch (Exception ex)
+		{
+			AquaLogger.Error($"World: Error disposing sync controller: {ex.Message}");
 		}
 
 		// 5. Dispose all users

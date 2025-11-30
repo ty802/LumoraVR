@@ -14,7 +14,6 @@ public class Session : IDisposable
 {
     public World World { get; private set; }
     public SessionConnectionManager Connections { get; private set; }
-    public SessionMessageManager Messages { get; private set; }
     public SessionSyncManager Sync { get; private set; }
 
     public bool IsDisposed { get; private set; }
@@ -24,7 +23,6 @@ public class Session : IDisposable
     {
         World = world;
         Connections = new SessionConnectionManager(this);
-        Messages = new SessionMessageManager(this);
     }
 
     /// <summary>
@@ -83,7 +81,6 @@ public class Session : IDisposable
         AquaLogger.Log("Disposing session");
 
         Sync?.Dispose();
-        Messages?.Dispose();
         Connections?.Dispose();
 
         World = null;

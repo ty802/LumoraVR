@@ -1,507 +1,623 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 using System.Threading;
 using Lumora.Core;
-using Lumora.Core.Networking.LNL;
-using Lumora.Core.Networking.Messages;
 using Lumora.Core.Networking.Sync;
+using LegacyJoinGrantData = Lumora.Core.Networking.Messages.JoinGrantData;
 using AquaLogger = Lumora.Core.Logging.Logger;
-using StreamType = Lumora.Core.Networking.Sync.StreamType;
 
 namespace Lumora.Core.Networking.Session;
 
 /// <summary>
-/// Manages synchronization with dedicated sync thread.
+/// Manages synchronization with 3 dedicated threads (decode, encode, sync).
 /// </summary>
 public class SessionSyncManager : IDisposable
 {
-    private Thread _syncThread;
-    private bool _running;
-    private readonly AutoResetEvent _worldUpdateFinished = new(false);
-    private readonly object _lock = new();
-
-    public Session Session { get; private set; }
-    public World World => Session?.World;
-
-    // Sync rate in Hz
-    public int SyncRate { get; set; } = 20;
-
-    public SessionSyncManager(Session session)
-    {
-        Session = session;
-    }
-
-    /// <summary>
-    /// Start the sync thread.
-    /// </summary>
-    public void Start()
-    {
-        if (_syncThread != null)
-        {
-            throw new InvalidOperationException("Sync thread already started");
-        }
-
-        _running = true;
-        _syncThread = new Thread(SyncLoop)
-        {
-            Name = "SessionSyncThread",
-            IsBackground = true,
-            Priority = ThreadPriority.AboveNormal
-        };
-
-        _syncThread.Start();
-        AquaLogger.Log("Sync thread started");
-    }
-
-    /// <summary>
-    /// Main sync loop running on dedicated thread.
-    /// </summary>
-    private void SyncLoop()
-    {
-        World.HookManager.DataModelLock(Thread.CurrentThread);
-
-        ulong lastSyncTime = 0;
-        int syncInterval = 1000 / SyncRate;
-
-        while (_running && !Session.IsDisposed)
-        {
-            try
-            {
-                // Stage 1: Wait for world update to finish
-                _worldUpdateFinished.WaitOne(syncInterval);
-
-                if (!_running) break;
-
-                // Stage 2: Increment sync tick
-                World.IncrementSyncTick();
-
-                // Stage 3: Generate and send delta batch (authority only)
-                if (World.IsAuthority)
-                {
-                    GenerateAndSendDeltaBatch();
-                }
-
-                // Stage 4: Generate and send streams (high-frequency data)
-                GenerateAndSendStreams();
-
-                lastSyncTime++;
-
-                // Sleep to maintain sync rate
-                Thread.Sleep(syncInterval);
-            }
-            catch (Exception ex)
-            {
-                AquaLogger.Error($"Exception in sync loop: {ex.Message}");
-            }
-        }
-
-        World.HookManager.DataModelUnlock();
-        AquaLogger.Log("Sync thread stopped");
-    }
-
-    /// <summary>
-    /// Signal that world update has finished.
-    /// Called from main thread.
-    /// </summary>
-    public void SignalWorldUpdateFinished()
-    {
-        _worldUpdateFinished.Set();
-    }
-
-    /// <summary>
-    /// Generate delta batch from dirty sync members and send to all clients.
-    /// </summary>
-    private void GenerateAndSendDeltaBatch()
-    {
-        var deltaBatch = new DeltaBatch
-        {
-            SenderStateVersion = World.StateVersion,
-            WorldTime = World.TotalTime
-        };
-
-        // Collect dirty sync members from all users
-        foreach (var user in World.GetAllUsers())
-        {
-            var dirtyMembers = user.GetDirtySyncMembers();
-            foreach (var member in dirtyMembers)
-            {
-                // Serialize member data
-                using var ms = new MemoryStream();
-                using var writer = new BinaryWriter(ms);
-                member.Encode(writer);
-
-                var record = new DataRecord
-                {
-                    TargetID = user.ReferenceID,
-                    MemberIndex = member.MemberIndex,
-                    Data = ms.ToArray()
-                };
-
-                deltaBatch.Records.Add(record);
-            }
-
-            user.ClearDirtyFlags();
-        }
-
-        // Only send if there are changes
-        if (deltaBatch.Records.Count > 0)
-        {
-            byte[] encoded = deltaBatch.Encode();
-            Session.Messages.BroadcastMessage(encoded, reliable: true);
-
-            AquaLogger.Debug($"Sent DeltaBatch with {deltaBatch.Records.Count} records");
-        }
-    }
-
-    /// <summary>
-    /// Generate and send stream messages (transforms, audio, etc.).
-    /// </summary>
-    private void GenerateAndSendStreams()
-    {
-        var streamMessage = new StreamMessage();
-
-        // Collect stream data from all users
-        foreach (var user in World.GetAllUsers())
-        {
-            if (!user.StreamBag.HasData) continue;
-
-            // Head transform
-            if (user.StreamBag.HeadTransform.HasValue)
-            {
-                streamMessage.Entries.Add(new StreamEntry
-                {
-                    UserID = user.ReferenceID,
-                    StreamID = (int)StreamType.HeadTransform,
-                    Data = user.StreamBag.HeadTransform.Value.Encode()
-                });
-            }
-
-            // Left hand transform
-            if (user.StreamBag.LeftHandTransform.HasValue)
-            {
-                streamMessage.Entries.Add(new StreamEntry
-                {
-                    UserID = user.ReferenceID,
-                    StreamID = (int)StreamType.LeftHandTransform,
-                    Data = user.StreamBag.LeftHandTransform.Value.Encode()
-                });
-            }
-
-            // Right hand transform
-            if (user.StreamBag.RightHandTransform.HasValue)
-            {
-                streamMessage.Entries.Add(new StreamEntry
-                {
-                    UserID = user.ReferenceID,
-                    StreamID = (int)StreamType.RightHandTransform,
-                    Data = user.StreamBag.RightHandTransform.Value.Encode()
-                });
-            }
-
-            // Clear stream bag after encoding
-            user.StreamBag.Clear();
-        }
-
-        // Send if there's stream data
-        if (streamMessage.Entries.Count > 0)
-        {
-            byte[] encoded = streamMessage.Encode();
-            Session.Messages.BroadcastMessage(encoded, reliable: false); // Streams are unreliable for low latency
-
-            AquaLogger.Debug($"Sent StreamMessage with {streamMessage.Entries.Count} entries");
-        }
-    }
-
-    /// <summary>
-    /// Process incoming delta batch from a client.
-    /// </summary>
-    public void ProcessDeltaBatch(IConnection connection, DeltaBatch delta)
-    {
-        lock (_lock)
-        {
-            AquaLogger.Debug($"Processing DeltaBatch with {delta.Records.Count} records from {connection.Identifier}");
-
-            // If we're authority, validate and confirm/correct changes
-            if (World.IsAuthority)
-            {
-                var confirmation = new ConfirmationMessage
-                {
-                    ClientStateVersion = delta.SenderStateVersion,
-                    AuthorityStateVersion = World.StateVersion
-                };
-
-                foreach (var record in delta.Records)
-                {
-                    var validation = ValidateDataRecord(record, connection);
-
-                    if (validation.IsValid)
-                    {
-                        // Accept: apply change and increment state version
-                        ApplyDataRecord(record);
-                        World.IncrementStateVersion();
-
-                        confirmation.Records.Add(new ConfirmationRecord
-                        {
-                            TargetID = record.TargetID,
-                            MemberIndex = record.MemberIndex,
-                            Accepted = true
-                        });
-                    }
-                    else
-                    {
-                        // Reject: send correction
-                        AquaLogger.Warn($"Rejected delta change: {validation.RejectionReason}");
-
-                        byte[] correctedData = null;
-                        if (validation.CorrectedValue != null)
-                        {
-                            // TODO: Platform-agnostic serialization needed
-                            // correctedData = Serializer.Serialize(validation.CorrectedValue);
-                            AquaLogger.Warn("Corrected value serialization not yet implemented");
-                        }
-
-                        confirmation.Records.Add(new ConfirmationRecord
-                        {
-                            TargetID = record.TargetID,
-                            MemberIndex = record.MemberIndex,
-                            Accepted = false,
-                            CorrectedData = correctedData,
-                            RejectionReason = validation.RejectionReason
-                        });
-                    }
-                }
-
-                // Update confirmation with new authority state version
-                confirmation.AuthorityStateVersion = World.StateVersion;
-
-                // Send confirmation back to client
-                byte[] confirmationData = confirmation.Encode();
-                Session.Messages.SendToConnection(connection, confirmationData, reliable: true);
-
-                // Broadcast accepted changes to other clients
-                if (confirmation.Records.Any(r => r.Accepted))
-                {
-                    byte[] encoded = delta.Encode();
-                    Session.Messages.BroadcastMessageExcept(connection, encoded, reliable: true);
-                }
-            }
-            else
-            {
-                // Clients accept all deltas from authority without validation
-                foreach (var record in delta.Records)
-                {
-                    ApplyDataRecord(record);
-                }
-
-                // Update our state version to match authority
-                World.SetStateVersion(delta.SenderStateVersion);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Process full state batch.
-    /// </summary>
-    public void ProcessFullBatch(IConnection connection, FullBatch full)
-    {
-        lock (_lock)
-        {
-            AquaLogger.Log($"Processing FullBatch with {full.Records.Count} records");
-
-            foreach (var record in full.Records)
-            {
-                ApplyDataRecord(record);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Process stream message.
-    /// </summary>
-    public void ProcessStreamMessage(IConnection connection, StreamMessage stream)
-    {
-        lock (_lock)
-        {
-            foreach (var entry in stream.Entries)
-            {
-                // Find the user
-                var user = World.GetAllUsers().Find(u => u.ReferenceID == entry.UserID);
-                if (user == null)
-                {
-                    AquaLogger.Warn($"Stream entry for unknown user {entry.UserID}");
-                    continue;
-                }
-
-                // Decode stream data based on type
-                StreamType streamType = (StreamType)entry.StreamID;
-                switch (streamType)
-                {
-                    case StreamType.HeadTransform:
-                        user.StreamBag.HeadTransform = TransformStreamData.Decode(entry.Data);
-                        break;
-
-                    case StreamType.LeftHandTransform:
-                        user.StreamBag.LeftHandTransform = TransformStreamData.Decode(entry.Data);
-                        break;
-
-                    case StreamType.RightHandTransform:
-                        user.StreamBag.RightHandTransform = TransformStreamData.Decode(entry.Data);
-                        break;
-
-                    default:
-                        AquaLogger.Warn($"Unknown stream type: {streamType}");
-                        break;
-                }
-            }
-
-            AquaLogger.Debug($"Processed stream message with {stream.Entries.Count} entries");
-        }
-    }
-
-    /// <summary>
-    /// Validate a data record before applying it.
-    /// Authority checks if the change is allowed.
-    /// </summary>
-    private DeltaValidationResult ValidateDataRecord(DataRecord record, IConnection sender)
-    {
-        try
-        {
-            var element = World.FindElement(record.TargetID);
-
-            if (element == null)
-            {
-                return DeltaValidationResult.Reject($"Element {record.TargetID} not found");
-            }
-
-            // Check if this is a sync object
-            if (element is not ISyncObject syncObject)
-            {
-                return DeltaValidationResult.Reject($"Element {record.TargetID} is not a sync object");
-            }
-
-            // Check if member index is valid
-            if (record.MemberIndex < 0 || record.MemberIndex >= syncObject.SyncMembers.Count)
-            {
-                return DeltaValidationResult.Reject($"Invalid member index {record.MemberIndex}");
-            }
-
-            var member = syncObject.SyncMembers[record.MemberIndex];
-
-            // Check authority/ownership
-            // For User objects, only the user themselves can modify their own data
-            if (element is User user)
-            {
-                // TODO: Get sender's user ID from connection and verify it matches
-                // For now, accept all user changes (will implement proper ownership checking)
-                return DeltaValidationResult.Accept();
-            }
-
-            // For Slots and Components, check if sender has permission
-            // TODO: Implement ownership/permission system
-            // For now, accept all changes from any connected client
-            return DeltaValidationResult.Accept();
-        }
-        catch (Exception ex)
-        {
-            AquaLogger.Error($"Validation error: {ex.Message}");
-            return DeltaValidationResult.Reject($"Validation exception: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Apply a data record to the world state.
-    /// </summary>
-    private void ApplyDataRecord(DataRecord record)
-    {
-        try
-        {
-            var element = World.FindElement(record.TargetID);
-            if (element is ISyncObject syncObject)
-            {
-                if (record.MemberIndex < syncObject.SyncMembers.Count)
-                {
-                    var member = syncObject.SyncMembers[record.MemberIndex];
-
-                    using var ms = new MemoryStream(record.Data);
-                    using var reader = new BinaryReader(ms);
-                    member.Decode(reader);
-
-                    AquaLogger.Debug($"Applied {member.Name} to {element}");
-                }
-                else
-                {
-                    AquaLogger.Warn($"Invalid member index {record.MemberIndex} for {element}");
-                }
-            }
-            else
-            {
-                AquaLogger.Warn($"Element {record.TargetID} not found or not ISyncObject");
-            }
-        }
-        catch (Exception ex)
-        {
-            AquaLogger.Error($"Failed to apply data record: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Process confirmation message from authority.
-    /// Apply corrections for rejected changes.
-    /// </summary>
-    public void ProcessConfirmation(IConnection connection, ConfirmationMessage confirmation)
-    {
-        lock (_lock)
-        {
-            AquaLogger.Debug($"Processing confirmation with {confirmation.Records.Count} records from authority");
-
-            // Update our state version to match authority
-            World.SetStateVersion(confirmation.AuthorityStateVersion);
-
-            foreach (var record in confirmation.Records)
-            {
-                if (record.Accepted)
-                {
-                    // Change was accepted, nothing to do
-                    AquaLogger.Debug($"Change accepted for element {record.TargetID} member {record.MemberIndex}");
-                }
-                else
-                {
-                    // Change was rejected, apply correction
-                    AquaLogger.Warn($"Change rejected: {record.RejectionReason}");
-
-                    if (record.CorrectedData != null)
-                    {
-                        // Apply the corrected value from authority
-                        var element = World.FindElement(record.TargetID);
-                        if (element is ISyncObject syncObject && record.MemberIndex < syncObject.SyncMembers.Count)
-                        {
-                            var member = syncObject.SyncMembers[record.MemberIndex];
-
-                            using var ms = new MemoryStream(record.CorrectedData);
-                            using var reader = new BinaryReader(ms);
-                            member.Decode(reader);
-
-                            AquaLogger.Log($"Applied correction from authority for {member.Name}");
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    public void Dispose()
-    {
-        _running = false;
-        _worldUpdateFinished.Set(); // Wake up thread
-
-        if (_syncThread != null)
-        {
-            _syncThread.Join(timeout: TimeSpan.FromSeconds(5));
-            _syncThread = null;
-        }
-
-        _worldUpdateFinished.Dispose();
-    }
+	public enum SyncLoopStage
+	{
+		WaitingForSyncThreadEvent,
+		RunningMessageProcessing,
+		ExitedMessageProcessing,
+		ProcessingStopped,
+		ContinuingAfterRefreshFinished,
+		GeneratingDeltaBatch,
+		GeneratingCorrections,
+		EncodingStreams,
+		FinishingSyncCycle,
+		ProcessingControlMessages,
+		InitializingNewUsers,
+		Finished
+	}
+
+	// Threads
+	private Thread _decodeThread;
+	private Thread _encodeThread;
+	private Thread _syncThread;
+
+	// Thread synchronization
+	private readonly AutoResetEvent _decodeThreadEvent = new(false);
+	private readonly AutoResetEvent _encodeThreadEvent = new(false);
+	private readonly AutoResetEvent _syncThreadEvent = new(false);
+	private readonly ManualResetEvent _syncThreadInitEvent = new(false);
+	private readonly ManualResetEvent _refreshFinished = new(false);
+	private readonly ManualResetEvent _lastProcessingStopped = new(false);
+
+	// Message queues
+	private readonly ConcurrentQueue<RawInMessage> _rawInMessages = new();
+	private readonly ConcurrentQueue<SyncMessage> _messagesToProcess = new();
+	private readonly ConcurrentQueue<SyncMessage> _messagesToTransmit = new();
+
+	// State
+	private bool _running;
+	private bool _stopProcessing;
+	private bool _isDisposed;
+
+	// New user initialization
+	private readonly List<User> _newUsersToInitialize = new();
+	private readonly object _newUsersLock = new();
+
+	// Debug
+	public SyncLoopStage DEBUG_SyncLoopStage { get; private set; }
+	public SyncMessage ProcessingSyncMessage { get; private set; }
+
+	// Statistics
+	public int TotalProcessedMessages { get; private set; }
+	public int TotalReceivedDeltas { get; private set; }
+	public int TotalReceivedFulls { get; private set; }
+	public int TotalReceivedStreams { get; private set; }
+	public int TotalSentDeltas { get; private set; }
+	public int TotalSentFulls { get; private set; }
+	public int TotalSentStreams { get; private set; }
+	public int TotalCorrections { get; private set; }
+	public int LastGeneratedDeltaChanges { get; private set; }
+
+	public Session Session { get; private set; }
+	public World World => Session?.World;
+	public int SyncRate { get; set; } = 20;
+
+	public SessionSyncManager(Session session)
+	{
+		Session = session;
+	}
+
+	/// <summary>
+	/// Start all sync threads.
+	/// </summary>
+	public void Start()
+	{
+		if (_syncThread != null)
+			throw new InvalidOperationException("Sync threads already started");
+
+		_running = true;
+
+		_decodeThread = new Thread(DecodeLoop)
+		{
+			Name = "SessionDecodeThread",
+			IsBackground = true,
+			Priority = ThreadPriority.AboveNormal
+		};
+
+		_encodeThread = new Thread(EncodeLoop)
+		{
+			Name = "SessionEncodeThread",
+			IsBackground = true,
+			Priority = ThreadPriority.AboveNormal
+		};
+
+		_syncThread = new Thread(SyncLoop)
+		{
+			Name = "SessionSyncThread",
+			IsBackground = true,
+			Priority = ThreadPriority.AboveNormal
+		};
+
+		_decodeThread.Start();
+		_encodeThread.Start();
+		_syncThread.Start();
+
+		// Wait for sync thread to initialize
+		_syncThreadInitEvent.WaitOne();
+
+		AquaLogger.Log("SessionSyncManager: All threads started");
+	}
+
+	/// <summary>
+	/// Signal that world update has finished.
+	/// Called from main thread after World.Update().
+	/// </summary>
+	public void SignalWorldUpdateFinished()
+	{
+		_syncThreadEvent.Set();
+	}
+
+	/// <summary>
+	/// Queue raw incoming data for decoding.
+	/// </summary>
+	public void QueueRawIncoming(RawInMessage message)
+	{
+		_rawInMessages.Enqueue(message);
+		_decodeThreadEvent.Set();
+	}
+
+	/// <summary>
+	/// Queue message for transmission.
+	/// </summary>
+	public void EnqueueForTransmission(SyncMessage message)
+	{
+		_messagesToTransmit.Enqueue(message);
+		_encodeThreadEvent.Set();
+	}
+
+	/// <summary>
+	/// Queue message for processing.
+	/// </summary>
+	private void EnqueueForProcessing(SyncMessage message)
+	{
+		_messagesToProcess.Enqueue(message);
+		_syncThreadEvent.Set();
+	}
+
+	/// <summary>
+	/// Add user to initialization queue.
+	/// </summary>
+	public void QueueUserForInitialization(User user)
+	{
+		lock (_newUsersLock)
+		{
+			_newUsersToInitialize.Add(user);
+		}
+	}
+
+	// ===== DECODE THREAD =====
+
+	private void DecodeLoop()
+	{
+		AquaLogger.Log("DecodeLoop started");
+
+		while (_running && !_isDisposed)
+		{
+			_decodeThreadEvent.WaitOne();
+
+			if (_isDisposed) break;
+
+			while (_rawInMessages.TryDequeue(out var rawMessage))
+			{
+				try
+				{
+					var syncMessage = SyncMessage.Decode(rawMessage);
+
+					// Update statistics
+					switch (syncMessage)
+					{
+						case DeltaBatch: TotalReceivedDeltas++; break;
+						case FullBatch: TotalReceivedFulls++; break;
+						case StreamMessage: TotalReceivedStreams++; break;
+					}
+
+					EnqueueForProcessing(syncMessage);
+				}
+				catch (Exception ex)
+				{
+					AquaLogger.Error($"DecodeLoop: Exception decoding message: {ex.Message}");
+				}
+			}
+		}
+
+		AquaLogger.Log("DecodeLoop stopped");
+	}
+
+	// ===== ENCODE THREAD =====
+
+	private void EncodeLoop()
+	{
+		AquaLogger.Log("EncodeLoop started");
+
+		while (_running && !_isDisposed)
+		{
+			_encodeThreadEvent.WaitOne();
+
+			if (_isDisposed) break;
+
+			while (_messagesToTransmit.TryDequeue(out var message))
+			{
+				if (message.Targets.Count == 0)
+				{
+					message.Dispose();
+					continue;
+				}
+
+				try
+				{
+					// Update statistics
+					switch (message)
+					{
+						case DeltaBatch: TotalSentDeltas++; break;
+						case FullBatch: TotalSentFulls++; break;
+						case StreamMessage: TotalSentStreams++; break;
+					}
+
+					// Encode and transmit
+					var encoded = message.Encode();
+					Session.Connections.Broadcast(encoded, message.Targets, message.Reliable);
+				}
+				catch (Exception ex)
+				{
+					AquaLogger.Error($"EncodeLoop: Exception encoding message: {ex.Message}");
+				}
+				finally
+				{
+					message.Dispose();
+				}
+			}
+		}
+
+		AquaLogger.Log("EncodeLoop stopped");
+	}
+
+	// ===== SYNC THREAD =====
+
+	private void SyncLoop()
+	{
+		AquaLogger.Log("SyncLoop started");
+
+		var controlMessagesToProcess = new List<ControlMessage>();
+		ulong lastDeltaSyncTime = 0;
+
+		// Lock data model for sync thread
+		World.HookManager?.DataModelLock(Thread.CurrentThread);
+
+		_syncThreadInitEvent.Set();
+
+		while (_running && !_isDisposed)
+		{
+			try
+			{
+				// Stage 1: Wait for world update or messages
+				DEBUG_SyncLoopStage = SyncLoopStage.WaitingForSyncThreadEvent;
+
+				if (_messagesToProcess.IsEmpty)
+				{
+					_syncThreadEvent.WaitOne(1000 / SyncRate);
+				}
+
+				if (_isDisposed) break;
+
+				// Stage 2: Process incoming messages
+				DEBUG_SyncLoopStage = SyncLoopStage.RunningMessageProcessing;
+
+				while (_messagesToProcess.TryDequeue(out var message))
+				{
+					ProcessingSyncMessage = message;
+
+					if (ProcessMessage(message, lastDeltaSyncTime, controlMessagesToProcess))
+					{
+						TotalProcessedMessages++;
+					}
+
+					ProcessingSyncMessage = null;
+				}
+
+				DEBUG_SyncLoopStage = SyncLoopStage.ExitedMessageProcessing;
+
+				// Stage 3: Generate and send delta batch (authority only)
+				DEBUG_SyncLoopStage = SyncLoopStage.GeneratingDeltaBatch;
+
+				if (World.IsAuthority)
+				{
+					World.IncrementStateVersion();
+				}
+
+				var deltaBatch = World.SyncController.CollectDeltaMessages();
+				LastGeneratedDeltaChanges = deltaBatch.DataRecordCount;
+
+				if (deltaBatch.DataRecordCount > 0)
+				{
+					if (World.IsAuthority)
+					{
+						// Send to all connected users
+						var connections = Session.Connections.GetAllConnections();
+						deltaBatch.Targets.AddRange(connections);
+					}
+					else
+					{
+						// Send to host
+						var hostConnection = Session.Connections.HostConnection;
+						if (hostConnection != null)
+						{
+							deltaBatch.Targets.Add(hostConnection);
+						}
+					}
+
+					EnqueueForTransmission(deltaBatch);
+				}
+				else
+				{
+					deltaBatch.Dispose();
+				}
+
+				// Stage 4: Generate corrections (authority only)
+				DEBUG_SyncLoopStage = SyncLoopStage.GeneratingCorrections;
+
+				// TODO: Handle released drives and corrections
+
+				// Stage 5: Gather and send streams
+				DEBUG_SyncLoopStage = SyncLoopStage.EncodingStreams;
+
+				if (World.State == World.WorldState.Running)
+				{
+					var streams = new List<StreamMessage>();
+					World.SyncController.GatherStreams(streams);
+
+					foreach (var stream in streams)
+					{
+						EnqueueForTransmission(stream);
+					}
+				}
+
+				// Stage 6: Finish sync cycle
+				DEBUG_SyncLoopStage = SyncLoopStage.FinishingSyncCycle;
+
+				lastDeltaSyncTime = World.StateVersion;
+				World.IncrementSyncTick();
+
+				// Stage 7: Process control messages
+				DEBUG_SyncLoopStage = SyncLoopStage.ProcessingControlMessages;
+
+				foreach (var controlMessage in controlMessagesToProcess)
+				{
+					ProcessControlMessage(controlMessage);
+					controlMessage.Dispose();
+				}
+				controlMessagesToProcess.Clear();
+
+				// Stage 8: Initialize new users
+				DEBUG_SyncLoopStage = SyncLoopStage.InitializingNewUsers;
+
+				List<User> usersToInit;
+				lock (_newUsersLock)
+				{
+					if (_newUsersToInitialize.Count > 0)
+					{
+						usersToInit = new List<User>(_newUsersToInitialize);
+						_newUsersToInitialize.Clear();
+					}
+					else
+					{
+						usersToInit = null;
+					}
+				}
+
+				if (usersToInit != null && usersToInit.Count > 0)
+				{
+					var fullBatch = World.SyncController.EncodeFullBatch();
+
+					foreach (var user in usersToInit)
+					{
+						if (Session.Connections.TryGetConnection(user, out var connection))
+						{
+							fullBatch.Targets.Add(connection);
+						}
+					}
+
+					EnqueueForTransmission(fullBatch);
+
+					// Send JoinStartDelta to new users
+					var startDeltaMessage = new ControlMessage(ControlMessage.Message.JoinStartDelta);
+					foreach (var user in usersToInit)
+					{
+						if (Session.Connections.TryGetConnection(user, out var connection))
+						{
+							startDeltaMessage.Targets.Add(connection);
+						}
+					}
+					EnqueueForTransmission(startDeltaMessage);
+				}
+
+				DEBUG_SyncLoopStage = SyncLoopStage.Finished;
+				if (LastGeneratedDeltaChanges > 0)
+				{
+					AquaLogger.Debug($"SyncLoop: DeltaChanges={LastGeneratedDeltaChanges}");
+				}
+			}
+			catch (Exception ex)
+			{
+				AquaLogger.Error($"SyncLoop: Exception: {ex.Message}\n{ex.StackTrace}");
+			}
+		}
+
+		World.HookManager?.DataModelUnlock();
+		AquaLogger.Log("SyncLoop stopped");
+	}
+
+	private bool ProcessMessage(SyncMessage msg, ulong lastDeltaSyncTime, List<ControlMessage> controlMessagesToProcess)
+	{
+		try
+		{
+			// Link sender user
+			if (msg is not ControlMessage)
+			{
+				if (World.IsAuthority)
+				{
+					if (!Session.Connections.TryGetUser(msg.Sender, out var user))
+					{
+						msg.Dispose();
+						return true;
+					}
+					msg.LinkSenderUser(user);
+				}
+				// Client links to host user
+			}
+
+			switch (msg)
+			{
+				case DeltaBatch deltaBatch:
+					if (World.State != World.WorldState.Running)
+						throw new InvalidOperationException("Cannot process delta when not running");
+
+					// Validate and retransmit (authority)
+					if (World.IsAuthority)
+					{
+						World.SyncController.ValidateDeltaMessages(deltaBatch);
+					}
+
+					// Apply data records
+					ApplyDataRecords(deltaBatch);
+
+					if (!World.IsAuthority)
+					{
+						World.SetStateVersion(deltaBatch.SenderStateVersion);
+					}
+
+					deltaBatch.Dispose();
+					break;
+
+				case FullBatch fullBatch:
+					ApplyDataRecords(fullBatch);
+
+					if (!World.IsAuthority)
+					{
+						World.SetStateVersion(fullBatch.SenderStateVersion);
+					}
+
+					fullBatch.Dispose();
+					break;
+
+				case ConfirmationMessage confirmation:
+					for (int i = 0; i < confirmation.DataRecordCount; i++)
+					{
+						World.SyncController.DecodeCorrection(i, confirmation);
+					}
+
+					if (!World.IsAuthority)
+					{
+						World.SetStateVersion(confirmation.SenderStateVersion);
+					}
+
+					confirmation.Dispose();
+					break;
+
+				case StreamMessage streamMessage:
+					if (World.State == World.WorldState.Running)
+					{
+						World.SyncController.ApplyStreams(streamMessage);
+					}
+					msg.Dispose();
+					break;
+
+				case ControlMessage controlMessage:
+					// Queue for later processing
+					controlMessagesToProcess.Add(controlMessage);
+					break;
+
+				default:
+					AquaLogger.Warn($"Unknown message type: {msg.GetType()}");
+					msg.Dispose();
+					break;
+			}
+
+			return true;
+		}
+		catch (Exception ex)
+		{
+			AquaLogger.Error($"ProcessMessage: Exception: {ex.Message}");
+			throw;
+		}
+	}
+
+	private int ApplyDataRecords(BinaryMessageBatch batch)
+	{
+		int remaining = batch.DataRecordCount;
+		int lastRemaining = remaining;
+
+		while (remaining > 0)
+		{
+			for (int i = 0; i < batch.DataRecordCount; i++)
+			{
+				if (batch.IsProcessed(i))
+					continue;
+
+				bool decoded = batch switch
+				{
+					DeltaBatch delta => World.SyncController.DecodeDeltaMessage(i, delta),
+					FullBatch full => World.SyncController.DecodeFullMessage(i, full),
+					_ => false
+				};
+
+				if (decoded)
+				{
+					batch.MarkDataRecordAsProcessed(i);
+					remaining--;
+				}
+			}
+
+			if (remaining == lastRemaining)
+			{
+				// No progress, some records couldn't be decoded
+				break;
+			}
+
+			lastRemaining = remaining;
+		}
+
+		return remaining;
+	}
+
+	private void ProcessControlMessage(ControlMessage message)
+	{
+		switch (message.ControlMessageType)
+		{
+			case ControlMessage.Message.JoinGrant:
+				if (message.Payload == null || message.Payload.Length == 0)
+				{
+					AquaLogger.Warn("ProcessControlMessage: JoinGrant missing payload");
+					return;
+				}
+
+				var grantData = LegacyJoinGrantData.Decode(message.Payload);
+				AquaLogger.Log($"ProcessControlMessage: JoinGrant UserID={grantData.AssignedUserID}");
+
+				var localUser = new User(World, grantData.AssignedUserID);
+				localUser.UserID.Value = grantData.AssignedUserID.ToString();
+				localUser.AllocationIDStart.Value = grantData.AllocationIDStart;
+				localUser.AllocationIDEnd.Value = grantData.AllocationIDEnd;
+
+				Session.World.SetLocalUser(localUser);
+				Session.World.SetStateVersion(grantData.StateVersion);
+				Session.World.OnJoinGrantReceived();
+				break;
+
+			default:
+				AquaLogger.Log($"ProcessControlMessage: {message.ControlMessageType}");
+				break;
+		}
+	}
+
+	public void Dispose()
+	{
+		if (_isDisposed) return;
+		_isDisposed = true;
+		_running = false;
+
+		// Signal all threads to wake up and exit
+		_decodeThreadEvent.Set();
+		_encodeThreadEvent.Set();
+		_syncThreadEvent.Set();
+		_refreshFinished.Set();
+
+		// Wait for threads to finish
+		_decodeThread?.Join(1000);
+		_encodeThread?.Join(1000);
+		_syncThread?.Join(1000);
+
+		// Dispose events
+		_decodeThreadEvent.Dispose();
+		_encodeThreadEvent.Dispose();
+		_syncThreadEvent.Dispose();
+		_syncThreadInitEvent.Dispose();
+		_refreshFinished.Dispose();
+		_lastProcessingStopped.Dispose();
+
+		AquaLogger.Log("SessionSyncManager disposed");
+	}
 }

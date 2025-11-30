@@ -1,137 +1,166 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using Lumora.Core;
 
 namespace Lumora.Core.Networking.Sync;
 
 /// <summary>
-/// Generic synchronized property.
-/// Automatically tracked for network replication.
-/// 
+/// Synchronized value field.
+/// Automatically tracks changes and synchronizes across the network.
 /// </summary>
-public class Sync<T> : ISyncMember
+public class Sync<T> : SyncElement, ISyncMember, IChangeable
 {
-    private T _value;
-    private ulong _version;
-    private bool _isDirty;
+	private T _value;
+	private T _lastSyncedValue;
+	private Component _owner;
 
-    public int MemberIndex { get; set; } = -1;
-    public string Name { get; set; } = string.Empty;
-    public ulong Version
-    {
-        get => _version;
-        set => _version = value;
-    }
+	public event Action<T> OnChanged;
+	public event Action<IChangeable> Changed;
 
-    public bool IsDirty
-    {
-        get => _isDirty;
-        set => _isDirty = value;
-    }
+	public T Value
+	{
+		get => _value;
+		set
+		{
+			if (!EqualityComparer<T>.Default.Equals(_value, value))
+			{
+				_value = value;
+				OnValueChanged();
+			}
+		}
+	}
 
-    /// <summary>
-    /// Event fired when value changes.
-    /// </summary>
-    public event Action<T> OnValueChanged;
+	// ISyncMember implementation
+	public string Name { get; set; }
+	public bool IsDirty
+	{
+		get => IsSyncDirty;
+		set
+		{
+			if (value)
+			{
+				InvalidateSyncElement();
+			}
+			else
+			{
+				IsSyncDirty = false;
+				InternalClearDirty();
+			}
+		}
+	}
 
-    /// <summary>
-    /// The synchronized value.
-    /// Setting this will mark the member as dirty.
-    /// </summary>
-    public T Value
-    {
-        get => _value;
-        set
-        {
-            if (!Coder<T>.Equals(_value, value))
-            {
-                _value = value;
-                _version++;
-                _isDirty = true;
-                OnValueChanged?.Invoke(value);
-            }
-        }
-    }
+	// Retained for compatibility with existing discovery logic
+	public int MemberIndex { get; set; } = -1;
+	public ulong Version { get; set; }
 
-    /// <summary>
-    /// Force set the value without checking equality.
-    /// Used for initial setup or forced updates.
-    /// </summary>
-    public void ForceSet(T value)
-    {
-        _value = value;
-        _version++;
-        _isDirty = true;
-        OnValueChanged?.Invoke(value);
-    }
+	public Sync()
+	{
+	}
 
-    /// <summary>
-    /// Set the value without triggering dirty flag.
-    /// Used when receiving network updates.
-    /// </summary>
-    internal void SetValueFromNetwork(T value)
-    {
-        if (!Coder<T>.Equals(_value, value))
-        {
-            _value = value;
-            _version++;
-            _isDirty = false; // Don't mark dirty for network updates
-            OnValueChanged?.Invoke(value);
-        }
-    }
+	public Sync(Component owner)
+	{
+		Initialize(owner);
+	}
 
-    public void Encode(BinaryWriter writer)
-    {
-        try
-        {
-            Coder<T>.Encode(writer, _value);
-        }
-        catch (Exception ex)
-        {
-            AquaLogger.Error($"Failed to encode {Name}: {ex.Message}");
-        }
-    }
+	public Sync(Component owner, T initialValue)
+	{
+		Initialize(owner);
+		_value = initialValue;
+		_lastSyncedValue = initialValue;
+	}
 
-    public void Decode(BinaryReader reader)
-    {
-        try
-        {
-            T newValue = Coder<T>.Decode(reader);
-            SetValueFromNetwork(newValue);
-        }
-        catch (Exception ex)
-        {
-            AquaLogger.Error($"Failed to decode {Name}: {ex.Message}");
-        }
-    }
+	public void Initialize(Component owner)
+	{
+		_owner = owner;
+		World = owner?.World;
+		RefID = owner?.RefID ?? 0; // Sync members share owner's RefID
 
-    public object GetValueAsObject()
-    {
-        return _value;
-    }
+		// Check if local element
+		if (RefID != 0 && RefIDAllocator.IsLocalID(RefID))
+		{
+			MarkLocalElement();
+		}
+	}
 
-    // Implicit conversion operator for easier usage
-    public static implicit operator T(Sync<T> sync)
-    {
-        return sync != null ? sync.Value : default(T);
-    }
+	private void OnValueChanged()
+	{
+		Version++;
 
-    public Sync()
-    {
-        _value = default(T);
-        _version = 0;
-        _isDirty = false;
-    }
+		// Fire events
+		OnChanged?.Invoke(_value);
+		Changed?.Invoke(this);
 
-    public Sync(T initialValue)
-    {
-        _value = initialValue;
-        _version = 0;
-        _isDirty = false;
-    }
+		// Mark for sync (if not loading and not local)
+		if (!IsLoading)
+		{
+			InvalidateSyncElement();
+		}
 
-    public override string ToString()
-    {
-        return _value?.ToString() ?? "null";
-    }
+		// Notify owner
+		_owner?.NotifyChanged();
+	}
+
+	/// <summary>
+	/// Check if value changed and clear dirty flag.
+	/// </summary>
+	public bool GetWasChangedAndClear()
+	{
+		bool changed = IsSyncDirty;
+		// Don't clear here - cleared by EncodeDelta
+		return changed;
+	}
+
+	// ===== ISyncMember compatibility helpers =====
+
+	public void Encode(BinaryWriter writer)
+	{
+		EncodeDelta(writer, null);
+	}
+
+	public void Decode(BinaryReader reader)
+	{
+		DecodeDelta(reader, null);
+	}
+
+	public object GetValueAsObject()
+	{
+		return _value;
+	}
+
+	// ===== ENCODING/DECODING =====
+
+	protected override void InternalEncodeFull(BinaryWriter writer, BinaryMessageBatch outboundMessage)
+	{
+		SyncCoder<T>.Encode(writer, _value);
+	}
+
+	protected override void InternalDecodeFull(BinaryReader reader, BinaryMessageBatch inboundMessage)
+	{
+		_value = SyncCoder<T>.Decode(reader);
+		_lastSyncedValue = _value;
+		OnChanged?.Invoke(_value);
+		Changed?.Invoke(this);
+	}
+
+	protected override void InternalEncodeDelta(BinaryWriter writer, BinaryMessageBatch outboundMessage)
+	{
+		// For simple values, delta is the same as full
+		SyncCoder<T>.Encode(writer, _value);
+	}
+
+	protected override void InternalDecodeDelta(BinaryReader reader, BinaryMessageBatch inboundMessage)
+	{
+		_value = SyncCoder<T>.Decode(reader);
+		_lastSyncedValue = _value;
+		OnChanged?.Invoke(_value);
+		Changed?.Invoke(this);
+	}
+
+	protected override void InternalClearDirty()
+	{
+		_lastSyncedValue = _value;
+	}
+
+	public override string ToString() => $"Sync<{typeof(T).Name}>({_value})";
 }

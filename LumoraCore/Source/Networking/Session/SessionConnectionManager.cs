@@ -4,7 +4,8 @@ using System.Linq;
 using System.Threading.Tasks;
 using Lumora.Core;
 using Lumora.Core.Networking.LNL;
-using Lumora.Core.Networking.Messages;
+using Lumora.Core.Networking.Sync;
+using LegacyJoinGrantData = Lumora.Core.Networking.Messages.JoinGrantData;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Session;
@@ -96,7 +97,7 @@ public class SessionConnectionManager : IDisposable
             taskCompletionSource.TrySetResult(false);
         };
 
-        connection.DataReceived += OnHostDataReceived;
+        connection.DataReceived += (data, length) => OnConnectionDataReceived(connection, data, length);
         connection.Connect(null);
 
         bool success = await taskCompletionSource.Task;
@@ -112,7 +113,7 @@ public class SessionConnectionManager : IDisposable
     {
         AquaLogger.Log($"Peer connected: {peer.Identifier}");
 
-        peer.DataReceived += (data, length) => OnPeerDataReceived(peer, data, length);
+        peer.DataReceived += (data, length) => OnConnectionDataReceived(peer, data, length);
 
         // Send JoinGrant
         SendJoinGrant(peer);
@@ -147,7 +148,7 @@ public class SessionConnectionManager : IDisposable
         // Use the start of the range as the user's RefID
         ulong userID = allocStart;
 
-        var grantData = new JoinGrantData
+        var grantData = new LegacyJoinGrantData
         {
             AssignedUserID = userID,
             AllocationIDStart = allocStart,
@@ -157,10 +158,9 @@ public class SessionConnectionManager : IDisposable
             StateVersion = World.StateVersion
         };
 
-        var controlMessage = new ControlMessage
+        var controlMessage = new ControlMessage(ControlMessage.Message.JoinGrant)
         {
-            SubType = ControlMessageType.JoinGrant,
-            Data = grantData.Encode()
+            Payload = grantData.Encode()
         };
 
         byte[] encoded = controlMessage.Encode();
@@ -181,6 +181,7 @@ public class SessionConnectionManager : IDisposable
         }
 
         World.AddUser(user);
+        Session.Sync?.QueueUserForInitialization(user);
     }
 
     private void RemoveUser(User user)
@@ -189,16 +190,20 @@ public class SessionConnectionManager : IDisposable
         user.Dispose();
     }
 
-    private void OnHostDataReceived(byte[] data, int length)
+    private void OnConnectionDataReceived(IConnection connection, byte[] data, int length)
     {
-        // Route to message manager
-        Session.Messages.ProcessIncomingData(HostConnection, data, length);
-    }
+        if (Session?.Sync == null)
+            return;
 
-    private void OnPeerDataReceived(IConnection peer, byte[] data, int length)
-    {
-        // Route to message manager
-        Session.Messages.ProcessIncomingData(peer, data, length);
+        var raw = new RawInMessage
+        {
+            Data = data,
+            Offset = 0,
+            Length = length,
+            Sender = connection
+        };
+
+        Session.Sync.QueueRawIncoming(raw);
     }
 
     /// <summary>
@@ -231,6 +236,17 @@ public class SessionConnectionManager : IDisposable
         lock (_lock)
         {
             return _connectionToUser.Keys.ToList();
+        }
+    }
+
+    /// <summary>
+    /// Broadcast data to specified connections.
+    /// </summary>
+    public void Broadcast(byte[] data, List<IConnection> targets, bool reliable)
+    {
+        foreach (var target in targets)
+        {
+            target.Send(data, data.Length, reliable, background: false);
         }
     }
 

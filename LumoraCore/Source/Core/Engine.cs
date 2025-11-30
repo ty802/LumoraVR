@@ -7,7 +7,6 @@ using Lumora.Core.Helpers;
 using Lumora.Core.Assets;
 using Lumora.Core.Coroutines;
 using Lumora.Core.Audio;
-using Lumora.Core.Networking;
 using Lumora.Core.Physics;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
@@ -38,7 +37,6 @@ public class Engine : IDisposable
 	public AssetManager AssetManager { get; private set; }
 	public GlobalCoroutineManager CoroutineManager { get; private set; }
 	public AudioSystem AudioSystem { get; private set; }
-	public NetworkManager NetworkManager { get; private set; }
 	public PhysicsManager PhysicsManager { get; private set; }
 
 	public static Engine Instance
@@ -159,11 +157,6 @@ public class Engine : IDisposable
 			PhysicsManager = new PhysicsManager();
 			await PhysicsManager.InitializeAsync();
 			AquaLogger.Log("  ✓ PhysicsManager initialized");
-
-			// Initialize NetworkManager
-			NetworkManager = new NetworkManager();
-			await NetworkManager.InitializeAsync();
-			AquaLogger.Log("  ✓ NetworkManager initialized");
 
 			// Phase 4: World Management
 			AquaLogger.Log("Phase 4: Initializing World Management...");
@@ -324,9 +317,6 @@ public class Engine : IDisposable
 
 		// Stage 7: Audio Processing
 		AudioSystem?.Update((float)delta);
-
-		// Stage 8: Network Processing
-		NetworkManager?.Update((float)delta);
 	}
 
 	/// <summary>
@@ -373,9 +363,6 @@ public class Engine : IDisposable
 		// Dispose in reverse initialization order
 		WorldManager?.Dispose();
 		AquaLogger.Log("  ✓ WorldManager disposed");
-
-		NetworkManager?.Dispose();
-		AquaLogger.Log("  ✓ NetworkManager disposed");
 
 		PhysicsManager?.Dispose();
 		AquaLogger.Log("  ✓ PhysicsManager disposed");

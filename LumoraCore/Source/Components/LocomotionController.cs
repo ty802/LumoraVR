@@ -224,10 +224,11 @@ public class LocomotionController : Component
 
 		if (headDevice != null && headDevice.IsTracking)
 		{
-			// VR mode: use head rotation to get forward direction
-			// In Godot/OpenXR, -Z is forward, so we use float3.Back (0,0,-1) or negate Forward
+			// VR mode: combine snap turn yaw with head rotation
+			// headDevice.RawRotation is in tracking space, we need to apply accumulated snap turn yaw
+			floatQ yawRotation = floatQ.AxisAngle(float3.Up, _yaw);
 			floatQ headRot = headDevice.RawRotation;
-			forward = headRot * new float3(0, 0, -1); // -Z is forward in Godot
+			forward = yawRotation * (headRot * new float3(0, 0, -1)); // -Z is forward in Godot
 		}
 		else if (_userRoot != null && _userRoot.HeadSlot != null)
 		{
@@ -247,8 +248,8 @@ public class LocomotionController : Component
 			forward = new float3(0, 0, -1); // Default forward is -Z
 		forward = forward.Normalized;
 
-		// Right as perpendicular on horizontal plane (cross product order matters for handedness)
-		right = float3.Cross(float3.Up, forward);
+		// Right as perpendicular on horizontal plane (Forward × Up = Right in right-handed system)
+		right = float3.Cross(forward, float3.Up);
 		if (right.LengthSquared < 1e-4f)
 			right = float3.Right;
 		right = right.Normalized;

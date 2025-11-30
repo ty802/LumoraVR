@@ -106,9 +106,8 @@ public class VRLocomotionModule : ILocomotionModule
 	private void UpdateMovement(VRController left)
 	{
 		var axis = left.ThumbstickPosition;
-		// Note: In VR, thumbstick Y is typically negative when pushed forward
-		// So we negate Y to make forward = positive
-		float2 moveAxis = new float2(axis.X, -axis.Y);
+		// Use thumbstick values directly - Y positive = forward
+		float2 moveAxis = new float2(axis.X, axis.Y);
 
 		// Apply deadzone
 		if (moveAxis.LengthSquared < DeadZone * DeadZone)
@@ -126,6 +125,13 @@ public class VRLocomotionModule : ILocomotionModule
 			_owner.GetMovementBasis(out var forward, out var rightDir);
 			// Y is forward/back, X is strafe
 			moveDir = (forward * moveAxis.y + rightDir * moveAxis.x).Normalized;
+
+			// Debug logging: camera -> joystick -> movement (commented out for performance)
+			// var headDevice = Engine.Current?.InputInterface?.GetBodyNode(Input.BodyNode.Head) as ITrackedDevice;
+			// Lumora.Core.Logging.Logger.Log($"[VRLoco] HEAD rot:{headDevice?.RawRotation} tracking:{headDevice?.IsTracking}");
+			// Lumora.Core.Logging.Logger.Log($"[VRLoco] JOYSTICK raw:({axis.X:F2},{axis.Y:F2}) processed:({moveAxis.x:F2},{moveAxis.y:F2})");
+			// Lumora.Core.Logging.Logger.Log($"[VRLoco] BASIS fwd:({forward.x:F2},{forward.y:F2},{forward.z:F2}) right:({rightDir.x:F2},{rightDir.y:F2},{rightDir.z:F2})");
+			// Lumora.Core.Logging.Logger.Log($"[VRLoco] MOVE dir:({moveDir.x:F2},{moveDir.y:F2},{moveDir.z:F2})");
 		}
 		_characterController.SetMovementDirection(moveDir);
 	}

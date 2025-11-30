@@ -53,7 +53,7 @@ public class HelioPanel : Component
 			var canvas = current.GetComponent<HelioCanvas>();
 			if (canvas != null)
 			{
-				canvas.RequestRebuild();
+				canvas.RequestVisualRebuild(); // Visual changes require mesh rebuild
 				return;
 			}
 			current = current.Parent;

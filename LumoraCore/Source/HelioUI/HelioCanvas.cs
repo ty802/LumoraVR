@@ -12,11 +12,17 @@ namespace Lumora.Core.HelioUI;
 /// </summary>
 public class HelioCanvas : Component
 {
-	private bool _dirty = true;
+	private bool _layoutDirty = true;
+	private bool _visualsDirty = true;
 	private bool _rendererInitialized = false;
 	private Slot? _rendererSlot;
 	private HelioUIMesh? _canvasMesh;
 	private HelioRaycaster? _raycaster;
+	private bool _rebuildInProgress = false;
+	private float _rebuildCooldown = 0f;
+
+	// Minimum interval between rebuilds to avoid spamming mesh uploads
+	private const float MIN_REBUILD_INTERVAL = 1f / 30f;
 
 	/// <summary>
 	/// Logical reference size for the canvas (UI units).
@@ -77,6 +83,9 @@ public class HelioCanvas : Component
 			_raycaster.TargetCanvas.Target = this;
 		}
 
+		// Ensure first rebuild is not delayed by the throttle
+		_rebuildCooldown = MIN_REBUILD_INTERVAL;
+
 		Logging.Logger.Log($"[HelioCanvas] OnStart -> RequestRebuild for '{Slot.SlotName.Value}'");
 		// Force an initial rebuild to compute layout
 		RequestRebuild();
@@ -85,16 +94,31 @@ public class HelioCanvas : Component
 	public override void OnUpdate(float delta)
 	{
 		base.OnUpdate(delta);
-		if (_dirty)
-			Rebuild();
+		// Throttle rebuild frequency to reduce mesh churn on rapidly-changing UI
+		if (_layoutDirty || _visualsDirty)
+		{
+			_rebuildCooldown += delta;
+			if (!_rebuildInProgress && _rebuildCooldown >= MIN_REBUILD_INTERVAL)
+			{
+				Rebuild();
+			}
+		}
 	}
 
 	/// <summary>
-	/// Mark the canvas for rebuild on next LateUpdate.
+	/// Mark the canvas layout for rebuild on next update.
 	/// </summary>
 	public void RequestRebuild()
 	{
-		_dirty = true;
+		_layoutDirty = true;
+	}
+
+	/// <summary>
+	/// Mark the canvas visuals for rebuild (triggers mesh regeneration).
+	/// </summary>
+	public void RequestVisualRebuild()
+	{
+		_visualsDirty = true;
 	}
 
 	/// <summary>
@@ -102,6 +126,11 @@ public class HelioCanvas : Component
 	/// </summary>
 	public void Rebuild()
 	{
+		if (_rebuildInProgress)
+			return;
+
+		_rebuildInProgress = true;
+
 		try
 		{
 			// Logging.Logger.Log($"[HelioCanvas] Rebuild start for '{Slot.SlotName.Value}'");
@@ -116,21 +145,32 @@ public class HelioCanvas : Component
 			rootRect.SetLayoutRect(new HelioRect(float2.Zero, ReferenceSize.Value), rewriteOffsets: false);
 
 			RebuildSlotRecursive(Slot);
-			_dirty = false;
 
 			// Initialize renderer after first layout pass
 			if (!_rendererInitialized)
 			{
 				InitializeRenderer();
+				_visualsDirty = true; // Force visual rebuild after init
 			}
 
-			_canvasMesh?.RegenerateMesh();
+			// Only regenerate mesh when visuals actually changed
+			if (_visualsDirty)
+			{
+				_canvasMesh?.RegenerateMesh();
+				_visualsDirty = false;
+			}
 
+			_layoutDirty = false;
 			CanvasRebuilt?.Invoke();
 		}
 		catch (Exception ex)
 		{
 			Logging.Logger.Error($"[HelioCanvas] Rebuild failed on '{Slot.SlotName.Value}': {ex}");
+		}
+		finally
+		{
+			_rebuildInProgress = false;
+			_rebuildCooldown = 0f;
 		}
 	}
 
@@ -199,22 +239,22 @@ public class HelioCanvas : Component
 
 	private void OnPixelScaleChanged()
 	{
-		RequestRebuild();
+		RequestVisualRebuild();
 
 		if (_canvasMesh != null)
 		{
 			_canvasMesh.PixelScale.Value = PixelScale.Value;
 		}
-
 	}
 
 	private void OnBackgroundColorChanged()
 	{
+		RequestVisualRebuild();
+
 		if (_canvasMesh != null)
 		{
 			_canvasMesh.BackgroundColor.Value = BackgroundColor.Value;
 		}
-
 	}
 
 	public override void OnDestroy()

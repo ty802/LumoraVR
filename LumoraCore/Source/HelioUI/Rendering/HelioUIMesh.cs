@@ -20,6 +20,12 @@ public class HelioUIMesh : ProceduralMesh
 
 	private HelioCanvas _canvas;
 	private Slot _rendererSlot;
+	private PhosTriangleSubmesh _submesh;
+
+	private List<RenderItem> _cachedItems = new();
+	private int _cachedQuadCount = 0;
+	private float2 _cachedRefSize;
+	private float _cachedPixelScale;
 
 	public HelioUIMesh()
 	{
@@ -41,9 +47,9 @@ public class HelioUIMesh : ProceduralMesh
 	public override void OnAwake()
 	{
 		base.OnAwake();
-		SubscribeToChanges(CanvasSize);
-		SubscribeToChanges(PixelScale);
-		SubscribeToChanges(BackgroundColor);
+		// NOTE: Do NOT use SubscribeToChanges here!
+		// The Canvas manages when to regenerate mesh via RequestVisualRebuild.
+		// Auto-subscribing would cause double regeneration and kill performance.
 	}
 
 	protected override void PrepareAssetUpdateData()
@@ -52,34 +58,63 @@ public class HelioUIMesh : ProceduralMesh
 
 	protected override void UpdateMeshData(PhosMesh mesh)
 	{
-		mesh.Clear();
-
 		if (_canvas == null || _canvas.Slot == null)
 			return;
 
-		var refSize = CanvasSize.Value;
-		float pixelScale = PixelScale.Value <= 0.0001f ? 100f : PixelScale.Value;
+		_cachedRefSize = CanvasSize.Value;
+		_cachedPixelScale = PixelScale.Value <= 0.0001f ? 100f : PixelScale.Value;
 
-		var submesh = new PhosTriangleSubmesh(mesh);
-		mesh.Submeshes.Add(submesh);
-
+		var newItems = new List<RenderItem>();
 		float z = 0f;
 
-		// Base background quad (full canvas)
-		AddQuad(submesh,
-			new HelioRect(float2.Zero, refSize),
-			BackgroundColor.Value,
-			ref z,
-			refSize,
-			pixelScale);
+		// Canvas background
+		newItems.Add(RenderItem.MakeQuad(new HelioRect(float2.Zero, _cachedRefSize), BackgroundColor.Value, z));
+		z += Z_INCREMENT;
 
-		TraverseSlot(_canvas.Slot, submesh, ref z, refSize, pixelScale);
+		CollectItems(_canvas.Slot, newItems, ref z);
 
-		uploadHint[MeshUploadHint.Flag.Geometry] = true;
+		int totalQuads = 0;
+		foreach (var item in newItems)
+			totalQuads += item.QuadCount;
+
+		bool structureChanged = totalQuads != _cachedQuadCount || newItems.Count != _cachedItems.Count;
+		if (!structureChanged)
+		{
+			for (int i = 0; i < newItems.Count; i++)
+			{
+				if (!_cachedItems[i].SameStructure(newItems[i]))
+				{
+					structureChanged = true;
+					break;
+				}
+			}
+		}
+
+		_cachedItems = newItems;
+		_cachedQuadCount = totalQuads;
+
+		int totalVertices = totalQuads * 4;
+
+		if (structureChanged || _submesh == null)
+		{
+			RebuildTopology(mesh, totalQuads, totalVertices);
+			uploadHint[MeshUploadHint.Flag.Geometry] = true;
+		}
+		else
+		{
+			uploadHint[MeshUploadHint.Flag.Geometry] = false; // topology unchanged
+		}
+
+		// Always rewrite vertex attributes for now (safe, simple)
+		WriteVertexData(mesh, _cachedItems);
+
 		uploadHint[MeshUploadHint.Flag.Colors] = true;
+		uploadHint[MeshUploadHint.Flag.Normals] = true;
+		uploadHint[MeshUploadHint.Flag.Tangents] = true;
+		uploadHint[MeshUploadHint.Flag.UV0] = true;
 	}
 
-	private void TraverseSlot(Slot slot, PhosTriangleSubmesh submesh, ref float z, float2 refSize, float pixelScale)
+	private void CollectItems(Slot slot, List<RenderItem> items, ref float z)
 	{
 		if (slot == null || slot.ActiveSelf.Value == false)
 			return;
@@ -95,99 +130,36 @@ public class HelioUIMesh : ProceduralMesh
 			var panel = slot.GetComponent<HelioPanel>();
 			if (panel != null)
 			{
-				AddQuad(submesh, computedRect, panel.BackgroundColor.Value, ref z, refSize, pixelScale);
+				items.Add(RenderItem.MakeQuad(computedRect, panel.BackgroundColor.Value, z));
+				z += Z_INCREMENT;
 			}
 
 			var image = slot.GetComponent<HelioImage>();
 			if (image != null)
 			{
-				AddQuad(submesh, computedRect, image.Tint.Value, ref z, refSize, pixelScale);
+				items.Add(RenderItem.MakeQuad(computedRect, image.Tint.Value, z));
+				z += Z_INCREMENT;
 			}
 
 			var text = slot.GetComponent<HelioText>();
 			if (text != null)
 			{
-				AddText(submesh, computedRect, text, ref z, refSize, pixelScale);
+				var renderItem = RenderItem.MakeText(computedRect, text, z, BuildLines(text.Content.Value, GetCharAdvance(text), computedRect.Size.x, text.Overflow.Value));
+				items.Add(renderItem);
+				if (renderItem.QuadCount > 0)
+					z += renderItem.QuadCount * Z_INCREMENT;
 			}
 		}
 
 		foreach (var child in slot.Children)
 		{
-			TraverseSlot(child, submesh, ref z, refSize, pixelScale);
+			CollectItems(child, items, ref z);
 		}
 	}
 
 	// Z increment per quad - very small to keep UI essentially flat
 	// Even with 10000 quads, total depth is only 0.01 world units
 	private const float Z_INCREMENT = 0.000001f;
-
-	private void AddQuad(PhosTriangleSubmesh submesh, HelioRect rect, color quadColor, ref float z, float2 refSize, float pixelScale)
-	{
-		// Skip invalid rects
-		if (rect.Size.x <= 0 || rect.Size.y <= 0)
-			return;
-
-		var quad = new PhosQuad(submesh)
-		{
-			UseColors = true
-		};
-
-		float2 sizeWorld = rect.Size / pixelScale;
-		float2 center = rect.Min + rect.Size * 0.5f;
-		float2 worldCenter2D = (center - refSize * 0.5f) / pixelScale;
-
-		quad.Size = sizeWorld;
-		quad.Position = new float3(worldCenter2D.x, worldCenter2D.y, z);
-		quad.Color = quadColor;
-		quad.Update();
-
-		z += Z_INCREMENT;
-	}
-
-	private void AddText(PhosTriangleSubmesh submesh, HelioRect rect, HelioText text, ref float z, float2 refSize, float pixelScale)
-	{
-		if (string.IsNullOrEmpty(text.Content.Value))
-			return;
-
-		float fontSize = MathF.Max(8f, text.FontSize.Value);
-		float lineHeight = fontSize * text.LineHeight.Value;
-		float charWidth = fontSize * ((float)FONT_WIDTH / FONT_HEIGHT);
-		float charSpacing = charWidth * 0.15f; // 15% spacing between characters
-		float maxWidth = rect.Size.x;
-
-		// Build lines with word wrapping
-		var lines = BuildLines(text.Content.Value, charWidth + charSpacing, maxWidth, text.Overflow.Value);
-
-		// Start from top of rect
-		float yCursor = rect.Max.y - fontSize;
-
-		foreach (var line in lines)
-		{
-			if (yCursor + fontSize < rect.Min.y)
-				break;
-
-			float lineWidth = line.Length * (charWidth + charSpacing);
-			float xStart = rect.Min.x;
-
-			if (text.Alignment.Value == TextAlignment.Center)
-				xStart = rect.Min.x + (rect.Size.x - lineWidth) * 0.5f;
-			else if (text.Alignment.Value == TextAlignment.Right)
-				xStart = rect.Max.x - lineWidth;
-
-			float xCursor = xStart;
-
-			foreach (char c in line)
-			{
-				if (TryGetGlyph(c, out var glyph))
-				{
-					RenderGlyph(submesh, glyph, xCursor, yCursor, fontSize, text.Color.Value, ref z, refSize, pixelScale);
-				}
-				xCursor += charWidth + charSpacing;
-			}
-
-			yCursor -= lineHeight;
-		}
-	}
 
 	private List<string> BuildLines(string content, float charAdvance, float maxWidth, TextOverflow overflow)
 	{
@@ -231,49 +203,6 @@ public class HelioUIMesh : ProceduralMesh
 			lines.Add(currentLine);
 
 		return lines;
-	}
-
-	/// <summary>
-	/// Render a glyph using run-length optimized quads.
-	/// Instead of one quad per pixel, we merge horizontal runs into single quads.
-	/// </summary>
-	private void RenderGlyph(PhosTriangleSubmesh submesh, byte[] glyph, float x, float y, float fontSize, color glyphColor, ref float z, float2 refSize, float pixelScale)
-	{
-		float pixelSize = fontSize / FONT_HEIGHT;
-
-		for (int row = 0; row < FONT_HEIGHT; row++)
-		{
-			byte rowData = glyph[row];
-			if (rowData == 0) continue; // Skip empty rows
-
-			int col = 0;
-			while (col < FONT_WIDTH)
-			{
-				// Find start of a run
-				if ((rowData & (1 << (FONT_WIDTH - 1 - col))) == 0)
-				{
-					col++;
-					continue;
-				}
-
-				// Found a pixel, now find the run length
-				int runStart = col;
-				while (col < FONT_WIDTH && (rowData & (1 << (FONT_WIDTH - 1 - col))) != 0)
-				{
-					col++;
-				}
-				int runLength = col - runStart;
-
-				// Create a single quad for this run
-				float px = x + runStart * pixelSize;
-				float py = y - row * pixelSize;
-				float pw = runLength * pixelSize;
-				float ph = pixelSize;
-
-				var glyphRect = new HelioRect(new float2(px, py - ph), new float2(pw, ph));
-				AddQuad(submesh, glyphRect, glyphColor, ref z, refSize, pixelScale);
-			}
-		}
 	}
 
 	// ===== Font Data - 8x12 bitmap font stored as bytes (1 bit per pixel) =====
@@ -413,5 +342,322 @@ public class HelioUIMesh : ProceduralMesh
 
 	protected override void ClearMeshData()
 	{
+	}
+
+	// ===== Internal helpers =====
+
+	private float GetCharAdvance(HelioText text)
+	{
+		float fontSize = MathF.Max(8f, text.FontSize.Value);
+		float charWidth = fontSize * ((float)FONT_WIDTH / FONT_HEIGHT);
+		return charWidth * 1.15f; // includes spacing
+	}
+
+	private void RebuildTopology(PhosMesh mesh, int totalQuads, int totalVertices)
+	{
+		mesh.Clear();
+		mesh.HasNormals = true;
+		mesh.HasTangents = true;
+		mesh.HasUV0s = true;
+		mesh.HasColors = true;
+		mesh.IncreaseVertexCount(totalVertices);
+
+		mesh.Submeshes.Clear();
+		_submesh = new PhosTriangleSubmesh(mesh);
+		mesh.Submeshes.Add(_submesh);
+
+		// Build triangle indices once
+		_submesh.AddTriangles(totalQuads * 2);
+		int triangleIndex = 0;
+		int vertexIndex = 0;
+		for (int i = 0; i < totalQuads; i++)
+		{
+			_submesh.SetQuadAsTriangles(
+				vertexIndex + 0,
+				vertexIndex + 1,
+				vertexIndex + 2,
+				vertexIndex + 3,
+				triangleIndex,
+				triangleIndex + 1
+			);
+			vertexIndex += 4;
+			triangleIndex += 2;
+		}
+	}
+
+	private void WriteVertexData(PhosMesh mesh, List<RenderItem> items)
+	{
+		int v = 0;
+		float zCursor = 0f; // items already carry z but we still step for text glyphs
+		foreach (var item in items)
+		{
+			if (item.Kind == RenderKind.Quad)
+			{
+				WriteQuad(mesh, v, item.Rect, item.Color, item.Z);
+				v += 4;
+			}
+			else if (item.Kind == RenderKind.Text && item.TextLayout.HasValue)
+			{
+				WriteText(mesh, ref v, item);
+			}
+		}
+	}
+
+	private void WriteQuad(PhosMesh mesh, int vertexStart, HelioRect rect, color quadColor, float z)
+	{
+		if (rect.Size.x <= 0 || rect.Size.y <= 0)
+			return;
+
+		float2 sizeWorld = rect.Size / _cachedPixelScale;
+		float2 center = rect.Min + rect.Size * 0.5f;
+		float2 worldCenter2D = (center - _cachedRefSize * 0.5f) / _cachedPixelScale;
+
+		// Corner positions in local quad space
+		float2 half = sizeWorld * 0.5f;
+		float3 pos0 = new float3(-half.x, half.y, z);
+		float3 pos1 = new float3(half.x, half.y, z);
+		float3 pos2 = new float3(half.x, -half.y, z);
+		float3 pos3 = new float3(-half.x, -half.y, z);
+
+		pos0 += new float3(worldCenter2D.x, worldCenter2D.y, 0f);
+		pos1 += new float3(worldCenter2D.x, worldCenter2D.y, 0f);
+		pos2 += new float3(worldCenter2D.x, worldCenter2D.y, 0f);
+		pos3 += new float3(worldCenter2D.x, worldCenter2D.y, 0f);
+
+		var positions = mesh.RawPositions;
+		var normals = mesh.RawNormals;
+		var tangents = mesh.RawTangents;
+		var colors = mesh.RawColors;
+		var uvs = mesh.RawUV0s;
+
+		positions[vertexStart + 0] = pos0;
+		positions[vertexStart + 1] = pos1;
+		positions[vertexStart + 2] = pos2;
+		positions[vertexStart + 3] = pos3;
+
+		normals[vertexStart + 0] = float3.Backward;
+		normals[vertexStart + 1] = float3.Backward;
+		normals[vertexStart + 2] = float3.Backward;
+		normals[vertexStart + 3] = float3.Backward;
+
+		var tangent = new float4(float3.Right, -1f);
+		tangents[vertexStart + 0] = tangent;
+		tangents[vertexStart + 1] = tangent;
+		tangents[vertexStart + 2] = tangent;
+		tangents[vertexStart + 3] = tangent;
+
+		colors[vertexStart + 0] = quadColor;
+		colors[vertexStart + 1] = quadColor;
+		colors[vertexStart + 2] = quadColor;
+		colors[vertexStart + 3] = quadColor;
+
+		uvs[vertexStart + 0] = new float2(0f, 1f);
+		uvs[vertexStart + 1] = new float2(1f, 1f);
+		uvs[vertexStart + 2] = new float2(1f, 0f);
+		uvs[vertexStart + 3] = new float2(0f, 0f);
+	}
+
+	private void WriteText(PhosMesh mesh, ref int vertexStart, RenderItem item)
+	{
+		if (!item.TextLayout.HasValue)
+			return;
+
+		var layout = item.TextLayout.Value;
+		float fontSize = layout.FontSize;
+		float charAdvance = layout.CharAdvance;
+
+		float pixelSize = fontSize / FONT_HEIGHT;
+
+		float zLayer = item.Z;
+
+		foreach (var line in layout.Lines)
+		{
+			float xCursor = line.XStart;
+			float yCursor = line.Y;
+			foreach (char c in line.Text)
+			{
+				if (!TryGetGlyph(c, out var glyph))
+				{
+					xCursor += charAdvance;
+					continue;
+				}
+
+				for (int row = 0; row < FONT_HEIGHT; row++)
+				{
+					byte rowData = glyph[row];
+					if (rowData == 0) continue;
+
+					int col = 0;
+					while (col < FONT_WIDTH)
+					{
+						if ((rowData & (1 << (FONT_WIDTH - 1 - col))) == 0)
+						{
+							col++;
+							continue;
+						}
+
+						int runStart = col;
+						while (col < FONT_WIDTH && (rowData & (1 << (FONT_WIDTH - 1 - col))) != 0)
+						{
+							col++;
+						}
+						int runLength = col - runStart;
+
+						float px = xCursor + runStart * pixelSize;
+						float py = yCursor - row * pixelSize;
+						float pw = runLength * pixelSize;
+						float ph = pixelSize;
+
+						var glyphRect = new HelioRect(new float2(px, py - ph), new float2(pw, ph));
+						WriteQuad(mesh, vertexStart, glyphRect, layout.Color, zLayer);
+						vertexStart += 4;
+						zLayer += Z_INCREMENT;
+					}
+				}
+
+				xCursor += charAdvance;
+			}
+
+			// Next line
+		}
+	}
+
+	private struct RenderItem
+	{
+		public RenderKind Kind;
+		public HelioRect Rect;
+		public color Color;
+		public float Z;
+		public int QuadCount;
+		public TextRenderLayout? TextLayout;
+
+		public static RenderItem MakeQuad(HelioRect rect, color c, float z) => new RenderItem
+		{
+			Kind = RenderKind.Quad,
+			Rect = rect,
+			Color = c,
+			Z = z,
+			QuadCount = 1
+		};
+
+		public static RenderItem MakeText(HelioRect rect, HelioText text, float z, List<string> lines)
+		{
+			var layout = TextRenderLayout.Build(rect, text, lines);
+			return new RenderItem
+			{
+				Kind = RenderKind.Text,
+				Rect = rect,
+				Color = text.Color.Value,
+				Z = z,
+				QuadCount = layout.QuadCount,
+				TextLayout = layout
+			};
+		}
+
+		public bool SameStructure(RenderItem other)
+		{
+			if (Kind != other.Kind || QuadCount != other.QuadCount)
+				return false;
+
+			return true;
+		}
+	}
+
+	private enum RenderKind
+	{
+		Quad,
+		Text
+	}
+
+	private struct TextLine
+	{
+		public string Text;
+		public float XStart;
+		public float Y;
+	}
+
+	private struct TextRenderLayout
+	{
+		public List<TextLine> Lines;
+		public float FontSize;
+		public float LineHeight;
+		public float CharAdvance;
+		public color Color;
+		public int QuadCount;
+
+		public static TextRenderLayout Build(HelioRect rect, HelioText text, List<string> lines)
+		{
+			var layout = new TextRenderLayout
+			{
+				Lines = new List<TextLine>(),
+				FontSize = MathF.Max(8f, text.FontSize.Value),
+				LineHeight = MathF.Max(8f, text.FontSize.Value) * text.LineHeight.Value,
+				Color = text.Color.Value
+			};
+			layout.CharAdvance = layout.FontSize * ((float)FONT_WIDTH / FONT_HEIGHT) * 1.15f;
+
+			float yCursor = rect.Max.y - layout.FontSize;
+			int totalQuads = 0;
+
+			foreach (var line in lines)
+			{
+				if (yCursor + layout.FontSize < rect.Min.y)
+					break;
+
+				float lineWidth = line.Length * layout.CharAdvance;
+				float xStart = rect.Min.x;
+
+				if (text.Alignment.Value == TextAlignment.Center)
+					xStart = rect.Min.x + (rect.Size.x - lineWidth) * 0.5f;
+				else if (text.Alignment.Value == TextAlignment.Right)
+					xStart = rect.Max.x - lineWidth;
+
+				layout.Lines.Add(new TextLine
+				{
+					Text = line,
+					XStart = xStart,
+					Y = yCursor
+				});
+
+				// Count quads for this line
+				foreach (char c in line)
+				{
+					if (!TryGetGlyph(c, out var glyph))
+						continue;
+					totalQuads += CountGlyphQuads(glyph);
+				}
+
+				yCursor -= layout.LineHeight;
+			}
+
+			layout.QuadCount = totalQuads;
+			return layout;
+		}
+	}
+
+	private static int CountGlyphQuads(byte[] glyph)
+	{
+		int quads = 0;
+		for (int row = 0; row < FONT_HEIGHT; row++)
+		{
+			byte rowData = glyph[row];
+			if (rowData == 0)
+				continue;
+			int col = 0;
+			while (col < FONT_WIDTH)
+			{
+				if ((rowData & (1 << (FONT_WIDTH - 1 - col))) == 0)
+				{
+					col++;
+					continue;
+				}
+				while (col < FONT_WIDTH && (rowData & (1 << (FONT_WIDTH - 1 - col))) != 0)
+				{
+					col++;
+				}
+				quads++;
+			}
+		}
+		return quads;
 	}
 }

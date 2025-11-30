@@ -136,12 +136,24 @@ public class HelioRectTransform : Component
 		// Get parent rect to compute relative offsets
 		var parentRect = GetParentRect(out _);
 
-		// Collapse anchors to the top-left corner to encode absolute placement.
-		AnchorMin.Value = float2.Zero;
-		AnchorMax.Value = float2.Zero;
-		// Offsets must be relative to parent's min position so Recalculate() works correctly
-		OffsetMin.Value = rect.Min - parentRect.Min;
-		OffsetMax.Value = rect.Min + rect.Size - parentRect.Min;
+		// Only write values if they actually changed (avoid floating point drift triggering rebuilds)
+		var newOffsetMin = rect.Min - parentRect.Min;
+		var newOffsetMax = rect.Min + rect.Size - parentRect.Min;
+
+		const float epsilon = 0.001f;
+		if (!ApproxEquals(AnchorMin.Value, float2.Zero, epsilon))
+			AnchorMin.Value = float2.Zero;
+		if (!ApproxEquals(AnchorMax.Value, float2.Zero, epsilon))
+			AnchorMax.Value = float2.Zero;
+		if (!ApproxEquals(OffsetMin.Value, newOffsetMin, epsilon))
+			OffsetMin.Value = newOffsetMin;
+		if (!ApproxEquals(OffsetMax.Value, newOffsetMax, epsilon))
+			OffsetMax.Value = newOffsetMax;
+	}
+
+	private static bool ApproxEquals(float2 a, float2 b, float epsilon)
+	{
+		return System.MathF.Abs(a.x - b.x) < epsilon && System.MathF.Abs(a.y - b.y) < epsilon;
 	}
 
 	/// <summary>

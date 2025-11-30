@@ -2,10 +2,10 @@ using System.Text.RegularExpressions;
 
 namespace Lumora.Core.Helpers;
 
-public static partial class GeneralHelpers
+public static class GeneralHelpers
 {
-    [GeneratedRegex("\\[.+?\\]")]
-    private static partial Regex BBCodeRegex();
+    private static readonly Regex BBCodeRegex = new Regex(@"\[.+?\]", RegexOptions.Compiled);
+
     /// <summary>
     /// Removes every instance of a BBCode tag from a string.
     /// </summary>
@@ -17,6 +17,6 @@ public static partial class GeneralHelpers
         {
             return text;
         }
-        return BBCodeRegex().Replace(text, string.Empty);
+        return BBCodeRegex.Replace(text, string.Empty);
     }
 }

@@ -42,10 +42,9 @@ public class HelioCanvasMesh : ProceduralMesh
 	public override void OnAwake()
 	{
 		base.OnAwake();
-
-		SubscribeToChanges(CanvasSize);
-		SubscribeToChanges(PixelScale);
-		SubscribeToChanges(BackgroundColor);
+		// NOTE: Do NOT use SubscribeToChanges here!
+		// The Canvas manages when to regenerate mesh via RequestVisualRebuild.
+		// Auto-subscribing would cause double regeneration and kill performance.
 	}
 
 	// ===== Mesh Generation =====

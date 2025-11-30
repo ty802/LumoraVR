@@ -68,7 +68,7 @@ public class LocomotionController : Component
 		}
 
 		// Get input devices from InputInterface
-		_inputInterface = Lumora.Core.Engine.Instance.InputInterface;
+		_inputInterface = Lumora.Core.Engine.Current?.InputInterface;
 		if (_inputInterface != null)
 		{
 			_mouse = _inputInterface.Mouse;
@@ -84,7 +84,8 @@ public class LocomotionController : Component
 		_modules.Add(new VRLocomotionModule());
 		_modules.Add(new DesktopLocomotionModule());
 		_modules.Add(new NullLocomotionModule()); // placeholder fallback
-		ActivateModule(0);
+		// Pick module based on current platform state
+		ActivateModule(IsVRActive() ? 0 : 1);
 
 		// Initialized
 	}
@@ -106,9 +107,9 @@ public class LocomotionController : Component
 		base.OnUpdate(delta);
 
 		// Late-bind InputInterface if it was not ready during Awake
-		if (_inputInterface == null && Lumora.Core.Engine.Instance.InputInterface != null)
+		if (_inputInterface == null && Lumora.Core.Engine.Current?.InputInterface != null)
 		{
-			_inputInterface = Lumora.Core.Engine.Instance.InputInterface;
+			_inputInterface = Lumora.Core.Engine.Current.InputInterface;
 			_mouse = _inputInterface.Mouse;
 			_keyboardDriver = _inputInterface.GetKeyboardDriver();
 		}
@@ -116,6 +117,7 @@ public class LocomotionController : Component
 		if (_characterController == null || _userRoot?.ActiveUser != World.LocalUser)
 			return;
 
+		EnsurePlatformModule();
 		HandleModuleSwitching();
 
 		// Always handle mouse look (updates head rotation)
@@ -150,6 +152,40 @@ public class LocomotionController : Component
 
 		_nextModuleHeld = nextDown;
 		_prevModuleHeld = prevDown;
+	}
+
+	/// <summary>
+	/// Auto-select module based on platform state (VR vs Desktop).
+	/// </summary>
+	private void EnsurePlatformModule()
+	{
+		if (_modules.Count < 2)
+			return;
+
+		bool vrActive = IsVRActive();
+		int desiredIndex = vrActive ? 0 : 1; // 0=VR, 1=Desktop
+
+		if (_activeModuleIndex != desiredIndex)
+		{
+			ActivateModule(desiredIndex);
+		}
+
+		// On desktop ensure the mouse is captured so look works
+		if (!vrActive && !_mouseCaptured)
+		{
+			CaptureMouse();
+		}
+	}
+
+	private bool IsVRActive()
+	{
+		if (_inputInterface == null)
+			return false;
+
+		// VR considered active when explicitly flagged and controllers/head tracked
+		bool controllersTracked = _inputInterface.LeftController?.IsTracked == true || _inputInterface.RightController?.IsTracked == true;
+		bool headTracked = _inputInterface.HeadDevice?.IsTracked == true;
+		return _inputInterface.VR_Active && (controllersTracked || headTracked);
 	}
 
 	private void HandleMouseLook(float delta)

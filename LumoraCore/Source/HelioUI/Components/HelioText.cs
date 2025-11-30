@@ -92,7 +92,7 @@ public class HelioText : Component
 			var canvas = current.GetComponent<HelioCanvas>();
 			if (canvas != null)
 			{
-				canvas.RequestRebuild();
+				canvas.RequestVisualRebuild(); // Text changes require visual rebuild
 				return;
 			}
 			current = current.Parent;

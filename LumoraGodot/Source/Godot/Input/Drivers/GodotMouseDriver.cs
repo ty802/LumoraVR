@@ -86,8 +86,7 @@ public class GodotMouseDriver : IMouseDriver, IInputDriver
 			{
 				// Normalize velocity to a 60 FPS reference so mouse feel stays stable at high frame rates
 				const float referenceDelta = 1f / 60f;
-				const float fallbackBoost = 3.0f;
-				motion = lastVelocity * referenceDelta * fallbackBoost;
+				motion = lastVelocity * referenceDelta;
 				usedFallback = true;
 				_lastVelocitySample = lastVelocity;
 				_lastVelocitySampleTime = currentTime;

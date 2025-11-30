@@ -16,7 +16,7 @@ public class LocomotionController : Component
 {
 	// ===== PARAMETERS =====
 
-	public float MouseSensitivity { get; set; } = 0.007f;
+	public float MouseSensitivity { get; set; } = 0.001f;
 	public float MaxPitch { get; set; } = 89.0f;
 
 	// ===== STATE =====

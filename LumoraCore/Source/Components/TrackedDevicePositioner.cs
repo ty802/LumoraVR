@@ -277,7 +277,7 @@ public class TrackedDevicePositioner : Component, IInputUpdateReceiver
 		{
 			_debugLogCounter = 0;
 			var nodeStr = AutoBodyNode.Value?.ToString() ?? "null";
-			AquaLogger.Log($"[TDP] {Slot.SlotName.Value} node:{nodeStr} device:{device != null} tracking:{device?.IsTracking} pos:{device?.RawPosition}");
+			// AquaLogger.Log($"[TDP] {Slot.SlotName.Value} node:{nodeStr} device:{device != null} tracking:{device?.IsTracking} pos:{device?.RawPosition}");
 		}
 
 		if (device != null)

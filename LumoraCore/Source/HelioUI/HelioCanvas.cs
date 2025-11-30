@@ -104,7 +104,7 @@ public class HelioCanvas : Component
 	{
 		try
 		{
-			Logging.Logger.Log($"[HelioCanvas] Rebuild start for '{Slot.SlotName.Value}'");
+			// Logging.Logger.Log($"[HelioCanvas] Rebuild start for '{Slot.SlotName.Value}'");
 			var rootRect = Slot.GetComponent<HelioRectTransform>();
 			if (rootRect == null)
 			{

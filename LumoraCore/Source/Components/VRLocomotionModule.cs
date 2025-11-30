@@ -88,10 +88,10 @@ public class VRLocomotionModule : ILocomotionModule
 			return;
 		}
 
-		if (shouldLog)
-		{
-			Lumora.Core.Logging.Logger.Log($"[VRLoco] thumb L:({left.ThumbstickPosition.X:F2},{left.ThumbstickPosition.Y:F2}) R:({right.ThumbstickPosition.X:F2},{right.ThumbstickPosition.Y:F2})");
-		}
+		// if (shouldLog)
+		// {
+		// 	Lumora.Core.Logging.Logger.Log($"[VRLoco] thumb L:({left.ThumbstickPosition.X:F2},{left.ThumbstickPosition.Y:F2}) R:({right.ThumbstickPosition.X:F2},{right.ThumbstickPosition.Y:F2})");
+		// }
 
 		// === SMOOTH LOCOMOTION (Left Thumbstick) ===
 		UpdateMovement(left);

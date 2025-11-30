@@ -138,7 +138,7 @@ public class MeshHook : ComponentHook<ProceduralMesh>
 	{
 		if (godotMesh == null) return;
 
-		Lumora.Core.Logging.Logger.Log($"MeshHook.UploadMesh: Uploading mesh with {phosMesh.VertexCount} vertices");
+		// Lumora.Core.Logging.Logger.Log($"MeshHook.UploadMesh: Uploading mesh with {phosMesh.VertexCount} vertices");
 
 		// Clear existing surfaces
 		godotMesh.ClearSurfaces();
@@ -251,7 +251,7 @@ public class MeshHook : ComponentHook<ProceduralMesh>
 		if (vertexArray.VariantType != Variant.Type.Nil && vertexArray.AsVector3Array() != null)
 		{
 			godotMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
-			Lumora.Core.Logging.Logger.Log($"MeshHook.UploadTriangleSubmesh: Uploaded {submesh.IndexCount / 3} triangles");
+			// Lumora.Core.Logging.Logger.Log($"MeshHook.UploadTriangleSubmesh: Uploaded {submesh.IndexCount / 3} triangles");
 		}
 		else
 		{

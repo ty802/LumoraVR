@@ -226,7 +226,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
 			var leftTrack = _leftControllerTrackedObject?.IsTracking ?? false;
 			var rightTrack = _rightControllerTrackedObject?.IsTracking ?? false;
 			var leftThumb = _inputInterface.LeftController?.ThumbstickPosition ?? default;
-			global::Godot.GD.Print($"[VR] L:{leftPos} track:{leftTrack} | R:{rightPos} track:{rightTrack} | Thumb:({leftThumb.X:F2},{leftThumb.Y:F2}) | XRNodes L:{_leftController != null} R:{_rightController != null}");
+			// global::Godot.GD.Print($"[VR] L:{leftPos} track:{leftTrack} | R:{rightPos} track:{rightTrack} | Thumb:({leftThumb.X:F2},{leftThumb.Y:F2}) | XRNodes L:{_leftController != null} R:{_rightController != null}");
 		}
 	}
 

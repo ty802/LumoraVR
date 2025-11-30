@@ -26,29 +26,26 @@ public partial class LoadingScreen : Control
 	private const float PROGRESS_SMOOTH_SPEED = 2.0f; // How fast progress bar animates
 	private const float SPINNER_ROTATION_SPEED = 2.0f; // Radians per second
 
-    public override void _Ready()
-    {
-        // IMPORTANT: Make immediately visible - no fade in!
-        // This prevents the "flash" where screen is empty before animation starts
-        Visible = true;
-        Modulate = Colors.White; // Full opacity immediately
-        _isVisible = true;
+	public override void _Ready()
+	{
+		// IMPORTANT: Make immediately visible - no fade in!
+		// This prevents the "flash" where screen is empty before animation starts
+		Visible = true;
+		Modulate = Colors.White; // Full opacity immediately
+		_isVisible = true;
 
-        // Cache node references
-        _statusLabel = GetNode<Label>("CenterContainer/VBoxContainer/ProgressContainer/StatusLabel");
-        _percentageLabel = GetNode<Label>("CenterContainer/VBoxContainer/ProgressContainer/PercentageLabel");
-        _progressBar = GetNode<ProgressBar>("CenterContainer/VBoxContainer/ProgressContainer/ProgressBarContainer/ProgressBar");
-        _animationPlayer = GetNode<AnimationPlayer>("AnimationPlayer");
-        _loadingSpinner = GetNode<Control>("CenterContainer/VBoxContainer/LoadingSpinner");
+		// Cache node references
+		_statusLabel = GetNode<Label>("CenterContainer/VBoxContainer/ProgressContainer/StatusLabel");
+		_percentageLabel = GetNode<Label>("CenterContainer/VBoxContainer/ProgressContainer/PercentageLabel");
+		_progressBar = GetNode<ProgressBar>("CenterContainer/VBoxContainer/ProgressContainer/ProgressBarContainer/ProgressBar");
 
-        // Start pulse animation (NOT fade_in - we're already visible)
-        _animationPlayer.Play("pulse");
 
-        // Initialize progress
-        UpdateProgressDisplay(0f);
-    }
 
-    public override void _Process(double delta)
+		// Initialize progress
+		UpdateProgressDisplay(0f);
+	}
+
+	public override void _Process(double delta)
 	{
 		// Smoothly interpolate progress bar
 		if (_currentProgress < _targetProgress)
@@ -100,17 +97,12 @@ public partial class LoadingScreen : Control
 	/// </summary>
 	public void Hide()
 	{
-		if (!_isVisible || _fadeOutQueued)
+		if (!_isVisible)
 			return;
 
-		_fadeOutQueued = true;
 		_isVisible = false;
-
-		// Play fade-out animation
-		if (_animationPlayer != null)
-		{
-			_animationPlayer.Play("fade_out");
-		}
+		Visible = false;
+		QueueFree(); // Remove immediately since animation player was removed
 	}
 
 	/// <summary>
@@ -122,14 +114,7 @@ public partial class LoadingScreen : Control
 			return;
 
 		_isVisible = true;
-		_fadeOutQueued = false;
 		Visible = true;
-
-		// Play fade-in animation
-		if (_animationPlayer != null)
-		{
-			_animationPlayer.Play("fade_in");
-		}
 	}
 
 	/// <summary>
@@ -153,12 +138,7 @@ public partial class LoadingScreen : Control
 	/// </summary>
 	private void _on_animation_finished(StringName animName)
 	{
-		if (animName == "fade_out")
-		{
-			// Fully hide the control after fade-out completes
-			Visible = false;
-			QueueFree(); // Remove from scene tree
-		}
+		// AnimationPlayer removed; keep handler to avoid errors if signal still exists
 	}
 
 	// ===== PHASE-SPECIFIC HELPER METHODS =====

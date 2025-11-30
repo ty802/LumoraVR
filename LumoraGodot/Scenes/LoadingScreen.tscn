@@ -1,4 +1,4 @@
-[gd_scene load_steps=11 format=3 uid="uid://cqx7y3n8m4pj5"]
+[gd_scene load_steps=7 format=3 uid="uid://cqx7y3n8m4pj5"]
 
 [ext_resource type="Script" uid="uid://dgojwxd44m8xu" path="res://Source/Godot/UI/LoadingScreen.cs" id="1_loading"]
 [ext_resource type="Texture2D" uid="uid://cnr803pygny8k" path="res://Assets/Textures/lumoravricon.svg" id="2_logo"]
@@ -25,62 +25,6 @@ corner_radius_top_left = 6
 corner_radius_top_right = 6
 corner_radius_bottom_right = 6
 corner_radius_bottom_left = 6
-
-[sub_resource type="Animation" id="fade_in"]
-resource_name = "fade_in"
-length = 0.5
-tracks/0/type = "value"
-tracks/0/imported = false
-tracks/0/enabled = true
-tracks/0/path = NodePath(".:modulate")
-tracks/0/interp = 1
-tracks/0/loop_wrap = true
-tracks/0/keys = {
-"times": PackedFloat32Array(0, 0.5),
-"transitions": PackedFloat32Array(1, 1),
-"update": 0,
-"values": [Color(1, 1, 1, 0), Color(1, 1, 1, 1)]
-}
-
-[sub_resource type="Animation" id="fade_out"]
-resource_name = "fade_out"
-length = 0.5
-tracks/0/type = "value"
-tracks/0/imported = false
-tracks/0/enabled = true
-tracks/0/path = NodePath(".:modulate")
-tracks/0/interp = 1
-tracks/0/loop_wrap = true
-tracks/0/keys = {
-"times": PackedFloat32Array(0, 0.5),
-"transitions": PackedFloat32Array(1, 1),
-"update": 0,
-"values": [Color(1, 1, 1, 1), Color(1, 1, 1, 0)]
-}
-
-[sub_resource type="Animation" id="pulse_animation"]
-resource_name = "pulse"
-length = 2.0
-loop_mode = 1
-tracks/0/type = "value"
-tracks/0/imported = false
-tracks/0/enabled = true
-tracks/0/path = NodePath("CenterContainer/VBoxContainer/LogoContainer/Logo:modulate")
-tracks/0/interp = 1
-tracks/0/loop_wrap = true
-tracks/0/keys = {
-"times": PackedFloat32Array(0, 1, 2),
-"transitions": PackedFloat32Array(1, 1, 1),
-"update": 0,
-"values": [Color(1, 1, 1, 0.8), Color(1, 1, 1, 1), Color(1, 1, 1, 0.8)]
-}
-
-[sub_resource type="AnimationLibrary" id="animation_library"]
-_data = {
-&"fade_in": SubResource("fade_in"),
-&"fade_out": SubResource("fade_out"),
-&"pulse": SubResource("pulse_animation")
-}
 
 [node name="LoadingScreen" type="Control"]
 layout_mode = 3
@@ -116,13 +60,12 @@ layout_mode = 2
 theme_override_constants/separation = 48
 alignment = 1
 
-[node name="LogoContainer" type="CenterContainer" parent="CenterContainer/VBoxContainer"]
-layout_mode = 2
-
-[node name="Logo" type="TextureRect" parent="CenterContainer/VBoxContainer/LogoContainer"]
+[node name="Logo" type="TextureRect" parent="CenterContainer/VBoxContainer"]
 modulate = Color(1, 1, 1, 0.9694911)
 custom_minimum_size = Vector2(256, 256)
 layout_mode = 2
+size_flags_horizontal = 4
+size_flags_vertical = 4
 texture = ExtResource("2_logo")
 expand_mode = 1
 stretch_mode = 5
@@ -200,11 +143,3 @@ theme_override_fonts/font = ExtResource("3_font")
 theme_override_font_sizes/font_size = 14
 text = "Lumora VR Alpha 0.1.0"
 horizontal_alignment = 1
-
-[node name="AnimationPlayer" type="AnimationPlayer" parent="."]
-libraries = {
-&"": SubResource("animation_library")
-}
-autoplay = "fade_in"
-
-[connection signal="animation_finished" from="AnimationPlayer" to="." method="_on_animation_finished"]

@@ -82,7 +82,19 @@ public class HelioCanvasPanel : Component
 	public override void OnStart()
 	{
 		base.OnStart();
-		SetupPanel();
+		// Only setup if not already initialized
+		if (_panel?.Target == null)
+			SetupPanel();
+	}
+
+	/// <summary>
+	/// Initialize the panel immediately (for synchronous setup).
+	/// Call this after attaching the component if you need immediate access.
+	/// </summary>
+	public void Initialize()
+	{
+		if (_panel?.Target == null)
+			SetupPanel();
 	}
 
 	/// <summary>
@@ -93,6 +105,10 @@ public class HelioCanvasPanel : Component
 		// Create window panel
 		var windowPanel = Slot.AttachComponent<HelioWindowPanel>();
 		_panel.Target = windowPanel;
+
+		// Initialize immediately so ContentSlot is available
+		windowPanel.Initialize();
+
 		windowPanel.Padding.Value = 0.005f;
 		windowPanel.ZPadding.Value = 0.002f;
 		windowPanel.Thickness.Value = 0.01f;

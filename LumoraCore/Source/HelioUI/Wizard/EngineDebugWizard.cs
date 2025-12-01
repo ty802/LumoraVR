@@ -35,8 +35,7 @@ public class EngineDebugWizard : HelioWizardForm
 	// ===== CONFIGURATION =====
 
 	protected override float2 CanvasSize => new float2(900f, 1100f);
-	protected override float WizardPixelScale => 800f;
-	protected override string WizardTitle => "Engine Debug";
+	protected override float CanvasScale => 1400f; // pixels per unit, ~0.8m tall
 
 	// ===== STATE =====
 
@@ -84,7 +83,7 @@ public class EngineDebugWizard : HelioWizardForm
 
 	// ===== ROOT STEP =====
 
-	protected override void BuildRootStep(HelioUIBuilder ui)
+	protected override void OpenRoot(HelioUIBuilder ui)
 	{
 		// Header with FPS display
 		ui.HorizontalLayout(spacing: 8f);

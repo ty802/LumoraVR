@@ -6,7 +6,6 @@ namespace Lumora.Core.HelioUI;
 
 /// <summary>
 /// Base class for wizard-style multi-step UI forms.
-/// Provides navigation stack and panel management for wizard flows.
 /// </summary>
 [ComponentCategory("HelioUI/Wizard")]
 public abstract class HelioWizardForm : Component
@@ -14,142 +13,98 @@ public abstract class HelioWizardForm : Component
 	// ===== REFERENCES =====
 
 	/// <summary>
-	/// The swap panel used for transitions.
+	/// The swap canvas panel used for transitions.
 	/// </summary>
-	protected SyncRef<HelioSwapPanel> SwapPanel { get; private set; }
+	protected SyncRef<HelioSwapCanvasPanel> SwapPanel { get; private set; }
 
 	/// <summary>
-	/// The canvas containing this wizard.
+	/// Navigation path stack.
 	/// </summary>
-	protected SyncRef<HelioCanvas> Canvas { get; private set; }
-
-	/// <summary>
-	/// The content slot where panels are created.
-	/// </summary>
-	protected SyncRef<Slot> ContentSlot { get; private set; }
+	protected readonly List<Action<HelioUIBuilder>> Path = new();
 
 	// ===== CONFIGURATION =====
 
 	/// <summary>
-	/// Size of the wizard canvas.
-	/// </summary>
-	protected virtual float2 CanvasSize => new float2(400f, 600f);
-
-	/// <summary>
-	/// Pixels per unit for this canvas. Higher values = smaller physical size.
-	/// For 0.8m tall panel with 600px height: 600/0.8 = 750 px/unit
-	/// </summary>
-	protected virtual float WizardPixelScale => 750f;
-
-	/// <summary>
 	/// Duration of panel transitions.
 	/// </summary>
-	protected virtual float TransitionDuration => 0.25f;
+	protected virtual float Duration => 0.25f;
 
 	/// <summary>
-	/// Title displayed at the top of the wizard.
+	/// Size of the wizard canvas in pixels.
 	/// </summary>
-	protected virtual string WizardTitle => "Wizard";
-
-	// ===== STATE =====
+	protected virtual float2 CanvasSize => new float2(400f, 800f);
 
 	/// <summary>
-	/// Navigation stack of step builders.
+	/// Pixels per world unit. Higher = smaller physical panel.
+	/// Default 1000 = 800px / 1000 = 0.8m tall.
 	/// </summary>
-	protected readonly List<Action<HelioUIBuilder>> StepStack = new();
+	protected virtual float CanvasScale => 1000f;
 
 	/// <summary>
-	/// Currently active step index.
+	/// Access to the underlying window panel.
 	/// </summary>
-	public int CurrentStepIndex => StepStack.Count - 1;
-
-	/// <summary>
-	/// Whether there are previous steps to return to.
-	/// </summary>
-	public bool CanReturn => StepStack.Count > 1;
+	public HelioWindowPanel Panel => SwapPanel?.Target?.Panel;
 
 	// ===== INITIALIZATION =====
 
 	public override void OnAwake()
 	{
 		base.OnAwake();
-
-		SwapPanel = new SyncRef<HelioSwapPanel>(this);
-		Canvas = new SyncRef<HelioCanvas>(this);
-		ContentSlot = new SyncRef<Slot>(this);
+		SwapPanel = new SyncRef<HelioSwapCanvasPanel>(this);
 	}
 
-	/// <summary>
-	/// Called when the wizard starts. Sets up the UI structure.
-	/// </summary>
 	public override void OnStart()
 	{
 		base.OnStart();
-		try
-		{
-			SetupWizard();
-		}
-		catch (System.Exception ex)
-		{
-			Logging.Logger.Error($"HelioWizardForm.OnStart: Failed to setup wizard: {ex.Message}");
-		}
-	}
 
-	/// <summary>
-	/// Set up the wizard UI structure.
-	/// </summary>
-	protected virtual void SetupWizard()
-	{
-		// Create canvas if not exists
-		var canvasSlot = Slot.AddSlot("WizardCanvas");
-		var canvas = canvasSlot.AttachComponent<HelioCanvas>();
-		canvas.ReferenceSize.Value = CanvasSize;
-		canvas.PixelScale.Value = WizardPixelScale;
-		Canvas.Target = canvas;
-
-		// Add rect transform to canvas
-		var canvasRect = canvasSlot.AttachComponent<HelioRectTransform>();
-		canvasRect.AnchorMin.Value = float2.Zero;
-		canvasRect.AnchorMax.Value = float2.One;
-
-		// Create content container
-		var contentSlot = canvasSlot.AddSlot("Content");
-		var contentRect = contentSlot.AttachComponent<HelioRectTransform>();
-		contentRect.AnchorMin.Value = float2.Zero;
-		contentRect.AnchorMax.Value = float2.One;
-		ContentSlot.Target = contentSlot;
-
-		// Create swap panel for transitions
-		var swapPanel = contentSlot.AttachComponent<HelioSwapPanel>();
-		swapPanel.TransitionDuration.Value = TransitionDuration;
+		// Create swap canvas panel
+		var swapPanel = Slot.AttachComponent<HelioSwapCanvasPanel>();
 		SwapPanel.Target = swapPanel;
 
-		// Build the root step
-		Open(BuildRootStep);
+		// Initialize immediately so Canvas and Panel are available
+		swapPanel.Initialize();
+
+		// Now we can set size (canvas exists)
+		swapPanel.CanvasSize = CanvasSize;
+		swapPanel.CanvasScale = CanvasScale;
+
+		// Setup panel buttons (panel now exists)
+		Panel?.AddCloseButton();
+		Panel?.AddParentButton();
+		if (Panel != null)
+			Panel.Title.Value = "Wizard";
+
+		// Open root step (no animation for initial)
+		OpenRoot(swapPanel.SwapPanel(Slide.None));
 	}
 
 	// ===== NAVIGATION =====
 
 	/// <summary>
-	/// Navigate to a new step.
+	/// Override in subclasses to build the initial wizard step.
 	/// </summary>
-	public void Open(Action<HelioUIBuilder> buildStep)
-	{
-		if (buildStep == null) return;
+	protected abstract void OpenRoot(HelioUIBuilder ui);
 
-		StepStack.Add(buildStep);
-		BuildCurrentStep(SwapDirection.Left);
+	/// <summary>
+	/// Navigate to a new step (slides left).
+	/// </summary>
+	protected void Open(Action<HelioUIBuilder> builder)
+	{
+		if (builder == null) return;
+		Path.Add(builder);
+		builder(SwapPanel.Target.SwapPanel(Slide.Left, Duration));
 	}
 
 	/// <summary>
-	/// Return to the previous step.
+	/// Return to the previous step (slides right).
 	/// </summary>
-	public void Return()
+	protected void Return()
 	{
-		if (!CanReturn) return;
+		if (Path.Count == 0) return;
 
-		StepStack.RemoveAt(StepStack.Count - 1);
-		BuildCurrentStep(SwapDirection.Right);
+		Path.RemoveAt(Path.Count - 1);
+		var action = Path.Count > 0 ? Path[^1] : new Action<HelioUIBuilder>(OpenRoot);
+		action(SwapPanel.Target.SwapPanel(Slide.Right, Duration));
 	}
 
 	/// <summary>
@@ -157,7 +112,7 @@ public abstract class HelioWizardForm : Component
 	/// </summary>
 	public virtual void Close()
 	{
-		StepStack.Clear();
+		Path.Clear();
 		Slot.Destroy();
 	}
 
@@ -166,52 +121,9 @@ public abstract class HelioWizardForm : Component
 	/// </summary>
 	public void Reset()
 	{
-		while (StepStack.Count > 1)
-		{
-			StepStack.RemoveAt(StepStack.Count - 1);
-		}
-		BuildCurrentStep(SwapDirection.Right);
+		Path.Clear();
+		OpenRoot(SwapPanel.Target.SwapPanel(Slide.Right, Duration));
 	}
-
-	// ===== STEP BUILDING =====
-
-	/// <summary>
-	/// Build the current step UI.
-	/// </summary>
-	private void BuildCurrentStep(SwapDirection direction)
-	{
-		if (StepStack.Count == 0) return;
-
-		var contentSlot = ContentSlot.Target;
-		if (contentSlot == null) return;
-
-		// Create new panel for this step
-		var panelSlot = contentSlot.AddSlot($"Step_{StepStack.Count}");
-		var panelRect = panelSlot.AttachComponent<HelioRectTransform>();
-		panelRect.AnchorMin.Value = float2.Zero;
-		panelRect.AnchorMax.Value = float2.One;
-
-		// Add a vertical layout to the step panel so all content is arranged properly
-		var stepLayout = panelSlot.AttachComponent<HelioVerticalLayout>();
-		stepLayout.Spacing.Value = new float2(4f, 4f);
-		stepLayout.Padding.Value = new float4(8f, 8f, 8f, 8f);
-
-		// Build the step content
-		var builder = new HelioUIBuilder(panelSlot);
-		StepStack[^1](builder);
-
-		// Swap to new panel
-		var swapPanel = SwapPanel.Target;
-		if (swapPanel != null)
-		{
-			swapPanel.SwapTo(panelSlot, direction);
-		}
-	}
-
-	/// <summary>
-	/// Override in subclasses to build the initial wizard step.
-	/// </summary>
-	protected abstract void BuildRootStep(HelioUIBuilder ui);
 
 	// ===== UTILITY =====
 
@@ -222,7 +134,7 @@ public abstract class HelioWizardForm : Component
 	{
 		ui.HorizontalLayout(spacing: 8f);
 
-		if (showBack && CanReturn)
+		if (showBack && Path.Count > 0)
 		{
 			ui.Button("Back", Return);
 		}
@@ -240,9 +152,9 @@ public abstract class HelioWizardForm : Component
 	/// <summary>
 	/// Create a standard header with title.
 	/// </summary>
-	protected void BuildHeader(HelioUIBuilder ui, string title = null)
+	protected void BuildHeader(HelioUIBuilder ui, string title)
 	{
-		ui.Text(title ?? WizardTitle, fontSize: 24f);
+		ui.Text(title, fontSize: 24f);
 		ui.Spacer(16f);
 	}
 }

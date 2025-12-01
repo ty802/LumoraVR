@@ -183,7 +183,6 @@ public class HelioUIMesh : ProceduralMesh
 			var text = slot.GetComponent<HelioText>();
 			if (text != null)
 			{
-				Logging.Logger.Log($"[HelioUIMesh] Found HelioText on '{slot.SlotName.Value}' content='{text.Content?.Value}'");
 				var renderItem = RenderItem.MakeText(computedRect, text, z, BuildLines(text.Content.Value, GetCharAdvance(text), computedRect.Size.x, text.Overflow.Value));
 				items.Add(renderItem);
 				if (renderItem.QuadCount > 0)

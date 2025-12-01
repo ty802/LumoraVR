@@ -114,7 +114,18 @@ public class HelioWindowPanel : Component
 	public override void OnStart()
 	{
 		base.OnStart();
-		SetupStructure();
+		// Only setup if not already initialized
+		if (ContentSlot?.Target == null)
+			SetupStructure();
+	}
+
+	/// <summary>
+	/// Initialize the panel immediately (for synchronous setup).
+	/// </summary>
+	public void Initialize()
+	{
+		if (ContentSlot?.Target == null)
+			SetupStructure();
 	}
 
 	// ===== SETUP =====

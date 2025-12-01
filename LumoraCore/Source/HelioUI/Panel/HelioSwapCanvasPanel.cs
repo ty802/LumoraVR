@@ -3,6 +3,16 @@ using Lumora.Core.Math;
 namespace Lumora.Core.HelioUI;
 
 /// <summary>
+/// Slide direction for panel transitions.
+/// </summary>
+public enum Slide
+{
+	None,
+	Left,
+	Right
+}
+
+/// <summary>
 /// Canvas panel with animated content swapping.
 /// </summary>
 [ComponentCategory("HelioUI/Panel")]
@@ -45,19 +55,34 @@ public class HelioSwapCanvasPanel : HelioCanvasPanel
 	{
 		var canvasSlot = Canvas?.Slot;
 		if (canvasSlot == null) return Slot.AddSlot("Container");
-		return canvasSlot.AddSlot("Container");
+
+		var container = canvasSlot.AddSlot("Container");
+
+		// Container must fill the canvas
+		var rect = container.AttachComponent<HelioRectTransform>();
+		rect.AnchorMin.Value = float2.Zero;
+		rect.AnchorMax.Value = float2.One;
+		rect.OffsetMin.Value = float2.Zero;
+		rect.OffsetMax.Value = float2.Zero;
+
+		return container;
 	}
 
 	/// <summary>
 	/// Swap to a new panel with animation.
 	/// Returns a UIBuilder for building content.
 	/// </summary>
-	public HelioUIBuilder SwapPanel(SwapDirection direction = SwapDirection.None, float duration = 0.25f)
+	public HelioUIBuilder SwapPanel(Slide slide, float duration = 0.25f)
 	{
 		var container = _container?.Target;
 		if (container == null)
 		{
-			container = Slot.AddSlot("Container");
+			// Fallback: create container with proper rect
+			var canvasSlot = Canvas?.Slot ?? Slot;
+			container = canvasSlot.AddSlot("Container");
+			var containerRect = container.AttachComponent<HelioRectTransform>();
+			containerRect.AnchorMin.Value = float2.Zero;
+			containerRect.AnchorMax.Value = float2.One;
 			_container.Target = container;
 		}
 
@@ -74,22 +99,22 @@ public class HelioSwapCanvasPanel : HelioCanvasPanel
 
 		var canvasSize = CanvasSize;
 
-		// Animate based on direction
-		switch (direction)
+		// Animate based on slide direction
+		switch (slide)
 		{
-			case SwapDirection.Left:
+			case Slide.Left:
 				// New panel slides in from right
 				AnimateIn(rect, new float2(canvasSize.x, 0f), duration);
 				AnimateOut(_currentPanel?.Target, new float2(-canvasSize.x, 0f), duration);
 				break;
 
-			case SwapDirection.Right:
+			case Slide.Right:
 				// New panel slides in from left
 				AnimateIn(rect, new float2(-canvasSize.x, 0f), duration);
 				AnimateOut(_currentPanel?.Target, new float2(canvasSize.x, 0f), duration);
 				break;
 
-			case SwapDirection.None:
+			case Slide.None:
 			default:
 				// Instant swap
 				DestroyCurrentPanel();

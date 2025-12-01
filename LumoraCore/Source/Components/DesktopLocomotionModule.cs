@@ -12,6 +12,7 @@ public class DesktopLocomotionModule : ILocomotionModule
 	private CharacterController _characterController;
 	private InputInterface _inputInterface;
 	private IKeyboardDriver _keyboardDriver;
+	private bool _wasJumpPressed;
 
 	public void Activate(LocomotionController owner)
 	{
@@ -61,10 +62,12 @@ public class DesktopLocomotionModule : ILocomotionModule
 		_characterController.SetMovementDirection(moveDir);
 
 		// Jump
-		if (_keyboardDriver.GetKeyState(Key.Space))
+		bool isJumpPressed = _keyboardDriver.GetKeyState(Key.Space);
+		if (isJumpPressed && !_wasJumpPressed)
 		{
 			_characterController.RequestJump();
 		}
+		_wasJumpPressed = isJumpPressed;
 	}
 
 	public void Dispose()

@@ -72,7 +72,7 @@ public class HelioText : Component
 		base.OnAwake();
 		Content = new Sync<string>(this, "");
 		FontSize = new Sync<float>(this, 14f);
-		Color = new Sync<color>(this, new color(1f, 1f, 1f, 1f));
+		Color = new Sync<color>(this, HelioUITheme.TextPrimary);
 		Alignment = new Sync<TextAlignment>(this, TextAlignment.Left);
 		Overflow = new Sync<TextOverflow>(this, TextOverflow.Clip);
 		RichText = new Sync<bool>(this, false);
@@ -81,6 +81,10 @@ public class HelioText : Component
 		// Request canvas rebuild when properties change
 		Content.OnChanged += _ => RequestCanvasRebuild();
 		FontSize.OnChanged += _ => RequestCanvasRebuild();
+		Color.OnChanged += _ => RequestCanvasRebuild();
+		Alignment.OnChanged += _ => RequestCanvasRebuild();
+		Overflow.OnChanged += _ => RequestCanvasRebuild();
+		LineHeight.OnChanged += _ => RequestCanvasRebuild();
 	}
 
 	private void RequestCanvasRebuild()

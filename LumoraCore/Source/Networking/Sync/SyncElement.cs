@@ -7,7 +7,6 @@ namespace Lumora.Core.Networking.Sync;
 
 /// <summary>
 /// Base class for all synchronizable elements.
-/// Mirrors FrooxEngine's SyncElement pattern.
 /// </summary>
 public abstract class SyncElement : IWorldElement, IDisposable
 {
@@ -32,7 +31,7 @@ public abstract class SyncElement : IWorldElement, IDisposable
 	public ulong RefID { get; protected set; }
 
 	/// <summary>
-	/// Alias for RefID (FrooxEngine compatibility).
+	/// Alias for RefID.
 	/// </summary>
 	public ulong ReferenceID => RefID;
 

@@ -130,8 +130,47 @@ public class HelioUIMesh : ProceduralMesh
 			var panel = slot.GetComponent<HelioPanel>();
 			if (panel != null)
 			{
-				items.Add(RenderItem.MakeQuad(computedRect, panel.BackgroundColor.Value, z));
-				z += Z_INCREMENT;
+				float borderWidth = panel.BorderWidth?.Value ?? 0f;
+				color bgColor = panel.BackgroundColor.Value;
+				color borderColor = panel.BorderColor?.Value ?? HelioUITheme.PanelBorder;
+
+				if (borderWidth > 0f)
+				{
+					float clampedBorder = MathF.Max(0f, MathF.Min(borderWidth, MathF.Min(computedRect.Size.x * 0.5f, computedRect.Size.y * 0.5f)));
+					var innerRect = new HelioRect(
+						computedRect.Min + new float2(clampedBorder, clampedBorder),
+						computedRect.Size - new float2(clampedBorder * 2f, clampedBorder * 2f));
+
+					if (innerRect.Size.x > 0f && innerRect.Size.y > 0f)
+					{
+						items.Add(RenderItem.MakeQuad(innerRect, bgColor, z));
+						z += Z_INCREMENT;
+					}
+					else
+					{
+						items.Add(RenderItem.MakeQuad(computedRect, bgColor, z));
+						z += Z_INCREMENT;
+					}
+
+					items.Add(RenderItem.MakeQuad(new HelioRect(
+						new float2(computedRect.Min.x, computedRect.Max.y - clampedBorder),
+						new float2(computedRect.Size.x, clampedBorder)), borderColor, z));
+					items.Add(RenderItem.MakeQuad(new HelioRect(
+						computedRect.Min,
+						new float2(computedRect.Size.x, clampedBorder)), borderColor, z));
+					items.Add(RenderItem.MakeQuad(new HelioRect(
+						computedRect.Min,
+						new float2(clampedBorder, computedRect.Size.y)), borderColor, z));
+					items.Add(RenderItem.MakeQuad(new HelioRect(
+						new float2(computedRect.Max.x - clampedBorder, computedRect.Min.y),
+						new float2(clampedBorder, computedRect.Size.y)), borderColor, z));
+					z += Z_INCREMENT;
+				}
+				else
+				{
+					items.Add(RenderItem.MakeQuad(computedRect, bgColor, z));
+					z += Z_INCREMENT;
+				}
 			}
 
 			var image = slot.GetComponent<HelioImage>();
@@ -144,6 +183,7 @@ public class HelioUIMesh : ProceduralMesh
 			var text = slot.GetComponent<HelioText>();
 			if (text != null)
 			{
+				Logging.Logger.Log($"[HelioUIMesh] Found HelioText on '{slot.SlotName.Value}' content='{text.Content?.Value}'");
 				var renderItem = RenderItem.MakeText(computedRect, text, z, BuildLines(text.Content.Value, GetCharAdvance(text), computedRect.Size.x, text.Overflow.Value));
 				items.Add(renderItem);
 				if (renderItem.QuadCount > 0)

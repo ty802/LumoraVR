@@ -190,15 +190,15 @@ public class HelioWindowPanel : Component
 	/// </summary>
 	public HelioTitleButton AddCloseButton()
 	{
-		return AddButton(new color(1f, 0.3f, 0.3f), "X", color.Black, _ => Close());
+		return AddButton(HelioUITheme.AccentRed, "X", HelioUITheme.TextBlack, _ => Close());
 	}
 
 	/// <summary>
-	/// Add parent/pin button (orange).
+	/// Add parent/pin button (purple).
 	/// </summary>
 	public HelioTitleButton AddParentButton()
 	{
-		return AddButton(new color(1f, 0.6f, 0.2f), "P", color.Black, _ =>
+		return AddButton(HelioUITheme.AccentPrimary, "P", HelioUITheme.TextPrimary, _ =>
 		{
 			Logging.Logger.Log($"[HelioWindowPanel] Pin pressed: '{Title.Value}'");
 		});
@@ -209,7 +209,7 @@ public class HelioWindowPanel : Component
 	/// </summary>
 	public HelioTitleButton AddHelpButton(Action<HelioCanvasPanel> helpGenerator)
 	{
-		return AddButton(new color(0.3f, 0.8f, 1f), "?", color.Black, _ =>
+		return AddButton(HelioUITheme.AccentCyan, "?", HelioUITheme.TextBlack, _ =>
 		{
 			// Create help dialog
 			var helpSlot = Slot.AddSlot("HelpDialog");

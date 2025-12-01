@@ -5,10 +5,10 @@ namespace Lumora.Core.HelioUI;
 /// <summary>
 /// Fit mode for content size fitting.
 /// </summary>
-public enum FitMode
+public enum SizeFit
 {
 	/// <summary>Don't modify size on this axis.</summary>
-	Unconstrained,
+	Disabled,
 	/// <summary>Size to minimum content size.</summary>
 	MinSize,
 	/// <summary>Size to preferred content size.</summary>
@@ -25,12 +25,12 @@ public class HelioContentSizeFitter : Component
 	/// <summary>
 	/// How to fit horizontally.
 	/// </summary>
-	public Sync<FitMode> HorizontalFit { get; private set; }
+	public Sync<SizeFit> HorizontalFit { get; private set; }
 
 	/// <summary>
 	/// How to fit vertically.
 	/// </summary>
-	public Sync<FitMode> VerticalFit { get; private set; }
+	public Sync<SizeFit> VerticalFit { get; private set; }
 
 	private bool _dirty = true;
 
@@ -38,8 +38,8 @@ public class HelioContentSizeFitter : Component
 	{
 		base.OnAwake();
 
-		HorizontalFit = new Sync<FitMode>(this, FitMode.Unconstrained);
-		VerticalFit = new Sync<FitMode>(this, FitMode.Unconstrained);
+		HorizontalFit = new Sync<SizeFit>(this, SizeFit.Disabled);
+		VerticalFit = new Sync<SizeFit>(this, SizeFit.Disabled);
 
 		HorizontalFit.OnChanged += _ => MarkDirty();
 		VerticalFit.OnChanged += _ => MarkDirty();
@@ -108,20 +108,20 @@ public class HelioContentSizeFitter : Component
 		// Apply fit modes
 		switch (HorizontalFit.Value)
 		{
-			case FitMode.MinSize:
+			case SizeFit.MinSize:
 				newSize.x = minSize.x;
 				break;
-			case FitMode.PreferredSize:
+			case SizeFit.PreferredSize:
 				newSize.x = preferredSize.x;
 				break;
 		}
 
 		switch (VerticalFit.Value)
 		{
-			case FitMode.MinSize:
+			case SizeFit.MinSize:
 				newSize.y = minSize.y;
 				break;
-			case FitMode.PreferredSize:
+			case SizeFit.PreferredSize:
 				newSize.y = preferredSize.y;
 				break;
 		}

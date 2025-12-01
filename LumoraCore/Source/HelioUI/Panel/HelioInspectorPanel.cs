@@ -80,15 +80,20 @@ public class HelioInspectorPanel : Component
 		_canvas.Target = canvas;
 		canvas.ReferenceSize.Value = CanvasSize;
 		canvas.PixelScale.Value = PixelScale;
+		canvas.BackgroundColor.Value = HelioUITheme.PanelBackground;
 
 		// Root rect
 		var rootRect = canvasSlot.GetComponent<HelioRectTransform>() ?? canvasSlot.AttachComponent<HelioRectTransform>();
 		rootRect.AnchorMin.Value = float2.Zero;
 		rootRect.AnchorMax.Value = float2.One;
 
-		// Main panel background
-		var mainPanel = canvasSlot.AttachComponent<HelioPanel>();
-		mainPanel.BackgroundColor.Value = new color(1f, 1f, 1f, 0.2f);
+		// Main overlay background similar to Radiant UI
+		var mainBgSlot = canvasSlot.AddSlot("MainBackground");
+		var mainBgRect = mainBgSlot.AttachComponent<HelioRectTransform>();
+		mainBgRect.AnchorMin.Value = float2.Zero;
+		mainBgRect.AnchorMax.Value = float2.One;
+		var mainPanel = mainBgSlot.AttachComponent<HelioPanel>();
+		mainPanel.BackgroundColor.Value = HelioUITheme.PanelOverlay;
 
 		// Create horizontal split
 		var splitSlot = canvasSlot.AddSlot("Split");
@@ -96,32 +101,34 @@ public class HelioInspectorPanel : Component
 		splitRect.AnchorMin.Value = float2.Zero;
 		splitRect.AnchorMax.Value = float2.One;
 
-		var splitLayout = splitSlot.AttachComponent<HelioHorizontalLayout>();
-
 		// Left pane (hierarchy)
 		var leftSlot = splitSlot.AddSlot("Hierarchy");
 		var leftRect = leftSlot.AttachComponent<HelioRectTransform>();
-		var leftLayout = leftSlot.AttachComponent<HelioLayoutElement>();
-		leftLayout.FlexibleSize.Value = new float2(HierarchySplit, 1f);
+		leftRect.AnchorMin.Value = new float2(0f, 0f);
+		leftRect.AnchorMax.Value = new float2(HierarchySplit, 1f);
 
 		var leftPanel = leftSlot.AttachComponent<HelioPanel>();
-		leftPanel.BackgroundColor.Value = new color(hierarchyColor.r, hierarchyColor.g, hierarchyColor.b, 0.2f);
+		leftPanel.BackgroundColor.Value = new color(hierarchyColor.r, hierarchyColor.g, hierarchyColor.b, 0.35f);
+		leftPanel.BorderWidth.Value = 1f;
+		leftPanel.BorderColor.Value = new color(hierarchyColor.r, hierarchyColor.g, hierarchyColor.b, 0.65f);
 
 		// Right pane (detail)
 		var rightSlot = splitSlot.AddSlot("Detail");
 		var rightRect = rightSlot.AttachComponent<HelioRectTransform>();
-		var rightLayout = rightSlot.AttachComponent<HelioLayoutElement>();
-		rightLayout.FlexibleSize.Value = new float2(1f - HierarchySplit, 1f);
+		rightRect.AnchorMin.Value = new float2(HierarchySplit, 0f);
+		rightRect.AnchorMax.Value = new float2(1f, 1f);
 
 		var rightPanel = rightSlot.AttachComponent<HelioPanel>();
-		rightPanel.BackgroundColor.Value = new color(detailColor.r, detailColor.g, detailColor.b, 0.2f);
+		rightPanel.BackgroundColor.Value = new color(detailColor.r, detailColor.g, detailColor.b, 0.35f);
+		rightPanel.BorderWidth.Value = 1f;
+		rightPanel.BorderColor.Value = new color(detailColor.r, detailColor.g, detailColor.b, 0.65f);
 
 		// Setup hierarchy pane (header + content)
-		SetupHeaderContent(leftSlot, 64f, out hierarchyHeader, out hierarchyContent);
+		SetupHeaderContent(leftSlot, HelioUITheme.HeaderHeight, out hierarchyHeader, out hierarchyContent);
 		AddScrollArea(hierarchyContent);
 
 		// Setup detail pane (header + content + footer)
-		SetupHeaderContentFooter(rightSlot, 64f, 64f, out detailHeader, out detailContent, out detailFooter);
+		SetupHeaderContentFooter(rightSlot, HelioUITheme.HeaderHeight, HelioUITheme.FooterHeight, out detailHeader, out detailContent, out detailFooter);
 		AddScrollArea(detailContent);
 
 		return windowPanel;
@@ -208,7 +215,7 @@ public class HelioInspectorPanel : Component
 
 		// Add content size fitter for scroll behavior
 		var fitter = scrollSlot.AttachComponent<HelioContentSizeFitter>();
-		fitter.HorizontalFit.Value = FitMode.Unconstrained;
-		fitter.VerticalFit.Value = FitMode.MinSize;
+		fitter.HorizontalFit.Value = SizeFit.Disabled;
+		fitter.VerticalFit.Value = SizeFit.MinSize;
 	}
 }

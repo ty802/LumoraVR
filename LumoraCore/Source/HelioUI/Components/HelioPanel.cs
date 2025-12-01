@@ -32,10 +32,10 @@ public class HelioPanel : Component
 	public override void OnAwake()
 	{
 		base.OnAwake();
-		BackgroundColor = new Sync<color>(this, new color(0.2f, 0.2f, 0.2f, 1f));
+		BackgroundColor = new Sync<color>(this, HelioUITheme.PanelBackground);
 		BorderRadius = new Sync<float4>(this, float4.Zero);
-		BorderColor = new Sync<color>(this, new color(0.4f, 0.4f, 0.4f, 1f));
-		BorderWidth = new Sync<float>(this, 0f);
+		BorderColor = new Sync<color>(this, HelioUITheme.PanelBorder);
+		BorderWidth = new Sync<float>(this, 1f);
 
 		// Request rebuild on visual changes
 		BackgroundColor.OnChanged += _ => RequestCanvasRebuild();

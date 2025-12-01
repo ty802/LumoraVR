@@ -98,10 +98,10 @@ public class HelioButton : Component, IHelioInteractable
 
 		// Initialize sync fields
 		Interactable = new Sync<bool>(this, true);
-		NormalColor = new Sync<color>(this, new color(0.3f, 0.3f, 0.3f, 1f));
-		HoveredColor = new Sync<color>(this, new color(0.4f, 0.4f, 0.4f, 1f));
-		PressedColor = new Sync<color>(this, new color(0.2f, 0.2f, 0.2f, 1f));
-		DisabledColor = new Sync<color>(this, new color(0.2f, 0.2f, 0.2f, 0.5f));
+		NormalColor = new Sync<color>(this, HelioUITheme.ButtonNormal);
+		HoveredColor = new Sync<color>(this, HelioUITheme.ButtonHovered);
+		PressedColor = new Sync<color>(this, HelioUITheme.ButtonPressed);
+		DisabledColor = new Sync<color>(this, HelioUITheme.ButtonDisabled);
 		TransitionDuration = new Sync<float>(this, 0.1f);
 
 		Label = new SyncRef<HelioText>(this);

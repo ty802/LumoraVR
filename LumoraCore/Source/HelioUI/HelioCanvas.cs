@@ -59,7 +59,7 @@ public class HelioCanvas : Component
 		base.OnAwake();
 		ReferenceSize = new Sync<float2>(this, new float2(400f, 600f));
 		PixelScale = new Sync<float>(this, 100f);
-		BackgroundColor = new Sync<color>(this, new color(0.1f, 0.1f, 0.12f, 0.95f));
+		BackgroundColor = new Sync<color>(this, HelioUITheme.CanvasBackground);
 
 		ReferenceSize.OnChanged += _ => OnReferenceSizeChanged();
 		PixelScale.OnChanged += _ => OnPixelScaleChanged();

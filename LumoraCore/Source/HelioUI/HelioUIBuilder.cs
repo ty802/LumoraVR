@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Lumora.Core.Math;
+using Lumora.Core.Logging;
 
 namespace Lumora.Core.HelioUI;
 
@@ -255,6 +256,136 @@ public class HelioUIBuilder
 		return this;
 	}
 
+	/// <summary>
+	/// Split current area horizontally. Returns list of RectTransforms.
+	/// </summary>
+	public List<HelioRectTransform> SplitHorizontally(params float[] proportions)
+	{
+		var results = new List<HelioRectTransform>();
+		float cursor = 0f;
+
+		for (int i = 0; i < proportions.Length; i++)
+		{
+			var slot = _current.AddSlot($"Split_{i}");
+			var rect = slot.AttachComponent<HelioRectTransform>();
+			rect.AnchorMin.Value = new float2(cursor, 0f);
+			cursor += proportions[i];
+			rect.AnchorMax.Value = new float2(cursor, 1f);
+			results.Add(rect);
+			_lastComponent = rect;
+		}
+
+		return results;
+	}
+
+	/// <summary>
+	/// Split with left/right output and optional gap.
+	/// </summary>
+	public void SplitHorizontally(float proportion, out HelioRectTransform left, out HelioRectTransform right, float gap = 0f)
+	{
+		float halfGap = gap * 0.5f;
+
+		var leftSlot = _current.AddSlot("Left");
+		left = leftSlot.AttachComponent<HelioRectTransform>();
+		left.AnchorMin.Value = new float2(0f, 0f);
+		left.AnchorMax.Value = new float2(proportion - halfGap, 1f);
+
+		var rightSlot = _current.AddSlot("Right");
+		right = rightSlot.AttachComponent<HelioRectTransform>();
+		right.AnchorMin.Value = new float2(proportion + halfGap, 0f);
+		right.AnchorMax.Value = new float2(1f, 1f);
+
+		_lastComponent = right;
+	}
+
+	/// <summary>
+	/// Create header at top with fixed height, content below.
+	/// </summary>
+	public void HorizontalHeader(float size, out HelioRectTransform header, out HelioRectTransform content)
+	{
+		var headerSlot = _current.AddSlot("Header");
+		header = headerSlot.AttachComponent<HelioRectTransform>();
+		header.AnchorMin.Value = new float2(0f, 1f);
+		header.AnchorMax.Value = new float2(1f, 1f);
+		header.OffsetMin.Value = new float2(0f, -size);
+		header.OffsetMax.Value = float2.Zero;
+
+		var contentSlot = _current.AddSlot("Content");
+		content = contentSlot.AttachComponent<HelioRectTransform>();
+		content.AnchorMin.Value = float2.Zero;
+		content.AnchorMax.Value = float2.One;
+		content.OffsetMax.Value = new float2(0f, -size);
+
+		_lastComponent = content;
+	}
+
+	/// <summary>
+	/// Create footer at bottom with fixed height, content above.
+	/// </summary>
+	public void HorizontalFooter(float size, out HelioRectTransform footer, out HelioRectTransform content)
+	{
+		var contentSlot = _current.AddSlot("Content");
+		content = contentSlot.AttachComponent<HelioRectTransform>();
+		content.AnchorMin.Value = float2.Zero;
+		content.AnchorMax.Value = float2.One;
+		content.OffsetMin.Value = new float2(0f, size);
+
+		var footerSlot = _current.AddSlot("Footer");
+		footer = footerSlot.AttachComponent<HelioRectTransform>();
+		footer.AnchorMin.Value = float2.Zero;
+		footer.AnchorMax.Value = new float2(1f, 0f);
+		footer.OffsetMin.Value = float2.Zero;
+		footer.OffsetMax.Value = new float2(0f, size);
+
+		_lastComponent = content;
+	}
+
+	/// <summary>
+	/// Create scrollable area with mask.
+	/// </summary>
+	public HelioScrollView ScrollArea()
+	{
+		var slot = _current.AddSlot("ScrollArea");
+		var rect = slot.AttachComponent<HelioRectTransform>();
+		rect.AnchorMin.Value = float2.Zero;
+		rect.AnchorMax.Value = float2.One;
+
+		var mask = slot.AttachComponent<HelioMask>();
+		var maskPanel = slot.AttachComponent<HelioPanel>();
+		maskPanel.BackgroundColor.Value = color.Transparent;
+		maskPanel.BorderWidth.Value = 0f;
+
+		var scrollView = slot.AttachComponent<HelioScrollView>();
+		scrollView.Viewport.Target = slot;
+
+		var contentSlot = slot.AddSlot("Content");
+		var contentRect = contentSlot.AttachComponent<HelioRectTransform>();
+		contentRect.AnchorMin.Value = float2.Zero;
+		contentRect.AnchorMax.Value = float2.One;
+		scrollView.Content.Target = contentSlot;
+
+		_layoutStack.Push(_current);
+		_current = contentSlot;
+		_lastComponent = scrollView;
+
+		return scrollView;
+	}
+
+	/// <summary>
+	/// Add content size fitter behavior.
+	/// </summary>
+	public HelioUIBuilder FitContent(SizeFit horizontal, SizeFit vertical)
+	{
+		var fitter = _current.GetComponent<HelioContentSizeFitter>()
+			?? _current.AttachComponent<HelioContentSizeFitter>();
+
+		fitter.HorizontalFit.Value = horizontal;
+		fitter.VerticalFit.Value = vertical;
+		_lastComponent = fitter;
+
+		return this;
+	}
+
 	// ===== SPACING =====
 
 	/// <summary>
@@ -298,13 +429,16 @@ public class HelioUIBuilder
 	public HelioText Text(string content, float fontSize = 14f, color? textColor = null)
 	{
 		var slot = _current.AddSlot("Text");
-		slot.AttachComponent<HelioRectTransform>();
+		var rect = slot.AttachComponent<HelioRectTransform>();
+		rect.AnchorMin.Value = float2.Zero;
+		rect.AnchorMax.Value = float2.One;
 
 		var text = slot.AttachComponent<HelioText>();
 		text.Content.Value = content;
 		text.FontSize.Value = fontSize;
-		if (textColor.HasValue)
-			text.Color.Value = textColor.Value;
+		text.Color.Value = textColor ?? HelioUITheme.TextPrimary;
+
+		Logging.Logger.Log($"[HelioUIBuilder.Text] Created '{content}' size={fontSize}");
 
 		// Add layout element for sizing
 		var layoutElement = slot.AttachComponent<HelioLayoutElement>();
@@ -385,6 +519,25 @@ public class HelioUIBuilder
 		layoutElement.PreferredSize.Value = new float2(100f, 32f);
 
 		_lastComponent = button;
+		return button;
+	}
+
+	/// <summary>
+	/// Button with custom colors (for title bar buttons).
+	/// </summary>
+	public HelioButton Button(string label, color buttonColor, color textColor, Action onClick = null)
+	{
+		var button = Button(label, onClick);
+		button.NormalColor.Value = buttonColor;
+		button.HoveredColor.Value = buttonColor.Lighten(0.15f);
+		button.PressedColor.Value = buttonColor.Darken(0.1f);
+
+		if (button.Label?.Target != null)
+			button.Label.Target.Color.Value = textColor;
+
+		if (button.Background?.Target != null)
+			button.Background.Target.BackgroundColor.Value = buttonColor;
+
 		return button;
 	}
 
@@ -583,16 +736,43 @@ public class HelioUIBuilder
 	}
 
 	/// <summary>
-	/// Push into the last created slot for nesting.
+	/// Nest into current slot (push to stack, stay at current).
 	/// </summary>
 	public HelioUIBuilder Nest()
 	{
-		if (_lastComponent?.Slot != null)
+		_layoutStack.Push(_current);
+		return this;
+	}
+
+	/// <summary>
+	/// Nest out to parent level.
+	/// </summary>
+	public HelioUIBuilder NestOut()
+	{
+		if (_layoutStack.Count > 0)
+			_current = _layoutStack.Pop();
+		return this;
+	}
+
+	/// <summary>
+	/// Nest into specific slot.
+	/// </summary>
+	public HelioUIBuilder NestInto(Slot slot)
+	{
+		if (slot != null)
 		{
 			_layoutStack.Push(_current);
-			_current = _lastComponent.Slot;
+			_current = slot;
 		}
 		return this;
+	}
+
+	/// <summary>
+	/// Nest into RectTransform's slot.
+	/// </summary>
+	public HelioUIBuilder NestInto(HelioRectTransform rect)
+	{
+		return rect != null ? NestInto(rect.Slot) : this;
 	}
 
 	/// <summary>
@@ -600,6 +780,6 @@ public class HelioUIBuilder
 	/// </summary>
 	public HelioUIBuilder Unnest()
 	{
-		return EndLayout();
+		return NestOut();
 	}
 }

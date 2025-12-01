@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using Lumora.Core.Math;
 
@@ -7,119 +8,77 @@ namespace Lumora.Core.Networking.Sync;
 /// <summary>
 /// Binary encoding/decoding for sync types.
 /// </summary>
-public static class SyncCoder<T>
+public static class SyncCoder
 {
-	public static void Encode(BinaryWriter writer, T value)
+	private static readonly Dictionary<Type, Action<BinaryWriter, object>> Encoders = new()
 	{
-		switch (value)
-		{
-			case bool b:
-				writer.Write(b);
-				break;
-			case byte b:
-				writer.Write(b);
-				break;
-			case sbyte sb:
-				writer.Write(sb);
-				break;
-			case short s:
-				writer.Write(s);
-				break;
-			case ushort us:
-				writer.Write(us);
-				break;
-			case int i:
-				writer.Write(i);
-				break;
-			case uint ui:
-				writer.Write(ui);
-				break;
-			case long l:
-				writer.Write(l);
-				break;
-			case ulong ul:
-				writer.Write(ul);
-				break;
-			case float f:
-				writer.Write(f);
-				break;
-			case double d:
-				writer.Write(d);
-				break;
-			case string str:
-				writer.Write(str ?? string.Empty);
-				break;
-			case float2 f2:
-				writer.Write(f2.x);
-				writer.Write(f2.y);
-				break;
-			case float3 f3:
-				writer.Write(f3.x);
-				writer.Write(f3.y);
-				writer.Write(f3.z);
-				break;
-			case float4 f4:
-				writer.Write(f4.x);
-				writer.Write(f4.y);
-				writer.Write(f4.z);
-				writer.Write(f4.w);
-				break;
-			case floatQ q:
-				writer.Write(q.x);
-				writer.Write(q.y);
-				writer.Write(q.z);
-				writer.Write(q.w);
-				break;
-			case Enum e:
-				writer.Write(Convert.ToInt32(e));
-				break;
-			default:
-				throw new NotSupportedException($"SyncCoder: Type {typeof(T)} not supported");
-		}
-	}
+		[typeof(bool)] = (w, v) => w.Write((bool)v),
+		[typeof(byte)] = (w, v) => w.Write((byte)v),
+		[typeof(sbyte)] = (w, v) => w.Write((sbyte)v),
+		[typeof(short)] = (w, v) => w.Write((short)v),
+		[typeof(ushort)] = (w, v) => w.Write((ushort)v),
+		[typeof(int)] = (w, v) => w.Write((int)v),
+		[typeof(uint)] = (w, v) => w.Write((uint)v),
+		[typeof(long)] = (w, v) => w.Write((long)v),
+		[typeof(ulong)] = (w, v) => w.Write((ulong)v),
+		[typeof(float)] = (w, v) => w.Write((float)v),
+		[typeof(double)] = (w, v) => w.Write((double)v),
+		[typeof(string)] = (w, v) => w.Write((string)v ?? string.Empty),
+		[typeof(float2)] = (w, v) => { var f = (float2)v; w.Write(f.x); w.Write(f.y); },
+		[typeof(float3)] = (w, v) => { var f = (float3)v; w.Write(f.x); w.Write(f.y); w.Write(f.z); },
+		[typeof(float4)] = (w, v) => { var f = (float4)v; w.Write(f.x); w.Write(f.y); w.Write(f.z); w.Write(f.w); },
+		[typeof(floatQ)] = (w, v) => { var q = (floatQ)v; w.Write(q.x); w.Write(q.y); w.Write(q.z); w.Write(q.w); },
+	};
 
-	public static T Decode(BinaryReader reader)
+	private static readonly Dictionary<Type, Func<BinaryReader, object>> Decoders = new()
+	{
+		[typeof(bool)] = r => r.ReadBoolean(),
+		[typeof(byte)] = r => r.ReadByte(),
+		[typeof(sbyte)] = r => r.ReadSByte(),
+		[typeof(short)] = r => r.ReadInt16(),
+		[typeof(ushort)] = r => r.ReadUInt16(),
+		[typeof(int)] = r => r.ReadInt32(),
+		[typeof(uint)] = r => r.ReadUInt32(),
+		[typeof(long)] = r => r.ReadInt64(),
+		[typeof(ulong)] = r => r.ReadUInt64(),
+		[typeof(float)] = r => r.ReadSingle(),
+		[typeof(double)] = r => r.ReadDouble(),
+		[typeof(string)] = r => r.ReadString(),
+		[typeof(float2)] = r => new float2(r.ReadSingle(), r.ReadSingle()),
+		[typeof(float3)] = r => new float3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()),
+		[typeof(float4)] = r => new float4(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle()),
+		[typeof(floatQ)] = r => new floatQ(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle()),
+	};
+
+	public static void Encode<T>(BinaryWriter writer, T value)
 	{
 		var type = typeof(T);
-		object result;
 
-		if (type == typeof(bool))
-			result = reader.ReadBoolean();
-		else if (type == typeof(byte))
-			result = reader.ReadByte();
-		else if (type == typeof(sbyte))
-			result = reader.ReadSByte();
-		else if (type == typeof(short))
-			result = reader.ReadInt16();
-		else if (type == typeof(ushort))
-			result = reader.ReadUInt16();
-		else if (type == typeof(int))
-			result = reader.ReadInt32();
-		else if (type == typeof(uint))
-			result = reader.ReadUInt32();
-		else if (type == typeof(long))
-			result = reader.ReadInt64();
-		else if (type == typeof(ulong))
-			result = reader.ReadUInt64();
-		else if (type == typeof(float))
-			result = reader.ReadSingle();
-		else if (type == typeof(double))
-			result = reader.ReadDouble();
-		else if (type == typeof(string))
-			result = reader.ReadString();
-		else if (type == typeof(float2))
-			result = new float2(reader.ReadSingle(), reader.ReadSingle());
-		else if (type == typeof(float3))
-			result = new float3(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
-		else if (type == typeof(float4))
-			result = new float4(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
-		else if (type == typeof(floatQ))
-			result = new floatQ(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
-		else if (type.IsEnum)
-			result = Enum.ToObject(type, reader.ReadInt32());
-		else
-			throw new NotSupportedException($"SyncCoder: Type {type} not supported");
+		if (Encoders.TryGetValue(type, out var encoder))
+		{
+			encoder(writer, value!);
+			return;
+		}
 
-		return (T)result;
+		if (type.IsEnum)
+		{
+			writer.Write(Convert.ToInt32(value));
+			return;
+		}
+
+		throw new NotSupportedException($"SyncCoder: Type {type} not supported");
+	}
+
+	public static T Decode<T>(BinaryReader reader)
+	{
+		var type = typeof(T);
+
+		if (Decoders.TryGetValue(type, out var decoder))
+			return (T)decoder(reader);
+
+		if (type.IsEnum)
+			return (T)Enum.ToObject(type, reader.ReadInt32());
+
+		throw new NotSupportedException($"SyncCoder: Type {type} not supported");
 	}
 }

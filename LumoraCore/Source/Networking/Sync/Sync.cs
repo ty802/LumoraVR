@@ -132,12 +132,12 @@ public class Sync<T> : SyncElement, ISyncMember, IChangeable
 
 	protected override void InternalEncodeFull(BinaryWriter writer, BinaryMessageBatch outboundMessage)
 	{
-		SyncCoder<T>.Encode(writer, _value);
+		SyncCoder.Encode<T>(writer, _value);
 	}
 
 	protected override void InternalDecodeFull(BinaryReader reader, BinaryMessageBatch inboundMessage)
 	{
-		_value = SyncCoder<T>.Decode(reader);
+		_value = SyncCoder.Decode<T>(reader);
 		_lastSyncedValue = _value;
 		OnChanged?.Invoke(_value);
 		Changed?.Invoke(this);
@@ -146,12 +146,12 @@ public class Sync<T> : SyncElement, ISyncMember, IChangeable
 	protected override void InternalEncodeDelta(BinaryWriter writer, BinaryMessageBatch outboundMessage)
 	{
 		// For simple values, delta is the same as full
-		SyncCoder<T>.Encode(writer, _value);
+		SyncCoder.Encode<T>(writer, _value);
 	}
 
 	protected override void InternalDecodeDelta(BinaryReader reader, BinaryMessageBatch inboundMessage)
 	{
-		_value = SyncCoder<T>.Decode(reader);
+		_value = SyncCoder.Decode<T>(reader);
 		_lastSyncedValue = _value;
 		OnChanged?.Invoke(_value);
 		Changed?.Invoke(this);

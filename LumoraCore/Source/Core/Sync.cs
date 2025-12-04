@@ -10,7 +10,7 @@ namespace Lumora.Core;
 /// Implements IChangeable for reactive change tracking.
 /// </summary>
 /// <typeparam name="T">The type of value to synchronize.</typeparam>
-public class Sync<T> : ILinkable, IChangeable
+public class SyncField<T> : ILinkable, IChangeable
 {
 	private T _value;
 	private IWorldElement _owner;
@@ -119,9 +119,11 @@ public class Sync<T> : ILinkable, IChangeable
 				component.NotifyChanged();
 			}
 
-			// Fire the IChangeable Changed event
-			Changed?.Invoke(this);
-		}
+		// Fire the IChangeable Changed event
+		Changed?.Invoke(this);
+
+		ValueChanged();
+	}
 	}
 
 	/// <summary>
@@ -134,7 +136,7 @@ public class Sync<T> : ILinkable, IChangeable
 	/// </summary>
 	public bool IsDirty { get; internal set; }
 
-	public Sync(IWorldElement owner, T defaultValue = default)
+	public SyncField(IWorldElement owner, T defaultValue = default)
 	{
 		_owner = owner;
 		_value = defaultValue;
@@ -181,7 +183,7 @@ public class Sync<T> : ILinkable, IChangeable
 		return wasChanged;
 	}
 
-	public static implicit operator T(Sync<T> sync) => sync.Value;
+	public static implicit operator T(SyncField<T> sync) => sync.Value;
 
 	public override string ToString() => _value?.ToString() ?? "null";
 
@@ -333,7 +335,7 @@ public class Sync<T> : ILinkable, IChangeable
 		{
 			_owner.World?.MarkElementDirty(_owner);
 
-			// Notify the parent component that this sync field changed
+			// Notify the parent component that this delegate changed
 			if (_owner is Component component)
 			{
 				component.NotifyChanged();
@@ -342,7 +344,14 @@ public class Sync<T> : ILinkable, IChangeable
 			// Fire the IChangeable Changed event
 			Changed?.Invoke(this);
 		}
+
+		ValueChanged();
 	}
+
+	/// <summary>
+	/// Hook that derived classes can override when the value changes.
+	/// </summary>
+	protected virtual void ValueChanged() { }
 
 	// IWorldElement implementation (forwarded to owner)
 
@@ -354,7 +363,12 @@ public class Sync<T> : ILinkable, IChangeable
 	/// <summary>
 	/// Unique reference ID for this field within the world.
 	/// </summary>
-	public ulong RefID => _owner?.RefID ?? 0;
+	public RefID ReferenceID => _owner?.ReferenceID ?? RefID.Null;
+
+	/// <summary>
+	/// Legacy alias for numeric RefID.
+	/// </summary>
+	public ulong RefID => (ulong)ReferenceID;
 
 	/// <summary>
 	/// Whether this field has been destroyed.
@@ -373,6 +387,18 @@ public class Sync<T> : ILinkable, IChangeable
 	{
 		// Sync fields cannot be destroyed directly
 		// They are destroyed when their owner is destroyed
+	}
+}
+
+/// <summary>
+/// Convenience wrapper preserving the original Sync&lt;T&gt; surface area.
+/// </summary>
+/// <typeparam name="T">Value type.</typeparam>
+public class Sync<T> : SyncField<T>
+{
+	public Sync(IWorldElement owner, T defaultValue = default)
+		: base(owner, defaultValue)
+	{
 	}
 }
 

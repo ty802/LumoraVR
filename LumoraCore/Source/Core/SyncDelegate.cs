@@ -116,7 +116,7 @@ public class SyncDelegate<T> : IChangeable where T : Delegate
 	/// <summary>
 	/// Unique reference ID for this delegate within the world.
 	/// </summary>
-	public ulong RefID => _owner?.RefID ?? 0;
+	public RefID ReferenceID => _owner?.ReferenceID ?? RefID.Null;
 
 	/// <summary>
 	/// Whether this delegate has been destroyed.

@@ -220,7 +220,7 @@ public class SyncArray<T> : IChangeable, IEnumerable<T>
 	/// <summary>
 	/// Unique reference ID for this array within the world.
 	/// </summary>
-	public ulong RefID => _owner?.RefID ?? 0;
+	public RefID ReferenceID => _owner?.ReferenceID ?? RefID.Null;
 
 	/// <summary>
 	/// Whether this array has been destroyed.

@@ -36,9 +36,9 @@ public class SyncBag<T> : IChangeable, IEnumerable<T>
 	public World World => _owner?.World;
 
 	/// <summary>
-	/// Unique reference ID for this element within the world.
+	/// Strongly-typed reference ID for this element within the world.
 	/// </summary>
-	public ulong RefID => _owner?.RefID ?? 0;
+	public RefID ReferenceID => _owner?.ReferenceID ?? RefID.Null;
 
 	/// <summary>
 	/// Whether this element has been destroyed.

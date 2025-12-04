@@ -70,9 +70,13 @@ public class FieldHook<T> : ILinkRef
 
 	// IWorldElement implementation
 	public World World => _world;
-	public ulong RefID { get; private set; }
+	public RefID ReferenceID => RefID.Null;
+	public ulong RefID => (ulong)ReferenceID;
+	public bool IsLocalElement => true;
+	public bool IsPersistent => false;
 	public bool IsDestroyed { get; private set; }
 	public bool IsInitialized { get; private set; }
+	public string ParentHierarchyToString() => $"FieldHook<{typeof(T).Name}>";
 
 	public FieldHook(World world)
 	{

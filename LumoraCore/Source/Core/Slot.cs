@@ -643,16 +643,15 @@ public class Slot : IImplementable<IHook<Slot>>, IWorldElement
 			throw new InvalidOperationException("ReferenceController is required for component allocation");
 		}
 
+		// Handle local allocation if parent slot is local
 		bool startedLocalBlock = false;
-		if (ReferenceID.IsLocalID)
+		if (ReferenceID.IsLocalID && !refController.IsInLocalAllocation)
 		{
 			refController.LocalAllocationBlockBegin();
 			startedLocalBlock = true;
 		}
 
-		RefID nextID = refController.PeekID();
-		refController.AllocationBlockBegin(in nextID);
-
+		// Create and initialize the component - RefID is allocated sequentially
 		var component = new T();
 		component.Initialize(this);
 		_components.Add(component);
@@ -660,8 +659,6 @@ public class Slot : IImplementable<IHook<Slot>>, IWorldElement
 		component.OnAwake();
 		component.OnInit();
 		component.OnStart();
-
-		refController.AllocationBlockEnd();
 
 		if (startedLocalBlock)
 		{
@@ -719,16 +716,15 @@ public class Slot : IImplementable<IHook<Slot>>, IWorldElement
 			throw new InvalidOperationException("ReferenceController is required for slot allocation");
 		}
 
+		// Handle local allocation if parent is local
 		bool startedLocalBlock = false;
-		if (ReferenceID.IsLocalID)
+		if (ReferenceID.IsLocalID && !refController.IsInLocalAllocation)
 		{
 			refController.LocalAllocationBlockBegin();
 			startedLocalBlock = true;
 		}
 
-		RefID nextID = refController.PeekID();
-		refController.AllocationBlockBegin(in nextID);
-
+		// Create and initialize the slot - it will allocate its own RefID
 		var slot = new Slot();
 		slot.SlotName.Value = name;
 		slot._name = name;
@@ -736,7 +732,8 @@ public class Slot : IImplementable<IHook<Slot>>, IWorldElement
 		slot.Parent = this;
 		slot.Initialize(World);
 
-		refController.AllocationBlockEnd();
+		// Register with the world
+		World.RegisterSlot(slot);
 
 		if (startedLocalBlock)
 		{

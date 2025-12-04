@@ -731,11 +731,13 @@ public class World
 	{
 		var (rangeStart, rangeEnd) = _refIDAllocator.GetAuthorityIDRange();
 
-		var hostUser = new User(this, rangeStart);
+		// Allocate a unique RefID for the User via ReferenceController to avoid collisions
+		var userRefId = ReferenceController.AllocateID();
+		var hostUser = new User(this, userRefId);
 		var resolvedName = string.IsNullOrWhiteSpace(userName) ? System.Environment.MachineName : userName;
 
 		hostUser.UserName.Value = resolvedName;
-		hostUser.UserID.Value = rangeStart.ToString();
+		hostUser.UserID.Value = userRefId.ToString();
 		hostUser.AllocationIDStart.Value = rangeStart;
 		hostUser.AllocationIDEnd.Value = rangeEnd;
 		hostUser.IsPresent.Value = true;
@@ -743,7 +745,7 @@ public class World
 
 		SetLocalUser(hostUser);
 		AddUser(hostUser); // Add user to world and trigger OnUserJoined
-		AquaLogger.Log($"Created host user '{resolvedName}' with RefID {rangeStart:X16}");
+		AquaLogger.Log($"Created host user '{resolvedName}' with RefID {userRefId}");
 		return hostUser;
 	}
 

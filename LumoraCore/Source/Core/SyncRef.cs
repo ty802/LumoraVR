@@ -1,8 +1,5 @@
 using System;
-using System.IO;
 using System.Runtime.CompilerServices;
-using Lumora.Core.Networking;
-using Lumora.Core.Networking.Sync;
 
 namespace Lumora.Core;
 
@@ -38,9 +35,19 @@ public class SyncRef<T> : SyncField<RefID>, ISyncRef, IWorldElementReceiver
     }
 
     public SyncRef(IWorldElement owner)
+        : base(owner)
     {
-        World = owner?.World;
         State = ReferenceState.Null;
+    }
+
+    public SyncRef(IWorldElement owner, T defaultTarget)
+        : base(owner)
+    {
+        State = ReferenceState.Null;
+        if (defaultTarget != null)
+        {
+            Target = defaultTarget;
+        }
     }
 
     private const int PreassignedFlag = 16;
@@ -71,18 +78,6 @@ public class SyncRef<T> : SyncField<RefID>, ISyncRef, IWorldElementReceiver
     }
 
     public T RawTarget => _target;
-
-    public override RefID Value
-    {
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        get => base.Value;
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        set
-        {
-            if (value == base.Value) return;
-            base.Value = value;
-        }
-    }
 
     public virtual T Target
     {
@@ -234,11 +229,10 @@ public class SyncRef<T> : SyncField<RefID>, ISyncRef, IWorldElementReceiver
             }
             else
             {
-                World?.ReferenceController?.RequestObject(in Value, this);
+                var refId = Value;
+                World?.ReferenceController?.RequestObject(in refId, this);
             }
         }
-
-        base.ValueChanged();
     }
 
     void IWorldElementReceiver.OnWorldElementAvailable(IWorldElement element)
@@ -299,39 +293,12 @@ public class SyncRef<T> : SyncField<RefID>, ISyncRef, IWorldElementReceiver
         OnTargetChange?.Invoke(this);
     }
 
-    #region Encoding/Decoding
-
-    protected override void InternalEncodeFull(BinaryWriter writer, BinaryMessageBatch outboundMessage)
-    {
-        writer.WriteRefID(Value);
-    }
-
-    protected override void InternalDecodeFull(BinaryReader reader, BinaryMessageBatch inboundMessage)
-    {
-        RefID value = reader.ReadRefID();
-        InternalSetValue(value);
-    }
-
-    protected override void InternalEncodeDelta(BinaryWriter writer, BinaryMessageBatch outboundMessage)
-    {
-        writer.WriteRefID(Value);
-    }
-
-    protected override void InternalDecodeDelta(BinaryReader reader, BinaryMessageBatch inboundMessage)
-    {
-        RefID value = reader.ReadRefID();
-        InternalSetValue(value);
-    }
-
-    #endregion
-
-    public override void Dispose()
+    public void Dispose()
     {
         _target = null;
         OnReferenceChange = null;
         OnObjectAvailable = null;
         OnTargetChange = null;
-        base.Dispose();
     }
 
     public override string ToString()

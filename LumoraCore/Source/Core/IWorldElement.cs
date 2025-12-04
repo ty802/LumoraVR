@@ -17,6 +17,11 @@ public interface IWorldElement
 	RefID ReferenceID { get; }
 
 	/// <summary>
+	/// Whether this element has been initialized.
+	/// </summary>
+	bool IsInitialized { get; }
+
+	/// <summary>
 	/// Whether this element has been destroyed.
 	/// </summary>
 	bool IsDestroyed { get; }

@@ -10,7 +10,7 @@ namespace Lumora.Core;
 /// Implements IChangeable for reactive change tracking.
 /// </summary>
 /// <typeparam name="T">The type of value to synchronize.</typeparam>
-public class SyncField<T> : ILinkable, IChangeable
+public class SyncField<T> : ILinkable, IChangeable, IWorldElement
 {
 	private T _value;
 	private IWorldElement _owner;
@@ -18,6 +18,21 @@ public class SyncField<T> : ILinkable, IChangeable
 	private bool _isInHook;
 	private ILinkRef _directLink;
 	private ILinkRef _inheritedLink;
+	protected int _flags;
+
+	protected bool GetFlag(int flag) => (_flags & (1 << flag)) != 0;
+	protected void SetFlag(int flag, bool value)
+	{
+		if (value)
+			_flags |= (1 << flag);
+		else
+			_flags &= ~(1 << flag);
+	}
+
+	protected bool IsWithinHookCallback => _isInHook;
+	protected virtual bool IsInInitPhase => false;
+	protected virtual bool IsLoading => false;
+	protected virtual string Name => GetType().Name;
 
 	/// <summary>
 	/// Event triggered when the value changes.
@@ -81,7 +96,7 @@ public class SyncField<T> : ILinkable, IChangeable
 	/// <summary>
 	/// Begin hook processing (prevents reentrancy).
 	/// </summary>
-	private void BeginHook()
+	protected void BeginHook()
 	{
 		_isInHook = true;
 	}
@@ -89,7 +104,7 @@ public class SyncField<T> : ILinkable, IChangeable
 	/// <summary>
 	/// End hook processing.
 	/// </summary>
-	private void EndHook()
+	protected void EndHook()
 	{
 		_isInHook = false;
 	}
@@ -97,9 +112,9 @@ public class SyncField<T> : ILinkable, IChangeable
 	/// <summary>
 	/// Internal method to set value with change tracking.
 	/// </summary>
-	private void InternalSetValue(T value)
+	protected bool InternalSetValue(T value)
 	{
-		if (Equals(_value, value)) return;
+		if (Equals(_value, value)) return false;
 
 		var oldValue = _value;
 		_value = value;
@@ -119,11 +134,12 @@ public class SyncField<T> : ILinkable, IChangeable
 				component.NotifyChanged();
 			}
 
-		// Fire the IChangeable Changed event
-		Changed?.Invoke(this);
+			// Fire the IChangeable Changed event
+			Changed?.Invoke(this);
 
-		ValueChanged();
-	}
+			ValueChanged();
+		}
+		return true;
 	}
 
 	/// <summary>
@@ -135,6 +151,13 @@ public class SyncField<T> : ILinkable, IChangeable
 	/// Whether this field has been modified since last sync.
 	/// </summary>
 	public bool IsDirty { get; internal set; }
+
+	protected SyncField()
+	{
+		_owner = null;
+		_value = default;
+		IsDirty = false;
+	}
 
 	public SyncField(IWorldElement owner, T defaultValue = default)
 	{
@@ -368,7 +391,7 @@ public class SyncField<T> : ILinkable, IChangeable
 	/// <summary>
 	/// Legacy alias for numeric RefID.
 	/// </summary>
-	public ulong RefID => (ulong)ReferenceID;
+	public ulong RefIdNumeric => (ulong)ReferenceID;
 
 	/// <summary>
 	/// Whether this field has been destroyed.
@@ -388,6 +411,10 @@ public class SyncField<T> : ILinkable, IChangeable
 		// Sync fields cannot be destroyed directly
 		// They are destroyed when their owner is destroyed
 	}
+
+	public bool IsLocalElement => _owner?.IsLocalElement ?? false;
+	public bool IsPersistent => _owner?.IsPersistent ?? true;
+	public string ParentHierarchyToString() => _owner?.ParentHierarchyToString() ?? $"{Name}<{typeof(T).Name}>";
 }
 
 /// <summary>

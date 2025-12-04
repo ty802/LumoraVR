@@ -38,7 +38,7 @@ public class Slot : IImplementable<IHook<Slot>>, IWorldElement
 	/// </summary>
 	public RefID ReferenceID { get; private set; }
 
-	public ulong RefID => (ulong)ReferenceID;
+	public ulong RefIdNumeric => (ulong)ReferenceID;
 
 	public bool IsLocalElement => ReferenceID.IsLocalID;
 

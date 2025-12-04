@@ -34,7 +34,7 @@ public class User : ISyncObject, IWorldElement, IDisposable
     // ISyncObject implementation
     public List<ISyncMember> SyncMembers => _syncMembers;
     public RefID ReferenceID => _referenceID;
-    public ulong RefID => (ulong)_referenceID;
+    public ulong RefIdNumeric => (ulong)_referenceID;
     public bool IsAuthority => World?.IsAuthority ?? false;
 
     // IWorldElement implementation

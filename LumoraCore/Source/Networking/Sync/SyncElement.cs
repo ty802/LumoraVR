@@ -68,7 +68,7 @@ public abstract class SyncElement : IWorldElement, IDisposable
     /// <summary>
     /// Numeric alias for compatibility.
     /// </summary>
-    public ulong RefID => (ulong)ReferenceID;
+    public ulong RefIdNumeric => (ulong)ReferenceID;
 
     protected bool GetFlag(int flag) => (_flags & (1 << flag)) != 0;
 

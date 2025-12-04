@@ -20,7 +20,7 @@ public abstract class Component : IWorldElement, IUpdatable, IChangeable
 	/// </summary>
 	public RefID ReferenceID { get; private set; }
 
-	public ulong RefID => (ulong)ReferenceID;
+	public ulong RefIdNumeric => (ulong)ReferenceID;
 
 	/// <summary>
 	/// Whether this component belongs to the local-only allocation space.

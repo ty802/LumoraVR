@@ -7,15 +7,15 @@ namespace Lumora.Core.Input;
 /// </summary>
 public interface IInputUpdateReceiver
 {
-	/// <summary>
-	/// Called before the main input update cycle.
-	/// Use this to read tracking data and update slot transforms before other components read them.
-	/// </summary>
-	void BeforeInputUpdate();
+    /// <summary>
+    /// Called before the main input update cycle.
+    /// Use this to read tracking data and update slot transforms before other components read them.
+    /// </summary>
+    void BeforeInputUpdate();
 
-	/// <summary>
-	/// Called after the main input update cycle.
-	/// Use this for cleanup or post-processing of input data.
-	/// </summary>
-	void AfterInputUpdate();
+    /// <summary>
+    /// Called after the main input update cycle.
+    /// Use this for cleanup or post-processing of input data.
+    /// </summary>
+    void AfterInputUpdate();
 }

@@ -5,40 +5,40 @@ namespace Lumora.Core;
 /// </summary>
 public interface IHook
 {
-	/// <summary>
-	/// The component that owns this hook.
-	/// </summary>
-	IImplementable Owner { get; }
+    /// <summary>
+    /// The component that owns this hook.
+    /// </summary>
+    IImplementable Owner { get; }
 
-	/// <summary>
-	/// Assign an owner to this hook.
-	/// Called when the hook is created.
-	/// </summary>
-	void AssignOwner(IImplementable owner);
+    /// <summary>
+    /// Assign an owner to this hook.
+    /// Called when the hook is created.
+    /// </summary>
+    void AssignOwner(IImplementable owner);
 
-	/// <summary>
-	/// Remove the owner from this hook.
-	/// Called when the hook is destroyed.
-	/// </summary>
-	void RemoveOwner();
+    /// <summary>
+    /// Remove the owner from this hook.
+    /// Called when the hook is destroyed.
+    /// </summary>
+    void RemoveOwner();
 
-	/// <summary>
-	/// Initialize the hook.
-	/// Called after AssignOwner, when the component is starting up.
-	/// </summary>
-	void Initialize();
+    /// <summary>
+    /// Initialize the hook.
+    /// Called after AssignOwner, when the component is starting up.
+    /// </summary>
+    void Initialize();
 
-	/// <summary>
-	/// Apply changes from the owner component to the engine implementation.
-	/// Called every frame when the component has changes.
-	/// </summary>
-	void ApplyChanges();
+    /// <summary>
+    /// Apply changes from the owner component to the engine implementation.
+    /// Called every frame when the component has changes.
+    /// </summary>
+    void ApplyChanges();
 
-	/// <summary>
-	/// Destroy the hook and clean up engine resources.
-	/// </summary>
-	/// <param name="destroyingWorld">True if the entire world is being destroyed (skip cleanup in this case)</param>
-	void Destroy(bool destroyingWorld);
+    /// <summary>
+    /// Destroy the hook and clean up engine resources.
+    /// </summary>
+    /// <param name="destroyingWorld">True if the entire world is being destroyed (skip cleanup in this case)</param>
+    void Destroy(bool destroyingWorld);
 }
 
 /// <summary>
@@ -46,8 +46,8 @@ public interface IHook
 /// </summary>
 public interface IHook<T> : IHook where T : IImplementable
 {
-	/// <summary>
-	/// The typed component that owns this hook.
-	/// </summary>
-	new T Owner { get; }
+    /// <summary>
+    /// The typed component that owns this hook.
+    /// </summary>
+    new T Owner { get; }
 }

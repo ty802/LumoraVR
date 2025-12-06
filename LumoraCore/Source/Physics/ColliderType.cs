@@ -6,28 +6,28 @@ namespace Lumora.Core.Physics;
 /// </summary>
 public enum ColliderType
 {
-	/// <summary>
-	/// No collision - ignores all physics.
-	/// </summary>
-	NoCollision,
+    /// <summary>
+    /// No collision - ignores all physics.
+    /// </summary>
+    NoCollision,
 
-	/// <summary>
-	/// Static collider - doesn't move, provides collision for dynamic objects.
-	/// </summary>
-	Static,
+    /// <summary>
+    /// Static collider - doesn't move, provides collision for dynamic objects.
+    /// </summary>
+    Static,
 
-	/// <summary>
-	/// Trigger - detects overlaps but doesn't provide physical collision.
-	/// </summary>
-	Trigger,
+    /// <summary>
+    /// Trigger - detects overlaps but doesn't provide physical collision.
+    /// </summary>
+    Trigger,
 
-	/// <summary>
-	/// Active physics - full physics simulation with forces.
-	/// </summary>
-	Active,
+    /// <summary>
+    /// Active physics - full physics simulation with forces.
+    /// </summary>
+    Active,
 
-	/// <summary>
-	/// Character controller - specialized for character movement.
-	/// </summary>
-	CharacterController
+    /// <summary>
+    /// Character controller - specialized for character movement.
+    /// </summary>
+    CharacterController
 }

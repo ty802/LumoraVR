@@ -8,17 +8,17 @@ namespace Lumora.Core.Networking.Sync;
 /// </summary>
 public class ConfirmationMessage : BinaryMessageBatch
 {
-	public override MessageType MessageType => MessageType.Confirmation;
-	public override bool Reliable => true;
+    public override MessageType MessageType => MessageType.Confirmation;
+    public override bool Reliable => true;
 
-	/// <summary>
-	/// The sync tick being confirmed.
-	/// </summary>
-	public ulong ConfirmTime { get; set; }
+    /// <summary>
+    /// The sync tick being confirmed.
+    /// </summary>
+    public ulong ConfirmTime { get; set; }
 
-	public ConfirmationMessage(ulong confirmTime, ulong stateVersion, ulong syncTick, IConnection sender = null)
-		: base(stateVersion, syncTick, sender)
-	{
-		ConfirmTime = confirmTime;
-	}
+    public ConfirmationMessage(ulong confirmTime, ulong stateVersion, ulong syncTick, IConnection sender = null)
+        : base(stateVersion, syncTick, sender)
+    {
+        ConfirmTime = confirmTime;
+    }
 }

@@ -13,10 +13,10 @@ public delegate void AssetIntegrated();
 /// </summary>
 public interface ISharedMaterialHook : IAssetHook, ISharedMaterialPropertySetter
 {
-	/// <summary>
-	/// Initialize shader properties with their IDs.
-	/// </summary>
-	void InitializeProperties(List<MaterialProperty> properties, Action onDone);
+    /// <summary>
+    /// Initialize shader properties with their IDs.
+    /// </summary>
+    void InitializeProperties(List<MaterialProperty> properties, Action onDone);
 }
 
 /// <summary>
@@ -25,26 +25,26 @@ public interface ISharedMaterialHook : IAssetHook, ISharedMaterialPropertySetter
 /// </summary>
 public interface IMaterialHook : ISharedMaterialHook, IMaterialPropertySetter
 {
-	/// <summary>
-	/// Apply changes to the material with a specific shader.
-	/// Called when material properties or shader change.
-	/// </summary>
-	void ApplyChanges(Shader shader, AssetIntegrated onDone);
+    /// <summary>
+    /// Apply changes to the material with a specific shader.
+    /// Called when material properties or shader change.
+    /// </summary>
+    void ApplyChanges(Shader shader, AssetIntegrated onDone);
 
-	/// <summary>
-	/// Enable or disable GPU instancing for this material.
-	/// </summary>
-	void SetInstancing(bool enabled);
+    /// <summary>
+    /// Enable or disable GPU instancing for this material.
+    /// </summary>
+    void SetInstancing(bool enabled);
 
-	/// <summary>
-	/// Set the render queue for this material (controls render order).
-	/// </summary>
-	void SetRenderQueue(int renderQueue);
+    /// <summary>
+    /// Set the render queue for this material (controls render order).
+    /// </summary>
+    void SetRenderQueue(int renderQueue);
 
-	/// <summary>
-	/// Set a material tag (e.g., "RenderType" = "Opaque").
-	/// </summary>
-	void SetTag(MaterialTag tag, string value);
+    /// <summary>
+    /// Set a material tag (e.g., "RenderType" = "Opaque").
+    /// </summary>
+    void SetTag(MaterialTag tag, string value);
 }
 
 /// <summary>
@@ -53,10 +53,10 @@ public interface IMaterialHook : ISharedMaterialHook, IMaterialPropertySetter
 /// </summary>
 public interface IMaterialPropertyBlockHook : ISharedMaterialHook
 {
-	/// <summary>
-	/// Apply changes to the property block.
-	/// </summary>
-	void ApplyChanges(AssetIntegrated onDone);
+    /// <summary>
+    /// Apply changes to the property block.
+    /// </summary>
+    void ApplyChanges(AssetIntegrated onDone);
 }
 
 /// <summary>
@@ -64,11 +64,11 @@ public interface IMaterialPropertyBlockHook : ISharedMaterialHook
 /// </summary>
 public enum MaterialTag
 {
-	RenderType,
-	Queue,
-	IgnoreProjector,
-	ForceNoShadowCasting,
-	PreviewType
+    RenderType,
+    Queue,
+    IgnoreProjector,
+    ForceNoShadowCasting,
+    PreviewType
 }
 
 /// <summary>
@@ -76,6 +76,6 @@ public enum MaterialTag
 /// </summary>
 public class Shader
 {
-	// Will be defined in shader asset system
-	public string Name { get; set; }
+    // Will be defined in shader asset system
+    public string Name { get; set; }
 }

@@ -6,22 +6,22 @@ namespace Lumora.Core.Networking.Messages;
 /// </summary>
 public class DeltaValidationResult
 {
-	public bool IsValid { get; set; }
-	public string RejectionReason { get; set; }
-	public object CorrectedValue { get; set; }
+    public bool IsValid { get; set; }
+    public string RejectionReason { get; set; }
+    public object CorrectedValue { get; set; }
 
-	public static DeltaValidationResult Accept()
-	{
-		return new DeltaValidationResult { IsValid = true };
-	}
+    public static DeltaValidationResult Accept()
+    {
+        return new DeltaValidationResult { IsValid = true };
+    }
 
-	public static DeltaValidationResult Reject(string reason, object correctedValue = null)
-	{
-		return new DeltaValidationResult
-		{
-			IsValid = false,
-			RejectionReason = reason,
-			CorrectedValue = correctedValue
-		};
-	}
+    public static DeltaValidationResult Reject(string reason, object correctedValue = null)
+    {
+        return new DeltaValidationResult
+        {
+            IsValid = false,
+            RejectionReason = reason,
+            CorrectedValue = correctedValue
+        };
+    }
 }

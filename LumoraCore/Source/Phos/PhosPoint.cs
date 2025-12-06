@@ -6,9 +6,9 @@ namespace Lumora.Core.Phos;
 /// </summary>
 public struct PhosPoint
 {
-	private int index;
-	private int version;
-	// TODO: Add PhosPointSubmesh when implementing point clouds
+    private int index;
+    private int version;
+    // TODO: Add PhosPointSubmesh when implementing point clouds
 
-	public int Index => index;
+    public int Index => index;
 }

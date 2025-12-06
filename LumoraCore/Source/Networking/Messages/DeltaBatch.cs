@@ -8,11 +8,11 @@ namespace Lumora.Core.Networking.Sync;
 /// </summary>
 public class DeltaBatch : BinaryMessageBatch
 {
-	public override MessageType MessageType => MessageType.Delta;
-	public override bool Reliable => true;
+    public override MessageType MessageType => MessageType.Delta;
+    public override bool Reliable => true;
 
-	public DeltaBatch(ulong stateVersion, ulong syncTick, IConnection sender = null)
-		: base(stateVersion, syncTick, sender)
-	{
-	}
+    public DeltaBatch(ulong stateVersion, ulong syncTick, IConnection sender = null)
+        : base(stateVersion, syncTick, sender)
+    {
+    }
 }

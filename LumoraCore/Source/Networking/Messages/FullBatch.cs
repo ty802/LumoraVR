@@ -8,13 +8,13 @@ namespace Lumora.Core.Networking.Sync;
 /// </summary>
 public class FullBatch : BinaryMessageBatch
 {
-	public override MessageType MessageType => MessageType.Full;
-	public override bool Reliable => true;
-	public bool UseBackgroundQueue { get; set; }
-	public override bool Background => UseBackgroundQueue;
+    public override MessageType MessageType => MessageType.Full;
+    public override bool Reliable => true;
+    public bool UseBackgroundQueue { get; set; }
+    public override bool Background => UseBackgroundQueue;
 
-	public FullBatch(ulong stateVersion, ulong syncTick, IConnection sender = null)
-		: base(stateVersion, syncTick, sender)
-	{
-	}
+    public FullBatch(ulong stateVersion, ulong syncTick, IConnection sender = null)
+        : base(stateVersion, syncTick, sender)
+    {
+    }
 }

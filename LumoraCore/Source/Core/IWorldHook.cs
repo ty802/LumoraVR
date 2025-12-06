@@ -5,9 +5,9 @@ namespace Lumora.Core;
 /// </summary>
 public interface IWorldHook
 {
-	World Owner { get; }
+    World Owner { get; }
 
-	void Initialize(World owner);
-	void ChangeFocus(World.WorldFocus focus);
-	void Destroy();
+    void Initialize(World owner);
+    void ChangeFocus(World.WorldFocus focus);
+    void Destroy();
 }

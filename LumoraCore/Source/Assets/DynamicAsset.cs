@@ -9,11 +9,11 @@ namespace Lumora.Core.Assets;
 /// </summary>
 public abstract class DynamicAsset : Asset
 {
-	public override int ActiveRequestCount => 0; // Dynamic assets don't track requests
+    public override int ActiveRequestCount => 0; // Dynamic assets don't track requests
 
-	public override void Unload()
-	{
-		// Dynamic assets typically don't need explicit unloading
-		// Override in derived classes if cleanup is needed
-	}
+    public override void Unload()
+    {
+        // Dynamic assets typically don't need explicit unloading
+        // Override in derived classes if cleanup is needed
+    }
 }

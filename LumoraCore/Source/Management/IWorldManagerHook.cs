@@ -6,8 +6,8 @@ namespace Lumora.Core.Management;
 /// </summary>
 public interface IWorldManagerHook
 {
-	WorldManager Owner { get; }
+    WorldManager Owner { get; }
 
-	void Initialize(WorldManager owner, object sceneRoot);
-	void Destroy();
+    void Initialize(WorldManager owner, object sceneRoot);
+    void Destroy();
 }

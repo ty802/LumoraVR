@@ -7,31 +7,31 @@ namespace Lumora.Core.HelioUI;
 [ComponentCategory("HelioUI")]
 public abstract class HelioUIController : HelioUIComputeComponent
 {
-	/// <summary>
-	/// Whether this controller is currently active.
-	/// </summary>
-	public Sync<bool> Active { get; private set; }
+    /// <summary>
+    /// Whether this controller is currently active.
+    /// </summary>
+    public Sync<bool> Active { get; private set; }
 
-	public override void OnAwake()
-	{
-		base.OnAwake();
-		Active = new Sync<bool>(this, true);
-		Active.OnChanged += OnActiveChanged;
-	}
+    public override void OnAwake()
+    {
+        base.OnAwake();
+        Active = new Sync<bool>(this, true);
+        Active.OnChanged += OnActiveChanged;
+    }
 
-	/// <summary>
-	/// Called when the Active state changes.
-	/// </summary>
-	protected virtual void OnActiveChanged(bool newValue)
-	{
-		MarkComputeDirty();
-	}
+    /// <summary>
+    /// Called when the Active state changes.
+    /// </summary>
+    protected virtual void OnActiveChanged(bool newValue)
+    {
+        MarkComputeDirty();
+    }
 
-	/// <summary>
-	/// Check if this controller should process.
-	/// </summary>
-	protected bool ShouldProcess()
-	{
-		return Active?.Value ?? true && Enabled.Value;
-	}
+    /// <summary>
+    /// Check if this controller should process.
+    /// </summary>
+    protected bool ShouldProcess()
+    {
+        return Active?.Value ?? true && Enabled.Value;
+    }
 }

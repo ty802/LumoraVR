@@ -8,10 +8,10 @@ namespace Lumora.Core;
 [AttributeUsage(AttributeTargets.Class, AllowMultiple = false, Inherited = false)]
 public class ComponentCategoryAttribute : Attribute
 {
-	public string Category { get; }
+    public string Category { get; }
 
-	public ComponentCategoryAttribute(string category)
-	{
-		Category = category;
-	}
+    public ComponentCategoryAttribute(string category)
+    {
+        Category = category;
+    }
 }

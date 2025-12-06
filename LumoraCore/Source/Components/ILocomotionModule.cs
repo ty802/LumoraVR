@@ -8,18 +8,18 @@ namespace Lumora.Core.Components;
 /// </summary>
 public interface ILocomotionModule : IDisposable
 {
-	/// <summary>
-	/// Called when this module becomes active.
-	/// </summary>
-	void Activate(LocomotionController owner);
+    /// <summary>
+    /// Called when this module becomes active.
+    /// </summary>
+    void Activate(LocomotionController owner);
 
-	/// <summary>
-	/// Called when this module is deactivated.
-	/// </summary>
-	void Deactivate();
+    /// <summary>
+    /// Called when this module is deactivated.
+    /// </summary>
+    void Deactivate();
 
-	/// <summary>
-	/// Per-frame update.
-	/// </summary>
-	void Update(float delta);
+    /// <summary>
+    /// Per-frame update.
+    /// </summary>
+    void Update(float delta);
 }

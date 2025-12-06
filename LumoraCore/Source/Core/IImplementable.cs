@@ -5,20 +5,20 @@ namespace Lumora.Core;
 /// </summary>
 public interface IImplementable : IWorldElement
 {
-	/// <summary>
-	/// The hook that implements this component in the engine.
-	/// </summary>
-	IHook Hook { get; }
+    /// <summary>
+    /// The hook that implements this component in the engine.
+    /// </summary>
+    IHook Hook { get; }
 
-	/// <summary>
-	/// The world this component belongs to.
-	/// </summary>
-	World World { get; }
+    /// <summary>
+    /// The world this component belongs to.
+    /// </summary>
+    World World { get; }
 
-	/// <summary>
-	/// The slot this component is attached to.
-	/// </summary>
-	Slot Slot { get; }
+    /// <summary>
+    /// The slot this component is attached to.
+    /// </summary>
+    Slot Slot { get; }
 }
 
 /// <summary>
@@ -26,8 +26,8 @@ public interface IImplementable : IWorldElement
 /// </summary>
 public interface IImplementable<C> : IImplementable where C : class, IHook
 {
-	/// <summary>
-	/// The typed hook that implements this component.
-	/// </summary>
-	new C Hook { get; }
+    /// <summary>
+    /// The typed hook that implements this component.
+    /// </summary>
+    new C Hook { get; }
 }

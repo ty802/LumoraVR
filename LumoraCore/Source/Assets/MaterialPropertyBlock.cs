@@ -6,7 +6,7 @@ namespace Lumora.Core.Assets;
 /// </summary>
 public class MaterialPropertyBlock : SharedMaterialBase<IMaterialPropertyBlockHook>
 {
-	// MaterialPropertyBlock inherits all property-setting methods from SharedMaterialBase
-	// No additional functionality needed - it's a lighter-weight version of Material
-	// that doesn't support shader changes, render queue, or tags.
+    // MaterialPropertyBlock inherits all property-setting methods from SharedMaterialBase
+    // No additional functionality needed - it's a lighter-weight version of Material
+    // that doesn't support shader changes, render queue, or tags.
 }

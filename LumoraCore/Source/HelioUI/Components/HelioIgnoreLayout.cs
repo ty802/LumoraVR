@@ -8,27 +8,27 @@ namespace Lumora.Core.HelioUI;
 [ComponentCategory("HelioUI")]
 public class HelioIgnoreLayout : Component
 {
-	public override void OnAwake()
-	{
-		base.OnAwake();
+    public override void OnAwake()
+    {
+        base.OnAwake();
 
-		// Set the IgnoreLayout flag on the rect transform when this component is added
-		var rect = Slot.GetComponent<HelioRectTransform>();
-		if (rect != null)
-		{
-			rect.IgnoreLayout.Value = true;
-		}
-	}
+        // Set the IgnoreLayout flag on the rect transform when this component is added
+        var rect = Slot.GetComponent<HelioRectTransform>();
+        if (rect != null)
+        {
+            rect.IgnoreLayout.Value = true;
+        }
+    }
 
-	public override void OnStart()
-	{
-		base.OnStart();
+    public override void OnStart()
+    {
+        base.OnStart();
 
-		// Ensure the flag remains set
-		var rect = Slot.GetComponent<HelioRectTransform>();
-		if (rect != null)
-		{
-			rect.IgnoreLayout.Value = true;
-		}
-	}
+        // Ensure the flag remains set
+        var rect = Slot.GetComponent<HelioRectTransform>();
+        if (rect != null)
+        {
+            rect.IgnoreLayout.Value = true;
+        }
+    }
 }

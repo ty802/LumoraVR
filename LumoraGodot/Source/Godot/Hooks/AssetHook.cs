@@ -11,24 +11,24 @@ namespace Aquamarine.Godot.Hooks;
 /// </summary>
 public abstract class AssetHook : IAssetHook
 {
-	protected IAsset asset;
+    protected IAsset asset;
 
-	/// <summary>
-	/// The engine this asset belongs to (currently unused in Lumora).
-	/// </summary>
-	public object Engine => null; // TODO: Assets don't have World reference yet
+    /// <summary>
+    /// The engine this asset belongs to (currently unused in Lumora).
+    /// </summary>
+    public object Engine => null; // TODO: Assets don't have World reference yet
 
-	/// <summary>
-	/// Initialize the asset hook.
-	/// </summary>
-	public void Initialize(IAsset asset)
-	{
-		this.asset = asset;
-	}
+    /// <summary>
+    /// Initialize the asset hook.
+    /// </summary>
+    public void Initialize(IAsset asset)
+    {
+        this.asset = asset;
+    }
 
-	/// <summary>
-	/// Unload/dispose the asset hook and its Godot resources.
-	/// Override this to free Godot resources.
-	/// </summary>
-	public abstract void Unload();
+    /// <summary>
+    /// Unload/dispose the asset hook and its Godot resources.
+    /// Override this to free Godot resources.
+    /// </summary>
+    public abstract void Unload();
 }

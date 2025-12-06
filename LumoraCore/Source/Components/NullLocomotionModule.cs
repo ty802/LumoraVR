@@ -5,8 +5,8 @@ namespace Lumora.Core.Components;
 /// </summary>
 public class NullLocomotionModule : ILocomotionModule
 {
-	public void Activate(LocomotionController owner) { }
-	public void Deactivate() { }
-	public void Update(float delta) { }
-	public void Dispose() { }
+    public void Activate(LocomotionController owner) { }
+    public void Deactivate() { }
+    public void Update(float delta) { }
+    public void Dispose() { }
 }

@@ -8,15 +8,15 @@ namespace Lumora.Core.Assets;
 /// </summary>
 public interface IAssetHook
 {
-	/// <summary>
-	/// Initialize the hook with an asset instance.
-	/// </summary>
-	void Initialize(IAsset asset);
+    /// <summary>
+    /// Initialize the hook with an asset instance.
+    /// </summary>
+    void Initialize(IAsset asset);
 
-	/// <summary>
-	/// Unload/dispose the hook and its resources.
-	/// </summary>
-	void Unload();
+    /// <summary>
+    /// Unload/dispose the hook and its resources.
+    /// </summary>
+    void Unload();
 }
 
 /// <summary>
@@ -24,14 +24,14 @@ public interface IAssetHook
 /// </summary>
 public interface ISharedMaterialPropertySetter
 {
-	void SetFloat(int property, float value);
-	void SetFloat4(int property, in float4 value);
-	void SetFloatArray(int property, System.Collections.Generic.List<float> values);
-	void SetFloat4Array(int property, System.Collections.Generic.List<float4> values);
-	void SetMatrix(int property, in float4x4 matrix);
-	void SetTexture(int property, ITexture texture);
-	void SetST(int property, in float2 scale, in float2 offset);
-	void SetDebug(bool debug, string tag);
+    void SetFloat(int property, float value);
+    void SetFloat4(int property, in float4 value);
+    void SetFloatArray(int property, System.Collections.Generic.List<float> values);
+    void SetFloat4Array(int property, System.Collections.Generic.List<float4> values);
+    void SetMatrix(int property, in float4x4 matrix);
+    void SetTexture(int property, ITexture texture);
+    void SetST(int property, in float2 scale, in float2 offset);
+    void SetDebug(bool debug, string tag);
 }
 
 /// <summary>
@@ -39,7 +39,7 @@ public interface ISharedMaterialPropertySetter
 /// </summary>
 public interface IMaterialPropertySetter
 {
-	// Extended in derived interfaces as needed
+    // Extended in derived interfaces as needed
 }
 
 /// <summary>
@@ -47,5 +47,5 @@ public interface IMaterialPropertySetter
 /// </summary>
 public interface ITexture
 {
-	// Will be defined in texture asset system
+    // Will be defined in texture asset system
 }

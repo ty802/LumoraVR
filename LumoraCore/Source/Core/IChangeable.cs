@@ -8,9 +8,9 @@ namespace Lumora.Core;
 /// </summary>
 public interface IChangeable : IWorldElement
 {
-	/// <summary>
-	/// Event fired when this element changes.
-	/// Used for reactive updates and change propagation.
-	/// </summary>
-	event Action<IChangeable> Changed;
+    /// <summary>
+    /// Event fired when this element changes.
+    /// Used for reactive updates and change propagation.
+    /// </summary>
+    event Action<IChangeable> Changed;
 }

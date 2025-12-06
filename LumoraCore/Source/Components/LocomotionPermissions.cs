@@ -5,6 +5,6 @@ namespace Lumora.Core.Components;
 /// </summary>
 public class LocomotionPermissions
 {
-	public bool CanUseLocomotion(ILocomotionModule module) => true;
-	public bool CanUseAnyLocomotion() => true;
+    public bool CanUseLocomotion(ILocomotionModule module) => true;
+    public bool CanUseAnyLocomotion() => true;
 }

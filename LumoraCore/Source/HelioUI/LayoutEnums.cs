@@ -5,10 +5,10 @@ namespace Lumora.Core.HelioUI;
 /// </summary>
 public enum LayoutHorizontalAlignment
 {
-	Left,
-	Center,
-	Right,
-	Justify
+    Left,
+    Center,
+    Right,
+    Justify
 }
 
 /// <summary>
@@ -16,10 +16,10 @@ public enum LayoutHorizontalAlignment
 /// </summary>
 public enum LayoutVerticalAlignment
 {
-	Top,
-	Middle,
-	Bottom,
-	Justify
+    Top,
+    Middle,
+    Bottom,
+    Justify
 }
 
 /// <summary>
@@ -27,6 +27,6 @@ public enum LayoutVerticalAlignment
 /// </summary>
 public enum LayoutDirection
 {
-	Horizontal,
-	Vertical
+    Horizontal,
+    Vertical
 }

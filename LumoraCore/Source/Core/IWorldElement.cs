@@ -7,28 +7,28 @@ namespace Lumora.Core;
 /// </summary>
 public interface IWorldElement
 {
-	/// <summary>
-	/// The World this element belongs to.
-	/// </summary>
-	World World { get; }
+    /// <summary>
+    /// The World this element belongs to.
+    /// </summary>
+    World World { get; }
 
-	/// <summary>
-	/// Unique reference ID for this element within the world.
-	/// </summary>
-	ulong RefID { get; }
+    /// <summary>
+    /// Unique reference ID for this element within the world.
+    /// </summary>
+    ulong RefID { get; }
 
-	/// <summary>
-	/// Whether this element has been destroyed.
-	/// </summary>
-	bool IsDestroyed { get; }
+    /// <summary>
+    /// Whether this element has been destroyed.
+    /// </summary>
+    bool IsDestroyed { get; }
 
-	/// <summary>
-	/// Whether this element has been initialized.
-	/// </summary>
-	bool IsInitialized { get; }
+    /// <summary>
+    /// Whether this element has been initialized.
+    /// </summary>
+    bool IsInitialized { get; }
 
-	/// <summary>
-	/// Destroy this element and remove it from the world.
-	/// </summary>
-	void Destroy();
+    /// <summary>
+    /// Destroy this element and remove it from the world.
+    /// </summary>
+    void Destroy();
 }

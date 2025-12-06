@@ -10,34 +10,34 @@ namespace Lumora.Core.Components;
 [ComponentCategory("Users")]
 public class HeadOutput : ImplementableComponent
 {
-	public UserRoot UserRoot { get; private set; }
+    public UserRoot UserRoot { get; private set; }
 
-	public override void OnAwake()
-	{
-		base.OnAwake();
+    public override void OnAwake()
+    {
+        base.OnAwake();
 
-		UserRoot = Slot.GetComponent<UserRoot>();
-		if (UserRoot == null)
-		{
-			AquaLogger.Warn("HeadOutput: No UserRoot found!");
-			return;
-		}
+        UserRoot = Slot.GetComponent<UserRoot>();
+        if (UserRoot == null)
+        {
+            AquaLogger.Warn("HeadOutput: No UserRoot found!");
+            return;
+        }
 
-		AquaLogger.Log($"HeadOutput: Initialized for user '{UserRoot.ActiveUser.UserName.Value}'");
-	}
+        AquaLogger.Log($"HeadOutput: Initialized for user '{UserRoot.ActiveUser.UserName.Value}'");
+    }
 
-	public override void OnStart()
-	{
-		base.OnStart();
-		
-		// Hook will handle camera creation
-		AquaLogger.Log($"HeadOutput: OnStart called for slot '{Slot.SlotName.Value}'");
-	}
+    public override void OnStart()
+    {
+        base.OnStart();
 
-	public override void OnDestroy()
-	{
-		UserRoot = null;
-		base.OnDestroy();
-		AquaLogger.Log("HeadOutput: Destroyed");
-	}
+        // Hook will handle camera creation
+        AquaLogger.Log($"HeadOutput: OnStart called for slot '{Slot.SlotName.Value}'");
+    }
+
+    public override void OnDestroy()
+    {
+        UserRoot = null;
+        base.OnDestroy();
+        AquaLogger.Log("HeadOutput: Destroyed");
+    }
 }

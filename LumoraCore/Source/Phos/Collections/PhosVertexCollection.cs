@@ -8,7 +8,7 @@ namespace Lumora.Core.Phos.Collections;
 /// </summary>
 public class PhosVertexCollection : List<PhosVertex>
 {
-	public PhosVertexCollection() : base() { }
+    public PhosVertexCollection() : base() { }
 
-	public PhosVertexCollection(int capacity) : base(capacity) { }
+    public PhosVertexCollection(int capacity) : base(capacity) { }
 }

@@ -44,6 +44,12 @@ public static class BinaryExtensions
     }
 
     /// <summary>
+    /// Alias for Read7BitEncoded for compatibility.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ulong Read7BitEncodedUInt64(this BinaryReader reader) => Read7BitEncoded(reader);
+
+    /// <summary>
     /// Write a RefID using 7-bit encoding.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

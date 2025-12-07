@@ -70,18 +70,18 @@ public class Sync<T> : SyncElement, ISyncMember, IChangeable
         _lastSyncedValue = initialValue;
     }
 
-    public void Initialize(Component owner)
-    {
-        _owner = owner;
-        World = owner?.World;
-        RefID = owner?.RefID ?? 0; // Sync members share owner's RefID
+	public void Initialize(Component owner)
+	{
+		_owner = owner;
+		World = owner?.World;
+		ReferenceID = owner?.ReferenceID ?? RefID.Null; // Sync members share owner's RefID
 
-        // Check if local element
-        if (RefID != 0 && RefIDAllocator.IsLocalID(RefID))
-        {
-            MarkLocalElement();
-        }
-    }
+		// Check if local element
+		if (!ReferenceID.IsNull && ReferenceID.IsLocalID)
+		{
+			MarkLocalElement();
+		}
+	}
 
     private void OnValueChanged()
     {

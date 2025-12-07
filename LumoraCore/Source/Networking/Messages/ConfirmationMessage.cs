@@ -1,5 +1,7 @@
 using System.Collections.Generic;
 using System.IO;
+using Lumora.Core;
+using Lumora.Core.Networking;
 
 namespace Lumora.Core.Networking.Messages;
 
@@ -37,11 +39,11 @@ public class ConfirmationMessage
         writer.Write(ClientStateVersion);
         writer.Write(Records.Count);
 
-        foreach (var record in Records)
-        {
-            writer.Write(record.TargetID);
-            writer.Write(record.MemberIndex);
-            writer.Write(record.Accepted);
+		foreach (var record in Records)
+		{
+			writer.WriteRefID(record.TargetID);
+			writer.Write(record.MemberIndex);
+			writer.Write(record.Accepted);
 
             if (!record.Accepted)
             {
@@ -63,15 +65,15 @@ public class ConfirmationMessage
             ClientStateVersion = reader.ReadUInt64()
         };
 
-        int recordCount = reader.ReadInt32();
-        for (int i = 0; i < recordCount; i++)
-        {
-            var record = new ConfirmationRecord
-            {
-                TargetID = reader.ReadUInt64(),
-                MemberIndex = reader.ReadInt32(),
-                Accepted = reader.ReadBoolean()
-            };
+		int recordCount = reader.ReadInt32();
+		for (int i = 0; i < recordCount; i++)
+		{
+			var record = new ConfirmationRecord
+			{
+				TargetID = reader.ReadRefID(),
+				MemberIndex = reader.ReadInt32(),
+				Accepted = reader.ReadBoolean()
+			};
 
             if (!record.Accepted)
             {
@@ -90,12 +92,12 @@ public class ConfirmationMessage
 /// <summary>
 /// Single confirmation or correction for a sync member change.
 /// </summary>
-public class ConfirmationRecord
-{
-    /// <summary>
-    /// RefID of the element (User, Slot, Component) being confirmed.
-    /// </summary>
-    public ulong TargetID { get; set; }
+	public class ConfirmationRecord
+	{
+	/// <summary>
+	/// RefID of the element (User, Slot, Component) being confirmed.
+	/// </summary>
+	public RefID TargetID { get; set; }
 
     /// <summary>
     /// Index of the sync member within the element.

@@ -76,17 +76,17 @@ public class SyncController : IDisposable
                 if (element.IsDisposed)
                     continue;
 
-                try
-                {
-                    var writer = deltaBatch.BeginNewDataRecord(element.RefID);
-                    element.EncodeDelta(writer, deltaBatch);
-                    deltaBatch.FinishDataRecord(element.RefID);
-                }
-                catch (Exception ex)
-                {
-                    Logger.Error($"SyncController: Failed to encode delta for {element.RefID}: {ex.Message}");
-                }
-            }
+				try
+				{
+					var writer = deltaBatch.BeginNewDataRecord(element.ReferenceID);
+					element.EncodeDelta(writer, deltaBatch);
+					deltaBatch.FinishDataRecord(element.ReferenceID);
+				}
+				catch (Exception ex)
+				{
+					Logger.Error($"SyncController: Failed to encode delta for {element.ReferenceID}: {ex.Message}");
+				}
+			}
 
             _dirtySyncElements.Clear();
         }
@@ -136,37 +136,37 @@ public class SyncController : IDisposable
         {
             if (element.IsLocalElement)
             {
-                Logger.Warn($"SyncController: Cannot encode local element in full batch: {element.RefID}");
+                Logger.Warn($"SyncController: Cannot encode local element in full batch: {element.ReferenceID}");
                 continue;
             }
 
-            try
-            {
-                var writer = fullBatch.BeginNewDataRecord(element.RefID);
-                element.EncodeFull(writer, fullBatch);
-                fullBatch.FinishDataRecord(element.RefID);
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"SyncController: Failed to encode full for {element.RefID}: {ex.Message}");
-            }
-        }
+			try
+			{
+				var writer = fullBatch.BeginNewDataRecord(element.ReferenceID);
+				element.EncodeFull(writer, fullBatch);
+				fullBatch.FinishDataRecord(element.ReferenceID);
+			}
+			catch (Exception ex)
+			{
+				Logger.Error($"SyncController: Failed to encode full for {element.ReferenceID}: {ex.Message}");
+			}
+		}
 
         return fullBatch;
     }
 
-    /// <summary>
-    /// Encode full state for a single element into an existing batch.
-    /// Used for corrections.
-    /// </summary>
-    public void EncodeFull(ulong refID, BinaryMessageBatch batch)
-    {
-        var element = World.FindElement(refID) as SyncElement;
-        if (element == null)
-        {
-            Logger.Warn($"SyncController: Element not found for EncodeFull: {refID}");
-            return;
-        }
+	/// <summary>
+	/// Encode full state for a single element into an existing batch.
+	/// Used for corrections.
+	/// </summary>
+	public void EncodeFull(RefID refID, BinaryMessageBatch batch)
+	{
+		var element = World.FindElement(refID) as SyncElement;
+		if (element == null)
+		{
+			Logger.Warn($"SyncController: Element not found for EncodeFull: {refID}");
+			return;
+		}
 
         var writer = batch.BeginNewDataRecord(refID);
         element.EncodeFull(writer, batch);
@@ -261,17 +261,17 @@ public class SyncController : IDisposable
         }
     }
 
-    /// <summary>
-    /// Apply confirmations from authority.
-    /// </summary>
-    public void ApplyConfirmations(IEnumerable<ulong> ids, ulong confirmTime)
-    {
-        foreach (var id in ids)
-        {
-            var element = World.FindElement(id) as SyncElement;
-            element?.Confirm(confirmTime);
-        }
-    }
+	/// <summary>
+	/// Apply confirmations from authority.
+	/// </summary>
+	public void ApplyConfirmations(IEnumerable<RefID> ids, ulong confirmTime)
+	{
+		foreach (var id in ids)
+		{
+			var element = World.FindElement(id) as SyncElement;
+			element?.Confirm(confirmTime);
+		}
+	}
 
     // ===== STREAMS (high-frequency data) =====
 
@@ -300,10 +300,10 @@ public class SyncController : IDisposable
 
     // ===== HELPERS =====
 
-    private static int CompareSyncElements(SyncElement a, SyncElement b)
-    {
-        return a.RefID.CompareTo(b.RefID);
-    }
+	private static int CompareSyncElements(SyncElement a, SyncElement b)
+	{
+		return a.ReferenceID.CompareTo(b.ReferenceID);
+	}
 
     public void Dispose()
     {

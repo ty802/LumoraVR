@@ -12,11 +12,11 @@ public interface ISyncObject
     /// </summary>
     List<ISyncMember> SyncMembers { get; }
 
-    /// <summary>
-    /// Unique identifier for this sync object.
-    /// Used in network messages to target updates.
-    /// </summary>
-    ulong ReferenceID { get; }
+	/// <summary>
+	/// Strongly-typed identifier for this sync object.
+	/// Used in network messages to target updates.
+	/// </summary>
+	RefID ReferenceID { get; }
 
     /// <summary>
     /// Whether this object is owned/controlled by authority.

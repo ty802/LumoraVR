@@ -7,7 +7,7 @@ namespace Lumora.Core;
 /// Provides networked callbacks with change tracking.
 /// </summary>
 /// <typeparam name="T">The delegate type to synchronize.</typeparam>
-public class SyncDelegate<T> : IChangeable where T : Delegate
+public class SyncDelegate<T> : IChangeable, IWorldElement where T : Delegate
 {
     private IWorldElement _owner;
     private T _target;
@@ -113,20 +113,28 @@ public class SyncDelegate<T> : IChangeable where T : Delegate
     /// </summary>
     public World World => _owner?.World;
 
-    /// <summary>
-    /// Unique reference ID for this delegate within the world.
-    /// </summary>
-    public ulong RefID => _owner?.RefID ?? 0;
+	/// <summary>
+	/// Unique reference ID for this delegate within the world.
+	/// </summary>
+	public RefID ReferenceID => _owner?.ReferenceID ?? RefID.Null;
 
     /// <summary>
     /// Whether this delegate has been destroyed.
     /// </summary>
     public bool IsDestroyed => _owner?.IsDestroyed ?? false;
 
-    /// <summary>
-    /// Whether this delegate has been initialized.
-    /// </summary>
-    public bool IsInitialized => _owner?.IsInitialized ?? false;
+	/// <summary>
+	/// Whether this delegate has been initialized.
+	/// </summary>
+	public bool IsInitialized => _owner?.IsInitialized ?? false;
+
+	public ulong RefIdNumeric => (ulong)ReferenceID;
+
+	public bool IsLocalElement => _owner?.IsLocalElement ?? false;
+
+	public bool IsPersistent => _owner?.IsPersistent ?? true;
+
+	public string ParentHierarchyToString() => _owner?.ParentHierarchyToString() ?? $"{GetType().Name}";
 
     /// <summary>
     /// Destroy this delegate (cannot be destroyed directly, owner must be destroyed).

@@ -91,11 +91,11 @@ public class HelioModalOverlay : Component, IHelioInteractable
         OnOpened = new SyncDelegate<Action>(this);
         OnClosed = new SyncDelegate<Action>(this);
 
-        // React to state changes
-        IsOpen.OnChanged += OnIsOpenChanged;
-        OverlayColor.OnChanged += OnOverlayColorChanged;
-        ContentSlot.OnChanged += OnContentSlotChanged;
-    }
+		// React to state changes
+		IsOpen.OnChanged += OnIsOpenChanged;
+		OverlayColor.OnChanged += OnOverlayColorChanged;
+		ContentSlot.Changed += OnContentSlotChanged;
+	}
 
     public override void OnStart()
     {

@@ -10,8 +10,8 @@ namespace Lumora.Core;
 /// </summary>
 public class TrashBin
 {
-    private readonly Dictionary<ulong, TrashEntry> _trashedElements = new();
-    private readonly World _world;
+	private readonly Dictionary<RefID, TrashEntry> _trashedElements = new();
+	private readonly World _world;
 
     /// <summary>
     /// How long to keep items in trash before permanent deletion (in seconds).
@@ -31,30 +31,30 @@ public class TrashBin
         if (element == null || element.IsDestroyed)
             return;
 
-        var entry = new TrashEntry
-        {
-            Element = element,
-            TrashedTime = _world.TotalTime,
-            RefID = element.RefID
-        };
+		var entry = new TrashEntry
+		{
+			Element = element,
+			TrashedTime = _world.TotalTime,
+			RefID = element.ReferenceID
+		};
 
-        _trashedElements[element.RefID] = entry;
+		_trashedElements[element.ReferenceID] = entry;
 
-        // Mark as destroyed to prevent further use, but don't actually destroy yet
-        // This allows recovery if deletion is rejected
-        AquaLogger.Debug($"Moved element {element.RefID} to trash");
-    }
+		// Mark as destroyed to prevent further use, but don't actually destroy yet
+		// This allows recovery if deletion is rejected
+		AquaLogger.Debug($"Moved element {element.ReferenceID} to trash");
+	}
 
-    /// <summary>
-    /// Restore an element from trash (if deletion was rejected by authority).
-    /// </summary>
-    public bool RestoreFromTrash(ulong refID)
-    {
-        if (!_trashedElements.TryGetValue(refID, out var entry))
-        {
-            AquaLogger.Warn($"Cannot restore {refID} - not in trash");
-            return false;
-        }
+	/// <summary>
+	/// Restore an element from trash (if deletion was rejected by authority).
+	/// </summary>
+	public bool RestoreFromTrash(RefID refID)
+	{
+		if (!_trashedElements.TryGetValue(refID, out var entry))
+		{
+			AquaLogger.Warn($"Cannot restore {refID} - not in trash");
+			return false;
+		}
 
         _trashedElements.Remove(refID);
 
@@ -72,15 +72,15 @@ public class TrashBin
         return true;
     }
 
-    /// <summary>
-    /// Permanently delete an element from trash (authority confirmed deletion).
-    /// </summary>
-    public void PermanentlyDelete(ulong refID)
-    {
-        if (!_trashedElements.TryGetValue(refID, out var entry))
-        {
-            return; // Already deleted
-        }
+	/// <summary>
+	/// Permanently delete an element from trash (authority confirmed deletion).
+	/// </summary>
+	public void PermanentlyDelete(RefID refID)
+	{
+		if (!_trashedElements.TryGetValue(refID, out var entry))
+		{
+			return; // Already deleted
+		}
 
         _trashedElements.Remove(refID);
 
@@ -97,14 +97,14 @@ public class TrashBin
         AquaLogger.Debug($"Permanently deleted element {refID}");
     }
 
-    /// <summary>
-    /// Update the trash bin and clean up expired entries.
-    /// Call this periodically from World._Process.
-    /// </summary>
-    public void Update()
-    {
-        var currentTime = _world.TotalTime;
-        var toRemove = new List<ulong>();
+	/// <summary>
+	/// Update the trash bin and clean up expired entries.
+	/// Call this periodically from World._Process.
+	/// </summary>
+	public void Update()
+	{
+		var currentTime = _world.TotalTime;
+		var toRemove = new List<RefID>();
 
         foreach (var kvp in _trashedElements)
         {
@@ -126,13 +126,13 @@ public class TrashBin
         }
     }
 
-    /// <summary>
-    /// Check if an element is in trash.
-    /// </summary>
-    public bool IsInTrash(ulong refID)
-    {
-        return _trashedElements.ContainsKey(refID);
-    }
+	/// <summary>
+	/// Check if an element is in trash.
+	/// </summary>
+	public bool IsInTrash(RefID refID)
+	{
+		return _trashedElements.ContainsKey(refID);
+	}
 
     /// <summary>
     /// Clear all trash (emergency cleanup).
@@ -178,7 +178,7 @@ public class TrashBin
 /// </summary>
 internal class TrashEntry
 {
-    public IWorldElement Element { get; set; }
-    public ulong RefID { get; set; }
-    public double TrashedTime { get; set; }
+	public IWorldElement Element { get; set; }
+	public RefID RefID { get; set; }
+	public double TrashedTime { get; set; }
 }

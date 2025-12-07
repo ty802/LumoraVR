@@ -10,14 +10,29 @@ namespace Lumora.Core;
 /// Implements IChangeable for reactive change tracking.
 /// </summary>
 /// <typeparam name="T">The type of value to synchronize.</typeparam>
-public class Sync<T> : ILinkable, IChangeable
+public class SyncField<T> : ILinkable, IChangeable, IWorldElement
 {
-    private T _value;
-    private IWorldElement _owner;
-    private bool _isSyncing;
-    private bool _isInHook;
-    private ILinkRef _directLink;
-    private ILinkRef _inheritedLink;
+	private T _value;
+	private IWorldElement _owner;
+	private bool _isSyncing;
+	private bool _isInHook;
+	private ILinkRef _directLink;
+	private ILinkRef _inheritedLink;
+	protected int _flags;
+
+	protected bool GetFlag(int flag) => (_flags & (1 << flag)) != 0;
+	protected void SetFlag(int flag, bool value)
+	{
+		if (value)
+			_flags |= (1 << flag);
+		else
+			_flags &= ~(1 << flag);
+	}
+
+	protected bool IsWithinHookCallback => _isInHook;
+	protected virtual bool IsInInitPhase => false;
+	protected virtual bool IsLoading => false;
+	protected virtual string Name => GetType().Name;
 
     /// <summary>
     /// Event triggered when the value changes.
@@ -78,28 +93,28 @@ public class Sync<T> : ILinkable, IChangeable
         }
     }
 
-    /// <summary>
-    /// Begin hook processing (prevents reentrancy).
-    /// </summary>
-    private void BeginHook()
-    {
-        _isInHook = true;
-    }
+	/// <summary>
+	/// Begin hook processing (prevents reentrancy).
+	/// </summary>
+	protected void BeginHook()
+	{
+		_isInHook = true;
+	}
 
-    /// <summary>
-    /// End hook processing.
-    /// </summary>
-    private void EndHook()
-    {
-        _isInHook = false;
-    }
+	/// <summary>
+	/// End hook processing.
+	/// </summary>
+	protected void EndHook()
+	{
+		_isInHook = false;
+	}
 
-    /// <summary>
-    /// Internal method to set value with change tracking.
-    /// </summary>
-    private void InternalSetValue(T value)
-    {
-        if (Equals(_value, value)) return;
+	/// <summary>
+	/// Internal method to set value with change tracking.
+	/// </summary>
+	protected bool InternalSetValue(T value)
+	{
+		if (Equals(_value, value)) return false;
 
         var oldValue = _value;
         _value = value;
@@ -119,10 +134,13 @@ public class Sync<T> : ILinkable, IChangeable
                 component.NotifyChanged();
             }
 
-            // Fire the IChangeable Changed event
-            Changed?.Invoke(this);
-        }
-    }
+			// Fire the IChangeable Changed event
+			Changed?.Invoke(this);
+
+			ValueChanged();
+		}
+		return true;
+	}
 
     /// <summary>
     /// The world element that owns this Sync field.
@@ -134,12 +152,19 @@ public class Sync<T> : ILinkable, IChangeable
     /// </summary>
     public bool IsDirty { get; internal set; }
 
-    public Sync(IWorldElement owner, T defaultValue = default)
-    {
-        _owner = owner;
-        _value = defaultValue;
-        IsDirty = false;
-    }
+	protected SyncField()
+	{
+		_owner = null;
+		_value = default;
+		IsDirty = false;
+	}
+
+	public SyncField(IWorldElement owner, T defaultValue = default)
+	{
+		_owner = owner;
+		_value = defaultValue;
+		IsDirty = false;
+	}
 
     /// <summary>
     /// Set the value without triggering change events or network sync.
@@ -181,7 +206,7 @@ public class Sync<T> : ILinkable, IChangeable
         return wasChanged;
     }
 
-    public static implicit operator T(Sync<T> sync) => sync.Value;
+	public static implicit operator T(SyncField<T> sync) => sync.Value;
 
     public override string ToString() => _value?.ToString() ?? "null";
 
@@ -333,16 +358,23 @@ public class Sync<T> : ILinkable, IChangeable
         {
             _owner.World?.MarkElementDirty(_owner);
 
-            // Notify the parent component that this sync field changed
-            if (_owner is Component component)
-            {
-                component.NotifyChanged();
-            }
+			// Notify the parent component that this delegate changed
+			if (_owner is Component component)
+			{
+				component.NotifyChanged();
+			}
 
-            // Fire the IChangeable Changed event
-            Changed?.Invoke(this);
-        }
-    }
+			// Fire the IChangeable Changed event
+			Changed?.Invoke(this);
+		}
+
+		ValueChanged();
+	}
+
+	/// <summary>
+	/// Hook that derived classes can override when the value changes.
+	/// </summary>
+	protected virtual void ValueChanged() { }
 
     // IWorldElement implementation (forwarded to owner)
 
@@ -351,10 +383,15 @@ public class Sync<T> : ILinkable, IChangeable
     /// </summary>
     public World World => _owner?.World;
 
-    /// <summary>
-    /// Unique reference ID for this field within the world.
-    /// </summary>
-    public ulong RefID => _owner?.RefID ?? 0;
+	/// <summary>
+	/// Unique reference ID for this field within the world.
+	/// </summary>
+	public RefID ReferenceID => _owner?.ReferenceID ?? RefID.Null;
+
+	/// <summary>
+	/// Legacy alias for numeric RefID.
+	/// </summary>
+	public ulong RefIdNumeric => (ulong)ReferenceID;
 
     /// <summary>
     /// Whether this field has been destroyed.
@@ -366,14 +403,30 @@ public class Sync<T> : ILinkable, IChangeable
     /// </summary>
     public bool IsInitialized => _owner?.IsInitialized ?? false;
 
-    /// <summary>
-    /// Destroy this field (cannot be destroyed directly, owner must be destroyed).
-    /// </summary>
-    public void Destroy()
-    {
-        // Sync fields cannot be destroyed directly
-        // They are destroyed when their owner is destroyed
-    }
+	/// <summary>
+	/// Destroy this field (cannot be destroyed directly, owner must be destroyed).
+	/// </summary>
+	public void Destroy()
+	{
+		// Sync fields cannot be destroyed directly
+		// They are destroyed when their owner is destroyed
+	}
+
+	public bool IsLocalElement => _owner?.IsLocalElement ?? false;
+	public bool IsPersistent => _owner?.IsPersistent ?? true;
+	public string ParentHierarchyToString() => _owner?.ParentHierarchyToString() ?? $"{Name}<{typeof(T).Name}>";
+}
+
+/// <summary>
+/// Convenience wrapper preserving the original Sync&lt;T&gt; surface area.
+/// </summary>
+/// <typeparam name="T">Value type.</typeparam>
+public class Sync<T> : SyncField<T>
+{
+	public Sync(IWorldElement owner, T defaultValue = default)
+		: base(owner, defaultValue)
+	{
+	}
 }
 
 /// <summary>

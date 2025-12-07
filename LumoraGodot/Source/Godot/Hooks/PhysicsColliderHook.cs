@@ -22,29 +22,38 @@ namespace Aquamarine.Godot.Hooks
         public override void Initialize()
         {
             base.Initialize();
-
-            // Character controller colliders are handled by CharacterControllerHook
-            if (Owner.Type.Value == ColliderType.CharacterController)
-                return;
-
-            CreateBody();
-            BuildShape();
-            UpdateTransform();
+            // Don't create body here - Type.Value may not be set yet
+            // Body creation is deferred to ApplyChanges()
         }
 
         public override void ApplyChanges()
         {
+            // CharacterController colliders are handled by CharacterControllerHook
             if (Owner.Type.Value == ColliderType.CharacterController)
+            {
+                // If we already created a body (Type changed after init), destroy it
+                if (_bodyNode != null && GodotObject.IsInstanceValid(_bodyNode))
+                {
+                    DestroyBody(true);
+                }
                 return;
+            }
 
+            // Create body if needed (deferred from Initialize)
             if (_bodyNode == null || !GodotObject.IsInstanceValid(_bodyNode))
-                return;
+            {
+                AquaLogger.Log($"PhysicsColliderHook: Creating body for {Owner.GetType().Name} on '{Owner.Slot.SlotName.Value}'");
+                CreateBody();
+                BuildShape();
+                UpdateTransform();
+                // Don't return - continue to apply any pending changes
+            }
 
             // Recreate body if dynamic/static state changed
             bool shouldBeDynamic = Owner.Mass.Value > 0.0001f && Owner.Type.Value != ColliderType.Static;
             if (shouldBeDynamic != _isDynamic)
             {
-                DestroyBody(false);
+                DestroyBody(true);
                 CreateBody();
                 BuildShape();
             }
@@ -104,36 +113,48 @@ namespace Aquamarine.Godot.Hooks
             if (_collisionShape == null || !GodotObject.IsInstanceValid(_collisionShape))
                 return;
 
-            Shape3D newShape = _shape;
-
+            // Update existing shape in-place if possible, otherwise create new
             switch (Owner)
             {
                 case BoxCollider box:
-                    var boxShape = new BoxShape3D();
                     float3 size = box.Size.Value;
-                    boxShape.Size = new Vector3(size.x, size.y, size.z);
-                    newShape = boxShape;
+                    AquaLogger.Log($"PhysicsColliderHook.BuildShape: BoxCollider size={size} on '{Owner.Slot.SlotName.Value}'");
+                    if (_shape is BoxShape3D existingBox)
+                    {
+                        existingBox.Size = new Vector3(size.x, size.y, size.z);
+                    }
+                    else
+                    {
+                        _shape = new BoxShape3D { Size = new Vector3(size.x, size.y, size.z) };
+                        _collisionShape.Shape = _shape;
+                    }
                     break;
                 case CapsuleCollider capsule:
-                    var cap = new CapsuleShape3D();
-                    cap.Radius = capsule.Radius.Value;
-                    cap.Height = capsule.Height.Value;
-                    newShape = cap;
+                    if (_shape is CapsuleShape3D existingCap)
+                    {
+                        existingCap.Radius = capsule.Radius.Value;
+                        existingCap.Height = capsule.Height.Value;
+                    }
+                    else
+                    {
+                        _shape = new CapsuleShape3D { Radius = capsule.Radius.Value, Height = capsule.Height.Value };
+                        _collisionShape.Shape = _shape;
+                    }
                     break;
                 case SphereCollider sphere:
-                    var sph = new SphereShape3D();
-                    sph.Radius = sphere.Radius.Value;
-                    newShape = sph;
+                    if (_shape is SphereShape3D existingSph)
+                    {
+                        existingSph.Radius = sphere.Radius.Value;
+                    }
+                    else
+                    {
+                        _shape = new SphereShape3D { Radius = sphere.Radius.Value };
+                        _collisionShape.Shape = _shape;
+                    }
                     break;
                 default:
                     AquaLogger.Warn($"PhysicsColliderHook: Unknown collider type {Owner.GetType().Name}");
                     return;
-            }
-
-            if (_shape != newShape)
-            {
-                _shape = newShape;
-                _collisionShape.Shape = _shape;
             }
 
             // Apply offset
@@ -147,9 +168,24 @@ namespace Aquamarine.Godot.Hooks
                 return;
 
             var slotNode = slotHook?.GeneratedNode3D;
-            if (slotNode != null && slotNode.IsInsideTree())
+            if (slotNode != null)
             {
-                _bodyNode.GlobalTransform = slotNode.GlobalTransform;
+                // Only copy position and rotation - NOT scale
+                // Shape size is already set to correct dimensions, scaling would double-apply
+                if (slotNode.IsInsideTree())
+                {
+                    _bodyNode.GlobalPosition = slotNode.GlobalPosition;
+                    _bodyNode.GlobalRotation = slotNode.GlobalRotation;
+                }
+                else
+                {
+                    var globalPos = Owner.Slot.GlobalPosition;
+                    var globalRot = Owner.Slot.GlobalRotation;
+
+                    _bodyNode.Position = new Vector3(globalPos.x, globalPos.y, globalPos.z);
+                    _bodyNode.Quaternion = new Quaternion(globalRot.x, globalRot.y, globalRot.z, globalRot.w);
+                }
+                // Scale stays at (1,1,1) - shape size handles dimensions
             }
         }
 

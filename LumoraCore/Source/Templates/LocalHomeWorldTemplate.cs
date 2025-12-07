@@ -58,8 +58,9 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
         boxMesh.Size.Value = new float3(0.5f, 0.5f, 0.5f);
         boxMesh.UVScale.Value = new float3(1f, 1f, 1f);
 
-        // TODO: Platform-specific collider component
-        // var collider = cubeSlot.AttachComponent<BoxCollider>();
+        var collider = cubeSlot.AttachComponent<BoxCollider>();
+        collider.Type.Value = ColliderType.Static;
+        collider.Size.Value = boxMesh.Size.Value;
 
         Logger.Log($"WorldTemplates: Created test cube '{name}' at position {position}");
     }

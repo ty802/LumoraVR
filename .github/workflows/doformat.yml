@@ -1,0 +1,34 @@
+name: Run dotnet format and commit changes
+
+on:
+  workflow_dispatch:  # Triggered manually via GitHub UI
+
+jobs:
+  dotnet-format:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Set up .NET
+      uses: actions/setup-dotnet@v3
+      with:
+        dotnet-version: '6.0'  # Specify the version of .NET you're using
+
+    - name: Install dotnet format tool
+      run: |
+        dotnet tool install -g dotnet-format
+
+    - name: Run dotnet format
+      run: |
+        dotnet format --check # Runs in "check" mode to see if there are any format issues
+        dotnet format # To actually format the code
+
+    - name: Commit changes if any
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git add .
+        git commit -m "Run dotnet format and apply changes" || echo "No changes to commit"
+        git push

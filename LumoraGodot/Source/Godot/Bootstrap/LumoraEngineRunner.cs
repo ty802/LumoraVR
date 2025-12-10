@@ -70,6 +70,19 @@ public partial class LumoraEngineRunner : Node
         AquaLogger.Log("==========================================================");
         AquaLogger.Log("LumoraEngineRunner: Starting engine bootstrap...");
         AquaLogger.Log("==========================================================");
+#if DEBUG
+        AquaLogger.Log($"[DEBUG] The Pid is {System.Environment.ProcessId}");
+#if _Windows
+#else
+        string execname = "../LinuxDebuggerLauncher/bin/Release/net10.0/linux-x64/native/LinuxDebuggerLauncher";
+        System.IO.FileInfo file = new System.IO.FileInfo(execname);
+        if(file.Exists){
+            var procsargs = new System.Diagnostics.ProcessStartInfo(execname,new[] {System.Environment.ProcessId.ToString()});
+            System.Diagnostics.Process.Start(procsargs).Dispose();
+        }
+        System.Threading.Thread.Sleep(200);
+#endif
+#endif
 
         // Load and show loading screen
         InitializeLoadingScreen();

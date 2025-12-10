@@ -9,6 +9,9 @@
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(IsWindows)'=='true'">
+    <DefineConstants>_WINDOWS</DefineConstants>
+  </PropertyGroup>
 
   <PropertyGroup>
     <Description>LumoraCore - Platform-agnostic VR engine core library (no Godot dependencies)</Description>

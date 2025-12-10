@@ -96,7 +96,6 @@ public partial class AudioMixer : IAudioMixer
                 }
                 buses.Remove(name);
             }
-            Lumora.Core.Logging.Logger.Log("trying");
             int newBusId = AudioServer.BusCount;
             AudioServer.AddBus(newBusId);
             AudioServer.SetBusName(newBusId, name);

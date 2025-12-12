@@ -6,7 +6,6 @@ using Lumora.Core.Management;
 using Lumora.Core.Helpers;
 using Lumora.Core.Assets;
 using Lumora.Core.Coroutines;
-using Lumora.Core.Audio;
 using Lumora.Core.Physics;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
@@ -36,8 +35,8 @@ public class Engine : IDisposable
     public Input.InputInterface InputInterface { get; private set; }
     public AssetManager AssetManager { get; private set; }
     public GlobalCoroutineManager CoroutineManager { get; private set; }
-    public AudioSystem AudioSystem { get; private set; }
     public PhysicsManager PhysicsManager { get; private set; }
+    public RemoteAudioManager AudioManager { get; private set; }
 
     public static Engine Instance
     {
@@ -146,9 +145,12 @@ public class Engine : IDisposable
             AquaLogger.Log("  ✓ AssetManager initialized");
 
             // Initialize AudioSystem
-            AudioSystem = new AudioSystem();
-            await AudioSystem.InitializeAsync();
-            AquaLogger.Log("  ✓ AudioSystem initialized");
+            AudioManager = new();
+            foreach (string name in new string[] { "Music", "Effects", "Voice" })
+            {
+                if (AudioManager.Mixer.CreateAudioBus(name, out var bus) && AudioManager.Mixer.TryGetAudioBusByName("Master", out var master))
+                    bus.Target = master;
+            }
 
             // Phase 3: Physics and Networking
             AquaLogger.Log("Phase 3: Initializing Physics and Networking...");
@@ -316,7 +318,6 @@ public class Engine : IDisposable
         AssetManager?.Update((float)delta);
 
         // Stage 7: Audio Processing
-        AudioSystem?.Update((float)delta);
     }
 
     /// <summary>
@@ -367,8 +368,7 @@ public class Engine : IDisposable
         PhysicsManager?.Dispose();
         AquaLogger.Log("  ✓ PhysicsManager disposed");
 
-        AudioSystem?.Dispose();
-        AquaLogger.Log("  ✓ AudioSystem disposed");
+        //	AquaLogger.Log("  ✓ AudioSystem disposed");
 
         AssetManager?.Dispose();
         AquaLogger.Log("  ✓ AssetManager disposed");

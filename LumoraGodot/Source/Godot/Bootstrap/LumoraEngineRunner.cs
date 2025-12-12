@@ -336,6 +336,7 @@ public partial class LumoraEngineRunner : Node
 
         // Get InputInterface from Engine (it's already initialized in Engine.InitializeAsync)
         _inputInterface = _engine.InputInterface;
+        _engine.AudioManager.Initialize(AudioMixer.GetMixer());
 
         // Register input drivers
         RegisterInputDrivers();

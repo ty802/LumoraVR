@@ -261,9 +261,6 @@ public class EngineDebugWizard : HelioWizardForm
             case EngineDebugView.Assets:
                 RefreshAssetsView();
                 break;
-            case EngineDebugView.Audio:
-                RefreshAudioView();
-                break;
         }
     }
 
@@ -543,51 +540,6 @@ public class EngineDebugWizard : HelioWizardForm
         }
     }
 
-    private void RefreshAudioView()
-    {
-        if (_mainInfoText == null) return;
-
-        string info = "Audio System:\n\n";
-
-        var engine = Engine.Current;
-        if (engine != null)
-        {
-            var audioSystem = engine.AudioSystem;
-            if (audioSystem != null)
-            {
-                info += $"Status: Active\n\n";
-
-                info += $"Sources:\n";
-                info += $"  Active: {audioSystem.ActiveSourceCount}\n";
-                info += $"  Pooled: {audioSystem.PooledSourceCount}\n\n";
-
-                info += $"Volume Levels:\n";
-                info += $"  Master: {audioSystem.MasterVolume:P0}\n";
-                info += $"  Music: {audioSystem.MusicVolume:P0}\n";
-                info += $"  Effects: {audioSystem.EffectsVolume:P0}\n";
-                info += $"  Voice: {audioSystem.VoiceVolume:P0}";
-            }
-            else
-            {
-                info += "Audio System: Not Available";
-            }
-        }
-
-        _mainInfoText.Content.Value = info;
-
-        if (_detailsText != null)
-        {
-            string details = "Audio Statistics:\n";
-            details += "  CPU Usage: N/A\n";
-            details += "  Buffer Usage: N/A\n\n";
-
-            details += "Spatial Audio:\n";
-            details += "  HRTF: Enabled\n";
-            details += "  Reverb Zones: N/A";
-
-            _detailsText.Content.Value = details;
-        }
-    }
 
     // ===== ACTIONS =====
 

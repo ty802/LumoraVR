@@ -119,7 +119,7 @@ public class GodotUserInspector : GodotUIPanel, IWorldEventReceiver
     {
         return device switch
         {
-            HeadOutputDevice.Headless => "SERVER",
+            HeadOutputDevice.Headless => "Headless",
             HeadOutputDevice.Screen => "Desktop",
             HeadOutputDevice.VR => "VR",
             HeadOutputDevice.Camera => "Camera",

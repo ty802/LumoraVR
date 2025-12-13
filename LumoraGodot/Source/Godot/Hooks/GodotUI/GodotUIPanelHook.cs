@@ -1,7 +1,6 @@
 using Godot;
 using Lumora.Core;
 using Lumora.Core.GodotUI;
-using Lumora.Core.Interaction;
 using Lumora.Core.Math;
 using System.Collections.Generic;
 using AquaLogger = Lumora.Core.Logging.Logger;
@@ -28,26 +27,11 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
     private CollisionShape3D? _collisionShape;
     private BoxShape3D? _boxShape;
 
-    // Touch state
-    private bool _isTouching;
-    private Vector2 _lastTouchUV;
-
     // Registry of scene node paths to their Control instances
     private readonly Dictionary<string, Control> _nodeRegistry = new();
 
     // Static registry for hooks (so element hooks can find their nodes)
     private static readonly Dictionary<GodotUIPanel, GodotUIPanelHook> _panelHooks = new();
-
-    // Static registry for touchable colliders (instance ID -> ITouchable)
-    private static readonly Dictionary<ulong, ITouchable> _touchableColliders = new();
-
-    /// <summary>
-    /// Get the ITouchable for a given collider instance ID.
-    /// </summary>
-    public static ITouchable? GetTouchableForCollider(ulong instanceId)
-    {
-        return _touchableColliders.TryGetValue(instanceId, out var touchable) ? touchable : null;
-    }
 
     public static IHook<GodotUIPanel> Constructor()
     {
@@ -118,7 +102,6 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
         LoadScene();
 
         Owner.OnDataRefresh += RefreshUIData;
-        Owner.OnTouchEvent += HandleTouchEvent;
 
         AquaLogger.Log($"GodotUIPanelHook: Initialized for {Owner.GetType().Name}");
     }
@@ -331,9 +314,6 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
         _collisionArea.AddChild(_collisionShape);
         attachedNode.AddChild(_collisionArea);
 
-        // Register this collider for touch lookups
-        _touchableColliders[_collisionArea.GetInstanceId()] = Owner;
-
         AquaLogger.Log($"GodotUIPanelHook: Created collision area for touch interaction");
     }
 
@@ -346,103 +326,6 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
 
         // Box shape is same size as quad, but very thin
         _boxShape.Size = new Vector3(size.x / ppu, size.y / ppu, 0.01f);
-    }
-
-    /// <summary>
-    /// Handle touch events by simulating mouse input on the viewport.
-    /// </summary>
-    private void HandleTouchEvent(TouchEventInfo eventInfo)
-    {
-        if (_viewport == null || _meshInstance == null) return;
-
-        // Convert world hit point to local UV coordinates
-        var uv = WorldToUV(eventInfo.WorldPoint);
-        if (!uv.HasValue) return;
-
-        // Convert UV to viewport pixel coordinates
-        var resScale = Owner.ResolutionScale.Value;
-        var viewportSize = new Vector2(
-            Owner.Size.Value.x * resScale,
-            Owner.Size.Value.y * resScale);
-
-        var pixelPos = new Vector2(uv.Value.X * viewportSize.X, (1f - uv.Value.Y) * viewportSize.Y);
-
-        // Create input event based on touch type
-        if (eventInfo.Type == TouchType.Hover || eventInfo.Type == TouchType.Drag)
-        {
-            // Mouse motion for hover
-            var motionEvent = new InputEventMouseMotion();
-            motionEvent.Position = pixelPos;
-            motionEvent.GlobalPosition = pixelPos;
-            _viewport.PushInput(motionEvent);
-        }
-        else if (eventInfo.Type == TouchType.Press)
-        {
-            // Mouse motion first
-            var motionEvent = new InputEventMouseMotion();
-            motionEvent.Position = pixelPos;
-            motionEvent.GlobalPosition = pixelPos;
-            _viewport.PushInput(motionEvent);
-
-            // Then mouse button press
-            if (!_isTouching)
-            {
-                _isTouching = true;
-                var pressEvent = new InputEventMouseButton();
-                pressEvent.Position = pixelPos;
-                pressEvent.GlobalPosition = pixelPos;
-                pressEvent.ButtonIndex = MouseButton.Left;
-                pressEvent.Pressed = true;
-                _viewport.PushInput(pressEvent);
-            }
-        }
-        else if (eventInfo.Type == TouchType.Release)
-        {
-            // Release on touch release
-            if (_isTouching)
-            {
-                _isTouching = false;
-                var releaseEvent = new InputEventMouseButton();
-                releaseEvent.Position = pixelPos;
-                releaseEvent.GlobalPosition = pixelPos;
-                releaseEvent.ButtonIndex = MouseButton.Left;
-                releaseEvent.Pressed = false;
-                _viewport.PushInput(releaseEvent);
-            }
-        }
-
-        _lastTouchUV = new Vector2(uv.Value.X, uv.Value.Y);
-    }
-
-    /// <summary>
-    /// Convert world position to UV coordinates on the panel (0-1 range).
-    /// </summary>
-    private Vector2? WorldToUV(float3 worldPoint)
-    {
-        if (_meshInstance == null) return null;
-
-        // Get panel transform
-        var panelTransform = _meshInstance.GlobalTransform;
-        var panelInverse = panelTransform.AffineInverse();
-
-        // Convert world point to local space
-        var worldPos = new Vector3(worldPoint.x, worldPoint.y, worldPoint.z);
-        var localPos = panelInverse * worldPos;
-
-        // Get panel size
-        var size = Owner.Size.Value;
-        var ppu = Owner.PixelsPerUnit.Value;
-        var panelWidth = size.x / ppu;
-        var panelHeight = size.y / ppu;
-
-        // Convert local position to UV (assuming quad is centered)
-        var u = (localPos.X / panelWidth) + 0.5f;
-        var v = (localPos.Y / panelHeight) + 0.5f;
-
-        // Clamp to valid range
-        if (u < 0 || u > 1 || v < 0 || v > 1) return null;
-
-        return new Vector2(u, v);
     }
 
     public override void ApplyChanges()
@@ -474,13 +357,6 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
     {
         _panelHooks.Remove(Owner);
         Owner.OnDataRefresh -= RefreshUIData;
-        Owner.OnTouchEvent -= HandleTouchEvent;
-
-        // Unregister from touchable registry
-        if (_collisionArea != null)
-        {
-            _touchableColliders.Remove(_collisionArea.GetInstanceId());
-        }
 
         if (!destroyingWorld)
         {

@@ -12,6 +12,9 @@
   <ItemGroup>
     <ProjectReference Include="..\LumoraCore\LumoraCore.csproj" />
   </ItemGroup>
+  <PropertyGroup Condition="'$(IsWindows)'=='true'">
+    <DefineConstants>_WINDOWS</DefineConstants>
+  </PropertyGroup>
 
   <!-- Copy LumoraCore.dll to addons folder after build -->
   <Target Name="CopyLumoraCoreToAddons" AfterTargets="Build">

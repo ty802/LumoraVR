@@ -1,6 +1,7 @@
-[gd_scene load_steps=16 format=3 uid="uid://cjh7lam2pn4lf"]
+[gd_scene load_steps=17 format=3 uid="uid://cjh7lam2pn4lf"]
 
-[ext_resource type="FontFile" uid="uid://bc0fpvfqcqrld" path="res://assets/fonts/FiraCode-SemiBold.ttf" id="1_font"]
+[ext_resource type="FontFile" uid="uid://bc0fpvfqcqrld" path="res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf" id="1_font"]
+[ext_resource type="Script" path="res://Scripts/UI/Dashboard/HomeDash.cs" id="2_script"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_background"]
 bg_color = Color(0.05, 0.04, 0.1, 0.98)
@@ -148,6 +149,7 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+script = ExtResource("2_script")
 
 [node name="Background" type="Panel" parent="."]
 layout_mode = 1

@@ -1,5 +1,6 @@
 using Godot;
 using System;
+using System.Collections.Generic;
 
 namespace Lumora.Godot.UI;
 
@@ -9,6 +10,9 @@ namespace Lumora.Godot.UI;
 /// </summary>
 public partial class HomeDash : Control
 {
+    // Scene paths for content pages
+    private const string WorldBrowserScenePath = "res://Scenes/UI/Dashboard/WorldBrowser.tscn";
+
     // Navigation buttons
     private Button? _btnHome;
     private Button? _btnWorlds;
@@ -22,6 +26,15 @@ public partial class HomeDash : Control
     private Panel? _joinWorldCard;
     private Panel? _createWorldCard;
     private Panel? _avatarsCard;
+
+    // Content containers
+    private Panel? _mainContentPanel;
+    private MarginContainer? _contentMargin;
+    private VBoxContainer? _homeContent;
+
+    // Loaded content pages
+    private readonly Dictionary<string, Control> _contentPages = new();
+    private Control? _currentContentPage;
 
     // UI elements
     private Label? _usernameLabel;
@@ -47,6 +60,11 @@ public partial class HomeDash : Control
         _btnInventory = GetNodeOrNull<Button>("MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons/BtnInventory");
         _btnSettings = GetNodeOrNull<Button>("MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons/BtnSettings");
         _btnExit = GetNodeOrNull<Button>("MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons/BtnExit");
+
+        // Get content containers
+        _mainContentPanel = GetNodeOrNull<Panel>("MainContainer/VBox/ContentArea/MainContent");
+        _contentMargin = GetNodeOrNull<MarginContainer>("MainContainer/VBox/ContentArea/MainContent/ContentMargin");
+        _homeContent = GetNodeOrNull<VBoxContainer>("MainContainer/VBox/ContentArea/MainContent/ContentMargin/ContentVBox");
 
         // Get quick action cards
         _joinWorldCard = GetNodeOrNull<Panel>("MainContainer/VBox/ContentArea/MainContent/ContentMargin/ContentVBox/QuickActions/JoinWorld");
@@ -103,25 +121,120 @@ public partial class HomeDash : Control
 
         _currentTab = tab;
         UpdateActiveButton();
+        SwitchContent(tab);
 
         GD.Print($"HomeDash: Navigated to {tab}");
+    }
 
-        // TODO: Switch content panels based on tab
-        // For now just log the navigation
+    private void SwitchContent(string tab)
+    {
+        // Hide current content
+        if (_currentContentPage != null)
+        {
+            _currentContentPage.Visible = false;
+        }
+        if (_homeContent != null)
+        {
+            _homeContent.Visible = tab == "Home";
+        }
+
+        // Show or load the requested content
+        if (tab == "Home")
+        {
+            _currentContentPage = null;
+            return;
+        }
+
+        // Check if page already loaded
+        if (_contentPages.TryGetValue(tab, out var existingPage))
+        {
+            existingPage.Visible = true;
+            _currentContentPage = existingPage;
+            return;
+        }
+
+        // Load the content page
+        var page = LoadContentPage(tab);
+        if (page != null)
+        {
+            _contentPages[tab] = page;
+            _currentContentPage = page;
+        }
+    }
+
+    private Control? LoadContentPage(string tab)
+    {
+        string? scenePath = tab switch
+        {
+            "Worlds" => WorldBrowserScenePath,
+            // Add more pages here as they're created
+            // "Friends" => FriendsScenePath,
+            // "Inventory" => InventoryScenePath,
+            _ => null
+        };
+
+        if (scenePath == null)
+        {
+            GD.Print($"HomeDash: No content page for tab '{tab}' yet");
+            return null;
+        }
+
+        var packedScene = GD.Load<PackedScene>(scenePath);
+        if (packedScene == null)
+        {
+            GD.PrintErr($"HomeDash: Failed to load scene '{scenePath}'");
+            return null;
+        }
+
+        var page = packedScene.Instantiate<Control>();
+        if (page == null)
+        {
+            GD.PrintErr($"HomeDash: Failed to instantiate scene '{scenePath}'");
+            return null;
+        }
+
+        // Add to content area
+        if (_contentMargin != null)
+        {
+            _contentMargin.AddChild(page);
+
+            // Make it fill the container
+            page.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+            page.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            page.SizeFlagsVertical = SizeFlags.ExpandFill;
+        }
+
+        GD.Print($"HomeDash: Loaded content page '{tab}'");
+        return page;
     }
 
     private void UpdateActiveButton()
     {
-        // Reset all buttons to normal style, set active button to pressed style
+        // Update button visual states based on current tab
         Button?[] buttons = { _btnHome, _btnWorlds, _btnFriends, _btnGroups, _btnInventory, _btnSettings };
         string[] tabs = { "Home", "Worlds", "Friends", "Groups", "Inventory", "Settings" };
+
+        // Get style references from _btnHome (which has the pressed style as default)
+        var pressedStyle = _btnHome?.GetThemeStylebox("normal");
+        var normalStyle = _btnWorlds?.GetThemeStylebox("normal");
 
         for (int i = 0; i < buttons.Length; i++)
         {
             if (buttons[i] == null) continue;
 
-            // We'll handle visual feedback via button state
-            // The pressed style is applied when button toggles
+            bool isActive = tabs[i] == _currentTab;
+
+            // Swap the normal style to show active state
+            if (isActive && pressedStyle != null)
+            {
+                buttons[i]!.AddThemeStyleboxOverride("normal", pressedStyle);
+                buttons[i]!.Modulate = new Color(1, 1, 1, 1);
+            }
+            else if (normalStyle != null)
+            {
+                buttons[i]!.AddThemeStyleboxOverride("normal", normalStyle);
+                buttons[i]!.Modulate = new Color(0.85f, 0.85f, 0.85f, 1);
+            }
         }
     }
 

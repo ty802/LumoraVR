@@ -1,7 +1,7 @@
 [gd_scene load_steps=6 format=3 uid="uid://dkecltk08mu85"]
 
 [ext_resource type="FontFile" uid="uid://bc0fpvfqcqrld" path="res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf" id="1_font"]
-[ext_resource type="Script" path="res://Scripts/UI/ImportDialog.cs" id="2_script"]
+[ext_resource type="Script" path="res://Scripts/UI/Dialogs/ImportDialog.cs" id="2_script"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_background"]
 bg_color = Color(0.08, 0.07, 0.12, 0.95)

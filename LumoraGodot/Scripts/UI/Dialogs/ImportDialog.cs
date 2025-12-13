@@ -21,7 +21,7 @@ public partial class ImportDialog : Control
         (ImportType.RawFile, "Raw File")
     };
 
-    private const string OptionButtonScenePath = "res://Scenes/UI/ImportOptionButton.tscn";
+    private const string OptionButtonScenePath = "res://Scenes/UI/Components/ImportOptionButton.tscn";
 
     private Button? _btnClose;
     private Button? _btnInfo;

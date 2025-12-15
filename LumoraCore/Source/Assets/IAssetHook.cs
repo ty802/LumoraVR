@@ -19,9 +19,49 @@ public interface IAssetHook
 }
 
 /// <summary>
-/// Placeholder texture interface (will be implemented in texture system).
+/// Hook interface for texture assets.
 /// </summary>
-public interface ITexture
+public interface ITextureAssetHook : IAssetHook
 {
-    // Will be defined in texture asset system
+    /// <summary>
+    /// Upload texture data to the renderer.
+    /// </summary>
+    void UploadData(byte[] pixels, int width, int height, bool hasMipmaps);
+
+    /// <summary>
+    /// Update texture wrap modes.
+    /// </summary>
+    void SetWrapMode(TextureWrapMode wrapU, TextureWrapMode wrapV);
+
+    /// <summary>
+    /// Whether the texture is valid and can be used.
+    /// </summary>
+    bool IsValid { get; }
+}
+
+/// <summary>
+/// Hook interface for mesh data assets.
+/// </summary>
+public interface IMeshAssetHook : IAssetHook
+{
+    /// <summary>
+    /// Upload mesh data to the renderer.
+    /// </summary>
+    void UploadMesh(Phos.PhosMesh mesh);
+
+    /// <summary>
+    /// Whether the mesh is valid and can be used.
+    /// </summary>
+    bool IsValid { get; }
+}
+
+/// <summary>
+/// Texture wrap modes for sampling.
+/// </summary>
+public enum TextureWrapMode
+{
+    Repeat,
+    Clamp,
+    Mirror,
+    ClampToBorder
 }

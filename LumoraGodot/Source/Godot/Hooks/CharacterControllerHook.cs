@@ -21,6 +21,9 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
     private bool _jumpRequested;
     private XROrigin3D _xrOrigin;
     private bool _isLocalUser;
+    private bool _isCrouching;
+    private float _currentHeight;
+    private float _targetHeight;
 
     public CharacterBody3D GodotCharacterBody => _characterBody;
 
@@ -42,6 +45,11 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
         _characterBody.FloorStopOnSlope = true;
         _characterBody.FloorMaxAngle = Mathf.DegToRad(45f);
         _characterBody.WallMinSlideAngle = Mathf.DegToRad(15f);
+
+        // Initialize crouch state
+        _currentHeight = Owner.StandingHeight;
+        _targetHeight = Owner.StandingHeight;
+        _isCrouching = false;
 
         // Check if this is the local user
         var userRoot = Owner.Slot.GetComponent<UserRoot>();
@@ -108,10 +116,23 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
             _velocity.Y -= 9.81f * delta * 2.0f; // 2x gravity for snappier feel
         }
 
-        // Apply movement
+        // Smoothly transition crouch height
+        if (Mathf.Abs(_currentHeight - _targetHeight) > 0.01f)
+        {
+            _currentHeight = Mathf.MoveToward(_currentHeight, _targetHeight, Owner.CrouchTransitionSpeed * delta);
+            UpdateColliderHeights();
+        }
+
+        // Apply movement (use crouch speed when crouching)
         if (_moveDirection.LengthSquared() > 0.001f)
         {
-            float speed = _characterBody.IsOnFloor() ? Owner.Speed : Owner.AirSpeed;
+            float speed;
+            if (!_characterBody.IsOnFloor())
+                speed = Owner.AirSpeed;
+            else if (_isCrouching)
+                speed = Owner.CrouchSpeed;
+            else
+                speed = Owner.Speed;
             _velocity.X = _moveDirection.X * speed;
             _velocity.Z = _moveDirection.Z * speed;
         }
@@ -197,6 +218,40 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
     public bool IsOnFloor()
     {
         return _characterBody != null && _characterBody.IsOnFloor();
+    }
+
+    /// <summary>
+    /// Set the crouching state. Updates target height for smooth transition.
+    /// </summary>
+    public void SetCrouching(bool crouching)
+    {
+        if (_isCrouching == crouching)
+            return;
+
+        _isCrouching = crouching;
+        _targetHeight = crouching ? Owner.CrouchHeight : Owner.StandingHeight;
+        AquaLogger.Log($"CharacterControllerHook: Crouch={crouching}, TargetHeight={_targetHeight}");
+    }
+
+    /// <summary>
+    /// Update all collider shapes to match current height.
+    /// </summary>
+    private void UpdateColliderHeights()
+    {
+        foreach (var kvp in _collisionShapes)
+        {
+            var collider = kvp.Key;
+            var shape = kvp.Value;
+            if (shape.Shape is CapsuleShape3D capsule && collider is CapsuleCollider capCollider)
+            {
+                // Just update the capsule height - physics will keep us grounded
+                capsule.Height = _currentHeight;
+
+                // Keep original offset from collider component
+                var offset = capCollider.Offset.Value;
+                shape.Position = new Vector3(offset.x, offset.y, offset.z);
+            }
+        }
     }
 
     public void AddColliderShape(object collider)

@@ -11,6 +11,7 @@ using Aquamarine.Source.Godot.Input.Drivers;
 using Aquamarine.Godot.Hooks;
 using Aquamarine.Source.Godot.UI;
 using Aquamarine.Source.Input;
+using Lumora.Godot.Input;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
 namespace Aquamarine.Source.Godot.Bootstrap;
@@ -38,6 +39,8 @@ public partial class LumoraEngineRunner : Node
     private GodotMouseDriver _mouseDriver;
     private GodotKeyboardDriver _keyboardDriver;
     private GodotVRDriver _vrDriver;
+    private ClipboardImporter _clipboardImporter;
+    private LocalDB _localDB;
 
     // ===== STATE =====
     private bool _engineInitialized = false;
@@ -369,6 +372,38 @@ public partial class LumoraEngineRunner : Node
 
         // Find XR nodes in scene tree for proper Godot 4.x VR tracking
         _vrDriver.FindXRNodes(GetTree().Root);
+
+        // Create desktop input provider if not in VR mode
+        // This provides the center-screen cursor and hand simulation for desktop
+        bool isVRActive = XRServer.PrimaryInterface != null && GetViewport().UseXR;
+        if (!isVRActive)
+        {
+            var desktopInput = new DesktopInput();
+            desktopInput.Name = "DesktopInput";
+            AddChild(desktopInput);
+            desktopInput.SetCamera(_mainCamera);
+            AquaLogger.Log("DesktopInput: Created for non-VR mode");
+        }
+
+        // Initialize LocalDB for asset storage
+        _localDB = new LocalDB();
+        _ = _localDB.InitializeAsync();
+
+        // Create clipboard importer for Ctrl+V paste handling
+        _clipboardImporter = new ClipboardImporter();
+        _clipboardImporter.Name = "ClipboardImporter";
+        AddChild(_clipboardImporter);
+        _clipboardImporter.Initialize(_localDB, null, _mainCamera);
+        _clipboardImporter.OnAssetImported += OnClipboardAssetImported;
+        AquaLogger.Log("ClipboardImporter: Created for paste handling");
+    }
+
+    /// <summary>
+    /// Called when an asset is imported from clipboard.
+    /// </summary>
+    private void OnClipboardAssetImported(string filePath, Lumora.Core.Slot slot)
+    {
+        AquaLogger.Log($"ClipboardImporter: Asset imported from '{filePath}' to slot '{slot?.SlotName.Value}'");
     }
 
     /// <summary>
@@ -422,6 +457,17 @@ public partial class LumoraEngineRunner : Node
         _loadingScreen?.UpdatePhase(6); // Phase index 6 = Ready
 
         _engineInitialized = true;
+
+        // Set up clipboard importer with engine reference for dynamic slot lookup
+        if (_clipboardImporter != null)
+        {
+            _clipboardImporter.SetEngine(_engine);
+            if (_engine?.WorldManager?.FocusedWorld != null)
+            {
+                _clipboardImporter.SetTargetSlot(_engine.WorldManager.FocusedWorld.RootSlot);
+            }
+            AquaLogger.Log("ClipboardImporter: Configured with engine reference");
+        }
 
         // DEBUG: Print scene tree
         await Task.Delay(500); // Wait for everything to settle
@@ -510,57 +556,36 @@ public partial class LumoraEngineRunner : Node
 
 
     /// <summary>
-    /// Register all Godot-specific hooks.
+    /// Register all Godot-specific hooks - Unity Neos style with fewer, broader connectors.
     /// Called before engine initialization.
     /// </summary>
     private void RegisterHooks()
     {
         AquaLogger.Log("Registering Godot hooks...");
 
-        // Register slot hook (MUST be registered first!)
+        // Core slot hook (MUST be registered first!)
         Lumora.Core.World.HookTypes.Register<Lumora.Core.Slot, Aquamarine.Godot.Hooks.SlotHook>();
 
-        // Register mesh hooks (use fully qualified names to avoid ambiguity with Godot types)
+        // MESH HOOK - handles mesh generation
         Lumora.Core.World.HookTypes.Register<ProceduralMesh, Aquamarine.Godot.Hooks.MeshHook>();
         Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.Meshes.BoxMesh, Aquamarine.Godot.Hooks.MeshHook>();
         Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.Meshes.QuadMesh, Aquamarine.Godot.Hooks.MeshHook>();
 
-        // Register MeshRenderer hook for avatar visibility
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.MeshRenderer, Aquamarine.Godot.Hooks.MeshRendererHook>();
-
-        // Register SkeletonBuilder and SkinnedMeshRenderer hooks for skeletal animation
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.SkeletonBuilder, Aquamarine.Godot.Hooks.SkeletonHook>();
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.SkinnedMeshRenderer, Aquamarine.Godot.Hooks.SkinnedMeshHook>();
-
-        // Register HeadOutput hook for camera management
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.HeadOutput, Aquamarine.Godot.Hooks.HeadOutputHook>();
-
-        // Register physics hooks
+        // PHYSICS COLLIDER HOOKS
         Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.BoxCollider, Aquamarine.Godot.Hooks.PhysicsColliderHook>();
         Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.CapsuleCollider, Aquamarine.Godot.Hooks.PhysicsColliderHook>();
         Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.SphereCollider, Aquamarine.Godot.Hooks.PhysicsColliderHook>();
+
+        // SPECIALIZED HOOKS
+        Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.SkeletonBuilder, Aquamarine.Godot.Hooks.SkeletonHook>();
+        Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.HeadOutput, Aquamarine.Godot.Hooks.HeadOutputHook>();
         Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.CharacterController, Aquamarine.Godot.Hooks.CharacterControllerHook>();
 
-        // Register GodotUI hooks (native Godot UI rendered to 3D)
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.GodotUI.GodotUICanvas, Aquamarine.Godot.Hooks.GodotUI.GodotUICanvasHook>();
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.GodotUI.GodotPanel, Aquamarine.Godot.Hooks.GodotUI.GodotPanelHook>();
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.GodotUI.GodotLabel, Aquamarine.Godot.Hooks.GodotUI.GodotLabelHook>();
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.GodotUI.GodotButton, Aquamarine.Godot.Hooks.GodotUI.GodotButtonHook>();
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.GodotUI.GodotScrollContainer, Aquamarine.Godot.Hooks.GodotUI.GodotScrollContainerHook>();
-
-        // Register GodotUI scene loading hooks
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.GodotUI.GodotSceneCanvas, Aquamarine.Godot.Hooks.GodotUI.GodotSceneCanvasHook>();
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.GodotUI.GodotControlRef, Aquamarine.Godot.Hooks.GodotUI.GodotControlRefHook>();
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.GodotUI.GodotLabelBinding, Aquamarine.Godot.Hooks.GodotUI.GodotLabelBindingHook>();
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.GodotUI.GodotValueBinding, Aquamarine.Godot.Hooks.GodotUI.GodotValueBindingHook>();
-
-        // Register GodotUIPanel hook - inheritance now works automatically for derived types
+        // GODOT UI HOOKS
         Lumora.Core.World.HookTypes.Register<Lumora.Core.GodotUI.GodotUIPanel, Aquamarine.Godot.Hooks.GodotUI.GodotUIPanelHook>();
-
-        // Register Nameplate hook for user nameplates
         Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.Nameplate, Aquamarine.Godot.Hooks.NameplateHook>();
 
-        AquaLogger.Log("Hook registration complete");
+        AquaLogger.Log("Hook registration complete - Unity Neos style with connectors");
     }
 
     /// <summary>

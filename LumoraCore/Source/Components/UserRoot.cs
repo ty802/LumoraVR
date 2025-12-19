@@ -277,6 +277,14 @@ public class UserRoot : Component
         }
 
         ActiveUser = user;
+        
+        // Register with user
+        if (user == World?.LocalUser)
+        {
+            user.Root = this;
+            AquaLogger.Log($"UserRoot: Registered as Root for local user '{user.UserName.Value}'");
+        }
+        
         AquaLogger.Log($"UserRoot: Initialized for user '{user.UserName.Value}' (RefID: {user.ReferenceID})");
     }
 

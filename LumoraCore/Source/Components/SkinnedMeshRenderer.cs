@@ -77,15 +77,18 @@ public class SkinnedMeshRenderer : ImplementableComponent
         base.OnAwake();
 
         Skeleton = new SyncRef<SkeletonBuilder>(this, null);
-        Vertices = new SyncFieldList<float3>();
-        Normals = new SyncFieldList<float3>();
-        UVs = new SyncFieldList<float2>();
-        Indices = new SyncFieldList<int>();
-        BoneIndices = new SyncFieldList<int4>();
-        BoneWeights = new SyncFieldList<float4>();
+        Vertices = new SyncFieldList<float3>(this);
+        Normals = new SyncFieldList<float3>(this);
+        UVs = new SyncFieldList<float2>(this);
+        Indices = new SyncFieldList<int>(this);
+        BoneIndices = new SyncFieldList<int4>(this);
+        BoneWeights = new SyncFieldList<float4>(this);
         ShadowCastMode = new Sync<ShadowCastMode>(this, Components.ShadowCastMode.On);
         UpdateWhenOffscreen = new Sync<bool>(this, true);
         Quality = new Sync<SkinQuality>(this, Components.SkinQuality.FourBones);
+
+        // Initialize sync members created in OnAwake
+        InitializeNewSyncMembers();
 
         Skeleton.OnChanged += (field) => SkeletonChanged = true;
         Vertices.OnChanged += (list) => MeshDataChanged = true;

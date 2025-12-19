@@ -59,9 +59,9 @@ public class SkeletonBuilder : ImplementableComponent
         base.OnAwake();
 
         RootBone = new SyncRef<Slot>(this, null);
-        BoneNames = new SyncFieldList<string>();
+        BoneNames = new SyncFieldList<string>(this);
         BoneSlots = new SyncRefList<Slot>(this);
-        RestPoseTransforms = new SyncFieldList<float4x4>();
+        RestPoseTransforms = new SyncFieldList<float4x4>(this);
         IsBuilt = new Sync<bool>(this, false);
 
         RootBone.OnChanged += (field) => BoneHierarchyChanged = true;

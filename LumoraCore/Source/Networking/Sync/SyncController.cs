@@ -76,15 +76,32 @@ public class SyncController : IDisposable
                 if (element.IsDisposed)
                     continue;
 
+				BinaryWriter writer = null;
+				bool recordStarted = false;
 				try
 				{
-					var writer = deltaBatch.BeginNewDataRecord(element.ReferenceID);
+					writer = deltaBatch.BeginNewDataRecord(element.ReferenceID);
+					recordStarted = true;
 					element.EncodeDelta(writer, deltaBatch);
 					deltaBatch.FinishDataRecord(element.ReferenceID);
+					recordStarted = false;
 				}
 				catch (Exception ex)
 				{
 					Logger.Error($"SyncController: Failed to encode delta for {element.ReferenceID}: {ex.Message}");
+					
+					// Clean up the incomplete data record if it was started
+					if (recordStarted)
+					{
+						try
+						{
+							deltaBatch.FinishDataRecord(element.ReferenceID);
+						}
+						catch (Exception cleanupEx)
+						{
+							Logger.Error($"SyncController: Failed to clean up incomplete record for {element.ReferenceID}: {cleanupEx.Message}");
+						}
+					}
 				}
 			}
 
@@ -136,15 +153,32 @@ public class SyncController : IDisposable
                 continue;
             }
 
+			BinaryWriter writer = null;
+			bool recordStarted = false;
 			try
 			{
-				var writer = fullBatch.BeginNewDataRecord(element.ReferenceID);
+				writer = fullBatch.BeginNewDataRecord(element.ReferenceID);
+				recordStarted = true;
 				element.EncodeFull(writer, fullBatch);
 				fullBatch.FinishDataRecord(element.ReferenceID);
+				recordStarted = false;
 			}
 			catch (Exception ex)
 			{
 				Logger.Error($"SyncController: Failed to encode full for {element.ReferenceID}: {ex.Message}");
+				
+				// Clean up the incomplete data record if it was started
+				if (recordStarted)
+				{
+					try
+					{
+						fullBatch.FinishDataRecord(element.ReferenceID);
+					}
+					catch (Exception cleanupEx)
+					{
+						Logger.Error($"SyncController: Failed to clean up incomplete full record for {element.ReferenceID}: {cleanupEx.Message}");
+					}
+				}
 			}
 		}
 

@@ -24,6 +24,17 @@ public class SyncFieldList<T> : SyncElementList<Sync<T>>, IEnumerable<T>, IEnume
     }
 
     /// <summary>
+    /// Create a SyncFieldList attached to a component.
+    /// </summary>
+    public SyncFieldList(Component owner) : this()
+    {
+        if (owner?.World != null)
+        {
+            Initialize(owner.World, owner);
+        }
+    }
+
+    /// <summary>
     /// Enumerator that yields values instead of Sync fields.
     /// </summary>
     public new struct Enumerator : IEnumerator<T>, IDisposable, IEnumerator

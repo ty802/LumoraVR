@@ -96,8 +96,29 @@ public class User : ISyncObject, IWorldElement, IDisposable
     public bool ReceiveStreams { get; set; } = true;
     public Lumora.Core.Networking.Sync.UserStreamBag StreamBag { get; private set; } = new();
 
-    // UserRoot reference
-    public Slot UserRootSlot { get; set; }
+    private Components.UserRoot _root;
+    public readonly SyncRef<Components.UserRoot> UserRootRef = new();
+
+    /// <summary>
+    /// UserRoot component for this user.
+    /// </summary>
+    public Components.UserRoot Root
+    {
+        get => _root;
+        set
+        {
+            if (World?.LocalUser == this)
+            {
+                _root = value;
+                UserRootRef.Target = value;
+                AquaLogger.Log($"User: Registered UserRoot for local user '{UserName.Value}'");
+            }
+            else
+            {
+                throw new Exception("Only the user can register their own UserRoot");
+            }
+        }
+    }
 
     public User(World world, RefID refID)
     {

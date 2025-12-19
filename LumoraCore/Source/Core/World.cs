@@ -238,6 +238,11 @@ public class World
 	public Session Session => _session;
 
 	/// <summary>
+	/// URLs that can be used to connect to this session.
+	/// </summary>
+	public IReadOnlyList<Uri> SessionURLs => (IReadOnlyList<Uri>)_session?.Metadata?.SessionURLs ?? Array.Empty<Uri>();
+
+	/// <summary>
 	/// Synchronization controller for this world.
 	/// </summary>
 	public SyncController SyncController { get; private set; }
@@ -457,9 +462,23 @@ public class World
 	/// </summary>
 	public static World StartSession(Engine engine, string name, ushort port, string hostUserName = null, Action<World> init = null)
 	{
+		return StartSession(engine, name, port, hostUserName, SessionVisibility.Private, 16, init);
+	}
+
+	/// <summary>
+	/// Start a hosted session (authority/server) with visibility settings.
+	/// </summary>
+	public static World StartSession(
+		Engine engine,
+		string name,
+		ushort port,
+		string hostUserName,
+		SessionVisibility visibility,
+		int maxUsers = 16,
+		Action<World> init = null)
+	{
 		var world = new World();
 		world.WorldName.Value = name;
-		world.SessionID.Value = "S-" + Guid.NewGuid().ToString();
 		world.AuthorityID = 0; // This instance is authority
 		world.LocalID = 0;
 		world.IsDestroyed = false;
@@ -468,9 +487,22 @@ public class World
 		// Initialize world
 		world.Initialize();
 
+		// Build session metadata
+		var metadata = new SessionMetadata
+		{
+			Name = name,
+			HostUsername = hostUserName ?? Environment.MachineName,
+			HostMachineId = Environment.MachineName,
+			Visibility = visibility,
+			MaxUsers = maxUsers
+		};
+
 		// Start session network (creates LNL listener) but don't create user yet
 		world._state = WorldState.InitializingNetwork;
-		world.StartSessionNetwork(port);
+		world.StartSessionNetwork(port, metadata);
+
+		// Set session ID from the generated metadata
+		world.SessionID.Value = world._session?.Metadata?.SessionId ?? SessionIdentifier.Generate();
 
 		// Run initialization callback first so event receivers (like SimpleUserSpawn) are registered
 		init?.Invoke(world);
@@ -480,7 +512,7 @@ public class World
 
 		// Start running
 		world._state = WorldState.Running;
-		AquaLogger.Log($"Session '{name}' started on port {port}");
+		AquaLogger.Log($"Session '{name}' started on port {port} with visibility {visibility}");
 
 		return world;
 	}
@@ -774,9 +806,12 @@ public class World
 				_users.Add(user);
 				ReferenceController?.RegisterObject(user);
 				AquaLogger.Log($"User added to world: {user.UserName.Value}");
-				
+
 				// Trigger user joined event
 				TriggerUserJoinedEvent(user);
+
+				// Notify session of user count change
+				_session?.OnUserCountChanged(_users.Count);
 			}
 		}
 	}
@@ -793,9 +828,12 @@ public class World
 			_users.Remove(user);
 			ReferenceController?.UnregisterObject(user.ReferenceID);
 			AquaLogger.Log($"User removed from world: {user.UserName.Value}");
-			
+
 			// Trigger user left event
 			TriggerUserLeftEvent(user);
+
+			// Notify session of user count change
+			_session?.OnUserCountChanged(_users.Count);
 		}
 	}
 
@@ -833,7 +871,7 @@ public class World
 	/// Start the session network without creating the host user.
 	/// Used internally to allow init callback to run before user creation.
 	/// </summary>
-	private void StartSessionNetwork(ushort port)
+	private void StartSessionNetwork(ushort port, SessionMetadata metadata = null)
 	{
 		if (_session != null)
 		{
@@ -846,7 +884,14 @@ public class World
 			_state = WorldState.InitializingNetwork;
 			AquaLogger.Log("World entering InitializingNetwork stage (host)");
 
-			_session = Session.NewSession(this, port);
+			if (metadata != null)
+			{
+				_session = Session.NewSession(this, port, metadata);
+			}
+			else
+			{
+				_session = Session.NewSession(this, port);
+			}
 			AuthorityID = -1; // This is the host
 
 			_refIDAllocator.Reset();

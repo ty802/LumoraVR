@@ -48,6 +48,11 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
         // Godot-based UI panels
         AttachGodotUserInspectorPanel(uiPanelsSlot, new float3(-0.4f, 0f, 0f));
         AttachGodotEngineDebugPanel(uiPanelsSlot, new float3(0.5f, 0f, 0f));
+
+        // Add ClipboardImporter for paste functionality
+        var clipboardSlot = world.RootSlot.AddSlot("ClipboardImporter");
+        clipboardSlot.AttachComponent<ClipboardImporter>();
+        Logger.Log("WorldTemplates: Added ClipboardImporter for paste functionality");
     }
 
     private static void CreateTestCube(World world, string name, float3 position)

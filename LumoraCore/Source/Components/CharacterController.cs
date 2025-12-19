@@ -18,6 +18,10 @@ public class CharacterController : ImplementableComponent, IColliderOwner
     public float Speed { get; set; } = 5.0f;
     public float AirSpeed { get; set; } = 1.0f;
     public float JumpSpeed { get; set; } = 6.0f;
+    public float CrouchSpeed { get; set; } = 2.5f;
+    public float StandingHeight { get; set; } = 1.8f;
+    public float CrouchHeight { get; set; } = 1.0f;
+    public float CrouchTransitionSpeed { get; set; } = 8.0f;
 
     // ===== STATE =====
 
@@ -32,6 +36,8 @@ public class CharacterController : ImplementableComponent, IColliderOwner
     private bool _jumpRequested = false;
     private bool _isReady = false;
     private bool _creationAttempted = false;
+    private bool _isCrouching = false;
+    private float _currentHeight;
 
     private UserRoot _userRoot;
 
@@ -342,6 +348,38 @@ public class CharacterController : ImplementableComponent, IColliderOwner
             hook?.RequestJump();
         }
         catch { }
+    }
+
+    /// <summary>
+    /// Set crouch state.
+    /// Called by locomotion system.
+    /// </summary>
+    public void SetCrouching(bool crouching)
+    {
+        _isCrouching = crouching;
+
+        // Pass to hook for physics (uses dynamic dispatch)
+        dynamic hook = Hook;
+        try
+        {
+            hook?.SetCrouching(crouching);
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Check if character is crouching.
+    /// </summary>
+    public bool IsCrouching => _isCrouching;
+
+    /// <summary>
+    /// Get current movement speed based on state.
+    /// </summary>
+    public float GetCurrentSpeed()
+    {
+        if (_isCrouching) return CrouchSpeed;
+        if (_currentState == MovementState.InAir) return AirSpeed;
+        return Speed;
     }
 
     /// <summary>

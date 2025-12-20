@@ -196,12 +196,16 @@ public static class DefaultAVI
             out float2[] uvs,
             out int[] indices,
             out int4[] boneIndices,
-            out float4[] boneWeights);
+            out float4[] boneWeights,
+            out string[] boneNames);
 
-        // Set the mesh data on the renderer
-        skinnedRenderer.SetMeshData(vertices, normals, uvs, indices, boneIndices, boneWeights);
+        // Set the mesh data on the renderer (including bone names)
+        skinnedRenderer.SetMeshData(vertices, normals, uvs, indices, boneIndices, boneWeights, boneNames);
 
-        AquaLogger.Log($"DefaultAVI: Created skinned mesh with {vertices.Length} vertices bound to skeleton");
+        // Setup bone references from skeleton
+        skinnedRenderer.SetupBonesFromSkeleton(skeleton);
+
+        AquaLogger.Log($"DefaultAVI: Created skinned mesh with {vertices.Length} vertices, {boneNames.Length} bones bound to skeleton");
     }
 
     /// <summary>

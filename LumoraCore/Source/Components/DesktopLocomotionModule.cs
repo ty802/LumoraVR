@@ -14,6 +14,7 @@ public class DesktopLocomotionModule : ILocomotionModule
     private IKeyboardDriver _keyboardDriver;
     private bool _wasJumpPressed;
     private bool _isCrouching;
+    private bool _isSprinting;
 
     public void Activate(LocomotionController owner)
     {
@@ -76,6 +77,15 @@ public class DesktopLocomotionModule : ILocomotionModule
         {
             _isCrouching = isCrouchPressed;
             _characterController.SetCrouching(_isCrouching);
+        }
+
+        // Sprint (Left Shift or Right Shift)
+        bool isSprintPressed = _keyboardDriver.GetKeyState(Key.LeftShift) || _keyboardDriver.GetKeyState(Key.RightShift);
+        bool wantsSprint = isSprintPressed && !_isCrouching;
+        if (wantsSprint != _isSprinting)
+        {
+            _isSprinting = wantsSprint;
+            _characterController.SetSprinting(_isSprinting);
         }
     }
 

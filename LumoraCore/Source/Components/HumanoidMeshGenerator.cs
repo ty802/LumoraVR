@@ -12,6 +12,18 @@ namespace Lumora.Core.Components;
 public static class HumanoidMeshGenerator
 {
     /// <summary>
+    /// Bone names in order matching bone indices used in mesh generation.
+    /// </summary>
+    public static readonly string[] BoneNameOrder = new string[]
+    {
+        "Root", "Hips", "Spine", "Chest", "UpperChest", "Neck", "Head",
+        "LeftShoulder", "LeftUpperArm", "LeftLowerArm", "LeftHand",
+        "RightShoulder", "RightUpperArm", "RightLowerArm", "RightHand",
+        "LeftUpperLeg", "LeftLowerLeg", "LeftFoot", "LeftToes",
+        "RightUpperLeg", "RightLowerLeg", "RightFoot", "RightToes"
+    };
+
+    /// <summary>
     /// Generate a complete humanoid body mesh with proper bone weights.
     /// Creates simple shapes for body parts weighted to a standard humanoid skeleton.
     /// </summary>
@@ -21,7 +33,8 @@ public static class HumanoidMeshGenerator
         out float2[] uvs,
         out int[] indices,
         out int4[] boneIndices,
-        out float4[] boneWeights)
+        out float4[] boneWeights,
+        out string[] boneNames)
     {
         var vertexList = new List<float3>();
         var normalList = new List<float3>();
@@ -134,8 +147,9 @@ public static class HumanoidMeshGenerator
         indices = indexList.ToArray();
         boneIndices = boneIndexList.ToArray();
         boneWeights = boneWeightList.ToArray();
+        boneNames = BoneNameOrder;
 
-        AquaLogger.Log($"HumanoidMeshGenerator: Generated mesh with {vertices.Length} vertices, {indices.Length / 3} triangles");
+        AquaLogger.Log($"HumanoidMeshGenerator: Generated mesh with {vertices.Length} vertices, {indices.Length / 3} triangles, {boneNames.Length} bones");
     }
 
     // ===== MESH PRIMITIVE GENERATORS =====

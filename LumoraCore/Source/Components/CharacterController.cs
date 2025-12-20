@@ -19,6 +19,7 @@ public class CharacterController : ImplementableComponent, IColliderOwner
     public float AirSpeed { get; set; } = 1.0f;
     public float JumpSpeed { get; set; } = 6.0f;
     public float CrouchSpeed { get; set; } = 2.5f;
+    public float SprintMultiplier { get; set; } = 1.7f;
     public float StandingHeight { get; set; } = 1.8f;
     public float CrouchHeight { get; set; } = 1.0f;
     public float CrouchTransitionSpeed { get; set; } = 8.0f;
@@ -37,6 +38,7 @@ public class CharacterController : ImplementableComponent, IColliderOwner
     private bool _isReady = false;
     private bool _creationAttempted = false;
     private bool _isCrouching = false;
+    private bool _isSprinting = false;
     private float _currentHeight;
 
     private UserRoot _userRoot;
@@ -357,6 +359,10 @@ public class CharacterController : ImplementableComponent, IColliderOwner
     public void SetCrouching(bool crouching)
     {
         _isCrouching = crouching;
+        if (crouching)
+        {
+            _isSprinting = false;
+        }
 
         // Pass to hook for physics (uses dynamic dispatch)
         dynamic hook = Hook;
@@ -368,9 +374,23 @@ public class CharacterController : ImplementableComponent, IColliderOwner
     }
 
     /// <summary>
+    /// Set sprint state.
+    /// </summary>
+    public void SetSprinting(bool sprinting)
+    {
+        if (_isCrouching)
+        {
+            _isSprinting = false;
+            return;
+        }
+        _isSprinting = sprinting;
+    }
+
+    /// <summary>
     /// Check if character is crouching.
     /// </summary>
     public bool IsCrouching => _isCrouching;
+    public bool IsSprinting => _isSprinting;
 
     /// <summary>
     /// Get current movement speed based on state.
@@ -379,7 +399,7 @@ public class CharacterController : ImplementableComponent, IColliderOwner
     {
         if (_isCrouching) return CrouchSpeed;
         if (_currentState == MovementState.InAir) return AirSpeed;
-        return Speed;
+        return _isSprinting ? Speed * SprintMultiplier : Speed;
     }
 
     /// <summary>

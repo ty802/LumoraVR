@@ -556,36 +556,15 @@ public partial class LumoraEngineRunner : Node
 
 
     /// <summary>
-    /// Register all Godot-specific hooks - Unity Neos style with fewer, broader connectors.
+    /// Register all Godot-specific hooks with fewer, broader connectors.
     /// Called before engine initialization.
     /// </summary>
     private void RegisterHooks()
     {
         AquaLogger.Log("Registering Godot hooks...");
+        GodotHookRegistry.RegisterAll();
 
-        // Core slot hook (MUST be registered first!)
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.Slot, Aquamarine.Godot.Hooks.SlotHook>();
-
-        // MESH HOOK - handles mesh generation
-        Lumora.Core.World.HookTypes.Register<ProceduralMesh, Aquamarine.Godot.Hooks.MeshHook>();
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.Meshes.BoxMesh, Aquamarine.Godot.Hooks.MeshHook>();
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.Meshes.QuadMesh, Aquamarine.Godot.Hooks.MeshHook>();
-
-        // PHYSICS COLLIDER HOOKS
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.BoxCollider, Aquamarine.Godot.Hooks.PhysicsColliderHook>();
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.CapsuleCollider, Aquamarine.Godot.Hooks.PhysicsColliderHook>();
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.SphereCollider, Aquamarine.Godot.Hooks.PhysicsColliderHook>();
-
-        // SPECIALIZED HOOKS
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.SkeletonBuilder, Aquamarine.Godot.Hooks.SkeletonHook>();
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.HeadOutput, Aquamarine.Godot.Hooks.HeadOutputHook>();
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.CharacterController, Aquamarine.Godot.Hooks.CharacterControllerHook>();
-
-        // GODOT UI HOOKS
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.GodotUI.GodotUIPanel, Aquamarine.Godot.Hooks.GodotUI.GodotUIPanelHook>();
-        Lumora.Core.World.HookTypes.Register<Lumora.Core.Components.Nameplate, Aquamarine.Godot.Hooks.NameplateHook>();
-
-        AquaLogger.Log("Hook registration complete - Unity Neos style with connectors");
+        AquaLogger.Log("Hook registration complete");
     }
 
     /// <summary>

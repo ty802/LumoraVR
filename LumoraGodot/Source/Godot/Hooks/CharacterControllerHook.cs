@@ -24,6 +24,7 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
     private bool _isCrouching;
     private float _currentHeight;
     private float _targetHeight;
+    private bool _debugDumpDone;
 
     public CharacterBody3D GodotCharacterBody => _characterBody;
 
@@ -45,6 +46,10 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
         _characterBody.FloorStopOnSlope = true;
         _characterBody.FloorMaxAngle = Mathf.DegToRad(45f);
         _characterBody.WallMinSlideAngle = Mathf.DegToRad(15f);
+
+        // Set collision layers - must match StaticBody3D layers to collide
+        _characterBody.CollisionLayer = 1u;
+        _characterBody.CollisionMask = 1u;
 
         // Initialize crouch state
         _currentHeight = Owner.StandingHeight;
@@ -91,6 +96,36 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
         return null;
     }
 
+    private int CountNodesOfType<T>(Node node) where T : Node
+    {
+        int count = node is T ? 1 : 0;
+        foreach (var child in node.GetChildren())
+        {
+            count += CountNodesOfType<T>(child);
+        }
+        return count;
+    }
+
+    private void ListNodesOfType<T>(Node node, string typeName) where T : Node
+    {
+        if (node is T typed)
+        {
+            var pos = typed is Node3D n3d ? n3d.GlobalPosition : Vector3.Zero;
+            int childCount = typed.GetChildCount();
+            GD.Print($"  {typeName}: '{typed.Name}' at ({pos.X:F1}, {pos.Y:F1}, {pos.Z:F1}), children={childCount}");
+
+            // For physics bodies, check collision info
+            if (typed is CollisionObject3D col)
+            {
+                GD.Print($"    Layer={col.CollisionLayer}, Mask={col.CollisionMask}");
+            }
+        }
+        foreach (var child in node.GetChildren())
+        {
+            ListNodesOfType<T>(child, typeName);
+        }
+    }
+
     public override void ApplyChanges()
     {
         if (_characterBody == null || !_characterBody.IsInsideTree())
@@ -133,6 +168,11 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
                 speed = Owner.CrouchSpeed;
             else
                 speed = Owner.Speed;
+
+            if (_characterBody.IsOnFloor() && !_isCrouching && Owner.IsSprinting)
+            {
+                speed *= Owner.SprintMultiplier;
+            }
             _velocity.X = _moveDirection.X * speed;
             _velocity.Z = _moveDirection.Z * speed;
         }
@@ -155,6 +195,34 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
         _characterBody.Velocity = _velocity;
         _characterBody.MoveAndSlide();
         _velocity = _characterBody.Velocity;
+
+        // Push any rigid bodies we collided with
+        int collisionCount = _characterBody.GetSlideCollisionCount();
+        for (int i = 0; i < collisionCount; i++)
+        {
+            var collision = _characterBody.GetSlideCollision(i);
+            var collider = collision.GetCollider();
+            if (collider is RigidBody3D rigidBody)
+            {
+                // Apply impulse based on movement direction and mass
+                var pushDir = -collision.GetNormal();
+                var pushForce = pushDir * Owner.Speed * 0.5f;
+                rigidBody.ApplyCentralImpulse(new Vector3(pushForce.X, 0, pushForce.Z));
+            }
+        }
+
+        // DEBUG: One-time check for RigidBody3D nodes in scene
+        if (!_debugDumpDone && _characterBody.IsInsideTree())
+        {
+            _debugDumpDone = true;
+            var root = _characterBody.GetTree().Root;
+            int rigidCount = CountNodesOfType<RigidBody3D>(root);
+            int staticCount = CountNodesOfType<StaticBody3D>(root);
+            GD.Print($"DEBUG PHYSICS BODIES: RigidBody3D={rigidCount}, StaticBody3D={staticCount}");
+
+            // List all RigidBody3D nodes
+            ListNodesOfType<RigidBody3D>(root, "RigidBody3D");
+        }
 
         // Sync position back to slot
         var newPos = new float3(

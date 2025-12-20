@@ -18,6 +18,8 @@ namespace Aquamarine.Godot.Hooks
         private Shape3D _shape;
         private bool _isDynamic;
         private PhysicsMaterial _material;
+        private MeshInstance3D _debugMesh;
+        private static bool _showDebugColliders = false;
 
         public override void Initialize()
         {
@@ -29,11 +31,17 @@ namespace Aquamarine.Godot.Hooks
         public override void ApplyChanges()
         {
             // CharacterController colliders are handled by CharacterControllerHook
-            if (Owner.Type.Value == ColliderType.CharacterController)
+            // NoCollision colliders should not create any physics body
+            // If a RigidBody component exists on the same slot, RigidBodyHook handles the physics body
+            bool hasRigidBody = Owner.Slot.GetComponent<Lumora.Core.Components.RigidBody>() != null;
+            if (Owner.Type.Value == ColliderType.CharacterController ||
+                Owner.Type.Value == ColliderType.NoCollision ||
+                hasRigidBody)
             {
                 // If we already created a body (Type changed after init), destroy it
                 if (_bodyNode != null && GodotObject.IsInstanceValid(_bodyNode))
                 {
+                    AquaLogger.Log($"PhysicsColliderHook: Destroying body - hasRigidBody={hasRigidBody}, Type={Owner.Type.Value}");
                     DestroyBody(true);
                 }
                 return;
@@ -152,6 +160,18 @@ namespace Aquamarine.Godot.Hooks
                         _collisionShape.Shape = _shape;
                     }
                     break;
+                case CylinderCollider cylinder:
+                    if (_shape is CylinderShape3D existingCyl)
+                    {
+                        existingCyl.Radius = cylinder.Radius.Value;
+                        existingCyl.Height = cylinder.Height.Value;
+                    }
+                    else
+                    {
+                        _shape = new CylinderShape3D { Radius = cylinder.Radius.Value, Height = cylinder.Height.Value };
+                        _collisionShape.Shape = _shape;
+                    }
+                    break;
                 default:
                     AquaLogger.Warn($"PhysicsColliderHook: Unknown collider type {Owner.GetType().Name}");
                     return;
@@ -160,6 +180,80 @@ namespace Aquamarine.Godot.Hooks
             // Apply offset
             var offset = Owner.Offset.Value;
             _collisionShape.Position = new Vector3(offset.x, offset.y, offset.z);
+
+            // Update debug visualization
+            if (_showDebugColliders)
+            {
+                UpdateDebugVisualization();
+            }
+        }
+
+        private void UpdateDebugVisualization()
+        {
+            // Remove old debug mesh
+            if (_debugMesh != null && GodotObject.IsInstanceValid(_debugMesh))
+            {
+                _debugMesh.QueueFree();
+                _debugMesh = null;
+            }
+
+            if (_bodyNode == null || !GodotObject.IsInstanceValid(_bodyNode))
+                return;
+
+            // Create wireframe debug mesh based on collider type
+            _debugMesh = new MeshInstance3D();
+            _debugMesh.Name = "DebugCollider";
+
+            // Create blue wireframe material
+            var material = new StandardMaterial3D();
+            material.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
+            material.AlbedoColor = new Color(0.2f, 0.5f, 1.0f, 0.8f); // Blue
+            material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+            material.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
+
+            switch (Owner)
+            {
+                case BoxCollider box:
+                    var boxSize = box.Size.Value;
+                    var boxMesh = new BoxMesh();
+                    boxMesh.Size = new Vector3(boxSize.x, boxSize.y, boxSize.z);
+                    _debugMesh.Mesh = boxMesh;
+                    // Use wireframe by setting material to show edges
+                    material.AlbedoColor = new Color(0.2f, 0.5f, 1.0f, 0.3f);
+                    break;
+
+                case CapsuleCollider capsule:
+                    var capsuleMesh = new CapsuleMesh();
+                    capsuleMesh.Radius = capsule.Radius.Value;
+                    capsuleMesh.Height = capsule.Height.Value;
+                    _debugMesh.Mesh = capsuleMesh;
+                    material.AlbedoColor = new Color(0.2f, 1.0f, 0.5f, 0.3f); // Green for capsule
+                    break;
+
+                case SphereCollider sphere:
+                    var sphereMesh = new SphereMesh();
+                    sphereMesh.Radius = sphere.Radius.Value;
+                    _debugMesh.Mesh = sphereMesh;
+                    material.AlbedoColor = new Color(1.0f, 0.5f, 0.2f, 0.3f); // Orange for sphere
+                    break;
+
+                case CylinderCollider cylinder:
+                    var cylinderMesh = new CylinderMesh();
+                    cylinderMesh.TopRadius = cylinder.Radius.Value;
+                    cylinderMesh.BottomRadius = cylinder.Radius.Value;
+                    cylinderMesh.Height = cylinder.Height.Value;
+                    _debugMesh.Mesh = cylinderMesh;
+                    material.AlbedoColor = new Color(0.8f, 0.2f, 0.8f, 0.3f); // Purple for cylinder
+                    break;
+            }
+
+            _debugMesh.MaterialOverride = material;
+
+            // Position at collider offset
+            var offset = Owner.Offset.Value;
+            _debugMesh.Position = new Vector3(offset.x, offset.y, offset.z);
+
+            _bodyNode.AddChild(_debugMesh);
         }
 
         private void UpdateTransform()
@@ -197,6 +291,11 @@ namespace Aquamarine.Godot.Hooks
 
         private void DestroyBody(bool queueFree)
         {
+            if (_debugMesh != null && GodotObject.IsInstanceValid(_debugMesh) && queueFree)
+            {
+                _debugMesh.QueueFree();
+            }
+
             if (_collisionShape != null && GodotObject.IsInstanceValid(_collisionShape) && queueFree)
             {
                 _collisionShape.QueueFree();
@@ -207,6 +306,7 @@ namespace Aquamarine.Godot.Hooks
                 _bodyNode.QueueFree();
             }
 
+            _debugMesh = null;
             _collisionShape = null;
             _bodyNode = null;
             _shape = null;

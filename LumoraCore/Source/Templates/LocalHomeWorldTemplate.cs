@@ -60,6 +60,20 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
         var clipboardSlot = world.RootSlot.AddSlot("ClipboardImporter");
         clipboardSlot.AttachComponent<ClipboardImporter>();
         Logger.Log("WorldTemplates: Added ClipboardImporter for paste functionality");
+
+        // Add respawn plane below the world (larger than ground which is 50m diameter)
+        var respawnSlot = world.RootSlot.AddSlot("RespawnPlane");
+
+        var respawnPlane = respawnSlot.AttachComponent<RespawnPlane>();
+        respawnPlane.Size.Value = new float2(100f, 100f); // 100m x 100m (bigger than 50m ground)
+        respawnPlane.Height.Value = -20f; // 20 meters below ground
+        respawnPlane.UseBounds.Value = false;
+        respawnPlane.VisualColor.Value = new color(1f, 0.3f, 0.3f, 0.25f);
+        respawnPlane.DebugColor.Value = new color(0.9f, 0.2f, 1f, 1f);
+        respawnPlane.ShowVisual.Value = true;
+        respawnPlane.ShowDebug.Value = true;
+        respawnPlane.UserRespawnPosition.Value = new float3(0f, 1f, 0f); // Above spawn
+        Logger.Log("WorldTemplates: Added respawn plane at y=-20 with 100m visual");
     }
 
     private static void CreateBoxPlayground(World world)
@@ -165,5 +179,13 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
         var rigidBody = boxSlot.AttachComponent<Components.RigidBody>();
         rigidBody.Mass.Value = mass;
         rigidBody.UseGravity.Value = true;
+
+        // Make it grabbable
+        boxSlot.AttachComponent<Grabbable>();
+
+        // Store original position for respawning
+        var respawnData = boxSlot.GetOrAttachComponent<RespawnData>();
+        respawnData.OriginalPosition.Value = boxSlot.GlobalPosition;
+        respawnData.OriginalRotation.Value = boxSlot.GlobalRotation;
     }
 }

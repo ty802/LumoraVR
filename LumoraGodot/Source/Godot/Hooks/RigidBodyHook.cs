@@ -18,6 +18,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
     private bool _hasCollisionShape;
     private bool _positionInitialized;
     private int _framesSinceInit;
+    private bool _pendingWorldRootReparent;
     private readonly List<MeshInstance3D> _debugEdges = new();
     private const int DebugCircleSegments = 24;
     private static bool _showDebugEdges = true;
@@ -35,6 +36,11 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         // Set collision layers BEFORE adding to tree
         _rigidBody.CollisionLayer = 1u;
         _rigidBody.CollisionMask = 1u;
+
+        if (Owner?.Slot != null)
+        {
+            _rigidBody.SetMeta("LumoraSlotRef", Owner.Slot.ReferenceID.ToDecimalString());
+        }
 
         // Enable contact monitoring
         _rigidBody.ContactMonitor = true;
@@ -74,6 +80,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
                 attachedNode.AddChild(_rigidBody);
                 AquaLogger.Warn($"RigidBodyHook: Added as child of attachedNode (will have transform issues!)");
             }
+            _pendingWorldRootReparent = true;
         }
 
         // Set initial transform - use CallDeferred if not in tree yet
@@ -208,6 +215,30 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         if (_rigidBody == null || !GodotObject.IsInstanceValid(_rigidBody))
             return;
 
+        if (_pendingWorldRootReparent)
+        {
+            if (!TryReparentToWorldRoot())
+            {
+                return;
+            }
+
+            _pendingWorldRootReparent = false;
+            _positionInitialized = false;
+        }
+
+        if (!_positionInitialized)
+        {
+            if (_rigidBody.IsInsideTree())
+            {
+                SetInitialTransform();
+            }
+            else
+            {
+                // Wait until the rigid body is in the scene tree before syncing transforms.
+                return;
+            }
+        }
+
         // Wait a few frames before enabling physics to let static colliders (ground) initialize
         // This prevents rigid bodies from falling through the ground before it exists
         _framesSinceInit++;
@@ -291,17 +322,59 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         SyncTransformToSlot();
     }
 
+    private bool TryReparentToWorldRoot()
+    {
+        var worldRoot = Owner?.World?.GodotSceneRoot as Node3D;
+        if (worldRoot == null || _rigidBody == null || !GodotObject.IsInstanceValid(_rigidBody))
+        {
+            return false;
+        }
+
+        if (_rigidBody.GetParent() != worldRoot)
+        {
+            var slotPos = Owner.Slot.GlobalPosition;
+            var slotRot = Owner.Slot.GlobalRotation;
+
+            if (_rigidBody.GetParent() != null)
+            {
+                _rigidBody.Reparent(worldRoot, true);
+            }
+            else
+            {
+                worldRoot.AddChild(_rigidBody);
+            }
+
+            _rigidBody.GlobalPosition = new Vector3(slotPos.x, slotPos.y, slotPos.z);
+            _rigidBody.Quaternion = new Quaternion(slotRot.x, slotRot.y, slotRot.z, slotRot.w);
+        }
+
+        return true;
+    }
+
     private void SyncTransformToSlot()
     {
-        if (_rigidBody == null || Owner.IsKinematic.Value || !_rigidBody.IsInsideTree())
+        if (_rigidBody == null || !_rigidBody.IsInsideTree())
             return;
 
-        var globalPos = _rigidBody.GlobalPosition;
-        var globalRot = _rigidBody.GlobalBasis.GetRotationQuaternion();
+        if (Owner.IsKinematic.Value)
+        {
+            // Kinematic mode: sync Slot → RigidBody (for grabbing)
+            // The slot is being moved by the grabber, RigidBody needs to follow
+            var slotPos = Owner.Slot.GlobalPosition;
+            var slotRot = Owner.Slot.GlobalRotation;
+            _rigidBody.GlobalPosition = new Vector3(slotPos.x, slotPos.y, slotPos.z);
+            _rigidBody.Quaternion = new Quaternion(slotRot.x, slotRot.y, slotRot.z, slotRot.w);
+        }
+        else
+        {
+            // Dynamic mode: sync RigidBody → Slot (physics simulation)
+            var globalPos = _rigidBody.GlobalPosition;
+            var globalRot = _rigidBody.GlobalBasis.GetRotationQuaternion();
 
-        // Sync physics position to Lumora Slot (this is what gets networked)
-        Owner.Slot.GlobalPosition = new float3(globalPos.X, globalPos.Y, globalPos.Z);
-        Owner.Slot.GlobalRotation = new floatQ(globalRot.X, globalRot.Y, globalRot.Z, globalRot.W);
+            // Sync physics position to Lumora Slot (this is what gets networked)
+            Owner.Slot.GlobalPosition = new float3(globalPos.X, globalPos.Y, globalPos.Z);
+            Owner.Slot.GlobalRotation = new floatQ(globalRot.X, globalRot.Y, globalRot.Z, globalRot.W);
+        }
 
         // SlotHook will sync attachedNode from Slot.GlobalPosition - don't do it here
         // to avoid transform conflicts (RigidBody is a sibling of attachedNode, not a child)

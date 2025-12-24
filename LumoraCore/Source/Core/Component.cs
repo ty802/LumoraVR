@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -258,6 +259,48 @@ public abstract class Component : IWorldElement, IUpdatable, IChangeable
         _isDestroyed = true;
     }
 
+    internal void DisposeSyncMembers()
+    {
+        var members = new HashSet<ISyncMember>();
+        var type = GetType();
+
+        var fields = type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        foreach (var field in fields)
+        {
+            if (!typeof(ISyncMember).IsAssignableFrom(field.FieldType))
+                continue;
+
+            if (field.GetValue(this) is ISyncMember member)
+            {
+                members.Add(member);
+            }
+        }
+
+        var properties = type.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        foreach (var prop in properties)
+        {
+            if (!typeof(ISyncMember).IsAssignableFrom(prop.PropertyType) || !prop.CanRead)
+                continue;
+
+            if (prop.GetValue(this) is ISyncMember member)
+            {
+                members.Add(member);
+            }
+        }
+
+        foreach (var member in members)
+        {
+            try
+            {
+                member.Dispose();
+            }
+            catch
+            {
+                // Ignore disposal errors to avoid cascading failures during teardown
+            }
+        }
+    }
+
     /// <summary>
     /// Destroy this Component and remove it from its Slot.
     /// </summary>
@@ -286,7 +329,9 @@ public abstract class Component : IWorldElement, IUpdatable, IChangeable
     public void MarkChangeDirty()
     {
         if (_isChangeDirty || !IsStarted || _isDestroyed)
+        {
             return;
+        }
 
         _isChangeDirty = true;
         World?.UpdateManager?.RegisterForChanges(this);

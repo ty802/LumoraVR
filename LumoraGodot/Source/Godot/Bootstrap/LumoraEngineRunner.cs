@@ -11,6 +11,7 @@ using Aquamarine.Source.Godot.Input.Drivers;
 using Aquamarine.Godot.Hooks;
 using Aquamarine.Source.Godot.UI;
 using Aquamarine.Source.Input;
+using Aquamarine.Source.UI;
 using Lumora.Godot.Input;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
@@ -292,6 +293,7 @@ public partial class LumoraEngineRunner : Node
                 AutoHostLocalHome = this.AutoHostLocalHome,
                 AutoConnectLocalHome = this.AutoConnectLocalHome
             };
+            _engine.ResourceRoot = ProjectSettings.GlobalizePath("res://");
             GD.Print("PhaseEngineCoreInit: Engine instance created");
 
             // Register hooks BEFORE engine initialization
@@ -389,6 +391,12 @@ public partial class LumoraEngineRunner : Node
         _localDB = new LocalDB();
         _ = _localDB.InitializeAsync();
 
+        // Wire up LocalDB to Engine for local:// URI resolution
+        if (_engine != null)
+        {
+            _engine.LocalDB = _localDB;
+        }
+
         // Create clipboard importer for Ctrl+V paste handling
         _clipboardImporter = new ClipboardImporter();
         _clipboardImporter.Name = "ClipboardImporter";
@@ -433,6 +441,12 @@ public partial class LumoraEngineRunner : Node
         {
             var userspace = Userspace.SetupUserspace(_engine);
             AquaLogger.Log($"LumoraEngineRunner: Userspace created: '{userspace.WorldName.Value}'");
+
+            // Create dashboard toggle input handler
+            var dashboardToggle = new DashboardToggle();
+            dashboardToggle.Name = "DashboardToggle";
+            AddChild(dashboardToggle);
+            AquaLogger.Log("LumoraEngineRunner: DashboardToggle created");
         }
         catch (Exception ex)
         {

@@ -49,6 +49,9 @@ public class WorldHook : IWorldHook
 
         // Reparent any existing slot Node3Ds that were created before world root existed
         ReparentExistingSlots(Owner.RootSlot);
+
+        // Apply the world's current focus state (important for worlds that set focus before hook was created)
+        ChangeFocus(Owner.Focus);
     }
 
     /// <summary>
@@ -119,16 +122,22 @@ public class WorldHook : IWorldHook
             case World.WorldFocus.Focused:
             case World.WorldFocus.Overlay:
                 WorldRoot.Visible = true;
+                // Re-enable all processing (physics, input, colliders) for focused worlds
+                WorldRoot.ProcessMode = Node.ProcessModeEnum.Inherit;
                 break;
 
             case World.WorldFocus.PrivateOverlay:
                 WorldRoot.Visible = true;
+                WorldRoot.ProcessMode = Node.ProcessModeEnum.Inherit;
                 // TODO: Set layer recursively for private rendering
                 // SetLayerRecursively(WorldRoot, RenderHelper.PRIVATE_LAYER);
                 break;
 
             case World.WorldFocus.Background:
                 WorldRoot.Visible = false;
+                // Disable all processing (physics, input, colliders) for background worlds
+                // This prevents interaction with unfocused world's colliders/UI
+                WorldRoot.ProcessMode = Node.ProcessModeEnum.Disabled;
                 break;
         }
     }

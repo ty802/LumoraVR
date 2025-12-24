@@ -11,6 +11,11 @@ namespace Lumora.Core.Networking.Sync;
 /// </summary>
 public abstract class ConflictingSyncElement : SyncElement
 {
+    /// <summary>
+    /// Default MemberType for most conflicting elements is Dynamic.
+    /// Override in concrete classes if needed.
+    /// </summary>
+    public override SyncMemberType MemberType => SyncMemberType.Dynamic;
     protected new enum InternalFlags
     {
         IsValid = 13,

@@ -135,6 +135,11 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
         if (Owner == null)
             return;
 
+        // Skip physics processing if the world is not focused (background worlds have ProcessMode.Disabled)
+        // When transitioning from Disabled to Inherit, the physics space may not be ready yet
+        if (Owner.World?.Focus == World.WorldFocus.Background)
+            return;
+
         // Get delta time from the UpdateManager
         float delta = Owner?.World?.UpdateManager?.DeltaTime ?? (1f / 60f);
 
@@ -191,7 +196,16 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
             GD.Print("CharacterControllerHook: Jump!");
         }
 
-        // Move character
+        // Move character - check if physics space is valid first
+        // When transitioning from ProcessMode.Disabled to Inherit, the physics space may not be ready
+        var bodyRid = _characterBody.GetRid();
+        var spaceRid = PhysicsServer3D.BodyGetSpace(bodyRid);
+        if (!spaceRid.IsValid)
+        {
+            // Physics space not ready yet, skip this frame
+            return;
+        }
+
         _characterBody.Velocity = _velocity;
         _characterBody.MoveAndSlide();
         _velocity = _characterBody.Velocity;

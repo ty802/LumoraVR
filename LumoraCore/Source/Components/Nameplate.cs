@@ -75,8 +75,8 @@ public class Nameplate : ImplementableComponent
         RimColor = new Sync<color>(this, ColorNormal);
         IsLoggedIn = new Sync<bool>(this, true);
         PatreonColorHex = new Sync<string>(this, "");
-        Size = new Sync<float2>(this, new float2(0.3f, 0.08f)); // 30cm x 8cm default
-        HeadOffset = new Sync<float>(this, 0.25f); // 25cm above head
+        Size = new Sync<float2>(this, new float2(0.45f, 0.12f)); // 45cm x 12cm default
+        HeadOffset = new Sync<float>(this, 0.3f); // 30cm above head
         Billboard = new Sync<bool>(this, true);
 
         TargetUser.OnChanged += _ => UpdateFromUser();
@@ -177,5 +177,21 @@ public class Nameplate : ImplementableComponent
         {
             DisplayName.Value = user.UserName.Value ?? "";
         }
+
+        UpdateFollowTransform(user);
     }
+
+    private void UpdateFollowTransform(User user)
+    {
+        if (Slot == null) return;
+
+        var userRoot = user?.UserRootRef.Target;
+        var headSlot = userRoot?.HeadSlot ?? Slot.Parent;
+        if (headSlot == null) return;
+
+        var desiredPos = headSlot.GlobalPosition + float3.Up * HeadOffset.Value;
+        Slot.GlobalPosition = desiredPos;
+        Slot.GlobalRotation = floatQ.Identity;
+    }
+
 }

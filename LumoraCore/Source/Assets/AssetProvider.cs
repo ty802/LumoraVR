@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using Lumora.Core;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
@@ -31,9 +32,11 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
     {
         if (IsDestroyed) return;
 
+        AquaLogger.Debug($"AssetProvider.ReferenceSet: [{GetType().Name}] Adding reference, count before: {references.Count}");
         if (references.Add(reference) && references.Count == 1)
         {
             // First reference added - trigger update
+            AquaLogger.Debug($"AssetProvider.ReferenceSet: [{GetType().Name}] First reference added, triggering RefreshAssetState");
             RefreshAssetState();
         }
     }
@@ -74,6 +77,16 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
         FreeAsset();
         AssetRemoved();
         base.OnDestroy();
+    }
+
+    /// <summary>
+    /// Called when component changes are applied.
+    /// Refreshes asset state based on current reference count.
+    /// </summary>
+    protected override void OnChanges()
+    {
+        AquaLogger.Debug($"AssetProvider.OnChanges: [{GetType().Name}] Called, refCount={AssetReferenceCount}");
+        RefreshAssetState();
     }
 
     // ===== ASSET STATE MANAGEMENT =====
@@ -136,10 +149,12 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
 
     void IAssetProvider.SendAssetCreated()
     {
+        AquaLogger.Debug($"AssetProvider.SendAssetCreated: [{GetType().Name}] IsDestroyed={IsDestroyed}, refCount={references?.Count ?? 0}");
         if (IsDestroyed) return;
 
         foreach (IAssetRef reference in references)
         {
+            AquaLogger.Debug($"AssetProvider.SendAssetCreated: [{GetType().Name}] Notifying reference {reference.GetType().Name}");
             reference.AssetUpdated();
         }
     }
@@ -174,9 +189,94 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
     {
         if (assetURL == null)
         {
+            AquaLogger.Debug("AssetProvider.ProcessURL: URL is null");
             return null;
         }
-        // TODO: Implement scheme validation when AssetManager exists
+
+        AquaLogger.Debug($"AssetProvider.ProcessURL: Processing {assetURL} (scheme: {assetURL.Scheme})");
+
+        if (assetURL.Scheme == "lumdb")
+        {
+            var filename = GetUriRelativePath(assetURL);
+            if (string.IsNullOrEmpty(filename))
+            {
+                AquaLogger.Warn($"AssetProvider: Invalid lumdb URI: {assetURL}");
+                return null;
+            }
+            assetURL = new Uri($"lumora:///{filename}");
+        }
+
+        if (assetURL.Scheme == "lumora")
+        {
+            var filename = GetUriRelativePath(assetURL);
+            if (!string.IsNullOrEmpty(filename) && assetURL.AbsolutePath == "/")
+            {
+                assetURL = new Uri($"lumora:///{filename}");
+            }
+            return assetURL;
+        }
+
+        if (assetURL.Scheme is "lumres" or "res")
+        {
+            var resourceRoot = Engine.Current?.ResourceRoot;
+            if (string.IsNullOrWhiteSpace(resourceRoot))
+            {
+                AquaLogger.Warn($"AssetProvider: Resource root not set; cannot resolve {assetURL}");
+                return null;
+            }
+
+            var relativePath = GetUriRelativePath(assetURL);
+            if (string.IsNullOrEmpty(relativePath))
+            {
+                AquaLogger.Warn($"AssetProvider: Invalid resource URI: {assetURL}");
+                return null;
+            }
+
+            relativePath = relativePath.Replace('/', Path.DirectorySeparatorChar);
+            var filePath = Path.Combine(resourceRoot, relativePath);
+            if (!File.Exists(filePath))
+            {
+                AquaLogger.Warn($"AssetProvider: Resource not found at '{filePath}' for {assetURL}");
+            }
+            return new Uri(filePath);
+        }
+
+        // Resolve local:// URIs via LocalDB
+        if (assetURL.Scheme == "local")
+        {
+            var localDB = Engine.Current?.LocalDB;
+            AquaLogger.Debug($"AssetProvider.ProcessURL: LocalDB is {(localDB != null ? "available" : "NULL")}");
+            if (localDB != null)
+            {
+                var filePath = localDB.GetFilePath(assetURL.ToString());
+                AquaLogger.Debug($"AssetProvider.ProcessURL: GetFilePath returned '{filePath}'");
+                if (!string.IsNullOrEmpty(filePath))
+                {
+                    var resolvedUri = new Uri(filePath);
+                    AquaLogger.Debug($"AssetProvider.ProcessURL: Resolved to {resolvedUri}");
+                    return resolvedUri;
+                }
+            }
+            AquaLogger.Warn($"AssetProvider: Could not resolve local URI: {assetURL}");
+            return null;
+        }
+
         return assetURL;
+    }
+
+    private static string GetUriRelativePath(Uri uri)
+    {
+        var path = uri.AbsolutePath.TrimStart('/');
+        if (string.IsNullOrEmpty(path))
+        {
+            return uri.Host;
+        }
+
+        if (string.IsNullOrEmpty(uri.Host))
+        {
+            return path;
+        }
+
+        return $"{uri.Host}/{path}";
     }
 }

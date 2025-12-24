@@ -52,8 +52,8 @@ public class InputInterface : IDisposable
     public VRController RightController { get; private set; }
     public HeadDevice HeadDevice { get; private set; }
 
-    // VR state
-    public bool VR_Active { get; set; }
+    // VR state - synced from VR drivers automatically
+    public bool VR_Active => IsVRActive;
     public float UserHeight { get; set; } = DEFAULT_USER_HEIGHT;
 
     // Global tracking offset

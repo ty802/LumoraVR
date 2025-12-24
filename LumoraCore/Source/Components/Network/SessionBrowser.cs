@@ -80,9 +80,17 @@ public class SessionBrowser : Component
         _discovery.SessionLost += OnDiscoveryLost;
         _discovery.SessionUpdated += OnDiscoveryUpdated;
 
-        // If we're hosting, ignore our own announcer
+        // If we're hosting, ignore our own announcer to avoid seeing our own session
         Guid? ignoreId = null;
-        // Could check World.Session for LANAnnouncer ID if available
+        if (World?.Session != null)
+        {
+            var announcerId = World.Session.LANAnnouncerId;
+            if (announcerId != Guid.Empty)
+            {
+                ignoreId = announcerId;
+                AquaLogger.Log($"SessionBrowser: Filtering out own announcer ID: {announcerId}");
+            }
+        }
 
         _discovery.StartDiscovery(ignoreId);
         IsScanning.Value = true;
@@ -206,6 +214,7 @@ public class SessionBrowser : Component
             Visibility = discovered.Metadata.Visibility,
             JoinUrl = discovered.GetConnectionUrl(),
             ThumbnailUrl = discovered.Metadata.ThumbnailUrl,
+            ThumbnailBase64 = discovered.Metadata.ThumbnailBase64,
             Tags = discovered.Metadata.Tags != null ? new List<string>(discovered.Metadata.Tags) : new List<string>()
         };
     }
@@ -260,6 +269,11 @@ public class SessionListEntry
     /// URL to session thumbnail image.
     /// </summary>
     public string ThumbnailUrl { get; set; }
+
+    /// <summary>
+    /// Base64-encoded thumbnail image data.
+    /// </summary>
+    public string? ThumbnailBase64 { get; set; }
 
     /// <summary>
     /// Tags for filtering.

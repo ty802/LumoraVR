@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Diagnostics;
@@ -9,6 +10,7 @@ using Lumora.Core.Helpers;
 using Lumora.Core.Assets;
 using Lumora.Core.Coroutines;
 using Lumora.Core.Physics;
+using Lumora.CDN;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
@@ -160,6 +162,18 @@ public class Engine : IDisposable
     public GlobalCoroutineManager CoroutineManager { get; private set; }
     public PhysicsManager PhysicsManager { get; private set; }
     public RemoteAudioManager AudioManager { get; private set; }
+
+    // CDN / Content delivery
+    public LumoraClient? CDNClient { get; private set; }
+    public ContentCache? ContentCache { get; private set; }
+
+    // Local asset storage
+    public LocalDB? LocalDB { get; set; }
+
+    /// <summary>
+    /// Root directory for lumres:// and res:// URI resolution.
+    /// </summary>
+    public string ResourceRoot { get; set; }
 
     // Events
     /// <summary>Fired when engine state changes.</summary>
@@ -371,6 +385,15 @@ public class Engine : IDisposable
             {
                 AssetManager = new AssetManager();
                 await AssetManager.InitializeAsync();
+            }, cancellationToken);
+
+            await InitializeSubsystem("ContentCache", async () =>
+            {
+                var deviceId = Environment.MachineName;
+                CDNClient = new LumoraClient(deviceId, "LumoraVR", EngineVersion.VersionString);
+                var cachePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Lumora", "Cache");
+                ContentCache = new ContentCache(CDNClient, cachePath);
+                await Task.CompletedTask;
             }, cancellationToken);
 
             // Initialize AudioSystem
@@ -685,6 +708,7 @@ public class Engine : IDisposable
         DisposeSubsystem("WorldManager", () => { WorldManager?.Dispose(); WorldManager = null; });
         DisposeSubsystem("PhysicsManager", () => { PhysicsManager?.Dispose(); PhysicsManager = null; });
         DisposeSubsystem("AudioManager", () => { AudioManager = null; });
+        DisposeSubsystem("ContentCache", () => { ContentCache?.Dispose(); ContentCache = null; CDNClient?.Dispose(); CDNClient = null; });
         DisposeSubsystem("AssetManager", () => { AssetManager?.Dispose(); AssetManager = null; });
         DisposeSubsystem("CoroutineManager", () => { CoroutineManager?.Dispose(); CoroutineManager = null; });
         DisposeSubsystem("InputInterface", () => { InputInterface?.Dispose(); InputInterface = null; });

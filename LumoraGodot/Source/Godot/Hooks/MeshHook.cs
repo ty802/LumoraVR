@@ -32,10 +32,12 @@ public class MeshHook : ComponentHook<ProceduralMesh>
     {
         Lumora.Core.Logging.Logger.Log($"MeshHook.Initialize: Starting for component on slot '{Owner?.Slot?.SlotName?.Value}'");
 
-        // Create Godot mesh instance
+        // Create the ArrayMesh to hold mesh data
+        godotMesh = new ArrayMesh();
+
+        // Create Godot mesh instance (will hide if MeshRenderer is present)
         meshInstance = new MeshInstance3D();
         meshInstance.Name = "PhosMesh";
-        godotMesh = new ArrayMesh();
         meshInstance.Mesh = godotMesh;
 
         // Create default material so mesh is visible
@@ -43,10 +45,14 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         material.AlbedoColor = new Color(0.8f, 0.8f, 0.8f); // Light gray
         material.Roughness = 0.7f;
         material.ShadingMode = BaseMaterial3D.ShadingModeEnum.PerPixel;
-        meshInstance.MaterialOverride = material;
 
-        // Note: UI mesh rendering is now handled by the GodotUI Canvas system
-        // which uses GraphicsChunk for batched rendering rather than individual meshes
+        var slotName = Owner?.Slot?.SlotName?.Value;
+        if (!string.IsNullOrEmpty(slotName) && slotName.StartsWith("Default", System.StringComparison.Ordinal))
+        {
+            material.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
+            material.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
+        }
+        meshInstance.MaterialOverride = material;
 
         // Get slot hook and request Node3D
         if (Owner.Slot?.Hook is SlotHook hook)
@@ -77,6 +83,16 @@ public class MeshHook : ComponentHook<ProceduralMesh>
             Owner.ClearDirty();
         }
 
+        // Hide our MeshInstance3D if a MeshRenderer is handling rendering
+        // MeshRenderer creates its own MeshInstance3D with its own material
+        if (meshInstance != null)
+        {
+            bool hasMeshRenderer = Owner.Slot?.GetComponent<Lumora.Core.Components.MeshRenderer>() != null;
+            if (meshInstance.Visible != !hasMeshRenderer)
+            {
+                meshInstance.Visible = !hasMeshRenderer;
+            }
+        }
     }
 
     public override void Destroy(bool destroyingWorld)
@@ -210,7 +226,8 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         }
 
         // Upload indices (ALWAYS required for triangle meshes)
-        if (submesh.IndexCount > 0 && submesh.RawIndices != null)
+        bool hasIndices = submesh.IndexCount > 0 && submesh.RawIndices != null;
+        if (hasIndices)
         {
             var indices = new int[submesh.IndexCount];
             for (int i = 0; i < submesh.IndexCount; i++)
@@ -224,6 +241,11 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         var vertexArray = arrays[(int)Mesh.ArrayType.Vertex];
         if (vertexArray.VariantType != Variant.Type.Nil && vertexArray.AsVector3Array() != null)
         {
+            if (!hasIndices && (phosMesh.VertexCount % 3) != 0)
+            {
+                Lumora.Core.Logging.Logger.Warn($"MeshHook.UploadTriangleSubmesh: Skipping surface - no indices and vertex count {phosMesh.VertexCount} is not a multiple of 3");
+                return;
+            }
             godotMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
             // Lumora.Core.Logging.Logger.Log($"MeshHook.UploadTriangleSubmesh: Uploaded {submesh.IndexCount / 3} triangles");
         }

@@ -52,6 +52,17 @@ public class SessionSyncManager : IDisposable
     private bool _running;
     private bool _stopProcessing;
     private bool _isDisposed;
+    private bool _acceptDeltas;
+
+    // Client-side change confirmations (sync tick -> RefIDs)
+    private readonly Dictionary<ulong, HashSet<RefID>> _changesToConfirm = new();
+
+    // Pending data records that couldn't decode yet (missing elements)
+    private readonly Dictionary<RefID, PendingRecord> _pendingFullRecords = new();
+    private readonly Dictionary<RefID, PendingRecord> _pendingDeltaRecords = new();
+    private readonly object _pendingLock = new();
+    private const int PendingRecordMaxAttempts = 20;
+    private const int PendingRecordMaxAgeTicks = 400;
 
     // New user initialization
     private readonly List<User> _newUsersToInitialize = new();
@@ -288,133 +299,182 @@ public class SessionSyncManager : IDisposable
                     // Stage 2: Process incoming messages
                     DEBUG_SyncLoopStage = SyncLoopStage.RunningMessageProcessing;
 
-                while (_messagesToProcess.TryDequeue(out var message))
-                {
-                    ProcessingSyncMessage = message;
-
-                    if (ProcessMessage(message, lastDeltaSyncTime, controlMessagesToProcess))
+                    while (_messagesToProcess.TryDequeue(out var message))
                     {
-                        TotalProcessedMessages++;
+                        ProcessingSyncMessage = message;
+
+                        if (ProcessMessage(message, lastDeltaSyncTime, controlMessagesToProcess))
+                        {
+                            TotalProcessedMessages++;
+                        }
+
+                        ProcessingSyncMessage = null;
                     }
 
-                    ProcessingSyncMessage = null;
-                }
+                    DEBUG_SyncLoopStage = SyncLoopStage.ExitedMessageProcessing;
 
-                DEBUG_SyncLoopStage = SyncLoopStage.ExitedMessageProcessing;
+                    ProcessPendingRecords();
 
-                // Stage 3: Generate and send delta batch (authority only)
-                DEBUG_SyncLoopStage = SyncLoopStage.GeneratingDeltaBatch;
+                    // Stage 3: Generate and send delta batch (authority only)
+                    DEBUG_SyncLoopStage = SyncLoopStage.GeneratingDeltaBatch;
 
-                if (World.IsAuthority)
-                {
-                    World.IncrementStateVersion();
-                }
-
-                var deltaBatch = World.SyncController.CollectDeltaMessages();
-                LastGeneratedDeltaChanges = deltaBatch.DataRecordCount;
-
-                if (deltaBatch.DataRecordCount > 0)
-                {
                     if (World.IsAuthority)
                     {
-                        // Send to all connected users
-                        var connections = Session.Connections.GetAllConnections();
-                        deltaBatch.Targets.AddRange(connections);
+                        World.IncrementStateVersion();
+                    }
+
+                    var deltaBatch = World.SyncController.CollectDeltaMessages();
+                    LastGeneratedDeltaChanges = deltaBatch.DataRecordCount;
+
+                    if (deltaBatch.DataRecordCount > 0)
+                    {
+                        if (World.IsAuthority)
+                        {
+                            // Send to all connected users that are fully initialized
+                            var connections = Session.Connections.GetAllConnections();
+                            var initializingUsers = new HashSet<User>();
+                            
+                            lock (_newUsersLock)
+                            {
+                                foreach (var user in _newUsersToInitialize)
+                                {
+                                    initializingUsers.Add(user);
+                                }
+                            }
+                            
+                            // Only send deltas to users that are not currently initializing
+                            foreach (var connection in connections)
+                            {
+                                if (Session.Connections.TryGetUser(connection, out var user))
+                                {
+                                    if (!initializingUsers.Contains(user))
+                                    {
+                                        deltaBatch.Targets.Add(connection);
+                                    }
+                                }
+                                else
+                                {
+                                    // No user associated - safe to send
+                                    deltaBatch.Targets.Add(connection);
+                                }
+                            }
+                        }
+					else
+					{
+						// Send to host
+						var hostConnection = Session.Connections.HostConnection;
+						if (hostConnection != null)
+						{
+							deltaBatch.Targets.Add(hostConnection);
+						}
+					}
+
+					if (deltaBatch.Targets.Count > 0)
+					{
+						if (!World.IsAuthority)
+						{
+							var confirmTime = deltaBatch.SenderSyncTick;
+							if (!_changesToConfirm.TryGetValue(confirmTime, out var ids))
+							{
+								ids = new HashSet<RefID>();
+								_changesToConfirm[confirmTime] = ids;
+							}
+
+							for (int i = 0; i < deltaBatch.DataRecordCount; i++)
+							{
+								ids.Add(deltaBatch.GetDataRecord(i).TargetID);
+							}
+						}
+
+						EnqueueForTransmission(deltaBatch);
+					}
+					else
+					{
+						deltaBatch.Dispose();
+					}
                     }
                     else
                     {
-                        // Send to host
-                        var hostConnection = Session.Connections.HostConnection;
-                        if (hostConnection != null)
+                        deltaBatch.Dispose();
+                    }
+
+                    // Stage 4: Generate corrections (authority only)
+                    DEBUG_SyncLoopStage = SyncLoopStage.GeneratingCorrections;
+
+                    // TODO: Handle released drives and corrections
+
+                    // Stage 5: Gather and send streams
+                    DEBUG_SyncLoopStage = SyncLoopStage.EncodingStreams;
+
+                    if (World.State == World.WorldState.Running)
+                    {
+                        var streams = new List<StreamMessage>();
+                        World.SyncController.GatherStreams(streams);
+
+                        foreach (var stream in streams)
                         {
-                            deltaBatch.Targets.Add(hostConnection);
+                            EnqueueForTransmission(stream);
                         }
                     }
 
-                    EnqueueForTransmission(deltaBatch);
-                }
-                else
-                {
-                    deltaBatch.Dispose();
-                }
+                    // Stage 6: Finish sync cycle
+                    DEBUG_SyncLoopStage = SyncLoopStage.FinishingSyncCycle;
 
-                // Stage 4: Generate corrections (authority only)
-                DEBUG_SyncLoopStage = SyncLoopStage.GeneratingCorrections;
+                    lastDeltaSyncTime = World.StateVersion;
+                    World.IncrementSyncTick();
 
-                // TODO: Handle released drives and corrections
+                    // Stage 7: Process control messages
+                    DEBUG_SyncLoopStage = SyncLoopStage.ProcessingControlMessages;
 
-                // Stage 5: Gather and send streams
-                DEBUG_SyncLoopStage = SyncLoopStage.EncodingStreams;
-
-                if (World.State == World.WorldState.Running)
-                {
-                    var streams = new List<StreamMessage>();
-                    World.SyncController.GatherStreams(streams);
-
-                    foreach (var stream in streams)
+                    foreach (var controlMessage in controlMessagesToProcess)
                     {
-                        EnqueueForTransmission(stream);
+                        ProcessControlMessage(controlMessage);
+                        controlMessage.Dispose();
                     }
-                }
+                    controlMessagesToProcess.Clear();
 
-                // Stage 6: Finish sync cycle
-                DEBUG_SyncLoopStage = SyncLoopStage.FinishingSyncCycle;
+                    // Stage 8: Initialize new users
+                    DEBUG_SyncLoopStage = SyncLoopStage.InitializingNewUsers;
 
-                lastDeltaSyncTime = World.StateVersion;
-                World.IncrementSyncTick();
-
-                // Stage 7: Process control messages
-                DEBUG_SyncLoopStage = SyncLoopStage.ProcessingControlMessages;
-
-                foreach (var controlMessage in controlMessagesToProcess)
-                {
-                    ProcessControlMessage(controlMessage);
-                    controlMessage.Dispose();
-                }
-                controlMessagesToProcess.Clear();
-
-                // Stage 8: Initialize new users
-                DEBUG_SyncLoopStage = SyncLoopStage.InitializingNewUsers;
-
-                List<User> usersToInit;
-                lock (_newUsersLock)
-                {
-                    if (_newUsersToInitialize.Count > 0)
+                    List<User> usersToInit;
+                    lock (_newUsersLock)
                     {
-                        usersToInit = new List<User>(_newUsersToInitialize);
-                        _newUsersToInitialize.Clear();
-                    }
-                    else
-                    {
-                        usersToInit = null;
-                    }
-                }
-
-                if (usersToInit != null && usersToInit.Count > 0)
-                {
-                    var fullBatch = World.SyncController.EncodeFullBatch();
-
-                    foreach (var user in usersToInit)
-                    {
-                        if (Session.Connections.TryGetConnection(user, out var connection))
+                        if (_newUsersToInitialize.Count > 0)
                         {
-                            fullBatch.Targets.Add(connection);
+                            usersToInit = new List<User>(_newUsersToInitialize);
+                            _newUsersToInitialize.Clear();
+                        }
+                        else
+                        {
+                            usersToInit = null;
                         }
                     }
 
-                    EnqueueForTransmission(fullBatch);
-
-                    // Send JoinStartDelta to new users
-                    var startDeltaMessage = new ControlMessage(ControlMessage.Message.JoinStartDelta);
-                    foreach (var user in usersToInit)
+                    if (usersToInit != null && usersToInit.Count > 0)
                     {
-                        if (Session.Connections.TryGetConnection(user, out var connection))
+                        var fullBatch = World.SyncController.EncodeFullBatch();
+
+                        foreach (var user in usersToInit)
                         {
-                            startDeltaMessage.Targets.Add(connection);
+                            if (Session.Connections.TryGetConnection(user, out var connection))
+                            {
+                                fullBatch.Targets.Add(connection);
+                            }
                         }
+
+                        EnqueueForTransmission(fullBatch);
+
+                        // Send JoinStartDelta to new users
+                        var startDeltaMessage = new ControlMessage(ControlMessage.Message.JoinStartDelta);
+                        foreach (var user in usersToInit)
+                        {
+                            if (Session.Connections.TryGetConnection(user, out var connection))
+                            {
+                                startDeltaMessage.Targets.Add(connection);
+                            }
+                        }
+                        EnqueueForTransmission(startDeltaMessage);
                     }
-                    EnqueueForTransmission(startDeltaMessage);
-                }
 
                     DEBUG_SyncLoopStage = SyncLoopStage.Finished;
                 }
@@ -460,13 +520,25 @@ public class SessionSyncManager : IDisposable
             switch (msg)
             {
                 case DeltaBatch deltaBatch:
+                    // Only process deltas when world is running
                     if (World.State != World.WorldState.Running)
-                        throw new InvalidOperationException("Cannot process delta when not running");
+                    {
+                        AquaLogger.Warn($"ProcessMessage: Ignoring delta batch - world state is {World.State}, expected Running");
+                        deltaBatch.Dispose();
+                        break;
+                    }
+
+                    if (!World.IsAuthority && !_acceptDeltas)
+                    {
+                        AquaLogger.Debug("ProcessMessage: Ignoring delta batch - JoinStartDelta not received yet");
+                        deltaBatch.Dispose();
+                        break;
+                    }
 
                     // Validate and retransmit (authority)
                     if (World.IsAuthority)
                     {
-                        World.SyncController.ValidateDeltaMessages(deltaBatch);
+                        ValidateDeltaBatchAndRetransmit(deltaBatch);
                     }
 
                     // Apply data records
@@ -486,6 +558,12 @@ public class SessionSyncManager : IDisposable
                     if (!World.IsAuthority)
                     {
                         World.SetStateVersion(fullBatch.SenderStateVersion);
+                        
+                        // If client is in InitializingDataModel stage, this is the initial world state
+                        if (World.State == World.WorldState.InitializingDataModel)
+                        {
+                            World.OnFullStateReceived();
+                        }
                     }
 
                     fullBatch.Dispose();
@@ -495,6 +573,22 @@ public class SessionSyncManager : IDisposable
                     for (int i = 0; i < confirmation.DataRecordCount; i++)
                     {
                         World.SyncController.DecodeCorrection(i, confirmation);
+                    }
+
+                    if (_changesToConfirm.TryGetValue(confirmation.ConfirmTime, out var confirmedIds))
+                    {
+                        World.SyncController.ApplyConfirmations(confirmedIds, confirmation.ConfirmTime);
+
+                        foreach (var id in confirmedIds)
+                        {
+                            World.ReferenceController?.DeleteFromTrash(id);
+                        }
+
+                        _changesToConfirm.Remove(confirmation.ConfirmTime);
+                    }
+                    else
+                    {
+                        AquaLogger.Debug($"Confirmation received for unknown tick {confirmation.ConfirmTime}");
                     }
 
                     if (!World.IsAuthority)
@@ -533,42 +627,315 @@ public class SessionSyncManager : IDisposable
         }
     }
 
+    private void ValidateDeltaBatchAndRetransmit(DeltaBatch batch)
+    {
+        World.SyncController.ValidateDeltaMessages(batch);
+
+        var conflicting = new List<RefID>();
+        batch.GetConflictingDataRecords(conflicting);
+        batch.RemoveInvalidRecords();
+
+        if (World.IsAuthority)
+        {
+            if (batch.DataRecordCount > 0)
+            {
+                var forward = CopyDeltaBatch(batch);
+
+                var connections = Session.Connections.GetAllConnections();
+                var initializingUsers = new HashSet<User>();
+                lock (_newUsersLock)
+                {
+                    foreach (var user in _newUsersToInitialize)
+                    {
+                        initializingUsers.Add(user);
+                    }
+                }
+
+                foreach (var connection in connections)
+                {
+                    if (connection == batch.Sender)
+                        continue;
+
+                    if (Session.Connections.TryGetUser(connection, out var user) &&
+                        initializingUsers.Contains(user))
+                    {
+                        continue;
+                    }
+
+                    forward.Targets.Add(connection);
+                }
+
+                if (forward.Targets.Count > 0)
+                {
+                    EnqueueForTransmission(forward);
+                }
+                else
+                {
+                    forward.Dispose();
+                }
+            }
+
+            if (conflicting.Count > 0 && batch.Sender != null)
+            {
+                TotalCorrections += conflicting.Count;
+                var confirmation = new ConfirmationMessage(batch.SenderSyncTick, World.StateVersion, World.SyncTick);
+                foreach (var id in conflicting)
+                {
+                    World.SyncController.EncodeFull(id, confirmation);
+                }
+                confirmation.Targets.Add(batch.Sender);
+                EnqueueForTransmission(confirmation);
+            }
+        }
+    }
+
+    private DeltaBatch CopyDeltaBatch(DeltaBatch source)
+    {
+        var copy = new DeltaBatch(World.StateVersion, World.SyncTick);
+
+		for (int i = 0; i < source.DataRecordCount; i++)
+		{
+			var record = source.GetDataRecord(i);
+			var length = record.EndOffset - record.StartOffset;
+			var reader = source.SeekDataRecord(i);
+			var buffer = length > 0 ? reader.ReadBytes(length) : Array.Empty<byte>();
+
+			var writer = copy.BeginNewDataRecord(record.TargetID);
+			if (buffer.Length > 0)
+			{
+				writer.Write(buffer);
+			}
+			copy.FinishDataRecord(record.TargetID);
+		}
+
+        return copy;
+    }
+
     private int ApplyDataRecords(BinaryMessageBatch batch)
     {
+        // Simple retry logic, no complex dependency resolution
         int remaining = batch.DataRecordCount;
-        int lastRemaining = remaining;
+        int passes = 0;
 
         while (remaining > 0)
         {
+            int startRemaining = remaining;
+            
             for (int i = 0; i < batch.DataRecordCount; i++)
             {
                 if (batch.IsProcessed(i))
                     continue;
 
-                bool decoded = batch switch
+                bool decoded = false;
+                try
                 {
-                    DeltaBatch delta => World.SyncController.DecodeDeltaMessage(i, delta),
-                    FullBatch full => World.SyncController.DecodeFullMessage(i, full),
-                    _ => false
-                };
+                    decoded = batch switch
+                    {
+                        DeltaBatch delta => World.SyncController.DecodeDeltaMessage(i, delta),
+                        FullBatch full => World.SyncController.DecodeFullMessage(i, full),
+                        _ => false
+                    };
 
-                if (decoded)
+                    if (decoded)
+                    {
+                        batch.MarkDataRecordAsProcessed(i);
+                        remaining--;
+                    }
+                }
+                catch (Exception ex)
                 {
-                    batch.MarkDataRecordAsProcessed(i);
-                    remaining--;
+                    // Log but don't retry immediately - might succeed in next pass
+                    var dataRecord = batch.GetDataRecord(i);
+                    AquaLogger.Debug($"ApplyDataRecords: Decode failed for {dataRecord.TargetID}: {ex.Message}");
                 }
             }
 
-            if (remaining == lastRemaining)
+            // If no progress in this pass, we're done
+            if (remaining == startRemaining)
             {
-                // No progress, some records couldn't be decoded
                 break;
             }
+            
+            passes++;
+        }
 
-            lastRemaining = remaining;
+        // Log any remaining failures with details
+        if (remaining > 0)
+        {
+            AquaLogger.Debug($"ApplyDataRecords: {remaining} records could not be decoded after {passes} passes");
+            // Log which RefIDs failed
+            for (int i = 0; i < batch.DataRecordCount; i++)
+            {
+                if (!batch.IsProcessed(i))
+                {
+                    var record = batch.GetDataRecord(i);
+                    var obj = World.ReferenceController?.GetObjectOrNull(record.TargetID);
+                    AquaLogger.Warn($"  FAILED RefID={record.TargetID} Type={obj?.GetType().Name ?? "NOT_FOUND"}");
+                    QueuePendingRecord(batch, i);
+                }
+            }
         }
 
         return remaining;
+    }
+
+    private void QueuePendingRecord(BinaryMessageBatch batch, int recordIndex)
+    {
+        if (World == null)
+            return;
+
+        var record = batch.GetDataRecord(recordIndex);
+        var reader = batch.SeekDataRecord(recordIndex);
+        var length = record.EndOffset - record.StartOffset;
+        var buffer = length > 0 ? reader.ReadBytes(length) : Array.Empty<byte>();
+
+        var pending = new PendingRecord
+        {
+            TargetID = record.TargetID,
+            Data = buffer,
+            SenderStateVersion = batch.SenderStateVersion,
+            SenderSyncTick = batch.SenderSyncTick,
+            FirstSeenTick = World.SyncTick,
+            Attempts = 0
+        };
+
+        var isFull = batch is FullBatch;
+        var map = isFull ? _pendingFullRecords : _pendingDeltaRecords;
+
+        lock (_pendingLock)
+        {
+            if (map.TryGetValue(record.TargetID, out var existing))
+            {
+                if (pending.SenderSyncTick >= existing.SenderSyncTick)
+                {
+                    map[record.TargetID] = pending;
+                }
+            }
+            else
+            {
+                map[record.TargetID] = pending;
+            }
+        }
+    }
+
+    private void ProcessPendingRecords()
+    {
+        if (World == null || World.ReferenceController == null || World.SyncController == null)
+            return;
+
+        List<PendingRecord> fullRecords;
+        List<PendingRecord> deltaRecords;
+
+        lock (_pendingLock)
+        {
+            if (_pendingFullRecords.Count == 0 && _pendingDeltaRecords.Count == 0)
+                return;
+
+            fullRecords = new List<PendingRecord>(_pendingFullRecords.Values);
+            deltaRecords = new List<PendingRecord>(_pendingDeltaRecords.Values);
+        }
+
+        foreach (var record in fullRecords)
+        {
+            ProcessPendingRecord(record, isFull: true);
+        }
+
+        if (World.State == World.WorldState.Running && (_acceptDeltas || World.IsAuthority))
+        {
+            foreach (var record in deltaRecords)
+            {
+                ProcessPendingRecord(record, isFull: false);
+            }
+        }
+    }
+
+    private void ProcessPendingRecord(PendingRecord record, bool isFull)
+    {
+        if (World == null || World.ReferenceController == null || World.SyncController == null)
+            return;
+
+        var isExpired = World.SyncTick - record.FirstSeenTick > PendingRecordMaxAgeTicks;
+        if (isExpired)
+        {
+            DropPendingRecord(record.TargetID, isFull, "expired");
+            return;
+        }
+
+        if (!World.ReferenceController.ContainsObject(record.TargetID))
+        {
+            return;
+        }
+
+        var decoded = TryDecodePendingRecord(record, isFull);
+        if (decoded)
+        {
+            DropPendingRecord(record.TargetID, isFull, null);
+            return;
+        }
+
+        record.Attempts++;
+        if (record.Attempts >= PendingRecordMaxAttempts)
+        {
+            DropPendingRecord(record.TargetID, isFull, "attempts exceeded");
+            return;
+        }
+
+        UpdatePendingRecord(record, isFull);
+    }
+
+    private bool TryDecodePendingRecord(PendingRecord record, bool isFull)
+    {
+        BinaryMessageBatch batch = isFull
+            ? new FullBatch(record.SenderStateVersion, record.SenderSyncTick)
+            : new DeltaBatch(record.SenderStateVersion, record.SenderSyncTick);
+
+        var writer = batch.BeginNewDataRecord(record.TargetID);
+        if (record.Data.Length > 0)
+        {
+            writer.Write(record.Data);
+        }
+        batch.FinishDataRecord(record.TargetID);
+
+        bool decoded = isFull
+            ? World.SyncController.DecodeFullMessage(0, (FullBatch)batch)
+            : World.SyncController.DecodeDeltaMessage(0, (DeltaBatch)batch);
+
+        batch.Dispose();
+        return decoded;
+    }
+
+    private void UpdatePendingRecord(PendingRecord record, bool isFull)
+    {
+        lock (_pendingLock)
+        {
+            var map = isFull ? _pendingFullRecords : _pendingDeltaRecords;
+            if (map.ContainsKey(record.TargetID))
+            {
+                map[record.TargetID] = record;
+            }
+        }
+    }
+
+    private void DropPendingRecord(RefID targetId, bool isFull, string reason)
+    {
+        lock (_pendingLock)
+        {
+            var map = isFull ? _pendingFullRecords : _pendingDeltaRecords;
+            if (map.Remove(targetId) && !string.IsNullOrEmpty(reason))
+            {
+                AquaLogger.Warn($"Pending record dropped for {targetId}: {reason}");
+            }
+        }
+    }
+
+    private struct PendingRecord
+    {
+        public RefID TargetID;
+        public byte[] Data;
+        public ulong SenderStateVersion;
+        public ulong SenderSyncTick;
+        public ulong FirstSeenTick;
+        public int Attempts;
     }
 
     private void ProcessControlMessage(ControlMessage message)
@@ -585,15 +952,54 @@ public class SessionSyncManager : IDisposable
                 var grantData = LegacyJoinGrantData.Decode(message.Payload);
                 AquaLogger.Log($"ProcessControlMessage: JoinGrant UserID={grantData.AssignedUserID}");
 
-				var assignedRefID = new RefID(grantData.AssignedUserID);
-				var localUser = new User(World, assignedRefID);
-				localUser.UserID.Value = grantData.AssignedUserID.ToString();
-				localUser.AllocationIDStart.Value = grantData.AllocationIDStart;
-				localUser.AllocationIDEnd.Value = grantData.AllocationIDEnd;
+                var assignedRefID = new RefID(grantData.AssignedUserID);
 
-                Session.World.SetLocalUser(localUser);
+                // User has a host-assigned RefID, so use fromNetwork=true
+                // This sets up allocation block at RefID+1 for sync members
+                var localUser = new User(World, assignedRefID, fromNetwork: true);
+                localUser.UserID.Value = grantData.AssignedUserID.ToString();
+                localUser.AllocationIDStart.Value = grantData.AllocationIDStart;
+                localUser.AllocationIDEnd.Value = grantData.AllocationIDEnd;
+				localUser.AllocationID.Value = assignedRefID.GetUserByte();
+
                 Session.World.SetStateVersion(grantData.StateVersion);
+
+				// IMPORTANT: Switch allocation context to user's namespace BEFORE SetLocalUser!
+				// SetLocalUser triggers OnUserJoined which causes SimpleUserSpawn to create slots.
+				// Those slots must be allocated in user's namespace, not Authority.
+				var userByte = assignedRefID.GetUserByte();
+				var startPos = grantData.AllocationIDStart > 0 ? grantData.AllocationIDStart : 1UL;
+				World.ReferenceController.SetAllocationContext(userByte, startPos);
+				AquaLogger.Log($"Switched allocation to user namespace: byte={userByte}, startPos={startPos}");
+
                 Session.World.OnJoinGrantReceived();
+                Session.World.SetLocalUser(localUser);
+                break;
+
+            case ControlMessage.Message.JoinStartDelta:
+                AquaLogger.Log("ProcessControlMessage: JoinStartDelta received - can now accept delta updates");
+                _acceptDeltas = true;
+                break;
+
+            case ControlMessage.Message.RequestFullState:
+                AquaLogger.Log("ProcessControlMessage: RequestFullState received from client");
+                
+                if (World.IsAuthority && Session.Connections.TryGetUser(message.Sender, out var requestingUser))
+                {
+                    AquaLogger.Log($"ProcessControlMessage: Sending full world state to user {requestingUser.UserName.Value}");
+                    var fullBatch = World.SyncController.EncodeFullBatch();
+                    fullBatch.Targets.Add(message.Sender);
+                    EnqueueForTransmission(fullBatch);
+                    
+                    // Send JoinStartDelta to indicate they can now receive delta updates
+                    var startDeltaMessage = new ControlMessage(ControlMessage.Message.JoinStartDelta);
+                    startDeltaMessage.Targets.Add(message.Sender);
+                    EnqueueForTransmission(startDeltaMessage);
+                }
+                else if (!World.IsAuthority)
+                {
+                    AquaLogger.Warn("ProcessControlMessage: Non-authority received RequestFullState - ignoring");
+                }
                 break;
 
             default:
@@ -626,6 +1032,12 @@ public class SessionSyncManager : IDisposable
         _syncThreadInitEvent.Dispose();
         _refreshFinished.Dispose();
         _lastProcessingStopped.Dispose();
+        _changesToConfirm.Clear();
+        lock (_pendingLock)
+        {
+            _pendingFullRecords.Clear();
+            _pendingDeltaRecords.Clear();
+        }
 
         AquaLogger.Log("SessionSyncManager disposed");
     }

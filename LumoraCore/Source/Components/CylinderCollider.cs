@@ -26,6 +26,8 @@ public class CylinderCollider : Collider
     public override void OnAwake()
     {
         base.OnAwake();
+        Radius.OnChanged += _ => RunApplyChanges();
+        Height.OnChanged += _ => RunApplyChanges();
         AquaLogger.Log($"CylinderCollider: Initialized with Radius={Radius.Value}, Height={Height.Value}");
     }
 

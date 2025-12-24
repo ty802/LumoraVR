@@ -75,8 +75,7 @@ public class NameplateHook : ComponentHook<Nameplate>
 
         _meshInstance.MaterialOverride = _material;
 
-        // Position above head
-        _meshInstance.Position = new Vector3(0, Owner.HeadOffset.Value, 0);
+        _meshInstance.Position = Vector3.Zero;
 
         attachedNode.AddChild(_viewport);
         attachedNode.AddChild(_meshInstance);
@@ -155,10 +154,9 @@ public class NameplateHook : ComponentHook<Nameplate>
         UpdateNameplate();
         UpdateQuadSize();
 
-        // Update position offset
         if (_meshInstance != null)
         {
-            _meshInstance.Position = new Vector3(0, Owner.HeadOffset.Value, 0);
+            _meshInstance.Position = Vector3.Zero;
         }
 
         // Update billboard mode

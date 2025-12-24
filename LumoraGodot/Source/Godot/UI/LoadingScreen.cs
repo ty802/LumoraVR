@@ -156,6 +156,13 @@ public partial class LoadingScreen : Control
 		public const string SystemIntegration = "Connecting input and audio systems...";
 		public const string UserspaceSetup = "Loading user interface...";
 		public const string Ready = "Ready!";
+		
+		// World synchronization phases
+		public const string ConnectingToWorld = "Connecting to world...";
+		public const string WaitingForJoinGrant = "Requesting access...";
+		public const string DownloadingWorldState = "Downloading world data...";
+		public const string InitializingWorld = "Initializing world...";
+		public const string WorldReady = "World ready!";
 	}
 
 	/// <summary>

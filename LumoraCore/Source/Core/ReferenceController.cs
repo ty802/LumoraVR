@@ -11,6 +11,11 @@ namespace Lumora.Core;
 /// </summary>
 public class ReferenceController : IDisposable
 {
+    /// <summary>
+    /// If true, new RefID allocations are blocked to prevent wrong-context creation.
+    /// </summary>
+    public bool BlockAllocations { get; set; }
+
     // Object registry
     private readonly Dictionary<RefID, IWorldElement> _objects = new();
     
@@ -234,6 +239,7 @@ public class ReferenceController : IDisposable
     /// </summary>
     public void AllocationBlockBegin(in RefID id)
     {
+        CheckAllocation();
         byte userByte = id.GetUserByte();
         ulong position = id.GetPosition();
         
@@ -265,6 +271,7 @@ public class ReferenceController : IDisposable
     /// </summary>
     public void LocalAllocationBlockBegin()
     {
+        CheckAllocation();
         // If already in local allocation, this is a nested call - just push
         _allocationStack.Push(_currentAllocation);
         
@@ -301,6 +308,7 @@ public class ReferenceController : IDisposable
     /// </summary>
     public RefID AllocateID()
     {
+        CheckAllocation();
         RefID id = RefID.Construct(_currentAllocation.UserByte, _currentAllocation.Position);
         _currentAllocation.Position++;
         return id;
@@ -311,6 +319,7 @@ public class ReferenceController : IDisposable
     /// </summary>
     public RefID PeekID()
     {
+        CheckAllocation();
         return RefID.Construct(_currentAllocation.UserByte, _currentAllocation.Position);
     }
     
@@ -320,6 +329,7 @@ public class ReferenceController : IDisposable
     /// </summary>
     public void SetAllocationContext(byte userByte, ulong position)
     {
+        CheckAllocation();
         _currentAllocation = new AllocationContext
         {
             UserByte = userByte,
@@ -420,6 +430,7 @@ public class ReferenceController : IDisposable
         _trashedObjects.Clear();
         _allocationStack.Clear();
         _localAllocationPosition = 1;
+        BlockAllocations = false;
         
         _currentAllocation = new AllocationContext
         {
@@ -434,6 +445,15 @@ public class ReferenceController : IDisposable
     }
     
     #endregion
+
+    private void CheckAllocation()
+    {
+        if (BlockAllocations)
+        {
+            throw new InvalidOperationException(
+                "New RefID allocations are currently blocked. Check allocation context or thread.");
+        }
+    }
     
     #region Internal Types
     

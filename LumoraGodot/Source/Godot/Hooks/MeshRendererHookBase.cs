@@ -1,6 +1,8 @@
 using Godot;
 using Lumora.Core;
+using Lumora.Core.Assets;
 using Lumora.Core.Components;
+using LumoraMeshes = Lumora.Core.Components.Meshes;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
 namespace Aquamarine.Godot.Hooks;
@@ -31,6 +33,28 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
 
     protected virtual void OnAttachRenderer()
     {
+        // Hide the source mesh's MeshInstance3D since we're taking over rendering
+        HideSourceMeshInstance();
+    }
+
+    /// <summary>
+    /// Hide the MeshInstance3D from the source mesh (ProceduralMesh) since MeshRenderer handles rendering.
+    /// </summary>
+    private void HideSourceMeshInstance()
+    {
+        var meshValue = Owner.Mesh.Value;
+        if (meshValue is LumoraMeshes.ProceduralMesh proceduralMesh)
+        {
+            if (proceduralMesh.Hook is MeshHook meshHook)
+            {
+                var sourceMeshInstance = meshHook.GetMeshInstance();
+                if (sourceMeshInstance != null)
+                {
+                    sourceMeshInstance.Visible = false;
+                    AquaLogger.Debug($"MeshRendererHookBase: Hid source MeshHook's MeshInstance3D");
+                }
+            }
+        }
     }
 
     protected virtual void OnCleanupRenderer()
@@ -60,10 +84,30 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
             meshWasChanged = Owner.Mesh.GetWasChangedAndClear();
             if (meshWasChanged)
             {
+                // Hide the source mesh's MeshInstance3D when mesh changes
+                HideSourceMeshInstance();
+
                 var godotMesh = GetGodotMeshFromAsset();
                 if (UseMeshInstance && meshInstance != null)
                 {
                     meshInstance.Mesh = godotMesh;
+
+                    // Debug: verify mesh has UV data
+                    if (godotMesh is ArrayMesh arrayMesh && arrayMesh.GetSurfaceCount() > 0)
+                    {
+                        var arrays = arrayMesh.SurfaceGetArrays(0);
+                        var uvArray = arrays[(int)Mesh.ArrayType.TexUV];
+                        bool hasUvs = uvArray.VariantType != Variant.Type.Nil;
+                        AquaLogger.Log($"MeshRendererHookBase: Mesh assigned, surface 0 has UV data: {hasUvs}");
+                        if (hasUvs)
+                        {
+                            var uvs = uvArray.AsVector2Array();
+                            if (uvs.Length > 0)
+                            {
+                                AquaLogger.Log($"MeshRendererHookBase: UV sample[0] = {uvs[0]}");
+                            }
+                        }
+                    }
                 }
                 else
                 {
@@ -86,10 +130,36 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
             {
                 ApplyShadowCastMode(Owner.ShadowCastMode.Value);
             }
+
+            // Apply material if changed
+            if (Owner.Material.GetWasChangedAndClear() || meshWasChanged)
+            {
+                ApplyMaterial();
+            }
         }
         else
         {
             CleanupRenderer(destroyingWorld: false);
+        }
+    }
+
+    /// <summary>
+    /// Apply the material to the mesh instance.
+    /// </summary>
+    protected virtual void ApplyMaterial()
+    {
+        if (meshInstance == null) return;
+
+        var materialAsset = Owner.Material.Asset;
+        if (materialAsset != null && materialAsset.GodotMaterial is Material godotMaterial)
+        {
+            AquaLogger.Debug($"MeshRendererHookBase.ApplyMaterial: Applying {godotMaterial.GetType().Name} to meshInstance");
+            meshInstance.MaterialOverride = godotMaterial;
+        }
+        else
+        {
+            AquaLogger.Debug($"MeshRendererHookBase.ApplyMaterial: No material (materialAsset={materialAsset}, GodotMaterial={materialAsset?.GodotMaterial})");
+            meshInstance.MaterialOverride = null;
         }
     }
 
@@ -117,13 +187,47 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
 
     protected virtual Mesh GetGodotMeshFromAsset()
     {
-        AquaLogger.Warn("MeshRendererHookBase: GetGodotMeshFromAsset not implemented - using placeholder");
-        return new BoxMesh();
+        var meshValue = Owner.Mesh.Value;
+        if (meshValue == null) return null;
+
+        // Handle MeshDataAsset - get the Godot mesh from its hook
+        if (meshValue is MeshDataAsset meshDataAsset)
+        {
+            if (meshDataAsset.Hook is MeshAssetHook meshAssetHook && meshAssetHook.IsValid)
+            {
+                return meshAssetHook.GodotMesh;
+            }
+            AquaLogger.Debug("MeshRendererHookBase: MeshDataAsset hook not ready");
+            return null;
+        }
+
+        // Handle ProceduralMesh components - get mesh from their hook
+        if (meshValue is LumoraMeshes.ProceduralMesh proceduralMesh)
+        {
+            if (proceduralMesh.Hook is MeshHook meshHook)
+            {
+                var meshInstance = meshHook.GetMeshInstance();
+                if (meshInstance?.Mesh != null)
+                {
+                    return meshInstance.Mesh;
+                }
+            }
+            AquaLogger.Debug("MeshRendererHookBase: ProceduralMesh hook not ready");
+            return null;
+        }
+
+        AquaLogger.Warn($"MeshRendererHookBase: Unsupported mesh type {meshValue.GetType().Name}");
+        return null;
     }
 
     protected virtual void ApplySortingOrder(int sortingOrder)
     {
-        AquaLogger.Debug($"MeshRendererHookBase: ApplySortingOrder({sortingOrder}) not implemented");
+        if (meshInstance != null)
+        {
+            // Use sorting offset for depth sorting of transparent objects
+            // Higher values render later (on top)
+            meshInstance.SortingOffset = sortingOrder;
+        }
     }
 
     protected virtual void ApplyShadowCastMode(ShadowCastMode shadowCastMode)

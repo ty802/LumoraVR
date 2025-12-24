@@ -1,6 +1,7 @@
 using Godot;
 using System;
 using System.Collections.Generic;
+using Lumora.CDN;
 
 namespace Lumora.Godot.UI;
 
@@ -12,6 +13,8 @@ public partial class HomeDash : Control
 {
     // Scene paths for content pages
     private const string WorldBrowserScenePath = "res://Scenes/UI/Dashboard/WorldBrowser.tscn";
+    private const string SettingsScenePath = "res://Scenes/UI/Dashboard/Settings.tscn";
+    private const string LoginOverlayScenePath = "res://Scenes/UI/Dashboard/LoginOverlay.tscn";
 
     // Navigation buttons
     private Button? _btnHome;
@@ -21,6 +24,14 @@ public partial class HomeDash : Control
     private Button? _btnInventory;
     private Button? _btnSettings;
     private Button? _btnExit;
+
+    // Login & Auth
+    private Panel? _userSectionPanel;
+    private LoginOverlay? _loginOverlay;
+    private bool _isLoggedIn;
+    private VBoxContainer? _storageContainer;
+    private LumoraClient? _client;
+    private UserProfile? _currentUser;
 
     // Quick action cards
     private Panel? _joinWorldCard;
@@ -72,8 +83,10 @@ public partial class HomeDash : Control
         _avatarsCard = GetNodeOrNull<Panel>("MainContainer/VBox/ContentArea/MainContent/ContentMargin/ContentVBox/QuickActions/BrowseAvatars");
 
         // Get user section elements
+        _userSectionPanel = GetNodeOrNull<Panel>("MainContainer/VBox/Header/HeaderContent/UserSectionPanel");
         _usernameLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/Username");
         _patreonRoleLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/PatreonRole");
+        _storageContainer = GetNodeOrNull<VBoxContainer>("MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/StorageContainer");
         _storageLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/StorageContainer/StorageLabel");
         _storageBarFill = GetNodeOrNull<Panel>("MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/StorageContainer/StorageBarBg/StorageBarFill");
         _avatarIconLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/AvatarContainer/AvatarCircle/AvatarIcon");
@@ -87,7 +100,24 @@ public partial class HomeDash : Control
         // Connect button signals
         ConnectButtons();
 
+        // Create LumoraClient
+        var deviceId = OS.GetUniqueId();
+        _client = new LumoraClient(deviceId);
+
+        // Create login overlay
+        CreateLoginOverlay();
+
+        // Set initial logged out state
+        SetLoggedOutState();
+
         GD.Print("HomeDash: Initialized");
+    }
+
+    public override void _Process(double delta)
+    {
+        // Update FPS counter with real value
+        int fps = (int)Engine.GetFramesPerSecond();
+        SetFPS(fps);
     }
 
     private void ConnectButtons()
@@ -99,6 +129,12 @@ public partial class HomeDash : Control
         _btnInventory?.Connect("pressed", Callable.From(() => OnNavButtonPressed("Inventory")));
         _btnSettings?.Connect("pressed", Callable.From(() => OnNavButtonPressed("Settings")));
         _btnExit?.Connect("pressed", Callable.From(OnExitPressed));
+
+        // User section click to show login (when not logged in)
+        if (_userSectionPanel != null)
+        {
+            _userSectionPanel.GuiInput += OnUserSectionInput;
+        }
 
         // Connect card interactions (make them clickable)
         if (_joinWorldCard != null)
@@ -167,6 +203,7 @@ public partial class HomeDash : Control
         string? scenePath = tab switch
         {
             "Worlds" => WorldBrowserScenePath,
+            "Settings" => SettingsScenePath,
             // Add more pages here as they're created
             // "Friends" => FriendsScenePath,
             // "Inventory" => InventoryScenePath,
@@ -202,6 +239,16 @@ public partial class HomeDash : Control
             page.SetAnchorsPreset(Control.LayoutPreset.FullRect);
             page.SizeFlagsHorizontal = SizeFlags.ExpandFill;
             page.SizeFlagsVertical = SizeFlags.ExpandFill;
+        }
+
+        // Initialize Settings page with client and user data
+        if (tab == "Settings" && page is Settings settingsPage)
+        {
+            if (_client != null)
+                settingsPage.SetClient(_client);
+
+            if (_currentUser != null)
+                settingsPage.SetUserData(_currentUser.Username, "", _currentUser.TwoFactorEnabled);
         }
 
         GD.Print($"HomeDash: Loaded content page '{tab}'");
@@ -272,6 +319,144 @@ public partial class HomeDash : Control
         // TODO: Implement exit confirmation or directly quit
         // GetTree().Quit();
     }
+
+    private void CreateLoginOverlay()
+    {
+        var packedScene = GD.Load<PackedScene>(LoginOverlayScenePath);
+        if (packedScene == null)
+        {
+            GD.PrintErr("HomeDash: Failed to load LoginOverlay scene");
+            return;
+        }
+
+        _loginOverlay = packedScene.Instantiate<LoginOverlay>();
+        if (_loginOverlay == null)
+        {
+            GD.PrintErr("HomeDash: Failed to instantiate LoginOverlay");
+            return;
+        }
+
+        _loginOverlay.Visible = false;
+        _loginOverlay.OnLoginSuccess += OnLoginSuccess;
+        _loginOverlay.OnCancel += OnLoginCancel;
+
+        // Pass the client to the overlay
+        if (_client != null)
+            _loginOverlay.SetClient(_client);
+
+        // Add to root so it overlays everything
+        AddChild(_loginOverlay);
+        _loginOverlay.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+
+        GD.Print("HomeDash: LoginOverlay created");
+    }
+
+    private void OnUserSectionInput(InputEvent @event)
+    {
+        if (@event is InputEventMouseButton mouseEvent && mouseEvent.Pressed && mouseEvent.ButtonIndex == MouseButton.Left)
+        {
+            if (_isLoggedIn)
+            {
+                // Already logged in - could show profile/account options
+                GD.Print("HomeDash: Account clicked (already logged in)");
+                // TODO: Show account dropdown or navigate to settings
+            }
+            else
+            {
+                _loginOverlay?.Show();
+            }
+        }
+    }
+
+    private void SetLoggedOutState()
+    {
+        _isLoggedIn = false;
+
+        if (_usernameLabel != null)
+            _usernameLabel.Text = "Not logged in";
+
+        if (_patreonRoleLabel != null)
+            _patreonRoleLabel.Visible = false;
+
+        if (_storageContainer != null)
+            _storageContainer.Visible = false;
+
+        if (_avatarIconLabel != null)
+            _avatarIconLabel.Text = "?";
+
+        if (_welcomeTitle != null)
+            _welcomeTitle.Text = "Welcome!";
+    }
+
+    private async void OnLoginSuccess()
+    {
+        _isLoggedIn = true;
+        _loginOverlay?.Hide();
+
+        // Show storage and patreon when logged in
+        if (_patreonRoleLabel != null)
+            _patreonRoleLabel.Visible = true;
+
+        if (_storageContainer != null)
+            _storageContainer.Visible = true;
+
+        // Fetch user data from LumoraClient
+        if (_client != null)
+        {
+            var result = await _client.GetCurrentUser();
+            if (result.Success && result.Data != null)
+            {
+                _currentUser = result.Data;
+                ApplyUserProfile(_currentUser);
+            }
+            else
+            {
+                GD.PrintErr($"HomeDash: Failed to fetch user profile - {result.Message}");
+            }
+        }
+
+        GD.Print("HomeDash: Login successful");
+    }
+
+    private void ApplyUserProfile(UserProfile profile)
+    {
+        SetUsername(profile.Username);
+
+        // Set Patreon role if available
+        if (profile.PatreonData != null && profile.PatreonData.IsActiveSupporter)
+        {
+            SetPatreonRole(profile.PatreonData.TierName ?? "Supporter");
+        }
+        else
+        {
+            SetPatreonRole("");
+        }
+
+        // Set storage usage
+        if (profile.StorageQuota != null)
+        {
+            float usedGB = profile.StorageQuota.UsedMB / 1024f;
+            float totalGB = profile.StorageQuota.QuotaMB / 1024f;
+            SetStorageUsage(usedGB, totalGB);
+        }
+
+        GD.Print($"HomeDash: User profile applied - {profile.Username}");
+    }
+
+    private void OnLoginCancel()
+    {
+        _loginOverlay?.Hide();
+    }
+
+    /// <summary>
+    /// Get the LumoraClient for use by child pages.
+    /// </summary>
+    public LumoraClient? GetClient() => _client;
+
+    /// <summary>
+    /// Get the current user profile.
+    /// </summary>
+    public UserProfile? GetCurrentUserProfile() => _currentUser;
 
     /// <summary>
     /// Set the displayed username.

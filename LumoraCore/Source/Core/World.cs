@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using Lumora.Core.Networking.Session;
 using Lumora.Core.Networking.Sync;
 using AquaLogger = Lumora.Core.Logging.Logger;
@@ -162,6 +163,10 @@ public class World
 	private readonly List<User> _users = new();
 	private readonly List<User> _joinedUsers = new();
 	private readonly List<User> _leftUsers = new();
+
+	// Network replicators for world structure synchronization
+	private Networking.Sync.SlotReplicator? _slotReplicator;
+	private Networking.Sync.UserReplicator? _userReplicator;
 	private readonly List<IWorldEventReceiver>[] _worldEventReceivers;
 	private WorldState _state = WorldState.Created;
 	private Session _session;
@@ -530,8 +535,8 @@ public class World
 		world.IsDestroyed = false;
 		world.IsDisposed = false;
 
-		// Initialize world
-		world.Initialize();
+		// Initialize world as CLIENT (uses LOCAL RefID space to avoid collisions with host's Authority RefIDs)
+		world.Initialize(isAuthority: false);
 
 		// Join session (connects to LNL server)
 		world._state = WorldState.InitializingNetwork;
@@ -544,27 +549,83 @@ public class World
 	}
 
 	/// <summary>
+	/// Join a remote session (client) asynchronously.
+	/// </summary>
+	public static async Task<World?> JoinSessionAsync(Engine engine, string name, Uri address)
+	{
+		var world = new World();
+		world.WorldName.Value = name;
+		world.SessionID.Value = "Unknown"; // Will be set by server
+		world.AuthorityID = 0; // Server is authority
+		world.LocalID = -1; // Will be assigned by server
+		world.IsDestroyed = false;
+		world.IsDisposed = false;
+
+		// Initialize world as CLIENT (uses LOCAL RefID space to avoid collisions with host's Authority RefIDs)
+		world.Initialize(isAuthority: false);
+
+		// Join session (connects to LNL server)
+		var joined = await world.JoinSessionAsync(address);
+		if (!joined)
+		{
+			return null;
+		}
+
+		AquaLogger.Log($"Joining session at {address}");
+		return world;
+	}
+
+	/// <summary>
 	/// Initialize the World and create the root Slot.
 	/// </summary>
-	public void Initialize()
+	/// <param name="isAuthority">True if this is the authority/host, false for clients.
+	/// Clients use LOCAL RefID space to avoid conflicts with network-received Authority RefIDs.</param>
+	public void Initialize(bool isAuthority = true)
 	{
 		if (_state != WorldState.Created) return;
 
 		_state = WorldState.InitializingDataModel;
-		AquaLogger.Log("World entering InitializingDataModel stage");
+		AquaLogger.Log($"World entering InitializingDataModel stage (isAuthority={isAuthority})");
 
 		// Create reference controller BEFORE anything else
 		ReferenceController = new ReferenceController(this);
 
-		// Create root Slot (uses ReferenceController)
-		RootSlot = new Slot();
-		RootSlot.SlotName.Value = "Root";
-		RootSlot.Initialize(this);
-		RegisterSlot(RootSlot);
-
-		// Create sync controller
+		// Create sync controller first (doesn't need RefID)
 		SyncController = new SyncController(this);
 		AquaLogger.Log("SyncController initialized");
+
+		// Create network replicators BEFORE entering LOCAL allocation block
+		// These MUST have Authority RefIDs that match between host and client
+		// so that when the host sends FullBatch, the client can decode it
+		_slotReplicator = new Networking.Sync.SlotReplicator();
+		_slotReplicator.Initialize(this, "Slots", null);
+		_userReplicator = new Networking.Sync.UserReplicator();
+		_userReplicator.Initialize(this, "Users", null);
+		AquaLogger.Log($"Network replicators initialized: SlotReplicator={_slotReplicator.ReferenceID}, UserReplicator={_userReplicator.ReferenceID}");
+
+		// For clients, use LOCAL RefID space for client-specific structures
+		// The host sends FullBatch with Authority RefIDs for world content
+		if (!isAuthority)
+		{
+			ReferenceController.LocalAllocationBlockBegin();
+			AquaLogger.Log("Client: Using LOCAL RefID space for local structures");
+		}
+
+		try
+		{
+			// Create root Slot (client uses LOCAL RefID, host uses Authority RefID)
+			RootSlot = new Slot();
+			RootSlot.SlotName.Value = "Root";
+			RootSlot.Initialize(this);
+			RegisterSlot(RootSlot);
+		}
+		finally
+		{
+			if (!isAuthority)
+			{
+				ReferenceController.LocalAllocationBlockEnd();
+			}
+		}
 
 		// Note: Godot scene attachment handled by WorldDriver wrapper
 		// World itself is pure C# and doesn't use AddChild
@@ -572,8 +633,18 @@ public class World
 		// Network session is started via StartSession() or JoinSession()
 		// No automatic network initialization
 
-		_state = WorldState.Running;
-		AquaLogger.Log($"World '{WorldName.Value}' initialized successfully - now Running");
+		// DON'T transition to Running here for clients!
+		// Clients need to wait for full state download.
+		// Only local/authority worlds can go to Running immediately.
+		if (_slotReplicator != null && _slotReplicator.IsInInitPhase)
+		{
+			_slotReplicator.EndInitPhase();
+		}
+		if (_userReplicator != null && _userReplicator.IsInInitPhase)
+		{
+			_userReplicator.EndInitPhase();
+		}
+		AquaLogger.Log($"World '{WorldName.Value}' initialized successfully - state remains {_state}");
 	}
 
 	/// <summary>
@@ -607,8 +678,18 @@ public class World
 	{
 		if (slot == null) return;
 
-		ReferenceController?.RegisterObject(slot);
+		// Only register if not already registered (InitializeFromReplicator may have already registered)
+		if (!ReferenceController.ContainsObject(slot.ReferenceID))
+		{
+			ReferenceController?.RegisterObject(slot);
+		}
 		Metrics.SlotCount++;
+
+		// Add to slot replicator for network sync (only if not already present)
+		if (_slotReplicator != null && !_slotReplicator.ContainsKey(slot.ReferenceID))
+		{
+			_slotReplicator.Add(slot.ReferenceID, slot, isNewlyCreated: true, skipSync: false);
+		}
 
 		if (!string.IsNullOrEmpty(slot.Tag.Value))
 		{
@@ -637,6 +718,9 @@ public class World
 
 		ReferenceController?.UnregisterObject(slot.ReferenceID);
 		Metrics.SlotCount--;
+
+		// Remove from slot replicator for network sync
+		_slotReplicator?.Remove(slot.ReferenceID);
 
 		if (!string.IsNullOrEmpty(slot.Tag.Value))
 		{
@@ -804,11 +888,28 @@ public class World
 			if (!_users.Contains(user))
 			{
 				_users.Add(user);
-				ReferenceController?.RegisterObject(user);
+				// Only register if not already registered (User constructor may have already registered)
+				if (!ReferenceController.ContainsObject(user.ReferenceID))
+				{
+					ReferenceController?.RegisterObject(user);
+				}
+
+				// Add to user replicator for network sync (only if not already present)
+				if (_userReplicator != null && !_userReplicator.ContainsKey(user.ReferenceID))
+				{
+					_userReplicator.Add(user.ReferenceID, user, isNewlyCreated: true, skipSync: false);
+				}
+
 				AquaLogger.Log($"User added to world: {user.UserName.Value}");
 
-				// Trigger user joined event
-				TriggerUserJoinedEvent(user);
+				// Trigger user joined event - ONLY on authority!
+				// Only host fires OnUserJoined events. Host's SimpleUserSpawn creates
+				// avatar slots in authority namespace, which are then synced to clients.
+				// If clients also fired OnUserJoined, they'd create duplicate slots.
+				if (IsAuthority)
+				{
+					TriggerUserJoinedEvent(user);
+				}
 
 				// Notify session of user count change
 				_session?.OnUserCountChanged(_users.Count);
@@ -827,15 +928,35 @@ public class World
 		{
 			_users.Remove(user);
 			ReferenceController?.UnregisterObject(user.ReferenceID);
+
+			// Remove from user replicator for network sync
+			_userReplicator?.Remove(user.ReferenceID);
+
 			AquaLogger.Log($"User removed from world: {user.UserName.Value}");
 
-			// Trigger user left event
-			TriggerUserLeftEvent(user);
+			// Trigger user left event - ONLY on authority!
+			// Same reason as OnUserJoined - host handles user lifecycle events.
+			if (IsAuthority)
+			{
+				TriggerUserLeftEvent(user);
+			}
 
 			// Notify session of user count change
 			_session?.OnUserCountChanged(_users.Count);
 		}
 	}
+
+	/// <summary>
+	/// Register a user with the world (called by UserReplicator).
+	/// Alias for AddUser.
+	/// </summary>
+	internal void RegisterUser(User user) => AddUser(user);
+
+	/// <summary>
+	/// Unregister a user from the world (called by UserReplicator).
+	/// Alias for RemoveUser.
+	/// </summary>
+	internal void UnregisterUser(User user) => RemoveUser(user);
 
 	/// <summary>
 	/// Set the local user (client's own user).
@@ -926,6 +1047,7 @@ public class World
 		hostUser.MachineID.Value = System.Environment.MachineName;
 		hostUser.AllocationIDStart.Value = rangeStart;
 		hostUser.AllocationIDEnd.Value = rangeEnd;
+		hostUser.AllocationID.Value = userRefId.GetUserByte();
 		hostUser.IsPresent.Value = true;
 		hostUser.PresentInWorld.Value = true;
 		hostUser.IsSilenced.Value = false;
@@ -988,15 +1110,65 @@ public class World
 	}
 
 	/// <summary>
+	/// Join an existing session as client (async).
+	/// </summary>
+	public async Task<bool> JoinSessionAsync(Uri address)
+	{
+		if (_session != null)
+		{
+			AquaLogger.Warn("Session already active");
+			return false;
+		}
+
+		try
+		{
+			_state = WorldState.InitializingNetwork;
+			AquaLogger.Log("World entering InitializingNetwork stage (client)");
+
+			_session = await Session.JoinSessionAsync(this, new[] { address });
+			if (_session == null)
+			{
+				_state = WorldState.Failed;
+				return false;
+			}
+
+			// Client now waits for JoinGrant from authority
+			_state = WorldState.WaitingForJoinGrant;
+			AquaLogger.Log($"Joined session at {address} - waiting for JoinGrant");
+			return true;
+		}
+		catch (Exception ex)
+		{
+			AquaLogger.Error($"Failed to join session: {ex.Message}");
+			_state = WorldState.Failed;
+			return false;
+		}
+	}
+
+	/// <summary>
 	/// Called when client receives JoinGrant from authority.
-	/// Transitions from WaitingForJoinGrant to Running.
+	/// Transitions from WaitingForJoinGrant to InitializingDataModel.
+	/// Note: Allocation context switch is handled in SessionSyncManager before SetLocalUser.
 	/// </summary>
 	public void OnJoinGrantReceived()
 	{
 		if (_state == WorldState.WaitingForJoinGrant)
 		{
+			_state = WorldState.InitializingDataModel;
+			AquaLogger.Log("World received JoinGrant - now InitializingDataModel");
+		}
+	}
+
+	/// <summary>
+	/// Called when client receives full world state from authority.
+	/// Transitions from InitializingDataModel to Running.
+	/// </summary>
+	public void OnFullStateReceived()
+	{
+		if (_state == WorldState.InitializingDataModel)
+		{
 			_state = WorldState.Running;
-			AquaLogger.Log("World received JoinGrant - now Running");
+			AquaLogger.Log("World received full state - now Running");
 		}
 	}
 
@@ -1057,7 +1229,7 @@ public class World
 				}
 				catch (Exception ex)
 				{
-					AquaLogger.Error($"World: Error in synchronous action: {ex.Message}");
+					AquaLogger.Error($"World: Error in synchronous action: {ex}");
 				}
 			}
 		}
@@ -1122,6 +1294,9 @@ public class World
 			// Stage 1: Process synchronous actions (immediate state changes)
 			ProcessSynchronousActions();
 
+			// Stage 1.5: Process completed asset fetch tasks
+			Networking.AssetFetcher.ProcessQueue();
+
 			// Stage 2: Process world events (user joined/left, focus changes)
 			RunWorldEvents();
 
@@ -1137,7 +1312,10 @@ public class World
 			// Stage 5: Update components (main update)
 			UpdateComponents((float)scaledDelta);
 
-			// Stage 5.5: Sync slot hooks so transforms propagate to the platform scene graph
+			// Stage 5.5: Apply component changes (from sync field updates)
+			_updateManager?.RunChangeApplications();
+
+			// Stage 5.6: Sync slot hooks so transforms propagate to the platform scene graph
 			UpdateSlotHooks(RootSlot);
 
 			// Stage 6: Process changed elements
@@ -1490,7 +1668,7 @@ public class World
 				}
 				catch (Exception ex)
 				{
-					AquaLogger.Error($"World: Error in disposal synchronous action: {ex.Message}");
+					AquaLogger.Error($"World: Error in disposal synchronous action: {ex}");
 				}
 			}
 		}

@@ -76,6 +76,13 @@ public class RigidBody : ImplementableComponent
     {
         base.OnAwake();
         AquaLogger.Log($"RigidBody: Initialized on '{Slot.SlotName.Value}' with Mass={Mass.Value}kg");
+
+        var respawnData = Slot.GetComponent<RespawnData>();
+        if (respawnData == null)
+        {
+            respawnData = Slot.AttachComponent<RespawnData>();
+            respawnData.StoreCurrentPosition();
+        }
     }
 
     public override void OnUpdate(float delta)

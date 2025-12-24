@@ -26,6 +26,11 @@ public class SessionConnectionManager : IDisposable
     public LNLListener Listener { get; private set; }
     public IConnection HostConnection { get; private set; }
 
+    /// <summary>
+    /// Event triggered when host connection is lost (client side).
+    /// </summary>
+    public event Action OnHostDisconnected;
+
     public SessionConnectionManager(Session session)
     {
         Session = session;
@@ -82,31 +87,47 @@ public class SessionConnectionManager : IDisposable
         connection.Connected += (c) =>
         {
             AquaLogger.Log($"Connected to {c.Address}");
-            taskCompletionSource.SetResult(true);
+            taskCompletionSource.TrySetResult(true);
         };
 
         connection.ConnectionFailed += (c) =>
         {
             AquaLogger.Error($"Connection failed: {c.FailReason}");
-            taskCompletionSource.SetResult(false);
+            taskCompletionSource.TrySetResult(false);
         };
 
         connection.Closed += (c) =>
         {
             AquaLogger.Warn($"Connection closed: {c.FailReason}");
             taskCompletionSource.TrySetResult(false);
+            
+            // Trigger host disconnected event if this was the host connection
+            if (HostConnection == c)
+            {
+                OnHostDisconnected?.Invoke();
+            }
         };
 
         connection.DataReceived += (data, length) => OnConnectionDataReceived(connection, data, length);
         connection.Connect(null);
 
-        bool success = await taskCompletionSource.Task;
+        var timeoutTask = Task.Delay(10000);
+        var completedTask = await Task.WhenAny(taskCompletionSource.Task, timeoutTask);
+        bool success = completedTask == taskCompletionSource.Task && taskCompletionSource.Task.Result;
+
         if (success)
         {
             HostConnection = connection;
+            return true;
         }
 
-        return success;
+        if (completedTask == timeoutTask)
+        {
+            AquaLogger.Warn($"Connection timed out: {uri}");
+        }
+
+        connection.Close();
+        return false;
     }
 
     private void OnPeerConnected(LNLPeer peer)
@@ -169,11 +190,24 @@ public class SessionConnectionManager : IDisposable
 
         AquaLogger.Log($"Sent JoinGrant to {connection.Identifier} - UserID: {userID}");
 
-        // Create user
-        var user = new User(World, userRefID);
-        user.UserID.Value = userID.ToString();
-        user.AllocationIDStart.Value = (ulong)allocStart;
-        user.AllocationIDEnd.Value = (ulong)allocEnd;
+        // Create user - use allocation block to ensure sync members get correct RefIDs
+        // The client will create the same User with the same RefID pattern
+        // Start at position 2 because User itself is at position 1, sync members follow
+        var syncMemberStart = RefID.Construct(userRefID.GetUserByte(), userRefID.GetPosition() + 1);
+        World.ReferenceController.AllocationBlockBegin(syncMemberStart);
+        User user;
+        try
+        {
+            user = new User(World, userRefID);
+            user.UserID.Value = userID.ToString();
+            user.AllocationIDStart.Value = (ulong)allocStart;
+            user.AllocationIDEnd.Value = (ulong)allocEnd;
+            user.AllocationID.Value = userRefID.GetUserByte();
+        }
+        finally
+        {
+            World.ReferenceController.AllocationBlockEnd();
+        }
 
         lock (_lock)
         {

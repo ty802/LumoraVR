@@ -11,6 +11,7 @@ public class UpdateManager
 {
     private World _world;
     private HashSet<IImplementable> _pendingHookUpdates = new HashSet<IImplementable>();
+    private readonly object _hookUpdatesLock = new object();
     private float _currentDeltaTime = 0f;
 
     // Bucketed update system for ordered execution
@@ -139,7 +140,10 @@ public class UpdateManager
     {
         if (component != null && component.Hook != null)
         {
-            _pendingHookUpdates.Add(component);
+            lock (_hookUpdatesLock)
+            {
+                _pendingHookUpdates.Add(component);
+            }
         }
     }
 
@@ -268,21 +272,27 @@ public class UpdateManager
     /// </summary>
     public void ProcessHookUpdates(float deltaTime)
     {
-        if (_pendingHookUpdates.Count == 0)
-            return;
+        List<IImplementable> pending;
+        lock (_hookUpdatesLock)
+        {
+            if (_pendingHookUpdates.Count == 0)
+                return;
+
+            // Snapshot to avoid collection modification during hook updates
+            pending = new List<IImplementable>(_pendingHookUpdates);
+            _pendingHookUpdates.Clear();
+        }
 
         // Store delta time for hooks to access
         _currentDeltaTime = deltaTime;
 
-        foreach (var component in _pendingHookUpdates)
+        foreach (var component in pending)
         {
             if (component is ImplementableComponent<IHook> impl)
             {
                 impl.UpdateHook();
             }
         }
-
-        _pendingHookUpdates.Clear();
     }
 
     /// <summary>
@@ -290,7 +300,10 @@ public class UpdateManager
     /// </summary>
     public void Clear()
     {
-        _pendingHookUpdates.Clear();
+        lock (_hookUpdatesLock)
+        {
+            _pendingHookUpdates.Clear();
+        }
         _updateBuckets.Clear();
         _startupQueue.Clear();
         _destructionQueue.Clear();

@@ -53,7 +53,7 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
     /// Initialize this sync element with the world and parent.
     /// Allocates RefID and registers with ReferenceController.
     /// </summary>
-    public virtual void Initialize(World world, IWorldElement parent)
+    public virtual void Initialize(World world, IWorldElement? parent)
     {
         if (world == null)
             throw new ArgumentNullException(nameof(world));
@@ -68,6 +68,9 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
 
         World = world;
         world.ReferenceController.RegisterObject(this);
+        
+        // Register with SyncController for network sync
+        world.SyncController?.RegisterSyncElement(this);
 
         WasChanged = true;
     }
@@ -168,6 +171,11 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
     protected virtual ILinkRef ActiveLink => null;
 
     protected virtual string Name => GetType().Name;
+    
+    /// <summary>
+    /// Type of sync member - must be implemented by concrete classes
+    /// </summary>
+    public abstract SyncMemberType MemberType { get; }
 
     /// <summary>
     /// Default hierarchy info used in messages.
@@ -475,8 +483,9 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
 
     public virtual void Dispose()
     {
-        // Unregister from ReferenceController
+        // Unregister from both controllers
         World?.ReferenceController?.UnregisterObject(this);
+        World?.SyncController?.UnregisterSyncElement(this);
 
         IsDisposed = true;
         _parent = null;

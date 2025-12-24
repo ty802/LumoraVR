@@ -19,6 +19,7 @@ public partial class VRInput : Node3D, IInputProvider
 
     // Laser interaction for UI
     private LaserInteractionManager _laserManager;
+    private GrabManager _grabManager;
 
     /// <summary>
     /// Laser interaction manager for VR UI interaction.
@@ -46,6 +47,10 @@ public partial class VRInput : Node3D, IInputProvider
             _laserManager = new LaserInteractionManager();
             _laserManager.Name = "LaserInteraction";
             AddChild(_laserManager);
+
+            _grabManager = new GrabManager();
+            _grabManager.Name = "GrabManager";
+            AddChild(_grabManager);
 
             AquaLogger.Log("XRInput initialized successfully.");
         }

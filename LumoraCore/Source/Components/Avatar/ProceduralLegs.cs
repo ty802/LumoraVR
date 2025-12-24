@@ -1,5 +1,6 @@
 using System;
 using Lumora.Core;
+using Lumora.Core.Components;
 using Lumora.Core.Math;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
@@ -203,13 +204,34 @@ public class ProceduralLegs : Component
 
         if (leftHand == null && rightHand == null) return;
 
-        // Calculate swing based on which foot is forward
+        // Skip procedural arm swing when hands are actively tracked.
+        bool leftTracked = IsHandTracked(leftHand);
+        bool rightTracked = IsHandTracked(rightHand);
+
+        if (leftTracked && rightTracked)
+            return;
+
+        // Use body-facing basis so arms don't drift in world axes while turning.
+        var bodyRot = _userRoot?.HeadFacingRotation ?? Slot.GlobalRotation;
+        float3 forward = bodyRot * float3.Backward; // Godot forward is -Z
+        forward.y = 0f;
+        if (forward.LengthSquared < 1e-6f)
+            forward = float3.Backward;
+        forward = forward.Normalized;
+
+        float3 right = float3.Cross(forward, float3.Up);
+        if (right.LengthSquared < 1e-6f)
+            right = float3.Right;
+        right = right.Normalized;
+
+        // Calculate swing based on which foot is forward along body direction.
         float swing = 0f;
         if (speed > 0.1f)
         {
-            // Left arm swings opposite to left foot
-            float leftFootZ = _leftFootPos.z - rootPos.z;
-            float rightFootZ = _rightFootPos.z - rootPos.z;
+            float3 leftDelta = _leftFootPos - rootPos;
+            float3 rightDelta = _rightFootPos - rootPos;
+            float leftFootZ = float3.Dot(leftDelta, forward);
+            float rightFootZ = float3.Dot(rightDelta, forward);
             swing = (rightFootZ - leftFootZ) * 0.5f;
             swing = System.Math.Clamp(swing, -ArmSwingAmount, ArmSwingAmount);
         }
@@ -217,23 +239,28 @@ public class ProceduralLegs : Component
         float handY = rootPos.y; // At hip height
         float handSide = 0.25f;
 
-        if (leftHand != null)
+        if (leftHand != null && !leftTracked)
         {
-            leftHand.GlobalPosition = new float3(
-                rootPos.x - handSide,
-                handY,
-                rootPos.z + swing // Left arm forward when right foot forward
-            );
+            var leftPos = rootPos + (-right * handSide) + (forward * swing);
+            leftPos.y = handY;
+            leftHand.GlobalPosition = leftPos;
         }
 
-        if (rightHand != null)
+        if (rightHand != null && !rightTracked)
         {
-            rightHand.GlobalPosition = new float3(
-                rootPos.x + handSide,
-                handY,
-                rootPos.z - swing // Right arm forward when left foot forward
-            );
+            var rightPos = rootPos + (right * handSide) + (forward * -swing);
+            rightPos.y = handY;
+            rightHand.GlobalPosition = rightPos;
         }
+    }
+
+    private static bool IsHandTracked(Slot handSlot)
+    {
+        if (handSlot == null)
+            return false;
+
+        var positioner = handSlot.GetComponent<TrackedDevicePositioner>();
+        return positioner != null && positioner.IsTracking.Value;
     }
 
     private float3 GetRootPosition()

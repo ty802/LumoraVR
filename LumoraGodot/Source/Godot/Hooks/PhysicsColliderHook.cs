@@ -1,4 +1,5 @@
 using Godot;
+using Lumora.Core.Assets;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
 using Lumora.Core.Physics;
@@ -110,6 +111,11 @@ namespace Aquamarine.Godot.Hooks
             _collisionShape = new CollisionShape3D { Name = "Shape" };
             _bodyNode.AddChild(_collisionShape);
 
+            if (Owner?.Slot != null)
+            {
+                _bodyNode.SetMeta("LumoraSlotRef", Owner.Slot.ReferenceID.ToDecimalString());
+            }
+
             // Parent under world root to avoid double transforms
             Node3D worldRoot = Owner?.World?.GodotSceneRoot as Node3D;
             Node parentNode = (Node)worldRoot ?? attachedNode;
@@ -182,9 +188,13 @@ namespace Aquamarine.Godot.Hooks
             _collisionShape.Position = new Vector3(offset.x, offset.y, offset.z);
 
             // Update debug visualization
-            if (_showDebugColliders)
+            if (ShouldShowDebugForCollider())
             {
                 UpdateDebugVisualization();
+            }
+            else
+            {
+                ClearDebugVisualization();
             }
         }
 
@@ -199,6 +209,8 @@ namespace Aquamarine.Godot.Hooks
 
             if (_bodyNode == null || !GodotObject.IsInstanceValid(_bodyNode))
                 return;
+
+            bool isImageCollider = IsImageCollider();
 
             // Create wireframe debug mesh based on collider type
             _debugMesh = new MeshInstance3D();
@@ -215,11 +227,19 @@ namespace Aquamarine.Godot.Hooks
             {
                 case BoxCollider box:
                     var boxSize = box.Size.Value;
-                    var boxMesh = new BoxMesh();
-                    boxMesh.Size = new Vector3(boxSize.x, boxSize.y, boxSize.z);
-                    _debugMesh.Mesh = boxMesh;
-                    // Use wireframe by setting material to show edges
-                    material.AlbedoColor = new Color(0.2f, 0.5f, 1.0f, 0.3f);
+                    if (isImageCollider)
+                    {
+                        _debugMesh.Mesh = BuildBoxWireMesh(new Vector3(boxSize.x, boxSize.y, boxSize.z));
+                        material.AlbedoColor = new Color(0.75f, 0.2f, 1.0f, 1.0f);
+                    }
+                    else
+                    {
+                        var boxMesh = new BoxMesh();
+                        boxMesh.Size = new Vector3(boxSize.x, boxSize.y, boxSize.z);
+                        _debugMesh.Mesh = boxMesh;
+                        // Use wireframe by setting material to show edges
+                        material.AlbedoColor = new Color(0.2f, 0.5f, 1.0f, 0.3f);
+                    }
                     break;
 
                 case CapsuleCollider capsule:
@@ -254,6 +274,88 @@ namespace Aquamarine.Godot.Hooks
             _debugMesh.Position = new Vector3(offset.x, offset.y, offset.z);
 
             _bodyNode.AddChild(_debugMesh);
+        }
+
+        private void ClearDebugVisualization()
+        {
+            if (_debugMesh != null && GodotObject.IsInstanceValid(_debugMesh))
+            {
+                _debugMesh.QueueFree();
+            }
+            _debugMesh = null;
+        }
+
+        private bool ShouldShowDebugForCollider()
+        {
+            return _showDebugColliders || IsImageCollider();
+        }
+
+        private bool IsImageCollider()
+        {
+            if (Owner?.Slot == null)
+                return false;
+
+            return Owner.Slot.GetComponent<ImageProvider>() != null;
+        }
+
+        private static ArrayMesh BuildBoxWireMesh(Vector3 size)
+        {
+            float hx = size.X * 0.5f;
+            float hy = size.Y * 0.5f;
+            float hz = size.Z * 0.5f;
+
+            var corners = new[]
+            {
+                new Vector3(-hx, -hy, -hz),
+                new Vector3(hx, -hy, -hz),
+                new Vector3(hx, hy, -hz),
+                new Vector3(-hx, hy, -hz),
+                new Vector3(-hx, -hy, hz),
+                new Vector3(hx, -hy, hz),
+                new Vector3(hx, hy, hz),
+                new Vector3(-hx, hy, hz)
+            };
+
+            var vertices = new System.Collections.Generic.List<Vector3>();
+            var indices = new System.Collections.Generic.List<int>();
+
+            AddLine(vertices, indices, corners[0], corners[1]);
+            AddLine(vertices, indices, corners[1], corners[2]);
+            AddLine(vertices, indices, corners[2], corners[3]);
+            AddLine(vertices, indices, corners[3], corners[0]);
+
+            AddLine(vertices, indices, corners[4], corners[5]);
+            AddLine(vertices, indices, corners[5], corners[6]);
+            AddLine(vertices, indices, corners[6], corners[7]);
+            AddLine(vertices, indices, corners[7], corners[4]);
+
+            AddLine(vertices, indices, corners[0], corners[4]);
+            AddLine(vertices, indices, corners[1], corners[5]);
+            AddLine(vertices, indices, corners[2], corners[6]);
+            AddLine(vertices, indices, corners[3], corners[7]);
+
+            return BuildLineMesh(vertices, indices);
+        }
+
+        private static ArrayMesh BuildLineMesh(System.Collections.Generic.List<Vector3> vertices, System.Collections.Generic.List<int> indices)
+        {
+            if (vertices.Count == 0) return null;
+            var mesh = new ArrayMesh();
+            var arrays = new global::Godot.Collections.Array();
+            arrays.Resize((int)Mesh.ArrayType.Max);
+            arrays[(int)Mesh.ArrayType.Vertex] = vertices.ToArray();
+            arrays[(int)Mesh.ArrayType.Index] = indices.ToArray();
+            mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Lines, arrays);
+            return mesh;
+        }
+
+        private static void AddLine(System.Collections.Generic.List<Vector3> vertices, System.Collections.Generic.List<int> indices, Vector3 from, Vector3 to)
+        {
+            int start = vertices.Count;
+            vertices.Add(from);
+            vertices.Add(to);
+            indices.Add(start);
+            indices.Add(start + 1);
         }
 
         private void UpdateTransform()

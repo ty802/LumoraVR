@@ -1,5 +1,6 @@
 using Godot;
 using Lumora.Core.Assets;
+using AquaLogger = Lumora.Core.Logging.Logger;
 
 namespace Aquamarine.Godot.Hooks;
 
@@ -35,8 +36,14 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook
 
         if (width > 0 && height > 0 && pixels.Length == expectedRgbaSize)
         {
-            // Raw RGBA8 pixel data
-            image = Image.CreateFromData(width, height, hasMipmaps, Image.Format.Rgba8, pixels);
+            // Raw RGBA8 pixel data - create without mipmaps first (we only have base level data)
+            image = Image.CreateFromData(width, height, false, Image.Format.Rgba8, pixels);
+
+            // Generate mipmaps if requested
+            if (hasMipmaps)
+            {
+                image.GenerateMipmaps();
+            }
         }
         else
         {
@@ -80,6 +87,16 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook
         else
         {
             _godotTexture.SetImage(image);
+        }
+
+        // Debug: verify texture was created correctly
+        AquaLogger.Log($"TextureAssetHook.UploadData: Created texture {width}x{height}, format={image.GetFormat()}, valid={_godotTexture != null}");
+
+        // Debug: sample some pixels to verify data
+        if (image.GetWidth() > 0 && image.GetHeight() > 0)
+        {
+            var pixel = image.GetPixel(0, 0);
+            AquaLogger.Log($"TextureAssetHook.UploadData: Sample pixel[0,0] = RGBA({pixel.R:F2}, {pixel.G:F2}, {pixel.B:F2}, {pixel.A:F2})");
         }
     }
 

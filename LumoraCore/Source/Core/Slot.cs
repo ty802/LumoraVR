@@ -143,6 +143,17 @@ public class Slot : IImplementable<IHook<Slot>>, IWorldElement, IChangeable
     /// </summary>
     public Sync<long> OrderOffset { get; private set; }
 
+	/// <summary>
+	/// Reference to parent slot (synchronized).
+	/// This is how parent-child relationships are synced over the network.
+	/// </summary>
+	public SyncRef<Slot> ParentSlotRef { get; private set; }
+
+	/// <summary>
+	/// Replicator for this slot's components (synchronized).
+	/// </summary>
+	public ComponentReplicator ComponentReplicator { get; private set; }
+
     /// <summary>
     /// Alias for Name for backward compatibility.
     /// </summary>
@@ -347,6 +358,7 @@ public class Slot : IImplementable<IHook<Slot>>, IWorldElement, IChangeable
 
     /// <summary>
     /// Set parent with option to preserve global transform.
+    /// Updates ParentSlotRef which triggers network sync and internal state update.
     /// </summary>
     public void SetParent(Slot newParent, bool preserveGlobalTransform = false)
     {
@@ -356,7 +368,6 @@ public class Slot : IImplementable<IHook<Slot>>, IWorldElement, IChangeable
             throw new InvalidOperationException("Cannot set a descendant as parent (would create cycle)");
         }
 
-        var oldParent = _parent;
         float3 globalPos = float3.Zero;
         floatQ globalRot = floatQ.Identity;
         float3 globalScale = float3.One;
@@ -368,9 +379,9 @@ public class Slot : IImplementable<IHook<Slot>>, IWorldElement, IChangeable
             globalScale = GlobalScale;
         }
 
-        _parent?.RemoveChildInternal(this);
-        _parent = newParent;
-        _parent?.AddChildInternal(this);
+        // Update ParentSlotRef - this triggers OnParentSlotRefChanged which updates
+        // _parent, child collections, and fires events
+        ParentSlotRef.Target = newParent;
 
         InvalidateGlobalTransforms();
 
@@ -380,10 +391,6 @@ public class Slot : IImplementable<IHook<Slot>>, IWorldElement, IChangeable
             GlobalRotation = globalRot;
             GlobalScale = globalScale;
         }
-
-        OnParentChanged?.Invoke(this, oldParent, newParent);
-        ParentChanged?.Invoke(this);
-        OnChanged();
     }
 
     #endregion
@@ -928,7 +935,9 @@ public class Slot : IImplementable<IHook<Slot>>, IWorldElement, IChangeable
         LocalScale = new Sync<float3>(this, float3.One);
         Tag = new Sync<string>(this, string.Empty);
         Persistent = new Sync<bool>(this, true);
-        OrderOffset = new Sync<long>(this, 0);
+		OrderOffset = new Sync<long>(this, 0);
+		ParentSlotRef = new SyncRef<Slot>();
+		ComponentReplicator = new ComponentReplicator(this);
 
         ((ISyncMember)Name).Name = "Name";
         ((ISyncMember)ActiveSelf).Name = "ActiveSelf";
@@ -937,7 +946,9 @@ public class Slot : IImplementable<IHook<Slot>>, IWorldElement, IChangeable
         ((ISyncMember)LocalScale).Name = "LocalScale";
         ((ISyncMember)Tag).Name = "Tag";
         ((ISyncMember)Persistent).Name = "Persistent";
-        ((ISyncMember)OrderOffset).Name = "OrderOffset";
+		((ISyncMember)OrderOffset).Name = "OrderOffset";
+		((ISyncMember)ParentSlotRef).Name = "ParentSlotRef";
+		((ISyncMember)ComponentReplicator).Name = "Components";
 
         LocalPosition.OnChanged += _ => InvalidateTransformCache();
         LocalRotation.OnChanged += _ => InvalidateTransformCache();
@@ -953,18 +964,64 @@ public class Slot : IImplementable<IHook<Slot>>, IWorldElement, IChangeable
             OnNameChanged?.Invoke(this, Name.Value);
             OnChanged();
         };
+
+        // When ParentSlotRef changes (from network sync), update internal parent-child structure
+        ParentSlotRef.OnTargetChange += OnParentSlotRefChanged;
+    }
+
+    /// <summary>
+    /// Called when ParentSlotRef changes (e.g., from network sync).
+    /// Updates the internal _parent field and child collections.
+    /// </summary>
+    private void OnParentSlotRefChanged(SyncRef<Slot> syncRef)
+    {
+        var newParent = syncRef.Target;
+
+        // Skip if already the same parent (avoid infinite loops)
+        if (_parent == newParent) return;
+
+        // Remove from old parent's children
+        if (_parent != null)
+        {
+            _parent._children.Remove(this);
+            _parent.OnChildRemoved?.Invoke(_parent, this);
+        }
+
+        var oldParent = _parent;
+        _parent = newParent;
+
+        // Add to new parent's children
+        if (_parent != null)
+        {
+            if (!_parent._children.Contains(this))
+            {
+                _parent._children.Add(this);
+                _parent.OnChildAdded?.Invoke(_parent, this);
+            }
+        }
+
+        // Update transform cache and fire events
+        InvalidateTransformCache();
+        OnParentChanged?.Invoke(this, oldParent, newParent);
+        ParentChanged?.Invoke(this);
+        OnChanged();
     }
 
     /// <summary>
     /// Initialize this Slot with a World context.
     /// </summary>
-    public void Initialize(World world)
-    {
-        World = world;
-        ReferenceID = World?.ReferenceController?.AllocateID() ?? RefID.Null;
-        // Note: Registration is handled by World.RegisterSlot, called by the parent (AddSlot/World.Initialize)
-        InitializeSyncMemberRefIDs();
-        IsInitialized = true;
+	public void Initialize(World world)
+	{
+		World = world;
+		ReferenceID = World?.ReferenceController?.AllocateID() ?? RefID.Null;
+		// Note: Registration is handled by World.RegisterSlot, called by the parent (AddSlot/World.Initialize)
+		InitializeSyncMemberRefIDs();
+		ComponentReplicator?.RegisterExistingComponents();
+		if (ComponentReplicator != null && ComponentReplicator.IsInInitPhase)
+		{
+			ComponentReplicator.EndInitPhase();
+		}
+		IsInitialized = true;
 
         if (IsRootSlot)
         {
@@ -983,19 +1040,97 @@ public class Slot : IImplementable<IHook<Slot>>, IWorldElement, IChangeable
             component.OnAwake();
     }
 
-    private void InitializeSyncMemberRefIDs()
+    /// <summary>
+    /// Set the ReferenceID directly. Used by SlotReplicator for network-created slots.
+    /// </summary>
+    internal void SetReferenceID(RefID id)
     {
-        if (World == null) return;
-
-        Name?.Initialize(World, this);
-        ActiveSelf?.Initialize(World, this);
-        LocalPosition?.Initialize(World, this);
-        LocalRotation?.Initialize(World, this);
-        LocalScale?.Initialize(World, this);
-        Tag?.Initialize(World, this);
-        Persistent?.Initialize(World, this);
-        OrderOffset?.Initialize(World, this);
+        ReferenceID = id;
     }
+
+    /// <summary>
+    /// Initialize this Slot from network replication with a pre-assigned RefID.
+    /// Used by SlotReplicator when creating slots from network data.
+    /// NOTE: This runs on the sync thread - no Godot operations allowed here!
+    /// Hook initialization is deferred to the main thread.
+    /// </summary>
+	internal void InitializeFromReplicator(World world, RefID assignedId)
+	{
+		World = world;
+		ReferenceID = assignedId;
+
+        // Register with ReferenceController (ReferenceID is already set)
+        World?.ReferenceController?.RegisterObject(this);
+
+        // Initialize sync members with sequential RefIDs starting after the slot's RefID.
+        // This must match the host's allocation pattern. The host allocates:
+        // - Slot: RefID X
+        // - Name: RefID X+1
+        // - ActiveSelf: RefID X+2
+        // - etc.
+        // We use an allocation block to ensure the same pattern on the client.
+        var refController = World?.ReferenceController;
+        if (refController != null)
+        {
+            // Start allocation block at the position AFTER this slot's RefID
+            var nextId = RefID.Construct(assignedId.GetUserByte(), assignedId.GetPosition() + 1);
+            refController.AllocationBlockBegin(nextId);
+            try
+            {
+				InitializeSyncMemberRefIDs();
+			}
+			finally
+			{
+				refController.AllocationBlockEnd();
+			}
+		}
+
+		ComponentReplicator?.RegisterExistingComponents();
+		if (ComponentReplicator != null && ComponentReplicator.IsInInitPhase)
+		{
+			ComponentReplicator.EndInitPhase();
+		}
+		IsInitialized = true;
+
+        if (IsRootSlot)
+        {
+            _transformDirty = 0;
+            _cachedTRS = float4x4.TRS(LocalPosition.Value, LocalRotation.Value, LocalScale.Value);
+            _cachedLocalToWorld = _cachedTRS;
+            _cachedWorldToLocal = _cachedTRS.Inverse;
+            _cachedGlobalPosition = LocalPosition.Value;
+            _cachedGlobalRotation = LocalRotation.Value;
+            _cachedGlobalScale = LocalScale.Value;
+        }
+
+        // DO NOT call InitializeHook() here! This runs on sync thread.
+        // Hook creation must be deferred to the main thread via World.RunSynchronously
+        World?.RunSynchronously(() =>
+        {
+            if (!IsDestroyed && World != null)
+            {
+                InitializeHook();
+                foreach (var component in _components)
+                    component.OnAwake();
+            }
+        });
+    }
+
+	private void InitializeSyncMemberRefIDs()
+	{
+		if (World == null) return;
+
+		Name?.Initialize(World, this);
+		ActiveSelf?.Initialize(World, this);
+		LocalPosition?.Initialize(World, this);
+		LocalRotation?.Initialize(World, this);
+		LocalScale?.Initialize(World, this);
+		Tag?.Initialize(World, this);
+		Persistent?.Initialize(World, this);
+		OrderOffset?.Initialize(World, this);
+		ParentSlotRef?.Initialize(World, this);
+		ComponentReplicator?.Initialize(World, this);
+	}
 
     private void InitializeHook()
     {
@@ -1075,15 +1210,16 @@ public class Slot : IImplementable<IHook<Slot>>, IWorldElement, IChangeable
     /// <summary>
     /// Attach a new Component to this Slot.
     /// </summary>
-    public T AttachComponent<T>() where T : Component, new()
-    {
-        if (!IsInitialized || World == null)
-        {
-            var uninitializedComponent = new T();
-            uninitializedComponent.Initialize(this);
-            _components.Add(uninitializedComponent);
-            return uninitializedComponent;
-        }
+	public T AttachComponent<T>() where T : Component, new()
+	{
+		if (!IsInitialized || World == null)
+		{
+			var uninitializedComponent = new T();
+			uninitializedComponent.Initialize(this);
+			_components.Add(uninitializedComponent);
+			TrackComponentForSync(uninitializedComponent, skipSync: true);
+			return uninitializedComponent;
+		}
 
         var refController = World.ReferenceController;
         if (refController == null)
@@ -1100,40 +1236,114 @@ public class Slot : IImplementable<IHook<Slot>>, IWorldElement, IChangeable
         component.Initialize(this);
         _components.Add(component);
 
-        component.OnAwake();
-        component.OnInit();
-        component.OnStart();
+		component.OnAwake();
+		component.OnInit();
+		component.OnStart();
 
-        OnComponentAdded?.Invoke(this, component);
+		OnComponentAdded?.Invoke(this, component);
+		TrackComponentForSync(component, skipSync: false);
 
-        if (startedLocalBlock)
-            refController.LocalAllocationBlockEnd();
+		if (startedLocalBlock)
+			refController.LocalAllocationBlockEnd();
 
-        return component;
-    }
+		return component;
+	}
 
     /// <summary>
     /// Attach a Component by type.
     /// </summary>
-    public Component AttachComponent(Type componentType)
-    {
-        if (!typeof(Component).IsAssignableFrom(componentType))
-            throw new ArgumentException("Type must derive from Component", nameof(componentType));
+	public Component AttachComponent(Type componentType)
+	{
+		if (!typeof(Component).IsAssignableFrom(componentType))
+			throw new ArgumentException("Type must derive from Component", nameof(componentType));
 
-        var component = (Component)Activator.CreateInstance(componentType);
-        component.Initialize(this);
-        _components.Add(component);
+		var refController = World?.ReferenceController;
+		bool startedLocalBlock = false;
+		if (refController != null && ReferenceID.IsLocalID && !refController.IsInLocalAllocation)
+		{
+			refController.LocalAllocationBlockBegin();
+			startedLocalBlock = true;
+		}
 
-        if (IsInitialized)
-        {
-            component.OnAwake();
-            component.OnInit();
-            component.OnStart();
-        }
+		var component = (Component)Activator.CreateInstance(componentType);
+		component.Initialize(this);
+		_components.Add(component);
 
-        OnComponentAdded?.Invoke(this, component);
-        return component;
-    }
+		if (IsInitialized)
+		{
+			component.OnAwake();
+			component.OnInit();
+			component.OnStart();
+		}
+
+		OnComponentAdded?.Invoke(this, component);
+		TrackComponentForSync(component, skipSync: !IsInitialized);
+
+		if (startedLocalBlock)
+		{
+			refController.LocalAllocationBlockEnd();
+		}
+		return component;
+	}
+
+	/// <summary>
+	/// Attach a component from network replication with a pre-assigned RefID.
+	/// Runs component lifecycle on the main thread.
+	/// </summary>
+	internal Component AttachComponentFromNetwork(Type componentType, RefID assignedId)
+	{
+		if (World == null)
+			return null;
+
+		if (!typeof(Component).IsAssignableFrom(componentType))
+			throw new ArgumentException("Type must derive from Component", nameof(componentType));
+
+		var existing = _components.FirstOrDefault(c => c.ReferenceID == assignedId);
+		if (existing != null)
+			return existing;
+
+		var refController = World.ReferenceController;
+		if (refController == null)
+			throw new InvalidOperationException("ReferenceController required for component allocation");
+
+		refController.AllocationBlockBegin(assignedId);
+		Component component;
+		try
+		{
+			component = (Component)Activator.CreateInstance(componentType);
+			component.Initialize(this);
+		}
+		finally
+		{
+			refController.AllocationBlockEnd();
+		}
+
+		_components.Add(component);
+
+		World.RunSynchronously(() =>
+		{
+			if (component.IsDestroyed)
+				return;
+
+			component.OnAwake();
+			component.OnInit();
+			component.OnStart();
+			OnComponentAdded?.Invoke(this, component);
+		});
+
+		return component;
+	}
+
+	private void TrackComponentForSync(Component component, bool skipSync)
+	{
+		if (component == null || ComponentReplicator == null || component.ReferenceID.IsNull)
+			return;
+
+		if (!ComponentReplicator.ContainsKey(component.ReferenceID))
+		{
+			ComponentReplicator.Add(component.ReferenceID, component, isNewlyCreated: true, skipSync: skipSync);
+		}
+	}
 
     /// <summary>
     /// Get or attach a component.
@@ -1281,14 +1491,29 @@ public class Slot : IImplementable<IHook<Slot>>, IWorldElement, IChangeable
     /// <summary>
     /// Remove a Component from this Slot.
     /// </summary>
-    public void RemoveComponent(Component component)
-    {
-        if (_components.Remove(component))
-        {
-            OnComponentRemoved?.Invoke(this, component);
-            component.OnDestroy();
-        }
-    }
+	public void RemoveComponent(Component component)
+	{
+		RemoveComponentInternal(component, fromReplicator: false);
+	}
+
+	internal void RemoveComponentInternal(Component component, bool fromReplicator)
+	{
+		if (component == null)
+			return;
+
+		if (_components.Remove(component))
+		{
+			OnComponentRemoved?.Invoke(this, component);
+			World?.UnregisterComponent(component);
+			component.OnDestroy();
+			component.DisposeSyncMembers();
+		}
+
+		if (!fromReplicator && ComponentReplicator != null && ComponentReplicator.ContainsKey(component.ReferenceID))
+		{
+			ComponentReplicator.Remove(component.ReferenceID);
+		}
+	}
 
     /// <summary>
     /// Remove all Components of a type.
@@ -1904,15 +2129,13 @@ public class Slot : IImplementable<IHook<Slot>>, IWorldElement, IChangeable
         foreach (var child in _children.ToArray())
             child.Destroy();
 
-        // Destroy all components
-        foreach (var component in _components.ToArray())
-        {
-            OnComponentRemoved?.Invoke(this, component);
-            component.OnDestroy();
-        }
+		// Destroy all components
+		foreach (var component in _components.ToArray())
+		{
+			RemoveComponentInternal(component, fromReplicator: false);
+		}
 
-        _children.Clear();
-        _components.Clear();
+		_children.Clear();
 
         // Remove from parent
         _parent?.RemoveChildInternal(this);

@@ -2,6 +2,8 @@ using System;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using StbImageSharp;
+using AquaLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Assets;
 
@@ -55,6 +57,7 @@ public class ImageProvider : UrlAssetProvider<TextureAsset, ImageMetadata>
         if (rgbaPixels == null) return null;
 
         var asset = new TextureAsset();
+        asset.InitializeDynamic();  // Create the hook before setting data
         asset.SetImageData(rgbaPixels, metadata.Width, metadata.Height, GenerateMipmaps.Value);
         return asset;
     }
@@ -83,7 +86,23 @@ public class ImageProvider : UrlAssetProvider<TextureAsset, ImageMetadata>
             return buffer;
         }
 
-        // For non-file URLs, would need HTTP client - for now return empty
+        // For HTTP/HTTPS/lumora URLs, load full content via ContentCache then take header
+        if (url.Scheme is "http" or "https" or "lumora")
+        {
+            var contentCache = Engine.Current?.ContentCache;
+            if (contentCache != null)
+            {
+                var data = await contentCache.Get(url, token);
+                if (data != null && data.Length > 0)
+                {
+                    var headerLen = System.Math.Min(headerSize, data.Length);
+                    var header = new byte[headerLen];
+                    Array.Copy(data, header, headerLen);
+                    return header;
+                }
+            }
+        }
+
         return new byte[0];
     }
 
@@ -138,7 +157,7 @@ public class ImageProvider : UrlAssetProvider<TextureAsset, ImageMetadata>
         }
 
         // Try to get info from file extension
-        string ext = Path.GetExtension(url.LocalPath)?.ToLowerInvariant();
+        string ext = Path.GetExtension(url.IsFile ? url.LocalPath : url.AbsolutePath)?.ToLowerInvariant();
         switch (ext)
         {
             case ".png":
@@ -170,17 +189,72 @@ public class ImageProvider : UrlAssetProvider<TextureAsset, ImageMetadata>
             return await File.ReadAllBytesAsync(url.LocalPath, token);
         }
 
-        // For HTTP URLs, would need HttpClient - placeholder
+        // For HTTP/HTTPS/lumora URLs, use ContentCache
+        if (url.Scheme is "http" or "https" or "lumora")
+        {
+            var contentCache = Engine.Current?.ContentCache;
+            if (contentCache != null)
+            {
+                var data = await contentCache.Get(url, token);
+                if (data != null)
+                {
+                    return data;
+                }
+            }
+            throw new InvalidOperationException($"Failed to load content from URL: {url}");
+        }
+
         throw new NotSupportedException($"URL scheme not supported: {url.Scheme}");
     }
 
     private byte[] DecodeImageToRgba(byte[] fileData, ImageMetadata metadata)
     {
-        // This is a placeholder - actual implementation would use an image decoder
-        // like StbImageSharp, ImageSharp, or platform-specific decoders
+        if (fileData == null || fileData.Length == 0)
+        {
+            AquaLogger.Warn("ImageProvider: Empty file data");
+            return null;
+        }
 
-        // For Godot integration, the hook will handle actual decoding
-        // Return the raw file data and let the hook process it
-        return fileData;
+        try
+        {
+            using var stream = new MemoryStream(fileData);
+            var result = ImageResult.FromStream(stream, ColorComponents.RedGreenBlueAlpha);
+
+            // Update metadata with actual dimensions from decoded image
+            metadata.Width = result.Width;
+            metadata.Height = result.Height;
+
+            AquaLogger.Debug($"ImageProvider: Decoded {result.Width}x{result.Height} image");
+            return FlipRgbaVertical(result.Data, result.Width, result.Height);
+        }
+        catch (Exception ex)
+        {
+            AquaLogger.Error($"ImageProvider: Failed to decode image - {ex.Message}");
+            return null;
+        }
+    }
+
+    private static byte[] FlipRgbaVertical(byte[] rgba, int width, int height)
+    {
+        if (rgba == null || width <= 0 || height <= 0)
+        {
+            return rgba;
+        }
+
+        int stride = width * 4;
+        if (rgba.Length < stride * height)
+        {
+            return rgba;
+        }
+
+        var flipped = new byte[rgba.Length];
+        for (int y = 0; y < height; y++)
+        {
+            int src = y * stride;
+            int dst = (height - 1 - y) * stride;
+            Buffer.BlockCopy(rgba, src, flipped, dst, stride);
+        }
+
+        return flipped;
     }
 }

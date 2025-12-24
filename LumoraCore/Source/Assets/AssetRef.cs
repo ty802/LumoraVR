@@ -1,5 +1,6 @@
 using System;
 using Lumora.Core;
+using AquaLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Assets;
 
@@ -86,12 +87,15 @@ public class AssetRef<A> : Sync<string>, IAssetRef where A : Asset
     /// </summary>
     public void AssetUpdated()
     {
+        var ownerName = (Parent as Component)?.GetType().Name ?? "unknown";
+        AquaLogger.Debug($"AssetRef.AssetUpdated: Owner={ownerName}, Target={_target?.GetType().Name}, Asset={Asset?.GetType().Name}");
         _wasChanged = true;
 
         // Mark as dirty for network sync via SyncElement
         InvalidateSyncElement();
 
         // Force change notification
+        AquaLogger.Debug($"AssetRef.AssetUpdated: Calling ForceSet to trigger Changed event");
         ForceSet(Value);
     }
 

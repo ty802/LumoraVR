@@ -2,6 +2,7 @@ using System;
 using Godot;
 using Lumora.Core.Logging;
 using AquaLogger = Lumora.Core.Logging.Logger;
+using Aquamarine.Source.UI;
 
 namespace Aquamarine.Source.Input;
 
@@ -27,6 +28,7 @@ public partial class DesktopInput : Node3D, IInputProvider
     private CircleCursor _cursorDot;
     private RayCast3D _interactionRay;
     private LaserInteractionManager _laserManager;
+    private GrabManager _grabManager;
 
     // Simulated hand positions
     private Vector3 _leftHandPosition;
@@ -79,15 +81,19 @@ public partial class DesktopInput : Node3D, IInputProvider
         _laserManager.Name = "LaserInteraction";
         AddChild(_laserManager);
 
+        _grabManager = new GrabManager();
+        _grabManager.Name = "GrabManager";
+        AddChild(_grabManager);
+
         AquaLogger.Log("DesktopInput initialized");
     }
 
     private void CreateCursorUI()
     {
-        // Create a CanvasLayer for the cursor (always on top)
+        // Create a CanvasLayer for the cursor (always on top, above dashboard at 100)
         var canvasLayer = new CanvasLayer();
         canvasLayer.Name = "DesktopCursorLayer";
-        canvasLayer.Layer = 100; // High layer to be on top
+        canvasLayer.Layer = 101; // Above dashboard layer (100)
         AddChild(canvasLayer);
 
         // Create Control container for cursor
@@ -126,8 +132,13 @@ public partial class DesktopInput : Node3D, IInputProvider
     {
         UpdateCamera();
         UpdateCursorPosition();
-        UpdateInteractionRay();
-        UpdateHandSimulation((float)delta);
+
+        // Don't do interaction raycasting when dashboard is open
+        if (!DashboardToggle.IsDashboardVisible)
+        {
+            UpdateInteractionRay();
+            UpdateHandSimulation((float)delta);
+        }
     }
 
     private void UpdateCamera()
@@ -150,15 +161,28 @@ public partial class DesktopInput : Node3D, IInputProvider
         if (_cursorDot == null)
             return;
 
+        // Always keep cursor visible
+        _cursorDot.Visible = true;
+
         // Get viewport size
         var viewportSize = GetViewport()?.GetVisibleRect().Size ?? new Vector2(1920, 1080);
 
-        // Center the cursor
-        var centerPos = viewportSize / 2f - _cursorDot.CustomMinimumSize / 2f;
-        _cursorDot.Position = centerPos;
+        if (DashboardToggle.IsDashboardVisible)
+        {
+            // Dashboard mode: position cursor at actual mouse position
+            var mousePos = GetViewport()?.GetMousePosition() ?? viewportSize / 2f;
+            _cursorDot.Position = mousePos - _cursorDot.CustomMinimumSize / 2f;
+            _cursorDot.CursorColor = CursorColor;
+        }
+        else
+        {
+            // Normal mode: center the cursor
+            var centerPos = viewportSize / 2f - _cursorDot.CustomMinimumSize / 2f;
+            _cursorDot.Position = centerPos;
+            // Update cursor color based on hover state
+            _cursorDot.CursorColor = _isHoveringUI ? CursorHoverColor : CursorColor;
+        }
 
-        // Update cursor color based on hover state
-        _cursorDot.CursorColor = _isHoveringUI ? CursorHoverColor : CursorColor;
         _cursorDot.QueueRedraw();
     }
 
@@ -260,11 +284,12 @@ public partial class DesktopInput : Node3D, IInputProvider
 
     public Vector3 GetPlayspaceMovementDelta => Vector3.Zero;
 
-    public Vector2 GetMovementInputAxis => InputManager.Movement;
+    // Block all movement/action inputs when dashboard is visible
+    public Vector2 GetMovementInputAxis => DashboardToggle.IsDashboardVisible ? Vector2.Zero : InputManager.Movement;
 
-    public bool GetJumpInput => InputButton.Jump.Held();
+    public bool GetJumpInput => !DashboardToggle.IsDashboardVisible && InputButton.Jump.Held();
 
-    public bool GetSprintInput => InputButton.Sprint.Held();
+    public bool GetSprintInput => !DashboardToggle.IsDashboardVisible && InputButton.Sprint.Held();
 
     public float GetHeight => _playerHeight;
 
@@ -299,13 +324,13 @@ public partial class DesktopInput : Node3D, IInputProvider
     }
 
     // Desktop mode doesn't have grip/trigger in same way as VR
-    // Use mouse buttons instead
-    public bool GetLeftGripInput => global::Godot.Input.IsMouseButtonPressed(MouseButton.Middle);
-    public bool GetRightGripInput => global::Godot.Input.IsMouseButtonPressed(MouseButton.Right);
+    // Use mouse buttons instead - block when dashboard is visible
+    public bool GetLeftGripInput => !DashboardToggle.IsDashboardVisible && global::Godot.Input.IsMouseButtonPressed(MouseButton.Middle);
+    public bool GetRightGripInput => !DashboardToggle.IsDashboardVisible && global::Godot.Input.IsMouseButtonPressed(MouseButton.Right);
     public bool GetLeftTriggerInput => false;
-    public bool GetRightTriggerInput => global::Godot.Input.IsMouseButtonPressed(MouseButton.Left);
-    public bool GetLeftSecondaryInput => global::Godot.Input.IsKeyPressed(Key.Q);
-    public bool GetRightSecondaryInput => global::Godot.Input.IsKeyPressed(Key.E);
+    public bool GetRightTriggerInput => !DashboardToggle.IsDashboardVisible && global::Godot.Input.IsMouseButtonPressed(MouseButton.Left);
+    public bool GetLeftSecondaryInput => !DashboardToggle.IsDashboardVisible && global::Godot.Input.IsKeyPressed(Key.Q);
+    public bool GetRightSecondaryInput => !DashboardToggle.IsDashboardVisible && global::Godot.Input.IsKeyPressed(Key.E);
 }
 
 /// <summary>

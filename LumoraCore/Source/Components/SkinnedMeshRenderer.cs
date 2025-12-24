@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Lumora.Core;
+using Lumora.Core.Assets;
 using Lumora.Core.Math;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
@@ -72,6 +73,11 @@ public class SkinnedMeshRenderer : ImplementableComponent
     public Sync<ShadowCastMode> ShadowCastMode { get; private set; }
 
     /// <summary>
+    /// The material to use for rendering.
+    /// </summary>
+    public AssetRef<MaterialAsset> Material { get; private set; }
+
+    /// <summary>
     /// Whether to update the mesh when bones move.
     /// </summary>
     public Sync<bool> UpdateWhenOffscreen { get; private set; }
@@ -123,6 +129,7 @@ public class SkinnedMeshRenderer : ImplementableComponent
 
         // Initialize settings
         ShadowCastMode = new Sync<ShadowCastMode>(this, Components.ShadowCastMode.On);
+        Material = new AssetRef<MaterialAsset>(this);
         UpdateWhenOffscreen = new Sync<bool>(this, true);
         Quality = new Sync<SkinQuality>(this, Components.SkinQuality.FourBones);
 

@@ -33,7 +33,7 @@ public partial class HeadOutput : Node
     // ===== CONFIGURATION =====
     [Export] public OutputType Type { get; set; } = OutputType.Screen;
     [Export] public float DefaultFOV { get; set; } = 90f;
-    [Export] public float NearClip { get; set; } = 0.05f;
+    [Export] public float NearClip { get; set; } = 0.25f; // Clips through head sphere
     [Export] public float FarClip { get; set; } = 1000f;
 
     // ===== CAMERA REFERENCES =====

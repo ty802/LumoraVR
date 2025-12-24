@@ -52,15 +52,22 @@ public abstract class DynamicAssetProvider<A> : AssetProvider<A> where A : Asset
 
     private void RunAssetUpdate()
     {
-        if (_asset == null)
+        Lumora.Core.Logging.Logger.Debug($"DynamicAssetProvider.RunAssetUpdate: [{GetType().Name}] Starting");
+        bool isNew = _asset == null;
+        if (isNew)
         {
             _asset = new A();
             _asset.InitializeDynamic();
             _asset.SetOwner(this);
             OnAssetCreated(_asset);
+            Lumora.Core.Logging.Logger.Debug($"DynamicAssetProvider.RunAssetUpdate: [{GetType().Name}] Created new asset");
         }
         _asset.HighPriorityIntegration = HighPriorityIntegration.Value;
+        Lumora.Core.Logging.Logger.Debug($"DynamicAssetProvider.RunAssetUpdate: [{GetType().Name}] Calling UpdateAsset(_asset)");
         UpdateAsset(_asset);
+
+        // Notify references that asset was updated (so MeshRenderer can re-apply material)
+        AssetUpdated();
     }
 
     protected override void FreeAsset()

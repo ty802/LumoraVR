@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using Lumora.Core;
 using Lumora.Core.Networking;
+using Lumora.Core.Networking;
 
 namespace Lumora.Core.Networking.Sync;
 
@@ -58,9 +59,7 @@ public abstract class BinaryMessageBatch : SyncMessage
         _dataRecords.Add(record);
         _currentRecordIndex = _dataRecords.Count - 1;
 
-		// Write the target ID as header
-		_writer.WriteRefID(targetID);
-
+		// Just track the start - we'll write the header in FinishDataRecord
         return _writer;
     }
 
@@ -117,9 +116,8 @@ public abstract class BinaryMessageBatch : SyncMessage
         var record = _dataRecords[index];
         _stream.Position = record.StartOffset;
 
-		// Skip the target ID header
-		_reader.ReadRefID();
-
+        // Just seek, don't skip anything
+        // The stored data doesn't include RefID/length headers - they were parsed during Decode()
         return _reader;
     }
 
@@ -175,6 +173,7 @@ public abstract class BinaryMessageBatch : SyncMessage
 
     /// <summary>
     /// Encode this batch to bytes for transmission.
+    /// Simple format without complex framing.
     /// </summary>
     public override byte[] Encode()
     {
@@ -194,10 +193,23 @@ public abstract class BinaryMessageBatch : SyncMessage
         // Record count
         writer.Write7BitEncoded((ulong)_dataRecords.Count);
 
-        // Data (entire stream contents)
-        writer.Write7BitEncoded((ulong)_stream.Length);
+        // Write each record: [RefID][DataLength][Data]
         _stream.Position = 0;
-        _stream.CopyTo(output);
+        for (int i = 0; i < _dataRecords.Count; i++)
+        {
+            var record = _dataRecords[i];
+            var dataSize = record.EndOffset - record.StartOffset;
+            
+            // Write record header
+            writer.WriteRefID(record.TargetID);
+            writer.Write7BitEncoded((ulong)dataSize);
+            
+            // Write data
+            _stream.Position = record.StartOffset;
+            var buffer = new byte[dataSize];
+            _stream.Read(buffer, 0, dataSize);
+            writer.Write(buffer);
+        }
 
         return output.ToArray();
     }
@@ -220,7 +232,6 @@ public abstract class BinaryMessageBatch : SyncMessage
             confirmTime = reader.Read7BitEncoded();
         }
         var recordCount = (int)reader.Read7BitEncoded();
-        var dataLength = (int)reader.Read7BitEncoded();
 
         BinaryMessageBatch batch = messageType switch
         {
@@ -232,39 +243,39 @@ public abstract class BinaryMessageBatch : SyncMessage
 
         batch.SenderTime = senderTime;
 
-        // Read data into batch stream
-        var dataBytes = reader.ReadBytes(dataLength);
-        batch._stream = new MemoryStream(dataBytes);
+        // Read records directly into batch stream
+        batch._stream = new MemoryStream();
+        batch._writer = new BinaryWriter(batch._stream);
+        
+        for (int i = 0; i < recordCount; i++)
+        {
+            var targetID = reader.ReadRefID();
+            var dataLength = (int)reader.Read7BitEncoded();
+            var recordData = reader.ReadBytes(dataLength);
+            
+            var record = new DataRecord
+            {
+                TargetID = targetID,
+                StartOffset = (int)batch._stream.Position,
+                EndOffset = (int)batch._stream.Position + dataLength,
+                Validity = MessageValidity.Valid,
+                IsProcessed = false
+            };
+            
+            batch._dataRecords.Add(record);
+            batch._stream.Write(recordData, 0, dataLength);
+        }
+        
         batch._reader = new BinaryReader(batch._stream);
-
-        // Parse data records from stream
-        batch.ParseDataRecords(recordCount);
-
         return batch;
     }
 
     /// <summary>
-    /// Parse data records from the stream.
+    /// Parse data records from the stream (not needed with new approach).
     /// </summary>
     protected virtual void ParseDataRecords(int expectedCount)
     {
-        _stream.Position = 0;
-        _reader = new BinaryReader(_stream);
-
-		while (_stream.Position < _stream.Length && _dataRecords.Count < expectedCount)
-		{
-			var startPos = (int)_stream.Position;
-			var targetID = _reader.ReadRefID();
-
-            var record = new DataRecord
-            {
-                TargetID = targetID,
-                StartOffset = startPos,
-                Validity = MessageValidity.Valid
-            };
-
-            _dataRecords.Add(record);
-        }
+        // This method is no longer used with the new encoding approach
     }
 
     public override void Dispose()

@@ -120,7 +120,17 @@ public class User : ISyncObject, IWorldElement, IDisposable
         }
     }
 
-    public User(World world, RefID refID)
+    /// <summary>
+    /// Create a User for the local/host world (allocates RefIDs normally).
+    /// </summary>
+    public User(World world, RefID refID) : this(world, refID, fromNetwork: false)
+    {
+    }
+
+    /// <summary>
+    /// Create a User, optionally from network (uses allocation block for network-assigned RefIDs).
+    /// </summary>
+    internal User(World world, RefID refID, bool fromNetwork)
     {
         World = world;
         _referenceID = refID;
@@ -128,7 +138,67 @@ public class User : ISyncObject, IWorldElement, IDisposable
         // Discover sync members
         _syncMembers = SyncMemberDiscovery.DiscoverSyncMembers(this);
 
-        AquaLogger.Debug($"User created with {_syncMembers.Count} sync members");
+        // Initialize sync members with RefIDs
+        InitializeSyncMemberRefIDs(fromNetwork);
+
+        AquaLogger.Debug($"User created with {_syncMembers.Count} sync members (fromNetwork={fromNetwork})");
+    }
+
+    /// <summary>
+    /// Initialize sync members with RefIDs.
+    /// For network-created users, uses allocation block to match host's RefID pattern.
+    /// For locally-created users, uses normal sequential allocation.
+    /// </summary>
+    private void InitializeSyncMemberRefIDs(bool fromNetwork)
+    {
+        if (World == null) return;
+
+        var refController = World.ReferenceController;
+        if (refController == null) return;
+
+        // Register the user itself first
+        refController.RegisterObject(this);
+
+        if (fromNetwork)
+        {
+            // Network-created: Use allocation block to match host's RefID pattern
+            // Host allocated User at X, sync members at X+1, X+2, etc.
+            var nextId = RefID.Construct(_referenceID.GetUserByte(), _referenceID.GetPosition() + 1);
+            AquaLogger.Debug($"User.InitializeSyncMemberRefIDs: Starting allocation block at {nextId} for {_syncMembers.Count} members");
+            refController.AllocationBlockBegin(nextId);
+            try
+            {
+                int memberIndex = 0;
+                foreach (var member in _syncMembers)
+                {
+                    if (member is SyncElement syncElement)
+                    {
+                        syncElement.Initialize(World, this);
+                        AquaLogger.Debug($"  [{memberIndex}] {member.Name} → {syncElement.ReferenceID}");
+                        memberIndex++;
+                    }
+                }
+            }
+            finally
+            {
+                refController.AllocationBlockEnd();
+            }
+        }
+        else
+        {
+            // Locally-created: Normal sequential allocation
+            AquaLogger.Debug($"User.InitializeSyncMemberRefIDs: Sequential allocation for {_syncMembers.Count} members");
+            int memberIndex = 0;
+            foreach (var member in _syncMembers)
+            {
+                if (member is SyncElement syncElement)
+                {
+                    syncElement.Initialize(World, this);
+                    AquaLogger.Debug($"  [{memberIndex}] {member.Name} → {syncElement.ReferenceID}");
+                    memberIndex++;
+                }
+            }
+        }
     }
 
     /// <summary>

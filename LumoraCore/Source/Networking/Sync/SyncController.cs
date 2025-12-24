@@ -2,438 +2,284 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using Lumora.Core;
-using Lumora.Core.Logging;
+using AquaLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Sync;
 
-/// <summary>
-/// Controls synchronization of world state.
-/// Collects dirty elements and generates batches for transmission.
-/// </summary>
-public class SyncController : IDisposable
+public class SyncController
 {
-    private List<SyncElement> _dirtySyncElements = new();
-    private volatile bool _collectingDeltaMessages;
-    private DateTime _lastStreamMessageTime;
+	private Dictionary<RefID, SyncElement> syncElements;
+	private List<SyncElement> dirtySyncElements;
+	private readonly object _dirtyLock = new object();
 
-    private static readonly Comparison<SyncElement> _compareSyncElements = CompareSyncElements;
+	public World Owner { get; private set; }
 
-    public World World { get; private set; }
+	public SyncController(World owner)
+	{
+		Owner = owner;
+		syncElements = new Dictionary<RefID, SyncElement>();
+		dirtySyncElements = new List<SyncElement>();
+	}
 
-    /// <summary>
-    /// Currently decoding stream (for reference resolution during decode).
-    /// </summary>
-    public object CurrentlyDecodingStream { get; set; }
+	public void RegisterSyncElement(SyncElement element)
+	{
+		syncElements.Add(element.ReferenceID, element);
+	}
 
-    public SyncController(World world)
-    {
-        World = world;
-    }
+	public void UnregisterSyncElement(SyncElement element)
+	{
+		syncElements.Remove(element.ReferenceID);
+	}
 
-    /// <summary>
-    /// Add a dirty sync element to be synchronized.
-    /// Called by SyncElement.InvalidateSyncElement().
-    /// </summary>
-    public void AddDirtySyncElement(SyncElement element)
-    {
-        if (World.State != World.WorldState.Running && !World.IsAuthority)
-        {
-            Logger.Warn("SyncController: Cannot add dirty elements when not running");
-            return;
-        }
+	public void AddDirtySyncElement(SyncElement element)
+	{
+		if (Owner.State != World.WorldState.Running && !Owner.IsAuthority)
+		{
+			throw new Exception("Cannot Process Dirty Elements when not Running");
+		}
+		lock (_dirtyLock)
+		{
+			dirtySyncElements.Add(element);
+		}
+	}
 
-        if (_collectingDeltaMessages)
-        {
-            throw new InvalidOperationException("Currently collecting delta messages, cannot register new sync element!");
-        }
+	public DeltaBatch CollectDeltaMessages()
+	{
+		DeltaBatch deltaBatch = new DeltaBatch(Owner.StateVersion, Owner.SyncTick);
+		List<SyncElement> elementsToSend;
+		lock (_dirtyLock)
+		{
+			if (dirtySyncElements.Count == 0)
+			{
+				return deltaBatch;
+			}
 
-        if (element.IsLocalElement)
-        {
-            throw new InvalidOperationException($"Cannot register local element as dirty: {element}");
-        }
+			elementsToSend = new List<SyncElement>(dirtySyncElements);
+			dirtySyncElements.Clear();
+		}
 
-        _dirtySyncElements.Add(element);
-    }
+		elementsToSend.Sort((SyncElement a, SyncElement b) => a.ReferenceID.CompareTo(b.ReferenceID));
+		foreach (SyncElement dirtySyncElement in elementsToSend)
+		{
+			BinaryWriter writer = deltaBatch.BeginNewDataRecord(dirtySyncElement.ReferenceID);
+			dirtySyncElement.EncodeDelta(writer, deltaBatch);
+			deltaBatch.FinishDataRecord(dirtySyncElement.ReferenceID);
+		}
 
-    /// <summary>
-    /// Collect all dirty elements into a delta batch.
-    /// Called by sync thread after world update.
-    /// </summary>
-    public DeltaBatch CollectDeltaMessages()
-    {
-        var deltaBatch = new DeltaBatch(World.StateVersion, World.SyncTick);
-        deltaBatch.SetSenderTime(World.TotalTime);
+		return deltaBatch;
+	}
 
-        _collectingDeltaMessages = true;
+	public FullBatch EncodeFullBatch()
+	{
+		return EncodeFullBatch(syncElements.Values);
+	}
 
-        try
-        {
-            // Sort by RefID for deterministic ordering
-            _dirtySyncElements.Sort(_compareSyncElements);
+	public FullBatch EncodeFullBatch(IEnumerable<SyncElement> elements)
+	{
+		FullBatch fullBatch = new FullBatch(Owner.StateVersion, Owner.SyncTick);
+		List<SyncElement> list = new List<SyncElement>();
+		foreach (var element in elements)
+		{
+			list.Add(element);
+		}
+		list.Sort((SyncElement a, SyncElement b) => a.ReferenceID.CompareTo(b.ReferenceID));
+		foreach (SyncElement item in list)
+		{
+			BinaryWriter writer = fullBatch.BeginNewDataRecord(item.ReferenceID);
+			item.EncodeFull(writer, fullBatch);
+			fullBatch.FinishDataRecord(item.ReferenceID);
+		}
+		return fullBatch;
+	}
 
-            foreach (var element in _dirtySyncElements)
-            {
-                if (element.IsDisposed)
-                    continue;
+	public void EncodeFull(RefID id, BinaryMessageBatch syncMessage)
+	{
+		BinaryWriter writer = syncMessage.BeginNewDataRecord(id);
+		syncElements[id].EncodeFull(writer, syncMessage);
+		syncMessage.FinishDataRecord(id);
+	}
 
-				BinaryWriter writer = null;
-				bool recordStarted = false;
-				try
+	public void ValidateDeltaMessages(DeltaBatch batch)
+	{
+		List<ValidationGroup.Rule> list = new List<ValidationGroup.Rule>();
+		List<ValidationGroup> list2 = new List<ValidationGroup>();
+		for (int i = 0; i < batch.DataRecordCount; i++)
+		{
+			DataRecord dataRecord = batch.GetDataRecord(i);
+			if (syncElements.TryGetValue(dataRecord.TargetID, out var value))
+			{
+				BinaryReader reader = batch.SeekDataRecord(i);
+				MessageValidity messageValidity = value.Validate(batch, reader, list);
+				if (messageValidity != MessageValidity.Valid)
 				{
-					writer = deltaBatch.BeginNewDataRecord(element.ReferenceID);
-					recordStarted = true;
-					element.EncodeDelta(writer, deltaBatch);
-					deltaBatch.FinishDataRecord(element.ReferenceID);
-					recordStarted = false;
+					batch.InvalidateDataRecord(i, messageValidity == MessageValidity.Conflict);
 				}
-				catch (Exception ex)
+				if (list.Count > 0)
 				{
-					Logger.Error($"SyncController: Failed to encode delta for {element.ReferenceID}: {ex.Message}");
-					
-					// Clean up the incomplete data record if it was started
-					if (recordStarted)
+					ValidationGroup item = new ValidationGroup();
+					item.Set(i, value, list, batch, Owner);
+					list2.Add(item);
+					list = new List<ValidationGroup.Rule>();
+				}
+			}
+		}
+		Dictionary<RefID, int> dictionary = new Dictionary<RefID, int>();
+		foreach (ValidationGroup item2 in list2)
+		{
+			foreach (ValidationGroup.Rule validationRule in item2.ValidationRules)
+			{
+				RefID otherMessage = validationRule.OtherMessage;
+				if (!dictionary.ContainsKey(otherMessage))
+				{
+					dictionary.Add(otherMessage, batch.FindDataRecordIndex(otherMessage));
+				}
+			}
+		}
+		foreach (ValidationGroup item3 in list2)
+		{
+			bool flag = batch.GetDataRecord(item3.RequestingRecordIndex).Validity == MessageValidity.Conflict;
+			List<int> list3 = new List<int>();
+			foreach (ValidationGroup.Rule validationRule2 in item3.ValidationRules)
+			{
+				int num = dictionary[validationRule2.OtherMessage];
+				if (num < 0)
+				{
+					if (validationRule2.MustExist)
 					{
-						try
-						{
-							deltaBatch.FinishDataRecord(element.ReferenceID);
-						}
-						catch (Exception cleanupEx)
-						{
-							Logger.Error($"SyncController: Failed to clean up incomplete record for {element.ReferenceID}: {cleanupEx.Message}");
-						}
+						flag = true;
+					}
+					continue;
+				}
+				DataRecord dataRecord2 = batch.GetDataRecord(num);
+				list3.Add(num);
+				if (dataRecord2.Validity == MessageValidity.Conflict)
+				{
+					flag = true;
+				}
+				if (validationRule2.CustomValidation != null)
+				{
+					BinaryReader arg = batch.SeekDataRecord(num);
+					if (!validationRule2.CustomValidation(arg))
+					{
+						flag = true;
 					}
 				}
 			}
+			if (!flag)
+			{
+				continue;
+			}
+			batch.InvalidateDataRecord(item3.RequestingRecordIndex, conflict: true);
+			item3.RequestingSyncElement.Invalidate();
+			foreach (int item4 in list3)
+			{
+				batch.InvalidateDataRecord(item4, conflict: true);
+				DataRecord dataRecord3 = batch.GetDataRecord(item4);
+				if (syncElements.TryGetValue(dataRecord3.TargetID, out var value2))
+				{
+					value2.Invalidate();
+				}
+			}
+		}
+	}
 
-            _dirtySyncElements.Clear();
-        }
-        finally
-        {
-            _collectingDeltaMessages = false;
-        }
+	public void ApplyConfirmations(IEnumerable<RefID> ids, ulong confirmTime)
+	{
+		foreach (RefID id in ids)
+		{
+			if (syncElements.TryGetValue(id, out var value))
+			{
+				value.Confirm(confirmTime);
+			}
+		}
+	}
 
-        return deltaBatch;
-    }
+	public bool DecodeDeltaMessage(int recordIndex, DeltaBatch batch)
+	{
+		return DecodeBinaryMessage(recordIndex, batch, isFull: false);
+	}
 
-    /// <summary>
-    /// Encode full state for all non-local sync elements.
-    /// Used when initializing new users.
-    /// </summary>
-    public FullBatch EncodeFullBatch()
-    {
-        var elements = new List<SyncElement>();
+	public bool DecodeFullMessage(int recordIndex, FullBatch batch)
+	{
+		return DecodeBinaryMessage(recordIndex, batch, isFull: true);
+	}
 
-        foreach (var kvp in World.GetAllElements())
-        {
-            if (kvp.Value is SyncElement syncElement && !syncElement.IsLocalElement)
-            {
-                elements.Add(syncElement);
-            }
-        }
+	public bool DecodeCorrection(int recordIndex, ConfirmationMessage batch)
+	{
+		return DecodeBinaryMessage(recordIndex, batch, isFull: true);
+	}
 
-        return EncodeFullBatch(elements);
-    }
-
-    /// <summary>
-    /// Encode full state for specific elements.
-    /// </summary>
-    public FullBatch EncodeFullBatch(List<SyncElement> elements)
-    {
-        var fullBatch = new FullBatch(World.StateVersion, World.SyncTick);
-        fullBatch.SetSenderTime(World.TotalTime);
-
-        // Sort by RefID for deterministic ordering
-        elements.Sort(_compareSyncElements);
-
-        foreach (var element in elements)
-        {
-            if (element.IsLocalElement)
-            {
-                Logger.Warn($"SyncController: Cannot encode local element in full batch: {element.ReferenceID}");
-                continue;
-            }
-
-			BinaryWriter writer = null;
-			bool recordStarted = false;
+	private bool DecodeBinaryMessage(int recordIndex, BinaryMessageBatch message, bool isFull)
+	{
+		DataRecord dataRecord = message.GetDataRecord(recordIndex);
+		if (syncElements.TryGetValue(dataRecord.TargetID, out var value))
+		{
+			BinaryReader reader = message.SeekDataRecord(recordIndex);
 			try
 			{
-				writer = fullBatch.BeginNewDataRecord(element.ReferenceID);
-				recordStarted = true;
-				element.EncodeFull(writer, fullBatch);
-				fullBatch.FinishDataRecord(element.ReferenceID);
-				recordStarted = false;
+				if (!isFull)
+				{
+					value.DecodeDelta(reader, message);
+				}
+				else
+				{
+					value.DecodeFull(reader, message);
+				}
+				return true;
 			}
 			catch (Exception ex)
 			{
-				Logger.Error($"SyncController: Failed to encode full for {element.ReferenceID}: {ex.Message}");
+				AquaLogger.Error($"DecodeBinaryMessage: Failed to decode {dataRecord.TargetID}: {ex.Message}");
+				return false;
+			}
+		}
+		else
+		{
+			// Try to get the object from ReferenceController
+			var element = Owner.ReferenceController.GetObjectOrNull(dataRecord.TargetID);
+			if (element is SyncElement syncElement)
+			{
+				// Register it with sync controller
+				RegisterSyncElement(syncElement);
 				
-				// Clean up the incomplete data record if it was started
-				if (recordStarted)
+				// Try decoding again
+				BinaryReader reader = message.SeekDataRecord(recordIndex);
+				try
 				{
-					try
+					if (!isFull)
 					{
-						fullBatch.FinishDataRecord(element.ReferenceID);
+						syncElement.DecodeDelta(reader, message);
 					}
-					catch (Exception cleanupEx)
+					else
 					{
-						Logger.Error($"SyncController: Failed to clean up incomplete full record for {element.ReferenceID}: {cleanupEx.Message}");
+						syncElement.DecodeFull(reader, message);
 					}
+					return true;
+				}
+				catch (Exception ex)
+				{
+					AquaLogger.Error($"DecodeBinaryMessage: Failed to decode registered element {dataRecord.TargetID}: {ex.Message}");
+					return false;
 				}
 			}
 		}
-
-        return fullBatch;
-    }
-
-	/// <summary>
-	/// Encode full state for a single element into an existing batch.
-	/// Used for corrections.
-	/// </summary>
-	public void EncodeFull(RefID refID, BinaryMessageBatch batch)
-	{
-		var element = World.FindElement(refID) as SyncElement;
-		if (element == null)
-		{
-			Logger.Warn($"SyncController: Element not found for EncodeFull: {refID}");
-			return;
-		}
-
-        var writer = batch.BeginNewDataRecord(refID);
-        element.EncodeFull(writer, batch);
-        batch.FinishDataRecord(refID);
-    }
-
-    // ===== DECODING =====
-
-    /// <summary>
-    /// Decode a delta message record.
-    /// </summary>
-    public bool DecodeDeltaMessage(int recordIndex, DeltaBatch batch)
-    {
-        return DecodeBinaryMessage(recordIndex, batch, isFull: false);
-    }
-
-    /// <summary>
-    /// Decode a full message record.
-    /// </summary>
-    public bool DecodeFullMessage(int recordIndex, FullBatch batch)
-    {
-        return DecodeBinaryMessage(recordIndex, batch, isFull: true);
-    }
-
-    /// <summary>
-    /// Decode a correction record.
-    /// </summary>
-    public bool DecodeCorrection(int recordIndex, ConfirmationMessage batch)
-    {
-        return DecodeBinaryMessage(recordIndex, batch, isFull: true);
-    }
-
-    private bool DecodeBinaryMessage(int recordIndex, BinaryMessageBatch message, bool isFull)
-    {
-        var dataRecord = message.GetDataRecord(recordIndex);
-        var element = World.FindElement(dataRecord.TargetID) as SyncElement;
-
-        if (dataRecord.Validity != MessageValidity.Valid)
-        {
-            return false;
-        }
-
-        if (element == null)
-        {
-            // Try to restore from trash (element was deleted locally but authority still has it)
-            var trashedElement = SyncElement.TryRetrieveFromTrash(World, message.SenderSyncTick, dataRecord.TargetID);
-            if (trashedElement is SyncElement restored)
-            {
-                // Re-register the restored element
-                World.ReferenceController.RegisterObject(restored);
-                element = restored;
-                Logger.Debug($"SyncController: Restored element from trash: {dataRecord.TargetID}");
-            }
-            else
-            {
-                Logger.Warn($"SyncController: Element not found for decode: {dataRecord.TargetID}");
-                return false;
-            }
-        }
-
-        var reader = message.SeekDataRecord(recordIndex);
-
-        try
-        {
-            if (isFull)
-                element.DecodeFull(reader, message);
-            else
-                element.DecodeDelta(reader, message);
-
-            return true;
-        }
-        catch (Exception ex)
-        {
-            Logger.Error($"SyncController: Exception decoding element {dataRecord.TargetID}: {ex.Message}");
-            throw;
-        }
-    }
-
-    // ===== VALIDATION =====
-
-    /// <summary>
-    /// Validate delta messages from a client.
-    /// Authority-only operation.
-    /// </summary>
-    public void ValidateDeltaMessages(DeltaBatch batch)
-    {
-        var rules = new List<ValidationGroup.Rule>();
-        var validationGroups = new List<ValidationGroup>();
-
-        for (int i = 0; i < batch.DataRecordCount; i++)
-        {
-            var dataRecord = batch.GetDataRecord(i);
-            var element = World.FindElement(dataRecord.TargetID) as SyncElement;
-
-            if (element == null)
-            {
-                batch.InvalidateDataRecord(i, conflict: false);
-                continue;
-            }
-
-            var reader = batch.SeekDataRecord(i);
-            var validity = element.Validate(batch, reader, rules);
-
-            if (validity != MessageValidity.Valid)
-            {
-                batch.InvalidateDataRecord(i, validity == MessageValidity.Conflict);
-            }
-
-            if (rules.Count > 0)
-            {
-                // Capture rules for this record
-                var group = new ValidationGroup();
-                group.Set(i, element, new List<ValidationGroup.Rule>(rules));
-                validationGroups.Add(group);
-                rules.Clear();
-            }
-        }
-
-        // Build lookup for referenced messages
-        var recordIndexById = new Dictionary<RefID, int>();
-        foreach (var group in validationGroups)
-        {
-            foreach (var rule in group.ValidationRules)
-            {
-                if (!recordIndexById.ContainsKey(rule.OtherMessage))
-                {
-                    recordIndexById[rule.OtherMessage] = batch.FindDataRecordIndex(rule.OtherMessage);
-                }
-            }
-        }
-
-        // Apply cross-record validations and mark conflicts
-        foreach (var group in validationGroups)
-        {
-            bool conflict = batch.GetDataRecord(group.RequestingRecordIndex).Validity == MessageValidity.Conflict;
-            var relatedIndices = new List<int>();
-
-            foreach (var rule in group.ValidationRules)
-            {
-                if (!recordIndexById.TryGetValue(rule.OtherMessage, out var otherIndex))
-                {
-                    // Should not happen, continue
-                    continue;
-                }
-
-                if (otherIndex < 0)
-                {
-                    if (rule.MustExist)
-                    {
-                        conflict = true;
-                    }
-                    continue;
-                }
-
-                relatedIndices.Add(otherIndex);
-                var otherRecord = batch.GetDataRecord(otherIndex);
-                if (otherRecord.Validity == MessageValidity.Conflict)
-                {
-                    conflict = true;
-                }
-
-                if (rule.CustomValidation != null)
-                {
-                    var reader = batch.SeekDataRecord(otherIndex);
-                    if (!rule.CustomValidation(reader))
-                    {
-                        conflict = true;
-                    }
-                }
-            }
-
-            if (!conflict)
-                continue;
-
-            batch.InvalidateDataRecord(group.RequestingRecordIndex, conflict: true);
-            group.RequestingSyncElement?.Invalidate();
-
-            foreach (var otherIndex in relatedIndices)
-            {
-                batch.InvalidateDataRecord(otherIndex, conflict: true);
-                var otherRecord = batch.GetDataRecord(otherIndex);
-                (World.FindElement(otherRecord.TargetID) as SyncElement)?.Invalidate();
-            }
-        }
-
-        // Cleanup
-        validationGroups.Clear();
-        recordIndexById.Clear();
-    }
-
-	/// <summary>
-	/// Apply confirmations from authority.
-	/// </summary>
-	public void ApplyConfirmations(IEnumerable<RefID> ids, ulong confirmTime)
-	{
-		foreach (var id in ids)
-		{
-			var element = World.FindElement(id) as SyncElement;
-			element?.Confirm(confirmTime);
-		}
+		return false;
 	}
 
-    // ===== STREAMS (high-frequency data) =====
-
-    /// <summary>
-    /// Gather stream messages for transmission.
-    /// </summary>
-    public void GatherStreams(List<StreamMessage> messages)
-    {
-        // TODO: Implement stream gathering when Stream system is built
-        // For now, just send keepalive if authority
-
-        if (World.IsAuthority && (DateTime.UtcNow - _lastStreamMessageTime).TotalSeconds >= 0.5)
-        {
-            _lastStreamMessageTime = DateTime.UtcNow;
-            // Send keepalive stream
-        }
-    }
-
-    /// <summary>
-    /// Apply incoming stream message.
-    /// </summary>
-    public void ApplyStreams(StreamMessage message)
-    {
-        // TODO: Implement stream application when Stream system is built
-    }
-
-    // ===== HELPERS =====
-
-	private static int CompareSyncElements(SyncElement a, SyncElement b)
+	public void GatherStreams(List<StreamMessage> messages)
 	{
-		return a.ReferenceID.CompareTo(b.ReferenceID);
 	}
 
-    public void Dispose()
-    {
-        _dirtySyncElements.Clear();
-        World = null;
-    }
+	public void ApplyStreams(StreamMessage message)
+	{
+	}
+
+	public void Dispose()
+	{
+		syncElements.Clear();
+		lock (_dirtyLock)
+		{
+			dirtySyncElements.Clear();
+		}
+	}
 }

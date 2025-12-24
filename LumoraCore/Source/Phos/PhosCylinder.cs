@@ -64,8 +64,8 @@ public class PhosCylinder : PhosShape
 
     public override void Remove()
     {
-        base.Remove();
         Mesh.RemoveVertices(FirstVertex.Index, _totalVertices, updateSubmeshes: false);
+        base.Remove();
     }
 
     public override void Update()

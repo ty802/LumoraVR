@@ -58,6 +58,11 @@ public class MeshAssetHook : AssetHook, IMeshAssetHook
             var arrays = BuildSurfaceArraysNoIndices(mesh);
             if (arrays != null)
             {
+                if ((mesh.VertexCount % 3) != 0)
+                {
+                    Lumora.Core.Logging.Logger.Warn($"MeshAssetHook.UploadMesh: Skipping surface - no indices and vertex count {mesh.VertexCount} is not a multiple of 3");
+                    return;
+                }
                 _godotMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
             }
         }

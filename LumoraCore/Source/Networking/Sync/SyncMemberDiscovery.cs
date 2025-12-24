@@ -115,6 +115,9 @@ public static class SyncMemberDiscovery
                     syncMember.Initialize(world, parent);
                 }
 
+                // Hook up Changed event to notify parent component
+                HookUpChangedEvent(syncMember, parent);
+
                 syncMembers.Add(syncMember);
                 memberIndex++;
             }
@@ -150,6 +153,9 @@ public static class SyncMemberDiscovery
                         {
                             syncMember.Initialize(world, parent);
                         }
+
+                        // Hook up Changed event to notify parent component
+                        HookUpChangedEvent(syncMember, parent);
 
                         // Only add if not already in the list (avoid duplicates from backing fields)
                         if (!syncMembers.Contains(syncMember))
@@ -220,6 +226,26 @@ public static class SyncMemberDiscovery
         foreach (var member in members)
         {
             member.IsDirty = true;
+        }
+    }
+
+    /// <summary>
+    /// Hook up the Changed event from a sync member to notify the parent component.
+    /// This enables reactive change propagation from sync fields to their owning components.
+    /// </summary>
+    private static void HookUpChangedEvent(ISyncMember syncMember, IWorldElement parent)
+    {
+        // Only hook if the sync member is IChangeable and parent is a Component
+        if (syncMember is IChangeable changeable && parent is Component component)
+        {
+            changeable.Changed += (member) =>
+            {
+                // Don't propagate if component is destroyed
+                if (component.IsDestroyed) return;
+
+                // Notify the component that one of its sync members changed
+                component.NotifyChanged();
+            };
         }
     }
 }

@@ -104,7 +104,9 @@ public class LANDiscovery : IDisposable
 
         try
         {
-            _listener = new UdpClient(ListenPort);
+            _listener = new UdpClient();
+            _listener.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            _listener.Client.Bind(new IPEndPoint(IPAddress.Any, ListenPort));
             _isRunning = true;
 
             Task.Run(() => ListenLoop(_cts.Token));

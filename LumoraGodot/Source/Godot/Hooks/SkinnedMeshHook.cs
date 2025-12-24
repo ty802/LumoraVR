@@ -1,4 +1,5 @@
 using Godot;
+using Lumora.Core.Assets;
 using Lumora.Core.Components;
 using System.Collections.Generic;
 using AquaLogger = Lumora.Core.Logging.Logger;
@@ -78,6 +79,31 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         if (GodotObject.IsInstanceValid(_meshInstance))
         {
             _meshInstance.Visible = Owner.Enabled;
+        }
+
+        // Update material if changed
+        if (Owner.Material.GetWasChangedAndClear())
+        {
+            ApplyMaterial();
+        }
+    }
+
+    /// <summary>
+    /// Apply the component's material or use default fallback.
+    /// </summary>
+    private void ApplyMaterial()
+    {
+        if (_meshInstance == null || _arrayMesh == null) return;
+
+        var materialAsset = Owner.Material.Asset;
+        if (materialAsset != null && materialAsset.GodotMaterial is Material godotMaterial)
+        {
+            _meshInstance.SetSurfaceOverrideMaterial(0, godotMaterial);
+        }
+        else if (_material != null)
+        {
+            // Use default material
+            _meshInstance.SetSurfaceOverrideMaterial(0, _material);
         }
     }
 
@@ -412,16 +438,25 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         // Set mesh on instance
         _meshInstance.Mesh = _arrayMesh;
 
-        // Create/apply material
-        if (_material == null)
+        // Apply material - use component's material if set, otherwise use default
+        var materialAsset = Owner.Material.Asset;
+        if (materialAsset != null && materialAsset.GodotMaterial is Material godotMaterial)
         {
-            _material = new StandardMaterial3D();
-            _material.AlbedoColor = new Color(0.8f, 0.7f, 0.6f); // Skin-like color
-            _material.Roughness = 0.8f;
-            _material.Metallic = 0.0f;
-            _material.CullMode = BaseMaterial3D.CullModeEnum.Back;
+            _meshInstance.SetSurfaceOverrideMaterial(0, godotMaterial);
         }
-        _meshInstance.SetSurfaceOverrideMaterial(0, _material);
+        else
+        {
+            // Create/apply default material
+            if (_material == null)
+            {
+                _material = new StandardMaterial3D();
+                _material.AlbedoColor = new Color(0.8f, 0.7f, 0.6f); // Skin-like color
+                _material.Roughness = 0.8f;
+                _material.Metallic = 0.0f;
+                _material.CullMode = BaseMaterial3D.CullModeEnum.Back;
+            }
+            _meshInstance.SetSurfaceOverrideMaterial(0, _material);
+        }
 
         _meshApplied = true;
         AquaLogger.Log($"SkinnedMeshHook: Applied mesh with {Owner.Vertices.Count} vertices, {Owner.Indices.Count / 3} triangles");

@@ -1,5 +1,5 @@
-using System;
 using Lumora.Core;
+using Lumora.Core.Assets;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
@@ -13,26 +13,34 @@ public class MeshRenderer : ImplementableComponent
     /// <summary>
     /// The mesh to render.
     /// </summary>
-    public Sync<object> Mesh { get; private set; }
+    public readonly Sync<object> Mesh;
+
+    /// <summary>
+    /// The material to use for rendering.
+    /// </summary>
+    public readonly AssetRef<MaterialAsset> Material;
 
     /// <summary>
     /// Shadow casting mode (Off, On, ShadowOnly, DoubleSided).
     /// </summary>
-    public Sync<ShadowCastMode> ShadowCastMode { get; private set; }
+    public readonly Sync<ShadowCastMode> ShadowCastMode;
 
     /// <summary>
     /// Sorting order for transparent rendering (lower values render first).
     /// </summary>
-    public Sync<int> SortingOrder { get; private set; }
+    public readonly Sync<int> SortingOrder;
+
+    public MeshRenderer()
+    {
+        Mesh = new Sync<object>(this, default);
+        Material = new AssetRef<MaterialAsset>(this);
+        ShadowCastMode = new Sync<ShadowCastMode>(this, Components.ShadowCastMode.On);
+        SortingOrder = new Sync<int>(this, 0);
+    }
 
     public override void OnAwake()
     {
         base.OnAwake();
-
-        Mesh = new Sync<object>(this, default);
-        ShadowCastMode = new Sync<ShadowCastMode>(this, Components.ShadowCastMode.On);
-        SortingOrder = new Sync<int>(this, 0);
-
         AquaLogger.Log($"MeshRenderer: Awake on slot '{Slot.SlotName.Value}'");
     }
 

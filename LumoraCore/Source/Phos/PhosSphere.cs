@@ -123,9 +123,9 @@ public class PhosSphere : PhosShape
     /// </summary>
     public override void Remove()
     {
-        base.Remove();
         int vertCount = CalculateVertexCount(_segments, _rings);
         Mesh.RemoveVertices(FirstVertex.Index, vertCount, updateSubmeshes: false);
+        base.Remove();
     }
 
     /// <summary>
@@ -168,7 +168,7 @@ public class PhosSphere : PhosShape
             int v1 = nextRingStart + s;
             int v2 = nextRingStart + s + 1;
 
-            submesh.SetTriangle(tri.IndexUnsafe, topVertex, v2, v1);
+            submesh.SetTriangle(tri.IndexUnsafe, topVertex, v1, v2);
             triIndex++;
         }
 
@@ -180,15 +180,20 @@ public class PhosSphere : PhosShape
 
             for (int s = 0; s < segments; s++)
             {
-                // First triangle
+                int v0 = ringStart + s;         // top-left
+                int v1 = ringStart + s + 1;     // top-right
+                int v2 = nextRingStart + s;     // bottom-left
+                int v3 = nextRingStart + s + 1; // bottom-right
+
+                // First triangle (upper-left of quad)
                 PhosTriangle tri1 = submesh.AddTriangle();
                 triangles?.Add(tri1);
-                submesh.SetTriangle(tri1.IndexUnsafe, ringStart + s, nextRingStart + s + 1, ringStart + s + 1);
+                submesh.SetTriangle(tri1.IndexUnsafe, v0, v2, v1);
 
-                // Second triangle
+                // Second triangle (lower-right of quad)
                 PhosTriangle tri2 = submesh.AddTriangle();
                 triangles?.Add(tri2);
-                submesh.SetTriangle(tri2.IndexUnsafe, ringStart + s, nextRingStart + s, nextRingStart + s + 1);
+                submesh.SetTriangle(tri2.IndexUnsafe, v1, v2, v3);
 
                 triIndex += 2;
             }
@@ -206,7 +211,7 @@ public class PhosSphere : PhosShape
             int v1 = bottomCapStart + s;
             int v2 = bottomCapStart + s + 1;
 
-            submesh.SetTriangle(tri.IndexUnsafe, v1, bottomVertex + s, v2);
+            submesh.SetTriangle(tri.IndexUnsafe, bottomVertex + s, v2, v1);
             triIndex++;
         }
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using Lumora.Core;
 using Lumora.Core.Networking.Discovery;
 using Lumora.Core.Networking.LNL;
@@ -25,6 +26,28 @@ public class Session : IDisposable
     public TimeSpan Latency { get; set; }
 
     private LANAnnouncer _lanAnnouncer;
+    private SessionServerClient? _serverClient;
+
+    /// <summary>
+    /// Event triggered when session is disconnected.
+    /// </summary>
+    public event Action OnDisconnected;
+
+    /// <summary>
+    /// Gets the LAN announcer ID for filtering out own broadcasts during discovery.
+    /// Returns Guid.Empty if not hosting or not announcing.
+    /// </summary>
+    public Guid LANAnnouncerId => _lanAnnouncer?.AnnouncerId ?? Guid.Empty;
+
+    /// <summary>
+    /// Session server address for public registration.
+    /// </summary>
+    public static string SessionServerAddress { get; set; } = "localhost";
+
+    /// <summary>
+    /// Session server port for public registration.
+    /// </summary>
+    public static int SessionServerPort { get; set; } = 8000;
 
     private Session(World world)
     {
@@ -60,6 +83,8 @@ public class Session : IDisposable
         session.Metadata.SessionURLs = SessionUrlBuilder.GetLocalSessionUrls(port, session.Metadata.SessionId);
         session.Metadata.StartTime = DateTime.UtcNow;
         session.Metadata.LastUpdate = DateTime.UtcNow;
+        session.Metadata.HostUsername ??= Environment.UserName;
+        session.Metadata.ActiveUsers = 1;
 
         AquaLogger.Log($"Creating new session '{metadata.Name}' on port {port}");
         AquaLogger.Log($"Session ID: {session.Metadata.SessionId}");
@@ -73,6 +98,9 @@ public class Session : IDisposable
         // Create sync manager with dedicated thread
         session.Sync = new SessionSyncManager(session);
         session.Sync.Start();
+
+        // Subscribe to connection events
+        session.Connections.OnHostDisconnected += () => session.OnDisconnected?.Invoke();
 
         // Start LAN announcer if visibility allows
         if (metadata.Visibility == SessionVisibility.LAN ||
@@ -90,16 +118,39 @@ public class Session : IDisposable
     /// </summary>
     public static Session JoinSession(World world, IEnumerable<Uri> addresses)
     {
+        var session = JoinSessionAsync(world, addresses).GetAwaiter().GetResult();
+        if (session == null)
+        {
+            throw new Exception("Failed to connect to session");
+        }
+
+        return session;
+    }
+
+    /// <summary>
+    /// Join an existing session as client (async).
+    /// </summary>
+    public static async Task<Session?> JoinSessionAsync(World world, IEnumerable<Uri> addresses)
+    {
         var session = new Session(world);
 
         AquaLogger.Log($"Joining session at {string.Join(", ", addresses)}");
 
-        // Connect to host
-        var connected = session.Connections.ConnectToAsync(addresses).Result;
+        bool connected;
+        try
+        {
+            connected = await session.Connections.ConnectToAsync(addresses);
+        }
+        catch (Exception ex)
+        {
+            AquaLogger.Error($"Failed to connect to session: {ex.Message}");
+            connected = false;
+        }
+
         if (!connected)
         {
             session.Dispose();
-            throw new Exception("Failed to connect to session");
+            return null;
         }
 
         // Create sync manager with dedicated thread
@@ -133,6 +184,72 @@ public class Session : IDisposable
     }
 
     /// <summary>
+    /// Register with public session server for global discovery.
+    /// </summary>
+    private async void StartPublicServerRegistration()
+    {
+        if (_serverClient != null)
+            return;
+
+        try
+        {
+            _serverClient = new SessionServerClient(SessionServerAddress, SessionServerPort);
+            var connected = await _serverClient.ConnectAsync(
+                Metadata,
+                GetUserList);
+
+            if (connected)
+            {
+                AquaLogger.Log($"Session registered with public server at {SessionServerAddress}:{SessionServerPort}");
+            }
+            else
+            {
+                AquaLogger.Warn("Session: Failed to register with public server");
+                _serverClient?.Dispose();
+                _serverClient = null;
+            }
+        }
+        catch (Exception ex)
+        {
+            AquaLogger.Warn($"Session: Public server registration failed - {ex.Message}");
+            _serverClient?.Dispose();
+            _serverClient = null;
+        }
+    }
+
+    /// <summary>
+    /// Get list of usernames in this session.
+    /// </summary>
+    private string[] GetUserList()
+    {
+        if (World == null)
+            return new[] { Metadata?.HostUsername ?? "Host" };
+
+        var users = World.GetAllUsers();
+        if (users == null || users.Count == 0)
+            return new[] { Metadata?.HostUsername ?? "Host" };
+
+        var usernames = new List<string>();
+        foreach (var user in users)
+        {
+            var name = user.UserName?.Value;
+            if (!string.IsNullOrEmpty(name))
+                usernames.Add(name);
+        }
+
+        return usernames.Count > 0 ? usernames.ToArray() : new[] { Metadata?.HostUsername ?? "Host" };
+    }
+
+    /// <summary>
+    /// Disconnect from public session server.
+    /// </summary>
+    private void StopPublicServerRegistration()
+    {
+        _serverClient?.Dispose();
+        _serverClient = null;
+    }
+
+    /// <summary>
     /// Update session metadata with a modifier action.
     /// </summary>
     /// <param name="update">Action to modify the metadata</param>
@@ -161,6 +278,9 @@ public class Session : IDisposable
 
         // Update announcer
         _lanAnnouncer?.UpdateMetadata(Metadata);
+
+        // Update session server
+        _serverClient?.SendSessionUpdate(count, GetUserList());
     }
 
     /// <summary>
@@ -175,24 +295,37 @@ public class Session : IDisposable
         Metadata.Visibility = visibility;
         Metadata.LastUpdate = DateTime.UtcNow;
 
-        // Handle announcer state change
-        bool shouldAnnounce = visibility == SessionVisibility.LAN ||
-                              visibility == SessionVisibility.Public;
+        // Handle LAN announcer state change
+        bool shouldAnnounceLAN = visibility == SessionVisibility.LAN ||
+                                 visibility == SessionVisibility.Public;
 
-        bool wasAnnouncing = oldVisibility == SessionVisibility.LAN ||
-                             oldVisibility == SessionVisibility.Public;
+        bool wasAnnouncingLAN = oldVisibility == SessionVisibility.LAN ||
+                                oldVisibility == SessionVisibility.Public;
 
-        if (shouldAnnounce && !wasAnnouncing)
+        if (shouldAnnounceLAN && !wasAnnouncingLAN)
         {
             StartLANAnnouncer();
         }
-        else if (!shouldAnnounce && wasAnnouncing)
+        else if (!shouldAnnounceLAN && wasAnnouncingLAN)
         {
             StopLANAnnouncer();
         }
-        else if (shouldAnnounce)
+        else if (shouldAnnounceLAN)
         {
             _lanAnnouncer?.UpdateMetadata(Metadata);
+        }
+
+        // Handle public server registration
+        bool shouldRegisterPublic = visibility == SessionVisibility.Public;
+        bool wasRegisteredPublic = oldVisibility == SessionVisibility.Public;
+
+        if (shouldRegisterPublic && !wasRegisteredPublic)
+        {
+            StartPublicServerRegistration();
+        }
+        else if (!shouldRegisterPublic && wasRegisteredPublic)
+        {
+            StopPublicServerRegistration();
         }
     }
 
@@ -205,6 +338,9 @@ public class Session : IDisposable
 
         // Stop LAN announcer
         StopLANAnnouncer();
+
+        // Stop public server registration
+        StopPublicServerRegistration();
 
         Sync?.Dispose();
         Connections?.Dispose();

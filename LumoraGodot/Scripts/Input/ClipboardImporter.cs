@@ -7,6 +7,11 @@ using System.Text;
 using System.Threading.Tasks;
 using Lumora.Core;
 using Lumora.Core.Assets;
+using Lumora.Core.Components;
+using Lumora.Core.Components.Assets;
+using Lumora.Core.GodotUI.Wizards;
+using Lumora.Core.Math;
+using LumoraMeshes = Lumora.Core.Components.Meshes;
 using Lumora.Godot.UI;
 
 namespace Lumora.Godot.Input;
@@ -237,7 +242,7 @@ public partial class ClipboardImporter : Node
                 break;
 
             case ClipboardContentType.Text:
-                HandleText(clipboardText);
+                await HandleText(clipboardText);
                 break;
 
             default:
@@ -289,7 +294,7 @@ public partial class ClipboardImporter : Node
         }
 
         // Check common file extensions
-        var extensions = new[] { ".glb", ".gltf", ".vrm", ".png", ".jpg", ".jpeg", ".webp", ".obj", ".fbx" };
+        var extensions = new[] { ".glb", ".gltf", ".vrm", ".png", ".jpg", ".jpeg", ".webp", ".obj", ".fbx", ".gdshader" };
         foreach (var ext in extensions)
         {
             if (content.EndsWith(ext, StringComparison.OrdinalIgnoreCase))
@@ -352,6 +357,9 @@ public partial class ClipboardImporter : Node
             case ".bmp":
             case ".tga":
                 await ImportImage(filePath, targetSlot);
+                break;
+            case ".gdshader":
+                await ImportShader(filePath, targetSlot);
                 break;
 
             default:
@@ -447,16 +455,41 @@ public partial class ClipboardImporter : Node
         var imageSlot = targetSlot.AddSlot(fileName);
 
         // Position in front of camera
-        if (_camera != null)
-        {
-            var spawnPosition = _camera.GlobalPosition + (-_camera.GlobalTransform.Basis.Z * 2.0f);
-            imageSlot.LocalPosition.Value = new Lumora.Core.Math.float3(
-                spawnPosition.X, spawnPosition.Y, spawnPosition.Z
-            );
-        }
+        PositionInFrontOfCamera(imageSlot);
 
-        // TODO: Create ImageProvider component to display the image
-        GD.Print($"ClipboardImporter: Image imported to {localUri ?? filePath}");
+        // Add QuadMesh for geometry
+        var quadMesh = imageSlot.AttachComponent<LumoraMeshes.QuadMesh>();
+        quadMesh.Size.Value = new float2(1.0f, 1.0f);
+        quadMesh.DualSided.Value = true;
+
+        // Add MeshRenderer
+        var meshRenderer = imageSlot.AttachComponent<MeshRenderer>();
+        meshRenderer.Mesh.Value = quadMesh;
+
+        var collider = imageSlot.AttachComponent<BoxCollider>();
+        collider.Size.Value = new float3(1f, 1f, 0.02f);
+
+        imageSlot.AttachComponent<Grabbable>();
+
+        // Add ImageProvider with URL
+        var imageProvider = imageSlot.AttachComponent<ImageProvider>();
+        var imageUri = new Uri(localUri ?? filePath);
+        imageProvider.URL.Value = imageUri;
+
+        var sizeDriver = imageSlot.AttachComponent<TextureSizeDriver>();
+        sizeDriver.Source.Target = imageProvider;
+        sizeDriver.Target.Target = quadMesh;
+        sizeDriver.ColliderTarget.Target = collider;
+
+        // Add UnlitMaterial and connect texture
+        var material = imageSlot.AttachComponent<UnlitMaterial>();
+        material.Texture.Target = imageProvider;
+        material.TextureScale.Value = new float2(-1f, 1f);
+        material.TextureOffset.Value = new float2(1f, 0f);
+        material.BlendMode.Value = BlendMode.Transparent;
+        meshRenderer.Material.Target = material;
+
+        GD.Print($"ClipboardImporter: Image imported with visual components to {localUri ?? filePath}");
 
         OnAssetImported?.Invoke(filePath, imageSlot);
     }
@@ -491,7 +524,7 @@ public partial class ClipboardImporter : Node
             var path = uri.AbsolutePath;
             var extension = Path.GetExtension(path).ToLowerInvariant();
 
-            var knownExtensions = new[] { ".glb", ".gltf", ".vrm", ".png", ".jpg", ".jpeg", ".webp", ".obj" };
+        var knownExtensions = new[] { ".glb", ".gltf", ".vrm", ".png", ".jpg", ".jpeg", ".webp", ".obj", ".gdshader" };
             foreach (var ext in knownExtensions)
             {
                 if (extension == ext) return ext;
@@ -596,9 +629,112 @@ public partial class ClipboardImporter : Node
         return null;
     }
 
-    private void HandleText(string text)
+    private async Task HandleText(string text)
     {
         GD.Print($"ClipboardImporter: Handling text content (length: {text.Length})");
+
+        if (IsGdShaderText(text))
+        {
+            await ImportShaderText(text);
+            return;
+        }
+
         // Could create a text label or note in the world
+    }
+
+    private static bool IsGdShaderText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        return text.Contains("shader_type", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task ImportShaderText(string shaderText)
+    {
+        var targetSlot = GetTargetSlot();
+        if (targetSlot == null)
+        {
+            GD.PrintErr("ClipboardImporter: No target slot available for shader import");
+            return;
+        }
+
+        var tempPath = _localDB?.GetTempFilePath(".gdshader");
+        if (string.IsNullOrEmpty(tempPath))
+        {
+            var tempDir = OS.GetUserDataDir() + "/tmp";
+            Directory.CreateDirectory(tempDir);
+            tempPath = Path.Combine(tempDir, $"clipboard_shader_{DateTime.Now:yyyyMMdd_HHmmss}.gdshader");
+        }
+
+        await File.WriteAllTextAsync(tempPath, shaderText);
+        await ImportShader(tempPath, targetSlot);
+    }
+
+    private async Task ImportShader(string filePath, Slot targetSlot)
+    {
+        GD.Print($"ClipboardImporter: Importing shader: {filePath}");
+
+        string localUri = null;
+        if (_localDB != null)
+        {
+            localUri = await _localDB.ImportLocalAssetAsync(filePath, LocalDB.ImportLocation.Copy);
+        }
+
+        var shaderName = Path.GetFileNameWithoutExtension(filePath);
+        if (string.IsNullOrWhiteSpace(shaderName))
+        {
+            shaderName = "CustomShader";
+        }
+
+        var rootSlot = targetSlot.AddSlot($"{shaderName}_Material");
+        PositionInFrontOfCamera(rootSlot);
+
+        var sphereSlot = rootSlot.AddSlot("MaterialSphere");
+        sphereSlot.LocalPosition.Value = new float3(-0.35f, 0f, 0f);
+
+        var sphereMesh = sphereSlot.AttachComponent<LumoraMeshes.SphereMesh>();
+        sphereMesh.Radius.Value = 0.3f;
+        sphereMesh.Segments.Value = 32;
+        sphereMesh.Rings.Value = 16;
+
+        var meshRenderer = sphereSlot.AttachComponent<MeshRenderer>();
+        meshRenderer.Mesh.Value = sphereMesh;
+
+        var shaderProvider = sphereSlot.AttachComponent<ShaderSourceProvider>();
+        shaderProvider.URL.Value = new Uri(localUri ?? filePath);
+
+        var material = sphereSlot.AttachComponent<CustomShaderMaterial>();
+        material.Shader.Target = shaderProvider;
+        meshRenderer.Material.Target = material;
+
+        var inspectorSlot = rootSlot.AddSlot("MaterialInspector");
+        inspectorSlot.LocalPosition.Value = new float3(0.45f, 0f, 0f);
+
+        var inspector = inspectorSlot.AttachComponent<GodotMaterialInspector>();
+        inspector.Material.Target = material;
+
+        GD.Print($"ClipboardImporter: Shader material created with local URI {localUri ?? filePath}");
+        OnAssetImported?.Invoke(filePath, rootSlot);
+    }
+
+    /// <summary>
+    /// Position a slot in front of the camera and face it toward the camera.
+    /// </summary>
+    private void PositionInFrontOfCamera(Slot slot, float distance = 2.0f)
+    {
+        if (_camera != null)
+        {
+            var spawnPosition = _camera.GlobalPosition + (-_camera.GlobalTransform.Basis.Z * distance);
+            slot.LocalPosition.Value = new float3(spawnPosition.X, spawnPosition.Y, spawnPosition.Z);
+
+            // Face the camera with the quad's front side (local backward) toward the viewer
+            var cameraPos = _camera.GlobalPosition;
+            var toCamera = new float3(cameraPos.X - spawnPosition.X, cameraPos.Y - spawnPosition.Y, cameraPos.Z - spawnPosition.Z);
+            if (toCamera.LengthSquared > 0.0001f)
+            {
+                slot.GlobalRotation = floatQ.LookRotation(-toCamera, float3.Up);
+            }
+        }
     }
 }

@@ -105,9 +105,15 @@ public class SessionMetadata
     public bool HideFromListing { get; set; }
 
     /// <summary>
-    /// URL to session thumbnail image.
+    /// URL to session thumbnail image (for public servers).
     /// </summary>
     public string ThumbnailUrl { get; set; }
+
+    /// <summary>
+    /// Base64-encoded thumbnail image data (for LAN discovery).
+    /// PNG format, typically 256x144 or similar.
+    /// </summary>
+    public string? ThumbnailBase64 { get; set; }
 
     /// <summary>
     /// Version hash for compatibility checking.
@@ -141,6 +147,7 @@ public class SessionMetadata
             IsHeadless = IsHeadless,
             HideFromListing = HideFromListing,
             ThumbnailUrl = ThumbnailUrl,
+            ThumbnailBase64 = ThumbnailBase64,
             VersionHash = VersionHash,
             Tags = new List<string>(Tags)
         };

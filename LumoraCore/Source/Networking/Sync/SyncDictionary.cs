@@ -33,6 +33,7 @@ public interface ISyncDictionary
 /// </summary>
 public class SyncDictionary<K, T> : ConflictingSyncElement, IEnumerable<KeyValuePair<K, T>>, ISyncDictionary where T : SyncElement, new()
 {
+    public override SyncMemberType MemberType => SyncMemberType.Dictionary;
     private Dictionary<K, T> _elements;
     private bool _wasCleared;
     private Dictionary<K, T> _addedElements;

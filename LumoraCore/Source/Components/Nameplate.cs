@@ -87,12 +87,34 @@ public class Nameplate : ImplementableComponent
         Size.OnChanged += _ => NotifyChanged();
     }
 
+    private User _subscribedUser;
+
     /// <summary>
     /// Initialize the nameplate for a specific user.
     /// </summary>
     public void Initialize(User user)
     {
+        // Unsubscribe from previous user if any
+        if (_subscribedUser != null)
+        {
+            _subscribedUser.UserName.Changed -= OnUserNameChanged;
+        }
+
         TargetUser.Target = user;
+        _subscribedUser = user;
+
+        // Subscribe to username changes so nameplate updates when username is set
+        if (user != null)
+        {
+            user.UserName.Changed += OnUserNameChanged;
+            Logging.Logger.Log($"Nameplate: Initialized for user '{user.UserName.Value ?? "(null)"}' RefID={user.ReferenceID}");
+        }
+
+        UpdateFromUser();
+    }
+
+    private void OnUserNameChanged(IChangeable _)
+    {
         UpdateFromUser();
     }
 
@@ -105,7 +127,9 @@ public class Nameplate : ImplementableComponent
             return;
         }
 
-        DisplayName.Value = user.UserName.Value ?? "Unknown";
+        var newName = user.UserName.Value ?? "Unknown";
+        Logging.Logger.Log($"Nameplate: UpdateFromUser - UserName='{newName}'");
+        DisplayName.Value = newName;
 
         // Check login status from user
         IsLoggedIn.Value = !string.IsNullOrEmpty(user.UserID.Value);
@@ -194,4 +218,15 @@ public class Nameplate : ImplementableComponent
         Slot.GlobalRotation = floatQ.Identity;
     }
 
+    public override void OnDestroy()
+    {
+        // Unsubscribe from user events
+        if (_subscribedUser != null)
+        {
+            _subscribedUser.UserName.Changed -= OnUserNameChanged;
+            _subscribedUser = null;
+        }
+
+        base.OnDestroy();
+    }
 }

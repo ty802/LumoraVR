@@ -106,56 +106,7 @@ public class CharacterController : ImplementableComponent, IColliderOwner
     public override void OnStart()
     {
         base.OnStart();
-
-        if (_userRoot?.ActiveUser == World.LocalUser)
-        {
-            // Discover colliders NOW (after all components are added to slot)
-            DiscoverColliders();
-
-            // Tell hook to create collision shapes
-            if (Hook != null)
-            {
-                AquaLogger.Log($"CharacterController: Hook exists (type={Hook.GetType().Name}), calling AddColliderShape for {_colliders.Count} colliders");
-
-                try
-                {
-                    var colliders = GetColliders();
-                    foreach (var collider in colliders)
-                    {
-                        AquaLogger.Log($"CharacterController: Calling AddColliderShape for {collider.GetType().Name}");
-
-                        // Use reflection to verify the method exists
-                        var method = Hook.GetType().GetMethod("AddColliderShape");
-                        if (method != null)
-                        {
-                            AquaLogger.Log($"CharacterController: Method AddColliderShape found on hook");
-                            method.Invoke(Hook, new object[] { collider });
-                            AquaLogger.Log($"CharacterController: Method invoked successfully");
-                        }
-                        else
-                        {
-                            AquaLogger.Error($"CharacterController: Method AddColliderShape NOT found on hook type {Hook.GetType().Name}");
-                        }
-                    }
-
-                    // IMPORTANT: Register for hook updates so physics actually runs!
-                    RunApplyChanges();
-                    _isReady = true;
-                    AquaLogger.Log("CharacterController: Registered for hook updates - physics enabled!");
-                }
-                catch (System.Exception ex)
-                {
-                    AquaLogger.Error($"CharacterController: Failed to add collider shape: {ex.Message}\nStack: {ex.StackTrace}");
-                }
-            }
-            else
-            {
-                AquaLogger.Warn("CharacterController: Hook is null!");
-            }
-
-            _isReady = true;
-            AquaLogger.Log($"CharacterController: Initialized for local user '{_userRoot.ActiveUser.UserName.Value}' with {_colliders.Count} colliders");
-        }
+        TryInitializeLocalUser();
     }
 
     /// <summary>
@@ -242,8 +193,13 @@ public class CharacterController : ImplementableComponent, IColliderOwner
     {
         base.OnUpdate(delta);
 
+        if (!_isReady)
+        {
+            TryInitializeLocalUser();
+        }
+
         // Skip if not local user
-        if (_userRoot?.ActiveUser != World.LocalUser)
+        if (!(_userRoot?.IsLocalUserRoot ?? false))
             return;
 
         // Keep registering for hook updates every frame so physics runs continuously
@@ -251,6 +207,68 @@ public class CharacterController : ImplementableComponent, IColliderOwner
         {
             RunApplyChanges();
         }
+    }
+
+    private void TryInitializeLocalUser()
+    {
+        if (_isReady)
+            return;
+
+        if (_userRoot == null)
+        {
+            _userRoot = Slot.GetComponent<UserRoot>();
+            if (_userRoot == null)
+                return;
+        }
+
+        if (!_userRoot.IsLocalUserRoot)
+            return;
+
+        // Discover colliders NOW (after all components are added to slot)
+        DiscoverColliders();
+
+        // Tell hook to create collision shapes
+        if (Hook != null)
+        {
+            AquaLogger.Log($"CharacterController: Hook exists (type={Hook.GetType().Name}), calling AddColliderShape for {_colliders.Count} colliders");
+
+            try
+            {
+                var colliders = GetColliders();
+                foreach (var collider in colliders)
+                {
+                    AquaLogger.Log($"CharacterController: Calling AddColliderShape for {collider.GetType().Name}");
+
+                    // Use reflection to verify the method exists
+                    var method = Hook.GetType().GetMethod("AddColliderShape");
+                    if (method != null)
+                    {
+                        AquaLogger.Log($"CharacterController: Method AddColliderShape found on hook");
+                        method.Invoke(Hook, new object[] { collider });
+                        AquaLogger.Log($"CharacterController: Method invoked successfully");
+                    }
+                    else
+                    {
+                        AquaLogger.Error($"CharacterController: Method AddColliderShape NOT found on hook type {Hook.GetType().Name}");
+                    }
+                }
+
+                // IMPORTANT: Register for hook updates so physics actually runs!
+                RunApplyChanges();
+                AquaLogger.Log("CharacterController: Registered for hook updates - physics enabled!");
+            }
+            catch (System.Exception ex)
+            {
+                AquaLogger.Error($"CharacterController: Failed to add collider shape: {ex.Message}\nStack: {ex.StackTrace}");
+            }
+        }
+        else
+        {
+            AquaLogger.Warn("CharacterController: Hook is null!");
+        }
+
+        _isReady = true;
+        AquaLogger.Log($"CharacterController: Initialized for local user '{_userRoot.ActiveUser.UserName.Value}' with {_colliders.Count} colliders");
     }
 
     // TODO: Physics driver system - Move to physics hook

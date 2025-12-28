@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Lumora.Core.Networking.Session;
 using Lumora.Core.Networking.Sync;
+using Lumora.Core.Components;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
@@ -49,6 +50,16 @@ public class World
 		/// World has been destroyed and cleaned up.
 		/// </summary>
 		Destroyed
+	}
+
+	public enum InitializationState
+	{
+		Created,
+		InitializingNetwork,
+		WaitingForJoinGrant,
+		InitializingDataModel,
+		Finished,
+		Failed
 	}
 
 	public enum WorldFocus
@@ -169,6 +180,7 @@ public class World
 	private Networking.Sync.UserReplicator? _userReplicator;
 	private readonly List<IWorldEventReceiver>[] _worldEventReceivers;
 	private WorldState _state = WorldState.Created;
+	private InitializationState _initState = InitializationState.Created;
 	private Session _session;
 	private HookManager _hookManager;
 	private TrashBin _trashBin;
@@ -204,6 +216,11 @@ public class World
 	/// Current state of the World.
 	/// </summary>
 	public WorldState State => _state;
+
+	/// <summary>
+	/// Detailed initialization state for the World.
+	/// </summary>
+	public InitializationState InitState => _initState;
 
 	/// <summary>
 	/// The root Slot of this World.
@@ -256,6 +273,11 @@ public class World
 	/// Reference controller for object lookup and async resolution.
 	/// </summary>
 	public ReferenceController ReferenceController { get; private set; }
+
+	/// <summary>
+	/// Worker manager for type encoding/decoding during sync.
+	/// </summary>
+	public WorkerManager Workers { get; private set; }
 
 	/// <summary>
 	/// Thread-safe hook manager for world modifications.
@@ -456,7 +478,7 @@ public class World
 		world.CreateHostUser("LocalUser");
 
 		// Start running
-		world._state = WorldState.Running;
+		world.StartRunning();
 		AquaLogger.Log($"Local world '{name}' created and started");
 
 		return world;
@@ -503,7 +525,6 @@ public class World
 		};
 
 		// Start session network (creates LNL listener) but don't create user yet
-		world._state = WorldState.InitializingNetwork;
 		world.StartSessionNetwork(port, metadata);
 
 		// Set session ID from the generated metadata
@@ -516,7 +537,7 @@ public class World
 		world.CreateHostUser(hostUserName);
 
 		// Start running
-		world._state = WorldState.Running;
+		world.StartRunning();
 		AquaLogger.Log($"Session '{name}' started on port {port} with visibility {visibility}");
 
 		return world;
@@ -539,7 +560,6 @@ public class World
 		world.Initialize(isAuthority: false);
 
 		// Join session (connects to LNL server)
-		world._state = WorldState.InitializingNetwork;
 		world.JoinSession(address);
 
 		// World will transition to Running when connection succeeds
@@ -584,19 +604,21 @@ public class World
 	{
 		if (_state != WorldState.Created) return;
 
-		_state = WorldState.InitializingDataModel;
-		AquaLogger.Log($"World entering InitializingDataModel stage (isAuthority={isAuthority})");
+		_initState = InitializationState.Created;
+		AquaLogger.Log($"World initializing data model (isAuthority={isAuthority})");
 
 		// Create reference controller BEFORE anything else
 		ReferenceController = new ReferenceController(this);
+
+		// Create worker manager for type encoding/decoding during sync
+		Workers = new WorkerManager(this);
 
 		// Create sync controller first (doesn't need RefID)
 		SyncController = new SyncController(this);
 		AquaLogger.Log("SyncController initialized");
 
-		// Create network replicators BEFORE entering LOCAL allocation block
-		// These MUST have Authority RefIDs that match between host and client
-		// so that when the host sends FullBatch, the client can decode it
+		// Always create network replicators with consistent RefIDs
+		// This ensures both client and host use the same RefIDs for replicators
 		_slotReplicator = new Networking.Sync.SlotReplicator();
 		_slotReplicator.Initialize(this, "Slots", null);
 		_userReplicator = new Networking.Sync.UserReplicator();
@@ -644,7 +666,7 @@ public class World
 		{
 			_userReplicator.EndInitPhase();
 		}
-		AquaLogger.Log($"World '{WorldName.Value}' initialized successfully - state remains {_state}");
+		AquaLogger.Log($"World '{WorldName.Value}' initialized successfully - state={_state}, initState={_initState}");
 	}
 
 	/// <summary>
@@ -964,6 +986,7 @@ public class World
 	public void SetLocalUser(User user)
 	{
 		LocalUser = user;
+		user?.ConfigureLocalTrackingStreams();
 		AddUser(user);
 		AquaLogger.Log($"Local user set: {user.UserName.Value}");
 	}
@@ -1002,8 +1025,7 @@ public class World
 
 		try
 		{
-			_state = WorldState.InitializingNetwork;
-			AquaLogger.Log("World entering InitializingNetwork stage (host)");
+			NetworkInitStart();
 
 			if (metadata != null)
 			{
@@ -1026,7 +1048,7 @@ public class World
 		catch (Exception ex)
 		{
 			AquaLogger.Error($"Failed to start session network: {ex.Message}");
-			_state = WorldState.Failed;
+			InitializationFailed();
 		}
 	}
 
@@ -1060,8 +1082,7 @@ public class World
 		// Set platform
 		hostUser.UserPlatform.Value = GetCurrentPlatform();
 
-		SetLocalUser(hostUser);
-		AddUser(hostUser); // Add user to world and trigger OnUserJoined
+		SetLocalUser(hostUser); // This calls AddUser internally
 		AquaLogger.Log($"Created host user '{resolvedName}' with RefID {userRefId}");
 		return hostUser;
 	}
@@ -1093,19 +1114,20 @@ public class World
 
 		try
 		{
-			_state = WorldState.InitializingNetwork;
-			AquaLogger.Log("World entering InitializingNetwork stage (client)");
+			NetworkInitStart();
 
 			_session = Session.JoinSession(this, new[] { address });
 
 			// Client now waits for JoinGrant from authority
-			_state = WorldState.WaitingForJoinGrant;
-			AquaLogger.Log($"Joined session at {address} - waiting for JoinGrant");
+			WaitForJoinGrant();
+
+			// Create loading indicator in current world
+			CreateSessionJoinIndicator();
 		}
 		catch (Exception ex)
 		{
 			AquaLogger.Error($"Failed to join session: {ex.Message}");
-			_state = WorldState.Failed;
+			InitializationFailed();
 		}
 	}
 
@@ -1122,25 +1144,23 @@ public class World
 
 		try
 		{
-			_state = WorldState.InitializingNetwork;
-			AquaLogger.Log("World entering InitializingNetwork stage (client)");
+			NetworkInitStart();
 
 			_session = await Session.JoinSessionAsync(this, new[] { address });
 			if (_session == null)
 			{
-				_state = WorldState.Failed;
+				InitializationFailed();
 				return false;
 			}
 
 			// Client now waits for JoinGrant from authority
-			_state = WorldState.WaitingForJoinGrant;
-			AquaLogger.Log($"Joined session at {address} - waiting for JoinGrant");
+			WaitForJoinGrant();
 			return true;
 		}
 		catch (Exception ex)
 		{
 			AquaLogger.Error($"Failed to join session: {ex.Message}");
-			_state = WorldState.Failed;
+			InitializationFailed();
 			return false;
 		}
 	}
@@ -1154,8 +1174,7 @@ public class World
 	{
 		if (_state == WorldState.WaitingForJoinGrant)
 		{
-			_state = WorldState.InitializingDataModel;
-			AquaLogger.Log("World received JoinGrant - now InitializingDataModel");
+			StartDataModelInit();
 		}
 	}
 
@@ -1167,9 +1186,73 @@ public class World
 	{
 		if (_state == WorldState.InitializingDataModel)
 		{
-			_state = WorldState.Running;
-			AquaLogger.Log("World received full state - now Running");
+			StartRunning();
 		}
+	}
+
+	/// <summary>
+	/// Enter network initialization stage.
+	/// </summary>
+	public void NetworkInitStart()
+	{
+		_initState = InitializationState.InitializingNetwork;
+		_state = WorldState.InitializingNetwork;
+		AquaLogger.Log("World entering network initialization");
+	}
+
+	/// <summary>
+	/// Enter join grant wait stage (clients only).
+	/// </summary>
+	public void WaitForJoinGrant()
+	{
+		if (IsAuthority)
+		{
+			AquaLogger.Warn("Authority cannot wait for join grant");
+			return;
+		}
+
+		_initState = InitializationState.WaitingForJoinGrant;
+		_state = WorldState.WaitingForJoinGrant;
+		AquaLogger.Log("Waiting for join grant");
+	}
+
+	/// <summary>
+	/// Enter data model initialization stage (clients only).
+	/// </summary>
+	public void StartDataModelInit()
+	{
+		if (IsAuthority)
+		{
+			AquaLogger.Warn("Authority cannot enter data model init");
+			return;
+		}
+
+		_initState = InitializationState.InitializingDataModel;
+		_state = WorldState.InitializingDataModel;
+		AquaLogger.Log("Starting data model initialization");
+	}
+
+	/// <summary>
+	/// Mark the world as running.
+	/// </summary>
+	public void StartRunning()
+	{
+		if (_state == WorldState.Destroyed)
+			return;
+
+		_initState = InitializationState.Finished;
+		_state = WorldState.Running;
+		AquaLogger.Log("World is now running");
+	}
+
+	/// <summary>
+	/// Mark initialization failure.
+	/// </summary>
+	public void InitializationFailed()
+	{
+		_initState = InitializationState.Failed;
+		_state = WorldState.Failed;
+		AquaLogger.Log("World initialization failed");
 	}
 
 	/// <summary>
@@ -1330,10 +1413,12 @@ public class World
 			// Stage 9: Clean up trash bin
 			_trashBin?.Update();
 
-			// Stage 10: Signal sync manager
+			// Stage 10: Signal sync manager that world refresh is complete
+			// Sync thread waits for this before new-user initialization
+			// This ensures OnUserJoined events have fired and avatars are created
 			if (_session?.Sync != null)
 			{
-				_session.Sync.SignalWorldUpdateFinished();
+				_session.Sync.SignalRefreshFinished();
 			}
 
 			// Stage 11: Update local user stats (FPS)
@@ -1637,6 +1722,42 @@ public class World
 	public Slot AddSlot(string name = "Slot")
 	{
 		return RootSlot.AddSlot(name);
+	}
+
+	/// <summary>
+	/// Create a SessionJoinIndicator in the current world.
+	/// Shows a loading indicator in the currently focused world.
+	/// </summary>
+	private void CreateSessionJoinIndicator()
+	{
+		// Only create indicator for client worlds that have a local user
+		if (IsAuthority || LocalUser == null || WorldManager?.FocusedWorld == null)
+			return;
+
+		try
+		{
+			// Create indicator in the currently focused world
+			var currentWorld = WorldManager.FocusedWorld;
+			
+			RunSynchronously(() =>
+			{
+				SessionJoinIndicator.CreateIndicatorAsync(currentWorld, this, _session?.Sync, indicator =>
+				{
+					if (indicator != null)
+					{
+						AquaLogger.Log($"Created session join indicator in world '{currentWorld.Name}' for joining '{Name}'");
+					}
+					else
+					{
+						AquaLogger.Warn("Failed to create session join indicator");
+					}
+				});
+			});
+		}
+		catch (Exception ex)
+		{
+			AquaLogger.Error($"Error creating session join indicator: {ex.Message}");
+		}
 	}
 
 	/// <summary>

@@ -12,7 +12,7 @@ namespace Lumora.Core;
 /// Implements IUpdatable for structured update ordering.
 /// Implements IChangeable for reactive change tracking and notification.
 /// </summary>
-public abstract class Component : IWorldElement, IUpdatable, IChangeable
+public abstract class Component : IWorldElement, IUpdatable, IChangeable, IWorker
 {
     private bool _isDestroyed;
     private bool _isChangeDirty;
@@ -25,6 +25,11 @@ public abstract class Component : IWorldElement, IUpdatable, IChangeable
 	/// </summary>
 	public RefID ReferenceID { get; private set; }
 
+	/// <summary>
+	/// Set the ReferenceID directly. Used for network-created components.
+	/// </summary>
+	internal void SetReferenceID(RefID id) => ReferenceID = id;
+
 	public ulong RefIdNumeric => (ulong)ReferenceID;
 
 	/// <summary>
@@ -36,6 +41,54 @@ public abstract class Component : IWorldElement, IUpdatable, IChangeable
 	/// Whether this component should persist when the world is saved.
 	/// </summary>
 	public bool IsPersistent => Slot?.Persistent.Value ?? true;
+
+	/// <summary>
+	/// Type of this worker (IWorker implementation).
+	/// </summary>
+	public Type WorkerType => GetType();
+
+	/// <summary>
+	/// Full type name of this worker (IWorker implementation).
+	/// </summary>
+	public string WorkerTypeName => WorkerType.FullName;
+
+	/// <summary>
+	/// Try to get a field by name (IWorker implementation).
+	/// Uses reflection to find sync members.
+	/// </summary>
+	public IField TryGetField(string name)
+	{
+		var type = GetType();
+		var prop = type.GetProperty(name, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+		if (prop != null && typeof(IField).IsAssignableFrom(prop.PropertyType))
+		{
+			return prop.GetValue(this) as IField;
+		}
+		var field = type.GetField(name, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+		if (field != null && typeof(IField).IsAssignableFrom(field.FieldType))
+		{
+			return field.GetValue(this) as IField;
+		}
+		return null;
+	}
+
+	/// <summary>
+	/// Try to get a typed field by name (IWorker implementation).
+	/// </summary>
+	public IField<T> TryGetField<T>(string name)
+	{
+		return TryGetField(name) as IField<T>;
+	}
+
+	/// <summary>
+	/// Get all referenced objects from this component (IWorker implementation).
+	/// </summary>
+	public IEnumerable<IWorldElement> GetReferencedObjects(bool assetRefOnly, bool persistentOnly = true)
+	{
+		// Return the slot this component is attached to
+		if (Slot != null && (!persistentOnly || Slot.IsPersistent))
+			yield return Slot;
+	}
 
     /// <summary>
     /// The Slot this Component is attached to.
@@ -150,6 +203,10 @@ public abstract class Component : IWorldElement, IUpdatable, IChangeable
             // Discover and initialize any other sync members defined in derived classes
             SyncMemberDiscovery.DiscoverAndInitializeSyncMembers(this, world, this);
         }
+        if (Enabled.IsInInitPhase)
+        {
+            Enabled.EndInitPhase();
+        }
 
         // Hook up Enabled change handler for OnEnabled/OnDisabled lifecycle
         Enabled.OnChanged += (val) =>
@@ -173,6 +230,52 @@ public abstract class Component : IWorldElement, IUpdatable, IChangeable
 
         // Call OnAttach lifecycle method
         OnAttach();
+    }
+
+    /// <summary>
+    /// Initialize this Component from network replication with a pre-assigned RefID.
+    /// Used when creating components from FullBatch - does NOT allocate RefIDs.
+    /// Sync members will get their RefIDs from the decoded data.
+    /// </summary>
+    internal void InitializeFromReplicator(Slot slot, RefID assignedId)
+    {
+        Slot = slot;
+        ReferenceID = assignedId;
+        var world = Slot?.World;
+
+        // Register with ReferenceController (RefID already set)
+        world?.ReferenceController?.RegisterObject(this);
+
+        // Create Enabled sync field but DON'T initialize its RefID
+        // The RefID will come from the decoded data
+        Enabled = new Sync<bool>(this, true);
+
+        // DON'T call SyncMemberDiscovery - sync members will be initialized
+        // when we decode them from the host's data
+
+        // Hook up Enabled change handler
+        Enabled.OnChanged += (val) =>
+        {
+            if (val && !_wasEnabled)
+            {
+                _wasEnabled = true;
+                OnEnabled();
+            }
+            else if (!val && _wasEnabled)
+            {
+                _wasEnabled = false;
+                OnDisabled();
+            }
+        };
+
+        IsInitialized = true;
+
+        // Register with World
+        world?.RegisterComponent(this);
+
+        // Call OnAttach and OnAwake lifecycle methods
+        OnAttach();
+        OnAwake();
     }
 
     /// <summary>

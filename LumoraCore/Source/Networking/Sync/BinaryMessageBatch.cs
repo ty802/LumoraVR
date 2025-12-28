@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using Lumora.Core;
 using Lumora.Core.Networking;
-using Lumora.Core.Networking;
+using AquaLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Sync;
 
@@ -80,6 +80,21 @@ public abstract class BinaryMessageBatch : SyncMessage
         _dataRecords[_currentRecordIndex] = record;
         _currentRecordIndex = -1;
     }
+
+	/// <summary>
+	/// Cancel the current data record (used when encoding fails).
+	/// Removes the record and resets stream position.
+	/// </summary>
+	public void CancelDataRecord()
+	{
+		if (_currentRecordIndex < 0)
+			return; // Nothing to cancel
+
+		var record = _dataRecords[_currentRecordIndex];
+		_stream.Position = record.StartOffset; // Reset stream to before this record
+		_dataRecords.RemoveAt(_currentRecordIndex);
+		_currentRecordIndex = -1;
+	}
 
     /// <summary>
     /// Get a data record by index.
@@ -199,11 +214,11 @@ public abstract class BinaryMessageBatch : SyncMessage
         {
             var record = _dataRecords[i];
             var dataSize = record.EndOffset - record.StartOffset;
-            
+
             // Write record header
             writer.WriteRefID(record.TargetID);
             writer.Write7BitEncoded((ulong)dataSize);
-            
+
             // Write data
             _stream.Position = record.StartOffset;
             var buffer = new byte[dataSize];
@@ -246,13 +261,13 @@ public abstract class BinaryMessageBatch : SyncMessage
         // Read records directly into batch stream
         batch._stream = new MemoryStream();
         batch._writer = new BinaryWriter(batch._stream);
-        
+
         for (int i = 0; i < recordCount; i++)
         {
             var targetID = reader.ReadRefID();
             var dataLength = (int)reader.Read7BitEncoded();
             var recordData = reader.ReadBytes(dataLength);
-            
+
             var record = new DataRecord
             {
                 TargetID = targetID,
@@ -261,11 +276,11 @@ public abstract class BinaryMessageBatch : SyncMessage
                 Validity = MessageValidity.Valid,
                 IsProcessed = false
             };
-            
+
             batch._dataRecords.Add(record);
             batch._stream.Write(recordData, 0, dataLength);
         }
-        
+
         batch._reader = new BinaryReader(batch._stream);
         return batch;
     }

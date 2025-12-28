@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using Lumora.Core;
+using Lumora.Core.Networking.Streams;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Sync;
@@ -77,17 +78,13 @@ public class SyncController
 	public FullBatch EncodeFullBatch(IEnumerable<SyncElement> elements)
 	{
 		FullBatch fullBatch = new FullBatch(Owner.StateVersion, Owner.SyncTick);
-		List<SyncElement> list = new List<SyncElement>();
-		foreach (var element in elements)
-		{
-			list.Add(element);
-		}
+		var list = new List<SyncElement>(elements);
 		list.Sort((SyncElement a, SyncElement b) => a.ReferenceID.CompareTo(b.ReferenceID));
-		foreach (SyncElement item in list)
+		foreach (SyncElement element in list)
 		{
-			BinaryWriter writer = fullBatch.BeginNewDataRecord(item.ReferenceID);
-			item.EncodeFull(writer, fullBatch);
-			fullBatch.FinishDataRecord(item.ReferenceID);
+			BinaryWriter writer = fullBatch.BeginNewDataRecord(element.ReferenceID);
+			element.EncodeFull(writer, fullBatch, forFullBatch: true);
+			fullBatch.FinishDataRecord(element.ReferenceID);
 		}
 		return fullBatch;
 	}
@@ -215,63 +212,148 @@ public class SyncController
 		if (syncElements.TryGetValue(dataRecord.TargetID, out var value))
 		{
 			BinaryReader reader = message.SeekDataRecord(recordIndex);
-			try
+			if (!isFull)
 			{
-				if (!isFull)
-				{
-					value.DecodeDelta(reader, message);
-				}
-				else
-				{
-					value.DecodeFull(reader, message);
-				}
-				return true;
+				value.DecodeDelta(reader, message);
 			}
-			catch (Exception ex)
+			else
 			{
-				AquaLogger.Error($"DecodeBinaryMessage: Failed to decode {dataRecord.TargetID}: {ex.Message}");
-				return false;
+				value.DecodeFull(reader, message);
 			}
-		}
-		else
-		{
-			// Try to get the object from ReferenceController
-			var element = Owner.ReferenceController.GetObjectOrNull(dataRecord.TargetID);
-			if (element is SyncElement syncElement)
-			{
-				// Register it with sync controller
-				RegisterSyncElement(syncElement);
-				
-				// Try decoding again
-				BinaryReader reader = message.SeekDataRecord(recordIndex);
-				try
-				{
-					if (!isFull)
-					{
-						syncElement.DecodeDelta(reader, message);
-					}
-					else
-					{
-						syncElement.DecodeFull(reader, message);
-					}
-					return true;
-				}
-				catch (Exception ex)
-				{
-					AquaLogger.Error($"DecodeBinaryMessage: Failed to decode registered element {dataRecord.TargetID}: {ex.Message}");
-					return false;
-				}
-			}
+			return true;
 		}
 		return false;
 	}
 
+	/// <summary>
+	/// Gather stream data from local user's streams into messages.
+	/// Called by SessionSyncManager during the sync loop.
+	/// </summary>
 	public void GatherStreams(List<StreamMessage> messages)
 	{
+		if (Owner == null)
+			return;
+
+		var localUser = Owner.LocalUser;
+		if (localUser == null || !localUser.IsLocal)
+			return;
+
+		var syncTick = Owner.SyncTick;
+
+		// Iterate through all stream groups
+		foreach (var group in localUser.StreamGroupManager.Groups)
+		{
+			bool hasData = false;
+			using var dataStream = new MemoryStream();
+			using var writer = new BinaryWriter(dataStream);
+
+			// Check each stream in the group
+			foreach (var stream in group.Streams)
+			{
+				if (!stream.Active)
+					continue;
+
+				// Check if this stream should send data
+				bool shouldSend = stream.IsImplicitUpdatePoint(syncTick) ||
+				                  stream.IsExplicitUpdatePoint(syncTick);
+
+				if (shouldSend && stream.HasValidData)
+				{
+					// Write stream RefID and encode data
+					writer.Write((ulong)stream.ReferenceID);
+					stream.Encode(writer);
+					hasData = true;
+				}
+			}
+
+			// Create message if we have data
+			if (hasData)
+			{
+				var message = new StreamMessage(Owner.StateVersion, syncTick)
+				{
+					UserID = (ulong)localUser.ReferenceID,
+					StreamStateVersion = localUser.StreamConfigurationVersion,
+					StreamTime = Owner.TotalTime,
+					StreamGroup = group.GroupIndex
+				};
+
+				// Copy the data to the message
+				dataStream.Position = 0;
+				var msgData = message.GetData();
+				dataStream.CopyTo(msgData);
+
+				messages.Add(message);
+			}
+		}
 	}
 
+	/// <summary>
+	/// Apply received stream data to remote user's streams.
+	/// Called by SessionSyncManager when a StreamMessage is received.
+	/// </summary>
 	public void ApplyStreams(StreamMessage message)
 	{
+		if (message == null || message.IsOutdated)
+			return;
+
+		// Find the user that owns these streams
+		var userElement = Owner?.ReferenceController?.GetObjectOrNull(new RefID(message.UserID));
+		if (userElement is not User user)
+		{
+			AquaLogger.Warn($"ApplyStreams: User not found for ID {message.UserID}");
+			return;
+		}
+
+		// Don't apply streams to local user
+		if (user.IsLocal)
+			return;
+
+		// Check stream configuration version
+		if (message.StreamStateVersion < user.StreamConfigurationVersion)
+		{
+			return;
+		}
+
+		// Get the stream group
+		var group = user.StreamGroupManager.GetGroup(message.StreamGroup);
+		if (group == null)
+		{
+			return;
+		}
+
+		// Read and apply stream data
+		var data = message.GetData();
+		using var reader = new BinaryReader(data);
+
+		while (data.Position < data.Length)
+		{
+			try
+			{
+				// Read stream RefID
+				var streamRefID = new RefID(reader.ReadUInt64());
+
+				// Find the stream
+				var streamElement = Owner?.ReferenceController?.GetObjectOrNull(streamRefID);
+				if (streamElement is IStream stream && stream.Active)
+				{
+					stream.Decode(reader, message);
+				}
+				else
+				{
+					AquaLogger.Warn($"ApplyStreams: Stream {streamRefID} not found or inactive");
+					break; // Can't continue if we don't know the stream's data format
+				}
+			}
+			catch (EndOfStreamException)
+			{
+				break; // End of data
+			}
+			catch (Exception ex)
+			{
+				AquaLogger.Error($"ApplyStreams: Error decoding stream data: {ex.Message}");
+				break;
+			}
+		}
 	}
 
 	public void Dispose()

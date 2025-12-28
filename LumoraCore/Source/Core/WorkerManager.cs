@@ -119,18 +119,20 @@ public class WorkerManager
     public Type DecodeType(BinaryReader reader)
     {
         int index = (int)reader.Read7BitEncoded();
+
         if (index > types.Count)
         {
             throw new Exception($"Unknown type index: {index}, total known indexes: {types.Count}");
         }
-        
+
         if (index > 0)
         {
             return types[index];
         }
-        
+
         // Index 0 means type name follows
-        Type type = GetType(reader.ReadString());
+        string typeName = reader.ReadString();
+        Type type = GetType(typeName);
         InformOfTypeUse(type);
         return type;
     }

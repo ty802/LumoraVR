@@ -1,6 +1,5 @@
 using Godot;
 using Lumora.Core;
-using Lumora.Core.Assets;
 using Lumora.Core.Components;
 using LumoraMeshes = Lumora.Core.Components.Meshes;
 using AquaLogger = Lumora.Core.Logging.Logger;
@@ -42,7 +41,7 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
     /// </summary>
     private void HideSourceMeshInstance()
     {
-        var meshValue = Owner.Mesh.Value;
+        var meshValue = Owner.Mesh.Target;
         if (meshValue is LumoraMeshes.ProceduralMesh proceduralMesh)
         {
             if (proceduralMesh.Hook is MeshHook meshHook)
@@ -63,7 +62,7 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
 
     public override void ApplyChanges()
     {
-        if (Owner.Mesh.Value != null && IsMeshAssetAvailable())
+        if (Owner.Mesh.Target != null && IsMeshAssetAvailable())
         {
             if (MeshRenderer == null)
             {
@@ -182,27 +181,16 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
 
     protected virtual bool IsMeshAssetAvailable()
     {
-        return Owner.Mesh.Value != null;
+        return Owner.Mesh.Target != null;
     }
 
     protected virtual Mesh GetGodotMeshFromAsset()
     {
-        var meshValue = Owner.Mesh.Value;
-        if (meshValue == null) return null;
-
-        // Handle MeshDataAsset - get the Godot mesh from its hook
-        if (meshValue is MeshDataAsset meshDataAsset)
-        {
-            if (meshDataAsset.Hook is MeshAssetHook meshAssetHook && meshAssetHook.IsValid)
-            {
-                return meshAssetHook.GodotMesh;
-            }
-            AquaLogger.Debug("MeshRendererHookBase: MeshDataAsset hook not ready");
-            return null;
-        }
+        var meshComponent = Owner.Mesh.Target;
+        if (meshComponent == null) return null;
 
         // Handle ProceduralMesh components - get mesh from their hook
-        if (meshValue is LumoraMeshes.ProceduralMesh proceduralMesh)
+        if (meshComponent is LumoraMeshes.ProceduralMesh proceduralMesh)
         {
             if (proceduralMesh.Hook is MeshHook meshHook)
             {
@@ -216,7 +204,8 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
             return null;
         }
 
-        AquaLogger.Warn($"MeshRendererHookBase: Unsupported mesh type {meshValue.GetType().Name}");
+        // TODO: Handle MeshDataAssetProvider components when needed
+        AquaLogger.Warn($"MeshRendererHookBase: Unsupported mesh component type {meshComponent.GetType().Name}");
         return null;
     }
 

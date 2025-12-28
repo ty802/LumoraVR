@@ -113,6 +113,7 @@ public static class SyncMemberDiscovery
                 if (world != null && syncMember.World == null)
                 {
                     syncMember.Initialize(world, parent);
+                    EndInitPhaseIfNeeded(syncMember);
                 }
 
                 // Hook up Changed event to notify parent component
@@ -152,6 +153,7 @@ public static class SyncMemberDiscovery
                         if (world != null && syncMember.World == null)
                         {
                             syncMember.Initialize(world, parent);
+                            EndInitPhaseIfNeeded(syncMember);
                         }
 
                         // Hook up Changed event to notify parent component
@@ -186,6 +188,18 @@ public static class SyncMemberDiscovery
         foreach (var member in members)
         {
             member.Initialize(world, parent);
+            EndInitPhaseIfNeeded(member);
+        }
+    }
+
+    private static void EndInitPhaseIfNeeded(ISyncMember member)
+    {
+        if (member == null)
+            return;
+
+        if (member.IsInInitPhase)
+        {
+            member.EndInitPhase();
         }
     }
 

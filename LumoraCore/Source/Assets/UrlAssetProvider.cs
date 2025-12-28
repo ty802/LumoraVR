@@ -55,8 +55,8 @@ public abstract class UrlAssetProvider<A, M> : AssetProvider<A>, IAssetConsumer
 
     private void OnUrlChanged()
     {
-        AquaLogger.Debug($"UrlAssetProvider.OnUrlChanged: [{GetType().Name}] URL changed to {URL.Value}, refCount={AssetReferenceCount}, AlwaysLoad={AlwaysLoad}");
-        if (AssetReferenceCount > 0 || AlwaysLoad)
+        AquaLogger.Debug($"UrlAssetProvider.OnUrlChanged: [{GetType().Name}] URL changed to {URL.Value}, refCount={AssetReferenceCount}");
+        if (AssetReferenceCount > 0)
         {
             AquaLogger.Debug($"UrlAssetProvider.OnUrlChanged: [{GetType().Name}] Triggering RefreshAssetState");
             RefreshAssetState();
@@ -69,17 +69,9 @@ public abstract class UrlAssetProvider<A, M> : AssetProvider<A>, IAssetConsumer
     protected void RefreshAssetState()
     {
         AquaLogger.Debug($"UrlAssetProvider.RefreshAssetState: [{GetType().Name}] refCount={AssetReferenceCount}, IsAssetAvailable={IsAssetAvailable}");
-        if (ForceUnload)
+        if (AssetReferenceCount == 0 && IsAssetAvailable)
         {
             FreeAsset();
-        }
-        else if (AlwaysLoad)
-        {
-            UpdateAsset();
-        }
-        else if (AssetReferenceCount == 0 && IsAssetAvailable)
-        {
-            TryFreeAsset();
         }
         else if (AssetReferenceCount > 0)
         {

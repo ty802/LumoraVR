@@ -298,12 +298,13 @@ public class SyncRef<T> : SyncField<RefID>, ISyncRef, IWorldElementReceiver
         OnTargetChange?.Invoke(this);
     }
 
-    public void Dispose()
+    public override void Dispose()
     {
         _target = null;
         OnReferenceChange = null;
         OnObjectAvailable = null;
         OnTargetChange = null;
+        base.Dispose();
     }
 
     public override string ToString()

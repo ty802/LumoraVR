@@ -135,6 +135,32 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
         }
     }
 
+    /// <summary>
+    /// Initialize this sync element from network replication with a pre-assigned RefID.
+    /// Used when decoding from FullBatch - does NOT allocate a new RefID.
+    /// </summary>
+    internal void InitializeFromReplicator(World world, IWorldElement? parent, RefID assignedId)
+    {
+        if (world == null)
+            throw new ArgumentNullException(nameof(world));
+
+        Parent = parent;
+        IsInInitPhase = true;
+
+        // Use the assigned RefID from the network, don't allocate
+        ReferenceID = assignedId;
+        if (ReferenceID.IsLocalID)
+            IsLocalElement = true;
+
+        World = world;
+        world.ReferenceController.RegisterObject(this);
+
+        // Register with SyncController for network sync
+        world.SyncController?.RegisterSyncElement(this);
+
+        WasChanged = true;
+    }
+
     protected bool GetFlag(int flag) => (_flags & (1 << flag)) != 0;
 
     protected void SetFlag(int flag, bool value)
@@ -314,18 +340,40 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
 
     public virtual void EncodeFull(BinaryWriter writer, BinaryMessageBatch outboundMessage)
     {
-        if (World == null || !World.IsAuthority)
-            throw new InvalidOperationException("Non-authority shouldn't do a full encode!");
-        if (IsSyncDirty)
-            throw new InvalidOperationException("Cannot do a full encode on a dirty element!");
+        EncodeFull(writer, outboundMessage, forFullBatch: false);
+    }
+
+    /// <summary>
+    /// Encode full state. When forFullBatch is true, skips authority check (used when encoding for new clients).
+    /// </summary>
+    public virtual void EncodeFull(BinaryWriter writer, BinaryMessageBatch outboundMessage, bool forFullBatch)
+    {
+        if (!forFullBatch)
+        {
+            if (World == null || !World.IsAuthority)
+                throw new InvalidOperationException("Non-authority shouldn't do a full encode!");
+            if (IsSyncDirty)
+                throw new InvalidOperationException("Cannot do a full encode on a dirty element!");
+        }
 
         InternalEncodeFull(writer, outboundMessage);
     }
 
     public virtual void DecodeFull(BinaryReader reader, BinaryMessageBatch inboundMessage)
     {
-        if (World == null || World.IsAuthority)
-            throw new InvalidOperationException("Authority shouldn't do a full decode!");
+        DecodeFull(reader, inboundMessage, forFullBatch: false);
+    }
+
+    /// <summary>
+    /// Decode full state. When forFullBatch is true, skips authority check (used when receiving FullBatch from host).
+    /// </summary>
+    public virtual void DecodeFull(BinaryReader reader, BinaryMessageBatch inboundMessage, bool forFullBatch)
+    {
+        if (!forFullBatch)
+        {
+            if (World == null || World.IsAuthority)
+                throw new InvalidOperationException("Authority shouldn't do a full decode!");
+        }
 
         IsLoading = true;
         InternalDecodeFull(reader, inboundMessage);

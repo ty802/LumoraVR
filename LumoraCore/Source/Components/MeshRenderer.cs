@@ -11,9 +11,10 @@ namespace Lumora.Core.Components;
 public class MeshRenderer : ImplementableComponent
 {
     /// <summary>
-    /// The mesh to render.
+    /// The mesh to render (ProceduralMesh or MeshDataAsset component).
+    /// Uses SyncRef to properly sync component references over network.
     /// </summary>
-    public readonly Sync<object> Mesh;
+    public readonly SyncRef<Component> Mesh;
 
     /// <summary>
     /// The material to use for rendering.
@@ -32,7 +33,7 @@ public class MeshRenderer : ImplementableComponent
 
     public MeshRenderer()
     {
-        Mesh = new Sync<object>(this, default);
+        Mesh = new SyncRef<Component>(this);
         Material = new AssetRef<MaterialAsset>(this);
         ShadowCastMode = new Sync<ShadowCastMode>(this, Components.ShadowCastMode.On);
         SortingOrder = new Sync<int>(this, 0);

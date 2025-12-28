@@ -48,7 +48,10 @@ public class WorldHook : IWorldHook
         Owner.GodotSceneRoot = WorldRoot;
 
         // Reparent any existing slot Node3Ds that were created before world root existed
-        ReparentExistingSlots(Owner.RootSlot);
+        if (Owner.IsAuthority || Owner.State == World.WorldState.Running)
+        {
+            ReparentExistingSlots(Owner.RootSlot);
+        }
 
         // Apply the world's current focus state (important for worlds that set focus before hook was created)
         ChangeFocus(Owner.Focus);

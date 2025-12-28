@@ -5,6 +5,7 @@ using System.Threading;
 using Lumora.Core;
 using Lumora.Core.Networking.Sync;
 using LegacyJoinGrantData = Lumora.Core.Networking.Messages.JoinGrantData;
+using LegacyJoinRequestData = Lumora.Core.Networking.Messages.JoinRequestData;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Session;
@@ -47,12 +48,24 @@ public class SessionSyncManager : IDisposable
     private readonly ConcurrentQueue<RawInMessage> _rawInMessages = new();
     private readonly ConcurrentQueue<SyncMessage> _messagesToProcess = new();
     private readonly ConcurrentQueue<SyncMessage> _messagesToTransmit = new();
+    private readonly Queue<DeltaBatch> _pendingDeltaBatches = new();
+    private readonly Queue<StreamMessage> _pendingStreamMessages = new();
+    private const int MaxPendingDeltaBatches = 256;
+    private const int MaxPendingStreamMessages = 512;
 
     // State
     private bool _running;
     private bool _stopProcessing;
     private bool _isDisposed;
     private bool _acceptDeltas;
+
+    // Progress tracking for client initialization
+    private int _expectedComponents = 0;
+    private int _receivedComponents = 0;
+    private int _initializedComponents = 0;
+    private readonly HashSet<RefID> _receivedComponentIds = new();
+    private readonly object _progressLock = new();
+    private bool _initialFullBatchReceived = false;
 
     // Client-side change confirmations (sync tick -> RefIDs)
     private readonly Dictionary<ulong, HashSet<RefID>> _changesToConfirm = new();
@@ -63,10 +76,15 @@ public class SessionSyncManager : IDisposable
     private readonly object _pendingLock = new();
     private const int PendingRecordMaxAttempts = 20;
     private const int PendingRecordMaxAgeTicks = 400;
-
-    // New user initialization
+    // New user initialization queue
     private readonly List<User> _newUsersToInitialize = new();
     private readonly object _newUsersLock = new();
+
+    // Local user pending initialization (wait for sync-created User)
+    internal RefID LocalUserRefIDToInit { get; private set; }
+    private string? _pendingLocalUserName;
+    private ulong _pendingAllocationStart;
+    private ulong _pendingAllocationEnd;
 
     // Debug
     public SyncLoopStage DEBUG_SyncLoopStage { get; private set; }
@@ -136,9 +154,30 @@ public class SessionSyncManager : IDisposable
     /// <summary>
     /// Signal that world update has finished.
     /// Called from main thread after World.Update().
+    /// Allows the sync thread to advance past the refresh wait.
     /// </summary>
-    public void SignalWorldUpdateFinished()
+    public void SignalRefreshFinished()
     {
+        _refreshFinished.Set();
+    }
+
+    /// <summary>
+    /// Stop sync processing and wait for main thread refresh.
+    /// Sync thread pauses here while the main thread runs World.Update().
+    /// </summary>
+    public ManualResetEvent ProcessingStopped => _lastProcessingStopped;
+
+    /// <summary>
+    /// Event signaling that world refresh has completed.
+    /// </summary>
+    public WaitHandle RefreshFinished => _refreshFinished;
+
+    /// <summary>
+    /// Request the sync thread to stop processing and wait for world refresh.
+    /// </summary>
+    public void StopProcessing()
+    {
+        _stopProcessing = true;
         _syncThreadEvent.Set();
     }
 
@@ -174,9 +213,11 @@ public class SessionSyncManager : IDisposable
     /// </summary>
     public void QueueUserForInitialization(User user)
     {
+        AquaLogger.Log($"QueueUserForInitialization: Queuing user '{user.UserName.Value}' (RefID: {user.ReferenceID})");
         lock (_newUsersLock)
         {
             _newUsersToInitialize.Add(user);
+            AquaLogger.Log($"QueueUserForInitialization: Queue now has {_newUsersToInitialize.Count} users");
         }
     }
 
@@ -279,9 +320,9 @@ public class SessionSyncManager : IDisposable
 
         while (_running && !_isDisposed)
         {
+            bool lockHeld = false;
             try
             {
-                // Stage 1: Wait for world update or messages (without holding lock)
                 DEBUG_SyncLoopStage = SyncLoopStage.WaitingForSyncThreadEvent;
 
                 if (_messagesToProcess.IsEmpty)
@@ -291,152 +332,173 @@ public class SessionSyncManager : IDisposable
 
                 if (_isDisposed) break;
 
-                // Acquire DataModel lock for sync operations
                 World.HookManager?.DataModelLock(Thread.CurrentThread);
+                lockHeld = true;
 
-                try
+                DEBUG_SyncLoopStage = SyncLoopStage.RunningMessageProcessing;
+
+                while (_messagesToProcess.TryDequeue(out var message))
                 {
-                    // Stage 2: Process incoming messages
-                    DEBUG_SyncLoopStage = SyncLoopStage.RunningMessageProcessing;
+                    ProcessingSyncMessage = message;
 
-                    while (_messagesToProcess.TryDequeue(out var message))
+                    if (ProcessMessage(message, lastDeltaSyncTime, controlMessagesToProcess))
                     {
-                        ProcessingSyncMessage = message;
-
-                        if (ProcessMessage(message, lastDeltaSyncTime, controlMessagesToProcess))
-                        {
-                            TotalProcessedMessages++;
-                        }
-
-                        ProcessingSyncMessage = null;
+                        TotalProcessedMessages++;
                     }
 
-                    DEBUG_SyncLoopStage = SyncLoopStage.ExitedMessageProcessing;
+                    ProcessingSyncMessage = null;
+                }
 
-                    ProcessPendingRecords();
+                DEBUG_SyncLoopStage = SyncLoopStage.ExitedMessageProcessing;
 
-                    // Stage 3: Generate and send delta batch (authority only)
-                    DEBUG_SyncLoopStage = SyncLoopStage.GeneratingDeltaBatch;
+                ProcessPendingRecords();
 
+                if (World.IsAuthority)
+                {
+                    World.IncrementStateVersion();
+                }
+
+                World.HookManager?.DataModelUnlock();
+                lockHeld = false;
+                _lastProcessingStopped.Set();
+
+                DEBUG_SyncLoopStage = SyncLoopStage.ProcessingStopped;
+
+                if (!_refreshFinished.WaitOne(1000))
+                {
+                    if (_newUsersToInitialize.Count > 0)
+                    {
+                        AquaLogger.Warn("SyncLoop: Timeout waiting for world refresh, continuing anyway");
+                    }
+                }
+
+                if (_isDisposed) break;
+
+                _lastProcessingStopped.Reset();
+                _refreshFinished.Reset();
+
+                DEBUG_SyncLoopStage = SyncLoopStage.ContinuingAfterRefreshFinished;
+
+                World.HookManager?.DataModelLock(Thread.CurrentThread);
+                lockHeld = true;
+
+                DEBUG_SyncLoopStage = SyncLoopStage.GeneratingDeltaBatch;
+
+                var deltaBatch = World.SyncController.CollectDeltaMessages();
+                LastGeneratedDeltaChanges = deltaBatch.DataRecordCount;
+
+                if (deltaBatch.DataRecordCount > 0)
+                {
                     if (World.IsAuthority)
                     {
-                        World.IncrementStateVersion();
-                    }
+                        var connections = Session.Connections.GetAllConnections();
+                        var initializingUsers = new HashSet<User>();
 
-                    var deltaBatch = World.SyncController.CollectDeltaMessages();
-                    LastGeneratedDeltaChanges = deltaBatch.DataRecordCount;
-
-                    if (deltaBatch.DataRecordCount > 0)
-                    {
-                        if (World.IsAuthority)
+                        lock (_newUsersLock)
                         {
-                            // Send to all connected users that are fully initialized
-                            var connections = Session.Connections.GetAllConnections();
-                            var initializingUsers = new HashSet<User>();
-                            
-                            lock (_newUsersLock)
+                            foreach (var user in _newUsersToInitialize)
                             {
-                                foreach (var user in _newUsersToInitialize)
-                                {
-                                    initializingUsers.Add(user);
-                                }
+                                initializingUsers.Add(user);
                             }
-                            
-                            // Only send deltas to users that are not currently initializing
-                            foreach (var connection in connections)
+                        }
+
+                        foreach (var connection in connections)
+                        {
+                            if (Session.Connections.TryGetUser(connection, out var user))
                             {
-                                if (Session.Connections.TryGetUser(connection, out var user))
+                                if (!initializingUsers.Contains(user))
                                 {
-                                    if (!initializingUsers.Contains(user))
-                                    {
-                                        deltaBatch.Targets.Add(connection);
-                                    }
-                                }
-                                else
-                                {
-                                    // No user associated - safe to send
                                     deltaBatch.Targets.Add(connection);
                                 }
                             }
+                            else
+                            {
+                                deltaBatch.Targets.Add(connection);
+                            }
                         }
-					else
-					{
-						// Send to host
-						var hostConnection = Session.Connections.HostConnection;
-						if (hostConnection != null)
-						{
-							deltaBatch.Targets.Add(hostConnection);
-						}
-					}
+                    }
+                    else
+                    {
+                        var hostConnection = Session.Connections.HostConnection;
+                        if (hostConnection != null)
+                        {
+                            deltaBatch.Targets.Add(hostConnection);
+                        }
+                    }
 
-					if (deltaBatch.Targets.Count > 0)
-					{
-						if (!World.IsAuthority)
-						{
-							var confirmTime = deltaBatch.SenderSyncTick;
-							if (!_changesToConfirm.TryGetValue(confirmTime, out var ids))
-							{
-								ids = new HashSet<RefID>();
-								_changesToConfirm[confirmTime] = ids;
-							}
+                    if (deltaBatch.Targets.Count > 0)
+                    {
+                        if (!World.IsAuthority)
+                        {
+                            var confirmTime = deltaBatch.SenderSyncTick;
+                            if (!_changesToConfirm.TryGetValue(confirmTime, out var ids))
+                            {
+                                ids = new HashSet<RefID>();
+                                _changesToConfirm[confirmTime] = ids;
+                            }
 
-							for (int i = 0; i < deltaBatch.DataRecordCount; i++)
-							{
-								ids.Add(deltaBatch.GetDataRecord(i).TargetID);
-							}
-						}
+                            for (int i = 0; i < deltaBatch.DataRecordCount; i++)
+                            {
+                                ids.Add(deltaBatch.GetDataRecord(i).TargetID);
+                            }
+                        }
 
-						EnqueueForTransmission(deltaBatch);
-					}
-					else
-					{
-						deltaBatch.Dispose();
-					}
+                        EnqueueForTransmission(deltaBatch);
                     }
                     else
                     {
                         deltaBatch.Dispose();
                     }
+                }
+                else
+                {
+                    deltaBatch.Dispose();
+                }
 
-                    // Stage 4: Generate corrections (authority only)
-                    DEBUG_SyncLoopStage = SyncLoopStage.GeneratingCorrections;
+                DEBUG_SyncLoopStage = SyncLoopStage.GeneratingCorrections;
 
-                    // TODO: Handle released drives and corrections
+                // TODO: Handle released drives and corrections
 
-                    // Stage 5: Gather and send streams
-                    DEBUG_SyncLoopStage = SyncLoopStage.EncodingStreams;
+                DEBUG_SyncLoopStage = SyncLoopStage.EncodingStreams;
 
-                    if (World.State == World.WorldState.Running)
+                if (World.State == World.WorldState.Running)
+                {
+                    var streams = new List<StreamMessage>();
+                    World.SyncController.GatherStreams(streams);
+
+                    foreach (var stream in streams)
                     {
-                        var streams = new List<StreamMessage>();
-                        World.SyncController.GatherStreams(streams);
-
-                        foreach (var stream in streams)
+                        AddStreamTargets(stream, excludeSender: false);
+                        if (stream.Targets.Count > 0)
                         {
                             EnqueueForTransmission(stream);
                         }
+                        else
+                        {
+                            stream.Dispose();
+                        }
                     }
+                }
 
-                    // Stage 6: Finish sync cycle
-                    DEBUG_SyncLoopStage = SyncLoopStage.FinishingSyncCycle;
+                DEBUG_SyncLoopStage = SyncLoopStage.FinishingSyncCycle;
 
-                    lastDeltaSyncTime = World.StateVersion;
-                    World.IncrementSyncTick();
+                lastDeltaSyncTime = World.StateVersion;
+                World.IncrementSyncTick();
 
-                    // Stage 7: Process control messages
-                    DEBUG_SyncLoopStage = SyncLoopStage.ProcessingControlMessages;
+                DEBUG_SyncLoopStage = SyncLoopStage.ProcessingControlMessages;
 
-                    foreach (var controlMessage in controlMessagesToProcess)
-                    {
-                        ProcessControlMessage(controlMessage);
-                        controlMessage.Dispose();
-                    }
-                    controlMessagesToProcess.Clear();
+                foreach (var controlMessage in controlMessagesToProcess)
+                {
+                    ProcessControlMessage(controlMessage);
+                    controlMessage.Dispose();
+                }
+                controlMessagesToProcess.Clear();
 
-                    // Stage 8: Initialize new users
-                    DEBUG_SyncLoopStage = SyncLoopStage.InitializingNewUsers;
+                DEBUG_SyncLoopStage = SyncLoopStage.InitializingNewUsers;
 
-                    List<User> usersToInit;
+                if (World.IsAuthority)
+                {
+                    List<User> usersToInit = null;
                     lock (_newUsersLock)
                     {
                         if (_newUsersToInitialize.Count > 0)
@@ -444,27 +506,30 @@ public class SessionSyncManager : IDisposable
                             usersToInit = new List<User>(_newUsersToInitialize);
                             _newUsersToInitialize.Clear();
                         }
-                        else
-                        {
-                            usersToInit = null;
-                        }
                     }
 
                     if (usersToInit != null && usersToInit.Count > 0)
                     {
+                        AquaLogger.Log($"Stage 8: Encoding FullBatch for {usersToInit.Count} new users");
                         var fullBatch = World.SyncController.EncodeFullBatch();
+                        AquaLogger.Log($"Stage 8: FullBatch has {fullBatch.DataRecordCount} records");
 
                         foreach (var user in usersToInit)
                         {
                             if (Session.Connections.TryGetConnection(user, out var connection))
                             {
+                                AquaLogger.Log($"Stage 8: Adding target connection for user '{user.UserName.Value}'");
                                 fullBatch.Targets.Add(connection);
+                            }
+                            else
+                            {
+                                AquaLogger.Warn($"Stage 8: No connection found for user '{user.UserName.Value}'");
                             }
                         }
 
+                        AquaLogger.Log($"Stage 8: Enqueueing FullBatch with {fullBatch.Targets.Count} targets");
                         EnqueueForTransmission(fullBatch);
 
-                        // Send JoinStartDelta to new users
                         var startDeltaMessage = new ControlMessage(ControlMessage.Message.JoinStartDelta);
                         foreach (var user in usersToInit)
                         {
@@ -473,22 +538,24 @@ public class SessionSyncManager : IDisposable
                                 startDeltaMessage.Targets.Add(connection);
                             }
                         }
+                        AquaLogger.Log($"Stage 8: Enqueueing JoinStartDelta with {startDeltaMessage.Targets.Count} targets");
                         EnqueueForTransmission(startDeltaMessage);
                     }
+                }
 
-                    DEBUG_SyncLoopStage = SyncLoopStage.Finished;
-                }
-                finally
-                {
-                    // Release DataModel lock to allow main thread updates
-                    World.HookManager?.DataModelUnlock();
-                }
+                DEBUG_SyncLoopStage = SyncLoopStage.Finished;
             }
             catch (Exception ex)
             {
                 AquaLogger.Error($"SyncLoop: Exception: {ex.Message}\n{ex.StackTrace}");
-                // Make sure we release lock on error too
                 if (World.HookManager?.Lock == HookManager.LockOwner.DataModel)
+                {
+                    World.HookManager?.DataModelUnlock();
+                }
+            }
+            finally
+            {
+                if (lockHeld)
                 {
                     World.HookManager?.DataModelUnlock();
                 }
@@ -523,47 +590,32 @@ public class SessionSyncManager : IDisposable
                     // Only process deltas when world is running
                     if (World.State != World.WorldState.Running)
                     {
-                        AquaLogger.Warn($"ProcessMessage: Ignoring delta batch - world state is {World.State}, expected Running");
-                        deltaBatch.Dispose();
+                        EnqueuePendingDelta(deltaBatch, $"world state {World.State}");
                         break;
                     }
 
                     if (!World.IsAuthority && !_acceptDeltas)
                     {
-                        AquaLogger.Debug("ProcessMessage: Ignoring delta batch - JoinStartDelta not received yet");
-                        deltaBatch.Dispose();
+                        EnqueuePendingDelta(deltaBatch, "JoinStartDelta not received yet");
                         break;
                     }
 
-                    // Validate and retransmit (authority)
-                    if (World.IsAuthority)
-                    {
-                        ValidateDeltaBatchAndRetransmit(deltaBatch);
-                    }
-
-                    // Apply data records
-                    ApplyDataRecords(deltaBatch);
-
-                    if (!World.IsAuthority)
-                    {
-                        World.SetStateVersion(deltaBatch.SenderStateVersion);
-                    }
-
-                    deltaBatch.Dispose();
+                    ApplyDeltaBatch(deltaBatch);
                     break;
 
                 case FullBatch fullBatch:
+                    // Track progress for initial FullBatch (client joining)
+                    if (!World.IsAuthority && World.InitState == World.InitializationState.InitializingDataModel)
+                    {
+                        TrackFullBatchProgress(fullBatch);
+                    }
+
                     ApplyDataRecords(fullBatch);
 
                     if (!World.IsAuthority)
                     {
                         World.SetStateVersion(fullBatch.SenderStateVersion);
-                        
-                        // If client is in InitializingDataModel stage, this is the initial world state
-                        if (World.State == World.WorldState.InitializingDataModel)
-                        {
-                            World.OnFullStateReceived();
-                        }
+                        // Transition happens on JoinStartDelta to avoid starting before deltas are allowed.
                     }
 
                     fullBatch.Dispose();
@@ -600,11 +652,25 @@ public class SessionSyncManager : IDisposable
                     break;
 
                 case StreamMessage streamMessage:
-                    if (World.State == World.WorldState.Running)
+                    if (World.IsAuthority)
                     {
-                        World.SyncController.ApplyStreams(streamMessage);
+                        var forwarded = CloneStreamMessage(streamMessage);
+                        AddStreamTargets(forwarded, excludeSender: true);
+                        if (forwarded.Targets.Count > 0)
+                        {
+                            EnqueueForTransmission(forwarded);
+                        }
+                        else
+                        {
+                            forwarded.Dispose();
+                        }
                     }
-                    msg.Dispose();
+                    if (World.State != World.WorldState.Running)
+                    {
+                        EnqueuePendingStream(streamMessage, $"world state {World.State}");
+                        break;
+                    }
+                    ApplyStreamMessage(streamMessage);
                     break;
 
                 case ControlMessage controlMessage:
@@ -625,6 +691,77 @@ public class SessionSyncManager : IDisposable
             AquaLogger.Error($"ProcessMessage: Exception: {ex.Message}");
             throw;
         }
+    }
+
+    private void EnqueuePendingDelta(DeltaBatch batch, string reason)
+    {
+        if (_pendingDeltaBatches.Count >= MaxPendingDeltaBatches)
+        {
+            AquaLogger.Warn($"ProcessMessage: Dropping delta batch - pending limit reached ({MaxPendingDeltaBatches})");
+            batch.Dispose();
+            return;
+        }
+
+        AquaLogger.Debug($"ProcessMessage: Queueing delta batch ({reason})");
+        _pendingDeltaBatches.Enqueue(batch);
+    }
+
+    private void EnqueuePendingStream(StreamMessage streamMessage, string reason)
+    {
+        if (_pendingStreamMessages.Count >= MaxPendingStreamMessages)
+        {
+            AquaLogger.Warn($"ProcessMessage: Dropping stream message - pending limit reached ({MaxPendingStreamMessages})");
+            streamMessage.Dispose();
+            return;
+        }
+
+        AquaLogger.Debug($"ProcessMessage: Queueing stream message ({reason})");
+        _pendingStreamMessages.Enqueue(streamMessage);
+    }
+
+    private void FlushPendingMessages()
+    {
+        if (World.State != World.WorldState.Running)
+            return;
+
+        if (World.IsAuthority || _acceptDeltas)
+        {
+            while (_pendingDeltaBatches.Count > 0)
+            {
+                ApplyDeltaBatch(_pendingDeltaBatches.Dequeue());
+            }
+        }
+
+        while (_pendingStreamMessages.Count > 0)
+        {
+            ApplyStreamMessage(_pendingStreamMessages.Dequeue());
+        }
+    }
+
+    private void ApplyDeltaBatch(DeltaBatch deltaBatch)
+    {
+        if (World.IsAuthority)
+        {
+            ValidateDeltaBatchAndRetransmit(deltaBatch);
+        }
+
+        ApplyDataRecords(deltaBatch);
+
+        if (!World.IsAuthority)
+        {
+            World.SetStateVersion(deltaBatch.SenderStateVersion);
+        }
+
+        deltaBatch.Dispose();
+    }
+
+    private void ApplyStreamMessage(StreamMessage streamMessage)
+    {
+        if (World.State == World.WorldState.Running)
+        {
+            World.SyncController.ApplyStreams(streamMessage);
+        }
+        streamMessage.Dispose();
     }
 
     private void ValidateDeltaBatchAndRetransmit(DeltaBatch batch)
@@ -687,6 +824,67 @@ public class SessionSyncManager : IDisposable
                 EnqueueForTransmission(confirmation);
             }
         }
+    }
+
+    private void AddStreamTargets(StreamMessage stream, bool excludeSender)
+    {
+        if (World.IsAuthority)
+        {
+            var connections = Session.Connections.GetAllConnections();
+            HashSet<User> initializingUsers = null;
+
+            lock (_newUsersLock)
+            {
+                if (_newUsersToInitialize.Count > 0)
+                {
+                    initializingUsers = new HashSet<User>(_newUsersToInitialize);
+                }
+            }
+
+            foreach (var connection in connections)
+            {
+                if (excludeSender && connection == stream.Sender)
+                {
+                    continue;
+                }
+
+                if (initializingUsers != null &&
+                    Session.Connections.TryGetUser(connection, out var user) &&
+                    initializingUsers.Contains(user))
+                {
+                    continue;
+                }
+
+                stream.Targets.Add(connection);
+            }
+        }
+        else
+        {
+            var hostConnection = Session.Connections.HostConnection;
+            if (hostConnection != null)
+            {
+                stream.Targets.Add(hostConnection);
+            }
+        }
+    }
+
+    private static StreamMessage CloneStreamMessage(StreamMessage source)
+    {
+        var clone = new StreamMessage(source.SenderStateVersion, source.SenderSyncTick)
+        {
+            IsAsynchronous = source.IsAsynchronous,
+            UserID = source.UserID,
+            StreamStateVersion = source.StreamStateVersion,
+            StreamTime = source.StreamTime,
+            StreamGroup = source.StreamGroup
+        };
+
+        var sourceData = source.GetData();
+        sourceData.Position = 0;
+        var cloneData = clone.GetData();
+        sourceData.CopyTo(cloneData);
+
+        return clone;
     }
 
     private DeltaBatch CopyDeltaBatch(DeltaBatch source)
@@ -938,10 +1136,101 @@ public class SessionSyncManager : IDisposable
         public int Attempts;
     }
 
+    /// <summary>
+    /// Track progress of initial FullBatch reception for client joining.
+    /// </summary>
+    private void TrackFullBatchProgress(FullBatch fullBatch)
+    {
+        lock (_progressLock)
+        {
+            if (!_initialFullBatchReceived)
+            {
+                _initialFullBatchReceived = true;
+                _expectedComponents = fullBatch.DataRecordCount;
+                AquaLogger.Log($"TrackFullBatchProgress: Expecting {_expectedComponents} components from initial FullBatch");
+            }
+
+            // Count successfully received components
+            for (int i = 0; i < fullBatch.DataRecordCount; i++)
+            {
+                var record = fullBatch.GetDataRecord(i);
+                if (!_receivedComponentIds.Contains(record.TargetID))
+                {
+                    _receivedComponentIds.Add(record.TargetID);
+                    _receivedComponents++;
+                }
+            }
+
+            AquaLogger.Log($"TrackFullBatchProgress: Received {_receivedComponents}/{_expectedComponents} components ({(_receivedComponents * 100.0f / _expectedComponents):F1}%)");
+        }
+    }
+
+    // NOTE: World transitions to Running when JoinStartDelta is received,
+    // not based on percentage of components synchronized.
+
+    /// <summary>
+    /// Get current initialization progress (0.0 to 1.0) for loading indicators.
+    /// </summary>
+    public float GetInitializationProgress()
+    {
+        lock (_progressLock)
+        {
+            if (!_initialFullBatchReceived || _expectedComponents == 0)
+                return 0f;
+
+            return MathF.Min(1f, (float)_initializedComponents / _expectedComponents);
+        }
+    }
+
+    /// <summary>
+    /// Get current initialization status text for loading indicators.
+    /// </summary>
+    public string GetInitializationStatus()
+    {
+        if (World.IsAuthority)
+            return "Authority";
+
+        if (World.InitState == World.InitializationState.Failed)
+            return "Connection failed";
+
+        if (World.InitState == World.InitializationState.WaitingForJoinGrant)
+            return "Waiting for join approval...";
+
+        if (World.InitState == World.InitializationState.InitializingNetwork)
+            return "Connecting to session...";
+
+        lock (_progressLock)
+        {
+            if (!_initialFullBatchReceived)
+                return "Waiting for world data...";
+
+            if (_expectedComponents == 0)
+                return "Initializing...";
+
+            var progress = (int)((float)_initializedComponents / _expectedComponents * 100f);
+            return $"Loading world components... {_initializedComponents}/{_expectedComponents} ({progress}%)";
+        }
+    }
+
     private void ProcessControlMessage(ControlMessage message)
     {
         switch (message.ControlMessageType)
         {
+            case ControlMessage.Message.JoinRequest:
+                if (World.IsAuthority)
+                {
+                    if (message.Payload == null || message.Payload.Length == 0)
+                    {
+                        AquaLogger.Warn("ProcessControlMessage: JoinRequest missing payload");
+                        return;
+                    }
+
+                    var requestData = LegacyJoinRequestData.Decode(message.Payload);
+                    AquaLogger.Log($"ProcessControlMessage: JoinRequest from '{requestData.UserName}'");
+                    Session.Connections.HandleJoinRequest(message.Sender, requestData);
+                }
+                break;
+
             case ControlMessage.Message.JoinGrant:
                 if (message.Payload == null || message.Payload.Length == 0)
                 {
@@ -954,31 +1243,35 @@ public class SessionSyncManager : IDisposable
 
                 var assignedRefID = new RefID(grantData.AssignedUserID);
 
-                // User has a host-assigned RefID, so use fromNetwork=true
-                // This sets up allocation block at RefID+1 for sync members
-                var localUser = new User(World, assignedRefID, fromNetwork: true);
-                localUser.UserID.Value = grantData.AssignedUserID.ToString();
-                localUser.AllocationIDStart.Value = grantData.AllocationIDStart;
-                localUser.AllocationIDEnd.Value = grantData.AllocationIDEnd;
-				localUser.AllocationID.Value = assignedRefID.GetUserByte();
+                // Store the assigned RefID and wait for the User to sync from host.
+                // When User syncs and its RefID matches, it will call SetLocalUser(this).
+                LocalUserRefIDToInit = assignedRefID;
+                _pendingLocalUserName = Environment.MachineName;
+                _pendingAllocationStart = grantData.AllocationIDStart;
+                _pendingAllocationEnd = grantData.AllocationIDEnd;
+
+                AquaLogger.Log($"ProcessControlMessage: Stored pending local user RefID {assignedRefID} - waiting for User to sync from host");
 
                 Session.World.SetStateVersion(grantData.StateVersion);
 
-				// IMPORTANT: Switch allocation context to user's namespace BEFORE SetLocalUser!
-				// SetLocalUser triggers OnUserJoined which causes SimpleUserSpawn to create slots.
-				// Those slots must be allocated in user's namespace, not Authority.
-				var userByte = assignedRefID.GetUserByte();
-				var startPos = grantData.AllocationIDStart > 0 ? grantData.AllocationIDStart : 1UL;
-				World.ReferenceController.SetAllocationContext(userByte, startPos);
-				AquaLogger.Log($"Switched allocation to user namespace: byte={userByte}, startPos={startPos}");
+                // Switch allocation context to user's namespace for any local allocations
+                var userByte = assignedRefID.GetUserByte();
+                var startPos = grantData.AllocationIDStart > 0 ? grantData.AllocationIDStart : 1UL;
+                World.ReferenceController.SetAllocationContext(userByte, startPos);
+                AquaLogger.Log($"Switched allocation to user namespace: byte={userByte}, startPos={startPos}");
 
                 Session.World.OnJoinGrantReceived();
-                Session.World.SetLocalUser(localUser);
                 break;
 
             case ControlMessage.Message.JoinStartDelta:
                 AquaLogger.Log("ProcessControlMessage: JoinStartDelta received - can now accept delta updates");
                 _acceptDeltas = true;
+                if (!World.IsAuthority && World.InitState == World.InitializationState.InitializingDataModel)
+                {
+                    AquaLogger.Log("JoinStartDelta: transitioning client world to Running");
+                    World.OnFullStateReceived();
+                }
+                FlushPendingMessages();
                 break;
 
             case ControlMessage.Message.RequestFullState:
@@ -1037,6 +1330,14 @@ public class SessionSyncManager : IDisposable
         {
             _pendingFullRecords.Clear();
             _pendingDeltaRecords.Clear();
+        }
+        while (_pendingDeltaBatches.Count > 0)
+        {
+            _pendingDeltaBatches.Dequeue().Dispose();
+        }
+        while (_pendingStreamMessages.Count > 0)
+        {
+            _pendingStreamMessages.Dequeue().Dispose();
         }
 
         AquaLogger.Log("SessionSyncManager disposed");

@@ -15,6 +15,9 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
 {
     private HashSet<IAssetRef> references = new HashSet<IAssetRef>();
     private HashSet<IAssetRef> updatedListeners;
+    private Action _sendAssetCreatedDelegate;
+    private Action _sendAssetUpdatedDelegate;
+    private Action _sendAssetRemovedDelegate;
 
     // ===== PROPERTIES =====
 
@@ -22,8 +25,6 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
     public abstract A Asset { get; }
     public IAsset GenericAsset => Asset;
     public abstract bool IsAssetAvailable { get; }
-    protected virtual bool AlwaysLoad => false;
-    protected virtual bool ForceUnload => false;
     public IEnumerable<IAssetRef> References => references;
 
     // ===== REFERENCE MANAGEMENT =====
@@ -75,7 +76,6 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
     public override void OnDestroy()
     {
         FreeAsset();
-        AssetRemoved();
         base.OnDestroy();
     }
 
@@ -93,31 +93,13 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
 
     private void RefreshAssetState()
     {
-        if (ForceUnload)
+        if (AssetReferenceCount == 0 && IsAssetAvailable)
         {
             FreeAsset();
-        }
-        else if (AlwaysLoad)
-        {
-            UpdateAsset();
-        }
-        else if (AssetReferenceCount == 0 && IsAssetAvailable)
-        {
-            // Schedule delayed unload when no references
-            // TODO: Implement delayed task system
-            TryFreeAsset();
         }
         else if (AssetReferenceCount > 0)
         {
             UpdateAsset();
-        }
-    }
-
-    protected void TryFreeAsset()
-    {
-        if (AssetReferenceCount == 0 && IsAssetAvailable)
-        {
-            FreeAsset();
         }
     }
 
@@ -129,22 +111,55 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
     protected void AssetCreated()
     {
         if (IsDestroyed || references.Count == 0) return;
-        // Queue for processing on next frame
-        ((IAssetProvider)this).SendAssetCreated();
+        DispatchNotification(GetSendAssetCreatedDelegate());
     }
 
     protected void AssetUpdated()
     {
-        if (IsDestroyed || updatedListeners == null || updatedListeners.Count == 0) return;
-        // Queue for processing on next frame
-        ((IAssetProvider)this).SendAssetUpdated();
+        if (IsDestroyed) return;
+        if (references.Count == 0 && (updatedListeners == null || updatedListeners.Count == 0))
+            return;
+        DispatchNotification(GetSendAssetUpdatedDelegate());
     }
 
     protected void AssetRemoved()
     {
         if (IsDestroyed || references.Count == 0) return;
-        // Queue for processing on next frame
-        ((IAssetProvider)this).SendAssetRemoved();
+        DispatchNotification(GetSendAssetRemovedDelegate());
+    }
+
+    private void DispatchNotification(Action action)
+    {
+        var world = World;
+        if (world != null)
+        {
+            world.RunSynchronously(action);
+        }
+        else
+        {
+            action();
+        }
+    }
+
+    private Action GetSendAssetCreatedDelegate()
+    {
+        if (_sendAssetCreatedDelegate == null)
+            _sendAssetCreatedDelegate = ((IAssetProvider)this).SendAssetCreated;
+        return _sendAssetCreatedDelegate;
+    }
+
+    private Action GetSendAssetUpdatedDelegate()
+    {
+        if (_sendAssetUpdatedDelegate == null)
+            _sendAssetUpdatedDelegate = ((IAssetProvider)this).SendAssetUpdated;
+        return _sendAssetUpdatedDelegate;
+    }
+
+    private Action GetSendAssetRemovedDelegate()
+    {
+        if (_sendAssetRemovedDelegate == null)
+            _sendAssetRemovedDelegate = ((IAssetProvider)this).SendAssetRemoved;
+        return _sendAssetRemovedDelegate;
     }
 
     void IAssetProvider.SendAssetCreated()
@@ -163,8 +178,18 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
     {
         if (IsDestroyed) return;
 
+        foreach (IAssetRef reference in references)
+        {
+            reference.AssetUpdated();
+        }
+
+        if (updatedListeners == null)
+            return;
+
         foreach (IAssetRef updatedListener in updatedListeners)
         {
+            if (references.Contains(updatedListener))
+                continue;
             updatedListener.AssetUpdated();
         }
     }
@@ -176,6 +201,16 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
         foreach (IAssetRef reference in references)
         {
             reference.AssetUpdated();
+        }
+
+        if (updatedListeners != null)
+        {
+            foreach (IAssetRef updatedListener in updatedListeners)
+            {
+                if (references.Contains(updatedListener))
+                    continue;
+                updatedListener.AssetUpdated();
+            }
         }
 
         if (IsDestroyed)

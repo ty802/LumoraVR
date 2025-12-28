@@ -292,6 +292,14 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
     }
 
     /// <summary>
+    /// Set value without generating sync data (used for remote-applied updates).
+    /// </summary>
+    internal void SetValueSilently(T value, bool change = true)
+    {
+        InternalSetValue(in value, sync: false, change: change);
+    }
+
+    /// <summary>
     /// Set the value when driven by a FieldDrive.
     /// This bypasses the IsDriven check and allows drives to push values.
     /// </summary>

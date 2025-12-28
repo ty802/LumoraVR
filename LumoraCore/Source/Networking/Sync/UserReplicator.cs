@@ -80,7 +80,14 @@ public class UserReplicator : ReplicatedDictionary<RefID, User>
     {
         if (World == null || user == null) return;
 
-        // Register user with world's user tracking
+        // Initialize first to set LocalUser before registration
+        // User.Initialize() checks if RefID matches Session.LocalUserRefIDToInit
+        // This MUST happen before RegisterUser so that:
+        // 1. World.LocalUser is set before OnUserJoined events fire
+        // 2. UserRoot.OnChanges() can detect the local user correctly
+        user.Initialize();
+
+        // Now register user with world's user tracking
         World.RegisterUser(user);
     }
 

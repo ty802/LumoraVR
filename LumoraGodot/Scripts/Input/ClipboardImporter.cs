@@ -464,7 +464,7 @@ public partial class ClipboardImporter : Node
 
         // Add MeshRenderer
         var meshRenderer = imageSlot.AttachComponent<MeshRenderer>();
-        meshRenderer.Mesh.Value = quadMesh;
+        meshRenderer.Mesh.Target = quadMesh;
 
         var collider = imageSlot.AttachComponent<BoxCollider>();
         collider.Size.Value = new float3(1f, 1f, 0.02f);
@@ -699,7 +699,7 @@ public partial class ClipboardImporter : Node
         sphereMesh.Rings.Value = 16;
 
         var meshRenderer = sphereSlot.AttachComponent<MeshRenderer>();
-        meshRenderer.Mesh.Value = sphereMesh;
+        meshRenderer.Mesh.Target = sphereMesh;
 
         var shaderProvider = sphereSlot.AttachComponent<ShaderSourceProvider>();
         shaderProvider.URL.Value = new Uri(localUri ?? filePath);

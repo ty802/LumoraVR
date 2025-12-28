@@ -1,5 +1,6 @@
 using System;
 using Lumora.Core;
+using Lumora.Core.Components;
 using Lumora.Core.Components.Meshes;
 using Lumora.Core.Assets;
 using Lumora.Core.Math;
@@ -95,7 +96,7 @@ public static class DefaultAVI
     private static void ApplyDefaultMaterial(Slot visualSlot, ProceduralMesh mesh, colorHDR tint)
     {
         var meshRenderer = visualSlot.GetComponent<MeshRenderer>() ?? visualSlot.AttachComponent<MeshRenderer>();
-        meshRenderer.Mesh.Value = mesh;
+        meshRenderer.Mesh.Target = mesh;
 
         var material = visualSlot.GetComponent<UnlitMaterial>() ?? visualSlot.AttachComponent<UnlitMaterial>();
         material.TintColor.Value = tint;
@@ -159,6 +160,10 @@ public static class DefaultAVI
         headSlot.LocalPosition.Value = new float3(0, DEFAULT_HEIGHT - 0.1f, 0);
         var headPositioner = headSlot.AttachComponent<TrackedDevicePositioner>();
         headPositioner.AutoBodyNode.Value = BodyNode.Head;
+        var headStreamDriver = headSlot.AttachComponent<TransformStreamDriver>();
+        user.GetTrackingStreams(BodyNode.Head, out var headPositionStream, out var headRotationStream);
+        headStreamDriver.PositionStream.Target = headPositionStream;
+        headStreamDriver.RotationStream.Target = headRotationStream;
 
         // Create LeftHand slot - UserRoot auto-resolves from "Body Nodes/LeftHand"
         // Default position: at rest by the side (not T-pose)
@@ -166,6 +171,10 @@ public static class DefaultAVI
         leftHandSlot.LocalPosition.Value = new float3(-0.2f, 0.9f, 0.1f); // By left hip, slightly forward
         var leftHandPositioner = leftHandSlot.AttachComponent<TrackedDevicePositioner>();
         leftHandPositioner.AutoBodyNode.Value = BodyNode.LeftController;
+        var leftHandStreamDriver = leftHandSlot.AttachComponent<TransformStreamDriver>();
+        user.GetTrackingStreams(BodyNode.LeftController, out var leftPositionStream, out var leftRotationStream);
+        leftHandStreamDriver.PositionStream.Target = leftPositionStream;
+        leftHandStreamDriver.RotationStream.Target = leftRotationStream;
 
         // Create RightHand slot - UserRoot auto-resolves from "Body Nodes/RightHand"
         // Default position: at rest by the side (not T-pose)
@@ -173,6 +182,10 @@ public static class DefaultAVI
         rightHandSlot.LocalPosition.Value = new float3(0.2f, 0.9f, 0.1f); // By right hip, slightly forward
         var rightHandPositioner = rightHandSlot.AttachComponent<TrackedDevicePositioner>();
         rightHandPositioner.AutoBodyNode.Value = BodyNode.RightController;
+        var rightHandStreamDriver = rightHandSlot.AttachComponent<TransformStreamDriver>();
+        user.GetTrackingStreams(BodyNode.RightController, out var rightPositionStream, out var rightRotationStream);
+        rightHandStreamDriver.PositionStream.Target = rightPositionStream;
+        rightHandStreamDriver.RotationStream.Target = rightRotationStream;
 
         // Physics
         var collider = userSlot.AttachComponent<CapsuleCollider>();

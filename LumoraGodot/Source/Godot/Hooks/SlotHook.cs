@@ -21,6 +21,12 @@ public class SlotHook : Hook<Slot>, ISlotHook
     private bool _shouldDestroy;
     private SlotHook _parentHook;
     private WorldHook _worldHook;
+    private bool _didDeferLog;
+
+    private bool ShouldDeferHierarchy =>
+        Owner?.World != null &&
+        !Owner.World.IsAuthority &&
+        Owner.World.State != World.WorldState.Running;
 
     /// <summary>
     /// The generated Node3D for this slot (created on-demand).
@@ -116,6 +122,11 @@ public class SlotHook : Hook<Slot>, ISlotHook
     /// </summary>
     private void UpdateParent()
     {
+        if (ShouldDeferHierarchy)
+        {
+            return;
+        }
+
         if (_lastParent == Owner.Parent && !Owner.IsRootSlot)
         {
             return;
@@ -234,22 +245,45 @@ public class SlotHook : Hook<Slot>, ISlotHook
             GeneratedNode3D.Scale = ToGodotVector3(Owner.LocalScale.Value);
         }
 
+        var slotName = Owner.SlotName.Value ?? string.Empty;
         if (Owner.SlotName.GetWasChangedAndClear())
         {
-            GeneratedNode3D.Name = Owner.SlotName.Value;
+            GeneratedNode3D.Name = slotName;
+        }
+        else if (!string.IsNullOrEmpty(slotName) && GeneratedNode3D.Name != slotName)
+        {
+            GeneratedNode3D.Name = slotName;
         }
     }
 
     public override void Initialize()
     {
-        // Create Node3D immediately for hierarchical node structure
-        // This ensures ALL slots appear in the scene tree, not just requested ones
+        if (ShouldDeferHierarchy)
+        {
+            if (!_didDeferLog)
+            {
+                Lumora.Core.Logging.Logger.Log($"SlotHook.Initialize: Deferring Node3D creation for '{Owner.SlotName.Value}'");
+                _didDeferLog = true;
+            }
+            return;
+        }
+
         GenerateNode3D();
         Lumora.Core.Logging.Logger.Log($"SlotHook.Initialize: Created Node3D for slot '{Owner.SlotName.Value}'");
     }
 
     public override void ApplyChanges()
     {
+        if (GeneratedNode3D == null || !GodotObject.IsInstanceValid(GeneratedNode3D))
+        {
+            if (ShouldDeferHierarchy)
+            {
+                return;
+            }
+
+            GenerateNode3D();
+        }
+
         // Only apply changes if Node3D exists
         if (GeneratedNode3D != null && GodotObject.IsInstanceValid(GeneratedNode3D))
         {

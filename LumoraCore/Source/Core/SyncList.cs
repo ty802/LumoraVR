@@ -9,7 +9,7 @@ namespace Lumora.Core;
 /// Network-synchronized list of sync members.
 /// Concrete implementation of SyncElementList that exposes IList interface.
 /// </summary>
-public sealed class SyncList<T> : SyncElementList<T>, IEnumerable<T>, IEnumerable, IList<T>, ICollection<T> where T : class, ISyncMember, new()
+public class SyncList<T> : SyncElementList<T>, IEnumerable<T>, IEnumerable, IList<T>, ICollection<T> where T : class, ISyncMember, new()
 {
     T IList<T>.this[int index]
     {

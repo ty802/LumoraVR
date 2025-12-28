@@ -39,10 +39,20 @@ public class SimpleUserSpawn : Component, IWorldEventReceiver
     {
         if (user == null) return;
 
+        AquaLogger.Log($"SimpleUserSpawn: OnUserJoined - UserName='{user.UserName.Value ?? "(null)"}', UserID='{user.UserID.Value ?? "(null)"}', RefID={user.ReferenceID}");
+        AquaLogger.Log($"SimpleUserSpawn: IsLocalUser={user == World?.LocalUser}, World.LocalUser='{World?.LocalUser?.UserName?.Value ?? "(null)"}'");
+
         try
         {
             // Create user slot at spawn position
-            var userSlot = World.RootSlot.AddSlot($"User {user.UserName.Value}");
+            var userName = user.UserName.Value;
+            if (string.IsNullOrEmpty(userName))
+            {
+                userName = $"User_{user.ReferenceID}";
+                AquaLogger.Warn($"SimpleUserSpawn: Username was empty, using fallback: {userName}");
+            }
+
+            var userSlot = World.RootSlot.AddSlot($"User {userName}");
             userSlot.Persistent.Value = false;
             userSlot.LocalPosition.Value = Slot.LocalPosition.Value;
             userSlot.LocalRotation.Value = Slot.LocalRotation.Value;
@@ -50,7 +60,7 @@ public class SimpleUserSpawn : Component, IWorldEventReceiver
             // Use DefaultAVI to spawn user with full skeleton avatar
             DefaultAVI.SpawnWithDefaultAvatar(userSlot, user);
 
-            AquaLogger.Log($"SimpleUserSpawn: Spawned user '{user.UserName.Value}' with default avatar");
+            AquaLogger.Log($"SimpleUserSpawn: Spawned user '{userName}' with default avatar");
         }
         catch (Exception ex)
         {

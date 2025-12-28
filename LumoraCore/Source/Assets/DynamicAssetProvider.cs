@@ -101,7 +101,7 @@ public abstract class DynamicAssetProvider<A> : AssetProvider<A> where A : Asset
     /// </summary>
     protected void MarkChangeDirty()
     {
-        if (AssetReferenceCount > 0 || AlwaysLoad)
+        if (AssetReferenceCount > 0)
         {
             UpdateAsset();
         }

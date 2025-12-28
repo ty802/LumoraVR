@@ -13,7 +13,7 @@ namespace Lumora.Core;
 /// A Slot is the fundamental container for Components and child Slots.
 /// Forms a hierarchical structure for organizing objects in a World.
 /// </summary>
-public class Slot : IImplementable<IHook<Slot>>, IWorldElement, IChangeable
+public class Slot : IImplementable<IHook<Slot>>, IWorldElement, IChangeable, IWorker
 {
     #region Fields
 
@@ -182,6 +182,67 @@ public class Slot : IImplementable<IHook<Slot>>, IWorldElement, IChangeable
     /// Whether this Slot persists when saved.
     /// </summary>
     public bool IsPersistent => Persistent.Value;
+
+    /// <summary>
+    /// Type of this worker (IWorker implementation).
+    /// </summary>
+    public Type WorkerType => GetType();
+
+    /// <summary>
+    /// Full type name of this worker (IWorker implementation).
+    /// </summary>
+    public string WorkerTypeName => WorkerType.FullName;
+
+    /// <summary>
+    /// Try to get a field by name (IWorker implementation).
+    /// </summary>
+    public IField TryGetField(string name)
+    {
+        return name switch
+        {
+            "Name" => Name as IField,
+            "ActiveSelf" => ActiveSelf as IField,
+            "LocalPosition" => LocalPosition as IField,
+            "LocalRotation" => LocalRotation as IField,
+            "LocalScale" => LocalScale as IField,
+            "Tag" => Tag as IField,
+            "Persistent" => Persistent as IField,
+            "OrderOffset" => OrderOffset as IField,
+            _ => null
+        };
+    }
+
+    /// <summary>
+    /// Try to get a typed field by name (IWorker implementation).
+    /// </summary>
+    public IField<T> TryGetField<T>(string name)
+    {
+        return TryGetField(name) as IField<T>;
+    }
+
+    /// <summary>
+    /// Get all referenced objects from this slot (IWorker implementation).
+    /// </summary>
+    public IEnumerable<IWorldElement> GetReferencedObjects(bool assetRefOnly, bool persistentOnly = true)
+    {
+        // Return parent if referenced
+        if (ParentSlotRef?.Target != null && (!persistentOnly || ParentSlotRef.Target.IsPersistent))
+            yield return ParentSlotRef.Target;
+
+        // Return components
+        foreach (var component in _components)
+        {
+            if (!persistentOnly || component.IsPersistent)
+                yield return component;
+        }
+
+        // Return children
+        foreach (var child in _children)
+        {
+            if (!persistentOnly || child.IsPersistent)
+                yield return child;
+        }
+    }
 
     /// <summary>
     /// The World this Slot belongs to.
@@ -1021,6 +1082,7 @@ public class Slot : IImplementable<IHook<Slot>>, IWorldElement, IChangeable
 		{
 			ComponentReplicator.EndInitPhase();
 		}
+        EndInitPhaseForMembers();
 		IsInitialized = true;
 
         if (IsRootSlot)
@@ -1059,37 +1121,34 @@ public class Slot : IImplementable<IHook<Slot>>, IWorldElement, IChangeable
 		World = world;
 		ReferenceID = assignedId;
 
-        // Register with ReferenceController (ReferenceID is already set)
-        World?.ReferenceController?.RegisterObject(this);
-
-        // Initialize sync members with sequential RefIDs starting after the slot's RefID.
-        // This must match the host's allocation pattern. The host allocates:
-        // - Slot: RefID X
-        // - Name: RefID X+1
-        // - ActiveSelf: RefID X+2
-        // - etc.
-        // We use an allocation block to ensure the same pattern on the client.
         var refController = World?.ReferenceController;
-        if (refController != null)
+        if (refController == null)
         {
-            // Start allocation block at the position AFTER this slot's RefID
-            var nextId = RefID.Construct(assignedId.GetUserByte(), assignedId.GetPosition() + 1);
-            refController.AllocationBlockBegin(nextId);
-            try
-            {
-				InitializeSyncMemberRefIDs();
-			}
-			finally
-			{
-				refController.AllocationBlockEnd();
-			}
-		}
+            throw new InvalidOperationException("ReferenceController required for replicated slot initialization");
+        }
 
-		ComponentReplicator?.RegisterExistingComponents();
-		if (ComponentReplicator != null && ComponentReplicator.IsInInitPhase)
-		{
-			ComponentReplicator.EndInitPhase();
-		}
+        // Register with ReferenceController (ReferenceID is already set)
+        refController.RegisterObject(this);
+
+        // Match host RefID layout: slot at assignedId, sync members at assignedId + 1
+        var nextId = RefID.Construct(assignedId.GetUserByte(), assignedId.GetPosition() + 1);
+        refController.AllocationBlockBegin(nextId);
+        try
+        {
+            InitializeSyncMemberRefIDs();
+        }
+        finally
+        {
+            refController.AllocationBlockEnd();
+        }
+
+        ComponentReplicator?.RegisterExistingComponents();
+        if (ComponentReplicator != null && ComponentReplicator.IsInInitPhase)
+        {
+            ComponentReplicator.EndInitPhase();
+        }
+        EndInitPhaseForMembers();
+
 		IsInitialized = true;
 
         if (IsRootSlot)
@@ -1131,6 +1190,30 @@ public class Slot : IImplementable<IHook<Slot>>, IWorldElement, IChangeable
 		ParentSlotRef?.Initialize(World, this);
 		ComponentReplicator?.Initialize(World, this);
 	}
+
+    private void EndInitPhaseForMembers()
+    {
+        EndInitPhaseIfNeeded(Name);
+        EndInitPhaseIfNeeded(ActiveSelf);
+        EndInitPhaseIfNeeded(LocalPosition);
+        EndInitPhaseIfNeeded(LocalRotation);
+        EndInitPhaseIfNeeded(LocalScale);
+        EndInitPhaseIfNeeded(Tag);
+        EndInitPhaseIfNeeded(Persistent);
+        EndInitPhaseIfNeeded(OrderOffset);
+        EndInitPhaseIfNeeded(ParentSlotRef);
+    }
+
+    private static void EndInitPhaseIfNeeded(ISyncMember member)
+    {
+        if (member == null)
+            return;
+
+        if (member.IsInInitPhase)
+        {
+            member.EndInitPhase();
+        }
+    }
 
     private void InitializeHook()
     {

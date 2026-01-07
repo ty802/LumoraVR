@@ -156,6 +156,7 @@ public class Engine : IDisposable
 
     // Core subsystems
     public WorldManager WorldManager { get; private set; }
+    public WorldLoadingService WorldLoadingService { get; private set; }
     public FocusManager FocusManager { get; private set; }
     public Input.InputInterface InputInterface { get; private set; }
     public AssetManager AssetManager { get; private set; }
@@ -420,6 +421,7 @@ public class Engine : IDisposable
             {
                 WorldManager = new WorldManager();
                 await WorldManager.InitializeAsync(this);
+                WorldLoadingService = new WorldLoadingService(this);
             }, cancellationToken);
 
             // Phase 5: Post-initialization

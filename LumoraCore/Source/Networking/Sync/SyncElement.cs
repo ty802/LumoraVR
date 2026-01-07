@@ -180,13 +180,19 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
     public bool HasInitializableChildren { get => GetFlag((int)InternalFlags.HasInitializableChildren); protected set => SetFlag((int)InternalFlags.HasInitializableChildren, value); }
     public bool NonPersistent { get => GetFlag((int)InternalFlags.NonPersistent); protected set => SetFlag((int)InternalFlags.NonPersistent, value); }
     public bool IsDrivable { get => GetFlag((int)InternalFlags.IsDrivable); protected set => SetFlag((int)InternalFlags.IsDrivable, value); }
-    public bool IsLoading { get => GetFlag((int)InternalFlags.IsLoading); protected set => SetFlag((int)InternalFlags.IsLoading, value); }
+    public bool IsLoading { get => GetFlag((int)InternalFlags.IsLoading); internal set => SetFlag((int)InternalFlags.IsLoading, value); }
     public bool IsWithinHookCallback { get => GetFlag((int)InternalFlags.IsWithinHookCallback); protected set => SetFlag((int)InternalFlags.IsWithinHookCallback, value); }
     public bool ModificationBlocked { get => GetFlag((int)InternalFlags.ModificationBlocked); protected set => SetFlag((int)InternalFlags.ModificationBlocked, value); }
     public bool DriveErrorLogged { get => GetFlag((int)InternalFlags.DriveErrorLogged); protected set => SetFlag((int)InternalFlags.DriveErrorLogged, value); }
     public bool IsPersistent => !NonPersistent;
     public bool IsDestroyed => IsDisposed;
     public bool GenerateSyncData => !IsLocalElement && World?.State == World.WorldState.Running;
+
+    /// <summary>
+    /// Whether this sync element is in a valid state for encoding/decoding.
+    /// Override in derived classes (e.g., ConflictingSyncElement tracks validity based on host confirmation).
+    /// </summary>
+    public virtual bool IsValid => true;
 
     /// <summary>
     /// Whether this element is currently driven via link.
@@ -306,10 +312,13 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
 
     /// <summary>
     /// Mark this element as needing synchronization.
+    /// Also checks IsInInitPhase and IsLoading to prevent
+    /// elements created during network decode from being marked dirty.
     /// </summary>
     public void InvalidateSyncElement()
     {
-        if (IsLocalElement || IsDisposed || IsSyncDirty || !GenerateSyncData)
+        // IsInInitPhase and IsLoading checks prevent spurious dirty marking during decode
+        if (IsLocalElement || IsDisposed || IsSyncDirty || IsInInitPhase || IsLoading || !GenerateSyncData)
             return;
 
         if (World?.SyncController == null)
@@ -329,6 +338,11 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
     public void MarkNonPersistent()
     {
         NonPersistent = true;
+    }
+
+    public void MarkNonDrivable()
+    {
+        IsDrivable = false;
     }
 
     public void MarkLocalElement()
@@ -391,7 +405,19 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
     public virtual void DecodeDelta(BinaryReader reader, BinaryMessageBatch inboundMessage)
     {
         if (IsSyncDirty)
-            throw new InvalidOperationException("Cannot apply delta to a dirty element!");
+        {
+            // For clients, authority's data wins - clear dirty state and apply the delta.
+            // This handles edge cases where elements get marked dirty during initialization.
+            if (World != null && !World.IsAuthority)
+            {
+                IsSyncDirty = false;
+                InternalClearDirty();
+            }
+            else
+            {
+                throw new InvalidOperationException("Cannot apply delta to a dirty element!");
+            }
+        }
 
         IsLoading = true;
         InternalDecodeDelta(reader, inboundMessage);

@@ -447,6 +447,8 @@ public partial class LumoraEngineRunner : Node
             dashboardToggle.Name = "DashboardToggle";
             AddChild(dashboardToggle);
             AquaLogger.Log("LumoraEngineRunner: DashboardToggle created");
+
+            // Note: 3D loading indicator is now created in userspace world via WorldLoadingService
         }
         catch (Exception ex)
         {

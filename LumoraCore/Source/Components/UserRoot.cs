@@ -302,7 +302,7 @@ public class UserRoot : Component
     /// Called when synced fields change. Handles client-side local user detection.
     /// Simple direct object reference comparison.
     /// </summary>
-    protected override void OnChanges()
+    public override void OnChanges()
     {
         base.OnChanges();
 

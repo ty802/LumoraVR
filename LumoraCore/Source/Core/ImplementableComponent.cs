@@ -125,7 +125,7 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
     /// <summary>
     /// When component changes, apply changes to the hook.
     /// </summary>
-    protected override void OnChanges()
+    public override void OnChanges()
     {
         base.OnChanges();
         UpdateHook();

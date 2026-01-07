@@ -33,9 +33,19 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
         base.Initialize();
 
         _characterBody = new CharacterBody3D();
-        _characterBody.Name = "CharacterController";
+        _characterBody.Name = $"@CharacterBody3D_{Owner?.Slot?.Name?.Value ?? "Unknown"}";
 
-        // Parent the physics body under the world root (not the slot) to avoid double transforms
+       
+        // In Lumora/Godot, we parent CharacterBody3D to WORLD ROOT to avoid double transforms.
+        // This is because:
+        // 1. Godot's CharacterBody3D.MoveAndSlide() operates in world space
+        // 2. If parented under a moving slot, the body would get double transforms
+        // 3. We sync position BACK to the slot after physics (see ApplyChanges)
+        //
+        // For remote users: They don't have a local CharacterBody3D - their slot position
+        // is driven by network sync, so this doesn't create hierarchy issues.
+        //
+        // This is a Godot-specific architectural choice, not a bug.
         Node3D worldRoot = Owner?.World?.GodotSceneRoot as Node3D;
         Node parentNode = (Node)worldRoot ?? attachedNode;
         parentNode.AddChild(_characterBody);

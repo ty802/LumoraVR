@@ -176,8 +176,8 @@ public class World
 	private readonly List<User> _leftUsers = new();
 
 	// Network replicators for world structure synchronization
-	private Networking.Sync.SlotReplicator? _slotReplicator;
-	private Networking.Sync.UserReplicator? _userReplicator;
+	private Networking.Sync.SlotBag? _slotBag;
+	private Networking.Sync.UserBag? _userBag;
 	private readonly List<IWorldEventReceiver>[] _worldEventReceivers;
 	private WorldState _state = WorldState.Created;
 	private InitializationState _initState = InitializationState.Created;
@@ -211,6 +211,11 @@ public class World
 	/// Global hook type registry (static, shared across all worlds).
 	/// </summary>
 	public static HookTypeRegistry HookTypes => _staticHookTypes;
+
+	/// <summary>
+	/// Event fired when world state changes.
+	/// </summary>
+	public event Action<WorldState, WorldState>? OnStateChanged;
 
 	/// <summary>
 	/// Current state of the World.
@@ -610,44 +615,35 @@ public class World
 		// Create reference controller BEFORE anything else
 		ReferenceController = new ReferenceController(this);
 
-		// Create worker manager for type encoding/decoding during sync
-		Workers = new WorkerManager(this);
-
 		// Create sync controller first (doesn't need RefID)
 		SyncController = new SyncController(this);
 		AquaLogger.Log("SyncController initialized");
 
+		// Create worker manager for type encoding/decoding during sync
+		// Needs SyncController available so the type index table registers for replication.
+		Workers = new WorkerManager(this);
+
 		// Always create network replicators with consistent RefIDs
 		// This ensures both client and host use the same RefIDs for replicators
-		_slotReplicator = new Networking.Sync.SlotReplicator();
-		_slotReplicator.Initialize(this, "Slots", null);
-		_userReplicator = new Networking.Sync.UserReplicator();
-		_userReplicator.Initialize(this, "Users", null);
-		AquaLogger.Log($"Network replicators initialized: SlotReplicator={_slotReplicator.ReferenceID}, UserReplicator={_userReplicator.ReferenceID}");
+		_slotBag = new Networking.Sync.SlotBag();
+		_slotBag.Initialize(this, null);
+		_userBag = new Networking.Sync.UserBag();
+		_userBag.Initialize(this, null);
+		AquaLogger.Log($"Network bags initialized: SlotBag={_slotBag.ReferenceID}, UserBag={_userBag.ReferenceID}");
 
-		// For clients, use LOCAL RefID space for client-specific structures
-		// The host sends FullBatch with Authority RefIDs for world content
+		// Clients must create shared world structures (RootSlot) in authority RefID space
+		// so incoming ParentSlotRef and other references resolve correctly.
+		// Local-only structures should explicitly use LocalAllocationBlockBegin where created.
 		if (!isAuthority)
 		{
-			ReferenceController.LocalAllocationBlockBegin();
-			AquaLogger.Log("Client: Using LOCAL RefID space for local structures");
+			AquaLogger.Log("Client: Using authority RefID space for shared world structures");
 		}
 
-		try
-		{
-			// Create root Slot (client uses LOCAL RefID, host uses Authority RefID)
-			RootSlot = new Slot();
-			RootSlot.SlotName.Value = "Root";
-			RootSlot.Initialize(this);
-			RegisterSlot(RootSlot);
-		}
-		finally
-		{
-			if (!isAuthority)
-			{
-				ReferenceController.LocalAllocationBlockEnd();
-			}
-		}
+		// Create root Slot (uses Authority RefID space on both host and client)
+		RootSlot = new Slot();
+		RootSlot.SlotName.Value = "Root";
+		RootSlot.Initialize(this);
+		RegisterSlot(RootSlot);
 
 		// Note: Godot scene attachment handled by WorldDriver wrapper
 		// World itself is pure C# and doesn't use AddChild
@@ -658,13 +654,13 @@ public class World
 		// DON'T transition to Running here for clients!
 		// Clients need to wait for full state download.
 		// Only local/authority worlds can go to Running immediately.
-		if (_slotReplicator != null && _slotReplicator.IsInInitPhase)
+		if (_slotBag != null && _slotBag.IsInInitPhase)
 		{
-			_slotReplicator.EndInitPhase();
+			_slotBag.EndInitPhase();
 		}
-		if (_userReplicator != null && _userReplicator.IsInInitPhase)
+		if (_userBag != null && _userBag.IsInInitPhase)
 		{
-			_userReplicator.EndInitPhase();
+			_userBag.EndInitPhase();
 		}
 		AquaLogger.Log($"World '{WorldName.Value}' initialized successfully - state={_state}, initState={_initState}");
 	}
@@ -707,10 +703,10 @@ public class World
 		}
 		Metrics.SlotCount++;
 
-		// Add to slot replicator for network sync (only if not already present)
-		if (_slotReplicator != null && !_slotReplicator.ContainsKey(slot.ReferenceID))
+		// Add to slot replicator for network sync (skip local-only slots)
+		if (!slot.IsLocalElement && _slotBag != null && !_slotBag.ContainsKey(slot.ReferenceID))
 		{
-			_slotReplicator.Add(slot.ReferenceID, slot, isNewlyCreated: true, skipSync: false);
+			_slotBag.Add(slot.ReferenceID, slot, isNewlyCreated: true, skipSync: false);
 		}
 
 		if (!string.IsNullOrEmpty(slot.Tag.Value))
@@ -723,7 +719,7 @@ public class World
 			slots.Add(slot);
 		}
 
-		if (slot.Parent == null)
+		if (slot.IsRootSlot)
 		{
 			_rootSlots.Add(slot);
 		}
@@ -742,7 +738,10 @@ public class World
 		Metrics.SlotCount--;
 
 		// Remove from slot replicator for network sync
-		_slotReplicator?.Remove(slot.ReferenceID);
+		if (!slot.IsLocalElement)
+		{
+			_slotBag?.Remove(slot.ReferenceID);
+		}
 
 		if (!string.IsNullOrEmpty(slot.Tag.Value))
 		{
@@ -762,7 +761,10 @@ public class World
 	internal void RegisterComponent(Component component)
 	{
 		if (component == null) return;
-		ReferenceController?.RegisterObject(component);
+		if (!ReferenceController.ContainsObject(component.ReferenceID))
+		{
+			ReferenceController?.RegisterObject(component);
+		}
 		Metrics.ComponentCount++;
 	}
 
@@ -865,6 +867,11 @@ public class World
 			var found = FindSlotByNameRecursive(child, name);
 			if (found != null) return found;
 		}
+		foreach (var child in slot.LocalChildren)
+		{
+			var found = FindSlotByNameRecursive(child, name);
+			if (found != null) return found;
+		}
 
 		return null;
 	}
@@ -917,9 +924,9 @@ public class World
 				}
 
 				// Add to user replicator for network sync (only if not already present)
-				if (_userReplicator != null && !_userReplicator.ContainsKey(user.ReferenceID))
+				if (_userBag != null && !_userBag.ContainsKey(user.ReferenceID))
 				{
-					_userReplicator.Add(user.ReferenceID, user, isNewlyCreated: true, skipSync: false);
+					_userBag.Add(user.ReferenceID, user, isNewlyCreated: true, skipSync: false);
 				}
 
 				AquaLogger.Log($"User added to world: {user.UserName.Value}");
@@ -939,6 +946,19 @@ public class World
 		}
 	}
 
+	internal void AddUserToBag(User user, RefID id, bool isNewlyCreated)
+	{
+		if (user == null || _userBag == null)
+		{
+			return;
+		}
+
+		if (!_userBag.ContainsKey(id))
+		{
+			_userBag.Add(id, user, isNewlyCreated, skipSync: false);
+		}
+	}
+
 	/// <summary>
 	/// Remove a user from the world.
 	/// </summary>
@@ -952,7 +972,7 @@ public class World
 			ReferenceController?.UnregisterObject(user.ReferenceID);
 
 			// Remove from user replicator for network sync
-			_userReplicator?.Remove(user.ReferenceID);
+			_userBag?.Remove(user.ReferenceID);
 
 			AquaLogger.Log($"User removed from world: {user.UserName.Value}");
 
@@ -969,13 +989,13 @@ public class World
 	}
 
 	/// <summary>
-	/// Register a user with the world (called by UserReplicator).
+	/// Register a user with the world (called by UserBag).
 	/// Alias for AddUser.
 	/// </summary>
 	internal void RegisterUser(User user) => AddUser(user);
 
 	/// <summary>
-	/// Unregister a user from the world (called by UserReplicator).
+	/// Unregister a user from the world (called by UserBag).
 	/// Alias for RemoveUser.
 	/// </summary>
 	internal void UnregisterUser(User user) => RemoveUser(user);
@@ -1059,9 +1079,10 @@ public class World
 	{
 		var (rangeStart, rangeEnd) = _refIDAllocator.GetAuthorityIDRange();
 
-		// Allocate a unique RefID for the User via ReferenceController to avoid collisions
-		var userRefId = ReferenceController.AllocateID();
-		var hostUser = new User(this, userRefId);
+		// Reserve the next RefID without advancing the allocation cursor.
+		// User.InitializeWorker will advance the cursor for the user and its sync members.
+		var userRefId = ReferenceController.PeekID();
+		var hostUser = new User();
 		var resolvedName = string.IsNullOrWhiteSpace(userName) ? System.Environment.MachineName : userName;
 
 		hostUser.UserName.Value = resolvedName;
@@ -1082,7 +1103,9 @@ public class World
 		// Set platform
 		hostUser.UserPlatform.Value = GetCurrentPlatform();
 
-		SetLocalUser(hostUser); // This calls AddUser internally
+		LocalUser = hostUser;
+		AddUserToBag(hostUser, userRefId, isNewlyCreated: true);
+		hostUser.ConfigureLocalTrackingStreams();
 		AquaLogger.Log($"Created host user '{resolvedName}' with RefID {userRefId}");
 		return hostUser;
 	}
@@ -1195,9 +1218,11 @@ public class World
 	/// </summary>
 	public void NetworkInitStart()
 	{
+		var oldState = _state;
 		_initState = InitializationState.InitializingNetwork;
 		_state = WorldState.InitializingNetwork;
 		AquaLogger.Log("World entering network initialization");
+		OnStateChanged?.Invoke(oldState, _state);
 	}
 
 	/// <summary>
@@ -1211,9 +1236,11 @@ public class World
 			return;
 		}
 
+		var oldState = _state;
 		_initState = InitializationState.WaitingForJoinGrant;
 		_state = WorldState.WaitingForJoinGrant;
 		AquaLogger.Log("Waiting for join grant");
+		OnStateChanged?.Invoke(oldState, _state);
 	}
 
 	/// <summary>
@@ -1227,9 +1254,11 @@ public class World
 			return;
 		}
 
+		var oldState = _state;
 		_initState = InitializationState.InitializingDataModel;
 		_state = WorldState.InitializingDataModel;
 		AquaLogger.Log("Starting data model initialization");
+		OnStateChanged?.Invoke(oldState, _state);
 	}
 
 	/// <summary>
@@ -1240,9 +1269,11 @@ public class World
 		if (_state == WorldState.Destroyed)
 			return;
 
+		var oldState = _state;
 		_initState = InitializationState.Finished;
 		_state = WorldState.Running;
 		AquaLogger.Log("World is now running");
+		OnStateChanged?.Invoke(oldState, _state);
 	}
 
 	/// <summary>
@@ -1250,9 +1281,11 @@ public class World
 	/// </summary>
 	public void InitializationFailed()
 	{
+		var oldState = _state;
 		_initState = InitializationState.Failed;
 		_state = WorldState.Failed;
 		AquaLogger.Log("World initialization failed");
+		OnStateChanged?.Invoke(oldState, _state);
 	}
 
 	/// <summary>
@@ -1383,6 +1416,12 @@ public class World
 			// Stage 2: Process world events (user joined/left, focus changes)
 			RunWorldEvents();
 
+			// Stage 2.5: Register any newly used worker types (authority only)
+			if (IsAuthority)
+			{
+				Workers?.RegisterTypes();
+			}
+
 			// Stage 3: Process input for this world (if focused)
 			if (_focus == WorldFocus.Focused)
 			{
@@ -1400,6 +1439,9 @@ public class World
 
 			// Stage 5.6: Sync slot hooks so transforms propagate to the platform scene graph
 			UpdateSlotHooks(RootSlot);
+
+			// Stage 5.7: Update hooks for orphaned slots (network-replicated slots not yet in tree)
+			UpdateOrphanedSlotHooks();
 
 			// Stage 6: Process changed elements
 			ProcessChangedElements();
@@ -1481,8 +1523,8 @@ public class World
 	/// </summary>
 	private void UpdateComponents(float delta)
 	{
-		// Update all components that need updating
-		UpdateSlotsRecursive(RootSlot, delta);
+		_updateManager?.RunStartups();
+		_updateManager?.RunUpdates(delta);
 	}
 
 	/// <summary>
@@ -1498,6 +1540,30 @@ public class World
 		foreach (var child in slot.Children)
 		{
 			UpdateSlotHooks(child);
+		}
+		foreach (var child in slot.LocalChildren)
+		{
+			UpdateSlotHooks(child);
+		}
+	}
+
+	/// <summary>
+	/// Update hooks for orphaned slots (slots not in the tree hierarchy).
+	/// This handles network-replicated slots whose parent hasn't resolved yet.
+	/// </summary>
+	private void UpdateOrphanedSlotHooks()
+	{
+		if (_slotBag == null)
+			return;
+
+		foreach (var kvp in _slotBag)
+		{
+			var slot = kvp.Value;
+			// Only update slots that aren't in the tree (no parent and not RootSlot)
+			if (slot != null && slot.Parent == null && slot != RootSlot && slot.Hook != null)
+			{
+				slot.Hook.ApplyChanges();
+			}
 		}
 	}
 
@@ -1520,6 +1586,10 @@ public class World
 
 		// Update child slots
 		foreach (var child in slot.Children)
+		{
+			UpdateSlotsRecursive(child, delta);
+		}
+		foreach (var child in slot.LocalChildren)
 		{
 			UpdateSlotsRecursive(child, delta);
 		}
@@ -1549,8 +1619,7 @@ public class World
 	/// </summary>
 	private void ProcessDestructions()
 	{
-		// Process any pending component/slot destructions
-		// This ensures destructions happen at a consistent time
+		_updateManager?.RunDestructions();
 	}
 
 	/// <summary>
@@ -1587,6 +1656,10 @@ public class World
 		{
 			UpdatePhysicsRecursive(child, fixedDelta);
 		}
+		foreach (var child in slot.LocalChildren)
+		{
+			UpdatePhysicsRecursive(child, fixedDelta);
+		}
 	}
 
 	/// <summary>
@@ -1618,6 +1691,10 @@ public class World
 
 		// Update child slots
 		foreach (var child in slot.Children)
+		{
+			UpdateCamerasRecursive(child, delta);
+		}
+		foreach (var child in slot.LocalChildren)
 		{
 			UpdateCamerasRecursive(child, delta);
 		}

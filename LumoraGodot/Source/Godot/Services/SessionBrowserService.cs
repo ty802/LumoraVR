@@ -281,6 +281,30 @@ public partial class SessionBrowserService : Node
 		if (world == null)
 			return;
 
+		// Prevent duplicate joins - check if already loading
+		var loadingService = LumoraEngine.Current?.WorldLoadingService;
+		if (loadingService?.IsLoading == true)
+		{
+			AquaLogger.Warn("SessionBrowserService: Already loading a world, ignoring join request");
+			return;
+		}
+
+		// Check if already in this world
+		var worldManager = LumoraEngine.Current?.WorldManager;
+		if (worldManager != null)
+		{
+			foreach (var existingWorld in worldManager.Worlds)
+			{
+				// Check by session ID or address match
+				if (existingWorld?.Session?.Metadata?.SessionId == world.Id)
+				{
+					AquaLogger.Warn($"SessionBrowserService: Already connected to world '{world.Name}'");
+					OnJoinFailed?.Invoke("Already connected to this world");
+					return;
+				}
+			}
+		}
+
 		OnJoinStarted?.Invoke(world.Name);
 
 		// Check if this is a LAN session with direct connection info
@@ -312,40 +336,81 @@ public partial class SessionBrowserService : Node
 
 	/// <summary>
 	/// Join directly using a connection URL (LAN or direct IP).
+	/// Uses WorldLoadingService for progress tracking.
 	/// </summary>
 	private async Task JoinDirectAsync(string worldName, Uri joinUri)
 	{
 		try
 		{
-			var worldManager = LumoraEngine.Current?.WorldManager;
-			if (worldManager == null)
+			var loadingService = LumoraEngine.Current?.WorldLoadingService;
+			if (loadingService == null)
 			{
-				OnJoinFailed?.Invoke("WorldManager not available");
+				// Fall back to direct join if loading service not available
+				await JoinDirectLegacyAsync(worldName, joinUri);
 				return;
 			}
 
-			var host = joinUri.Host;
-			var port = (ushort)(joinUri.Port > 0 ? joinUri.Port : 7777);
+			AquaLogger.Log($"SessionBrowserService: Direct join to {joinUri} via WorldLoadingService");
 
-			AquaLogger.Log($"SessionBrowserService: Direct join to {host}:{port}");
-
-			var joinedWorld = await worldManager.JoinSessionAsync(worldName, host, port);
-
-			if (joinedWorld != null)
+			// Use loading service for background loading with progress
+			var operation = loadingService.JoinSessionAsync(worldName, joinUri, focusWhenReady: true);
+			if (operation == null)
 			{
-				worldManager.FocusWorld(joinedWorld);
-				OnJoinSuccess?.Invoke(joinedWorld);
+				OnJoinFailed?.Invoke("Already loading another world");
+				return;
+			}
+
+			// Wait for completion
+			var world = await operation.Task;
+
+			if (world != null)
+			{
+				OnJoinSuccess?.Invoke(world);
 				AquaLogger.Log($"SessionBrowserService: Successfully joined '{worldName}'");
+			}
+			else if (operation.IsCancelled)
+			{
+				OnJoinFailed?.Invoke("Join cancelled");
 			}
 			else
 			{
-				OnJoinFailed?.Invoke("Failed to join session");
+				OnJoinFailed?.Invoke(operation.ErrorMessage ?? "Failed to join session");
 			}
 		}
 		catch (Exception ex)
 		{
 			AquaLogger.Error($"SessionBrowserService: Direct join failed: {ex.Message}");
 			OnJoinFailed?.Invoke(ex.Message);
+		}
+	}
+
+	/// <summary>
+	/// Legacy direct join without loading indicator.
+	/// </summary>
+	private async Task JoinDirectLegacyAsync(string worldName, Uri joinUri)
+	{
+		var worldManager = LumoraEngine.Current?.WorldManager;
+		if (worldManager == null)
+		{
+			OnJoinFailed?.Invoke("WorldManager not available");
+			return;
+		}
+
+		var host = joinUri.Host;
+		var port = (ushort)(joinUri.Port > 0 ? joinUri.Port : 7777);
+
+		AquaLogger.Log($"SessionBrowserService: Legacy direct join to {host}:{port}");
+
+		var joinedWorld = await worldManager.JoinSessionAsync(worldName, host, port);
+
+		if (joinedWorld != null)
+		{
+			worldManager.FocusWorld(joinedWorld);
+			OnJoinSuccess?.Invoke(joinedWorld);
+		}
+		else
+		{
+			OnJoinFailed?.Invoke("Failed to join session");
 		}
 	}
 
@@ -395,29 +460,9 @@ public partial class SessionBrowserService : Node
 
 			AquaLogger.Log($"SessionBrowserService: NAT punch succeeded, connecting to {punchedEndpoint}");
 
-			// Connect to the punched endpoint
-			var worldManager = LumoraEngine.Current?.WorldManager;
-			if (worldManager == null)
-			{
-				OnJoinFailed?.Invoke("WorldManager not available");
-				return;
-			}
-
-			var joinedWorld = await worldManager.JoinSessionAsync(
-				worldName,
-				punchedEndpoint.Address.ToString(),
-				(ushort)punchedEndpoint.Port);
-
-			if (joinedWorld != null)
-			{
-				worldManager.FocusWorld(joinedWorld);
-				OnJoinSuccess?.Invoke(joinedWorld);
-				AquaLogger.Log($"SessionBrowserService: Successfully joined '{worldName}' via NAT punch");
-			}
-			else
-			{
-				OnJoinFailed?.Invoke("Failed to create world after NAT punch");
-			}
+			// Connect to the punched endpoint using WorldLoadingService
+			var joinUri = new Uri($"lnl://{punchedEndpoint.Address}:{punchedEndpoint.Port}");
+			await JoinDirectAsync(worldName, joinUri);
 
 			// Clean up NAT punch client
 			_natPunchClient?.Dispose();

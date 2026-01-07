@@ -23,10 +23,31 @@ public class SlotHook : Hook<Slot>, ISlotHook
     private WorldHook _worldHook;
     private bool _didDeferLog;
 
-    private bool ShouldDeferHierarchy =>
-        Owner?.World != null &&
-        !Owner.World.IsAuthority &&
-        Owner.World.State != World.WorldState.Running;
+    /// <summary>
+    /// Whether hierarchy updates should be deferred.
+    /// Defers when:
+    /// - World not running yet (client still connecting)
+    /// - Currently in batch decode (sync fields not populated yet)
+    /// </summary>
+    private bool ShouldDeferHierarchy
+    {
+        get
+        {
+            if (Owner?.World == null)
+                return false;
+
+            // Defer if we're still decoding a batch - sync fields (Name, ParentSlotRef) may not be populated yet
+            var refController = Owner.World.ReferenceController;
+            if (refController?.IsDecodingBatch == true)
+                return true;
+
+            // Defer if world not running yet (client still connecting)
+            if (!Owner.World.IsAuthority && Owner.World.State != World.WorldState.Running)
+                return true;
+
+            return false;
+        }
+    }
 
     /// <summary>
     /// The generated Node3D for this slot (created on-demand).
@@ -127,6 +148,20 @@ public class SlotHook : Hook<Slot>, ISlotHook
             return;
         }
 
+        // Defer if parent is unknown (ParentSlotRef not decoded yet) or pending (waiting for async resolution)
+        // This prevents orphaned slots from being incorrectly attached to world root
+        // during network decode when sync members haven't been decoded yet
+        if (Owner.IsParentUnknown)
+        {
+            Lumora.Core.Logging.Logger.Log($"SlotHook: Deferring hierarchy for '{Owner.SlotName.Value}' - parent ref not decoded yet");
+            return;
+        }
+        if (Owner.HasPendingParent)
+        {
+            Lumora.Core.Logging.Logger.Log($"SlotHook: Deferring hierarchy for '{Owner.SlotName.Value}' - parent pending resolution");
+            return;
+        }
+
         if (_lastParent == Owner.Parent && !Owner.IsRootSlot)
         {
             return;
@@ -168,8 +203,12 @@ public class SlotHook : Hook<Slot>, ISlotHook
         }
         else
         {
-            // Root slot - attach to world root
-            if (Owner.IsRootSlot)
+            // Root slot - attach to world root ONLY if this is the actual World.RootSlot
+            // Don't use IsTrueRootSlot because ParentSlotRef.IsInInitPhase becomes false
+            // during slot initialization, but the actual Value is decoded later as a separate
+            // sync element. This causes false positives for "true root slot" detection.
+            bool isActualRootSlot = Owner == Owner.World?.RootSlot;
+            if (isActualRootSlot)
             {
                 // Get the world's Godot scene root directly
                 var worldRoot = Owner.World.GodotSceneRoot as Node3D;
@@ -195,7 +234,43 @@ public class SlotHook : Hook<Slot>, ISlotHook
             }
             else
             {
-                Lumora.Core.Logging.Logger.Warn($"SlotHook: Slot '{Owner.SlotName.Value}' has no parent (_lastParent={_lastParent != null}, IsRootSlot={Owner.IsRootSlot})");
+                // Not World.RootSlot and no parent - check if we should fall back to RootSlot
+                // This happens when:
+                // 1. ParentSlotRef.Value was decoded as RefID.Null (true orphan, should parent to RootSlot)
+                // 2. We're still waiting for parent decode (defer)
+                var parentRefValue = Owner.ParentSlotRef?.Value ?? RefID.Null;
+                bool worldIsRunning = Owner.World?.State == World.WorldState.Running;
+                bool parentRefIsNull = parentRefValue.IsNull;
+
+                // If world is running and parent ref is explicitly null, fall back to RootSlot
+                if (worldIsRunning && parentRefIsNull && Owner.World?.RootSlot != null)
+                {
+                    // Parent to RootSlot's Node3D
+                    var rootSlot = Owner.World.RootSlot;
+                    var rootHook = rootSlot.Hook as SlotHook;
+                    if (rootHook != null)
+                    {
+                        _parentHook = rootHook;
+                        Node3D parentNode = _parentHook.RequestNode3D();
+                        if (GeneratedNode3D.GetParent() != parentNode)
+                        {
+                            if (GeneratedNode3D.GetParent() != null)
+                            {
+                                GeneratedNode3D.Reparent(parentNode, false);
+                            }
+                            else
+                            {
+                                parentNode.AddChild(GeneratedNode3D);
+                            }
+                        }
+                        Lumora.Core.Logging.Logger.Log($"SlotHook: Attached orphan slot '{Owner.SlotName.Value}' to RootSlot '{rootSlot.SlotName.Value}' (fallback)");
+                    }
+                }
+                else
+                {
+                    // Still waiting for parent decode or world not running yet
+                    Lumora.Core.Logging.Logger.Log($"SlotHook: Deferring attachment for '{Owner.SlotName.Value}' - waiting for parent decode (ParentRef.Value={parentRefValue}, WorldRunning={worldIsRunning})");
+                }
             }
         }
     }

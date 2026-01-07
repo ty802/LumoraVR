@@ -5,24 +5,16 @@ using Lumora.Core;
 namespace Lumora.Core.Networking.Sync;
 
 /// <summary>
-/// Network replicator for Users.
+/// Network bag for Users.
 /// When a FullBatch is received, this creates User objects that don't exist yet.
 /// </summary>
-public class UserReplicator : ReplicatedDictionary<RefID, User>
+public class UserBag : SyncRefIDBagBase<User>
 {
-    public UserReplicator()
+    public UserBag()
     {
         // Hook into element added to register users with world
         OnElementAdded += HandleUserAdded;
         OnElementRemoved += HandleUserRemoved;
-    }
-
-    /// <summary>
-    /// Encode a RefID key to the stream.
-    /// </summary>
-    protected override void EncodeKey(BinaryWriter writer, RefID key)
-    {
-        writer.Write7BitEncoded((ulong)key);
     }
 
     /// <summary>
@@ -36,20 +28,12 @@ public class UserReplicator : ReplicatedDictionary<RefID, User>
     }
 
     /// <summary>
-    /// Decode a RefID key from the stream.
-    /// </summary>
-    protected override RefID DecodeKey(BinaryReader reader)
-    {
-        return new RefID(reader.Read7BitEncoded());
-    }
-
-    /// <summary>
     /// Decode element - not used directly, we override CreateElementWithKey instead.
     /// </summary>
     protected override User DecodeElement(BinaryReader reader)
     {
         // This shouldn't be called - we override CreateElementWithKey
-        throw new InvalidOperationException("UserReplicator requires CreateElementWithKey - DecodeElement should not be called");
+        throw new InvalidOperationException("UserBag requires CreateElementWithKey - DecodeElement should not be called");
     }
 
     /// <summary>
@@ -58,19 +42,7 @@ public class UserReplicator : ReplicatedDictionary<RefID, User>
     /// </summary>
     protected override User CreateElementWithKey(RefID key, BinaryReader reader)
     {
-        if (World == null)
-            return null;
-
-        // Create user with the network-assigned RefID (fromNetwork=true for allocation block)
-        return new User(World, key, fromNetwork: true);
-    }
-
-    /// <summary>
-    /// Initialize the replicator with a World.
-    /// </summary>
-    public void Initialize(World world, string name, IWorldElement? parent)
-    {
-        base.Initialize(world, parent);
+        return new User();
     }
 
     /// <summary>
@@ -80,12 +52,28 @@ public class UserReplicator : ReplicatedDictionary<RefID, User>
     {
         if (World == null || user == null) return;
 
+        if (user.World == null)
+        {
+            user.InitializeFromBag(World, key);
+        }
+
         // Initialize first to set LocalUser before registration
         // User.Initialize() checks if RefID matches Session.LocalUserRefIDToInit
         // This MUST happen before RegisterUser so that:
         // 1. World.LocalUser is set before OnUserJoined events fire
         // 2. UserRoot.OnChanges() can detect the local user correctly
         user.Initialize();
+
+        // Keep sync members in loading state until their values
+        // are decoded from FullBatch. This prevents them from being marked dirty
+        // if the world transitions to Running before all values are decoded.
+        foreach (var member in user.SyncMembers)
+        {
+            if (member is SyncElement syncElement)
+            {
+                syncElement.IsLoading = true;
+            }
+        }
 
         // Now register user with world's user tracking
         World.RegisterUser(user);

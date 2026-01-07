@@ -740,10 +740,8 @@ public class SessionSyncManager : IDisposable
 
     private void ApplyDeltaBatch(DeltaBatch deltaBatch)
     {
-        if (World.IsAuthority)
-        {
-            ValidateDeltaBatchAndRetransmit(deltaBatch);
-        }
+        // Always validate before applying deltas; host will retransmit if needed.
+        ValidateDeltaBatchAndRetransmit(deltaBatch);
 
         ApplyDataRecords(deltaBatch);
 
@@ -915,10 +913,13 @@ public class SessionSyncManager : IDisposable
         int remaining = batch.DataRecordCount;
         int passes = 0;
 
+        AquaLogger.Log($"ApplyDataRecords: Starting with {batch.DataRecordCount} records, isFull={batch is FullBatch}");
+
         while (remaining > 0)
         {
             int startRemaining = remaining;
-            
+            int decodedThisPass = 0;
+
             for (int i = 0; i < batch.DataRecordCount; i++)
             {
                 if (batch.IsProcessed(i))
@@ -938,6 +939,7 @@ public class SessionSyncManager : IDisposable
                     {
                         batch.MarkDataRecordAsProcessed(i);
                         remaining--;
+                        decodedThisPass++;
                     }
                 }
                 catch (Exception ex)
@@ -948,12 +950,14 @@ public class SessionSyncManager : IDisposable
                 }
             }
 
+            AquaLogger.Log($"ApplyDataRecords: Pass {passes} decoded {decodedThisPass} records, {remaining} remaining");
+
             // If no progress in this pass, we're done
             if (remaining == startRemaining)
             {
                 break;
             }
-            
+
             passes++;
         }
 
@@ -1064,6 +1068,16 @@ public class SessionSyncManager : IDisposable
             return;
         }
 
+        if (!isFull)
+        {
+            var syncElement = World.ReferenceController.GetObjectOrNull(record.TargetID) as SyncElement;
+            if (syncElement != null && syncElement.IsSyncDirty)
+            {
+                // Defer pending delta while local changes are still dirty.
+                return;
+            }
+        }
+
         var decoded = TryDecodePendingRecord(record, isFull);
         if (decoded)
         {
@@ -1087,19 +1101,29 @@ public class SessionSyncManager : IDisposable
             ? new FullBatch(record.SenderStateVersion, record.SenderSyncTick)
             : new DeltaBatch(record.SenderStateVersion, record.SenderSyncTick);
 
-        var writer = batch.BeginNewDataRecord(record.TargetID);
-        if (record.Data.Length > 0)
+        try
         {
-            writer.Write(record.Data);
+            var writer = batch.BeginNewDataRecord(record.TargetID);
+            if (record.Data.Length > 0)
+            {
+                writer.Write(record.Data);
+            }
+            batch.FinishDataRecord(record.TargetID);
+
+            return isFull
+                ? World.SyncController.DecodeFullMessage(0, (FullBatch)batch)
+                : World.SyncController.DecodeDeltaMessage(0, (DeltaBatch)batch);
         }
-        batch.FinishDataRecord(record.TargetID);
-
-        bool decoded = isFull
-            ? World.SyncController.DecodeFullMessage(0, (FullBatch)batch)
-            : World.SyncController.DecodeDeltaMessage(0, (DeltaBatch)batch);
-
-        batch.Dispose();
-        return decoded;
+        catch (InvalidOperationException ex)
+        {
+            // Common case: delta applied to a locally dirty element. Keep pending for later.
+            AquaLogger.Debug($"TryDecodePendingRecord: Deferred {record.TargetID} ({(isFull ? "full" : "delta")}) - {ex.Message}");
+            return false;
+        }
+        finally
+        {
+            batch.Dispose();
+        }
     }
 
     private void UpdatePendingRecord(PendingRecord record, bool isFull)

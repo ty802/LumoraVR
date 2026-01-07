@@ -34,7 +34,7 @@ public abstract class ConflictingSyncElement : SyncElement
     /// Whether this element is in a valid state.
     /// Invalid elements have experienced conflicts and await resync.
     /// </summary>
-    public virtual bool IsValid => _isValid;
+    public override bool IsValid => _isValid;
 
     /// <summary>
     /// Whether this element can only be modified by the host.
@@ -84,6 +84,8 @@ public abstract class ConflictingSyncElement : SyncElement
         {
             if (World?.IsAuthority == true)
                 return true;
+            if (IsSyncDirty)
+                return false;
             return LastVersion == LastConfirmedTime;
         }
     }

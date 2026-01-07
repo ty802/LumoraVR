@@ -201,23 +201,44 @@ public class SessionJoinIndicator : Component
 
     /// <summary>
     /// Update indicator position to follow user's head.
+    /// Uses InputInterface for head tracking since LocalUser may not be available in userspace.
     /// </summary>
     private void UpdatePosition(float delta = 0f)
     {
-        var localUser = World?.LocalUser;
-        if (localUser?.Root == null)
-            return;
-
         try
         {
-            var userRoot = localUser.Root;
-            var headPosition = userRoot.HeadPosition;
-            var headRotation = userRoot.HeadRotation;
+            // Get head position from InputInterface (works even without LocalUser)
+            var inputInterface = Engine.Current?.InputInterface;
+            var headDevice = inputInterface?.HeadDevice;
+            if (headDevice == null || !headDevice.IsTracked)
+            {
+                // Use default position if no head tracking
+                var defaultPos = new float3(0, 1.5f, 2f);
+                Slot.GlobalPosition = defaultPos;
+                Slot.GlobalRotation = floatQ.LookRotation(float3.Backward, float3.Up);
+                return;
+            }
+
+            // Get head position and rotation from HeadDevice
+            var headPos = new float3(headDevice.Position.X, headDevice.Position.Y, headDevice.Position.Z);
+            var headRot = new floatQ(headDevice.Rotation.X, headDevice.Rotation.Y, headDevice.Rotation.Z, headDevice.Rotation.W);
 
             // Position indicator 1.5m in front of user, slightly down
-            var forward = headRotation * float3.Forward;
-            var targetPosition = headPosition + forward * 1.5f + float3.Down * 0.5f;
-            var targetRotation = floatQ.LookRotation(targetPosition - headPosition, float3.Up);
+            var forward = headRot * float3.Forward;
+            var targetPosition = headPos + forward * 1.5f + float3.Down * 0.3f;
+
+            // Look at the user
+            var lookDir = headPos - targetPosition;
+            lookDir.y = 0; // Keep level
+            if (lookDir.LengthSquared > 0.001f)
+            {
+                lookDir = lookDir.Normalized;
+            }
+            else
+            {
+                lookDir = float3.Backward;
+            }
+            var targetRotation = floatQ.LookRotation(lookDir, float3.Up);
 
             if (delta > 0f)
             {

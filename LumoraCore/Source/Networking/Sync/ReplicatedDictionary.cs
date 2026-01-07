@@ -92,7 +92,7 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
 
     /// <summary>
     /// Encode an element to the binary stream.
-    /// For SlotReplicator, this is typically empty since slot data is encoded separately.
+    /// For SlotBag, this is typically empty since slot data is encoded separately.
     /// </summary>
     protected abstract void EncodeElement(BinaryWriter writer, TValue element);
 
@@ -116,6 +116,15 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
     protected virtual TValue CreateElementWithKey(TKey key, BinaryReader reader)
     {
         return DecodeElement(reader);
+    }
+
+    /// <summary>
+    /// Skip element data when the element already exists.
+    /// Override in derived classes that encode element payloads.
+    /// </summary>
+    protected virtual void SkipElement(BinaryReader reader)
+    {
+        // Default is no-op because some replicators encode no element data.
     }
 
     #endregion
@@ -270,33 +279,51 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
     {
         uint count = (uint)reader.Read7BitEncoded();
 
-        for (int i = 0; i < count; i++)
+        Lumora.Core.Logging.Logger.Log($"ReplicatedDictionary<{typeof(TKey).Name},{typeof(TValue).Name}>.DecodeFull: count={count}");
+
+        // Signal batch decode start - prevents premature parent fallbacks and init
+        var refController = World?.ReferenceController;
+        refController?.BeginBatchDecode();
+
+        try
         {
-            TKey key = DecodeKey(reader);
-
-            // Check if already in our elements - skip creation
-            if (_elements.ContainsKey(key))
-                continue;
-
-            // Check if already registered in world (e.g., local user from JoinGrant)
-            // This prevents RefID collision when FullBatch contains elements we already created
-            if (key is RefID refId && World?.ReferenceController?.ContainsObject(refId) == true)
+            for (int i = 0; i < count; i++)
             {
-                // Get existing element and add to our tracking
-                var existing = World.ReferenceController.GetObjectOrNull(refId);
-                if (existing is TValue existingElement)
+                TKey key = DecodeKey(reader);
+
+                // Check if already in our elements - skip creation
+                if (_elements.ContainsKey(key))
                 {
-                    InternalAdd(key, existingElement, isNewlyCreated: false, sync: false, triggerChanged: true);
+                    SkipElement(reader);
                     continue;
                 }
-            }
 
-            // Only create if not already registered
-            TValue element = CreateElementWithKey(key, reader);
-            if (element != null)
-            {
-                InternalAdd(key, element, isNewlyCreated: false, sync: false, triggerChanged: true);
+                // Check if already registered in world (e.g., local user from JoinGrant)
+                // This prevents RefID collision when FullBatch contains elements we already created
+                if (key is RefID refId && refController?.ContainsObject(refId) == true)
+                {
+                    // Get existing element and add to our tracking
+                    var existing = refController.GetObjectOrNull(refId);
+                    if (existing is TValue existingElement)
+                    {
+                        InternalAdd(key, existingElement, isNewlyCreated: false, sync: false, triggerChanged: true);
+                        SkipElement(reader);
+                        continue;
+                    }
+                }
+
+                // Only create if not already registered
+                TValue element = CreateElementWithKey(key, reader);
+                if (element != null)
+                {
+                    InternalAdd(key, element, isNewlyCreated: false, sync: false, triggerChanged: true);
+                }
             }
+        }
+        finally
+        {
+            // Signal batch decode end - allows deferred initialization to proceed
+            refController?.EndBatchDecode();
         }
     }
 
@@ -330,7 +357,10 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
 
             // Check if already in our elements - skip creation
             if (_elements.ContainsKey(key))
+            {
+                SkipElement(reader);
                 continue;
+            }
 
             // Check if already registered in world (e.g., local user from JoinGrant)
             if (key is RefID refId && World?.ReferenceController?.ContainsObject(refId) == true)
@@ -339,6 +369,7 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
                 if (existing is TValue existingElement)
                 {
                     InternalAdd(key, existingElement, isNewlyCreated, sync: false, triggerChanged: true);
+                    SkipElement(reader);
                     continue;
                 }
             }

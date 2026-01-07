@@ -69,8 +69,10 @@ public class WorldHook : IWorldHook
         if (slot.Hook is SlotHook slotHook && slotHook.GeneratedNode3D != null)
         {
             Node3D node3D = slotHook.GeneratedNode3D;
-            // For root slot, add directly to WorldRoot
-            if (slot.Parent == null || slot.IsRootSlot)
+            // For root slot, add directly to WorldRoot. Don't treat pending-parent slots as roots.
+            bool isRootSlot = slot.IsRootSlot;
+            bool isExplicitOrphan = slot.Parent == null && !slot.HasPendingParent && !slot.IsParentUnknown;
+            if (isRootSlot || isExplicitOrphan)
             {
                 // If node is orphaned (no parent), add it. Otherwise reparent it.
                 if (node3D.GetParent() == null)

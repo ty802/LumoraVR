@@ -32,10 +32,9 @@ public enum Platform
 /// <summary>
 /// Represents a user in the world.
 /// </summary>
-public class User : ISyncObject, IWorldElement, IDisposable, IWorker
+public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
 {
-    private RefID _referenceID;
-    private List<ISyncMember> _syncMembers;
+    private List<ISyncMember> _syncMembers = new();
     private readonly Dictionary<BodyNode, TrackingStreamPair> _trackingStreams = new();
     private bool _trackingStreamsInitialized;
 
@@ -92,54 +91,12 @@ public class User : ISyncObject, IWorldElement, IDisposable, IWorker
 
     // ISyncObject implementation
     public List<ISyncMember> SyncMembers => _syncMembers;
-    public RefID ReferenceID => _referenceID;
-    public ulong RefIdNumeric => (ulong)_referenceID;
     public bool IsAuthority => World?.IsAuthority ?? false;
-
-    // IWorldElement implementation
-    public World World { get; private set; }
-    public bool IsDestroyed { get; private set; }
-    public bool IsInitialized { get; private set; } = true;
-    public bool IsLocalElement => ReferenceID.IsLocalID;
-    public bool IsPersistent => true;
-    public Type WorkerType => GetType();
-    public string WorkerTypeName => WorkerType.FullName;
-
-    /// <summary>
-    /// Try to get a field by name (IWorker implementation).
-    /// </summary>
-    public IField TryGetField(string name)
-    {
-        var type = GetType();
-        var field = type.GetField(name, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-        if (field != null && typeof(IField).IsAssignableFrom(field.FieldType))
-        {
-            return field.GetValue(this) as IField;
-        }
-        return null;
-    }
-
-    /// <summary>
-    /// Try to get a typed field by name (IWorker implementation).
-    /// </summary>
-    public IField<T> TryGetField<T>(string name)
-    {
-        return TryGetField(name) as IField<T>;
-    }
-
-    /// <summary>
-    /// Get all referenced objects from this user (IWorker implementation).
-    /// </summary>
-    public IEnumerable<IWorldElement> GetReferencedObjects(bool assetRefOnly, bool persistentOnly = true)
-    {
-        // User doesn't reference other world elements directly
-        yield break;
-    }
 
     /// <summary>
     /// Hierarchy path for debugging.
     /// </summary>
-    public string ParentHierarchyToString() => $"User:{UserName.Value ?? UserID.Value}";
+    public override string ParentHierarchyToString() => $"User:{UserName.Value ?? UserID.Value}";
 
     public bool IsHost => World?.IsAuthority == true && World.LocalUser == this;
     public bool IsDisposed { get; private set; }
@@ -205,96 +162,50 @@ public class User : ISyncObject, IWorldElement, IDisposable, IWorker
         }
     }
 
-    /// <summary>
-    /// Create a User for the local/host world (allocates RefIDs normally).
-    /// </summary>
-    public User(World world, RefID refID) : this(world, refID, fromNetwork: false)
+    public User()
     {
     }
 
-    /// <summary>
-    /// Create a User, optionally from network (uses allocation block for network-assigned RefIDs).
-    /// </summary>
-    internal User(World world, RefID refID, bool fromNetwork)
+    internal void InitializeFromBag(World world, RefID refID)
     {
-        World = world;
-        _referenceID = refID;
+        if (world == null)
+            throw new ArgumentNullException(nameof(world));
 
-        // Initialize stream infrastructure
-        StreamGroupManager = new StreamGroupManager(this);
-        Streams = new StreamBag();
-        Streams.Initialize(this);
+        var refController = world.ReferenceController;
+        if (refController == null)
+            throw new InvalidOperationException("ReferenceController required to initialize User.");
 
-        // Discover sync members
-        _syncMembers = SyncMemberDiscovery.DiscoverSyncMembers(this);
-
-        // Initialize sync members with RefIDs
-        InitializeSyncMemberRefIDs(fromNetwork);
-
-        // Bind UserRootRef changes to keep UserRoot.ActiveUser in sync
-        UserRootRef.OnTargetChange += OnUserRootRefChanged;
-
-        AquaLogger.Debug($"User created with {_syncMembers.Count} sync members (fromNetwork={fromNetwork})");
-    }
-
-    /// <summary>
-    /// Initialize sync members with RefIDs.
-    /// For network-created users, uses allocation block to match host's RefID pattern.
-    /// For locally-created users, uses normal sequential allocation.
-    /// </summary>
-    private void InitializeSyncMemberRefIDs(bool fromNetwork)
-    {
-        if (World == null) return;
-
-        var refController = World.ReferenceController;
-        if (refController == null) return;
-
-        // Register the user itself first
-        refController.RegisterObject(this);
-
-        if (fromNetwork)
+        IsInInitPhase = true;
+        refController.AllocationBlockBegin(refID);
+        try
         {
-            // Network-created: Use allocation block to match host's RefID pattern
-            // Host allocated User at X, sync members at X+1, X+2, etc.
-            var nextId = RefID.Construct(_referenceID.GetUserByte(), _referenceID.GetPosition() + 1);
-            AquaLogger.Debug($"User.InitializeSyncMemberRefIDs: Starting allocation block at {nextId} for {_syncMembers.Count} members");
-            refController.AllocationBlockBegin(nextId);
-            try
-            {
-                int memberIndex = 0;
-                foreach (var member in _syncMembers)
-                {
-                    if (member is SyncElement syncElement)
-                    {
-                        syncElement.Initialize(World, this);
-                        AquaLogger.Debug($"  [{memberIndex}] {member.Name} → {syncElement.ReferenceID}");
-                        memberIndex++;
-                    }
-                }
+            base.Initialize(world, parent: null);
 
-                EnsureTrackingStreamsInitialized();
-            }
-            finally
+            EndInitializationStageForMembers();
+
+            _syncMembers = new List<ISyncMember>(SyncMemberCount);
+            for (int i = 0; i < SyncMemberCount; i++)
             {
-                refController.AllocationBlockEnd();
-            }
-        }
-        else
-        {
-            // Locally-created: Normal sequential allocation
-            AquaLogger.Debug($"User.InitializeSyncMemberRefIDs: Sequential allocation for {_syncMembers.Count} members");
-            int memberIndex = 0;
-            foreach (var member in _syncMembers)
-            {
-                if (member is SyncElement syncElement)
-                {
-                    syncElement.Initialize(World, this);
-                    AquaLogger.Debug($"  [{memberIndex}] {member.Name} → {syncElement.ReferenceID}");
-                    memberIndex++;
-                }
+                _syncMembers.Add(GetSyncMember(i));
             }
 
+            // Initialize stream infrastructure
+            StreamGroupManager = new StreamGroupManager(this);
+            Streams = new StreamBag();
+            Streams.Initialize(this);
+
+            // Bind UserRootRef changes to keep UserRoot.ActiveUser in sync
+            UserRootRef.OnTargetChange += OnUserRootRefChanged;
+
+            // Streams should use the user's allocation context for consistent RefIDs.
             EnsureTrackingStreamsInitialized();
+            EndInitPhase();
+
+            AquaLogger.Debug($"User created with {_syncMembers.Count} sync members");
+        }
+        finally
+        {
+            refController.AllocationBlockEnd();
         }
     }
 
@@ -339,7 +250,15 @@ public class User : ISyncObject, IWorldElement, IDisposable, IWorker
     /// </summary>
     public List<ISyncMember> GetDirtySyncMembers()
     {
-        return SyncMemberDiscovery.GetDirtySyncMembers(_syncMembers);
+        var dirty = new List<ISyncMember>();
+        foreach (var member in _syncMembers)
+        {
+            if (member.IsDirty)
+            {
+                dirty.Add(member);
+            }
+        }
+        return dirty;
     }
 
     /// <summary>
@@ -347,7 +266,10 @@ public class User : ISyncObject, IWorldElement, IDisposable, IWorker
     /// </summary>
     public void ClearDirtyFlags()
     {
-        SyncMemberDiscovery.ClearDirtyFlags(_syncMembers);
+        foreach (var member in _syncMembers)
+        {
+            member.IsDirty = false;
+        }
     }
 
     #region Stream Management
@@ -483,7 +405,6 @@ public class User : ISyncObject, IWorldElement, IDisposable, IWorker
     {
         if (IsDisposed) return;
         IsDisposed = true;
-        IsDestroyed = true;
 
         UserRootRef.OnTargetChange -= OnUserRootRefChanged;
 
@@ -492,7 +413,7 @@ public class User : ISyncObject, IWorldElement, IDisposable, IWorker
         StreamGroupManager?.Clear();
         _trackingStreams.Clear();
 
-        World = null;
+        base.Dispose();
     }
 
     private void OnUserRootRefChanged(SyncRef<Components.UserRoot> syncRef)
@@ -508,13 +429,18 @@ public class User : ISyncObject, IWorldElement, IDisposable, IWorker
             return;
         }
 
-        if (userRoot.ActiveUser != null && userRoot.ActiveUser != this)
+        // Only the authority should initialize and bind UserRoot.
+        // Clients should not modify synced references during callbacks.
+        if (World?.IsAuthority == true)
         {
-            AquaLogger.Warn(
-                $"User: UserRootRef points to UserRoot owned by '{userRoot.ActiveUser.UserName.Value ?? "(null)"}', rebinding to '{UserName.Value ?? "(null)"}'");
-        }
+            if (userRoot.ActiveUser != null && userRoot.ActiveUser != this)
+            {
+                AquaLogger.Warn(
+                    $"User: UserRootRef points to UserRoot owned by '{userRoot.ActiveUser.UserName.Value ?? "(null)"}', rebinding to '{UserName.Value ?? "(null)"}'");
+            }
 
-        userRoot.Initialize(this);
+            userRoot.Initialize(this);
+        }
     }
 
     public override string ToString()

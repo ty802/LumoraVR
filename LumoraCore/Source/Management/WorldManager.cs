@@ -242,7 +242,7 @@ public class WorldManager : IDisposable
     /// Add a world to managed list and fire events.
     /// Adds world to managed collection and triggers events.
     /// </summary>
-    private void AddWorld(World world)
+    public void AddWorld(World world)
     {
         if (world == null)
             return;

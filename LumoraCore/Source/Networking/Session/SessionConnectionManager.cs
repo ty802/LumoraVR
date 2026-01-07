@@ -251,28 +251,16 @@ public class SessionConnectionManager : IDisposable
 
         AquaLogger.Log($"Sent JoinGrant to {connection.Identifier} - UserID: {userID}, UserName: '{userName}'");
 
-        // Create user - use allocation block to ensure sync members get correct RefIDs
-        // The client will create the same User with the same RefID pattern
-        // Start at position 2 because User itself is at position 1, sync members follow
-        var syncMemberStart = RefID.Construct(userRefID.GetUserByte(), userRefID.GetPosition() + 1);
-        World.ReferenceController.AllocationBlockBegin(syncMemberStart);
-        User user;
-        try
-        {
-            user = new User(World, userRefID);
-            user.UserID.Value = userID.ToString();
-            user.UserName.Value = !string.IsNullOrEmpty(userName) ? userName : $"Guest {userRefID.GetUserByte()}";
-            user.MachineID.Value = machineId ?? "";
-            user.AllocationIDStart.Value = (ulong)allocStart;
-            user.AllocationIDEnd.Value = (ulong)allocEnd;
-            user.AllocationID.Value = userRefID.GetUserByte();
-            user.IsPresent.Value = true;
-            user.PresentInWorld.Value = true;
-        }
-        finally
-        {
-            World.ReferenceController.AllocationBlockEnd();
-        }
+        // Create user instance, populate fields, then add to the user bag for initialization
+        var user = new User();
+        user.UserID.Value = userID.ToString();
+        user.UserName.Value = !string.IsNullOrEmpty(userName) ? userName : $"Guest {userRefID.GetUserByte()}";
+        user.MachineID.Value = machineId ?? "";
+        user.AllocationIDStart.Value = (ulong)allocStart;
+        user.AllocationIDEnd.Value = (ulong)allocEnd;
+        user.AllocationID.Value = userRefID.GetUserByte();
+        user.IsPresent.Value = true;
+        user.PresentInWorld.Value = true;
 
         lock (_lock)
         {
@@ -281,7 +269,7 @@ public class SessionConnectionManager : IDisposable
         }
         AquaLogger.Log($"SendJoinGrant: Added connection-user mapping for '{userName}'");
 
-        World.AddUser(user);
+        World.AddUserToBag(user, userRefID, isNewlyCreated: true);
         AquaLogger.Log($"SendJoinGrant: User '{userName}' added to world");
 
         if (Session.Sync != null)

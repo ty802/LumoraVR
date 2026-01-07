@@ -83,7 +83,7 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
     /// Called when component changes are applied.
     /// Refreshes asset state based on current reference count.
     /// </summary>
-    protected override void OnChanges()
+    public override void OnChanges()
     {
         AquaLogger.Debug($"AssetProvider.OnChanges: [{GetType().Name}] Called, refCount={AssetReferenceCount}");
         RefreshAssetState();

@@ -43,7 +43,7 @@ public class GodotUserInspector : GodotUIPanel, IWorldEventReceiver
         };
     }
 
-    protected override void OnAttach()
+    public override void OnAttach()
     {
         base.OnAttach();
         World?.RegisterEventReceiver(this);
@@ -59,7 +59,7 @@ public class GodotUserInspector : GodotUIPanel, IWorldEventReceiver
         }
     }
 
-    protected override void OnDetach()
+    public override void OnDetach()
     {
         World?.UnregisterEventReceiver(this);
         base.OnDetach();

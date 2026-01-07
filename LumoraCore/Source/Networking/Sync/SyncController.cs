@@ -25,6 +25,16 @@ public class SyncController
 	public void RegisterSyncElement(SyncElement element)
 	{
 		syncElements.Add(element.ReferenceID, element);
+
+		// Log slot name registrations for debugging
+		if (element.Parent is Slot parentSlot && element is SyncField<string> sf)
+		{
+			var memberName = ((ISyncMember)sf).Name;
+			if (memberName == "Name")
+			{
+				AquaLogger.Log($"SyncController.RegisterSyncElement: Slot.Name RefID={element.ReferenceID}, Value='{sf.Value}', ParentSlot={parentSlot.ReferenceID}");
+			}
+		}
 	}
 
 	public void UnregisterSyncElement(SyncElement element)
@@ -62,6 +72,17 @@ public class SyncController
 		elementsToSend.Sort((SyncElement a, SyncElement b) => a.ReferenceID.CompareTo(b.ReferenceID));
 		foreach (SyncElement dirtySyncElement in elementsToSend)
 		{
+			// Skip invalid or disposed elements - they'll be retried once valid
+			if (!dirtySyncElement.IsValid || dirtySyncElement.IsDisposed)
+			{
+				// Re-add to dirty list to retry later
+				if (!dirtySyncElement.IsDisposed)
+				{
+					AddDirtySyncElement(dirtySyncElement);
+				}
+				continue;
+			}
+
 			BinaryWriter writer = deltaBatch.BeginNewDataRecord(dirtySyncElement.ReferenceID);
 			dirtySyncElement.EncodeDelta(writer, deltaBatch);
 			deltaBatch.FinishDataRecord(dirtySyncElement.ReferenceID);
@@ -80,19 +101,45 @@ public class SyncController
 		FullBatch fullBatch = new FullBatch(Owner.StateVersion, Owner.SyncTick);
 		var list = new List<SyncElement>(elements);
 		list.Sort((SyncElement a, SyncElement b) => a.ReferenceID.CompareTo(b.ReferenceID));
+
+		AquaLogger.Log($"SyncController.EncodeFullBatch: Encoding {list.Count} sync elements");
+		int slotFieldCount = 0, componentFieldCount = 0, otherCount = 0;
+
 		foreach (SyncElement element in list)
 		{
+			// Count by parent type for summary
+			if (element.Parent is Slot parentSlot)
+			{
+				slotFieldCount++;
+				// Log slot name fields specifically
+				if (element is SyncField<string> sf)
+				{
+					var memberName = ((ISyncMember)sf).Name;
+					if (memberName == "Name")
+					{
+						AquaLogger.Log($"  Encoding Slot.Name: RefID={element.ReferenceID}, Value='{sf.Value}', ParentSlot={parentSlot.ReferenceID}");
+					}
+				}
+			}
+			else if (element.Parent is Component) componentFieldCount++;
+			else otherCount++;
+
 			BinaryWriter writer = fullBatch.BeginNewDataRecord(element.ReferenceID);
 			element.EncodeFull(writer, fullBatch, forFullBatch: true);
 			fullBatch.FinishDataRecord(element.ReferenceID);
 		}
+
+		AquaLogger.Log($"SyncController.EncodeFullBatch: Summary - SlotFields={slotFieldCount}, ComponentFields={componentFieldCount}, Other={otherCount}");
+
 		return fullBatch;
 	}
 
 	public void EncodeFull(RefID id, BinaryMessageBatch syncMessage)
 	{
 		BinaryWriter writer = syncMessage.BeginNewDataRecord(id);
-		syncElements[id].EncodeFull(writer, syncMessage);
+		// Use forFullBatch: true to allow encoding dirty elements when sending corrections.
+		// The authority's current state (even if dirty) is the correct state to send.
+		syncElements[id].EncodeFull(writer, syncMessage, forFullBatch: true);
 		syncMessage.FinishDataRecord(id);
 	}
 
@@ -219,9 +266,21 @@ public class SyncController
 			else
 			{
 				value.DecodeFull(reader, message);
+
+				// Log slot name decode for debugging
+				if (value.Parent is Slot parentSlot && value is SyncField<string> sf)
+				{
+					var memberName = ((ISyncMember)sf).Name;
+					if (memberName == "Name")
+					{
+						AquaLogger.Log($"SyncController.DecodeFullMessage: Decoded Slot.Name RefID={value.ReferenceID}, Value='{sf.Value}', ParentSlot={parentSlot.ReferenceID}");
+					}
+				}
 			}
 			return true;
 		}
+
+		AquaLogger.Warn($"SyncController.DecodeBinaryMessage: Element not found for RefID={dataRecord.TargetID}");
 		return false;
 	}
 

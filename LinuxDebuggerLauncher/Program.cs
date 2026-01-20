@@ -32,7 +32,7 @@ public class Native
             nargs.Add($"{execname} --attach {args[0]}");
             procsargs = new ProcessStartInfo(terminal,nargs.ToArray());
         }else{
-            procsargs = new ProcessStartInfo(execname);
+            procsargs = new ProcessStartInfo(execname,$"--attach {args[0]}");
         }
         Console.WriteLine("Starting Debugger");
         Process.Start(procsargs)?.Dispose();

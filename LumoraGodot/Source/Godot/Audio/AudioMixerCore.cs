@@ -1,10 +1,9 @@
 using System;
 using Godot;
 using System.Collections.Generic;
-using Lumora.Core.External.GenericAudioOutputMixer;
 namespace Aquamarine.Source.Godot;
 
-public partial class AudioMixer : IAudioMixer
+public partial class AudioMixer 
 {
 
     public string[] GetAvailableAudioEffects()

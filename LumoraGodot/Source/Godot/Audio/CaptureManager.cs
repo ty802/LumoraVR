@@ -1,4 +1,5 @@
 using Godot;
+using Lumora.Core;
 using Lumora.Core.External.Audio.Capture;
 using Lumora.Core.External.Audio.Capture.Godot;
 #nullable enable
@@ -8,25 +9,29 @@ public partial class CaptureManager : global::Lumora.Core.External.Audio.Capture
 {
     public string[] GetCaptureDeviceNames() => AudioServer.GetInputDeviceList();
 
-    public ILocalAudioStream? GetStreamForOrNull(string captureName)
+    public ResultEnum<ILocalAudioStream, GodotAudioStreamError> GetStreamFrom(string captureName)
     {
+        AudioEffectCapture? cap = null;
         AudioMixer mixer = AudioMixer.GetMixer();
         string busName = $"{captureName}-capture";
         AudioBus captureBus;
-        if (mixer.TryGetAudioBusByName(busName, out captureBus))
-            goto Success;
-
-        if (mixer.CreateAudioBus(busName, out captureBus))
+        if (mixer.TryGetAudioBusByName(busName, out captureBus)) goto WithBus;
+        if (mixer.CreateAudioBus(busName, out captureBus)) goto WithBus;
+        return GodotAudioStreamError.FailedToGetBus;
+    WithBus:
+        int effectcount = AudioServer.GetBusEffectCount(captureBus.BusId);
+        if (effectcount < 0) return GodotAudioStreamError.Unknown;
+        if (effectcount > 1) return GodotAudioStreamError.InvalidBusConfiguration;
+        if (effectcount < 1)
         {
-            throw new System.NotImplementedException("yay");
-            // Do initialization steps for new bus here
-            goto Success;
+            cap = new();
+            AudioServer.AddBusEffect(captureBus.BusId, cap);
+            goto WithCapture;
         }
-
-        return null;
-
-    Success:
-        // Create and return ILocalAudioStream using captureBus
-        throw new System.NotImplementedException("yay");
+        cap =  AudioServer.GetBusEffect(captureBus.BusId,0) as AudioEffectCapture;
+        if(cap is null) return GodotAudioStreamError.InvalidBusConfiguration;
+    WithCapture:
+        // this is not finished
+        throw new System.NotImplementedException();
     }
 }

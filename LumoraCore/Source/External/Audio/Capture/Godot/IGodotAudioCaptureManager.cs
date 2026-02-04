@@ -4,5 +4,5 @@ public interface IGodotAudioCaptureManager
 {
     public string[] GetCaptureDeviceNames();
 
-    public ILocalAudioStream? GetStreamForOrNull(string captureName);
+    public ResultEnum<ILocalAudioStream,GodotAudioStreamError> GetStreamFrom(string captureName);
 }

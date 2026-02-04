@@ -157,16 +157,41 @@ public class TrackedDevicePositioner : Component, IInputUpdateReceiver
         base.OnStart();
 
         FindUserRoot();
+        TryRegisterWithInput();
+    }
 
-        // Register with InputInterface for BeforeInputUpdate/AfterInputUpdate
-        if (IsUnderLocalUser)
+    /// <summary>
+    /// Called every frame. Check if we need to register (handles late SyncRef resolution).
+    /// </summary>
+    public override void OnUpdate(float delta)
+    {
+        base.OnUpdate(delta);
+
+        // If not registered yet, keep trying (SyncRef may resolve later on client)
+        if (!_isRegistered)
         {
-            var input = Engine.Current?.InputInterface;
-            if (input != null)
-            {
-                input.RegisterInputEventReceiver(this);
-                _isRegistered = true;
-            }
+            FindUserRoot();
+            TryRegisterWithInput();
+        }
+    }
+
+    /// <summary>
+    /// Try to register with InputInterface if we're under the local user.
+    /// </summary>
+    private void TryRegisterWithInput()
+    {
+        if (_isRegistered)
+            return;
+
+        if (!IsUnderLocalUser)
+            return;
+
+        var input = Engine.Current?.InputInterface;
+        if (input != null)
+        {
+            input.RegisterInputEventReceiver(this);
+            _isRegistered = true;
+            AquaLogger.Log($"TrackedDevicePositioner: Registered for input on '{Slot.SlotName.Value}' (node: {AutoBodyNode.Value})");
         }
     }
 
@@ -323,9 +348,25 @@ public class TrackedDevicePositioner : Component, IInputUpdateReceiver
         pos = ClampPosition(pos);
         rot = FilterRotation(rot);
 
-        // Update slot transform
-        Slot.LocalPosition.Value = pos;
-        Slot.LocalRotation.Value = rot;
+        // Update slot transform only if change is significant (avoid syncing VR tracking jitter)
+        const float POS_THRESHOLD_SQ = 0.0001f * 0.0001f; // 0.1mm squared
+        const float ROT_THRESHOLD = 0.0001f;
+
+        var currentPos = Slot.LocalPosition.Value;
+        var currentRot = Slot.LocalRotation.Value;
+
+        float posDeltaSq = (pos - currentPos).LengthSquared;
+        float dot = floatQ.Dot(rot, currentRot);
+        float rotDelta = 1.0f - (dot < 0 ? -dot : dot);
+
+        if (posDeltaSq > POS_THRESHOLD_SQ)
+        {
+            Slot.LocalPosition.Value = pos;
+        }
+        if (rotDelta > ROT_THRESHOLD)
+        {
+            Slot.LocalRotation.Value = rot;
+        }
 
         // Update tracking state
         IsTracking.Value = tracking;

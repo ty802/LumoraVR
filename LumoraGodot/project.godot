@@ -8,11 +8,15 @@
 
 config_version=5
 
+[animation]
+
+compatibility/default_parent_skeleton_in_mesh_instance_3d=true
+
 [application]
 
 config/name="Aquamarine"
-run/main_scene="res://Scenes/Bootstrap.tscn"
-config/features=PackedStringArray("4.5", "C#", "Forward Plus")
+run/main_scene="uid://c8sly288nngj4"
+config/features=PackedStringArray("4.6", "C#", "Forward Plus")
 config/icon="res://Assets/Textures/lumoravricon.svg"
 
 [debug_draw_3d]
@@ -21,8 +25,6 @@ settings/3d/volumetric_defaults/thickness=0.0
 
 [display]
 
-window/size/viewport_width=1920
-window/size/viewport_height=1080
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
 window/vsync/vsync_mode="disabled"

@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using Godot;
 using Lumora.Core;
@@ -57,9 +59,12 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
     // State tracking
     private Slot? _boundRoot;
     private string? _lastBuiltSelectionId; // Track RefID of what selection the component panel was last built for
+    private Vector2I _lastViewportSize = Vector2I.Zero;
     private readonly Dictionary<TreeItem, Slot> _treeItemToSlot = new();
     private readonly Dictionary<Slot, TreeItem> _slotToTreeItem = new();
     private readonly HashSet<string> _expandedComponents = new(); // Track which components are expanded by type name
+    private Action<Slot?>? _rootChangedHandler;
+    private Action<Slot?>? _selectionChangedHandler;
 
     public static IHook<SceneInspector> Constructor()
     {
@@ -113,11 +118,32 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         BindRoot(Owner.Root.Target);
 
         Owner.OnDataRefresh += RefreshUI;
-        Owner.OnRootChanged += root => BindRoot(root);
-        Owner.OnSelectionChanged += _ => RebuildComponentPanel();
+        _rootChangedHandler = OnOwnerRootChanged;
+        _selectionChangedHandler = OnOwnerSelectionChanged;
+        Owner.OnRootChanged += _rootChangedHandler;
+        Owner.OnSelectionChanged += _selectionChangedHandler;
         Owner.OnAttachComponentRequested += OnAttachComponentRequested;
 
         AquaLogger.Log("SceneInspectorHook: Initialized");
+    }
+
+    private void OnOwnerRootChanged(Slot? root)
+    {
+        BindRoot(root);
+    }
+
+    private void OnOwnerSelectionChanged(Slot? _)
+    {
+        try
+        {
+            _lastBuiltSelectionId = null;
+            RebuildComponentPanel();
+        }
+        catch (Exception ex)
+        {
+            AquaLogger.Error($"SceneInspectorHook: Selection change rebuild failed: {ex.Message}");
+            AquaLogger.Error($"SceneInspectorHook: {ex.StackTrace}");
+        }
     }
 
     private void SetupInputHandling()
@@ -294,7 +320,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
 
         _rootUpButton = new Button();
         _rootUpButton.Name = "RootUpButton";
-        _rootUpButton.Text = "↑";
+        _rootUpButton.Text = "^";
         _rootUpButton.TooltipText = "Navigate to parent";
         _rootUpButton.CustomMinimumSize = new Vector2(30, 30);
         _rootUpButton.Pressed += () => Owner.NavigateRootUp();
@@ -493,7 +519,24 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         RebuildUI();
     }
 
-    private void OnChildChanged(Slot parent, Slot child) => RebuildHierarchyTree();
+    private void OnChildChanged(Slot parent, Slot child)
+    {
+        try
+        {
+            // Ignore transient inspector gizmo slots to avoid unnecessary hierarchy rebuild churn.
+            if (child.Name.Value.StartsWith("Gizmo_", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            RebuildHierarchyTree();
+        }
+        catch (Exception ex)
+        {
+            AquaLogger.Error($"SceneInspectorHook: OnChildChanged exception: {ex.Message}");
+            AquaLogger.Error($"SceneInspectorHook: {ex.StackTrace}");
+        }
+    }
     private void OnSlotNameChanged(Slot slot, string newName) => RefreshUI();
 
     private Slot? _pendingSelection;
@@ -505,63 +548,78 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
     /// </summary>
     private void OnTreeGuiInput(InputEvent @event)
     {
-        if (@event is InputEventMouseButton mouseButton)
+        try
         {
-            // Grab focus on any mouse button press to ensure click handling works
-            if (mouseButton.Pressed)
+            if (@event is InputEventMouseButton mouseButton)
             {
-                _hierarchyTree?.GrabFocus();
-            }
-
-            // Left mouse button released - this is when selection should happen
-            if (mouseButton.ButtonIndex == MouseButton.Left && !mouseButton.Pressed)
-            {
-                AquaLogger.Log($"SceneInspectorHook: Tree received mouse release at {mouseButton.Position}");
-
-                // Get the item at the click position
-                var item = _hierarchyTree?.GetItemAtPosition(mouseButton.Position);
-                if (item != null)
+                // Grab focus on any mouse button press to ensure Tree processes clicks
+                if (mouseButton.Pressed && mouseButton.ButtonIndex == MouseButton.Left)
                 {
-                    AquaLogger.Log($"SceneInspectorHook: Found item at click position: '{item.GetText(0)}'");
+                    _hierarchyTree?.GrabFocus();
 
-                    // Select the item programmatically
-                    item.Select(0);
-
-                    // Directly select the slot - don't defer, as the deferred mechanism isn't working
-                    if (_treeItemToSlot.TryGetValue(item, out var slot))
+                    // Get the item at the click position and select it directly
+                    // This is needed because PushInput from LaserPointer may not trigger Tree's internal ItemSelected signal
+                    var item = _hierarchyTree?.GetItemAtPosition(mouseButton.Position);
+                    if (item != null)
                     {
-                        AquaLogger.Log($"SceneInspectorHook: Directly selecting slot '{slot.Name.Value}'");
-                        Owner.SelectSlot(slot);
+                        AquaLogger.Log($"SceneInspectorHook: Click on tree item '{item.GetText(0)}'");
+                        item.Select(0);
+
+                        if (_treeItemToSlot.TryGetValue(item, out var slot))
+                        {
+                            if (slot.IsDestroyed)
+                            {
+                                AquaLogger.Warn("SceneInspectorHook: Ignored click on destroyed slot");
+                                return;
+                            }
+
+                            Owner.SelectSlot(slot);
+                        }
                     }
                 }
-                else
-                {
-                    AquaLogger.Log("SceneInspectorHook: No item found at click position");
-                }
             }
+        }
+        catch (Exception ex)
+        {
+            AquaLogger.Error($"SceneInspectorHook: OnTreeGuiInput exception: {ex.Message}");
+            AquaLogger.Error($"SceneInspectorHook: {ex.StackTrace}");
         }
     }
 
     private void OnTreeItemSelected()
     {
-        AquaLogger.Log("SceneInspectorHook: OnTreeItemSelected called!");
-        var selected = _hierarchyTree?.GetSelected();
-        if (selected == null)
+        try
         {
-            AquaLogger.Log("SceneInspectorHook: GetSelected() returned null");
-            return;
-        }
+            AquaLogger.Log("SceneInspectorHook: OnTreeItemSelected called!");
+            var selected = _hierarchyTree?.GetSelected();
+            if (selected == null)
+            {
+                AquaLogger.Log("SceneInspectorHook: GetSelected() returned null");
+                return;
+            }
 
-        AquaLogger.Log($"SceneInspectorHook: Tree item selected, text='{selected.GetText(0)}'");
+            AquaLogger.Log($"SceneInspectorHook: Tree item selected, text='{selected.GetText(0)}'");
 
-        if (_treeItemToSlot.TryGetValue(selected, out var slot))
-        {
-            AquaLogger.Log($"SceneInspectorHook: Directly selecting slot '{slot.Name.Value}' from signal");
-            Owner.SelectSlot(slot);
+            if (_treeItemToSlot.TryGetValue(selected, out var slot))
+            {
+                if (slot.IsDestroyed)
+                {
+                    AquaLogger.Warn("SceneInspectorHook: Ignored selection for destroyed slot");
+                    return;
+                }
+
+                AquaLogger.Log($"SceneInspectorHook: Directly selecting slot '{slot.Name.Value}' from signal");
+                Owner.SelectSlot(slot);
+            }
+            else
+            {
+                AquaLogger.Log($"SceneInspectorHook: No slot found in dictionary for tree item!");
+            }
         }
-        else
+        catch (Exception ex)
         {
-            AquaLogger.Log($"SceneInspectorHook: No slot found in dictionary for tree item!");
+            AquaLogger.Error($"SceneInspectorHook: OnTreeItemSelected exception: {ex.Message}");
+            AquaLogger.Error($"SceneInspectorHook: {ex.StackTrace}");
         }
     }
 
@@ -639,29 +697,37 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
 
     private void RebuildHierarchyTree()
     {
-        if (_hierarchyTree == null) return;
-
-        _hierarchyTree.Clear();
-        _treeItemToSlot.Clear();
-        _slotToTreeItem.Clear();
-
-        if (_boundRoot == null) return;
-
-        var root = _hierarchyTree.CreateItem();
-        root.SetText(0, _boundRoot.Name.Value);
-        root.SetIcon(0, GetSlotIcon(_boundRoot));
-        _treeItemToSlot[root] = _boundRoot;
-        _slotToTreeItem[_boundRoot] = root;
-
-        BuildTreeRecursive(root, _boundRoot);
-
-        AquaLogger.Log($"SceneInspectorHook: Built hierarchy tree with {_treeItemToSlot.Count} items");
-
-        // Select current slot
-        if (Owner.ComponentView.Target != null &&
-            _slotToTreeItem.TryGetValue(Owner.ComponentView.Target, out var selectedItem))
+        try
         {
-            selectedItem.Select(0);
+            if (_hierarchyTree == null) return;
+
+            _hierarchyTree.Clear();
+            _treeItemToSlot.Clear();
+            _slotToTreeItem.Clear();
+
+            if (_boundRoot == null || _boundRoot.IsDestroyed) return;
+
+            var root = _hierarchyTree.CreateItem();
+            root.SetText(0, _boundRoot.Name.Value);
+            root.SetIcon(0, GetSlotIcon(_boundRoot));
+            _treeItemToSlot[root] = _boundRoot;
+            _slotToTreeItem[_boundRoot] = root;
+
+            BuildTreeRecursive(root, _boundRoot);
+
+            AquaLogger.Log($"SceneInspectorHook: Built hierarchy tree with {_treeItemToSlot.Count} items");
+
+            // Select current slot
+            if (Owner.ComponentView.Target != null &&
+                _slotToTreeItem.TryGetValue(Owner.ComponentView.Target, out var selectedItem))
+            {
+                selectedItem.Select(0);
+            }
+        }
+        catch (Exception ex)
+        {
+            AquaLogger.Error($"SceneInspectorHook: RebuildHierarchyTree exception: {ex.Message}");
+            AquaLogger.Error($"SceneInspectorHook: {ex.StackTrace}");
         }
     }
 
@@ -669,8 +735,17 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
     {
         if (depth > 20) return; // Prevent deep recursion
 
-        foreach (var child in slot.Children)
+        var childrenSnapshot = slot.Children
+            .Where(child => child != null && !child.IsDestroyed)
+            .ToList();
+
+        foreach (var child in childrenSnapshot)
         {
+            if (child.Name.Value.StartsWith("Gizmo_", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
             var item = _hierarchyTree!.CreateItem(parent);
             item.SetText(0, child.Name.Value);
             item.SetIcon(0, GetSlotIcon(child));
@@ -679,7 +754,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
 
             if (child.ChildCount > 0)
             {
-                item.Collapsed = depth > 2; // Collapse deep items
+                item.Collapsed = true; // Start collapsed by default
                 BuildTreeRecursive(item, child, depth + 1);
             }
         }
@@ -693,40 +768,52 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
 
     private void RebuildComponentPanel()
     {
-        if (_componentContainer == null) return;
-
-        var selected = Owner.ComponentView.Target;
-        var selectedId = selected?.ReferenceID.ToString();
-
-        // Only rebuild if selection actually changed
-        if (selectedId == _lastBuiltSelectionId)
-            return;
-
-        _lastBuiltSelectionId = selectedId;
-
-        // Clear existing
-        foreach (var child in _componentContainer.GetChildren())
+        try
         {
-            child.QueueFree();
-        }
+            if (_componentContainer == null) return;
 
-        if (selected == null)
+            var selected = Owner.ComponentView.Target;
+            var selectedId = selected?.ReferenceID.ToString();
+
+            // Only rebuild if selection actually changed
+            if (selectedId == _lastBuiltSelectionId)
+                return;
+
+            _lastBuiltSelectionId = selectedId;
+
+            // Clear existing - use RemoveChild + Free for immediate cleanup
+            // QueueFree defers deletion which causes crashes when new children are added in the same frame
+            var children = _componentContainer.GetChildren();
+            for (int i = children.Count - 1; i >= 0; i--)
+            {
+                var child = children[i];
+                _componentContainer.RemoveChild(child);
+                child.QueueFree();
+            }
+
+            if (selected == null || selected.IsDestroyed)
+            {
+                var noSelectionLabel = new Label();
+                noSelectionLabel.Text = "No slot selected";
+                _componentContainer.AddChild(noSelectionLabel);
+                return;
+            }
+
+            AquaLogger.Log($"SceneInspectorHook: Building component panel for '{selected.Name.Value}' with {selected.Components.Count} components");
+
+            // Slot properties section
+            AddSlotPropertiesSection(selected);
+
+            // Components section
+            AddComponentsSection(selected);
+
+            UpdateLabels();
+        }
+        catch (Exception ex)
         {
-            var noSelectionLabel = new Label();
-            noSelectionLabel.Text = "No slot selected";
-            _componentContainer.AddChild(noSelectionLabel);
-            return;
+            AquaLogger.Error($"SceneInspectorHook: RebuildComponentPanel exception: {ex.Message}");
+            AquaLogger.Error($"SceneInspectorHook: {ex.StackTrace}");
         }
-
-        AquaLogger.Log($"SceneInspectorHook: Building component panel for '{selected.Name.Value}' with {selected.Components.Count} components");
-
-        // Slot properties section
-        AddSlotPropertiesSection(selected);
-
-        // Components section
-        AddComponentsSection(selected);
-
-        UpdateLabels();
     }
 
     private void AddSlotPropertiesSection(Slot slot)
@@ -779,9 +866,21 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
             return;
         }
 
-        foreach (var component in slot.Components)
+        var componentsSnapshot = slot.Components.ToList();
+        foreach (var component in componentsSnapshot)
         {
-            AddComponentEditor(component);
+            try
+            {
+                AddComponentEditor(component);
+            }
+            catch (Exception ex)
+            {
+                AquaLogger.Log($"SceneInspectorHook: Error adding editor for {component.GetType().Name}: {ex.Message}");
+                var errorLabel = new Label();
+                errorLabel.Text = $"[Error: {component.GetType().Name}]";
+                errorLabel.AddThemeColorOverride("font_color", new Color(1f, 0.3f, 0.3f));
+                _componentContainer.AddChild(errorLabel);
+            }
         }
     }
 
@@ -796,7 +895,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         headerBox.Name = $"ComponentHeader_{component.GetType().Name}";
 
         var collapseBtn = new Button();
-        collapseBtn.Text = isExpanded ? "▼" : "▶";
+        collapseBtn.Text = isExpanded ? "v" : ">";
         collapseBtn.CustomMinimumSize = new Vector2(24, 24);
         collapseBtn.Flat = true;
         headerBox.AddChild(collapseBtn);
@@ -835,26 +934,33 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
 
         foreach (var prop in properties)
         {
-            if (!typeof(ISyncMember).IsAssignableFrom(prop.PropertyType)) continue;
-
-            // Skip the base Component properties unless ShowInherited is true
-            if (!Owner.ShowInherited.Value)
+            try
             {
-                var declaringType = prop.DeclaringType;
-                if (declaringType == typeof(Component) || declaringType == typeof(Worker))
-                    continue;
+                if (!typeof(ISyncMember).IsAssignableFrom(prop.PropertyType)) continue;
+
+                // Skip the base Component properties unless ShowInherited is true
+                if (!Owner.ShowInherited.Value)
+                {
+                    var declaringType = prop.DeclaringType;
+                    if (declaringType == typeof(Component) || declaringType == typeof(Worker))
+                        continue;
+                }
+
+                var syncMember = prop.GetValue(component) as ISyncMember;
+                if (syncMember == null) continue;
+
+                var field = component.GetType().GetField($"<{prop.Name}>k__BackingField",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+
+                var row = SyncMemberEditorBuilder.CreateEditorRow(syncMember, prop.Name, field);
+                if (row != null)
+                {
+                    propsContainer.AddChild(row);
+                }
             }
-
-            var syncMember = prop.GetValue(component) as ISyncMember;
-            if (syncMember == null) continue;
-
-            var field = component.GetType().GetField($"<{prop.Name}>k__BackingField",
-                BindingFlags.NonPublic | BindingFlags.Instance);
-
-            var row = SyncMemberEditorBuilder.CreateEditorRow(syncMember, prop.Name, field);
-            if (row != null)
+            catch (Exception ex)
             {
-                propsContainer.AddChild(row);
+                AquaLogger.Log($"SceneInspectorHook: Error building editor for '{prop.Name}' on {component.GetType().Name}: {ex.Message}");
             }
         }
 
@@ -864,7 +970,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         collapseBtn.Pressed += () =>
         {
             propsContainer.Visible = !propsContainer.Visible;
-            collapseBtn.Text = propsContainer.Visible ? "▼" : "▶";
+            collapseBtn.Text = propsContainer.Visible ? "v" : ">";
 
             // Update tracked state
             if (propsContainer.Visible)
@@ -880,56 +986,61 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
     private void RefreshUI()
     {
         UpdateLabels();
-        _lastBuiltSelectionId = null; // Force rebuild
-        RebuildComponentPanel();
     }
 
     public override void ApplyChanges()
     {
-        // Process any pending selections from tree interactions (deferred to avoid callback conflicts)
-        ProcessPendingSelections();
-
-        if (_viewport == null) return;
-
-        var resScale = Owner.ResolutionScale.Value;
-        _viewport.Size = new Vector2I(
-            (int)(Owner.Size.Value.x * resScale),
-            (int)(Owner.Size.Value.y * resScale));
-
-        UpdateQuadSize();
-
-        if (_material != null)
+        try
         {
-            _material.AlbedoTexture = _viewport.GetTexture();
-        }
+            // Process any pending selections from tree interactions (deferred to avoid callback conflicts)
+            ProcessPendingSelections();
 
-        if (Owner.Root.GetWasChangedAndClear())
-        {
-            BindRoot(Owner.Root.Target);
-        }
+            if (_viewport == null) return;
 
-        // Check if component view changed - RebuildComponentPanel handles deduplication internally
-        if (Owner.ComponentView.GetWasChangedAndClear())
-        {
-            RebuildComponentPanel();
-
-            // Update tree selection
-            var currentSelection = Owner.ComponentView.Target;
-            if (currentSelection != null &&
-                _slotToTreeItem.TryGetValue(currentSelection, out var item))
+            var resScale = Owner.ResolutionScale.Value;
+            var desiredSize = new Vector2I(
+                (int)(Owner.Size.Value.x * resScale),
+                (int)(Owner.Size.Value.y * resScale));
+            if (_lastViewportSize != desiredSize)
             {
-                item.Select(0);
+                _viewport.Size = desiredSize;
+                _lastViewportSize = desiredSize;
+                UpdateQuadSize();
+            }
+
+            if (_material != null && _material.AlbedoTexture != _viewport.GetTexture())
+            {
+                _material.AlbedoTexture = _viewport.GetTexture();
+            }
+
+            if (Owner.Root.GetWasChangedAndClear())
+            {
+                BindRoot(Owner.Root.Target);
+            }
+
+            // Check if component view changed
+            if (Owner.ComponentView.GetWasChangedAndClear())
+            {
+                RebuildComponentPanel();
+
+                // Update tree selection
+                var currentSelection = Owner.ComponentView.Target;
+                if (currentSelection != null && !currentSelection.IsDestroyed &&
+                    _slotToTreeItem.TryGetValue(currentSelection, out var item))
+                {
+                    item.Select(0);
+                }
+            }
+
+            if (Owner.SplitRatio.GetWasChangedAndClear() && _splitContainer != null)
+            {
+                _splitContainer.SplitOffset = (int)(Owner.Size.Value.x * Owner.SplitRatio.Value);
             }
         }
-        else
+        catch (Exception ex)
         {
-            // Also try to rebuild in case the initial selection wasn't built yet
-            RebuildComponentPanel();
-        }
-
-        if (Owner.SplitRatio.GetWasChangedAndClear() && _splitContainer != null)
-        {
-            _splitContainer.SplitOffset = (int)(Owner.Size.Value.x * Owner.SplitRatio.Value);
+            AquaLogger.Error($"SceneInspectorHook: ApplyChanges exception: {ex.Message}");
+            AquaLogger.Error($"SceneInspectorHook: {ex.StackTrace}");
         }
     }
 
@@ -975,8 +1086,8 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
     public override void Destroy(bool destroyingWorld)
     {
         Owner.OnDataRefresh -= RefreshUI;
-        Owner.OnRootChanged -= root => BindRoot(root);
-        Owner.OnSelectionChanged -= _ => RebuildComponentPanel();
+        if (_rootChangedHandler != null) Owner.OnRootChanged -= _rootChangedHandler;
+        if (_selectionChangedHandler != null) Owner.OnSelectionChanged -= _selectionChangedHandler;
         Owner.OnAttachComponentRequested -= OnAttachComponentRequested;
 
         if (_boundRoot != null)
@@ -1014,9 +1125,12 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         _material = null;
         _quadMesh = null;
         _lastBuiltSelectionId = null;
+        _lastViewportSize = Vector2I.Zero;
         _isDragging = false;
         _treeItemToSlot.Clear();
         _slotToTreeItem.Clear();
+        _rootChangedHandler = null;
+        _selectionChangedHandler = null;
 
         base.Destroy(destroyingWorld);
     }

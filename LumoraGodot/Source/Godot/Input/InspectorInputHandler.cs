@@ -1,5 +1,6 @@
 using Godot;
 using Lumora.Core;
+using Lumora.Core.Components;
 using Lumora.Core.Components.Gizmos;
 using Lumora.Core.GodotUI.Inspectors;
 using Lumora.Core.Math;
@@ -265,6 +266,9 @@ public partial class InspectorInputHandler : Node3D
         inspector.Root.Target = rootSlot;
         inspector.ComponentView.Target = rootSlot;
 
+        // Make inspector grabbable
+        inspectorSlot.AttachComponent<Grabbable>();
+
         AquaLogger.Log($"InspectorInputHandler: Spawned SceneInspector at {spawnPos}");
 
         return inspector;
@@ -300,6 +304,9 @@ public partial class InspectorInputHandler : Node3D
         var inspector = inspectorSlot.AttachComponent<SlotInspector>();
         inspector.Setup(targetSlot);
 
+        // Make inspector grabbable
+        inspectorSlot.AttachComponent<Grabbable>();
+
         AquaLogger.Log($"InspectorInputHandler: Spawned SlotInspector for '{targetSlot.Name.Value}'");
 
         return inspector;
@@ -333,6 +340,9 @@ public partial class InspectorInputHandler : Node3D
 
         var attacher = attacherSlot.AttachComponent<ComponentAttacher>();
         attacher.Setup(targetSlot);
+
+        // Make attacher grabbable
+        attacherSlot.AttachComponent<Grabbable>();
 
         AquaLogger.Log($"InspectorInputHandler: Spawned ComponentAttacher for '{targetSlot.Name.Value}'");
 

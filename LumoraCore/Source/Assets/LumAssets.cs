@@ -26,6 +26,7 @@ public static class LumAssets
 
         // Debug
         public static string EngineDebug => "res://Scenes/UI/Debug/EngineDebug.tscn";
+        public static string DebugWindow => "res://Scenes/UI/Debug/DebugWindow.tscn";
 
         // Dashboard
         public static string HomeDash => "res://Scenes/UI/Dashboard/HomeDash.tscn";

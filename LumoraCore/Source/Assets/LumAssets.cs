@@ -18,6 +18,11 @@ public static class LumAssets
         public static string Nameplate => "res://Scenes/UI/Inspectors/Nameplate.tscn";
         public static string UserInspector => "res://Scenes/UI/Inspectors/UserInspector.tscn";
         public static string MaterialOrbInspector => "res://Scenes/UI/Inspectors/MaterialOrbInspector.tscn";
+        public static string SlotInspector => "res://Scenes/UI/Inspectors/SlotInspector.tscn";
+        public static string ComponentInspector => "res://Scenes/UI/Inspectors/ComponentInspector.tscn";
+        public static string SceneInspector => "res://Scenes/UI/Inspectors/SceneInspector.tscn";
+        public static string ComponentAttacher => "res://Scenes/UI/Inspectors/ComponentAttacher.tscn";
+        public static string ListEditor => "res://Scenes/UI/Inspectors/ListEditor.tscn";
 
         // Debug
         public static string EngineDebug => "res://Scenes/UI/Debug/EngineDebug.tscn";

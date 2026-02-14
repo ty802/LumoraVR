@@ -15,6 +15,8 @@ using Aquamarine.Source.UI;
 using Lumora.Godot.Input;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
+using InspectorInputHandler = Aquamarine.Source.Input.InspectorInputHandler;
+
 namespace Aquamarine.Source.Godot.Bootstrap;
 
 /// <summary>
@@ -42,6 +44,7 @@ public partial class LumoraEngineRunner : Node
     private GodotVRDriver _vrDriver;
     private ClipboardImporter _clipboardImporter;
     private LocalDB _localDB;
+    private InspectorInputHandler _inspectorInputHandler;
 
     // ===== STATE =====
     private bool _engineInitialized = false;
@@ -484,6 +487,13 @@ public partial class LumoraEngineRunner : Node
             }
             AquaLogger.Log("ClipboardImporter: Configured with engine reference");
         }
+
+        // Create inspector input handler for "I" key inspection
+        _inspectorInputHandler = new InspectorInputHandler();
+        _inspectorInputHandler.Name = "InspectorInputHandler";
+        _inspectorInputHandler.Engine = _engine;
+        AddChild(_inspectorInputHandler);
+        AquaLogger.Log("InspectorInputHandler: Created for object inspection");
 
         // DEBUG: Print scene tree
         await Task.Delay(500); // Wait for everything to settle

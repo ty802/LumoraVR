@@ -1,0 +1,1023 @@
+using System.Collections.Generic;
+using System.Reflection;
+using Godot;
+using Lumora.Core;
+using Lumora.Core.GodotUI.Inspectors;
+using Lumora.Core.Math;
+using Lumora.Core.Networking.Sync;
+using AquaLogger = Lumora.Core.Logging.Logger;
+
+namespace Aquamarine.Godot.Hooks.GodotUI.Inspectors;
+
+#nullable enable
+
+/// <summary>
+/// Godot hook for the SceneInspector panel.
+/// Builds a combined hierarchy tree and component property view.
+/// </summary>
+public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
+{
+    // Viewport and rendering
+    private SubViewport? _viewport;
+    private MeshInstance3D? _meshInstance;
+    private QuadMesh? _quadMesh;
+    private StandardMaterial3D? _material;
+    private Node? _loadedScene;
+
+    // UI containers
+    private PanelContainer? _mainPanel;
+    private Tree? _hierarchyTree;
+    private VBoxContainer? _componentContainer;
+    private Label? _titleLabel;
+    private Label? _rootLabel;
+    private HSplitContainer? _splitContainer;
+    private ScrollContainer? _hierarchyScroll;
+    private ScrollContainer? _componentScroll;
+
+    // Scroll/drag state
+    private bool _isDragging;
+    private Vector2 _lastMousePos;
+    private const float ScrollSpeed = 30f;
+    private const float DragScrollSpeed = 2f;
+
+    // Buttons
+    private Button? _rootUpButton;
+    private Button? _setRootButton;
+    private Button? _addChildButton;
+    private Button? _duplicateButton;
+    private Button? _destroyButton;
+    private Button? _attachComponentButton;
+    private CheckButton? _inheritedToggle;
+
+    // Collision for interaction
+    private Area3D? _collisionArea;
+    private CollisionShape3D? _collisionShape;
+    private BoxShape3D? _boxShape;
+
+    // State tracking
+    private Slot? _boundRoot;
+    private string? _lastBuiltSelectionId; // Track RefID of what selection the component panel was last built for
+    private readonly Dictionary<TreeItem, Slot> _treeItemToSlot = new();
+    private readonly Dictionary<Slot, TreeItem> _slotToTreeItem = new();
+    private readonly HashSet<string> _expandedComponents = new(); // Track which components are expanded by type name
+
+    public static IHook<SceneInspector> Constructor()
+    {
+        return new SceneInspectorHook();
+    }
+
+    public override void Initialize()
+    {
+        base.Initialize();
+
+        var resScale = Owner.ResolutionScale.Value;
+
+        // Create SubViewport
+        _viewport = new SubViewport
+        {
+            Name = "SceneInspectorViewport",
+            Size = new Vector2I(
+                (int)(Owner.Size.Value.x * resScale),
+                (int)(Owner.Size.Value.y * resScale)),
+            TransparentBg = true,
+            HandleInputLocally = true,
+            GuiDisableInput = false,
+            RenderTargetUpdateMode = SubViewport.UpdateMode.Always,
+            CanvasItemDefaultTextureFilter = Viewport.DefaultCanvasItemTextureFilter.Linear,
+            Msaa2D = Viewport.Msaa.Msaa4X
+        };
+
+        // Create mesh for 3D display
+        _meshInstance = new MeshInstance3D { Name = "SceneInspectorQuad" };
+        _quadMesh = new QuadMesh();
+        UpdateQuadSize();
+        _meshInstance.Mesh = _quadMesh;
+
+        // Create material
+        _material = new StandardMaterial3D
+        {
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+            TextureFilter = BaseMaterial3D.TextureFilterEnum.Linear
+        };
+        _material.AlbedoTexture = _viewport.GetTexture();
+        _meshInstance.MaterialOverride = _material;
+
+        attachedNode.AddChild(_viewport);
+        attachedNode.AddChild(_meshInstance);
+
+        CreateCollisionArea();
+        LoadScene();
+        SetupInputHandling();
+        BindRoot(Owner.Root.Target);
+
+        Owner.OnDataRefresh += RefreshUI;
+        Owner.OnRootChanged += root => BindRoot(root);
+        Owner.OnSelectionChanged += _ => RebuildComponentPanel();
+        Owner.OnAttachComponentRequested += OnAttachComponentRequested;
+
+        AquaLogger.Log("SceneInspectorHook: Initialized");
+    }
+
+    private void SetupInputHandling()
+    {
+        if (_viewport == null) return;
+
+        // Create a control to capture input events for the entire viewport
+        var inputCapture = new Control();
+        inputCapture.Name = "InputCapture";
+        inputCapture.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        inputCapture.MouseFilter = Control.MouseFilterEnum.Pass; // Pass through but still receive events
+        inputCapture.GuiInput += OnViewportInput;
+        _viewport.AddChild(inputCapture);
+        _viewport.MoveChild(inputCapture, 0); // Move to back so it doesn't block other controls
+    }
+
+    private void OnViewportInput(InputEvent @event)
+    {
+        // Mouse wheel scrolling
+        if (@event is InputEventMouseButton mouseButton)
+        {
+            if (mouseButton.ButtonIndex == MouseButton.WheelUp && mouseButton.Pressed)
+            {
+                ScrollActivePanel(-ScrollSpeed);
+                return;
+            }
+            if (mouseButton.ButtonIndex == MouseButton.WheelDown && mouseButton.Pressed)
+            {
+                ScrollActivePanel(ScrollSpeed);
+                return;
+            }
+
+            // Right mouse button for drag scrolling
+            if (mouseButton.ButtonIndex == MouseButton.Right)
+            {
+                _isDragging = mouseButton.Pressed;
+                _lastMousePos = mouseButton.Position;
+                return;
+            }
+        }
+
+        // Mouse motion for drag scrolling
+        if (@event is InputEventMouseMotion mouseMotion && _isDragging)
+        {
+            var delta = mouseMotion.Position - _lastMousePos;
+            _lastMousePos = mouseMotion.Position;
+
+            // Scroll both panels based on mouse position
+            ScrollActivePanel(-delta.Y * DragScrollSpeed);
+        }
+    }
+
+    private void ScrollActivePanel(float amount)
+    {
+        // Determine which panel the mouse is over based on split position
+        var mousePos = _viewport?.GetMousePosition() ?? Vector2.Zero;
+        var splitOffset = _splitContainer?.SplitOffset ?? 0;
+
+        if (mousePos.X < splitOffset)
+        {
+            // Mouse is over hierarchy panel - Tree handles its own scrolling
+            // We don't need to manually scroll the tree as it has built-in scroll
+        }
+        else
+        {
+            // Mouse is over component panel
+            if (_componentScroll != null)
+            {
+                _componentScroll.ScrollVertical += (int)amount;
+            }
+        }
+    }
+
+    private void LoadScene()
+    {
+        var scenePath = Owner.ScenePath.Value;
+        if (!string.IsNullOrEmpty(scenePath) && ResourceLoader.Exists(scenePath))
+        {
+            var packedScene = GD.Load<PackedScene>(scenePath);
+            if (packedScene != null)
+            {
+                _loadedScene = packedScene.Instantiate();
+                if (_loadedScene != null)
+                {
+                    _viewport?.AddChild(_loadedScene);
+                    if (_loadedScene is Control control)
+                    {
+                        control.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+                    }
+                    CacheSceneNodes();
+                    RebuildUI();
+                    return;
+                }
+            }
+        }
+
+        // Scene doesn't exist - create UI programmatically
+        CreateDefaultUI();
+    }
+
+    private void CreateDefaultUI()
+    {
+        _mainPanel = new PanelContainer();
+        _mainPanel.Name = "MainPanel";
+        _mainPanel.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+
+        var styleBox = new StyleBoxFlat();
+        styleBox.BgColor = new Color(0.12f, 0.12f, 0.14f, 0.95f);
+        styleBox.SetCornerRadiusAll(6);
+        _mainPanel.AddThemeStyleboxOverride("panel", styleBox);
+
+        var margin = new MarginContainer();
+        margin.AddThemeConstantOverride("margin_left", 8);
+        margin.AddThemeConstantOverride("margin_top", 8);
+        margin.AddThemeConstantOverride("margin_right", 8);
+        margin.AddThemeConstantOverride("margin_bottom", 8);
+        _mainPanel.AddChild(margin);
+
+        var vbox = new VBoxContainer();
+        vbox.Name = "VBox";
+        margin.AddChild(vbox);
+
+        // Header with title and controls
+        CreateHeader(vbox);
+
+        // Split container for hierarchy and components
+        _splitContainer = new HSplitContainer();
+        _splitContainer.Name = "SplitContainer";
+        _splitContainer.SizeFlagsVertical = Control.SizeFlags.ExpandFill;
+        _splitContainer.SplitOffset = (int)(Owner.Size.Value.x * Owner.SplitRatio.Value);
+        vbox.AddChild(_splitContainer);
+
+        // Left panel - Hierarchy
+        CreateHierarchyPanel(_splitContainer);
+
+        // Right panel - Components
+        CreateComponentPanel(_splitContainer);
+
+        _viewport?.AddChild(_mainPanel);
+        _loadedScene = _mainPanel;
+
+        RebuildUI();
+    }
+
+    private void CreateHeader(VBoxContainer parent)
+    {
+        var headerBox = new VBoxContainer();
+        headerBox.Name = "Header";
+        parent.AddChild(headerBox);
+
+        // Title row
+        var titleRow = new HBoxContainer();
+        titleRow.Name = "TitleRow";
+        headerBox.AddChild(titleRow);
+
+        _titleLabel = new Label();
+        _titleLabel.Name = "Title";
+        _titleLabel.Text = "Scene Inspector";
+        _titleLabel.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        _titleLabel.AddThemeFontSizeOverride("font_size", 18);
+        titleRow.AddChild(_titleLabel);
+
+        var closeButton = new Button();
+        closeButton.Name = "CloseButton";
+        closeButton.Text = "X";
+        closeButton.CustomMinimumSize = new Vector2(30, 30);
+        closeButton.Pressed += () => Owner.Close();
+        titleRow.AddChild(closeButton);
+
+        // Root navigation row
+        var rootRow = new HBoxContainer();
+        rootRow.Name = "RootRow";
+        headerBox.AddChild(rootRow);
+
+        _rootUpButton = new Button();
+        _rootUpButton.Name = "RootUpButton";
+        _rootUpButton.Text = "↑";
+        _rootUpButton.TooltipText = "Navigate to parent";
+        _rootUpButton.CustomMinimumSize = new Vector2(30, 30);
+        _rootUpButton.Pressed += () => Owner.NavigateRootUp();
+        rootRow.AddChild(_rootUpButton);
+
+        _rootLabel = new Label();
+        _rootLabel.Name = "RootLabel";
+        _rootLabel.Text = "Root: (none)";
+        _rootLabel.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        rootRow.AddChild(_rootLabel);
+
+        _setRootButton = new Button();
+        _setRootButton.Name = "SetRootButton";
+        _setRootButton.Text = "Set Root";
+        _setRootButton.TooltipText = "Set selection as hierarchy root";
+        _setRootButton.Pressed += () => Owner.SetSelectionAsRoot();
+        rootRow.AddChild(_setRootButton);
+
+        // Toolbar
+        var toolbar = new HBoxContainer();
+        toolbar.Name = "Toolbar";
+        headerBox.AddChild(toolbar);
+
+        _addChildButton = new Button();
+        _addChildButton.Name = "AddChildButton";
+        _addChildButton.Text = "+ Child";
+        _addChildButton.TooltipText = "Add child slot";
+        _addChildButton.Pressed += () => Owner.AddChild();
+        toolbar.AddChild(_addChildButton);
+
+        _duplicateButton = new Button();
+        _duplicateButton.Name = "DuplicateButton";
+        _duplicateButton.Text = "Dup";
+        _duplicateButton.TooltipText = "Duplicate selection";
+        _duplicateButton.Pressed += () => Owner.DuplicateSelection();
+        toolbar.AddChild(_duplicateButton);
+
+        _destroyButton = new Button();
+        _destroyButton.Name = "DestroyButton";
+        _destroyButton.Text = "Del";
+        _destroyButton.TooltipText = "Destroy selection";
+        _destroyButton.Pressed += () => Owner.DestroySelection();
+        toolbar.AddChild(_destroyButton);
+
+        var spacer = new Control();
+        spacer.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        toolbar.AddChild(spacer);
+
+        _attachComponentButton = new Button();
+        _attachComponentButton.Name = "AttachComponentButton";
+        _attachComponentButton.Text = "+ Component";
+        _attachComponentButton.TooltipText = "Attach component";
+        _attachComponentButton.Pressed += () => Owner.OpenComponentAttacher();
+        toolbar.AddChild(_attachComponentButton);
+
+        _inheritedToggle = new CheckButton();
+        _inheritedToggle.Name = "InheritedToggle";
+        _inheritedToggle.Text = "Inherited";
+        _inheritedToggle.TooltipText = "Show inherited members";
+        _inheritedToggle.ButtonPressed = Owner.ShowInherited.Value;
+        _inheritedToggle.Toggled += pressed =>
+        {
+            Owner.ShowInherited.Value = pressed;
+            RebuildComponentPanel();
+        };
+        toolbar.AddChild(_inheritedToggle);
+
+        // Separator
+        var separator = new HSeparator();
+        headerBox.AddChild(separator);
+    }
+
+    private void CreateHierarchyPanel(HSplitContainer parent)
+    {
+        var hierarchyPanel = new PanelContainer();
+        hierarchyPanel.Name = "HierarchyPanel";
+        hierarchyPanel.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        parent.AddChild(hierarchyPanel);
+
+        var hierarchyVBox = new VBoxContainer();
+        hierarchyPanel.AddChild(hierarchyVBox);
+
+        var hierarchyLabel = new Label();
+        hierarchyLabel.Text = "Hierarchy";
+        hierarchyLabel.AddThemeFontSizeOverride("font_size", 14);
+        hierarchyVBox.AddChild(hierarchyLabel);
+
+        // Tree has built-in scrolling, so we add it directly to the VBox
+        // Using a wrapper ScrollContainer can interfere with Tree's mouse input
+        _hierarchyTree = new Tree();
+        _hierarchyTree.Name = "HierarchyTree";
+        _hierarchyTree.HideRoot = false;
+        _hierarchyTree.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        _hierarchyTree.SizeFlagsVertical = Control.SizeFlags.ExpandFill;
+        _hierarchyTree.SelectMode = Tree.SelectModeEnum.Single;
+        _hierarchyTree.AllowRmbSelect = true;
+        _hierarchyTree.FocusMode = Control.FocusModeEnum.All;
+        _hierarchyTree.MouseFilter = Control.MouseFilterEnum.Stop; // Ensure tree captures mouse events
+        _hierarchyTree.ItemSelected += OnTreeItemSelected;
+        _hierarchyTree.ItemActivated += OnTreeItemActivated;
+        // Add direct GUI input handling as fallback for PushInput events
+        _hierarchyTree.GuiInput += OnTreeGuiInput;
+        hierarchyVBox.AddChild(_hierarchyTree);
+
+        // Keep scroll reference as null since Tree handles its own scrolling
+        _hierarchyScroll = null;
+    }
+
+    private void CreateComponentPanel(HSplitContainer parent)
+    {
+        var componentPanel = new PanelContainer();
+        componentPanel.Name = "ComponentPanel";
+        componentPanel.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        parent.AddChild(componentPanel);
+
+        var componentVBox = new VBoxContainer();
+        componentPanel.AddChild(componentVBox);
+
+        var componentLabel = new Label();
+        componentLabel.Text = "Components";
+        componentLabel.AddThemeFontSizeOverride("font_size", 14);
+        componentVBox.AddChild(componentLabel);
+
+        _componentScroll = new ScrollContainer();
+        _componentScroll.Name = "ComponentScroll";
+        _componentScroll.SizeFlagsVertical = Control.SizeFlags.ExpandFill;
+        componentVBox.AddChild(_componentScroll);
+
+        _componentContainer = new VBoxContainer();
+        _componentContainer.Name = "ComponentContainer";
+        _componentContainer.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        _componentScroll.AddChild(_componentContainer);
+    }
+
+    private void CacheSceneNodes()
+    {
+        _hierarchyTree = _loadedScene?.GetNodeOrNull<Tree>("MainPanel/VBox/SplitContainer/HierarchyPanel/VBox/HierarchyScroll/HierarchyTree");
+        _componentContainer = _loadedScene?.GetNodeOrNull<VBoxContainer>("MainPanel/VBox/SplitContainer/ComponentPanel/VBox/ComponentScroll/ComponentContainer");
+        _hierarchyScroll = _loadedScene?.GetNodeOrNull<ScrollContainer>("MainPanel/VBox/SplitContainer/HierarchyPanel/VBox/HierarchyScroll");
+        _componentScroll = _loadedScene?.GetNodeOrNull<ScrollContainer>("MainPanel/VBox/SplitContainer/ComponentPanel/VBox/ComponentScroll");
+        _titleLabel = _loadedScene?.GetNodeOrNull<Label>("MainPanel/VBox/Header/TitleRow/Title");
+        _rootLabel = _loadedScene?.GetNodeOrNull<Label>("MainPanel/VBox/Header/RootRow/RootLabel");
+
+        // Connect buttons if they exist in the scene
+        var closeBtn = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/TitleRow/CloseButton");
+        closeBtn?.Connect("pressed", Callable.From(() => Owner.Close()));
+
+        _rootUpButton = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/RootRow/RootUpButton");
+        _rootUpButton?.Connect("pressed", Callable.From(() => Owner.NavigateRootUp()));
+
+        _setRootButton = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/RootRow/SetRootButton");
+        _setRootButton?.Connect("pressed", Callable.From(() => Owner.SetSelectionAsRoot()));
+
+        _addChildButton = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/Toolbar/AddChildButton");
+        _addChildButton?.Connect("pressed", Callable.From(() => Owner.AddChild()));
+
+        _duplicateButton = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/Toolbar/DuplicateButton");
+        _duplicateButton?.Connect("pressed", Callable.From(() => Owner.DuplicateSelection()));
+
+        _destroyButton = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/Toolbar/DestroyButton");
+        _destroyButton?.Connect("pressed", Callable.From(() => Owner.DestroySelection()));
+
+        _attachComponentButton = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/Toolbar/AttachComponentButton");
+        _attachComponentButton?.Connect("pressed", Callable.From(() => Owner.OpenComponentAttacher()));
+
+        if (_hierarchyTree != null)
+        {
+            _hierarchyTree.ItemSelected += OnTreeItemSelected;
+            _hierarchyTree.ItemActivated += OnTreeItemActivated;
+            _hierarchyTree.GuiInput += OnTreeGuiInput;
+            _hierarchyTree.FocusMode = Control.FocusModeEnum.All;
+            _hierarchyTree.MouseFilter = Control.MouseFilterEnum.Stop;
+        }
+    }
+
+    private void BindRoot(Slot? slot)
+    {
+        if (_boundRoot == slot) return;
+
+        if (_boundRoot != null)
+        {
+            _boundRoot.OnChildAdded -= OnChildChanged;
+            _boundRoot.OnChildRemoved -= OnChildChanged;
+            _boundRoot.OnNameChanged -= OnSlotNameChanged;
+        }
+
+        _boundRoot = slot;
+
+        if (_boundRoot != null)
+        {
+            _boundRoot.OnChildAdded += OnChildChanged;
+            _boundRoot.OnChildRemoved += OnChildChanged;
+            _boundRoot.OnNameChanged += OnSlotNameChanged;
+        }
+
+        RebuildUI();
+    }
+
+    private void OnChildChanged(Slot parent, Slot child) => RebuildHierarchyTree();
+    private void OnSlotNameChanged(Slot slot, string newName) => RefreshUI();
+
+    private Slot? _pendingSelection;
+    private Slot? _pendingFocus;
+
+    /// <summary>
+    /// Direct GUI input handler for the Tree - catches clicks that ItemSelected signal might miss.
+    /// This is needed because PushInput from LaserPointer may not trigger all internal Tree signals.
+    /// </summary>
+    private void OnTreeGuiInput(InputEvent @event)
+    {
+        if (@event is InputEventMouseButton mouseButton)
+        {
+            // Grab focus on any mouse button press to ensure click handling works
+            if (mouseButton.Pressed)
+            {
+                _hierarchyTree?.GrabFocus();
+            }
+
+            // Left mouse button released - this is when selection should happen
+            if (mouseButton.ButtonIndex == MouseButton.Left && !mouseButton.Pressed)
+            {
+                AquaLogger.Log($"SceneInspectorHook: Tree received mouse release at {mouseButton.Position}");
+
+                // Get the item at the click position
+                var item = _hierarchyTree?.GetItemAtPosition(mouseButton.Position);
+                if (item != null)
+                {
+                    AquaLogger.Log($"SceneInspectorHook: Found item at click position: '{item.GetText(0)}'");
+
+                    // Select the item programmatically
+                    item.Select(0);
+
+                    // Directly select the slot - don't defer, as the deferred mechanism isn't working
+                    if (_treeItemToSlot.TryGetValue(item, out var slot))
+                    {
+                        AquaLogger.Log($"SceneInspectorHook: Directly selecting slot '{slot.Name.Value}'");
+                        Owner.SelectSlot(slot);
+                    }
+                }
+                else
+                {
+                    AquaLogger.Log("SceneInspectorHook: No item found at click position");
+                }
+            }
+        }
+    }
+
+    private void OnTreeItemSelected()
+    {
+        AquaLogger.Log("SceneInspectorHook: OnTreeItemSelected called!");
+        var selected = _hierarchyTree?.GetSelected();
+        if (selected == null)
+        {
+            AquaLogger.Log("SceneInspectorHook: GetSelected() returned null");
+            return;
+        }
+
+        AquaLogger.Log($"SceneInspectorHook: Tree item selected, text='{selected.GetText(0)}'");
+
+        if (_treeItemToSlot.TryGetValue(selected, out var slot))
+        {
+            AquaLogger.Log($"SceneInspectorHook: Directly selecting slot '{slot.Name.Value}' from signal");
+            Owner.SelectSlot(slot);
+        }
+        else
+        {
+            AquaLogger.Log($"SceneInspectorHook: No slot found in dictionary for tree item!");
+        }
+    }
+
+    private void OnTreeItemActivated()
+    {
+        // Double-click focuses on slot
+        var selected = _hierarchyTree?.GetSelected();
+        if (selected != null && _treeItemToSlot.TryGetValue(selected, out var slot))
+        {
+            // Store pending focus and defer
+            _pendingFocus = slot;
+        }
+    }
+
+    private void ProcessPendingSelections()
+    {
+        if (_pendingSelection != null)
+        {
+            var slot = _pendingSelection;
+            _pendingSelection = null;
+            AquaLogger.Log($"SceneInspectorHook: Processing pending selection '{slot.Name.Value}'");
+            Owner.SelectSlot(slot);
+        }
+
+        if (_pendingFocus != null)
+        {
+            var slot = _pendingFocus;
+            _pendingFocus = null;
+            AquaLogger.Log($"SceneInspectorHook: Processing pending focus '{slot.Name.Value}'");
+            Owner.FocusSlot(slot);
+        }
+    }
+
+    private void OnAttachComponentRequested(Slot slot)
+    {
+        // The InspectorInputHandler will handle spawning the ComponentAttacher
+        AquaLogger.Log($"SceneInspectorHook: Component attach requested for '{slot.Name.Value}'");
+    }
+
+    private void RebuildUI()
+    {
+        UpdateLabels();
+        RebuildHierarchyTree();
+        RebuildComponentPanel();
+    }
+
+    private void UpdateLabels()
+    {
+        if (_titleLabel != null)
+        {
+            var selection = Owner.ComponentView.Target;
+            _titleLabel.Text = selection != null
+                ? $"Scene Inspector - {selection.Name.Value}"
+                : "Scene Inspector";
+        }
+
+        if (_rootLabel != null)
+        {
+            _rootLabel.Text = _boundRoot != null
+                ? $"Root: {_boundRoot.Name.Value}"
+                : "Root: (none)";
+        }
+
+        // Update button states
+        var hasSelection = Owner.ComponentView.Target != null;
+        var canDelete = hasSelection && !Owner.ComponentView.Target!.IsRootSlot;
+
+        if (_duplicateButton != null) _duplicateButton.Disabled = !canDelete;
+        if (_destroyButton != null) _destroyButton.Disabled = !canDelete;
+        if (_addChildButton != null) _addChildButton.Disabled = !hasSelection;
+        if (_attachComponentButton != null) _attachComponentButton.Disabled = !hasSelection;
+        if (_setRootButton != null) _setRootButton.Disabled = !hasSelection;
+        if (_rootUpButton != null) _rootUpButton.Disabled = _boundRoot == null || _boundRoot.IsRootSlot;
+    }
+
+    private void RebuildHierarchyTree()
+    {
+        if (_hierarchyTree == null) return;
+
+        _hierarchyTree.Clear();
+        _treeItemToSlot.Clear();
+        _slotToTreeItem.Clear();
+
+        if (_boundRoot == null) return;
+
+        var root = _hierarchyTree.CreateItem();
+        root.SetText(0, _boundRoot.Name.Value);
+        root.SetIcon(0, GetSlotIcon(_boundRoot));
+        _treeItemToSlot[root] = _boundRoot;
+        _slotToTreeItem[_boundRoot] = root;
+
+        BuildTreeRecursive(root, _boundRoot);
+
+        AquaLogger.Log($"SceneInspectorHook: Built hierarchy tree with {_treeItemToSlot.Count} items");
+
+        // Select current slot
+        if (Owner.ComponentView.Target != null &&
+            _slotToTreeItem.TryGetValue(Owner.ComponentView.Target, out var selectedItem))
+        {
+            selectedItem.Select(0);
+        }
+    }
+
+    private void BuildTreeRecursive(TreeItem parent, Slot slot, int depth = 0)
+    {
+        if (depth > 20) return; // Prevent deep recursion
+
+        foreach (var child in slot.Children)
+        {
+            var item = _hierarchyTree!.CreateItem(parent);
+            item.SetText(0, child.Name.Value);
+            item.SetIcon(0, GetSlotIcon(child));
+            _treeItemToSlot[item] = child;
+            _slotToTreeItem[child] = item;
+
+            if (child.ChildCount > 0)
+            {
+                item.Collapsed = depth > 2; // Collapse deep items
+                BuildTreeRecursive(item, child, depth + 1);
+            }
+        }
+    }
+
+    private Texture2D? GetSlotIcon(Slot slot)
+    {
+        // Could return different icons based on slot state/components
+        return null;
+    }
+
+    private void RebuildComponentPanel()
+    {
+        if (_componentContainer == null) return;
+
+        var selected = Owner.ComponentView.Target;
+        var selectedId = selected?.ReferenceID.ToString();
+
+        // Only rebuild if selection actually changed
+        if (selectedId == _lastBuiltSelectionId)
+            return;
+
+        _lastBuiltSelectionId = selectedId;
+
+        // Clear existing
+        foreach (var child in _componentContainer.GetChildren())
+        {
+            child.QueueFree();
+        }
+
+        if (selected == null)
+        {
+            var noSelectionLabel = new Label();
+            noSelectionLabel.Text = "No slot selected";
+            _componentContainer.AddChild(noSelectionLabel);
+            return;
+        }
+
+        AquaLogger.Log($"SceneInspectorHook: Building component panel for '{selected.Name.Value}' with {selected.Components.Count} components");
+
+        // Slot properties section
+        AddSlotPropertiesSection(selected);
+
+        // Components section
+        AddComponentsSection(selected);
+
+        UpdateLabels();
+    }
+
+    private void AddSlotPropertiesSection(Slot slot)
+    {
+        var header = new Label();
+        header.Text = "Slot Properties";
+        header.AddThemeFontSizeOverride("font_size", 12);
+        header.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
+        _componentContainer!.AddChild(header);
+
+        // Name
+        var nameRow = SyncMemberEditorBuilder.CreateEditorRow(slot.Name, "Name");
+        if (nameRow != null) _componentContainer.AddChild(nameRow);
+
+        // Active
+        var activeRow = SyncMemberEditorBuilder.CreateEditorRow(slot.ActiveSelf, "Active");
+        if (activeRow != null) _componentContainer.AddChild(activeRow);
+
+        // Position
+        var posRow = SyncMemberEditorBuilder.CreateEditorRow(slot.LocalPosition, "Position");
+        if (posRow != null) _componentContainer.AddChild(posRow);
+
+        // Rotation
+        var rotRow = SyncMemberEditorBuilder.CreateEditorRow(slot.LocalRotation, "Rotation");
+        if (rotRow != null) _componentContainer.AddChild(rotRow);
+
+        // Scale
+        var scaleRow = SyncMemberEditorBuilder.CreateEditorRow(slot.LocalScale, "Scale");
+        if (scaleRow != null) _componentContainer.AddChild(scaleRow);
+
+        var separator = new HSeparator();
+        _componentContainer.AddChild(separator);
+    }
+
+    private void AddComponentsSection(Slot slot)
+    {
+        // Components header with count
+        var componentsHeader = new Label();
+        componentsHeader.Text = $"Components ({slot.Components.Count})";
+        componentsHeader.AddThemeFontSizeOverride("font_size", 12);
+        componentsHeader.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
+        _componentContainer!.AddChild(componentsHeader);
+
+        if (slot.Components.Count == 0)
+        {
+            var noComponentsLabel = new Label();
+            noComponentsLabel.Text = "No components attached";
+            noComponentsLabel.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f));
+            _componentContainer.AddChild(noComponentsLabel);
+            return;
+        }
+
+        foreach (var component in slot.Components)
+        {
+            AddComponentEditor(component);
+        }
+    }
+
+    private void AddComponentEditor(Component component)
+    {
+        // Use component RefID as unique key for tracking expanded state
+        var componentKey = component.ReferenceID.ToString();
+        var isExpanded = _expandedComponents.Contains(componentKey);
+
+        // Component header with collapse toggle
+        var headerBox = new HBoxContainer();
+        headerBox.Name = $"ComponentHeader_{component.GetType().Name}";
+
+        var collapseBtn = new Button();
+        collapseBtn.Text = isExpanded ? "▼" : "▶";
+        collapseBtn.CustomMinimumSize = new Vector2(24, 24);
+        collapseBtn.Flat = true;
+        headerBox.AddChild(collapseBtn);
+
+        var nameLabel = new Label();
+        nameLabel.Text = component.GetType().Name;
+        nameLabel.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        nameLabel.AddThemeFontSizeOverride("font_size", 13);
+        headerBox.AddChild(nameLabel);
+
+        var removeBtn = new Button();
+        removeBtn.Text = "X";
+        removeBtn.CustomMinimumSize = new Vector2(24, 24);
+        removeBtn.Flat = true;
+        removeBtn.TooltipText = "Remove component";
+        removeBtn.Pressed += () =>
+        {
+            _expandedComponents.Remove(componentKey);
+            component.Slot.RemoveComponent(component);
+            _lastBuiltSelectionId = null; // Force rebuild
+            RebuildComponentPanel();
+        };
+        headerBox.AddChild(removeBtn);
+
+        _componentContainer!.AddChild(headerBox);
+
+        // Component properties container
+        var propsContainer = new VBoxContainer();
+        propsContainer.Name = $"ComponentProps_{component.GetType().Name}";
+        propsContainer.Visible = isExpanded; // Use tracked state
+
+        // Get sync members via reflection - always include inherited to show all properties
+        var bindingFlags = BindingFlags.Public | BindingFlags.Instance;
+
+        var properties = component.GetType().GetProperties(bindingFlags);
+
+        foreach (var prop in properties)
+        {
+            if (!typeof(ISyncMember).IsAssignableFrom(prop.PropertyType)) continue;
+
+            // Skip the base Component properties unless ShowInherited is true
+            if (!Owner.ShowInherited.Value)
+            {
+                var declaringType = prop.DeclaringType;
+                if (declaringType == typeof(Component) || declaringType == typeof(Worker))
+                    continue;
+            }
+
+            var syncMember = prop.GetValue(component) as ISyncMember;
+            if (syncMember == null) continue;
+
+            var field = component.GetType().GetField($"<{prop.Name}>k__BackingField",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+
+            var row = SyncMemberEditorBuilder.CreateEditorRow(syncMember, prop.Name, field);
+            if (row != null)
+            {
+                propsContainer.AddChild(row);
+            }
+        }
+
+        _componentContainer.AddChild(propsContainer);
+
+        // Toggle collapse - track state in HashSet
+        collapseBtn.Pressed += () =>
+        {
+            propsContainer.Visible = !propsContainer.Visible;
+            collapseBtn.Text = propsContainer.Visible ? "▼" : "▶";
+
+            // Update tracked state
+            if (propsContainer.Visible)
+                _expandedComponents.Add(componentKey);
+            else
+                _expandedComponents.Remove(componentKey);
+        };
+
+        var separator = new HSeparator();
+        _componentContainer.AddChild(separator);
+    }
+
+    private void RefreshUI()
+    {
+        UpdateLabels();
+        _lastBuiltSelectionId = null; // Force rebuild
+        RebuildComponentPanel();
+    }
+
+    public override void ApplyChanges()
+    {
+        // Process any pending selections from tree interactions (deferred to avoid callback conflicts)
+        ProcessPendingSelections();
+
+        if (_viewport == null) return;
+
+        var resScale = Owner.ResolutionScale.Value;
+        _viewport.Size = new Vector2I(
+            (int)(Owner.Size.Value.x * resScale),
+            (int)(Owner.Size.Value.y * resScale));
+
+        UpdateQuadSize();
+
+        if (_material != null)
+        {
+            _material.AlbedoTexture = _viewport.GetTexture();
+        }
+
+        if (Owner.Root.GetWasChangedAndClear())
+        {
+            BindRoot(Owner.Root.Target);
+        }
+
+        // Check if component view changed - RebuildComponentPanel handles deduplication internally
+        if (Owner.ComponentView.GetWasChangedAndClear())
+        {
+            RebuildComponentPanel();
+
+            // Update tree selection
+            var currentSelection = Owner.ComponentView.Target;
+            if (currentSelection != null &&
+                _slotToTreeItem.TryGetValue(currentSelection, out var item))
+            {
+                item.Select(0);
+            }
+        }
+        else
+        {
+            // Also try to rebuild in case the initial selection wasn't built yet
+            RebuildComponentPanel();
+        }
+
+        if (Owner.SplitRatio.GetWasChangedAndClear() && _splitContainer != null)
+        {
+            _splitContainer.SplitOffset = (int)(Owner.Size.Value.x * Owner.SplitRatio.Value);
+        }
+    }
+
+    private void UpdateQuadSize()
+    {
+        if (_quadMesh == null) return;
+
+        var size = Owner.Size.Value;
+        var ppu = Owner.PixelsPerUnit.Value;
+
+        _quadMesh.Size = new Vector2(size.x / ppu, size.y / ppu);
+        UpdateCollisionSize();
+    }
+
+    private void CreateCollisionArea()
+    {
+        _collisionArea = new Area3D();
+        _collisionArea.Name = "InspectorCollision";
+        _collisionArea.Monitorable = true;
+        _collisionArea.Monitoring = false;
+        _collisionArea.CollisionLayer = 1u << 3;
+        _collisionArea.CollisionMask = 0;
+
+        _collisionShape = new CollisionShape3D();
+        _boxShape = new BoxShape3D();
+        UpdateCollisionSize();
+        _collisionShape.Shape = _boxShape;
+
+        _collisionArea.AddChild(_collisionShape);
+        attachedNode.AddChild(_collisionArea);
+    }
+
+    private void UpdateCollisionSize()
+    {
+        if (_boxShape == null) return;
+
+        var size = Owner.Size.Value;
+        var ppu = Owner.PixelsPerUnit.Value;
+
+        _boxShape.Size = new Vector3(size.x / ppu, size.y / ppu, 0.01f);
+    }
+
+    public override void Destroy(bool destroyingWorld)
+    {
+        Owner.OnDataRefresh -= RefreshUI;
+        Owner.OnRootChanged -= root => BindRoot(root);
+        Owner.OnSelectionChanged -= _ => RebuildComponentPanel();
+        Owner.OnAttachComponentRequested -= OnAttachComponentRequested;
+
+        if (_boundRoot != null)
+        {
+            _boundRoot.OnChildAdded -= OnChildChanged;
+            _boundRoot.OnChildRemoved -= OnChildChanged;
+            _boundRoot.OnNameChanged -= OnSlotNameChanged;
+        }
+
+        if (!destroyingWorld)
+        {
+            _loadedScene?.QueueFree();
+            _collisionArea?.QueueFree();
+            _viewport?.QueueFree();
+            _meshInstance?.QueueFree();
+            _material?.Dispose();
+            _quadMesh?.Dispose();
+            _boxShape?.Dispose();
+        }
+
+        _loadedScene = null;
+        _mainPanel = null;
+        _hierarchyTree = null;
+        _componentContainer = null;
+        _hierarchyScroll = null;
+        _componentScroll = null;
+        _titleLabel = null;
+        _rootLabel = null;
+        _splitContainer = null;
+        _collisionArea = null;
+        _collisionShape = null;
+        _boxShape = null;
+        _viewport = null;
+        _meshInstance = null;
+        _material = null;
+        _quadMesh = null;
+        _lastBuiltSelectionId = null;
+        _isDragging = false;
+        _treeItemToSlot.Clear();
+        _slotToTreeItem.Clear();
+
+        base.Destroy(destroyingWorld);
+    }
+}

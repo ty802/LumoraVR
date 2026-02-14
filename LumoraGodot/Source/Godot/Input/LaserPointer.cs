@@ -465,6 +465,8 @@ public partial class LaserPointer : Node3D
         var moveEvent = new InputEventMouseMotion();
         moveEvent.Position = pos;
         moveEvent.GlobalPosition = pos;
+        // Set button mask based on current trigger state
+        moveEvent.ButtonMask = _wasTriggerPressed ? MouseButtonMask.Left : 0;
 
         _currentViewport.PushInput(moveEvent, true);
     }
@@ -478,7 +480,10 @@ public partial class LaserPointer : Node3D
         clickEvent.GlobalPosition = pos;
         clickEvent.ButtonIndex = MouseButton.Left;
         clickEvent.Pressed = pressed;
+        // Set button mask - required by some controls for proper click detection
+        clickEvent.ButtonMask = pressed ? MouseButtonMask.Left : 0;
 
+        AquaLogger.Log($"LaserPointer: Sending mouse {(pressed ? "press" : "release")} at viewport pos {pos}");
         _currentViewport.PushInput(clickEvent, true);
     }
 

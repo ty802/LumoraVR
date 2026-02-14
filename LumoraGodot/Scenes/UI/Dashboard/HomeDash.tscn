@@ -216,6 +216,7 @@ theme_override_font_sizes/font_size = 12
 text = "Home Dashboard"
 
 [node name="UserSectionPanel" type="Panel" parent="MainContainer/VBox/Header/HeaderContent"]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(220, 0)
 layout_mode = 2
 size_flags_vertical = 1
@@ -246,6 +247,7 @@ alignment = 1
 theme_override_constants/separation = 2
 
 [node name="Username" type="Label" parent="MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_fonts/font = ExtResource("1_font")
@@ -254,6 +256,7 @@ text = "Guest User"
 horizontal_alignment = 2
 
 [node name="PatreonRole" type="Label" parent="MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.47, 0.37, 0.94, 0.9)
 theme_override_fonts/font = ExtResource("1_font")
@@ -262,10 +265,12 @@ text = "Supporter"
 horizontal_alignment = 2
 
 [node name="StorageContainer" type="VBoxContainer" parent="MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_constants/separation = 2
 
 [node name="StorageLabel" type="Label" parent="MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/StorageContainer"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.5, 0.5, 0.55, 1)
 theme_override_fonts/font = ExtResource("1_font")
@@ -280,6 +285,7 @@ size_flags_horizontal = 10
 theme_override_styles/panel = SubResource("StyleBoxFlat_storage_bg")
 
 [node name="StorageBarFill" type="Panel" parent="MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/StorageContainer/StorageBarBg"]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(24, 3)
 layout_mode = 0
 offset_left = 1.0
@@ -299,6 +305,7 @@ layout_mode = 2
 theme_override_styles/panel = SubResource("StyleBoxFlat_avatar_circle")
 
 [node name="AvatarIcon" type="Label" parent="MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/AvatarContainer/AvatarCircle"]
+unique_name_in_owner = true
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -336,6 +343,7 @@ alignment = 1
 theme_override_constants/separation = 0
 
 [node name="FPSValue" type="Label" parent="MainContainer/VBox/Header/HeaderContent/FPSPanel/FPSMargin/FPSVBox"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.3, 0.85, 0.5, 1)
 theme_override_fonts/font = ExtResource("1_font")
@@ -393,6 +401,7 @@ custom_minimum_size = Vector2(0, 4)
 layout_mode = 2
 
 [node name="BtnHome" type="Button" parent="MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons"]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 40)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
@@ -407,6 +416,7 @@ text = "  Home"
 alignment = 0
 
 [node name="BtnWorlds" type="Button" parent="MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons"]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 40)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.8, 0.8, 0.85, 1)
@@ -421,6 +431,7 @@ text = "  Worlds"
 alignment = 0
 
 [node name="BtnFriends" type="Button" parent="MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons"]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 40)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.8, 0.8, 0.85, 1)
@@ -435,6 +446,7 @@ text = "  Friends"
 alignment = 0
 
 [node name="BtnGroups" type="Button" parent="MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons"]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 40)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.8, 0.8, 0.85, 1)
@@ -449,6 +461,7 @@ text = "  Groups"
 alignment = 0
 
 [node name="BtnInventory" type="Button" parent="MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons"]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 40)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.8, 0.8, 0.85, 1)
@@ -478,6 +491,7 @@ custom_minimum_size = Vector2(0, 4)
 layout_mode = 2
 
 [node name="BtnSettings" type="Button" parent="MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons"]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 40)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.8, 0.8, 0.85, 1)
@@ -492,6 +506,7 @@ text = "  Settings"
 alignment = 0
 
 [node name="BtnExit" type="Button" parent="MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons"]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 40)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.9, 0.5, 0.5, 1)
@@ -506,11 +521,13 @@ text = "  Exit"
 alignment = 0
 
 [node name="MainContent" type="Panel" parent="MainContainer/VBox/ContentArea"]
+unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_styles/panel = SubResource("StyleBoxFlat_panel")
 
 [node name="ContentMargin" type="MarginContainer" parent="MainContainer/VBox/ContentArea/MainContent"]
+unique_name_in_owner = true
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -523,6 +540,7 @@ theme_override_constants/margin_right = 20
 theme_override_constants/margin_bottom = 20
 
 [node name="ContentVBox" type="VBoxContainer" parent="MainContainer/VBox/ContentArea/MainContent/ContentMargin"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_constants/separation = 20
 
@@ -531,6 +549,7 @@ layout_mode = 2
 theme_override_constants/separation = 8
 
 [node name="WelcomeTitle" type="Label" parent="MainContainer/VBox/ContentArea/MainContent/ContentMargin/ContentVBox/WelcomeSection"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
 theme_override_fonts/font = ExtResource("1_font")
@@ -549,6 +568,7 @@ layout_mode = 2
 theme_override_constants/separation = 16
 
 [node name="JoinWorld" type="Panel" parent="MainContainer/VBox/ContentArea/MainContent/ContentMargin/ContentVBox/QuickActions"]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(180, 100)
 layout_mode = 2
 size_flags_horizontal = 3
@@ -580,6 +600,7 @@ text = "Enter a session"
 horizontal_alignment = 1
 
 [node name="CreateWorld" type="Panel" parent="MainContainer/VBox/ContentArea/MainContent/ContentMargin/ContentVBox/QuickActions"]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(180, 100)
 layout_mode = 2
 size_flags_horizontal = 3
@@ -611,6 +632,7 @@ text = "Start a new session"
 horizontal_alignment = 1
 
 [node name="BrowseAvatars" type="Panel" parent="MainContainer/VBox/ContentArea/MainContent/ContentMargin/ContentVBox/QuickActions"]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(180, 100)
 layout_mode = 2
 size_flags_horizontal = 3
@@ -757,6 +779,7 @@ layout_mode = 2
 theme_override_styles/panel = SubResource("StyleBoxFlat_status_dot")
 
 [node name="StatusText" type="Label" parent="MainContainer/VBox/StatusBar/StatusContent/ConnectionPanel/ConnectionCenter/ConnectionStatus"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.6, 0.6, 0.65, 1)
 theme_override_fonts/font = ExtResource("1_font")
@@ -782,6 +805,7 @@ grow_horizontal = 2
 grow_vertical = 2
 
 [node name="Version" type="Label" parent="MainContainer/VBox/StatusBar/StatusContent/VersionPanel/VersionCenter"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.5, 0.5, 0.55, 1)
 theme_override_fonts/font = ExtResource("1_font")

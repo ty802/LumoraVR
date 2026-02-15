@@ -28,6 +28,7 @@ public partial class HomeDash : Control
 
     // Login & Auth
     private Panel? _userSectionPanel;
+    private Panel? _storageQuotaPanel;
     private LoginOverlay? _loginOverlay;
     private bool _isLoggedIn;
     private VBoxContainer? _storageContainer;
@@ -85,11 +86,12 @@ public partial class HomeDash : Control
 
         // Get user section elements
         _userSectionPanel = GetNodeOrNull<Panel>("MainContainer/VBox/Header/HeaderMargin/HeaderContent/UserSectionPanel");
+        _storageQuotaPanel = GetNodeOrNull<Panel>("MainContainer/VBox/Header/HeaderMargin/HeaderContent/StorageQuotaPanel");
         _usernameLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderMargin/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/Username");
         _patreonRoleLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderMargin/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/PatreonRole");
-        _storageContainer = GetNodeOrNull<VBoxContainer>("MainContainer/VBox/Header/HeaderMargin/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/StorageContainer");
-        _storageLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderMargin/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/StorageContainer/StorageLabel");
-        _storageBarFill = GetNodeOrNull<Panel>("MainContainer/VBox/Header/HeaderMargin/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/StorageContainer/StorageBarBg/StorageBarFill");
+        _storageContainer = GetNodeOrNull<VBoxContainer>("MainContainer/VBox/Header/HeaderMargin/HeaderContent/StorageQuotaPanel/StorageQuotaMargin/StorageQuotaVBox/StorageContainer");
+        _storageLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderMargin/HeaderContent/StorageQuotaPanel/StorageQuotaMargin/StorageQuotaVBox/StorageContainer/StorageLabel");
+        _storageBarFill = GetNodeOrNull<Panel>("MainContainer/VBox/Header/HeaderMargin/HeaderContent/StorageQuotaPanel/StorageQuotaMargin/StorageQuotaVBox/StorageContainer/StorageBarBg/StorageBarFill");
         _avatarIconLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderMargin/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/AvatarContainer/AvatarCircle/AvatarIcon");
 
         // Get other labels
@@ -390,6 +392,8 @@ public partial class HomeDash : Control
 
         if (_storageContainer != null)
             _storageContainer.Visible = false;
+        if (_storageQuotaPanel != null)
+            _storageQuotaPanel.Visible = false;
 
         if (_avatarIconLabel != null)
             _avatarIconLabel.Text = "?";
@@ -409,6 +413,8 @@ public partial class HomeDash : Control
 
         if (_storageContainer != null)
             _storageContainer.Visible = true;
+        if (_storageQuotaPanel != null)
+            _storageQuotaPanel.Visible = true;
 
         // Fetch user data from LumoraClient
         if (_client != null)

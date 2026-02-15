@@ -35,6 +35,7 @@ corner_radius_bottom_right = 4
 corner_radius_bottom_left = 4
 
 [node name="UserInspector" type="Control" unique_id=144872538]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(320, 380)
 layout_mode = 3
 anchors_preset = 15
@@ -44,6 +45,7 @@ grow_horizontal = 2
 grow_vertical = 2
 
 [node name="MainPanel" type="Panel" parent="." unique_id=1433481930]
+unique_name_in_owner = true
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -66,11 +68,13 @@ grow_vertical = 2
 theme_override_constants/separation = 0
 
 [node name="Header" type="Panel" parent="MainPanel/VBox" unique_id=2045565619]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 48)
 layout_mode = 2
 theme_override_styles/panel = SubResource("header_bg")
 
 [node name="HBox" type="HBoxContainer" parent="MainPanel/VBox/Header" unique_id=2122664001]
+unique_name_in_owner = true
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -82,6 +86,7 @@ grow_vertical = 2
 theme_override_constants/separation = 16
 
 [node name="TitleLabel" type="Label" parent="MainPanel/VBox/Header/HBox" unique_id=1524132551]
+unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.47, 0.37, 0.94, 1)
@@ -91,6 +96,7 @@ text = "User Inspector"
 vertical_alignment = 1
 
 [node name="UserTitle" type="Label" parent="MainPanel/VBox/Header/HBox" unique_id=1936955730]
+unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.8, 0.8, 0.9, 1)
@@ -101,6 +107,7 @@ horizontal_alignment = 2
 vertical_alignment = 1
 
 [node name="Content" type="HSplitContainer" parent="MainPanel/VBox" unique_id=1210231103]
+unique_name_in_owner = true
 layout_mode = 2
 size_flags_vertical = 3
 theme_override_constants/separation = 4
@@ -108,6 +115,7 @@ split_offsets = PackedInt32Array(150, 0)
 split_offset = 150
 
 [node name="CloseButton" type="Button" parent="MainPanel/VBox/Content" unique_id=189450905]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(32, 32)
 layout_mode = 2
 theme_override_colors/font_color = Color(1, 0.3, 0.3, 1)
@@ -116,6 +124,7 @@ theme_override_font_sizes/font_size = 16
 text = "✕"
 
 [node name="LeftPanel" type="Panel" parent="MainPanel/VBox/Content" unique_id=826127460]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(140, 0)
 layout_mode = 2
 theme_override_styles/panel = SubResource("left_panel_bg")
@@ -134,6 +143,7 @@ grow_vertical = 2
 theme_override_constants/separation = 8
 
 [node name="UsersLabel" type="Label" parent="MainPanel/VBox/Content/LeftPanel/VBox" unique_id=498228468]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.6, 0.6, 0.7, 1)
 theme_override_fonts/font = ExtResource("1_font")
@@ -141,21 +151,25 @@ theme_override_font_sizes/font_size = 12
 text = "USERS"
 
 [node name="UserList" type="ScrollContainer" parent="MainPanel/VBox/Content/LeftPanel/VBox" unique_id=444734172]
+unique_name_in_owner = true
 layout_mode = 2
 size_flags_vertical = 3
 horizontal_scroll_mode = 0
 
 [node name="UserListContent" type="VBoxContainer" parent="MainPanel/VBox/Content/LeftPanel/VBox/UserList" unique_id=855840293]
+unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_constants/separation = 4
 
 [node name="RightPanel" type="Panel" parent="MainPanel/VBox/Content" unique_id=1250629234]
+unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_styles/panel = SubResource("right_panel_bg")
 
 [node name="ScrollContainer" type="ScrollContainer" parent="MainPanel/VBox/Content/RightPanel" unique_id=1395091190]
+unique_name_in_owner = true
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -169,11 +183,13 @@ grow_vertical = 2
 horizontal_scroll_mode = 0
 
 [node name="DetailContent" type="VBoxContainer" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer" unique_id=1565923223]
+unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_constants/separation = 4
 
 [node name="BasicInfo" type="VBoxContainer" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent" unique_id=1930967988]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_constants/separation = 2
 
@@ -197,6 +213,7 @@ text = "BASIC INFO"
 vertical_alignment = 1
 
 [node name="UserName" type="HBoxContainer" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/BasicInfo" unique_id=1573791872]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Key" type="Label" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/BasicInfo/UserName" unique_id=180147791]
@@ -216,6 +233,7 @@ theme_override_font_sizes/font_size = 13
 text = "-"
 
 [node name="UserID" type="HBoxContainer" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/BasicInfo" unique_id=124284228]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Key" type="Label" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/BasicInfo/UserID" unique_id=1294522097]
@@ -235,6 +253,7 @@ theme_override_font_sizes/font_size = 13
 text = "-"
 
 [node name="MachineID" type="HBoxContainer" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/BasicInfo" unique_id=2040829082]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Key" type="Label" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/BasicInfo/MachineID" unique_id=958072508]
@@ -254,10 +273,12 @@ theme_override_font_sizes/font_size = 13
 text = "-"
 
 [node name="Spacer1" type="Control" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent" unique_id=999930784]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 8)
 layout_mode = 2
 
 [node name="Status" type="VBoxContainer" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent" unique_id=366000990]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_constants/separation = 2
 
@@ -281,6 +302,7 @@ text = "STATUS"
 vertical_alignment = 1
 
 [node name="HeadDevice" type="HBoxContainer" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/Status" unique_id=108124128]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Key" type="Label" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/Status/HeadDevice" unique_id=1647199248]
@@ -300,6 +322,7 @@ theme_override_font_sizes/font_size = 13
 text = "Desktop"
 
 [node name="Platform" type="HBoxContainer" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/Status" unique_id=886182669]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Key" type="Label" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/Status/Platform" unique_id=1663642537]
@@ -319,6 +342,7 @@ theme_override_font_sizes/font_size = 13
 text = "Windows"
 
 [node name="VRActive" type="HBoxContainer" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/Status" unique_id=215096296]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Key" type="Label" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/Status/VRActive" unique_id=628338233]
@@ -338,6 +362,7 @@ theme_override_font_sizes/font_size = 13
 text = "false"
 
 [node name="Present" type="HBoxContainer" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/Status" unique_id=357087015]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Key" type="Label" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/Status/Present" unique_id=412940139]
@@ -357,10 +382,12 @@ theme_override_font_sizes/font_size = 13
 text = "✓"
 
 [node name="Spacer2" type="Control" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent" unique_id=1784508659]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 8)
 layout_mode = 2
 
 [node name="Performance" type="VBoxContainer" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent" unique_id=1199390373]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_constants/separation = 2
 
@@ -384,6 +411,7 @@ text = "PERFORMANCE"
 vertical_alignment = 1
 
 [node name="FPS" type="HBoxContainer" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/Performance" unique_id=1494453332]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Key" type="Label" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/Performance/FPS" unique_id=476519771]
@@ -403,6 +431,7 @@ theme_override_font_sizes/font_size = 13
 text = "60.0"
 
 [node name="Ping" type="HBoxContainer" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/Performance" unique_id=1828651559]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Key" type="Label" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/Performance/Ping" unique_id=508313053]

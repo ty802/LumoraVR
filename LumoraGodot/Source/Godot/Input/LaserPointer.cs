@@ -173,6 +173,19 @@ public partial class LaserPointer : Node3D
         ProcessInput();
     }
 
+    public override void _Input(InputEvent @event)
+    {
+        if (_currentViewport == null) return;
+        if (@event is not InputEventKey keyEvent) return;
+
+        // Forward keyboard events into focused controls inside the hovered SubViewport
+        // so LineEdit/SpinBox editors can be typed into.
+        if (_currentViewport.GuiGetFocusOwner() == null) return;
+
+        var forwardedEvent = (InputEventKey)keyEvent.Duplicate();
+        _currentViewport.PushInput(forwardedEvent, true);
+    }
+
     private void UpdateLaserFromInput()
     {
         var input = IInputProvider.Instance;

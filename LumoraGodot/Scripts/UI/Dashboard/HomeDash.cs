@@ -13,6 +13,7 @@ public partial class HomeDash : Control
 {
     // Scene paths for content pages
     private const string WorldBrowserScenePath = "res://Scenes/UI/Dashboard/WorldBrowser.tscn";
+    private const string InventoryBrowserScenePath = "res://Scenes/UI/Dashboard/InventoryBrowser.tscn";
     private const string SettingsScenePath = "res://Scenes/UI/Dashboard/Settings.tscn";
     private const string LoginOverlayScenePath = "res://Scenes/UI/Dashboard/LoginOverlay.tscn";
 
@@ -64,13 +65,13 @@ public partial class HomeDash : Control
     public override void _Ready()
     {
         // Get navigation buttons
-        _btnHome = GetNodeOrNull<Button>("MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons/BtnHome");
-        _btnWorlds = GetNodeOrNull<Button>("MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons/BtnWorlds");
-        _btnFriends = GetNodeOrNull<Button>("MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons/BtnFriends");
-        _btnGroups = GetNodeOrNull<Button>("MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons/BtnGroups");
-        _btnInventory = GetNodeOrNull<Button>("MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons/BtnInventory");
-        _btnSettings = GetNodeOrNull<Button>("MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons/BtnSettings");
-        _btnExit = GetNodeOrNull<Button>("MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons/BtnExit");
+        _btnHome = GetNodeOrNull<Button>("MainContainer/VBox/StatusBar/StatusMargin/StatusContent/NavBarPanel/NavBarMargin/NavBar/BtnHome");
+        _btnWorlds = GetNodeOrNull<Button>("MainContainer/VBox/StatusBar/StatusMargin/StatusContent/NavBarPanel/NavBarMargin/NavBar/BtnWorlds");
+        _btnFriends = GetNodeOrNull<Button>("MainContainer/VBox/StatusBar/StatusMargin/StatusContent/NavBarPanel/NavBarMargin/NavBar/BtnFriends");
+        _btnGroups = GetNodeOrNull<Button>("MainContainer/VBox/StatusBar/StatusMargin/StatusContent/NavBarPanel/NavBarMargin/NavBar/BtnGroups");
+        _btnInventory = GetNodeOrNull<Button>("MainContainer/VBox/StatusBar/StatusMargin/StatusContent/NavBarPanel/NavBarMargin/NavBar/BtnInventory");
+        _btnSettings = GetNodeOrNull<Button>("MainContainer/VBox/StatusBar/StatusMargin/StatusContent/NavBarPanel/NavBarMargin/NavBar/BtnSettings");
+        _btnExit = GetNodeOrNull<Button>("MainContainer/VBox/StatusBar/StatusMargin/StatusContent/NavBarPanel/NavBarMargin/NavBar/BtnExit");
 
         // Get content containers
         _mainContentPanel = GetNodeOrNull<Panel>("MainContainer/VBox/ContentArea/MainContent");
@@ -83,19 +84,19 @@ public partial class HomeDash : Control
         _avatarsCard = GetNodeOrNull<Panel>("MainContainer/VBox/ContentArea/MainContent/ContentMargin/ContentVBox/QuickActions/BrowseAvatars");
 
         // Get user section elements
-        _userSectionPanel = GetNodeOrNull<Panel>("MainContainer/VBox/Header/HeaderContent/UserSectionPanel");
-        _usernameLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/Username");
-        _patreonRoleLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/PatreonRole");
-        _storageContainer = GetNodeOrNull<VBoxContainer>("MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/StorageContainer");
-        _storageLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/StorageContainer/StorageLabel");
-        _storageBarFill = GetNodeOrNull<Panel>("MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/StorageContainer/StorageBarBg/StorageBarFill");
-        _avatarIconLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/AvatarContainer/AvatarCircle/AvatarIcon");
+        _userSectionPanel = GetNodeOrNull<Panel>("MainContainer/VBox/Header/HeaderMargin/HeaderContent/UserSectionPanel");
+        _usernameLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderMargin/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/Username");
+        _patreonRoleLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderMargin/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/PatreonRole");
+        _storageContainer = GetNodeOrNull<VBoxContainer>("MainContainer/VBox/Header/HeaderMargin/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/StorageContainer");
+        _storageLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderMargin/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/StorageContainer/StorageLabel");
+        _storageBarFill = GetNodeOrNull<Panel>("MainContainer/VBox/Header/HeaderMargin/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/StorageContainer/StorageBarBg/StorageBarFill");
+        _avatarIconLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderMargin/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/AvatarContainer/AvatarCircle/AvatarIcon");
 
         // Get other labels
         _welcomeTitle = GetNodeOrNull<Label>("MainContainer/VBox/ContentArea/MainContent/ContentMargin/ContentVBox/WelcomeSection/WelcomeTitle");
-        _statusText = GetNodeOrNull<Label>("MainContainer/VBox/StatusBar/StatusContent/ConnectionPanel/ConnectionCenter/ConnectionStatus/StatusText");
-        _versionLabel = GetNodeOrNull<Label>("MainContainer/VBox/StatusBar/StatusContent/VersionPanel/VersionCenter/Version");
-        _fpsValueLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderContent/FPSPanel/FPSMargin/FPSVBox/FPSValue");
+        _statusText = GetNodeOrNull<Label>("MainContainer/VBox/StatusBar/StatusMargin/StatusContent/ConnectionPanel/ConnectionCenter/ConnectionStatus/StatusText");
+        _versionLabel = GetNodeOrNull<Label>("MainContainer/VBox/StatusBar/StatusMargin/StatusContent/VersionPanel/VersionCenter/Version");
+        _fpsValueLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderMargin/HeaderContent/FPSPanel/FPSMargin/FPSVBox/FPSValue");
 
         // Connect button signals
         ConnectButtons();
@@ -203,10 +204,10 @@ public partial class HomeDash : Control
         string? scenePath = tab switch
         {
             "Worlds" => WorldBrowserScenePath,
+            "Inventory" => InventoryBrowserScenePath,
             "Settings" => SettingsScenePath,
             // Add more pages here as they're created
             // "Friends" => FriendsScenePath,
-            // "Inventory" => InventoryScenePath,
             _ => null
         };
 
@@ -249,6 +250,15 @@ public partial class HomeDash : Control
 
             if (_currentUser != null)
                 settingsPage.SetUserData(_currentUser.Username, "", _currentUser.TwoFactorEnabled);
+        }
+
+        // Initialize Inventory page
+        if (tab == "Inventory" && page is InventoryBrowser inventoryPage)
+        {
+            if (_client != null)
+                inventoryPage.SetClient(_client);
+
+            inventoryPage.SetCurrentUser(_currentUser);
         }
 
         GD.Print($"HomeDash: Loaded content page '{tab}'");
@@ -408,6 +418,7 @@ public partial class HomeDash : Control
             {
                 _currentUser = result.Data;
                 ApplyUserProfile(_currentUser);
+                PushUserDataToLoadedPages();
             }
             else
             {
@@ -441,6 +452,26 @@ public partial class HomeDash : Control
         }
 
         GD.Print($"HomeDash: User profile applied - {profile.Username}");
+    }
+
+    private void PushUserDataToLoadedPages()
+    {
+        if (_contentPages.TryGetValue("Settings", out var settingsControl) && settingsControl is Settings settingsPage)
+        {
+            if (_client != null)
+                settingsPage.SetClient(_client);
+
+            if (_currentUser != null)
+                settingsPage.SetUserData(_currentUser.Username, "", _currentUser.TwoFactorEnabled);
+        }
+
+        if (_contentPages.TryGetValue("Inventory", out var inventoryControl) && inventoryControl is InventoryBrowser inventoryPage)
+        {
+            if (_client != null)
+                inventoryPage.SetClient(_client);
+
+            inventoryPage.SetCurrentUser(_currentUser);
+        }
     }
 
     private void OnLoginCancel()
@@ -551,3 +582,4 @@ public partial class HomeDash : Control
         }
     }
 }
+

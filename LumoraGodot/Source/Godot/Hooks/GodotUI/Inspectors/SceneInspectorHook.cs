@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using Godot;
 using Lumora.Core;
+using Lumora.Core.GodotUI;
 using Lumora.Core.GodotUI.Inspectors;
 using Lumora.Core.Math;
 using Lumora.Core.Networking.Sync;
@@ -58,6 +60,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
 
     // State tracking
     private Slot? _boundRoot;
+    private Slot? _observedComponentSlot; // Slot we're listening for component add/remove on
     private string? _lastBuiltSelectionId; // Track RefID of what selection the component panel was last built for
     private Vector2I _lastViewportSize = Vector2I.Zero;
     private readonly Dictionary<TreeItem, Slot> _treeItemToSlot = new();
@@ -132,18 +135,40 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         BindRoot(root);
     }
 
-    private void OnOwnerSelectionChanged(Slot? _)
+    private void OnOwnerSelectionChanged(Slot? newSelection)
     {
         try
         {
+            // Unsubscribe from previous slot's component events
+            if (_observedComponentSlot != null)
+            {
+                _observedComponentSlot.OnComponentAdded -= OnComponentListChanged;
+                _observedComponentSlot.OnComponentRemoved -= OnComponentListChanged;
+                _observedComponentSlot = null;
+            }
+
+            // Subscribe to new slot's component events following the component inspector pattern.
+            if (newSelection != null && !newSelection.IsDestroyed)
+            {
+                newSelection.OnComponentAdded += OnComponentListChanged;
+                newSelection.OnComponentRemoved += OnComponentListChanged;
+                _observedComponentSlot = newSelection;
+            }
+
             _lastBuiltSelectionId = null;
             RebuildComponentPanel();
         }
         catch (Exception ex)
         {
             AquaLogger.Error($"SceneInspectorHook: Selection change rebuild failed: {ex.Message}");
-            AquaLogger.Error($"SceneInspectorHook: {ex.StackTrace}");
         }
+    }
+
+    private void OnComponentListChanged(Slot slot, Component component)
+    {
+        // A component was added or removed from the selected slot - force rebuild
+        _lastBuiltSelectionId = null;
+        RebuildComponentPanel();
     }
 
     private void SetupInputHandling()
@@ -457,15 +482,17 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
 
     private void CacheSceneNodes()
     {
-        _hierarchyTree = _loadedScene?.GetNodeOrNull<Tree>("MainPanel/VBox/SplitContainer/HierarchyPanel/VBox/HierarchyScroll/HierarchyTree");
+        // Cache key nodes from the .tscn layout (paths match SceneInspector.tscn)
+        _hierarchyTree = _loadedScene?.GetNodeOrNull<Tree>("MainPanel/VBox/SplitContainer/HierarchyPanel/VBox/HierarchyTree");
         _componentContainer = _loadedScene?.GetNodeOrNull<VBoxContainer>("MainPanel/VBox/SplitContainer/ComponentPanel/VBox/ComponentScroll/ComponentContainer");
-        _hierarchyScroll = _loadedScene?.GetNodeOrNull<ScrollContainer>("MainPanel/VBox/SplitContainer/HierarchyPanel/VBox/HierarchyScroll");
+        _hierarchyScroll = null; // Tree handles its own scrolling
         _componentScroll = _loadedScene?.GetNodeOrNull<ScrollContainer>("MainPanel/VBox/SplitContainer/ComponentPanel/VBox/ComponentScroll");
-        _titleLabel = _loadedScene?.GetNodeOrNull<Label>("MainPanel/VBox/Header/TitleRow/Title");
+        _splitContainer = _loadedScene?.GetNodeOrNull<HSplitContainer>("MainPanel/VBox/SplitContainer");
+        _titleLabel = _loadedScene?.GetNodeOrNull<Label>("MainPanel/VBox/Header/TitleRow/HBox/Title");
         _rootLabel = _loadedScene?.GetNodeOrNull<Label>("MainPanel/VBox/Header/RootRow/RootLabel");
 
-        // Connect buttons if they exist in the scene
-        var closeBtn = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/TitleRow/CloseButton");
+        // Connect buttons
+        var closeBtn = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/TitleRow/HBox/CloseButton");
         closeBtn?.Connect("pressed", Callable.From(() => Owner.Close()));
 
         _rootUpButton = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/RootRow/RootUpButton");
@@ -474,17 +501,28 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         _setRootButton = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/RootRow/SetRootButton");
         _setRootButton?.Connect("pressed", Callable.From(() => Owner.SetSelectionAsRoot()));
 
-        _addChildButton = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/Toolbar/AddChildButton");
+        _addChildButton = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/Toolbar/HBox/AddChildButton");
         _addChildButton?.Connect("pressed", Callable.From(() => Owner.AddChild()));
 
-        _duplicateButton = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/Toolbar/DuplicateButton");
+        _duplicateButton = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/Toolbar/HBox/DuplicateButton");
         _duplicateButton?.Connect("pressed", Callable.From(() => Owner.DuplicateSelection()));
 
-        _destroyButton = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/Toolbar/DestroyButton");
+        _destroyButton = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/Toolbar/HBox/DestroyButton");
         _destroyButton?.Connect("pressed", Callable.From(() => Owner.DestroySelection()));
 
-        _attachComponentButton = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/Toolbar/AttachComponentButton");
+        _attachComponentButton = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/Toolbar/HBox/AttachComponentButton");
         _attachComponentButton?.Connect("pressed", Callable.From(() => Owner.OpenComponentAttacher()));
+
+        _inheritedToggle = _loadedScene?.GetNodeOrNull<CheckButton>("MainPanel/VBox/Header/Toolbar/HBox/InheritedToggle");
+        if (_inheritedToggle != null)
+        {
+            _inheritedToggle.ButtonPressed = Owner.ShowInherited.Value;
+            _inheritedToggle.Toggled += pressed =>
+            {
+                Owner.ShowInherited.Value = pressed;
+                RebuildComponentPanel();
+            };
+        }
 
         if (_hierarchyTree != null)
         {
@@ -494,95 +532,205 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
             _hierarchyTree.FocusMode = Control.FocusModeEnum.All;
             _hierarchyTree.MouseFilter = Control.MouseFilterEnum.Stop;
         }
+
+        // Create Lumora bidirectional UI components for all static .tscn elements
+        ParseStaticUIElements();
     }
+
+    /// <summary>
+    /// Parse the loaded .tscn scene and create Lumora UI components for each static Control node.
+    /// This follows the GodotUIPanelHook.ParseSceneNode pattern, making the inspector UI
+    /// itself inspectable and modifiable at runtime via Lumora components.
+    /// </summary>
+    private void ParseStaticUIElements()
+    {
+        if (_loadedScene == null) return;
+
+        // Recursively parse all child controls from the scene root
+        foreach (var child in _loadedScene.GetChildren())
+        {
+            ParseSceneNodeRecursive(child, "", Owner.Slot);
+        }
+
+        AquaLogger.Log($"SceneInspectorHook: Created Lumora UI components for .tscn elements");
+    }
+
+    private void ParseSceneNodeRecursive(Node node, string parentPath, Slot parentSlot)
+    {
+        var nodeName = node.Name.ToString();
+        var nodePath = string.IsNullOrEmpty(parentPath) ? nodeName : $"{parentPath}/{nodeName}";
+
+        if (node is not Control control)
+        {
+            foreach (var child in node.GetChildren())
+            {
+                ParseSceneNodeRecursive(child, nodePath, parentSlot);
+            }
+            return;
+        }
+
+        // Create child slot and appropriate Lumora component
+        var elementSlot = parentSlot.AddSlot(nodeName);
+        GodotUIElement? element = null;
+
+        if (control is Label)
+        {
+            element = elementSlot.AttachComponent<GodotLabel>();
+        }
+        else if (control is CheckButton or Button)
+        {
+            element = elementSlot.AttachComponent<GodotButton>();
+            // Wire button press to Owner.HandleButtonPress
+            if (control is Button btn)
+            {
+                var capturedPath = nodePath;
+                btn.Pressed += () => Owner.HandleButtonPress(capturedPath);
+            }
+        }
+        else if (control is PanelContainer or Panel)
+        {
+            element = elementSlot.AttachComponent<GodotPanel>();
+        }
+        else if (control is ScrollContainer)
+        {
+            element = elementSlot.AttachComponent<GodotScrollContainer>();
+        }
+        else if (control is Tree)
+        {
+            // Tree is a special control - create generic UI element
+            element = elementSlot.AttachComponent<GodotUIElement>();
+        }
+        else
+        {
+            // Generic UI element for containers (VBox, HBox, HSplitContainer, etc.)
+            element = elementSlot.AttachComponent<GodotUIElement>();
+        }
+
+        if (element != null)
+        {
+            element.SceneNodePath.Value = nodePath;
+            element.ParentPanel.Target = Owner;
+
+            // Sync initial properties from the Godot node
+            element.Visible.Value = control.Visible;
+            var mod = control.Modulate;
+            element.Modulate.Value = new color(mod.R, mod.G, mod.B, mod.A);
+            var minSize = control.CustomMinimumSize;
+            element.MinSize.Value = new float2(minSize.X, minSize.Y);
+            element.SizeFlagsHorizontal.Value = (int)control.SizeFlagsHorizontal;
+            element.SizeFlagsVertical.Value = (int)control.SizeFlagsVertical;
+
+            if (element is GodotLabel label && control is Label godotLabel)
+            {
+                label.Text.Value = godotLabel.Text;
+            }
+
+            if (element is GodotButton button && control is Button godotButton)
+            {
+                button.Text.Value = godotButton.Text;
+            }
+        }
+
+        // Recurse into children
+        foreach (var child in node.GetChildren())
+        {
+            ParseSceneNodeRecursive(child, nodePath, elementSlot);
+        }
+    }
+
+    // Slots we're currently listening to for child changes (all slots visible in the tree)
+    private readonly HashSet<Slot> _observedSlots = new();
 
     private void BindRoot(Slot? slot)
     {
         if (_boundRoot == slot) return;
 
-        if (_boundRoot != null)
-        {
-            _boundRoot.OnChildAdded -= OnChildChanged;
-            _boundRoot.OnChildRemoved -= OnChildChanged;
-            _boundRoot.OnNameChanged -= OnSlotNameChanged;
-        }
-
+        UnsubscribeAllSlots();
         _boundRoot = slot;
 
-        if (_boundRoot != null)
-        {
-            _boundRoot.OnChildAdded += OnChildChanged;
-            _boundRoot.OnChildRemoved += OnChildChanged;
-            _boundRoot.OnNameChanged += OnSlotNameChanged;
-        }
-
         RebuildUI();
+    }
+
+    /// <summary>
+    /// Subscribe to child-add/remove and name-change events on all slots visible in the hierarchy.
+    /// This follows the pattern where each slot inspector listens to its own slot.
+    /// </summary>
+    private void SubscribeToSlot(Slot slot)
+    {
+        if (_observedSlots.Contains(slot)) return;
+        _observedSlots.Add(slot);
+        slot.OnChildAdded += OnChildChanged;
+        slot.OnChildRemoved += OnChildChanged;
+        slot.OnNameChanged += OnSlotNameChanged;
+    }
+
+    private void UnsubscribeAllSlots()
+    {
+        foreach (var slot in _observedSlots)
+        {
+            if (slot != null && !slot.IsDestroyed)
+            {
+                slot.OnChildAdded -= OnChildChanged;
+                slot.OnChildRemoved -= OnChildChanged;
+                slot.OnNameChanged -= OnSlotNameChanged;
+            }
+        }
+        _observedSlots.Clear();
     }
 
     private void OnChildChanged(Slot parent, Slot child)
     {
         try
         {
-            // Ignore transient inspector gizmo slots to avoid unnecessary hierarchy rebuild churn.
+            // Ignore transient inspector gizmo slots
             if (child.Name.Value.StartsWith("Gizmo_", StringComparison.Ordinal))
-            {
                 return;
-            }
 
             RebuildHierarchyTree();
         }
         catch (Exception ex)
         {
             AquaLogger.Error($"SceneInspectorHook: OnChildChanged exception: {ex.Message}");
-            AquaLogger.Error($"SceneInspectorHook: {ex.StackTrace}");
         }
     }
+
     private void OnSlotNameChanged(Slot slot, string newName) => RefreshUI();
 
-    private Slot? _pendingSelection;
     private Slot? _pendingFocus;
 
     /// <summary>
-    /// Direct GUI input handler for the Tree - catches clicks that ItemSelected signal might miss.
-    /// This is needed because PushInput from LaserPointer may not trigger all internal Tree signals.
+    /// Direct GUI input handler for the Tree.
+    /// PushInput from LaserPointer may not trigger Tree's internal ItemSelected signal,
+    /// so we manually detect the clicked item and select it as a fallback.
     /// </summary>
     private void OnTreeGuiInput(InputEvent @event)
     {
         try
         {
-            if (@event is InputEventMouseButton mouseButton)
+            if (@event is not InputEventMouseButton mouseButton) return;
+            if (!mouseButton.Pressed || mouseButton.ButtonIndex != MouseButton.Left) return;
+
+            _hierarchyTree?.GrabFocus();
+
+            var item = _hierarchyTree?.GetItemAtPosition(mouseButton.Position);
+            if (item == null) return;
+
+            // item.Select(0) may trigger OnTreeItemSelected synchronously.
+            // That handler will call Owner.SelectSlot if it fires.
+            item.Select(0);
+
+            // Fallback: if the signal didn't fire (PushInput quirk), apply selection manually.
+            if (_treeItemToSlot.TryGetValue(item, out var slot) && !slot.IsDestroyed)
             {
-                // Grab focus on any mouse button press to ensure Tree processes clicks
-                if (mouseButton.Pressed && mouseButton.ButtonIndex == MouseButton.Left)
+                if (Owner.ComponentView.Target != slot)
                 {
-                    _hierarchyTree?.GrabFocus();
-
-                    // Get the item at the click position and select it directly
-                    // This is needed because PushInput from LaserPointer may not trigger Tree's internal ItemSelected signal
-                    var item = _hierarchyTree?.GetItemAtPosition(mouseButton.Position);
-                    if (item != null)
-                    {
-                        AquaLogger.Log($"SceneInspectorHook: Click on tree item '{item.GetText(0)}'");
-                        item.Select(0);
-
-                        if (_treeItemToSlot.TryGetValue(item, out var slot))
-                        {
-                            if (slot.IsDestroyed)
-                            {
-                                AquaLogger.Warn("SceneInspectorHook: Ignored click on destroyed slot");
-                                return;
-                            }
-
-                            Owner.SelectSlot(slot);
-                        }
-                    }
+                    Owner.SelectSlot(slot);
                 }
             }
         }
         catch (Exception ex)
         {
             AquaLogger.Error($"SceneInspectorHook: OnTreeGuiInput exception: {ex.Message}");
-            AquaLogger.Error($"SceneInspectorHook: {ex.StackTrace}");
         }
     }
 
@@ -590,65 +738,36 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
     {
         try
         {
-            AquaLogger.Log("SceneInspectorHook: OnTreeItemSelected called!");
             var selected = _hierarchyTree?.GetSelected();
-            if (selected == null)
+            if (selected == null) return;
+
+            if (_treeItemToSlot.TryGetValue(selected, out var slot) && !slot.IsDestroyed)
             {
-                AquaLogger.Log("SceneInspectorHook: GetSelected() returned null");
-                return;
-            }
-
-            AquaLogger.Log($"SceneInspectorHook: Tree item selected, text='{selected.GetText(0)}'");
-
-            if (_treeItemToSlot.TryGetValue(selected, out var slot))
-            {
-                if (slot.IsDestroyed)
-                {
-                    AquaLogger.Warn("SceneInspectorHook: Ignored selection for destroyed slot");
-                    return;
-                }
-
-                AquaLogger.Log($"SceneInspectorHook: Directly selecting slot '{slot.Name.Value}' from signal");
                 Owner.SelectSlot(slot);
-            }
-            else
-            {
-                AquaLogger.Log($"SceneInspectorHook: No slot found in dictionary for tree item!");
             }
         }
         catch (Exception ex)
         {
             AquaLogger.Error($"SceneInspectorHook: OnTreeItemSelected exception: {ex.Message}");
-            AquaLogger.Error($"SceneInspectorHook: {ex.StackTrace}");
         }
     }
 
     private void OnTreeItemActivated()
     {
-        // Double-click focuses on slot
+        // Double-click focuses on slot (sets as root and selects)
         var selected = _hierarchyTree?.GetSelected();
-        if (selected != null && _treeItemToSlot.TryGetValue(selected, out var slot))
+        if (selected != null && _treeItemToSlot.TryGetValue(selected, out var slot) && !slot.IsDestroyed)
         {
-            // Store pending focus and defer
             _pendingFocus = slot;
         }
     }
 
-    private void ProcessPendingSelections()
+    private void ProcessPendingActions()
     {
-        if (_pendingSelection != null)
-        {
-            var slot = _pendingSelection;
-            _pendingSelection = null;
-            AquaLogger.Log($"SceneInspectorHook: Processing pending selection '{slot.Name.Value}'");
-            Owner.SelectSlot(slot);
-        }
-
         if (_pendingFocus != null)
         {
             var slot = _pendingFocus;
             _pendingFocus = null;
-            AquaLogger.Log($"SceneInspectorHook: Processing pending focus '{slot.Name.Value}'");
             Owner.FocusSlot(slot);
         }
     }
@@ -704,8 +823,12 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
             _hierarchyTree.Clear();
             _treeItemToSlot.Clear();
             _slotToTreeItem.Clear();
+            UnsubscribeAllSlots();
 
             if (_boundRoot == null || _boundRoot.IsDestroyed) return;
+
+            // Subscribe to the root slot
+            SubscribeToSlot(_boundRoot);
 
             var root = _hierarchyTree.CreateItem();
             root.SetText(0, _boundRoot.Name.Value);
@@ -715,9 +838,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
 
             BuildTreeRecursive(root, _boundRoot);
 
-            AquaLogger.Log($"SceneInspectorHook: Built hierarchy tree with {_treeItemToSlot.Count} items");
-
-            // Select current slot
+            // Select current slot in tree
             if (Owner.ComponentView.Target != null &&
                 _slotToTreeItem.TryGetValue(Owner.ComponentView.Target, out var selectedItem))
             {
@@ -727,7 +848,6 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         catch (Exception ex)
         {
             AquaLogger.Error($"SceneInspectorHook: RebuildHierarchyTree exception: {ex.Message}");
-            AquaLogger.Error($"SceneInspectorHook: {ex.StackTrace}");
         }
     }
 
@@ -742,9 +862,10 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         foreach (var child in childrenSnapshot)
         {
             if (child.Name.Value.StartsWith("Gizmo_", StringComparison.Ordinal))
-            {
                 continue;
-            }
+
+            // Listen for changes on every visible slot using per-slot inspector subscriptions.
+            SubscribeToSlot(child);
 
             var item = _hierarchyTree!.CreateItem(parent);
             item.SetText(0, child.Name.Value);
@@ -798,8 +919,6 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
                 _componentContainer.AddChild(noSelectionLabel);
                 return;
             }
-
-            AquaLogger.Log($"SceneInspectorHook: Building component panel for '{selected.Name.Value}' with {selected.Components.Count} components");
 
             // Slot properties section
             AddSlotPropertiesSection(selected);
@@ -927,41 +1046,50 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         propsContainer.Name = $"ComponentProps_{component.GetType().Name}";
         propsContainer.Visible = isExpanded; // Use tracked state
 
-        // Get sync members via reflection - always include inherited to show all properties
-        var bindingFlags = BindingFlags.Public | BindingFlags.Instance;
+        var shownMembers = new HashSet<ISyncMember>();
+        int visiblePropertyCount = 0;
 
-        var properties = component.GetType().GetProperties(bindingFlags);
-
-        foreach (var prop in properties)
+        // Use Worker's built-in sync member iteration (works for both field and property patterns)
+        for (int i = 0; i < component.SyncMemberCount; i++)
         {
             try
             {
-                if (!typeof(ISyncMember).IsAssignableFrom(prop.PropertyType)) continue;
+                var syncMember = component.GetSyncMember(i);
+                if (syncMember == null) continue;
 
-                // Skip the base Component properties unless ShowInherited is true
+                var memberName = component.GetSyncMemberName(i);
+                var fieldInfo = component.GetSyncMemberFieldInfo(i);
+
+                // Skip base Component/Worker members unless ShowInherited is true
                 if (!Owner.ShowInherited.Value)
                 {
-                    var declaringType = prop.DeclaringType;
-                    if (declaringType == typeof(Component) || declaringType == typeof(Worker))
+                    if (IsBaseMemberType(fieldInfo?.DeclaringType))
                         continue;
                 }
 
-                var syncMember = prop.GetValue(component) as ISyncMember;
-                if (syncMember == null) continue;
-
-                var field = component.GetType().GetField($"<{prop.Name}>k__BackingField",
-                    BindingFlags.NonPublic | BindingFlags.Instance);
-
-                var row = SyncMemberEditorBuilder.CreateEditorRow(syncMember, prop.Name, field);
+                var row = SyncMemberEditorBuilder.CreateEditorRow(syncMember, memberName, fieldInfo);
                 if (row != null)
                 {
                     propsContainer.AddChild(row);
+                    shownMembers.Add(syncMember);
+                    visiblePropertyCount++;
                 }
             }
             catch (Exception ex)
             {
-                AquaLogger.Log($"SceneInspectorHook: Error building editor for '{prop.Name}' on {component.GetType().Name}: {ex.Message}");
+                AquaLogger.Log($"SceneInspectorHook: Error building editor for member {i} on {component.GetType().Name}: {ex.Message}");
             }
+        }
+
+        // Fallback for components that use property-backed Sync members not registered in InitInfo.
+        visiblePropertyCount += AddFallbackPropertyEditors(component, propsContainer, shownMembers);
+
+        if (visiblePropertyCount == 0)
+        {
+            var noPropsLabel = new Label();
+            noPropsLabel.Text = "No editable properties";
+            noPropsLabel.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f));
+            propsContainer.AddChild(noPropsLabel);
         }
 
         _componentContainer.AddChild(propsContainer);
@@ -983,6 +1111,82 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         _componentContainer.AddChild(separator);
     }
 
+    private int AddFallbackPropertyEditors(Component component, VBoxContainer propsContainer, HashSet<ISyncMember> shownMembers)
+    {
+        int addedRows = 0;
+        var componentType = component.GetType();
+
+        var properties = componentType.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        foreach (var property in properties)
+        {
+            if (!typeof(ISyncMember).IsAssignableFrom(property.PropertyType)) continue;
+            if (property.GetMethod == null || property.GetIndexParameters().Length > 0) continue;
+
+            if (!Owner.ShowInherited.Value && IsBaseMemberType(property.DeclaringType))
+                continue;
+
+            ISyncMember? syncMember;
+            try
+            {
+                syncMember = property.GetValue(component) as ISyncMember;
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (syncMember == null || shownMembers.Contains(syncMember)) continue;
+
+            var row = SyncMemberEditorBuilder.CreateEditorRow(syncMember, property.Name);
+            if (row == null) continue;
+
+            propsContainer.AddChild(row);
+            shownMembers.Add(syncMember);
+            addedRows++;
+        }
+
+        var fields = componentType.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        foreach (var field in fields)
+        {
+            if (!typeof(ISyncMember).IsAssignableFrom(field.FieldType)) continue;
+            if (field.IsDefined(typeof(CompilerGeneratedAttribute), inherit: false)) continue;
+
+            if (!Owner.ShowInherited.Value && IsBaseMemberType(field.DeclaringType))
+                continue;
+
+            var syncMember = field.GetValue(component) as ISyncMember;
+            if (syncMember == null || shownMembers.Contains(syncMember)) continue;
+
+            var memberName = field.GetCustomAttribute<NameOverrideAttribute>()?.Name;
+            if (string.IsNullOrEmpty(memberName))
+            {
+                memberName = field.Name;
+                if (memberName.EndsWith("_Field", StringComparison.Ordinal) && memberName != "_Field")
+                {
+                    memberName = memberName[..memberName.LastIndexOf("_Field", StringComparison.Ordinal)];
+                }
+            }
+
+            var row = SyncMemberEditorBuilder.CreateEditorRow(syncMember, memberName!, field);
+            if (row == null) continue;
+
+            propsContainer.AddChild(row);
+            shownMembers.Add(syncMember);
+            addedRows++;
+        }
+
+        return addedRows;
+    }
+
+    private static bool IsBaseMemberType(Type? declaringType)
+    {
+        if (declaringType == null) return false;
+        if (declaringType == typeof(Worker)) return true;
+
+        return declaringType.IsGenericType &&
+               declaringType.GetGenericTypeDefinition() == typeof(ComponentBase<>);
+    }
+
     private void RefreshUI()
     {
         UpdateLabels();
@@ -992,8 +1196,8 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
     {
         try
         {
-            // Process any pending selections from tree interactions (deferred to avoid callback conflicts)
-            ProcessPendingSelections();
+            // Process any pending actions from tree interactions (deferred to avoid callback conflicts)
+            ProcessPendingActions();
 
             if (_viewport == null) return;
 
@@ -1090,11 +1294,15 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         if (_selectionChangedHandler != null) Owner.OnSelectionChanged -= _selectionChangedHandler;
         Owner.OnAttachComponentRequested -= OnAttachComponentRequested;
 
-        if (_boundRoot != null)
+        // Unsubscribe from all observed slots
+        UnsubscribeAllSlots();
+
+        // Unsubscribe from component add/remove on the observed slot
+        if (_observedComponentSlot != null)
         {
-            _boundRoot.OnChildAdded -= OnChildChanged;
-            _boundRoot.OnChildRemoved -= OnChildChanged;
-            _boundRoot.OnNameChanged -= OnSlotNameChanged;
+            _observedComponentSlot.OnComponentAdded -= OnComponentListChanged;
+            _observedComponentSlot.OnComponentRemoved -= OnComponentListChanged;
+            _observedComponentSlot = null;
         }
 
         if (!destroyingWorld)

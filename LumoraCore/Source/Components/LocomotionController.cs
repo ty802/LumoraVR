@@ -16,7 +16,9 @@ public class LocomotionController : Component
 {
     // ===== PARAMETERS =====
 
-    public float MouseSensitivity { get; set; } = 0.001f;
+    // DirectDelta is now normalized (1.0 = full screen height swipe).
+    // Sensitivity of Pi means a full screen-height swipe = 180 degrees.
+    public float MouseSensitivity { get; set; } = MathF.PI;
     public float MaxPitch { get; set; } = 89.0f;
 
     // ===== STATE =====

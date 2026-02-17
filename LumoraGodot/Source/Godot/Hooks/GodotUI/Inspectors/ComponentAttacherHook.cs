@@ -4,6 +4,7 @@ using Godot;
 using Lumora.Core;
 using Lumora.Core.GodotUI.Inspectors;
 using Lumora.Core.Math;
+using Aquamarine.Godot.UI;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
 namespace Aquamarine.Godot.Hooks.GodotUI.Inspectors;
@@ -48,7 +49,7 @@ public sealed class ComponentAttacherHook : ComponentHook<ComponentAttacher>
     {
         base.Initialize();
 
-        var resScale = Owner.ResolutionScale.Value;
+        var resScale = UIReadability.GetReadableResolutionScale(Owner.ResolutionScale.Value);
 
         // Create SubViewport
         _viewport = new SubViewport
@@ -111,6 +112,7 @@ public sealed class ComponentAttacherHook : ComponentHook<ComponentAttacher>
                     if (_loadedScene is Control control)
                     {
                         control.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+                        UIReadability.ApplyToTree(control);
                     }
                     CacheSceneNodes();
                     RebuildUI();
@@ -156,6 +158,7 @@ public sealed class ComponentAttacherHook : ComponentHook<ComponentAttacher>
 
         _viewport?.AddChild(_mainPanel);
         _loadedScene = _mainPanel;
+        UIReadability.ApplyToTree(_mainPanel);
 
         RebuildUI();
     }
@@ -366,6 +369,11 @@ public sealed class ComponentAttacherHook : ComponentHook<ComponentAttacher>
             spacer.CustomMinimumSize = new Vector2(0, 8);
             _componentList.AddChild(spacer);
         }
+
+        if (_loadedScene is Control loadedControl)
+        {
+            UIReadability.ApplyToTree(loadedControl);
+        }
     }
 
     private void AddComponentButton(ComponentTypeInfo typeInfo)
@@ -400,7 +408,7 @@ public sealed class ComponentAttacherHook : ComponentHook<ComponentAttacher>
     {
         if (_viewport == null) return;
 
-        var resScale = Owner.ResolutionScale.Value;
+        var resScale = UIReadability.GetReadableResolutionScale(Owner.ResolutionScale.Value);
         _viewport.Size = new Vector2I(
             (int)(Owner.Size.Value.x * resScale),
             (int)(Owner.Size.Value.y * resScale));

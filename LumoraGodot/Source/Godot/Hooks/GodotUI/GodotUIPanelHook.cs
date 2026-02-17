@@ -3,6 +3,7 @@ using Lumora.Core;
 using Lumora.Core.GodotUI;
 using Lumora.Core.Math;
 using System.Collections.Generic;
+using Aquamarine.Godot.UI;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
 namespace Aquamarine.Godot.Hooks.GodotUI;
@@ -61,7 +62,7 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
 
         _panelHooks[Owner] = this;
 
-        var resScale = Owner.ResolutionScale.Value;
+        var resScale = UIReadability.GetReadableResolutionScale(Owner.ResolutionScale.Value);
 
         // Create SubViewport
         _viewport = new SubViewport();
@@ -130,6 +131,12 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
         }
 
         _viewport?.AddChild(_loadedScene);
+
+        if (_loadedScene is Control loadedControl)
+        {
+            loadedControl.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+            UIReadability.ApplyToTree(loadedControl);
+        }
 
         // Build node registry and create Lumora components
         // Start from children of root (skip root node name in paths)
@@ -332,7 +339,7 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
     {
         if (_viewport == null) return;
 
-        var resScale = Owner.ResolutionScale.Value;
+        var resScale = UIReadability.GetReadableResolutionScale(Owner.ResolutionScale.Value);
         _viewport.Size = new Vector2I(
             (int)(Owner.Size.Value.x * resScale),
             (int)(Owner.Size.Value.y * resScale));

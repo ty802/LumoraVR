@@ -3,6 +3,7 @@ using Godot;
 using Lumora.Core;
 using Lumora.Core.GodotUI.Inspectors;
 using Lumora.Core.Math;
+using Aquamarine.Godot.UI;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
 namespace Aquamarine.Godot.Hooks.GodotUI.Inspectors;
@@ -54,7 +55,7 @@ public sealed class SlotInspectorHook : ComponentHook<SlotInspector>
     {
         base.Initialize();
 
-        var resScale = Owner.ResolutionScale.Value;
+        var resScale = UIReadability.GetReadableResolutionScale(Owner.ResolutionScale.Value);
 
         // Create SubViewport
         _viewport = new SubViewport
@@ -130,6 +131,7 @@ public sealed class SlotInspectorHook : ComponentHook<SlotInspector>
         if (_loadedScene is Control control)
         {
             control.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+            UIReadability.ApplyToTree(control);
         }
 
         CacheSceneNodes();
@@ -204,6 +206,7 @@ public sealed class SlotInspectorHook : ComponentHook<SlotInspector>
 
         _viewport?.AddChild(panel);
         _loadedScene = panel;
+        UIReadability.ApplyToTree(panel);
 
         RebuildUI();
     }
@@ -372,11 +375,16 @@ public sealed class SlotInspectorHook : ComponentHook<SlotInspector>
             componentsLabel.Text = "Components";
             _propertiesContainer.AddChild(componentsLabel);
 
-            foreach (var component in selected.Components)
-            {
-                AddComponentSection(component);
-            }
+        foreach (var component in selected.Components)
+        {
+            AddComponentSection(component);
         }
+
+        if (_loadedScene is Control loadedControl)
+        {
+            UIReadability.ApplyToTree(loadedControl);
+        }
+    }
     }
 
     private void AddPropertyRow(string label, string value, System.Action<object> onChange)
@@ -519,7 +527,7 @@ public sealed class SlotInspectorHook : ComponentHook<SlotInspector>
     {
         if (_viewport == null) return;
 
-        var resScale = Owner.ResolutionScale.Value;
+        var resScale = UIReadability.GetReadableResolutionScale(Owner.ResolutionScale.Value);
         _viewport.Size = new Vector2I(
             (int)(Owner.Size.Value.x * resScale),
             (int)(Owner.Size.Value.y * resScale));

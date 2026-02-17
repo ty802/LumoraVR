@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using Godot;
 using Lumora.Core;
 using Lumora.Core.GodotUI.Inspectors;
+using Aquamarine.Godot.UI;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
 namespace Aquamarine.Godot.Hooks.GodotUI.Inspectors;
@@ -45,6 +46,11 @@ public class ComponentInspectorHook : ComponentHook<ComponentInspector>
         {
             _headerLabel = attachedNode.GetNodeOrNull<Label>("%HeaderLabel");
             _removeButton = attachedNode.GetNodeOrNull<Button>("%RemoveButton");
+            var existingRoot = _propertyContainer.GetParentOrNull<Control>();
+            if (existingRoot != null)
+            {
+                UIReadability.ApplyToTree(existingRoot);
+            }
             return;
         }
 
@@ -91,6 +97,8 @@ public class ComponentInspectorHook : ComponentHook<ComponentInspector>
         _propertyContainer.Name = "PropertyContainer";
         _propertyContainer.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
         scroll.AddChild(_propertyContainer);
+
+        UIReadability.ApplyToTree(root);
     }
 
     private void OnRemovePressed()
@@ -164,6 +172,11 @@ public class ComponentInspectorHook : ComponentHook<ComponentInspector>
                 _propertyContainer.AddChild(row);
                 _propertyRows.Add(row);
             }
+        }
+
+        if (_propertyContainer != null)
+        {
+            UIReadability.ApplyToTree(_propertyContainer);
         }
 
         AquaLogger.Log($"ComponentInspectorHook: Built {_propertyRows.Count} property editors for {component.GetType().Name}");

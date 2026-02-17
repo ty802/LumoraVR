@@ -321,8 +321,10 @@ public partial class HomeDash : PanelContainer
 
     private void OnExitPressed()
     {
-        // TODO: Implement exit confirmation or directly quit
-        // GetTree().Quit();
+        // Quit cleanly from the dashboard.
+        // In-editor this stops the running game, and in exports this closes the app.
+        GD.Print("HomeDash: Exit pressed, quitting application");
+        GetTree().Quit();
     }
 
     private void CreateLoginOverlay()

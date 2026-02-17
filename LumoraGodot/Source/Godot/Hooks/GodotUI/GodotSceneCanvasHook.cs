@@ -1,6 +1,7 @@
 using Godot;
 using Lumora.Core;
 using Lumora.Core.GodotUI;
+using Aquamarine.Godot.UI;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
 namespace Aquamarine.Godot.Hooks.GodotUI;
@@ -139,6 +140,7 @@ public class GodotSceneCanvasHook : ComponentHook<GodotSceneCanvas>
         if (_loadedScene is Control control)
         {
             control.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+            UIReadability.ApplyToTree(control);
         }
 
         AquaLogger.Log($"GodotSceneCanvasHook: Loaded scene '{path}'");

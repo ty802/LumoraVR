@@ -5,6 +5,7 @@ using Lumora.Core.Assets;
 using Lumora.Core.Components.Assets;
 using Lumora.Core.GodotUI.Wizards;
 using Lumora.Core.Math;
+using Aquamarine.Godot.UI;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
 namespace Aquamarine.Godot.Hooks.GodotUI;
@@ -44,7 +45,7 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
     {
         base.Initialize();
 
-        var resScale = Owner.ResolutionScale.Value;
+        var resScale = UIReadability.GetReadableResolutionScale(Owner.ResolutionScale.Value);
 
         _viewport = new SubViewport
         {
@@ -88,7 +89,7 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
     {
         if (_viewport == null) return;
 
-        var resScale = Owner.ResolutionScale.Value;
+        var resScale = UIReadability.GetReadableResolutionScale(Owner.ResolutionScale.Value);
         _viewport.Size = new Vector2I(
             (int)(Owner.Size.Value.x * resScale),
             (int)(Owner.Size.Value.y * resScale));
@@ -149,6 +150,7 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
         if (_loadedScene is Control control)
         {
             control.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+            UIReadability.ApplyToTree(control);
         }
 
         CacheSceneNodes();
@@ -260,6 +262,11 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
         foreach (var param in _boundMaterial.Parameters)
         {
             _paramContainer.AddChild(CreateParamRow(param));
+        }
+
+        if (_loadedScene is Control loadedControl)
+        {
+            UIReadability.ApplyToTree(loadedControl);
         }
 
         _isUpdating = false;

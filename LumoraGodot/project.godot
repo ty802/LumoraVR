@@ -36,7 +36,7 @@ project/assembly_name="Aquamarine"
 
 [editor]
 
-run/main_run_args="--Lumora-Debug --xr-mode off"
+run/main_run_args="--Lumora-Debug -desktop --xr-mode off"
 
 [filesystem]
 
@@ -206,6 +206,6 @@ renderer/rendering_method.mobile="forward_plus"
 
 [xr]
 
-openxr/enabled=true
+openxr/enabled=false
 shaders/enabled=true
 openxr/action_map="res://openxr_action_map.tres"

@@ -6,6 +6,7 @@ using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Math;
 using Lumora.Core.Networking.Sync;
+using Aquamarine.Godot.UI;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
 namespace Aquamarine.Godot.Hooks.GodotUI.Inspectors;
@@ -18,9 +19,14 @@ namespace Aquamarine.Godot.Hooks.GodotUI.Inspectors;
 /// </summary>
 public static class SyncMemberEditorBuilder
 {
-    private const int LabelMinWidth = 100;
-    private const int EditorMinWidth = 150;
+    private const int LabelMinWidth = 128;
+    private const int EditorMinWidth = 210;
     private const int IndentWidth = 16;
+    private const int RowMinHeight = 34;
+    private const int EditorFontSize = 14;
+    private const int HeaderFontSize = 16;
+    private const int SmallButtonSize = 30;
+    private const int ComponentSpinMinWidth = 82;
 
     /// <summary>
     /// Create a property row with label and appropriate editor for a sync member.
@@ -52,7 +58,7 @@ public static class SyncMemberEditorBuilder
             var header = new Label();
             header.Text = headerAttr.Text;
             header.AddThemeColorOverride("font_color", new Color(0.8f, 0.8f, 1f));
-            header.AddThemeFontSizeOverride("font_size", 14);
+            header.AddThemeFontSizeOverride("font_size", HeaderFontSize);
             container.AddChild(header);
 
             var separator = new HSeparator();
@@ -70,6 +76,8 @@ public static class SyncMemberEditorBuilder
         // Create standard row
         var row = new HBoxContainer();
         row.Name = $"Row_{name}";
+        row.CustomMinimumSize = new Vector2(0, RowMinHeight);
+        row.AddThemeConstantOverride("separation", 8);
 
         // Add indentation
         if (depth > 0)
@@ -82,8 +90,9 @@ public static class SyncMemberEditorBuilder
         // Label
         var label = new Label();
         label.Text = name;
-        label.CustomMinimumSize = new Vector2(LabelMinWidth - (IndentWidth * depth), 0);
+        label.CustomMinimumSize = new Vector2(Mathf.Max(80, LabelMinWidth - (IndentWidth * depth)), RowMinHeight);
         label.SizeFlagsHorizontal = Control.SizeFlags.Fill;
+        label.AddThemeFontSizeOverride("font_size", EditorFontSize);
         if (tooltipAttr != null)
         {
             label.TooltipText = tooltipAttr.Text;
@@ -94,7 +103,7 @@ public static class SyncMemberEditorBuilder
         var editor = CreateEditor(syncMember, fieldInfo, readOnlyAttr != null);
         if (editor != null)
         {
-            editor.CustomMinimumSize = new Vector2(EditorMinWidth, 0);
+            editor.CustomMinimumSize = new Vector2(EditorMinWidth, RowMinHeight);
             editor.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
             if (tooltipAttr != null)
             {
@@ -107,11 +116,13 @@ public static class SyncMemberEditorBuilder
             // Fallback: show read-only value
             var valueLabel = new Label();
             valueLabel.Text = syncMember.GetValueAsObject()?.ToString() ?? "null";
+            valueLabel.AddThemeFontSizeOverride("font_size", EditorFontSize);
             valueLabel.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
             row.AddChild(valueLabel);
         }
 
         container.AddChild(row);
+        UIReadability.ApplyToTree(container);
         return container;
     }
 
@@ -238,8 +249,9 @@ public static class SyncMemberEditorBuilder
         slider.Editable = !readOnly && field.CanWrite;
 
         var valueLabel = new Label();
-        valueLabel.CustomMinimumSize = new Vector2(50, 0);
+        valueLabel.CustomMinimumSize = new Vector2(64, RowMinHeight);
         valueLabel.HorizontalAlignment = HorizontalAlignment.Right;
+        valueLabel.AddThemeFontSizeOverride("font_size", EditorFontSize);
         UpdateSliderLabel(valueLabel, slider.Value, range.TextFormat);
 
         slider.ValueChanged += (value) =>
@@ -315,6 +327,7 @@ public static class SyncMemberEditorBuilder
         var addBtn = new Button();
         addBtn.Text = "+";
         addBtn.TooltipText = "Add element";
+        addBtn.CustomMinimumSize = new Vector2(SmallButtonSize, SmallButtonSize);
         addBtn.Pressed += () =>
         {
             syncList.AddElement();
@@ -390,6 +403,7 @@ public static class SyncMemberEditorBuilder
             var removeBtn = new Button();
             removeBtn.Text = "X";
             removeBtn.TooltipText = "Remove element";
+            removeBtn.CustomMinimumSize = new Vector2(SmallButtonSize, SmallButtonSize);
             removeBtn.Pressed += () =>
             {
                 syncList.RemoveElement(elementIndex);
@@ -457,6 +471,7 @@ public static class SyncMemberEditorBuilder
         var clearBtn = new Button();
         clearBtn.Text = "X";
         clearBtn.TooltipText = "Clear type";
+        clearBtn.CustomMinimumSize = new Vector2(SmallButtonSize, SmallButtonSize);
         clearBtn.Disabled = readOnly || !field.CanWrite;
         clearBtn.Pressed += () =>
         {
@@ -895,6 +910,7 @@ public static class SyncMemberEditorBuilder
         var clearBtn = new Button();
         clearBtn.Text = "X";
         clearBtn.TooltipText = "Clear reference";
+        clearBtn.CustomMinimumSize = new Vector2(SmallButtonSize, SmallButtonSize);
         clearBtn.Disabled = readOnly;
         clearBtn.Pressed += () =>
         {
@@ -952,7 +968,7 @@ public static class SyncMemberEditorBuilder
         spinBox.AllowLesser = true;
         spinBox.Value = initialValue;
         spinBox.TooltipText = tooltip;
-        spinBox.CustomMinimumSize = new Vector2(60, 0);
+        spinBox.CustomMinimumSize = new Vector2(ComponentSpinMinWidth, RowMinHeight);
         spinBox.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
         spinBox.Editable = !readOnly;
         return spinBox;

@@ -4,6 +4,7 @@ using Lumora.Core.GodotUI;
 using Lumora.Core.Math;
 using System.Collections.Generic;
 using Aquamarine.Source.Input;
+using Aquamarine.Godot.UI;
 using AquaLogger = Lumora.Core.Logging.Logger;
 
 namespace Aquamarine.Godot.Hooks.GodotUI;
@@ -84,7 +85,7 @@ public class DashboardPanelHook : ComponentHook<DashboardPanel>
 
     private void InitializeVRMode()
     {
-        var resScale = Owner.ResolutionScale.Value;
+        var resScale = UIReadability.GetReadableResolutionScale(Owner.ResolutionScale.Value);
 
         // Create SubViewport for VR
         _viewport = new SubViewport();
@@ -150,6 +151,7 @@ public class DashboardPanelHook : ComponentHook<DashboardPanel>
         }
 
         _desktopUI = control;
+        UIReadability.ApplyToTree(control);
 
         _canvasLayer?.AddChild(_desktopUI);
         UpdateDesktopLayout();
@@ -186,6 +188,12 @@ public class DashboardPanelHook : ComponentHook<DashboardPanel>
         }
 
         _viewport?.AddChild(_loadedScene);
+
+        if (_loadedScene is Control loadedControl)
+        {
+            loadedControl.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+            UIReadability.ApplyToTree(loadedControl);
+        }
 
         // Build node registry
         _nodeRegistry.Clear();
@@ -369,7 +377,7 @@ public class DashboardPanelHook : ComponentHook<DashboardPanel>
     {
         if (_viewport == null) return;
 
-        var resScale = Owner.ResolutionScale.Value;
+        var resScale = UIReadability.GetReadableResolutionScale(Owner.ResolutionScale.Value);
         _viewport.Size = new Vector2I(
             (int)(Owner.Size.Value.x * resScale),
             (int)(Owner.Size.Value.y * resScale));

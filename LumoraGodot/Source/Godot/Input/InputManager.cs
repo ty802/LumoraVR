@@ -28,12 +28,12 @@ public partial class InputManager : Node
     public static InputManager Instance { get; private set; }
     public static Vector2 Movement { get; private set; }
     public static bool ActiveMovement => Movement.Length() > 0.05f;
-    public static Vector2 CameraMovement => (MouseMovement * Mathf.Pi * MouseSensitivity) +
+    public static Vector2 CameraMovement => (MouseMovement * MouseSensitivity) +
                                             (global::Godot.Input.GetVector("CameraRight", "CameraLeft", "CameraDown",
                                                 "CameraUp") * Mathf.Pi);
     public static Vector2 MouseMovement { get; private set; }
-    public static float MouseSensitivity = 20f;
-    private static Vector2 _previousMouseMovement;
+    public static float MouseSensitivity = 3f;
+    private static Vector2 _accumulatedMouseMotion;
     private Window _window;
 
     private static bool _movementLocked;
@@ -111,12 +111,13 @@ public partial class InputManager : Node
         {
             Movement = Vector2.Zero;
             MouseMovement = Vector2.Zero;
-            _previousMouseMovement = Vector2.Zero;
+            _accumulatedMouseMotion = Vector2.Zero;
             return;
         }
 
-        MouseMovement -= _previousMouseMovement;
-        _previousMouseMovement = MouseMovement;
+        // Consume accumulated mouse motion from _Input, then reset for next frame
+        MouseMovement = _accumulatedMouseMotion;
+        _accumulatedMouseMotion = Vector2.Zero;
 
         Movement = global::Godot.Input.GetVector("MoveLeft", "MoveRight", "MoveBackward", "MoveForward");
     }
@@ -129,7 +130,9 @@ public partial class InputManager : Node
         // Don't process mouse movement when dashboard is visible
         if (DashboardToggle.IsDashboardVisible) return;
 
-        // Note: Mouse events are forwarded to GodotMouseDriver by LumoraEngineRunner._Input()
-        if (@event is InputEventMouseMotion motion) MouseMovement += -(motion.ScreenRelative / _window.Size.Y);
+        // Accumulate normalized mouse motion (ScreenRelative is in pixels, normalize by window height)
+        // Note: Mouse events are also forwarded to GodotMouseDriver by LumoraEngineRunner._Input()
+        if (@event is InputEventMouseMotion motion)
+            _accumulatedMouseMotion += -(motion.ScreenRelative / _window.Size.Y);
     }
 }

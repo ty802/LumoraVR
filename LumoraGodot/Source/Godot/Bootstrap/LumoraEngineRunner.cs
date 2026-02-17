@@ -20,6 +20,7 @@ using Aquamarine.Source.UI;
 using Lumora.Godot.Input;
 using Aquamarine.Godot.Debug;
 using AquaLogger = Lumora.Core.Logging.Logger;
+using ThreadingMutex = System.Threading.Mutex;
 
 using InspectorInputHandler = Aquamarine.Source.Input.InspectorInputHandler;
 
@@ -34,6 +35,7 @@ public partial class LumoraEngineRunner : Node
     private const string DebugFlag = "--Lumora-Debug";
     private const string DebugConsoleFlag = "--Lumora-DebugConsole";
     private const string DebugConsoleScenePath = "res://Scenes/UI/Debug/DebugWindow.tscn";
+    private const string DebugConsoleMutexName = "Lumora.DebugConsole.SingleInstance";
     private const double DebugPerfSendIntervalSec = 0.25;
     private const double DebugMemorySendIntervalSec = 0.5;
 
@@ -67,6 +69,9 @@ public partial class LumoraEngineRunner : Node
     private double _debugPerfTimer;
     private double _debugMemoryTimer;
     private InitializationPhase _currentPhase = InitializationPhase.EnvironmentSetup;
+    private XrLaunchMode _xrLaunchMode = XrLaunchMode.Desktop;
+    private ThreadingMutex? _debugConsoleInstanceMutex;
+    private bool _ownsDebugConsoleLock;
     private static readonly Dictionary<Type, long> ComponentMemoryEstimateCache = new();
 
     // ===== SCENE REFERENCES =====
@@ -87,10 +92,28 @@ public partial class LumoraEngineRunner : Node
         Ready
     }
 
+    /// <summary>
+    /// XR startup mode resolved from command-line args.
+    /// Defaults to desktop to avoid launching OpenXR runtimes unexpectedly.
+    /// </summary>
+    private enum XrLaunchMode
+    {
+        Desktop,
+        Auto,
+        Vr
+    }
+
     public override void _Ready()
     {
         if (HasCommandLineFlag(DebugConsoleFlag))
         {
+            if (!TryAcquireDebugConsoleLock())
+            {
+                AquaLogger.Log("LumoraEngineRunner: Debug console already running, skipping duplicate launch");
+                GetTree().Quit();
+                return;
+            }
+
             AquaLogger.Log("LumoraEngineRunner: Starting in debug console mode");
             CallDeferred(nameof(SwitchToDebugConsoleScene));
             return;
@@ -124,15 +147,7 @@ public partial class LumoraEngineRunner : Node
 
     private static bool HasCommandLineFlag(string flag)
     {
-        foreach (var arg in OS.GetCmdlineArgs())
-        {
-            if (arg.Trim().Equals(flag, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-        }
-
-        foreach (var arg in OS.GetCmdlineUserArgs())
+        foreach (var arg in GetAllCommandLineArgs())
         {
             if (arg.Trim().Equals(flag, StringComparison.OrdinalIgnoreCase))
             {
@@ -143,10 +158,90 @@ public partial class LumoraEngineRunner : Node
         return false;
     }
 
+    private static IEnumerable<string> GetAllCommandLineArgs()
+    {
+        foreach (var arg in OS.GetCmdlineArgs())
+        {
+            yield return arg;
+        }
+
+        foreach (var arg in OS.GetCmdlineUserArgs())
+        {
+            yield return arg;
+        }
+    }
+
+    private static XrLaunchMode ParseXrModeValue(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return XrLaunchMode.Desktop;
+        }
+
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "off" => XrLaunchMode.Desktop,
+            "desktop" => XrLaunchMode.Desktop,
+            "2d" => XrLaunchMode.Desktop,
+            "auto" => XrLaunchMode.Auto,
+            "on" => XrLaunchMode.Vr,
+            "vr" => XrLaunchMode.Vr,
+            "openxr" => XrLaunchMode.Vr,
+            _ => XrLaunchMode.Desktop
+        };
+    }
+
+    private static XrLaunchMode ResolveXrLaunchMode()
+    {
+        var mode = XrLaunchMode.Desktop;
+        var args = GetAllCommandLineArgs().ToArray();
+
+        for (int i = 0; i < args.Length; i++)
+        {
+            var arg = args[i]?.Trim();
+            if (string.IsNullOrWhiteSpace(arg))
+            {
+                continue;
+            }
+
+            var normalized = arg.ToLowerInvariant();
+            if (normalized is "-desktop" or "--desktop")
+            {
+                mode = XrLaunchMode.Desktop;
+                continue;
+            }
+
+            if (normalized is "-vr" or "--vr")
+            {
+                mode = XrLaunchMode.Vr;
+                continue;
+            }
+
+            if (normalized.StartsWith("--xr-mode=", StringComparison.Ordinal))
+            {
+                mode = ParseXrModeValue(normalized.Substring("--xr-mode=".Length));
+                continue;
+            }
+
+            if (normalized == "--xr-mode" && i + 1 < args.Length)
+            {
+                mode = ParseXrModeValue(args[++i]);
+            }
+        }
+
+        return mode;
+    }
+
     private void LaunchDebugConsoleProcess()
     {
         try
         {
+            if (IsDebugConsoleRunning())
+            {
+                AquaLogger.Log("DebugConsole: already running, not launching a duplicate process");
+                return;
+            }
+
             var executablePath = OS.GetExecutablePath();
             if (string.IsNullOrWhiteSpace(executablePath))
             {
@@ -163,6 +258,9 @@ public partial class LumoraEngineRunner : Node
 
             args.Add("--");
             args.Add(DebugConsoleFlag);
+            args.Add("-desktop");
+            args.Add("--xr-mode");
+            args.Add("off");
 
             var processId = OS.CreateProcess(executablePath, args.ToArray(), false);
             if (processId > 0)
@@ -178,6 +276,46 @@ public partial class LumoraEngineRunner : Node
         {
             AquaLogger.Error($"DebugConsole: process launch exception: {ex.Message}");
         }
+    }
+
+    private bool TryAcquireDebugConsoleLock()
+    {
+        try
+        {
+            _debugConsoleInstanceMutex = new ThreadingMutex(true, DebugConsoleMutexName, out var createdNew);
+            _ownsDebugConsoleLock = createdNew;
+
+            if (!createdNew)
+            {
+                _debugConsoleInstanceMutex.Dispose();
+                _debugConsoleInstanceMutex = null;
+            }
+
+            return createdNew;
+        }
+        catch (Exception ex)
+        {
+            AquaLogger.Warn($"DebugConsole: failed to create single-instance lock: {ex.Message}");
+            return true;
+        }
+    }
+
+    private static bool IsDebugConsoleRunning()
+    {
+        try
+        {
+            if (ThreadingMutex.TryOpenExisting(DebugConsoleMutexName, out var existingMutex))
+            {
+                existingMutex.Dispose();
+                return true;
+            }
+        }
+        catch
+        {
+            // Best effort only; if this check fails, allow launch.
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -276,8 +414,10 @@ public partial class LumoraEngineRunner : Node
         // Prevent screen sleep
         DisplayServer.ScreenSetKeepOn(true);
 
-        var args = OS.GetCmdlineArgs();
+        var args = GetAllCommandLineArgs().ToArray();
         AquaLogger.Log($"Command-line args: {string.Join(" ", args)}");
+        _xrLaunchMode = ResolveXrLaunchMode();
+        AquaLogger.Log($"XR launch mode: {_xrLaunchMode}");
 
         await Task.Delay(150); // Artificial delay to show phase message
     }
@@ -292,6 +432,14 @@ public partial class LumoraEngineRunner : Node
         AquaLogger.Log("[Phase 2/6] XR Detection");
         _loadingScreen?.UpdatePhase(1); // Phase index 1
 
+        GetViewport().UseXR = false;
+        if (_xrLaunchMode == XrLaunchMode.Desktop)
+        {
+            AquaLogger.Log("XR Device: Disabled (desktop launch mode)");
+            await Task.Delay(120);
+            return;
+        }
+
         var xrInterface = XRServer.FindInterface("OpenXR");
         if (xrInterface != null)
         {
@@ -301,7 +449,14 @@ public partial class LumoraEngineRunner : Node
                 AquaLogger.Log("XR: OpenXR interface found but not initialized. Attempting Initialize()...");
                 if (!xrInterface.Initialize())
                 {
-                    AquaLogger.Warn("XR: OpenXR Initialize() failed - falling back to screen mode");
+                    if (_xrLaunchMode == XrLaunchMode.Vr)
+                    {
+                        AquaLogger.Warn("XR: OpenXR Initialize() failed while VR mode was requested - falling back to screen mode");
+                    }
+                    else
+                    {
+                        AquaLogger.Warn("XR: OpenXR Initialize() failed - falling back to screen mode");
+                    }
                     return;
                 }
             }
@@ -320,7 +475,14 @@ public partial class LumoraEngineRunner : Node
         }
         else
         {
-            AquaLogger.Log("XR Device: None (Screen Mode)");
+            if (_xrLaunchMode == XrLaunchMode.Vr)
+            {
+                AquaLogger.Warn("XR: VR mode requested, but OpenXR interface was not found. Running in screen mode.");
+            }
+            else
+            {
+                AquaLogger.Log("XR Device: None (Screen Mode)");
+            }
         }
 
         await Task.Delay(120); // Artificial delay to show phase message
@@ -979,6 +1141,22 @@ public partial class LumoraEngineRunner : Node
     public override void _ExitTree()
     {
         AquaLogger.Log("LumoraEngineRunner: Shutting down...");
+
+        if (_ownsDebugConsoleLock && _debugConsoleInstanceMutex != null)
+        {
+            try
+            {
+                _debugConsoleInstanceMutex.ReleaseMutex();
+            }
+            catch
+            {
+                // No-op: lock may already be released during shutdown.
+            }
+        }
+
+        _debugConsoleInstanceMutex?.Dispose();
+        _debugConsoleInstanceMutex = null;
+        _ownsDebugConsoleLock = false;
 
         _debugUdpSender?.Dispose();
         _engine?.Dispose();

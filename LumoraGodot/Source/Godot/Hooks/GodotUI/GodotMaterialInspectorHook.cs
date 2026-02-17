@@ -1,4 +1,6 @@
 using System.Collections.Generic;
+using System;
+using System.Linq;
 using Godot;
 using Lumora.Core;
 using Lumora.Core.Assets;
@@ -20,6 +22,7 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
 {
     private const string ContainerPath = "MainPanel/VBox/Content/Scroll/VBox";
     private const string TitlePath = "MainPanel/VBox/Header/HBox/Title";
+    private const string CloseButtonPath = "MainPanel/VBox/Header/HBox/CloseButton";
     private const string LabelTemplatePath = "MainPanel/VBox/Content/Scroll/VBox/Row_0/Label";
 
     private SubViewport? _viewport;
@@ -27,14 +30,23 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
     private QuadMesh? _quadMesh;
     private StandardMaterial3D? _material;
     private Node? _loadedScene;
+    private Vector2I _lastViewportSize = Vector2I.Zero;
+
+    private Area3D? _collisionArea;
+    private CollisionShape3D? _collisionShape;
+    private BoxShape3D? _boxShape;
+
     private VBoxContainer? _paramContainer;
     private Label? _titleLabel;
+    private Button? _closeButton;
     private Font? _labelFont;
     private int? _labelFontSize;
     private Color? _labelFontColor;
     private CustomShaderMaterial? _boundMaterial;
     private Lumora.Core.Networking.Sync.ISyncList? _boundParamList;
     private bool _isUpdating;
+    private string _searchQuery = string.Empty;
+    private readonly Dictionary<string, float4> _defaultValues = new(StringComparer.Ordinal);
 
     public static IHook<GodotMaterialInspector> Constructor()
     {
@@ -56,10 +68,11 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
             TransparentBg = true,
             HandleInputLocally = true,
             GuiDisableInput = false,
-            RenderTargetUpdateMode = SubViewport.UpdateMode.Always,
+            RenderTargetUpdateMode = SubViewport.UpdateMode.WhenVisible,
             CanvasItemDefaultTextureFilter = Viewport.DefaultCanvasItemTextureFilter.Linear,
-            Msaa2D = Viewport.Msaa.Msaa4X
+            Msaa2D = Viewport.Msaa.Disabled
         };
+        _lastViewportSize = _viewport.Size;
 
         _meshInstance = new MeshInstance3D { Name = "MaterialInspectorQuad" };
         _quadMesh = new QuadMesh();
@@ -78,6 +91,7 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
 
         attachedNode.AddChild(_viewport);
         attachedNode.AddChild(_meshInstance);
+        CreateCollisionArea();
 
         LoadScene();
         BindMaterial(Owner.Material.Target);
@@ -90,13 +104,17 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
         if (_viewport == null) return;
 
         var resScale = UIReadability.GetReadableResolutionScale(Owner.ResolutionScale.Value);
-        _viewport.Size = new Vector2I(
+        var desiredSize = new Vector2I(
             (int)(Owner.Size.Value.x * resScale),
             (int)(Owner.Size.Value.y * resScale));
+        if (_lastViewportSize != desiredSize)
+        {
+            _viewport.Size = desiredSize;
+            _lastViewportSize = desiredSize;
+            UpdateQuadSize();
+        }
 
-        UpdateQuadSize();
-
-        if (_material != null)
+        if (_material != null && _material.AlbedoTexture != _viewport.GetTexture())
         {
             _material.AlbedoTexture = _viewport.GetTexture();
         }
@@ -161,6 +179,11 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
     {
         _paramContainer = _loadedScene?.GetNodeOrNull<VBoxContainer>(ContainerPath);
         _titleLabel = _loadedScene?.GetNodeOrNull<Label>(TitlePath);
+        _closeButton = _loadedScene?.GetNodeOrNull<Button>(CloseButtonPath);
+        if (_closeButton != null)
+        {
+            _closeButton.Pressed += () => Owner.HandleButtonPress(CloseButtonPath);
+        }
 
         var templateLabel = _loadedScene?.GetNodeOrNull<Label>(LabelTemplatePath);
         if (templateLabel != null)
@@ -191,6 +214,8 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
 
         UnbindMaterial();
         _boundMaterial = material;
+        _searchQuery = string.Empty;
+        CaptureDefaultValues();
 
         if (_boundMaterial != null)
         {
@@ -218,15 +243,18 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
             _boundParamList = null;
         }
         _boundMaterial = null;
+        _defaultValues.Clear();
     }
 
     private void OnParametersChanged(Lumora.Core.Networking.Sync.SyncElementList<ShaderUniformParam> list, int index, int count)
     {
+        EnsureDefaultValues();
         RebuildUI();
     }
 
     private void OnParametersCleared(Lumora.Core.Networking.Sync.ISyncList list)
     {
+        _defaultValues.Clear();
         RebuildUI();
     }
 
@@ -252,6 +280,8 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
             return;
         }
 
+        _paramContainer.AddChild(CreateToolbar());
+
         if (_boundMaterial.Parameters.Count == 0)
         {
             _paramContainer.AddChild(CreateEmptyLabel("No shader uniforms."));
@@ -259,7 +289,20 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
             return;
         }
 
-        foreach (var param in _boundMaterial.Parameters)
+        var rows = _boundMaterial.Parameters
+            .Where(param => string.IsNullOrWhiteSpace(_searchQuery) ||
+                            param.Name.Value.Contains(_searchQuery, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(param => param.Name.Value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (rows.Count == 0)
+        {
+            _paramContainer.AddChild(CreateEmptyLabel("No matching uniforms."));
+            _isUpdating = false;
+            return;
+        }
+
+        foreach (var param in rows)
         {
             _paramContainer.AddChild(CreateParamRow(param));
         }
@@ -270,6 +313,38 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
         }
 
         _isUpdating = false;
+    }
+
+    private Control CreateToolbar()
+    {
+        var toolbar = new HBoxContainer();
+        toolbar.AddThemeConstantOverride("separation", 6);
+        toolbar.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+
+        var search = new LineEdit
+        {
+            PlaceholderText = "Search uniforms...",
+            Text = _searchQuery
+        };
+        search.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        search.TextChanged += value =>
+        {
+            if (_isUpdating) return;
+            _searchQuery = value ?? string.Empty;
+            RebuildUI();
+        };
+        toolbar.AddChild(search);
+
+        var resetAll = new Button { Text = "Reset All" };
+        resetAll.Pressed += () =>
+        {
+            if (_isUpdating) return;
+            ResetAllParameters();
+            RebuildUI();
+        };
+        toolbar.AddChild(resetAll);
+
+        return toolbar;
     }
 
     private void ClearContainer(VBoxContainer container)
@@ -299,10 +374,12 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
         var row = new HBoxContainer();
         row.AddThemeConstantOverride("separation", 6);
         row.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        row.CustomMinimumSize = new Vector2(0, 28);
 
         var nameLabel = CreateLabel(param.Name.Value);
-        nameLabel.CustomMinimumSize = new Vector2(120, 0);
+        nameLabel.CustomMinimumSize = new Vector2(140, 0);
         nameLabel.SizeFlagsHorizontal = Control.SizeFlags.ShrinkBegin;
+        nameLabel.TooltipText = $"{param.Type.Value}" + (param.HasRange.Value ? $" [{param.Range.Value.x:0.###}..{param.Range.Value.y:0.###}]" : string.Empty);
         row.AddChild(nameLabel);
 
         var editor = CreateEditor(param);
@@ -311,6 +388,20 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
             editor.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
             row.AddChild(editor);
         }
+
+        var reset = new Button
+        {
+            Text = "R",
+            CustomMinimumSize = new Vector2(24, 24),
+            TooltipText = "Reset parameter to default"
+        };
+        reset.Pressed += () =>
+        {
+            if (_isUpdating) return;
+            ResetParameter(param);
+            RebuildUI();
+        };
+        row.AddChild(reset);
 
         return row;
     }
@@ -337,6 +428,11 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
 
     private Control CreateFloatEditor(ShaderUniformParam param)
     {
+        if (param.HasRange.Value)
+        {
+            return CreateRangedNumericEditor(param, isInt: false);
+        }
+
         var spin = CreateSpinBox(param, param.Value.Value.x, isInt: false);
         spin.ValueChanged += value =>
         {
@@ -349,6 +445,11 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
 
     private Control CreateIntEditor(ShaderUniformParam param)
     {
+        if (param.HasRange.Value)
+        {
+            return CreateRangedNumericEditor(param, isInt: true);
+        }
+
         var spin = CreateSpinBox(param, param.Value.Value.x, isInt: true);
         spin.Step = 1;
         spin.ValueChanged += value =>
@@ -358,6 +459,60 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
             param.Value.Value = new float4((float)value, current.y, current.z, current.w);
         };
         return spin;
+    }
+
+    private Control CreateRangedNumericEditor(ShaderUniformParam param, bool isInt)
+    {
+        var container = new HBoxContainer();
+        container.AddThemeConstantOverride("separation", 4);
+
+        var min = param.Range.Value.x;
+        var max = param.Range.Value.y;
+        var step = isInt ? 1f : 0.01f;
+        var value = param.Value.Value.x;
+
+        var slider = new HSlider
+        {
+            MinValue = min,
+            MaxValue = max,
+            Step = step,
+            Value = value,
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill
+        };
+
+        var spin = CreateSpinBox(param, value, isInt);
+        spin.MinValue = min;
+        spin.MaxValue = max;
+        spin.Step = step;
+        spin.CustomMinimumSize = new Vector2(74, 0);
+
+        bool internalSync = false;
+
+        slider.ValueChanged += raw =>
+        {
+            if (_isUpdating || internalSync) return;
+            internalSync = true;
+            var mapped = isInt ? (float)Math.Round(raw) : (float)raw;
+            spin.Value = mapped;
+            var current = param.Value.Value;
+            param.Value.Value = new float4(mapped, current.y, current.z, current.w);
+            internalSync = false;
+        };
+
+        spin.ValueChanged += raw =>
+        {
+            if (_isUpdating || internalSync) return;
+            internalSync = true;
+            var mapped = isInt ? (float)Math.Round(raw) : (float)raw;
+            slider.Value = mapped;
+            var current = param.Value.Value;
+            param.Value.Value = new float4(mapped, current.y, current.z, current.w);
+            internalSync = false;
+        };
+
+        container.AddChild(slider);
+        container.AddChild(spin);
+        return container;
     }
 
     private Control CreateBoolEditor(ShaderUniformParam param)
@@ -398,20 +553,29 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
 
     private Control CreateColorEditor(ShaderUniformParam param)
     {
-        var picker = new ColorPickerButton
+        var container = new HBoxContainer();
+        container.AddThemeConstantOverride("separation", 4);
+
+        var swatch = new ColorRect
         {
-            EditAlpha = true,
-            Color = new Color(param.Value.Value.x, param.Value.Value.y, param.Value.Value.z, param.Value.Value.w),
-            CustomMinimumSize = new Vector2(80, 0)
+            CustomMinimumSize = new Vector2(16, 16),
+            Color = new Color(param.Value.Value.x, param.Value.Value.y, param.Value.Value.z, param.Value.Value.w)
+        };
+        container.AddChild(swatch);
+
+        var picker = new Button
+        {
+            Text = "Pick",
+            CustomMinimumSize = new Vector2(96, 0)
+        };
+        picker.Pressed += () =>
+        {
+            OpenColorPickerPanel(param);
+            swatch.Color = new Color(param.Value.Value.x, param.Value.Value.y, param.Value.Value.z, param.Value.Value.w);
         };
 
-        picker.ColorChanged += color =>
-        {
-            if (_isUpdating) return;
-            param.Value.Value = new float4(color.R, color.G, color.B, color.A);
-        };
-
-        return picker;
+        container.AddChild(picker);
+        return container;
     }
 
     private Control CreateTextureEditor(ShaderUniformParam param)
@@ -511,6 +675,164 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
         var size = Owner.Size.Value;
         var ppu = Owner.PixelsPerUnit.Value;
         _quadMesh.Size = new Vector2(size.x / ppu, size.y / ppu);
+        UpdateCollisionSize();
+    }
+
+    private void CreateCollisionArea()
+    {
+        _collisionArea = new Area3D();
+        _collisionArea.Name = "MaterialInspectorCollision";
+        _collisionArea.Monitorable = true;
+        _collisionArea.Monitoring = false;
+        _collisionArea.CollisionLayer = 1u << 3;
+        _collisionArea.CollisionMask = 0;
+
+        _collisionShape = new CollisionShape3D();
+        _boxShape = new BoxShape3D();
+        UpdateCollisionSize();
+        _collisionShape.Shape = _boxShape;
+
+        _collisionArea.AddChild(_collisionShape);
+        attachedNode.AddChild(_collisionArea);
+    }
+
+    private void UpdateCollisionSize()
+    {
+        if (_boxShape == null) return;
+
+        var size = Owner.Size.Value;
+        var ppu = Owner.PixelsPerUnit.Value;
+        _boxShape.Size = new Vector3(size.x / ppu, size.y / ppu, 0.01f);
+    }
+
+    private void OpenColorPickerPanel(ShaderUniformParam param)
+    {
+        if (_boundMaterial == null || string.IsNullOrWhiteSpace(param.Name.Value))
+        {
+            return;
+        }
+
+        var parentSlot = Owner.Slot.Parent ?? Owner.Slot;
+        var slotName = $"MaterialColorPicker_{SanitizeName(param.Name.Value)}";
+
+        var pickerSlot = parentSlot.FindChild(slotName, recursive: false);
+        var picker = pickerSlot?.GetComponent<GodotMaterialColorPicker>();
+        if (picker == null)
+        {
+            pickerSlot = parentSlot.AddSlot(slotName);
+            picker = pickerSlot.AttachComponent<GodotMaterialColorPicker>();
+        }
+
+        picker.Material.Target = _boundMaterial;
+        picker.ParameterName.Value = param.Name.Value;
+        picker.PixelsPerUnit.Value = Owner.PixelsPerUnit.Value;
+
+        if (pickerSlot != null)
+        {
+            var offset = Owner.Slot.Right * 0.34f + Owner.Slot.Up * 0.06f + Owner.Slot.Forward * 0.03f;
+            pickerSlot.GlobalPosition = Owner.Slot.GlobalPosition + offset;
+            pickerSlot.GlobalRotation = Owner.Slot.GlobalRotation;
+        }
+    }
+
+    private static string SanitizeName(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return "Color";
+        }
+
+        Span<char> chars = stackalloc char[raw.Length];
+        int len = 0;
+        foreach (var c in raw)
+        {
+            if (char.IsLetterOrDigit(c) || c == '_')
+            {
+                chars[len++] = c;
+            }
+            else if (len == 0 || chars[len - 1] != '_')
+            {
+                chars[len++] = '_';
+            }
+        }
+
+        if (len == 0)
+        {
+            return "Color";
+        }
+
+        return new string(chars.Slice(0, len));
+    }
+
+    private void CaptureDefaultValues()
+    {
+        _defaultValues.Clear();
+        if (_boundMaterial == null) return;
+
+        foreach (var param in _boundMaterial.Parameters)
+        {
+            var name = param.Name.Value;
+            if (string.IsNullOrEmpty(name) || _defaultValues.ContainsKey(name))
+            {
+                continue;
+            }
+            _defaultValues[name] = param.Value.Value;
+        }
+    }
+
+    private void EnsureDefaultValues()
+    {
+        if (_boundMaterial == null) return;
+
+        foreach (var param in _boundMaterial.Parameters)
+        {
+            var name = param.Name.Value;
+            if (string.IsNullOrEmpty(name) || _defaultValues.ContainsKey(name))
+            {
+                continue;
+            }
+            _defaultValues[name] = param.Value.Value;
+        }
+    }
+
+    private void ResetAllParameters()
+    {
+        if (_boundMaterial == null) return;
+
+        EnsureDefaultValues();
+
+        foreach (var param in _boundMaterial.Parameters)
+        {
+            ResetParameter(param);
+        }
+    }
+
+    private void ResetParameter(ShaderUniformParam param)
+    {
+        if (param.Type.Value == ShaderUniformType.Texture2D)
+        {
+            param.Texture.Target = null;
+            return;
+        }
+
+        var name = param.Name.Value;
+        if (!string.IsNullOrEmpty(name) && _defaultValues.TryGetValue(name, out var def))
+        {
+            param.Value.Value = def;
+            return;
+        }
+
+        // Fallback if defaults are unavailable.
+        param.Value.Value = param.Type.Value switch
+        {
+            ShaderUniformType.Bool => new float4(0f, 0f, 0f, 0f),
+            ShaderUniformType.Int => new float4(0f, 0f, 0f, 0f),
+            ShaderUniformType.Float => new float4(0f, 0f, 0f, 0f),
+            ShaderUniformType.Vec2 => new float4(0f, 0f, 0f, 0f),
+            ShaderUniformType.Vec3 => new float4(0f, 0f, 0f, 0f),
+            ShaderUniformType.Vec4 => new float4(0f, 0f, 0f, 0f),
+            _ => param.Value.Value
+        };
     }
 
     public override void Destroy(bool destroyingWorld)
@@ -520,22 +842,31 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
         if (!destroyingWorld)
         {
             _loadedScene?.QueueFree();
+            _collisionArea?.QueueFree();
             _viewport?.QueueFree();
             _meshInstance?.QueueFree();
             _material?.Dispose();
             _quadMesh?.Dispose();
+            _boxShape?.Dispose();
         }
 
         _loadedScene = null;
+        _collisionArea = null;
+        _collisionShape = null;
+        _boxShape = null;
         _viewport = null;
         _meshInstance = null;
         _material = null;
         _quadMesh = null;
+        _lastViewportSize = Vector2I.Zero;
         _paramContainer = null;
         _titleLabel = null;
+        _closeButton = null;
         _labelFont = null;
         _labelFontSize = null;
         _labelFontColor = null;
+        _defaultValues.Clear();
+        _searchQuery = string.Empty;
 
         base.Destroy(destroyingWorld);
     }

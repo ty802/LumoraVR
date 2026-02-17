@@ -47,7 +47,7 @@ public class GodotSceneCanvasHook : ComponentHook<GodotSceneCanvas>
         _viewport.TransparentBg = Owner.TransparentBackground.Value;
         _viewport.HandleInputLocally = true;
         _viewport.GuiDisableInput = !Owner.Interactive.Value;
-        _viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Always;
+        _viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.WhenVisible;
 
         // Create mesh to display the viewport texture
         _meshInstance = new MeshInstance3D();

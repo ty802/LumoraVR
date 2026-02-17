@@ -38,6 +38,7 @@ public class DashboardPanelHook : ComponentHook<DashboardPanel>
     private static DashboardPanelHook? _activeDashboard;
     public static DashboardPanelHook? ActiveDashboard => _activeDashboard;
     private bool _isVRMode = false;
+    private Vector2I _lastViewportSize = Vector2I.Zero;
 
     public static IHook<DashboardPanel> Constructor()
     {
@@ -93,12 +94,13 @@ public class DashboardPanelHook : ComponentHook<DashboardPanel>
         _viewport.Size = new Vector2I(
             (int)(Owner.Size.Value.x * resScale),
             (int)(Owner.Size.Value.y * resScale));
+        _lastViewportSize = _viewport.Size;
         _viewport.TransparentBg = true;
         _viewport.HandleInputLocally = true;
         _viewport.GuiDisableInput = false;
-        _viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Always;
+        _viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.WhenVisible;
         _viewport.CanvasItemDefaultTextureFilter = Viewport.DefaultCanvasItemTextureFilter.Linear;
-        _viewport.Msaa2D = Viewport.Msaa.Msaa4X;
+        _viewport.Msaa2D = Viewport.Msaa.Disabled;
 
         // Create mesh for 3D display
         _meshInstance = new MeshInstance3D();
@@ -378,18 +380,22 @@ public class DashboardPanelHook : ComponentHook<DashboardPanel>
         if (_viewport == null) return;
 
         var resScale = UIReadability.GetReadableResolutionScale(Owner.ResolutionScale.Value);
-        _viewport.Size = new Vector2I(
+        var desiredSize = new Vector2I(
             (int)(Owner.Size.Value.x * resScale),
             (int)(Owner.Size.Value.y * resScale));
-        UpdateQuadSize();
+        if (_lastViewportSize != desiredSize)
+        {
+            _viewport.Size = desiredSize;
+            _lastViewportSize = desiredSize;
+            UpdateQuadSize();
+        }
 
-        if (_material != null)
+        if (_material != null && _material.AlbedoTexture != _viewport.GetTexture())
         {
             _material.AlbedoTexture = _viewport.GetTexture();
         }
 
         UpdateVisibility();
-        RefreshUIData();
     }
 
     public override void Destroy(bool destroyingWorld)
@@ -425,6 +431,7 @@ public class DashboardPanelHook : ComponentHook<DashboardPanel>
         _meshInstance = null;
         _material = null;
         _quadMesh = null;
+        _lastViewportSize = Vector2I.Zero;
 
         base.Destroy(destroyingWorld);
     }

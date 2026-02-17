@@ -45,7 +45,7 @@ public class GodotUICanvasHook : ComponentHook<GodotUICanvas>
         _viewport.TransparentBg = Owner.TransparentBackground.Value;
         _viewport.HandleInputLocally = true;
         _viewport.GuiDisableInput = !Owner.Interactive.Value;
-        _viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Always;
+        _viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.WhenVisible;
 
         // Set background color if not transparent
         if (!Owner.TransparentBackground.Value)

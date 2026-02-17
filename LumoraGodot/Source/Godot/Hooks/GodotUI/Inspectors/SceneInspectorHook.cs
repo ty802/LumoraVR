@@ -91,9 +91,9 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
             TransparentBg = true,
             HandleInputLocally = true,
             GuiDisableInput = false,
-            RenderTargetUpdateMode = SubViewport.UpdateMode.Always,
+            RenderTargetUpdateMode = SubViewport.UpdateMode.WhenVisible,
             CanvasItemDefaultTextureFilter = Viewport.DefaultCanvasItemTextureFilter.Linear,
-            Msaa2D = Viewport.Msaa.Msaa4X
+            Msaa2D = Viewport.Msaa.Disabled
         };
 
         // Create mesh for 3D display

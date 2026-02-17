@@ -1,0 +1,153 @@
+[gd_scene load_steps=5 format=3 uid="uid://dqjgh10yxr6fh"]
+
+[ext_resource type="FontFile" uid="uid://dne06dcdmx5hj" path="res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf" id="1_font"]
+
+[sub_resource type="StyleBoxFlat" id="panel_bg"]
+bg_color = Color(0.08, 0.08, 0.1, 0.98)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.2, 0.18, 0.35, 0.8)
+corner_radius_top_left = 12
+corner_radius_top_right = 12
+corner_radius_bottom_right = 12
+corner_radius_bottom_left = 12
+
+[sub_resource type="StyleBoxFlat" id="header_bg"]
+bg_color = Color(0.12, 0.1, 0.18, 1)
+corner_radius_top_left = 10
+corner_radius_top_right = 10
+
+[sub_resource type="StyleBoxFlat" id="content_bg"]
+bg_color = Color(0.06, 0.06, 0.08, 1)
+corner_radius_bottom_right = 10
+corner_radius_bottom_left = 10
+
+[node name="MaterialColorPicker" type="Control"]
+custom_minimum_size = Vector2(320, 420)
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="MainPanel" type="Panel" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_styles/panel = SubResource("panel_bg")
+
+[node name="VBox" type="VBoxContainer" parent="MainPanel"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 8.0
+offset_top = 8.0
+offset_right = -8.0
+offset_bottom = -8.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = 0
+
+[node name="Header" type="Panel" parent="MainPanel/VBox"]
+custom_minimum_size = Vector2(0, 34)
+layout_mode = 2
+theme_override_styles/panel = SubResource("header_bg")
+
+[node name="HBox" type="HBoxContainer" parent="MainPanel/VBox/Header"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 12.0
+offset_right = -8.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = 8
+
+[node name="Title" type="Label" parent="MainPanel/VBox/Header/HBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.47, 0.37, 0.94, 1)
+theme_override_fonts/font = ExtResource("1_font")
+theme_override_font_sizes/font_size = 12
+text = "Color Picker"
+vertical_alignment = 1
+
+[node name="CloseButton" type="Button" parent="MainPanel/VBox/Header/HBox"]
+custom_minimum_size = Vector2(24, 24)
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 0.3, 0.3, 1)
+theme_override_fonts/font = ExtResource("1_font")
+theme_override_font_sizes/font_size = 12
+text = "X"
+
+[node name="Content" type="Panel" parent="MainPanel/VBox"]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_styles/panel = SubResource("content_bg")
+
+[node name="Margin" type="MarginContainer" parent="MainPanel/VBox/Content"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 8.0
+offset_top = 8.0
+offset_right = -8.0
+offset_bottom = -8.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="VBox" type="VBoxContainer" parent="MainPanel/VBox/Content/Margin"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+theme_override_constants/separation = 8
+
+[node name="UniformName" type="Label" parent="MainPanel/VBox/Content/Margin/VBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.72, 0.72, 0.8, 1)
+theme_override_fonts/font = ExtResource("1_font")
+theme_override_font_sizes/font_size = 11
+text = "Uniform:"
+
+[node name="ColorPicker" type="ColorPicker" parent="MainPanel/VBox/Content/Margin/VBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+edit_alpha = true
+
+[node name="PreviewRow" type="HBoxContainer" parent="MainPanel/VBox/Content/Margin/VBox"]
+custom_minimum_size = Vector2(0, 24)
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="PreviewLabel" type="Label" parent="MainPanel/VBox/Content/Margin/VBox/PreviewRow"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.7, 0.7, 0.8, 1)
+theme_override_fonts/font = ExtResource("1_font")
+theme_override_font_sizes/font_size = 11
+text = "Current"
+vertical_alignment = 1
+
+[node name="Swatch" type="ColorRect" parent="MainPanel/VBox/Content/Margin/VBox/PreviewRow"]
+custom_minimum_size = Vector2(28, 16)
+layout_mode = 2
+color = Color(1, 1, 1, 1)
+
+[node name="Value" type="Label" parent="MainPanel/VBox/Content/Margin/VBox/PreviewRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.95, 0.95, 1, 1)
+theme_override_fonts/font = ExtResource("1_font")
+theme_override_font_sizes/font_size = 11
+text = "#FFFFFFFF"
+text_overrun_behavior = 3
+vertical_alignment = 1

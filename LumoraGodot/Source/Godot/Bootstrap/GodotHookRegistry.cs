@@ -48,6 +48,7 @@ public static class GodotHookRegistry
         World.HookTypes.Register<GodotUIPanel, Aquamarine.Godot.Hooks.GodotUI.GodotUIPanelHook>();
         World.HookTypes.Register<DashboardPanel, Aquamarine.Godot.Hooks.GodotUI.DashboardPanelHook>();
         World.HookTypes.Register<GodotMaterialInspector, Aquamarine.Godot.Hooks.GodotUI.GodotMaterialInspectorHook>();
+        World.HookTypes.Register<GodotMaterialColorPicker, Aquamarine.Godot.Hooks.GodotUI.GodotMaterialColorPickerHook>();
         World.HookTypes.Register<Nameplate, Aquamarine.Godot.Hooks.NameplateHook>();
 
         // Inspector hooks

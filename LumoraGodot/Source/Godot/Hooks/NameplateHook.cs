@@ -43,9 +43,9 @@ public class NameplateHook : ComponentHook<Nameplate>
         _viewport.TransparentBg = true;
         _viewport.HandleInputLocally = false;
         _viewport.GuiDisableInput = true;
-        _viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Always;
+        _viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.WhenVisible;
         _viewport.CanvasItemDefaultTextureFilter = Viewport.DefaultCanvasItemTextureFilter.Linear;
-        _viewport.Msaa2D = Viewport.Msaa.Msaa4X;
+        _viewport.Msaa2D = Viewport.Msaa.Disabled;
 
         // Create quad mesh for 3D display
         _meshInstance = new MeshInstance3D();

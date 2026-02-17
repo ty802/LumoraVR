@@ -1,10 +1,15 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+using System.Reflection;
 using System.Threading.Tasks;
 using Godot;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Input;
+using Lumora.Core.Math;
+using Lumora.Core.Networking.Sync;
 using Lumora.Core.Components.Meshes;
 using Lumora.Core.Templates;
 using Aquamarine.Source.Godot.Input.Drivers;
@@ -30,6 +35,7 @@ public partial class LumoraEngineRunner : Node
     private const string DebugConsoleFlag = "--Lumora-DebugConsole";
     private const string DebugConsoleScenePath = "res://Scenes/UI/Debug/DebugWindow.tscn";
     private const double DebugPerfSendIntervalSec = 0.25;
+    private const double DebugMemorySendIntervalSec = 0.5;
 
     // ===== CONFIGURATION =====
     [Export] public bool VerboseInit { get; set; } = false;
@@ -59,7 +65,9 @@ public partial class LumoraEngineRunner : Node
     private bool _shutdownRequested = false;
     private bool _missingInputInterfaceWarned = false;
     private double _debugPerfTimer;
+    private double _debugMemoryTimer;
     private InitializationPhase _currentPhase = InitializationPhase.EnvironmentSetup;
+    private static readonly Dictionary<Type, long> ComponentMemoryEstimateCache = new();
 
     // ===== SCENE REFERENCES =====
     private Node3D _inputRoot;
@@ -645,6 +653,7 @@ public partial class LumoraEngineRunner : Node
         // Update Godot metrics for debug panels
         UpdateGodotMetrics();
         SendDebugPerf(delta);
+        SendDebugMemory(delta);
 
         // Update HeadOutput camera positioning
         _headOutput?.UpdatePositioning(_engine);
@@ -753,6 +762,158 @@ public partial class LumoraEngineRunner : Node
             metrics.VideoMemoryBytes,
             metrics.GodotObjectCount,
             metrics.GodotNodeCount);
+    }
+
+    private void SendDebugMemory(double delta)
+    {
+        if (_debugUdpSender == null || _engine?.WorldManager?.FocusedWorld == null)
+        {
+            return;
+        }
+
+        _debugMemoryTimer += delta;
+        if (_debugMemoryTimer < DebugMemorySendIntervalSec)
+        {
+            return;
+        }
+        _debugMemoryTimer = 0;
+
+        var world = _engine.WorldManager.FocusedWorld;
+        var metrics = world.Metrics;
+
+        var gcBytes = GC.GetTotalMemory(false);
+        var gcInfo = GC.GetGCMemoryInfo();
+        var committedBytes = gcInfo.TotalCommittedBytes > 0 ? gcInfo.TotalCommittedBytes : gcBytes;
+
+        long workingSetBytes = 0;
+        long privateBytes = 0;
+
+        try
+        {
+            using var process = Process.GetCurrentProcess();
+            workingSetBytes = process.WorkingSet64;
+            privateBytes = process.PrivateMemorySize64;
+        }
+        catch
+        {
+            // Ignore process metric failures in restricted environments.
+        }
+
+        var breakdown = BuildComponentMemoryBreakdown(world.RootSlot);
+        var estimatedBytes = breakdown.Sum(x => x.bytes);
+        var topComponents = breakdown
+            .OrderByDescending(x => x.bytes)
+            .Take(24)
+            .ToList();
+
+        _debugUdpSender.SendMemory(
+            committedBytes,
+            gcBytes,
+            GC.CollectionCount(0),
+            GC.CollectionCount(1),
+            GC.CollectionCount(2),
+            estimatedBytes,
+            workingSetBytes,
+            privateBytes,
+            metrics.VideoMemoryBytes,
+            metrics.GodotObjectCount,
+            metrics.GodotNodeCount,
+            topComponents);
+    }
+
+    private static List<(string name, int count, long bytes)> BuildComponentMemoryBreakdown(Slot rootSlot)
+    {
+        var perType = new Dictionary<string, (int count, long bytes)>(StringComparer.Ordinal);
+        var stack = new Stack<Slot>();
+        stack.Push(rootSlot);
+
+        while (stack.Count > 0)
+        {
+            var slot = stack.Pop();
+
+            foreach (var component in slot.Components)
+            {
+                if (component == null)
+                {
+                    continue;
+                }
+
+                var type = component.GetType();
+                var typeName = type.Name;
+                var estimated = EstimateComponentMemory(type);
+
+                if (perType.TryGetValue(typeName, out var existing))
+                {
+                    perType[typeName] = (existing.count + 1, existing.bytes + estimated);
+                }
+                else
+                {
+                    perType[typeName] = (1, estimated);
+                }
+            }
+
+            foreach (var child in slot.Children)
+            {
+                stack.Push(child);
+            }
+        }
+
+        var result = new List<(string name, int count, long bytes)>(perType.Count);
+        foreach (var entry in perType)
+        {
+            result.Add((entry.Key, entry.Value.count, entry.Value.bytes));
+        }
+
+        return result;
+    }
+
+    private static long EstimateComponentMemory(Type type)
+    {
+        if (ComponentMemoryEstimateCache.TryGetValue(type, out var cached))
+        {
+            return cached;
+        }
+
+        long estimate = 64; // base object overhead
+
+        var properties = type.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        foreach (var property in properties)
+        {
+            if (!typeof(ISyncMember).IsAssignableFrom(property.PropertyType))
+            {
+                continue;
+            }
+
+            var syncType = property.PropertyType;
+            if (!syncType.IsGenericType)
+            {
+                estimate += 32;
+                continue;
+            }
+
+            var valueType = syncType.GetGenericArguments().FirstOrDefault();
+            if (valueType == typeof(string))
+                estimate += 80;
+            else if (valueType == typeof(float) || valueType == typeof(int))
+                estimate += 24;
+            else if (valueType == typeof(float2))
+                estimate += 32;
+            else if (valueType == typeof(float3))
+                estimate += 40;
+            else if (valueType == typeof(float4) || valueType == typeof(floatQ))
+                estimate += 48;
+            else if (valueType == typeof(float4x4))
+                estimate += 96;
+            else if (valueType == typeof(bool))
+                estimate += 20;
+            else if (valueType?.IsEnum == true)
+                estimate += 24;
+            else
+                estimate += 48;
+        }
+
+        ComponentMemoryEstimateCache[type] = estimate;
+        return estimate;
     }
 
     /// <summary>

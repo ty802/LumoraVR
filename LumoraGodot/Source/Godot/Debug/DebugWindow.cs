@@ -117,7 +117,16 @@ public partial class DebugWindow : Control
     {
         DisplayServer.WindowSetTitle("Lumora Debug Console");
         DisplayServer.WindowSetSize(new Vector2I(900, 650));
-        DisplayServer.WindowSetMinSize(new Vector2I(600, 400));
+        DisplayServer.WindowSetMinSize(new Vector2I(760, 520));
+
+        // Keep UI text at a stable pixel size even when the window is resized.
+        var window = GetWindow();
+        if (window != null)
+        {
+            window.ContentScaleMode = Window.ContentScaleModeEnum.Disabled;
+            window.ContentScaleAspect = Window.ContentScaleAspectEnum.Ignore;
+            window.ContentScaleFactor = 1.0f;
+        }
 
         var screenCount = DisplayServer.GetScreenCount();
         if (screenCount > 1)

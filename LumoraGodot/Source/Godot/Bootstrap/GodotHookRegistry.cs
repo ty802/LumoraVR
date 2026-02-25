@@ -28,6 +28,7 @@ public static class GodotHookRegistry
 
         // Renderer hooks
         World.HookTypes.Register<MeshRenderer, Aquamarine.Godot.Hooks.MeshRendererHook>();
+        World.HookTypes.Register<ModelData, Aquamarine.Godot.Hooks.ModelDataHook>();
 
         // Physics collider hooks
         World.HookTypes.Register<BoxCollider, Aquamarine.Godot.Hooks.PhysicsColliderHook>();
@@ -49,6 +50,7 @@ public static class GodotHookRegistry
         World.HookTypes.Register<DashboardPanel, Aquamarine.Godot.Hooks.GodotUI.DashboardPanelHook>();
         World.HookTypes.Register<GodotMaterialInspector, Aquamarine.Godot.Hooks.GodotUI.GodotMaterialInspectorHook>();
         World.HookTypes.Register<GodotMaterialColorPicker, Aquamarine.Godot.Hooks.GodotUI.GodotMaterialColorPickerHook>();
+        World.HookTypes.Register<GodotImportDialogPanel, Aquamarine.Godot.Hooks.GodotUI.GodotImportDialogPanelHook>();
         World.HookTypes.Register<Nameplate, Aquamarine.Godot.Hooks.NameplateHook>();
 
         // Inspector hooks

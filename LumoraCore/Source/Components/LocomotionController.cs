@@ -56,6 +56,29 @@ public class LocomotionController : Component
         MouseCaptureRequested = state;
     }
 
+    /// <summary>
+    /// Set by DesktopCameraController when free-cam is active.
+    /// Blocks mouse look and character movement so the camera flies independently.
+    /// </summary>
+    public static bool FreeCamActive { get; private set; } = false;
+
+    public static void SetFreeCamActive(bool value)
+    {
+        FreeCamActive = value;
+    }
+
+    /// <summary>
+    /// Set by DesktopCameraController in third-person mode.
+    /// Suppresses character mouse-look so the camera can orbit independently
+    /// while WASD movement continues normally.
+    /// </summary>
+    public static bool MouseLookSuppressed { get; private set; } = false;
+
+    public static void SetMouseLookSuppressed(bool value)
+    {
+        MouseLookSuppressed = value;
+    }
+
     // ===== INITIALIZATION =====
 
     public override void OnAwake()
@@ -239,7 +262,7 @@ public class LocomotionController : Component
         }
         _escapeWasPressed = escapePressed;
 
-        if (_mouse == null || !_mouseCaptured)
+        if (_mouse == null || !_mouseCaptured || FreeCamActive || MouseLookSuppressed)
             return;
 
         // Use Mouse.DirectDelta - now populated via GodotMouseDriver.HandleInputEvent

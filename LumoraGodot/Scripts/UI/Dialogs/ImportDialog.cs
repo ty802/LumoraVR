@@ -38,8 +38,13 @@ public partial class ImportDialog : Control
     private Label _subtitleLabel;
     private VBoxContainer _optionsList;
     private Label _fileInfoLabel;
+    private Control _progressPanel;
+    private Label _progressStatusLabel;
+    private ProgressBar _progressBar;
     private PackedScene _optionButtonScene;
     private readonly List<Button> _optionButtons = new();
+    private bool _isInitialized;
+    private bool _isImporting;
 
     public event Action<ImportType, string> ImportRequested;
     public event Action DialogClosed;
@@ -57,6 +62,9 @@ public partial class ImportDialog : Control
         _subtitleLabel = GetNodeOrNull<Label>("MainMargin/VBox/Subtitle");
         _optionsList = GetNodeOrNull<VBoxContainer>("MainMargin/VBox/OptionsList");
         _fileInfoLabel = GetNodeOrNull<Label>("MainMargin/VBox/FileInfo");
+        _progressPanel = GetNodeOrNull<Control>("MainMargin/VBox/ProgressPanel");
+        _progressStatusLabel = GetNodeOrNull<Label>("MainMargin/VBox/ProgressPanel/Status");
+        _progressBar = GetNodeOrNull<ProgressBar>("MainMargin/VBox/ProgressPanel/Bar");
 
         _optionButtonScene = GD.Load<PackedScene>(OptionButtonScenePath);
         if (_optionButtonScene == null)
@@ -65,6 +73,9 @@ public partial class ImportDialog : Control
         }
 
         ConnectSignals();
+        _isInitialized = true;
+        SetImportInProgress(false);
+        RefreshDialogForCurrentFile();
         GD.Print("ImportDialog: Initialized");
     }
 
@@ -83,23 +94,13 @@ public partial class ImportDialog : Control
         _targetSlot = targetSlot;
         _localDB = localDB;
         _selectedType = null;
+        _isImporting = false;
 
-        // Update title based on file
-        var fileName = Path.GetFileName(filePath);
-        SetTitle($"Import: {fileName}");
-
-        // Show file info if label exists
-        if (_fileInfoLabel != null)
+        if (_isInitialized)
         {
-            _fileInfoLabel.Text = filePath;
-            _fileInfoLabel.Visible = true;
+            RefreshDialogForCurrentFile();
+            Show();
         }
-
-        // Create option buttons based on file type
-        var extension = Path.GetExtension(filePath).ToLowerInvariant();
-        CreateOptionButtonsForFile(extension);
-
-        Show();
     }
 
     /// <summary>
@@ -111,14 +112,49 @@ public partial class ImportDialog : Control
         _targetSlot = targetSlot;
         _localDB = localDB;
         _selectedType = null;
+        _isImporting = false;
 
-        SetTitle("Import");
-        if (_fileInfoLabel != null)
-            _fileInfoLabel.Visible = false;
+        if (_isInitialized)
+        {
+            RefreshDialogForCurrentFile();
+            Show();
+        }
+    }
 
-        // Show all options
-        CreateAllOptionButtons();
-        Show();
+    private void RefreshDialogForCurrentFile()
+    {
+        if (!_isInitialized)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_filePath))
+        {
+            SetTitle("Import");
+            SetSubtitle("What are you importing?");
+            if (_fileInfoLabel != null)
+            {
+                _fileInfoLabel.Visible = false;
+            }
+            CreateAllOptionButtons();
+        }
+        else
+        {
+            var fileName = Path.GetFileName(_filePath);
+            SetTitle($"Import: {fileName}");
+            SetSubtitle("Choose import type");
+
+            if (_fileInfoLabel != null)
+            {
+                _fileInfoLabel.Text = _filePath;
+                _fileInfoLabel.Visible = true;
+            }
+
+            var extension = Path.GetExtension(_filePath).ToLowerInvariant();
+            CreateOptionButtonsForFile(extension);
+        }
+
+        SetImportInProgress(_isImporting);
     }
 
     private void CreateOptionButtonsForFile(string extension)
@@ -210,6 +246,11 @@ public partial class ImportDialog : Control
 
     private void OnClosePressed()
     {
+        if (_isImporting)
+        {
+            return;
+        }
+
         GD.Print("ImportDialog: Closed");
         DialogClosed?.Invoke();
         Hide();
@@ -225,6 +266,11 @@ public partial class ImportDialog : Control
 
     private async void OnOptionSelected(ImportType type)
     {
+        if (_isImporting)
+        {
+            return;
+        }
+
         _selectedType = type;
         GD.Print($"ImportDialog: Selected {type}");
 
@@ -232,44 +278,71 @@ public partial class ImportDialog : Control
         ImportRequested?.Invoke(type, _filePath);
 
         // If we have all necessary info, perform the import
+        bool success = true;
         if (!string.IsNullOrEmpty(_filePath) && _targetSlot != null)
         {
-            await PerformImport(type, _filePath);
+            success = await PerformImport(type, _filePath);
         }
 
-        Hide();
+        if (success)
+        {
+            SetSubtitle("Import finished. Close when done.");
+        }
     }
 
-    private async Task PerformImport(ImportType type, string filePath)
+    private async Task<bool> PerformImport(ImportType type, string filePath)
     {
         GD.Print($"ImportDialog: Performing {type} import of '{filePath}'");
+        _isImporting = true;
+
+        SetImportInProgress(true, $"Importing {type}...", 0f);
+        SetSubtitle("Import in progress...");
+
+        var progress = new Progress<(float progress, string status)>(update =>
+        {
+            ReportProgress(update.progress, update.status);
+        });
 
         try
         {
             switch (type)
             {
                 case ImportType.ImageTexture:
+                    ReportProgress(0.1f, "Importing image...");
                     await ImportImage(filePath);
+                    ReportProgress(1.0f, "Image import complete");
                     break;
 
                 case ImportType.Model3D:
-                    await ImportModel(filePath, isAvatar: false);
+                    await ImportModel(filePath, isAvatar: false, progress);
                     break;
 
                 case ImportType.Avatar:
-                    await ImportModel(filePath, isAvatar: true);
+                    await ImportModel(filePath, isAvatar: true, progress);
                     break;
 
                 case ImportType.RawFile:
+                    ReportProgress(0.1f, "Importing raw file...");
                     await ImportRawFile(filePath);
+                    ReportProgress(1.0f, "Raw file import complete");
                     break;
             }
 
+            SetSubtitle("Import completed");
+            SetCompletedStatus("Import queued. Model may take a moment to appear in-world.");
             GD.Print($"ImportDialog: Import completed successfully");
+            return true;
         }
         catch (Exception ex)
         {
             GD.PrintErr($"ImportDialog: Import failed: {ex.Message}");
+            SetSubtitle($"Import failed: {ex.Message}");
+            SetCompletedStatus($"Import failed: {ex.Message}", success: false);
+            return false;
+        }
+        finally
+        {
+            _isImporting = false;
         }
     }
 
@@ -289,32 +362,32 @@ public partial class ImportDialog : Control
         GD.Print($"ImportDialog: Image imported to {localUri ?? filePath}");
     }
 
-    private async Task ImportModel(string filePath, bool isAvatar)
+    private async Task ImportModel(string filePath, bool isAvatar, IProgress<(float progress, string status)> progress)
     {
         ModelImportResult result;
 
         if (isAvatar)
         {
-            result = await ModelImporter.ImportAvatarAsync(filePath, _targetSlot, _localDB);
+            progress?.Report((0.05f, "Preparing avatar import..."));
+            result = await ModelImporter.ImportAvatarAsync(filePath, _targetSlot, _localDB, progress);
         }
         else
         {
-            result = await ModelImporter.ImportModelAsync(filePath, _targetSlot, null, _localDB);
+            progress?.Report((0.05f, "Preparing model import..."));
+            result = await ModelImporter.ImportModelAsync(filePath, _targetSlot, null, _localDB, progress);
         }
 
         if (result.Success)
         {
+            progress?.Report((0.90f, isAvatar ? "Finalizing avatar..." : "Finalizing model..."));
             GD.Print($"ImportDialog: Model imported successfully to slot '{result.RootSlot?.SlotName.Value}'");
-
-            if (isAvatar)
-            {
-                GD.Print("ImportDialog: Avatar is ready to equip!");
-                // The avatar is now loaded and can be equipped via AvatarManager
-            }
+            progress?.Report((1.0f, isAvatar ? "Avatar imported" : "Model import complete"));
         }
         else
         {
             GD.PrintErr($"ImportDialog: Model import failed: {result.ErrorMessage}");
+            progress?.Report((0f, $"Import failed: {result.ErrorMessage}"));
+            throw new InvalidOperationException(result.ErrorMessage);
         }
     }
 
@@ -338,6 +411,87 @@ public partial class ImportDialog : Control
     {
         if (_subtitleLabel != null)
             _subtitleLabel.Text = subtitle;
+    }
+
+    private void SetImportInProgress(bool importing, string status = "", float progress = 0f)
+    {
+        _isImporting = importing;
+
+        if (_progressPanel != null)
+        {
+            _progressPanel.Visible = importing;
+        }
+
+        if (_progressStatusLabel != null)
+        {
+            _progressStatusLabel.Text = importing ? status : string.Empty;
+        }
+
+        if (_progressBar != null)
+        {
+            _progressBar.Value = Mathf.Clamp(progress * 100f, 0f, 100f);
+        }
+
+        if (_btnClose != null)
+        {
+            _btnClose.Disabled = importing;
+        }
+
+        if (_btnInfo != null)
+        {
+            _btnInfo.Disabled = importing;
+        }
+
+        foreach (var button in _optionButtons)
+        {
+            button.Disabled = importing;
+        }
+    }
+
+    private void ReportProgress(float progress, string status)
+    {
+        CallDeferred(nameof(ApplyProgressUpdate), progress, status ?? string.Empty);
+    }
+
+    private void ApplyProgressUpdate(float progress, string status)
+    {
+        SetImportInProgress(true, status, progress);
+    }
+
+    private void SetCompletedStatus(string status, bool success = true)
+    {
+        // Keep status visible after fast imports, but re-enable controls.
+        _isImporting = false;
+
+        if (_progressPanel != null)
+        {
+            _progressPanel.Visible = true;
+        }
+
+        if (_progressStatusLabel != null)
+        {
+            _progressStatusLabel.Text = status;
+        }
+
+        if (_progressBar != null)
+        {
+            _progressBar.Value = success ? 100.0f : 0.0f;
+        }
+
+        if (_btnClose != null)
+        {
+            _btnClose.Disabled = false;
+        }
+
+        if (_btnInfo != null)
+        {
+            _btnInfo.Disabled = false;
+        }
+
+        foreach (var button in _optionButtons)
+        {
+            button.Disabled = false;
+        }
     }
 
     public ImportType? GetSelectedType() => _selectedType;

@@ -28,6 +28,12 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
 
     public CharacterBody3D GodotCharacterBody => _characterBody;
 
+    /// <summary>
+    /// The local player's Godot CharacterBody3D — set when the local user's hook is initialised,
+    /// cleared on destroy. Read by DesktopCameraController for third-person orbit.
+    /// </summary>
+    public static CharacterBody3D LocalPlayerBody { get; private set; }
+
     public override void Initialize()
     {
         base.Initialize();
@@ -69,6 +75,10 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
         // Check if this is the local user
         var userRoot = Owner.Slot.GetComponent<UserRoot>();
         _isLocalUser = userRoot?.ActiveUser == Owner.World?.LocalUser;
+
+        // Expose body for DesktopCameraController third-person mode
+        if (_isLocalUser)
+            LocalPlayerBody = _characterBody;
 
         // Find XROrigin3D in scene tree for VR tracking sync
         if (_isLocalUser)
@@ -408,6 +418,9 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
 
     public override void Destroy(bool destroyingWorld)
     {
+        if (_isLocalUser && LocalPlayerBody == _characterBody)
+            LocalPlayerBody = null;
+
         if (!destroyingWorld && _characterBody != null && GodotObject.IsInstanceValid(_characterBody))
         {
             _characterBody.QueueFree();

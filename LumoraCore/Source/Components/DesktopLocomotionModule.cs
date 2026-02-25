@@ -36,6 +36,13 @@ public class DesktopLocomotionModule : ILocomotionModule
         if (_owner == null || _characterController == null || !_characterController.IsReady)
             return;
 
+        // Yield all movement to DesktopCameraController when free-cam is active
+        if (LocomotionController.FreeCamActive)
+        {
+            _characterController.SetMovementDirection(float3.Zero);
+            return;
+        }
+
         // Refresh input interface if it became available
         if (_inputInterface == null && Engine.Current?.InputInterface != null)
         {

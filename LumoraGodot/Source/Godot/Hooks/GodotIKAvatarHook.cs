@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using Godot;
 using Lumora.Core;
 using Lumora.Core.Components.Avatar;
@@ -7,14 +9,14 @@ using AquaLogger = Lumora.Core.Logging.Logger;
 namespace Aquamarine.Godot.Hooks;
 
 /// <summary>
-/// Hook for GodotIKAvatar component → Godot native IK system.
+/// Hook for GodotIKAvatar component -> Godot native IK system.
 /// Uses SkeletonIK3D for inverse kinematics solving.
 /// Updates IK targets from tracking data each frame.
 /// </summary>
 public class GodotIKAvatarHook : ComponentHook<GodotIKAvatar>
 {
     // IK solvers for each limb (using deprecated but still functional SkeletonIK3D)
-#pragma warning disable CS0618 // SkeletonIK3D is deprecated but still works
+#pragma warning disable CS0618
     private SkeletonIK3D _leftArmIK;
     private SkeletonIK3D _rightArmIK;
     private SkeletonIK3D _leftLegIK;
@@ -43,7 +45,6 @@ public class GodotIKAvatarHook : ComponentHook<GodotIKAvatar>
         if (!Owner.Enabled.Value)
             return;
 
-        // Try to setup IK if not done yet
         if (!_ikSetup)
         {
             TrySetupIK();
@@ -52,7 +53,6 @@ public class GodotIKAvatarHook : ComponentHook<GodotIKAvatar>
         if (!_ikSetup || _skeleton == null)
             return;
 
-        // Update IK targets from Lumora tracking
         UpdateIKTargets();
     }
 
@@ -61,21 +61,12 @@ public class GodotIKAvatarHook : ComponentHook<GodotIKAvatar>
     /// </summary>
     private void TrySetupIK()
     {
-        // Get skeleton from GodotIKAvatar's skeleton reference
-        var skeletonBuilder = Owner.Skeleton.Target;
-        if (skeletonBuilder == null || !skeletonBuilder.IsBuilt.Value)
+        if (!TryResolveSkeleton(out var skeleton))
         {
             return;
         }
 
-        // Get the SkeletonHook to access Godot's Skeleton3D
-        _skeletonHook = skeletonBuilder.Hook as SkeletonHook;
-        if (_skeletonHook == null)
-        {
-            return;
-        }
-
-        _skeleton = _skeletonHook.GetSkeleton();
+        _skeleton = skeleton;
         if (_skeleton == null || !GodotObject.IsInstanceValid(_skeleton))
         {
             return;
@@ -88,17 +79,74 @@ public class GodotIKAvatarHook : ComponentHook<GodotIKAvatar>
 
         AquaLogger.Log($"GodotIKAvatarHook: Setting up IK with skeleton '{_skeleton.Name}' ({_skeleton.GetBoneCount()} bones)");
 
-        // Create IK target nodes
         CreateIKTargets();
 
-        // Setup IK solvers for each limb
-        SetupArmIK("Left", ref _leftArmIK, _leftHandTarget);
-        SetupArmIK("Right", ref _rightArmIK, _rightHandTarget);
-        SetupLegIK("Left", ref _leftLegIK, _leftFootTarget);
-        SetupLegIK("Right", ref _rightLegIK, _rightFootTarget);
+        bool anySolver =
+            SetupArmIK("Left", ref _leftArmIK, _leftHandTarget) |
+            SetupArmIK("Right", ref _rightArmIK, _rightHandTarget) |
+            SetupLegIK("Left", ref _leftLegIK, _leftFootTarget) |
+            SetupLegIK("Right", ref _rightLegIK, _rightFootTarget);
 
+        if (!anySolver)
+        {
+            AquaLogger.Warn("GodotIKAvatarHook: Skeleton found but no IK limbs could be mapped");
+        }
+
+        // Mark setup complete even if partial, avoids per-frame warning spam.
         _ikSetup = true;
         AquaLogger.Log("GodotIKAvatarHook: IK setup complete");
+    }
+
+    private bool TryResolveSkeleton(out Skeleton3D skeleton)
+    {
+        skeleton = null;
+        _skeletonHook = null;
+
+        // Preferred path: Lumora skeleton builder.
+        var skeletonBuilder = Owner.Skeleton.Target;
+        if (skeletonBuilder != null && skeletonBuilder.IsBuilt.Value)
+        {
+            _skeletonHook = skeletonBuilder.Hook as SkeletonHook;
+            skeleton = _skeletonHook?.GetSkeleton();
+            if (skeleton != null && GodotObject.IsInstanceValid(skeleton))
+            {
+                return true;
+            }
+        }
+
+        // Fallback path: imported GLTF/VRM skeleton under avatar root.
+        Node searchRoot = attachedNode?.GetParent() ?? attachedNode;
+        skeleton = FindFirstSkeleton(searchRoot);
+        return skeleton != null && GodotObject.IsInstanceValid(skeleton);
+    }
+
+    private static Skeleton3D FindFirstSkeleton(Node root)
+    {
+        if (root == null)
+        {
+            return null;
+        }
+
+        var stack = new Stack<Node>();
+        stack.Push(root);
+        while (stack.Count > 0)
+        {
+            var node = stack.Pop();
+            if (node is Skeleton3D skeleton && skeleton.GetBoneCount() > 0)
+            {
+                return skeleton;
+            }
+
+            foreach (var child in node.GetChildren())
+            {
+                if (child is Node childNode)
+                {
+                    stack.Push(childNode);
+                }
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -106,7 +154,6 @@ public class GodotIKAvatarHook : ComponentHook<GodotIKAvatar>
     /// </summary>
     private void CreateIKTargets()
     {
-        // Create targets as children of skeleton's parent (world space)
         Node parent = _skeleton.GetParent() ?? _skeleton;
 
         _leftHandTarget = new Node3D { Name = "LeftHandIKTarget" };
@@ -128,78 +175,159 @@ public class GodotIKAvatarHook : ComponentHook<GodotIKAvatar>
     /// Setup IK solver for an arm.
     /// </summary>
 #pragma warning disable CS0618
-    private void SetupArmIK(string side, ref SkeletonIK3D ik, Node3D target)
+    private bool SetupArmIK(string side, ref SkeletonIK3D ik, Node3D target)
     {
-        string upperArm = $"{side}UpperArm";
-        string hand = $"{side}Hand";
+        string upperArm = FindBoneName(GetUpperArmAliases(side), GetUpperArmTokens(side));
+        string hand = FindBoneName(GetHandAliases(side), GetHandTokens(side));
 
-        int upperArmIdx = _skeleton.FindBone(upperArm);
-        int handIdx = _skeleton.FindBone(hand);
-
-        if (upperArmIdx < 0 || handIdx < 0)
+        if (string.IsNullOrWhiteSpace(upperArm) || string.IsNullOrWhiteSpace(hand))
         {
-            AquaLogger.Warn($"GodotIKAvatarHook: Could not find bones for {side} arm IK (upperArm={upperArmIdx}, hand={handIdx})");
-            return;
+            AquaLogger.Warn($"GodotIKAvatarHook: Could not resolve {side} arm bones");
+            return false;
         }
 
-        ik = new SkeletonIK3D();
-        ik.Name = $"{side}ArmIK";
-        ik.RootBone = upperArm;
-        ik.TipBone = hand;
-        ik.OverrideTipBasis = true;
-        ik.Influence = 1.0f;
-        ik.MaxIterations = 10;
+        ik = new SkeletonIK3D
+        {
+            Name = $"{side}ArmIK",
+            RootBone = upperArm,
+            TipBone = hand,
+            OverrideTipBasis = true,
+            Influence = 1.0f,
+            MaxIterations = 10
+        };
 
         _skeleton.AddChild(ik);
-
-        // Set target node after adding to tree
         ik.SetTargetNode(target.GetPath());
         ik.Start();
 
-        AquaLogger.Log($"GodotIKAvatarHook: Setup {side} arm IK ({upperArm} → {hand})");
+        AquaLogger.Log($"GodotIKAvatarHook: Setup {side} arm IK ({upperArm} -> {hand})");
+        return true;
     }
 
     /// <summary>
     /// Setup IK solver for a leg.
     /// </summary>
-    private void SetupLegIK(string side, ref SkeletonIK3D ik, Node3D target)
+    private bool SetupLegIK(string side, ref SkeletonIK3D ik, Node3D target)
     {
-        string upperLeg = $"{side}UpperLeg";
-        string foot = $"{side}Foot";
+        string upperLeg = FindBoneName(GetUpperLegAliases(side), GetUpperLegTokens(side));
+        string foot = FindBoneName(GetFootAliases(side), GetFootTokens(side));
 
-        int upperLegIdx = _skeleton.FindBone(upperLeg);
-        int footIdx = _skeleton.FindBone(foot);
-
-        if (upperLegIdx < 0 || footIdx < 0)
+        if (string.IsNullOrWhiteSpace(upperLeg) || string.IsNullOrWhiteSpace(foot))
         {
-            AquaLogger.Warn($"GodotIKAvatarHook: Could not find bones for {side} leg IK (upperLeg={upperLegIdx}, foot={footIdx})");
-            return;
+            AquaLogger.Warn($"GodotIKAvatarHook: Could not resolve {side} leg bones");
+            return false;
         }
 
-        ik = new SkeletonIK3D();
-        ik.Name = $"{side}LegIK";
-        ik.RootBone = upperLeg;
-        ik.TipBone = foot;
-        ik.OverrideTipBasis = true;
-        ik.Influence = 1.0f;
-        ik.MaxIterations = 10;
+        ik = new SkeletonIK3D
+        {
+            Name = $"{side}LegIK",
+            RootBone = upperLeg,
+            TipBone = foot,
+            OverrideTipBasis = true,
+            Influence = 1.0f,
+            MaxIterations = 10
+        };
 
         _skeleton.AddChild(ik);
-
-        // Set target node after adding to tree
         ik.SetTargetNode(target.GetPath());
         ik.Start();
 
-        AquaLogger.Log($"GodotIKAvatarHook: Setup {side} leg IK ({upperLeg} → {foot})");
+        AquaLogger.Log($"GodotIKAvatarHook: Setup {side} leg IK ({upperLeg} -> {foot})");
+        return true;
     }
 #pragma warning restore CS0618
+
+    private string FindBoneName(string[] aliases, string[] tokens)
+    {
+        foreach (var alias in aliases)
+        {
+            int idx = _skeleton.FindBone(alias);
+            if (idx >= 0)
+            {
+                return _skeleton.GetBoneName(idx).ToString();
+            }
+        }
+
+        var normalizedTokens = new List<string>(tokens.Length);
+        foreach (var token in tokens)
+        {
+            normalizedTokens.Add(NormalizeName(token));
+        }
+
+        int boneCount = _skeleton.GetBoneCount();
+        for (int i = 0; i < boneCount; i++)
+        {
+            string candidate = _skeleton.GetBoneName(i).ToString();
+            string normalized = NormalizeName(candidate);
+            foreach (var token in normalizedTokens)
+            {
+                if (normalized.Contains(token, StringComparison.Ordinal))
+                {
+                    return candidate;
+                }
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static string NormalizeName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return string.Empty;
+        }
+
+        Span<char> buffer = stackalloc char[name.Length];
+        int outIdx = 0;
+        foreach (char c in name)
+        {
+            if (char.IsLetterOrDigit(c))
+            {
+                buffer[outIdx++] = char.ToLowerInvariant(c);
+            }
+        }
+
+        return outIdx == 0 ? string.Empty : new string(buffer[..outIdx]);
+    }
+
+    private static string[] GetUpperArmAliases(string side) => side == "Left"
+        ? new[] { "LeftUpperArm", "LeftArm", "mixamorig:LeftArm", "J_Bip_L_UpperArm", "upper_arm.L" }
+        : new[] { "RightUpperArm", "RightArm", "mixamorig:RightArm", "J_Bip_R_UpperArm", "upper_arm.R" };
+
+    private static string[] GetHandAliases(string side) => side == "Left"
+        ? new[] { "LeftHand", "mixamorig:LeftHand", "J_Bip_L_Hand", "hand.L" }
+        : new[] { "RightHand", "mixamorig:RightHand", "J_Bip_R_Hand", "hand.R" };
+
+    private static string[] GetUpperLegAliases(string side) => side == "Left"
+        ? new[] { "LeftUpperLeg", "LeftLeg", "mixamorig:LeftUpLeg", "J_Bip_L_UpperLeg", "upper_leg.L" }
+        : new[] { "RightUpperLeg", "RightLeg", "mixamorig:RightUpLeg", "J_Bip_R_UpperLeg", "upper_leg.R" };
+
+    private static string[] GetFootAliases(string side) => side == "Left"
+        ? new[] { "LeftFoot", "mixamorig:LeftFoot", "J_Bip_L_Foot", "foot.L" }
+        : new[] { "RightFoot", "mixamorig:RightFoot", "J_Bip_R_Foot", "foot.R" };
+
+    private static string[] GetUpperArmTokens(string side) => side == "Left"
+        ? new[] { "leftupperarm", "leftarm", "upperarml", "lupperarm" }
+        : new[] { "rightupperarm", "rightarm", "upperarmr", "rupperarm" };
+
+    private static string[] GetHandTokens(string side) => side == "Left"
+        ? new[] { "lefthand", "handl", "lhand" }
+        : new[] { "righthand", "handr", "rhand" };
+
+    private static string[] GetUpperLegTokens(string side) => side == "Left"
+        ? new[] { "leftupperleg", "leftupleg", "leftleg", "upperlegl", "lupleg" }
+        : new[] { "rightupperleg", "rightupleg", "rightleg", "upperlegr", "rupleg" };
+
+    private static string[] GetFootTokens(string side) => side == "Left"
+        ? new[] { "leftfoot", "footl", "lfoot" }
+        : new[] { "rightfoot", "footr", "rfoot" };
 
     /// <summary>
     /// Update IK targets from Lumora tracking slots.
     /// </summary>
     private void UpdateIKTargets()
     {
-        // Update hand targets
         if (_leftHandTarget != null && GodotObject.IsInstanceValid(_leftHandTarget))
         {
             float3 pos = Owner.GetLeftHandTargetPosition();
@@ -216,7 +344,6 @@ public class GodotIKAvatarHook : ComponentHook<GodotIKAvatar>
             _rightHandTarget.Quaternion = new Quaternion(rot.x, rot.y, rot.z, rot.w);
         }
 
-        // Update foot targets
         if (_leftFootTarget != null && GodotObject.IsInstanceValid(_leftFootTarget))
         {
             float3 pos = Owner.GetLeftFootTargetPosition();
@@ -234,7 +361,6 @@ public class GodotIKAvatarHook : ComponentHook<GodotIKAvatar>
     {
         if (!destroyingWorld)
         {
-            // Stop and cleanup IK solvers
 #pragma warning disable CS0618
             StopAndFreeIK(ref _leftArmIK);
             StopAndFreeIK(ref _rightArmIK);
@@ -242,7 +368,6 @@ public class GodotIKAvatarHook : ComponentHook<GodotIKAvatar>
             StopAndFreeIK(ref _rightLegIK);
 #pragma warning restore CS0618
 
-            // Cleanup targets
             FreeNode(ref _leftHandTarget);
             FreeNode(ref _rightHandTarget);
             FreeNode(ref _leftFootTarget);
@@ -264,6 +389,7 @@ public class GodotIKAvatarHook : ComponentHook<GodotIKAvatar>
             ik.Stop();
             ik.QueueFree();
         }
+
         ik = null;
     }
 #pragma warning restore CS0618
@@ -274,6 +400,7 @@ public class GodotIKAvatarHook : ComponentHook<GodotIKAvatar>
         {
             node.QueueFree();
         }
+
         node = null;
     }
 }

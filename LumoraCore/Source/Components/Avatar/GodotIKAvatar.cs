@@ -111,16 +111,17 @@ public class GodotIKAvatar : ImplementableComponent
     {
         base.OnUpdate(delta);
 
+        if (!Enabled.Value) return;
+
+        // Always push updates to the hook so fallback IK (direct Skeleton3D binding)
+        // keeps receiving tracker targets even when no SkeletonBuilder exists.
+        RunApplyChanges();
+
         if (!_initialized)
         {
             TryInitialize();
             return;
         }
-
-        if (!Enabled.Value) return;
-
-        // Run hook to sync with Godot IK
-        RunApplyChanges();
 
         // Update body orientation and basic positioning
         UpdateBody();

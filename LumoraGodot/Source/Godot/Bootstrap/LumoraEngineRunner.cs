@@ -659,6 +659,12 @@ public partial class LumoraEngineRunner : Node
             AddChild(desktopInput);
             desktopInput.SetCamera(_mainCamera);
             AquaLogger.Log("DesktopInput: Created for non-VR mode");
+
+            var desktopCamera = new Aquamarine.Source.Godot.Input.DesktopCameraController();
+            desktopCamera.Name = "DesktopCameraController";
+            AddChild(desktopCamera);
+            desktopCamera.Initialize(_engine);
+            AquaLogger.Log("DesktopCameraController: Created (F5=third-person, F6=free-cam)");
         }
 
         // Initialize LocalDB for asset storage

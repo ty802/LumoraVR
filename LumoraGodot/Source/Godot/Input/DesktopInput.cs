@@ -1,6 +1,7 @@
 using System;
 using Godot;
 using Lumora.Core.Logging;
+using Lumora.Core.Components;
 using AquaLogger = Lumora.Core.Logging.Logger;
 using Aquamarine.Source.UI;
 
@@ -143,11 +144,13 @@ public partial class DesktopInput : Node3D, IInputProvider
 
     private void UpdateCamera()
     {
-        // Find camera if not set
-        if (_camera == null)
-        {
-            _camera = GetViewport()?.GetCamera3D();
-        }
+        // During freecam the override camera is Current, but hands/rays must stay
+        // anchored to the character's head — not fly around with the freecam.
+        if (LocomotionController.FreeCamActive)
+            return;
+
+        // Always re-query the active camera so we pick up CameraHook transitions.
+        _camera = GetViewport()?.GetCamera3D();
 
         if (_camera != null)
         {

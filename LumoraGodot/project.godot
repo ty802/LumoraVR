@@ -44,8 +44,8 @@ import/blender/enabled=false
 
 [gui]
 
-theme/custom="res://Assets/Themes/LumoraUITheme.tres"
 theme/default_font_multichannel_signed_distance_field=true
+theme/custom="res://Assets/Themes/LumoraUITheme.tres"
 
 [input]
 
@@ -206,6 +206,5 @@ renderer/rendering_method.mobile="forward_plus"
 
 [xr]
 
-openxr/enabled=false
 shaders/enabled=true
 openxr/action_map="res://openxr_action_map.tres"

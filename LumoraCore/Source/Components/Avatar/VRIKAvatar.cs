@@ -358,6 +358,8 @@ public class VRIKAvatar : ImplementableComponent, IAvatarObjectComponent, IInput
 
     /// <summary>
     /// Setup tracking references from UserRoot.
+    /// Finds the AvatarObjectSlot on each body node tracking slot and equips our
+    /// corresponding AvatarPoseNode so it starts receiving tracking data.
     /// </summary>
     public void SetupTracking(UserRoot userRoot)
     {
@@ -369,24 +371,31 @@ public class VRIKAvatar : ImplementableComponent, IAvatarObjectComponent, IInput
 
         UserRoot.Target = userRoot;
 
-        // Connect pose nodes to tracking slots
-        if (_headNode.Target != null && userRoot.HeadSlot != null)
+        EquipPoseNodeToBodySlot(userRoot.HeadSlot,      _headNode.Target);
+        EquipPoseNodeToBodySlot(userRoot.LeftHandSlot,  _leftHandNode.Target);
+        EquipPoseNodeToBodySlot(userRoot.RightHandSlot, _rightHandNode.Target);
+        EquipPoseNodeToBodySlot(userRoot.LeftFootSlot,  _leftFootNode.Target);
+        EquipPoseNodeToBodySlot(userRoot.RightFootSlot, _rightFootNode.Target);
+
+        AquaLogger.Log($"VRIKAvatar: Tracking connected for UserRoot '{userRoot.Slot.SlotName.Value}'");
+    }
+
+    /// <summary>
+    /// Finds the AvatarObjectSlot on a body tracking slot and equips the given pose node to it.
+    /// </summary>
+    private static void EquipPoseNodeToBodySlot(Slot bodySlot, AvatarPoseNode poseNode)
+    {
+        if (bodySlot == null || poseNode == null) return;
+
+        var avatarSlot = bodySlot.GetComponent<AvatarObjectSlot>();
+        if (avatarSlot == null)
         {
-            // The AvatarObjectSlot on the head tracking slot will equip our head pose node
-            AquaLogger.Log($"VRIKAvatar: Head tracking setup to '{userRoot.HeadSlot.SlotName.Value}'");
+            AquaLogger.Warn($"VRIKAvatar: No AvatarObjectSlot on body slot '{bodySlot.SlotName.Value}'");
+            return;
         }
 
-        if (_leftHandNode.Target != null && userRoot.LeftHandSlot != null)
-        {
-            AquaLogger.Log($"VRIKAvatar: Left hand tracking setup");
-        }
-
-        if (_rightHandNode.Target != null && userRoot.RightHandSlot != null)
-        {
-            AquaLogger.Log($"VRIKAvatar: Right hand tracking setup");
-        }
-
-        AquaLogger.Log($"VRIKAvatar: Setup tracking from UserRoot '{userRoot.Slot.SlotName.Value}'");
+        avatarSlot.Equip(poseNode);
+        AquaLogger.Log($"VRIKAvatar: Equipped {poseNode.Node.Value} pose node to '{bodySlot.SlotName.Value}'");
     }
 
     // ===== INTERNAL METHODS =====
@@ -513,33 +522,18 @@ public class VRIKAvatar : ImplementableComponent, IAvatarObjectComponent, IInput
 
     /// <summary>
     /// Update proxy slot positions from tracking data.
+    /// Head/hand/foot proxies are driven by AvatarPoseNode.BeforeInputUpdate/AfterInputUpdate
+    /// automatically once SetupTracking has called Equip(). We only need to handle the
+    /// procedural-feet fallback here for when foot tracking is absent.
     /// </summary>
     private void UpdateProxiesFromTracking()
     {
-        // Head proxy gets position from head tracking
-        if (_headNode.Target != null && _headProxy.Target != null)
-        {
-            if (_headNode.Target.IsEquippedAndActive)
-            {
-                // Position is updated by the AvatarPoseNode from the AvatarObjectSlot
-            }
-        }
-
-        // Hand proxies
-        if (_leftHandNode.Target != null && _leftHandProxy.Target != null)
-        {
-            // Updated by AvatarPoseNode
-        }
-
-        if (_rightHandNode.Target != null && _rightHandProxy.Target != null)
-        {
-            // Updated by AvatarPoseNode
-        }
-
-        // Feet - use procedural if no tracking
         if (UseProceduralFeet.Value)
         {
-            UpdateProceduralFeet();
+            bool leftTracked  = _leftFootNode.Target?.IsEquippedAndActive  ?? false;
+            bool rightTracked = _rightFootNode.Target?.IsEquippedAndActive ?? false;
+            if (!leftTracked || !rightTracked)
+                UpdateProceduralFeet();
         }
     }
 
@@ -634,31 +628,45 @@ public class VRIKAvatar : ImplementableComponent, IAvatarObjectComponent, IInput
 
     /// <summary>
     /// Update procedural foot positions when no foot tracking is available.
+    /// Uses body-rotation-aware foot zones so feet stay under the body even when turning.
     /// </summary>
     private void UpdateProceduralFeet()
     {
-        if (_leftFootNode.Target == null || _leftFootNode.Target.IsEquippedAndActive)
-            return;
-        if (_rightFootNode.Target == null || _rightFootNode.Target.IsEquippedAndActive)
-            return;
+        var headSlot = _headProxy.Target;
+        if (headSlot == null) return;
 
-        // Get head position for procedural foot placement
-        var headPos = _headProxy.Target?.GlobalPosition ?? float3.Zero;
+        float3 headPos = headSlot.GlobalPosition;
 
-        // Calculate foot positions relative to head
-        float footSeparation = 0.2f;
-        float footHeightOffset = -1.6f; // Approximate leg length
+        // Compute body forward direction (flatten Y, normalize)
+        floatQ headRot = headSlot.GlobalRotation;
+        float3 forward = headRot * float3.Backward; // Godot: -Z is forward
+        forward.y = 0f;
+        if (forward.LengthSquared < 0.001f) forward = float3.Backward;
+        forward = forward.Normalized;
 
-        if (_leftFootProxy.Target != null)
+        floatQ bodyRot = floatQ.LookRotation(forward, float3.Up);
+        float3 right = bodyRot * float3.Right;
+
+        const float heightOffset   = -1.6f;
+        const float footSeparation = 0.15f;
+
+        if (_leftFootProxy.Target != null && !(_leftFootNode.Target?.IsEquippedAndActive ?? false))
         {
-            var leftFootPos = headPos + new float3(-footSeparation / 2, footHeightOffset, 0);
-            _leftFootProxy.Target.GlobalPosition = leftFootPos;
+            float3 pos = headPos + new float3(0f, heightOffset, 0f) + (-right * footSeparation);
+            // Convert to proxy's parent-local space
+            var parent = _leftFootProxy.Target.Parent;
+            _leftFootProxy.Target.LocalPosition.Value = parent != null
+                ? parent.GlobalPointToLocal(pos)
+                : pos;
         }
 
-        if (_rightFootProxy.Target != null)
+        if (_rightFootProxy.Target != null && !(_rightFootNode.Target?.IsEquippedAndActive ?? false))
         {
-            var rightFootPos = headPos + new float3(footSeparation / 2, footHeightOffset, 0);
-            _rightFootProxy.Target.GlobalPosition = rightFootPos;
+            float3 pos = headPos + new float3(0f, heightOffset, 0f) + (right * footSeparation);
+            var parent = _rightFootProxy.Target.Parent;
+            _rightFootProxy.Target.LocalPosition.Value = parent != null
+                ? parent.GlobalPointToLocal(pos)
+                : pos;
         }
     }
 

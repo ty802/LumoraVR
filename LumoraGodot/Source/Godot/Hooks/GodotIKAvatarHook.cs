@@ -324,7 +324,7 @@ public class GodotIKAvatarHook : ComponentHook<GodotIKAvatar>
         : new[] { "rightfoot", "footr", "rfoot" };
 
     /// <summary>
-    /// Update IK targets from Lumora tracking slots.
+    /// Update IK targets from Lumora tracking slots, then detect ground under each foot.
     /// </summary>
     private void UpdateIKTargets()
     {
@@ -347,14 +347,59 @@ public class GodotIKAvatarHook : ComponentHook<GodotIKAvatar>
         if (_leftFootTarget != null && GodotObject.IsInstanceValid(_leftFootTarget))
         {
             float3 pos = Owner.GetLeftFootTargetPosition();
+            floatQ rot = Owner.GetLeftFootTargetRotation();
             _leftFootTarget.GlobalPosition = new Vector3(pos.x, pos.y, pos.z);
+            _leftFootTarget.Quaternion = new Quaternion(rot.x, rot.y, rot.z, rot.w);
         }
 
         if (_rightFootTarget != null && GodotObject.IsInstanceValid(_rightFootTarget))
         {
             float3 pos = Owner.GetRightFootTargetPosition();
+            floatQ rot = Owner.GetRightFootTargetRotation();
             _rightFootTarget.GlobalPosition = new Vector3(pos.x, pos.y, pos.z);
+            _rightFootTarget.Quaternion = new Quaternion(rot.x, rot.y, rot.z, rot.w);
         }
+
+        // Raycast ground under each foot and write results back to Owner for ProceduralLegs.
+        // One-frame lag is imperceptible at runtime.
+        UpdateGroundDetection();
+    }
+
+    /// <summary>
+    /// Uses Godot's physics space to detect ground Y under each foot target.
+    /// Results are written into GodotIKAvatar.LeftFootGroundY / RightFootGroundY
+    /// so that ProceduralLegs can read them on the next frame.
+    /// </summary>
+    private void UpdateGroundDetection()
+    {
+        if (_skeleton == null || !GodotObject.IsInstanceValid(_skeleton)) return;
+
+        var spaceState = _skeleton.GetWorld3D()?.DirectSpaceState;
+        if (spaceState == null) return;
+
+        float range = Owner.GroundRaycastRange.Value;
+
+        Owner.LeftFootGroundY.Value  = RaycastGroundY(spaceState, Owner.GetLeftFootTargetPosition(),  range);
+        Owner.RightFootGroundY.Value = RaycastGroundY(spaceState, Owner.GetRightFootTargetPosition(), range);
+    }
+
+    /// <summary>
+    /// Fires a vertical ray at footPos ± range and returns the Y of the first ground hit.
+    /// Falls back to footPos.y if nothing is hit.
+    /// </summary>
+    private static float RaycastGroundY(PhysicsDirectSpaceState3D spaceState, float3 footPos, float range)
+    {
+        var from = new Vector3(footPos.x, footPos.y + range, footPos.z);
+        var to   = new Vector3(footPos.x, footPos.y - range, footPos.z);
+
+        var query = PhysicsRayQueryParameters3D.Create(from, to);
+        query.CollideWithAreas = false;
+
+        var result = spaceState.IntersectRay(query);
+        if (result != null && result.Count > 0 && result.ContainsKey("position"))
+            return ((Vector3)result["position"]).Y;
+
+        return footPos.y; // no hit — keep current foot Y
     }
 
     public override void Destroy(bool destroyingWorld)

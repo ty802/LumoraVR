@@ -21,6 +21,12 @@ public class ProceduralLegs : Component
     public float FootSpacing { get; set; } = 0.12f;
     public float ArmSwingAmount { get; set; } = 0.12f;
 
+    /// <summary>
+    /// Max distance a foot can move toward its ideal zone per frame.
+    /// Prevents teleport glitches when tracking jumps.
+    /// </summary>
+    public float MaxFootStepPerFrame { get; set; } = 0.6f;
+
     // ===== REFERENCES =====
 
     private GodotIKAvatar? _ikAvatar;
@@ -74,10 +80,10 @@ public class ProceduralLegs : Component
         }
 
         var rootPos = GetRootPosition();
-        float groundY = GetGroundY();
+        float groundY = FallbackGroundY();
 
         // Initialize feet directly under root, on ground
-        _leftFootPos = new float3(rootPos.x - FootSpacing, groundY, rootPos.z);
+        _leftFootPos  = new float3(rootPos.x - FootSpacing, groundY, rootPos.z);
         _rightFootPos = new float3(rootPos.x + FootSpacing, groundY, rootPos.z);
         _lastRootPos = rootPos;
         _initialized = true;
@@ -93,7 +99,8 @@ public class ProceduralLegs : Component
         if (!_initialized || _ikAvatar == null) return;
 
         var rootPos = GetRootPosition();
-        float groundY = GetGroundY();
+        float leftGroundY  = GetLeftGroundY();
+        float rightGroundY = GetRightGroundY();
 
         // Calculate velocity from root movement
         float3 velocity = (rootPos - _lastRootPos) / MathF.Max(delta, 0.001f);
@@ -104,34 +111,49 @@ public class ProceduralLegs : Component
         _smoothVelocity = float3.Lerp(_smoothVelocity, velocity, delta * 10f);
         float speed = _smoothVelocity.Length;
 
-        // Calculate where feet SHOULD be (directly under root)
-        float3 leftIdeal = new float3(rootPos.x - FootSpacing, groundY, rootPos.z);
-        float3 rightIdeal = new float3(rootPos.x + FootSpacing, groundY, rootPos.z);
+        // Preferred: use GodotIKAvatar's body-rotation-aware foot zone positions.
+        // Fallback: world-X axis separation (legacy behaviour).
+        float3 leftIdeal;
+        float3 rightIdeal;
+        if (_ikAvatar != null)
+        {
+            leftIdeal  = _ikAvatar.GetLeftFootIdealPosition();
+            rightIdeal = _ikAvatar.GetRightFootIdealPosition();
+        }
+        else
+        {
+            leftIdeal  = new float3(rootPos.x - FootSpacing, leftGroundY,  rootPos.z);
+            rightIdeal = new float3(rootPos.x + FootSpacing, rightGroundY, rootPos.z);
+        }
 
-        // Add small forward offset based on velocity
+        // Small forward prediction based on movement velocity
         if (speed > 0.1f)
         {
-            float3 velDir = _smoothVelocity.Normalized;
-            float3 stepOffset = velDir * 0.1f; // Small prediction
-            leftIdeal += stepOffset;
+            float3 stepOffset = _smoothVelocity.Normalized * 0.1f;
+            leftIdeal  += stepOffset;
             rightIdeal += stepOffset;
         }
 
-        // Update stepping
-        UpdateStep(ref _leftStepping, ref _leftStepT, ref _leftFootPos, ref _leftStepFrom, ref _leftStepTo, leftIdeal, groundY, delta, false);
-        UpdateStep(ref _rightStepping, ref _rightStepT, ref _rightFootPos, ref _rightStepFrom, ref _rightStepTo, rightIdeal, groundY, delta, true);
+        // Clamp per-frame foot movement to avoid teleport glitches
+        float3 leftDelta  = leftIdeal  - _leftFootPos;
+        float3 rightDelta = rightIdeal - _rightFootPos;
+        if (leftDelta.Length  > MaxFootStepPerFrame) leftIdeal  = _leftFootPos  + leftDelta.Normalized  * MaxFootStepPerFrame;
+        if (rightDelta.Length > MaxFootStepPerFrame) rightIdeal = _rightFootPos + rightDelta.Normalized * MaxFootStepPerFrame;
 
-        // Check if need new step
+        // Update stepping animation
+        UpdateStep(ref _leftStepping,  ref _leftStepT,  ref _leftFootPos,  ref _leftStepFrom,  ref _leftStepTo,  leftIdeal,  leftGroundY,  delta, false);
+        UpdateStep(ref _rightStepping, ref _rightStepT, ref _rightFootPos, ref _rightStepFrom, ref _rightStepTo, rightIdeal, rightGroundY, delta, true);
+
+        // Trigger a new step when foot drifts past StepDistance (only one foot at a time)
         if (!_leftStepping && !_rightStepping)
         {
-            float leftDist = HorizDist(_leftFootPos, leftIdeal);
+            float leftDist  = HorizDist(_leftFootPos,  leftIdeal);
             float rightDist = HorizDist(_rightFootPos, rightIdeal);
 
             if (leftDist > StepDistance || rightDist > StepDistance)
             {
-                // Step the foot that's further behind
                 if (leftDist >= rightDist)
-                    StartStep(ref _leftStepping, ref _leftStepT, ref _leftStepFrom, ref _leftStepTo, _leftFootPos, leftIdeal);
+                    StartStep(ref _leftStepping,  ref _leftStepT,  ref _leftStepFrom,  ref _leftStepTo,  _leftFootPos,  leftIdeal);
                 else
                     StartStep(ref _rightStepping, ref _rightStepT, ref _rightStepFrom, ref _rightStepTo, _rightFootPos, rightIdeal);
             }
@@ -267,14 +289,23 @@ public class ProceduralLegs : Component
     {
         // Use user root position as the reference (where the player is)
         if (_userRoot != null)
-            return _userRoot.Slot.GlobalPosition + new float3(0, 0.9f, 0); // Hip height
-        return Slot.GlobalPosition + new float3(0, 0.9f, 0);
+            return _userRoot.Slot.GlobalPosition + new float3(0f, 0.9f, 0f); // approximate hip height
+        return Slot.GlobalPosition + new float3(0f, 0.9f, 0f);
     }
 
-    private float GetGroundY()
+    /// <summary>
+    /// Ground Y under the left foot, using raycast feedback from GodotIKAvatarHook when available.
+    /// </summary>
+    private float GetLeftGroundY()  => _ikAvatar?.LeftFootGroundY  != null ? _ikAvatar.LeftFootGroundY.Value  : FallbackGroundY();
+
+    /// <summary>
+    /// Ground Y under the right foot, using raycast feedback from GodotIKAvatarHook when available.
+    /// </summary>
+    private float GetRightGroundY() => _ikAvatar?.RightFootGroundY != null ? _ikAvatar.RightFootGroundY.Value : FallbackGroundY();
+
+    private float FallbackGroundY()
     {
-        if (_userRoot != null)
-            return _userRoot.Slot.GlobalPosition.y;
+        if (_userRoot != null) return _userRoot.Slot.GlobalPosition.y;
         return Slot.GlobalPosition.y;
     }
 

@@ -782,10 +782,18 @@ public partial class ClipboardImporter : Node
             shaderName = "CustomShader";
         }
 
-        var rootSlot = targetSlot.AddSlot($"{shaderName}_Material");
+        var rootSlot = targetSlot.AddSlot($"{shaderName}_ShaderWorkbench");
         PositionInFrontOfCamera(rootSlot);
 
-        var sphereSlot = rootSlot.AddSlot("MaterialSphere");
+        var sourceSlot = rootSlot.AddSlot("ShaderSource");
+        var shaderProvider = sourceSlot.AttachComponent<ShaderSourceProvider>();
+        shaderProvider.URL.Value = new Uri(localUri ?? filePath);
+
+        var materialSlot = rootSlot.AddSlot("Material");
+        var material = materialSlot.AttachComponent<CustomShaderMaterial>();
+        material.Shader.Target = shaderProvider;
+
+        var sphereSlot = rootSlot.AddSlot("PreviewSphere");
         sphereSlot.LocalPosition.Value = new float3(-0.35f, 0f, 0f);
 
         var sphereMesh = sphereSlot.AttachComponent<LumoraMeshes.SphereMesh>();
@@ -795,12 +803,6 @@ public partial class ClipboardImporter : Node
 
         var meshRenderer = sphereSlot.AttachComponent<MeshRenderer>();
         meshRenderer.Mesh.Target = sphereMesh;
-
-        var shaderProvider = sphereSlot.AttachComponent<ShaderSourceProvider>();
-        shaderProvider.URL.Value = new Uri(localUri ?? filePath);
-
-        var material = sphereSlot.AttachComponent<CustomShaderMaterial>();
-        material.Shader.Target = shaderProvider;
         meshRenderer.Material.Target = material;
 
         var inspectorSlot = rootSlot.AddSlot("MaterialInspector");

@@ -22,4 +22,4 @@ Lumora VR is a feature-rich Social VR Platform designed for mid-range PC users w
 For questions or issues, please open an issue or make a PR.
 
 ## Licence
-LumoraVR is **source-available** — the code is visible and open for community contributions, but all rights are reserved by LUMORAVR LTD. Contributions become company property. You may not fork, redistribute, or publish this project. See [LICENSE.md](./LICENSE.md) for full terms.
+LumoraVR is **source-available** — the code is visible and open for community contributions, but all rights are reserved by LUMORAVR LTD. Contributions become company property. You may fork this repository solely for the purpose of submitting pull requests back to this project. You may not redistribute, publish, or use this project or any fork of it as your own product. See [LICENSE.md](./LICENSE.md) for full terms. for full terms.

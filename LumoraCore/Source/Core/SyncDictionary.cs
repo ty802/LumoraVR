@@ -1,225 +1,231 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.IO;
+using Lumora.Core.Networking;
+using Lumora.Core.Networking.Sync;
 
 namespace Lumora.Core;
 
 /// <summary>
-/// A synchronized dictionary that can be networked.
-/// Provides key-value synchronized collections with change tracking.
+/// Compact synchronized dictionary for value types and primitives.
+/// Supports full and op-log delta network encoding via SyncCoder.
+/// Use this instead of wrapping individual Sync&lt;T&gt; fields for keyed collections.
 /// </summary>
-public class SyncDictionary<TKey, TValue> : IChangeable, IEnumerable<KeyValuePair<TKey, TValue>>, IWorldElement
+public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<KeyValuePair<TKey, TValue>>
 {
-    private Component _owner;
-    private Dictionary<TKey, TValue> _dictionary = new Dictionary<TKey, TValue>();
+    private const byte OpSet = 0;
+    private const byte OpRemove = 1;
+    private const byte OpClear = 2;
 
-    /// <summary>
-    /// Event fired when the dictionary changes (add, remove, update, clear, etc.)
-    /// </summary>
-    public event Action<SyncDictionary<TKey, TValue>> OnChanged;
+    private struct DictOp
+    {
+        public byte Type;
+        public TKey Key;
+        public TValue Value;
+    }
 
-    /// <summary>
-    /// Event fired when a specific key is added or updated.
-    /// </summary>
-    public event Action<TKey, TValue> OnKeyChanged;
+    private readonly Dictionary<TKey, TValue> _dict = new();
+    private List<DictOp>? _pendingOps;
 
-    /// <summary>
-    /// Event fired when a specific key is removed.
-    /// </summary>
-    public event Action<TKey> OnKeyRemoved;
+    public int Count => _dict.Count;
+    public IEnumerable<TKey> Keys => _dict.Keys;
+    public IEnumerable<TValue> Values => _dict.Values;
 
-    /// <summary>
-    /// Event fired when this element changes.
-    /// Used for reactive updates and change propagation.
-    /// </summary>
-    public event Action<IChangeable> Changed;
+    public event Action<SyncDictionary<TKey, TValue>>? OnChanged;
+    public event Action<TKey, TValue>? OnKeyChanged;
+    public event Action<TKey>? OnKeyRemoved;
 
-    /// <summary>
-    /// The number of key-value pairs in the dictionary.
-    /// </summary>
-    public int Count => _dictionary.Count;
-
-    /// <summary>
-    /// Gets the collection of keys in the dictionary.
-    /// </summary>
-    public ICollection<TKey> Keys => _dictionary.Keys;
-
-	/// <summary>
-	/// Gets the collection of values in the dictionary.
-	/// </summary>
-	public ICollection<TValue> Values => _dictionary.Values;
-
-    /// <summary>
-    /// Gets or sets the value associated with the specified key.
-    /// </summary>
     public TValue this[TKey key]
     {
-        get => _dictionary[key];
-        set
-        {
-            bool isUpdate = _dictionary.ContainsKey(key);
-            if (!isUpdate || !EqualityComparer<TValue>.Default.Equals(_dictionary[key], value))
-            {
-                _dictionary[key] = value;
-                OnKeyChanged?.Invoke(key, value);
-                NotifyChange();
-            }
-        }
+        get => _dict[key];
+        set => SetKey(key, value);
     }
 
-    public SyncDictionary(Component owner)
-    {
-        _owner = owner;
-    }
-
-    /// <summary>
-    /// Add a key-value pair to the dictionary.
-    /// </summary>
-    /// <param name="key">The key to add.</param>
-    /// <param name="value">The value to add.</param>
     public void Add(TKey key, TValue value)
     {
-        _dictionary.Add(key, value);
+        if (!BeginModification()) return;
+        _dict.Add(key, value);
+        (_pendingOps ??= new List<DictOp>()).Add(new DictOp { Type = OpSet, Key = key, Value = value });
+        InvalidateSyncElement();
+        BlockModification();
         OnKeyChanged?.Invoke(key, value);
-        NotifyChange();
+        OnChanged?.Invoke(this);
+        UnblockModification();
+        EndModification();
     }
 
-    /// <summary>
-    /// Try to add a key-value pair to the dictionary.
-    /// </summary>
-    /// <param name="key">The key to add.</param>
-    /// <param name="value">The value to add.</param>
-    /// <returns>True if added successfully, false if key already exists.</returns>
     public bool TryAdd(TKey key, TValue value)
     {
-        if (_dictionary.ContainsKey(key))
-            return false;
-
-        _dictionary.Add(key, value);
-        OnKeyChanged?.Invoke(key, value);
-        NotifyChange();
+        if (_dict.ContainsKey(key)) return false;
+        Add(key, value);
         return true;
     }
 
-    /// <summary>
-    /// Remove a key-value pair from the dictionary.
-    /// </summary>
-    /// <param name="key">The key to remove.</param>
-    /// <returns>True if the key was found and removed, false otherwise.</returns>
     public bool Remove(TKey key)
     {
-        if (_dictionary.Remove(key))
-        {
-            OnKeyRemoved?.Invoke(key);
-            NotifyChange();
-            return true;
-        }
-        return false;
+        if (!_dict.ContainsKey(key)) return false;
+        if (!BeginModification()) return false;
+        _dict.Remove(key);
+        (_pendingOps ??= new List<DictOp>()).Add(new DictOp { Type = OpRemove, Key = key });
+        InvalidateSyncElement();
+        BlockModification();
+        OnKeyRemoved?.Invoke(key);
+        OnChanged?.Invoke(this);
+        UnblockModification();
+        EndModification();
+        return true;
     }
 
-    /// <summary>
-    /// Check if the dictionary contains a key.
-    /// </summary>
-    /// <param name="key">The key to check for.</param>
-    /// <returns>True if the key exists, false otherwise.</returns>
-    public bool ContainsKey(TKey key)
-    {
-        return _dictionary.ContainsKey(key);
-    }
+    public bool ContainsKey(TKey key) => _dict.ContainsKey(key);
+    public bool ContainsValue(TValue value) => _dict.ContainsValue(value);
+    public bool TryGetValue(TKey key, out TValue value) => _dict.TryGetValue(key, out value);
 
-    /// <summary>
-    /// Check if the dictionary contains a value.
-    /// </summary>
-    /// <param name="value">The value to check for.</param>
-    /// <returns>True if the value exists, false otherwise.</returns>
-    public bool ContainsValue(TValue value)
-    {
-        return _dictionary.ContainsValue(value);
-    }
+    public TValue GetValueOrDefault(TKey key, TValue defaultValue = default!)
+        => _dict.TryGetValue(key, out var v) ? v : defaultValue;
 
-    /// <summary>
-    /// Try to get a value from the dictionary.
-    /// </summary>
-    /// <param name="key">The key to look up.</param>
-    /// <param name="value">The value if found.</param>
-    /// <returns>True if the key was found, false otherwise.</returns>
-    public bool TryGetValue(TKey key, out TValue value)
-    {
-        return _dictionary.TryGetValue(key, out value);
-    }
-
-    /// <summary>
-    /// Get a value from the dictionary, or a default value if not found.
-    /// </summary>
-    /// <param name="key">The key to look up.</param>
-    /// <param name="defaultValue">The default value to return if key not found.</param>
-    /// <returns>The value if found, or the default value.</returns>
-    public TValue GetValueOrDefault(TKey key, TValue defaultValue = default)
-    {
-        return _dictionary.TryGetValue(key, out var value) ? value : defaultValue;
-    }
-
-    /// <summary>
-    /// Remove all key-value pairs from the dictionary.
-    /// </summary>
     public void Clear()
     {
-        if (_dictionary.Count > 0)
+        if (_dict.Count == 0) return;
+        if (!BeginModification()) return;
+        _dict.Clear();
+        _pendingOps?.Clear();
+        (_pendingOps ??= new List<DictOp>()).Add(new DictOp { Type = OpClear });
+        InvalidateSyncElement();
+        BlockModification();
+        OnChanged?.Invoke(this);
+        UnblockModification();
+        EndModification();
+    }
+
+    private void SetKey(TKey key, TValue value)
+    {
+        if (!BeginModification()) return;
+        _dict[key] = value;
+        (_pendingOps ??= new List<DictOp>()).Add(new DictOp { Type = OpSet, Key = key, Value = value });
+        InvalidateSyncElement();
+        BlockModification();
+        OnKeyChanged?.Invoke(key, value);
+        OnChanged?.Invoke(this);
+        UnblockModification();
+        EndModification();
+    }
+
+    protected override void InternalEncodeFull(BinaryWriter writer, BinaryMessageBatch outboundMessage)
+    {
+        writer.Write7BitEncoded((ulong)_dict.Count);
+        foreach (var kv in _dict)
         {
-            _dictionary.Clear();
-            NotifyChange();
+            SyncCoder.Encode(writer, kv.Key);
+            SyncCoder.Encode(writer, kv.Value);
         }
     }
 
-    /// <summary>
-    /// Get an enumerator for the key-value pairs in the dictionary.
-    /// </summary>
-    public IEnumerator<KeyValuePair<TKey, TValue>> GetEnumerator()
+    protected override void InternalDecodeFull(BinaryReader reader, BinaryMessageBatch inboundMessage)
     {
-        return _dictionary.GetEnumerator();
-    }
-
-    /// <summary>
-    /// Get a non-generic enumerator for the key-value pairs in the dictionary.
-    /// </summary>
-    IEnumerator IEnumerable.GetEnumerator()
-    {
-        return _dictionary.GetEnumerator();
-    }
-
-	/// <summary>
-	/// Destroy this element and remove it from the world.
-	/// </summary>
-	public void Destroy()
-	{
-		Clear();
-		_owner = null;
-	}
-
-	public World World => _owner?.World;
-
-	public RefID ReferenceID => _owner?.ReferenceID ?? RefID.Null;
-
-	public ulong RefIdNumeric => (ulong)ReferenceID;
-
-	public bool IsDestroyed => _owner?.IsDestroyed ?? true;
-
-	public bool IsInitialized => _owner?.IsInitialized ?? false;
-
-	public bool IsLocalElement => _owner?.IsLocalElement ?? false;
-
-	public bool IsPersistent => _owner?.IsPersistent ?? true;
-
-	public string ParentHierarchyToString() => _owner?.ParentHierarchyToString() ?? $"{GetType().Name}";
-
-    /// <summary>
-    /// Notify that the dictionary has changed.
-    /// Triggers both OnChanged and Changed events, and notifies the owner component.
-    /// </summary>
-    private void NotifyChange()
-    {
+        _dict.Clear();
+        int count = (int)reader.Read7BitEncoded();
+        for (int i = 0; i < count; i++)
+        {
+            var key = SyncCoder.Decode<TKey>(reader);
+            var value = SyncCoder.Decode<TValue>(reader);
+            _dict[key] = value;
+        }
+        BlockModification();
         OnChanged?.Invoke(this);
-        Changed?.Invoke(this);
-        _owner?.NotifyChanged();
+        UnblockModification();
+    }
+
+    protected override void InternalEncodeDelta(BinaryWriter writer, BinaryMessageBatch outboundMessage)
+    {
+        if (_pendingOps == null || _pendingOps.Count == 0)
+        {
+            writer.Write(true); // isFull flag
+            InternalEncodeFull(writer, outboundMessage);
+            return;
+        }
+        writer.Write(false); // isFull flag
+        writer.Write7BitEncoded((ulong)_pendingOps.Count);
+        foreach (var op in _pendingOps)
+        {
+            writer.Write(op.Type);
+            if (op.Type == OpSet)
+            {
+                SyncCoder.Encode(writer, op.Key);
+                SyncCoder.Encode(writer, op.Value);
+            }
+            else if (op.Type == OpRemove)
+            {
+                SyncCoder.Encode(writer, op.Key);
+            }
+            // OpClear: no payload
+        }
+    }
+
+    protected override void InternalDecodeDelta(BinaryReader reader, BinaryMessageBatch inboundMessage)
+    {
+        bool isFull = reader.ReadBoolean();
+        if (isFull)
+        {
+            InternalDecodeFull(reader, inboundMessage);
+            return;
+        }
+        int opCount = (int)reader.Read7BitEncoded();
+        bool anyChanged = false;
+        for (int i = 0; i < opCount; i++)
+        {
+            byte type = reader.ReadByte();
+            if (type == OpSet)
+            {
+                var key = SyncCoder.Decode<TKey>(reader);
+                var value = SyncCoder.Decode<TValue>(reader);
+                _dict[key] = value;
+                BlockModification();
+                OnKeyChanged?.Invoke(key, value);
+                UnblockModification();
+                anyChanged = true;
+            }
+            else if (type == OpRemove)
+            {
+                var key = SyncCoder.Decode<TKey>(reader);
+                _dict.Remove(key);
+                BlockModification();
+                OnKeyRemoved?.Invoke(key);
+                UnblockModification();
+                anyChanged = true;
+            }
+            else if (type == OpClear)
+            {
+                _dict.Clear();
+                anyChanged = true;
+            }
+        }
+        if (anyChanged)
+        {
+            BlockModification();
+            OnChanged?.Invoke(this);
+            UnblockModification();
+        }
+    }
+
+    protected override void InternalClearDirty()
+    {
+        _pendingOps?.Clear();
+    }
+
+    public override object? GetValueAsObject() => null;
+
+    public IEnumerator<KeyValuePair<TKey, TValue>> GetEnumerator() => _dict.GetEnumerator();
+    IEnumerator IEnumerable.GetEnumerator() => _dict.GetEnumerator();
+
+    public override void Dispose()
+    {
+        OnChanged = null;
+        OnKeyChanged = null;
+        OnKeyRemoved = null;
+        _dict.Clear();
+        _pendingOps?.Clear();
+        _pendingOps = null;
+        base.Dispose();
     }
 }

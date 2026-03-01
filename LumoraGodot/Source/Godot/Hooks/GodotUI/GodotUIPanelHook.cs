@@ -1,12 +1,12 @@
-using Godot;
+﻿using Godot;
 using Lumora.Core;
 using Lumora.Core.GodotUI;
 using Lumora.Core.Math;
 using System.Collections.Generic;
-using Aquamarine.Godot.UI;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using Lumora.Godot.UI;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks.GodotUI;
+namespace Lumora.Godot.Hooks.GodotUI;
 
 #nullable enable
 
@@ -106,7 +106,7 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
 
         Owner.OnDataRefresh += RefreshUIData;
 
-        AquaLogger.Log($"GodotUIPanelHook: Initialized for {Owner.GetType().Name}");
+        LumoraLogger.Log($"GodotUIPanelHook: Initialized for {Owner.GetType().Name}");
     }
 
     private void LoadScene()
@@ -114,21 +114,21 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
         var scenePath = Owner.ScenePath.Value;
         if (string.IsNullOrEmpty(scenePath))
         {
-            AquaLogger.Warn("GodotUIPanelHook: No scene path specified");
+            LumoraLogger.Warn("GodotUIPanelHook: No scene path specified");
             return;
         }
 
         var packedScene = GD.Load<PackedScene>(scenePath);
         if (packedScene == null)
         {
-            AquaLogger.Warn($"GodotUIPanelHook: Failed to load scene '{scenePath}'");
+            LumoraLogger.Warn($"GodotUIPanelHook: Failed to load scene '{scenePath}'");
             return;
         }
 
         _loadedScene = packedScene.Instantiate();
         if (_loadedScene == null)
         {
-            AquaLogger.Warn("GodotUIPanelHook: Failed to instantiate scene");
+            LumoraLogger.Warn("GodotUIPanelHook: Failed to instantiate scene");
             return;
         }
 
@@ -154,7 +154,7 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
         RefreshUIData();
         ResetScrollPositions();
 
-        AquaLogger.Log($"GodotUIPanelHook: Scene loaded, created {_nodeRegistry.Count} UI element components");
+        LumoraLogger.Log($"GodotUIPanelHook: Scene loaded, created {_nodeRegistry.Count} UI element components");
     }
 
     private void ParseSceneNode(Node node, string parentPath, Slot parentSlot)
@@ -323,7 +323,7 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
         _collisionArea.AddChild(_collisionShape);
         attachedNode.AddChild(_collisionArea);
 
-        AquaLogger.Log($"GodotUIPanelHook: Created collision area for touch interaction");
+        LumoraLogger.Log($"GodotUIPanelHook: Created collision area for touch interaction");
     }
 
     private void UpdateCollisionSize()

@@ -1,8 +1,8 @@
-using Godot;
+﻿using Godot;
 using Lumora.Core;
 using Lumora.Core.GodotUI;
 
-namespace Aquamarine.Godot.Hooks.GodotUI;
+namespace Lumora.Godot.Hooks.GodotUI;
 
 #nullable enable
 

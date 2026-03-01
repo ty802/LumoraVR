@@ -1,8 +1,8 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Math;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -68,13 +68,13 @@ public class SkeletonBuilder : ImplementableComponent
         BoneNames.OnChanged += (list) => BoneHierarchyChanged = true;
         BoneSlots.OnChanged += (list) => BoneHierarchyChanged = true;
 
-        AquaLogger.Log($"SkeletonBuilder: Awake on slot '{Slot.SlotName.Value}'");
+        LumoraLogger.Log($"SkeletonBuilder: Awake on slot '{Slot.SlotName.Value}'");
     }
 
     public override void OnStart()
     {
         base.OnStart();
-        AquaLogger.Log($"SkeletonBuilder: Started on slot '{Slot.SlotName.Value}'");
+        LumoraLogger.Log($"SkeletonBuilder: Started on slot '{Slot.SlotName.Value}'");
     }
 
     public override void OnUpdate(float delta)
@@ -95,7 +95,7 @@ public class SkeletonBuilder : ImplementableComponent
     public override void OnDestroy()
     {
         base.OnDestroy();
-        AquaLogger.Log($"SkeletonBuilder: Destroyed on slot '{Slot?.SlotName.Value}'");
+        LumoraLogger.Log($"SkeletonBuilder: Destroyed on slot '{Slot?.SlotName.Value}'");
     }
 
     // ===== PUBLIC API =====
@@ -108,7 +108,7 @@ public class SkeletonBuilder : ImplementableComponent
     {
         if (rootBone == null)
         {
-            AquaLogger.Warn("SkeletonBuilder: Cannot build from null root bone");
+            LumoraLogger.Warn("SkeletonBuilder: Cannot build from null root bone");
             return;
         }
 
@@ -123,7 +123,7 @@ public class SkeletonBuilder : ImplementableComponent
         IsBuilt.Value = true;
         BoneHierarchyChanged = true;
 
-        AquaLogger.Log($"SkeletonBuilder: Built skeleton with {BoneNames.Count} bones from root '{rootBone.SlotName.Value}'");
+        LumoraLogger.Log($"SkeletonBuilder: Built skeleton with {BoneNames.Count} bones from root '{rootBone.SlotName.Value}'");
     }
 
     /// <summary>
@@ -134,7 +134,7 @@ public class SkeletonBuilder : ImplementableComponent
     {
         if (string.IsNullOrEmpty(boneName) || boneSlot == null)
         {
-            AquaLogger.Warn("SkeletonBuilder: Cannot add bone with null name or slot");
+            LumoraLogger.Warn("SkeletonBuilder: Cannot add bone with null name or slot");
             return;
         }
 
@@ -146,7 +146,7 @@ public class SkeletonBuilder : ImplementableComponent
 
         BoneHierarchyChanged = true;
 
-        AquaLogger.Log($"SkeletonBuilder: Added bone '{boneName}' (total: {BoneNames.Count})");
+        LumoraLogger.Log($"SkeletonBuilder: Added bone '{boneName}' (total: {BoneNames.Count})");
     }
 
     /// <summary>
@@ -191,7 +191,7 @@ public class SkeletonBuilder : ImplementableComponent
         IsBuilt.Value = false;
         BoneHierarchyChanged = true;
 
-        AquaLogger.Log("SkeletonBuilder: Cleared all bones");
+        LumoraLogger.Log("SkeletonBuilder: Cleared all bones");
     }
 
     // ===== PRIVATE METHODS =====

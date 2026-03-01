@@ -1,9 +1,9 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using Lumora.Core;
 using Lumora.Core.Networking.Streams;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Sync;
 
@@ -32,7 +32,7 @@ public class SyncController
 			var memberName = ((ISyncMember)sf).Name;
 			if (memberName == "Name")
 			{
-				AquaLogger.Log($"SyncController.RegisterSyncElement: Slot.Name RefID={element.ReferenceID}, Value='{sf.Value}', ParentSlot={parentSlot.ReferenceID}");
+				LumoraLogger.Log($"SyncController.RegisterSyncElement: Slot.Name RefID={element.ReferenceID}, Value='{sf.Value}', ParentSlot={parentSlot.ReferenceID}");
 			}
 		}
 	}
@@ -102,7 +102,7 @@ public class SyncController
 		var list = new List<SyncElement>(elements);
 		list.Sort((SyncElement a, SyncElement b) => a.ReferenceID.CompareTo(b.ReferenceID));
 
-		AquaLogger.Log($"SyncController.EncodeFullBatch: Encoding {list.Count} sync elements");
+		LumoraLogger.Log($"SyncController.EncodeFullBatch: Encoding {list.Count} sync elements");
 		int slotFieldCount = 0, componentFieldCount = 0, otherCount = 0;
 
 		foreach (SyncElement element in list)
@@ -117,7 +117,7 @@ public class SyncController
 					var memberName = ((ISyncMember)sf).Name;
 					if (memberName == "Name")
 					{
-						AquaLogger.Log($"  Encoding Slot.Name: RefID={element.ReferenceID}, Value='{sf.Value}', ParentSlot={parentSlot.ReferenceID}");
+						LumoraLogger.Log($"  Encoding Slot.Name: RefID={element.ReferenceID}, Value='{sf.Value}', ParentSlot={parentSlot.ReferenceID}");
 					}
 				}
 			}
@@ -129,7 +129,7 @@ public class SyncController
 			fullBatch.FinishDataRecord(element.ReferenceID);
 		}
 
-		AquaLogger.Log($"SyncController.EncodeFullBatch: Summary - SlotFields={slotFieldCount}, ComponentFields={componentFieldCount}, Other={otherCount}");
+		LumoraLogger.Log($"SyncController.EncodeFullBatch: Summary - SlotFields={slotFieldCount}, ComponentFields={componentFieldCount}, Other={otherCount}");
 
 		return fullBatch;
 	}
@@ -273,14 +273,14 @@ public class SyncController
 					var memberName = ((ISyncMember)sf).Name;
 					if (memberName == "Name")
 					{
-						AquaLogger.Log($"SyncController.DecodeFullMessage: Decoded Slot.Name RefID={value.ReferenceID}, Value='{sf.Value}', ParentSlot={parentSlot.ReferenceID}");
+						LumoraLogger.Log($"SyncController.DecodeFullMessage: Decoded Slot.Name RefID={value.ReferenceID}, Value='{sf.Value}', ParentSlot={parentSlot.ReferenceID}");
 					}
 				}
 			}
 			return true;
 		}
 
-		AquaLogger.Warn($"SyncController.DecodeBinaryMessage: Element not found for RefID={dataRecord.TargetID}");
+		LumoraLogger.Warn($"SyncController.DecodeBinaryMessage: Element not found for RefID={dataRecord.TargetID}");
 		return false;
 	}
 
@@ -373,7 +373,7 @@ public class SyncController
 		var userElement = Owner?.ReferenceController?.GetObjectOrNull(new RefID(message.UserID));
 		if (userElement is not User user)
 		{
-			AquaLogger.Warn($"ApplyStreams: User not found for ID {message.UserID}");
+			LumoraLogger.Warn($"ApplyStreams: User not found for ID {message.UserID}");
 			return;
 		}
 
@@ -408,7 +408,7 @@ public class SyncController
 				}
 				else
 				{
-					AquaLogger.Warn($"ApplyStreams: Stream {streamRefID} not found or inactive");
+					LumoraLogger.Warn($"ApplyStreams: Stream {streamRefID} not found or inactive");
 					break; // Can't continue if we don't know the stream's data format
 				}
 			}
@@ -418,7 +418,7 @@ public class SyncController
 			}
 			catch (Exception ex)
 			{
-				AquaLogger.Error($"ApplyStreams: Error decoding stream data: {ex.Message}");
+				LumoraLogger.Error($"ApplyStreams: Error decoding stream data: {ex.Message}");
 				break;
 			}
 		}
@@ -428,7 +428,7 @@ public class SyncController
 		// Log stream receive summary periodically (every 60 messages)
 		// if (_appliedStreamCount > 0 && _appliedStreamCount % 60 == 0)
 		// {
-		// 	AquaLogger.Log($"[Stream] Applied {_appliedStreamCount} streams from remote users");
+		// 	LumoraLogger.Log($"[Stream] Applied {_appliedStreamCount} streams from remote users");
 		// }
 	}
 

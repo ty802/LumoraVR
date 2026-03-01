@@ -1,11 +1,11 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Lumora.Core.Networking.Session;
 using Lumora.Core.Networking.Sync;
 using Lumora.Core.Components;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
 
@@ -484,7 +484,7 @@ public class World
 
 		// Start running
 		world.StartRunning();
-		AquaLogger.Log($"Local world '{name}' created and started");
+		LumoraLogger.Log($"Local world '{name}' created and started");
 
 		return world;
 	}
@@ -543,7 +543,7 @@ public class World
 
 		// Start running
 		world.StartRunning();
-		AquaLogger.Log($"Session '{name}' started on port {port} with visibility {visibility}");
+		LumoraLogger.Log($"Session '{name}' started on port {port} with visibility {visibility}");
 
 		return world;
 	}
@@ -568,7 +568,7 @@ public class World
 		world.JoinSession(address);
 
 		// World will transition to Running when connection succeeds
-		AquaLogger.Log($"Joining session at {address}");
+		LumoraLogger.Log($"Joining session at {address}");
 
 		return world;
 	}
@@ -596,7 +596,7 @@ public class World
 			return null;
 		}
 
-		AquaLogger.Log($"Joining session at {address}");
+		LumoraLogger.Log($"Joining session at {address}");
 		return world;
 	}
 
@@ -610,14 +610,14 @@ public class World
 		if (_state != WorldState.Created) return;
 
 		_initState = InitializationState.Created;
-		AquaLogger.Log($"World initializing data model (isAuthority={isAuthority})");
+		LumoraLogger.Log($"World initializing data model (isAuthority={isAuthority})");
 
 		// Create reference controller BEFORE anything else
 		ReferenceController = new ReferenceController(this);
 
 		// Create sync controller first (doesn't need RefID)
 		SyncController = new SyncController(this);
-		AquaLogger.Log("SyncController initialized");
+		LumoraLogger.Log("SyncController initialized");
 
 		// Create worker manager for type encoding/decoding during sync
 		// Needs SyncController available so the type index table registers for replication.
@@ -629,14 +629,14 @@ public class World
 		_slotBag.Initialize(this, null);
 		_userBag = new Networking.Sync.UserBag();
 		_userBag.Initialize(this, null);
-		AquaLogger.Log($"Network bags initialized: SlotBag={_slotBag.ReferenceID}, UserBag={_userBag.ReferenceID}");
+		LumoraLogger.Log($"Network bags initialized: SlotBag={_slotBag.ReferenceID}, UserBag={_userBag.ReferenceID}");
 
 		// Clients must create shared world structures (RootSlot) in authority RefID space
 		// so incoming ParentSlotRef and other references resolve correctly.
 		// Local-only structures should explicitly use LocalAllocationBlockBegin where created.
 		if (!isAuthority)
 		{
-			AquaLogger.Log("Client: Using authority RefID space for shared world structures");
+			LumoraLogger.Log("Client: Using authority RefID space for shared world structures");
 		}
 
 		// Create root Slot (uses Authority RefID space on both host and client)
@@ -662,7 +662,7 @@ public class World
 		{
 			_userBag.EndInitPhase();
 		}
-		AquaLogger.Log($"World '{WorldName.Value}' initialized successfully - state={_state}, initState={_initState}");
+		LumoraLogger.Log($"World '{WorldName.Value}' initialized successfully - state={_state}, initState={_initState}");
 	}
 
 	/// <summary>
@@ -679,7 +679,7 @@ public class World
 			// Create Users container slot under Root
 			usersSlot = RootSlot.AddSlot("Users");
 			usersSlot.Tag.Value = "UserRoot";
-			AquaLogger.Log("Created Users container slot in world");
+			LumoraLogger.Log("Created Users container slot in world");
 		}
 
 		// NO UserRootComponent here! Users container is just a parent slot.
@@ -883,7 +883,7 @@ public class World
 	{
 		if (_state == WorldState.Destroyed) return;
 
-		AquaLogger.Log($"Destroying world '{WorldName.Value}'...");
+		LumoraLogger.Log($"Destroying world '{WorldName.Value}'...");
 
 		_state = WorldState.Destroyed;
 
@@ -929,7 +929,7 @@ public class World
 					_userBag.Add(user.ReferenceID, user, isNewlyCreated: true, skipSync: false);
 				}
 
-				AquaLogger.Log($"User added to world: {user.UserName.Value}");
+				LumoraLogger.Log($"User added to world: {user.UserName.Value}");
 
 				// Trigger user joined event - ONLY on authority!
 				// Only host fires OnUserJoined events. Host's SimpleUserSpawn creates
@@ -974,7 +974,7 @@ public class World
 			// Remove from user replicator for network sync
 			_userBag?.Remove(user.ReferenceID);
 
-			AquaLogger.Log($"User removed from world: {user.UserName.Value}");
+			LumoraLogger.Log($"User removed from world: {user.UserName.Value}");
 
 			// Trigger user left event - ONLY on authority!
 			// Same reason as OnUserJoined - host handles user lifecycle events.
@@ -1014,7 +1014,7 @@ public class World
 			user?.ConfigureLocalTrackingStreams();
 		}
 		AddUser(user);
-		AquaLogger.Log($"Local user set: {user.UserName.Value}");
+		LumoraLogger.Log($"Local user set: {user.UserName.Value}");
 	}
 
 	/// <summary>
@@ -1045,7 +1045,7 @@ public class World
 	{
 		if (_session != null)
 		{
-			AquaLogger.Warn("Session already started");
+			LumoraLogger.Warn("Session already started");
 			return;
 		}
 
@@ -1069,11 +1069,11 @@ public class World
 			// The caller (StartSession factory) will set Running AFTER init callback completes.
 			// This allows the init callback to modify the world before the DataModel lock check kicks in.
 
-			AquaLogger.Log($"Started session network on port {port}");
+			LumoraLogger.Log($"Started session network on port {port}");
 		}
 		catch (Exception ex)
 		{
-			AquaLogger.Error($"Failed to start session network: {ex.Message}");
+			LumoraLogger.Error($"Failed to start session network: {ex.Message}");
 			InitializationFailed();
 		}
 	}
@@ -1112,7 +1112,7 @@ public class World
 		LocalUser = hostUser;
 		AddUserToBag(hostUser, userRefId, isNewlyCreated: true);
 		hostUser.ConfigureLocalTrackingStreams();
-		AquaLogger.Log($"Created host user '{resolvedName}' with RefID {userRefId}");
+		LumoraLogger.Log($"Created host user '{resolvedName}' with RefID {userRefId}");
 		return hostUser;
 	}
 
@@ -1137,7 +1137,7 @@ public class World
 	{
 		if (_session != null)
 		{
-			AquaLogger.Warn("Session already active");
+			LumoraLogger.Warn("Session already active");
 			return;
 		}
 
@@ -1155,7 +1155,7 @@ public class World
 		}
 		catch (Exception ex)
 		{
-			AquaLogger.Error($"Failed to join session: {ex.Message}");
+			LumoraLogger.Error($"Failed to join session: {ex.Message}");
 			InitializationFailed();
 		}
 	}
@@ -1167,7 +1167,7 @@ public class World
 	{
 		if (_session != null)
 		{
-			AquaLogger.Warn("Session already active");
+			LumoraLogger.Warn("Session already active");
 			return false;
 		}
 
@@ -1188,7 +1188,7 @@ public class World
 		}
 		catch (Exception ex)
 		{
-			AquaLogger.Error($"Failed to join session: {ex.Message}");
+			LumoraLogger.Error($"Failed to join session: {ex.Message}");
 			InitializationFailed();
 			return false;
 		}
@@ -1227,7 +1227,7 @@ public class World
 		var oldState = _state;
 		_initState = InitializationState.InitializingNetwork;
 		_state = WorldState.InitializingNetwork;
-		AquaLogger.Log("World entering network initialization");
+		LumoraLogger.Log("World entering network initialization");
 		OnStateChanged?.Invoke(oldState, _state);
 	}
 
@@ -1238,14 +1238,14 @@ public class World
 	{
 		if (IsAuthority)
 		{
-			AquaLogger.Warn("Authority cannot wait for join grant");
+			LumoraLogger.Warn("Authority cannot wait for join grant");
 			return;
 		}
 
 		var oldState = _state;
 		_initState = InitializationState.WaitingForJoinGrant;
 		_state = WorldState.WaitingForJoinGrant;
-		AquaLogger.Log("Waiting for join grant");
+		LumoraLogger.Log("Waiting for join grant");
 		OnStateChanged?.Invoke(oldState, _state);
 	}
 
@@ -1256,14 +1256,14 @@ public class World
 	{
 		if (IsAuthority)
 		{
-			AquaLogger.Warn("Authority cannot enter data model init");
+			LumoraLogger.Warn("Authority cannot enter data model init");
 			return;
 		}
 
 		var oldState = _state;
 		_initState = InitializationState.InitializingDataModel;
 		_state = WorldState.InitializingDataModel;
-		AquaLogger.Log("Starting data model initialization");
+		LumoraLogger.Log("Starting data model initialization");
 		OnStateChanged?.Invoke(oldState, _state);
 	}
 
@@ -1278,14 +1278,14 @@ public class World
 		var oldState = _state;
 		_initState = InitializationState.Finished;
 		_state = WorldState.Running;
-		AquaLogger.Log("World is now running");
+		LumoraLogger.Log("World is now running");
 
 		// For clients: configure local user's tracking streams now that all sync members are decoded.
 		// This was deferred from SetLocalUser because streams weren't decoded yet during FullBatch processing.
 		if (!IsAuthority && LocalUser != null)
 		{
 			LocalUser.ConfigureLocalTrackingStreams();
-			AquaLogger.Log($"Configured tracking streams for local user '{LocalUser.UserName.Value}' on world Running");
+			LumoraLogger.Log($"Configured tracking streams for local user '{LocalUser.UserName.Value}' on world Running");
 		}
 
 		OnStateChanged?.Invoke(oldState, _state);
@@ -1299,7 +1299,7 @@ public class World
 		var oldState = _state;
 		_initState = InitializationState.Failed;
 		_state = WorldState.Failed;
-		AquaLogger.Log("World initialization failed");
+		LumoraLogger.Log("World initialization failed");
 		OnStateChanged?.Invoke(oldState, _state);
 	}
 
@@ -1360,7 +1360,7 @@ public class World
 				}
 				catch (Exception ex)
 				{
-					AquaLogger.Error($"World: Error in synchronous action: {ex}");
+					LumoraLogger.Error($"World: Error in synchronous action: {ex}");
 				}
 			}
 		}
@@ -1375,7 +1375,7 @@ public class World
 		{
 			_session.Dispose();
 			_session = null;
-			AquaLogger.Log("Left session");
+			LumoraLogger.Log("Left session");
 		}
 	}
 
@@ -1780,7 +1780,7 @@ public class World
 					}
 					catch (Exception ex)
 					{
-						AquaLogger.Error($"Error in OnUserJoined handler: {ex.Message}");
+						LumoraLogger.Error($"Error in OnUserJoined handler: {ex.Message}");
 					}
 				}
 			}
@@ -1800,7 +1800,7 @@ public class World
 					}
 					catch (Exception ex)
 					{
-						AquaLogger.Error($"Error in OnUserLeft handler: {ex.Message}");
+						LumoraLogger.Error($"Error in OnUserLeft handler: {ex.Message}");
 					}
 				}
 			}
@@ -1837,18 +1837,18 @@ public class World
 				{
 					if (indicator != null)
 					{
-						AquaLogger.Log($"Created session join indicator in world '{currentWorld.Name}' for joining '{Name}'");
+						LumoraLogger.Log($"Created session join indicator in world '{currentWorld.Name}' for joining '{Name}'");
 					}
 					else
 					{
-						AquaLogger.Warn("Failed to create session join indicator");
+						LumoraLogger.Warn("Failed to create session join indicator");
 					}
 				});
 			});
 		}
 		catch (Exception ex)
 		{
-			AquaLogger.Error($"Error creating session join indicator: {ex.Message}");
+			LumoraLogger.Error($"Error creating session join indicator: {ex.Message}");
 		}
 	}
 
@@ -1860,11 +1860,11 @@ public class World
 		// 1. Check double-dispose
 		if (IsDisposed)
 		{
-			AquaLogger.Warn($"World: Already disposed world '{WorldName.Value}'");
+			LumoraLogger.Warn($"World: Already disposed world '{WorldName.Value}'");
 			return;
 		}
 
-		AquaLogger.Log($"World: Disposing world '{WorldName.Value}'");
+		LumoraLogger.Log($"World: Disposing world '{WorldName.Value}'");
 
 		// 2. Mark as destroyed
 		IsDestroyed = true;
@@ -1881,7 +1881,7 @@ public class World
 				}
 				catch (Exception ex)
 				{
-					AquaLogger.Error($"World: Error in disposal synchronous action: {ex}");
+					LumoraLogger.Error($"World: Error in disposal synchronous action: {ex}");
 				}
 			}
 		}
@@ -1894,7 +1894,7 @@ public class World
 		}
 		catch (Exception ex)
 		{
-			AquaLogger.Error($"World: Error disposing session: {ex.Message}");
+			LumoraLogger.Error($"World: Error disposing session: {ex.Message}");
 		}
 
 		// Dispose sync controller
@@ -1905,7 +1905,7 @@ public class World
 		}
 		catch (Exception ex)
 		{
-			AquaLogger.Error($"World: Error disposing sync controller: {ex.Message}");
+			LumoraLogger.Error($"World: Error disposing sync controller: {ex.Message}");
 		}
 
 		// 5. Dispose all users
@@ -1917,7 +1917,7 @@ public class World
 			}
 			catch (Exception ex)
 			{
-				AquaLogger.Error($"World: Error disposing user: {ex.Message}");
+				LumoraLogger.Error($"World: Error disposing user: {ex.Message}");
 			}
 		}
 
@@ -1930,7 +1930,7 @@ public class World
 		}
 		catch (Exception ex)
 		{
-			AquaLogger.Error($"World: Error disposing root slot: {ex.Message}");
+			LumoraLogger.Error($"World: Error disposing root slot: {ex.Message}");
 		}
 
 		// 10. Clear all collections
@@ -1958,7 +1958,7 @@ public class World
 		}
 		catch (Exception ex)
 		{
-			AquaLogger.Error($"World: Error disposing hook manager: {ex.Message}");
+			LumoraLogger.Error($"World: Error disposing hook manager: {ex.Message}");
 		}
 
 		try
@@ -1968,7 +1968,7 @@ public class World
 		}
 		catch (Exception ex)
 		{
-			AquaLogger.Error($"World: Error clearing trash bin: {ex.Message}");
+			LumoraLogger.Error($"World: Error clearing trash bin: {ex.Message}");
 		}
 
 		try
@@ -1978,7 +1978,7 @@ public class World
 		}
 		catch (Exception ex)
 		{
-			AquaLogger.Error($"World: Error clearing update manager: {ex.Message}");
+			LumoraLogger.Error($"World: Error clearing update manager: {ex.Message}");
 		}
 
 		try
@@ -1988,7 +1988,7 @@ public class World
 		}
 		catch (Exception ex)
 		{
-			AquaLogger.Error($"World: Error clearing managers: {ex.Message}");
+			LumoraLogger.Error($"World: Error clearing managers: {ex.Message}");
 		}
 
 		try
@@ -1998,9 +1998,9 @@ public class World
 		}
 		catch (Exception ex)
 		{
-			AquaLogger.Error($"World: Error disposing reference controller: {ex.Message}");
+			LumoraLogger.Error($"World: Error disposing reference controller: {ex.Message}");
 		}
 
-		AquaLogger.Log($"World: Disposed world '{WorldName.Value}'");
+		LumoraLogger.Log($"World: Disposed world '{WorldName.Value}'");
 	}
 }

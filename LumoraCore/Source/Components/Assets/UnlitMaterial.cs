@@ -1,5 +1,5 @@
-using Lumora.Core.Math;
-using AquaLogger = Lumora.Core.Logging.Logger;
+﻿using Lumora.Core.Math;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Assets;
 
@@ -93,7 +93,7 @@ public class UnlitMaterial : MaterialProvider, ICommonMaterial
     protected override void UpdateMaterial(MaterialAsset asset)
     {
         var textureAsset = Texture.Asset;
-        AquaLogger.Debug($"UnlitMaterial.UpdateMaterial: Texture.Target={Texture.Target?.GetType().Name}, Texture.Asset={textureAsset?.GetType().Name}, HasHook={textureAsset?.Hook != null}");
+        LumoraLogger.Debug($"UnlitMaterial.UpdateMaterial: Texture.Target={Texture.Target?.GetType().Name}, Texture.Asset={textureAsset?.GetType().Name}, HasHook={textureAsset?.Hook != null}");
 
         // Blend settings
         asset.SetBlendMode(BlendMode.Value);

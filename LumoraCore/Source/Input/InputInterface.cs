@@ -441,28 +441,47 @@ public class InputInterface : IDisposable
         // Call BeforeInputUpdate on all receivers (TrackedDevicePositioner updates slots here)
         foreach (var receiver in _inputReceivers)
         {
-            try
-            {
-                receiver.BeforeInputUpdate();
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"InputInterface: Error in BeforeInputUpdate: {ex.Message}");
-            }
+            InvokeInputReceiver(receiver, before: true);
         }
 
         // Call AfterInputUpdate on all receivers
         foreach (var receiver in _inputReceivers)
         {
+            InvokeInputReceiver(receiver, before: false);
+        }
+    }
+
+    private static void InvokeInputReceiver(IInputUpdateReceiver receiver, bool before)
+    {
+        void InvokeNow()
+        {
             try
             {
-                receiver.AfterInputUpdate();
+                if (before)
+                    receiver.BeforeInputUpdate();
+                else
+                    receiver.AfterInputUpdate();
             }
             catch (Exception ex)
             {
-                Logger.Error($"InputInterface: Error in AfterInputUpdate: {ex.Message}");
+                Logger.Error($"InputInterface: Error in {(before ? "BeforeInputUpdate" : "AfterInputUpdate")}: {ex.Message}");
             }
         }
+
+        // World components modify Sync state in these callbacks.
+        // Route through world sync queue while running so writes happen under the world's
+        // implementer lock, avoiding cross-thread lock violations.
+        if (receiver is IWorldElement worldElement &&
+            worldElement.World != null &&
+            !worldElement.World.IsDisposed &&
+            !worldElement.World.IsDestroyed &&
+            worldElement.World.State == World.WorldState.Running)
+        {
+            worldElement.World.RunSynchronously(InvokeNow);
+            return;
+        }
+
+        InvokeNow();
     }
 
     #endregion

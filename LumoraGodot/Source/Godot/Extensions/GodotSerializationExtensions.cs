@@ -1,8 +1,8 @@
-using System;
+﻿using System;
 using System.IO;
 using Godot;
 
-namespace Aquamarine.Source.Godot.Extensions;
+namespace Lumora.Source.Godot.Extensions;
 
 public static class GodotSerializationExtensions
 {

@@ -1,7 +1,7 @@
-using Lumora.Core;
+﻿using Lumora.Core;
 using Lumora.Core.Math;
 using Lumora.Core.Physics;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -26,7 +26,7 @@ public class BoxCollider : Collider
     {
         base.OnAwake();
         Size.OnChanged += _ => RunApplyChanges();
-        AquaLogger.Log($"BoxCollider: Initialized with Size={Size.Value}");
+        LumoraLogger.Log($"BoxCollider: Initialized with Size={Size.Value}");
     }
 
     // ===== ABSTRACT METHOD IMPLEMENTATIONS =====

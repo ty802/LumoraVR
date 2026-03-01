@@ -1,6 +1,6 @@
-using Lumora.Core.Math;
+﻿using Lumora.Core.Math;
 using Lumora.Core.Physics;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -75,7 +75,7 @@ public class RigidBody : ImplementableComponent
     public override void OnAwake()
     {
         base.OnAwake();
-        AquaLogger.Log($"RigidBody: Initialized on '{Slot.SlotName.Value}' with Mass={Mass.Value}kg");
+        LumoraLogger.Log($"RigidBody: Initialized on '{Slot.SlotName.Value}' with Mass={Mass.Value}kg");
 
         var respawnData = Slot.GetComponent<RespawnData>();
         if (respawnData == null)

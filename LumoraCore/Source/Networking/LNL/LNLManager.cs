@@ -1,8 +1,8 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Net;
 using LiteNetLib;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.LNL;
 
@@ -28,7 +28,7 @@ public class LNLManager
         var connection = new LNLConnection(APP_ID, uri, dontRoute, bindIP);
         _connections.Add(connection);
 
-        AquaLogger.Log($"Created LNL connection to {uri}");
+        LumoraLogger.Log($"Created LNL connection to {uri}");
         return connection;
     }
 
@@ -45,7 +45,7 @@ public class LNLManager
         {
             _listeners.Add(globalListener);
             listeners.Add(globalListener);
-            AquaLogger.Log($"Created LNL listener on 0.0.0.0:{port}");
+            LumoraLogger.Log($"Created LNL listener on 0.0.0.0:{port}");
         }
 
         return listeners;
@@ -101,6 +101,6 @@ public class LNLManager
         }
         _listeners.Clear();
 
-        AquaLogger.Log("LNL Manager shut down");
+        LumoraLogger.Log("LNL Manager shut down");
     }
 }

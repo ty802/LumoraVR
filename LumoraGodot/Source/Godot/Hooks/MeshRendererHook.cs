@@ -1,9 +1,9 @@
-using Godot;
+﻿using Godot;
 using Lumora.Core;
 using Lumora.Core.Components;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks;
+namespace Lumora.Godot.Hooks;
 
 /// <summary>
 /// Hook for MeshRenderer component → Godot MeshInstance3D.
@@ -24,13 +24,13 @@ public class MeshRendererHook : MeshRendererHookBase<MeshRenderer, Node3D>
     protected override void OnAttachRenderer()
     {
         base.OnAttachRenderer();
-        AquaLogger.Log($"MeshRendererHook: Attached renderer for slot '{Owner.Slot.SlotName.Value}'");
+        LumoraLogger.Log($"MeshRendererHook: Attached renderer for slot '{Owner.Slot.SlotName.Value}'");
     }
 
     protected override void OnCleanupRenderer()
     {
         base.OnCleanupRenderer();
-        AquaLogger.Log($"MeshRendererHook: Cleaned up renderer for slot '{Owner?.Slot?.SlotName.Value}'");
+        LumoraLogger.Log($"MeshRendererHook: Cleaned up renderer for slot '{Owner?.Slot?.SlotName.Value}'");
     }
 
     /// <summary>

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using Godot;
@@ -7,9 +7,9 @@ using Lumora.Core.Assets;
 using Lumora.Core.Components;
 using Lumora.Core.Components.Avatar;
 using Lumora.Core.Math;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks;
+namespace Lumora.Godot.Hooks;
 
 /// <summary>
 /// Hook for ModelData component → runtime model scene instantiation.
@@ -74,7 +74,7 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
         var loadedNode = LoadSceneNode(sourcePath);
         if (loadedNode == null)
         {
-            AquaLogger.Warn($"ModelDataHook: Failed to load model '{sourcePath}'");
+            LumoraLogger.Warn($"ModelDataHook: Failed to load model '{sourcePath}'");
             Owner.IsLoaded.Value = false;
             return;
         }
@@ -96,7 +96,7 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
         _loadedSourceKey = sourcePath;
         Owner.IsLoaded.Value = true;
 
-        AquaLogger.Log($"ModelDataHook: Loaded model '{Path.GetFileName(sourcePath)}' on slot '{Owner.Slot.SlotName.Value}'");
+        LumoraLogger.Log($"ModelDataHook: Loaded model '{Path.GetFileName(sourcePath)}' on slot '{Owner.Slot.SlotName.Value}'");
     }
 
     private string ResolveSourcePath()
@@ -136,18 +136,18 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
                 var appendErr = doc.AppendFromFile(sourcePath, state);
                 if (appendErr != Error.Ok)
                 {
-                    AquaLogger.Warn($"ModelDataHook: GLTF append failed for '{sourcePath}' ({appendErr})");
+                    LumoraLogger.Warn($"ModelDataHook: GLTF append failed for '{sourcePath}' ({appendErr})");
                     return null;
                 }
 
                 var scene = doc.GenerateScene(state);
                 if (scene == null)
-                    AquaLogger.Warn($"ModelDataHook: GLTF generate scene failed for '{sourcePath}'");
+                    LumoraLogger.Warn($"ModelDataHook: GLTF generate scene failed for '{sourcePath}'");
                 return scene;
             }
             catch (Exception ex)
             {
-                AquaLogger.Warn($"ModelDataHook: Exception loading '{sourcePath}': {ex.Message}");
+                LumoraLogger.Warn($"ModelDataHook: Exception loading '{sourcePath}': {ex.Message}");
                 return null;
             }
         }
@@ -191,7 +191,7 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
 
         modelRoot.Scale = Vector3.One * uniformScale;
         modelRoot.Position = offset;
-        AquaLogger.Log($"ModelDataHook: Applied import scale={uniformScale:0.###} size={bounds.Size}");
+        LumoraLogger.Log($"ModelDataHook: Applied import scale={uniformScale:0.###} size={bounds.Size}");
     }
 
     private static bool TryCalculateBounds(Node3D root, out Aabb bounds)
@@ -300,7 +300,7 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
                 pending.GltfSkeleton ?? foundSkeleton, skelBuilder);
         }
 
-        AquaLogger.Log($"ModelDataHook: Built {created} hierarchy slots");
+        LumoraLogger.Log($"ModelDataHook: Built {created} hierarchy slots");
     }
 
     /// <summary>
@@ -489,7 +489,7 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
         skelBuilder.IsBuilt.Value = true;
         _builtSkeleton = skelBuilder;
 
-        AquaLogger.Log($"ModelDataHook: Built SkeletonBuilder with {skelBuilder.BoneCount} bones");
+        LumoraLogger.Log($"ModelDataHook: Built SkeletonBuilder with {skelBuilder.BoneCount} bones");
 
         // BipedRig for avatar imports
         bool isAvatar = Owner.IsAvatar.Value || (Owner.ImportSettings?.IsAvatarImport ?? false);
@@ -497,7 +497,7 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
         {
             var rig = skeletonSlot.AttachComponent<BipedRig>();
             rig.PopulateFromSkeleton(skelBuilder);
-            AquaLogger.Log($"ModelDataHook: Created BipedRig, IsBiped={rig.IsBiped}");
+            LumoraLogger.Log($"ModelDataHook: Created BipedRig, IsBiped={rig.IsBiped}");
         }
 
         return skelBuilder;
@@ -606,7 +606,7 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
             smr.Material.Target = pbs;
         }
 
-        AquaLogger.Log($"ModelDataHook: Attached SkinnedMeshRenderer(s) for '{godotMesh.Name}' ({surfaceCount} surfaces)");
+        LumoraLogger.Log($"ModelDataHook: Attached SkinnedMeshRenderer(s) for '{godotMesh.Name}' ({surfaceCount} surfaces)");
     }
 
     // ------------------------------------------------------------------

@@ -1,11 +1,11 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Godot;
 using RuntimeEngine = Lumora.Core.Engine;
 using LocomotionController = Lumora.Core.Components.LocomotionController;
-using Aquamarine.Source.UI;
+using Lumora.Source.UI;
 
-namespace Aquamarine.Source.Input;
+namespace Lumora.Source.Input;
 
 public enum InputButton
 {

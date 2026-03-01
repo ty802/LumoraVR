@@ -1,6 +1,6 @@
-using Lumora.Core;
+﻿using Lumora.Core;
 using Lumora.Core.Assets;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -42,13 +42,13 @@ public class MeshRenderer : ImplementableComponent
     public override void OnAwake()
     {
         base.OnAwake();
-        AquaLogger.Log($"MeshRenderer: Awake on slot '{Slot.SlotName.Value}'");
+        LumoraLogger.Log($"MeshRenderer: Awake on slot '{Slot.SlotName.Value}'");
     }
 
     public override void OnDestroy()
     {
         base.OnDestroy();
-        AquaLogger.Log($"MeshRenderer: Destroyed on slot '{Slot?.SlotName.Value}'");
+        LumoraLogger.Log($"MeshRenderer: Destroyed on slot '{Slot?.SlotName.Value}'");
     }
 }
 

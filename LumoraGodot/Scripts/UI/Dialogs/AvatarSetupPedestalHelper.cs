@@ -1,5 +1,6 @@
 using System;
 using Lumora.Core;
+using Lumora.Core.Assets;
 using Lumora.Core.Components;
 using Lumora.Core.Components.Assets;
 using Lumora.Core.Math;

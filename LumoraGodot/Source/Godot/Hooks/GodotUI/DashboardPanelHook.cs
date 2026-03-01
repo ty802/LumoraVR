@@ -1,13 +1,13 @@
-using Godot;
+﻿using Godot;
 using Lumora.Core;
 using Lumora.Core.GodotUI;
 using Lumora.Core.Math;
 using System.Collections.Generic;
-using Aquamarine.Source.Input;
-using Aquamarine.Godot.UI;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using Lumora.Source.Input;
+using Lumora.Godot.UI;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks.GodotUI;
+namespace Lumora.Godot.Hooks.GodotUI;
 
 #nullable enable
 
@@ -65,7 +65,7 @@ public class DashboardPanelHook : ComponentHook<DashboardPanel>
         Owner.IsVisible.Changed += _ => UpdateVisibility();
         UpdateVisibility();
 
-        AquaLogger.Log($"DashboardPanelHook: Initialized in {(_isVRMode ? "VR" : "Desktop")} mode, visible={Owner.IsVisible.Value}");
+        LumoraLogger.Log($"DashboardPanelHook: Initialized in {(_isVRMode ? "VR" : "Desktop")} mode, visible={Owner.IsVisible.Value}");
     }
 
     private void InitializeDesktopMode()
@@ -134,21 +134,21 @@ public class DashboardPanelHook : ComponentHook<DashboardPanel>
         var scenePath = Owner.ScenePath.Value;
         if (string.IsNullOrEmpty(scenePath))
         {
-            AquaLogger.Warn("DashboardPanelHook: No scene path specified");
+            LumoraLogger.Warn("DashboardPanelHook: No scene path specified");
             return;
         }
 
         var packedScene = GD.Load<PackedScene>(scenePath);
         if (packedScene == null)
         {
-            AquaLogger.Warn($"DashboardPanelHook: Failed to load scene '{scenePath}'");
+            LumoraLogger.Warn($"DashboardPanelHook: Failed to load scene '{scenePath}'");
             return;
         }
 
         _loadedScene = packedScene.Instantiate();
         if (_loadedScene == null || _loadedScene is not Control control)
         {
-            AquaLogger.Warn("DashboardPanelHook: Failed to instantiate scene as Control");
+            LumoraLogger.Warn("DashboardPanelHook: Failed to instantiate scene as Control");
             return;
         }
 
@@ -163,7 +163,7 @@ public class DashboardPanelHook : ComponentHook<DashboardPanel>
         ParseSceneNode(_loadedScene, "");
 
         Owner.NotifySceneLoaded(new List<string>(_nodeRegistry.Keys));
-        AquaLogger.Log($"DashboardPanelHook: Desktop scene loaded with {_nodeRegistry.Count} controls, scale={_desktopScale:F2}");
+        LumoraLogger.Log($"DashboardPanelHook: Desktop scene loaded with {_nodeRegistry.Count} controls, scale={_desktopScale:F2}");
     }
 
     private void LoadSceneVR()
@@ -171,21 +171,21 @@ public class DashboardPanelHook : ComponentHook<DashboardPanel>
         var scenePath = Owner.ScenePath.Value;
         if (string.IsNullOrEmpty(scenePath))
         {
-            AquaLogger.Warn("DashboardPanelHook: No scene path specified");
+            LumoraLogger.Warn("DashboardPanelHook: No scene path specified");
             return;
         }
 
         var packedScene = GD.Load<PackedScene>(scenePath);
         if (packedScene == null)
         {
-            AquaLogger.Warn($"DashboardPanelHook: Failed to load scene '{scenePath}'");
+            LumoraLogger.Warn($"DashboardPanelHook: Failed to load scene '{scenePath}'");
             return;
         }
 
         _loadedScene = packedScene.Instantiate();
         if (_loadedScene == null)
         {
-            AquaLogger.Warn("DashboardPanelHook: Failed to instantiate scene");
+            LumoraLogger.Warn("DashboardPanelHook: Failed to instantiate scene");
             return;
         }
 
@@ -202,7 +202,7 @@ public class DashboardPanelHook : ComponentHook<DashboardPanel>
         ParseSceneNode(_loadedScene, "");
 
         Owner.NotifySceneLoaded(new List<string>(_nodeRegistry.Keys));
-        AquaLogger.Log($"DashboardPanelHook: VR scene loaded with {_nodeRegistry.Count} controls");
+        LumoraLogger.Log($"DashboardPanelHook: VR scene loaded with {_nodeRegistry.Count} controls");
     }
 
     private void ParseSceneNode(Node node, string parentPath)

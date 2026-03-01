@@ -1,11 +1,11 @@
-using Godot;
-using Aquamarine.Godot.Hooks;
+﻿using Godot;
+using Lumora.Godot.Hooks;
 using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Source.Input;
+namespace Lumora.Source.Input;
 
 /// <summary>
 /// Simple grab interaction for physics-backed objects marked with Grabbable.
@@ -16,8 +16,15 @@ public partial class GrabManager : Node3D
     private const float MaxGrabDistance = 10f;
     // Layer 1: physics colliders/rigid bodies, Layer 4: UI panel Area3D colliders (inspectors).
     private const uint GrabCollisionMask = (1u << 0) | (1u << 3);
+    private enum GrabHand
+    {
+        None,
+        Left,
+        Right
+    }
 
-    private RayCast3D _raycast;
+    private RayCast3D _leftRaycast;
+    private RayCast3D _rightRaycast;
     private Camera3D _camera;
 
     private Slot _grabbedSlot;
@@ -25,20 +32,29 @@ public partial class GrabManager : Node3D
     private Vector3 _offsetLocal;
     private Quaternion _rotationOffset = Quaternion.Identity;
     private bool _followRotation;
-    private bool _wasGrabPressed;
+    private GrabHand _activeHand = GrabHand.None;
+    private bool _wasLeftGrabPressed;
+    private bool _wasRightGrabPressed;
 
     public override void _Ready()
     {
-        _raycast = new RayCast3D
+        _leftRaycast = CreateRaycast("GrabRaycastLeft");
+        _rightRaycast = CreateRaycast("GrabRaycastRight");
+        AddChild(_leftRaycast);
+        AddChild(_rightRaycast);
+    }
+
+    private static RayCast3D CreateRaycast(string name)
+    {
+        return new RayCast3D
         {
-            Name = "GrabRaycast",
+            Name = name,
             TargetPosition = new Vector3(0, 0, -MaxGrabDistance),
             CollisionMask = GrabCollisionMask,
             CollideWithAreas = true,
             CollideWithBodies = true,
             Enabled = true
         };
-        AddChild(_raycast);
     }
 
     public override void _Process(double delta)
@@ -47,35 +63,61 @@ public partial class GrabManager : Node3D
         if (input == null)
             return;
 
-        bool grabPressed = input.GetRightGripInput;
+        bool leftGrabPressed = input.GetLeftGripInput;
+        bool rightGrabPressed = input.GetRightGripInput;
 
-        UpdateRay(input);
+        UpdateRay(input, GrabHand.Left);
+        UpdateRay(input, GrabHand.Right);
 
-        if (grabPressed && !_wasGrabPressed)
+        if (_grabbedSlot == null)
         {
-            TryBeginGrab(input);
-        }
-        else if (!grabPressed && _wasGrabPressed)
-        {
-            EndGrab();
+            if (rightGrabPressed && !_wasRightGrabPressed)
+            {
+                TryBeginGrab(input, GrabHand.Right);
+            }
+            else if (leftGrabPressed && !_wasLeftGrabPressed)
+            {
+                TryBeginGrab(input, GrabHand.Left);
+            }
         }
 
         if (_grabbedSlot != null)
         {
-            UpdateGrabbedTransform(input);
+            bool stillHolding = _activeHand switch
+            {
+                GrabHand.Left => leftGrabPressed,
+                GrabHand.Right => rightGrabPressed,
+                _ => false
+            };
+
+            if (!stillHolding)
+            {
+                EndGrab();
+            }
+            else
+            {
+                UpdateGrabbedTransform(input, _activeHand);
+            }
         }
 
-        _wasGrabPressed = grabPressed;
+        _wasLeftGrabPressed = leftGrabPressed;
+        _wasRightGrabPressed = rightGrabPressed;
     }
 
-    private void UpdateRay(IInputProvider input)
+    private void UpdateRay(IInputProvider input, GrabHand hand)
     {
+        var raycast = hand == GrabHand.Left ? _leftRaycast : _rightRaycast;
+        var limb = hand == GrabHand.Left ? IInputProvider.InputLimb.LeftHand : IInputProvider.InputLimb.RightHand;
+
+        if (raycast == null)
+            return;
+
         if (input.IsVR)
         {
-            var pos = input.GetLimbPosition(IInputProvider.InputLimb.RightHand);
-            var rot = input.GetLimbRotation(IInputProvider.InputLimb.RightHand);
-            _raycast.GlobalPosition = pos;
-            _raycast.GlobalRotation = rot.GetEuler();
+            var pos = input.GetLimbPosition(limb);
+            var rot = input.GetLimbRotation(limb);
+            raycast.GlobalPosition = pos;
+            raycast.GlobalRotation = rot.GetEuler();
         }
         else
         {
@@ -85,19 +127,20 @@ public partial class GrabManager : Node3D
             if (_camera == null || !GodotObject.IsInstanceValid(_camera))
                 return;
 
-            _raycast.GlobalPosition = _camera.GlobalPosition;
-            _raycast.GlobalRotation = _camera.GlobalRotation;
+            raycast.GlobalPosition = _camera.GlobalPosition;
+            raycast.GlobalRotation = _camera.GlobalRotation;
         }
 
-        _raycast.ForceRaycastUpdate();
+        raycast.ForceRaycastUpdate();
     }
 
-    private void TryBeginGrab(IInputProvider input)
+    private void TryBeginGrab(IInputProvider input, GrabHand hand)
     {
-        if (!_raycast.IsColliding())
+        var raycast = hand == GrabHand.Left ? _leftRaycast : _rightRaycast;
+        if (raycast == null || !raycast.IsColliding())
             return;
 
-        var collider = _raycast.GetCollider() as Node;
+        var collider = raycast.GetCollider() as Node;
         if (collider == null)
             return;
 
@@ -109,7 +152,7 @@ public partial class GrabManager : Node3D
         if (grabbable == null || !grabbable.Enabled.Value || !grabbable.AllowGrab.Value)
             return;
 
-        if (!TryGetGrabTransform(input, out var grabPos, out var grabRot))
+        if (!TryGetGrabTransform(input, hand, out var grabPos, out var grabRot))
             return;
 
         var slotPos = slot.GlobalPosition;
@@ -117,6 +160,7 @@ public partial class GrabManager : Node3D
 
         _grabbedSlot = slot;
         _followRotation = grabbable.FollowRotation.Value;
+        _activeHand = hand;
 
         _offsetLocal = grabRot.Inverse() * (new Vector3(slotPos.x, slotPos.y, slotPos.z) - grabPos);
         var slotQuat = new Quaternion(slotRot.x, slotRot.y, slotRot.z, slotRot.w);
@@ -129,7 +173,7 @@ public partial class GrabManager : Node3D
             _grabbedRigidBody.IsKinematic.Value = true;
         }
 
-        AquaLogger.Log($"GrabManager: Grabbed '{slot.SlotName.Value}'");
+        LumoraLogger.Log($"GrabManager: Grabbed '{slot.SlotName.Value}' with {hand} hand");
     }
 
     private static Slot? ResolveSlotFromCollider(Node collider)
@@ -159,12 +203,12 @@ public partial class GrabManager : Node3D
         return null;
     }
 
-    private void UpdateGrabbedTransform(IInputProvider input)
+    private void UpdateGrabbedTransform(IInputProvider input, GrabHand hand)
     {
         if (_grabbedSlot == null)
             return;
 
-        if (!TryGetGrabTransform(input, out var grabPos, out var grabRot))
+        if (!TryGetGrabTransform(input, hand, out var grabPos, out var grabRot))
             return;
 
         var worldPos = grabPos + (grabRot * _offsetLocal);
@@ -185,12 +229,13 @@ public partial class GrabManager : Node3D
         });
     }
 
-    private bool TryGetGrabTransform(IInputProvider input, out Vector3 pos, out Quaternion rot)
+    private bool TryGetGrabTransform(IInputProvider input, GrabHand hand, out Vector3 pos, out Quaternion rot)
     {
         if (input.IsVR)
         {
-            pos = input.GetLimbPosition(IInputProvider.InputLimb.RightHand);
-            rot = input.GetLimbRotation(IInputProvider.InputLimb.RightHand);
+            var limb = hand == GrabHand.Left ? IInputProvider.InputLimb.LeftHand : IInputProvider.InputLimb.RightHand;
+            pos = input.GetLimbPosition(limb);
+            rot = input.GetLimbRotation(limb);
             return true;
         }
 
@@ -211,7 +256,7 @@ public partial class GrabManager : Node3D
     {
         if (_grabbedSlot != null)
         {
-            AquaLogger.Log($"GrabManager: Released '{_grabbedSlot.SlotName.Value}'");
+            LumoraLogger.Log($"GrabManager: Released '{_grabbedSlot.SlotName.Value}'");
         }
 
         // Re-enable physics when released
@@ -225,5 +270,6 @@ public partial class GrabManager : Node3D
         _rotationOffset = Quaternion.Identity;
         _offsetLocal = Vector3.Zero;
         _followRotation = false;
+        _activeHand = GrabHand.None;
     }
 }

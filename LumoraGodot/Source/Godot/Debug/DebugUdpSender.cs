@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -6,7 +6,7 @@ using System.Net.Sockets;
 using System.Text;
 using Lumora.Core.Logging;
 
-namespace Aquamarine.Godot.Debug;
+namespace Lumora.Godot.Debug;
 
 #nullable enable
 

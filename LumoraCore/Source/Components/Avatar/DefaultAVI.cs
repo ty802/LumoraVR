@@ -1,11 +1,11 @@
-using System;
+﻿using System;
 using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.Components.Meshes;
 using Lumora.Core.Assets;
 using Lumora.Core.Math;
 using Lumora.Core.Input;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components.Avatar;
 
@@ -28,36 +28,56 @@ public static class DefaultAVI
     {
         if (avatarRoot == null)
         {
-            AquaLogger.Error("DefaultAVI: Cannot create avatar - avatarRoot is null");
+            LumoraLogger.Error("DefaultAVI: Cannot create avatar - avatarRoot is null");
             return;
         }
 
-        AquaLogger.Log($"DefaultAVI: Creating minimal avatar on '{avatarRoot.SlotName.Value}'");
+        LumoraLogger.Log($"DefaultAVI: Creating minimal avatar on '{avatarRoot.SlotName.Value}'");
 
         CreateHeadAndHands(userRoot);
 
-        AquaLogger.Log("DefaultAVI: Default avatar created (head + hands)");
+        LumoraLogger.Log("DefaultAVI: Default avatar created (head + hands)");
     }
 
     private static void CreateHeadAndHands(UserRoot userRoot)
     {
         if (userRoot == null)
         {
-            AquaLogger.Warn("DefaultAVI: Cannot create head/hands visuals - UserRoot is null");
+            LumoraLogger.Warn("DefaultAVI: Cannot create head/hands visuals - UserRoot is null");
             return;
         }
 
         var tint = GetUserTint(userRoot.ActiveUser);
         CreateHeadVisual(userRoot.HeadSlot, tint);
-        CreateHandVisual(userRoot.LeftHandSlot, "DefaultLeftHand", tint);
-        CreateHandVisual(userRoot.RightHandSlot, "DefaultRightHand", tint);
+        CreateHandVisualIfNeeded(userRoot.LeftHandSlot, "DefaultLeftHand", tint);
+        CreateHandVisualIfNeeded(userRoot.RightHandSlot, "DefaultRightHand", tint);
+    }
+
+    private static void CreateHandVisualIfNeeded(Slot handSlot, string name, colorHDR tint)
+    {
+        if (handSlot == null)
+        {
+            LumoraLogger.Warn($"DefaultAVI: Hand slot not found for {name}");
+            return;
+        }
+
+        // Skeletal controller hands supersede the legacy box hand visual.
+        if (handSlot.GetComponent<ControllerHandVisual>() != null)
+        {
+            var legacy = handSlot.FindChild(name, recursive: false);
+            if (legacy != null)
+                legacy.Destroy();
+            return;
+        }
+
+        CreateHandVisual(handSlot, name, tint);
     }
 
     private static void CreateHeadVisual(Slot headSlot, colorHDR tint)
     {
         if (headSlot == null)
         {
-            AquaLogger.Warn("DefaultAVI: Head slot not found for head visual");
+            LumoraLogger.Warn("DefaultAVI: Head slot not found for head visual");
             return;
         }
 
@@ -72,13 +92,20 @@ public static class DefaultAVI
         headMesh.DualSided.Value = true;
 
         ApplyDefaultMaterial(headVisual, headMesh, tint);
+
+        // Hide head sphere from the local user's own camera (shadow is preserved).
+        var localViewOverride = headVisual.GetComponent<LocalViewOverride>()
+                             ?? headVisual.AttachComponent<LocalViewOverride>();
+        localViewOverride.Context.Value          = RenderingContext.UserView;
+        localViewOverride.HasScaleOverride.Value = true;
+        localViewOverride.ScaleOverride.Value    = float3.Zero;
     }
 
     private static void CreateHandVisual(Slot handSlot, string name, colorHDR tint)
     {
         if (handSlot == null)
         {
-            AquaLogger.Warn($"DefaultAVI: Hand slot not found for {name}");
+            LumoraLogger.Warn($"DefaultAVI: Hand slot not found for {name}");
             return;
         }
 
@@ -144,7 +171,7 @@ public static class DefaultAVI
     {
         if (userSlot == null || user == null)
         {
-            AquaLogger.Error("DefaultAVI: Cannot spawn - userSlot or user is null");
+            LumoraLogger.Error("DefaultAVI: Cannot spawn - userSlot or user is null");
             return;
         }
 
@@ -176,6 +203,10 @@ public static class DefaultAVI
         user.GetTrackingStreams(BodyNode.LeftController, out var leftPositionStream, out var leftRotationStream);
         leftHandStreamDriver.PositionStream.Target = leftPositionStream;
         leftHandStreamDriver.RotationStream.Target = leftRotationStream;
+        var leftHandVisual = leftHandSlot.AttachComponent<ControllerHandVisual>();
+        leftHandVisual.HandSide.Value = Chirality.Left;
+        var leftRayBeam = leftHandSlot.AttachComponent<ControllerRayBeam>();
+        leftRayBeam.ControllerSide.Value = Chirality.Left;
 
         // Create RightHand slot - UserRoot auto-resolves from "Body Nodes/RightHand"
         // Start at origin - VR tracking provides actual position
@@ -187,6 +218,10 @@ public static class DefaultAVI
         user.GetTrackingStreams(BodyNode.RightController, out var rightPositionStream, out var rightRotationStream);
         rightHandStreamDriver.PositionStream.Target = rightPositionStream;
         rightHandStreamDriver.RotationStream.Target = rightRotationStream;
+        var rightHandVisual = rightHandSlot.AttachComponent<ControllerHandVisual>();
+        rightHandVisual.HandSide.Value = Chirality.Right;
+        var rightRayBeam = rightHandSlot.AttachComponent<ControllerRayBeam>();
+        rightRayBeam.ControllerSide.Value = Chirality.Right;
 
         // Physics
         var collider = userSlot.AttachComponent<CapsuleCollider>();
@@ -212,6 +247,6 @@ public static class DefaultAVI
         var nameplate = nameplateSlot.AttachComponent<Nameplate>();
         nameplate.Initialize(user);
 
-        AquaLogger.Log($"DefaultAVI: Spawned user '{user.UserName.Value}' with default avatar");
+        LumoraLogger.Log($"DefaultAVI: Spawned user '{user.UserName.Value}' with default avatar");
     }
 }

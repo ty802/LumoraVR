@@ -1,11 +1,11 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Godot;
 using Lumora.Core.Assets;
 using Lumora.Core.Math;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks;
+namespace Lumora.Godot.Hooks;
 
 /// <summary>
 /// Godot implementation of material asset hook.
@@ -56,8 +56,9 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
                 break;
 
             case MaterialType.Unlit:
-                _usesShaderMaterial = true;
-                _shaderMaterial = CreateUnlitShaderMaterial();
+                _usesShaderMaterial = false;
+                _standardMaterial = new StandardMaterial3D();
+                _standardMaterial.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
                 break;
 
             case MaterialType.Custom:
@@ -137,7 +138,7 @@ void fragment() {
             }
             else
             {
-                AquaLogger.Warn($"MaterialAssetHook: Custom shader not found: {_customShaderPath}");
+                LumoraLogger.Warn($"MaterialAssetHook: Custom shader not found: {_customShaderPath}");
             }
         }
     }
@@ -204,6 +205,8 @@ void fragment() {
             {
                 _standardMaterial.BlendMode = BaseMaterial3D.BlendModeEnum.Mix;
             }
+
+            _standardMaterial.NoDepthTest = false;
         }
         else if (_shaderMaterial != null)
         {
@@ -296,12 +299,12 @@ void fragment() {
         {
             var godotTex = textureHook.GodotTexture;
             var image = godotTex?.GetImage();
-            AquaLogger.Log($"MaterialAssetHook.SetTexture: property={property}, texture valid, size={image?.GetWidth()}x{image?.GetHeight()}, format={image?.GetFormat()}");
+            LumoraLogger.Log($"MaterialAssetHook.SetTexture: property={property}, texture valid, size={image?.GetWidth()}x{image?.GetHeight()}, format={image?.GetFormat()}");
             _pendingProperties[property] = godotTex;
         }
         else
         {
-            AquaLogger.Log($"MaterialAssetHook.SetTexture: property={property}, texture null or invalid (Hook={texture?.Hook}, IsValid={((texture?.Hook as TextureAssetHook)?.IsValid)})");
+            LumoraLogger.Log($"MaterialAssetHook.SetTexture: property={property}, texture null or invalid (Hook={texture?.Hook}, IsValid={((texture?.Hook as TextureAssetHook)?.IsValid)})");
             _pendingProperties[property] = null;
         }
     }
@@ -319,7 +322,7 @@ void fragment() {
     /// </summary>
     public void ApplyChanges(Action callback)
     {
-        AquaLogger.Debug($"MaterialAssetHook.ApplyChanges: Applying {_pendingProperties.Count} properties, usesShader={_usesShaderMaterial}");
+        LumoraLogger.Debug($"MaterialAssetHook.ApplyChanges: Applying {_pendingProperties.Count} properties, usesShader={_usesShaderMaterial}");
         foreach (var (property, value) in _pendingProperties)
         {
             ApplyProperty(property, value);
@@ -351,9 +354,11 @@ void fragment() {
         switch (property)
         {
             // Albedo
+            case "TintColor":
             case "AlbedoColor":
                 if (value is Color c) _standardMaterial.AlbedoColor = c;
                 break;
+            case "Texture":
             case "AlbedoTexture":
                 _standardMaterial.AlbedoTexture = value as Texture2D;
                 break;
@@ -422,6 +427,10 @@ void fragment() {
             case "AlphaCutoff":
                 if (value is float ac) _standardMaterial.AlphaScissorThreshold = ac;
                 break;
+            case "RenderQueue":
+                if (value is float rqf) _standardMaterial.RenderPriority = System.Math.Clamp((int)rqf, -128, 127);
+                if (value is int rqi) _standardMaterial.RenderPriority = System.Math.Clamp(rqi, -128, 127);
+                break;
 
             // Texture transform
             case "TextureScale":
@@ -444,6 +453,16 @@ void fragment() {
     /// </summary>
     private void ApplyShaderMaterialProperty(string property, object value)
     {
+        if (_shaderMaterial == null)
+            return;
+
+        if (property == "RenderQueue")
+        {
+            if (value is float rqf) _shaderMaterial.RenderPriority = System.Math.Clamp((int)rqf, -128, 127);
+            if (value is int rqi) _shaderMaterial.RenderPriority = System.Math.Clamp(rqi, -128, 127);
+            return;
+        }
+
         // Convert property name to shader parameter name (snake_case)
         string shaderParam = ToSnakeCase(property);
 
@@ -460,9 +479,6 @@ void fragment() {
             "AlphaCutoff" => isUnlit ? "alpha_scissor_threshold" : "alpha_cutoff",
             _ => shaderParam
         };
-
-        if (_shaderMaterial == null)
-            return;
 
         if (value == null)
         {
@@ -494,7 +510,7 @@ void fragment() {
 
         if (variantValue.VariantType != Variant.Type.Nil)
         {
-            AquaLogger.Debug($"MaterialAssetHook.ApplyShaderMaterialProperty: Setting {mappedParam} = {value?.GetType().Name}");
+            LumoraLogger.Debug($"MaterialAssetHook.ApplyShaderMaterialProperty: Setting {mappedParam} = {value?.GetType().Name}");
             _shaderMaterial.SetShaderParameter(mappedParam, variantValue);
             if (property == "Texture" && isUnlit)
             {
@@ -503,7 +519,7 @@ void fragment() {
         }
         else
         {
-            AquaLogger.Debug($"MaterialAssetHook.ApplyShaderMaterialProperty: Skipping {mappedParam}, value is nil");
+            LumoraLogger.Debug($"MaterialAssetHook.ApplyShaderMaterialProperty: Skipping {mappedParam}, value is nil");
         }
     }
 

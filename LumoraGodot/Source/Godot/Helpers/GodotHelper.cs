@@ -1,10 +1,10 @@
-using Godot;
+﻿using Godot;
 using Lumora.Core;
 using Lumora.Core.Math;
-using Aquamarine.Source.Godot.Extensions;
-using Aquamarine.Godot.Hooks;
+using Lumora.Source.Godot.Extensions;
+using Lumora.Godot.Hooks;
 
-namespace Aquamarine.Godot.Helpers;
+namespace Lumora.Godot.Helpers;
 
 /// <summary>
 /// Helper utilities for Godot interop.

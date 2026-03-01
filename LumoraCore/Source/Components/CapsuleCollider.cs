@@ -1,7 +1,7 @@
-using Lumora.Core;
+﻿using Lumora.Core;
 using Lumora.Core.Math;
 using Lumora.Core.Physics;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -39,7 +39,7 @@ public class CapsuleCollider : Collider
         base.OnAwake();
         Height.OnChanged += _ => RunApplyChanges();
         Radius.OnChanged += _ => RunApplyChanges();
-        AquaLogger.Log($"CapsuleCollider: Initialized with Height={Height.Value}, Radius={Radius.Value}");
+        LumoraLogger.Log($"CapsuleCollider: Initialized with Height={Height.Value}, Radius={Radius.Value}");
     }
 
     // ===== ABSTRACT METHOD IMPLEMENTATIONS =====

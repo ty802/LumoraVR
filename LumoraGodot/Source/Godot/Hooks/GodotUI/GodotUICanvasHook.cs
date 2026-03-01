@@ -1,9 +1,9 @@
-using Godot;
+﻿using Godot;
 using Lumora.Core;
 using Lumora.Core.GodotUI;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks.GodotUI;
+namespace Lumora.Godot.Hooks.GodotUI;
 
 #nullable enable
 
@@ -80,7 +80,7 @@ public class GodotUICanvasHook : ComponentHook<GodotUICanvas>
         attachedNode.AddChild(_viewport);
         attachedNode.AddChild(_meshInstance);
 
-        AquaLogger.Log($"GodotUICanvasHook: Initialized with size {Owner.Size.Value}");
+        LumoraLogger.Log($"GodotUICanvasHook: Initialized with size {Owner.Size.Value}");
     }
 
     public override void ApplyChanges()

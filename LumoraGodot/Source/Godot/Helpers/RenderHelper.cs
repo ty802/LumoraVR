@@ -1,9 +1,9 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Godot;
 using Lumora.Core;
 
-namespace Aquamarine.Godot.Helpers;
+namespace Lumora.Godot.Helpers;
 
 /// <summary>
 /// Rendering helper utilities for layer management and camera registration.

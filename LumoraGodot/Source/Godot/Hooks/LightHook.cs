@@ -1,9 +1,9 @@
-using Godot;
+﻿using Godot;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
 using System;
 
-namespace Aquamarine.Godot.Hooks;
+namespace Lumora.Godot.Hooks;
 
 /// <summary>
 /// Hook for Light component → Godot Light3D.

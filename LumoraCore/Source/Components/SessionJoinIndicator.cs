@@ -1,9 +1,9 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Math;
 using Lumora.Core.Networking.Session;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -84,14 +84,14 @@ public class SessionJoinIndicator : Component
         // Start at visible position in front of user
         UpdatePosition();
 
-        AquaLogger.Log("SessionJoinIndicator: Created visual elements");
+        LumoraLogger.Log("SessionJoinIndicator: Created visual elements");
     }
 
     public override void OnUpdate(float delta)
     {
         if (TargetWorld == null)
         {
-            AquaLogger.Warn("SessionJoinIndicator: TargetWorld is null, destroying indicator");
+            LumoraLogger.Warn("SessionJoinIndicator: TargetWorld is null, destroying indicator");
             Slot.Destroy();
             return;
         }
@@ -99,7 +99,7 @@ public class SessionJoinIndicator : Component
         // Check if target world is destroyed
         if (TargetWorld.IsDestroyed)
         {
-            AquaLogger.Log("SessionJoinIndicator: Target world destroyed, removing indicator");
+            LumoraLogger.Log("SessionJoinIndicator: Target world destroyed, removing indicator");
             Slot.Destroy();
             return;
         }
@@ -110,7 +110,7 @@ public class SessionJoinIndicator : Component
             _disappearThreshold += delta;
             if (_disappearThreshold >= 1f) // Wait 1 second after Running to ensure stability
             {
-                AquaLogger.Log("SessionJoinIndicator: Target world is running and stable, removing indicator");
+                LumoraLogger.Log("SessionJoinIndicator: Target world is running and stable, removing indicator");
                 Slot.Destroy();
                 return;
             }
@@ -169,7 +169,7 @@ public class SessionJoinIndicator : Component
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"SessionJoinIndicator: Error updating progress: {ex.Message}");
+            LumoraLogger.Error($"SessionJoinIndicator: Error updating progress: {ex.Message}");
         }
     }
 
@@ -257,7 +257,7 @@ public class SessionJoinIndicator : Component
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"SessionJoinIndicator: Error updating position: {ex.Message}");
+            LumoraLogger.Error($"SessionJoinIndicator: Error updating position: {ex.Message}");
         }
     }
 
@@ -278,11 +278,11 @@ public class SessionJoinIndicator : Component
                 indicator.TargetWorld = targetWorld;
                 indicator.SessionSync = sessionSync;
 
-                AquaLogger.Log($"SessionJoinIndicator: Created indicator in world '{currentWorld.Name}' for target '{targetWorld.Name}'");
+                LumoraLogger.Log($"SessionJoinIndicator: Created indicator in world '{currentWorld.Name}' for target '{targetWorld.Name}'");
             }
             catch (Exception ex)
             {
-                AquaLogger.Error($"SessionJoinIndicator: Error creating indicator: {ex.Message}");
+                LumoraLogger.Error($"SessionJoinIndicator: Error creating indicator: {ex.Message}");
             }
         });
 
@@ -296,7 +296,7 @@ public class SessionJoinIndicator : Component
     {
         if (currentWorld == null || targetWorld == null || sessionSync == null)
         {
-            AquaLogger.Warn("SessionJoinIndicator: Cannot create indicator - null parameters");
+            LumoraLogger.Warn("SessionJoinIndicator: Cannot create indicator - null parameters");
             onCreated?.Invoke(null);
             return;
         }
@@ -311,7 +311,7 @@ public class SessionJoinIndicator : Component
 
     public override void OnDestroy()
     {
-        AquaLogger.Log("SessionJoinIndicator: Indicator destroyed");
+        LumoraLogger.Log("SessionJoinIndicator: Indicator destroyed");
         base.OnDestroy();
     }
 }

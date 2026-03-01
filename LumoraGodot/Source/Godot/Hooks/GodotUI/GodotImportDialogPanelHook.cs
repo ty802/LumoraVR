@@ -1,12 +1,12 @@
-using System;
+﻿using System;
 using Godot;
 using Lumora.Core;
 using Lumora.Core.GodotUI.Wizards;
-using Aquamarine.Godot.UI;
 using Lumora.Godot.UI;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using Lumora.Godot.UI;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks.GodotUI;
+namespace Lumora.Godot.Hooks.GodotUI;
 
 #nullable enable
 
@@ -124,7 +124,7 @@ public sealed class GodotImportDialogPanelHook : ComponentHook<GodotImportDialog
         var scenePath = Owner.ScenePath.Value;
         if (string.IsNullOrEmpty(scenePath))
         {
-            AquaLogger.Warn("GodotImportDialogPanelHook: No scene path specified");
+            LumoraLogger.Warn("GodotImportDialogPanelHook: No scene path specified");
             return;
         }
 
@@ -139,14 +139,14 @@ public sealed class GodotImportDialogPanelHook : ComponentHook<GodotImportDialog
         var packedScene = GD.Load<PackedScene>(scenePath);
         if (packedScene == null)
         {
-            AquaLogger.Warn($"GodotImportDialogPanelHook: Failed to load scene '{scenePath}'");
+            LumoraLogger.Warn($"GodotImportDialogPanelHook: Failed to load scene '{scenePath}'");
             return;
         }
 
         _loadedScene = packedScene.Instantiate();
         if (_loadedScene == null)
         {
-            AquaLogger.Warn("GodotImportDialogPanelHook: Failed to instantiate scene");
+            LumoraLogger.Warn("GodotImportDialogPanelHook: Failed to instantiate scene");
             return;
         }
 
@@ -161,7 +161,7 @@ public sealed class GodotImportDialogPanelHook : ComponentHook<GodotImportDialog
         _dialog = _loadedScene as ImportDialog ?? _loadedScene.GetNodeOrNull<ImportDialog>("ImportDialog");
         if (_dialog == null)
         {
-            AquaLogger.Warn("GodotImportDialogPanelHook: Loaded scene is missing ImportDialog script root");
+            LumoraLogger.Warn("GodotImportDialogPanelHook: Loaded scene is missing ImportDialog script root");
             return;
         }
 

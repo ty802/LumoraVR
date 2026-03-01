@@ -1,6 +1,6 @@
-using Lumora.Core;
+﻿using Lumora.Core;
 using Lumora.Core.Physics;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -28,7 +28,7 @@ public class CylinderCollider : Collider
         base.OnAwake();
         Radius.OnChanged += _ => RunApplyChanges();
         Height.OnChanged += _ => RunApplyChanges();
-        AquaLogger.Log($"CylinderCollider: Initialized with Radius={Radius.Value}, Height={Height.Value}");
+        LumoraLogger.Log($"CylinderCollider: Initialized with Radius={Radius.Value}, Height={Height.Value}");
     }
 
     // ===== ABSTRACT METHOD IMPLEMENTATIONS =====

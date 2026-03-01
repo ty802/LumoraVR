@@ -1,9 +1,9 @@
-using Godot;
+﻿using Godot;
 using Lumora.Core;
 using Lumora.Core.GodotUI;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks.GodotUI;
+namespace Lumora.Godot.Hooks.GodotUI;
 
 #nullable enable
 
@@ -79,7 +79,7 @@ public class GodotControlRefHook : Hook<GodotControlRef>
         Owner.IsValid = true;
         ConnectToControl();
 
-        AquaLogger.Log($"GodotControlRefHook: Found control '{Owner.NodePath.Value}'");
+        LumoraLogger.Log($"GodotControlRefHook: Found control '{Owner.NodePath.Value}'");
     }
 
     private void ConnectToControl()

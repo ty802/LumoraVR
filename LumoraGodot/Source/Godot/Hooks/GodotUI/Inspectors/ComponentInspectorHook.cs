@@ -1,11 +1,11 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using Godot;
 using Lumora.Core;
 using Lumora.Core.GodotUI.Inspectors;
-using Aquamarine.Godot.UI;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using Lumora.Godot.UI;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks.GodotUI.Inspectors;
+namespace Lumora.Godot.Hooks.GodotUI.Inspectors;
 
 #nullable enable
 
@@ -30,7 +30,7 @@ public class ComponentInspectorHook : ComponentHook<ComponentInspector>
         base.Initialize();
         BuildDefaultUI();
         UpdateUI();
-        AquaLogger.Log($"ComponentInspectorHook: Initialized");
+        LumoraLogger.Log($"ComponentInspectorHook: Initialized");
     }
 
     /// <summary>
@@ -179,7 +179,7 @@ public class ComponentInspectorHook : ComponentHook<ComponentInspector>
             UIReadability.ApplyToTree(_propertyContainer);
         }
 
-        AquaLogger.Log($"ComponentInspectorHook: Built {_propertyRows.Count} property editors for {component.GetType().Name}");
+        LumoraLogger.Log($"ComponentInspectorHook: Built {_propertyRows.Count} property editors for {component.GetType().Name}");
     }
 
     public override void Destroy(bool destroyingWorld)

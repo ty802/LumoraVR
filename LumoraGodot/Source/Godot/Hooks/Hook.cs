@@ -1,6 +1,6 @@
-using Lumora.Core;
+﻿using Lumora.Core;
 
-namespace Aquamarine.Godot.Hooks;
+namespace Lumora.Godot.Hooks;
 
 /// <summary>
 /// Base class for all Godot hooks.

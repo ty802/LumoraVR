@@ -14,7 +14,7 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 
 [application]
 
-config/name="Aquamarine"
+config/name="LumoraVR"
 run/main_scene="uid://c8sly288nngj4"
 config/features=PackedStringArray("4.6", "C#", "Forward Plus")
 config/icon="res://Assets/Textures/lumoravricon.svg"
@@ -32,11 +32,11 @@ window/size/always_on_top.editor=false
 
 [dotnet]
 
-project/assembly_name="Aquamarine"
+project/assembly_name="Lumora"
 
 [editor]
 
-run/main_run_args="--Lumora-Debug -desktop --xr-mode off"
+run/main_run_args="--xr-mode on --vr"
 
 [filesystem]
 
@@ -206,5 +206,6 @@ renderer/rendering_method.mobile="forward_plus"
 
 [xr]
 
+openxr/enabled=true
 shaders/enabled=true
 openxr/action_map="res://openxr_action_map.tres"

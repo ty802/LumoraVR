@@ -1,9 +1,9 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components.Avatar;
 
@@ -140,7 +140,7 @@ public class AvatarObjectSlot : Component
                 }
                 catch (Exception ex)
                 {
-                    AquaLogger.Error($"Exception in OnPreEquip: {ex.Message}");
+                    LumoraLogger.Error($"Exception in OnPreEquip: {ex.Message}");
                 }
             });
 
@@ -166,11 +166,11 @@ public class AvatarObjectSlot : Component
             }
             catch (Exception ex)
             {
-                AquaLogger.Error($"Exception in OnEquip: {ex.Message}");
+                LumoraLogger.Error($"Exception in OnEquip: {ex.Message}");
             }
         });
 
-        AquaLogger.Log($"AvatarObjectSlot: Equipped {avatarObject.Node} to slot on '{Slot.SlotName.Value}'");
+        LumoraLogger.Log($"AvatarObjectSlot: Equipped {avatarObject.Node} to slot on '{Slot.SlotName.Value}'");
     }
 
     /// <summary>
@@ -192,7 +192,7 @@ public class AvatarObjectSlot : Component
             }
             catch (Exception ex)
             {
-                AquaLogger.Error($"Exception in OnDequip: {ex.Message}");
+                LumoraLogger.Error($"Exception in OnDequip: {ex.Message}");
             }
         });
 
@@ -267,9 +267,11 @@ public class AvatarObjectSlot : Component
             return Slot;
         }
 
-        // Get local position/rotation relative to user root
-        position = Slot.LocalPosition.Value;
-        rotation = Slot.LocalRotation.Value;
+        // Convert this slot's world transform into UserRoot-local space.
+        // Using global→local conversion handles any depth of nesting under UserRoot
+        // (e.g. UserRoot > Body Nodes > Head > BodyNode) correctly.
+        position   = space.GlobalPointToLocal(Slot.GlobalPosition);
+        rotation   = space.GlobalRotation.Inverse * Slot.GlobalRotation;
         isTracking = IsTracking.Value;
 
         // Apply all filters

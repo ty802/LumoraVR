@@ -1,11 +1,11 @@
-using Godot;
+﻿using Godot;
 using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
 using System.Collections.Generic;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks;
+namespace Lumora.Godot.Hooks;
 
 /// <summary>
 /// Hook for CharacterController component → Godot CharacterBody3D.
@@ -332,7 +332,7 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
 
         _isCrouching = crouching;
         _targetHeight = crouching ? Owner.CrouchHeight : Owner.StandingHeight;
-        AquaLogger.Log($"CharacterControllerHook: Crouch={crouching}, TargetHeight={_targetHeight}");
+        LumoraLogger.Log($"CharacterControllerHook: Crouch={crouching}, TargetHeight={_targetHeight}");
     }
 
     /// <summary>
@@ -365,7 +365,7 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
 
         if (_characterBody == null)
         {
-            AquaLogger.Error("CharacterControllerHook: _characterBody is null!");
+            LumoraLogger.Error("CharacterControllerHook: _characterBody is null!");
             return;
         }
 
@@ -393,7 +393,7 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
         }
         else
         {
-            AquaLogger.Warn($"CharacterControllerHook: Unknown collider type {collider.GetType().Name}");
+            LumoraLogger.Warn($"CharacterControllerHook: Unknown collider type {collider.GetType().Name}");
         }
 
         // Apply collider offset so shapes line up with the avatar body

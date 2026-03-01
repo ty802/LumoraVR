@@ -1,8 +1,8 @@
-using Godot;
+﻿using Godot;
 using Lumora.Core.Assets;
 using Lumora.Core.Phos;
 
-namespace Aquamarine.Godot.Hooks;
+namespace Lumora.Godot.Hooks;
 
 /// <summary>
 /// Godot implementation of mesh asset hook.

@@ -1,7 +1,7 @@
-using System;
+﻿using System;
 using System.Threading;
 using System.Threading.Tasks;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Assets;
 
@@ -136,7 +136,7 @@ public abstract class AsyncProceduralProvider<A> : DynamicAssetProvider<A> where
         catch (Exception ex)
         {
             _hasError = true;
-            AquaLogger.Log($"Error in async procedural asset update: {ex.Message}");
+            LumoraLogger.Log($"Error in async procedural asset update: {ex.Message}");
             OnGenerationFailed(ex.Message);
         }
         FinishUpdate();
@@ -165,7 +165,7 @@ public abstract class AsyncProceduralProvider<A> : DynamicAssetProvider<A> where
         catch (Exception ex)
         {
             _hasError = true;
-            AquaLogger.Log($"Error in procedural asset update: {ex.Message}");
+            LumoraLogger.Log($"Error in procedural asset update: {ex.Message}");
             OnGenerationFailed(ex.Message);
         }
         FinishUpdate();

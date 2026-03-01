@@ -1,6 +1,6 @@
-using Godot;
+﻿using Godot;
 
-namespace Aquamarine.Godot.UI;
+namespace Lumora.Godot.UI;
 
 #nullable enable
 

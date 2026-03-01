@@ -1,7 +1,7 @@
-using System;
+﻿using System;
 using System.Threading;
 using System.Threading.Tasks;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Assets;
 
@@ -55,10 +55,10 @@ public abstract class UrlAssetProvider<A, M> : AssetProvider<A>, IAssetConsumer
 
     private void OnUrlChanged()
     {
-        AquaLogger.Debug($"UrlAssetProvider.OnUrlChanged: [{GetType().Name}] URL changed to {URL.Value}, refCount={AssetReferenceCount}");
+        LumoraLogger.Debug($"UrlAssetProvider.OnUrlChanged: [{GetType().Name}] URL changed to {URL.Value}, refCount={AssetReferenceCount}");
         if (AssetReferenceCount > 0)
         {
-            AquaLogger.Debug($"UrlAssetProvider.OnUrlChanged: [{GetType().Name}] Triggering RefreshAssetState");
+            LumoraLogger.Debug($"UrlAssetProvider.OnUrlChanged: [{GetType().Name}] Triggering RefreshAssetState");
             RefreshAssetState();
         }
     }
@@ -68,24 +68,24 @@ public abstract class UrlAssetProvider<A, M> : AssetProvider<A>, IAssetConsumer
     /// </summary>
     protected void RefreshAssetState()
     {
-        AquaLogger.Debug($"UrlAssetProvider.RefreshAssetState: [{GetType().Name}] refCount={AssetReferenceCount}, IsAssetAvailable={IsAssetAvailable}");
+        LumoraLogger.Debug($"UrlAssetProvider.RefreshAssetState: [{GetType().Name}] refCount={AssetReferenceCount}, IsAssetAvailable={IsAssetAvailable}");
         if (AssetReferenceCount == 0 && IsAssetAvailable)
         {
             FreeAsset();
         }
         else if (AssetReferenceCount > 0)
         {
-            AquaLogger.Debug($"UrlAssetProvider.RefreshAssetState: [{GetType().Name}] Calling UpdateAsset");
+            LumoraLogger.Debug($"UrlAssetProvider.RefreshAssetState: [{GetType().Name}] Calling UpdateAsset");
             UpdateAsset();
         }
     }
 
     protected override void UpdateAsset()
     {
-        AquaLogger.Debug($"UrlAssetProvider.UpdateAsset: [{GetType().Name}] Starting for URL {URL.Value}");
+        LumoraLogger.Debug($"UrlAssetProvider.UpdateAsset: [{GetType().Name}] Starting for URL {URL.Value}");
         if (_loadCancellation != null)
         {
-            AquaLogger.Debug($"UrlAssetProvider.UpdateAsset: [{GetType().Name}] Cancelling previous load");
+            LumoraLogger.Debug($"UrlAssetProvider.UpdateAsset: [{GetType().Name}] Cancelling previous load");
         }
         _loadCancellation?.Cancel();
         _loadCancellation = new CancellationTokenSource();
@@ -103,8 +103,8 @@ public abstract class UrlAssetProvider<A, M> : AssetProvider<A>, IAssetConsumer
             }
             catch (Exception ex)
             {
-                AquaLogger.Log($"Error loading asset from {URL.Value}: {ex.Message}");
-                AquaLogger.Log($"Stack trace: {ex.StackTrace}");
+                LumoraLogger.Log($"Error loading asset from {URL.Value}: {ex.Message}");
+                LumoraLogger.Log($"Stack trace: {ex.StackTrace}");
             }
         });
     }
@@ -112,16 +112,16 @@ public abstract class UrlAssetProvider<A, M> : AssetProvider<A>, IAssetConsumer
     private async Task LoadAssetAsync(CancellationToken token)
     {
         var typeName = GetType().Name;
-        AquaLogger.Debug($"UrlAssetProvider.LoadAssetAsync: [{typeName}] Starting");
+        LumoraLogger.Debug($"UrlAssetProvider.LoadAssetAsync: [{typeName}] Starting");
         Uri url = ProcessURL(URL.Value);
         if (url == null)
         {
-            AquaLogger.Debug($"UrlAssetProvider.LoadAssetAsync: [{typeName}] ProcessURL returned null, freeing asset");
+            LumoraLogger.Debug($"UrlAssetProvider.LoadAssetAsync: [{typeName}] ProcessURL returned null, freeing asset");
             FreeAsset();
             return;
         }
 
-        AquaLogger.Debug($"UrlAssetProvider.LoadAssetAsync: [{typeName}] Resolved URL = {url}");
+        LumoraLogger.Debug($"UrlAssetProvider.LoadAssetAsync: [{typeName}] Resolved URL = {url}");
 
         bool urlChanged;
         lock (_loadLock)
@@ -137,20 +137,20 @@ public abstract class UrlAssetProvider<A, M> : AssetProvider<A>, IAssetConsumer
 
         if (token.IsCancellationRequested || IsDestroyed)
         {
-            AquaLogger.Debug($"UrlAssetProvider.LoadAssetAsync: [{typeName}] Aborted - token.IsCancellationRequested={token.IsCancellationRequested}, IsDestroyed={IsDestroyed}");
+            LumoraLogger.Debug($"UrlAssetProvider.LoadAssetAsync: [{typeName}] Aborted - token.IsCancellationRequested={token.IsCancellationRequested}, IsDestroyed={IsDestroyed}");
             return;
         }
 
         // Load metadata first
-        AquaLogger.Debug($"UrlAssetProvider.LoadAssetAsync: [{typeName}] Loading metadata...");
+        LumoraLogger.Debug($"UrlAssetProvider.LoadAssetAsync: [{typeName}] Loading metadata...");
         M metadata = await LoadMetadata(url, token);
-        AquaLogger.Debug($"UrlAssetProvider.LoadAssetAsync: Metadata loaded: {metadata}");
+        LumoraLogger.Debug($"UrlAssetProvider.LoadAssetAsync: Metadata loaded: {metadata}");
         if (token.IsCancellationRequested || IsDestroyed) return;
 
         // Load the actual asset data
-        AquaLogger.Debug($"UrlAssetProvider.LoadAssetAsync: Loading asset data...");
+        LumoraLogger.Debug($"UrlAssetProvider.LoadAssetAsync: Loading asset data...");
         A asset = await LoadAssetData(url, metadata, token);
-        AquaLogger.Debug($"UrlAssetProvider.LoadAssetAsync: Asset loaded: {asset}");
+        LumoraLogger.Debug($"UrlAssetProvider.LoadAssetAsync: Asset loaded: {asset}");
         if (token.IsCancellationRequested || IsDestroyed)
         {
             asset?.Unload();
@@ -176,15 +176,15 @@ public abstract class UrlAssetProvider<A, M> : AssetProvider<A>, IAssetConsumer
 
         // Dispatch notifications to main thread since we're on a background thread
         var world = Slot?.World;
-        AquaLogger.Debug($"UrlAssetProvider.LoadAssetAsync: [{typeName}] Dispatching to main thread, world={world != null}");
+        LumoraLogger.Debug($"UrlAssetProvider.LoadAssetAsync: [{typeName}] Dispatching to main thread, world={world != null}");
         if (world != null)
         {
             world.RunSynchronously(() =>
             {
-                AquaLogger.Debug($"UrlAssetProvider.LoadAssetAsync: [{typeName}] RunSynchronously callback executing, IsDestroyed={IsDestroyed}");
+                LumoraLogger.Debug($"UrlAssetProvider.LoadAssetAsync: [{typeName}] RunSynchronously callback executing, IsDestroyed={IsDestroyed}");
                 if (IsDestroyed) return;
                 asset.NotifyAssigned(this);
-                AquaLogger.Debug($"UrlAssetProvider.LoadAssetAsync: [{typeName}] Calling AssetCreated(), refCount={AssetReferenceCount}");
+                LumoraLogger.Debug($"UrlAssetProvider.LoadAssetAsync: [{typeName}] Calling AssetCreated(), refCount={AssetReferenceCount}");
                 AssetCreated();
                 OnAssetLoaded();
             });

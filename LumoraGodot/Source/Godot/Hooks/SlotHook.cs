@@ -1,10 +1,10 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using Godot;
 using Lumora.Core;
 using Lumora.Core.Math;
 using Lumora.Core.Logging;
 
-namespace Aquamarine.Godot.Hooks;
+namespace Lumora.Godot.Hooks;
 
 /// <summary>
 /// Hook for Slot → Godot Node3D.

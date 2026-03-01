@@ -1,13 +1,13 @@
-using System;
+﻿using System;
 using Godot;
 using Lumora.Core;
 using Lumora.Core.Components.Assets;
 using Lumora.Core.GodotUI.Wizards;
 using Lumora.Core.Math;
-using Aquamarine.Godot.UI;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using Lumora.Godot.UI;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks.GodotUI;
+namespace Lumora.Godot.Hooks.GodotUI;
 
 #nullable enable
 
@@ -97,7 +97,7 @@ public sealed class GodotMaterialColorPickerHook : ComponentHook<GodotMaterialCo
         BindMaterial(Owner.Material.Target);
         ResolveParameter();
 
-        AquaLogger.Log("GodotMaterialColorPickerHook: Initialized");
+        LumoraLogger.Log("GodotMaterialColorPickerHook: Initialized");
     }
 
     public override void ApplyChanges()
@@ -158,7 +158,7 @@ public sealed class GodotMaterialColorPickerHook : ComponentHook<GodotMaterialCo
         var scenePath = Owner.ScenePath.Value;
         if (string.IsNullOrEmpty(scenePath))
         {
-            AquaLogger.Warn("GodotMaterialColorPickerHook: No scene path specified");
+            LumoraLogger.Warn("GodotMaterialColorPickerHook: No scene path specified");
             return;
         }
 
@@ -171,14 +171,14 @@ public sealed class GodotMaterialColorPickerHook : ComponentHook<GodotMaterialCo
         var packedScene = GD.Load<PackedScene>(scenePath);
         if (packedScene == null)
         {
-            AquaLogger.Warn($"GodotMaterialColorPickerHook: Failed to load scene '{scenePath}'");
+            LumoraLogger.Warn($"GodotMaterialColorPickerHook: Failed to load scene '{scenePath}'");
             return;
         }
 
         _loadedScene = packedScene.Instantiate();
         if (_loadedScene == null)
         {
-            AquaLogger.Warn("GodotMaterialColorPickerHook: Failed to instantiate scene");
+            LumoraLogger.Warn("GodotMaterialColorPickerHook: Failed to instantiate scene");
             return;
         }
 

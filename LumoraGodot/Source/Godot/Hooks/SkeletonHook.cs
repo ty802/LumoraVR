@@ -1,10 +1,10 @@
-using Godot;
+﻿using Godot;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
 using System.Collections.Generic;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks;
+namespace Lumora.Godot.Hooks;
 
 /// <summary>
 /// Hook for SkeletonBuilder component → Godot Skeleton3D.
@@ -32,7 +32,7 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
             RebuildSkeleton();
         }
 
-        AquaLogger.Log($"SkeletonHook: Initialized for slot '{Owner.Slot.SlotName.Value}'");
+        LumoraLogger.Log($"SkeletonHook: Initialized for slot '{Owner.Slot.SlotName.Value}'");
     }
 
     public override void ApplyChanges()
@@ -48,7 +48,7 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
 
         if (needsRebuild && Owner.IsBuilt.Value)
         {
-            AquaLogger.Log($"SkeletonHook: Triggering rebuild - hierarchyChanged={Owner.BoneHierarchyChanged}, lumoraBones={Owner.BoneCount}, godotBones={_skeleton.GetBoneCount()}");
+            LumoraLogger.Log($"SkeletonHook: Triggering rebuild - hierarchyChanged={Owner.BoneHierarchyChanged}, lumoraBones={Owner.BoneCount}, godotBones={_skeleton.GetBoneCount()}");
             RebuildSkeleton();
         }
 
@@ -71,7 +71,7 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
         if (_skeleton == null)
             return;
 
-        AquaLogger.Log($"SkeletonHook: Rebuilding skeleton with {Owner.BoneCount} bones");
+        LumoraLogger.Log($"SkeletonHook: Rebuilding skeleton with {Owner.BoneCount} bones");
 
         // Clear existing bones (Godot doesn't have RemoveBone, so recreate skeleton)
         if (_skeleton.GetBoneCount() > 0)
@@ -97,7 +97,7 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
 
             if (boneSlot == null)
             {
-                AquaLogger.Warn($"SkeletonHook: Bone '{boneName}' has null slot, skipping");
+                LumoraLogger.Warn($"SkeletonHook: Bone '{boneName}' has null slot, skipping");
                 continue;
             }
 
@@ -130,10 +130,10 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
             _skeleton.SetBoneRest(boneIndex, restPose);
             _boneRestPoses[boneIndex] = restPose;
 
-            AquaLogger.Log($"SkeletonHook: Added bone {boneIndex} '{boneName}' with parent {(_skeleton.GetBoneParent(boneIndex) >= 0 ? _skeleton.GetBoneParent(boneIndex).ToString() : "root")}");
+            LumoraLogger.Log($"SkeletonHook: Added bone {boneIndex} '{boneName}' with parent {(_skeleton.GetBoneParent(boneIndex) >= 0 ? _skeleton.GetBoneParent(boneIndex).ToString() : "root")}");
         }
 
-        AquaLogger.Log($"SkeletonHook: Skeleton rebuilt with {_skeleton.GetBoneCount()} bones");
+        LumoraLogger.Log($"SkeletonHook: Skeleton rebuilt with {_skeleton.GetBoneCount()} bones");
     }
 
     /// <summary>

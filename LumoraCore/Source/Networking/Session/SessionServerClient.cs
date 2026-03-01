@@ -1,10 +1,10 @@
-using System;
+﻿using System;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using LiteNetLib;
 using LiteNetLib.Utils;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Session;
 
@@ -84,7 +84,7 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
 
             if (!_client.Start())
             {
-                AquaLogger.Error("SessionServerClient: Failed to start NetManager");
+                LumoraLogger.Error("SessionServerClient: Failed to start NetManager");
                 return false;
             }
 
@@ -100,7 +100,7 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
 
             if (_serverPeer == null)
             {
-                AquaLogger.Error("SessionServerClient: Failed to initiate connection");
+                LumoraLogger.Error("SessionServerClient: Failed to initiate connection");
                 Disconnect();
                 return false;
             }
@@ -114,17 +114,17 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
 
             if (!IsConnected)
             {
-                AquaLogger.Warn("SessionServerClient: Connection timeout");
+                LumoraLogger.Warn("SessionServerClient: Connection timeout");
                 Disconnect();
                 return false;
             }
 
-            AquaLogger.Log($"SessionServerClient: Connected to {_serverAddress}:{_serverPort}");
+            LumoraLogger.Log($"SessionServerClient: Connected to {_serverAddress}:{_serverPort}");
             return true;
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"SessionServerClient: Connection failed - {ex.Message}");
+            LumoraLogger.Error($"SessionServerClient: Connection failed - {ex.Message}");
             Disconnect();
             return false;
         }
@@ -153,7 +153,7 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
 
             if (!_client.Start())
             {
-                AquaLogger.Error("SessionServerClient: Failed to start NetManager for NAT punch");
+                LumoraLogger.Error("SessionServerClient: Failed to start NetManager for NAT punch");
                 return false;
             }
 
@@ -165,12 +165,12 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
             // Send NAT punch request
             SendNATPunchRequest(targetSessionId);
 
-            AquaLogger.Log($"SessionServerClient: NAT punch request sent for session {targetSessionId}");
+            LumoraLogger.Log($"SessionServerClient: NAT punch request sent for session {targetSessionId}");
             return true;
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"SessionServerClient: NAT punch request failed - {ex.Message}");
+            LumoraLogger.Error($"SessionServerClient: NAT punch request failed - {ex.Message}");
             return false;
         }
     }
@@ -183,7 +183,7 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
         // Send NAT punch request with client token
         string token = $"client:{targetSessionId}";
         _client.NatPunchModule.SendNatIntroduceRequest(_serverAddress, _serverPort, token);
-        AquaLogger.Log($"SessionServerClient: Sent NAT punch request with token: {token}");
+        LumoraLogger.Log($"SessionServerClient: Sent NAT punch request with token: {token}");
     }
 
     /// <summary>
@@ -193,14 +193,14 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
     {
         if (string.IsNullOrEmpty(ServerSecret))
         {
-            AquaLogger.Warn("SessionServerClient: Cannot respond to NAT intro - no server secret");
+            LumoraLogger.Warn("SessionServerClient: Cannot respond to NAT intro - no server secret");
             return;
         }
 
         // Send NAT punch response with server token
         string token = $"server:{ServerSecret}";
         _client.NatPunchModule.SendNatIntroduceRequest(_serverAddress, _serverPort, token);
-        AquaLogger.Log($"SessionServerClient: Sent NAT punch response with token: {token}");
+        LumoraLogger.Log($"SessionServerClient: Sent NAT punch response with token: {token}");
     }
 
     private async Task PollLoop()
@@ -217,7 +217,7 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
             {
                 if (_cts != null && !_cts.Token.IsCancellationRequested)
                 {
-                    AquaLogger.Warn($"SessionServerClient: Poll error - {ex.Message}");
+                    LumoraLogger.Warn($"SessionServerClient: Poll error - {ex.Message}");
                 }
             }
         }
@@ -242,7 +242,7 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
         _client = null;
 
         OnDisconnected?.Invoke("Disconnected");
-        AquaLogger.Log("SessionServerClient: Disconnected");
+        LumoraLogger.Log("SessionServerClient: Disconnected");
     }
 
     /// <summary>
@@ -309,7 +309,7 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
         _serverPeer.Send(writer, DeliveryMethod.ReliableOrdered);
 
         IsReady = true;
-        AquaLogger.Log($"SessionServerClient: Sent session ready - Name: {metadata.Name}, SessionId: {metadata.SessionId}");
+        LumoraLogger.Log($"SessionServerClient: Sent session ready - Name: {metadata.Name}, SessionId: {metadata.SessionId}");
     }
 
     /// <summary>
@@ -331,20 +331,20 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
         }
         _serverPeer.Send(writer, DeliveryMethod.ReliableOrdered);
 
-        AquaLogger.Log($"SessionServerClient: Sent session update - Users: {activeUsers}");
+        LumoraLogger.Log($"SessionServerClient: Sent session update - Users: {activeUsers}");
     }
 
     // INetEventListener implementation
 
     public void OnPeerConnected(NetPeer peer)
     {
-        AquaLogger.Log($"SessionServerClient: Connected to server");
+        LumoraLogger.Log($"SessionServerClient: Connected to server");
         OnConnected?.Invoke();
     }
 
     public void OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo)
     {
-        AquaLogger.Log($"SessionServerClient: Disconnected - {disconnectInfo.Reason}");
+        LumoraLogger.Log($"SessionServerClient: Disconnected - {disconnectInfo.Reason}");
         _serverPeer = null;
         IsReady = false;
         OnDisconnected?.Invoke(disconnectInfo.Reason.ToString());
@@ -352,7 +352,7 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
 
     public void OnNetworkError(IPEndPoint endPoint, System.Net.Sockets.SocketError socketError)
     {
-        AquaLogger.Warn($"SessionServerClient: Network error - {socketError}");
+        LumoraLogger.Warn($"SessionServerClient: Network error - {socketError}");
     }
 
     public void OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channelNumber, DeliveryMethod deliveryMethod)
@@ -366,14 +366,14 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
                 case OP_HANDSHAKE:
                     // Server sends secret after connection
                     ServerSecret = reader.GetString();
-                    AquaLogger.Log($"SessionServerClient: Received server secret");
+                    LumoraLogger.Log($"SessionServerClient: Received server secret");
 
                     // Now send our session ready message
                     SendSessionReady();
                     break;
 
                 case OP_NAT_INTRO_NOTIFY:
-                    AquaLogger.Log("SessionServerClient: NAT introduction requested - responding");
+                    LumoraLogger.Log("SessionServerClient: NAT introduction requested - responding");
                     // Respond to the NAT intro request
                     RespondToNATIntro();
                     OnNATIntroStarted?.Invoke();
@@ -381,7 +381,7 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
 
                 case OP_RELAY_CONFIRM:
                     var targetId = reader.GetString();
-                    AquaLogger.Log($"SessionServerClient: Relay confirmed for {targetId}");
+                    LumoraLogger.Log($"SessionServerClient: Relay confirmed for {targetId}");
                     OnRelayConfirmed?.Invoke(targetId);
                     break;
 
@@ -392,13 +392,13 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
                     break;
 
                 default:
-                    AquaLogger.Warn($"SessionServerClient: Unknown opcode 0x{opcode:X2}");
+                    LumoraLogger.Warn($"SessionServerClient: Unknown opcode 0x{opcode:X2}");
                     break;
             }
         }
         catch (Exception ex)
         {
-            AquaLogger.Warn($"SessionServerClient: Error processing message - {ex.Message}");
+            LumoraLogger.Warn($"SessionServerClient: Error processing message - {ex.Message}");
         }
         finally
         {
@@ -427,13 +427,13 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
     public void OnNatIntroductionRequest(IPEndPoint localEndPoint, IPEndPoint remoteEndPoint, string token)
     {
         // This is called when someone is trying to connect to us
-        AquaLogger.Log($"SessionServerClient: NAT introduction request received - Local: {localEndPoint}, Remote: {remoteEndPoint}, Token: {token}");
+        LumoraLogger.Log($"SessionServerClient: NAT introduction request received - Local: {localEndPoint}, Remote: {remoteEndPoint}, Token: {token}");
     }
 
     public void OnNatIntroductionSuccess(IPEndPoint targetEndPoint, NatAddressType type, string token)
     {
         // NAT punch succeeded! We can now connect directly to this endpoint
-        AquaLogger.Log($"SessionServerClient: NAT punch SUCCESS! Endpoint: {targetEndPoint}, Type: {type}, Token: {token}");
+        LumoraLogger.Log($"SessionServerClient: NAT punch SUCCESS! Endpoint: {targetEndPoint}, Type: {type}, Token: {token}");
         OnNATPunchSuccess?.Invoke(targetEndPoint);
     }
 

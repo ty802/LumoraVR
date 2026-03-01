@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading;
@@ -11,7 +11,7 @@ using Lumora.Core.Assets;
 using Lumora.Core.Coroutines;
 using Lumora.Core.Physics;
 using Lumora.CDN;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
 
@@ -342,24 +342,24 @@ public class Engine : IDisposable
     {
         if (State != EngineState.NotInitialized)
         {
-            AquaLogger.Warn($"Engine already in state {State}, skipping initialization.");
+            LumoraLogger.Warn($"Engine already in state {State}, skipping initialization.");
             return;
         }
 
         State = EngineState.Initializing;
         _engineTimer.Start();
 
-        AquaLogger.Log("=====================================");
-        AquaLogger.Log($"Lumora Engine v{EngineVersion.VersionString}");
-        AquaLogger.Log($"Platform: {Platform}");
-        AquaLogger.Log("=====================================");
-        AquaLogger.Log("Engine Initialization Starting");
-        AquaLogger.Log("=====================================");
+        LumoraLogger.Log("=====================================");
+        LumoraLogger.Log($"Lumora Engine v{EngineVersion.VersionString}");
+        LumoraLogger.Log($"Platform: {Platform}");
+        LumoraLogger.Log("=====================================");
+        LumoraLogger.Log("Engine Initialization Starting");
+        LumoraLogger.Log("=====================================");
 
         try
         {
             // Phase 1: Core Systems
-            AquaLogger.Log("Phase 1: Initializing Core Systems...");
+            LumoraLogger.Log("Phase 1: Initializing Core Systems...");
 
             await InitializeSubsystem("FocusManager", async () =>
             {
@@ -380,7 +380,7 @@ public class Engine : IDisposable
             }, cancellationToken);
 
             // Phase 2: Asset and Audio Systems
-            AquaLogger.Log("Phase 2: Initializing Asset Systems...");
+            LumoraLogger.Log("Phase 2: Initializing Asset Systems...");
 
             await InitializeSubsystem("AssetManager", async () =>
             {
@@ -406,7 +406,7 @@ public class Engine : IDisposable
             }
 
             // Phase 3: Physics
-            AquaLogger.Log("Phase 3: Initializing Physics...");
+            LumoraLogger.Log("Phase 3: Initializing Physics...");
 
             await InitializeSubsystem("PhysicsManager", async () =>
             {
@@ -415,7 +415,7 @@ public class Engine : IDisposable
             }, cancellationToken);
 
             // Phase 4: World Management
-            AquaLogger.Log("Phase 4: Initializing World Management...");
+            LumoraLogger.Log("Phase 4: Initializing World Management...");
 
             await InitializeSubsystem("WorldManager", async () =>
             {
@@ -425,28 +425,28 @@ public class Engine : IDisposable
             }, cancellationToken);
 
             // Phase 5: Post-initialization
-            AquaLogger.Log("Phase 5: Post-initialization setup...");
+            LumoraLogger.Log("Phase 5: Post-initialization setup...");
             ProcessStartupArguments();
 
             State = EngineState.Running;
 
             var initTime = _engineTimer.Elapsed.TotalSeconds;
-            AquaLogger.Log("=====================================");
-            AquaLogger.Log($"Engine Initialized Successfully in {initTime:F2}s");
-            AquaLogger.Log($"Subsystems: {_subsystemStatus.Count} initialized");
-            AquaLogger.Log("=====================================");
+            LumoraLogger.Log("=====================================");
+            LumoraLogger.Log($"Engine Initialized Successfully in {initTime:F2}s");
+            LumoraLogger.Log($"Subsystems: {_subsystemStatus.Count} initialized");
+            LumoraLogger.Log("=====================================");
         }
         catch (OperationCanceledException)
         {
-            AquaLogger.Warn("Engine initialization was cancelled.");
+            LumoraLogger.Warn("Engine initialization was cancelled.");
             State = EngineState.Failed;
             _initializationError = new OperationCanceledException("Initialization cancelled");
             throw;
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"Engine initialization failed: {ex.Message}");
-            AquaLogger.Error(ex.StackTrace);
+            LumoraLogger.Error($"Engine initialization failed: {ex.Message}");
+            LumoraLogger.Error(ex.StackTrace);
             State = EngineState.Failed;
             _initializationError = ex;
             lock (_instanceLock) { _instance = null; }
@@ -466,12 +466,12 @@ public class Engine : IDisposable
             await initializer();
             sw.Stop();
             SetSubsystemStatus(name, SubsystemStatus.Ready);
-            AquaLogger.Log($"  [{sw.ElapsedMilliseconds}ms] {name} initialized");
+            LumoraLogger.Log($"  [{sw.ElapsedMilliseconds}ms] {name} initialized");
         }
         catch (Exception ex)
         {
             SetSubsystemStatus(name, SubsystemStatus.Failed);
-            AquaLogger.Error($"  [FAILED] {name}: {ex.Message}");
+            LumoraLogger.Error($"  [FAILED] {name}: {ex.Message}");
             throw;
         }
     }
@@ -517,12 +517,12 @@ public class Engine : IDisposable
         var world = WorldManager?.StartSession("LocalHome", (ushort)_localHomePort.Value, GetHostUserName(), "LocalHome");
         if (world == null)
         {
-            AquaLogger.Error("Engine: Failed to start LocalHome session.");
+            LumoraLogger.Error("Engine: Failed to start LocalHome session.");
             return;
         }
 
         _hostingLocalHome = true;
-        AquaLogger.Log($"Engine: LocalHome hosted on port {_localHomePort.Value}.");
+        LumoraLogger.Log($"Engine: LocalHome hosted on port {_localHomePort.Value}.");
 
         _pendingUserSpaceSetup = world;
     }
@@ -533,11 +533,11 @@ public class Engine : IDisposable
         if (world != null)
         {
             WorldManager.SwitchToWorld(world);
-            AquaLogger.Log("Engine: Switched to LocalHome world.");
+            LumoraLogger.Log("Engine: Switched to LocalHome world.");
         }
         else
         {
-            AquaLogger.Warn("Engine: LocalHome world not found.");
+            LumoraLogger.Warn("Engine: LocalHome world not found.");
         }
     }
 
@@ -574,7 +574,7 @@ public class Engine : IDisposable
     /// </summary>
     public void JoinNatServer(string identifier)
     {
-        AquaLogger.Warn($"Engine: NAT join for session '{identifier}' not implemented yet.");
+        LumoraLogger.Warn($"Engine: NAT join for session '{identifier}' not implemented yet.");
     }
 
     /// <summary>
@@ -582,7 +582,7 @@ public class Engine : IDisposable
     /// </summary>
     public void JoinNatServerRelay(string identifier)
     {
-        AquaLogger.Warn($"Engine: Relay join for session '{identifier}' not implemented yet.");
+        LumoraLogger.Warn($"Engine: Relay join for session '{identifier}' not implemented yet.");
     }
 
     #endregion
@@ -619,8 +619,8 @@ public class Engine : IDisposable
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"Engine Update error: {ex.Message}");
-            if (ShowDebug) AquaLogger.Error(ex.StackTrace);
+            LumoraLogger.Error($"Engine Update error: {ex.Message}");
+            if (ShowDebug) LumoraLogger.Error(ex.StackTrace);
         }
 
         OnPostUpdate?.Invoke(delta);
@@ -688,7 +688,7 @@ public class Engine : IDisposable
         if (State != EngineState.Running)
             return;
 
-        AquaLogger.Log("Engine: Shutdown requested.");
+        LumoraLogger.Log("Engine: Shutdown requested.");
         Dispose();
     }
 
@@ -702,9 +702,9 @@ public class Engine : IDisposable
 
         State = EngineState.ShuttingDown;
 
-        AquaLogger.Log("=====================================");
-        AquaLogger.Log("Engine Shutdown Starting...");
-        AquaLogger.Log("=====================================");
+        LumoraLogger.Log("=====================================");
+        LumoraLogger.Log("Engine Shutdown Starting...");
+        LumoraLogger.Log("=====================================");
 
         // Dispose in reverse initialization order
         DisposeSubsystem("WorldManager", () => { WorldManager?.Dispose(); WorldManager = null; });
@@ -727,10 +727,10 @@ public class Engine : IDisposable
                 _instance = null;
         }
 
-        AquaLogger.Log("=====================================");
-        AquaLogger.Log($"Engine Shutdown Complete");
-        AquaLogger.Log($"Total runtime: {runTime:F2}s, Frames: {_metrics.TotalFrames}");
-        AquaLogger.Log("=====================================");
+        LumoraLogger.Log("=====================================");
+        LumoraLogger.Log($"Engine Shutdown Complete");
+        LumoraLogger.Log($"Total runtime: {runTime:F2}s, Frames: {_metrics.TotalFrames}");
+        LumoraLogger.Log("=====================================");
     }
 
     private void DisposeSubsystem(string name, Action disposer)
@@ -741,11 +741,11 @@ public class Engine : IDisposable
             disposer();
             sw.Stop();
             SetSubsystemStatus(name, SubsystemStatus.Disposed);
-            AquaLogger.Log($"  [{sw.ElapsedMilliseconds}ms] {name} disposed");
+            LumoraLogger.Log($"  [{sw.ElapsedMilliseconds}ms] {name} disposed");
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"  [ERROR] {name} disposal: {ex.Message}");
+            LumoraLogger.Error($"  [ERROR] {name} disposal: {ex.Message}");
         }
     }
 

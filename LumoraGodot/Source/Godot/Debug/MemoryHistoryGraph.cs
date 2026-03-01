@@ -1,8 +1,8 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Godot;
 
-namespace Aquamarine.Godot.Debug;
+namespace Lumora.Godot.Debug;
 
 #nullable enable
 

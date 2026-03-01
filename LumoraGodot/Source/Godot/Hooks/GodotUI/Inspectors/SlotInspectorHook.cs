@@ -1,12 +1,12 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using Godot;
 using Lumora.Core;
 using Lumora.Core.GodotUI.Inspectors;
 using Lumora.Core.Math;
-using Aquamarine.Godot.UI;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using Lumora.Godot.UI;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks.GodotUI.Inspectors;
+namespace Lumora.Godot.Hooks.GodotUI.Inspectors;
 
 #nullable enable
 
@@ -98,7 +98,7 @@ public sealed class SlotInspectorHook : ComponentHook<SlotInspector>
 
         Owner.OnDataRefresh += RefreshUI;
 
-        AquaLogger.Log("SlotInspectorHook: Initialized");
+        LumoraLogger.Log("SlotInspectorHook: Initialized");
     }
 
     private void LoadScene()
@@ -114,7 +114,7 @@ public sealed class SlotInspectorHook : ComponentHook<SlotInspector>
         var packedScene = GD.Load<PackedScene>(scenePath);
         if (packedScene == null)
         {
-            AquaLogger.Warn($"SlotInspectorHook: Scene not found at '{scenePath}', creating default UI");
+            LumoraLogger.Warn($"SlotInspectorHook: Scene not found at '{scenePath}', creating default UI");
             CreateDefaultUI();
             return;
         }

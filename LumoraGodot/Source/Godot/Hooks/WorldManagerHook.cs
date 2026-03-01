@@ -1,7 +1,7 @@
-using Godot;
+﻿using Godot;
 using Lumora.Core.Management;
 
-namespace Aquamarine.Godot.Hooks;
+namespace Lumora.Godot.Hooks;
 
 /// <summary>
 /// WorldManager hook for Godot - creates root node for all worlds.

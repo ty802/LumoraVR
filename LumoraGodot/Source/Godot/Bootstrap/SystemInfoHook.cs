@@ -1,8 +1,8 @@
-using System;
+﻿using System;
 using Godot;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Source.Godot.Bootstrap;
+namespace Lumora.Source.Godot.Bootstrap;
 
 /// <summary>
 /// SystemInfoHook - Tracks system performance metrics.
@@ -41,11 +41,11 @@ public partial class SystemInfoHook : Node
 
         _lastFrameTime = Time.GetTicksUsec() / 1000000.0;
 
-        AquaLogger.Log("SystemInfoHook: Initialized");
-        AquaLogger.Log($"  GPU: {GPUName}");
-        AquaLogger.Log($"  CPU: {CPUName}");
-        AquaLogger.Log($"  OS: {OSName}");
-        AquaLogger.Log($"  Memory: {TotalMemoryMB} MB");
+        LumoraLogger.Log("SystemInfoHook: Initialized");
+        LumoraLogger.Log($"  GPU: {GPUName}");
+        LumoraLogger.Log($"  CPU: {CPUName}");
+        LumoraLogger.Log($"  OS: {OSName}");
+        LumoraLogger.Log($"  Memory: {TotalMemoryMB} MB");
     }
 
     /// <summary>

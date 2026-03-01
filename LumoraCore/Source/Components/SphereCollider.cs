@@ -1,7 +1,7 @@
-using Lumora.Core;
+﻿using Lumora.Core;
 using Lumora.Core.Math;
 using Lumora.Core.Physics;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -26,7 +26,7 @@ public class SphereCollider : Collider
     {
         base.OnAwake();
         Radius.OnChanged += _ => RunApplyChanges();
-        AquaLogger.Log($"SphereCollider: Initialized with Radius={Radius.Value}");
+        LumoraLogger.Log($"SphereCollider: Initialized with Radius={Radius.Value}");
     }
 
     // ===== ABSTRACT METHOD IMPLEMENTATIONS =====

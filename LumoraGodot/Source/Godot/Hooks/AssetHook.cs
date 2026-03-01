@@ -1,7 +1,7 @@
-using Lumora.Core;
+﻿using Lumora.Core;
 using Lumora.Core.Assets;
 
-namespace Aquamarine.Godot.Hooks;
+namespace Lumora.Godot.Hooks;
 
 /// <summary>
 /// Base class for asset hooks.

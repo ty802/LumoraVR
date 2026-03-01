@@ -1,10 +1,10 @@
-using Godot;
+﻿using Godot;
 using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks;
+namespace Lumora.Godot.Hooks;
 
 /// <summary>
 /// Hook for RespawnPlane - checks if objects are within bounds and below respawn height.
@@ -165,7 +165,7 @@ public class RespawnPlaneHook : ComponentHook<RespawnPlane>
             {
                 var originalPos = respawnData.OriginalPosition.Value;
                 var originalRot = respawnData.OriginalRotation.Value;
-                AquaLogger.Log($"RespawnPlaneHook: Reset '{slot.SlotName.Value}' from {slotPos} to {originalPos} (rot={originalRot})");
+                LumoraLogger.Log($"RespawnPlaneHook: Reset '{slot.SlotName.Value}' from {slotPos} to {originalPos} (rot={originalRot})");
 
                 // Reset to original position
                 slot.GlobalPosition = originalPos;

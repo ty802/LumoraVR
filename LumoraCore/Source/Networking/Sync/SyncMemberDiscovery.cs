@@ -1,8 +1,8 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Reflection;
 using Lumora.Core;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Sync;
 
@@ -46,7 +46,7 @@ public static class SyncMemberDiscovery
                     }
                     catch (Exception ex)
                     {
-                        AquaLogger.Error($"Failed to create sync member {field.Name}: {ex.Message}");
+                        LumoraLogger.Error($"Failed to create sync member {field.Name}: {ex.Message}");
                         continue;
                     }
                 }
@@ -60,7 +60,7 @@ public static class SyncMemberDiscovery
             }
         }
 
-        AquaLogger.Debug($"Discovered {syncMembers.Count} sync members in {type.Name}");
+        LumoraLogger.Debug($"Discovered {syncMembers.Count} sync members in {type.Name}");
         return syncMembers;
     }
 
@@ -99,7 +99,7 @@ public static class SyncMemberDiscovery
                     }
                     catch (Exception ex)
                     {
-                        AquaLogger.Error($"Failed to create sync member {field.Name}: {ex.Message}");
+                        LumoraLogger.Error($"Failed to create sync member {field.Name}: {ex.Message}");
                         continue;
                     }
                 }
@@ -169,12 +169,12 @@ public static class SyncMemberDiscovery
                 }
                 catch (Exception ex)
                 {
-                    AquaLogger.Error($"Failed to access sync member property {prop.Name}: {ex.Message}");
+                    LumoraLogger.Error($"Failed to access sync member property {prop.Name}: {ex.Message}");
                 }
             }
         }
 
-        AquaLogger.Debug($"Discovered and initialized {syncMembers.Count} sync members in {type.Name}");
+        LumoraLogger.Debug($"Discovered and initialized {syncMembers.Count} sync members in {type.Name}");
         return syncMembers;
     }
 

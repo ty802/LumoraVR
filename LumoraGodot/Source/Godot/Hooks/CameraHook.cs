@@ -1,8 +1,8 @@
-using Godot;
+﻿using Godot;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
 
-namespace Aquamarine.Godot.Hooks;
+namespace Lumora.Godot.Hooks;
 
 /// <summary>
 /// Hook for Camera component → Godot Camera3D.

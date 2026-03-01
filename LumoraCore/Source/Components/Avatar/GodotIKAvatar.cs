@@ -1,6 +1,6 @@
-using System;
+﻿using System;
 using Lumora.Core.Math;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components.Avatar;
 
@@ -142,9 +142,9 @@ public class GodotIKAvatar : ImplementableComponent
         _initialized = _hips != null;
 
         if (_initialized)
-            AquaLogger.Log("GodotIKAvatar: Initialized with skeleton");
+            LumoraLogger.Log("GodotIKAvatar: Initialized with skeleton");
         else
-            AquaLogger.Warn("GodotIKAvatar: Failed to initialize - missing hips bone");
+            LumoraLogger.Warn("GodotIKAvatar: Failed to initialize - missing hips bone");
     }
 
     public override void OnUpdate(float delta)
@@ -188,7 +188,7 @@ public class GodotIKAvatar : ImplementableComponent
         _hips.GlobalPosition = hipsPos;
 
         // Hips rotation: body direction + forward spine tilt
-        floatQ spineTiltRot = floatQ.AngleAxis(SpineTilt.Value * Deg2Rad, float3.Right);
+        floatQ spineTiltRot = floatQ.AxisAngle(float3.Right, SpineTilt.Value * Deg2Rad);
         _hips.GlobalRotation = bodyRot * spineTiltRot;
 
         // Head bone follows tracker exactly
@@ -273,7 +273,7 @@ public class GodotIKAvatar : ImplementableComponent
         LeftFootTarget.Target = userRoot.LeftFootSlot;
         RightFootTarget.Target = userRoot.RightFootSlot;
 
-        AquaLogger.Log("GodotIKAvatar: Tracking setup complete");
+        LumoraLogger.Log("GodotIKAvatar: Tracking setup complete");
     }
 
     // ===== GETTERS FOR HOOK =====

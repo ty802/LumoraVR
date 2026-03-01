@@ -1,7 +1,7 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Lumora.Core.Math;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -149,7 +149,7 @@ public static class HumanoidMeshGenerator
         boneWeights = boneWeightList.ToArray();
         boneNames = BoneNameOrder;
 
-        AquaLogger.Log($"HumanoidMeshGenerator: Generated mesh with {vertices.Length} vertices, {indices.Length / 3} triangles, {boneNames.Length} bones");
+        LumoraLogger.Log($"HumanoidMeshGenerator: Generated mesh with {vertices.Length} vertices, {indices.Length / 3} triangles, {boneNames.Length} bones");
     }
 
     // ===== MESH PRIMITIVE GENERATORS =====

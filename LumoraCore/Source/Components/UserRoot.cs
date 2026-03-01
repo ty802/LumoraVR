@@ -1,7 +1,7 @@
-using System;
+﻿using System;
 using Lumora.Core;
 using Lumora.Core.Math;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -281,7 +281,7 @@ public class UserRoot : Component
     {
         if (user == null)
         {
-            AquaLogger.Error("UserRoot: Cannot initialize with null user");
+            LumoraLogger.Error("UserRoot: Cannot initialize with null user");
             return;
         }
 
@@ -292,10 +292,10 @@ public class UserRoot : Component
         if (World?.IsAuthority == true)
         {
             user.Root = this;
-            AquaLogger.Log($"User: Registered UserRoot for authority user '{user.UserName.Value}'");
+            LumoraLogger.Log($"User: Registered UserRoot for authority user '{user.UserName.Value}'");
         }
 
-        AquaLogger.Log($"UserRoot: Initialized for user '{user.UserName.Value}' (RefID: {user.ReferenceID})");
+        LumoraLogger.Log($"UserRoot: Initialized for user '{user.UserName.Value}' (RefID: {user.ReferenceID})");
     }
 
     /// <summary>
@@ -311,7 +311,7 @@ public class UserRoot : Component
         {
             World.LocalUser.Root = this;
             _isRegistered = true;
-            AquaLogger.Log($"UserRoot: Registered as Root for local user '{TargetUser.Target?.UserName?.Value}'");
+            LumoraLogger.Log($"UserRoot: Registered as Root for local user '{TargetUser.Target?.UserName?.Value}'");
         }
 
         if (TargetUser.Target != World?.LocalUser && _isRegistered)
@@ -439,7 +439,7 @@ public class UserRoot : Component
             float.IsNaN(scale.x) || float.IsNaN(scale.y) || float.IsNaN(scale.z) ||
             float.IsInfinity(scale.x) || float.IsInfinity(scale.y) || float.IsInfinity(scale.z))
         {
-            AquaLogger.Warn($"UserRoot: Invalid scale detected ({scale}), resetting to (1,1,1)");
+            LumoraLogger.Warn($"UserRoot: Invalid scale detected ({scale}), resetting to (1,1,1)");
             Slot.LocalScale.Value = float3.One;
         }
 
@@ -456,7 +456,7 @@ public class UserRoot : Component
     /// </summary>
     public override void OnDestroy()
     {
-        AquaLogger.Log($"UserRoot: Destroying UserRoot for user '{ActiveUser?.UserName.Value ?? "Unknown"}'");
+        LumoraLogger.Log($"UserRoot: Destroying UserRoot for user '{ActiveUser?.UserName.Value ?? "Unknown"}'");
 
         // Unregister from user
         if (_isRegistered && World?.LocalUser?.Root == this)

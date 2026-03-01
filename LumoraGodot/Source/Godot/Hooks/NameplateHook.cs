@@ -1,10 +1,10 @@
-using Godot;
+﻿using Godot;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Components;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks;
+namespace Lumora.Godot.Hooks;
 
 #nullable enable
 
@@ -82,7 +82,7 @@ public class NameplateHook : ComponentHook<Nameplate>
 
         LoadScene();
 
-        AquaLogger.Log($"NameplateHook: Initialized for '{Owner.DisplayName.Value}'");
+        LumoraLogger.Log($"NameplateHook: Initialized for '{Owner.DisplayName.Value}'");
     }
 
     private void LoadScene()
@@ -90,14 +90,14 @@ public class NameplateHook : ComponentHook<Nameplate>
         var packedScene = GD.Load<PackedScene>(LumAssets.UI.Nameplate);
         if (packedScene == null)
         {
-            AquaLogger.Warn($"NameplateHook: Failed to load scene '{LumAssets.UI.Nameplate}'");
+            LumoraLogger.Warn($"NameplateHook: Failed to load scene '{LumAssets.UI.Nameplate}'");
             return;
         }
 
         _loadedScene = packedScene.Instantiate();
         if (_loadedScene == null)
         {
-            AquaLogger.Warn("NameplateHook: Failed to instantiate scene");
+            LumoraLogger.Warn("NameplateHook: Failed to instantiate scene");
             return;
         }
 

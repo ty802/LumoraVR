@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -9,10 +9,10 @@ using Lumora.Core.GodotUI;
 using Lumora.Core.GodotUI.Inspectors;
 using Lumora.Core.Math;
 using Lumora.Core.Networking.Sync;
-using Aquamarine.Godot.UI;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using Lumora.Godot.UI;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks.GodotUI.Inspectors;
+namespace Lumora.Godot.Hooks.GodotUI.Inspectors;
 
 #nullable enable
 
@@ -128,7 +128,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         Owner.OnSelectionChanged += _selectionChangedHandler;
         Owner.OnAttachComponentRequested += OnAttachComponentRequested;
 
-        AquaLogger.Log("SceneInspectorHook: Initialized");
+        LumoraLogger.Log("SceneInspectorHook: Initialized");
     }
 
     private void OnOwnerRootChanged(Slot? root)
@@ -161,7 +161,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"SceneInspectorHook: Selection change rebuild failed: {ex.Message}");
+            LumoraLogger.Error($"SceneInspectorHook: Selection change rebuild failed: {ex.Message}");
         }
     }
 
@@ -555,7 +555,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
             ParseSceneNodeRecursive(child, "", Owner.Slot);
         }
 
-        AquaLogger.Log($"SceneInspectorHook: Created Lumora UI components for .tscn elements");
+        LumoraLogger.Log($"SceneInspectorHook: Created Lumora UI components for .tscn elements");
     }
 
     private void ParseSceneNodeRecursive(Node node, string parentPath, Slot parentSlot)
@@ -693,7 +693,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"SceneInspectorHook: OnChildChanged exception: {ex.Message}");
+            LumoraLogger.Error($"SceneInspectorHook: OnChildChanged exception: {ex.Message}");
         }
     }
 
@@ -733,7 +733,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"SceneInspectorHook: OnTreeGuiInput exception: {ex.Message}");
+            LumoraLogger.Error($"SceneInspectorHook: OnTreeGuiInput exception: {ex.Message}");
         }
     }
 
@@ -751,7 +751,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"SceneInspectorHook: OnTreeItemSelected exception: {ex.Message}");
+            LumoraLogger.Error($"SceneInspectorHook: OnTreeItemSelected exception: {ex.Message}");
         }
     }
 
@@ -778,7 +778,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
     private void OnAttachComponentRequested(Slot slot)
     {
         // The InspectorInputHandler will handle spawning the ComponentAttacher
-        AquaLogger.Log($"SceneInspectorHook: Component attach requested for '{slot.Name.Value}'");
+        LumoraLogger.Log($"SceneInspectorHook: Component attach requested for '{slot.Name.Value}'");
     }
 
     private void RebuildUI()
@@ -850,7 +850,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"SceneInspectorHook: RebuildHierarchyTree exception: {ex.Message}");
+            LumoraLogger.Error($"SceneInspectorHook: RebuildHierarchyTree exception: {ex.Message}");
         }
     }
 
@@ -938,8 +938,8 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"SceneInspectorHook: RebuildComponentPanel exception: {ex.Message}");
-            AquaLogger.Error($"SceneInspectorHook: {ex.StackTrace}");
+            LumoraLogger.Error($"SceneInspectorHook: RebuildComponentPanel exception: {ex.Message}");
+            LumoraLogger.Error($"SceneInspectorHook: {ex.StackTrace}");
         }
     }
 
@@ -1002,7 +1002,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
             }
             catch (Exception ex)
             {
-                AquaLogger.Log($"SceneInspectorHook: Error adding editor for {component.GetType().Name}: {ex.Message}");
+                LumoraLogger.Log($"SceneInspectorHook: Error adding editor for {component.GetType().Name}: {ex.Message}");
                 var errorLabel = new Label();
                 errorLabel.Text = $"[Error: {component.GetType().Name}]";
                 errorLabel.AddThemeColorOverride("font_color", new Color(1f, 0.3f, 0.3f));
@@ -1085,7 +1085,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
             }
             catch (Exception ex)
             {
-                AquaLogger.Log($"SceneInspectorHook: Error building editor for member {i} on {component.GetType().Name}: {ex.Message}");
+                LumoraLogger.Log($"SceneInspectorHook: Error building editor for member {i} on {component.GetType().Name}: {ex.Message}");
             }
         }
 
@@ -1251,8 +1251,8 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"SceneInspectorHook: ApplyChanges exception: {ex.Message}");
-            AquaLogger.Error($"SceneInspectorHook: {ex.StackTrace}");
+            LumoraLogger.Error($"SceneInspectorHook: ApplyChanges exception: {ex.Message}");
+            LumoraLogger.Error($"SceneInspectorHook: {ex.StackTrace}");
         }
     }
 

@@ -1,7 +1,7 @@
-using Godot;
+﻿using Godot;
 using Lumora.Core.Math;
 
-namespace Aquamarine.Godot.Extensions;
+namespace Lumora.Godot.Extensions;
 
 /// <summary>
 /// Extension methods for converting between Lumora.Core.Math types and Godot types.

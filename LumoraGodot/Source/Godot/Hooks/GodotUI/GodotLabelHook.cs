@@ -1,10 +1,10 @@
-using Godot;
+﻿using Godot;
 using Lumora.Core;
 using Lumora.Core.GodotUI;
 using LumoraHAlign = Lumora.Core.GodotUI.HorizontalAlignment;
 using LumoraVAlign = Lumora.Core.GodotUI.VerticalAlignment;
 
-namespace Aquamarine.Godot.Hooks.GodotUI;
+namespace Lumora.Godot.Hooks.GodotUI;
 
 #nullable enable
 

@@ -1,15 +1,15 @@
-using Godot;
+﻿using Godot;
 using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.Components.Gizmos;
 using Lumora.Core.GodotUI.Inspectors;
 using Lumora.Core.Math;
-using Aquamarine.Godot.Hooks;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using Lumora.Godot.Hooks;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 using GodotInput = Godot.Input;
 using LumoraEngine = Lumora.Core.Engine;
 
-namespace Aquamarine.Source.Input;
+namespace Lumora.Source.Input;
 
 #nullable enable
 
@@ -53,7 +53,7 @@ public partial class InspectorInputHandler : Node3D
     {
         CreateSelectionRay();
         EnsureInputActionsExist();
-        AquaLogger.Log("InspectorInputHandler: Initialized");
+        LumoraLogger.Log("InspectorInputHandler: Initialized");
     }
 
     private void CreateSelectionRay()
@@ -77,7 +77,7 @@ public partial class InspectorInputHandler : Node3D
             var keyEvent = new InputEventKey();
             keyEvent.PhysicalKeycode = Key.I;
             InputMap.ActionAddEvent("Inspect", keyEvent);
-            AquaLogger.Log("InspectorInputHandler: Added 'Inspect' input action (I key)");
+            LumoraLogger.Log("InspectorInputHandler: Added 'Inspect' input action (I key)");
         }
 
         // World Inspector action (Shift+I)
@@ -88,7 +88,7 @@ public partial class InspectorInputHandler : Node3D
             keyEvent.PhysicalKeycode = Key.I;
             keyEvent.ShiftPressed = true;
             InputMap.ActionAddEvent("InspectWorld", keyEvent);
-            AquaLogger.Log("InspectorInputHandler: Added 'InspectWorld' input action (Shift+I)");
+            LumoraLogger.Log("InspectorInputHandler: Added 'InspectWorld' input action (Shift+I)");
         }
 
         // Toggle Inspector action (Tab)
@@ -98,7 +98,7 @@ public partial class InspectorInputHandler : Node3D
             var keyEvent = new InputEventKey();
             keyEvent.PhysicalKeycode = Key.Tab;
             InputMap.ActionAddEvent("ToggleInspector", keyEvent);
-            AquaLogger.Log("InspectorInputHandler: Added 'ToggleInspector' input action (Tab key)");
+            LumoraLogger.Log("InspectorInputHandler: Added 'ToggleInspector' input action (Tab key)");
         }
     }
 
@@ -152,11 +152,11 @@ public partial class InspectorInputHandler : Node3D
         var world = World;
         if (world == null)
         {
-            AquaLogger.Log("InspectorInputHandler: No world set, cannot open inspector");
+            LumoraLogger.Log("InspectorInputHandler: No world set, cannot open inspector");
             return;
         }
 
-        AquaLogger.Log("InspectorInputHandler: Opening world inspector at root");
+        LumoraLogger.Log("InspectorInputHandler: Opening world inspector at root");
 
         var inspector = SpawnSceneInspector(world.RootSlot);
         if (inspector != null)
@@ -173,12 +173,12 @@ public partial class InspectorInputHandler : Node3D
         // If nothing targeted, open world inspector at root
         if (targetSlot == null)
         {
-            AquaLogger.Log("InspectorInputHandler: No slot found under cursor, opening world inspector");
+            LumoraLogger.Log("InspectorInputHandler: No slot found under cursor, opening world inspector");
             OpenWorldInspector();
             return;
         }
 
-        AquaLogger.Log($"InspectorInputHandler: Inspecting slot '{targetSlot.Name.Value}'");
+        LumoraLogger.Log($"InspectorInputHandler: Inspecting slot '{targetSlot.Name.Value}'");
 
         // Get object root for better context
         var objectRoot = GetObjectRoot(targetSlot);
@@ -269,7 +269,7 @@ public partial class InspectorInputHandler : Node3D
         // Make inspector grabbable
         inspectorSlot.AttachComponent<Grabbable>();
 
-        AquaLogger.Log($"InspectorInputHandler: Spawned SceneInspector at {spawnPos}");
+        LumoraLogger.Log($"InspectorInputHandler: Spawned SceneInspector at {spawnPos}");
 
         return inspector;
     }
@@ -307,7 +307,7 @@ public partial class InspectorInputHandler : Node3D
         // Make inspector grabbable
         inspectorSlot.AttachComponent<Grabbable>();
 
-        AquaLogger.Log($"InspectorInputHandler: Spawned SlotInspector for '{targetSlot.Name.Value}'");
+        LumoraLogger.Log($"InspectorInputHandler: Spawned SlotInspector for '{targetSlot.Name.Value}'");
 
         return inspector;
     }
@@ -344,7 +344,7 @@ public partial class InspectorInputHandler : Node3D
         // Make attacher grabbable
         attacherSlot.AttachComponent<Grabbable>();
 
-        AquaLogger.Log($"InspectorInputHandler: Spawned ComponentAttacher for '{targetSlot.Name.Value}'");
+        LumoraLogger.Log($"InspectorInputHandler: Spawned ComponentAttacher for '{targetSlot.Name.Value}'");
 
         return attacher;
     }

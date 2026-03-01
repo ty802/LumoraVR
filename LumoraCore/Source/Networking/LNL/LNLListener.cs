@@ -1,9 +1,9 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Net;
 using LiteNetLib;
 using LiteNetLib.Utils;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.LNL;
 
@@ -47,16 +47,16 @@ public class LNLListener : INetEventListener, IDisposable
 
             if (IsInitialized)
             {
-                AquaLogger.Log($"LNL Listener started on {bindIP}:{port}");
+                LumoraLogger.Log($"LNL Listener started on {bindIP}:{port}");
             }
             else
             {
-                AquaLogger.Error($"Failed to start LNL Listener on {bindIP}:{port}");
+                LumoraLogger.Error($"Failed to start LNL Listener on {bindIP}:{port}");
             }
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"Exception starting LNL Listener: {ex.Message}");
+            LumoraLogger.Error($"Exception starting LNL Listener: {ex.Message}");
             IsInitialized = false;
         }
     }
@@ -83,7 +83,7 @@ public class LNLListener : INetEventListener, IDisposable
             _peers.Clear();
 
             _server.Stop();
-            AquaLogger.Log($"LNL Listener stopped on {_bindIP}:{_port}");
+            LumoraLogger.Log($"LNL Listener stopped on {_bindIP}:{_port}");
         }
     }
 
@@ -96,7 +96,7 @@ public class LNLListener : INetEventListener, IDisposable
 
     public void OnPeerConnected(NetPeer peer)
     {
-        AquaLogger.Log($"Peer connected: {peer.Address}:{peer.Port}");
+        LumoraLogger.Log($"Peer connected: {peer.Address}:{peer.Port}");
 
         var lnlPeer = new LNLPeer(_server, peer);
         _peers[peer] = lnlPeer;
@@ -106,7 +106,7 @@ public class LNLListener : INetEventListener, IDisposable
 
     public void OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo)
     {
-        AquaLogger.Log($"Peer disconnected: {peer.Address}:{peer.Port} - {disconnectInfo.Reason}");
+        LumoraLogger.Log($"Peer disconnected: {peer.Address}:{peer.Port} - {disconnectInfo.Reason}");
 
         if (_peers.TryGetValue(peer, out var lnlPeer))
         {
@@ -118,7 +118,7 @@ public class LNLListener : INetEventListener, IDisposable
 
     public void OnNetworkError(IPEndPoint endPoint, System.Net.Sockets.SocketError socketError)
     {
-        AquaLogger.Error($"Network error: {socketError} at {endPoint}");
+        LumoraLogger.Error($"Network error: {socketError} at {endPoint}");
     }
 
     public void OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channel, DeliveryMethod deliveryMethod)
@@ -151,12 +151,12 @@ public class LNLListener : INetEventListener, IDisposable
         if (request.Data.GetString() == _appId)
         {
             request.Accept();
-            AquaLogger.Log($"Accepted connection request from {request.RemoteEndPoint}");
+            LumoraLogger.Log($"Accepted connection request from {request.RemoteEndPoint}");
         }
         else
         {
             request.Reject();
-            AquaLogger.Warn($"Rejected connection request from {request.RemoteEndPoint} - invalid app ID");
+            LumoraLogger.Warn($"Rejected connection request from {request.RemoteEndPoint} - invalid app ID");
         }
     }
 }

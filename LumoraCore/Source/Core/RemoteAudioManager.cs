@@ -1,6 +1,6 @@
-using System.Diagnostics.CodeAnalysis;
+﻿using System.Diagnostics.CodeAnalysis;
 using System.Collections.Generic;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 using System;
 using System.Linq;
 using Lumora.Core.External.GenericAudioOutputMixer;
@@ -76,7 +76,7 @@ public class RemoteAudioManager
             foreach (IAudioBus bus in buses)
             {
                 IAudioBus? newbus;
-                AquaLogger.Log($"[Audio] Importing bus {bus.Name} into external engine");
+                LumoraLogger.Log($"[Audio] Importing bus {bus.Name} into external engine");
 
                 // Try to get the audio bus
                 if (!mixer.TryGetAudioBusByName(bus.Name, out newbus))
@@ -84,7 +84,7 @@ public class RemoteAudioManager
                     // If it doesn't exist try to create it
                     if (!mixer.CreateAudioBus(bus.Name, out newbus))
                     {
-                        AquaLogger.Log($"[Audio] Failed to create bus: {bus.Name}");
+                        LumoraLogger.Log($"[Audio] Failed to create bus: {bus.Name}");
                         continue;
                     }
                 }
@@ -96,14 +96,14 @@ public class RemoteAudioManager
                 }
                 catch (System.Exception e)
                 {
-                    AquaLogger.Log($"[Audio] Exception {e.ToString()} was thrown while setting volume of {bus.Name}");
+                    LumoraLogger.Log($"[Audio] Exception {e.ToString()} was thrown while setting volume of {bus.Name}");
                 }
             }
             foreach (IAudioBus bus in buses)
             {
                 if (bus.Target is null || !mixer.TryGetAudioBusByName(bus.Name, out var newbus) || !mixer.TryGetAudioBusByName(bus.Target.Name, out var newtarget))
                     continue;
-                AquaLogger.Log($"[Audio] Setting target of bus {newbus.Name} to {newtarget.Name}");
+                LumoraLogger.Log($"[Audio] Setting target of bus {newbus.Name} to {newtarget.Name}");
                 newbus.Target = newtarget;
             }
             _mixer = mixer;

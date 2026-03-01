@@ -1,10 +1,10 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Lumora.Core;
 using Lumora.Core.Networking.Discovery;
 using Lumora.Core.Networking.LNL;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Session;
 
@@ -86,8 +86,8 @@ public class Session : IDisposable
         session.Metadata.HostUsername ??= Environment.UserName;
         session.Metadata.ActiveUsers = 1;
 
-        AquaLogger.Log($"Creating new session '{metadata.Name}' on port {port}");
-        AquaLogger.Log($"Session ID: {session.Metadata.SessionId}");
+        LumoraLogger.Log($"Creating new session '{metadata.Name}' on port {port}");
+        LumoraLogger.Log($"Session ID: {session.Metadata.SessionId}");
 
         // Start listener
         if (!session.Connections.StartListener(port))
@@ -109,7 +109,7 @@ public class Session : IDisposable
             session.StartLANAnnouncer();
         }
 
-        AquaLogger.Log($"Session created as host with {session.Metadata.SessionURLs.Count} URLs");
+        LumoraLogger.Log($"Session created as host with {session.Metadata.SessionURLs.Count} URLs");
         return session;
     }
 
@@ -134,7 +134,7 @@ public class Session : IDisposable
     {
         var session = new Session(world);
 
-        AquaLogger.Log($"Joining session at {string.Join(", ", addresses)}");
+        LumoraLogger.Log($"Joining session at {string.Join(", ", addresses)}");
 
         bool connected;
         try
@@ -143,7 +143,7 @@ public class Session : IDisposable
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"Failed to connect to session: {ex.Message}");
+            LumoraLogger.Error($"Failed to connect to session: {ex.Message}");
             connected = false;
         }
 
@@ -157,7 +157,7 @@ public class Session : IDisposable
         session.Sync = new SessionSyncManager(session);
         session.Sync.Start();
 
-        AquaLogger.Log("Session joined as client");
+        LumoraLogger.Log("Session joined as client");
         return session;
     }
 
@@ -200,18 +200,18 @@ public class Session : IDisposable
 
             if (connected)
             {
-                AquaLogger.Log($"Session registered with public server at {SessionServerAddress}:{SessionServerPort}");
+                LumoraLogger.Log($"Session registered with public server at {SessionServerAddress}:{SessionServerPort}");
             }
             else
             {
-                AquaLogger.Warn("Session: Failed to register with public server");
+                LumoraLogger.Warn("Session: Failed to register with public server");
                 _serverClient?.Dispose();
                 _serverClient = null;
             }
         }
         catch (Exception ex)
         {
-            AquaLogger.Warn($"Session: Public server registration failed - {ex.Message}");
+            LumoraLogger.Warn($"Session: Public server registration failed - {ex.Message}");
             _serverClient?.Dispose();
             _serverClient = null;
         }
@@ -334,7 +334,7 @@ public class Session : IDisposable
         if (IsDisposed) return;
         IsDisposed = true;
 
-        AquaLogger.Log("Disposing session");
+        LumoraLogger.Log("Disposing session");
 
         // Stop LAN announcer
         StopLANAnnouncer();

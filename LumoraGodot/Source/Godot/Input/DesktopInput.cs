@@ -1,11 +1,11 @@
-using System;
+﻿using System;
 using Godot;
 using Lumora.Core.Logging;
 using Lumora.Core.Components;
-using AquaLogger = Lumora.Core.Logging.Logger;
-using Aquamarine.Source.UI;
+using LumoraLogger = Lumora.Core.Logging.Logger;
+using Lumora.Source.UI;
 
-namespace Aquamarine.Source.Input;
+namespace Lumora.Source.Input;
 
 /// <summary>
 /// Desktop input provider - provides camera-based interaction for non-VR mode.
@@ -86,7 +86,7 @@ public partial class DesktopInput : Node3D, IInputProvider
         _grabManager.Name = "GrabManager";
         AddChild(_grabManager);
 
-        AquaLogger.Log("DesktopInput initialized");
+        LumoraLogger.Log("DesktopInput initialized");
     }
 
     private void CreateCursorUI()
@@ -114,7 +114,7 @@ public partial class DesktopInput : Node3D, IInputProvider
         _cursorDot.MouseFilter = Control.MouseFilterEnum.Ignore;
         _cursorUI.AddChild(_cursorDot);
 
-        AquaLogger.Log("Desktop cursor UI created");
+        LumoraLogger.Log("Desktop cursor UI created");
     }
 
     private void CreateInteractionRay()

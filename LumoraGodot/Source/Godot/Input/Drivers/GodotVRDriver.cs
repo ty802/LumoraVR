@@ -1,13 +1,15 @@
-using Godot;
+﻿using Godot;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
-using Aquamarine.Source.Input;
+using Lumora.Source.Input;
 using System.Numerics;
+using System;
+using System.Collections.Generic;
 using Quaternion = System.Numerics.Quaternion;
 using Vector3 = System.Numerics.Vector3;
 using Vector2 = System.Numerics.Vector2;
 
-namespace Aquamarine.Source.Godot.Input.Drivers;
+namespace Lumora.Source.Godot.Input.Drivers;
 
 /// <summary>
 /// Godot VR driver for passing VR tracking data to Lumora engine.
@@ -38,23 +40,63 @@ public class GodotVRDriver : IVRDriver, IInputDriver
     private TrackedObject _rightControllerTrackedObject;
     private TrackedObject _leftHandTrackedObject;
     private TrackedObject _rightHandTrackedObject;
+    private readonly Dictionary<BodyNode, TrackedObject> _handSkeletonTrackedObjects = new();
+
+    private static readonly FingerType[] FingerOrder = new[]
+    {
+        FingerType.Thumb,
+        FingerType.Index,
+        FingerType.Middle,
+        FingerType.Ring,
+        FingerType.Pinky
+    };
+
+    private static readonly FingerSegmentType[] ThumbSegments = new[]
+    {
+        FingerSegmentType.Metacarpal,
+        FingerSegmentType.Proximal,
+        FingerSegmentType.Distal,
+        FingerSegmentType.Tip
+    };
+
+    private static readonly FingerSegmentType[] FingerSegments = new[]
+    {
+        FingerSegmentType.Metacarpal,
+        FingerSegmentType.Proximal,
+        FingerSegmentType.Intermediate,
+        FingerSegmentType.Distal,
+        FingerSegmentType.Tip
+    };
 
     /// <summary>
-    /// Initialize the VR system.
+    /// Pick up the XR interface that PhaseXRDetection() already initialized.
+    /// Also subscribes to TrackerAdded to log the HMD device name on connect.
     /// </summary>
     public void InitializeVR()
     {
-        // Get XR interface (OpenXR, OpenVR, etc.)
         _xrInterface = XRServer.PrimaryInterface;
 
         if (_xrInterface != null && _xrInterface.IsInitialized())
         {
-            global::Godot.GD.Print($"GodotVRDriver: VR initialized with interface: {_xrInterface.GetName()}");
+            GD.Print($"GodotVRDriver: VR active — interface: {_xrInterface.GetName()}");
+            XRServer.TrackerAdded += OnTrackerAdded;
         }
         else
         {
-            global::Godot.GD.Print("GodotVRDriver: No VR interface available or not initialized");
+            GD.Print("GodotVRDriver: No VR interface active — running in desktop mode");
         }
+    }
+
+    private void OnTrackerAdded(StringName trackerName, long type)
+    {
+        var tracker = XRServer.GetTracker(trackerName);
+        if (tracker == null) return;
+
+        string desc = tracker is XRPositionalTracker pt ? pt.Description : tracker.Name.ToString();
+        global::Godot.GD.Print($"GodotVRDriver: Tracker connected [{(XRServer.TrackerType)type}] '{trackerName}' — {desc}");
+
+        if ((XRServer.TrackerType)type == XRServer.TrackerType.Head)
+            global::Godot.GD.Print($"GodotVRDriver: HMD device: {desc}");
     }
 
     /// <summary>
@@ -190,6 +232,8 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         _rightHandTrackedObject.CorrespondingBodyNode = BodyNode.RightHand;
         _rightHandTrackedObject.Priority = 50;
 
+        RegisterHandSkeletonDevices(inputInterface);
+
         Lumora.Core.Logging.Logger.Log($"GodotVRDriver: Registered VR tracked devices - Head:{_headTrackedObject?.Name}, LeftController:{_leftControllerTrackedObject?.Name}, RightController:{_rightControllerTrackedObject?.Name}");
     }
 
@@ -217,6 +261,9 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         if (_inputInterface.RightController != null)
             UpdateControllerInputs(_inputInterface.RightController);
 
+        UpdateHandSkeletonTracking(Chirality.Left);
+        UpdateHandSkeletonTracking(Chirality.Right);
+
         // Debug log every 60 frames
         _debugLogCounter++;
         if (_debugLogCounter >= 60)
@@ -229,6 +276,317 @@ public class GodotVRDriver : IVRDriver, IInputDriver
             var leftThumb = _inputInterface.LeftController?.ThumbstickPosition ?? default;
             // global::Godot.GD.Print($"[VR] L:{leftPos} track:{leftTrack} | R:{rightPos} track:{rightTrack} | Thumb:({leftThumb.X:F2},{leftThumb.Y:F2}) | XRNodes L:{_leftController != null} R:{_rightController != null}");
         }
+    }
+
+    private void RegisterHandSkeletonDevices(InputInterface inputInterface)
+    {
+        RegisterHandSkeletonDevice(inputInterface, BodyNode.LeftPalm);
+        RegisterHandSkeletonDevice(inputInterface, BodyNode.RightPalm);
+
+        foreach (var chirality in new[] { Chirality.Left, Chirality.Right })
+        {
+            foreach (var finger in FingerOrder)
+            {
+                var segments = finger == FingerType.Thumb ? ThumbSegments : FingerSegments;
+                for (int i = 0; i < segments.Length; i++)
+                {
+                    RegisterHandSkeletonDevice(inputInterface, finger.ComposeFinger(segments[i], chirality));
+                }
+            }
+        }
+    }
+
+    private void RegisterHandSkeletonDevice(InputInterface inputInterface, BodyNode node)
+    {
+        if (_handSkeletonTrackedObjects.ContainsKey(node))
+            return;
+
+        var tracked = inputInterface.CreateDevice<TrackedObject>($"VR_{node}");
+        tracked.CorrespondingBodyNode = node;
+        tracked.Priority = 120;
+        _handSkeletonTrackedObjects[node] = tracked;
+    }
+
+    private void UpdateHandSkeletonTracking(Chirality side)
+    {
+        var controllerObj = side == Chirality.Left ? _leftControllerTrackedObject : _rightControllerTrackedObject;
+        if (controllerObj == null)
+            return;
+
+        bool isTracking = controllerObj.IsTracking;
+        if (!isTracking)
+        {
+            SetHandSkeletonTrackingState(side, false);
+            return;
+        }
+
+        float3 controllerPos = controllerObj.RawPosition;
+        floatQ controllerRot = controllerObj.RawRotation;
+        var xrController = side == Chirality.Left ? _leftController : _rightController;
+        var vrController = side == Chirality.Left ? _inputInterface?.LeftController : _inputInterface?.RightController;
+
+        float trigger = Clamp01(vrController?.TriggerValue ?? 0f);
+        float grip = Clamp01(vrController?.GripValue ?? 0f);
+        float squeezeForce = 0f;
+        float thumbAxis = 0f;
+        bool triggerTouch = false;
+        bool thumbTouch = false;
+
+        if (xrController != null && GodotObject.IsInstanceValid(xrController))
+        {
+            trigger = MathF.Max(trigger, Clamp01(ReadFloatAction(xrController, "trigger")));
+            grip = MathF.Max(grip, Clamp01(ReadFloatAction(xrController, "grip")));
+            grip = MathF.Max(grip, Clamp01(ReadFloatAction(xrController, "grip_force")));
+            grip = MathF.Max(grip, Clamp01(ReadFloatAction(xrController, "squeeze")));
+            grip = MathF.Max(grip, Clamp01(ReadFloatAction(xrController, "squeeze_force")));
+            squeezeForce = Clamp01(ReadFloatAction(xrController, "grip_force"));
+            squeezeForce = MathF.Max(squeezeForce, Clamp01(ReadFloatAction(xrController, "squeeze_force")));
+
+            var thumb = xrController.GetVector2("primary");
+            thumbAxis = thumb.X;
+
+            triggerTouch = ReadBoolAction(xrController, "trigger_touch");
+            thumbTouch = ReadBoolAction(xrController, "primary_touch")
+                || ReadBoolAction(xrController, "secondary_touch")
+                || ReadBoolAction(xrController, "ax_touch")
+                || ReadBoolAction(xrController, "by_touch")
+                || ReadBoolAction(xrController, "thumbstick_touch")
+                || ReadBoolAction(xrController, "trackpad_touch");
+        }
+
+        float indexCurl = Clamp01(trigger * 0.92f + (triggerTouch ? 0.18f : 0f));
+        float baseCurl = Clamp01(MathF.Max(grip, squeezeForce));
+        float middleCurl = Clamp01(baseCurl * 0.95f);
+        float ringCurl = Clamp01(baseCurl * 1.02f + 0.03f);
+        float pinkyCurl = Clamp01(baseCurl * 1.08f + 0.05f);
+        float thumbCurl = Clamp01(baseCurl * 0.45f + trigger * 0.30f + (thumbTouch ? 0.20f : 0f));
+        float splay = Clamp01(MathF.Abs(thumbAxis)) * MathF.Sign(thumbAxis) * 0.18f;
+        float handScale = 1.12f;
+
+        BodyNode palmNode = side == Chirality.Left ? BodyNode.LeftPalm : BodyNode.RightPalm;
+        float3 palmLocal = MirrorForSide(new float3(0.0000f, -0.0150f, -0.0350f), side, handScale);
+        SetHandNodePose(
+            palmNode,
+            Add(controllerPos, controllerRot * palmLocal),
+            controllerRot,
+            true);
+
+        WriteFingerPose(side, FingerType.Thumb, thumbCurl, -splay * 0.50f, controllerPos, controllerRot, handScale);
+        WriteFingerPose(side, FingerType.Index, indexCurl, splay * 0.70f, controllerPos, controllerRot, handScale);
+        WriteFingerPose(side, FingerType.Middle, middleCurl, splay * 0.20f, controllerPos, controllerRot, handScale);
+        WriteFingerPose(side, FingerType.Ring, ringCurl, -splay * 0.25f, controllerPos, controllerRot, handScale);
+        WriteFingerPose(side, FingerType.Pinky, pinkyCurl, -splay * 0.75f, controllerPos, controllerRot, handScale);
+    }
+
+    private void WriteFingerPose(
+        Chirality side,
+        FingerType finger,
+        float curl,
+        float splay,
+        float3 controllerPos,
+        floatQ controllerRot,
+        float handScale)
+    {
+        var openPoints = GetOpenPosePoints(finger);
+        var closedPoints = GetClosedPosePoints(finger);
+        var segments = finger == FingerType.Thumb ? ThumbSegments : FingerSegments;
+
+        for (int i = 0; i < segments.Length; i++)
+        {
+            float3 open = openPoints[i];
+            float3 closed = closedPoints[i];
+
+            float3 local = new float3(
+                Lerp(open.x, closed.x, curl),
+                Lerp(open.y, closed.y, curl),
+                Lerp(open.z, closed.z, curl));
+
+            if (finger != FingerType.Thumb)
+                local = new float3(local.x + splay * (0.4f + i * 0.1f), local.y, local.z);
+
+            local = MirrorForSide(local, side, handScale);
+            var world = Add(controllerPos, controllerRot * local);
+            var node = finger.ComposeFinger(segments[i], side);
+            SetHandNodePose(node, world, controllerRot, true);
+        }
+    }
+
+    private void SetHandSkeletonTrackingState(Chirality side, bool isTracking)
+    {
+        BodyNode palmNode = side == Chirality.Left ? BodyNode.LeftPalm : BodyNode.RightPalm;
+        SetHandNodeTrackingState(palmNode, isTracking);
+
+        foreach (var finger in FingerOrder)
+        {
+            var segments = finger == FingerType.Thumb ? ThumbSegments : FingerSegments;
+            for (int i = 0; i < segments.Length; i++)
+                SetHandNodeTrackingState(finger.ComposeFinger(segments[i], side), isTracking);
+        }
+    }
+
+    private void SetHandNodeTrackingState(BodyNode node, bool isTracking)
+    {
+        if (!_handSkeletonTrackedObjects.TryGetValue(node, out var tracked))
+            return;
+
+        tracked.IsTracking = isTracking;
+        tracked.IsDeviceActive = isTracking;
+        tracked.TrackingSpace = _inputInterface?.GlobalTrackingSpace;
+    }
+
+    private void SetHandNodePose(BodyNode node, float3 position, floatQ rotation, bool isTracking)
+    {
+        if (!_handSkeletonTrackedObjects.TryGetValue(node, out var tracked))
+            return;
+
+        tracked.RawPosition = position;
+        tracked.RawRotation = rotation;
+        tracked.IsTracking = isTracking;
+        tracked.IsDeviceActive = isTracking;
+        tracked.TrackingSpace = _inputInterface?.GlobalTrackingSpace;
+    }
+
+    private static float3[] GetOpenPosePoints(FingerType finger)
+    {
+        return finger switch
+        {
+            FingerType.Thumb => new[]
+            {
+                new float3(0.0240f, -0.0100f, -0.0320f),
+                new float3(0.0360f, -0.0040f, -0.0430f),
+                new float3(0.0440f,  0.0000f, -0.0560f),
+                new float3(0.0500f,  0.0040f, -0.0680f),
+            },
+            FingerType.Index => new[]
+            {
+                new float3(0.0160f, -0.0060f, -0.0480f),
+                new float3(0.0170f, -0.0030f, -0.0670f),
+                new float3(0.0180f,  0.0010f, -0.0850f),
+                new float3(0.0190f,  0.0040f, -0.1030f),
+                new float3(0.0200f,  0.0070f, -0.1190f),
+            },
+            FingerType.Middle => new[]
+            {
+                new float3(0.0060f, -0.0060f, -0.0470f),
+                new float3(0.0060f, -0.0020f, -0.0680f),
+                new float3(0.0060f,  0.0020f, -0.0890f),
+                new float3(0.0060f,  0.0060f, -0.1090f),
+                new float3(0.0060f,  0.0100f, -0.1260f),
+            },
+            FingerType.Ring => new[]
+            {
+                new float3(-0.0040f, -0.0070f, -0.0450f),
+                new float3(-0.0050f, -0.0030f, -0.0640f),
+                new float3(-0.0060f,  0.0000f, -0.0820f),
+                new float3(-0.0070f,  0.0030f, -0.0990f),
+                new float3(-0.0080f,  0.0060f, -0.1130f),
+            },
+            _ => new[]
+            {
+                new float3(-0.0140f, -0.0090f, -0.0410f),
+                new float3(-0.0160f, -0.0060f, -0.0570f),
+                new float3(-0.0180f, -0.0030f, -0.0720f),
+                new float3(-0.0200f,  0.0000f, -0.0860f),
+                new float3(-0.0220f,  0.0030f, -0.0980f),
+            },
+        };
+    }
+
+    private static float3[] GetClosedPosePoints(FingerType finger)
+    {
+        return finger switch
+        {
+            FingerType.Thumb => new[]
+            {
+                new float3(0.0200f, -0.0080f, -0.0320f),
+                new float3(0.0260f, -0.0100f, -0.0230f),
+                new float3(0.0300f, -0.0120f, -0.0120f),
+                new float3(0.0330f, -0.0130f, -0.0010f),
+            },
+            FingerType.Index => new[]
+            {
+                new float3(0.0160f, -0.0060f, -0.0470f),
+                new float3(0.0200f, -0.0130f, -0.0320f),
+                new float3(0.0220f, -0.0170f, -0.0180f),
+                new float3(0.0240f, -0.0200f, -0.0060f),
+                new float3(0.0260f, -0.0220f,  0.0060f),
+            },
+            FingerType.Middle => new[]
+            {
+                new float3(0.0060f, -0.0060f, -0.0460f),
+                new float3(0.0090f, -0.0150f, -0.0310f),
+                new float3(0.0100f, -0.0200f, -0.0180f),
+                new float3(0.0110f, -0.0240f, -0.0070f),
+                new float3(0.0120f, -0.0270f,  0.0040f),
+            },
+            FingerType.Ring => new[]
+            {
+                new float3(-0.0040f, -0.0070f, -0.0440f),
+                new float3(-0.0030f, -0.0160f, -0.0300f),
+                new float3(-0.0020f, -0.0210f, -0.0180f),
+                new float3(-0.0010f, -0.0250f, -0.0080f),
+                new float3( 0.0000f, -0.0280f,  0.0030f),
+            },
+            _ => new[]
+            {
+                new float3(-0.0130f, -0.0080f, -0.0410f),
+                new float3(-0.0110f, -0.0160f, -0.0290f),
+                new float3(-0.0100f, -0.0210f, -0.0180f),
+                new float3(-0.0090f, -0.0250f, -0.0090f),
+                new float3(-0.0080f, -0.0290f,  0.0010f),
+            },
+        };
+    }
+
+    private static float ReadFloatAction(XRController3D controller, string action)
+    {
+        if (controller == null || !GodotObject.IsInstanceValid(controller))
+            return 0f;
+
+        float value = controller.GetFloat(action);
+        return float.IsNaN(value) || float.IsInfinity(value) ? 0f : value;
+    }
+
+    private static bool ReadBoolAction(XRController3D controller, string action)
+    {
+        if (controller == null || !GodotObject.IsInstanceValid(controller))
+            return false;
+
+        Variant value = controller.Get(action);
+        return value.VariantType switch
+        {
+            Variant.Type.Bool => value.AsBool(),
+            Variant.Type.Float => value.AsSingle() > 0.5f,
+            Variant.Type.Int => value.AsInt32() > 0,
+            _ => controller.GetFloat(action) > 0.5f
+        };
+    }
+
+    private static float Clamp01(float value)
+    {
+        return Math.Clamp(value, 0f, 1f);
+    }
+
+    private static float Lerp(float from, float to, float t)
+    {
+        return from + (to - from) * Clamp01(t);
+    }
+
+    private static float3 MirrorForSide(float3 rightHandLocal, Chirality side, float scale)
+    {
+        float3 scaled = new float3(
+            rightHandLocal.x * scale,
+            rightHandLocal.y * scale,
+            rightHandLocal.z * scale);
+
+        return side == Chirality.Left
+            ? new float3(-scaled.x, scaled.y, scaled.z)
+            : scaled;
+    }
+
+    private static float3 Add(float3 a, float3 b)
+    {
+        return new float3(a.x + b.x, a.y + b.y, a.z + b.z);
     }
 
     /// <summary>
@@ -464,11 +822,8 @@ public class GodotVRDriver : IVRDriver, IInputDriver
     /// </summary>
     public void ShutdownVR()
     {
-        if (_xrInterface != null)
-        {
-            _xrInterface = null;
-        }
-
-        global::Godot.GD.Print("GodotVRDriver: VR shutdown");
+        XRServer.TrackerAdded -= OnTrackerAdded;
+        _xrInterface = null;
+        GD.Print("GodotVRDriver: VR shutdown");
     }
 }

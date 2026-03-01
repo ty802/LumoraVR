@@ -1,8 +1,8 @@
-using System;
+﻿using System;
 using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components.Avatar;
 
@@ -70,13 +70,13 @@ public class ProceduralLegs : Component
         base.OnStart();
         if (_ikAvatar == null)
         {
-            AquaLogger.Warn("ProceduralLegs: No GodotIKAvatar found");
+            LumoraLogger.Warn("ProceduralLegs: No GodotIKAvatar found");
             return;
         }
 
         if (_userRoot == null)
         {
-            AquaLogger.Warn("ProceduralLegs: No UserRoot found in hierarchy");
+            LumoraLogger.Warn("ProceduralLegs: No UserRoot found in hierarchy");
         }
 
         var rootPos = GetRootPosition();
@@ -90,7 +90,7 @@ public class ProceduralLegs : Component
 
         var leftTarget = _ikAvatar.LeftFootTarget.Target;
         var rightTarget = _ikAvatar.RightFootTarget.Target;
-        AquaLogger.Log($"ProceduralLegs: Initialized - UserRoot={(_userRoot != null ? "found" : "null")}, LeftFootTarget={leftTarget?.SlotName.Value ?? "null"}, RightFootTarget={rightTarget?.SlotName.Value ?? "null"}");
+        LumoraLogger.Log($"ProceduralLegs: Initialized - UserRoot={(_userRoot != null ? "found" : "null")}, LeftFootTarget={leftTarget?.SlotName.Value ?? "null"}, RightFootTarget={rightTarget?.SlotName.Value ?? "null"}");
     }
 
     public override void OnUpdate(float delta)

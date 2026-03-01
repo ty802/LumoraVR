@@ -1,12 +1,12 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Godot;
 using Lumora.Core;
 using Lumora.Core.Components.Avatar;
 using Lumora.Core.Math;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks;
+namespace Lumora.Godot.Hooks;
 
 /// <summary>
 /// Hook for GodotIKAvatar component -> Godot native IK system.
@@ -37,7 +37,7 @@ public class GodotIKAvatarHook : ComponentHook<GodotIKAvatar>
     public override void Initialize()
     {
         base.Initialize();
-        AquaLogger.Log($"GodotIKAvatarHook: Initialized for '{Owner.Slot.SlotName.Value}'");
+        LumoraLogger.Log($"GodotIKAvatarHook: Initialized for '{Owner.Slot.SlotName.Value}'");
     }
 
     public override void ApplyChanges()
@@ -77,7 +77,7 @@ public class GodotIKAvatarHook : ComponentHook<GodotIKAvatar>
             return;
         }
 
-        AquaLogger.Log($"GodotIKAvatarHook: Setting up IK with skeleton '{_skeleton.Name}' ({_skeleton.GetBoneCount()} bones)");
+        LumoraLogger.Log($"GodotIKAvatarHook: Setting up IK with skeleton '{_skeleton.Name}' ({_skeleton.GetBoneCount()} bones)");
 
         CreateIKTargets();
 
@@ -89,12 +89,12 @@ public class GodotIKAvatarHook : ComponentHook<GodotIKAvatar>
 
         if (!anySolver)
         {
-            AquaLogger.Warn("GodotIKAvatarHook: Skeleton found but no IK limbs could be mapped");
+            LumoraLogger.Warn("GodotIKAvatarHook: Skeleton found but no IK limbs could be mapped");
         }
 
         // Mark setup complete even if partial, avoids per-frame warning spam.
         _ikSetup = true;
-        AquaLogger.Log("GodotIKAvatarHook: IK setup complete");
+        LumoraLogger.Log("GodotIKAvatarHook: IK setup complete");
     }
 
     private bool TryResolveSkeleton(out Skeleton3D skeleton)
@@ -168,7 +168,7 @@ public class GodotIKAvatarHook : ComponentHook<GodotIKAvatar>
         _rightFootTarget = new Node3D { Name = "RightFootIKTarget" };
         parent.AddChild(_rightFootTarget);
 
-        AquaLogger.Log("GodotIKAvatarHook: Created IK target nodes");
+        LumoraLogger.Log("GodotIKAvatarHook: Created IK target nodes");
     }
 
     /// <summary>
@@ -182,7 +182,7 @@ public class GodotIKAvatarHook : ComponentHook<GodotIKAvatar>
 
         if (string.IsNullOrWhiteSpace(upperArm) || string.IsNullOrWhiteSpace(hand))
         {
-            AquaLogger.Warn($"GodotIKAvatarHook: Could not resolve {side} arm bones");
+            LumoraLogger.Warn($"GodotIKAvatarHook: Could not resolve {side} arm bones");
             return false;
         }
 
@@ -200,7 +200,7 @@ public class GodotIKAvatarHook : ComponentHook<GodotIKAvatar>
         ik.SetTargetNode(target.GetPath());
         ik.Start();
 
-        AquaLogger.Log($"GodotIKAvatarHook: Setup {side} arm IK ({upperArm} -> {hand})");
+        LumoraLogger.Log($"GodotIKAvatarHook: Setup {side} arm IK ({upperArm} -> {hand})");
         return true;
     }
 
@@ -214,7 +214,7 @@ public class GodotIKAvatarHook : ComponentHook<GodotIKAvatar>
 
         if (string.IsNullOrWhiteSpace(upperLeg) || string.IsNullOrWhiteSpace(foot))
         {
-            AquaLogger.Warn($"GodotIKAvatarHook: Could not resolve {side} leg bones");
+            LumoraLogger.Warn($"GodotIKAvatarHook: Could not resolve {side} leg bones");
             return false;
         }
 
@@ -232,7 +232,7 @@ public class GodotIKAvatarHook : ComponentHook<GodotIKAvatar>
         ik.SetTargetNode(target.GetPath());
         ik.Start();
 
-        AquaLogger.Log($"GodotIKAvatarHook: Setup {side} leg IK ({upperLeg} -> {foot})");
+        LumoraLogger.Log($"GodotIKAvatarHook: Setup {side} leg IK ({upperLeg} -> {foot})");
         return true;
     }
 #pragma warning restore CS0618

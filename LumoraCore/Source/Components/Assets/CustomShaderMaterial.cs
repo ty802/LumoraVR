@@ -1,10 +1,10 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Lumora.CDN;
 using Lumora.Core.Assets;
 using Lumora.Core.Math;
 using Lumora.Core.Networking.Sync;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components.Assets;
 
@@ -150,7 +150,7 @@ public sealed class CustomShaderMaterial : MaterialProvider
             }
         }
 
-        AquaLogger.Debug($"CustomShaderMaterial: Built {Parameters.Count} uniforms for shader");
+        LumoraLogger.Debug($"CustomShaderMaterial: Built {Parameters.Count} uniforms for shader");
     }
 
     private void OnParametersAdded(SyncElementList<ShaderUniformParam> list, int index, int count)

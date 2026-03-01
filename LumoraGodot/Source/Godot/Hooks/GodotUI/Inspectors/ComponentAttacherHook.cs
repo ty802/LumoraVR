@@ -1,13 +1,13 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
 using Godot;
 using Lumora.Core;
 using Lumora.Core.GodotUI.Inspectors;
 using Lumora.Core.Math;
-using Aquamarine.Godot.UI;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using Lumora.Godot.UI;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks.GodotUI.Inspectors;
+namespace Lumora.Godot.Hooks.GodotUI.Inspectors;
 
 #nullable enable
 
@@ -94,7 +94,7 @@ public sealed class ComponentAttacherHook : ComponentHook<ComponentAttacher>
         Owner.OnCategoryChanged += _ => RebuildComponentList();
         Owner.OnComponentAttached += OnComponentAttached;
 
-        AquaLogger.Log("ComponentAttacherHook: Initialized");
+        LumoraLogger.Log("ComponentAttacherHook: Initialized");
     }
 
     private void LoadScene()
@@ -396,7 +396,7 @@ public sealed class ComponentAttacherHook : ComponentHook<ComponentAttacher>
 
     private void OnComponentAttached(Slot slot, Component component)
     {
-        AquaLogger.Log($"ComponentAttacherHook: Attached {component.GetType().Name} to '{slot.Name.Value}'");
+        LumoraLogger.Log($"ComponentAttacherHook: Attached {component.GetType().Name} to '{slot.Name.Value}'");
     }
 
     private void RefreshUI()

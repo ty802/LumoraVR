@@ -1,7 +1,7 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 using Lumora.Core;
 
 namespace Lumora.Core.Networking.Sync;
@@ -280,7 +280,7 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
             {
                 var msg = $"Cannot modify disposed element: {this.ParentHierarchyToString()}";
                 if (throwOnError) throw new InvalidOperationException(msg);
-                AquaLogger.Error(msg);
+                LumoraLogger.Error(msg);
                 return false;
             }
 
@@ -293,7 +293,7 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
                 if (!DriveErrorLogged)
                 {
                     DriveErrorLogged = true;
-                    AquaLogger.Warn(msg);
+                    LumoraLogger.Warn(msg);
                 }
                 return false;
             }
@@ -327,7 +327,7 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
         // Don't sync elements that don't have valid RefIDs yet
         if (ReferenceID.IsNull)
         {
-            AquaLogger.Warn($"SyncElement: Skipping sync for element with null RefID [{GetType().Name}] Parent={Parent?.GetType().Name ?? "null"}");
+            LumoraLogger.Warn($"SyncElement: Skipping sync for element with null RefID [{GetType().Name}] Parent={Parent?.GetType().Name ?? "null"}");
             return;
         }
 

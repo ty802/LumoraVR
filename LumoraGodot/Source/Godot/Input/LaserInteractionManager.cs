@@ -1,8 +1,8 @@
-using Godot;
+﻿using Godot;
 using Lumora.Core.Logging;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Source.Input;
+namespace Lumora.Source.Input;
 
 /// <summary>
 /// Manages laser pointer interaction for both hands.
@@ -39,7 +39,7 @@ public partial class LaserInteractionManager : Node3D
     public override void _Ready()
     {
         CreateLasers();
-        AquaLogger.Log("LaserInteractionManager: Initialized");
+        LumoraLogger.Log("LaserInteractionManager: Initialized");
     }
 
     private void CreateLasers()

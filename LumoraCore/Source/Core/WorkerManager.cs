@@ -1,10 +1,10 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using Lumora.Core.Networking.Sync;
 using Lumora.Core.Networking;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
 
@@ -184,7 +184,7 @@ public class WorkerManager
             }
         }
         
-        AquaLogger.Error("Unable to find type: " + typename);
+        LumoraLogger.Error("Unable to find type: " + typename);
         return null;
     }
 }

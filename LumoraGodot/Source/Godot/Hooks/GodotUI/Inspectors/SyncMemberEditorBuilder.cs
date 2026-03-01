@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Reflection;
 using Godot;
@@ -6,10 +6,10 @@ using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Math;
 using Lumora.Core.Networking.Sync;
-using Aquamarine.Godot.UI;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using Lumora.Godot.UI;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks.GodotUI.Inspectors;
+namespace Lumora.Godot.Hooks.GodotUI.Inspectors;
 
 #nullable enable
 

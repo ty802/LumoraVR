@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Net;
@@ -8,7 +8,7 @@ using System.Threading;
 using Godot;
 using LogLevel = Lumora.Core.Logging.Logger.LogLevel;
 
-namespace Aquamarine.Godot.Debug;
+namespace Lumora.Godot.Debug;
 
 #nullable enable
 

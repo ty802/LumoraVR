@@ -1,12 +1,12 @@
-using System.Collections.Generic;
-using Aquamarine.Godot.Hooks;
+﻿using System.Collections.Generic;
+using Lumora.Godot.Hooks;
 using Godot;
 using Lumora.Core;
 using Lumora.Core.Components.Gizmos;
 using Lumora.Core.Math;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks.Gizmos;
+namespace Lumora.Godot.Hooks.Gizmos;
 
 #nullable enable
 
@@ -76,7 +76,7 @@ public sealed class SlotGizmoHook : ComponentHook<SlotGizmo>
 
         UpdateVisuals();
 
-        AquaLogger.Log($"SlotGizmoHook: Initialized for slot '{Owner.TargetSlot?.Name.Value}'");
+        LumoraLogger.Log($"SlotGizmoHook: Initialized for slot '{Owner.TargetSlot?.Name.Value}'");
     }
 
     private void CreateMaterials()

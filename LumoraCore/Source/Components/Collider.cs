@@ -1,8 +1,8 @@
-using System;
+﻿using System;
 using Lumora.Core;
 using Lumora.Core.Math;
 using Lumora.Core.Physics;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -83,14 +83,14 @@ public abstract class Collider : ImplementableComponent
                 {
                     _owner = owner;
                     _owner.OnColliderAdded(this);
-                    AquaLogger.Log($"Collider: Notified owner {_owner.GetType().Name} in same slot");
+                    LumoraLogger.Log($"Collider: Notified owner {_owner.GetType().Name} in same slot");
                     break; // Only register with first owner found
                 }
             }
 
             if (_owner == null)
             {
-                AquaLogger.Warn($"Collider: No IColliderOwner found in same slot '{Slot.SlotName.Value}' for CharacterController collider");
+                LumoraLogger.Warn($"Collider: No IColliderOwner found in same slot '{Slot.SlotName.Value}' for CharacterController collider");
             }
         }
         // For non-CharacterController colliders, register with physics system directly
@@ -119,7 +119,7 @@ public abstract class Collider : ImplementableComponent
                     {
                         _owner = owner;
                         _owner.OnColliderAdded(this);
-                        AquaLogger.Log($"Collider: Found owner {_owner.GetType().Name} after {_updatesSinceAwake} updates");
+                        LumoraLogger.Log($"Collider: Found owner {_owner.GetType().Name} after {_updatesSinceAwake} updates");
                         _ownerSearchComplete = true;
                         break;
                     }
@@ -131,7 +131,7 @@ public abstract class Collider : ImplementableComponent
                 _ownerSearchComplete = true;
                 if (_owner == null)
                 {
-                    AquaLogger.Log($"Collider: No owner found after {_updatesSinceAwake} updates, creating standalone static body");
+                    LumoraLogger.Log($"Collider: No owner found after {_updatesSinceAwake} updates, creating standalone static body");
                 }
             }
         }
@@ -171,7 +171,7 @@ public abstract class Collider : ImplementableComponent
     // 		_staticBody.GlobalRotation = Slot.GlobalRotation;
     // 		var scale = Slot.LocalScale.Value;
     // 		_staticBody.Scale = new global::Godot.Vector3(scale.X, scale.Y, scale.Z);
-    // 		AquaLogger.Log($"Collider: Created standalone StaticBody3D for {GetType().Name}");
+    // 		LumoraLogger.Log($"Collider: Created standalone StaticBody3D for {GetType().Name}");
     // 	}
     // }
 
@@ -206,6 +206,6 @@ public abstract class Collider : ImplementableComponent
         // }
 
         base.OnDestroy();
-        AquaLogger.Log($"Collider: Destroyed {GetType().Name}");
+        LumoraLogger.Log($"Collider: Destroyed {GetType().Name}");
     }
 }

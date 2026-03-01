@@ -1,7 +1,7 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Input;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components.Avatar;
 
@@ -41,13 +41,13 @@ public class AvatarBodyAnchor : Component, IAvatarObject, IAvatarObjectComponent
     public void Equip(AvatarObjectSlot slot)
     {
         _equippingSlot = slot;
-        AquaLogger.Log($"AvatarBodyAnchor: Equipped {Node.Value} to slot on '{slot.Slot.SlotName.Value}'");
+        LumoraLogger.Log($"AvatarBodyAnchor: Equipped {Node.Value} to slot on '{slot.Slot.SlotName.Value}'");
     }
 
     public void Dequip()
     {
         _equippingSlot = null;
-        AquaLogger.Log($"AvatarBodyAnchor: Dequipped {Node.Value}");
+        LumoraLogger.Log($"AvatarBodyAnchor: Dequipped {Node.Value}");
         if (DestroyOnDequip.Value)
             Slot.Destroy();
     }

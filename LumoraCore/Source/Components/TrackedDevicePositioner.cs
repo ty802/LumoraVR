@@ -1,8 +1,8 @@
-using Lumora.Core;
+﻿using Lumora.Core;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
 using Lumora.Core.Components.Avatar;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -191,7 +191,7 @@ public class TrackedDevicePositioner : Component, IInputUpdateReceiver
         {
             input.RegisterInputEventReceiver(this);
             _isRegistered = true;
-            AquaLogger.Log($"TrackedDevicePositioner: Registered for input on '{Slot.SlotName.Value}' (node: {AutoBodyNode.Value})");
+            LumoraLogger.Log($"TrackedDevicePositioner: Registered for input on '{Slot.SlotName.Value}' (node: {AutoBodyNode.Value})");
         }
     }
 
@@ -305,7 +305,7 @@ public class TrackedDevicePositioner : Component, IInputUpdateReceiver
         {
             _debugLogCounter = 0;
             var nodeStr = AutoBodyNode.Value?.ToString() ?? "null";
-            // AquaLogger.Log($"[TDP] {Slot.SlotName.Value} node:{nodeStr} device:{device != null} tracking:{device?.IsTracking} pos:{device?.RawPosition}");
+            // LumoraLogger.Log($"[TDP] {Slot.SlotName.Value} node:{nodeStr} device:{device != null} tracking:{device?.IsTracking} pos:{device?.RawPosition}");
         }
 
         if (device != null)

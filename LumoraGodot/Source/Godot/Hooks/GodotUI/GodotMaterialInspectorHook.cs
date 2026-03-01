@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System;
 using System.Linq;
 using Godot;
@@ -7,10 +7,10 @@ using Lumora.Core.Assets;
 using Lumora.Core.Components.Assets;
 using Lumora.Core.GodotUI.Wizards;
 using Lumora.Core.Math;
-using Aquamarine.Godot.UI;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using Lumora.Godot.UI;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks.GodotUI;
+namespace Lumora.Godot.Hooks.GodotUI;
 
 #nullable enable
 
@@ -96,7 +96,7 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
         LoadScene();
         BindMaterial(Owner.Material.Target);
 
-        AquaLogger.Log("GodotMaterialInspectorHook: Initialized");
+        LumoraLogger.Log("GodotMaterialInspectorHook: Initialized");
     }
 
     public override void ApplyChanges()
@@ -139,7 +139,7 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
         var scenePath = Owner.ScenePath.Value;
         if (string.IsNullOrEmpty(scenePath))
         {
-            AquaLogger.Warn("GodotMaterialInspectorHook: No scene path specified");
+            LumoraLogger.Warn("GodotMaterialInspectorHook: No scene path specified");
             return;
         }
 
@@ -152,14 +152,14 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
         var packedScene = GD.Load<PackedScene>(scenePath);
         if (packedScene == null)
         {
-            AquaLogger.Warn($"GodotMaterialInspectorHook: Failed to load scene '{scenePath}'");
+            LumoraLogger.Warn($"GodotMaterialInspectorHook: Failed to load scene '{scenePath}'");
             return;
         }
 
         _loadedScene = packedScene.Instantiate();
         if (_loadedScene == null)
         {
-            AquaLogger.Warn("GodotMaterialInspectorHook: Failed to instantiate scene");
+            LumoraLogger.Warn("GodotMaterialInspectorHook: Failed to instantiate scene");
             return;
         }
 

@@ -1,10 +1,10 @@
-using Godot;
-using Aquamarine.Godot.Hooks;
-using Aquamarine.Source.UI;
+﻿using Godot;
+using Lumora.Godot.Hooks;
+using Lumora.Source.UI;
 using Lumora.Core.Components;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Source.Godot.Input;
+namespace Lumora.Source.Godot.Input;
 
 /// <summary>
 /// Desktop camera modes:
@@ -188,7 +188,7 @@ public partial class DesktopCameraController : Node
         {
             case CameraMode.FirstPerson:
                 if (_overrideCamera != null) _overrideCamera.Current = false;
-                AquaLogger.Log("[DesktopCameraController] First-person");
+                LumoraLogger.Log("[DesktopCameraController] First-person");
                 break;
 
             case CameraMode.ThirdPerson:
@@ -198,7 +198,7 @@ public partial class DesktopCameraController : Node
                 _pendingTpMouse = Vector2.Zero;
                 LocomotionController.SetMouseLookSuppressed(true);
                 if (_overrideCamera != null) _overrideCamera.Current = true;
-                AquaLogger.Log("[DesktopCameraController] Third-person (mouse=orbit, scroll=distance)");
+                LumoraLogger.Log("[DesktopCameraController] Third-person (mouse=orbit, scroll=distance)");
                 break;
 
             case CameraMode.FreeCam:
@@ -207,7 +207,7 @@ public partial class DesktopCameraController : Node
                 LocomotionController.SetFreeCamActive(true);
                 if (_overrideCamera != null) _overrideCamera.Current = true;
                 if (_freeCamIndicator != null) _freeCamIndicator.Visible = true;
-                AquaLogger.Log("[DesktopCameraController] Free-cam (WASD+mouse, Shift=fast, Space/Ctrl=vertical)");
+                LumoraLogger.Log("[DesktopCameraController] Free-cam (WASD+mouse, Shift=fast, Space/Ctrl=vertical)");
                 break;
         }
     }

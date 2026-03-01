@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -12,19 +12,19 @@ using Lumora.Core.Math;
 using Lumora.Core.Networking.Sync;
 using Lumora.Core.Components.Meshes;
 using Lumora.Core.Templates;
-using Aquamarine.Source.Godot.Input.Drivers;
-using Aquamarine.Godot.Hooks;
-using Aquamarine.Source.Godot.UI;
-using Aquamarine.Source.Input;
-using Aquamarine.Source.UI;
+using Lumora.Source.Godot.Input.Drivers;
+using Lumora.Godot.Hooks;
+using Lumora.Source.Godot.UI;
+using Lumora.Source.Input;
+using Lumora.Source.UI;
 using Lumora.Godot.Input;
-using Aquamarine.Godot.Debug;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using Lumora.Godot.Debug;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 using ThreadingMutex = System.Threading.Mutex;
 
-using InspectorInputHandler = Aquamarine.Source.Input.InspectorInputHandler;
+using InspectorInputHandler = Lumora.Source.Input.InspectorInputHandler;
 
-namespace Aquamarine.Source.Godot.Bootstrap;
+namespace Lumora.Source.Godot.Bootstrap;
 
 /// <summary>
 /// Bootstrap script for Lumora engine initialization in Godot.
@@ -109,19 +109,19 @@ public partial class LumoraEngineRunner : Node
         {
             if (!TryAcquireDebugConsoleLock())
             {
-                AquaLogger.Log("LumoraEngineRunner: Debug console already running, skipping duplicate launch");
+                LumoraLogger.Log("LumoraEngineRunner: Debug console already running, skipping duplicate launch");
                 GetTree().Quit();
                 return;
             }
 
-            AquaLogger.Log("LumoraEngineRunner: Starting in debug console mode");
+            LumoraLogger.Log("LumoraEngineRunner: Starting in debug console mode");
             CallDeferred(nameof(SwitchToDebugConsoleScene));
             return;
         }
 
-        AquaLogger.Log("==========================================================");
-        AquaLogger.Log("LumoraEngineRunner: Starting engine bootstrap...");
-        AquaLogger.Log("==========================================================");
+        LumoraLogger.Log("==========================================================");
+        LumoraLogger.Log("LumoraEngineRunner: Starting engine bootstrap...");
+        LumoraLogger.Log("==========================================================");
 
         if (HasCommandLineFlag(DebugFlag))
         {
@@ -141,7 +141,7 @@ public partial class LumoraEngineRunner : Node
         var result = GetTree().ChangeSceneToFile(DebugConsoleScenePath);
         if (result != Error.Ok)
         {
-            AquaLogger.Error($"DebugConsole: failed to open scene '{DebugConsoleScenePath}' ({result})");
+            LumoraLogger.Error($"DebugConsole: failed to open scene '{DebugConsoleScenePath}' ({result})");
         }
     }
 
@@ -238,14 +238,14 @@ public partial class LumoraEngineRunner : Node
         {
             if (IsDebugConsoleRunning())
             {
-                AquaLogger.Log("DebugConsole: already running, not launching a duplicate process");
+                LumoraLogger.Log("DebugConsole: already running, not launching a duplicate process");
                 return;
             }
 
             var executablePath = OS.GetExecutablePath();
             if (string.IsNullOrWhiteSpace(executablePath))
             {
-                AquaLogger.Warn("DebugConsole: could not resolve executable path");
+                LumoraLogger.Warn("DebugConsole: could not resolve executable path");
                 return;
             }
 
@@ -265,16 +265,16 @@ public partial class LumoraEngineRunner : Node
             var processId = OS.CreateProcess(executablePath, args.ToArray(), false);
             if (processId > 0)
             {
-                AquaLogger.Log($"DebugConsole: launched separate process (pid={processId})");
+                LumoraLogger.Log($"DebugConsole: launched separate process (pid={processId})");
             }
             else
             {
-                AquaLogger.Warn($"DebugConsole: process launch failed (pid={processId})");
+                LumoraLogger.Warn($"DebugConsole: process launch failed (pid={processId})");
             }
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"DebugConsole: process launch exception: {ex.Message}");
+            LumoraLogger.Error($"DebugConsole: process launch exception: {ex.Message}");
         }
     }
 
@@ -295,7 +295,7 @@ public partial class LumoraEngineRunner : Node
         }
         catch (Exception ex)
         {
-            AquaLogger.Warn($"DebugConsole: failed to create single-instance lock: {ex.Message}");
+            LumoraLogger.Warn($"DebugConsole: failed to create single-instance lock: {ex.Message}");
             return true;
         }
     }
@@ -325,7 +325,7 @@ public partial class LumoraEngineRunner : Node
     {
         if (VerboseInit)
         {
-            AquaLogger.Debug("InitializeLoadingScreen: Loading loading screen scene...");
+            LumoraLogger.Debug("InitializeLoadingScreen: Loading loading screen scene...");
         }
 
         // Load LoadingScreen scene
@@ -334,7 +334,7 @@ public partial class LumoraEngineRunner : Node
         {
             if (VerboseInit)
             {
-                AquaLogger.Debug("InitializeLoadingScreen: Scene loaded, instantiating...");
+                LumoraLogger.Debug("InitializeLoadingScreen: Scene loaded, instantiating...");
             }
 
             _loadingScreen = loadingScreenScene.Instantiate<LoadingScreen>();
@@ -342,11 +342,11 @@ public partial class LumoraEngineRunner : Node
             //_loadingScreen.Show();
             // No need to call Show() - it's already visible from _Ready()
             //forgor
-            AquaLogger.Log("LoadingScreen: Initialized and displayed");
+            LumoraLogger.Log("LoadingScreen: Initialized and displayed");
         }
         else
         {
-            AquaLogger.Warn("LoadingScreen: Failed to load scene - continuing without loading UI");
+            LumoraLogger.Warn("LoadingScreen: Failed to load scene - continuing without loading UI");
         }
     }
 
@@ -357,7 +357,7 @@ public partial class LumoraEngineRunner : Node
     {
         if (VerboseInit)
         {
-            AquaLogger.Debug("StartInitialization: Beginning async initialization...");
+            LumoraLogger.Debug("StartInitialization: Beginning async initialization...");
         }
 
         try
@@ -392,8 +392,8 @@ public partial class LumoraEngineRunner : Node
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"LumoraEngineRunner: Initialization failed at phase {_currentPhase}: {ex.Message}");
-            AquaLogger.Error($"Stack trace: {ex.StackTrace}");
+            LumoraLogger.Error($"LumoraEngineRunner: Initialization failed at phase {_currentPhase}: {ex.Message}");
+            LumoraLogger.Error($"Stack trace: {ex.StackTrace}");
         }
     }
 
@@ -404,7 +404,7 @@ public partial class LumoraEngineRunner : Node
     /// </summary>
     private async Task PhaseEnvironmentSetup()
     {
-        AquaLogger.Log("[Phase 1/6] Environment Setup");
+        LumoraLogger.Log("[Phase 1/6] Environment Setup");
         _loadingScreen?.UpdatePhase(0); // Phase index 0
 
         // Leave vsync off but allow high framerates; mouse driver normalizes deltas to 60 Hz feel
@@ -415,9 +415,9 @@ public partial class LumoraEngineRunner : Node
         DisplayServer.ScreenSetKeepOn(true);
 
         var args = GetAllCommandLineArgs().ToArray();
-        AquaLogger.Log($"Command-line args: {string.Join(" ", args)}");
+        LumoraLogger.Log($"Command-line args: {string.Join(" ", args)}");
         _xrLaunchMode = ResolveXrLaunchMode();
-        AquaLogger.Log($"XR launch mode: {_xrLaunchMode}");
+        LumoraLogger.Log($"XR launch mode: {_xrLaunchMode}");
 
         await Task.Delay(150); // Artificial delay to show phase message
     }
@@ -429,13 +429,13 @@ public partial class LumoraEngineRunner : Node
     /// </summary>
     private async Task PhaseXRDetection()
     {
-        AquaLogger.Log("[Phase 2/6] XR Detection");
+        LumoraLogger.Log("[Phase 2/6] XR Detection");
         _loadingScreen?.UpdatePhase(1); // Phase index 1
 
         GetViewport().UseXR = false;
         if (_xrLaunchMode == XrLaunchMode.Desktop)
         {
-            AquaLogger.Log("XR Device: Disabled (desktop launch mode)");
+            LumoraLogger.Log("XR Device: Disabled (desktop launch mode)");
             await Task.Delay(120);
             return;
         }
@@ -446,16 +446,16 @@ public partial class LumoraEngineRunner : Node
             // Ensure the interface is initialized (some runtimes need an explicit call)
             if (!xrInterface.IsInitialized())
             {
-                AquaLogger.Log("XR: OpenXR interface found but not initialized. Attempting Initialize()...");
+                LumoraLogger.Log("XR: OpenXR interface found but not initialized. Attempting Initialize()...");
                 if (!xrInterface.Initialize())
                 {
                     if (_xrLaunchMode == XrLaunchMode.Vr)
                     {
-                        AquaLogger.Warn("XR: OpenXR Initialize() failed while VR mode was requested - falling back to screen mode");
+                        LumoraLogger.Warn("XR: OpenXR Initialize() failed while VR mode was requested - falling back to screen mode");
                     }
                     else
                     {
-                        AquaLogger.Warn("XR: OpenXR Initialize() failed - falling back to screen mode");
+                        LumoraLogger.Warn("XR: OpenXR Initialize() failed - falling back to screen mode");
                     }
                     return;
                 }
@@ -471,17 +471,17 @@ public partial class LumoraEngineRunner : Node
             GetViewport().UseXR = true;
             DisplayServer.WindowSetVsyncMode(DisplayServer.VSyncMode.Disabled);
 
-            AquaLogger.Log("XR Device: OpenXR (Active) - viewport switched to XR");
+            LumoraLogger.Log("XR Device: OpenXR (Active) - viewport switched to XR");
         }
         else
         {
             if (_xrLaunchMode == XrLaunchMode.Vr)
             {
-                AquaLogger.Warn("XR: VR mode requested, but OpenXR interface was not found. Running in screen mode.");
+                LumoraLogger.Warn("XR: VR mode requested, but OpenXR interface was not found. Running in screen mode.");
             }
             else
             {
-                AquaLogger.Log("XR Device: None (Screen Mode)");
+                LumoraLogger.Log("XR Device: None (Screen Mode)");
             }
         }
 
@@ -495,7 +495,7 @@ public partial class LumoraEngineRunner : Node
     /// </summary>
     private async Task PhaseHeadOutputCreation()
     {
-        AquaLogger.Log("[Phase 3/6] HeadOutput Creation");
+        LumoraLogger.Log("[Phase 3/6] HeadOutput Creation");
         _loadingScreen?.UpdatePhase(2); // Phase index 2
 
         // Find or create main camera
@@ -506,7 +506,7 @@ public partial class LumoraEngineRunner : Node
             _mainCamera.Name = "MainCamera";
             AddChild(_mainCamera);
             GetViewport().AddChild(_mainCamera);
-            AquaLogger.Log("Created new MainCamera");
+            LumoraLogger.Log("Created new MainCamera");
         }
 
         // Create HeadOutput system
@@ -514,7 +514,7 @@ public partial class LumoraEngineRunner : Node
         AddChild(_headOutput);
         _headOutput.Initialize(_mainCamera);
 
-        AquaLogger.Log($"HeadOutput initialized with camera: {_mainCamera.Name}");
+        LumoraLogger.Log($"HeadOutput initialized with camera: {_mainCamera.Name}");
 
         await Task.Delay(180); // Artificial delay to show phase message
     }
@@ -527,14 +527,14 @@ public partial class LumoraEngineRunner : Node
     /// </summary>
     private async Task PhaseEngineCoreInit()
     {
-        AquaLogger.Log("[Phase 4/6] Engine Core Initialization");
+        LumoraLogger.Log("[Phase 4/6] Engine Core Initialization");
         _loadingScreen?.UpdatePhase(3); // Phase index 3
 
         try
         {
             if (VerboseInit)
             {
-                AquaLogger.Debug("PhaseEngineCoreInit: Creating SystemInfoHook...");
+                LumoraLogger.Debug("PhaseEngineCoreInit: Creating SystemInfoHook...");
             }
 
             // Create SystemInfoHook
@@ -542,12 +542,12 @@ public partial class LumoraEngineRunner : Node
             AddChild(_systemInfoHook);
             if (VerboseInit)
             {
-                AquaLogger.Debug("PhaseEngineCoreInit: SystemInfoHook created");
+                LumoraLogger.Debug("PhaseEngineCoreInit: SystemInfoHook created");
             }
 
             if (VerboseInit)
             {
-                AquaLogger.Debug("PhaseEngineCoreInit: Creating Engine instance...");
+                LumoraLogger.Debug("PhaseEngineCoreInit: Creating Engine instance...");
             }
 
             // Create Engine with configuration
@@ -559,31 +559,31 @@ public partial class LumoraEngineRunner : Node
             _engine.ResourceRoot = ProjectSettings.GlobalizePath("res://");
             if (VerboseInit)
             {
-                AquaLogger.Debug("PhaseEngineCoreInit: Engine instance created");
+                LumoraLogger.Debug("PhaseEngineCoreInit: Engine instance created");
             }
 
             // Register hooks BEFORE engine initialization
             // This ensures slots get hooks when they're created
             if (VerboseInit)
             {
-                AquaLogger.Debug("PhaseEngineCoreInit: Registering hooks...");
+                LumoraLogger.Debug("PhaseEngineCoreInit: Registering hooks...");
             }
 
             RegisterHooks();
             if (VerboseInit)
             {
-                AquaLogger.Debug("PhaseEngineCoreInit: Hooks registered");
+                LumoraLogger.Debug("PhaseEngineCoreInit: Hooks registered");
             }
 
             // Initialize engine asynchronously
-            AquaLogger.Log("LumoraEngineRunner: Calling Engine.InitializeAsync()...");
+            LumoraLogger.Log("LumoraEngineRunner: Calling Engine.InitializeAsync()...");
             await _engine.InitializeAsync();
 
-            AquaLogger.Log("LumoraEngineRunner: Engine initialized successfully");
+            LumoraLogger.Log("LumoraEngineRunner: Engine initialized successfully");
 
             if (VerboseInit)
             {
-                AquaLogger.Debug("PhaseEngineCoreInit: Initializing WorldManager hook...");
+                LumoraLogger.Debug("PhaseEngineCoreInit: Initializing WorldManager hook...");
             }
 
             // Initialize WorldManager hook
@@ -591,14 +591,14 @@ public partial class LumoraEngineRunner : Node
             // IMPORTANT: Set Hook BEFORE Initialize() so existing worlds can find it
             _engine.WorldManager.Hook = worldManagerHook;
             worldManagerHook.Initialize(_engine.WorldManager, GetTree().Root);
-            AquaLogger.Log("LumoraEngineRunner: WorldManager hook initialized");
+            LumoraLogger.Log("LumoraEngineRunner: WorldManager hook initialized");
 
             await Task.Delay(200); // Artificial delay to show phase message (longer for core init)
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"LumoraEngineRunner: Engine initialization failed: {ex.Message}");
-            AquaLogger.Error($"Stack trace: {ex.StackTrace}");
+            LumoraLogger.Error($"LumoraEngineRunner: Engine initialization failed: {ex.Message}");
+            LumoraLogger.Error($"Stack trace: {ex.StackTrace}");
             throw; // Re-throw to be caught by StartInitialization
         }
     }
@@ -611,7 +611,7 @@ public partial class LumoraEngineRunner : Node
     /// </summary>
     private async Task PhaseSystemIntegration()
     {
-        AquaLogger.Log("[Phase 5/6] System Integration");
+        LumoraLogger.Log("[Phase 5/6] System Integration");
         _loadingScreen?.UpdatePhase(4); // Phase index 4
 
         // Get InputInterface from Engine (it's already initialized in Engine.InitializeAsync)
@@ -658,13 +658,31 @@ public partial class LumoraEngineRunner : Node
             desktopInput.Name = "DesktopInput";
             AddChild(desktopInput);
             desktopInput.SetCamera(_mainCamera);
-            AquaLogger.Log("DesktopInput: Created for non-VR mode");
+            LumoraLogger.Log("DesktopInput: Created for non-VR mode");
 
-            var desktopCamera = new Aquamarine.Source.Godot.Input.DesktopCameraController();
+            var desktopCamera = new Lumora.Source.Godot.Input.DesktopCameraController();
             desktopCamera.Name = "DesktopCameraController";
             AddChild(desktopCamera);
             desktopCamera.Initialize(_engine);
-            AquaLogger.Log("DesktopCameraController: Created (F5=third-person, F6=free-cam)");
+            LumoraLogger.Log("DesktopCameraController: Created (F5=third-person, F6=free-cam)");
+        }
+        else
+        {
+            var vrInputProvider = new EngineVRInputProvider();
+            vrInputProvider.Name = "VRInputProvider";
+            AddChild(vrInputProvider);
+            vrInputProvider.Initialize(_inputInterface);
+            LumoraLogger.Log("VRInputProvider: Created for VR mode");
+
+            var laserManager = new LaserInteractionManager();
+            laserManager.Name = "LaserInteraction";
+            AddChild(laserManager);
+
+            var grabManager = new GrabManager();
+            grabManager.Name = "GrabManager";
+            AddChild(grabManager);
+
+            LumoraLogger.Log("VR interaction managers: LaserInteraction + GrabManager created");
         }
 
         // Initialize LocalDB for asset storage
@@ -683,7 +701,7 @@ public partial class LumoraEngineRunner : Node
         AddChild(_clipboardImporter);
         _clipboardImporter.Initialize(_localDB, null, _mainCamera);
         _clipboardImporter.OnAssetImported += OnClipboardAssetImported;
-        AquaLogger.Log("ClipboardImporter: Created for paste handling");
+        LumoraLogger.Log("ClipboardImporter: Created for paste handling");
     }
 
     /// <summary>
@@ -691,7 +709,7 @@ public partial class LumoraEngineRunner : Node
     /// </summary>
     private void OnClipboardAssetImported(string filePath, Lumora.Core.Slot slot)
     {
-        AquaLogger.Log($"ClipboardImporter: Asset imported from '{filePath}' to slot '{slot?.SlotName.Value}'");
+        LumoraLogger.Log($"ClipboardImporter: Asset imported from '{filePath}' to slot '{slot?.SlotName.Value}'");
     }
 
     /// <summary>
@@ -714,30 +732,30 @@ public partial class LumoraEngineRunner : Node
     /// </summary>
     private async Task PhaseUserspaceSetup()
     {
-        AquaLogger.Log("[Phase 6/6] Userspace Setup");
+        LumoraLogger.Log("[Phase 6/6] Userspace Setup");
         _loadingScreen?.UpdatePhase(5); // Phase index 5
 
         try
         {
             var userspace = Userspace.SetupUserspace(_engine);
-            AquaLogger.Log($"LumoraEngineRunner: Userspace created: '{userspace.WorldName.Value}'");
+            LumoraLogger.Log($"LumoraEngineRunner: Userspace created: '{userspace.WorldName.Value}'");
 
             // Create dashboard toggle input handler
             var dashboardToggle = new DashboardToggle();
             dashboardToggle.Name = "DashboardToggle";
             AddChild(dashboardToggle);
-            AquaLogger.Log("LumoraEngineRunner: DashboardToggle created");
+            LumoraLogger.Log("LumoraEngineRunner: DashboardToggle created");
 
             // Note: 3D loading indicator is now created in userspace world via WorldLoadingService
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"LumoraEngineRunner: Failed to setup userspace: {ex.Message}");
+            LumoraLogger.Error($"LumoraEngineRunner: Failed to setup userspace: {ex.Message}");
             throw;
         }
 
         await Task.Delay(100); // Allow world to initialize
-        AquaLogger.Log("LumoraEngineRunner: Userspace setup complete");
+        LumoraLogger.Log("LumoraEngineRunner: Userspace setup complete");
     }
 
     /// <summary>
@@ -745,9 +763,9 @@ public partial class LumoraEngineRunner : Node
     /// </summary>
     private async void OnEngineReady()
     {
-        AquaLogger.Log("==========================================================");
-        AquaLogger.Log("LumoraEngineRunner: Engine initialization COMPLETE!");
-        AquaLogger.Log("==========================================================");
+        LumoraLogger.Log("==========================================================");
+        LumoraLogger.Log("LumoraEngineRunner: Engine initialization COMPLETE!");
+        LumoraLogger.Log("==========================================================");
 
         // Update loading screen to 100% and show "Ready!" message
         _loadingScreen?.UpdatePhase(6); // Phase index 6 = Ready
@@ -762,7 +780,7 @@ public partial class LumoraEngineRunner : Node
             {
                 _clipboardImporter.SetTargetSlot(_engine.WorldManager.FocusedWorld.RootSlot);
             }
-            AquaLogger.Log("ClipboardImporter: Configured with engine reference");
+            LumoraLogger.Log("ClipboardImporter: Configured with engine reference");
         }
 
         // Create inspector input handler for "I" key inspection
@@ -770,7 +788,7 @@ public partial class LumoraEngineRunner : Node
         _inspectorInputHandler.Name = "InspectorInputHandler";
         _inspectorInputHandler.Engine = _engine;
         AddChild(_inspectorInputHandler);
-        AquaLogger.Log("InspectorInputHandler: Created for object inspection");
+        LumoraLogger.Log("InspectorInputHandler: Created for object inspection");
 
         // Optional scene tree dump for deep diagnostics only.
         if (DumpSceneTreeOnReady)
@@ -790,7 +808,7 @@ public partial class LumoraEngineRunner : Node
         // Hide loading screen with fade-out animation
         if (_loadingScreen != null)
         {
-            AquaLogger.Log("LoadingScreen: Hiding loading screen");
+            LumoraLogger.Log("LoadingScreen: Hiding loading screen");
             _loadingScreen.Hide();
         }
     }
@@ -803,19 +821,14 @@ public partial class LumoraEngineRunner : Node
         if (!_engineInitialized || _shutdownRequested)
             return;
 
-        // Update input interface FIRST so tracking data is ready for world update
-        // This ensures TrackedDevicePositioner updates slots BEFORE SlotHooks sync to Godot
-        if (_inputInterface != null)
-        {
-            _inputInterface.UpdateInputs((float)delta);
-        }
-        else if (!_missingInputInterfaceWarned)
+        if (_inputInterface == null && !_missingInputInterfaceWarned)
         {
             _missingInputInterfaceWarned = true;
-            AquaLogger.Warn("LumoraEngineRunner: No InputInterface available in _Process");
+            LumoraLogger.Warn("LumoraEngineRunner: No InputInterface available in _Process");
         }
 
-        // Run engine update loop (world updates, slot hooks sync to Godot)
+        // Run engine update loop (includes one input pass + world updates).
+        // Avoid a duplicate InputInterface.UpdateInputs call here.
         _engine?.Update(delta);
 
         // Update Godot metrics for debug panels
@@ -849,8 +862,8 @@ public partial class LumoraEngineRunner : Node
     /// </summary>
     private void OnEnginePanic(Exception ex)
     {
-        AquaLogger.Error($"ENGINE PANIC: {ex.Message}");
-        AquaLogger.Error($"Stack trace: {ex.StackTrace}");
+        LumoraLogger.Error($"ENGINE PANIC: {ex.Message}");
+        LumoraLogger.Error($"Stack trace: {ex.StackTrace}");
         _shutdownRequested = true;
     }
 
@@ -859,7 +872,7 @@ public partial class LumoraEngineRunner : Node
     /// </summary>
     private void OnEngineShutdown()
     {
-        AquaLogger.Log("Engine shutdown requested");
+        LumoraLogger.Log("Engine shutdown requested");
         _shutdownRequested = true;
     }
 
@@ -870,10 +883,10 @@ public partial class LumoraEngineRunner : Node
     /// </summary>
     private void RegisterHooks()
     {
-        AquaLogger.Log("Registering Godot hooks...");
+        LumoraLogger.Log("Registering Godot hooks...");
         GodotHookRegistry.RegisterAll();
 
-        AquaLogger.Log("Hook registration complete");
+        LumoraLogger.Log("Hook registration complete");
     }
 
     /// <summary>
@@ -1089,35 +1102,35 @@ public partial class LumoraEngineRunner : Node
     /// </summary>
     private void PrintSceneTree()
     {
-        AquaLogger.Debug("==========================================================");
-        AquaLogger.Debug("DEBUG: SCENE TREE DUMP");
-        AquaLogger.Debug("==========================================================");
+        LumoraLogger.Debug("==========================================================");
+        LumoraLogger.Debug("DEBUG: SCENE TREE DUMP");
+        LumoraLogger.Debug("==========================================================");
         PrintNodeTree(GetTree().Root, 0);
-        AquaLogger.Debug("==========================================================");
+        LumoraLogger.Debug("==========================================================");
 
         // Also print world info
-        AquaLogger.Debug($"Engine worlds count: {_engine?.WorldManager?.Worlds?.Count ?? 0}");
+        LumoraLogger.Debug($"Engine worlds count: {_engine?.WorldManager?.Worlds?.Count ?? 0}");
         if (_engine?.WorldManager?.Worlds != null)
         {
             foreach (var world in _engine.WorldManager.Worlds)
             {
-                AquaLogger.Debug($"  World: {world.WorldName.Value}");
-                AquaLogger.Debug($"    State: {world.State}");
-                AquaLogger.Debug($"    Focus: {world.Focus}");
-                AquaLogger.Debug($"    RootSlot children: {world.RootSlot?.Children.Count ?? 0}");
+                LumoraLogger.Debug($"  World: {world.WorldName.Value}");
+                LumoraLogger.Debug($"    State: {world.State}");
+                LumoraLogger.Debug($"    Focus: {world.Focus}");
+                LumoraLogger.Debug($"    RootSlot children: {world.RootSlot?.Children.Count ?? 0}");
                 if (world.RootSlot != null)
                 {
                     PrintSlotTree(world.RootSlot, 4);
                 }
             }
         }
-        AquaLogger.Debug("==========================================================");
+        LumoraLogger.Debug("==========================================================");
     }
 
     private void PrintNodeTree(Node node, int indent)
     {
         string prefix = new string(' ', indent);
-        AquaLogger.Debug($"{prefix}{node.Name} ({node.GetType().Name}) - Visible: {node is CanvasItem ci && ci.Visible || node is Node3D n3d && n3d.Visible}");
+        LumoraLogger.Debug($"{prefix}{node.Name} ({node.GetType().Name}) - Visible: {node is CanvasItem ci && ci.Visible || node is Node3D n3d && n3d.Visible}");
 
         foreach (Node child in node.GetChildren())
         {
@@ -1128,11 +1141,11 @@ public partial class LumoraEngineRunner : Node
     private void PrintSlotTree(Lumora.Core.Slot slot, int indent)
     {
         string prefix = new string(' ', indent);
-        AquaLogger.Debug($"{prefix}Slot: {slot.SlotName.Value}");
-        AquaLogger.Debug($"{prefix}  Components: {slot.Components.Count}");
+        LumoraLogger.Debug($"{prefix}Slot: {slot.SlotName.Value}");
+        LumoraLogger.Debug($"{prefix}  Components: {slot.Components.Count}");
         foreach (var component in slot.Components)
         {
-            AquaLogger.Debug($"{prefix}    - {component.GetType().Name}");
+            LumoraLogger.Debug($"{prefix}    - {component.GetType().Name}");
         }
 
         foreach (var child in slot.Children)
@@ -1146,7 +1159,7 @@ public partial class LumoraEngineRunner : Node
     /// </summary>
     public override void _ExitTree()
     {
-        AquaLogger.Log("LumoraEngineRunner: Shutting down...");
+        LumoraLogger.Log("LumoraEngineRunner: Shutting down...");
 
         if (_ownsDebugConsoleLock && _debugConsoleInstanceMutex != null)
         {

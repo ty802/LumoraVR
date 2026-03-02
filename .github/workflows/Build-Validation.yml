@@ -6,6 +6,10 @@ on:
 jobs:
   build-check:
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+      contents: read
     
     steps:
     - name: Checkout repository
@@ -13,9 +17,10 @@ jobs:
       with:
         fetch-depth: 0
         submodules: 'false'
-        token: ${{ secrets.GH_PAT }}
+        token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
     
     - name: Initialize submodules with PAT
+      if: ${{ secrets.GH_PAT != '' }}
       run: |
         git config --global url."https://${{ secrets.GH_PAT }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
         git submodule update --init --recursive
@@ -36,6 +41,7 @@ jobs:
     
     - name: Add build-error label if build fails
       if: steps.build.outcome == 'failure'
+      continue-on-error: true
       uses: actions/github-script@v7
       with:
         github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -49,6 +55,7 @@ jobs:
           
     - name: Add build-success label if build succeeds
       if: steps.build.outcome == 'success'
+      continue-on-error: true
       uses: actions/github-script@v7
       with:
         github-token: ${{ secrets.GITHUB_TOKEN }}

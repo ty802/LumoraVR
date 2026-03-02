@@ -11,27 +11,29 @@ public partial class CaptureManager : global::Lumora.Core.External.Audio.Capture
 
     public ResultEnum<ILocalAudioStream, GodotAudioStreamError> GetStreamFrom(string captureName)
     {
-        AudioEffectCapture? cap = null;
-        AudioMixer mixer = AudioMixer.GetMixer();
-        string busName = $"{captureName}-capture";
-        AudioBus captureBus;
-        if (mixer.TryGetAudioBusByName(busName, out captureBus)) goto WithBus;
-        if (mixer.CreateAudioBus(busName, out captureBus)) goto WithBus;
-        return GodotAudioStreamError.FailedToGetBus;
-    WithBus:
-        int effectcount = AudioServer.GetBusEffectCount(captureBus.BusId);
-        if (effectcount < 0) return GodotAudioStreamError.Unknown;
-        if (effectcount > 1) return GodotAudioStreamError.InvalidBusConfiguration;
-        if (effectcount < 1)
+        var mixer = AudioMixer.GetMixer();
+        var busName = $"{captureName}-capture";
+
+        if (!mixer.TryGetAudioBusByName(busName, out var captureBus) &&
+            !mixer.CreateAudioBus(busName, out captureBus))
+            return GodotAudioStreamError.FailedToGetBus;
+
+        var effectCount = AudioServer.GetBusEffectCount(captureBus.BusId);
+
+        if (effectCount < 0) return GodotAudioStreamError.Unknown;
+        if (effectCount > 1) return GodotAudioStreamError.InvalidBusConfiguration;
+
+        AudioEffectCapture cap;
+        if (effectCount == 0)
         {
-            cap = new();
+            cap = new AudioEffectCapture();
             AudioServer.AddBusEffect(captureBus.BusId, cap);
-            goto WithCapture;
         }
-        cap =  AudioServer.GetBusEffect(captureBus.BusId,0) as AudioEffectCapture;
-        if(cap is null) return GodotAudioStreamError.InvalidBusConfiguration;
-    WithCapture:
-        // this is not finished
-        throw new System.NotImplementedException();
+        else
+        {
+            cap = AudioServer.GetBusEffect(captureBus.BusId, 0) as AudioEffectCapture;
+            if (cap is null) return GodotAudioStreamError.InvalidBusConfiguration;
+        }
+        return new LocalAudioSteam(cap);
     }
 }

@@ -13,28 +13,63 @@ jobs:
       issues: write
       pull-requests: write
     steps:
-      - name: Ensure "Has Conflicts" label exists
+      - name: Label PRs with merge conflicts
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            const labelName = 'Has Conflicts';
+
+            // Ensure the label exists
             try {
               await github.rest.issues.getLabel({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                name: 'Has Conflicts'
+                name: labelName
               });
             } catch (e) {
               if (e.status === 404) {
                 await github.rest.issues.createLabel({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  name: 'Has Conflicts',
+                  name: labelName,
                   color: 'e11d48'
                 });
               }
             }
-      - uses: mschilde/auto-label-merge-conflicts@v2.0
-        with:
-          CONFLICT_LABEL_NAME: "Has Conflicts"
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+            // Get all open PRs
+            const prs = await github.paginate(github.rest.pulls.list, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open'
+            });
+
+            for (const pr of prs) {
+              // Get detailed PR info to check mergeability
+              const { data: prDetail } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number
+              });
+
+              const mergeable = prDetail.mergeable;
+              const hasConflictLabel = pr.labels.some(l => l.name === labelName);
+
+              if (mergeable === false && !hasConflictLabel) {
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  labels: [labelName]
+                });
+              } else if (mergeable === true && hasConflictLabel) {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  name: labelName
+                });
+              }
+              // If mergeable === null, skip (still being computed by GitHub)
+            }

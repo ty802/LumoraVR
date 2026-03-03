@@ -27,6 +27,12 @@ jobs:
             const mergeableRetryDelaySeconds = 2;
             const singlePrRetryAttempts = 3;
             const sweepRetryAttempts = 1;
+            const isForkPullRequest = context.eventName === 'pull_request'
+              && context.payload.pull_request?.head?.repo?.fork;
+            if (isForkPullRequest) {
+              console.log('Skipping label operations for forked pull_request events.');
+              return;
+            }
             // Ensure the label exists
             try {
               await github.rest.issues.getLabel({

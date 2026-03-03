@@ -58,15 +58,50 @@ jobs:
               throw new Error('workflow_dispatch requires a positive numeric pull_number input.');
             }
 
+            const isScheduledEvent = context.eventName === 'schedule';
+            const scheduledLookbackDays = 7;
+            const scheduledMaxPrs = 200;
+            const scheduledSinceDate = new Date(Date.now() - scheduledLookbackDays * 24 * 60 * 60 * 1000);
+            let scheduledCollectedCount = 0;
+
             const prs = context.payload.pull_request
               ? [context.payload.pull_request]
               : workflowDispatchNumber
                 ? [{ number: workflowDispatchNumber }]
-                : await github.paginate(github.rest.pulls.list, {
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    state: 'open'
-                  });
+                : isScheduledEvent
+                  ? await github.paginate(
+                      github.rest.pulls.list,
+                      {
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        state: 'open',
+                        sort: 'updated',
+                        direction: 'desc',
+                        per_page: 100
+                      },
+                      (response, done) => {
+                        const filtered = [];
+                        for (const pr of response.data) {
+                          const updatedAt = new Date(pr.updated_at);
+                          if (updatedAt < scheduledSinceDate) {
+                            done();
+                            break;
+                          }
+                          filtered.push(pr);
+                          scheduledCollectedCount += 1;
+                          if (scheduledCollectedCount >= scheduledMaxPrs) {
+                            done();
+                            break;
+                          }
+                        }
+                        return filtered;
+                      }
+                    )
+                  : await github.paginate(github.rest.pulls.list, {
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      state: 'open'
+                    });
             const mergeableRetryAttempts = prs.length === 1
               ? singlePrRetryAttempts
               : sweepRetryAttempts;

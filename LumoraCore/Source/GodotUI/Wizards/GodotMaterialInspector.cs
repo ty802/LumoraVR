@@ -31,6 +31,7 @@ public sealed class GodotMaterialInspector : GodotUIPanel
         Material.OnTargetChange += _ => NotifyChanged();
     }
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 
     public override void OnAttach()
     {
@@ -43,6 +44,9 @@ public sealed class GodotMaterialInspector : GodotUIPanel
         }
     }
 }
+=======
+}
+>>>>>>> Stashed changes
 =======
 }
 >>>>>>> Stashed changes

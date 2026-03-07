@@ -191,6 +191,7 @@ public partial class ImportDialog : Control
         DialogClosed?.Invoke();
         Hide();
     }
+<<<<<<< Updated upstream
 
     private void OnInfoPressed()
     {
@@ -222,4 +223,6 @@ public partial class ImportDialog : Control
         if (success)
             SetSubtitle("Import finished. Close when done.");
     }
+=======
+>>>>>>> Stashed changes
 }

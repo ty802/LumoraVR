@@ -582,8 +582,12 @@ public partial class HomeDash : PanelContainer
         }
     }
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 }
 
+=======
+}
+>>>>>>> Stashed changes
 =======
 }
 >>>>>>> Stashed changes

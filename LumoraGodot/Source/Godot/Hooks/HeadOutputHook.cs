@@ -1,8 +1,17 @@
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 ﻿using Godot;
 =======
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+=======
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+using Godot;
+using Lumora.Core.Components;
+using AquaLogger = Lumora.Core.Logging.Logger;
+>>>>>>> Stashed changes
 
 using Godot;
 >>>>>>> Stashed changes

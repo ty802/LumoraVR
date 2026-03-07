@@ -262,5 +262,9 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
 }
 =======
     public override object GetValueAsObject() => _items;
+<<<<<<< Updated upstream
+}
+>>>>>>> Stashed changes
+=======
 }
 >>>>>>> Stashed changes

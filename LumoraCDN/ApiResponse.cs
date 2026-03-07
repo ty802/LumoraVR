@@ -183,6 +183,7 @@ public record TwoFactorSetup
     public required string QrCode { get; init; }
     public required List<string> RecoveryCodes { get; init; }
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 }
 
 // inventory models matching backend Inventory.cs
@@ -269,6 +270,9 @@ public record AssetInfo
     [JsonPropertyName("thumbnailHash")] public string? ThumbnailHash { get; init; }
     [JsonPropertyName("sharing")] public AssetSharingInfo? Sharing { get; init; }
 }
+=======
+}
+>>>>>>> Stashed changes
 =======
 }
 >>>>>>> Stashed changes

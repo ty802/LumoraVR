@@ -1,4 +1,11 @@
+<<<<<<< Updated upstream
 ﻿using Lumora.Core.Math;
+=======
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+using Lumora.Core.Math;
+>>>>>>> Stashed changes
 using Lumora.Core.Physics;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 

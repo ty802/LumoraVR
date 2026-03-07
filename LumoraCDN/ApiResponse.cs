@@ -1,3 +1,6 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
 using System.Collections.Generic;
 using System.Net;
@@ -179,6 +182,7 @@ public record TwoFactorSetup
     public required string Secret { get; init; }
     public required string QrCode { get; init; }
     public required List<string> RecoveryCodes { get; init; }
+<<<<<<< Updated upstream
 }
 
 // inventory models matching backend Inventory.cs
@@ -265,3 +269,6 @@ public record AssetInfo
     [JsonPropertyName("thumbnailHash")] public string? ThumbnailHash { get; init; }
     [JsonPropertyName("sharing")] public AssetSharingInfo? Sharing { get; init; }
 }
+=======
+}
+>>>>>>> Stashed changes

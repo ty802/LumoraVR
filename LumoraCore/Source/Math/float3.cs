@@ -1,3 +1,6 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
 using System.Runtime.InteropServices;
 
@@ -211,4 +214,3 @@ public struct float3 : IEquatable<float3>
     /// Implicit conversion from Godot Vector3.
     /// </summary>
 }
-

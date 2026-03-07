@@ -1,4 +1,11 @@
+<<<<<<< Updated upstream
 ﻿using System.Collections.Generic;
+=======
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+using System.Collections.Generic;
+>>>>>>> Stashed changes
 using System.Text;
 using Lumora.Core.Input;
 using Godot;

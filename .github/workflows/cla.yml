@@ -45,7 +45,7 @@ jobs:
           custom-notsigned-prcomment: |
             ## CLA Signature Required
 
-            Hey @$contributorName — before this PR can be reviewed or merged, you need to sign our **Contributor License Agreement**.
+            Hey @${{ github.event.pull_request.user.login }} — before this PR can be reviewed or merged, you need to sign our **Contributor License Agreement**.
 
             This is not optional. By contributing to LumoraVR you assign IP rights to LUMORAVR LTD. Read the full terms here:
             👉 [LumoraVR CLA]($pathToCLA)

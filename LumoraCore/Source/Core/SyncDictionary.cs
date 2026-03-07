@@ -138,7 +138,6 @@ public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<
         OnChanged?.Invoke(this);
         UnblockModification();
     }
-<<<<<<< Updated upstream
 
     protected override void InternalEncodeDelta(BinaryWriter writer, BinaryMessageBatch outboundMessage)
     {
@@ -232,6 +231,4 @@ public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<
         _pendingOps = null;
         base.Dispose();
     }
-=======
->>>>>>> Stashed changes
 }

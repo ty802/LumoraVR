@@ -20,3 +20,4 @@ public interface IAudioEffect : IDisposable
     public string Name { get; }
     public IReadOnlyDictionary<string, Value> Config { get; }
 }
+

@@ -228,3 +228,4 @@ public struct color : IEquatable<color>
     /// Implicit conversion from Godot Color.
     /// </summary>
 }
+

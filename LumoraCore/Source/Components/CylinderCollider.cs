@@ -1,14 +1,7 @@
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-﻿using Lumora.Core;
-=======
-=======
->>>>>>> Stashed changes
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-using Lumora.Core;
->>>>>>> Stashed changes
+﻿using Lumora.Core;
 using Lumora.Core.Physics;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 

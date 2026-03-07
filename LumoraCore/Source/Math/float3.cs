@@ -214,3 +214,4 @@ public struct float3 : IEquatable<float3>
     /// Implicit conversion from Godot Vector3.
     /// </summary>
 }
+

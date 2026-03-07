@@ -332,3 +332,4 @@ public struct floatQ : IEquatable<floatQ>
     /// Implicit conversion from Godot Quaternion.
     /// </summary>
 }
+

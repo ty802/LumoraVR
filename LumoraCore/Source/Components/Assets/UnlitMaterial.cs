@@ -1,16 +1,8 @@
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-﻿using Lumora.Core.Math;
-using LumoraLogger = Lumora.Core.Logging.Logger;
-=======
-=======
->>>>>>> Stashed changes
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-using Lumora.Core.Math;
-using AquaLogger = Lumora.Core.Logging.Logger;
->>>>>>> Stashed changes
+﻿using Lumora.Core.Math;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Assets;
 

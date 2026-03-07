@@ -238,7 +238,6 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
         _dirtyIndices?.Clear();
     }
 
-<<<<<<< Updated upstream
     public override object? GetValueAsObject() => null;
 
     public IEnumerator<T> GetEnumerator()
@@ -260,11 +259,3 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
         base.Dispose();
     }
 }
-=======
-    public override object GetValueAsObject() => _items;
-<<<<<<< Updated upstream
-}
->>>>>>> Stashed changes
-=======
-}
->>>>>>> Stashed changes

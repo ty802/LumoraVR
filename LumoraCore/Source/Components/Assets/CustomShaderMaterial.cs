@@ -1,16 +1,7 @@
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 ﻿using System;
-=======
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
-// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
-
->>>>>>> Stashed changes
-=======
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
-// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
-
->>>>>>> Stashed changes
 using System.Collections.Generic;
 using Lumora.CDN;
 using Lumora.Core.Assets;
@@ -317,8 +308,6 @@ public sealed class CustomShaderMaterial : MaterialProvider
             }
         }
     }
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
 
     public override void OnDestroy()
     {
@@ -334,9 +323,3 @@ public sealed class CustomShaderMaterial : MaterialProvider
         base.OnDestroy();
     }
 }
-=======
-}
->>>>>>> Stashed changes
-=======
-}
->>>>>>> Stashed changes

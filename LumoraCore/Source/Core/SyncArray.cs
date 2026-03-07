@@ -1,6 +1,3 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
-// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
-
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -238,7 +235,6 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
         _dirtyIndices?.Clear();
     }
 
-<<<<<<< Updated upstream
     public override object? GetValueAsObject() => null;
 
     public IEnumerator<T> GetEnumerator()
@@ -260,11 +256,3 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
         base.Dispose();
     }
 }
-=======
-    public override object GetValueAsObject() => _items;
-<<<<<<< Updated upstream
-}
->>>>>>> Stashed changes
-=======
-}
->>>>>>> Stashed changes

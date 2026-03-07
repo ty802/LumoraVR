@@ -1,16 +1,5 @@
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
 ﻿using Lumora.Core.Networking.Streams;
 using LumoraLogger = Lumora.Core.Logging.Logger;
-=======
-=======
->>>>>>> Stashed changes
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
-// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
-
-using Lumora.Core.Networking.Streams;
-using AquaLogger = Lumora.Core.Logging.Logger;
->>>>>>> Stashed changes
 
 namespace Lumora.Core.Components;
 

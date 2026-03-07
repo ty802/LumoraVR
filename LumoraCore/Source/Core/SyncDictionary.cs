@@ -1,6 +1,3 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
-// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
-
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -138,7 +135,6 @@ public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<
         OnChanged?.Invoke(this);
         UnblockModification();
     }
-<<<<<<< Updated upstream
 
     protected override void InternalEncodeDelta(BinaryWriter writer, BinaryMessageBatch outboundMessage)
     {
@@ -232,6 +228,4 @@ public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<
         _pendingOps = null;
         base.Dispose();
     }
-=======
->>>>>>> Stashed changes
 }

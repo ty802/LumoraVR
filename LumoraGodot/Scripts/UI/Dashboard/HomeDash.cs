@@ -1,6 +1,3 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
-// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
-
 using Godot;
 using System;
 using System.Collections.Generic;
@@ -581,13 +578,5 @@ public partial class HomeDash : PanelContainer
                 _fpsValueLabel.Modulate = new Color(0.9f, 0.4f, 0.35f);
         }
     }
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
 }
 
-=======
-}
->>>>>>> Stashed changes
-=======
-}
->>>>>>> Stashed changes

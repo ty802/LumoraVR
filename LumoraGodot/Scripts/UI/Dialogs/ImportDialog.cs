@@ -1,6 +1,3 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
-// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
-
 using Godot;
 using System;
 using System.Collections.Generic;
@@ -191,7 +188,6 @@ public partial class ImportDialog : Control
         DialogClosed?.Invoke();
         Hide();
     }
-<<<<<<< Updated upstream
 
     private void OnInfoPressed()
     {
@@ -223,6 +219,4 @@ public partial class ImportDialog : Control
         if (success)
             SetSubtitle("Import finished. Close when done.");
     }
-=======
->>>>>>> Stashed changes
 }

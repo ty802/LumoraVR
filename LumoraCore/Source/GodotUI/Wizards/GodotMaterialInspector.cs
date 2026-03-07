@@ -1,6 +1,3 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
-// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
-
 using Lumora.Core.Assets;
 using Lumora.Core.Components;
 using Lumora.Core.Components.Assets;
@@ -30,8 +27,6 @@ public sealed class GodotMaterialInspector : GodotUIPanel
         Material = new SyncRef<CustomShaderMaterial>(this);
         Material.OnTargetChange += _ => NotifyChanged();
     }
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
 
     public override void OnAttach()
     {
@@ -44,9 +39,3 @@ public sealed class GodotMaterialInspector : GodotUIPanel
         }
     }
 }
-=======
-}
->>>>>>> Stashed changes
-=======
-}
->>>>>>> Stashed changes

@@ -1,15 +1,5 @@
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
 ﻿using Godot;
 using Lumora.Godot.Hooks;
-=======
-=======
->>>>>>> Stashed changes
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
-// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
-
-using Godot;
->>>>>>> Stashed changes
 using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.Math;

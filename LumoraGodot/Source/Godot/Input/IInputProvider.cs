@@ -1,6 +1,20 @@
-using Godot;
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Godot;
+=======
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+=======
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-namespace Aquamarine.Source.Input;
+using Godot;
+>>>>>>> Stashed changes
+
+using Godot;
+>>>>>>> Stashed changes
+
+namespace Lumora.Source.Input;
 
 public interface IInputProvider
 {
@@ -53,4 +67,3 @@ public interface IInputProvider
     public static bool LeftSecondaryInput => Instance?.GetLeftSecondaryInput ?? false;
     public static bool RightSecondaryInput => Instance?.GetRightSecondaryInput ?? false;
 }
-

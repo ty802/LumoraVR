@@ -1,10 +1,20 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using Lumora.Core.Networking.Sync;
 using Lumora.Core.Networking;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
 
@@ -184,7 +194,7 @@ public class WorkerManager
             }
         }
         
-        AquaLogger.Error("Unable to find type: " + typename);
+        LumoraLogger.Error("Unable to find type: " + typename);
         return null;
     }
 }

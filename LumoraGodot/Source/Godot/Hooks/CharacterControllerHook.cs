@@ -1,11 +1,21 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Godot;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Godot;
+>>>>>>> Stashed changes
 using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
 using System.Collections.Generic;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks;
+namespace Lumora.Godot.Hooks;
 
 /// <summary>
 /// Hook for CharacterController component → Godot CharacterBody3D.
@@ -27,6 +37,12 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
     private bool _debugDumpDone;
 
     public CharacterBody3D GodotCharacterBody => _characterBody;
+
+    /// <summary>
+    /// The local player's Godot CharacterBody3D — set when the local user's hook is initialised,
+    /// cleared on destroy. Read by DesktopCameraController for third-person orbit.
+    /// </summary>
+    public static CharacterBody3D LocalPlayerBody { get; private set; }
 
     public override void Initialize()
     {
@@ -69,6 +85,10 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
         // Check if this is the local user
         var userRoot = Owner.Slot.GetComponent<UserRoot>();
         _isLocalUser = userRoot?.ActiveUser == Owner.World?.LocalUser;
+
+        // Expose body for DesktopCameraController third-person mode
+        if (_isLocalUser)
+            LocalPlayerBody = _characterBody;
 
         // Find XROrigin3D in scene tree for VR tracking sync
         if (_isLocalUser)
@@ -322,7 +342,7 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
 
         _isCrouching = crouching;
         _targetHeight = crouching ? Owner.CrouchHeight : Owner.StandingHeight;
-        AquaLogger.Log($"CharacterControllerHook: Crouch={crouching}, TargetHeight={_targetHeight}");
+        LumoraLogger.Log($"CharacterControllerHook: Crouch={crouching}, TargetHeight={_targetHeight}");
     }
 
     /// <summary>
@@ -355,7 +375,7 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
 
         if (_characterBody == null)
         {
-            AquaLogger.Error("CharacterControllerHook: _characterBody is null!");
+            LumoraLogger.Error("CharacterControllerHook: _characterBody is null!");
             return;
         }
 
@@ -383,7 +403,7 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
         }
         else
         {
-            AquaLogger.Warn($"CharacterControllerHook: Unknown collider type {collider.GetType().Name}");
+            LumoraLogger.Warn($"CharacterControllerHook: Unknown collider type {collider.GetType().Name}");
         }
 
         // Apply collider offset so shapes line up with the avatar body
@@ -408,6 +428,9 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
 
     public override void Destroy(bool destroyingWorld)
     {
+        if (_isLocalUser && LocalPlayerBody == _characterBody)
+            LocalPlayerBody = null;
+
         if (!destroyingWorld && _characterBody != null && GodotObject.IsInstanceValid(_characterBody))
         {
             _characterBody.QueueFree();

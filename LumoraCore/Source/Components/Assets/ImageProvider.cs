@@ -1,9 +1,19 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using StbImageSharp;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Assets;
 
@@ -211,7 +221,7 @@ public class ImageProvider : UrlAssetProvider<TextureAsset, ImageMetadata>
     {
         if (fileData == null || fileData.Length == 0)
         {
-            AquaLogger.Warn("ImageProvider: Empty file data");
+            LumoraLogger.Warn("ImageProvider: Empty file data");
             return null;
         }
 
@@ -224,12 +234,12 @@ public class ImageProvider : UrlAssetProvider<TextureAsset, ImageMetadata>
             metadata.Width = result.Width;
             metadata.Height = result.Height;
 
-            AquaLogger.Debug($"ImageProvider: Decoded {result.Width}x{result.Height} image");
+            LumoraLogger.Debug($"ImageProvider: Decoded {result.Width}x{result.Height} image");
             return FlipRgbaVertical(result.Data, result.Width, result.Height);
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"ImageProvider: Failed to decode image - {ex.Message}");
+            LumoraLogger.Error($"ImageProvider: Failed to decode image - {ex.Message}");
             return null;
         }
     }

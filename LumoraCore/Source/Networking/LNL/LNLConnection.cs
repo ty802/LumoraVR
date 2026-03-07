@@ -1,8 +1,18 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using System.Net;
 using LiteNetLib;
 using LiteNetLib.Utils;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.LNL;
 
@@ -53,14 +63,14 @@ public class LNLConnection : IConnection, INetEventListener
             throw new Exception($"Failed to start LNL Connection for {address}");
         }
 
-        AquaLogger.Log($"LNL Connection created for {address} on local port {_client.LocalPort}");
+        LumoraLogger.Log($"LNL Connection created for {address} on local port {_client.LocalPort}");
     }
 
     public void Connect(Action<string> statusCallback)
     {
         statusCallback?.Invoke($"Connecting to {Address.Host}:{Address.Port}");
 
-        AquaLogger.Log($"Establishing connection to {Address}");
+        LumoraLogger.Log($"Establishing connection to {Address}");
         _peer = _client.Connect(Address.Host, Address.Port, _appId);
 
         if (_peer == null)
@@ -85,7 +95,7 @@ public class LNLConnection : IConnection, INetEventListener
     {
         if (_peer == null || _peer.ConnectionState != ConnectionState.Connected)
         {
-            AquaLogger.Warn("Cannot send - peer not connected");
+            LumoraLogger.Warn("Cannot send - peer not connected");
             return;
         }
 
@@ -136,7 +146,7 @@ public class LNLConnection : IConnection, INetEventListener
 
     public void OnPeerConnected(NetPeer peer)
     {
-        AquaLogger.Log($"Connected to {peer.Address}:{peer.Port}");
+        LumoraLogger.Log($"Connected to {peer.Address}:{peer.Port}");
         _peer = peer;
         IsOpen = true;
         Connected?.Invoke(this);
@@ -144,14 +154,14 @@ public class LNLConnection : IConnection, INetEventListener
 
     public void OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo)
     {
-        AquaLogger.Log($"Disconnected from {peer.Address}:{peer.Port} - {disconnectInfo.Reason}");
+        LumoraLogger.Log($"Disconnected from {peer.Address}:{peer.Port} - {disconnectInfo.Reason}");
         FailReason = disconnectInfo.Reason.ToString();
         InformClosed();
     }
 
     public void OnNetworkError(IPEndPoint endPoint, System.Net.Sockets.SocketError socketError)
     {
-        AquaLogger.Error($"Network error: {socketError} at {endPoint}");
+        LumoraLogger.Error($"Network error: {socketError} at {endPoint}");
         FailReason = socketError.ToString();
         ConnectionFailed?.Invoke(this);
     }

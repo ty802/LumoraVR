@@ -1,3 +1,6 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
 using System.Collections.Generic;
 using Lumora.Core;
@@ -94,20 +97,27 @@ public class AvatarManager : ImplementableComponent
             Logger.Warn("AvatarManager: Avatar has no skeleton");
         }
 
-        // Find IK component
+        // Find or create IK component.
+        // We still create this even without SkeletonBuilder so the Godot hook can
+        // bind directly to imported Skeleton3D rigs (VRM/GLTF fallback path).
         var ikAvatar = avatarSlot.GetComponentInChildren<GodotIKAvatar>();
-        if (ikAvatar == null && skeleton != null)
+        if (ikAvatar == null)
         {
-            // Create IK for the avatar
             var ikSlot = avatarSlot.AddSlot("IK");
             ikAvatar = ikSlot.AttachComponent<GodotIKAvatar>();
-            ikAvatar.Skeleton.Target = skeleton;
+        }
 
-            // Connect to user root tracking
-            if (UserRoot.Target != null)
-            {
-                ikAvatar.SetupTracking(UserRoot.Target);
-            }
+        if (skeleton != null)
+        {
+            ikAvatar.Skeleton.Target = skeleton;
+        }
+
+        ikAvatar.Enabled.Value = true;
+
+        // Connect to user root tracking
+        if (UserRoot.Target != null)
+        {
+            ikAvatar.SetupTracking(UserRoot.Target);
         }
 
         // Parent avatar to our slot

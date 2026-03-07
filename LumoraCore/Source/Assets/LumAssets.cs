@@ -1,3 +1,6 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 namespace Lumora.Core.Assets;
 
 /// <summary>
@@ -18,9 +21,16 @@ public static class LumAssets
         public static string Nameplate => "res://Scenes/UI/Inspectors/Nameplate.tscn";
         public static string UserInspector => "res://Scenes/UI/Inspectors/UserInspector.tscn";
         public static string MaterialOrbInspector => "res://Scenes/UI/Inspectors/MaterialOrbInspector.tscn";
+        public static string MaterialColorPicker => "res://Scenes/UI/Inspectors/MaterialColorPicker.tscn";
+        public static string SlotInspector => "res://Scenes/UI/Inspectors/SlotInspector.tscn";
+        public static string ComponentInspector => "res://Scenes/UI/Inspectors/ComponentInspector.tscn";
+        public static string SceneInspector => "res://Scenes/UI/Inspectors/SceneInspector.tscn";
+        public static string ComponentAttacher => "res://Scenes/UI/Inspectors/ComponentAttacher.tscn";
+        public static string ListEditor => "res://Scenes/UI/Inspectors/ListEditor.tscn";
 
         // Debug
         public static string EngineDebug => "res://Scenes/UI/Debug/EngineDebug.tscn";
+        public static string DebugWindow => "res://Scenes/UI/Debug/DebugWindow.tscn";
 
         // Dashboard
         public static string HomeDash => "res://Scenes/UI/Dashboard/HomeDash.tscn";

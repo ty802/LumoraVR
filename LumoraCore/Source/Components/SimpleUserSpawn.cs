@@ -1,8 +1,18 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Components.Avatar;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -47,18 +57,18 @@ public class SimpleUserSpawn : Component, IWorldEventReceiver
         // Clients receive the spawned slots via network sync.
         if (!World.IsAuthority)
         {
-            AquaLogger.Log($"SimpleUserSpawn: Client ignoring OnUserJoined for '{user.UserName.Value}' - authority will spawn and sync");
+            LumoraLogger.Log($"SimpleUserSpawn: Client ignoring OnUserJoined for '{user.UserName.Value}' - authority will spawn and sync");
             return;
         }
 
         // Prevent duplicate spawns
         if (_userSlots.ContainsKey(user))
         {
-            AquaLogger.Warn($"SimpleUserSpawn: User '{user.UserName.Value}' already spawned, ignoring duplicate");
+            LumoraLogger.Warn($"SimpleUserSpawn: User '{user.UserName.Value}' already spawned, ignoring duplicate");
             return;
         }
 
-        AquaLogger.Log($"SimpleUserSpawn: [Authority] Spawning user '{user.UserName.Value ?? "(null)"}', RefID={user.ReferenceID}");
+        LumoraLogger.Log($"SimpleUserSpawn: [Authority] Spawning user '{user.UserName.Value ?? "(null)"}', RefID={user.ReferenceID}");
 
         try
         {
@@ -80,11 +90,11 @@ public class SimpleUserSpawn : Component, IWorldEventReceiver
             // Use DefaultAVI to spawn user with full skeleton avatar
             DefaultAVI.SpawnWithDefaultAvatar(userSlot, user);
 
-            AquaLogger.Log($"SimpleUserSpawn: [Authority] Spawned user '{userName}' - slots will sync to clients");
+            LumoraLogger.Log($"SimpleUserSpawn: [Authority] Spawned user '{userName}' - slots will sync to clients");
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"SimpleUserSpawn: Failed to spawn '{user.UserName.Value}': {ex.Message}\n{ex.StackTrace}");
+            LumoraLogger.Error($"SimpleUserSpawn: Failed to spawn '{user.UserName.Value}': {ex.Message}\n{ex.StackTrace}");
         }
     }
 

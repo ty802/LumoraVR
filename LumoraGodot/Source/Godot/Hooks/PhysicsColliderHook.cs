@@ -1,11 +1,21 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Godot;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Godot;
+>>>>>>> Stashed changes
 using Lumora.Core.Assets;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
 using Lumora.Core.Physics;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks
+namespace Lumora.Godot.Hooks
 {
     /// <summary>
     /// Shared hook for BoxCollider, CapsuleCollider, and SphereCollider -> Godot physics bodies.
@@ -42,7 +52,7 @@ namespace Aquamarine.Godot.Hooks
                 // If we already created a body (Type changed after init), destroy it
                 if (_bodyNode != null && GodotObject.IsInstanceValid(_bodyNode))
                 {
-                    AquaLogger.Log($"PhysicsColliderHook: Destroying body - hasRigidBody={hasRigidBody}, Type={Owner.Type.Value}");
+                    LumoraLogger.Log($"PhysicsColliderHook: Destroying body - hasRigidBody={hasRigidBody}, Type={Owner.Type.Value}");
                     DestroyBody(true);
                 }
                 return;
@@ -51,7 +61,7 @@ namespace Aquamarine.Godot.Hooks
             // Create body if needed (deferred from Initialize)
             if (_bodyNode == null || !GodotObject.IsInstanceValid(_bodyNode))
             {
-                AquaLogger.Log($"PhysicsColliderHook: Creating body for {Owner.GetType().Name} on '{Owner.Slot.SlotName.Value}'");
+                LumoraLogger.Log($"PhysicsColliderHook: Creating body for {Owner.GetType().Name} on '{Owner.Slot.SlotName.Value}'");
                 CreateBody();
                 BuildShape();
                 UpdateTransform();
@@ -132,7 +142,7 @@ namespace Aquamarine.Godot.Hooks
             {
                 case BoxCollider box:
                     float3 size = box.Size.Value;
-                    AquaLogger.Log($"PhysicsColliderHook.BuildShape: BoxCollider size={size} on '{Owner.Slot.SlotName.Value}'");
+                    LumoraLogger.Log($"PhysicsColliderHook.BuildShape: BoxCollider size={size} on '{Owner.Slot.SlotName.Value}'");
                     if (_shape is BoxShape3D existingBox)
                     {
                         existingBox.Size = new Vector3(size.x, size.y, size.z);
@@ -179,7 +189,7 @@ namespace Aquamarine.Godot.Hooks
                     }
                     break;
                 default:
-                    AquaLogger.Warn($"PhysicsColliderHook: Unknown collider type {Owner.GetType().Name}");
+                    LumoraLogger.Warn($"PhysicsColliderHook: Unknown collider type {Owner.GetType().Name}");
                     return;
             }
 

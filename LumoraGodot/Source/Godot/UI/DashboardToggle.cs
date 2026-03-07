@@ -1,13 +1,23 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Godot;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Godot;
+>>>>>>> Stashed changes
 using Lumora.Core;
 using Lumora.Core.GodotUI;
-using Aquamarine.Godot.Hooks.GodotUI;
-using Aquamarine.Source.Input;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using Lumora.Godot.Hooks.GodotUI;
+using Lumora.Source.Input;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 using RuntimeEngine = Lumora.Core.Engine;
 using GodotInput = Godot.Input;
 
-namespace Aquamarine.Source.UI;
+namespace Lumora.Source.UI;
 
 /// <summary>
 /// Handles input for toggling the userspace dashboard panel.
@@ -35,7 +45,7 @@ public partial class DashboardToggle : Node
     {
         base._Ready();
         _instance = this;
-        AquaLogger.Log("DashboardToggle: Initialized");
+        LumoraLogger.Log("DashboardToggle: Initialized");
     }
 
     public override void _Process(double delta)
@@ -55,7 +65,7 @@ public partial class DashboardToggle : Node
         // Desktop: Check Escape key
         if (GodotInput.IsActionJustPressed("ui_cancel"))
         {
-            AquaLogger.Log("DashboardToggle: Escape key pressed");
+            LumoraLogger.Log("DashboardToggle: Escape key pressed");
             shouldToggle = true;
         }
 
@@ -85,14 +95,14 @@ public partial class DashboardToggle : Node
         var engine = RuntimeEngine.Current;
         if (engine == null)
         {
-            AquaLogger.Log("DashboardToggle: Engine.Current is null");
+            LumoraLogger.Log("DashboardToggle: Engine.Current is null");
             return;
         }
 
         var userspaceWorld = engine.WorldManager?.UserspaceWorld;
         if (userspaceWorld == null)
         {
-            AquaLogger.Log("DashboardToggle: UserspaceWorld is null");
+            LumoraLogger.Log("DashboardToggle: UserspaceWorld is null");
             return;
         }
 
@@ -100,25 +110,25 @@ public partial class DashboardToggle : Node
         var userspaceRoot = userspaceWorld.RootSlot.FindChild("UserspaceRoot");
         if (userspaceRoot == null)
         {
-            AquaLogger.Log("DashboardToggle: UserspaceRoot slot not found");
+            LumoraLogger.Log("DashboardToggle: UserspaceRoot slot not found");
             return;
         }
 
         var dashboardSlot = userspaceRoot.FindChild("Dashboard");
         if (dashboardSlot == null)
         {
-            AquaLogger.Log("DashboardToggle: Dashboard slot not found under UserspaceRoot");
+            LumoraLogger.Log("DashboardToggle: Dashboard slot not found under UserspaceRoot");
             return;
         }
 
         _dashboardPanel = dashboardSlot.GetComponent<DashboardPanel>();
         if (_dashboardPanel != null)
         {
-            AquaLogger.Log("DashboardToggle: Found dashboard panel");
+            LumoraLogger.Log("DashboardToggle: Found dashboard panel");
         }
         else
         {
-            AquaLogger.Log("DashboardToggle: DashboardPanel component not found on slot");
+            LumoraLogger.Log("DashboardToggle: DashboardPanel component not found on slot");
         }
     }
 
@@ -129,13 +139,13 @@ public partial class DashboardToggle : Node
     {
         if (_dashboardPanel == null)
         {
-            AquaLogger.Warn("DashboardToggle: No dashboard panel found");
+            LumoraLogger.Warn("DashboardToggle: No dashboard panel found");
             return;
         }
 
         _dashboardPanel.Toggle();
         IsDashboardVisible = _dashboardPanel.IsVisible.Value;
-        AquaLogger.Log($"DashboardToggle: Dashboard visible = {IsDashboardVisible}");
+        LumoraLogger.Log($"DashboardToggle: Dashboard visible = {IsDashboardVisible}");
     }
 
     /// <summary>

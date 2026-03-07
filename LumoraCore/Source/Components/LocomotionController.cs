@@ -1,8 +1,18 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using Lumora.Core;
 using Lumora.Core.Math;
 using Lumora.Core.Input;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 using EngineKey = Lumora.Core.Input.Key;
 
 namespace Lumora.Core.Components;
@@ -16,7 +26,9 @@ public class LocomotionController : Component
 {
     // ===== PARAMETERS =====
 
-    public float MouseSensitivity { get; set; } = 0.001f;
+    // DirectDelta is now normalized (1.0 = full screen height swipe).
+    // Sensitivity of Pi means a full screen-height swipe = 180 degrees.
+    public float MouseSensitivity { get; set; } = MathF.PI;
     public float MaxPitch { get; set; } = 89.0f;
 
     // ===== STATE =====
@@ -54,13 +66,36 @@ public class LocomotionController : Component
         MouseCaptureRequested = state;
     }
 
+    /// <summary>
+    /// Set by DesktopCameraController when free-cam is active.
+    /// Blocks mouse look and character movement so the camera flies independently.
+    /// </summary>
+    public static bool FreeCamActive { get; private set; } = false;
+
+    public static void SetFreeCamActive(bool value)
+    {
+        FreeCamActive = value;
+    }
+
+    /// <summary>
+    /// Set by DesktopCameraController in third-person mode.
+    /// Suppresses character mouse-look so the camera can orbit independently
+    /// while WASD movement continues normally.
+    /// </summary>
+    public static bool MouseLookSuppressed { get; private set; } = false;
+
+    public static void SetMouseLookSuppressed(bool value)
+    {
+        MouseLookSuppressed = value;
+    }
+
     // ===== INITIALIZATION =====
 
     public override void OnAwake()
     {
         base.OnAwake();
 
-        AquaLogger.Log($"LocomotionController: OnAwake started");
+        LumoraLogger.Log($"LocomotionController: OnAwake started");
         TryInitializeLocalUser();
     }
 
@@ -115,7 +150,7 @@ public class LocomotionController : Component
             {
                 if (!_loggedMissingUserRoot)
                 {
-                    AquaLogger.Warn("LocomotionController: No UserRoot found!");
+                    LumoraLogger.Warn("LocomotionController: No UserRoot found!");
                     _loggedMissingUserRoot = true;
                 }
                 return false;
@@ -124,7 +159,7 @@ public class LocomotionController : Component
 
         if (!_loggedActiveUserState)
         {
-            AquaLogger.Log($"LocomotionController: UserRoot.ActiveUser={_userRoot.ActiveUser?.UserName?.Value ?? "(null)"}, World.LocalUser={World?.LocalUser?.UserName?.Value ?? "(null)"}");
+            LumoraLogger.Log($"LocomotionController: UserRoot.ActiveUser={_userRoot.ActiveUser?.UserName?.Value ?? "(null)"}, World.LocalUser={World?.LocalUser?.UserName?.Value ?? "(null)"}");
             _loggedActiveUserState = true;
         }
 
@@ -134,7 +169,7 @@ public class LocomotionController : Component
         _characterController = Slot.GetComponent<CharacterController>();
         if (_characterController == null)
         {
-            AquaLogger.Warn("LocomotionController: No CharacterController found!");
+            LumoraLogger.Warn("LocomotionController: No CharacterController found!");
             return false;
         }
 
@@ -143,11 +178,11 @@ public class LocomotionController : Component
         {
             _mouse = _inputInterface.Mouse;
             _keyboardDriver = _inputInterface.GetKeyboardDriver();
-            AquaLogger.Log($"LocomotionController: Input bound - Mouse={_mouse != null}, Keyboard={_keyboardDriver != null}");
+            LumoraLogger.Log($"LocomotionController: Input bound - Mouse={_mouse != null}, Keyboard={_keyboardDriver != null}");
         }
         else
         {
-            AquaLogger.Warn("[LocomotionController] No InputInterface found - will try late binding");
+            LumoraLogger.Warn("[LocomotionController] No InputInterface found - will try late binding");
         }
 
         if (_modules.Count == 0)
@@ -162,7 +197,7 @@ public class LocomotionController : Component
         if (!IsVRActive())
             SetMouseCaptureRequested(true);
 
-        AquaLogger.Log($"LocomotionController: Initialized for user '{_userRoot.ActiveUser?.UserName?.Value}' (VR={IsVRActive()}, Module={_activeModule?.GetType().Name})");
+        LumoraLogger.Log($"LocomotionController: Initialized for user '{_userRoot.ActiveUser?.UserName?.Value}' (VR={IsVRActive()}, Module={_activeModule?.GetType().Name})");
         _initialized = true;
         return true;
     }
@@ -233,11 +268,11 @@ public class LocomotionController : Component
         {
             _mouseCaptured = !_mouseCaptured;
             MouseCaptureRequested = _mouseCaptured;
-            AquaLogger.Log($"[LocomotionController] Mouse capture toggled: {_mouseCaptured}");
+            LumoraLogger.Log($"[LocomotionController] Mouse capture toggled: {_mouseCaptured}");
         }
         _escapeWasPressed = escapePressed;
 
-        if (_mouse == null || !_mouseCaptured)
+        if (_mouse == null || !_mouseCaptured || FreeCamActive || MouseLookSuppressed)
             return;
 
         // Use Mouse.DirectDelta - now populated via GodotMouseDriver.HandleInputEvent

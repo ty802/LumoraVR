@@ -1,5 +1,16 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Lumora.Core;
+using LumoraLogger = Lumora.Core.Logging.Logger;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Lumora.Core;
 using AquaLogger = Lumora.Core.Logging.Logger;
+>>>>>>> Stashed changes
 
 namespace Lumora.Core.Components;
 
@@ -23,7 +34,7 @@ public class HeadOutput : ImplementableComponent
         {
             if (!_loggedMissingUserRoot)
             {
-                AquaLogger.Warn("HeadOutput: No UserRoot found!");
+                LumoraLogger.Warn("HeadOutput: No UserRoot found!");
                 _loggedMissingUserRoot = true;
             }
             return;
@@ -34,13 +45,13 @@ public class HeadOutput : ImplementableComponent
         {
             if (!_loggedMissingUser)
             {
-                AquaLogger.Warn("HeadOutput: UserRoot has no ActiveUser yet");
+                LumoraLogger.Warn("HeadOutput: UserRoot has no ActiveUser yet");
                 _loggedMissingUser = true;
             }
             return;
         }
 
-        AquaLogger.Log($"HeadOutput: Initialized for user '{activeUser.UserName.Value}'");
+        LumoraLogger.Log($"HeadOutput: Initialized for user '{activeUser.UserName.Value}'");
     }
 
     public override void OnStart()
@@ -48,13 +59,13 @@ public class HeadOutput : ImplementableComponent
         base.OnStart();
 
         // Hook will handle camera creation
-        AquaLogger.Log($"HeadOutput: OnStart called for slot '{Slot.SlotName.Value}'");
+        LumoraLogger.Log($"HeadOutput: OnStart called for slot '{Slot.SlotName.Value}'");
     }
 
     public override void OnDestroy()
     {
         UserRoot = null;
         base.OnDestroy();
-        AquaLogger.Log("HeadOutput: Destroyed");
+        LumoraLogger.Log("HeadOutput: Destroyed");
     }
 }

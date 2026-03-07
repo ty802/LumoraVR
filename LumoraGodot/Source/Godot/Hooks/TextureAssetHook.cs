@@ -1,8 +1,24 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Godot;
+=======
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+=======
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Godot;
 using Lumora.Core.Assets;
 using AquaLogger = Lumora.Core.Logging.Logger;
+>>>>>>> Stashed changes
 
-namespace Aquamarine.Godot.Hooks;
+using Godot;
+>>>>>>> Stashed changes
+using Lumora.Core.Assets;
+using LumoraLogger = Lumora.Core.Logging.Logger;
+
+namespace Lumora.Godot.Hooks;
 
 /// <summary>
 /// Godot implementation of texture asset hook.
@@ -90,13 +106,13 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook
         }
 
         // Debug: verify texture was created correctly
-        AquaLogger.Log($"TextureAssetHook.UploadData: Created texture {width}x{height}, format={image.GetFormat()}, valid={_godotTexture != null}");
+        LumoraLogger.Log($"TextureAssetHook.UploadData: Created texture {width}x{height}, format={image.GetFormat()}, valid={_godotTexture != null}");
 
         // Debug: sample some pixels to verify data
         if (image.GetWidth() > 0 && image.GetHeight() > 0)
         {
             var pixel = image.GetPixel(0, 0);
-            AquaLogger.Log($"TextureAssetHook.UploadData: Sample pixel[0,0] = RGBA({pixel.R:F2}, {pixel.G:F2}, {pixel.B:F2}, {pixel.A:F2})");
+            LumoraLogger.Log($"TextureAssetHook.UploadData: Sample pixel[0,0] = RGBA({pixel.R:F2}, {pixel.G:F2}, {pixel.B:F2}, {pixel.A:F2})");
         }
     }
 

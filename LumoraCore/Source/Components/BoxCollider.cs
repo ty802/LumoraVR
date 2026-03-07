@@ -1,7 +1,17 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Lumora.Core;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Lumora.Core;
+>>>>>>> Stashed changes
 using Lumora.Core.Math;
 using Lumora.Core.Physics;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -26,7 +36,7 @@ public class BoxCollider : Collider
     {
         base.OnAwake();
         Size.OnChanged += _ => RunApplyChanges();
-        AquaLogger.Log($"BoxCollider: Initialized with Size={Size.Value}");
+        LumoraLogger.Log($"BoxCollider: Initialized with Size={Size.Value}");
     }
 
     // ===== ABSTRACT METHOD IMPLEMENTATIONS =====

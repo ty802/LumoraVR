@@ -1,11 +1,22 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Godot;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Godot;
+>>>>>>> Stashed changes
 using Lumora.Core;
 using Lumora.Core.GodotUI;
 using Lumora.Core.Math;
 using System.Collections.Generic;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using Lumora.Godot.UI;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks.GodotUI;
+namespace Lumora.Godot.Hooks.GodotUI;
 
 #nullable enable
 
@@ -26,6 +37,7 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
     private Area3D? _collisionArea;
     private CollisionShape3D? _collisionShape;
     private BoxShape3D? _boxShape;
+    private Vector2I _lastViewportSize = Vector2I.Zero;
 
     // Registry of scene node paths to their Control instances
     private readonly Dictionary<string, Control> _nodeRegistry = new();
@@ -61,7 +73,7 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
 
         _panelHooks[Owner] = this;
 
-        var resScale = Owner.ResolutionScale.Value;
+        var resScale = UIReadability.GetReadableResolutionScale(Owner.ResolutionScale.Value);
 
         // Create SubViewport
         _viewport = new SubViewport();
@@ -69,12 +81,13 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
         _viewport.Size = new Vector2I(
             (int)(Owner.Size.Value.x * resScale),
             (int)(Owner.Size.Value.y * resScale));
+        _lastViewportSize = _viewport.Size;
         _viewport.TransparentBg = true;
         _viewport.HandleInputLocally = true;
         _viewport.GuiDisableInput = false;
-        _viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Always;
+        _viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.WhenVisible;
         _viewport.CanvasItemDefaultTextureFilter = Viewport.DefaultCanvasItemTextureFilter.Linear;
-        _viewport.Msaa2D = Viewport.Msaa.Msaa4X;
+        _viewport.Msaa2D = Viewport.Msaa.Disabled;
 
         // Create mesh for 3D display
         _meshInstance = new MeshInstance3D();
@@ -103,7 +116,7 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
 
         Owner.OnDataRefresh += RefreshUIData;
 
-        AquaLogger.Log($"GodotUIPanelHook: Initialized for {Owner.GetType().Name}");
+        LumoraLogger.Log($"GodotUIPanelHook: Initialized for {Owner.GetType().Name}");
     }
 
     private void LoadScene()
@@ -111,25 +124,31 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
         var scenePath = Owner.ScenePath.Value;
         if (string.IsNullOrEmpty(scenePath))
         {
-            AquaLogger.Warn("GodotUIPanelHook: No scene path specified");
+            LumoraLogger.Warn("GodotUIPanelHook: No scene path specified");
             return;
         }
 
         var packedScene = GD.Load<PackedScene>(scenePath);
         if (packedScene == null)
         {
-            AquaLogger.Warn($"GodotUIPanelHook: Failed to load scene '{scenePath}'");
+            LumoraLogger.Warn($"GodotUIPanelHook: Failed to load scene '{scenePath}'");
             return;
         }
 
         _loadedScene = packedScene.Instantiate();
         if (_loadedScene == null)
         {
-            AquaLogger.Warn("GodotUIPanelHook: Failed to instantiate scene");
+            LumoraLogger.Warn("GodotUIPanelHook: Failed to instantiate scene");
             return;
         }
 
         _viewport?.AddChild(_loadedScene);
+
+        if (_loadedScene is Control loadedControl)
+        {
+            loadedControl.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+            UIReadability.ApplyToTree(loadedControl);
+        }
 
         // Build node registry and create Lumora components
         // Start from children of root (skip root node name in paths)
@@ -145,7 +164,7 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
         RefreshUIData();
         ResetScrollPositions();
 
-        AquaLogger.Log($"GodotUIPanelHook: Scene loaded, created {_nodeRegistry.Count} UI element components");
+        LumoraLogger.Log($"GodotUIPanelHook: Scene loaded, created {_nodeRegistry.Count} UI element components");
     }
 
     private void ParseSceneNode(Node node, string parentPath, Slot parentSlot)
@@ -314,7 +333,7 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
         _collisionArea.AddChild(_collisionShape);
         attachedNode.AddChild(_collisionArea);
 
-        AquaLogger.Log($"GodotUIPanelHook: Created collision area for touch interaction");
+        LumoraLogger.Log($"GodotUIPanelHook: Created collision area for touch interaction");
     }
 
     private void UpdateCollisionSize()
@@ -332,18 +351,21 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
     {
         if (_viewport == null) return;
 
-        var resScale = Owner.ResolutionScale.Value;
-        _viewport.Size = new Vector2I(
+        var resScale = UIReadability.GetReadableResolutionScale(Owner.ResolutionScale.Value);
+        var desiredSize = new Vector2I(
             (int)(Owner.Size.Value.x * resScale),
             (int)(Owner.Size.Value.y * resScale));
-        UpdateQuadSize();
+        if (_lastViewportSize != desiredSize)
+        {
+            _viewport.Size = desiredSize;
+            _lastViewportSize = desiredSize;
+            UpdateQuadSize();
+        }
 
-        if (_material != null)
+        if (_material != null && _material.AlbedoTexture != _viewport.GetTexture())
         {
             _material.AlbedoTexture = _viewport.GetTexture();
         }
-
-        RefreshUIData();
     }
 
     private void UnloadScene()
@@ -376,6 +398,7 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
         _meshInstance = null;
         _material = null;
         _quadMesh = null;
+        _lastViewportSize = Vector2I.Zero;
 
         base.Destroy(destroyingWorld);
     }

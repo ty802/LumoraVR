@@ -1,9 +1,19 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using Lumora.Core.Logging;
 using Godot;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Source.Input;
+namespace Lumora.Source.Input;
 
 public partial class VRInput : Node3D, IInputProvider
 {
@@ -52,11 +62,11 @@ public partial class VRInput : Node3D, IInputProvider
             _grabManager.Name = "GrabManager";
             AddChild(_grabManager);
 
-            AquaLogger.Log("XRInput initialized successfully.");
+            LumoraLogger.Log("XRInput initialized successfully.");
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"Error during XRInput initialization: {ex.Message}");
+            LumoraLogger.Error($"Error during XRInput initialization: {ex.Message}");
         }
     }
 

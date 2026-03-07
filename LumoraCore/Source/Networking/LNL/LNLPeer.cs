@@ -1,7 +1,17 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using System.Net;
 using LiteNetLib;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.LNL;
 
@@ -34,7 +44,7 @@ public class LNLPeer : IConnection
         Address = new Uri($"lnl://{peer.Address}:{peer.Port}");
         Identifier = $"LNL:{peer.Address}:{peer.Port}";
 
-        AquaLogger.Log($"LNL Peer created: {Identifier}");
+        LumoraLogger.Log($"LNL Peer created: {Identifier}");
     }
 
     public void Connect(Action<string> statusCallback)
@@ -55,7 +65,7 @@ public class LNLPeer : IConnection
     {
         if (Peer == null || Peer.ConnectionState != ConnectionState.Connected)
         {
-            AquaLogger.Warn($"Cannot send to {Identifier} - peer not connected");
+            LumoraLogger.Warn($"Cannot send to {Identifier} - peer not connected");
             return;
         }
 
@@ -85,7 +95,7 @@ public class LNLPeer : IConnection
         if (IsOpen)
         {
             IsOpen = false;
-            AquaLogger.Log($"LNL Peer closed: {Identifier}");
+            LumoraLogger.Log($"LNL Peer closed: {Identifier}");
             Closed?.Invoke(this);
         }
     }

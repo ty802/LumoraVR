@@ -1,4 +1,14 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using System.IO;
 using System.IO.Compression;
 using System.Net;
@@ -8,7 +18,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumora.Core.Networking.Session;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Discovery;
 
@@ -66,11 +76,11 @@ public class LANAnnouncer : IDisposable
 
             Task.Run(() => BroadcastLoop(_cts.Token));
 
-            AquaLogger.Log($"LAN announcer started for session: {metadata.Name}");
+            LumoraLogger.Log($"LAN announcer started for session: {metadata.Name}");
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"Failed to start LAN announcer: {ex.Message}");
+            LumoraLogger.Error($"Failed to start LAN announcer: {ex.Message}");
             _isRunning = false;
         }
     }
@@ -96,7 +106,7 @@ public class LANAnnouncer : IDisposable
             }
             catch (Exception ex)
             {
-                AquaLogger.Warn($"LAN broadcast error: {ex.Message}");
+                LumoraLogger.Warn($"LAN broadcast error: {ex.Message}");
             }
 
             try
@@ -172,7 +182,7 @@ public class LANAnnouncer : IDisposable
         _udpClient = null;
         _cts = null;
 
-        AquaLogger.Log("LAN announcer stopped");
+        LumoraLogger.Log("LAN announcer stopped");
     }
 
     /// <summary>

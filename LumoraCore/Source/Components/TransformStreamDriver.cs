@@ -1,5 +1,16 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Lumora.Core.Networking.Streams;
+using LumoraLogger = Lumora.Core.Logging.Logger;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Lumora.Core.Networking.Streams;
 using AquaLogger = Lumora.Core.Logging.Logger;
+>>>>>>> Stashed changes
 
 namespace Lumora.Core.Components;
 
@@ -52,7 +63,7 @@ public class TransformStreamDriver : Component
             var posRefID = PositionStream?.Value.ToString() ?? "null";
             var posTarget = PositionStream?.Target;
             var user = User;
-            AquaLogger.Log($"[TSD] {Slot.SlotName.Value}: PosState={posState} RefID={posRefID} Target={posTarget != null} User={user?.UserName?.Value ?? "null"} IsLocal={user?.IsLocal}");
+            LumoraLogger.Log($"[TSD] {Slot.SlotName.Value}: PosState={posState} RefID={posRefID} Target={posTarget != null} User={user?.UserName?.Value ?? "null"} IsLocal={user?.IsLocal}");
             if (user != null)
                 _loggedStreamInfo = true;
         }

@@ -1,8 +1,22 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+>>>>>>> Stashed changes
+=======
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+>>>>>>> Stashed changes
 using System.Collections.Generic;
 using Lumora.CDN;
 using Lumora.Core.Assets;
 using Lumora.Core.Math;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using Lumora.Core.Networking.Sync;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components.Assets;
 
@@ -12,10 +26,25 @@ namespace Lumora.Core.Components.Assets;
 [ComponentCategory("Assets/Materials")]
 public sealed class CustomShaderMaterial : MaterialProvider
 {
+    private sealed class UniformObserver
+    {
+        public Action<float4> ValueChanged = _ => { };
+        public Action<ShaderUniformType> TypeChanged = _ => { };
+        public Action<bool> IsColorChanged = _ => { };
+        public Action<bool> HasRangeChanged = _ => { };
+        public Action<float2> RangeChanged = _ => { };
+        public ReferenceEvent<IAssetProvider<TextureAsset>> TextureChanged = _ => { };
+    }
+
     /// <summary>
     /// Shader source provider reference.
     /// </summary>
     public readonly AssetRef<ShaderSourceAsset> Shader;
+
+    /// <summary>
+    /// Optional inline shader source. Used when Shader asset is not assigned.
+    /// </summary>
+    public readonly Sync<string> InlineShaderSource;
 
     /// <summary>
     /// Shader uniform parameters (synced).
@@ -38,33 +67,51 @@ public sealed class CustomShaderMaterial : MaterialProvider
     public readonly Sync<int> RenderQueue;
 
     private string _lastShaderHash;
+    private readonly Dictionary<ShaderUniformParam, UniformObserver> _uniformObservers = new();
+    private bool _isUpdatingMaterial;
 
     protected override MaterialType MaterialType => MaterialType.Custom;
 
     public CustomShaderMaterial()
     {
         Shader = new AssetRef<ShaderSourceAsset>(this);
+        InlineShaderSource = new Sync<string>(this, string.Empty);
         Parameters = new SyncList<ShaderUniformParam>();
         BlendMode = new Sync<BlendMode>(this, global::Lumora.Core.Assets.BlendMode.Opaque);
         Culling = new Sync<Culling>(this, global::Lumora.Core.Assets.Culling.Back);
         RenderQueue = new Sync<int>(this, -1);
+
+        Parameters.ElementsAdded += OnParametersAdded;
+        Parameters.ElementsRemoving += OnParametersRemoving;
     }
 
     protected override void UpdateMaterial(MaterialAsset asset)
     {
-        asset.SetBlendMode(BlendMode.Value);
-        asset.SetCulling(Culling.Value);
-        asset.SetFloat("RenderQueue", RenderQueue.Value);
-
-        var shaderAsset = Shader.Asset;
-        var shaderSource = shaderAsset?.Source;
-        if (!string.IsNullOrWhiteSpace(shaderSource))
+        _isUpdatingMaterial = true;
+        try
         {
-            asset.SetCustomShaderSource(shaderSource);
-            EnsureUniforms(shaderSource);
-        }
+            asset.SetBlendMode(BlendMode.Value);
+            asset.SetCulling(Culling.Value);
+            asset.SetFloat("RenderQueue", RenderQueue.Value);
 
-        ApplyParameters(asset);
+            var shaderAsset = Shader.Asset;
+            var shaderSource = shaderAsset?.Source;
+            if (string.IsNullOrWhiteSpace(shaderSource))
+            {
+                shaderSource = InlineShaderSource.Value;
+            }
+            if (!string.IsNullOrWhiteSpace(shaderSource))
+            {
+                asset.SetCustomShaderSource(shaderSource);
+                EnsureUniforms(shaderSource);
+            }
+
+            ApplyParameters(asset);
+        }
+        finally
+        {
+            _isUpdatingMaterial = false;
+        }
     }
 
     private void EnsureUniforms(string shaderSource)
@@ -115,7 +162,83 @@ public sealed class CustomShaderMaterial : MaterialProvider
             }
         }
 
-        AquaLogger.Debug($"CustomShaderMaterial: Built {Parameters.Count} uniforms for shader");
+        LumoraLogger.Debug($"CustomShaderMaterial: Built {Parameters.Count} uniforms for shader");
+    }
+
+    private void OnParametersAdded(SyncElementList<ShaderUniformParam> list, int index, int count)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            var param = list[index + i];
+            AttachUniformObserver(param);
+        }
+
+        NotifyUniformChanged();
+    }
+
+    private void OnParametersRemoving(SyncElementList<ShaderUniformParam> list, int index, int count)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            var param = list[index + i];
+            DetachUniformObserver(param);
+        }
+
+        NotifyUniformChanged();
+    }
+
+    private void AttachUniformObserver(ShaderUniformParam param)
+    {
+        if (param == null || _uniformObservers.ContainsKey(param))
+        {
+            return;
+        }
+
+        var observer = new UniformObserver
+        {
+            ValueChanged = _ => NotifyUniformChanged(),
+            TypeChanged = _ => NotifyUniformChanged(),
+            IsColorChanged = _ => NotifyUniformChanged(),
+            HasRangeChanged = _ => NotifyUniformChanged(),
+            RangeChanged = _ => NotifyUniformChanged(),
+            TextureChanged = _ => NotifyUniformChanged()
+        };
+
+        param.Value.OnChanged += observer.ValueChanged;
+        param.Type.OnChanged += observer.TypeChanged;
+        param.IsColor.OnChanged += observer.IsColorChanged;
+        param.HasRange.OnChanged += observer.HasRangeChanged;
+        param.Range.OnChanged += observer.RangeChanged;
+        param.Texture.OnTargetChange += observer.TextureChanged;
+
+        _uniformObservers[param] = observer;
+    }
+
+    private void DetachUniformObserver(ShaderUniformParam param)
+    {
+        if (param == null || !_uniformObservers.TryGetValue(param, out var observer))
+        {
+            return;
+        }
+
+        param.Value.OnChanged -= observer.ValueChanged;
+        param.Type.OnChanged -= observer.TypeChanged;
+        param.IsColor.OnChanged -= observer.IsColorChanged;
+        param.HasRange.OnChanged -= observer.HasRangeChanged;
+        param.Range.OnChanged -= observer.RangeChanged;
+        param.Texture.OnTargetChange -= observer.TextureChanged;
+
+        _uniformObservers.Remove(param);
+    }
+
+    private void NotifyUniformChanged()
+    {
+        if (_isUpdatingMaterial || IsDestroyed)
+        {
+            return;
+        }
+
+        MarkChangeDirty();
     }
 
     private void ApplyParameters(MaterialAsset asset)
@@ -194,4 +317,26 @@ public sealed class CustomShaderMaterial : MaterialProvider
             }
         }
     }
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+
+    public override void OnDestroy()
+    {
+        Parameters.ElementsAdded -= OnParametersAdded;
+        Parameters.ElementsRemoving -= OnParametersRemoving;
+
+        var keys = new List<ShaderUniformParam>(_uniformObservers.Keys);
+        foreach (var param in keys)
+        {
+            DetachUniformObserver(param);
+        }
+
+        base.OnDestroy();
+    }
 }
+=======
+}
+>>>>>>> Stashed changes
+=======
+}
+>>>>>>> Stashed changes

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Godot;
 using System;
 using System.Collections.Generic;
@@ -9,10 +12,11 @@ namespace Lumora.Godot.UI;
 /// Home dashboard UI controller for userspace.
 /// Provides navigation between Home, Worlds, Friends, Inventory, and Settings.
 /// </summary>
-public partial class HomeDash : Control
+public partial class HomeDash : PanelContainer
 {
     // Scene paths for content pages
     private const string WorldBrowserScenePath = "res://Scenes/UI/Dashboard/WorldBrowser.tscn";
+    private const string InventoryBrowserScenePath = "res://Scenes/UI/Dashboard/InventoryBrowser.tscn";
     private const string SettingsScenePath = "res://Scenes/UI/Dashboard/Settings.tscn";
     private const string LoginOverlayScenePath = "res://Scenes/UI/Dashboard/LoginOverlay.tscn";
 
@@ -26,7 +30,8 @@ public partial class HomeDash : Control
     private Button? _btnExit;
 
     // Login & Auth
-    private Panel? _userSectionPanel;
+    private PanelContainer? _userSectionPanel;
+    private PanelContainer? _storageQuotaPanel;
     private LoginOverlay? _loginOverlay;
     private bool _isLoggedIn;
     private VBoxContainer? _storageContainer;
@@ -51,7 +56,7 @@ public partial class HomeDash : Control
     private Label? _usernameLabel;
     private Label? _patreonRoleLabel;
     private Label? _storageLabel;
-    private Panel? _storageBarFill;
+    private ProgressBar? _storageProgress;
     private Label? _avatarIconLabel;
     private Label? _welcomeTitle;
     private Label? _statusText;
@@ -64,38 +69,39 @@ public partial class HomeDash : Control
     public override void _Ready()
     {
         // Get navigation buttons
-        _btnHome = GetNodeOrNull<Button>("MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons/BtnHome");
-        _btnWorlds = GetNodeOrNull<Button>("MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons/BtnWorlds");
-        _btnFriends = GetNodeOrNull<Button>("MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons/BtnFriends");
-        _btnGroups = GetNodeOrNull<Button>("MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons/BtnGroups");
-        _btnInventory = GetNodeOrNull<Button>("MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons/BtnInventory");
-        _btnSettings = GetNodeOrNull<Button>("MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons/BtnSettings");
-        _btnExit = GetNodeOrNull<Button>("MainContainer/VBox/ContentArea/Sidebar/SidebarMargin/NavButtons/BtnExit");
+        _btnHome = GetNodeOrNull<Button>("VBox/StatusBar/StatusMargin/StatusContent/NavBarPanel/NavBarMargin/NavBar/BtnHome");
+        _btnWorlds = GetNodeOrNull<Button>("VBox/StatusBar/StatusMargin/StatusContent/NavBarPanel/NavBarMargin/NavBar/BtnWorlds");
+        _btnFriends = GetNodeOrNull<Button>("VBox/StatusBar/StatusMargin/StatusContent/NavBarPanel/NavBarMargin/NavBar/BtnFriends");
+        _btnGroups = GetNodeOrNull<Button>("VBox/StatusBar/StatusMargin/StatusContent/NavBarPanel/NavBarMargin/NavBar/BtnGroups");
+        _btnInventory = GetNodeOrNull<Button>("VBox/StatusBar/StatusMargin/StatusContent/NavBarPanel/NavBarMargin/NavBar/BtnInventory");
+        _btnSettings = GetNodeOrNull<Button>("VBox/StatusBar/StatusMargin/StatusContent/NavBarPanel/NavBarMargin/NavBar/BtnSettings");
+        _btnExit = GetNodeOrNull<Button>("VBox/StatusBar/StatusMargin/StatusContent/NavBarPanel/NavBarMargin/NavBar/BtnExit");
 
         // Get content containers
-        _mainContentPanel = GetNodeOrNull<Panel>("MainContainer/VBox/ContentArea/MainContent");
-        _contentMargin = GetNodeOrNull<MarginContainer>("MainContainer/VBox/ContentArea/MainContent/ContentMargin");
-        _homeContent = GetNodeOrNull<VBoxContainer>("MainContainer/VBox/ContentArea/MainContent/ContentMargin/ContentVBox");
+        _mainContentPanel = GetNodeOrNull<Panel>("VBox/ContentArea/MainContent");
+        _contentMargin = GetNodeOrNull<MarginContainer>("VBox/ContentArea/MainContent/ContentMargin");
+        _homeContent = GetNodeOrNull<VBoxContainer>("VBox/ContentArea/MainContent/ContentMargin/ContentVBox");
 
         // Get quick action cards
-        _joinWorldCard = GetNodeOrNull<Panel>("MainContainer/VBox/ContentArea/MainContent/ContentMargin/ContentVBox/QuickActions/JoinWorld");
-        _createWorldCard = GetNodeOrNull<Panel>("MainContainer/VBox/ContentArea/MainContent/ContentMargin/ContentVBox/QuickActions/CreateWorld");
-        _avatarsCard = GetNodeOrNull<Panel>("MainContainer/VBox/ContentArea/MainContent/ContentMargin/ContentVBox/QuickActions/BrowseAvatars");
+        _joinWorldCard = GetNodeOrNull<Panel>("VBox/ContentArea/MainContent/ContentMargin/ContentVBox/QuickActions/JoinWorld");
+        _createWorldCard = GetNodeOrNull<Panel>("VBox/ContentArea/MainContent/ContentMargin/ContentVBox/QuickActions/CreateWorld");
+        _avatarsCard = GetNodeOrNull<Panel>("VBox/ContentArea/MainContent/ContentMargin/ContentVBox/QuickActions/BrowseAvatars");
 
         // Get user section elements
-        _userSectionPanel = GetNodeOrNull<Panel>("MainContainer/VBox/Header/HeaderContent/UserSectionPanel");
-        _usernameLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/Username");
-        _patreonRoleLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/PatreonRole");
-        _storageContainer = GetNodeOrNull<VBoxContainer>("MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/StorageContainer");
-        _storageLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/StorageContainer/StorageLabel");
-        _storageBarFill = GetNodeOrNull<Panel>("MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/UserInfoVBox/StorageContainer/StorageBarBg/StorageBarFill");
-        _avatarIconLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderContent/UserSectionPanel/UserSectionMargin/UserSection/AvatarContainer/AvatarCircle/AvatarIcon");
+        _userSectionPanel = GetNodeOrNull<PanelContainer>("VBox/Header/HeaderContent/UserSectionPanel");
+        _storageQuotaPanel = GetNodeOrNull<PanelContainer>("VBox/Header/HeaderContent/StorageQuotaPanel");
+        _usernameLabel = GetNodeOrNull<Label>("VBox/Header/HeaderContent/UserSectionPanel/UserSection/UserInfoVBox/Username");
+        _patreonRoleLabel = GetNodeOrNull<Label>("VBox/Header/HeaderContent/UserSectionPanel/UserSection/UserInfoVBox/PatreonRole");
+        _storageContainer = GetNodeOrNull<VBoxContainer>("VBox/Header/HeaderContent/StorageQuotaPanel/StorageQuotaVBox/StorageContainer");
+        _storageLabel = GetNodeOrNull<Label>("VBox/Header/HeaderContent/StorageQuotaPanel/StorageQuotaVBox/StorageContainer/StorageLabel");
+        _storageProgress = GetNodeOrNull<ProgressBar>("VBox/Header/HeaderContent/StorageQuotaPanel/StorageQuotaVBox/StorageContainer/StorageProgress");
+        _avatarIconLabel = GetNodeOrNull<Label>("VBox/Header/HeaderContent/UserSectionPanel/UserSection/AvatarContainer/AvatarCircle/AvatarIcon");
 
         // Get other labels
-        _welcomeTitle = GetNodeOrNull<Label>("MainContainer/VBox/ContentArea/MainContent/ContentMargin/ContentVBox/WelcomeSection/WelcomeTitle");
-        _statusText = GetNodeOrNull<Label>("MainContainer/VBox/StatusBar/StatusContent/ConnectionPanel/ConnectionCenter/ConnectionStatus/StatusText");
-        _versionLabel = GetNodeOrNull<Label>("MainContainer/VBox/StatusBar/StatusContent/VersionPanel/VersionCenter/Version");
-        _fpsValueLabel = GetNodeOrNull<Label>("MainContainer/VBox/Header/HeaderContent/FPSPanel/FPSMargin/FPSVBox/FPSValue");
+        _welcomeTitle = GetNodeOrNull<Label>("VBox/ContentArea/MainContent/ContentMargin/ContentVBox/WelcomeSection/WelcomeTitle");
+        _statusText = GetNodeOrNull<Label>("VBox/StatusBar/StatusMargin/StatusContent/ConnectionPanel/ConnectionCenter/ConnectionStatus/StatusText");
+        _versionLabel = GetNodeOrNull<Label>("VBox/StatusBar/StatusMargin/StatusContent/VersionPanel/Version");
+        _fpsValueLabel = GetNodeOrNull<Label>("VBox/Header/HeaderContent/FPSPanel/FPSVBox/FPSValue");
 
         // Connect button signals
         ConnectButtons();
@@ -110,7 +116,6 @@ public partial class HomeDash : Control
         // Set initial logged out state
         SetLoggedOutState();
 
-        GD.Print("HomeDash: Initialized");
     }
 
     public override void _Process(double delta)
@@ -159,7 +164,6 @@ public partial class HomeDash : Control
         UpdateActiveButton();
         SwitchContent(tab);
 
-        GD.Print($"HomeDash: Navigated to {tab}");
     }
 
     private void SwitchContent(string tab)
@@ -203,16 +207,15 @@ public partial class HomeDash : Control
         string? scenePath = tab switch
         {
             "Worlds" => WorldBrowserScenePath,
+            "Inventory" => InventoryBrowserScenePath,
             "Settings" => SettingsScenePath,
             // Add more pages here as they're created
             // "Friends" => FriendsScenePath,
-            // "Inventory" => InventoryScenePath,
             _ => null
         };
 
         if (scenePath == null)
         {
-            GD.Print($"HomeDash: No content page for tab '{tab}' yet");
             return null;
         }
 
@@ -251,7 +254,15 @@ public partial class HomeDash : Control
                 settingsPage.SetUserData(_currentUser.Username, "", _currentUser.TwoFactorEnabled);
         }
 
-        GD.Print($"HomeDash: Loaded content page '{tab}'");
+        // Initialize Inventory page
+        if (tab == "Inventory" && page is InventoryBrowser inventoryPage)
+        {
+            if (_client != null)
+                inventoryPage.SetClient(_client);
+
+            inventoryPage.SetCurrentUser(_currentUser);
+        }
+
         return page;
     }
 
@@ -295,8 +306,6 @@ public partial class HomeDash : Control
 
     private void OnCardPressed(string cardType)
     {
-        GD.Print($"HomeDash: Card pressed - {cardType}");
-
         switch (cardType)
         {
             case "JoinWorld":
@@ -315,9 +324,10 @@ public partial class HomeDash : Control
 
     private void OnExitPressed()
     {
-        GD.Print("HomeDash: Exit pressed");
-        // TODO: Implement exit confirmation or directly quit
-        // GetTree().Quit();
+        // Quit cleanly from the dashboard.
+        // In-editor this stops the running game, and in exports this closes the app.
+        GD.Print("HomeDash: Exit pressed, quitting application");
+        GetTree().Quit();
     }
 
     private void CreateLoginOverlay()
@@ -348,7 +358,6 @@ public partial class HomeDash : Control
         AddChild(_loginOverlay);
         _loginOverlay.SetAnchorsPreset(Control.LayoutPreset.FullRect);
 
-        GD.Print("HomeDash: LoginOverlay created");
     }
 
     private void OnUserSectionInput(InputEvent @event)
@@ -358,7 +367,6 @@ public partial class HomeDash : Control
             if (_isLoggedIn)
             {
                 // Already logged in - could show profile/account options
-                GD.Print("HomeDash: Account clicked (already logged in)");
                 // TODO: Show account dropdown or navigate to settings
             }
             else
@@ -380,6 +388,10 @@ public partial class HomeDash : Control
 
         if (_storageContainer != null)
             _storageContainer.Visible = false;
+        if (_storageQuotaPanel != null)
+            _storageQuotaPanel.Visible = false;
+        if (_storageProgress != null)
+            _storageProgress.Value = 0.0f;
 
         if (_avatarIconLabel != null)
             _avatarIconLabel.Text = "?";
@@ -399,6 +411,8 @@ public partial class HomeDash : Control
 
         if (_storageContainer != null)
             _storageContainer.Visible = true;
+        if (_storageQuotaPanel != null)
+            _storageQuotaPanel.Visible = true;
 
         // Fetch user data from LumoraClient
         if (_client != null)
@@ -408,6 +422,7 @@ public partial class HomeDash : Control
             {
                 _currentUser = result.Data;
                 ApplyUserProfile(_currentUser);
+                PushUserDataToLoadedPages();
             }
             else
             {
@@ -415,7 +430,6 @@ public partial class HomeDash : Control
             }
         }
 
-        GD.Print("HomeDash: Login successful");
     }
 
     private void ApplyUserProfile(UserProfile profile)
@@ -440,7 +454,26 @@ public partial class HomeDash : Control
             SetStorageUsage(usedGB, totalGB);
         }
 
-        GD.Print($"HomeDash: User profile applied - {profile.Username}");
+    }
+
+    private void PushUserDataToLoadedPages()
+    {
+        if (_contentPages.TryGetValue("Settings", out var settingsControl) && settingsControl is Settings settingsPage)
+        {
+            if (_client != null)
+                settingsPage.SetClient(_client);
+
+            if (_currentUser != null)
+                settingsPage.SetUserData(_currentUser.Username, "", _currentUser.TwoFactorEnabled);
+        }
+
+        if (_contentPages.TryGetValue("Inventory", out var inventoryControl) && inventoryControl is InventoryBrowser inventoryPage)
+        {
+            if (_client != null)
+                inventoryPage.SetClient(_client);
+
+            inventoryPage.SetCurrentUser(_currentUser);
+        }
     }
 
     private void OnLoginCancel()
@@ -501,12 +534,10 @@ public partial class HomeDash : Control
         {
             _storageLabel.Text = $"Storage: {usedGB:F1} GB / {totalGB:F0} GB";
         }
-        if (_storageBarFill != null)
+        if (_storageProgress != null)
         {
             float percent = totalGB > 0 ? usedGB / totalGB : 0;
-            // Storage bar bg is 120px wide, fill should be proportional (with 1px margin)
-            float fillWidth = Mathf.Clamp(percent * 118f, 2f, 118f);
-            _storageBarFill.CustomMinimumSize = new Vector2(fillWidth, 4);
+            _storageProgress.Value = Mathf.Clamp(percent, 0f, 1f);
         }
     }
 
@@ -550,4 +581,13 @@ public partial class HomeDash : Control
                 _fpsValueLabel.Modulate = new Color(0.9f, 0.4f, 0.35f);
         }
     }
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
 }
+
+=======
+}
+>>>>>>> Stashed changes
+=======
+}
+>>>>>>> Stashed changes

@@ -1,9 +1,19 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components.Avatar;
 
@@ -177,34 +187,21 @@ public class AvatarPoseNode : Component, IAvatarObject, IInputUpdateReceiver
         _scale.ReleaseLink();
         _active.ReleaseLink();
 
-        AquaLogger.Log($"AvatarPoseNode: Dequipped {Node.Value} from '{Slot.SlotName.Value}'");
+        LumoraLogger.Log($"AvatarPoseNode: Dequipped {Node.Value} from '{Slot.SlotName.Value}'");
     }
 
     /// <summary>
     /// Equip this pose node to an AvatarObjectSlot.
+    /// RunUpdate() writes Slot.LocalPosition/Rotation directly each frame, so we must NOT
+    /// set up FieldDrives on those fields here — a FieldDrive would take ownership of the
+    /// field and silently block the direct writes in RunUpdate().
     /// </summary>
     public void Equip(AvatarObjectSlot slot)
     {
         _objectSlot.Target = slot;
-        _source.Target = slot.Slot;
+        _source.Target     = slot.Slot;
 
-        // Drive slot position and rotation
-        _position.DriveTarget(Slot.LocalPosition);
-        _rotation.DriveTarget(Slot.LocalRotation);
-
-        // Optionally drive scale
-        if (slot.DriveScale.Value)
-        {
-            _scale.DriveTarget(Slot.LocalScale);
-        }
-
-        // Optionally drive active state
-        if (slot.DriveActive.Value)
-        {
-            _active.DriveTarget(Slot.ActiveSelf);
-        }
-
-        AquaLogger.Log($"AvatarPoseNode: Equipped {Node.Value} to '{Slot.SlotName.Value}'");
+        LumoraLogger.Log($"AvatarPoseNode: Equipped {Node.Value} to '{Slot.SlotName.Value}'");
     }
 
     /// <summary>

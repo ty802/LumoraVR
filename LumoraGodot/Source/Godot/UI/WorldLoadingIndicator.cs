@@ -1,9 +1,19 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Godot;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Godot;
+>>>>>>> Stashed changes
 using Lumora.Core;
 using Lumora.Core.Management;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Source.Godot.UI;
+namespace Lumora.Source.Godot.UI;
 
 /// <summary>
 /// 2D loading indicator overlay that shows when joining a world.
@@ -34,7 +44,7 @@ public partial class WorldLoadingIndicator : CanvasLayer
         CreateUI();
         SubscribeToEvents();
 
-        AquaLogger.Log("WorldLoadingIndicator: Initialized");
+        LumoraLogger.Log("WorldLoadingIndicator: Initialized");
     }
 
     public override void _ExitTree()
@@ -171,7 +181,7 @@ public partial class WorldLoadingIndicator : CanvasLayer
         _cancelButton.Disabled = false;
         Visible = true;
 
-        AquaLogger.Log($"WorldLoadingIndicator: Showing for '{worldName}'");
+        LumoraLogger.Log($"WorldLoadingIndicator: Showing for '{worldName}'");
     }
 
     private void UpdateProgress(float progress, string status)
@@ -186,7 +196,7 @@ public partial class WorldLoadingIndicator : CanvasLayer
     {
         Visible = false;
         _currentOperation = null;
-        AquaLogger.Log("WorldLoadingIndicator: Hidden");
+        LumoraLogger.Log("WorldLoadingIndicator: Hidden");
     }
 
     private void ShowError(string error)
@@ -233,6 +243,6 @@ public partial class WorldLoadingIndicator : CanvasLayer
         indicator.Name = "WorldLoadingIndicator";
         sceneTree.Root.AddChild(indicator);
 
-        AquaLogger.Log("WorldLoadingIndicator: Created and added to scene tree");
+        LumoraLogger.Log("WorldLoadingIndicator: Created and added to scene tree");
     }
 }

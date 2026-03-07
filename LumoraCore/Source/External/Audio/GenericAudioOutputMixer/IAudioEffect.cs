@@ -1,3 +1,6 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
 using System.Collections.Generic;
 
@@ -17,4 +20,3 @@ public interface IAudioEffect : IDisposable
     public string Name { get; }
     public IReadOnlyDictionary<string, Value> Config { get; }
 }
-

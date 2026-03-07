@@ -1,6 +1,16 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Lumora.Core;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Lumora.Core;
+>>>>>>> Stashed changes
 using Lumora.Core.Assets;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -42,13 +52,13 @@ public class MeshRenderer : ImplementableComponent
     public override void OnAwake()
     {
         base.OnAwake();
-        AquaLogger.Log($"MeshRenderer: Awake on slot '{Slot.SlotName.Value}'");
+        LumoraLogger.Log($"MeshRenderer: Awake on slot '{Slot.SlotName.Value}'");
     }
 
     public override void OnDestroy()
     {
         base.OnDestroy();
-        AquaLogger.Log($"MeshRenderer: Destroyed on slot '{Slot?.SlotName.Value}'");
+        LumoraLogger.Log($"MeshRenderer: Destroyed on slot '{Slot?.SlotName.Value}'");
     }
 }
 

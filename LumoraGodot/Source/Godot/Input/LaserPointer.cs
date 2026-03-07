@@ -1,9 +1,19 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using Godot;
 using Lumora.Core.Logging;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Source.Input;
+namespace Lumora.Source.Input;
 
 /// <summary>
 /// Laser pointer for VR UI interaction.
@@ -25,6 +35,7 @@ public partial class LaserPointer : Node3D
     /// UI collision layer (layer 4 = bit 3).
     /// </summary>
     public const uint UICollisionLayer = 1u << 3;
+    public const uint SurfaceCollisionLayer = 1u << 0;
 
     /// <summary>
     /// Laser beam visual settings.
@@ -39,6 +50,7 @@ public partial class LaserPointer : Node3D
     public const float CursorSize = 0.02f;
 
     [Export] public Hand Side { get; set; } = Hand.Right;
+    [Export] public bool ShowVisuals { get; set; } = false;
 
     private RayCast3D _raycast;
     private MeshInstance3D _laserMesh;
@@ -50,8 +62,11 @@ public partial class LaserPointer : Node3D
 
     // Current state
     private bool _isHovering;
+    private bool _isHoveringUI;
     private bool _wasTriggerPressed;
+    private Node _currentHitCollider;
     private Area3D _currentHitArea;
+    private Node _currentSurfaceNode;
     private Vector3 _currentHitPoint;
     private Vector3 _currentHitNormal;
     private Node _currentHitPanel;
@@ -61,6 +76,7 @@ public partial class LaserPointer : Node3D
     /// Whether the laser is currently hovering over a UI panel.
     /// </summary>
     public bool IsHovering => _isHovering;
+    public bool IsHoveringUI => _isHoveringUI;
 
     /// <summary>
     /// The current hit point in world space.
@@ -86,6 +102,10 @@ public partial class LaserPointer : Node3D
     /// Event when trigger is released on a UI panel.
     /// </summary>
     public event Action<Area3D, Vector3> PanelReleased;
+    public event Action<Node> SurfaceEntered;
+    public event Action<Node> SurfaceExited;
+    public event Action<Node, Vector3> SurfacePressed;
+    public event Action<Node, Vector3> SurfaceReleased;
 
     public override void _Ready()
     {
@@ -96,7 +116,7 @@ public partial class LaserPointer : Node3D
         // Initially hide
         SetLaserVisible(false);
 
-        AquaLogger.Log($"LaserPointer ({Side}) initialized");
+        LumoraLogger.Log($"LaserPointer ({Side}) initialized");
     }
 
     private void CreateRaycast()
@@ -104,9 +124,9 @@ public partial class LaserPointer : Node3D
         _raycast = new RayCast3D();
         _raycast.Name = "LaserRaycast";
         _raycast.TargetPosition = new Vector3(0, 0, -MaxDistance);
-        _raycast.CollisionMask = UICollisionLayer;
+        _raycast.CollisionMask = UICollisionLayer | SurfaceCollisionLayer;
         _raycast.CollideWithAreas = true;
-        _raycast.CollideWithBodies = false;
+        _raycast.CollideWithBodies = true;
         _raycast.Enabled = true;
         AddChild(_raycast);
     }
@@ -161,8 +181,9 @@ public partial class LaserPointer : Node3D
 
     private void SetLaserVisible(bool visible)
     {
-        _laserMesh.Visible = visible;
-        _cursorMesh.Visible = visible && _isHovering;
+        bool shouldShow = visible && ShowVisuals;
+        _laserMesh.Visible = shouldShow;
+        _cursorMesh.Visible = shouldShow && _isHovering;
     }
 
     public override void _Process(double delta)
@@ -171,6 +192,19 @@ public partial class LaserPointer : Node3D
         ProcessRaycast();
         UpdateVisuals();
         ProcessInput();
+    }
+
+    public override void _Input(InputEvent @event)
+    {
+        if (_currentViewport == null) return;
+        if (@event is not InputEventKey keyEvent) return;
+
+        // Forward keyboard events into focused controls inside the hovered SubViewport
+        // so LineEdit/SpinBox editors can be typed into.
+        if (_currentViewport.GuiGetFocusOwner() == null) return;
+
+        var forwardedEvent = (InputEventKey)keyEvent.Duplicate();
+        _currentViewport.PushInput(forwardedEvent, true);
     }
 
     private void UpdateLaserFromInput()
@@ -229,28 +263,43 @@ public partial class LaserPointer : Node3D
         _raycast.ForceRaycastUpdate();
 
         Area3D newHitArea = null;
+        Node newHitCollider = null;
+        Node newSurfaceNode = null;
         Vector3 newHitPoint = Vector3.Zero;
         Vector3 newHitNormal = Vector3.Forward;
 
         if (_raycast.IsColliding())
         {
-            var collider = _raycast.GetCollider();
-            if (collider is Area3D area)
+            if (_raycast.GetCollider() is Node collider)
             {
-                newHitArea = area;
+                newHitCollider = collider;
                 newHitPoint = _raycast.GetCollisionPoint();
                 newHitNormal = _raycast.GetCollisionNormal();
+
+                if (collider is Area3D area && IsUIArea(area))
+                {
+                    newHitArea = area;
+                }
+                else
+                {
+                    newSurfaceNode = collider;
+                }
             }
         }
 
-        // Handle enter/exit events
-        // Check if current area was disposed (panel deleted)
+        // Handle disposed references.
+        if (_currentHitCollider != null && !GodotObject.IsInstanceValid(_currentHitCollider))
+            _currentHitCollider = null;
+
         if (_currentHitArea != null && !GodotObject.IsInstanceValid(_currentHitArea))
         {
             _currentHitArea = null;
             _currentViewport = null;
             _currentHitPanel = null;
         }
+
+        if (_currentSurfaceNode != null && !GodotObject.IsInstanceValid(_currentSurfaceNode))
+            _currentSurfaceNode = null;
 
         if (newHitArea != _currentHitArea)
         {
@@ -264,13 +313,28 @@ public partial class LaserPointer : Node3D
             }
         }
 
+        if (newSurfaceNode != _currentSurfaceNode)
+        {
+            if (_currentSurfaceNode != null && GodotObject.IsInstanceValid(_currentSurfaceNode))
+            {
+                OnSurfaceExit(_currentSurfaceNode);
+            }
+            if (newSurfaceNode != null)
+            {
+                OnSurfaceEnter(newSurfaceNode);
+            }
+        }
+
+        _currentHitCollider = newHitCollider;
         _currentHitArea = newHitArea;
+        _currentSurfaceNode = newSurfaceNode;
         _currentHitPoint = newHitPoint;
         _currentHitNormal = newHitNormal;
-        _isHovering = newHitArea != null;
+        _isHovering = newHitCollider != null;
+        _isHoveringUI = newHitArea != null;
 
         // Update viewport reference
-        if (_isHovering && _currentHitArea != null)
+        if (_isHoveringUI && _currentHitArea != null)
         {
             FindViewportForArea(_currentHitArea);
         }
@@ -350,9 +414,13 @@ public partial class LaserPointer : Node3D
         // Trigger press
         if (triggerPressed && !_wasTriggerPressed)
         {
-            if (_isHovering && _currentHitArea != null)
+            if (_isHoveringUI && _currentHitArea != null)
             {
                 OnPanelPress(_currentHitArea, _currentHitPoint);
+            }
+            else if (_currentSurfaceNode != null)
+            {
+                OnSurfacePress(_currentSurfaceNode, _currentHitPoint);
             }
         }
 
@@ -363,12 +431,16 @@ public partial class LaserPointer : Node3D
             {
                 OnPanelRelease(_currentHitArea, _currentHitPoint);
             }
+            else if (_currentSurfaceNode != null)
+            {
+                OnSurfaceRelease(_currentSurfaceNode, _currentHitPoint);
+            }
         }
 
         _wasTriggerPressed = triggerPressed;
 
         // Send hover events to viewport
-        if (_isHovering && _currentViewport != null)
+        if (_isHoveringUI && _currentViewport != null)
         {
             SendMouseMoveToViewport();
         }
@@ -376,13 +448,13 @@ public partial class LaserPointer : Node3D
 
     private void OnPanelEnter(Area3D area)
     {
-        AquaLogger.Log($"LaserPointer ({Side}): Entered panel {area.Name}");
+        LumoraLogger.Log($"LaserPointer ({Side}): Entered panel {area.Name}");
         PanelEntered?.Invoke(area);
     }
 
     private void OnPanelExit(Area3D area)
     {
-        AquaLogger.Log($"LaserPointer ({Side}): Exited panel {area.Name}");
+        LumoraLogger.Log($"LaserPointer ({Side}): Exited panel {area.Name}");
         PanelExited?.Invoke(area);
 
         // Send mouse exit event
@@ -394,7 +466,7 @@ public partial class LaserPointer : Node3D
 
     private void OnPanelPress(Area3D area, Vector3 hitPoint)
     {
-        AquaLogger.Log($"LaserPointer ({Side}): Pressed panel {area.Name}");
+        LumoraLogger.Log($"LaserPointer ({Side}): Pressed panel {area.Name}");
         PanelPressed?.Invoke(area, hitPoint);
 
         if (_currentViewport != null)
@@ -405,13 +477,38 @@ public partial class LaserPointer : Node3D
 
     private void OnPanelRelease(Area3D area, Vector3 hitPoint)
     {
-        AquaLogger.Log($"LaserPointer ({Side}): Released panel {area.Name}");
+        LumoraLogger.Log($"LaserPointer ({Side}): Released panel {area.Name}");
         PanelReleased?.Invoke(area, hitPoint);
 
         if (_currentViewport != null)
         {
             SendMousePressToViewport(false);
         }
+    }
+
+    private void OnSurfaceEnter(Node collider)
+    {
+        SurfaceEntered?.Invoke(collider);
+    }
+
+    private void OnSurfaceExit(Node collider)
+    {
+        SurfaceExited?.Invoke(collider);
+    }
+
+    private void OnSurfacePress(Node collider, Vector3 hitPoint)
+    {
+        SurfacePressed?.Invoke(collider, hitPoint);
+    }
+
+    private void OnSurfaceRelease(Node collider, Vector3 hitPoint)
+    {
+        SurfaceReleased?.Invoke(collider, hitPoint);
+    }
+
+    private static bool IsUIArea(Area3D area)
+    {
+        return (area.CollisionLayer & UICollisionLayer) != 0;
     }
 
     private Vector2 WorldToViewportPosition()
@@ -465,6 +562,8 @@ public partial class LaserPointer : Node3D
         var moveEvent = new InputEventMouseMotion();
         moveEvent.Position = pos;
         moveEvent.GlobalPosition = pos;
+        // Set button mask based on current trigger state
+        moveEvent.ButtonMask = _wasTriggerPressed ? MouseButtonMask.Left : 0;
 
         _currentViewport.PushInput(moveEvent, true);
     }
@@ -478,7 +577,10 @@ public partial class LaserPointer : Node3D
         clickEvent.GlobalPosition = pos;
         clickEvent.ButtonIndex = MouseButton.Left;
         clickEvent.Pressed = pressed;
+        // Set button mask - required by some controls for proper click detection
+        clickEvent.ButtonMask = pressed ? MouseButtonMask.Left : 0;
 
+        LumoraLogger.Log($"LaserPointer: Sending mouse {(pressed ? "press" : "release")} at viewport pos {pos}");
         _currentViewport.PushInput(clickEvent, true);
     }
 

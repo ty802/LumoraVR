@@ -1,10 +1,20 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using Godot;
 using Lumora.Core;
-using Aquamarine.Godot.Extensions;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using Lumora.Godot.Extensions;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Source.Godot.Bootstrap;
+namespace Lumora.Source.Godot.Bootstrap;
 
 /// <summary>
 /// Manages camera rendering for VR and screen modes.
@@ -82,7 +92,7 @@ public partial class HeadOutput : Node
             Type = OutputType.Screen;
         }
 
-        AquaLogger.Log($"HeadOutput: Initialized with type={Type}, FOV={DefaultFOV}, isVR={_isVRActive}");
+        LumoraLogger.Log($"HeadOutput: Initialized with type={Type}, FOV={DefaultFOV}, isVR={_isVRActive}");
     }
 
     /// <summary>
@@ -95,7 +105,7 @@ public partial class HeadOutput : Node
         if (parent == null)
         {
             // Defer VR setup until we're added to the scene tree
-            AquaLogger.Log("HeadOutput: Deferring VR setup until added to scene tree");
+            LumoraLogger.Log("HeadOutput: Deferring VR setup until added to scene tree");
             CallDeferred(MethodName.SetupVRCamera);
             return;
         }
@@ -121,7 +131,7 @@ public partial class HeadOutput : Node
         // Use VR camera as primary
         _camera = _vrCamera;
 
-        AquaLogger.Log("HeadOutput: VR camera setup complete");
+        LumoraLogger.Log("HeadOutput: VR camera setup complete");
     }
 
     /// <summary>
@@ -283,13 +293,13 @@ public partial class HeadOutput : Node
         if (Type == newType)
             return;
 
-        AquaLogger.Log($"HeadOutput: Switching from {Type} to {newType}");
+        LumoraLogger.Log($"HeadOutput: Switching from {Type} to {newType}");
 
         Type = newType;
 
         if (newType == OutputType.VR && !_isVRActive)
         {
-            AquaLogger.Warn("Cannot switch to VR - XR interface not active");
+            LumoraLogger.Warn("Cannot switch to VR - XR interface not active");
             Type = OutputType.Screen;
         }
     }

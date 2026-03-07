@@ -30,13 +30,15 @@ corner_radius_bottom_right = 12
 corner_radius_bottom_left = 12
 
 [node name="ImportDialog" type="Control"]
+unique_name_in_owner = true
 layout_mode = 3
 anchors_preset = 0
-offset_right = 280.0
-offset_bottom = 220.0
+offset_right = 320.0
+offset_bottom = 260.0
 script = ExtResource("2_script")
 
 [node name="Background" type="Panel" parent="."]
+unique_name_in_owner = true
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -46,6 +48,7 @@ grow_vertical = 2
 theme_override_styles/panel = SubResource("StyleBoxFlat_background")
 
 [node name="MainMargin" type="MarginContainer" parent="."]
+unique_name_in_owner = true
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -58,54 +61,100 @@ theme_override_constants/margin_right = 16
 theme_override_constants/margin_bottom = 16
 
 [node name="VBox" type="VBoxContainer" parent="MainMargin"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_constants/separation = 12
 
 [node name="Header" type="HBoxContainer" parent="MainMargin/VBox"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_constants/separation = 10
 
 [node name="Title" type="Label" parent="MainMargin/VBox/Header"]
+unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 16
 text = "Import Image"
 
 [node name="InfoButton" type="Button" parent="MainMargin/VBox/Header"]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(24, 24)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.47, 0.37, 0.94, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 14
 theme_override_styles/normal = SubResource("StyleBoxFlat_icon_button")
 theme_override_styles/hover = SubResource("StyleBoxFlat_icon_button")
 text = "?"
 
 [node name="CloseButton" type="Button" parent="MainMargin/VBox/Header"]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(24, 24)
 layout_mode = 2
 theme_override_colors/font_color = Color(1, 1, 1, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 theme_override_styles/normal = SubResource("StyleBoxFlat_close_button")
 theme_override_styles/hover = SubResource("StyleBoxFlat_close_button")
 text = "X"
 
 [node name="Subtitle" type="Label" parent="MainMargin/VBox"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.47, 0.37, 0.94, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "What are you importing?"
 horizontal_alignment = 1
 
+[node name="FileInfo" type="Label" parent="MainMargin/VBox"]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2
+theme_override_colors/font_color = Color(0.68, 0.68, 0.8, 1)
+theme_override_font_sizes/font_size = 10
+text = "C:/path/to/file"
+autowrap_mode = 3
+max_lines_visible = 2
+text_overrun_behavior = 3
+
 [node name="Spacer" type="Control" parent="MainMargin/VBox"]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 4)
 layout_mode = 2
 
+[node name="ProgressPanel" type="VBoxContainer" parent="MainMargin/VBox"]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="Status" type="Label" parent="MainMargin/VBox/ProgressPanel"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.8, 0.85, 1, 1)
+theme_override_font_sizes/font_size = 11
+text = "Importing..."
+autowrap_mode = 2
+max_lines_visible = 2
+text_overrun_behavior = 3
+
+[node name="Bar" type="ProgressBar" parent="MainMargin/VBox/ProgressPanel"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 16)
+layout_mode = 2
+value = 0.0
+show_percentage = false
+
+[node name="AvatarSetupButton" type="Button" parent="MainMargin/VBox"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(0, 32)
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+text = "Setup Imported Avatar"
+
 [node name="OptionsList" type="VBoxContainer" parent="MainMargin/VBox"]
+unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_constants/separation = 4

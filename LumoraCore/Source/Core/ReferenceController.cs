@@ -1,7 +1,17 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
 
@@ -167,7 +177,7 @@ public class ReferenceController : IDisposable
                 }
                 catch (Exception ex)
                 {
-                    AquaLogger.Error($"Exception in OnWorldElementAvailable: {ex}");
+                    LumoraLogger.Error($"Exception in OnWorldElementAvailable: {ex}");
                 }
             }
             // Return list to pool if using pooling
@@ -542,7 +552,7 @@ public class ReferenceController : IDisposable
         // but don't throw - some components legitimately need to create sync members
         if (_allocationBlockCount > 0)
         {
-            AquaLogger.Warn(
+            LumoraLogger.Warn(
                 "RefID allocation during OnAwake context. This may indicate a component " +
                 "creating new objects during initialization. Consider deferring to OnInit.");
         }

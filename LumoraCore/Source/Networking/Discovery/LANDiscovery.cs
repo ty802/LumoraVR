@@ -1,4 +1,14 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
@@ -10,7 +20,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Lumora.Core.Networking.Session;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Discovery;
 
@@ -112,11 +122,11 @@ public class LANDiscovery : IDisposable
             Task.Run(() => ListenLoop(_cts.Token));
             Task.Run(() => CleanupLoop(_cts.Token));
 
-            AquaLogger.Log("LAN discovery started");
+            LumoraLogger.Log("LAN discovery started");
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"Failed to start LAN discovery: {ex.Message}");
+            LumoraLogger.Error($"Failed to start LAN discovery: {ex.Message}");
             _isRunning = false;
         }
     }
@@ -142,7 +152,7 @@ public class LANDiscovery : IDisposable
             {
                 if (_isRunning)
                 {
-                    AquaLogger.Warn($"LAN discovery receive error: {ex.Message}");
+                    LumoraLogger.Warn($"LAN discovery receive error: {ex.Message}");
                 }
             }
         }
@@ -188,7 +198,7 @@ public class LANDiscovery : IDisposable
 
             if (isNew)
             {
-                AquaLogger.Log($"Discovered session: {session.Metadata.Name} at {source.Address}");
+                LumoraLogger.Log($"Discovered session: {session.Metadata.Name} at {source.Address}");
                 SessionFound?.Invoke(session);
             }
             else
@@ -198,7 +208,7 @@ public class LANDiscovery : IDisposable
         }
         catch (Exception ex)
         {
-            AquaLogger.Warn($"Failed to process announcement: {ex.Message}");
+            LumoraLogger.Warn($"Failed to process announcement: {ex.Message}");
         }
     }
 
@@ -242,7 +252,7 @@ public class LANDiscovery : IDisposable
 
             foreach (var key in expired)
             {
-                AquaLogger.Log($"Session lost: {key}");
+                LumoraLogger.Log($"Session lost: {key}");
                 SessionLost?.Invoke(key);
             }
         }
@@ -296,7 +306,7 @@ public class LANDiscovery : IDisposable
         _listener = null;
         _cts = null;
 
-        AquaLogger.Log("LAN discovery stopped");
+        LumoraLogger.Log("LAN discovery stopped");
     }
 
     /// <summary>

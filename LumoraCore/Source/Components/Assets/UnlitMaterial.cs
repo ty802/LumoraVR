@@ -1,5 +1,16 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Lumora.Core.Math;
+using LumoraLogger = Lumora.Core.Logging.Logger;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Lumora.Core.Math;
 using AquaLogger = Lumora.Core.Logging.Logger;
+>>>>>>> Stashed changes
 
 namespace Lumora.Core.Assets;
 
@@ -93,7 +104,7 @@ public class UnlitMaterial : MaterialProvider, ICommonMaterial
     protected override void UpdateMaterial(MaterialAsset asset)
     {
         var textureAsset = Texture.Asset;
-        AquaLogger.Debug($"UnlitMaterial.UpdateMaterial: Texture.Target={Texture.Target?.GetType().Name}, Texture.Asset={textureAsset?.GetType().Name}, HasHook={textureAsset?.Hook != null}");
+        LumoraLogger.Debug($"UnlitMaterial.UpdateMaterial: Texture.Target={Texture.Target?.GetType().Name}, Texture.Asset={textureAsset?.GetType().Name}, HasHook={textureAsset?.Hook != null}");
 
         // Blend settings
         asset.SetBlendMode(BlendMode.Value);

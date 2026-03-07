@@ -1,9 +1,19 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Godot;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Godot;
+>>>>>>> Stashed changes
 using Lumora.Core;
 using Lumora.Core.GodotUI;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks.GodotUI;
+namespace Lumora.Godot.Hooks.GodotUI;
 
 #nullable enable
 
@@ -45,7 +55,7 @@ public class GodotUICanvasHook : ComponentHook<GodotUICanvas>
         _viewport.TransparentBg = Owner.TransparentBackground.Value;
         _viewport.HandleInputLocally = true;
         _viewport.GuiDisableInput = !Owner.Interactive.Value;
-        _viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Always;
+        _viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.WhenVisible;
 
         // Set background color if not transparent
         if (!Owner.TransparentBackground.Value)
@@ -80,7 +90,7 @@ public class GodotUICanvasHook : ComponentHook<GodotUICanvas>
         attachedNode.AddChild(_viewport);
         attachedNode.AddChild(_meshInstance);
 
-        AquaLogger.Log($"GodotUICanvasHook: Initialized with size {Owner.Size.Value}");
+        LumoraLogger.Log($"GodotUICanvasHook: Initialized with size {Owner.Size.Value}");
     }
 
     public override void ApplyChanges()

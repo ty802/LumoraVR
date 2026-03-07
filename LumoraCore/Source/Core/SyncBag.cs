@@ -1,137 +1,173 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.IO;
+using Lumora.Core.Networking;
+using Lumora.Core.Networking.Sync;
 
 namespace Lumora.Core;
 
 /// <summary>
-/// An unordered synchronized collection that allows duplicates.
-/// Provides network-synchronized collections without ordering guarantees.
-/// Unlike a set, SyncBag allows duplicate items. Order is not guaranteed or preserved.
+/// Compact synchronized unordered collection.
+/// Stores values in a List&lt;T&gt; backing — allows duplicates, no ordering guarantees.
+/// Supports full and op-log delta network encoding via SyncCoder.
+/// Use this instead of SyncFieldList&lt;T&gt; for unordered bag semantics.
 /// </summary>
-public class SyncBag<T> : IChangeable, IEnumerable<T>, IWorldElement
+public class SyncBag<T> : ConflictingSyncElement, IEnumerable<T>
 {
-    private Component _owner;
-    private List<T> _items = new List<T>();
+    private const byte OpAdd = 0;
+    private const byte OpRemove = 1;
+    private const byte OpClear = 2;
 
-    /// <summary>
-    /// Event fired when the bag changes (add, remove, clear, etc.)
-    /// </summary>
-    public event Action<SyncBag<T>> OnChanged;
-
-    /// <summary>
-    /// Event fired when this element changes.
-    /// Used for reactive updates and change propagation.
-    /// </summary>
-    public event Action<IChangeable> Changed;
-
-	/// <summary>
-	/// The number of items in the bag.
-	/// </summary>
-	public int Count => _items.Count;
-
-    public SyncBag(Component owner)
+    private struct BagOp
     {
-        _owner = owner;
+        public byte Type;
+        public T Value;
     }
 
-    /// <summary>
-    /// Add an item to the bag.
-    /// </summary>
-    /// <param name="item">The item to add.</param>
+    private readonly List<T> _items = new();
+    private List<BagOp>? _pendingOps;
+
+    public int Count => _items.Count;
+
+    public event Action<SyncBag<T>>? OnChanged;
+
     public void Add(T item)
     {
+        if (!BeginModification()) return;
         _items.Add(item);
-        NotifyChange();
+        (_pendingOps ??= new List<BagOp>()).Add(new BagOp { Type = OpAdd, Value = item });
+        InvalidateSyncElement();
+        BlockModification();
+        OnChanged?.Invoke(this);
+        UnblockModification();
+        EndModification();
     }
 
-    /// <summary>
-    /// Remove the first occurrence of an item from the bag.
-    /// </summary>
-    /// <param name="item">The item to remove.</param>
-    /// <returns>True if the item was found and removed, false otherwise.</returns>
     public bool Remove(T item)
     {
-        bool removed = _items.Remove(item);
-        if (removed)
-        {
-            NotifyChange();
-        }
-        return removed;
+        int idx = _items.IndexOf(item);
+        if (idx < 0) return false;
+        if (!BeginModification()) return false;
+        _items.RemoveAt(idx);
+        (_pendingOps ??= new List<BagOp>()).Add(new BagOp { Type = OpRemove, Value = item });
+        InvalidateSyncElement();
+        BlockModification();
+        OnChanged?.Invoke(this);
+        UnblockModification();
+        EndModification();
+        return true;
     }
 
-    /// <summary>
-    /// Check if the bag contains an item.
-    /// </summary>
-    /// <param name="item">The item to check for.</param>
-    /// <returns>True if the item is in the bag, false otherwise.</returns>
-    public bool Contains(T item)
-    {
-        return _items.Contains(item);
-    }
+    public bool Contains(T item) => _items.Contains(item);
 
-    /// <summary>
-    /// Remove all items from the bag.
-    /// </summary>
     public void Clear()
     {
-        if (_items.Count > 0)
+        if (_items.Count == 0) return;
+        if (!BeginModification()) return;
+        _items.Clear();
+        _pendingOps?.Clear();
+        (_pendingOps ??= new List<BagOp>()).Add(new BagOp { Type = OpClear });
+        InvalidateSyncElement();
+        BlockModification();
+        OnChanged?.Invoke(this);
+        UnblockModification();
+        EndModification();
+    }
+
+    protected override void InternalEncodeFull(BinaryWriter writer, BinaryMessageBatch outboundMessage)
+    {
+        writer.Write7BitEncoded((ulong)_items.Count);
+        foreach (var item in _items)
+            SyncCoder.Encode(writer, item);
+    }
+
+    protected override void InternalDecodeFull(BinaryReader reader, BinaryMessageBatch inboundMessage)
+    {
+        _items.Clear();
+        int count = (int)reader.Read7BitEncoded();
+        for (int i = 0; i < count; i++)
+            _items.Add(SyncCoder.Decode<T>(reader));
+        BlockModification();
+        OnChanged?.Invoke(this);
+        UnblockModification();
+    }
+
+    protected override void InternalEncodeDelta(BinaryWriter writer, BinaryMessageBatch outboundMessage)
+    {
+        if (_pendingOps == null || _pendingOps.Count == 0)
         {
-            _items.Clear();
-            NotifyChange();
+            writer.Write(true); // isFull flag
+            InternalEncodeFull(writer, outboundMessage);
+            return;
+        }
+        writer.Write(false); // isFull flag
+        writer.Write7BitEncoded((ulong)_pendingOps.Count);
+        foreach (var op in _pendingOps)
+        {
+            writer.Write(op.Type);
+            if (op.Type == OpAdd || op.Type == OpRemove)
+                SyncCoder.Encode(writer, op.Value);
         }
     }
 
-    /// <summary>
-    /// Get an enumerator for the items in the bag.
-    /// Note: Order is not guaranteed.
-    /// </summary>
-    public IEnumerator<T> GetEnumerator()
+    protected override void InternalDecodeDelta(BinaryReader reader, BinaryMessageBatch inboundMessage)
     {
-        return _items.GetEnumerator();
+        bool isFull = reader.ReadBoolean();
+        if (isFull)
+        {
+            InternalDecodeFull(reader, inboundMessage);
+            return;
+        }
+        int opCount = (int)reader.Read7BitEncoded();
+        bool changed = false;
+        for (int i = 0; i < opCount; i++)
+        {
+            byte type = reader.ReadByte();
+            if (type == OpAdd)
+            {
+                _items.Add(SyncCoder.Decode<T>(reader));
+                changed = true;
+            }
+            else if (type == OpRemove)
+            {
+                T value = SyncCoder.Decode<T>(reader);
+                _items.Remove(value);
+                changed = true;
+            }
+            else if (type == OpClear)
+            {
+                _items.Clear();
+                changed = true;
+            }
+        }
+        if (changed)
+        {
+            BlockModification();
+            OnChanged?.Invoke(this);
+            UnblockModification();
+        }
     }
 
-    /// <summary>
-    /// Get a non-generic enumerator for the items in the bag.
-    /// </summary>
-    IEnumerator IEnumerable.GetEnumerator()
+    protected override void InternalClearDirty()
     {
-        return _items.GetEnumerator();
+        _pendingOps?.Clear();
     }
 
-	/// <summary>
-	/// Destroy this element and remove it from the world.
-	/// </summary>
-	public void Destroy()
-	{
-		Clear();
-		_owner = null;
-	}
+    public override object? GetValueAsObject() => null;
 
-	public World World => _owner?.World;
+    public IEnumerator<T> GetEnumerator() => _items.GetEnumerator();
+    IEnumerator IEnumerable.GetEnumerator() => _items.GetEnumerator();
 
-	public RefID ReferenceID => _owner?.ReferenceID ?? RefID.Null;
-
-	public ulong RefIdNumeric => (ulong)ReferenceID;
-
-	public bool IsDestroyed => _owner?.IsDestroyed ?? true;
-
-	public bool IsInitialized => _owner?.IsInitialized ?? false;
-
-	public bool IsLocalElement => _owner?.IsLocalElement ?? false;
-
-	public bool IsPersistent => _owner?.IsPersistent ?? true;
-
-	public string ParentHierarchyToString() => _owner?.ParentHierarchyToString() ?? $"{GetType().Name}";
-
-    /// <summary>
-    /// Notify that the bag has changed.
-    /// Triggers both OnChanged and Changed events, and notifies the owner component.
-    /// </summary>
-    private void NotifyChange()
+    public override void Dispose()
     {
-        OnChanged?.Invoke(this);
-        Changed?.Invoke(this);
-        _owner?.NotifyChanged();
+        OnChanged = null;
+        _items.Clear();
+        _pendingOps?.Clear();
+        _pendingOps = null;
+        base.Dispose();
     }
 }

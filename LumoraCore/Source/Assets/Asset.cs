@@ -1,8 +1,18 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Assets;
 
@@ -155,7 +165,7 @@ public abstract class Asset : IAsset
             }
             catch (Exception ex)
             {
-                AquaLogger.Log($"Error notifying consumer: {ex.Message}");
+                LumoraLogger.Log($"Error notifying consumer: {ex.Message}");
             }
         }
     }
@@ -173,7 +183,7 @@ public abstract class Asset : IAsset
         }
         catch (Exception ex)
         {
-            AquaLogger.Log($"Error in OnAssetAssigned: {ex.Message}");
+            LumoraLogger.Log($"Error in OnAssetAssigned: {ex.Message}");
         }
     }
 
@@ -197,7 +207,7 @@ public abstract class Asset : IAsset
 
     protected void FailLoad(string reason)
     {
-        AquaLogger.Log($"Failed Load: {reason}, for: {AssetURL}, instance: {GetHashCode()}");
+        LumoraLogger.Log($"Failed Load: {reason}, for: {AssetURL}, instance: {GetHashCode()}");
         SetLoadState(AssetLoadState.Failed);
     }
 

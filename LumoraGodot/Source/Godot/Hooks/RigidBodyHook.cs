@@ -1,11 +1,21 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Godot;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Godot;
+>>>>>>> Stashed changes
 using System.Collections.Generic;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 using LumoraRigidBody = Lumora.Core.Components.RigidBody;
 
-namespace Aquamarine.Godot.Hooks;
+namespace Lumora.Godot.Hooks;
 
 /// <summary>
 /// Hook for RigidBody component → Godot RigidBody3D.
@@ -63,7 +73,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         if (worldRoot != null)
         {
             worldRoot.AddChild(_rigidBody);
-            AquaLogger.Log($"RigidBodyHook: Added to worldRoot as sibling of slot node");
+            LumoraLogger.Log($"RigidBodyHook: Added to worldRoot as sibling of slot node");
         }
         else
         {
@@ -72,13 +82,13 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
             if (parent != null)
             {
                 parent.AddChild(_rigidBody);
-                AquaLogger.Log($"RigidBodyHook: Added as sibling of attachedNode under '{parent.Name}'");
+                LumoraLogger.Log($"RigidBodyHook: Added as sibling of attachedNode under '{parent.Name}'");
             }
             else
             {
                 // Last resort - will cause issues but at least the body exists
                 attachedNode.AddChild(_rigidBody);
-                AquaLogger.Warn($"RigidBodyHook: Added as child of attachedNode (will have transform issues!)");
+                LumoraLogger.Warn($"RigidBodyHook: Added as child of attachedNode (will have transform issues!)");
             }
             _pendingWorldRootReparent = true;
         }
@@ -94,7 +104,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
             _rigidBody.TreeEntered += OnTreeEntered;
         }
 
-        AquaLogger.Log($"RigidBodyHook: Created RigidBody3D for '{Owner.Slot.SlotName.Value}' with {_rigidBody.GetChildCount()} collision shapes (frozen until static colliders ready)");
+        LumoraLogger.Log($"RigidBodyHook: Created RigidBody3D for '{Owner.Slot.SlotName.Value}' with {_rigidBody.GetChildCount()} collision shapes (frozen until static colliders ready)");
     }
 
     private void OnTreeEntered()
@@ -117,7 +127,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         _rigidBody.GlobalPosition = new Vector3(slotPos.x, slotPos.y, slotPos.z);
         _rigidBody.Quaternion = new Quaternion(slotRot.x, slotRot.y, slotRot.z, slotRot.w);
 
-        AquaLogger.Log($"RigidBodyHook: Position set for '{Owner.Slot.SlotName.Value}' at ({slotPos.x:F2}, {slotPos.y:F2}, {slotPos.z:F2})");
+        LumoraLogger.Log($"RigidBodyHook: Position set for '{Owner.Slot.SlotName.Value}' at ({slotPos.x:F2}, {slotPos.y:F2}, {slotPos.z:F2})");
     }
 
     private void AddCollidersFromSlot()
@@ -149,7 +159,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
             }
         }
         _hasCollisionShape = shapeCount > 0;
-        AquaLogger.Log($"RigidBodyHook: Added {shapeCount} collision shapes for '{Owner.Slot.SlotName.Value}'");
+        LumoraLogger.Log($"RigidBodyHook: Added {shapeCount} collision shapes for '{Owner.Slot.SlotName.Value}'");
     }
 
     private void AddBoxShape(BoxCollider box)
@@ -166,7 +176,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         shape.Disabled = false;
         _rigidBody.AddChild(shape);
         AddDebugEdgesForBox(sizeVec, offset);
-        AquaLogger.Log($"RigidBodyHook.AddBoxShape: size=({size.x}, {size.y}, {size.z}), disabled={shape.Disabled}, shapeValid={shape.Shape != null}");
+        LumoraLogger.Log($"RigidBodyHook.AddBoxShape: size=({size.x}, {size.y}, {size.z}), disabled={shape.Disabled}, shapeValid={shape.Shape != null}");
     }
 
     private void AddSphereShape(SphereCollider sphere)
@@ -252,7 +262,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
             if (!Owner.IsKinematic.Value)
             {
                 _rigidBody.Freeze = false;
-                AquaLogger.Log($"RigidBodyHook: Unfroze '{Owner.Slot.SlotName.Value}' at ({slotPos.x:F1}, {slotPos.y:F1}, {slotPos.z:F1})");
+                LumoraLogger.Log($"RigidBodyHook: Unfroze '{Owner.Slot.SlotName.Value}' at ({slotPos.x:F1}, {slotPos.y:F1}, {slotPos.z:F1})");
             }
         }
 

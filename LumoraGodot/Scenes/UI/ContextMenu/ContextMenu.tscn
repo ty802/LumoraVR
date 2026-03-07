@@ -1,0 +1,17 @@
+[gd_scene format=3 uid="uid://cwfujurbq78qb"]
+
+[ext_resource type="Script" uid="uid://sskfma320hwr" path="res://Scripts/UI/ContextMenu/ContextMenuView.cs" id="1_cmview"]
+
+[node name="ContextMenu" type="Control" unique_id=437209732]
+custom_minimum_size = Vector2(340, 340)
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -126.0
+offset_top = -318.0
+offset_right = -126.0
+offset_bottom = -318.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_cmview")

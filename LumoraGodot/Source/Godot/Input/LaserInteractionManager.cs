@@ -1,8 +1,24 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Godot;
+=======
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+=======
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Godot;
 using Lumora.Core.Logging;
 using AquaLogger = Lumora.Core.Logging.Logger;
+>>>>>>> Stashed changes
 
-namespace Aquamarine.Source.Input;
+using Godot;
+>>>>>>> Stashed changes
+using Lumora.Core.Logging;
+using LumoraLogger = Lumora.Core.Logging.Logger;
+
+namespace Lumora.Source.Input;
 
 /// <summary>
 /// Manages laser pointer interaction for both hands.
@@ -39,7 +55,7 @@ public partial class LaserInteractionManager : Node3D
     public override void _Ready()
     {
         CreateLasers();
-        AquaLogger.Log("LaserInteractionManager: Initialized");
+        LumoraLogger.Log("LaserInteractionManager: Initialized");
     }
 
     private void CreateLasers()

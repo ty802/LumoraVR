@@ -1,6 +1,16 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using System.Collections.Generic;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
 
@@ -59,7 +69,7 @@ public class RefIDAllocator
                 _userByteToUser[userByte] = user;
             }
 
-            AquaLogger.Log($"Allocated ID range for user byte {userByte}: {range}");
+            LumoraLogger.Log($"Allocated ID range for user byte {userByte}: {range}");
 
             return range;
         }
@@ -99,7 +109,7 @@ public class RefIDAllocator
         lock (_lock)
         {
             _userByteToUser.Remove(userByte);
-            AquaLogger.Log($"Released allocation for user byte {userByte}");
+            LumoraLogger.Log($"Released allocation for user byte {userByte}");
         }
     }
 
@@ -334,7 +344,7 @@ public class RefIDAllocator
                 _latestUserPosition[i] = 1;
             }
 
-            AquaLogger.Log("RefIDAllocator reset");
+            LumoraLogger.Log("RefIDAllocator reset");
         }
     }
 

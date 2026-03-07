@@ -26,12 +26,12 @@ jobs:
         dotnet-version: '9.0.x'
     
     - name: Restore dependencies
-      run: dotnet restore LumoraGodot/Aquamarine.sln
+      run: dotnet restore LumoraGodot/Lumora.sln
       continue-on-error: true
     
     - name: Build solution
       id: build
-      run: dotnet build LumoraGodot/Aquamarine.sln --no-restore --configuration ExportRelease
+      run: dotnet build LumoraGodot/Lumora.sln --no-restore --configuration ExportRelease
       continue-on-error: true
     
     - name: Add build-error label if build fails

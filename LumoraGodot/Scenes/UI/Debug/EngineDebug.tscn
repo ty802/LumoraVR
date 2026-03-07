@@ -42,6 +42,7 @@ corner_radius_bottom_right = 4
 corner_radius_bottom_left = 4
 
 [node name="EngineDebug" type="Control"]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(420, 360)
 layout_mode = 3
 anchors_preset = 15
@@ -51,6 +52,7 @@ grow_horizontal = 2
 grow_vertical = 2
 
 [node name="MainPanel" type="Panel" parent="."]
+unique_name_in_owner = true
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -69,11 +71,13 @@ offset_bottom = -8.0
 theme_override_constants/separation = 0
 
 [node name="Header" type="Panel" parent="MainPanel/VBox"]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 40)
 layout_mode = 2
 theme_override_styles/panel = SubResource("header_bg")
 
 [node name="HBox" type="HBoxContainer" parent="MainPanel/VBox/Header"]
+unique_name_in_owner = true
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -82,34 +86,37 @@ offset_left = 16.0
 offset_right = -8.0
 
 [node name="Title" type="Label" parent="MainPanel/VBox/Header/HBox"]
+unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.47, 0.37, 0.94, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 16
 text = "Engine Debug"
 vertical_alignment = 1
 
 [node name="CloseButton" type="Button" parent="MainPanel/VBox/Header/HBox"]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(28, 28)
 layout_mode = 2
 theme_override_colors/font_color = Color(1, 0.3, 0.3, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 14
 text = "X"
 
 [node name="Content" type="HSplitContainer" parent="MainPanel/VBox"]
+unique_name_in_owner = true
 layout_mode = 2
 size_flags_vertical = 3
 theme_override_constants/separation = 4
 split_offset = 280
 
 [node name="LeftPanel" type="Panel" parent="MainPanel/VBox/Content"]
+unique_name_in_owner = true
 custom_minimum_size = Vector2(260, 0)
 layout_mode = 2
 theme_override_styles/panel = SubResource("left_panel_bg")
 
 [node name="Scroll" type="ScrollContainer" parent="MainPanel/VBox/Content/LeftPanel"]
+unique_name_in_owner = true
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -126,6 +133,7 @@ size_flags_horizontal = 3
 theme_override_constants/separation = 8
 
 [node name="WorldInfo" type="VBoxContainer" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_constants/separation = 2
 
@@ -141,19 +149,18 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 offset_left = 8.0
 theme_override_colors/font_color = Color(0.7, 0.65, 0.9, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "WORLD INFO"
 vertical_alignment = 1
 
 [node name="WorldName" type="HBoxContainer" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldInfo"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Label" type="Label" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldInfo/WorldName"]
 custom_minimum_size = Vector2(90, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.5, 0.5, 0.55, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "World Name"
 
@@ -161,19 +168,18 @@ text = "World Name"
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "-"
 horizontal_alignment = 2
 
 [node name="WorldFocus" type="HBoxContainer" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldInfo"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Label" type="Label" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldInfo/WorldFocus"]
 custom_minimum_size = Vector2(90, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.5, 0.5, 0.55, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "Focus"
 
@@ -181,19 +187,18 @@ text = "Focus"
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "-"
 horizontal_alignment = 2
 
 [node name="Authority" type="HBoxContainer" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldInfo"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Label" type="Label" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldInfo/Authority"]
 custom_minimum_size = Vector2(90, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.5, 0.5, 0.55, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "Authority"
 
@@ -201,19 +206,18 @@ text = "Authority"
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "-"
 horizontal_alignment = 2
 
 [node name="LocalUser" type="HBoxContainer" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldInfo"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Label" type="Label" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldInfo/LocalUser"]
 custom_minimum_size = Vector2(90, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.5, 0.5, 0.55, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "Local User"
 
@@ -221,12 +225,12 @@ text = "Local User"
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "-"
 horizontal_alignment = 2
 
 [node name="Performance" type="VBoxContainer" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_constants/separation = 2
 
@@ -242,19 +246,18 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 offset_left = 8.0
 theme_override_colors/font_color = Color(0.9, 0.75, 0.4, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "PERFORMANCE"
 vertical_alignment = 1
 
 [node name="FPS" type="HBoxContainer" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Performance"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Label" type="Label" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Performance/FPS"]
 custom_minimum_size = Vector2(90, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.5, 0.5, 0.55, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "FPS"
 
@@ -262,19 +265,18 @@ text = "FPS"
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.4, 0.9, 0.4, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "-"
 horizontal_alignment = 2
 
 [node name="FrameTime" type="HBoxContainer" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Performance"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Label" type="Label" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Performance/FrameTime"]
 custom_minimum_size = Vector2(90, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.5, 0.5, 0.55, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "Frame Time"
 
@@ -282,19 +284,18 @@ text = "Frame Time"
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "-"
 horizontal_alignment = 2
 
 [node name="RenderTime" type="HBoxContainer" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Performance"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Label" type="Label" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Performance/RenderTime"]
 custom_minimum_size = Vector2(90, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.5, 0.5, 0.55, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "Render Time"
 
@@ -302,19 +303,18 @@ text = "Render Time"
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "-"
 horizontal_alignment = 2
 
 [node name="PhysicsTime" type="HBoxContainer" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Performance"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Label" type="Label" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Performance/PhysicsTime"]
 custom_minimum_size = Vector2(90, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.5, 0.5, 0.55, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "Physics Time"
 
@@ -322,12 +322,12 @@ text = "Physics Time"
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "-"
 horizontal_alignment = 2
 
 [node name="Memory" type="VBoxContainer" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_constants/separation = 2
 
@@ -343,19 +343,18 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 offset_left = 8.0
 theme_override_colors/font_color = Color(0.4, 0.8, 0.9, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "MEMORY"
 vertical_alignment = 1
 
 [node name="StaticMem" type="HBoxContainer" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Memory"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Label" type="Label" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Memory/StaticMem"]
 custom_minimum_size = Vector2(90, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.5, 0.5, 0.55, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "Static Memory"
 
@@ -363,19 +362,18 @@ text = "Static Memory"
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "-"
 horizontal_alignment = 2
 
 [node name="VideoMem" type="HBoxContainer" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Memory"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Label" type="Label" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Memory/VideoMem"]
 custom_minimum_size = Vector2(90, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.5, 0.5, 0.55, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "Video Memory"
 
@@ -383,19 +381,18 @@ text = "Video Memory"
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "-"
 horizontal_alignment = 2
 
 [node name="Objects" type="HBoxContainer" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Memory"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Label" type="Label" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Memory/Objects"]
 custom_minimum_size = Vector2(90, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.5, 0.5, 0.55, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "Objects"
 
@@ -403,19 +400,18 @@ text = "Objects"
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "-"
 horizontal_alignment = 2
 
 [node name="Nodes" type="HBoxContainer" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Memory"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Label" type="Label" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Memory/Nodes"]
 custom_minimum_size = Vector2(90, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.5, 0.5, 0.55, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "Nodes"
 
@@ -423,12 +419,12 @@ text = "Nodes"
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "-"
 horizontal_alignment = 2
 
 [node name="WorldStats" type="VBoxContainer" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox"]
+unique_name_in_owner = true
 layout_mode = 2
 theme_override_constants/separation = 2
 
@@ -444,19 +440,18 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 offset_left = 8.0
 theme_override_colors/font_color = Color(0.65, 0.85, 0.65, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "WORLD STATISTICS"
 vertical_alignment = 1
 
 [node name="Slots" type="HBoxContainer" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldStats"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Label" type="Label" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldStats/Slots"]
 custom_minimum_size = Vector2(90, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.5, 0.5, 0.55, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "Slots"
 
@@ -464,19 +459,18 @@ text = "Slots"
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "-"
 horizontal_alignment = 2
 
 [node name="Components" type="HBoxContainer" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldStats"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Label" type="Label" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldStats/Components"]
 custom_minimum_size = Vector2(90, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.5, 0.5, 0.55, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "Components"
 
@@ -484,19 +478,18 @@ text = "Components"
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "-"
 horizontal_alignment = 2
 
 [node name="Users" type="HBoxContainer" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldStats"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Label" type="Label" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldStats/Users"]
 custom_minimum_size = Vector2(90, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.5, 0.5, 0.55, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "Users"
 
@@ -504,19 +497,18 @@ text = "Users"
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "-"
 horizontal_alignment = 2
 
 [node name="MaxDepth" type="HBoxContainer" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldStats"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Label" type="Label" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldStats/MaxDepth"]
 custom_minimum_size = Vector2(90, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.5, 0.5, 0.55, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "Max Depth"
 
@@ -524,12 +516,12 @@ text = "Max Depth"
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 13
 text = "-"
 horizontal_alignment = 2
 
 [node name="RightPanel" type="Panel" parent="MainPanel/VBox/Content"]
+unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_styles/panel = SubResource("right_panel_bg")
@@ -557,197 +549,188 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 offset_left = 8.0
 theme_override_colors/font_color = Color(0.9, 0.5, 0.7, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "MEMORY PROFILER"
 vertical_alignment = 1
 
 [node name="ScrollContainer" type="ScrollContainer" parent="MainPanel/VBox/Content/RightPanel/VBox"]
+unique_name_in_owner = true
 layout_mode = 2
 size_flags_vertical = 3
 horizontal_scroll_mode = 0
 
 [node name="MemoryList" type="VBoxContainer" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer"]
+unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_constants/separation = 3
 
 [node name="Item0" type="HBoxContainer" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Name" type="Label" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList/Item0"]
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.8, 0.8, 0.85, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "-"
 
 [node name="Count" type="Label" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList/Item0"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.6, 0.8, 0.6, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "-"
 
 [node name="Item1" type="HBoxContainer" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Name" type="Label" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList/Item1"]
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.8, 0.8, 0.85, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "-"
 
 [node name="Count" type="Label" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList/Item1"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.6, 0.8, 0.6, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "-"
 
 [node name="Item2" type="HBoxContainer" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Name" type="Label" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList/Item2"]
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.8, 0.8, 0.85, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "-"
 
 [node name="Count" type="Label" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList/Item2"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.6, 0.8, 0.6, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "-"
 
 [node name="Item3" type="HBoxContainer" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Name" type="Label" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList/Item3"]
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.8, 0.8, 0.85, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "-"
 
 [node name="Count" type="Label" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList/Item3"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.6, 0.8, 0.6, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "-"
 
 [node name="Item4" type="HBoxContainer" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Name" type="Label" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList/Item4"]
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.8, 0.8, 0.85, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "-"
 
 [node name="Count" type="Label" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList/Item4"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.6, 0.8, 0.6, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "-"
 
 [node name="Item5" type="HBoxContainer" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Name" type="Label" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList/Item5"]
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.8, 0.8, 0.85, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "-"
 
 [node name="Count" type="Label" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList/Item5"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.6, 0.8, 0.6, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "-"
 
 [node name="Item6" type="HBoxContainer" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Name" type="Label" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList/Item6"]
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.8, 0.8, 0.85, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "-"
 
 [node name="Count" type="Label" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList/Item6"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.6, 0.8, 0.6, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "-"
 
 [node name="Item7" type="HBoxContainer" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Name" type="Label" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList/Item7"]
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.8, 0.8, 0.85, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "-"
 
 [node name="Count" type="Label" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList/Item7"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.6, 0.8, 0.6, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "-"
 
 [node name="Item8" type="HBoxContainer" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Name" type="Label" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList/Item8"]
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.8, 0.8, 0.85, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "-"
 
 [node name="Count" type="Label" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList/Item8"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.6, 0.8, 0.6, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "-"
 
 [node name="Item9" type="HBoxContainer" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList"]
+unique_name_in_owner = true
 layout_mode = 2
 
 [node name="Name" type="Label" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList/Item9"]
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.8, 0.8, 0.85, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "-"
 
 [node name="Count" type="Label" parent="MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList/Item9"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.6, 0.8, 0.6, 1)
-theme_override_fonts/font = ExtResource("1_font")
 theme_override_font_sizes/font_size = 12
 text = "-"

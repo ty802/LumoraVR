@@ -1,4 +1,14 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using System.Collections.Generic;
 using System.Net.Http;
 using System.Text.Json;
@@ -8,11 +18,11 @@ using Lumora.Core;
 using Lumora.Core.Components.Network;
 using Lumora.Core.Networking.Session;
 using Lumora.Godot.UI;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 using LumoraEngine = Lumora.Core.Engine;
 using HttpClient = System.Net.Http.HttpClient;
 
-namespace Aquamarine.Source.Godot.Services;
+namespace Lumora.Source.Godot.Services;
 
 /// <summary>
 /// Service that bridges SessionBrowser (core) with WorldBrowser (UI).
@@ -44,7 +54,7 @@ public partial class SessionBrowserService : Node
 		_httpClient = new HttpClient();
 		_httpClient.Timeout = TimeSpan.FromSeconds(5);
 
-		AquaLogger.Log("SessionBrowserService: Initialized");
+		LumoraLogger.Log("SessionBrowserService: Initialized");
 	}
 
 	public override void _ExitTree()
@@ -63,7 +73,7 @@ public partial class SessionBrowserService : Node
 		if (_worldBrowser != null)
 		{
 			_worldBrowser.WorldSelected += OnWorldSelected;
-			AquaLogger.Log("SessionBrowserService: Connected to WorldBrowser UI");
+			LumoraLogger.Log("SessionBrowserService: Connected to WorldBrowser UI");
 		}
 	}
 
@@ -85,7 +95,7 @@ public partial class SessionBrowserService : Node
 		// Immediately query public server
 		_ = RefreshPublicSessionsAsync();
 
-		AquaLogger.Log("SessionBrowserService: Started scanning");
+		LumoraLogger.Log("SessionBrowserService: Started scanning");
 	}
 
 	/// <summary>
@@ -107,7 +117,7 @@ public partial class SessionBrowserService : Node
 			_sessionBrowser.StopScanning();
 		}
 
-		AquaLogger.Log("SessionBrowserService: Stopped scanning");
+		LumoraLogger.Log("SessionBrowserService: Stopped scanning");
 	}
 
 	public override void _Process(double delta)
@@ -132,14 +142,14 @@ public partial class SessionBrowserService : Node
 		var world = LumoraEngine.Current?.WorldManager?.FocusedWorld;
 		if (world == null)
 		{
-			AquaLogger.Warn("SessionBrowserService: No focused world for LAN discovery");
+			LumoraLogger.Warn("SessionBrowserService: No focused world for LAN discovery");
 			return;
 		}
 
 		// Reuse existing SessionBrowser if we already have one and it's valid
 		if (_sessionBrowser != null && _sessionBrowser.IsScanning.Value)
 		{
-			AquaLogger.Log("SessionBrowserService: LAN discovery already running");
+			LumoraLogger.Log("SessionBrowserService: LAN discovery already running");
 			return;
 		}
 
@@ -165,7 +175,7 @@ public partial class SessionBrowserService : Node
 		if (_sessionBrowser != null && !_sessionBrowser.IsScanning.Value)
 		{
 			_sessionBrowser.StartScanning();
-			AquaLogger.Log("SessionBrowserService: LAN discovery started");
+			LumoraLogger.Log("SessionBrowserService: LAN discovery started");
 		}
 	}
 
@@ -214,13 +224,13 @@ public partial class SessionBrowserService : Node
 				}
 
 				CallDeferred(nameof(RefreshUIDeferred));
-				AquaLogger.Log($"SessionBrowserService: Found {sessions.Count} public sessions");
+				LumoraLogger.Log($"SessionBrowserService: Found {sessions.Count} public sessions");
 			}
 		}
 		catch (HttpRequestException ex)
 		{
 			// Server not available - this is normal if no public server is running
-			AquaLogger.Log($"SessionBrowserService: Public server not available ({ex.Message})");
+			LumoraLogger.Log($"SessionBrowserService: Public server not available ({ex.Message})");
 		}
 		catch (TaskCanceledException)
 		{
@@ -228,7 +238,7 @@ public partial class SessionBrowserService : Node
 		}
 		catch (Exception ex)
 		{
-			AquaLogger.Warn($"SessionBrowserService: Error fetching public sessions: {ex.Message}");
+			LumoraLogger.Warn($"SessionBrowserService: Error fetching public sessions: {ex.Message}");
 		}
 	}
 
@@ -266,10 +276,10 @@ public partial class SessionBrowserService : Node
 	{
 		if (world == null)
 		{
-			AquaLogger.Warn("SessionBrowserService: OnWorldSelected called with null world");
+			LumoraLogger.Warn("SessionBrowserService: OnWorldSelected called with null world");
 			return;
 		}
-		AquaLogger.Log($"SessionBrowserService: User selected world '{world.Name}'");
+		LumoraLogger.Log($"SessionBrowserService: User selected world '{world.Name}'");
 		JoinWorld(world);
 	}
 
@@ -285,7 +295,7 @@ public partial class SessionBrowserService : Node
 		var loadingService = LumoraEngine.Current?.WorldLoadingService;
 		if (loadingService?.IsLoading == true)
 		{
-			AquaLogger.Warn("SessionBrowserService: Already loading a world, ignoring join request");
+			LumoraLogger.Warn("SessionBrowserService: Already loading a world, ignoring join request");
 			return;
 		}
 
@@ -298,7 +308,7 @@ public partial class SessionBrowserService : Node
 				// Check by session ID or address match
 				if (existingWorld?.Session?.Metadata?.SessionId == world.Id)
 				{
-					AquaLogger.Warn($"SessionBrowserService: Already connected to world '{world.Name}'");
+					LumoraLogger.Warn($"SessionBrowserService: Already connected to world '{world.Name}'");
 					OnJoinFailed?.Invoke("Already connected to this world");
 					return;
 				}
@@ -350,7 +360,7 @@ public partial class SessionBrowserService : Node
 				return;
 			}
 
-			AquaLogger.Log($"SessionBrowserService: Direct join to {joinUri} via WorldLoadingService");
+			LumoraLogger.Log($"SessionBrowserService: Direct join to {joinUri} via WorldLoadingService");
 
 			// Use loading service for background loading with progress
 			var operation = loadingService.JoinSessionAsync(worldName, joinUri, focusWhenReady: true);
@@ -366,7 +376,7 @@ public partial class SessionBrowserService : Node
 			if (world != null)
 			{
 				OnJoinSuccess?.Invoke(world);
-				AquaLogger.Log($"SessionBrowserService: Successfully joined '{worldName}'");
+				LumoraLogger.Log($"SessionBrowserService: Successfully joined '{worldName}'");
 			}
 			else if (operation.IsCancelled)
 			{
@@ -379,7 +389,7 @@ public partial class SessionBrowserService : Node
 		}
 		catch (Exception ex)
 		{
-			AquaLogger.Error($"SessionBrowserService: Direct join failed: {ex.Message}");
+			LumoraLogger.Error($"SessionBrowserService: Direct join failed: {ex.Message}");
 			OnJoinFailed?.Invoke(ex.Message);
 		}
 	}
@@ -399,7 +409,7 @@ public partial class SessionBrowserService : Node
 		var host = joinUri.Host;
 		var port = (ushort)(joinUri.Port > 0 ? joinUri.Port : 7777);
 
-		AquaLogger.Log($"SessionBrowserService: Legacy direct join to {host}:{port}");
+		LumoraLogger.Log($"SessionBrowserService: Legacy direct join to {host}:{port}");
 
 		var joinedWorld = await worldManager.JoinSessionAsync(worldName, host, port);
 
@@ -421,7 +431,7 @@ public partial class SessionBrowserService : Node
 	{
 		try
 		{
-			AquaLogger.Log($"SessionBrowserService: Initiating NAT punch for session {sessionId}");
+			LumoraLogger.Log($"SessionBrowserService: Initiating NAT punch for session {sessionId}");
 
 			// Create NAT punch client
 			_natPunchClient?.Dispose();
@@ -451,14 +461,14 @@ public partial class SessionBrowserService : Node
 
 			if (completedTask == timeoutTask || punchedEndpoint == null)
 			{
-				AquaLogger.Warn("SessionBrowserService: NAT punch timeout");
+				LumoraLogger.Warn("SessionBrowserService: NAT punch timeout");
 				OnJoinFailed?.Invoke("NAT punch timeout - host may be unreachable");
 				_natPunchClient?.Dispose();
 				_natPunchClient = null;
 				return;
 			}
 
-			AquaLogger.Log($"SessionBrowserService: NAT punch succeeded, connecting to {punchedEndpoint}");
+			LumoraLogger.Log($"SessionBrowserService: NAT punch succeeded, connecting to {punchedEndpoint}");
 
 			// Connect to the punched endpoint using WorldLoadingService
 			var joinUri = new Uri($"lnl://{punchedEndpoint.Address}:{punchedEndpoint.Port}");
@@ -470,7 +480,7 @@ public partial class SessionBrowserService : Node
 		}
 		catch (Exception ex)
 		{
-			AquaLogger.Error($"SessionBrowserService: NAT punch join failed: {ex.Message}");
+			LumoraLogger.Error($"SessionBrowserService: NAT punch join failed: {ex.Message}");
 			OnJoinFailed?.Invoke(ex.Message);
 			_natPunchClient?.Dispose();
 			_natPunchClient = null;
@@ -536,7 +546,7 @@ public partial class SessionBrowserService : Node
 
 			if (error != Error.Ok)
 			{
-				AquaLogger.Warn("SessionBrowserService: Failed to decode thumbnail image");
+				LumoraLogger.Warn("SessionBrowserService: Failed to decode thumbnail image");
 				return null;
 			}
 
@@ -544,7 +554,7 @@ public partial class SessionBrowserService : Node
 		}
 		catch (Exception ex)
 		{
-			AquaLogger.Warn($"SessionBrowserService: Thumbnail decode error - {ex.Message}");
+			LumoraLogger.Warn($"SessionBrowserService: Thumbnail decode error - {ex.Message}");
 			return null;
 		}
 	}

@@ -1,10 +1,20 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Godot;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Godot;
+>>>>>>> Stashed changes
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Components;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks;
+namespace Lumora.Godot.Hooks;
 
 #nullable enable
 
@@ -43,9 +53,9 @@ public class NameplateHook : ComponentHook<Nameplate>
         _viewport.TransparentBg = true;
         _viewport.HandleInputLocally = false;
         _viewport.GuiDisableInput = true;
-        _viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Always;
+        _viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.WhenVisible;
         _viewport.CanvasItemDefaultTextureFilter = Viewport.DefaultCanvasItemTextureFilter.Linear;
-        _viewport.Msaa2D = Viewport.Msaa.Msaa4X;
+        _viewport.Msaa2D = Viewport.Msaa.Disabled;
 
         // Create quad mesh for 3D display
         _meshInstance = new MeshInstance3D();
@@ -82,7 +92,7 @@ public class NameplateHook : ComponentHook<Nameplate>
 
         LoadScene();
 
-        AquaLogger.Log($"NameplateHook: Initialized for '{Owner.DisplayName.Value}'");
+        LumoraLogger.Log($"NameplateHook: Initialized for '{Owner.DisplayName.Value}'");
     }
 
     private void LoadScene()
@@ -90,14 +100,14 @@ public class NameplateHook : ComponentHook<Nameplate>
         var packedScene = GD.Load<PackedScene>(LumAssets.UI.Nameplate);
         if (packedScene == null)
         {
-            AquaLogger.Warn($"NameplateHook: Failed to load scene '{LumAssets.UI.Nameplate}'");
+            LumoraLogger.Warn($"NameplateHook: Failed to load scene '{LumAssets.UI.Nameplate}'");
             return;
         }
 
         _loadedScene = packedScene.Instantiate();
         if (_loadedScene == null)
         {
-            AquaLogger.Warn("NameplateHook: Failed to instantiate scene");
+            LumoraLogger.Warn("NameplateHook: Failed to instantiate scene");
             return;
         }
 

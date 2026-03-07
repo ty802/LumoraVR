@@ -1,10 +1,20 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Godot;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Godot;
+>>>>>>> Stashed changes
 using Lumora.Core.Assets;
 using Lumora.Core.Components;
 using System.Collections.Generic;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks;
+namespace Lumora.Godot.Hooks;
 
 /// <summary>
 /// Hook for SkinnedMeshRenderer component → Godot MeshInstance3D + Skeleton3D.
@@ -34,7 +44,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
 
         // Add to scene immediately - will reparent to skeleton later when ready
         attachedNode.AddChild(_meshInstance);
-        AquaLogger.Log($"SkinnedMeshHook: Initialized and added mesh to '{Owner.Slot.SlotName.Value}'");
+        LumoraLogger.Log($"SkinnedMeshHook: Initialized and added mesh to '{Owner.Slot.SlotName.Value}'");
 
         // Try to bind to skeleton immediately
         TryBindToSkeleton();
@@ -63,7 +73,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         bool shouldApplyMesh = Owner.MeshDataChanged || !_meshApplied;
         if (shouldApplyMesh && Owner.Vertices.Count > 0)
         {
-            AquaLogger.Log($"SkinnedMeshHook.ApplyChanges: Applying mesh (changed={Owner.MeshDataChanged}, applied={_meshApplied}, verts={Owner.Vertices.Count})");
+            LumoraLogger.Log($"SkinnedMeshHook.ApplyChanges: Applying mesh (changed={Owner.MeshDataChanged}, applied={_meshApplied}, verts={Owner.Vertices.Count})");
             ApplyMesh();
         }
 
@@ -153,7 +163,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
             if (!_meshInstance.IsInsideTree())
             {
                 attachedNode.AddChild(_meshInstance);
-                AquaLogger.Log("SkinnedMeshHook: No skeleton found - added mesh as static");
+                LumoraLogger.Log("SkinnedMeshHook: No skeleton found - added mesh as static");
             }
             return;
         }
@@ -163,7 +173,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
             if (!_meshInstance.IsInsideTree())
             {
                 attachedNode.AddChild(_meshInstance);
-                AquaLogger.Log("SkinnedMeshHook: Skeleton has no bones - added mesh as static");
+                LumoraLogger.Log("SkinnedMeshHook: Skeleton has no bones - added mesh as static");
             }
             return;
         }
@@ -178,20 +188,20 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
             {
                 _meshInstance.GetParent().RemoveChild(_meshInstance);
                 _skeleton.AddChild(_meshInstance);
-                AquaLogger.Log("SkinnedMeshHook: Reparented mesh under skeleton");
+                LumoraLogger.Log("SkinnedMeshHook: Reparented mesh under skeleton");
             }
         }
         else
         {
             _skeleton.AddChild(_meshInstance);
-            AquaLogger.Log("SkinnedMeshHook: Added mesh as child of skeleton");
+            LumoraLogger.Log("SkinnedMeshHook: Added mesh as child of skeleton");
         }
 
         // Set the skeleton path - use ".." since mesh is child of skeleton
         _meshInstance.Skeleton = new NodePath("..");
 
         _skeletonBound = true;
-        AquaLogger.Log($"SkinnedMeshHook: Bound to skeleton '{_skeleton.Name}' with {_skeleton.GetBoneCount()} bones, mapped {_boneIndexMap.Count} mesh bones");
+        LumoraLogger.Log($"SkinnedMeshHook: Bound to skeleton '{_skeleton.Name}' with {_skeleton.GetBoneCount()} bones, mapped {_boneIndexMap.Count} mesh bones");
 
         // Re-apply mesh now that we have skeleton with proper bone mapping
         if (Owner.Vertices.Count > 0)
@@ -234,10 +244,10 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
                 {
                     // Bone not found in skeleton - map to bone 0 as fallback
                     _boneIndexMap[meshBoneIdx] = 0;
-                    AquaLogger.Warn($"SkinnedMeshHook: Bone '{boneName}' not found in skeleton, mapping to bone 0");
+                    LumoraLogger.Warn($"SkinnedMeshHook: Bone '{boneName}' not found in skeleton, mapping to bone 0");
                 }
             }
-            AquaLogger.Log($"SkinnedMeshHook: Built bone map from names - {_boneIndexMap.Count} mappings");
+            LumoraLogger.Log($"SkinnedMeshHook: Built bone map from names - {_boneIndexMap.Count} mappings");
             return;
         }
 
@@ -266,7 +276,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
                     _boneIndexMap[meshBoneIdx] = 0;
                 }
             }
-            AquaLogger.Log($"SkinnedMeshHook: Built bone map from slots - {_boneIndexMap.Count} mappings");
+            LumoraLogger.Log($"SkinnedMeshHook: Built bone map from slots - {_boneIndexMap.Count} mappings");
             return;
         }
 
@@ -284,7 +294,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
                     _boneIndexMap[meshBoneIdx] = skelBoneIdx;
                 }
             }
-            AquaLogger.Log($"SkinnedMeshHook: Built bone map from SkeletonBuilder - {_boneIndexMap.Count} mappings");
+            LumoraLogger.Log($"SkinnedMeshHook: Built bone map from SkeletonBuilder - {_boneIndexMap.Count} mappings");
             return;
         }
 
@@ -293,7 +303,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         {
             _boneIndexMap[i] = i;
         }
-        AquaLogger.Log($"SkinnedMeshHook: Using direct bone index mapping (fallback)");
+        LumoraLogger.Log($"SkinnedMeshHook: Using direct bone index mapping (fallback)");
     }
 
     /// <summary>
@@ -331,7 +341,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         // Check if we have valid mesh data
         if (Owner.Vertices.Count == 0 || Owner.Indices.Count == 0)
         {
-            AquaLogger.Log("SkinnedMeshHook: No mesh data");
+            LumoraLogger.Log("SkinnedMeshHook: No mesh data");
             _meshInstance.Mesh = null;
             _meshApplied = false;
             return;
@@ -421,15 +431,15 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
             }
             arrays[(int)Mesh.ArrayType.Weights] = boneWeights;
 
-            AquaLogger.Log($"SkinnedMeshHook: Added bone data for {Owner.Vertices.Count} vertices with {_boneIndexMap.Count} bone mappings");
+            LumoraLogger.Log($"SkinnedMeshHook: Added bone data for {Owner.Vertices.Count} vertices with {_boneIndexMap.Count} bone mappings");
         }
         else if (hasBoneData)
         {
-            AquaLogger.Log($"SkinnedMeshHook: Skipping bone data - skeleton not ready (mappings={_boneIndexMap.Count}, skelBones={_skeleton?.GetBoneCount() ?? 0})");
+            LumoraLogger.Log($"SkinnedMeshHook: Skipping bone data - skeleton not ready (mappings={_boneIndexMap.Count}, skelBones={_skeleton?.GetBoneCount() ?? 0})");
         }
         else
         {
-            AquaLogger.Warn($"SkinnedMeshHook: Missing bone data - indices:{Owner.BoneIndices.Count} weights:{Owner.BoneWeights.Count} verts:{Owner.Vertices.Count}");
+            LumoraLogger.Warn($"SkinnedMeshHook: Missing bone data - indices:{Owner.BoneIndices.Count} weights:{Owner.BoneWeights.Count} verts:{Owner.Vertices.Count}");
         }
 
         // Add surface to mesh
@@ -459,7 +469,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         }
 
         _meshApplied = true;
-        AquaLogger.Log($"SkinnedMeshHook: Applied mesh with {Owner.Vertices.Count} vertices, {Owner.Indices.Count / 3} triangles");
+        LumoraLogger.Log($"SkinnedMeshHook: Applied mesh with {Owner.Vertices.Count} vertices, {Owner.Indices.Count / 3} triangles");
     }
 
     public override void Destroy(bool destroyingWorld)

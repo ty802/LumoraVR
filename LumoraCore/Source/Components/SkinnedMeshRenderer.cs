@@ -1,9 +1,19 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Math;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -146,7 +156,7 @@ public class SkinnedMeshRenderer : ImplementableComponent
         BoneIndices.OnChanged += (list) => { MeshDataChanged = true; RunApplyChanges(); };
         BoneWeights.OnChanged += (list) => { MeshDataChanged = true; RunApplyChanges(); };
 
-        AquaLogger.Log($"SkinnedMeshRenderer: Awake on slot '{Slot.SlotName.Value}'");
+        LumoraLogger.Log($"SkinnedMeshRenderer: Awake on slot '{Slot.SlotName.Value}'");
     }
 
     public override void OnUpdate(float delta)
@@ -167,7 +177,7 @@ public class SkinnedMeshRenderer : ImplementableComponent
     public override void OnDestroy()
     {
         base.OnDestroy();
-        AquaLogger.Log($"SkinnedMeshRenderer: Destroyed on slot '{Slot?.SlotName.Value}'");
+        LumoraLogger.Log($"SkinnedMeshRenderer: Destroyed on slot '{Slot?.SlotName.Value}'");
     }
 
     // ===== BONE SETUP =====
@@ -181,13 +191,13 @@ public class SkinnedMeshRenderer : ImplementableComponent
     {
         if (rootSlot == null)
         {
-            AquaLogger.Warn("SkinnedMeshRenderer: Cannot setup bones with null root slot");
+            LumoraLogger.Warn("SkinnedMeshRenderer: Cannot setup bones with null root slot");
             return;
         }
 
         if (BoneNames.Count == 0)
         {
-            AquaLogger.Warn("SkinnedMeshRenderer: No bone names to setup");
+            LumoraLogger.Warn("SkinnedMeshRenderer: No bone names to setup");
             return;
         }
 
@@ -206,13 +216,13 @@ public class SkinnedMeshRenderer : ImplementableComponent
             {
                 // Add null reference to maintain bone index alignment
                 Bones.Add(null);
-                AquaLogger.Warn($"SkinnedMeshRenderer: Bone '{boneName}' not found in hierarchy");
+                LumoraLogger.Warn($"SkinnedMeshRenderer: Bone '{boneName}' not found in hierarchy");
             }
         }
 
         SkeletonChanged = true;
         RunApplyChanges();
-        AquaLogger.Log($"SkinnedMeshRenderer: Setup {Bones.Count} bones from root '{rootSlot.SlotName.Value}'");
+        LumoraLogger.Log($"SkinnedMeshRenderer: Setup {Bones.Count} bones from root '{rootSlot.SlotName.Value}'");
     }
 
     /// <summary>
@@ -223,7 +233,7 @@ public class SkinnedMeshRenderer : ImplementableComponent
     {
         if (skeleton == null || !skeleton.IsBuilt.Value)
         {
-            AquaLogger.Warn("SkinnedMeshRenderer: Cannot setup bones - skeleton not ready");
+            LumoraLogger.Warn("SkinnedMeshRenderer: Cannot setup bones - skeleton not ready");
             return;
         }
 
@@ -242,13 +252,13 @@ public class SkinnedMeshRenderer : ImplementableComponent
             else
             {
                 Bones.Add(null);
-                AquaLogger.Warn($"SkinnedMeshRenderer: Bone '{boneName}' not found in skeleton");
+                LumoraLogger.Warn($"SkinnedMeshRenderer: Bone '{boneName}' not found in skeleton");
             }
         }
 
         SkeletonChanged = true;
         RunApplyChanges();
-        AquaLogger.Log($"SkinnedMeshRenderer: Setup {Bones.Count} bones from skeleton");
+        LumoraLogger.Log($"SkinnedMeshRenderer: Setup {Bones.Count} bones from skeleton");
     }
 
     /// <summary>
@@ -303,7 +313,7 @@ public class SkinnedMeshRenderer : ImplementableComponent
     {
         if (vertices == null || indices == null)
         {
-            AquaLogger.Warn("SkinnedMeshRenderer: Cannot set mesh data with null vertices or indices");
+            LumoraLogger.Warn("SkinnedMeshRenderer: Cannot set mesh data with null vertices or indices");
             return;
         }
 
@@ -372,7 +382,7 @@ public class SkinnedMeshRenderer : ImplementableComponent
         }
 
         MeshDataChanged = true;
-        AquaLogger.Log($"SkinnedMeshRenderer: Set mesh data with {vertices.Length} vertices, {indices.Length / 3} triangles, {boneNames?.Length ?? 0} bones");
+        LumoraLogger.Log($"SkinnedMeshRenderer: Set mesh data with {vertices.Length} vertices, {indices.Length / 3} triangles, {boneNames?.Length ?? 0} bones");
     }
 
     /// <summary>
@@ -389,7 +399,7 @@ public class SkinnedMeshRenderer : ImplementableComponent
         Bones.Clear();
         BoneNames.Clear();
         MeshDataChanged = true;
-        AquaLogger.Log("SkinnedMeshRenderer: Cleared mesh data");
+        LumoraLogger.Log("SkinnedMeshRenderer: Cleared mesh data");
     }
 }
 

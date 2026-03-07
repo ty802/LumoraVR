@@ -1,4 +1,14 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -7,7 +17,7 @@ using Lumora.Core.Networking.LNL;
 using Lumora.Core.Networking.Sync;
 using LegacyJoinGrantData = Lumora.Core.Networking.Messages.JoinGrantData;
 using LegacyJoinRequestData = Lumora.Core.Networking.Messages.JoinRequestData;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Session;
 
@@ -52,14 +62,14 @@ public class SessionConnectionManager : IDisposable
 
         if (!Listener.IsInitialized)
         {
-            AquaLogger.Error("Failed to start listener");
+            LumoraLogger.Error("Failed to start listener");
             return false;
         }
 
         Listener.PeerConnected += OnPeerConnected;
         Listener.PeerDisconnected += OnPeerDisconnected;
 
-        AquaLogger.Log($"Listener started on port {port}");
+        LumoraLogger.Log($"Listener started on port {port}");
         return true;
     }
 
@@ -71,11 +81,11 @@ public class SessionConnectionManager : IDisposable
         var uri = addresses.FirstOrDefault();
         if (uri == null)
         {
-            AquaLogger.Error("No addresses provided");
+            LumoraLogger.Error("No addresses provided");
             return false;
         }
 
-        AquaLogger.Log($"Connecting to {uri}");
+        LumoraLogger.Log($"Connecting to {uri}");
 
         var connection = new LNLConnection(
             LNLManager.APP_ID,
@@ -88,19 +98,19 @@ public class SessionConnectionManager : IDisposable
 
         connection.Connected += (c) =>
         {
-            AquaLogger.Log($"Connected to {c.Address}");
+            LumoraLogger.Log($"Connected to {c.Address}");
             taskCompletionSource.TrySetResult(true);
         };
 
         connection.ConnectionFailed += (c) =>
         {
-            AquaLogger.Error($"Connection failed: {c.FailReason}");
+            LumoraLogger.Error($"Connection failed: {c.FailReason}");
             taskCompletionSource.TrySetResult(false);
         };
 
         connection.Closed += (c) =>
         {
-            AquaLogger.Warn($"Connection closed: {c.FailReason}");
+            LumoraLogger.Warn($"Connection closed: {c.FailReason}");
             taskCompletionSource.TrySetResult(false);
             
             // Trigger host disconnected event if this was the host connection
@@ -128,7 +138,7 @@ public class SessionConnectionManager : IDisposable
 
         if (completedTask == timeoutTask)
         {
-            AquaLogger.Warn($"Connection timed out: {uri}");
+            LumoraLogger.Warn($"Connection timed out: {uri}");
         }
 
         connection.Close();
@@ -142,7 +152,7 @@ public class SessionConnectionManager : IDisposable
     {
         if (HostConnection == null)
         {
-            AquaLogger.Error("SendJoinRequest: No host connection");
+            LumoraLogger.Error("SendJoinRequest: No host connection");
             return;
         }
 
@@ -162,12 +172,12 @@ public class SessionConnectionManager : IDisposable
         byte[] encoded = controlMessage.Encode();
         HostConnection.Send(encoded, encoded.Length, reliable: true, background: false);
 
-        AquaLogger.Log($"Sent JoinRequest to host - UserName='{requestData.UserName}'");
+        LumoraLogger.Log($"Sent JoinRequest to host - UserName='{requestData.UserName}'");
     }
 
     private void OnPeerConnected(LNLPeer peer)
     {
-        AquaLogger.Log($"Peer connected: {peer.Identifier}");
+        LumoraLogger.Log($"Peer connected: {peer.Identifier}");
 
         peer.DataReceived += (data, length) => OnConnectionDataReceived(peer, data, length);
 
@@ -176,12 +186,12 @@ public class SessionConnectionManager : IDisposable
         {
             _pendingConnections.Add(peer);
         }
-        AquaLogger.Log($"Peer {peer.Identifier} added to pending - waiting for JoinRequest");
+        LumoraLogger.Log($"Peer {peer.Identifier} added to pending - waiting for JoinRequest");
     }
 
     private void OnPeerDisconnected(LNLPeer peer)
     {
-        AquaLogger.Log($"Peer disconnected: {peer.Identifier}");
+        LumoraLogger.Log($"Peer disconnected: {peer.Identifier}");
 
         lock (_lock)
         {
@@ -208,11 +218,11 @@ public class SessionConnectionManager : IDisposable
 
         if (!isPending)
         {
-            AquaLogger.Warn($"HandleJoinRequest: Connection {connection.Identifier} was not pending");
+            LumoraLogger.Warn($"HandleJoinRequest: Connection {connection.Identifier} was not pending");
             return;
         }
 
-        AquaLogger.Log($"HandleJoinRequest: Received from {connection.Identifier} - UserName='{requestData.UserName}'");
+        LumoraLogger.Log($"HandleJoinRequest: Received from {connection.Identifier} - UserName='{requestData.UserName}'");
         SendJoinGrant(connection, requestData.UserName, requestData.MachineID);
     }
 
@@ -220,7 +230,7 @@ public class SessionConnectionManager : IDisposable
     {
         if (!World.IsAuthority)
         {
-            AquaLogger.Error("Only authority can send JoinGrant");
+            LumoraLogger.Error("Only authority can send JoinGrant");
             return;
         }
 
@@ -249,7 +259,7 @@ public class SessionConnectionManager : IDisposable
         byte[] encoded = controlMessage.Encode();
         connection.Send(encoded, encoded.Length, reliable: true, background: false);
 
-        AquaLogger.Log($"Sent JoinGrant to {connection.Identifier} - UserID: {userID}, UserName: '{userName}'");
+        LumoraLogger.Log($"Sent JoinGrant to {connection.Identifier} - UserID: {userID}, UserName: '{userName}'");
 
         // Create user instance, populate fields, then add to the user bag for initialization
         var user = new User();
@@ -267,19 +277,19 @@ public class SessionConnectionManager : IDisposable
             _connectionToUser[connection] = user;
             _userToConnection[user] = connection;
         }
-        AquaLogger.Log($"SendJoinGrant: Added connection-user mapping for '{userName}'");
+        LumoraLogger.Log($"SendJoinGrant: Added connection-user mapping for '{userName}'");
 
         World.AddUserToBag(user, userRefID, isNewlyCreated: true);
-        AquaLogger.Log($"SendJoinGrant: User '{userName}' added to world");
+        LumoraLogger.Log($"SendJoinGrant: User '{userName}' added to world");
 
         if (Session.Sync != null)
         {
-            AquaLogger.Log($"SendJoinGrant: Calling QueueUserForInitialization for '{userName}'");
+            LumoraLogger.Log($"SendJoinGrant: Calling QueueUserForInitialization for '{userName}'");
             Session.Sync.QueueUserForInitialization(user);
         }
         else
         {
-            AquaLogger.Error("SendJoinGrant: Session.Sync is NULL - cannot queue user for initialization!");
+            LumoraLogger.Error("SendJoinGrant: Session.Sync is NULL - cannot queue user for initialization!");
         }
     }
 

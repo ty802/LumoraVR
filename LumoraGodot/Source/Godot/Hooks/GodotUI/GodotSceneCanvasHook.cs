@@ -1,9 +1,20 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Godot;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Godot;
+>>>>>>> Stashed changes
 using Lumora.Core;
 using Lumora.Core.GodotUI;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using Lumora.Godot.UI;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks.GodotUI;
+namespace Lumora.Godot.Hooks.GodotUI;
 
 #nullable enable
 
@@ -46,7 +57,7 @@ public class GodotSceneCanvasHook : ComponentHook<GodotSceneCanvas>
         _viewport.TransparentBg = Owner.TransparentBackground.Value;
         _viewport.HandleInputLocally = true;
         _viewport.GuiDisableInput = !Owner.Interactive.Value;
-        _viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Always;
+        _viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.WhenVisible;
 
         // Create mesh to display the viewport texture
         _meshInstance = new MeshInstance3D();
@@ -74,7 +85,7 @@ public class GodotSceneCanvasHook : ComponentHook<GodotSceneCanvas>
             LoadScene(Owner.ScenePath.Value);
         }
 
-        AquaLogger.Log($"GodotSceneCanvasHook: Initialized with size {Owner.Size.Value}");
+        LumoraLogger.Log($"GodotSceneCanvasHook: Initialized with size {Owner.Size.Value}");
     }
 
     public override void ApplyChanges()
@@ -122,14 +133,14 @@ public class GodotSceneCanvasHook : ComponentHook<GodotSceneCanvas>
         var packedScene = GD.Load<PackedScene>(path);
         if (packedScene == null)
         {
-            AquaLogger.Warn($"GodotSceneCanvasHook: Failed to load scene '{path}'");
+            LumoraLogger.Warn($"GodotSceneCanvasHook: Failed to load scene '{path}'");
             return;
         }
 
         _loadedScene = packedScene.Instantiate();
         if (_loadedScene == null)
         {
-            AquaLogger.Warn($"GodotSceneCanvasHook: Failed to instantiate scene '{path}'");
+            LumoraLogger.Warn($"GodotSceneCanvasHook: Failed to instantiate scene '{path}'");
             return;
         }
 
@@ -139,9 +150,10 @@ public class GodotSceneCanvasHook : ComponentHook<GodotSceneCanvas>
         if (_loadedScene is Control control)
         {
             control.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+            UIReadability.ApplyToTree(control);
         }
 
-        AquaLogger.Log($"GodotSceneCanvasHook: Loaded scene '{path}'");
+        LumoraLogger.Log($"GodotSceneCanvasHook: Loaded scene '{path}'");
         Owner.NotifySceneLoaded();
     }
 

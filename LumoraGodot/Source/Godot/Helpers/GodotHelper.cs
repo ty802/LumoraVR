@@ -1,10 +1,20 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Godot;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Godot;
+>>>>>>> Stashed changes
 using Lumora.Core;
 using Lumora.Core.Math;
-using Aquamarine.Source.Godot.Extensions;
-using Aquamarine.Godot.Hooks;
+using Lumora.Source.Godot.Extensions;
+using Lumora.Godot.Hooks;
 
-namespace Aquamarine.Godot.Helpers;
+namespace Lumora.Godot.Helpers;
 
 /// <summary>
 /// Helper utilities for Godot interop.

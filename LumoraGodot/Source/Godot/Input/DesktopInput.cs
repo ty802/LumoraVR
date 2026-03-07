@@ -1,10 +1,21 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using Godot;
 using Lumora.Core.Logging;
-using AquaLogger = Lumora.Core.Logging.Logger;
-using Aquamarine.Source.UI;
+using Lumora.Core.Components;
+using LumoraLogger = Lumora.Core.Logging.Logger;
+using Lumora.Source.UI;
 
-namespace Aquamarine.Source.Input;
+namespace Lumora.Source.Input;
 
 /// <summary>
 /// Desktop input provider - provides camera-based interaction for non-VR mode.
@@ -85,7 +96,7 @@ public partial class DesktopInput : Node3D, IInputProvider
         _grabManager.Name = "GrabManager";
         AddChild(_grabManager);
 
-        AquaLogger.Log("DesktopInput initialized");
+        LumoraLogger.Log("DesktopInput initialized");
     }
 
     private void CreateCursorUI()
@@ -113,7 +124,7 @@ public partial class DesktopInput : Node3D, IInputProvider
         _cursorDot.MouseFilter = Control.MouseFilterEnum.Ignore;
         _cursorUI.AddChild(_cursorDot);
 
-        AquaLogger.Log("Desktop cursor UI created");
+        LumoraLogger.Log("Desktop cursor UI created");
     }
 
     private void CreateInteractionRay()
@@ -143,11 +154,13 @@ public partial class DesktopInput : Node3D, IInputProvider
 
     private void UpdateCamera()
     {
-        // Find camera if not set
-        if (_camera == null)
-        {
-            _camera = GetViewport()?.GetCamera3D();
-        }
+        // During freecam the override camera is Current, but hands/rays must stay
+        // anchored to the character's head — not fly around with the freecam.
+        if (LocomotionController.FreeCamActive)
+            return;
+
+        // Always re-query the active camera so we pick up CameraHook transitions.
+        _camera = GetViewport()?.GetCamera3D();
 
         if (_camera != null)
         {

@@ -1,10 +1,20 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using Lumora.Core;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Sync;
 
@@ -30,7 +40,7 @@ public static class ComponentTypeRegistry
 			}
 			catch (Exception ex)
 			{
-				AquaLogger.Error($"ComponentTypeRegistry: Failed to scan assembly {args.LoadedAssembly.FullName}: {ex.Message}");
+				LumoraLogger.Error($"ComponentTypeRegistry: Failed to scan assembly {args.LoadedAssembly.FullName}: {ex.Message}");
 			}
 		};
 	}
@@ -157,7 +167,7 @@ public static class ComponentTypeRegistry
 			return type;
 		}
 
-		AquaLogger.Error($"ComponentTypeRegistry: Failed to resolve component type '{id}'");
+		LumoraLogger.Error($"ComponentTypeRegistry: Failed to resolve component type '{id}'");
 		return null;
 	}
 }

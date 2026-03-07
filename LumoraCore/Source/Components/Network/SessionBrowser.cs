@@ -1,9 +1,19 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using System.Collections.Generic;
 using System.Linq;
 using Lumora.Core.Networking.Discovery;
 using Lumora.Core.Networking.Session;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components.Network;
 
@@ -88,14 +98,14 @@ public class SessionBrowser : Component
             if (announcerId != Guid.Empty)
             {
                 ignoreId = announcerId;
-                AquaLogger.Log($"SessionBrowser: Filtering out own announcer ID: {announcerId}");
+                LumoraLogger.Log($"SessionBrowser: Filtering out own announcer ID: {announcerId}");
             }
         }
 
         _discovery.StartDiscovery(ignoreId);
         IsScanning.Value = true;
 
-        AquaLogger.Log("SessionBrowser: Started scanning for sessions");
+        LumoraLogger.Log("SessionBrowser: Started scanning for sessions");
     }
 
     /// <summary>
@@ -115,7 +125,7 @@ public class SessionBrowser : Component
 
         IsScanning.Value = false;
 
-        AquaLogger.Log("SessionBrowser: Stopped scanning");
+        LumoraLogger.Log("SessionBrowser: Stopped scanning");
     }
 
     /// <summary>
@@ -161,7 +171,7 @@ public class SessionBrowser : Component
             _sessions.Add(entry);
         }
 
-        AquaLogger.Log($"SessionBrowser: Found session '{entry.Name}' ({entry.ActiveUsers}/{entry.MaxUsers} users)");
+        LumoraLogger.Log($"SessionBrowser: Found session '{entry.Name}' ({entry.ActiveUsers}/{entry.MaxUsers} users)");
         OnSessionFound?.Invoke(entry);
     }
 
@@ -180,7 +190,7 @@ public class SessionBrowser : Component
 
         if (removed != null)
         {
-            AquaLogger.Log($"SessionBrowser: Lost session '{removed.Name}'");
+            LumoraLogger.Log($"SessionBrowser: Lost session '{removed.Name}'");
             OnSessionLost?.Invoke(sessionId);
         }
     }

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Godot;
 using System;
 using System.Collections.Generic;
@@ -8,11 +11,11 @@ using System.Threading.Tasks;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Components;
+using Lumora.Core.Components.Avatar;
 using Lumora.Core.Components.Assets;
 using Lumora.Core.GodotUI.Wizards;
 using Lumora.Core.Math;
 using LumoraMeshes = Lumora.Core.Components.Meshes;
-using Lumora.Godot.UI;
 
 namespace Lumora.Godot.Input;
 
@@ -43,7 +46,7 @@ public partial class ClipboardImporter : Node
 
     private LocalDB _localDB;
     private Slot _targetSlot;
-    private ImportDialog _importDialog;
+    private GodotImportDialogPanel _activeImportDialogPanel;
     private Camera3D _camera;
     private Lumora.Core.Engine _engine;
 
@@ -108,14 +111,6 @@ public partial class ClipboardImporter : Node
 
         // Try to get from focused world
         return _engine?.WorldManager?.FocusedWorld?.RootSlot;
-    }
-
-    /// <summary>
-    /// Set the import dialog reference.
-    /// </summary>
-    public void SetImportDialog(ImportDialog dialog)
-    {
-        _importDialog = dialog;
     }
 
     /// <summary>
@@ -261,7 +256,7 @@ public partial class ClipboardImporter : Node
 
     private ClipboardContentType DetectContentType(string content)
     {
-        content = content.Trim();
+        content = NormalizeFilePath(content);
 
         // Check for file path
         if (IsFilePath(content))
@@ -281,6 +276,8 @@ public partial class ClipboardImporter : Node
 
     private bool IsFilePath(string content)
     {
+        content = NormalizeFilePath(content);
+
         // Windows paths
         if (content.Length >= 3 && char.IsLetter(content[0]) && content[1] == ':' && (content[2] == '\\' || content[2] == '/'))
         {
@@ -306,8 +303,14 @@ public partial class ClipboardImporter : Node
         return false;
     }
 
+    private static string NormalizeFilePath(string content)
+    {
+        return content?.Trim().Trim('"') ?? string.Empty;
+    }
+
     private async Task HandleFilePath(string filePath)
     {
+        filePath = NormalizeFilePath(filePath);
         GD.Print($"ClipboardImporter: Handling file path: {filePath}");
 
         if (!File.Exists(filePath))
@@ -318,16 +321,74 @@ public partial class ClipboardImporter : Node
 
         var extension = Path.GetExtension(filePath).ToLowerInvariant();
 
-        // Show import dialog if available
         var targetSlot = GetTargetSlot();
-        if (_importDialog != null && targetSlot != null)
+        if (targetSlot != null && ShowImportDialogInWorld(filePath, targetSlot))
         {
-            _importDialog.ShowForFile(filePath, targetSlot, _localDB);
             return;
         }
 
-        // Otherwise, auto-import based on extension
+        // Fallback: auto-import when a world panel cannot be created.
         await AutoImport(filePath, extension);
+    }
+
+    private bool ShowImportDialogInWorld(string filePath, Slot targetSlot)
+    {
+        try
+        {
+            var world = targetSlot.World ?? _engine?.WorldManager?.FocusedWorld;
+            var rootSlot = world?.RootSlot;
+            if (rootSlot == null)
+            {
+                GD.PrintErr("ClipboardImporter: Cannot open in-world import dialog (world root missing)");
+                return false;
+            }
+
+            if (_activeImportDialogPanel?.Slot != null && !_activeImportDialogPanel.Slot.IsDestroyed)
+            {
+                _activeImportDialogPanel.Slot.Destroy();
+                _activeImportDialogPanel = null;
+            }
+
+            var dialogSlot = rootSlot.AddSlot("ImportDialog");
+            var dialogPanel = dialogSlot.AttachComponent<GodotImportDialogPanel>();
+            dialogPanel.Configure(filePath, targetSlot, _localDB);
+            _activeImportDialogPanel = dialogPanel;
+
+            PositionImportDialogPanel(dialogSlot, targetSlot);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"ClipboardImporter: Failed to open in-world import dialog: {ex.Message}");
+            return false;
+        }
+    }
+
+    private void PositionImportDialogPanel(Slot dialogSlot, Slot targetSlot)
+    {
+        if (_camera != null)
+        {
+            var cameraPos = _camera.GlobalPosition;
+            var cameraForward = -_camera.GlobalBasis.Z;
+            var cameraRight = _camera.GlobalBasis.X;
+
+            // Slightly forward/right of center so it doesn't cover the crosshair.
+            var spawnPos = cameraPos + cameraForward * 0.55f + cameraRight * 0.20f;
+            dialogSlot.GlobalPosition = new float3(spawnPos.X, spawnPos.Y, spawnPos.Z);
+
+            var lookDir = cameraPos - spawnPos;
+            if (lookDir.LengthSquared() > 0.001f)
+            {
+                dialogSlot.GlobalRotation = floatQ.LookRotation(
+                    new float3(lookDir.X, 0f, lookDir.Z).Normalized,
+                    float3.Up
+                );
+            }
+
+            return;
+        }
+
+        dialogSlot.GlobalPosition = targetSlot.GlobalPosition + new float3(0f, 0.25f, 0f);
     }
 
     private async Task AutoImport(string filePath, string extension)
@@ -422,8 +483,14 @@ public partial class ClipboardImporter : Node
         {
             GD.Print($"ClipboardImporter: Model imported successfully");
 
-            // Position the model in front of the camera
-            if (_camera != null && result.RootSlot != null)
+            bool avatarEquipped = false;
+            if (isAvatar && result.RootSlot != null)
+            {
+                avatarEquipped = TryEquipImportedAvatar(result.RootSlot);
+            }
+
+            // Position the imported object in front of the camera when not auto-equipped as avatar.
+            if (!avatarEquipped && _camera != null && result.RootSlot != null)
             {
                 var spawnPosition = _camera.GlobalPosition + (-_camera.GlobalTransform.Basis.Z * 2.0f);
                 result.RootSlot.LocalPosition.Value = new Lumora.Core.Math.float3(
@@ -436,6 +503,37 @@ public partial class ClipboardImporter : Node
         else
         {
             GD.PrintErr($"ClipboardImporter: Model import failed: {result.ErrorMessage}");
+        }
+    }
+
+    private bool TryEquipImportedAvatar(Slot avatarSlot)
+    {
+        try
+        {
+            var world = avatarSlot?.World ?? _targetSlot?.World ?? _engine?.WorldManager?.FocusedWorld;
+            var localUserRoot = world?.LocalUser?.Root;
+            if (localUserRoot == null)
+            {
+                GD.Print("ClipboardImporter: Local user root not available, imported avatar left as regular object");
+                return false;
+            }
+
+            var manager = localUserRoot.Slot.GetComponent<AvatarManager>() ?? localUserRoot.Slot.AttachComponent<AvatarManager>();
+            manager.UserRoot.Target ??= localUserRoot;
+
+            if (!manager.EquipAvatar(avatarSlot))
+            {
+                GD.Print("ClipboardImporter: AvatarManager rejected avatar equip, leaving avatar in scene");
+                return false;
+            }
+
+            GD.Print("ClipboardImporter: Avatar imported and equipped");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"ClipboardImporter: Failed to auto-equip avatar: {ex.Message}");
+            return false;
         }
     }
 
@@ -687,10 +785,18 @@ public partial class ClipboardImporter : Node
             shaderName = "CustomShader";
         }
 
-        var rootSlot = targetSlot.AddSlot($"{shaderName}_Material");
+        var rootSlot = targetSlot.AddSlot($"{shaderName}_ShaderWorkbench");
         PositionInFrontOfCamera(rootSlot);
 
-        var sphereSlot = rootSlot.AddSlot("MaterialSphere");
+        var sourceSlot = rootSlot.AddSlot("ShaderSource");
+        var shaderProvider = sourceSlot.AttachComponent<ShaderSourceProvider>();
+        shaderProvider.URL.Value = new Uri(localUri ?? filePath);
+
+        var materialSlot = rootSlot.AddSlot("Material");
+        var material = materialSlot.AttachComponent<CustomShaderMaterial>();
+        material.Shader.Target = shaderProvider;
+
+        var sphereSlot = rootSlot.AddSlot("PreviewSphere");
         sphereSlot.LocalPosition.Value = new float3(-0.35f, 0f, 0f);
 
         var sphereMesh = sphereSlot.AttachComponent<LumoraMeshes.SphereMesh>();
@@ -700,12 +806,6 @@ public partial class ClipboardImporter : Node
 
         var meshRenderer = sphereSlot.AttachComponent<MeshRenderer>();
         meshRenderer.Mesh.Target = sphereMesh;
-
-        var shaderProvider = sphereSlot.AttachComponent<ShaderSourceProvider>();
-        shaderProvider.URL.Value = new Uri(localUri ?? filePath);
-
-        var material = sphereSlot.AttachComponent<CustomShaderMaterial>();
-        material.Shader.Target = shaderProvider;
         meshRenderer.Material.Target = material;
 
         var inspectorSlot = rootSlot.AddSlot("MaterialInspector");

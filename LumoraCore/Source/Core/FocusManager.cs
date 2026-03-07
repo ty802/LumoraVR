@@ -1,5 +1,16 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+using LumoraLogger = Lumora.Core.Logging.Logger;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
 using AquaLogger = Lumora.Core.Logging.Logger;
+>>>>>>> Stashed changes
 
 namespace Lumora.Core;
 
@@ -25,7 +36,7 @@ public class FocusManager
             _focusedWorld = value;
 
             OnFocusedWorldChanged?.Invoke(oldWorld, value);
-            AquaLogger.Log($"FocusManager: Focused world changed from '{oldWorld?.WorldName.Value ?? "none"}' to '{value?.WorldName.Value ?? "none"}'");
+            LumoraLogger.Log($"FocusManager: Focused world changed from '{oldWorld?.WorldName.Value ?? "none"}' to '{value?.WorldName.Value ?? "none"}'");
         }
     }
 
@@ -41,7 +52,7 @@ public class FocusManager
             if (_userspaceWorld == value) return;
 
             _userspaceWorld = value;
-            AquaLogger.Log($"FocusManager: Userspace world set to '{value?.WorldName.Value ?? "none"}'");
+            LumoraLogger.Log($"FocusManager: Userspace world set to '{value?.WorldName.Value ?? "none"}'");
         }
     }
 
@@ -57,13 +68,13 @@ public class FocusManager
     {
         if (world == null)
         {
-            AquaLogger.Warn("FocusManager: Cannot switch to null world");
+            LumoraLogger.Warn("FocusManager: Cannot switch to null world");
             return;
         }
 
         if (world == _userspaceWorld)
         {
-            AquaLogger.Warn("FocusManager: Cannot switch focus to userspace world (it's always an overlay)");
+            LumoraLogger.Warn("FocusManager: Cannot switch focus to userspace world (it's always an overlay)");
             return;
         }
 

@@ -1,6 +1,16 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using System.Collections.Generic;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
 
@@ -42,7 +52,7 @@ public class TrashBin
 
 		// Mark as destroyed to prevent further use, but don't actually destroy yet
 		// This allows recovery if deletion is rejected
-		AquaLogger.Debug($"Moved element {element.ReferenceID} to trash");
+		LumoraLogger.Debug($"Moved element {element.ReferenceID} to trash");
 	}
 
 	/// <summary>
@@ -52,7 +62,7 @@ public class TrashBin
 	{
 		if (!_trashedElements.TryGetValue(refID, out var entry))
 		{
-			AquaLogger.Warn($"Cannot restore {refID} - not in trash");
+			LumoraLogger.Warn($"Cannot restore {refID} - not in trash");
 			return false;
 		}
 
@@ -68,7 +78,7 @@ public class TrashBin
             _world.RegisterComponent(component);
         }
 
-        AquaLogger.Log($"Restored element {refID} from trash");
+        LumoraLogger.Log($"Restored element {refID} from trash");
         return true;
     }
 
@@ -94,7 +104,7 @@ public class TrashBin
             component.Destroy();
         }
 
-        AquaLogger.Debug($"Permanently deleted element {refID}");
+        LumoraLogger.Debug($"Permanently deleted element {refID}");
     }
 
 	/// <summary>
@@ -122,7 +132,7 @@ public class TrashBin
         foreach (var refID in toRemove)
         {
             PermanentlyDelete(refID);
-            AquaLogger.Debug($"Auto-deleted expired trash entry {refID}");
+            LumoraLogger.Debug($"Auto-deleted expired trash entry {refID}");
         }
     }
 
@@ -152,7 +162,7 @@ public class TrashBin
         }
 
         _trashedElements.Clear();
-        AquaLogger.Log("Cleared trash bin");
+        LumoraLogger.Log("Cleared trash bin");
     }
 
     /// <summary>

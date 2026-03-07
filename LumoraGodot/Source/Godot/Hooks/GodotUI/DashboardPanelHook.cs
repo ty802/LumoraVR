@@ -1,12 +1,23 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Godot;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Godot;
+>>>>>>> Stashed changes
 using Lumora.Core;
 using Lumora.Core.GodotUI;
 using Lumora.Core.Math;
 using System.Collections.Generic;
-using Aquamarine.Source.Input;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using Lumora.Source.Input;
+using Lumora.Godot.UI;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks.GodotUI;
+namespace Lumora.Godot.Hooks.GodotUI;
 
 #nullable enable
 
@@ -37,6 +48,7 @@ public class DashboardPanelHook : ComponentHook<DashboardPanel>
     private static DashboardPanelHook? _activeDashboard;
     public static DashboardPanelHook? ActiveDashboard => _activeDashboard;
     private bool _isVRMode = false;
+    private Vector2I _lastViewportSize = Vector2I.Zero;
 
     public static IHook<DashboardPanel> Constructor()
     {
@@ -63,7 +75,7 @@ public class DashboardPanelHook : ComponentHook<DashboardPanel>
         Owner.IsVisible.Changed += _ => UpdateVisibility();
         UpdateVisibility();
 
-        AquaLogger.Log($"DashboardPanelHook: Initialized in {(_isVRMode ? "VR" : "Desktop")} mode, visible={Owner.IsVisible.Value}");
+        LumoraLogger.Log($"DashboardPanelHook: Initialized in {(_isVRMode ? "VR" : "Desktop")} mode, visible={Owner.IsVisible.Value}");
     }
 
     private void InitializeDesktopMode()
@@ -84,7 +96,7 @@ public class DashboardPanelHook : ComponentHook<DashboardPanel>
 
     private void InitializeVRMode()
     {
-        var resScale = Owner.ResolutionScale.Value;
+        var resScale = UIReadability.GetReadableResolutionScale(Owner.ResolutionScale.Value);
 
         // Create SubViewport for VR
         _viewport = new SubViewport();
@@ -92,12 +104,13 @@ public class DashboardPanelHook : ComponentHook<DashboardPanel>
         _viewport.Size = new Vector2I(
             (int)(Owner.Size.Value.x * resScale),
             (int)(Owner.Size.Value.y * resScale));
+        _lastViewportSize = _viewport.Size;
         _viewport.TransparentBg = true;
         _viewport.HandleInputLocally = true;
         _viewport.GuiDisableInput = false;
-        _viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Always;
+        _viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.WhenVisible;
         _viewport.CanvasItemDefaultTextureFilter = Viewport.DefaultCanvasItemTextureFilter.Linear;
-        _viewport.Msaa2D = Viewport.Msaa.Msaa4X;
+        _viewport.Msaa2D = Viewport.Msaa.Disabled;
 
         // Create mesh for 3D display
         _meshInstance = new MeshInstance3D();
@@ -131,25 +144,26 @@ public class DashboardPanelHook : ComponentHook<DashboardPanel>
         var scenePath = Owner.ScenePath.Value;
         if (string.IsNullOrEmpty(scenePath))
         {
-            AquaLogger.Warn("DashboardPanelHook: No scene path specified");
+            LumoraLogger.Warn("DashboardPanelHook: No scene path specified");
             return;
         }
 
         var packedScene = GD.Load<PackedScene>(scenePath);
         if (packedScene == null)
         {
-            AquaLogger.Warn($"DashboardPanelHook: Failed to load scene '{scenePath}'");
+            LumoraLogger.Warn($"DashboardPanelHook: Failed to load scene '{scenePath}'");
             return;
         }
 
         _loadedScene = packedScene.Instantiate();
         if (_loadedScene == null || _loadedScene is not Control control)
         {
-            AquaLogger.Warn("DashboardPanelHook: Failed to instantiate scene as Control");
+            LumoraLogger.Warn("DashboardPanelHook: Failed to instantiate scene as Control");
             return;
         }
 
         _desktopUI = control;
+        UIReadability.ApplyToTree(control);
 
         _canvasLayer?.AddChild(_desktopUI);
         UpdateDesktopLayout();
@@ -159,7 +173,7 @@ public class DashboardPanelHook : ComponentHook<DashboardPanel>
         ParseSceneNode(_loadedScene, "");
 
         Owner.NotifySceneLoaded(new List<string>(_nodeRegistry.Keys));
-        AquaLogger.Log($"DashboardPanelHook: Desktop scene loaded with {_nodeRegistry.Count} controls, scale={_desktopScale:F2}");
+        LumoraLogger.Log($"DashboardPanelHook: Desktop scene loaded with {_nodeRegistry.Count} controls, scale={_desktopScale:F2}");
     }
 
     private void LoadSceneVR()
@@ -167,32 +181,38 @@ public class DashboardPanelHook : ComponentHook<DashboardPanel>
         var scenePath = Owner.ScenePath.Value;
         if (string.IsNullOrEmpty(scenePath))
         {
-            AquaLogger.Warn("DashboardPanelHook: No scene path specified");
+            LumoraLogger.Warn("DashboardPanelHook: No scene path specified");
             return;
         }
 
         var packedScene = GD.Load<PackedScene>(scenePath);
         if (packedScene == null)
         {
-            AquaLogger.Warn($"DashboardPanelHook: Failed to load scene '{scenePath}'");
+            LumoraLogger.Warn($"DashboardPanelHook: Failed to load scene '{scenePath}'");
             return;
         }
 
         _loadedScene = packedScene.Instantiate();
         if (_loadedScene == null)
         {
-            AquaLogger.Warn("DashboardPanelHook: Failed to instantiate scene");
+            LumoraLogger.Warn("DashboardPanelHook: Failed to instantiate scene");
             return;
         }
 
         _viewport?.AddChild(_loadedScene);
+
+        if (_loadedScene is Control loadedControl)
+        {
+            loadedControl.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+            UIReadability.ApplyToTree(loadedControl);
+        }
 
         // Build node registry
         _nodeRegistry.Clear();
         ParseSceneNode(_loadedScene, "");
 
         Owner.NotifySceneLoaded(new List<string>(_nodeRegistry.Keys));
-        AquaLogger.Log($"DashboardPanelHook: VR scene loaded with {_nodeRegistry.Count} controls");
+        LumoraLogger.Log($"DashboardPanelHook: VR scene loaded with {_nodeRegistry.Count} controls");
     }
 
     private void ParseSceneNode(Node node, string parentPath)
@@ -369,19 +389,23 @@ public class DashboardPanelHook : ComponentHook<DashboardPanel>
     {
         if (_viewport == null) return;
 
-        var resScale = Owner.ResolutionScale.Value;
-        _viewport.Size = new Vector2I(
+        var resScale = UIReadability.GetReadableResolutionScale(Owner.ResolutionScale.Value);
+        var desiredSize = new Vector2I(
             (int)(Owner.Size.Value.x * resScale),
             (int)(Owner.Size.Value.y * resScale));
-        UpdateQuadSize();
+        if (_lastViewportSize != desiredSize)
+        {
+            _viewport.Size = desiredSize;
+            _lastViewportSize = desiredSize;
+            UpdateQuadSize();
+        }
 
-        if (_material != null)
+        if (_material != null && _material.AlbedoTexture != _viewport.GetTexture())
         {
             _material.AlbedoTexture = _viewport.GetTexture();
         }
 
         UpdateVisibility();
-        RefreshUIData();
     }
 
     public override void Destroy(bool destroyingWorld)
@@ -417,6 +441,7 @@ public class DashboardPanelHook : ComponentHook<DashboardPanel>
         _meshInstance = null;
         _material = null;
         _quadMesh = null;
+        _lastViewportSize = Vector2I.Zero;
 
         base.Destroy(destroyingWorld);
     }

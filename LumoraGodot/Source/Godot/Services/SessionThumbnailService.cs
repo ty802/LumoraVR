@@ -1,10 +1,20 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using Godot;
 using Lumora.Core;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 using LumoraEngine = Lumora.Core.Engine;
 
-namespace Aquamarine.Source.Godot.Services;
+namespace Lumora.Source.Godot.Services;
 
 /// <summary>
 /// Service that captures periodic thumbnails of hosted sessions.
@@ -36,7 +46,7 @@ public partial class SessionThumbnailService : Node
 
     public override void _Ready()
     {
-        AquaLogger.Log("SessionThumbnailService: Initialized");
+        LumoraLogger.Log("SessionThumbnailService: Initialized");
     }
 
     public override void _Process(double delta)
@@ -77,12 +87,12 @@ public partial class SessionThumbnailService : Node
                 {
                     meta.ThumbnailBase64 = base64;
                 });
-                AquaLogger.Log("SessionThumbnailService: Thumbnail updated");
+                LumoraLogger.Log("SessionThumbnailService: Thumbnail updated");
             }
         }
         catch (Exception ex)
         {
-            AquaLogger.Warn($"SessionThumbnailService: Capture failed - {ex.Message}");
+            LumoraLogger.Warn($"SessionThumbnailService: Capture failed - {ex.Message}");
         }
         finally
         {

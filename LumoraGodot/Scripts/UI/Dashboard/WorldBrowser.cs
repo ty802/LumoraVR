@@ -1,8 +1,18 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Godot;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Godot;
+>>>>>>> Stashed changes
 using System;
 using System.Collections.Generic;
-using Aquamarine.Source.Godot.Services;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using Lumora.Source.Godot.Services;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Godot.UI;
 
@@ -134,7 +144,7 @@ public partial class WorldBrowser : Control
         // Initialize session browser service
         InitializeSessionBrowser();
 
-        AquaLogger.Log("WorldBrowser: Initialized");
+        LumoraLogger.Log("WorldBrowser: Initialized");
     }
 
     private void InitializeSessionBrowser()
@@ -170,14 +180,14 @@ public partial class WorldBrowser : Control
     {
         SetLoading(false);
         SetCurrentWorld(world?.WorldName?.Value ?? "Unknown");
-        AquaLogger.Log($"WorldBrowser: Successfully joined world");
+        LumoraLogger.Log($"WorldBrowser: Successfully joined world");
     }
 
     private void OnJoinFailed(string reason)
     {
         SetLoading(false);
         SetCurrentWorld($"Join failed: {reason}");
-        AquaLogger.Warn($"WorldBrowser: Join failed - {reason}");
+        LumoraLogger.Warn($"WorldBrowser: Join failed - {reason}");
     }
 
     #region Host Session UI
@@ -372,14 +382,14 @@ public partial class WorldBrowser : Control
             _ => "Grid"
         };
 
-        AquaLogger.Log($"WorldBrowser: Hosting session '{name}' (template: {templateName}, max {maxUsers} users, visibility {visibilityIndex})");
+        LumoraLogger.Log($"WorldBrowser: Hosting session '{name}' (template: {templateName}, max {maxUsers} users, visibility {visibilityIndex})");
 
         try
         {
             var worldManager = Lumora.Core.Engine.Current?.WorldManager;
             if (worldManager == null)
             {
-                AquaLogger.Error("WorldBrowser: Cannot host - WorldManager not available");
+                LumoraLogger.Error("WorldBrowser: Cannot host - WorldManager not available");
                 return;
             }
 
@@ -410,16 +420,16 @@ public partial class WorldBrowser : Control
                 // Start thumbnail capture service for this session
                 StartThumbnailService();
 
-                AquaLogger.Log($"WorldBrowser: Successfully hosting '{name}' on port {port}");
+                LumoraLogger.Log($"WorldBrowser: Successfully hosting '{name}' on port {port}");
             }
             else
             {
-                AquaLogger.Error("WorldBrowser: Failed to create hosted session");
+                LumoraLogger.Error("WorldBrowser: Failed to create hosted session");
             }
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"WorldBrowser: Host failed - {ex.Message}");
+            LumoraLogger.Error($"WorldBrowser: Host failed - {ex.Message}");
         }
     }
 
@@ -439,7 +449,7 @@ public partial class WorldBrowser : Control
 
         // Force an immediate capture
         _thumbnailService.CaptureNow();
-        AquaLogger.Log("WorldBrowser: Thumbnail service started");
+        LumoraLogger.Log("WorldBrowser: Thumbnail service started");
     }
 
     #endregion
@@ -740,7 +750,7 @@ public partial class WorldBrowser : Control
 
     private void OnRefreshPressed()
     {
-        AquaLogger.Log("WorldBrowser: Refresh pressed");
+        LumoraLogger.Log("WorldBrowser: Refresh pressed");
 
         // Restart scanning to refresh sessions
         if (_browserService != null)

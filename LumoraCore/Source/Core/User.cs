@@ -1,9 +1,19 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using System.Collections.Generic;
 using Lumora.Core.Input;
 using Lumora.Core.Networking.Sync;
 using Lumora.Core.Networking.Streams;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
 
@@ -143,7 +153,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
                 if (value != null)
                 {
                     var scope = World?.LocalUser == this ? "local" : "authority";
-                    AquaLogger.Log($"User: Registered UserRoot for {scope} user '{UserName.Value}'");
+                    LumoraLogger.Log($"User: Registered UserRoot for {scope} user '{UserName.Value}'");
                 }
             }
             else
@@ -195,7 +205,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
             }
             EndInitPhase();
 
-            AquaLogger.Debug($"User created with {_syncMembers.Count} sync members");
+            LumoraLogger.Debug($"User created with {_syncMembers.Count} sync members");
         }
         finally
         {
@@ -219,7 +229,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
             if (syncManager != null && ReferenceID == syncManager.LocalUserRefIDToInit)
             {
                 World.SetLocalUser(this);
-                AquaLogger.Log($"User.Initialize: Set local user '{UserName.Value}' (RefID: {ReferenceID})");
+                LumoraLogger.Log($"User.Initialize: Set local user '{UserName.Value}' (RefID: {ReferenceID})");
             }
         }
     }
@@ -235,7 +245,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
         }
         else
         {
-            AquaLogger.Warn("Non-authority user cannot change username");
+            LumoraLogger.Warn("Non-authority user cannot change username");
         }
     }
 
@@ -378,7 +388,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
             }
         }
 
-        AquaLogger.Log($"ConfigureLocalTrackingStreams: Configured {StreamCount} streams for local user");
+        LumoraLogger.Log($"ConfigureLocalTrackingStreams: Configured {StreamCount} streams for local user");
     }
 
     private void EnsureTrackingStreamsInitialized()
@@ -461,7 +471,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
         {
             if (userRoot.ActiveUser != null && userRoot.ActiveUser != this)
             {
-                AquaLogger.Warn(
+                LumoraLogger.Warn(
                     $"User: UserRootRef points to UserRoot owned by '{userRoot.ActiveUser.UserName.Value ?? "(null)"}', rebinding to '{UserName.Value ?? "(null)"}'");
             }
 

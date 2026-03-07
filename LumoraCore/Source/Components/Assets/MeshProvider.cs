@@ -1,4 +1,14 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using System.Collections.Generic;
 using System.IO;
 using System.Numerics;
@@ -7,7 +17,7 @@ using System.Threading.Tasks;
 using Lumora.Core.Phos;
 using Lumora.Core.Math;
 using SharpGLTF.Schema2;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Assets;
 
@@ -146,7 +156,7 @@ public class MeshProvider : UrlAssetProvider<MeshDataAsset, MeshDataMetadata>
     {
         if (fileData == null || fileData.Length == 0)
         {
-            AquaLogger.Warn("MeshProvider: Empty file data");
+            LumoraLogger.Warn("MeshProvider: Empty file data");
             return null;
         }
 
@@ -163,7 +173,7 @@ public class MeshProvider : UrlAssetProvider<MeshDataAsset, MeshDataMetadata>
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"MeshProvider: Failed to decode mesh - {ex.Message}");
+            LumoraLogger.Error($"MeshProvider: Failed to decode mesh - {ex.Message}");
             return null;
         }
     }
@@ -245,7 +255,7 @@ public class MeshProvider : UrlAssetProvider<MeshDataAsset, MeshDataMetadata>
 
         if (allPositions.Count == 0)
         {
-            AquaLogger.Warn("MeshProvider: GLTF has no vertex data");
+            LumoraLogger.Warn("MeshProvider: GLTF has no vertex data");
             return phosMesh;
         }
 
@@ -277,7 +287,7 @@ public class MeshProvider : UrlAssetProvider<MeshDataAsset, MeshDataMetadata>
             }
         }
 
-        AquaLogger.Debug($"MeshProvider: Decoded GLTF with {allPositions.Count} vertices, {allIndices.Count / 3} triangles");
+        LumoraLogger.Debug($"MeshProvider: Decoded GLTF with {allPositions.Count} vertices, {allIndices.Count / 3} triangles");
         return phosMesh;
     }
 
@@ -376,7 +386,7 @@ public class MeshProvider : UrlAssetProvider<MeshDataAsset, MeshDataMetadata>
             submesh.AddTriangle(i, i + 1, i + 2);
         }
 
-        AquaLogger.Debug($"MeshProvider: Decoded OBJ with {faceIndices.Count} vertices, {faceIndices.Count / 3} triangles");
+        LumoraLogger.Debug($"MeshProvider: Decoded OBJ with {faceIndices.Count} vertices, {faceIndices.Count / 3} triangles");
         return phosMesh;
     }
 

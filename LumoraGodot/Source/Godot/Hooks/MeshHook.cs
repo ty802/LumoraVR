@@ -1,11 +1,21 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Godot;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Godot;
+>>>>>>> Stashed changes
 using Lumora.Core;
 using Lumora.Core.Components.Meshes;
 using Lumora.Core.Phos;
 using Lumora.Core.Logging;
 using System;
 
-namespace Aquamarine.Godot.Hooks;
+namespace Lumora.Godot.Hooks;
 
 /// <summary>
 /// Godot hook for ProceduralMesh components.
@@ -19,6 +29,8 @@ public class MeshHook : ComponentHook<ProceduralMesh>
     private MeshInstance3D? meshInstance;
     private SlotHook? _meshSlotHook;
     private Node3D? parentNode;
+    private bool _loggedNoIndexWarning;
+    private bool _loggedNoVertexWarning;
 
     /// <summary>
     /// Factory method for creating mesh hooks.
@@ -118,6 +130,8 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         godotMesh = null;
         _meshSlotHook = null;
         parentNode = null;
+        _loggedNoIndexWarning = false;
+        _loggedNoVertexWarning = false;
     }
 
     /// <summary>
@@ -243,7 +257,11 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         {
             if (!hasIndices && (phosMesh.VertexCount % 3) != 0)
             {
-                Lumora.Core.Logging.Logger.Warn($"MeshHook.UploadTriangleSubmesh: Skipping surface - no indices and vertex count {phosMesh.VertexCount} is not a multiple of 3");
+                if (!_loggedNoIndexWarning)
+                {
+                    _loggedNoIndexWarning = true;
+                    Lumora.Core.Logging.Logger.Warn($"MeshHook.UploadTriangleSubmesh: Skipping surface - no indices and vertex count {phosMesh.VertexCount} is not a multiple of 3");
+                }
                 return;
             }
             godotMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
@@ -251,7 +269,11 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         }
         else
         {
-            Lumora.Core.Logging.Logger.Warn($"MeshHook.UploadTriangleSubmesh: Skipping surface - no vertex data");
+            if (!_loggedNoVertexWarning)
+            {
+                _loggedNoVertexWarning = true;
+                Lumora.Core.Logging.Logger.Warn($"MeshHook.UploadTriangleSubmesh: Skipping surface - no vertex data");
+            }
         }
     }
 

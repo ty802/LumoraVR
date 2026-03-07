@@ -1,8 +1,24 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Godot;
+=======
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+=======
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Godot;
 using Lumora.Core.Components;
 using AquaLogger = Lumora.Core.Logging.Logger;
+>>>>>>> Stashed changes
 
-namespace Aquamarine.Godot.Hooks;
+using Godot;
+>>>>>>> Stashed changes
+using Lumora.Core.Components;
+using LumoraLogger = Lumora.Core.Logging.Logger;
+
+namespace Lumora.Godot.Hooks;
 
 /// <summary>
 /// Hook for HeadOutput component → Godot Camera3D.
@@ -56,7 +72,7 @@ public class HeadOutputHook : ComponentHook<HeadOutput>
         {
             if (!_loggedMissingUserRoot)
             {
-                AquaLogger.Warn($"HeadOutputHook: No UserRoot found on slot '{Owner.Slot.SlotName.Value}'");
+                LumoraLogger.Warn($"HeadOutputHook: No UserRoot found on slot '{Owner.Slot.SlotName.Value}'");
                 _loggedMissingUserRoot = true;
             }
             return;
@@ -81,7 +97,7 @@ public class HeadOutputHook : ComponentHook<HeadOutput>
             if (headHook != null)
             {
                 targetNode = headHook.RequestNode3D();
-                AquaLogger.Log($"HeadOutputHook: Attaching camera to head slot");
+                LumoraLogger.Log($"HeadOutputHook: Attaching camera to head slot");
             }
         }
 
@@ -89,11 +105,11 @@ public class HeadOutputHook : ComponentHook<HeadOutput>
         {
             targetNode.AddChild(_camera);
             _isInitialized = true;
-            AquaLogger.Log($"HeadOutputHook: Created camera for local user '{userRoot.ActiveUser.UserName.Value}'");
+            LumoraLogger.Log($"HeadOutputHook: Created camera for local user '{userRoot.ActiveUser.UserName.Value}'");
         }
         else
         {
-            AquaLogger.Error($"HeadOutputHook: Failed to find valid node to attach camera");
+            LumoraLogger.Error($"HeadOutputHook: Failed to find valid node to attach camera");
         }
     }
 

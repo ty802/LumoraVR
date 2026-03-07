@@ -1,3 +1,6 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Godot;
 using System;
 using Lumora.CDN;
@@ -55,7 +58,6 @@ public partial class LoginOverlay : Control
         // Focus username field
         _usernameInput?.GrabFocus();
 
-        GD.Print("LoginOverlay: Initialized");
     }
 
     /// <summary>
@@ -120,8 +122,6 @@ public partial class LoginOverlay : Control
 
         try
         {
-            GD.Print($"LoginOverlay: Attempting login for '{username}'");
-
             // Get 2FA code if visible
             string? twoFactorCode = _needs2FA ? (_twoFactorInput?.Text?.Trim()) : null;
 
@@ -129,8 +129,6 @@ public partial class LoginOverlay : Control
 
             if (result.Success && result.Data != null)
             {
-                GD.Print("LoginOverlay: Login successful");
-
                 // Clear fields
                 ClearInputs();
 
@@ -166,7 +164,6 @@ public partial class LoginOverlay : Control
 
     private void OnCancelPressed()
     {
-        GD.Print("LoginOverlay: Cancel pressed");
         ClearInputs();
         OnCancel?.Invoke();
     }

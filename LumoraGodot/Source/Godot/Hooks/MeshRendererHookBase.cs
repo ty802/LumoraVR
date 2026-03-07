@@ -1,10 +1,20 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Godot;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Godot;
+>>>>>>> Stashed changes
 using Lumora.Core;
 using Lumora.Core.Components;
 using LumoraMeshes = Lumora.Core.Components.Meshes;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks;
+namespace Lumora.Godot.Hooks;
 
 /// <summary>
 /// Abstract base class for MeshRenderer hooks.
@@ -50,7 +60,7 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
                 if (sourceMeshInstance != null)
                 {
                     sourceMeshInstance.Visible = false;
-                    AquaLogger.Debug($"MeshRendererHookBase: Hid source MeshHook's MeshInstance3D");
+                    LumoraLogger.Debug($"MeshRendererHookBase: Hid source MeshHook's MeshInstance3D");
                 }
             }
         }
@@ -97,13 +107,13 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
                         var arrays = arrayMesh.SurfaceGetArrays(0);
                         var uvArray = arrays[(int)Mesh.ArrayType.TexUV];
                         bool hasUvs = uvArray.VariantType != Variant.Type.Nil;
-                        AquaLogger.Log($"MeshRendererHookBase: Mesh assigned, surface 0 has UV data: {hasUvs}");
+                        LumoraLogger.Log($"MeshRendererHookBase: Mesh assigned, surface 0 has UV data: {hasUvs}");
                         if (hasUvs)
                         {
                             var uvs = uvArray.AsVector2Array();
                             if (uvs.Length > 0)
                             {
-                                AquaLogger.Log($"MeshRendererHookBase: UV sample[0] = {uvs[0]}");
+                                LumoraLogger.Log($"MeshRendererHookBase: UV sample[0] = {uvs[0]}");
                             }
                         }
                     }
@@ -152,12 +162,12 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
         var materialAsset = Owner.Material.Asset;
         if (materialAsset != null && materialAsset.GodotMaterial is Material godotMaterial)
         {
-            AquaLogger.Debug($"MeshRendererHookBase.ApplyMaterial: Applying {godotMaterial.GetType().Name} to meshInstance");
+            LumoraLogger.Debug($"MeshRendererHookBase.ApplyMaterial: Applying {godotMaterial.GetType().Name} to meshInstance");
             meshInstance.MaterialOverride = godotMaterial;
         }
         else
         {
-            AquaLogger.Debug($"MeshRendererHookBase.ApplyMaterial: No material (materialAsset={materialAsset}, GodotMaterial={materialAsset?.GodotMaterial})");
+            LumoraLogger.Debug($"MeshRendererHookBase.ApplyMaterial: No material (materialAsset={materialAsset}, GodotMaterial={materialAsset?.GodotMaterial})");
             meshInstance.MaterialOverride = null;
         }
     }
@@ -200,12 +210,12 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
                     return meshInstance.Mesh;
                 }
             }
-            AquaLogger.Debug("MeshRendererHookBase: ProceduralMesh hook not ready");
+            LumoraLogger.Debug("MeshRendererHookBase: ProceduralMesh hook not ready");
             return null;
         }
 
         // TODO: Handle MeshDataAssetProvider components when needed
-        AquaLogger.Warn($"MeshRendererHookBase: Unsupported mesh component type {meshComponent.GetType().Name}");
+        LumoraLogger.Warn($"MeshRendererHookBase: Unsupported mesh component type {meshComponent.GetType().Name}");
         return null;
     }
 

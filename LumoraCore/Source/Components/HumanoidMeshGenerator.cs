@@ -1,7 +1,17 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using System;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
+>>>>>>> Stashed changes
 using System.Collections.Generic;
 using Lumora.Core.Math;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -149,7 +159,7 @@ public static class HumanoidMeshGenerator
         boneWeights = boneWeightList.ToArray();
         boneNames = BoneNameOrder;
 
-        AquaLogger.Log($"HumanoidMeshGenerator: Generated mesh with {vertices.Length} vertices, {indices.Length / 3} triangles, {boneNames.Length} bones");
+        LumoraLogger.Log($"HumanoidMeshGenerator: Generated mesh with {vertices.Length} vertices, {indices.Length / 3} triangles, {boneNames.Length} bones");
     }
 
     // ===== MESH PRIMITIVE GENERATORS =====

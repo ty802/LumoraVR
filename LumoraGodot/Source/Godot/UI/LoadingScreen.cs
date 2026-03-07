@@ -1,7 +1,17 @@
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+﻿using Godot;
+=======
+=======
+>>>>>>> Stashed changes
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Godot;
+>>>>>>> Stashed changes
 using System;
 
-namespace Aquamarine.Source.Godot.UI;
+namespace Lumora.Source.Godot.UI;
 
 /// <summary>
 /// Professional loading UI for engine initialization.
@@ -152,7 +162,7 @@ public partial class LoadingScreen : Control
 		public const string EnvironmentSetup = "Setting up environment...";
 		public const string XRDetection = "Detecting VR hardware...";
 		public const string HeadOutputCreation = "Initializing rendering system...";
-		public const string EngineCoreInit = "Starting Aquamarine Engine...";
+		public const string EngineCoreInit = "Starting Lumora Engine...";
 		public const string SystemIntegration = "Connecting input and audio systems...";
 		public const string UserspaceSetup = "Loading user interface...";
 		public const string Ready = "Ready!";

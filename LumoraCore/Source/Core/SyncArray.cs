@@ -35,6 +35,13 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
     public event Action<SyncArray<T>, int, int>? ElementsAdded;
     public event Action<SyncArray<T>, int, int>? ElementsRemoved;
 
+    /// <summary>
+    /// Fired whenever elements are written (added/appended) to the array.
+    /// Fired when elements are added or appended to the array.
+    /// Signature: (sender, startIndex, count)
+    /// </summary>
+    public event Action<SyncArray<T>, int, int>? DataWritten;
+
     public T this[int index]
     {
         get
@@ -65,9 +72,16 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
         InvalidateSyncElement();
         BlockModification();
         ElementsAdded?.Invoke(this, idx, 1);
+        DataWritten?.Invoke(this, idx, 1);
         UnblockModification();
         EndModification();
     }
+
+    /// <summary>
+    /// Append a single element to the end of the array.
+    /// Equivalent to Add().
+    /// </summary>
+    public void Append(T item) => Add(item);
 
     public void AddRange(IEnumerable<T> items)
     {
@@ -85,6 +99,7 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
             InvalidateSyncElement();
             BlockModification();
             ElementsAdded?.Invoke(this, startIdx, _count - startIdx);
+            DataWritten?.Invoke(this, startIdx, _count - startIdx);
             UnblockModification();
         }
         EndModification();
@@ -252,6 +267,7 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
     {
         ElementsAdded = null;
         ElementsRemoved = null;
+        DataWritten = null;
         _dirtyIndices?.Clear();
         _dirtyIndices = null;
         _items = Array.Empty<T>();

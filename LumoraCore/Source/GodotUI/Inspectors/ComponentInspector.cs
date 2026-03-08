@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections.Generic;
 using Lumora.Core.Assets;
 using Lumora.Core.Math;
 using Lumora.Core.Networking.Sync;
@@ -153,6 +154,115 @@ public class ComponentInspector : GodotUIPanel
         {
             OnReferenceClicked?.Invoke(syncRef);
         }
+    }
+
+    // ── SyncMemberEditorBuilder integration ───────────────────────────────────
+
+    /// <summary>
+    /// Returns typed descriptors for every inspectable sync member on the target component.
+    /// The Godot scene uses this to build the correct editor widget per field.
+    /// </summary>
+    public IReadOnlyList<FieldEditorInfo> GetMemberDescriptors()
+    {
+        var component = TargetComponent.Target;
+        if (component == null) return [];
+        return SyncMemberEditorBuilder.Build(component, ShowInherited.Value);
+    }
+
+    /// <summary>
+    /// Update a field by name using a raw string from a text input.
+    /// Works for bool, int, float, string, and enum fields.
+    /// </summary>
+    public bool TrySetFieldFromString(string memberName, string rawInput)
+    {
+        var field = TargetComponent.Target?.TryGetField(memberName);
+        if (field is not ISyncMember member) return false;
+        bool ok = SyncMemberEditorBuilder.TrySetFromString(member, rawInput);
+        if (ok) OnPropertyChanged?.Invoke(memberName, rawInput);
+        return ok;
+    }
+
+    /// <summary>Typed setter for bool fields (e.g. toggle widgets).</summary>
+    public void SetBool(string memberName, bool value)
+    {
+        var field = TargetComponent.Target?.TryGetField(memberName);
+        if (field is ISyncMember m) { SyncMemberEditorBuilder.SetBool(m, value); OnPropertyChanged?.Invoke(memberName, value); }
+    }
+
+    /// <summary>Typed setter for int fields.</summary>
+    public void SetInt(string memberName, int value)
+    {
+        var field = TargetComponent.Target?.TryGetField(memberName);
+        if (field is ISyncMember m) { SyncMemberEditorBuilder.SetInt(m, value); OnPropertyChanged?.Invoke(memberName, value); }
+    }
+
+    /// <summary>Typed setter for float fields.</summary>
+    public void SetFloat(string memberName, float value)
+    {
+        var field = TargetComponent.Target?.TryGetField(memberName);
+        if (field is ISyncMember m) { SyncMemberEditorBuilder.SetFloat(m, value); OnPropertyChanged?.Invoke(memberName, value); }
+    }
+
+    /// <summary>Typed setter for float3 fields (position, scale, etc.).</summary>
+    public void SetFloat3(string memberName, float3 value)
+    {
+        var field = TargetComponent.Target?.TryGetField(memberName);
+        if (field is ISyncMember m) { SyncMemberEditorBuilder.SetFloat3(m, value); OnPropertyChanged?.Invoke(memberName, value); }
+    }
+
+    /// <summary>Typed setter for color fields — also opens the color picker if requested.</summary>
+    public void SetColor(string memberName, color value)
+    {
+        var field = TargetComponent.Target?.TryGetField(memberName);
+        if (field is ISyncMember m) { SyncMemberEditorBuilder.SetColor(m, value); OnPropertyChanged?.Invoke(memberName, value); }
+    }
+
+    /// <summary>Typed setter for enum fields (supply the enum name as string).</summary>
+    public void SetEnum(string memberName, string enumName)
+    {
+        var field = TargetComponent.Target?.TryGetField(memberName);
+        if (field is ISyncMember m) { SyncMemberEditorBuilder.SetEnum(m, enumName); OnPropertyChanged?.Invoke(memberName, enumName); }
+    }
+
+    /// <summary>
+    /// Spawn a ColorPickerPanel for a color field and return it.
+    /// The picker is placed near the inspector panel slot.
+    /// </summary>
+    public GodotUI.Wizards.ColorPickerPanel? OpenColorPicker(string memberName)
+    {
+        var component = TargetComponent.Target;
+        if (component == null) return null;
+
+        var pickerSlot = Slot.Parent?.AddSlot($"ColorPicker_{memberName}") ?? Slot.AddSlot($"ColorPicker_{memberName}");
+        var picker = pickerSlot.AttachComponent<GodotUI.Wizards.ColorPickerPanel>();
+        picker.SetTarget(component, memberName, memberName);
+
+        // Offset picker slightly to not overlap the inspector
+        pickerSlot.GlobalPosition = new float3(
+            Slot.GlobalPosition.x + 0.4f,
+            Slot.GlobalPosition.y,
+            Slot.GlobalPosition.z);
+
+        return picker;
+    }
+
+    /// <summary>
+    /// Override GetUIData to expose the component type name and member count
+    /// so the Godot header can display them without extra C# calls.
+    /// </summary>
+    public override Dictionary<string, string> GetUIData()
+    {
+        var component = TargetComponent.Target;
+        if (component == null)
+            return new Dictionary<string, string> { ["TypeName"] = "None", ["MemberCount"] = "0" };
+
+        var descriptors = GetMemberDescriptors();
+        return new Dictionary<string, string>
+        {
+            ["TypeName"]    = component.GetType().Name,
+            ["MemberCount"] = descriptors.Count.ToString(),
+            ["AllowRemove"] = AllowRemove.Value ? "1" : "0",
+        };
     }
 
     /// <summary>

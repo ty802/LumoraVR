@@ -186,9 +186,10 @@ public static class DefaultAVI
         var bodyNodes = userSlot.AddSlot("Body Nodes");
 
         // Create Head slot - UserRoot auto-resolves from "Body Nodes/Head"
-        // Start at origin - VR tracking includes height, desktop fallback in TrackedDevicePositioner
+        // Default at user height so desktop/untracked mode looks correct.
+        // TrackedDevicePositioner overrides this once VR tracking starts.
         var headSlot = bodyNodes.AddSlot("Head");
-        headSlot.LocalPosition.Value = float3.Zero;
+        headSlot.LocalPosition.Value = new float3(0f, DEFAULT_HEIGHT, 0f);
         var headPositioner = headSlot.AttachComponent<TrackedDevicePositioner>();
         headPositioner.AutoBodyNode.Value = BodyNode.Head;
         var headStreamDriver = headSlot.AttachComponent<TransformStreamDriver>();
@@ -197,9 +198,11 @@ public static class DefaultAVI
         headStreamDriver.RotationStream.Target = headRotationStream;
 
         // Create LeftHand slot - UserRoot auto-resolves from "Body Nodes/LeftHand"
-        // Start at origin - VR tracking provides actual position
+        // Default resting at side (hip height, 0.25 m left).
+        // TrackedDevicePositioner overrides with actual controller pose when tracking.
         var leftHandSlot = bodyNodes.AddSlot("LeftHand");
-        leftHandSlot.LocalPosition.Value = float3.Zero;
+        leftHandSlot.LocalPosition.Value = new float3(-0.25f, 1.0f, 0f);
+        leftHandSlot.LocalRotation.Value = floatQ.Euler(MathF.PI / 2f, -MathF.PI / 2f, 0f);
         var leftHandPositioner = leftHandSlot.AttachComponent<TrackedDevicePositioner>();
         leftHandPositioner.AutoBodyNode.Value = BodyNode.LeftController;
         var leftHandStreamDriver = leftHandSlot.AttachComponent<TransformStreamDriver>();
@@ -212,9 +215,10 @@ public static class DefaultAVI
         leftRayBeam.ControllerSide.Value = Chirality.Left;
 
         // Create RightHand slot - UserRoot auto-resolves from "Body Nodes/RightHand"
-        // Start at origin - VR tracking provides actual position
+        // Default resting at side (hip height, 0.25 m right).
         var rightHandSlot = bodyNodes.AddSlot("RightHand");
-        rightHandSlot.LocalPosition.Value = float3.Zero;
+        rightHandSlot.LocalPosition.Value = new float3(0.25f, 1.0f, 0f);
+        rightHandSlot.LocalRotation.Value = floatQ.Euler(-MathF.PI / 2f, -MathF.PI / 2f, 0f);
         var rightHandPositioner = rightHandSlot.AttachComponent<TrackedDevicePositioner>();
         rightHandPositioner.AutoBodyNode.Value = BodyNode.RightController;
         var rightHandStreamDriver = rightHandSlot.AttachComponent<TransformStreamDriver>();

@@ -309,6 +309,18 @@ public class LocomotionController : Component
         float headDot = floatQ.Dot(newHeadRot, currentHeadRot);
         if (1.0f - (headDot < 0 ? -headDot : headDot) > ROT_THRESHOLD)
             _userRoot.HeadSlot.LocalRotation.Value = newHeadRot;
+
+        // Drive hand aim: right hand tilts up when looking up, left stays at rest.
+        // Rest pitch = -π/2 (fingers down). Add camera pitch so hand aims forward when looking level.
+        float restPitch = -MathF.PI / 2f;
+        var rightHandSlot = _userRoot.RightHandSlot;
+        if (rightHandSlot != null)
+        {
+            float aimPitch = MathF.Min(MathF.Max(restPitch + _pitch, -MathF.PI / 2f), 0f);
+            rightHandSlot.LocalRotation.Value = floatQ.Euler(-MathF.PI / 2f, aimPitch, 0f);
+        }
+        if (_userRoot.LeftHandSlot is { } leftHandSlot)
+            leftHandSlot.LocalRotation.Value = floatQ.Euler(MathF.PI / 2f, restPitch, 0f);
     }
 
     /// <summary>

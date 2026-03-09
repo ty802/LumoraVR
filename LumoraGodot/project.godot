@@ -19,6 +19,10 @@ run/main_scene="uid://c8sly288nngj4"
 config/features=PackedStringArray("4.6", "C#", "Forward Plus")
 config/icon="res://Assets/Textures/lumoravricon.svg"
 
+[audio]
+
+driver/enable_input=true
+
 [debug_draw_3d]
 
 settings/3d/volumetric_defaults/thickness=0.0
@@ -36,7 +40,7 @@ project/assembly_name="Lumora"
 
 [editor]
 
-run/main_run_args="--xr-mode on --vr"
+run/main_run_args="--xr-mode off --vr"
 
 [filesystem]
 

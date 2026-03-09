@@ -822,84 +822,153 @@ public static class SyncMemberEditorBuilder
         return container;
     }
 
-    private static ColorPickerButton CreateColorEditor(IField field, bool readOnly)
+    // TODO(xlinka): placeholder color editor - RGBA spinboxes work but this needs a proper
+    // in-world color picker (hue wheel, saturation/value square, hex input).
+    // The swatch-only preview is ugly and the spinboxes are fiddly in VR/desktop.
+    private static HBoxContainer CreateColorEditor(IField field, bool readOnly)
     {
-        var picker = new ColorPickerButton();
-        var value = (color)(field.BoxedValue ?? new color(1, 1, 1, 1));
-        picker.Color = new Color(value.r, value.g, value.b, value.a);
-        picker.Disabled = readOnly || !field.CanWrite;
+        var container = new HBoxContainer();
+        container.AddThemeConstantOverride("separation", 4);
 
-        picker.ColorChanged += (newColor) =>
+        var value = (color)(field.BoxedValue ?? new color(1, 1, 1, 1));
+        bool canWrite = !readOnly && field.CanWrite;
+
+        // Color swatch preview
+        var swatch = new ColorRect();
+        swatch.Color = new Color(value.r, value.g, value.b, value.a);
+        swatch.CustomMinimumSize = new Vector2(28, 28);
+        container.AddChild(swatch);
+
+        // Channel spinboxes: R G B A
+        static SpinBox MakeSpin(float v, bool enabled)
         {
-            if (!readOnly && field.CanWrite)
-                field.BoxedValue = new color(newColor.R, newColor.G, newColor.B, newColor.A);
-        };
+            var s = new SpinBox();
+            s.MinValue = 0.0;
+            s.MaxValue = 1.0;
+            s.Step = 0.001;
+            s.Value = v;
+            s.Editable = enabled;
+            s.CustomMinimumSize = new Vector2(70, 0);
+            s.AddThemeFontSizeOverride("font_size", 12);
+            return s;
+        }
+
+        var rSpin = MakeSpin(value.r, canWrite);
+        var gSpin = MakeSpin(value.g, canWrite);
+        var bSpin = MakeSpin(value.b, canWrite);
+        var aSpin = MakeSpin(value.a, canWrite);
+
+        // Channel labels
+        static Label MakeLbl(string t)
+        {
+            var l = new Label { Text = t };
+            l.AddThemeFontSizeOverride("font_size", 11);
+            return l;
+        }
+
+        container.AddChild(MakeLbl("R")); container.AddChild(rSpin);
+        container.AddChild(MakeLbl("G")); container.AddChild(gSpin);
+        container.AddChild(MakeLbl("B")); container.AddChild(bSpin);
+        container.AddChild(MakeLbl("A")); container.AddChild(aSpin);
+
+        void ApplyFromSpins()
+        {
+            if (!canWrite) return;
+            var c = new color((float)rSpin.Value, (float)gSpin.Value, (float)bSpin.Value, (float)aSpin.Value);
+            field.BoxedValue = c;
+            if (IsInstanceValid(swatch))
+                swatch.Color = new Color(c.r, c.g, c.b, c.a);
+        }
+
+        rSpin.ValueChanged += (_) => ApplyFromSpins();
+        gSpin.ValueChanged += (_) => ApplyFromSpins();
+        bSpin.ValueChanged += (_) => ApplyFromSpins();
+        aSpin.ValueChanged += (_) => ApplyFromSpins();
 
         if (field is IChangeable changeable)
         {
             changeable.Changed += (_) =>
             {
-                if (IsInstanceValid(picker))
-                {
-                    var c = (color)(field.BoxedValue ?? new color(1, 1, 1, 1));
-                    picker.Color = new Color(c.r, c.g, c.b, c.a);
-                }
+                if (!IsInstanceValid(container)) return;
+                var c = (color)(field.BoxedValue ?? new color(1, 1, 1, 1));
+                rSpin.SetBlockSignals(true); rSpin.Value = c.r; rSpin.SetBlockSignals(false);
+                gSpin.SetBlockSignals(true); gSpin.Value = c.g; gSpin.SetBlockSignals(false);
+                bSpin.SetBlockSignals(true); bSpin.Value = c.b; bSpin.SetBlockSignals(false);
+                aSpin.SetBlockSignals(true); aSpin.Value = c.a; aSpin.SetBlockSignals(false);
+                if (IsInstanceValid(swatch))
+                    swatch.Color = new Color(c.r, c.g, c.b, c.a);
             };
         }
 
-        return picker;
+        return container;
     }
 
-    private static OptionButton CreateEnumEditor(IField field, Type enumType, bool readOnly)
+    // TODO(xlinka): placeholder enum editor - << >> cycling is functional but terrible UX
+    // for enums with many values. replace with a proper dropdown or searchable popup
+    // that doesn't require 47 button presses to get to the value you want.
+    private static HBoxContainer CreateEnumEditor(IField field, Type enumType, bool readOnly)
     {
-        var optionButton = new OptionButton();
+        var container = new HBoxContainer();
+        container.AddThemeConstantOverride("separation", 4);
+
         var names = Enum.GetNames(enumType);
         var values = Enum.GetValues(enumType);
-        optionButton.Disabled = readOnly || !field.CanWrite;
+        bool canWrite = !readOnly && field.CanWrite;
 
-        for (int i = 0; i < names.Length; i++)
-        {
-            optionButton.AddItem(names[i], i);
-        }
-
+        int currentIndex = 0;
         var currentValue = field.BoxedValue;
         if (currentValue != null)
         {
-            var index = Array.IndexOf(values, currentValue);
-            if (index >= 0)
-            {
-                optionButton.Selected = index;
-            }
+            var idx = Array.IndexOf(values, currentValue);
+            if (idx >= 0) currentIndex = idx;
         }
 
-        optionButton.ItemSelected += (index) =>
+        var valueLabel = new Label();
+        valueLabel.Text = names[currentIndex];
+        valueLabel.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        valueLabel.HorizontalAlignment = HorizontalAlignment.Center;
+        valueLabel.AddThemeFontSizeOverride("font_size", EditorFontSize);
+
+        void ShiftEnum(int delta)
         {
-            if (!readOnly && field.CanWrite && index >= 0 && index < values.Length)
-            {
-                field.BoxedValue = values.GetValue((int)index);
-            }
-        };
+            if (!canWrite) return;
+            var val = field.BoxedValue;
+            int idx = val != null ? Array.IndexOf(values, val) : 0;
+            idx = ((idx + delta) % names.Length + names.Length) % names.Length;
+            field.BoxedValue = values.GetValue(idx);
+            if (IsInstanceValid(valueLabel))
+                valueLabel.Text = names[idx];
+        }
+
+        var prevBtn = new Button { Text = "<<" };
+        prevBtn.CustomMinimumSize = new Vector2(SmallButtonSize + 8, SmallButtonSize);
+        prevBtn.Disabled = !canWrite;
+        prevBtn.Pressed += () => ShiftEnum(-1);
+
+        var nextBtn = new Button { Text = ">>" };
+        nextBtn.CustomMinimumSize = new Vector2(SmallButtonSize + 8, SmallButtonSize);
+        nextBtn.Disabled = !canWrite;
+        nextBtn.Pressed += () => ShiftEnum(+1);
+
+        container.AddChild(prevBtn);
+        container.AddChild(valueLabel);
+        container.AddChild(nextBtn);
 
         if (field is IChangeable changeable)
         {
             changeable.Changed += (_) =>
             {
-                if (IsInstanceValid(optionButton))
+                if (!IsInstanceValid(valueLabel)) return;
+                var val = field.BoxedValue;
+                if (val != null)
                 {
-                    var val = field.BoxedValue;
-                    if (val != null)
-                    {
-                        var idx = Array.IndexOf(values, val);
-                        if (idx >= 0)
-                        {
-                            optionButton.Selected = idx;
-                        }
-                    }
+                    var idx = Array.IndexOf(values, val);
+                    if (idx >= 0) valueLabel.Text = names[idx];
                 }
             };
         }
 
-        return optionButton;
+        return container;
     }
 
     private static HBoxContainer CreateRefEditor(ISyncRef syncRef, bool readOnly)

@@ -1,6 +1,6 @@
 [gd_scene load_steps=5 format=3 uid="uid://003dbw41kj4r"]
 
-[ext_resource type="FontFile" uid="uid://bc0fpvfqcqrld" path="res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf" id="1_font"]
+[ext_resource type="FontFile" uid="uid://dne06dcdmx5hj" path="res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf" id="1_font"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_normal"]
 bg_color = Color(0.1, 0.09, 0.15, 0.6)
@@ -49,3 +49,4 @@ theme_override_styles/hover = SubResource("StyleBoxFlat_hover")
 theme_override_styles/pressed = SubResource("StyleBoxFlat_pressed")
 text = "Option"
 alignment = 0
+

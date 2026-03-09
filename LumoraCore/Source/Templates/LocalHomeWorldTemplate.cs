@@ -24,6 +24,11 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
         var lightSlot = world.RootSlot.AddSlot("DirectionalLight");
         lightSlot.LocalPosition.Value = new float3(0f, 10f, 0f);
         lightSlot.LocalRotation.Value = floatQ.Euler(0.785f, -0.785f, 0f);
+        var dirLight = lightSlot.AttachComponent<Light>();
+        dirLight.Type.Value = LightType.Directional;
+        dirLight.LightColor.Value = new color(1f, 0.96f, 0.84f, 1f);
+        dirLight.Intensity.Value = 1.2f;
+        dirLight.Shadows.Value = ShadowType.Soft;
 
         // Circular ground floor - 50 meter diameter
         var groundSlot = world.RootSlot.AddSlot("Ground");
@@ -51,6 +56,12 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
 
         var ambientLightSlot = world.RootSlot.AddSlot("AmbientLight");
         ambientLightSlot.LocalPosition.Value = new float3(0f, 5f, 0f);
+        var ambientLight = ambientLightSlot.AttachComponent<Light>();
+        ambientLight.Type.Value = LightType.Point;
+        ambientLight.LightColor.Value = new color(0.4f, 0.45f, 0.55f, 1f);
+        ambientLight.Intensity.Value = 0.4f;
+        ambientLight.Range.Value = 100f;
+        ambientLight.Shadows.Value = ShadowType.None;
 
         var uiPanelsSlot = world.RootSlot.AddSlot("UIPanels");
         uiPanelsSlot.LocalPosition.Value = new float3(0f, 1.4f, -1.2f);

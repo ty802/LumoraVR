@@ -22,7 +22,6 @@ namespace Lumora.Godot.Input;
 /// <summary>
 /// Handles clipboard paste operations for importing assets.
 /// Detects file paths, URLs, and file data from clipboard.
-/// Similar to BarkVR's journaling import system.
 /// </summary>
 public partial class ClipboardImporter : Node
 {

@@ -1,6 +1,6 @@
 [gd_scene load_steps=18 format=3 uid="uid://cjh7lam2pn4lf"]
 
-[ext_resource type="FontFile" uid="uid://bc0fpvfqcqrld" path="res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf" id="1_font"]
+[ext_resource type="FontFile" uid="uid://dne06dcdmx5hj" path="res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf" id="1_font"]
 [ext_resource type="Script" path="res://Scripts/UI/Dashboard/HomeDash.cs" id="2_script"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_background"]
@@ -756,5 +756,6 @@ vertical_alignment = 1
 [node name="StatusRightSpacer" type="Control" parent="VBox/StatusBar/StatusMargin/StatusContent"]
 custom_minimum_size = Vector2(6, 0)
 layout_mode = 2
+
 
 

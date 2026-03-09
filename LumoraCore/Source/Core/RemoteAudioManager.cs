@@ -1,121 +1,187 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System.Diagnostics.CodeAnalysis;
-using System.Collections.Generic;
-using LumoraLogger = Lumora.Core.Logging.Logger;
 using System;
+using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using Lumora.Core.External.GenericAudioOutputMixer;
+using LumoraLogger = Lumora.Core.Logging.Logger;
+
 namespace Lumora.Core;
 
 public class RemoteAudioManager
 {
-
-    private class CacheBus : IAudioBus
+    private sealed class CacheBus : IAudioBus
     {
-        public float Channels => 0;
-        public List<IAudioEffect> Effects => throw new System.NotImplementedException();
+        private readonly List<IAudioEffect> _effects = new();
+        private float _volumeDb;
 
+        public float Channels => 2f;
+        public List<IAudioEffect> Effects => _effects;
         public IAudioBus? Target { get; set; }
         public string Name { get; set; } = "";
 
-        private float _volume = 0;
-        public float GetVolumeDB() => _volume;
+        public float GetVolumeDB() => _volumeDb;
 
-        public float GetVolumeNormalized() => (float)System.Math.Pow(10, _volume / 20.0);
+        public float GetVolumeNormalized()
+        {
+            if (_volumeDb <= -80f)
+                return 0f;
+
+            return (float)global::System.Math.Pow(10d, _volumeDb / 20d);
+        }
 
         public void SetVolumeDB(float volume)
         {
-            _volume = volume;
+            _volumeDb = volume;
         }
 
         public void SetVolumeNormalized(float volume)
         {
-            _volume = 20 * (float)System.Math.Log10(volume);
+            _volumeDb = volume <= 0f ? -80f : 20f * (float)global::System.Math.Log10(volume);
         }
     }
-    private class CacheMixer : IAudioMixer
+
+    private sealed class CacheMixer : IAudioMixer
     {
-        public string[] GetAvailableAudioEffects()
-        {
-            return Array.Empty<string>();
-        }
-        private Dictionary<string, IAudioBus> _buses = new();
+        private readonly object _sync = new();
+        private readonly Dictionary<string, IAudioBus> _buses = new(StringComparer.Ordinal);
+
         public CacheMixer()
         {
-            _buses.Add("Master", new CacheBus { Name = "Master" });
+            _buses["Master"] = new CacheBus { Name = "Master" };
         }
-        public bool CreateAudioBus(string name, out IAudioBus bus)
+
+        public bool CreateAudioBus(string name, [NotNullWhen(true)] out IAudioBus? bus)
         {
-            bus = new CacheBus { Name = name };
-            return _buses.TryAdd(name, bus);
+            lock (_sync)
+            {
+                if (string.IsNullOrWhiteSpace(name) || _buses.ContainsKey(name))
+                {
+                    bus = null;
+                    return false;
+                }
+
+                var created = new CacheBus { Name = name };
+                _buses[name] = created;
+                bus = created;
+                return true;
+            }
         }
 
         public void ForceSync()
         {
+            // No-op for in-memory cache.
         }
 
-        public IAudioBus[] GetAllBuses() => _buses.Values.ToArray();
-        public IAudioBus GetAudioBusByName(string name) => _buses[name];
+        public IAudioBus[] GetAllBuses()
+        {
+            lock (_sync)
+            {
+                return _buses.Values.ToArray();
+            }
+        }
 
+        public IAudioBus GetAudioBusByName(string name)
+        {
+            lock (_sync)
+            {
+                if (_buses.TryGetValue(name, out var bus))
+                    return bus;
+
+                throw new KeyNotFoundException($"Audio bus '{name}' was not found.");
+            }
+        }
 
         public IAudioBus? GetAudioBusByNameOrNull(string name)
         {
-            _buses.TryGetValue(name, out var res);
-            return res;
+            lock (_sync)
+            {
+                _buses.TryGetValue(name, out var bus);
+                return bus;
+            }
         }
-        public bool TryGetAudioBusByName(string name, [NotNullWhen(true)] out IAudioBus? bus) => _buses.TryGetValue(name, out bus);
+
+        public bool TryGetAudioBusByName(string name, [NotNullWhen(true)] out IAudioBus? bus)
+        {
+            lock (_sync)
+            {
+                if (_buses.TryGetValue(name, out var found))
+                {
+                    bus = found;
+                    return true;
+                }
+
+                bus = null;
+                return false;
+            }
+        }
+
+        public string[] GetAvailableAudioEffects()
+        {
+            return Array.Empty<string>();
+        }
     }
+
     private IAudioMixer _mixer = new CacheMixer();
     public IAudioMixer Mixer => _mixer;
 
     public void Initialize(IAudioMixer mixer)
     {
-        // yes this is bad but i dont want to spend my time making a better data structure
+        ArgumentNullException.ThrowIfNull(mixer);
+
+        if (ReferenceEquals(_mixer, mixer))
+            return;
+
         if (_mixer is CacheMixer)
-        {
-            IAudioBus[] buses = _mixer.GetAllBuses();
-            foreach (IAudioBus bus in buses)
-            {
-                IAudioBus? newbus;
-                LumoraLogger.Log($"[Audio] Importing bus {bus.Name} into external engine");
+            ImportCacheInto(mixer);
 
-                // Try to get the audio bus
-                if (!mixer.TryGetAudioBusByName(bus.Name, out newbus))
-                {
-                    // If it doesn't exist try to create it
-                    if (!mixer.CreateAudioBus(bus.Name, out newbus))
-                    {
-                        LumoraLogger.Log($"[Audio] Failed to create bus: {bus.Name}");
-                        continue;
-                    }
-                }
-
-                // Set the volume
-                try
-                {
-                    newbus?.SetVolumeDB(bus.GetVolumeDB());
-                }
-                catch (System.Exception e)
-                {
-                    LumoraLogger.Log($"[Audio] Exception {e.ToString()} was thrown while setting volume of {bus.Name}");
-                }
-            }
-            foreach (IAudioBus bus in buses)
-            {
-                if (bus.Target is null || !mixer.TryGetAudioBusByName(bus.Name, out var newbus) || !mixer.TryGetAudioBusByName(bus.Target.Name, out var newtarget))
-                    continue;
-                LumoraLogger.Log($"[Audio] Setting target of bus {newbus.Name} to {newtarget.Name}");
-                newbus.Target = newtarget;
-            }
-            _mixer = mixer;
-
-        }
+        _mixer = mixer;
     }
+
     public bool IsInitialized()
     {
         return _mixer is not CacheMixer;
     }
 
+    private void ImportCacheInto(IAudioMixer targetMixer)
+    {
+        IAudioBus[] cachedBuses = _mixer.GetAllBuses();
+
+        foreach (IAudioBus cachedBus in cachedBuses)
+        {
+            if (!targetMixer.TryGetAudioBusByName(cachedBus.Name, out var targetBus) || targetBus == null)
+            {
+                if (!targetMixer.CreateAudioBus(cachedBus.Name, out targetBus) || targetBus == null)
+                {
+                    LumoraLogger.Log($"[Audio] Failed to create bus '{cachedBus.Name}' while importing cache.");
+                    continue;
+                }
+            }
+
+            try
+            {
+                targetBus.SetVolumeDB(cachedBus.GetVolumeDB());
+            }
+            catch (Exception ex)
+            {
+                LumoraLogger.Log($"[Audio] Failed to set volume on '{cachedBus.Name}': {ex.Message}");
+            }
+        }
+
+        foreach (IAudioBus cachedBus in cachedBuses)
+        {
+            if (cachedBus.Target == null)
+                continue;
+
+            if (!targetMixer.TryGetAudioBusByName(cachedBus.Name, out var importedSource) || importedSource == null)
+                continue;
+
+            if (!targetMixer.TryGetAudioBusByName(cachedBus.Target.Name, out var importedTarget) || importedTarget == null)
+                continue;
+
+            importedSource.Target = importedTarget;
+        }
+    }
 }

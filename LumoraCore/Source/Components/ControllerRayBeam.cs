@@ -151,6 +151,15 @@ public sealed class ControllerRayBeam : Component
             return;
         }
 
+        // In desktop mode the left hand has no meaningful aim; hide its beam.
+        var inputCheck = Engine.Current?.InputInterface;
+        if (inputCheck != null && !inputCheck.IsVRActive && ControllerSide.Value == Chirality.Left)
+        {
+            _beamSlot.ActiveSelf.Value = false;
+            return;
+        }
+        _beamSlot.ActiveSelf.Value = true;
+
         float maxDist = MathF.Max(MaxDistance.Value, 0.01f);
         ResolveRayPose(out float3 origin, out float3 direction);
 
@@ -263,29 +272,48 @@ public sealed class ControllerRayBeam : Component
 
     private void ResolveRayPose(out float3 origin, out float3 direction)
     {
-        direction = -Slot.Forward; // Negated: controller visual faces -Z in world space.
-        float dirLen = direction.Length;
-        if (dirLen < 0.0001f)
+        float startOffset = MathF.Max(BeamStartOffset.Value, 0f);
+        var input = Engine.Current?.InputInterface;
+
+        // Desktop mode: the hand slot rotation is a rest pose (fingers down) which is
+        // not useful as an aim direction. Instead, use the head/camera forward so the
+        // beam follows where the user is looking, while the hand visual stays at the side.
+        if (input != null && !input.IsVRActive)
         {
-            direction = float3.Backward;
-        }
-        else
-        {
-            direction /= dirLen;
+            // Find head slot by walking parent hierarchy.
+            // If not found, fall back to world-forward (never to the hand's downward pose).
+            var headSlot = FindHeadSlot();
+            floatQ headRot = headSlot != null ? headSlot.GlobalRotation : floatQ.Identity;
+
+            // Head -Z is forward in Godot/Lumora convention
+            direction = headRot * new float3(0f, 0f, -1f);
+            float dLen = direction.Length;
+            if (dLen > 0.0001f) direction /= dLen;
+            else direction = float3.Backward;
+
+            origin = new float3(
+                Slot.GlobalPosition.x + direction.x * startOffset,
+                Slot.GlobalPosition.y + direction.y * startOffset,
+                Slot.GlobalPosition.z + direction.z * startOffset);
+            return;
         }
 
-        float startOffset = MathF.Max(BeamStartOffset.Value, 0f);
+        // VR mode: controller slot rotation is driven by hardware tracking — use it directly.
+        direction = -Slot.Forward; // controller faces -Z local → world forward when tracked
+        float dirLen = direction.Length;
+        if (dirLen < 0.0001f)
+            direction = float3.Backward;
+        else
+            direction /= dirLen;
+
         origin = new float3(
             Slot.GlobalPosition.x + direction.x * startOffset,
             Slot.GlobalPosition.y + direction.y * startOffset,
             Slot.GlobalPosition.z + direction.z * startOffset);
 
-        var input = Engine.Current?.InputInterface;
-        if (input == null)
-        {
-            return;
-        }
+        if (input == null) return;
 
+        // VR hand tracking: refine to index fingertip direction when available.
         BodyNode tipNode = ControllerSide.Value == Chirality.Left
             ? BodyNode.LeftIndexFinger_Tip
             : BodyNode.RightIndexFinger_Tip;
@@ -294,10 +322,7 @@ public sealed class ControllerRayBeam : Component
             : BodyNode.RightIndexFinger_Distal;
 
         var tip = input.GetBodyNode(tipNode);
-        if (tip == null || !tip.IsTracking)
-        {
-            return;
-        }
+        if (tip == null || !tip.IsTracking) return;
 
         float3 resolvedOrigin = tip.Position;
 
@@ -310,9 +335,7 @@ public sealed class ControllerRayBeam : Component
                 tip.Position.z - distal.Position.z);
             float fingertipDirectionLength = fingertipDirection.Length;
             if (fingertipDirectionLength > 0.0001f)
-            {
                 direction = fingertipDirection / fingertipDirectionLength;
-            }
         }
 
         origin = new float3(
@@ -542,6 +565,45 @@ public sealed class ControllerRayBeam : Component
             origin.y + direction.y * length * 0.5f,
             origin.z + direction.z * length * 0.5f);
         _beamSlot.GlobalRotation = AlignYToDirection(direction);
+    }
+
+    /// <summary>
+    /// Finds the head slot for desktop aim direction by walking the parent hierarchy.
+    /// Tries two strategies: via UserRoot.HeadSlot, then by directly searching a sibling
+    /// named "Head" inside the nearest "Body Nodes" ancestor.
+    /// </summary>
+    private Slot FindHeadSlot()
+    {
+        // Strategy 1: walk to UserRoot and use its HeadSlot accessor
+        var current = Slot.Parent;
+        while (current != null)
+        {
+            var userRoot = current.GetComponent<UserRoot>();
+            if (userRoot != null)
+            {
+                var hs = userRoot.HeadSlot;
+                if (hs != null) return hs;
+                break; // found UserRoot but HeadSlot is null; try strategy 2
+            }
+            current = current.Parent;
+        }
+
+        // Strategy 2: find the "Body Nodes" ancestor, then get its "Head" child directly
+        current = Slot.Parent;
+        while (current != null)
+        {
+            if (current.Name.Value == "Body Nodes")
+            {
+                foreach (var child in current.Children)
+                {
+                    if (child.Name.Value == "Head")
+                        return child;
+                }
+            }
+            current = current.Parent;
+        }
+
+        return null;
     }
 
     private bool ReadTriggerPressed()

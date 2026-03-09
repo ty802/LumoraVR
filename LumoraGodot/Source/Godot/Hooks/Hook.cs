@@ -1,6 +1,9 @@
-using Lumora.Core;
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-namespace Aquamarine.Godot.Hooks;
+﻿using Lumora.Core;
+
+namespace Lumora.Godot.Hooks;
 
 /// <summary>
 /// Base class for all Godot hooks.
@@ -58,4 +61,12 @@ public abstract class Hook<D> : IHook<D> where D : IImplementable
     /// Override this to free Godot nodes.
     /// </summary>
     public abstract void Destroy(bool destroyingWorld);
+
+    /// <summary>
+    /// Dispose of the hook and release resources.
+    /// </summary>
+    public virtual void Dispose()
+    {
+        Destroy(false);
+    }
 }

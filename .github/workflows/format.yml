@@ -1,28 +1,48 @@
 name: .NET Format Validation
+# if your code isn't formatted, dotnet format exists, use it, it takes 5 seconds
 on:
   pull_request:
-    branches: 
+    branches:
       - main
+
+# needs write perms to add labels - github won't tell you why it 403s, it'll just silently fail
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
 jobs:
   format-check:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-    
+        submodules: 'false'
+        token: ${{ secrets.GH_PAT }}
+
+    - name: Initialize submodules with PAT
+      # format check needs the full source tree or it'll shit itself on missing references
+      run: |
+        git config --global url."https://${{ secrets.GH_PAT }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
+        git submodule update --init --recursive
+
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: '9.0.x'
-    
+        # net10.0 targets in LumoraCore/LumoraCDN - don't downgrade this to 9 again ffs
+        dotnet-version: '10.0.x'
+
+    - name: Restore dependencies
+      # dotnet format needs packages restored first or it can't resolve analyzers
+      # yes this step is necessary, no you can't skip it, i already tried
+      run: dotnet restore LumoraGodot/Lumora.sln
+
     - name: Run dotnet format check
-      run: |
-        # Check formatting across the entire solution
-        dotnet format --verify-no-changes LumoraGodot/Aquamarine.sln
-      
+      run: dotnet format --verify-no-changes LumoraGodot/Lumora.sln
+
     - name: Add format-issues label if formatting issues found
       if: failure()
       uses: actions/github-script@v7
@@ -35,9 +55,9 @@ jobs:
             repo: context.repo.repo,
             labels: ['format-issues']
           })
-          
+
     - name: Fail if formatting issues found
       if: failure()
       run: |
-        echo "::error::Code formatting check failed. Please run 'dotnet format' and commit the changes."
+        echo "::error::Formatting check failed. Run 'dotnet format LumoraGodot/Lumora.sln' locally and commit the result. It's not hard."
         exit 1

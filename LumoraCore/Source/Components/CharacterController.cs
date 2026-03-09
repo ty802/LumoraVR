@@ -1,8 +1,11 @@
-using System.Collections.Generic;
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+﻿using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Math;
 using Lumora.Core.Physics;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -18,6 +21,11 @@ public class CharacterController : ImplementableComponent, IColliderOwner
     public float Speed { get; set; } = 5.0f;
     public float AirSpeed { get; set; } = 1.0f;
     public float JumpSpeed { get; set; } = 6.0f;
+    public float CrouchSpeed { get; set; } = 2.5f;
+    public float SprintMultiplier { get; set; } = 1.7f;
+    public float StandingHeight { get; set; } = 1.8f;
+    public float CrouchHeight { get; set; } = 1.0f;
+    public float CrouchTransitionSpeed { get; set; } = 8.0f;
 
     // ===== STATE =====
 
@@ -32,6 +40,9 @@ public class CharacterController : ImplementableComponent, IColliderOwner
     private bool _jumpRequested = false;
     private bool _isReady = false;
     private bool _creationAttempted = false;
+    private bool _isCrouching = false;
+    private bool _isSprinting = false;
+    private float _currentHeight;
 
     private UserRoot _userRoot;
 
@@ -53,7 +64,7 @@ public class CharacterController : ImplementableComponent, IColliderOwner
         {
             _colliders.Add(collider);
             _collidersChanged = true;
-            AquaLogger.Log($"CharacterController: Added collider {collider.GetType().Name}");
+            LumoraLogger.Log($"CharacterController: Added collider {collider.GetType().Name}");
         }
     }
 
@@ -68,13 +79,13 @@ public class CharacterController : ImplementableComponent, IColliderOwner
                 _colliderShapes.Remove(collider);
             }
             _collidersChanged = true;
-            AquaLogger.Log($"CharacterController: Removed collider {collider.GetType().Name}");
+            LumoraLogger.Log($"CharacterController: Removed collider {collider.GetType().Name}");
         }
     }
 
     public void OnColliderShapeChanged(Collider collider)
     {
-        AquaLogger.Log($"CharacterController: Rebuilt shape for {collider.GetType().Name} (TODO: Physics driver)");
+        LumoraLogger.Log($"CharacterController: Rebuilt shape for {collider.GetType().Name} (TODO: Physics driver)");
     }
 
     public void PostprocessBoundsOffset(ref float3 offset)
@@ -90,7 +101,7 @@ public class CharacterController : ImplementableComponent, IColliderOwner
         _userRoot = Slot.GetComponent<UserRoot>();
         if (_userRoot == null)
         {
-            AquaLogger.Warn("CharacterController: No UserRoot found!");
+            LumoraLogger.Warn("CharacterController: No UserRoot found!");
             return;
         }
     }
@@ -98,56 +109,7 @@ public class CharacterController : ImplementableComponent, IColliderOwner
     public override void OnStart()
     {
         base.OnStart();
-
-        if (_userRoot?.ActiveUser == World.LocalUser)
-        {
-            // Discover colliders NOW (after all components are added to slot)
-            DiscoverColliders();
-
-            // Tell hook to create collision shapes
-            if (Hook != null)
-            {
-                AquaLogger.Log($"CharacterController: Hook exists (type={Hook.GetType().Name}), calling AddColliderShape for {_colliders.Count} colliders");
-
-                try
-                {
-                    var colliders = GetColliders();
-                    foreach (var collider in colliders)
-                    {
-                        AquaLogger.Log($"CharacterController: Calling AddColliderShape for {collider.GetType().Name}");
-
-                        // Use reflection to verify the method exists
-                        var method = Hook.GetType().GetMethod("AddColliderShape");
-                        if (method != null)
-                        {
-                            AquaLogger.Log($"CharacterController: Method AddColliderShape found on hook");
-                            method.Invoke(Hook, new object[] { collider });
-                            AquaLogger.Log($"CharacterController: Method invoked successfully");
-                        }
-                        else
-                        {
-                            AquaLogger.Error($"CharacterController: Method AddColliderShape NOT found on hook type {Hook.GetType().Name}");
-                        }
-                    }
-
-                    // IMPORTANT: Register for hook updates so physics actually runs!
-                    RunApplyChanges();
-                    _isReady = true;
-                    AquaLogger.Log("CharacterController: Registered for hook updates - physics enabled!");
-                }
-                catch (System.Exception ex)
-                {
-                    AquaLogger.Error($"CharacterController: Failed to add collider shape: {ex.Message}\nStack: {ex.StackTrace}");
-                }
-            }
-            else
-            {
-                AquaLogger.Warn("CharacterController: Hook is null!");
-            }
-
-            _isReady = true;
-            AquaLogger.Log($"CharacterController: Initialized for local user '{_userRoot.ActiveUser.UserName.Value}' with {_colliders.Count} colliders");
-        }
+        TryInitializeLocalUser();
     }
 
     /// <summary>
@@ -167,17 +129,17 @@ public class CharacterController : ImplementableComponent, IColliderOwner
                 collider.Type.Value == ColliderType.CharacterController)
             {
                 _colliders.Add(collider);
-                AquaLogger.Log($"CharacterController: Found {collider.GetType().Name} with Type=CharacterController");
+                LumoraLogger.Log($"CharacterController: Found {collider.GetType().Name} with Type=CharacterController");
             }
         }
 
         // Sort by some stable criteria if multiple colliders (standard sort order)
         if (_colliders.Count > 1)
         {
-            AquaLogger.Warn($"CharacterController: Found {_colliders.Count} colliders, using first one");
+            LumoraLogger.Warn($"CharacterController: Found {_colliders.Count} colliders, using first one");
         }
 
-        AquaLogger.Log($"CharacterController: Discovered {_colliders.Count} colliders in same slot");
+        LumoraLogger.Log($"CharacterController: Discovered {_colliders.Count} colliders in same slot");
     }
 
     /// <summary>
@@ -212,7 +174,7 @@ public class CharacterController : ImplementableComponent, IColliderOwner
         // }
         // else
         // {
-        // 	AquaLogger.Error("CharacterController: Could not find scene root - WorldRenderer not initialized?");
+        // 	LumoraLogger.Error("CharacterController: Could not find scene root - WorldRenderer not initialized?");
         // }
         throw new System.NotImplementedException("Physics driver system required");
     }
@@ -234,8 +196,13 @@ public class CharacterController : ImplementableComponent, IColliderOwner
     {
         base.OnUpdate(delta);
 
+        if (!_isReady)
+        {
+            TryInitializeLocalUser();
+        }
+
         // Skip if not local user
-        if (_userRoot?.ActiveUser != World.LocalUser)
+        if (!(_userRoot?.IsLocalUserRoot ?? false))
             return;
 
         // Keep registering for hook updates every frame so physics runs continuously
@@ -243,6 +210,68 @@ public class CharacterController : ImplementableComponent, IColliderOwner
         {
             RunApplyChanges();
         }
+    }
+
+    private void TryInitializeLocalUser()
+    {
+        if (_isReady)
+            return;
+
+        if (_userRoot == null)
+        {
+            _userRoot = Slot.GetComponent<UserRoot>();
+            if (_userRoot == null)
+                return;
+        }
+
+        if (!_userRoot.IsLocalUserRoot)
+            return;
+
+        // Discover colliders NOW (after all components are added to slot)
+        DiscoverColliders();
+
+        // Tell hook to create collision shapes
+        if (Hook != null)
+        {
+            LumoraLogger.Log($"CharacterController: Hook exists (type={Hook.GetType().Name}), calling AddColliderShape for {_colliders.Count} colliders");
+
+            try
+            {
+                var colliders = GetColliders();
+                foreach (var collider in colliders)
+                {
+                    LumoraLogger.Log($"CharacterController: Calling AddColliderShape for {collider.GetType().Name}");
+
+                    // Use reflection to verify the method exists
+                    var method = Hook.GetType().GetMethod("AddColliderShape");
+                    if (method != null)
+                    {
+                        LumoraLogger.Log($"CharacterController: Method AddColliderShape found on hook");
+                        method.Invoke(Hook, new object[] { collider });
+                        LumoraLogger.Log($"CharacterController: Method invoked successfully");
+                    }
+                    else
+                    {
+                        LumoraLogger.Error($"CharacterController: Method AddColliderShape NOT found on hook type {Hook.GetType().Name}");
+                    }
+                }
+
+                // IMPORTANT: Register for hook updates so physics actually runs!
+                RunApplyChanges();
+                LumoraLogger.Log("CharacterController: Registered for hook updates - physics enabled!");
+            }
+            catch (System.Exception ex)
+            {
+                LumoraLogger.Error($"CharacterController: Failed to add collider shape: {ex.Message}\nStack: {ex.StackTrace}");
+            }
+        }
+        else
+        {
+            LumoraLogger.Warn("CharacterController: Hook is null!");
+        }
+
+        _isReady = true;
+        LumoraLogger.Log($"CharacterController: Initialized for local user '{_userRoot.ActiveUser.UserName.Value}' with {_colliders.Count} colliders");
     }
 
     // TODO: Physics driver system - Move to physics hook
@@ -286,7 +315,7 @@ public class CharacterController : ImplementableComponent, IColliderOwner
         // {
         // 	_velocity.y = JumpSpeed;
         // 	_jumpRequested = false;
-        // 	AquaLogger.Log("CharacterController: Jump!");
+        // 	LumoraLogger.Log("CharacterController: Jump!");
         // }
         // else if (!_jumpRequested)
         // {
@@ -342,6 +371,56 @@ public class CharacterController : ImplementableComponent, IColliderOwner
             hook?.RequestJump();
         }
         catch { }
+    }
+
+    /// <summary>
+    /// Set crouch state.
+    /// Called by locomotion system.
+    /// </summary>
+    public void SetCrouching(bool crouching)
+    {
+        _isCrouching = crouching;
+        if (crouching)
+        {
+            _isSprinting = false;
+        }
+
+        // Pass to hook for physics (uses dynamic dispatch)
+        dynamic hook = Hook;
+        try
+        {
+            hook?.SetCrouching(crouching);
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Set sprint state.
+    /// </summary>
+    public void SetSprinting(bool sprinting)
+    {
+        if (_isCrouching)
+        {
+            _isSprinting = false;
+            return;
+        }
+        _isSprinting = sprinting;
+    }
+
+    /// <summary>
+    /// Check if character is crouching.
+    /// </summary>
+    public bool IsCrouching => _isCrouching;
+    public bool IsSprinting => _isSprinting;
+
+    /// <summary>
+    /// Get current movement speed based on state.
+    /// </summary>
+    public float GetCurrentSpeed()
+    {
+        if (_isCrouching) return CrouchSpeed;
+        if (_currentState == MovementState.InAir) return AirSpeed;
+        return _isSprinting ? Speed * SprintMultiplier : Speed;
     }
 
     /// <summary>
@@ -401,6 +480,6 @@ public class CharacterController : ImplementableComponent, IColliderOwner
         _colliderShapes.Clear();
 
         base.OnDestroy();
-        AquaLogger.Log("CharacterController: Destroyed");
+        LumoraLogger.Log("CharacterController: Destroyed");
     }
 }

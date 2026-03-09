@@ -1,9 +1,12 @@
-using System;
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+﻿using System;
 using Lumora.Core.Logging;
 using Godot;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Source.Input;
+namespace Lumora.Source.Input;
 
 public partial class VRInput : Node3D, IInputProvider
 {
@@ -17,7 +20,14 @@ public partial class VRInput : Node3D, IInputProvider
     private Vector3 _playspaceDelta;
     private float _rotation;
 
-    public static readonly PackedScene PackedScene = ResourceLoader.Load<PackedScene>("res://Scenes/VRInput.tscn");
+    // Laser interaction for UI
+    private LaserInteractionManager _laserManager;
+    private GrabManager _grabManager;
+
+    /// <summary>
+    /// Laser interaction manager for VR UI interaction.
+    /// </summary>
+    public LaserInteractionManager LaserManager => _laserManager;
 
     public override void _Ready()
     {
@@ -36,11 +46,20 @@ public partial class VRInput : Node3D, IInputProvider
             _leftFoot.ProcessPriority = -10;
             _rightFoot.ProcessPriority = -10;
 
-            AquaLogger.Log("XRInput initialized successfully.");
+            // Create laser interaction manager for UI
+            _laserManager = new LaserInteractionManager();
+            _laserManager.Name = "LaserInteraction";
+            AddChild(_laserManager);
+
+            _grabManager = new GrabManager();
+            _grabManager.Name = "GrabManager";
+            AddChild(_grabManager);
+
+            LumoraLogger.Log("XRInput initialized successfully.");
         }
         catch (Exception ex)
         {
-            AquaLogger.Error($"Error during XRInput initialization: {ex.Message}");
+            LumoraLogger.Error($"Error during XRInput initialization: {ex.Message}");
         }
     }
 

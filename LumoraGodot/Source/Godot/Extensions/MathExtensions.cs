@@ -1,7 +1,10 @@
-using Godot;
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+﻿using Godot;
 using Lumora.Core.Math;
 
-namespace Aquamarine.Godot.Extensions;
+namespace Lumora.Godot.Extensions;
 
 /// <summary>
 /// Extension methods for converting between Lumora.Core.Math types and Godot types.

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 // handles all the cloud shit with compression and parallel uploads
 
 using System;
@@ -28,11 +31,11 @@ public sealed class LumoraClient : IDisposable
 
     public static TimeSpan ApiTimeout { get; set; } = TimeSpan.FromSeconds(30);
     public static TimeSpan ContentTimeout { get; set; } = TimeSpan.FromMinutes(10);
-    public static bool EnableCompression { get; set; } = true;
+    public static bool EnableCompression { get; set; } = false;
 
     public string DeviceId => _deviceId;
     public Session? CurrentSession => _session;
-    public bool IsAuthenticated => _session != null && DateTime.UtcNow < _session.Expires;
+    public bool IsAuthenticated => _session != null && !string.IsNullOrEmpty(_session.Token);
 
     public event Action<Session>? Authenticated;
     public event Action? SignedOut;
@@ -76,13 +79,16 @@ public sealed class LumoraClient : IDisposable
 
     #region Auth
 
-    public async Task<ApiResponse<Session>> SignIn(string username, string password, bool remember = false)
+    public async Task<ApiResponse<Session>> SignIn(string username, string password, bool remember = false, string? twoFactorCode = null)
     {
         if (!Connectivity.IsOnline)
             return ApiResponse<Session>.Fail(HttpStatusCode.ServiceUnavailable, "Offline");
 
-        var payload = new { Username = username, Password = password, Remember = remember, DeviceId = _deviceId };
-        var result = await PostAsync<Session>($"{ServiceConfig.Current.ApiBase}/auth/login", payload);
+        object payload = string.IsNullOrEmpty(twoFactorCode)
+            ? new { Username = username, Password = password, Remember = remember, DeviceId = _deviceId }
+            : new { Username = username, Password = password, Remember = remember, DeviceId = _deviceId, TwoFactorCode = twoFactorCode };
+
+        var result = await PostAsync<Session>($"{ServiceConfig.Current.ApiBase}/api/user/login", payload);
 
         if (result.Success && result.Data != null)
             ApplySession(result.Data);
@@ -96,7 +102,7 @@ public sealed class LumoraClient : IDisposable
             return ApiResponse<Session>.Fail(HttpStatusCode.ServiceUnavailable, "Offline");
 
         var payload = new { UserId = userId, Token = token, DeviceId = _deviceId };
-        var result = await PostAsync<Session>($"{ServiceConfig.Current.ApiBase}/auth/token", payload);
+        var result = await PostAsync<Session>($"{ServiceConfig.Current.ApiBase}/api/user/token", payload);
 
         if (result.Success && result.Data != null)
             ApplySession(result.Data);
@@ -115,7 +121,7 @@ public sealed class LumoraClient : IDisposable
             return ApiResponse.Ok("Signed out locally (offline)");
         }
 
-        var result = await PostAsync($"{ServiceConfig.Current.ApiBase}/auth/logout", null);
+        var result = await PostAsync($"{ServiceConfig.Current.ApiBase}/api/user/logout", null);
         ClearSession();
         return result;
     }
@@ -134,6 +140,194 @@ public sealed class LumoraClient : IDisposable
         _session = null;
         _api.DefaultRequestHeaders.Authorization = null;
         SignedOut?.Invoke();
+    }
+
+    #endregion
+
+    #region User Profile
+
+    public Task<ApiResponse<UserProfile>> GetCurrentUser()
+        => GetAsync<UserProfile>($"{ServiceConfig.Current.ApiBase}/api/user/me");
+
+    public async Task<ApiResponse> ChangePassword(string currentPassword, string newPassword)
+    {
+        if (!IsAuthenticated)
+            return ApiResponse.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+
+        var payload = new { CurrentPassword = currentPassword, NewPassword = newPassword };
+        return await PostAsync($"{ServiceConfig.Current.ApiBase}/api/user/reset-password", payload);
+    }
+
+    public async Task<ApiResponse<TwoFactorSetup>> Enable2FA()
+    {
+        if (!IsAuthenticated)
+            return ApiResponse<TwoFactorSetup>.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+
+        return await PostAsync<TwoFactorSetup>($"{ServiceConfig.Current.ApiBase}/api/user/enable2fa", null);
+    }
+
+    public async Task<ApiResponse> Verify2FA(string code)
+    {
+        if (!IsAuthenticated)
+            return ApiResponse.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+
+        var payload = new { Code = code };
+        return await PostAsync($"{ServiceConfig.Current.ApiBase}/api/user/verify2fa", payload);
+    }
+
+    public async Task<ApiResponse> Disable2FA(string code)
+    {
+        if (!IsAuthenticated)
+            return ApiResponse.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+
+        var payload = new { Code = code };
+        return await PostAsync($"{ServiceConfig.Current.ApiBase}/api/user/disable2fa", payload);
+    }
+
+    #endregion
+
+    #region Inventory
+
+    public async Task<ApiResponse<InventoryResponse>> GetInventory()
+    {
+        if (!IsAuthenticated)
+            return ApiResponse<InventoryResponse>.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+
+        var user = await GetCurrentUser();
+        if (user.Failed || user.Data == null)
+            return ApiResponse<InventoryResponse>.Fail(user.Status, user.Message);
+
+        return await GetAsync<InventoryResponse>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{user.Data.Id}");
+    }
+
+    public async Task<ApiResponse<List<AssetRef>>> GetInventoryByType(AssetType type)
+    {
+        if (!IsAuthenticated)
+            return ApiResponse<List<AssetRef>>.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+
+        var user = await GetCurrentUser();
+        if (user.Failed || user.Data == null)
+            return ApiResponse<List<AssetRef>>.Fail(user.Status, user.Message);
+
+        var typePath = type switch
+        {
+            AssetType.Avatar => "avatars",
+            AssetType.World => "worlds",
+            AssetType.Prop => "props",
+            _ => "props"
+        };
+
+        return await GetAsync<List<AssetRef>>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{user.Data.Id}/{typePath}");
+    }
+
+    public async Task<ApiResponse<List<UserFolder>>> GetFolders()
+    {
+        if (!IsAuthenticated)
+            return ApiResponse<List<UserFolder>>.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+
+        var user = await GetCurrentUser();
+        if (user.Failed || user.Data == null)
+            return ApiResponse<List<UserFolder>>.Fail(user.Status, user.Message);
+
+        return await GetAsync<List<UserFolder>>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{user.Data.Id}/folders");
+    }
+
+    public async Task<ApiResponse<UserFolder>> GetFolder(string folderId)
+    {
+        if (!IsAuthenticated)
+            return ApiResponse<UserFolder>.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+
+        var user = await GetCurrentUser();
+        if (user.Failed || user.Data == null)
+            return ApiResponse<UserFolder>.Fail(user.Status, user.Message);
+
+        return await GetAsync<UserFolder>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{user.Data.Id}/folders/{folderId}");
+    }
+
+    public async Task<ApiResponse<List<AssetInfo>>> GetUserAssets()
+    {
+        if (!IsAuthenticated)
+            return ApiResponse<List<AssetInfo>>.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+
+        var user = await GetCurrentUser();
+        if (user.Failed || user.Data == null)
+            return ApiResponse<List<AssetInfo>>.Fail(user.Status, user.Message);
+
+        return await GetAsync<List<AssetInfo>>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{user.Data.Id}/assets");
+    }
+
+    public async Task<ApiResponse<UserQuotaResponse>> GetQuota()
+    {
+        if (!IsAuthenticated)
+            return ApiResponse<UserQuotaResponse>.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+
+        var user = await GetCurrentUser();
+        if (user.Failed || user.Data == null)
+            return ApiResponse<UserQuotaResponse>.Fail(user.Status, user.Message);
+
+        return await GetAsync<UserQuotaResponse>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{user.Data.Id}/quota");
+    }
+
+    public async Task<ApiResponse<UserFolder>> CreateFolder(string name, string? parentFolderId = null)
+    {
+        if (!IsAuthenticated)
+            return ApiResponse<UserFolder>.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+
+        var user = await GetCurrentUser();
+        if (user.Failed || user.Data == null)
+            return ApiResponse<UserFolder>.Fail(user.Status, user.Message);
+
+        var payload = new { Name = name, ParentFolderId = parentFolderId };
+        return await PostAsync<UserFolder>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{user.Data.Id}/folders", payload);
+    }
+
+    public async Task<ApiResponse> AddAsset(string assetId)
+    {
+        if (!IsAuthenticated)
+            return ApiResponse.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+
+        var user = await GetCurrentUser();
+        if (user.Failed || user.Data == null)
+            return ApiResponse.Fail(user.Status, user.Message);
+
+        return await PostAsync($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{user.Data.Id}/assets/{assetId}", null);
+    }
+
+    public async Task<ApiResponse> MoveAsset(string assetId, string? sourceFolderId, string targetFolderId)
+    {
+        if (!IsAuthenticated)
+            return ApiResponse.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+
+        var user = await GetCurrentUser();
+        if (user.Failed || user.Data == null)
+            return ApiResponse.Fail(user.Status, user.Message);
+
+        var payload = new { SourceFolderId = sourceFolderId, TargetFolderId = targetFolderId };
+        return await PostAsync($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{user.Data.Id}/assets/{assetId}/move", payload);
+    }
+
+    public async Task<ApiResponse> UpdateAsset(string assetId, AssetRef assetRef)
+    {
+        if (!IsAuthenticated)
+            return ApiResponse.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+
+        var user = await GetCurrentUser();
+        if (user.Failed || user.Data == null)
+            return ApiResponse.Fail(user.Status, user.Message);
+
+        return await PutAsync($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{user.Data.Id}/assets/{assetId}", assetRef);
+    }
+
+    public async Task<ApiResponse> RemoveAsset(string assetId)
+    {
+        if (!IsAuthenticated)
+            return ApiResponse.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+
+        var user = await GetCurrentUser();
+        if (user.Failed || user.Data == null)
+            return ApiResponse.Fail(user.Status, user.Message);
+
+        return await DeleteAsync($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{user.Data.Id}/assets/{assetId}");
     }
 
     #endregion
@@ -504,6 +698,61 @@ public sealed class LumoraClient : IDisposable
         catch (Exception ex)
         {
             return ApiResponse<T>.FromException(ex);
+        }
+    }
+
+    private async Task<ApiResponse> DeleteAsync(string url)
+    {
+        if (!Connectivity.IsOnline)
+            return ApiResponse.Fail(HttpStatusCode.ServiceUnavailable, "Offline");
+
+        try
+        {
+            using var response = await _api.DeleteAsync(url);
+            Connectivity.ReportSuccess();
+            return new ApiResponse
+            {
+                Success = response.IsSuccessStatusCode,
+                Status = response.StatusCode,
+                RawBody = await response.Content.ReadAsStringAsync()
+            };
+        }
+        catch (HttpRequestException)
+        {
+            Connectivity.ReportFailure();
+            return ApiResponse.Fail(HttpStatusCode.ServiceUnavailable, "Network error");
+        }
+        catch (Exception ex)
+        {
+            return ApiResponse.FromException(ex);
+        }
+    }
+
+    private async Task<ApiResponse> PutAsync(string url, object? payload)
+    {
+        if (!Connectivity.IsOnline)
+            return ApiResponse.Fail(HttpStatusCode.ServiceUnavailable, "Offline");
+
+        try
+        {
+            using var content = CreateJsonContent(payload);
+            using var response = await _api.PutAsync(url, content);
+            Connectivity.ReportSuccess();
+            return new ApiResponse
+            {
+                Success = response.IsSuccessStatusCode,
+                Status = response.StatusCode,
+                RawBody = await response.Content.ReadAsStringAsync()
+            };
+        }
+        catch (HttpRequestException)
+        {
+            Connectivity.ReportFailure();
+            return ApiResponse.Fail(HttpStatusCode.ServiceUnavailable, "Network error");
+        }
+        catch (Exception ex)
+        {
+            return ApiResponse.FromException(ex);
         }
     }
 

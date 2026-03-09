@@ -1,3 +1,6 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.Components.Meshes;
@@ -20,9 +23,20 @@ internal sealed class SocialSpaceWorldTemplate : WorldTemplateDefinition
         var lightSlot = world.RootSlot.AddSlot("DirectionalLight");
         lightSlot.LocalPosition.Value = new float3(0f, 8f, 0f);
         lightSlot.LocalRotation.Value = floatQ.Euler(0.6f, -0.4f, 0f);
+        var dirLight = lightSlot.AttachComponent<Light>();
+        dirLight.Type.Value = LightType.Directional;
+        dirLight.LightColor.Value = new color(1f, 0.96f, 0.84f, 1f);
+        dirLight.Intensity.Value = 1.0f;
+        dirLight.Shadows.Value = ShadowType.Soft;
 
         var ambientLightSlot = world.RootSlot.AddSlot("AmbientLight");
         ambientLightSlot.LocalPosition.Value = new float3(0f, 5f, 0f);
+        var ambientLight = ambientLightSlot.AttachComponent<Light>();
+        ambientLight.Type.Value = LightType.Point;
+        ambientLight.LightColor.Value = new color(0.4f, 0.45f, 0.55f, 1f);
+        ambientLight.Intensity.Value = 0.35f;
+        ambientLight.Range.Value = 100f;
+        ambientLight.Shadows.Value = ShadowType.None;
 
         var groundSlot = world.RootSlot.AddSlot("Ground");
         groundSlot.LocalPosition.Value = new float3(0f, 0f, 0f);
@@ -40,7 +54,7 @@ internal sealed class SocialSpaceWorldTemplate : WorldTemplateDefinition
         var uiPanelsSlot = world.RootSlot.AddSlot("UIPanels");
         uiPanelsSlot.LocalPosition.Value = new float3(0f, 1.4f, -2f);
 
-        AttachUserInspectorPanel(uiPanelsSlot, new float3(-1.2f, 0f, 0f));
-        AttachEngineDebugPanel(uiPanelsSlot, new float3(1.2f, 0f, 0f));
+        AttachGodotUserInspectorPanel(uiPanelsSlot, new float3(-0.4f, 0f, 0f));
+        AttachGodotEngineDebugPanel(uiPanelsSlot, new float3(0.5f, 0f, 0f));
     }
 }

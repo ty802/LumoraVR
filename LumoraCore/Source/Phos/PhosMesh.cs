@@ -1,3 +1,6 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -297,6 +300,18 @@ public class PhosMesh
     {
         CheckUV(channel);
         return uvChannels[channel].uv2D!;
+    }
+
+    /// <summary>
+    /// Set a UV coordinate at a specific vertex index.
+    /// </summary>
+    public void SetUV(int channel, int vertexIndex, float2 uv)
+    {
+        CheckUV(channel);
+        if (vertexIndex >= 0 && vertexIndex < VertexCount)
+        {
+            uvChannels[channel].uv2D![vertexIndex] = uv;
+        }
     }
 
     /// <summary>

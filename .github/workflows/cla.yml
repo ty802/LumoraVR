@@ -1,0 +1,62 @@
+name: CLA Check
+# every contributor must sign our CLA before their PR touches main
+# if someone bypasses this i will lose my mind
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    # fires when a PR is opened, reopened, or synced - catches everyone, no sneaking through
+    types: [opened, reopened, synchronize]
+
+permissions:
+  # needs read on PR contents, write to post the bot comment and update the check status
+  contents: write
+  pull-requests: write
+  issues: write
+  statuses: write
+
+jobs:
+  cla-check:
+    runs-on: ubuntu-latest
+    # only run on actual PRs, not random issue comments from randos
+    if: |
+      (github.event_name == 'pull_request_target') ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
+    steps:
+      - name: CLA Assistant
+        # contributor-assistant is the only maintained CLA action that doesn't require
+        # a third-party service. mschilde abandoned their shit years ago, this one works.
+        # signatures stored in main branch under .github/cla-signatures.json so they're
+        # auditable and not hidden in some gist nobody can find
+        uses: contributor-assistant/github-action@v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GH_PAT needed to commit the signature file back to main
+          # if you remove this secret and wonder why it's broken, it's this
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.GH_PAT }}
+        with:
+          path-to-signatures: '.github/cla-signatures.json'
+          path-to-document: 'https://github.com/${{ github.repository }}/blob/main/.github/CLA.md'
+          branch: 'main'
+          # bots don't sign CLAs, exclude them or they'll spam the comment
+          allowlist: 'bot*,dependabot[bot],github-actions[bot]'
+          # exact phrase the contributor must comment - don't change this without updating PR template too
+          signed-commit-message: 'CLA signed by @$contributorName'
+          custom-notsigned-prcomment: |
+            ## CLA Signature Required
+
+            Hey @${{ github.event.pull_request.user.login }} — before this PR can be reviewed or merged, you need to sign our **Contributor License Agreement**.
+
+            This is not optional. By contributing to LumoraVR you assign IP rights to LUMORAVR LTD. Read the full terms here:
+            👉 [LumoraVR CLA]($pathToCLA)
+
+            **To sign**, post a comment on this PR with exactly this text:
+
+            ```
+            I have read the CLA Document and I hereby sign the CLA
+            ```
+
+            Once signed your name is recorded and you won't need to do this again for future PRs.
+          custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
+          custom-allsigned-prcomment: |
+            ✅ CLA signed. You're good to go.

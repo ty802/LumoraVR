@@ -1,8 +1,11 @@
-using System.Collections.Generic;
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+﻿using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components.Avatar;
 
@@ -190,7 +193,7 @@ public class BipedRig : Component
     {
         if (skeleton == null || !skeleton.IsBuilt.Value)
         {
-            AquaLogger.Warn("BipedRig: Cannot populate from null or unbuilt skeleton");
+            LumoraLogger.Warn("BipedRig: Cannot populate from null or unbuilt skeleton");
             return;
         }
 
@@ -275,7 +278,7 @@ public class BipedRig : Component
             }
         }
 
-        AquaLogger.Log($"BipedRig: Populated {Bones.Count} bones from skeleton, IsBiped={IsBiped}");
+        LumoraLogger.Log($"BipedRig: Populated {Bones.Count} bones from skeleton, IsBiped={IsBiped}");
     }
 
     /// <summary>
@@ -283,22 +286,22 @@ public class BipedRig : Component
     /// </summary>
     public void LogDiagnosticInfo()
     {
-        AquaLogger.Log($"BipedRig Diagnostic Info:");
-        AquaLogger.Log($"  Total bones: {Bones.Count}");
-        AquaLogger.Log($"  IsBiped: {IsBiped}");
-        AquaLogger.Log($"  HasLeftHandFingers: {HasLeftHandFingers}");
-        AquaLogger.Log($"  HasRightHandFingers: {HasRightHandFingers}");
+        LumoraLogger.Log($"BipedRig Diagnostic Info:");
+        LumoraLogger.Log($"  Total bones: {Bones.Count}");
+        LumoraLogger.Log($"  IsBiped: {IsBiped}");
+        LumoraLogger.Log($"  HasLeftHandFingers: {HasLeftHandFingers}");
+        LumoraLogger.Log($"  HasRightHandFingers: {HasRightHandFingers}");
 
         var missing = new List<BodyNode>();
         GetMissingBipedBones(missing);
         if (missing.Count > 0)
         {
-            AquaLogger.Log($"  Missing bones: {string.Join(", ", missing)}");
+            LumoraLogger.Log($"  Missing bones: {string.Join(", ", missing)}");
         }
 
         foreach (var kvp in Bones)
         {
-            AquaLogger.Log($"  {kvp.Key}: {kvp.Value?.Target?.SlotName.Value ?? "null"}");
+            LumoraLogger.Log($"  {kvp.Key}: {kvp.Value?.Target?.SlotName.Value ?? "null"}");
         }
     }
 }

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -48,8 +51,8 @@ public abstract class SyncMessage : IDisposable
         using var reader = new BinaryReader(ms);
 
         var messageType = (MessageType)reader.ReadByte();
-        var stateVersion = reader.Read7BitEncodedUInt64();
-        var syncTick = reader.Read7BitEncodedUInt64();
+        var stateVersion = reader.Read7BitEncoded();
+        var syncTick = reader.Read7BitEncoded();
 
         SyncMessage message = messageType switch
         {

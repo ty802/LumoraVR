@@ -1,5 +1,8 @@
-using Lumora.Core;
-using AquaLogger = Lumora.Core.Logging.Logger;
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+﻿using Lumora.Core;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -11,6 +14,8 @@ namespace Lumora.Core.Components;
 public class HeadOutput : ImplementableComponent
 {
     public UserRoot UserRoot { get; private set; }
+    private bool _loggedMissingUserRoot;
+    private bool _loggedMissingUser;
 
     public override void OnAwake()
     {
@@ -19,11 +24,26 @@ public class HeadOutput : ImplementableComponent
         UserRoot = Slot.GetComponent<UserRoot>();
         if (UserRoot == null)
         {
-            AquaLogger.Warn("HeadOutput: No UserRoot found!");
+            if (!_loggedMissingUserRoot)
+            {
+                LumoraLogger.Warn("HeadOutput: No UserRoot found!");
+                _loggedMissingUserRoot = true;
+            }
             return;
         }
 
-        AquaLogger.Log($"HeadOutput: Initialized for user '{UserRoot.ActiveUser.UserName.Value}'");
+        var activeUser = UserRoot.ActiveUser;
+        if (activeUser == null)
+        {
+            if (!_loggedMissingUser)
+            {
+                LumoraLogger.Warn("HeadOutput: UserRoot has no ActiveUser yet");
+                _loggedMissingUser = true;
+            }
+            return;
+        }
+
+        LumoraLogger.Log($"HeadOutput: Initialized for user '{activeUser.UserName.Value}'");
     }
 
     public override void OnStart()
@@ -31,13 +51,13 @@ public class HeadOutput : ImplementableComponent
         base.OnStart();
 
         // Hook will handle camera creation
-        AquaLogger.Log($"HeadOutput: OnStart called for slot '{Slot.SlotName.Value}'");
+        LumoraLogger.Log($"HeadOutput: OnStart called for slot '{Slot.SlotName.Value}'");
     }
 
     public override void OnDestroy()
     {
         UserRoot = null;
         base.OnDestroy();
-        AquaLogger.Log("HeadOutput: Destroyed");
+        LumoraLogger.Log("HeadOutput: Destroyed");
     }
 }

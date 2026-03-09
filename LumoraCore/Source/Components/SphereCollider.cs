@@ -1,7 +1,10 @@
-using Lumora.Core;
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+﻿using Lumora.Core;
 using Lumora.Core.Math;
 using Lumora.Core.Physics;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -25,7 +28,8 @@ public class SphereCollider : Collider
     public override void OnAwake()
     {
         base.OnAwake();
-        AquaLogger.Log($"SphereCollider: Initialized with Radius={Radius.Value}");
+        Radius.OnChanged += _ => RunApplyChanges();
+        LumoraLogger.Log($"SphereCollider: Initialized with Radius={Radius.Value}");
     }
 
     // ===== ABSTRACT METHOD IMPLEMENTATIONS =====

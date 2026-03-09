@@ -1,3 +1,6 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System.IO;
 using Lumora.Core.Networking;
 
@@ -14,7 +17,9 @@ public class ControlMessage : SyncMessage
         JoinGrant,
         JoinStartDelta,
         JoinReject,
-        ServerClose
+        ServerClose,
+        WorldSnapshot,
+        RequestFullState
     }
 
     public override MessageType MessageType => MessageType.Control;

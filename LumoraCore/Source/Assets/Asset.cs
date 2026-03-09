@@ -1,8 +1,11 @@
-using System;
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+﻿using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Assets;
 
@@ -36,6 +39,10 @@ public abstract class Asset : IAsset
     private List<object> readLocks = new List<object>();
     private object writeLock;
     private Queue<LockRequest> lockRequests = new Queue<LockRequest>();
+
+    // Consumer notifications
+    private readonly List<IAssetConsumer> _consumers = new List<IAssetConsumer>();
+    private readonly object _consumersLock = new object();
 
     // Asset properties
     public bool HighPriorityIntegration { get; set; }
@@ -102,6 +109,77 @@ public abstract class Asset : IAsset
         AssetURL = assetUrl;
     }
 
+    // ===== CONSUMER MANAGEMENT =====
+
+    /// <summary>
+    /// Register a consumer to receive asset state change notifications.
+    /// </summary>
+    public void RegisterConsumer(IAssetConsumer consumer)
+    {
+        if (consumer == null) return;
+        lock (_consumersLock)
+        {
+            if (!_consumers.Contains(consumer))
+            {
+                _consumers.Add(consumer);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Unregister a consumer from receiving notifications.
+    /// </summary>
+    public void UnregisterConsumer(IAssetConsumer consumer)
+    {
+        if (consumer == null) return;
+        lock (_consumersLock)
+        {
+            _consumers.Remove(consumer);
+        }
+    }
+
+    /// <summary>
+    /// Notify all registered consumers of a state change.
+    /// </summary>
+    private void NotifyConsumers()
+    {
+        IAssetConsumer[] consumersSnapshot;
+        lock (_consumersLock)
+        {
+            if (_consumers.Count == 0) return;
+            consumersSnapshot = _consumers.ToArray();
+        }
+
+        foreach (var consumer in consumersSnapshot)
+        {
+            try
+            {
+                consumer.OnAssetStateChanged(this);
+            }
+            catch (Exception ex)
+            {
+                LumoraLogger.Log($"Error notifying consumer: {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Notify all registered consumers that this asset was assigned.
+    /// Call this after assigning the asset to a consumer.
+    /// </summary>
+    public void NotifyAssigned(IAssetConsumer consumer)
+    {
+        if (consumer == null) return;
+        try
+        {
+            consumer.OnAssetAssigned(this);
+        }
+        catch (Exception ex)
+        {
+            LumoraLogger.Log($"Error in OnAssetAssigned: {ex.Message}");
+        }
+    }
+
     // ===== LOAD STATE MANAGEMENT =====
 
     protected void CheckStatic()
@@ -122,7 +200,7 @@ public abstract class Asset : IAsset
 
     protected void FailLoad(string reason)
     {
-        AquaLogger.Log($"Failed Load: {reason}, for: {AssetURL}, instance: {GetHashCode()}");
+        LumoraLogger.Log($"Failed Load: {reason}, for: {AssetURL}, instance: {GetHashCode()}");
         SetLoadState(AssetLoadState.Failed);
     }
 
@@ -142,7 +220,7 @@ public abstract class Asset : IAsset
 
     protected virtual void OnLoadStateChanged()
     {
-        // Override in derived classes to handle load state changes
+        NotifyConsumers();
     }
 
     // ===== ABSTRACT METHODS =====

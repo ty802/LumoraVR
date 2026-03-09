@@ -1,3 +1,6 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
 using System.Collections.Generic;
 using Lumora.Core;
@@ -7,7 +10,7 @@ namespace Lumora.Core.Assets;
 /// <summary>
 /// Non-generic interface for asset providers.
 /// </summary>
-public interface IAssetProvider
+public interface IAssetProvider : IWorldElement
 {
     /// <summary>
     /// The generic asset instance (use typed providers for specific asset types).

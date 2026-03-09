@@ -1,8 +1,11 @@
-using System;
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+﻿using System;
 using Lumora.Core;
 using Lumora.Core.Math;
 using Lumora.Core.Input;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 using EngineKey = Lumora.Core.Input.Key;
 
 namespace Lumora.Core.Components;
@@ -16,7 +19,9 @@ public class LocomotionController : Component
 {
     // ===== PARAMETERS =====
 
-    public float MouseSensitivity { get; set; } = 0.001f;
+    // DirectDelta is now normalized (1.0 = full screen height swipe).
+    // Sensitivity of Pi means a full screen-height swipe = 180 degrees.
+    public float MouseSensitivity { get; set; } = MathF.PI;
     public float MaxPitch { get; set; } = 89.0f;
 
     // ===== STATE =====
@@ -37,6 +42,9 @@ public class LocomotionController : Component
     private float _yaw = 0.0f;
     private bool _mouseCaptured = false;
     private bool _escapeWasPressed = false;
+    private bool _initialized = false;
+    private bool _loggedMissingUserRoot = false;
+    private bool _loggedActiveUserState = false;
 
     /// <summary>
     /// Property for platform layer to check if mouse should be captured
@@ -51,56 +59,37 @@ public class LocomotionController : Component
         MouseCaptureRequested = state;
     }
 
+    /// <summary>
+    /// Set by DesktopCameraController when free-cam is active.
+    /// Blocks mouse look and character movement so the camera flies independently.
+    /// </summary>
+    public static bool FreeCamActive { get; private set; } = false;
+
+    public static void SetFreeCamActive(bool value)
+    {
+        FreeCamActive = value;
+    }
+
+    /// <summary>
+    /// Set by DesktopCameraController in third-person mode.
+    /// Suppresses character mouse-look so the camera can orbit independently
+    /// while WASD movement continues normally.
+    /// </summary>
+    public static bool MouseLookSuppressed { get; private set; } = false;
+
+    public static void SetMouseLookSuppressed(bool value)
+    {
+        MouseLookSuppressed = value;
+    }
+
     // ===== INITIALIZATION =====
 
     public override void OnAwake()
     {
         base.OnAwake();
 
-        _userRoot = Slot.GetComponent<UserRoot>();
-        if (_userRoot == null)
-        {
-            AquaLogger.Warn("LocomotionController: No UserRoot found!");
-            return;
-        }
-
-        // Only work for local user
-        if (_userRoot.ActiveUser != World.LocalUser)
-            return;
-
-        // Get CharacterController
-        _characterController = Slot.GetComponent<CharacterController>();
-        if (_characterController == null)
-        {
-            AquaLogger.Warn("LocomotionController: No CharacterController found!");
-            return;
-        }
-
-        // Get input devices from InputInterface
-        _inputInterface = Lumora.Core.Engine.Current?.InputInterface;
-        if (_inputInterface != null)
-        {
-            _mouse = _inputInterface.Mouse;
-            _keyboardDriver = _inputInterface.GetKeyboardDriver();
-            // Input devices resolved
-        }
-        else
-        {
-            AquaLogger.Warn("[LocomotionController] No InputInterface found!");
-        }
-
-        // Initialize modules (desktop/VR delegation)
-        _modules.Add(new VRLocomotionModule());
-        _modules.Add(new DesktopLocomotionModule());
-        _modules.Add(new NullLocomotionModule()); // placeholder fallback
-                                                  // Pick module based on current platform state
-        ActivateModule(IsVRActive() ? 0 : 1);
-
-        // Desktop default: request mouse capture so look works immediately
-        if (!IsVRActive())
-            SetMouseCaptureRequested(true);
-
-        // Initialized
+        LumoraLogger.Log($"LocomotionController: OnAwake started");
+        TryInitializeLocalUser();
     }
 
     private void CaptureMouse()
@@ -123,7 +112,10 @@ public class LocomotionController : Component
             _keyboardDriver = _inputInterface.GetKeyboardDriver();
         }
 
-        if (_characterController == null || _userRoot?.ActiveUser != World.LocalUser)
+        if (!TryInitializeLocalUser())
+            return;
+
+        if (_characterController == null || !(_userRoot?.IsLocalUserRoot ?? false))
             return;
 
         EnsurePlatformModule();
@@ -137,6 +129,70 @@ public class LocomotionController : Component
 
         // Only send movement/jump commands if CharacterController is ready
         _activeModule?.Update(delta);
+    }
+
+    private bool TryInitializeLocalUser()
+    {
+        if (_initialized)
+            return true;
+
+        if (_userRoot == null)
+        {
+            _userRoot = Slot.GetComponent<UserRoot>();
+            if (_userRoot == null)
+            {
+                if (!_loggedMissingUserRoot)
+                {
+                    LumoraLogger.Warn("LocomotionController: No UserRoot found!");
+                    _loggedMissingUserRoot = true;
+                }
+                return false;
+            }
+        }
+
+        if (!_loggedActiveUserState)
+        {
+            LumoraLogger.Log($"LocomotionController: UserRoot.ActiveUser={_userRoot.ActiveUser?.UserName?.Value ?? "(null)"}, World.LocalUser={World?.LocalUser?.UserName?.Value ?? "(null)"}");
+            _loggedActiveUserState = true;
+        }
+
+        if (!_userRoot.IsLocalUserRoot)
+            return false;
+
+        _characterController = Slot.GetComponent<CharacterController>();
+        if (_characterController == null)
+        {
+            LumoraLogger.Warn("LocomotionController: No CharacterController found!");
+            return false;
+        }
+
+        _inputInterface = Lumora.Core.Engine.Current?.InputInterface;
+        if (_inputInterface != null)
+        {
+            _mouse = _inputInterface.Mouse;
+            _keyboardDriver = _inputInterface.GetKeyboardDriver();
+            LumoraLogger.Log($"LocomotionController: Input bound - Mouse={_mouse != null}, Keyboard={_keyboardDriver != null}");
+        }
+        else
+        {
+            LumoraLogger.Warn("[LocomotionController] No InputInterface found - will try late binding");
+        }
+
+        if (_modules.Count == 0)
+        {
+            _modules.Add(new VRLocomotionModule());
+            _modules.Add(new DesktopLocomotionModule());
+            _modules.Add(new NullLocomotionModule());
+        }
+
+        ActivateModule(IsVRActive() ? 0 : 1);
+
+        if (!IsVRActive())
+            SetMouseCaptureRequested(true);
+
+        LumoraLogger.Log($"LocomotionController: Initialized for user '{_userRoot.ActiveUser?.UserName?.Value}' (VR={IsVRActive()}, Module={_activeModule?.GetType().Name})");
+        _initialized = true;
+        return true;
     }
 
     private void HandleModuleSwitching()
@@ -205,11 +261,11 @@ public class LocomotionController : Component
         {
             _mouseCaptured = !_mouseCaptured;
             MouseCaptureRequested = _mouseCaptured;
-            AquaLogger.Log($"[LocomotionController] Mouse capture toggled: {_mouseCaptured}");
+            LumoraLogger.Log($"[LocomotionController] Mouse capture toggled: {_mouseCaptured}");
         }
         _escapeWasPressed = escapePressed;
 
-        if (_mouse == null || !_mouseCaptured)
+        if (_mouse == null || !_mouseCaptured || FreeCamActive || MouseLookSuppressed)
             return;
 
         // Use Mouse.DirectDelta - now populated via GodotMouseDriver.HandleInputEvent
@@ -222,32 +278,49 @@ public class LocomotionController : Component
         _pitch = System.Math.Clamp(_pitch, -maxPitchRad, maxPitchRad);
     }
 
-    // Simulates head position/rotation in desktop mode
+    private const float POS_THRESHOLD_SQ = 0.0001f * 0.0001f;
+    private const float ROT_THRESHOLD = 0.0001f;
+
     private void UpdateHead()
     {
         if (_userRoot?.HeadSlot == null)
-        {
-            AquaLogger.Warn("[LocomotionController] UpdateHead: HeadSlot is null!");
             return;
-        }
 
-        // If head tracking is available and active, do not override
-        // VRLocomotionModule handles snap turns by modifying _yaw directly
         bool headTracked = _inputInterface?.HeadDevice?.IsTracked == true;
+        if (headTracked)
+            return;
 
-        if (!headTracked)
+        float userHeight = _inputInterface?.UserHeight ?? InputInterface.DEFAULT_USER_HEIGHT;
+        float headHeight = userHeight - InputInterface.EYE_HEAD_OFFSET;
+        var newHeadPos = new float3(0, headHeight, 0);
+
+        var currentHeadPos = _userRoot.HeadSlot.LocalPosition.Value;
+        if ((newHeadPos - currentHeadPos).LengthSquared > POS_THRESHOLD_SQ)
+            _userRoot.HeadSlot.LocalPosition.Value = newHeadPos;
+
+        var newBodyRot = floatQ.FromEuler(new float3(0, _yaw, 0));
+        var currentBodyRot = Slot.GlobalRotation;
+        float bodyDot = floatQ.Dot(newBodyRot, currentBodyRot);
+        if (1.0f - (bodyDot < 0 ? -bodyDot : bodyDot) > ROT_THRESHOLD)
+            Slot.GlobalRotation = newBodyRot;
+
+        var newHeadRot = floatQ.FromEuler(new float3(_pitch, 0, 0));
+        var currentHeadRot = _userRoot.HeadSlot.LocalRotation.Value;
+        float headDot = floatQ.Dot(newHeadRot, currentHeadRot);
+        if (1.0f - (headDot < 0 ? -headDot : headDot) > ROT_THRESHOLD)
+            _userRoot.HeadSlot.LocalRotation.Value = newHeadRot;
+
+        // Drive hand aim: right hand tilts up when looking up, left stays at rest.
+        // Rest pitch = -π/2 (fingers down). Add camera pitch so hand aims forward when looking level.
+        float restPitch = -MathF.PI / 2f;
+        var rightHandSlot = _userRoot.RightHandSlot;
+        if (rightHandSlot != null)
         {
-            // Desktop mode: simulate head position and rotation
-            // Set head height from UserHeight (minus eye offset)
-            float userHeight = _inputInterface?.UserHeight ?? InputInterface.DEFAULT_USER_HEIGHT;
-            float headHeight = userHeight - InputInterface.EYE_HEAD_OFFSET;
-            _userRoot.HeadSlot.LocalPosition.Value = new float3(0, headHeight, 0);
-
-            // Apply yaw to body, pitch to head
-            Slot.GlobalRotation = floatQ.FromEuler(new float3(0, _yaw, 0));
-            _userRoot.HeadSlot.LocalRotation.Value = floatQ.FromEuler(new float3(_pitch, 0, 0));
+            float aimPitch = MathF.Min(MathF.Max(restPitch + _pitch, -MathF.PI / 2f), 0f);
+            rightHandSlot.LocalRotation.Value = floatQ.Euler(-MathF.PI / 2f, aimPitch, 0f);
         }
-        // VR mode: Don't touch - TrackedDevicePositioner handles it
+        if (_userRoot.LeftHandSlot is { } leftHandSlot)
+            leftHandSlot.LocalRotation.Value = floatQ.Euler(MathF.PI / 2f, restPitch, 0f);
     }
 
     /// <summary>

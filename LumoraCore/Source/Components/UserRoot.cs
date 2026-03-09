@@ -1,7 +1,10 @@
-using System;
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+﻿using System;
 using Lumora.Core;
 using Lumora.Core.Math;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -28,16 +31,24 @@ public class UserRoot : Component
     }
 
     // ===== USER REFERENCE =====
-    private User _activeUser;
+    /// <summary>
+    /// Synced reference to the user that owns this UserRoot.
+    /// This syncs over the network so clients can identify their own UserRoot.
+    /// </summary>
+    public readonly SyncRef<User> TargetUser;
+
+    private bool _isRegistered = false;
 
     /// <summary>
     /// The User that owns this UserRoot.
     /// </summary>
-    public User ActiveUser
-    {
-        get => _activeUser;
-        private set => _activeUser = value;
-    }
+    public User ActiveUser => TargetUser?.Target;
+
+    /// <summary>
+    /// Check if this UserRoot belongs to the local user.
+    /// Uses direct object reference comparison.
+    /// </summary>
+    public bool IsLocalUserRoot => TargetUser?.Target != null && TargetUser.Target == World?.LocalUser;
 
     // ===== CACHED BODY NODES =====
     private Slot _cachedHeadSlot;
@@ -267,17 +278,53 @@ public class UserRoot : Component
     /// <summary>
     /// Initialize this UserRoot with a User.
     /// Called by SimpleUserSpawn after attaching the component.
+    /// Sets TargetUser which syncs to clients.
     /// </summary>
     public void Initialize(User user)
     {
         if (user == null)
         {
-            AquaLogger.Error("UserRoot: Cannot initialize with null user");
+            LumoraLogger.Error("UserRoot: Cannot initialize with null user");
             return;
         }
 
-        ActiveUser = user;
-        AquaLogger.Log($"UserRoot: Initialized for user '{user.UserName.Value}' (RefID: {user.ReferenceID})");
+        // Set the synced reference - this will sync to clients
+        TargetUser.Target = user;
+
+        // Register with user on authority
+        if (World?.IsAuthority == true)
+        {
+            user.Root = this;
+            LumoraLogger.Log($"User: Registered UserRoot for authority user '{user.UserName.Value}'");
+        }
+
+        LumoraLogger.Log($"UserRoot: Initialized for user '{user.UserName.Value}' (RefID: {user.ReferenceID})");
+    }
+
+    /// <summary>
+    /// Called when synced fields change. Handles client-side local user detection.
+    /// Simple direct object reference comparison.
+    /// </summary>
+    public override void OnChanges()
+    {
+        base.OnChanges();
+
+        // Simple direct reference comparison
+        if (TargetUser.Target == World?.LocalUser && !_isRegistered)
+        {
+            World.LocalUser.Root = this;
+            _isRegistered = true;
+            LumoraLogger.Log($"UserRoot: Registered as Root for local user '{TargetUser.Target?.UserName?.Value}'");
+        }
+
+        if (TargetUser.Target != World?.LocalUser && _isRegistered)
+        {
+            if (World?.LocalUser?.Root == this)
+            {
+                World.LocalUser.Root = null;
+            }
+            _isRegistered = false;
+        }
     }
 
     /// <summary>
@@ -395,7 +442,7 @@ public class UserRoot : Component
             float.IsNaN(scale.x) || float.IsNaN(scale.y) || float.IsNaN(scale.z) ||
             float.IsInfinity(scale.x) || float.IsInfinity(scale.y) || float.IsInfinity(scale.z))
         {
-            AquaLogger.Warn($"UserRoot: Invalid scale detected ({scale}), resetting to (1,1,1)");
+            LumoraLogger.Warn($"UserRoot: Invalid scale detected ({scale}), resetting to (1,1,1)");
             Slot.LocalScale.Value = float3.One;
         }
 
@@ -412,7 +459,14 @@ public class UserRoot : Component
     /// </summary>
     public override void OnDestroy()
     {
-        AquaLogger.Log($"UserRoot: Destroying UserRoot for user '{ActiveUser?.UserName.Value ?? "Unknown"}'");
+        LumoraLogger.Log($"UserRoot: Destroying UserRoot for user '{ActiveUser?.UserName.Value ?? "Unknown"}'");
+
+        // Unregister from user
+        if (_isRegistered && World?.LocalUser?.Root == this)
+        {
+            World.LocalUser.Root = null;
+        }
+        _isRegistered = false;
 
         // Clear cached references
         _cachedHeadSlot = null;
@@ -421,7 +475,6 @@ public class UserRoot : Component
         _cachedRightHandSlot = null;
         _cachedLeftFootSlot = null;
         _cachedRightFootSlot = null;
-        ActiveUser = null;
 
         base.OnDestroy();
     }

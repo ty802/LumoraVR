@@ -1,8 +1,11 @@
-using System;
-using Godot;
-using AquaLogger = Lumora.Core.Logging.Logger;
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-namespace Aquamarine.Source.Godot.Shaders;
+﻿using System;
+using Godot;
+using LumoraLogger = Lumora.Core.Logging.Logger;
+
+namespace Lumora.Source.Godot.Shaders;
 
 /// <summary>
 /// Physically Based Shading shader wrapper for Godot.
@@ -33,7 +36,7 @@ public class PBSShader
 
         if (!ResourceLoader.Exists(SHADER_PATH))
         {
-            AquaLogger.Error($"PBSShader: Shader file not found at {SHADER_PATH}");
+            LumoraLogger.Error($"PBSShader: Shader file not found at {SHADER_PATH}");
             return;
         }
 
@@ -41,11 +44,11 @@ public class PBSShader
 
         if (_shaderResource == null)
         {
-            AquaLogger.Error($"PBSShader: Failed to load shader from {SHADER_PATH}");
+            LumoraLogger.Error($"PBSShader: Failed to load shader from {SHADER_PATH}");
         }
         else
         {
-            AquaLogger.Debug($"PBSShader: Loaded shader from {SHADER_PATH}");
+            LumoraLogger.Debug($"PBSShader: Loaded shader from {SHADER_PATH}");
         }
     }
 
@@ -56,7 +59,7 @@ public class PBSShader
     {
         if (_shaderResource == null)
         {
-            AquaLogger.Error("PBSShader: Cannot create material - shader not loaded");
+            LumoraLogger.Error("PBSShader: Cannot create material - shader not loaded");
             return;
         }
 
@@ -69,7 +72,7 @@ public class PBSShader
         SetEmissionColor(new Color(0.0f, 0.0f, 0.0f, 1.0f));
         SetEmissionEnergy(1.0f);
 
-        AquaLogger.Debug("PBSShader: Created material with default properties");
+        LumoraLogger.Debug("PBSShader: Created material with default properties");
     }
 
     /// <summary>

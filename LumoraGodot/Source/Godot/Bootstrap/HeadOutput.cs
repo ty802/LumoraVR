@@ -1,10 +1,13 @@
-using System;
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+﻿using System;
 using Godot;
 using Lumora.Core;
-using Aquamarine.Godot.Extensions;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using Lumora.Godot.Extensions;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Source.Godot.Bootstrap;
+namespace Lumora.Source.Godot.Bootstrap;
 
 /// <summary>
 /// Manages camera rendering for VR and screen modes.
@@ -33,7 +36,7 @@ public partial class HeadOutput : Node
     // ===== CONFIGURATION =====
     [Export] public OutputType Type { get; set; } = OutputType.Screen;
     [Export] public float DefaultFOV { get; set; } = 90f;
-    [Export] public float NearClip { get; set; } = 0.05f;
+    [Export] public float NearClip { get; set; } = 0.25f; // Clips through head sphere
     [Export] public float FarClip { get; set; } = 1000f;
 
     // ===== CAMERA REFERENCES =====
@@ -82,7 +85,7 @@ public partial class HeadOutput : Node
             Type = OutputType.Screen;
         }
 
-        AquaLogger.Log($"HeadOutput: Initialized with type={Type}, FOV={DefaultFOV}, isVR={_isVRActive}");
+        LumoraLogger.Log($"HeadOutput: Initialized with type={Type}, FOV={DefaultFOV}, isVR={_isVRActive}");
     }
 
     /// <summary>
@@ -95,7 +98,7 @@ public partial class HeadOutput : Node
         if (parent == null)
         {
             // Defer VR setup until we're added to the scene tree
-            AquaLogger.Log("HeadOutput: Deferring VR setup until added to scene tree");
+            LumoraLogger.Log("HeadOutput: Deferring VR setup until added to scene tree");
             CallDeferred(MethodName.SetupVRCamera);
             return;
         }
@@ -121,7 +124,7 @@ public partial class HeadOutput : Node
         // Use VR camera as primary
         _camera = _vrCamera;
 
-        AquaLogger.Log("HeadOutput: VR camera setup complete");
+        LumoraLogger.Log("HeadOutput: VR camera setup complete");
     }
 
     /// <summary>
@@ -181,7 +184,7 @@ public partial class HeadOutput : Node
             return;
 
         // Align the XR origin to the local user's root so HMD/controllers match avatar transforms
-        var userRootSlot = world.LocalUser.UserRootSlot;
+        var userRootSlot = world.LocalUser.Root?.Slot;
         if (_xrOrigin != null)
         {
             if (userRootSlot != null)
@@ -212,18 +215,10 @@ public partial class HeadOutput : Node
         else
         {
             // Follow local user's head position if they have a UserRoot
-            if (world.LocalUser?.UserRootSlot != null)
+            if (world.LocalUser?.Root != null)
             {
-                var userRoot = world.LocalUser.UserRootSlot.GetComponent<Lumora.Core.Components.UserRoot>();
-                if (userRoot != null)
-                {
-                    _camera.GlobalPosition = userRoot.HeadPosition.ToGodot();
-                }
-                else
-                {
-                    // Fallback to default height
-                    _camera.GlobalPosition = new Vector3(0, 1.6f, 0);
-                }
+                var userRoot = world.LocalUser.Root;
+                _camera.GlobalPosition = userRoot.HeadPosition.ToGodot();
             }
             else
             {
@@ -239,14 +234,11 @@ public partial class HeadOutput : Node
         else
         {
             // Follow local user's head rotation if they have a UserRoot
-            if (world.LocalUser?.UserRootSlot != null)
+            if (world.LocalUser?.Root != null)
             {
-                var userRoot = world.LocalUser.UserRootSlot.GetComponent<Lumora.Core.Components.UserRoot>();
-                if (userRoot != null)
-                {
-                    var rotation = userRoot.HeadRotation;
-                    _camera.GlobalTransform = new Transform3D(new Basis(rotation.ToGodot()), _camera.GlobalPosition);
-                }
+                var userRoot = world.LocalUser.Root;
+                var rotation = userRoot.HeadRotation;
+                _camera.GlobalTransform = new Transform3D(new Basis(rotation.ToGodot()), _camera.GlobalPosition);
             }
         }
     }
@@ -294,13 +286,13 @@ public partial class HeadOutput : Node
         if (Type == newType)
             return;
 
-        AquaLogger.Log($"HeadOutput: Switching from {Type} to {newType}");
+        LumoraLogger.Log($"HeadOutput: Switching from {Type} to {newType}");
 
         Type = newType;
 
         if (newType == OutputType.VR && !_isVRActive)
         {
-            AquaLogger.Warn("Cannot switch to VR - XR interface not active");
+            LumoraLogger.Warn("Cannot switch to VR - XR interface not active");
             Type = OutputType.Screen;
         }
     }

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
 
 namespace Lumora.Core;
@@ -120,6 +123,15 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
             Logging.Logger.Error($"Exception initializing hook for {GetType().Name}: {ex}");
             throw;
         }
+    }
+
+    /// <summary>
+    /// When component changes, apply changes to the hook.
+    /// </summary>
+    public override void OnChanges()
+    {
+        base.OnChanges();
+        UpdateHook();
     }
 
     /// <summary>

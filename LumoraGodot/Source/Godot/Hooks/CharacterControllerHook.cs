@@ -1,11 +1,14 @@
-using Godot;
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+﻿using Godot;
 using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
 using System.Collections.Generic;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
-namespace Aquamarine.Godot.Hooks;
+namespace Lumora.Godot.Hooks;
 
 /// <summary>
 /// Hook for CharacterController component → Godot CharacterBody3D.
@@ -21,17 +24,37 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
     private bool _jumpRequested;
     private XROrigin3D _xrOrigin;
     private bool _isLocalUser;
+    private bool _isCrouching;
+    private float _currentHeight;
+    private float _targetHeight;
+    private bool _debugDumpDone;
 
     public CharacterBody3D GodotCharacterBody => _characterBody;
+
+    /// <summary>
+    /// The local player's Godot CharacterBody3D — set when the local user's hook is initialised,
+    /// cleared on destroy. Read by DesktopCameraController for third-person orbit.
+    /// </summary>
+    public static CharacterBody3D LocalPlayerBody { get; private set; }
 
     public override void Initialize()
     {
         base.Initialize();
 
         _characterBody = new CharacterBody3D();
-        _characterBody.Name = "CharacterController";
+        _characterBody.Name = $"@CharacterBody3D_{Owner?.Slot?.Name?.Value ?? "Unknown"}";
 
-        // Parent the physics body under the world root (not the slot) to avoid double transforms
+       
+        // In Lumora/Godot, we parent CharacterBody3D to WORLD ROOT to avoid double transforms.
+        // This is because:
+        // 1. Godot's CharacterBody3D.MoveAndSlide() operates in world space
+        // 2. If parented under a moving slot, the body would get double transforms
+        // 3. We sync position BACK to the slot after physics (see ApplyChanges)
+        //
+        // For remote users: They don't have a local CharacterBody3D - their slot position
+        // is driven by network sync, so this doesn't create hierarchy issues.
+        //
+        // This is a Godot-specific architectural choice, not a bug.
         Node3D worldRoot = Owner?.World?.GodotSceneRoot as Node3D;
         Node parentNode = (Node)worldRoot ?? attachedNode;
         parentNode.AddChild(_characterBody);
@@ -43,9 +66,22 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
         _characterBody.FloorMaxAngle = Mathf.DegToRad(45f);
         _characterBody.WallMinSlideAngle = Mathf.DegToRad(15f);
 
+        // Set collision layers - must match StaticBody3D layers to collide
+        _characterBody.CollisionLayer = 1u;
+        _characterBody.CollisionMask = 1u;
+
+        // Initialize crouch state
+        _currentHeight = Owner.StandingHeight;
+        _targetHeight = Owner.StandingHeight;
+        _isCrouching = false;
+
         // Check if this is the local user
         var userRoot = Owner.Slot.GetComponent<UserRoot>();
         _isLocalUser = userRoot?.ActiveUser == Owner.World?.LocalUser;
+
+        // Expose body for DesktopCameraController third-person mode
+        if (_isLocalUser)
+            LocalPlayerBody = _characterBody;
 
         // Find XROrigin3D in scene tree for VR tracking sync
         if (_isLocalUser)
@@ -83,6 +119,36 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
         return null;
     }
 
+    private int CountNodesOfType<T>(Node node) where T : Node
+    {
+        int count = node is T ? 1 : 0;
+        foreach (var child in node.GetChildren())
+        {
+            count += CountNodesOfType<T>(child);
+        }
+        return count;
+    }
+
+    private void ListNodesOfType<T>(Node node, string typeName) where T : Node
+    {
+        if (node is T typed)
+        {
+            var pos = typed is Node3D n3d ? n3d.GlobalPosition : Vector3.Zero;
+            int childCount = typed.GetChildCount();
+            GD.Print($"  {typeName}: '{typed.Name}' at ({pos.X:F1}, {pos.Y:F1}, {pos.Z:F1}), children={childCount}");
+
+            // For physics bodies, check collision info
+            if (typed is CollisionObject3D col)
+            {
+                GD.Print($"    Layer={col.CollisionLayer}, Mask={col.CollisionMask}");
+            }
+        }
+        foreach (var child in node.GetChildren())
+        {
+            ListNodesOfType<T>(child, typeName);
+        }
+    }
+
     public override void ApplyChanges()
     {
         if (_characterBody == null || !_characterBody.IsInsideTree())
@@ -90,6 +156,11 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
 
         // If the owner is not ready, skip processing
         if (Owner == null)
+            return;
+
+        // Skip physics processing if the world is not focused (background worlds have ProcessMode.Disabled)
+        // When transitioning from Disabled to Inherit, the physics space may not be ready yet
+        if (Owner.World?.Focus == World.WorldFocus.Background)
             return;
 
         // Get delta time from the UpdateManager
@@ -108,10 +179,28 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
             _velocity.Y -= 9.81f * delta * 2.0f; // 2x gravity for snappier feel
         }
 
-        // Apply movement
+        // Smoothly transition crouch height
+        if (Mathf.Abs(_currentHeight - _targetHeight) > 0.01f)
+        {
+            _currentHeight = Mathf.MoveToward(_currentHeight, _targetHeight, Owner.CrouchTransitionSpeed * delta);
+            UpdateColliderHeights();
+        }
+
+        // Apply movement (use crouch speed when crouching)
         if (_moveDirection.LengthSquared() > 0.001f)
         {
-            float speed = _characterBody.IsOnFloor() ? Owner.Speed : Owner.AirSpeed;
+            float speed;
+            if (!_characterBody.IsOnFloor())
+                speed = Owner.AirSpeed;
+            else if (_isCrouching)
+                speed = Owner.CrouchSpeed;
+            else
+                speed = Owner.Speed;
+
+            if (_characterBody.IsOnFloor() && !_isCrouching && Owner.IsSprinting)
+            {
+                speed *= Owner.SprintMultiplier;
+            }
             _velocity.X = _moveDirection.X * speed;
             _velocity.Z = _moveDirection.Z * speed;
         }
@@ -130,10 +219,47 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
             GD.Print("CharacterControllerHook: Jump!");
         }
 
-        // Move character
+        // Move character - check if physics space is valid first
+        // When transitioning from ProcessMode.Disabled to Inherit, the physics space may not be ready
+        var bodyRid = _characterBody.GetRid();
+        var spaceRid = PhysicsServer3D.BodyGetSpace(bodyRid);
+        if (!spaceRid.IsValid)
+        {
+            // Physics space not ready yet, skip this frame
+            return;
+        }
+
         _characterBody.Velocity = _velocity;
         _characterBody.MoveAndSlide();
         _velocity = _characterBody.Velocity;
+
+        // Push any rigid bodies we collided with
+        int collisionCount = _characterBody.GetSlideCollisionCount();
+        for (int i = 0; i < collisionCount; i++)
+        {
+            var collision = _characterBody.GetSlideCollision(i);
+            var collider = collision.GetCollider();
+            if (collider is RigidBody3D rigidBody)
+            {
+                // Apply impulse based on movement direction and mass
+                var pushDir = -collision.GetNormal();
+                var pushForce = pushDir * Owner.Speed * 0.5f;
+                rigidBody.ApplyCentralImpulse(new Vector3(pushForce.X, 0, pushForce.Z));
+            }
+        }
+
+        // DEBUG: One-time check for RigidBody3D nodes in scene
+        if (!_debugDumpDone && _characterBody.IsInsideTree())
+        {
+            _debugDumpDone = true;
+            var root = _characterBody.GetTree().Root;
+            int rigidCount = CountNodesOfType<RigidBody3D>(root);
+            int staticCount = CountNodesOfType<StaticBody3D>(root);
+            GD.Print($"DEBUG PHYSICS BODIES: RigidBody3D={rigidCount}, StaticBody3D={staticCount}");
+
+            // List all RigidBody3D nodes
+            ListNodesOfType<RigidBody3D>(root, "RigidBody3D");
+        }
 
         // Sync position back to slot
         var newPos = new float3(
@@ -199,6 +325,40 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
         return _characterBody != null && _characterBody.IsOnFloor();
     }
 
+    /// <summary>
+    /// Set the crouching state. Updates target height for smooth transition.
+    /// </summary>
+    public void SetCrouching(bool crouching)
+    {
+        if (_isCrouching == crouching)
+            return;
+
+        _isCrouching = crouching;
+        _targetHeight = crouching ? Owner.CrouchHeight : Owner.StandingHeight;
+        LumoraLogger.Log($"CharacterControllerHook: Crouch={crouching}, TargetHeight={_targetHeight}");
+    }
+
+    /// <summary>
+    /// Update all collider shapes to match current height.
+    /// </summary>
+    private void UpdateColliderHeights()
+    {
+        foreach (var kvp in _collisionShapes)
+        {
+            var collider = kvp.Key;
+            var shape = kvp.Value;
+            if (shape.Shape is CapsuleShape3D capsule && collider is CapsuleCollider capCollider)
+            {
+                // Just update the capsule height - physics will keep us grounded
+                capsule.Height = _currentHeight;
+
+                // Keep original offset from collider component
+                var offset = capCollider.Offset.Value;
+                shape.Position = new Vector3(offset.x, offset.y, offset.z);
+            }
+        }
+    }
+
     public void AddColliderShape(object collider)
     {
         if (_collisionShapes.ContainsKey(collider))
@@ -208,7 +368,7 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
 
         if (_characterBody == null)
         {
-            AquaLogger.Error("CharacterControllerHook: _characterBody is null!");
+            LumoraLogger.Error("CharacterControllerHook: _characterBody is null!");
             return;
         }
 
@@ -236,7 +396,7 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
         }
         else
         {
-            AquaLogger.Warn($"CharacterControllerHook: Unknown collider type {collider.GetType().Name}");
+            LumoraLogger.Warn($"CharacterControllerHook: Unknown collider type {collider.GetType().Name}");
         }
 
         // Apply collider offset so shapes line up with the avatar body
@@ -261,6 +421,9 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
 
     public override void Destroy(bool destroyingWorld)
     {
+        if (_isLocalUser && LocalPlayerBody == _characterBody)
+            LocalPlayerBody = null;
+
         if (!destroyingWorld && _characterBody != null && GodotObject.IsInstanceValid(_characterBody))
         {
             _characterBody.QueueFree();

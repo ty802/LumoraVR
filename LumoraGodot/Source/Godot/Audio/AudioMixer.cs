@@ -1,8 +1,11 @@
-using System;
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+﻿using System;
 using Godot;
 using System.Collections.Generic;
 using Lumora.Core.External.GenericAudioOutputMixer;
-namespace Aquamarine.Source.Godot;
+namespace Lumora.Source.Godot;
 
 public partial class AudioMixer : IAudioMixer
 {

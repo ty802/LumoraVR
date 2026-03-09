@@ -1,3 +1,6 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System.IO;
 
 namespace Lumora.Core.Networking.Messages;
@@ -90,6 +93,44 @@ public class ControlMessage
         }
 
         return message;
+    }
+}
+
+/// <summary>
+/// Join request data sent by client when connecting.
+/// </summary>
+public struct JoinRequestData
+{
+    public string UserName;
+    public string MachineID;
+    public string UserID;
+    public byte HeadDevice;
+
+    public byte[] Encode()
+    {
+        using var ms = new MemoryStream();
+        using var writer = new BinaryWriter(ms);
+
+        writer.Write(UserName ?? "");
+        writer.Write(MachineID ?? "");
+        writer.Write(UserID ?? "");
+        writer.Write(HeadDevice);
+
+        return ms.ToArray();
+    }
+
+    public static JoinRequestData Decode(byte[] data)
+    {
+        using var ms = new MemoryStream(data);
+        using var reader = new BinaryReader(ms);
+
+        return new JoinRequestData
+        {
+            UserName = reader.ReadString(),
+            MachineID = reader.ReadString(),
+            UserID = reader.ReadString(),
+            HeadDevice = reader.ReadByte()
+        };
     }
 }
 

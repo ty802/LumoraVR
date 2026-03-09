@@ -1,7 +1,10 @@
-using Lumora.Core;
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+﻿using Lumora.Core;
 using Lumora.Core.Math;
 using Lumora.Core.Physics;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -37,7 +40,9 @@ public class CapsuleCollider : Collider
     public override void OnAwake()
     {
         base.OnAwake();
-        AquaLogger.Log($"CapsuleCollider: Initialized with Height={Height.Value}, Radius={Radius.Value}");
+        Height.OnChanged += _ => RunApplyChanges();
+        Radius.OnChanged += _ => RunApplyChanges();
+        LumoraLogger.Log($"CapsuleCollider: Initialized with Height={Height.Value}, Radius={Radius.Value}");
     }
 
     // ===== ABSTRACT METHOD IMPLEMENTATIONS =====

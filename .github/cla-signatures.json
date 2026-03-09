@@ -1,0 +1,20 @@
+{
+  "signedContributors": [
+    {
+      "name": "ty802",
+      "id": 31832680,
+      "comment_id": 4015386584,
+      "created_at": "2026-03-07T03:12:47Z",
+      "repoId": 908135242,
+      "pullRequestNo": 72
+    },
+    {
+      "name": "Xlinka",
+      "id": 22996716,
+      "comment_id": 4020366857,
+      "created_at": "2026-03-09T00:24:26Z",
+      "repoId": 908135242,
+      "pullRequestNo": 74
+    }
+  ]
+}

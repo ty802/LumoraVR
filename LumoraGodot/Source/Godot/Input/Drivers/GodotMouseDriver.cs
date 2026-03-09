@@ -1,8 +1,12 @@
-using Lumora.Core.Input;
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+﻿using Lumora.Core.Input;
 using Lumora.Core.Math;
 using Godot;
+using Lumora.Source.UI;
 
-namespace Aquamarine.Source.Godot.Input.Drivers;
+namespace Lumora.Source.Godot.Input.Drivers;
 
 /// <summary>
 /// Godot-specific mouse input driver.
@@ -11,25 +15,26 @@ namespace Aquamarine.Source.Godot.Input.Drivers;
 public class GodotMouseDriver : IMouseDriver, IInputDriver
 {
     public int UpdateOrder => 0;
-    private Vector2 _lastMousePosition = Vector2.Zero;
     private float _pendingScrollDelta = 0f;
     private double _lastFrameTime = 0;
 
     // Accumulated motion - only cleared when consumed
     private Vector2 _pendingMotion = Vector2.Zero;
-    private bool _mouseMotionReceived = false;
-    private Vector2 _lastVelocitySample = Vector2.Zero; // Used to detect stale velocities
-    private double _lastVelocitySampleTime = 0;
+    private global::Godot.Input.MouseModeEnum _lastAppliedMouseMode = global::Godot.Input.MouseModeEnum.Visible;
 
-    private int _instanceId;
-    private static int _nextInstanceId = 0;
+    // Reject impossible deltas from recapture/focus glitches while preserving normal fast flicks.
+    // Threshold is in pixels (before normalization).
+    private const float MaxReasonableMotionPerFrame = 2500f;
+    private const float MaxReasonableMotionSq = MaxReasonableMotionPerFrame * MaxReasonableMotionPerFrame;
+
+    // Light smoothing to reduce jitter from high-poll mice without adding noticeable latency
+    private float2 _smoothedDelta = float2.Zero;
+    private const float SmoothFactor = 0.3f; // 0 = raw (no smoothing), higher = smoother but laggier
 
     public GodotMouseDriver()
     {
-        _instanceId = _nextInstanceId++;
-        // Ensure Godot accumulates mouse motion between frames so we don't lose deltas
-        global::Godot.Input.UseAccumulatedInput = true;
-        GD.Print($"[GodotMouseDriver] Created instance {_instanceId}");
+        // Favor lower-latency raw events; we explicitly accumulate in HandleInputEvent.
+        global::Godot.Input.UseAccumulatedInput = false;
     }
 
     public void UpdateMouse(Mouse mouse)
@@ -37,19 +42,33 @@ public class GodotMouseDriver : IMouseDriver, IInputDriver
         if (mouse == null)
             return;
 
-        bool hadMotionEvent = _mouseMotionReceived;
-        _mouseMotionReceived = false;
-
-        // Honor capture requests from locomotion
-        if (Lumora.Core.Components.LocomotionController.MouseCaptureRequested)
+        var desiredMouseMode = global::Godot.Input.MouseMode;
+        // Dashboard takes priority - hide system cursor but allow mouse movement (we use custom cursor)
+        if (DashboardToggle.IsDashboardVisible)
         {
-            if (global::Godot.Input.MouseMode != global::Godot.Input.MouseModeEnum.Captured)
-                global::Godot.Input.MouseMode = global::Godot.Input.MouseModeEnum.Captured;
+            desiredMouseMode = global::Godot.Input.MouseModeEnum.Hidden;
+        }
+        // Honor capture requests from locomotion when dashboard is closed
+        else if (Lumora.Core.Components.LocomotionController.MouseCaptureRequested)
+        {
+            desiredMouseMode = global::Godot.Input.MouseModeEnum.Captured;
         }
         else
         {
-            if (global::Godot.Input.MouseMode != global::Godot.Input.MouseModeEnum.Visible)
-                global::Godot.Input.MouseMode = global::Godot.Input.MouseModeEnum.Visible;
+            desiredMouseMode = global::Godot.Input.MouseModeEnum.Visible;
+        }
+
+        if (global::Godot.Input.MouseMode != desiredMouseMode)
+        {
+            global::Godot.Input.MouseMode = desiredMouseMode;
+        }
+
+        if (_lastAppliedMouseMode != desiredMouseMode)
+        {
+            // Drop stale motion on capture/visibility transitions to avoid one-frame jumps.
+            _pendingMotion = Vector2.Zero;
+            _smoothedDelta = float2.Zero;
+            _lastAppliedMouseMode = desiredMouseMode;
         }
 
         // Calculate delta time manually since we can't access Engine's delta
@@ -72,45 +91,27 @@ public class GodotMouseDriver : IMouseDriver, IInputDriver
         mouse.DesktopPosition.UpdateValue(position, deltaTime);
         mouse.Position.UpdateValue(position, deltaTime);
 
-        // Pull motion gathered from _Input; fall back to Godot's velocity if no events reached us
+        // Pull raw motion gathered from _Input (in pixels).
         Vector2 motion = _pendingMotion;
         _pendingMotion = Vector2.Zero;
-        Vector2 lastVelocity = global::Godot.Input.GetLastMouseVelocity();
-        bool usedFallback = false;
-        bool usedPosDelta = false;
 
-        if (motion == Vector2.Zero)
+        // Clamp impossible spikes (alt-tab, recapture glitches)
+        if (motion.LengthSquared() > MaxReasonableMotionSq)
         {
-            bool velocityFresh = (currentTime - _lastVelocitySampleTime) < 0.25 || lastVelocity != _lastVelocitySample;
-            if (!hadMotionEvent && velocityFresh && lastVelocity.LengthSquared() > 0.0001f)
-            {
-                // Normalize velocity to a 60 FPS reference so mouse feel stays stable at high frame rates
-                const float referenceDelta = 1f / 60f;
-                motion = lastVelocity * referenceDelta;
-                usedFallback = true;
-                _lastVelocitySample = lastVelocity;
-                _lastVelocitySampleTime = currentTime;
-            }
-            else if (_lastMousePosition != Vector2.Zero)
-            {
-                // As an extra safety net, look at position delta in case events were eaten
-                Vector2 posDelta = mousePos - _lastMousePosition;
-                if (posDelta.LengthSquared() > 0.0001f)
-                {
-                    motion = posDelta;
-                    usedPosDelta = true;
-                }
-            }
-        }
-        else
-        {
-            _lastVelocitySample = lastVelocity;
-            _lastVelocitySampleTime = currentTime;
+            motion = motion.Normalized() * MaxReasonableMotionPerFrame;
         }
 
-        _lastMousePosition = mousePos;
+        // Normalize by screen height so delta is resolution/DPI-independent.
+        // A full screen-height swipe = 1.0 regardless of resolution.
+        float screenHeight = DisplayServer.WindowGetSize().Y;
+        if (screenHeight < 1f) screenHeight = 1080f;
+        float2 normalizedDelta = new float2(motion.X / screenHeight, motion.Y / screenHeight);
 
-        float2 delta = new float2(motion.X, motion.Y);
+        // Apply light smoothing (lerp between previous and current)
+        _smoothedDelta = float2.Lerp(_smoothedDelta, normalizedDelta, 1f - SmoothFactor);
+
+        // Don't send mouse delta to locomotion when dashboard is visible
+        float2 delta = DashboardToggle.IsDashboardVisible ? float2.Zero : _smoothedDelta;
 
         mouse.DirectDelta.UpdateValue(delta, deltaTime);
 
@@ -129,7 +130,6 @@ public class GodotMouseDriver : IMouseDriver, IInputDriver
         if (@event is InputEventMouseMotion mouseMotion)
         {
             _pendingMotion += mouseMotion.Relative;
-            _mouseMotionReceived = true;
         }
         // Capture scroll wheel
         else if (@event is InputEventMouseButton mouseButton)

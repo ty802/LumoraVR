@@ -1,66 +1,51 @@
-using System;
-using System.Collections.Generic;
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+﻿using System;
 using Lumora.Core;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
-using AquaLogger = Lumora.Core.Logging.Logger;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components.Avatar;
 
 /// <summary>
-/// VR Inverse Kinematics Avatar component.
-/// Creates proxy slots for body nodes, attaches AvatarPoseNode components
-/// to receive tracking data, and uses FieldDrives to drive skeleton bones.
+/// VR IK avatar orchestrator.
+///
+/// Responsibilities:
+///   1. Create one proxy slot per tracked body node (HeadProxy, LeftHandProxy, …).
+///   2. Attach an AvatarPoseNode to each proxy slot and equip it to the matching
+///      AvatarObjectSlot on the UserRoot's body-node tracking slots.
+///      This makes the proxy slots automatically mirror the tracking positions.
+///   3. Wire the proxy slots into GodotIKAvatar's target SyncRefs so the IK hook
+///      knows where to aim each limb.
+///   4. Run procedural feet when foot tracking is absent.
+///
+/// What this component does NOT do:
+///   - Drive skeleton bones directly (GodotIKAvatar + GodotIKAvatarHook own that).
+///   - Run any IK solver (GodotIKAvatarHook does that on the Godot side).
 /// </summary>
 [ComponentCategory("Users/Common Avatar System")]
 [DefaultUpdateOrder(-5000)]
 public class VRIKAvatar : ImplementableComponent, IAvatarObjectComponent, IInputUpdateReceiver
 {
-    // ===== REFERENCES =====
+    // ── References ──────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Reference to the SkeletonBuilder managing the avatar bones.
-    /// </summary>
-    public SyncRef<SkeletonBuilder> Skeleton { get; private set; }
+    public SyncRef<SkeletonBuilder> Skeleton  { get; private set; }
+    public SyncRef<BipedRig>        Rig       { get; private set; }
+    public SyncRef<UserRoot>        UserRoot  { get; private set; }
 
-    /// <summary>
-    /// Reference to the BipedRig that maps body nodes to skeleton bones.
-    /// </summary>
-    public SyncRef<BipedRig> Rig { get; private set; }
+    // ── Settings ─────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// UserRoot that owns this avatar.
-    /// </summary>
-    public SyncRef<UserRoot> UserRoot { get; private set; }
-
-    // ===== SETTINGS =====
-
-    /// <summary>
-    /// Height compensation factor (0.75-1.25).
-    /// </summary>
-    public Sync<float> HeightCompensation { get; private set; }
-
-    /// <summary>
-    /// Avatar height in local units.
-    /// </summary>
-    public Sync<float> AvatarHeight { get; private set; }
-
-    /// <summary>
-    /// User resize threshold.
-    /// </summary>
+    public Sync<float> HeightCompensation  { get; private set; }
+    public Sync<float> AvatarHeight        { get; private set; }
     public Sync<float> UserResizeThreshold { get; private set; }
+    public Sync<bool>  UseProceduralFeet   { get; private set; }
+    public Sync<bool>  IKEnabled           { get; private set; }
 
-    /// <summary>
-    /// Whether to use procedural feet when no trackers are available.
-    /// </summary>
-    public Sync<bool> UseProceduralFeet { get; private set; }
-
-    /// <summary>
-    /// Whether the IK system is enabled.
-    /// </summary>
-    public Sync<bool> IKEnabled { get; private set; }
-
-    // ===== PROXY SLOTS =====
+    // ── Proxy slots (one per tracked body node) ──────────────────────────────
+    // Each proxy slot's global position is kept in sync with the corresponding
+    // tracking slot by the AvatarPoseNode attached to it.
 
     protected SyncRef<Slot> _headProxy;
     protected SyncRef<Slot> _pelvisProxy;
@@ -74,7 +59,7 @@ public class VRIKAvatar : ImplementableComponent, IAvatarObjectComponent, IInput
     protected SyncRef<Slot> _leftKneeProxy;
     protected SyncRef<Slot> _rightKneeProxy;
 
-    // ===== POSE NODES =====
+    // ── Pose nodes (one per proxy, equips to tracking AvatarObjectSlot) ──────
 
     protected SyncRef<AvatarPoseNode> _headNode;
     protected SyncRef<AvatarPoseNode> _pelvisNode;
@@ -88,162 +73,75 @@ public class VRIKAvatar : ImplementableComponent, IAvatarObjectComponent, IInput
     protected SyncRef<AvatarPoseNode> _leftKneeNode;
     protected SyncRef<AvatarPoseNode> _rightKneeNode;
 
-    // ===== FIELD DRIVES (for driving skeleton bones from proxy positions) =====
-
-    protected FieldDrive<float3> _headTargetPos;
-    protected FieldDrive<floatQ> _headTargetRot;
-    protected FieldDrive<float3> _pelvisTargetPos;
-    protected FieldDrive<floatQ> _pelvisTargetRot;
-    protected FieldDrive<float3> _leftHandTargetPos;
-    protected FieldDrive<floatQ> _leftHandTargetRot;
-    protected FieldDrive<float3> _rightHandTargetPos;
-    protected FieldDrive<floatQ> _rightHandTargetRot;
-    protected FieldDrive<float3> _leftFootTargetPos;
-    protected FieldDrive<floatQ> _leftFootTargetRot;
-    protected FieldDrive<float3> _rightFootTargetPos;
-    protected FieldDrive<floatQ> _rightFootTargetRot;
-
-    // ===== INTERNAL STATE =====
+    // ── Internal state ────────────────────────────────────────────────────────
 
     private bool _isInitialized;
     private bool _isRegistered;
 
-    // ===== PUBLIC PROPERTIES =====
+    // ── Public accessors ──────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Whether the avatar is currently equipped.
-    /// </summary>
-    public bool IsEquipped => _headNode?.Target?.IsEquipped ?? false;
+    public bool            IsEquipped     => _headNode?.Target?.IsEquipped ?? false;
+    public AvatarPoseNode? HeadNode       => _headNode?.Target;
+    public AvatarPoseNode? PelvisNode     => _pelvisNode?.Target;
+    public AvatarPoseNode? LeftHandNode   => _leftHandNode?.Target;
+    public AvatarPoseNode? RightHandNode  => _rightHandNode?.Target;
+    public AvatarPoseNode? LeftFootNode   => _leftFootNode?.Target;
+    public AvatarPoseNode? RightFootNode  => _rightFootNode?.Target;
+    public Slot?           HeadProxy      => _headProxy?.Target;
+    public Slot?           LeftHandProxy  => _leftHandProxy?.Target;
+    public Slot?           RightHandProxy => _rightHandProxy?.Target;
 
-    /// <summary>
-    /// Head pose node.
-    /// </summary>
-    public AvatarPoseNode HeadNode => _headNode?.Target;
-
-    /// <summary>
-    /// Pelvis pose node.
-    /// </summary>
-    public AvatarPoseNode PelvisNode => _pelvisNode?.Target;
-
-    /// <summary>
-    /// Left hand pose node.
-    /// </summary>
-    public AvatarPoseNode LeftHandNode => _leftHandNode?.Target;
-
-    /// <summary>
-    /// Right hand pose node.
-    /// </summary>
-    public AvatarPoseNode RightHandNode => _rightHandNode?.Target;
-
-    /// <summary>
-    /// Left foot pose node.
-    /// </summary>
-    public AvatarPoseNode LeftFootNode => _leftFootNode?.Target;
-
-    /// <summary>
-    /// Right foot pose node.
-    /// </summary>
-    public AvatarPoseNode RightFootNode => _rightFootNode?.Target;
-
-    /// <summary>
-    /// Head proxy slot (tracking target position).
-    /// </summary>
-    public Slot HeadProxy => _headProxy?.Target;
-
-    /// <summary>
-    /// Left hand proxy slot.
-    /// </summary>
-    public Slot LeftHandProxy => _leftHandProxy?.Target;
-
-    /// <summary>
-    /// Right hand proxy slot.
-    /// </summary>
-    public Slot RightHandProxy => _rightHandProxy?.Target;
-
-    // ===== IAvatarObjectComponent =====
+    // ── IAvatarObjectComponent ────────────────────────────────────────────────
 
     public BodyNode Node => BodyNode.Root;
+    public void OnPreEquip(AvatarObjectSlot slot) { }
+    public void OnEquip(AvatarObjectSlot slot)    { LumoraLogger.Log($"VRIKAvatar: Equipped to {slot.Node.Value}"); }
+    public void OnDequip(AvatarObjectSlot slot)   { LumoraLogger.Log($"VRIKAvatar: Dequipped from {slot.Node.Value}"); }
 
-    public void OnPreEquip(AvatarObjectSlot slot)
-    {
-        // Called before equipping - can prepare state
-    }
-
-    public void OnEquip(AvatarObjectSlot slot)
-    {
-        AquaLogger.Log($"VRIKAvatar: Equipped to {slot.Node.Value}");
-    }
-
-    public void OnDequip(AvatarObjectSlot slot)
-    {
-        AquaLogger.Log($"VRIKAvatar: Dequipped from {slot.Node.Value}");
-    }
-
-    // ===== LIFECYCLE =====
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     public override void OnAwake()
     {
         base.OnAwake();
 
-        // Initialize sync fields
-        Skeleton = new SyncRef<SkeletonBuilder>(this, null);
-        Rig = new SyncRef<BipedRig>(this, null);
-        UserRoot = new SyncRef<UserRoot>(this, null);
-
-        HeightCompensation = new Sync<float>(this, 0.95f);
-        AvatarHeight = new Sync<float>(this, 1.7f);
+        Skeleton            = new SyncRef<SkeletonBuilder>(this, null);
+        Rig                 = new SyncRef<BipedRig>(this, null);
+        UserRoot            = new SyncRef<UserRoot>(this, null);
+        HeightCompensation  = new Sync<float>(this, 0.95f);
+        AvatarHeight        = new Sync<float>(this, 1.7f);
         UserResizeThreshold = new Sync<float>(this, 0.2f);
-        UseProceduralFeet = new Sync<bool>(this, true);
-        IKEnabled = new Sync<bool>(this, true);
+        UseProceduralFeet   = new Sync<bool>(this, true);
+        IKEnabled           = new Sync<bool>(this, true);
 
-        // Initialize proxy slot refs
-        _headProxy = new SyncRef<Slot>(this, null);
-        _pelvisProxy = new SyncRef<Slot>(this, null);
-        _chestProxy = new SyncRef<Slot>(this, null);
-        _leftHandProxy = new SyncRef<Slot>(this, null);
-        _rightHandProxy = new SyncRef<Slot>(this, null);
-        _leftElbowProxy = new SyncRef<Slot>(this, null);
+        _headProxy       = new SyncRef<Slot>(this, null);
+        _pelvisProxy     = new SyncRef<Slot>(this, null);
+        _chestProxy      = new SyncRef<Slot>(this, null);
+        _leftHandProxy   = new SyncRef<Slot>(this, null);
+        _rightHandProxy  = new SyncRef<Slot>(this, null);
+        _leftElbowProxy  = new SyncRef<Slot>(this, null);
         _rightElbowProxy = new SyncRef<Slot>(this, null);
-        _leftFootProxy = new SyncRef<Slot>(this, null);
-        _rightFootProxy = new SyncRef<Slot>(this, null);
-        _leftKneeProxy = new SyncRef<Slot>(this, null);
-        _rightKneeProxy = new SyncRef<Slot>(this, null);
+        _leftFootProxy   = new SyncRef<Slot>(this, null);
+        _rightFootProxy  = new SyncRef<Slot>(this, null);
+        _leftKneeProxy   = new SyncRef<Slot>(this, null);
+        _rightKneeProxy  = new SyncRef<Slot>(this, null);
 
-        // Initialize pose node refs
-        _headNode = new SyncRef<AvatarPoseNode>(this, null);
-        _pelvisNode = new SyncRef<AvatarPoseNode>(this, null);
-        _chestNode = new SyncRef<AvatarPoseNode>(this, null);
-        _leftHandNode = new SyncRef<AvatarPoseNode>(this, null);
-        _rightHandNode = new SyncRef<AvatarPoseNode>(this, null);
-        _leftElbowNode = new SyncRef<AvatarPoseNode>(this, null);
+        _headNode       = new SyncRef<AvatarPoseNode>(this, null);
+        _pelvisNode     = new SyncRef<AvatarPoseNode>(this, null);
+        _chestNode      = new SyncRef<AvatarPoseNode>(this, null);
+        _leftHandNode   = new SyncRef<AvatarPoseNode>(this, null);
+        _rightHandNode  = new SyncRef<AvatarPoseNode>(this, null);
+        _leftElbowNode  = new SyncRef<AvatarPoseNode>(this, null);
         _rightElbowNode = new SyncRef<AvatarPoseNode>(this, null);
-        _leftFootNode = new SyncRef<AvatarPoseNode>(this, null);
-        _rightFootNode = new SyncRef<AvatarPoseNode>(this, null);
-        _leftKneeNode = new SyncRef<AvatarPoseNode>(this, null);
-        _rightKneeNode = new SyncRef<AvatarPoseNode>(this, null);
-
-        // Initialize field drives
-        _headTargetPos = new FieldDrive<float3>(World);
-        _headTargetRot = new FieldDrive<floatQ>(World);
-        _pelvisTargetPos = new FieldDrive<float3>(World);
-        _pelvisTargetRot = new FieldDrive<floatQ>(World);
-        _leftHandTargetPos = new FieldDrive<float3>(World);
-        _leftHandTargetRot = new FieldDrive<floatQ>(World);
-        _rightHandTargetPos = new FieldDrive<float3>(World);
-        _rightHandTargetRot = new FieldDrive<floatQ>(World);
-        _leftFootTargetPos = new FieldDrive<float3>(World);
-        _leftFootTargetRot = new FieldDrive<floatQ>(World);
-        _rightFootTargetPos = new FieldDrive<float3>(World);
-        _rightFootTargetRot = new FieldDrive<floatQ>(World);
-
-        AquaLogger.Log($"VRIKAvatar: OnAwake on slot '{Slot.SlotName.Value}'");
+        _leftFootNode   = new SyncRef<AvatarPoseNode>(this, null);
+        _rightFootNode  = new SyncRef<AvatarPoseNode>(this, null);
+        _leftKneeNode   = new SyncRef<AvatarPoseNode>(this, null);
+        _rightKneeNode  = new SyncRef<AvatarPoseNode>(this, null);
     }
 
     public override void OnStart()
     {
         base.OnStart();
 
-        // Register for input updates
         var input = Engine.Current?.InputInterface;
         if (input != null)
         {
@@ -251,431 +149,277 @@ public class VRIKAvatar : ImplementableComponent, IAvatarObjectComponent, IInput
             _isRegistered = true;
         }
 
-        // Try to auto-find skeleton and rig
         if (Skeleton.Target == null)
-        {
             Skeleton.Target = Slot.GetComponent<SkeletonBuilder>();
-        }
 
         if (Rig.Target == null)
-        {
             Rig.Target = Slot.GetComponent<BipedRig>();
-        }
 
-        // Try to auto-find UserRoot
         if (UserRoot.Target == null)
         {
-            UserRoot.Target = Slot.GetComponent<UserRoot>();
-            if (UserRoot.Target == null)
-            {
-                UserRoot.Target = Slot.Parent?.GetComponent<UserRoot>();
-            }
+            var ur = Slot.GetComponent<UserRoot>();
+            if (ur == null && Slot.Parent != null)
+                ur = Slot.Parent.GetComponent<UserRoot>();
+            if (ur != null)
+                UserRoot.Target = ur;
         }
 
         _isInitialized = Skeleton.Target != null && Skeleton.Target.IsBuilt.Value;
 
         if (_isInitialized)
-        {
-            AquaLogger.Log($"VRIKAvatar: Started on slot '{Slot.SlotName.Value}' with skeleton");
-        }
+            LumoraLogger.Log($"VRIKAvatar: Started on '{Slot.SlotName.Value}' with skeleton");
         else
-        {
-            AquaLogger.Warn($"VRIKAvatar: No valid skeleton found on slot '{Slot.SlotName.Value}'");
-        }
+            LumoraLogger.Warn($"VRIKAvatar: No valid skeleton found on '{Slot.SlotName.Value}'");
     }
 
     public override void OnDestroy()
     {
         if (_isRegistered)
         {
-            var input = Engine.Current?.InputInterface;
-            input?.UnregisterInputEventReceiver(this);
+            Engine.Current?.InputInterface?.UnregisterInputEventReceiver(this);
             _isRegistered = false;
         }
-
-        ReleaseAllDrives();
         _isInitialized = false;
         base.OnDestroy();
-        AquaLogger.Log($"VRIKAvatar: Destroyed on slot '{Slot?.SlotName.Value}'");
     }
 
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
 
-        // Late-init if skeleton was assigned after OnStart
+        // Late-init if skeleton was assigned after OnStart.
         if (!_isInitialized && Skeleton.Target != null && Skeleton.Target.IsBuilt.Value)
         {
             _isInitialized = true;
-            AquaLogger.Log($"VRIKAvatar: Late-start with skeleton");
+            LumoraLogger.Log("VRIKAvatar: Late-start with skeleton");
         }
 
-        // Register for hook update
         RunApplyChanges();
     }
 
-    // ===== IInputUpdateReceiver =====
+    // ── IInputUpdateReceiver ──────────────────────────────────────────────────
 
     public void BeforeInputUpdate()
     {
-        if (!IKEnabled.Value || !_isInitialized)
-            return;
+        if (!IKEnabled.Value || !_isInitialized) return;
 
-        // Update proxy positions from tracking before IK solve
-        UpdateProxiesFromTracking();
+        // AvatarPoseNodes self-update via their own IInputUpdateReceiver registration.
+        // We only need to handle procedural feet for untracked foot nodes.
+        if (UseProceduralFeet.Value)
+        {
+            bool leftTracked  = _leftFootNode.Target?.IsEquippedAndActive  ?? false;
+            bool rightTracked = _rightFootNode.Target?.IsEquippedAndActive ?? false;
+            if (!leftTracked || !rightTracked)
+                UpdateProceduralFeet();
+        }
     }
 
     public void AfterInputUpdate()
     {
-        if (!IKEnabled.Value || !_isInitialized)
-            return;
-
-        // Drive skeleton bones from proxy positions after IK solve
-        DriveSkeletonFromProxies();
+        // Bone driving is handled by GodotIKAvatar + GodotIKAvatarHook.
     }
 
-    // ===== SETUP =====
+    // ── Setup ─────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Setup the VRIKAvatar with references.
-    /// Creates proxy slots and pose nodes for each tracked body part.
+    /// Full avatar setup — creates proxy slots, wires them to GodotIKAvatar,
+    /// and stores skeleton/rig/userRoot references.
     /// </summary>
     public void Setup(SkeletonBuilder skeleton, BipedRig rig, UserRoot userRoot)
     {
-        Skeleton.Target = skeleton;
-        Rig.Target = rig;
-        UserRoot.Target = userRoot;
+        Skeleton.Target  = skeleton;
+        Rig.Target       = rig;
+        UserRoot.Target  = userRoot;
 
-        // Create proxy slots and pose nodes
         EnsurePoseNodes();
-
-        // Setup field drives to skeleton bones
-        AssignDrives();
+        WireToGodotIK();
 
         _isInitialized = true;
-        AquaLogger.Log($"VRIKAvatar: Setup complete with {rig?.Bones.Count ?? 0} bones");
+        LumoraLogger.Log($"VRIKAvatar: Setup complete ({rig?.Bones.Count ?? 0} bones)");
     }
 
     /// <summary>
-    /// Setup tracking references from UserRoot.
+    /// Connect tracking: find the AvatarObjectSlot on each UserRoot body slot and
+    /// equip our AvatarPoseNode to it so the proxy slots start receiving tracking data.
     /// </summary>
     public void SetupTracking(UserRoot userRoot)
     {
         if (userRoot == null)
         {
-            AquaLogger.Warn("VRIKAvatar: Cannot setup tracking with null UserRoot");
+            LumoraLogger.Warn("VRIKAvatar: Cannot setup tracking — null UserRoot");
             return;
         }
 
         UserRoot.Target = userRoot;
+        EnsurePoseNodes();
 
-        // Connect pose nodes to tracking slots
-        if (_headNode.Target != null && userRoot.HeadSlot != null)
-        {
-            // The AvatarObjectSlot on the head tracking slot will equip our head pose node
-            AquaLogger.Log($"VRIKAvatar: Head tracking setup to '{userRoot.HeadSlot.SlotName.Value}'");
-        }
+        EquipPoseNodeToBodySlot(userRoot.HeadSlot,      _headNode.Target);
+        EquipPoseNodeToBodySlot(userRoot.LeftHandSlot,  _leftHandNode.Target);
+        EquipPoseNodeToBodySlot(userRoot.RightHandSlot, _rightHandNode.Target);
+        EquipPoseNodeToBodySlot(userRoot.LeftFootSlot,  _leftFootNode.Target);
+        EquipPoseNodeToBodySlot(userRoot.RightFootSlot, _rightFootNode.Target);
 
-        if (_leftHandNode.Target != null && userRoot.LeftHandSlot != null)
-        {
-            AquaLogger.Log($"VRIKAvatar: Left hand tracking setup");
-        }
-
-        if (_rightHandNode.Target != null && userRoot.RightHandSlot != null)
-        {
-            AquaLogger.Log($"VRIKAvatar: Right hand tracking setup");
-        }
-
-        AquaLogger.Log($"VRIKAvatar: Setup tracking from UserRoot '{userRoot.Slot.SlotName.Value}'");
+        WireToGodotIK();
+        LumoraLogger.Log($"VRIKAvatar: Tracking connected for UserRoot '{userRoot.Slot.SlotName.Value}'");
     }
 
-    // ===== INTERNAL METHODS =====
+    // ── Internal ──────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Ensure all pose nodes exist for tracked body parts.
+    /// Create proxy slots and AvatarPoseNodes for every tracked body node.
+    /// Each proxy is a single flat slot; the AvatarPoseNode sits on it and updates
+    /// the slot's local transform each frame once equipped.
     /// </summary>
     private void EnsurePoseNodes()
     {
-        EnsurePoseNode(_headProxy, _headNode, BodyNode.Head, "Head");
-        EnsurePoseNode(_pelvisProxy, _pelvisNode, BodyNode.Hips, "Hips");
-        EnsurePoseNode(_chestProxy, _chestNode, BodyNode.Chest, "Chest");
-        EnsurePoseNode(_leftHandProxy, _leftHandNode, BodyNode.LeftHand, "Left Hand");
-        EnsurePoseNode(_rightHandProxy, _rightHandNode, BodyNode.RightHand, "Right Hand");
-        EnsurePoseNode(_leftElbowProxy, _leftElbowNode, BodyNode.LeftLowerArm, "Left Elbow");
-        EnsurePoseNode(_rightElbowProxy, _rightElbowNode, BodyNode.RightLowerArm, "Right Elbow");
-        EnsurePoseNode(_leftFootProxy, _leftFootNode, BodyNode.LeftFoot, "Left Foot");
-        EnsurePoseNode(_rightFootProxy, _rightFootNode, BodyNode.RightFoot, "Right Foot");
-        EnsurePoseNode(_leftKneeProxy, _leftKneeNode, BodyNode.LeftLowerLeg, "Left Knee");
-        EnsurePoseNode(_rightKneeProxy, _rightKneeNode, BodyNode.RightLowerLeg, "Right Knee");
+        EnsurePoseNode(_headProxy,       _headNode,       BodyNode.Head,         "Head");
+        EnsurePoseNode(_pelvisProxy,     _pelvisNode,     BodyNode.Hips,         "Hips");
+        EnsurePoseNode(_chestProxy,      _chestNode,      BodyNode.Chest,        "Chest");
+        EnsurePoseNode(_leftHandProxy,   _leftHandNode,   BodyNode.LeftHand,     "LeftHand");
+        EnsurePoseNode(_rightHandProxy,  _rightHandNode,  BodyNode.RightHand,    "RightHand");
+        EnsurePoseNode(_leftElbowProxy,  _leftElbowNode,  BodyNode.LeftLowerArm, "LeftElbow");
+        EnsurePoseNode(_rightElbowProxy, _rightElbowNode, BodyNode.RightLowerArm,"RightElbow");
+        EnsurePoseNode(_leftFootProxy,   _leftFootNode,   BodyNode.LeftFoot,     "LeftFoot");
+        EnsurePoseNode(_rightFootProxy,  _rightFootNode,  BodyNode.RightFoot,    "RightFoot");
+        EnsurePoseNode(_leftKneeProxy,   _leftKneeNode,   BodyNode.LeftLowerLeg, "LeftKnee");
+        EnsurePoseNode(_rightKneeProxy,  _rightKneeNode,  BodyNode.RightLowerLeg,"RightKnee");
     }
 
     /// <summary>
-    /// Ensure a single pose node exists.
+    /// Ensure one proxy slot + AvatarPoseNode exist for a body node.
+    /// The proxy slot IS the IK target — AvatarPoseNode lives on it and moves it.
     /// </summary>
-    private AvatarPoseNode EnsurePoseNode(SyncRef<Slot> proxy, SyncRef<AvatarPoseNode> poseNode, BodyNode node, string name)
+    private AvatarPoseNode EnsurePoseNode(SyncRef<Slot> proxy, SyncRef<AvatarPoseNode> poseNode,
+                                          BodyNode node, string name)
     {
-        // Create proxy slot if it doesn't exist
         if (proxy.Target == null)
-        {
-            var proxyParent = Slot.AddSlot($"{name} Proxy");
-            proxy.Target = proxyParent.AddSlot("Target");
-        }
+            proxy.Target = Slot.AddSlot($"{name}Proxy");
 
-        // Create pose node if it doesn't exist
         if (poseNode.Target == null)
-        {
-            poseNode.Target = proxy.Target.Parent.AttachComponent<AvatarPoseNode>();
-        }
+            poseNode.Target = proxy.Target.AttachComponent<AvatarPoseNode>();
 
-        // Set the body node type
         poseNode.Target.Node.Value = node;
-
         return poseNode.Target;
     }
 
     /// <summary>
-    /// Assign field drives to skeleton bones.
+    /// Find the AvatarObjectSlot belonging to a body-node tracking slot.
+    ///
+    /// TrackedDevicePositioner creates its AvatarObjectSlot on a child "BodyNode" slot,
+    /// so we check via the positioner's ObjectSlot reference first before falling back
+    /// to a component search.
     /// </summary>
-    private void AssignDrives()
+    private static void EquipPoseNodeToBodySlot(Slot bodySlot, AvatarPoseNode poseNode)
     {
-        if (Rig.Target == null)
+        if (bodySlot == null || poseNode == null) return;
+
+        // 1. Direct — slot may have AvatarObjectSlot on itself.
+        var avatarSlot = bodySlot.GetComponent<AvatarObjectSlot>();
+
+        // 2. Via TrackedDevicePositioner — the positioner stores a reference to the
+        //    AvatarObjectSlot it created on its "BodyNode" child slot.
+        if (avatarSlot == null)
+            avatarSlot = bodySlot.GetComponent<TrackedDevicePositioner>()?.ObjectSlot.Target;
+
+        // 3. Last resort — scan children.
+        if (avatarSlot == null)
+            avatarSlot = bodySlot.GetComponentInChildren<AvatarObjectSlot>();
+
+        if (avatarSlot == null)
+        {
+            LumoraLogger.Warn($"VRIKAvatar: No AvatarObjectSlot found for body slot '{bodySlot.SlotName.Value}'");
             return;
-
-        // Drive head bone
-        var headBone = Rig.Target.TryGetBone(BodyNode.Head);
-        if (headBone != null)
-        {
-            _headTargetPos.DriveTarget(headBone.LocalPosition);
-            _headTargetRot.DriveTarget(headBone.LocalRotation);
         }
 
-        // Drive hips bone
-        var hipsBone = Rig.Target.TryGetBone(BodyNode.Hips);
-        if (hipsBone != null)
-        {
-            _pelvisTargetPos.DriveTarget(hipsBone.LocalPosition);
-            _pelvisTargetRot.DriveTarget(hipsBone.LocalRotation);
-        }
-
-        // Drive left hand bone
-        var leftHandBone = Rig.Target.TryGetBone(BodyNode.LeftHand);
-        if (leftHandBone != null)
-        {
-            _leftHandTargetPos.DriveTarget(leftHandBone.LocalPosition);
-            _leftHandTargetRot.DriveTarget(leftHandBone.LocalRotation);
-        }
-
-        // Drive right hand bone
-        var rightHandBone = Rig.Target.TryGetBone(BodyNode.RightHand);
-        if (rightHandBone != null)
-        {
-            _rightHandTargetPos.DriveTarget(rightHandBone.LocalPosition);
-            _rightHandTargetRot.DriveTarget(rightHandBone.LocalRotation);
-        }
-
-        // Drive left foot bone
-        var leftFootBone = Rig.Target.TryGetBone(BodyNode.LeftFoot);
-        if (leftFootBone != null)
-        {
-            _leftFootTargetPos.DriveTarget(leftFootBone.LocalPosition);
-            _leftFootTargetRot.DriveTarget(leftFootBone.LocalRotation);
-        }
-
-        // Drive right foot bone
-        var rightFootBone = Rig.Target.TryGetBone(BodyNode.RightFoot);
-        if (rightFootBone != null)
-        {
-            _rightFootTargetPos.DriveTarget(rightFootBone.LocalPosition);
-            _rightFootTargetRot.DriveTarget(rightFootBone.LocalRotation);
-        }
-
-        AquaLogger.Log($"VRIKAvatar: Assigned drives to skeleton bones");
+        avatarSlot.Equip(poseNode);
+        LumoraLogger.Log($"VRIKAvatar: Equipped {poseNode.Node.Value} pose node → '{bodySlot.SlotName.Value}'");
     }
 
     /// <summary>
-    /// Release all field drives.
+    /// Set GodotIKAvatar's IK target SyncRefs to our proxy slots so the Godot-side
+    /// hook knows exactly where to aim each limb.
     /// </summary>
-    private void ReleaseAllDrives()
+    private void WireToGodotIK()
     {
-        _headTargetPos?.ReleaseLink();
-        _headTargetRot?.ReleaseLink();
-        _pelvisTargetPos?.ReleaseLink();
-        _pelvisTargetRot?.ReleaseLink();
-        _leftHandTargetPos?.ReleaseLink();
-        _leftHandTargetRot?.ReleaseLink();
-        _rightHandTargetPos?.ReleaseLink();
-        _rightHandTargetRot?.ReleaseLink();
-        _leftFootTargetPos?.ReleaseLink();
-        _leftFootTargetRot?.ReleaseLink();
-        _rightFootTargetPos?.ReleaseLink();
-        _rightFootTargetRot?.ReleaseLink();
+        // Search up the hierarchy for a GodotIKAvatar.
+        var godotIK = Slot.GetComponent<GodotIKAvatar>();
+        if (godotIK == null)
+        {
+            var p = Slot.Parent;
+            while (p != null && godotIK == null)
+            {
+                godotIK = p.GetComponent<GodotIKAvatar>();
+                p = p.Parent;
+            }
+        }
+
+        if (godotIK == null)
+        {
+            LumoraLogger.Warn("VRIKAvatar: No GodotIKAvatar found in hierarchy — IK targets will not be set");
+            return;
+        }
+
+        if (_headProxy.Target != null)       godotIK.HeadTarget.Target      = _headProxy.Target;
+        if (_leftHandProxy.Target != null)   godotIK.LeftHandTarget.Target  = _leftHandProxy.Target;
+        if (_rightHandProxy.Target != null)  godotIK.RightHandTarget.Target = _rightHandProxy.Target;
+        if (_leftFootProxy.Target != null)   godotIK.LeftFootTarget.Target  = _leftFootProxy.Target;
+        if (_rightFootProxy.Target != null)  godotIK.RightFootTarget.Target = _rightFootProxy.Target;
+
+        LumoraLogger.Log($"VRIKAvatar: Wired proxy slots → GodotIKAvatar on '{godotIK.Slot.SlotName.Value}'");
     }
 
     /// <summary>
-    /// Update proxy slot positions from tracking data.
-    /// </summary>
-    private void UpdateProxiesFromTracking()
-    {
-        // Head proxy gets position from head tracking
-        if (_headNode.Target != null && _headProxy.Target != null)
-        {
-            if (_headNode.Target.IsEquippedAndActive)
-            {
-                // Position is updated by the AvatarPoseNode from the AvatarObjectSlot
-            }
-        }
-
-        // Hand proxies
-        if (_leftHandNode.Target != null && _leftHandProxy.Target != null)
-        {
-            // Updated by AvatarPoseNode
-        }
-
-        if (_rightHandNode.Target != null && _rightHandProxy.Target != null)
-        {
-            // Updated by AvatarPoseNode
-        }
-
-        // Feet - use procedural if no tracking
-        if (UseProceduralFeet.Value)
-        {
-            UpdateProceduralFeet();
-        }
-    }
-
-    /// <summary>
-    /// Drive skeleton bones from proxy positions.
-    /// </summary>
-    private void DriveSkeletonFromProxies()
-    {
-        // The FieldDrives automatically push values from proxy to skeleton
-        // This method is where additional IK solving would happen
-
-        // For now, directly copy proxy transforms to skeleton bones via drives
-        if (_headProxy.Target != null && _headTargetPos.IsActive)
-        {
-            var headBone = Rig.Target?.TryGetBone(BodyNode.Head);
-            if (headBone != null)
-            {
-                // Convert proxy global position to bone local position
-                var globalPos = _headProxy.Target.GlobalPosition;
-                var localPos = headBone.Parent?.GlobalPointToLocal(globalPos) ?? globalPos;
-                _headTargetPos.SetValue(localPos);
-
-                var globalRot = _headProxy.Target.GlobalRotation;
-                var localRot = headBone.Parent?.GlobalRotationToLocal(globalRot) ?? globalRot;
-                _headTargetRot.SetValue(localRot);
-            }
-        }
-
-        // Left hand
-        if (_leftHandProxy.Target != null && _leftHandTargetPos.IsActive)
-        {
-            var bone = Rig.Target?.TryGetBone(BodyNode.LeftHand);
-            if (bone != null)
-            {
-                var globalPos = _leftHandProxy.Target.GlobalPosition;
-                var localPos = bone.Parent?.GlobalPointToLocal(globalPos) ?? globalPos;
-                _leftHandTargetPos.SetValue(localPos);
-
-                var globalRot = _leftHandProxy.Target.GlobalRotation;
-                var localRot = bone.Parent?.GlobalRotationToLocal(globalRot) ?? globalRot;
-                _leftHandTargetRot.SetValue(localRot);
-            }
-        }
-
-        // Right hand
-        if (_rightHandProxy.Target != null && _rightHandTargetPos.IsActive)
-        {
-            var bone = Rig.Target?.TryGetBone(BodyNode.RightHand);
-            if (bone != null)
-            {
-                var globalPos = _rightHandProxy.Target.GlobalPosition;
-                var localPos = bone.Parent?.GlobalPointToLocal(globalPos) ?? globalPos;
-                _rightHandTargetPos.SetValue(localPos);
-
-                var globalRot = _rightHandProxy.Target.GlobalRotation;
-                var localRot = bone.Parent?.GlobalRotationToLocal(globalRot) ?? globalRot;
-                _rightHandTargetRot.SetValue(localRot);
-            }
-        }
-
-        // Feet
-        if (_leftFootProxy.Target != null && _leftFootTargetPos.IsActive)
-        {
-            var bone = Rig.Target?.TryGetBone(BodyNode.LeftFoot);
-            if (bone != null)
-            {
-                var globalPos = _leftFootProxy.Target.GlobalPosition;
-                var localPos = bone.Parent?.GlobalPointToLocal(globalPos) ?? globalPos;
-                _leftFootTargetPos.SetValue(localPos);
-
-                var globalRot = _leftFootProxy.Target.GlobalRotation;
-                var localRot = bone.Parent?.GlobalRotationToLocal(globalRot) ?? globalRot;
-                _leftFootTargetRot.SetValue(localRot);
-            }
-        }
-
-        if (_rightFootProxy.Target != null && _rightFootTargetPos.IsActive)
-        {
-            var bone = Rig.Target?.TryGetBone(BodyNode.RightFoot);
-            if (bone != null)
-            {
-                var globalPos = _rightFootProxy.Target.GlobalPosition;
-                var localPos = bone.Parent?.GlobalPointToLocal(globalPos) ?? globalPos;
-                _rightFootTargetPos.SetValue(localPos);
-
-                var globalRot = _rightFootProxy.Target.GlobalRotation;
-                var localRot = bone.Parent?.GlobalRotationToLocal(globalRot) ?? globalRot;
-                _rightFootTargetRot.SetValue(localRot);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Update procedural foot positions when no foot tracking is available.
+    /// Compute procedural foot positions from head transform when foot tracking is absent.
+    /// Uses body-rotation-aware positioning so feet stay under the body when turning.
     /// </summary>
     private void UpdateProceduralFeet()
     {
-        if (_leftFootNode.Target == null || _leftFootNode.Target.IsEquippedAndActive)
-            return;
-        if (_rightFootNode.Target == null || _rightFootNode.Target.IsEquippedAndActive)
-            return;
+        var headSlot = _headProxy.Target;
+        if (headSlot == null) return;
 
-        // Get head position for procedural foot placement
-        var headPos = _headProxy.Target?.GlobalPosition ?? float3.Zero;
+        float3 headPos = headSlot.GlobalPosition;
+        float3 forward = headSlot.GlobalRotation * float3.Backward; // Godot: -Z forward
+        forward.y = 0f;
+        if (forward.LengthSquared < 0.001f) forward = float3.Backward;
+        forward = forward.Normalized;
 
-        // Calculate foot positions relative to head
-        float footSeparation = 0.2f;
-        float footHeightOffset = -1.6f; // Approximate leg length
+        floatQ bodyRot = floatQ.LookRotation(forward, float3.Up);
+        float3 right   = bodyRot * float3.Right;
 
-        if (_leftFootProxy.Target != null)
-        {
-            var leftFootPos = headPos + new float3(-footSeparation / 2, footHeightOffset, 0);
-            _leftFootProxy.Target.GlobalPosition = leftFootPos;
-        }
+        const float heightOffset   = -1.6f;
+        const float footSeparation = 0.15f;
 
-        if (_rightFootProxy.Target != null)
-        {
-            var rightFootPos = headPos + new float3(footSeparation / 2, footHeightOffset, 0);
-            _rightFootProxy.Target.GlobalPosition = rightFootPos;
-        }
+        SetProceduralFoot(_leftFootProxy.Target,  _leftFootNode.Target,
+            headPos + new float3(0f, heightOffset, 0f) - right * footSeparation);
+
+        SetProceduralFoot(_rightFootProxy.Target, _rightFootNode.Target,
+            headPos + new float3(0f, heightOffset, 0f) + right * footSeparation);
     }
 
-    /// <summary>
-    /// Get diagnostic information about the avatar.
-    /// </summary>
+    private static void SetProceduralFoot(Slot proxy, AvatarPoseNode node, float3 worldPos)
+    {
+        if (proxy == null || (node?.IsEquippedAndActive ?? false)) return;
+        var parent = proxy.Parent;
+        proxy.LocalPosition.Value = parent != null
+            ? parent.GlobalPointToLocal(worldPos)
+            : worldPos;
+    }
+
+    // ── Diagnostics ───────────────────────────────────────────────────────────
+
     public void LogDiagnosticInfo()
     {
-        AquaLogger.Log($"VRIKAvatar Diagnostic Info:");
-        AquaLogger.Log($"  IsInitialized: {_isInitialized}");
-        AquaLogger.Log($"  IsEquipped: {IsEquipped}");
-        AquaLogger.Log($"  Skeleton: {Skeleton.Target?.Slot.SlotName.Value ?? "null"}");
-        AquaLogger.Log($"  Rig: {Rig.Target?.Bones.Count ?? 0} bones");
-        AquaLogger.Log($"  UserRoot: {UserRoot.Target?.Slot.SlotName.Value ?? "null"}");
-        AquaLogger.Log($"  HeadProxy: {_headProxy.Target?.SlotName.Value ?? "null"}");
-        AquaLogger.Log($"  HeadNode Equipped: {_headNode.Target?.IsEquipped ?? false}");
-        AquaLogger.Log($"  LeftHandNode Equipped: {_leftHandNode.Target?.IsEquipped ?? false}");
-        AquaLogger.Log($"  RightHandNode Equipped: {_rightHandNode.Target?.IsEquipped ?? false}");
+        LumoraLogger.Log("VRIKAvatar Diagnostic:");
+        LumoraLogger.Log($"  IsInitialized:       {_isInitialized}");
+        LumoraLogger.Log($"  IsEquipped:          {IsEquipped}");
+        LumoraLogger.Log($"  Skeleton:            {Skeleton.Target?.Slot.SlotName.Value ?? "null"}");
+        LumoraLogger.Log($"  Rig bones:           {Rig.Target?.Bones.Count ?? 0}");
+        LumoraLogger.Log($"  UserRoot:            {UserRoot.Target?.Slot.SlotName.Value ?? "null"}");
+        LumoraLogger.Log($"  HeadProxy:           {_headProxy.Target?.SlotName.Value ?? "null"}");
+        LumoraLogger.Log($"  HeadNode equipped:   {_headNode.Target?.IsEquipped ?? false}");
+        LumoraLogger.Log($"  LHandNode equipped:  {_leftHandNode.Target?.IsEquipped ?? false}");
+        LumoraLogger.Log($"  RHandNode equipped:  {_rightHandNode.Target?.IsEquipped ?? false}");
+        LumoraLogger.Log($"  LFootNode equipped:  {_leftFootNode.Target?.IsEquipped ?? false}");
+        LumoraLogger.Log($"  RFootNode equipped:  {_rightFootNode.Target?.IsEquipped ?? false}");
     }
 }

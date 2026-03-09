@@ -1,3 +1,6 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -52,8 +55,8 @@ public class InputInterface : IDisposable
     public VRController RightController { get; private set; }
     public HeadDevice HeadDevice { get; private set; }
 
-    // VR state
-    public bool VR_Active { get; set; }
+    // VR state - synced from VR drivers automatically
+    public bool VR_Active => IsVRActive;
     public float UserHeight { get; set; } = DEFAULT_USER_HEIGHT;
 
     // Global tracking offset
@@ -67,6 +70,24 @@ public class InputInterface : IDisposable
     private HashSet<string> _loggedBodyNodeAssignments = new HashSet<string>();
 
     public int InputDeviceCount => _inputDevices.Count;
+
+    /// <summary>
+    /// Check if any VR driver is active.
+    /// </summary>
+    public bool IsVRActive => _vrDrivers.Any(d => d.IsVRActive);
+
+    /// <summary>
+    /// Get the current head output device type based on VR status.
+    /// </summary>
+    public HeadOutputDevice CurrentHeadOutputDevice
+    {
+        get
+        {
+            if (_vrDrivers.Any(d => d.IsVRActive))
+                return HeadOutputDevice.VR;
+            return HeadOutputDevice.Screen;  // Desktop mode
+        }
+    }
 
     public InputInterface()
     {
@@ -423,28 +444,47 @@ public class InputInterface : IDisposable
         // Call BeforeInputUpdate on all receivers (TrackedDevicePositioner updates slots here)
         foreach (var receiver in _inputReceivers)
         {
-            try
-            {
-                receiver.BeforeInputUpdate();
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"InputInterface: Error in BeforeInputUpdate: {ex.Message}");
-            }
+            InvokeInputReceiver(receiver, before: true);
         }
 
         // Call AfterInputUpdate on all receivers
         foreach (var receiver in _inputReceivers)
         {
+            InvokeInputReceiver(receiver, before: false);
+        }
+    }
+
+    private static void InvokeInputReceiver(IInputUpdateReceiver receiver, bool before)
+    {
+        void InvokeNow()
+        {
             try
             {
-                receiver.AfterInputUpdate();
+                if (before)
+                    receiver.BeforeInputUpdate();
+                else
+                    receiver.AfterInputUpdate();
             }
             catch (Exception ex)
             {
-                Logger.Error($"InputInterface: Error in AfterInputUpdate: {ex.Message}");
+                Logger.Error($"InputInterface: Error in {(before ? "BeforeInputUpdate" : "AfterInputUpdate")}: {ex.Message}");
             }
         }
+
+        // World components modify Sync state in these callbacks.
+        // Route through world sync queue while running so writes happen under the world's
+        // implementer lock, avoiding cross-thread lock violations.
+        if (receiver is IWorldElement worldElement &&
+            worldElement.World != null &&
+            !worldElement.World.IsDisposed &&
+            !worldElement.World.IsDestroyed &&
+            worldElement.World.State == World.WorldState.Running)
+        {
+            worldElement.World.RunSynchronously(InvokeNow);
+            return;
+        }
+
+        InvokeNow();
     }
 
     #endregion

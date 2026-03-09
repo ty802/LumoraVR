@@ -40,12 +40,26 @@ public partial class Settings : Control
     private HSlider? _musicVolumeSlider;
     private Label? _masterVolumeValue;
     private Label? _musicVolumeValue;
+    private OptionButton? _outputDeviceOption;
+    private OptionButton? _inputDeviceOption;
     private OptionButton? _qualityOption;
     private CheckButton? _fpsLimitToggle;
     private HSlider? _fpsLimitSlider;
     private Label? _fpsLimitValue;
     private CheckButton? _vsyncToggle;
     private CheckButton? _fullscreenToggle;
+    private ProgressBar? _outputActivityBar;
+    private ProgressBar? _inputActivityBar;
+    private int _outputMeterBus = -1;
+    private int _inputMeterBus = -1;
+    private float _outputMeterLevel;
+    private float _inputMeterLevel;
+    private AudioStreamPlayer? _inputMonitorPlayer;
+    private AudioEffectCapture? _inputCaptureEffect;
+
+    private const string InputMonitorBusName = "LumoraInputMonitor";
+    private const float MeterAttackSpeed = 4.0f;
+    private const float MeterReleaseSpeed = 1.8f;
 
     // Style resources for tab switching
     private StyleBox? _tabActiveStyle;
@@ -94,13 +108,23 @@ public partial class Settings : Control
         _vsyncToggle = GetNodeOrNull<CheckButton>("VBox/ContentPanel/Margin/TabContainer/PreferencesTab/PreferencesContent/GraphicsSection/GraphicsMargin/GraphicsVBox/VSyncHBox/VSyncToggle");
         _fullscreenToggle = GetNodeOrNull<CheckButton>("VBox/ContentPanel/Margin/TabContainer/PreferencesTab/PreferencesContent/GraphicsSection/GraphicsMargin/GraphicsVBox/FullscreenHBox/FullscreenToggle");
 
+        BuildAudioDeviceRows();
+
         // Get styles for tab switching
         _tabActiveStyle = _tabProfile?.GetThemeStylebox("normal");
         _tabNormalStyle = _tabSecurity?.GetThemeStylebox("normal");
 
         ConnectSignals();
         UpdateTabVisuals();
+        SetProcess(true);
+        ResolveMeterBuses();
+    }
 
+    public override void _Process(double delta)
+    {
+        float dt = (float)delta;
+        UpdateMeterBar(_outputActivityBar, ref _outputMeterLevel, _outputMeterBus, dt);
+        UpdateInputMeterBar(dt);
     }
 
     private void ConnectSignals()
@@ -121,6 +145,8 @@ public partial class Settings : Control
         // Preferences sliders
         _masterVolumeSlider?.Connect("value_changed", Callable.From<double>(OnMasterVolumeChanged));
         _musicVolumeSlider?.Connect("value_changed", Callable.From<double>(OnMusicVolumeChanged));
+        _outputDeviceOption?.Connect("item_selected", Callable.From<long>(OnOutputDeviceSelected));
+        _inputDeviceOption?.Connect("item_selected", Callable.From<long>(OnInputDeviceSelected));
         _qualityOption?.Connect("item_selected", Callable.From<long>(OnQualitySelected));
         _fpsLimitToggle?.Connect("toggled", Callable.From<bool>(OnFPSLimitToggled));
         _fpsLimitSlider?.Connect("value_changed", Callable.From<double>(OnFPSLimitChanged));
@@ -323,6 +349,380 @@ public partial class Settings : Control
         DisplayServer.WindowSetMode(
             enabled ? DisplayServer.WindowMode.Fullscreen : DisplayServer.WindowMode.Windowed
         );
+    }
+
+    private void BuildAudioDeviceRows()
+    {
+        var audioVBox = GetNodeOrNull<VBoxContainer>(
+            "VBox/ContentPanel/Margin/TabContainer/PreferencesTab/PreferencesContent/AudioSection/AudioMargin/AudioVBox");
+        if (audioVBox == null) return;
+
+        // Expand the AudioSection panel to fit the extra rows
+        var audioSection = GetNodeOrNull<Panel>(
+            "VBox/ContentPanel/Margin/TabContainer/PreferencesTab/PreferencesContent/AudioSection");
+        if (audioSection != null)
+            audioSection.CustomMinimumSize = new Vector2(0, 300);
+
+        _outputDeviceOption = BuildDeviceRow(audioVBox, "Output Device",
+            AudioServer.GetOutputDeviceList(), AudioServer.OutputDevice, out _outputActivityBar);
+
+        _inputDeviceOption = BuildDeviceRow(audioVBox, "Input Device",
+            AudioServer.GetInputDeviceList(), AudioServer.InputDevice, out _inputActivityBar);
+
+        ResolveMeterBuses();
+    }
+
+    private OptionButton BuildDeviceRow(VBoxContainer parent, string labelText,
+        string[] devices, string currentDevice, out ProgressBar activityBar)
+    {
+        var block = new VBoxContainer
+        {
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+        };
+        block.AddThemeConstantOverride("separation", 6);
+
+        var row = new HBoxContainer
+        {
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+        };
+        row.AddThemeConstantOverride("separation", 12);
+
+        var label = new Label
+        {
+            Text = labelText,
+            CustomMinimumSize = new Vector2(100, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        row.AddChild(label);
+
+        var option = new OptionButton
+        {
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0, 32),
+        };
+        int selectIdx = 0;
+        for (int i = 0; i < devices.Length; i++)
+        {
+            option.AddItem(devices[i]);
+            if (devices[i] == currentDevice)
+                selectIdx = i;
+        }
+        option.Select(selectIdx);
+        ApplyDeviceOptionTheme(option);
+        row.AddChild(option);
+        block.AddChild(row);
+
+        activityBar = CreateActivityBar();
+        var meterWrap = new MarginContainer
+        {
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+        };
+        meterWrap.AddThemeConstantOverride("margin_left", 112);
+        meterWrap.AddChild(activityBar);
+        block.AddChild(meterWrap);
+
+        parent.AddChild(block);
+        return option;
+    }
+
+    private void OnOutputDeviceSelected(long index)
+    {
+        var device = _outputDeviceOption?.GetItemText((int)index) ?? "Default";
+        AudioServer.OutputDevice = device;
+        ResolveMeterBuses();
+    }
+
+    private void OnInputDeviceSelected(long index)
+    {
+        var device = _inputDeviceOption?.GetItemText((int)index) ?? "Default";
+        AudioServer.InputDevice = device;
+        ResolveMeterBuses();
+    }
+
+    private void ApplyDeviceOptionTheme(OptionButton option)
+    {
+        var normal = new StyleBoxFlat
+        {
+            BgColor = new Color(0.11f, 0.12f, 0.20f, 1f),
+            BorderColor = new Color(0.40f, 0.38f, 0.85f, 0.90f),
+            BorderWidthLeft = 1,
+            BorderWidthTop = 1,
+            BorderWidthRight = 1,
+            BorderWidthBottom = 1,
+            ContentMarginLeft = 10,
+            ContentMarginRight = 10,
+            ContentMarginTop = 6,
+            ContentMarginBottom = 6
+        };
+        normal.SetCornerRadiusAll(8);
+
+        var hover = (StyleBoxFlat)normal.Duplicate();
+        hover.BgColor = new Color(0.14f, 0.16f, 0.28f, 1f);
+        hover.BorderColor = new Color(0.52f, 0.50f, 0.95f, 1f);
+
+        option.AddThemeStyleboxOverride("normal", normal);
+        option.AddThemeStyleboxOverride("hover", hover);
+        option.AddThemeStyleboxOverride("focus", hover);
+        option.AddThemeColorOverride("font_color", new Color(0.93f, 0.93f, 0.98f, 1f));
+        option.AddThemeColorOverride("font_hover_color", new Color(1f, 1f, 1f, 1f));
+        option.AddThemeColorOverride("font_focus_color", new Color(1f, 1f, 1f, 1f));
+
+        var popup = option.GetPopup();
+        var popupPanel = new StyleBoxFlat
+        {
+            BgColor = new Color(0.10f, 0.11f, 0.18f, 0.98f),
+            BorderColor = new Color(0.34f, 0.35f, 0.70f, 0.90f),
+            BorderWidthLeft = 1,
+            BorderWidthTop = 1,
+            BorderWidthRight = 1,
+            BorderWidthBottom = 1,
+            ContentMarginLeft = 6,
+            ContentMarginRight = 6,
+            ContentMarginTop = 6,
+            ContentMarginBottom = 6
+        };
+        popupPanel.SetCornerRadiusAll(8);
+        popup.AddThemeStyleboxOverride("panel", popupPanel);
+        popup.AddThemeColorOverride("font_color", new Color(0.90f, 0.90f, 0.96f, 1f));
+        popup.AddThemeColorOverride("font_hover_color", new Color(1f, 1f, 1f, 1f));
+        popup.AddThemeColorOverride("font_selected_color", new Color(0.74f, 0.83f, 1f, 1f));
+    }
+
+    private static ProgressBar CreateActivityBar()
+    {
+        var meter = new ProgressBar
+        {
+            MinValue = 0,
+            MaxValue = 100,
+            Value = 0,
+            ShowPercentage = false,
+            CustomMinimumSize = new Vector2(0, 12),
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+            TooltipText = "Device activity"
+        };
+
+        var bg = new StyleBoxFlat
+        {
+            BgColor = new Color(0.08f, 0.09f, 0.14f, 1f),
+            BorderColor = new Color(0.30f, 0.31f, 0.46f, 0.8f),
+            BorderWidthLeft = 1,
+            BorderWidthTop = 1,
+            BorderWidthRight = 1,
+            BorderWidthBottom = 1
+        };
+        bg.SetCornerRadiusAll(5);
+
+        var fill = new StyleBoxFlat
+        {
+            BgColor = new Color(0.20f, 0.82f, 0.54f, 0.95f)
+        };
+        fill.SetCornerRadiusAll(5);
+
+        meter.AddThemeStyleboxOverride("background", bg);
+        meter.AddThemeStyleboxOverride("fill", fill);
+        return meter;
+    }
+
+    private void ResolveMeterBuses()
+    {
+        _outputMeterBus = AudioServer.GetBusIndex("Master");
+        if (_outputMeterBus < 0 && AudioServer.BusCount > 0)
+            _outputMeterBus = 0;
+
+        if (_outputActivityBar != null)
+        {
+            _outputActivityBar.TooltipText = _outputMeterBus >= 0
+                ? $"Output meter on bus: {AudioServer.GetBusName(_outputMeterBus)}"
+                : "No output bus found";
+        }
+
+        // Prefer a dedicated microphone monitor path so input meter does not depend
+        // on project-specific bus naming/routing.
+        _inputMeterBus = -1;
+        _inputCaptureEffect = null;
+        EnsureInputMonitorPath();
+
+        // Fallback if monitor setup fails on this machine/runtime.
+        if (_inputMeterBus < 0)
+            _inputMeterBus = FindInputMeterBus();
+
+        if (_inputActivityBar != null)
+        {
+            _inputActivityBar.TooltipText = _inputMeterBus >= 0
+                ? $"Input meter on bus: {AudioServer.GetBusName(_inputMeterBus)}"
+                : "No input monitoring bus found";
+        }
+    }
+
+    private static int FindInputMeterBus()
+    {
+        string[] candidates = { "Voice", "Record", "Input", "Mic", "Microphone", "Capture" };
+        for (int i = 0; i < candidates.Length; i++)
+        {
+            int bus = AudioServer.GetBusIndex(candidates[i]);
+            if (bus >= 0) return bus;
+        }
+        return -1;
+    }
+
+    private void EnsureInputMonitorPath()
+    {
+        try
+        {
+            // Attempt to enforce input-enabled setting at runtime for this project.
+            bool enabledInput = ProjectSettings.GetSetting("audio/driver/enable_input", false).AsBool();
+            if (!enabledInput)
+            {
+                ProjectSettings.SetSetting("audio/driver/enable_input", true);
+            }
+
+            int monitorBus = AudioServer.GetBusIndex(InputMonitorBusName);
+            if (monitorBus < 0)
+            {
+                monitorBus = AudioServer.BusCount;
+                AudioServer.AddBus(monitorBus);
+                AudioServer.SetBusName(monitorBus, InputMonitorBusName);
+            }
+            // Keep bus effectively silent to avoid feedback while still allowing metering.
+            AudioServer.SetBusVolumeDb(monitorBus, -60f);
+
+            _inputMeterBus = monitorBus;
+
+            bool hasCaptureEffect = false;
+            int effects = AudioServer.GetBusEffectCount(monitorBus);
+            for (int i = 0; i < effects; i++)
+            {
+                var effect = AudioServer.GetBusEffect(monitorBus, i);
+                if (effect is AudioEffectCapture capture)
+                {
+                    _inputCaptureEffect = capture;
+                    hasCaptureEffect = true;
+                    break;
+                }
+            }
+
+            if (!hasCaptureEffect)
+            {
+                _inputCaptureEffect = new AudioEffectCapture();
+                AudioServer.AddBusEffect(monitorBus, _inputCaptureEffect, 0);
+            }
+
+            if (_inputMonitorPlayer == null)
+            {
+                _inputMonitorPlayer = new AudioStreamPlayer
+                {
+                    Name = "InputMeterMonitor",
+                    Bus = InputMonitorBusName,
+                    Stream = new AudioStreamMicrophone(),
+                    Autoplay = true,
+                    VolumeDb = 0f
+                };
+                AddChild(_inputMonitorPlayer);
+            }
+            else
+            {
+                _inputMonitorPlayer.Bus = InputMonitorBusName;
+                _inputMonitorPlayer.Stream ??= new AudioStreamMicrophone();
+            }
+
+            if (!_inputMonitorPlayer.Playing)
+                _inputMonitorPlayer.Play();
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"Settings: Failed to initialize input monitor path - {ex.Message}");
+            _inputMeterBus = -1;
+            _inputCaptureEffect = null;
+        }
+    }
+
+    private static void UpdateMeterBar(ProgressBar? bar, ref float smoothedLevel, int busIndex, float delta)
+    {
+        if (bar == null)
+            return;
+
+        float target = 0f;
+        if (busIndex >= 0)
+        {
+            int channels = Math.Max(1, AudioServer.GetBusChannels(busIndex));
+            for (int ch = 0; ch < channels; ch++)
+            {
+                float left = AudioServer.GetBusPeakVolumeLeftDb(busIndex, ch);
+                float right = AudioServer.GetBusPeakVolumeRightDb(busIndex, ch);
+                target = Mathf.Max(target, Mathf.Max(DbToMeter(left), DbToMeter(right)));
+            }
+        }
+
+        smoothedLevel = SmoothMeter(smoothedLevel, target, delta);
+        bar.Value = smoothedLevel * 100f;
+        bar.Modulate = smoothedLevel > 0.05f
+            ? new Color(1f, 1f, 1f, 1f)
+            : new Color(0.72f, 0.72f, 0.72f, 0.80f);
+    }
+
+    private void UpdateInputMeterBar(float delta)
+    {
+        if (_inputActivityBar == null)
+            return;
+
+        if (_inputMonitorPlayer != null && !_inputMonitorPlayer.Playing)
+            _inputMonitorPlayer.Play();
+
+        float target = 0f;
+        bool capturedAnyFrames = false;
+
+        if (_inputCaptureEffect != null)
+        {
+            int frames = _inputCaptureEffect.GetFramesAvailable();
+            if (frames > 0)
+            {
+                capturedAnyFrames = true;
+                int take = Math.Min(frames, 1024);
+                var buffer = _inputCaptureEffect.GetBuffer(take);
+                for (int i = 0; i < buffer.Length; i++)
+                {
+                    var s = buffer[i];
+                    target = Mathf.Max(target, Mathf.Max(Mathf.Abs(s.X), Mathf.Abs(s.Y)));
+                }
+            }
+        }
+
+        // Fallback to bus-peak query when capture has no frames (or no capture effect).
+        if (!capturedAnyFrames && _inputMeterBus >= 0)
+        {
+            int channels = Math.Max(1, AudioServer.GetBusChannels(_inputMeterBus));
+            for (int ch = 0; ch < channels; ch++)
+            {
+                float left = AudioServer.GetBusPeakVolumeLeftDb(_inputMeterBus, ch);
+                float right = AudioServer.GetBusPeakVolumeRightDb(_inputMeterBus, ch);
+                target = Mathf.Max(target, Mathf.Max(DbToMeter(left), DbToMeter(right)));
+            }
+        }
+
+        _inputMeterLevel = SmoothMeter(_inputMeterLevel, Mathf.Clamp(target, 0f, 1f), delta);
+        _inputActivityBar.Value = _inputMeterLevel * 100f;
+        _inputActivityBar.Modulate = _inputMeterLevel > 0.05f
+            ? new Color(1f, 1f, 1f, 1f)
+            : new Color(0.72f, 0.72f, 0.72f, 0.80f);
+    }
+
+    private static float SmoothMeter(float current, float target, float delta)
+    {
+        float speed = target > current ? MeterAttackSpeed : MeterReleaseSpeed;
+        float alpha = 1f - Mathf.Exp(-speed * Mathf.Max(delta, 0f));
+        return current + (target - current) * alpha;
+    }
+
+    private static float DbToMeter(float db)
+    {
+        if (float.IsNaN(db) || float.IsInfinity(db))
+            return 0f;
+
+        const float floorDb = -60f;
+        if (db <= floorDb)
+            return 0f;
+
+        return Mathf.Clamp((db - floorDb) / -floorDb, 0f, 1f);
     }
 
     private static float LinearToDb(float linear)

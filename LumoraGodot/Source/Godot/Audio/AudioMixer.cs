@@ -1,129 +1,139 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
-using Godot;
+using System;
 using System.Collections.Generic;
+using Godot;
 using Lumora.Core.External.GenericAudioOutputMixer;
+
 namespace Lumora.Source.Godot;
 
 public partial class AudioMixer : IAudioMixer
 {
-
-    public string[] GetAvailableAudioEffects()
-    {
-        throw new NotImplementedException();
-    }
+    private static readonly AudioMixer _instance = new();
     public static AudioMixer GetMixer() => _instance;
-    private static readonly AudioMixer _instance = new AudioMixer();
-    private readonly object _writeLock = new object();
-    private readonly Dictionary<string, AudioBus> buses = new();
-    private AudioMixer() { ForceSync(); }
+
+    private readonly object _sync = new();
+    private readonly Dictionary<string, AudioBus> _buses = new(StringComparer.Ordinal);
+
+    private AudioMixer()
+    {
+        ForceSync();
+    }
+
+    public string[] GetAvailableAudioEffects() => Array.Empty<string>();
+
     public void ForceSync()
     {
-        foreach (var kv in buses)
+        lock (_sync)
         {
-            kv.Value.Invalidate();
-        }
-        lock (_writeLock)
-        {
+            foreach (var bus in _buses.Values)
+                bus.Invalidate();
 
-            Lumora.Core.Logging.Logger.Log($"[Audio][ForceSync] There are {AudioServer.BusCount} buses in the engine");
-            buses.Clear();
-            for (int i = 0; i < AudioServer.BusCount; i++)
+            _buses.Clear();
+
+            int busCount = AudioServer.BusCount;
+            for (int i = 0; i < busCount; i++)
             {
                 string name = AudioServer.GetBusName(i);
-                Lumora.Core.Logging.Logger.Log($"[Audio][ForceSync] Adding bus {name}");
-                var bus = new AudioBus(i);
-                Lumora.Core.Logging.Logger.Log($"[Audio][ForceSync] the bus exists and its name is {bus.Name}");
-                buses.Add(name, bus);
+                _buses[name] = new AudioBus(i);
             }
         }
     }
-    public IAudioBus GetAudioBusByName(string name)
-    {
-        if (buses.TryGetValue(name, out var b))
-            return b;
-        throw new Exception("I told you so");
-    }
-    public bool TryGetAudioBusByName(string name, out IAudioBus bus)
-    {
-#if DEBUG
-        void logfname1(string log, [System.Runtime.CompilerServices.CallerFilePath] string fp = "", [System.Runtime.CompilerServices.CallerLineNumber] int ln = 1)
-        {
-            Lumora.Core.Logging.Logger.Log($"[{fp}:{ln}]: {log}");
-        }
 
-        if (name == "Master")
-        {
-            logfname1("This is master");
-        }
-        var st = new System.Diagnostics.StackTrace(true);
-        var fr = st.GetFrame(1);
-        Lumora.Core.Logging.Logger.Log($"[Audio] {fr.GetMethod().Name} is trying to get bus {name}");
-#endif
-        if (!buses.TryGetValue(name, out var rawbus))
-        {
-            bus = default;
-            return false;
-        }
-        if (rawbus.IsValid)
-        {
-            bus = (IAudioBus)rawbus;
-        }
-        else
-        {
-            buses.Remove(name);
-            bus = default;
-            return false;
-        }
-        return true;
-    }
-#nullable enable
-    public IAudioBus? GetAudioBusByNameOrNull(string name)
+    public bool CreateAudioBus(string name, out IAudioBus? bus)
     {
-        if (buses.TryGetValue(name, out var bus))
-            return (IAudioBus)bus;
-        return null;
-    }
-#nullable disable
-    public bool CreateAudioBus(string name, out IAudioBus bus)
-    {
-        lock (_writeLock)
+        lock (_sync)
         {
-            if (buses.ContainsKey(name))
+            if (string.IsNullOrWhiteSpace(name))
             {
-                if (buses.TryGetValue(name, out var ebus) && ebus.IsValid)
-                {
-                    bus = default; return false;
-                }
-                buses.Remove(name);
+                bus = null;
+                return false;
             }
+
+            if (TryGetValidBusNoLock(name, out _))
+            {
+                bus = null;
+                return false;
+            }
+
             int newBusId = AudioServer.BusCount;
             AudioServer.AddBus(newBusId);
             AudioServer.SetBusName(newBusId, name);
-            bus = new AudioBus(newBusId);
+
+            var created = new AudioBus(newBusId);
+            _buses[name] = created;
+            bus = created;
             return true;
         }
     }
+
+    public IAudioBus GetAudioBusByName(string name)
+    {
+        if (TryGetAudioBusByName(name, out var bus) && bus != null)
+            return bus;
+
+        throw new KeyNotFoundException($"Audio bus '{name}' was not found.");
+    }
+
+    public IAudioBus? GetAudioBusByNameOrNull(string name)
+    {
+        return TryGetAudioBusByName(name, out var bus) ? bus : null;
+    }
+
+    public bool TryGetAudioBusByName(string name, out IAudioBus? bus)
+    {
+        lock (_sync)
+        {
+            if (TryGetValidBusNoLock(name, out var found))
+            {
+                bus = found;
+                return true;
+            }
+
+            bus = null;
+            return false;
+        }
+    }
+
     public IAudioBus[] GetAllBuses()
     {
-        IAudioBus[] res = new IAudioBus[buses.Count];
-        HashSet<int> indexs = new();
-        foreach (var kv in buses)
+        lock (_sync)
         {
-            if (!kv.Value.IsValid)
+            var result = new List<IAudioBus>(_buses.Count);
+            var staleKeys = new List<string>();
+
+            foreach (var kv in _buses)
             {
-                buses.Remove(kv.Key);
-                continue;
+                if (!kv.Value.IsValid)
+                {
+                    staleKeys.Add(kv.Key);
+                    continue;
+                }
+
+                result.Add(kv.Value);
             }
-            int id = kv.Value.BusId;
-            if (indexs.Add(id) && res.Length >= id)
-            {
-                res[id] = kv.Value;
-            }
+
+            foreach (string key in staleKeys)
+                _buses.Remove(key);
+
+            return result.ToArray();
         }
-        return res;
+    }
+
+    private bool TryGetValidBusNoLock(string name, out AudioBus? bus)
+    {
+        bus = null;
+        if (!_buses.TryGetValue(name, out var raw))
+            return false;
+
+        if (!raw.IsValid)
+        {
+            _buses.Remove(name);
+            return false;
+        }
+
+        bus = raw;
+        return true;
     }
 }
-

@@ -1,6 +1,6 @@
 [gd_scene load_steps=9 format=3 uid="uid://login_overlay"]
 
-[ext_resource type="FontFile" uid="uid://bc0fpvfqcqrld" path="res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf" id="1_font"]
+[ext_resource type="FontFile" uid="uid://dne06dcdmx5hj" path="res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf" id="1_font"]
 [ext_resource type="Script" path="res://Scripts/UI/Dashboard/LoginOverlay.cs" id="2_script"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_overlay_bg"]
@@ -279,3 +279,4 @@ theme_override_colors/font_hover_color = Color(0.6, 0.5, 1, 1)
 theme_override_font_sizes/font_size = 10
 text = "Register at lumoravr.com"
 uri = "https://lumoravr.com/register"
+

@@ -1,6 +1,6 @@
 [gd_scene load_steps=10 format=3 uid="uid://settings_panel"]
 
-[ext_resource type="FontFile" uid="uid://bc0fpvfqcqrld" path="res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf" id="1_font"]
+[ext_resource type="FontFile" uid="uid://dne06dcdmx5hj" path="res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf" id="1_font"]
 [ext_resource type="Script" path="res://Scripts/UI/Dashboard/Settings.cs" id="2_script"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_panel"]
@@ -682,3 +682,4 @@ text = "Fullscreen"
 [node name="FullscreenToggle" type="CheckButton" parent="VBox/ContentPanel/Margin/TabContainer/PreferencesTab/PreferencesContent/GraphicsSection/GraphicsMargin/GraphicsVBox/FullscreenHBox"]
 unique_name_in_owner = true
 layout_mode = 2
+

@@ -18,18 +18,18 @@ public sealed class RayTarget : Component
     /// <summary>
     /// Radius of the hit-detection sphere in metres.
     /// </summary>
-    public Sync<float> HoverRadius { get; private set; }
+    public readonly Sync<float> HoverRadius = new();
 
     /// <summary>
     /// Whether this target can currently be activated by a trigger press.
     /// </summary>
-    public Sync<bool> AllowActivation { get; private set; }
+    public readonly Sync<bool> AllowActivation = new();
 
     /// <summary>
     /// Whether a ControllerRayBeam ray is currently hovering over this target.
     /// Set automatically by the beam; treat this as read-only from outside.
     /// </summary>
-    public Sync<bool> IsHovered { get; private set; }
+    public readonly Sync<bool> IsHovered = new();
 
     /// <summary>
     /// Fired once when a ray first enters the hover sphere.
@@ -47,12 +47,12 @@ public sealed class RayTarget : Component
     /// </summary>
     public event Action<float3> Activated;
 
-    public override void OnAwake()
+    public override void OnInit()
     {
-        base.OnAwake();
-        HoverRadius     = new Sync<float>(this, 0.05f);
-        AllowActivation = new Sync<bool>(this, true);
-        IsHovered       = new Sync<bool>(this, false);
+        base.OnInit();
+        HoverRadius.Value     = 0.05f;
+        AllowActivation.Value = true;
+        // IsHovered = false (C# default, skip)
     }
 
     internal void NotifyHoverEntered()

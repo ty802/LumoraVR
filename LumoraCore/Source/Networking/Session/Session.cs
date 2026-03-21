@@ -19,6 +19,7 @@ public class Session : IDisposable
     public World World { get; private set; }
     public SessionConnectionManager Connections { get; private set; }
     public SessionSyncManager Sync { get; private set; }
+    public SessionAssetTransferer AssetTransferer { get; private set; }
 
     /// <summary>
     /// Session metadata describing identity, settings, and state.
@@ -102,6 +103,11 @@ public class Session : IDisposable
         session.Sync = new SessionSyncManager(session);
         session.Sync.Start();
 
+        // Create asset transferer and register it with the engine
+        session.AssetTransferer = new SessionAssetTransferer(session);
+        if (Engine.Current is { } e)
+            e.ActiveSessionTransferer = session.AssetTransferer;
+
         // Subscribe to connection events
         session.Connections.OnHostDisconnected += () => session.OnDisconnected?.Invoke();
 
@@ -159,6 +165,11 @@ public class Session : IDisposable
         // Create sync manager with dedicated thread
         session.Sync = new SessionSyncManager(session);
         session.Sync.Start();
+
+        // Create asset transferer and register it with the engine
+        session.AssetTransferer = new SessionAssetTransferer(session);
+        if (Engine.Current is { } e)
+            e.ActiveSessionTransferer = session.AssetTransferer;
 
         LumoraLogger.Log("Session joined as client");
         return session;
@@ -253,6 +264,14 @@ public class Session : IDisposable
     }
 
     /// <summary>
+    /// Poll network events for this session. Called every frame by World.Update().
+    /// </summary>
+    public void Poll()
+    {
+        Connections.Poll();
+    }
+
+    /// <summary>
     /// Update session metadata with a modifier action.
     /// </summary>
     /// <param name="update">Action to modify the metadata</param>
@@ -344,6 +363,10 @@ public class Session : IDisposable
 
         // Stop public server registration
         StopPublicServerRegistration();
+
+        AssetTransferer?.Dispose();
+        if (Engine.Current?.ActiveSessionTransferer == AssetTransferer)
+            Engine.Current.ActiveSessionTransferer = null;
 
         Sync?.Dispose();
         Connections?.Dispose();

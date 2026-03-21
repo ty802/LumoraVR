@@ -391,7 +391,12 @@ public sealed class GodotMaterialColorPickerHook : ComponentHook<GodotMaterialCo
         }
 
         var newValue = new float4(color.R, color.G, color.B, color.A);
-        _boundParam.Value.Value = newValue;
+        var param = _boundParam;
+
+        // ColorPicker signal fires on Godot main thread outside World.Update() —
+        // dispatch the sync write to run during the next update with the Implementer lock held.
+        World?.RunSynchronously(() => param?.Value.Value = newValue);
+
         _lastBoundColor = newValue;
         _hasLastBoundColor = true;
         UpdatePickerVisuals(newValue);

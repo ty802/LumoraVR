@@ -204,9 +204,19 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
         int old = _count;
         _count = count;
         BlockModification();
-        if (count > 0) ElementsAdded?.Invoke(this, 0, count);
-        else if (old > 0) ElementsRemoved?.Invoke(this, 0, old);
-        UnblockModification();
+        try
+        {
+            if (count > 0)
+            {
+                ElementsAdded?.Invoke(this, 0, count);
+                DataWritten?.Invoke(this, 0, count);
+            }
+            else if (old > 0) ElementsRemoved?.Invoke(this, 0, old);
+        }
+        finally
+        {
+            UnblockModification();
+        }
     }
 
     protected override void InternalEncodeDelta(BinaryWriter writer, BinaryMessageBatch outboundMessage)

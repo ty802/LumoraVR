@@ -29,27 +29,27 @@ public sealed class ColorPickerPanel : GodotUIPanel
     /// <summary>
     /// Component that owns the field being edited. Pair with TargetMemberName.
     /// </summary>
-    public SyncRef<Component> TargetMemberOwner { get; private set; } = null!;
+    public readonly SyncRef<Component> TargetMemberOwner;
 
     /// <summary>
     /// Name of the ISyncMember on TargetMemberOwner to edit.
     /// If empty, CurrentColor is used as a free-standing value.
     /// </summary>
-    public Sync<string> TargetMemberName { get; private set; } = null!;
+    public readonly Sync<string> TargetMemberName;
 
     // ── Live color value (what the Godot scene binds to) ─────────────────────
 
     /// <summary>The color currently being shown/edited.</summary>
-    public Sync<color> CurrentColor { get; private set; } = null!;
+    public readonly Sync<color> CurrentColor;
 
     /// <summary>Whether to expose alpha channel controls in the UI.</summary>
-    public Sync<bool> ShowAlpha { get; private set; } = null!;
+    public readonly Sync<bool> ShowAlpha;
 
     /// <summary>Whether to allow HDR (values &gt; 1) via a brightness multiplier.</summary>
-    public Sync<bool> AllowHDR { get; private set; } = null!;
+    public readonly Sync<bool> AllowHDR;
 
     /// <summary>Label shown in the panel header (e.g. field name).</summary>
-    public Sync<string> Label { get; private set; } = null!;
+    public readonly Sync<string> Label;
 
     // ── Events ────────────────────────────────────────────────────────────────
 
@@ -67,16 +67,19 @@ public sealed class ColorPickerPanel : GodotUIPanel
     {
         base.OnAwake();
 
-        TargetMemberOwner = new SyncRef<Component>(this);
-        TargetMemberName  = new Sync<string>(this, string.Empty);
-        CurrentColor      = new Sync<color>(this, color.White);
-        ShowAlpha         = new Sync<bool>(this, true);
-        AllowHDR          = new Sync<bool>(this, false);
-        Label             = new Sync<string>(this, "Color");
-
         TargetMemberOwner.OnTargetChange += _ => RebindTarget();
         TargetMemberName.OnChanged       += _ => RebindTarget();
         CurrentColor.OnChanged           += ApplyToTarget;
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        TargetMemberName.Value = string.Empty;
+        CurrentColor.Value = color.White;
+        ShowAlpha.Value = true;
+        AllowHDR.Value = false;
+        Label.Value = "Color";
     }
 
     public override void OnAttach()

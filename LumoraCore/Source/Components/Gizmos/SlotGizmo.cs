@@ -33,32 +33,32 @@ public class SlotGizmo : ImplementableComponent, IGizmo
     /// <summary>
     /// The slot this gizmo is manipulating.
     /// </summary>
-    public SyncRef<Slot> TargetSlotRef { get; private set; } = null!;
+    public readonly SyncRef<Slot> TargetSlotRef;
 
     /// <summary>
     /// Whether this gizmo is active.
     /// </summary>
-    public Sync<bool> Active { get; private set; } = null!;
+    public readonly Sync<bool> Active;
 
     /// <summary>
     /// Whether the gizmo is in folded (minimal) mode.
     /// </summary>
-    public Sync<bool> IsFolded { get; private set; } = null!;
+    public readonly Sync<bool> IsFolded;
 
     /// <summary>
     /// Whether to use local space for transformations.
     /// </summary>
-    public Sync<bool> IsLocalSpace { get; private set; } = null!;
+    public readonly Sync<bool> IsLocalSpace;
 
     /// <summary>
     /// The currently active transform mode (0=translate, 1=rotate, 2=scale).
     /// </summary>
-    public Sync<int> ActiveMode { get; private set; } = null!;
+    public readonly Sync<int> ActiveMode;
 
     /// <summary>
     /// Reference to the linked inspector (if any).
     /// </summary>
-    public SyncRef<Component> LinkedInspector { get; private set; } = null!;
+    public readonly SyncRef<Component> LinkedInspector;
 
     /// <summary>
     /// Event fired when gizmo mode changes.
@@ -96,23 +96,18 @@ public class SlotGizmo : ImplementableComponent, IGizmo
     public override void OnAwake()
     {
         base.OnAwake();
-        InitializeSyncMembers();
-    }
-
-    private void InitializeSyncMembers()
-    {
-        TargetSlotRef = new SyncRef<Slot>(this);
-        Active = new Sync<bool>(this, true);
-        IsFolded = new Sync<bool>(this, false);
-        IsLocalSpace = new Sync<bool>(this, true);
-        ActiveMode = new Sync<int>(this, 0); // Default to translation
-        LinkedInspector = new SyncRef<Component>(this);
-
         TargetSlotRef.OnTargetChange += _ => NotifyChanged();
         Active.OnChanged += _ => NotifyChanged();
         IsFolded.OnChanged += _ => NotifyChanged();
         IsLocalSpace.OnChanged += OnLocalSpaceChanged;
         ActiveMode.OnChanged += OnActiveModeChanged;
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        Active.Value = true;
+        IsLocalSpace.Value = true;
     }
 
     private void OnLocalSpaceChanged(bool newValue)

@@ -16,12 +16,12 @@ public class GodotControlRef : ImplementableComponent
     /// <summary>
     /// Node path to the control (e.g., "Panel/VBox/Label").
     /// </summary>
-    public Sync<string> NodePath { get; private set; } = null!;
+    public readonly Sync<string> NodePath;
 
     /// <summary>
     /// Reference to the canvas this control belongs to.
     /// </summary>
-    public SyncRef<GodotSceneCanvas> Canvas { get; private set; } = null!;
+    public readonly SyncRef<GodotSceneCanvas> Canvas;
 
     /// <summary>
     /// Whether the referenced control was found.
@@ -51,16 +51,15 @@ public class GodotControlRef : ImplementableComponent
     public override void OnAwake()
     {
         base.OnAwake();
-        InitializeSyncMembers();
-    }
-
-    private void InitializeSyncMembers()
-    {
-        NodePath = new Sync<string>(this, "");
-        Canvas = new SyncRef<GodotSceneCanvas>(this);
 
         NodePath.OnChanged += _ => NotifyChanged();
         Canvas.OnChanged += _ => NotifyChanged();
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        NodePath.Value = "";
     }
 
     // Methods called by hook to trigger events
@@ -79,21 +78,25 @@ public class GodotLabelBinding : ImplementableComponent
     /// <summary>
     /// Reference to the control (should be a Label).
     /// </summary>
-    public SyncRef<GodotControlRef> ControlRef { get; private set; } = null!;
+    public readonly SyncRef<GodotControlRef> ControlRef;
 
     /// <summary>
     /// The text to display.
     /// </summary>
-    public Sync<string> Text { get; private set; } = null!;
+    public readonly Sync<string> Text;
 
     public override void OnAwake()
     {
         base.OnAwake();
-        ControlRef = new SyncRef<GodotControlRef>(this);
-        Text = new Sync<string>(this, "");
 
         Text.OnChanged += _ => NotifyChanged();
         ControlRef.OnChanged += _ => NotifyChanged();
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        Text.Value = "";
     }
 }
 
@@ -106,34 +109,38 @@ public class GodotValueBinding : ImplementableComponent
     /// <summary>
     /// Reference to the control (should be a Range-based control).
     /// </summary>
-    public SyncRef<GodotControlRef> ControlRef { get; private set; } = null!;
+    public readonly SyncRef<GodotControlRef> ControlRef;
 
     /// <summary>
     /// The current value.
     /// </summary>
-    public Sync<float> Value { get; private set; } = null!;
+    public readonly Sync<float> Value;
 
     /// <summary>
     /// Minimum value.
     /// </summary>
-    public Sync<float> MinValue { get; private set; } = null!;
+    public readonly Sync<float> MinValue;
 
     /// <summary>
     /// Maximum value.
     /// </summary>
-    public Sync<float> MaxValue { get; private set; } = null!;
+    public readonly Sync<float> MaxValue;
 
     public override void OnAwake()
     {
         base.OnAwake();
-        ControlRef = new SyncRef<GodotControlRef>(this);
-        Value = new Sync<float>(this, 0f);
-        MinValue = new Sync<float>(this, 0f);
-        MaxValue = new Sync<float>(this, 100f);
 
         Value.OnChanged += _ => NotifyChanged();
         MinValue.OnChanged += _ => NotifyChanged();
         MaxValue.OnChanged += _ => NotifyChanged();
         ControlRef.OnChanged += _ => NotifyChanged();
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        Value.Value = 0f;
+        MinValue.Value = 0f;
+        MaxValue.Value = 100f;
     }
 }

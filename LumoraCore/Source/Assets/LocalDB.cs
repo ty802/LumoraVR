@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Threading.Tasks;
 using Lumora.Core.Logging;
 
@@ -283,9 +284,19 @@ public class LocalDB : IDisposable
         try
         {
             var json = await File.ReadAllTextAsync(recordsPath);
-            // Simple JSON parsing (in production, use System.Text.Json)
-            // For now, just log that we would load records
-            Logger.Log("LocalDB: Would load asset records from JSON");
+            var records = JsonSerializer.Deserialize<List<LocalAssetRecord>>(json);
+            if (records == null) return;
+
+            lock (_lock)
+            {
+                foreach (var record in records)
+                {
+                    if (!string.IsNullOrEmpty(record.Hash))
+                        _assetRecords[record.Hash] = record;
+                }
+            }
+
+            Logger.Log($"LocalDB: Loaded {records.Count} asset records");
         }
         catch (Exception ex)
         {
@@ -298,25 +309,12 @@ public class LocalDB : IDisposable
         var recordsPath = Path.Combine(_basePath, "records.json");
         try
         {
-            // Simple JSON serialization (in production, use System.Text.Json)
-            var sb = new StringBuilder();
-            sb.AppendLine("{\"records\":[");
-
+            List<LocalAssetRecord> snapshot;
             lock (_lock)
-            {
-                var first = true;
-                foreach (var record in _assetRecords.Values)
-                {
-                    if (!first) sb.AppendLine(",");
-                    first = false;
-                    sb.Append($"  {{\"hash\":\"{record.Hash}\",\"uri\":\"{record.LocalUri}\",\"path\":\"{record.FilePath.Replace("\\", "\\\\")}\",\"name\":\"{record.OriginalFileName}\"}}");
-                }
-            }
+                snapshot = new List<LocalAssetRecord>(_assetRecords.Values);
 
-            sb.AppendLine();
-            sb.AppendLine("]}");
-
-            await File.WriteAllTextAsync(recordsPath, sb.ToString());
+            var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
+            await File.WriteAllTextAsync(recordsPath, json);
         }
         catch (Exception ex)
         {

@@ -22,22 +22,25 @@ public sealed class GodotMaterialColorPicker : GodotUIPanel
     /// <summary>
     /// Material containing the target uniform.
     /// </summary>
-    public SyncRef<CustomShaderMaterial> Material { get; private set; } = null!;
+    public readonly SyncRef<CustomShaderMaterial> Material;
 
     /// <summary>
     /// Target shader uniform name to edit.
     /// </summary>
-    public Sync<string> ParameterName { get; private set; } = null!;
+    public readonly Sync<string> ParameterName;
 
     public override void OnAwake()
     {
         base.OnAwake();
 
-        Material = new SyncRef<CustomShaderMaterial>(this);
-        ParameterName = new Sync<string>(this, string.Empty);
-
         Material.OnTargetChange += _ => NotifyChanged();
         ParameterName.OnChanged += _ => NotifyChanged();
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        ParameterName.Value = string.Empty;
     }
 
     public override void OnAttach()

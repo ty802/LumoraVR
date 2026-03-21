@@ -15,66 +15,56 @@ public class GodotButton : GodotUIElement
     /// <summary>
     /// Button text.
     /// </summary>
-    public Sync<string> Text { get; private set; } = null!;
+    public readonly Sync<string> Text;
 
     /// <summary>
     /// Font size in pixels.
     /// </summary>
-    public Sync<int> FontSize { get; private set; } = null!;
+    public readonly Sync<int> FontSize;
 
     /// <summary>
     /// Text color.
     /// </summary>
-    public Sync<color> FontColor { get; private set; } = null!;
+    public readonly Sync<color> FontColor;
 
     /// <summary>
     /// Normal background color.
     /// </summary>
-    public Sync<color> NormalColor { get; private set; } = null!;
+    public readonly Sync<color> NormalColor;
 
     /// <summary>
     /// Background color when hovered.
     /// </summary>
-    public Sync<color> HoverColor { get; private set; } = null!;
+    public readonly Sync<color> HoverColor;
 
     /// <summary>
     /// Background color when pressed.
     /// </summary>
-    public Sync<color> PressedColor { get; private set; } = null!;
+    public readonly Sync<color> PressedColor;
 
     /// <summary>
     /// Background color when disabled.
     /// </summary>
-    public Sync<color> DisabledColor { get; private set; } = null!;
+    public readonly Sync<color> DisabledColor;
 
     /// <summary>
     /// Whether the button is disabled.
     /// </summary>
-    public Sync<bool> Disabled { get; private set; } = null!;
+    public readonly Sync<bool> Disabled;
 
     /// <summary>
     /// Corner radius for rounded corners.
     /// </summary>
-    public Sync<float> CornerRadius { get; private set; } = null!;
+    public readonly Sync<float> CornerRadius;
 
     /// <summary>
     /// Event fired when button is pressed.
     /// </summary>
     public event Action? OnPressed;
 
-    protected override void InitializeSyncMembers()
+    public override void OnAwake()
     {
-        base.InitializeSyncMembers();
-
-        Text = new Sync<string>(this, "Button");
-        FontSize = new Sync<int>(this, 16);
-        FontColor = new Sync<color>(this, color.White);
-        NormalColor = new Sync<color>(this, new color(0.25f, 0.25f, 0.3f, 1f));
-        HoverColor = new Sync<color>(this, new color(0.35f, 0.35f, 0.4f, 1f));
-        PressedColor = new Sync<color>(this, new color(0.2f, 0.2f, 0.25f, 1f));
-        DisabledColor = new Sync<color>(this, new color(0.15f, 0.15f, 0.15f, 1f));
-        Disabled = new Sync<bool>(this, false);
-        CornerRadius = new Sync<float>(this, 4f);
+        base.OnAwake();
 
         Text.OnChanged += _ => NotifyChanged();
         FontSize.OnChanged += _ => NotifyChanged();
@@ -85,6 +75,20 @@ public class GodotButton : GodotUIElement
         DisabledColor.OnChanged += _ => NotifyChanged();
         Disabled.OnChanged += _ => NotifyChanged();
         CornerRadius.OnChanged += _ => NotifyChanged();
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        Text.Value = "Button";
+        FontSize.Value = 16;
+        FontColor.Value = color.White;
+        NormalColor.Value = new color(0.25f, 0.25f, 0.3f, 1f);
+        HoverColor.Value = new color(0.35f, 0.35f, 0.4f, 1f);
+        PressedColor.Value = new color(0.2f, 0.2f, 0.25f, 1f);
+        DisabledColor.Value = new color(0.15f, 0.15f, 0.15f, 1f);
+        Disabled.Value = false;
+        CornerRadius.Value = 4f;
     }
 
     /// <summary>

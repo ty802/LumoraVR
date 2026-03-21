@@ -21,33 +21,33 @@ namespace Lumora.Core.Components.Avatar;
 public class LocalViewOverride : ImplementableComponent<IHook>
 {
     /// <summary>Which rendering context activates this override.</summary>
-    public Sync<RenderingContext> Context { get; private set; }
+    public readonly Sync<RenderingContext> Context = new();
 
     /// <summary>When true, PositionOverride replaces the slot's normal position.</summary>
-    public Sync<bool>   HasPositionOverride { get; private set; }
-    public Sync<float3> PositionOverride    { get; private set; }
+    public readonly Sync<bool>   HasPositionOverride = new();
+    public readonly Sync<float3> PositionOverride    = new();
 
     /// <summary>When true, RotationOverride replaces the slot's normal rotation.</summary>
-    public Sync<bool>   HasRotationOverride { get; private set; }
-    public Sync<floatQ> RotationOverride    { get; private set; }
+    public readonly Sync<bool>   HasRotationOverride = new();
+    public readonly Sync<floatQ> RotationOverride    = new();
 
     /// <summary>
     /// When true, ScaleOverride replaces the slot's normal scale.
     /// Set to float3.Zero to make the slot invisible in the target context
     /// while keeping shadow casting intact.
     /// </summary>
-    public Sync<bool>   HasScaleOverride { get; private set; }
-    public Sync<float3> ScaleOverride    { get; private set; }
+    public readonly Sync<bool>   HasScaleOverride = new();
+    public readonly Sync<float3> ScaleOverride    = new();
 
-    public override void OnAwake()
+    public override void OnInit()
     {
-        base.OnAwake();
-        Context             = new Sync<RenderingContext>(this, RenderingContext.UserView);
-        HasPositionOverride = new Sync<bool>(this, false);
-        PositionOverride    = new Sync<float3>(this, float3.Zero);
-        HasRotationOverride = new Sync<bool>(this, false);
-        RotationOverride    = new Sync<floatQ>(this, floatQ.Identity);
-        HasScaleOverride    = new Sync<bool>(this, false);
-        ScaleOverride       = new Sync<float3>(this, float3.One);
+        base.OnInit();
+        Context.Value          = RenderingContext.UserView;
+        // HasPositionOverride = false (C# default, skip)
+        // PositionOverride = float3.Zero (C# default, skip)
+        // HasRotationOverride = false (C# default, skip)
+        RotationOverride.Value = floatQ.Identity;
+        // HasScaleOverride = false (C# default, skip)
+        ScaleOverride.Value    = float3.One;
     }
 }

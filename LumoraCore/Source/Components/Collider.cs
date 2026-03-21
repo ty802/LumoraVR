@@ -28,9 +28,6 @@ public abstract class Collider : ImplementableComponent
 
     protected IColliderOwner _owner;
     protected bool _shapeChanged = true;
-    // TODO: Replace with platform-agnostic physics body types - requires physics driver system
-    protected object _staticBody; // StaticBody3D in Godot
-    protected object _collisionShape; // CollisionShape3D in Godot
     private bool _ownerSearchComplete = false;
     private int _updatesSinceAwake = 0;
 
@@ -139,59 +136,20 @@ public abstract class Collider : ImplementableComponent
             }
         }
 
-        // TODO: Physics driver system - Create standalone static body if no owner and scene root is ready
-        // if (_owner == null && _staticBody == null && _ownerSearchComplete && World.GodotSceneRoot != null)
-        // {
-        // 	CreateStandaloneStaticBody();
-        // }
-
-        // TODO: Physics driver system - Sync position to slot
-        // if (_staticBody != null && _staticBody.IsInsideTree())
-        // {
-        // 	_staticBody.GlobalPosition = Slot.GlobalPosition;
-        // 	_staticBody.GlobalRotation = Slot.GlobalRotation;
-        // 	var scale = Slot.LocalScale.Value;
-        // 	_staticBody.Scale = new global::Godot.Vector3(scale.X, scale.Y, scale.Z);
-        // }
     }
-
-    // TODO: Physics driver system - Move to physics hook/driver
-    // private void CreateStandaloneStaticBody()
-    // {
-    // 	_staticBody = new StaticBody3D { Name = $"StaticBody_{GetType().Name}" };
-    //
-    // 	_collisionShape = new CollisionShape3D { Name = "Shape" };
-    // 	_collisionShape.Shape = CreateGodotShape();
-    // 	_collisionShape.Position = Offset.Value;
-    //
-    // 	_staticBody.AddChild(_collisionShape);
-    //
-    // 	var sceneRoot = World.GodotSceneRoot as Node3D;
-    // 	if (sceneRoot != null)
-    // 	{
-    // 		sceneRoot.AddChild(_staticBody);
-    // 		_staticBody.GlobalPosition = Slot.GlobalPosition;
-    // 		_staticBody.GlobalRotation = Slot.GlobalRotation;
-    // 		var scale = Slot.LocalScale.Value;
-    // 		_staticBody.Scale = new global::Godot.Vector3(scale.X, scale.Y, scale.Z);
-    // 		LumoraLogger.Log($"Collider: Created standalone StaticBody3D for {GetType().Name}");
-    // 	}
-    // }
 
     // ===== ABSTRACT METHODS =====
 
     /// <summary>
-    /// Create the collision shape for this collider.
-    /// TODO: Physics driver system - Replace Shape3D with platform-agnostic shape type
-    /// Called by collider owner when building physics body.
+    /// Create the Godot collision shape for this collider (returns Shape3D).
+    /// Called by platform hooks when building a physics body.
     /// </summary>
-    public abstract object CreateGodotShape(); // Returns Shape3D in Godot
+    public abstract object CreateGodotShape();
 
     /// <summary>
-    /// Get the local bounding box for this collider.
-    /// TODO: Physics driver system - Replace Aabb with platform-agnostic AABB type
+    /// Get the local bounding box for this collider (returns Aabb).
     /// </summary>
-    public abstract object GetLocalBounds(); // Returns Aabb in Godot
+    public abstract object GetLocalBounds();
 
     // ===== CLEANUP =====
 
@@ -199,14 +157,6 @@ public abstract class Collider : ImplementableComponent
     {
         _owner?.OnColliderRemoved(this);
         _owner = null;
-
-        // TODO: Physics driver system - Cleanup standalone static body if we created one
-        // if (_staticBody != null)
-        // {
-        // 	_staticBody.QueueFree();
-        // 	_staticBody = null;
-        // 	_collisionShape = null;
-        // }
 
         base.OnDestroy();
         LumoraLogger.Log($"Collider: Destroyed {GetType().Name}");

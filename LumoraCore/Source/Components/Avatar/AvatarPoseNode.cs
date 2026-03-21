@@ -21,17 +21,17 @@ public class AvatarPoseNode : Component, IAvatarObject, IInputUpdateReceiver
     /// <summary>
     /// The body node this pose node corresponds to.
     /// </summary>
-    public Sync<BodyNode> Node { get; private set; }
+    public readonly Sync<BodyNode> Node = new();
 
     /// <summary>
     /// Priority for equipping order (higher = later).
     /// </summary>
-    public Sync<int> EquipOrderPriority_ { get; private set; }
+    public readonly Sync<int> EquipOrderPriority_ = new();
 
     /// <summary>
     /// Whether to run the update after input update instead of before.
     /// </summary>
-    public Sync<bool> RunAfterInputUpdate { get; private set; }
+    public readonly Sync<bool> RunAfterInputUpdate = new();
 
     /// <summary>
     /// Body nodes that cannot be equipped simultaneously.
@@ -41,21 +41,21 @@ public class AvatarPoseNode : Component, IAvatarObject, IInputUpdateReceiver
     /// <summary>
     /// Output: Whether tracking is currently active.
     /// </summary>
-    public Sync<bool> IsTracking { get; private set; }
+    public readonly Sync<bool> IsTracking = new();
 
     /// <summary>
     /// Output: Whether the source slot is tracking.
     /// </summary>
-    public Sync<bool> SourceIsTracking { get; private set; }
+    public readonly Sync<bool> SourceIsTracking = new();
 
     /// <summary>
     /// Output: Whether the source slot is active.
     /// </summary>
-    public Sync<bool> SourceIsActive { get; private set; }
+    public readonly Sync<bool> SourceIsActive = new();
 
     // Internal references
-    protected SyncRef<AvatarObjectSlot> _objectSlot;
-    protected SyncRef<Slot> _source;
+    protected readonly SyncRef<AvatarObjectSlot> _objectSlot;
+    protected readonly SyncRef<Slot> _source;
 
     // Field drives for position/rotation
     protected FieldDrive<float3> _position;
@@ -93,21 +93,24 @@ public class AvatarPoseNode : Component, IAvatarObject, IInputUpdateReceiver
     {
         base.OnAwake();
 
-        Node = new Sync<BodyNode>(this, BodyNode.NONE);
-        EquipOrderPriority_ = new Sync<int>(this, 0);
-        RunAfterInputUpdate = new Sync<bool>(this, false);
         MutuallyExclusiveNodes_ = new SyncFieldList<BodyNode>();
-        IsTracking = new Sync<bool>(this, false);
-        SourceIsTracking = new Sync<bool>(this, false);
-        SourceIsActive = new Sync<bool>(this, false);
-
-        _objectSlot = new SyncRef<AvatarObjectSlot>(this, null);
-        _source = new SyncRef<Slot>(this, null);
 
         _position = new FieldDrive<float3>(World);
         _rotation = new FieldDrive<floatQ>(World);
         _scale = new FieldDrive<float3>(World);
         _active = new FieldDrive<bool>(World);
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        // BodyNode.NONE may not be enum value 0 — set explicitly
+        Node.Value = BodyNode.NONE;
+        // EquipOrderPriority_ = 0 (C# default, skip)
+        // RunAfterInputUpdate = false (C# default, skip)
+        // IsTracking = false (C# default, skip)
+        // SourceIsTracking = false (C# default, skip)
+        // SourceIsActive = false (C# default, skip)
     }
 
     public override void OnStart()

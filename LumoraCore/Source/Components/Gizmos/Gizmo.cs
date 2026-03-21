@@ -20,22 +20,22 @@ public abstract class Gizmo : ImplementableComponent, IGizmo
     /// <summary>
     /// The slot this gizmo is manipulating.
     /// </summary>
-    public SyncRef<Slot> TargetSlotRef { get; private set; } = null!;
+    public readonly SyncRef<Slot> TargetSlotRef;
 
     /// <summary>
     /// Whether this gizmo is currently active and visible.
     /// </summary>
-    public Sync<bool> Active { get; private set; } = null!;
+    public readonly Sync<bool> Active;
 
     /// <summary>
     /// The base color of this gizmo.
     /// </summary>
-    public Sync<color> GizmoColor { get; private set; } = null!;
+    public readonly Sync<color> GizmoColor;
 
     /// <summary>
     /// Whether this gizmo is currently being interacted with.
     /// </summary>
-    public Sync<bool> IsInteracting { get; private set; } = null!;
+    public readonly Sync<bool> IsInteracting;
 
     /// <summary>
     /// IGizmo interface implementation.
@@ -58,19 +58,16 @@ public abstract class Gizmo : ImplementableComponent, IGizmo
     public override void OnAwake()
     {
         base.OnAwake();
-        InitializeSyncMembers();
-    }
-
-    private void InitializeSyncMembers()
-    {
-        TargetSlotRef = new SyncRef<Slot>(this);
-        Active = new Sync<bool>(this, true);
-        GizmoColor = new Sync<color>(this, color.Yellow);
-        IsInteracting = new Sync<bool>(this, false);
-
         TargetSlotRef.OnTargetChange += _ => NotifyChanged();
         Active.OnChanged += _ => NotifyChanged();
         GizmoColor.OnChanged += _ => NotifyChanged();
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        Active.Value = true;
+        GizmoColor.Value = color.Yellow;
     }
 
     /// <summary>

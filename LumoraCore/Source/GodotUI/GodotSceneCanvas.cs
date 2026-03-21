@@ -16,27 +16,27 @@ public class GodotSceneCanvas : ImplementableComponent
     /// <summary>
     /// Path to the .tscn scene file (e.g., "res://UI/MyPanel.tscn").
     /// </summary>
-    public Sync<string> ScenePath { get; private set; } = null!;
+    public readonly Sync<string> ScenePath;
 
     /// <summary>
     /// Size of the viewport in pixels.
     /// </summary>
-    public Sync<float2> Size { get; private set; } = null!;
+    public readonly Sync<float2> Size;
 
     /// <summary>
     /// Pixels per unit (affects how large the UI appears in world space).
     /// </summary>
-    public Sync<float> PixelsPerUnit { get; private set; } = null!;
+    public readonly Sync<float> PixelsPerUnit;
 
     /// <summary>
     /// Whether the canvas is interactive (receives input).
     /// </summary>
-    public Sync<bool> Interactive { get; private set; } = null!;
+    public readonly Sync<bool> Interactive;
 
     /// <summary>
     /// Whether the background is transparent.
     /// </summary>
-    public Sync<bool> TransparentBackground { get; private set; } = null!;
+    public readonly Sync<bool> TransparentBackground;
 
     /// <summary>
     /// Event fired when scene is loaded. Hook can use this to notify components.
@@ -46,22 +46,22 @@ public class GodotSceneCanvas : ImplementableComponent
     public override void OnAwake()
     {
         base.OnAwake();
-        InitializeSyncMembers();
-    }
-
-    private void InitializeSyncMembers()
-    {
-        ScenePath = new Sync<string>(this, "");
-        Size = new Sync<float2>(this, new float2(800, 600));
-        PixelsPerUnit = new Sync<float>(this, 1000f);
-        Interactive = new Sync<bool>(this, true);
-        TransparentBackground = new Sync<bool>(this, true);
 
         ScenePath.OnChanged += _ => NotifyChanged();
         Size.OnChanged += _ => NotifyChanged();
         PixelsPerUnit.OnChanged += _ => NotifyChanged();
         Interactive.OnChanged += _ => NotifyChanged();
         TransparentBackground.OnChanged += _ => NotifyChanged();
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        ScenePath.Value = "";
+        Size.Value = new float2(800, 600);
+        PixelsPerUnit.Value = 1000f;
+        Interactive.Value = true;
+        TransparentBackground.Value = true;
     }
 
     /// <summary>

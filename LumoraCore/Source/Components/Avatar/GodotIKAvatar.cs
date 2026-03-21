@@ -16,49 +16,49 @@ public class GodotIKAvatar : ImplementableComponent
 {
     // ===== TRACKING TARGETS =====
 
-    public SyncRef<Slot> HeadTarget { get; private set; }
-    public SyncRef<Slot> LeftHandTarget { get; private set; }
-    public SyncRef<Slot> RightHandTarget { get; private set; }
-    public SyncRef<Slot> LeftFootTarget { get; private set; }
-    public SyncRef<Slot> RightFootTarget { get; private set; }
+    public readonly SyncRef<Slot> HeadTarget       = new();
+    public readonly SyncRef<Slot> LeftHandTarget   = new();
+    public readonly SyncRef<Slot> RightHandTarget  = new();
+    public readonly SyncRef<Slot> LeftFootTarget   = new();
+    public readonly SyncRef<Slot> RightFootTarget  = new();
 
     // ===== SKELETON =====
 
-    public SyncRef<SkeletonBuilder> Skeleton { get; private set; }
-    public SyncRef<UserRoot> UserRoot { get; private set; }
+    public readonly SyncRef<SkeletonBuilder> Skeleton = new();
+    public readonly SyncRef<UserRoot>        UserRoot  = new();
 
     // ===== BODY POSITIONING SETTINGS =====
 
-    public Sync<float> HipHeight { get; private set; }
-    public Sync<bool> Enabled { get; private set; }
+    public readonly Sync<float> HipHeight     = new();
+    public readonly Sync<bool>  Enabled       = new();
 
     /// <summary>Forward lean of spine in degrees.</summary>
-    public Sync<float> SpineTilt { get; private set; }
+    public readonly Sync<float> SpineTilt     = new();
 
     /// <summary>How far hips sit behind the head center.</summary>
-    public Sync<float> HipsBackOffset { get; private set; }
+    public readonly Sync<float> HipsBackOffset = new();
 
     // ===== FOOT ZONE SETTINGS =====
 
     /// <summary>Where the foot zone sits relative to the head (x=side, y=down, z=back).</summary>
-    public Sync<float3> FootZoneOffset { get; private set; }
+    public readonly Sync<float3> FootZoneOffset = new();
 
     /// <summary>Left/right foot spread distance.</summary>
-    public Sync<float> FootSeparation { get; private set; }
+    public readonly Sync<float> FootSeparation = new();
 
     /// <summary>Hover distance above detected ground.</summary>
-    public Sync<float> FootHoverHeight { get; private set; }
+    public readonly Sync<float> FootHoverHeight = new();
 
     /// <summary>Length of downward ground detection raycast.</summary>
-    public Sync<float> GroundRaycastRange { get; private set; }
+    public readonly Sync<float> GroundRaycastRange = new();
 
     // ===== GROUND DETECTION FEEDBACK (written by GodotIKAvatarHook) =====
 
     /// <summary>Ground Y under left foot — written by the Godot-side hook, read by ProceduralLegs.</summary>
-    public Sync<float> LeftFootGroundY { get; private set; }
+    public readonly Sync<float> LeftFootGroundY = new();
 
     /// <summary>Ground Y under right foot — written by the Godot-side hook, read by ProceduralLegs.</summary>
-    public Sync<float> RightFootGroundY { get; private set; }
+    public readonly Sync<float> RightFootGroundY = new();
 
     // ===== BONE REFERENCES =====
 
@@ -82,31 +82,19 @@ public class GodotIKAvatar : ImplementableComponent
 
     private const float Deg2Rad = MathF.PI / 180f;
 
-    public override void OnAwake()
+    public override void OnInit()
     {
-        base.OnAwake();
-
-        HeadTarget = new SyncRef<Slot>(this, null);
-        LeftHandTarget = new SyncRef<Slot>(this, null);
-        RightHandTarget = new SyncRef<Slot>(this, null);
-        LeftFootTarget = new SyncRef<Slot>(this, null);
-        RightFootTarget = new SyncRef<Slot>(this, null);
-
-        Skeleton = new SyncRef<SkeletonBuilder>(this, null);
-        UserRoot = new SyncRef<UserRoot>(this, null);
-
-        HipHeight = new Sync<float>(this, 0.95f);
-        Enabled = new Sync<bool>(this, true);
-        SpineTilt = new Sync<float>(this, 20f);
-        HipsBackOffset = new Sync<float>(this, 0.2f);
-
-        FootZoneOffset = new Sync<float3>(this, new float3(0f, -1.4f, -0.25f));
-        FootSeparation = new Sync<float>(this, 0.3f);
-        FootHoverHeight = new Sync<float>(this, 0.15f);
-        GroundRaycastRange = new Sync<float>(this, 0.65f);
-
-        LeftFootGroundY = new Sync<float>(this, 0f);
-        RightFootGroundY = new Sync<float>(this, 0f);
+        base.OnInit();
+        HipHeight.Value         = 0.95f;
+        Enabled.Value           = true;
+        SpineTilt.Value         = 20f;
+        HipsBackOffset.Value    = 0.2f;
+        FootZoneOffset.Value    = new float3(0f, -1.4f, -0.25f);
+        FootSeparation.Value    = 0.3f;
+        FootHoverHeight.Value   = 0.15f;
+        GroundRaycastRange.Value = 0.65f;
+        // LeftFootGroundY = 0f (C# default, skip)
+        // RightFootGroundY = 0f (C# default, skip)
     }
 
     public override void OnStart()

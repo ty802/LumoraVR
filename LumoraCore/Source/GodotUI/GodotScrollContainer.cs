@@ -1,8 +1,6 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-using Lumora.Core.Math;
-
 namespace Lumora.Core.GodotUI;
 
 /// <summary>
@@ -25,43 +23,36 @@ public class GodotScrollContainer : GodotUIElement
     /// <summary>
     /// Horizontal scroll value (0-1).
     /// </summary>
-    public Sync<float> ScrollHorizontal { get; private set; } = null!;
+    public readonly Sync<float> ScrollHorizontal;
 
     /// <summary>
     /// Vertical scroll value (0-1).
     /// </summary>
-    public Sync<float> ScrollVertical { get; private set; } = null!;
+    public readonly Sync<float> ScrollVertical;
 
     /// <summary>
     /// Horizontal scroll bar visibility.
     /// </summary>
-    public Sync<ScrollMode> HorizontalScrollMode { get; private set; } = null!;
+    public readonly Sync<ScrollMode> HorizontalScrollMode;
 
     /// <summary>
     /// Vertical scroll bar visibility.
     /// </summary>
-    public Sync<ScrollMode> VerticalScrollMode { get; private set; } = null!;
+    public readonly Sync<ScrollMode> VerticalScrollMode;
 
     /// <summary>
     /// Whether to follow focus (scroll to focused element).
     /// </summary>
-    public Sync<bool> FollowFocus { get; private set; } = null!;
+    public readonly Sync<bool> FollowFocus;
 
     /// <summary>
     /// Scroll deadzone in pixels.
     /// </summary>
-    public Sync<int> ScrollDeadzone { get; private set; } = null!;
+    public readonly Sync<int> ScrollDeadzone;
 
-    protected override void InitializeSyncMembers()
+    public override void OnAwake()
     {
-        base.InitializeSyncMembers();
-
-        ScrollHorizontal = new Sync<float>(this, 0f);
-        ScrollVertical = new Sync<float>(this, 0f);
-        HorizontalScrollMode = new Sync<ScrollMode>(this, ScrollMode.Auto);
-        VerticalScrollMode = new Sync<ScrollMode>(this, ScrollMode.Auto);
-        FollowFocus = new Sync<bool>(this, true);
-        ScrollDeadzone = new Sync<int>(this, 0);
+        base.OnAwake();
 
         ScrollHorizontal.OnChanged += _ => NotifyChanged();
         ScrollVertical.OnChanged += _ => NotifyChanged();
@@ -69,6 +60,17 @@ public class GodotScrollContainer : GodotUIElement
         VerticalScrollMode.OnChanged += _ => NotifyChanged();
         FollowFocus.OnChanged += _ => NotifyChanged();
         ScrollDeadzone.OnChanged += _ => NotifyChanged();
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        ScrollHorizontal.Value = 0f;
+        ScrollVertical.Value = 0f;
+        HorizontalScrollMode.Value = ScrollMode.Auto;
+        VerticalScrollMode.Value = ScrollMode.Auto;
+        FollowFocus.Value = true;
+        ScrollDeadzone.Value = 0;
     }
 
     /// <summary>

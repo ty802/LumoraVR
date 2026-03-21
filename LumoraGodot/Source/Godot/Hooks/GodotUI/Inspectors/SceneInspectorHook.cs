@@ -69,6 +69,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
     private Vector2I _lastViewportSize = Vector2I.Zero;
     private readonly Dictionary<TreeItem, Slot> _treeItemToSlot = new();
     private readonly Dictionary<Slot, TreeItem> _slotToTreeItem = new();
+    private readonly Dictionary<string, Control> _nodeRegistry = new();
     private readonly HashSet<string> _expandedComponents = new(); // Track which components are expanded by type name
     private Action<Slot?>? _rootChangedHandler;
     private Action<Slot?>? _selectionChangedHandler;
@@ -552,13 +553,27 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
     {
         if (_loadedScene == null) return;
 
-        // Recursively parse all child controls from the scene root
+        // Build node registry first so element hooks can find their Godot controls on Initialize
+        _nodeRegistry.Clear();
         foreach (var child in _loadedScene.GetChildren())
-        {
+            BuildNodeRegistryRecursive(child, "");
+        GodotUIPanelHook.RegisterNodeProvider(Owner, path => _nodeRegistry.TryGetValue(path, out var c) ? c : null);
+
+        // Create Lumora components for each Control node
+        foreach (var child in _loadedScene.GetChildren())
             ParseSceneNodeRecursive(child, "", Owner.Slot);
-        }
 
         LumoraLogger.Log($"SceneInspectorHook: Created Lumora UI components for .tscn elements");
+    }
+
+    private void BuildNodeRegistryRecursive(Node node, string parentPath)
+    {
+        var nodeName = node.Name.ToString();
+        var nodePath = string.IsNullOrEmpty(parentPath) ? nodeName : $"{parentPath}/{nodeName}";
+        if (node is Control control)
+            _nodeRegistry[nodePath] = control;
+        foreach (var child in node.GetChildren())
+            BuildNodeRegistryRecursive(child, nodePath);
     }
 
     private void ParseSceneNodeRecursive(Node node, string parentPath, Slot parentSlot)
@@ -692,7 +707,8 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
             if (child.Name.Value.StartsWith("Gizmo_", StringComparison.Ordinal))
                 return;
 
-            RebuildHierarchyTree();
+            // May be called from SyncLoop thread — defer Godot UI work to main thread
+            World?.RunSynchronously(RebuildHierarchyTree);
         }
         catch (Exception ex)
         {
@@ -700,7 +716,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         }
     }
 
-    private void OnSlotNameChanged(Slot slot, string newName) => RefreshUI();
+    private void OnSlotNameChanged(Slot slot, string newName) => World?.RunSynchronously(RefreshUI);
 
     private Slot? _pendingFocus;
 
@@ -1315,6 +1331,9 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
             _observedComponentSlot.OnComponentRemoved -= OnComponentListChanged;
             _observedComponentSlot = null;
         }
+
+        GodotUIPanelHook.UnregisterNodeProvider(Owner);
+        _nodeRegistry.Clear();
 
         if (!destroyingWorld)
         {

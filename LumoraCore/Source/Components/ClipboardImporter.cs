@@ -4,7 +4,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Threading.Tasks;
 using Lumora.Core.Math;
 using Lumora.Core.Input;
 using Lumora.Core.Logging;
@@ -20,12 +19,12 @@ public class ClipboardImporter : Component
     /// <summary>
     /// Whether to spawn imports in front of the user
     /// </summary>
-    public Sync<bool> SpawnInFrontOfUser { get; private set; }
+    public readonly Sync<bool> SpawnInFrontOfUser = new();
 
     /// <summary>
     /// Distance in front of user to spawn imports
     /// </summary>
-    public Sync<float> SpawnDistance { get; private set; }
+    public readonly Sync<float> SpawnDistance = new();
 
     private bool CanImport
     {
@@ -33,29 +32,26 @@ public class ClipboardImporter : Component
         {
             if (World == null || !World.IsAuthority)
                 return false;
-            
+
             if (World.State != World.WorldState.Running)
                 return false;
-                
+
             return true;
         }
     }
 
-    public override void OnAwake()
+    public override void OnInit()
     {
-        base.OnAwake();
+        base.OnInit();
 
-        SpawnInFrontOfUser = new Sync<bool>(this, true);
-        SpawnDistance = new Sync<float>(this, 2.0f);
-
-        // Initialize sync members created in OnAwake
-        InitializeNewSyncMembers();
+        SpawnInFrontOfUser.Value = true;
+        SpawnDistance.Value      = 2.0f;
     }
 
     public override void OnStart()
     {
         base.OnStart();
-        
+
         // Note: File drop events would be handled by the platform layer (Godot)
         Logger.Log("ClipboardImporter: Started - ready for clipboard operations");
     }
@@ -63,7 +59,7 @@ public class ClipboardImporter : Component
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
-        
+
         if (!CanImport)
             return;
 
@@ -72,12 +68,11 @@ public class ClipboardImporter : Component
             return;
 
         // Check for Ctrl+V paste
-        var keyboard = inputInterface.GetKeyboardDriver() as Keyboard;
-        if (keyboard != null)
+        if (inputInterface.GetKeyboardDriver() is Keyboard keyboard)
         {
             bool ctrlPressed = keyboard.IsKeyPressed(Key.LeftControl) || keyboard.IsKeyPressed(Key.RightControl);
             bool vPressed = keyboard.IsKeyJustPressed(Key.V);
-            
+
             if (ctrlPressed && vPressed)
             {
                 HandleClipboardPaste();
@@ -144,21 +139,21 @@ public class ClipboardImporter : Component
     {
         var fileName = Path.GetFileName(filePath);
         var extension = Path.GetExtension(filePath).ToLower();
-        
+
         Logger.Log($"ClipboardImporter: Importing file '{fileName}' with extension '{extension}'");
-        
+
         var importSlot = CreateImportSlot($"Import: {fileName}");
-        
+
         // TODO: Handle different file types
         // - Images: .png, .jpg, .jpeg, .gif, .bmp
         // - 3D Models: .fbx, .obj, .gltf, .glb
         // - Audio: .wav, .mp3, .ogg
         // - Text: .txt, .json, .xml
-        
+
         // For now, just create a placeholder with TextRenderer
         var textComp = importSlot.AttachComponent<TextRenderer>();
         textComp.Text.Value = $"Imported file: {fileName}\nType: {extension}\nPath: {filePath}";
-        
+
         SetupImportedObject(importSlot);
     }
 
@@ -166,58 +161,58 @@ public class ClipboardImporter : Component
     {
         var dirName = Path.GetFileName(dirPath);
         Logger.Log($"ClipboardImporter: Importing directory '{dirName}'");
-        
+
         var importSlot = CreateImportSlot($"Import: {dirName}");
-        
+
         // TODO: Recursively import directory contents
         var textComp = importSlot.AttachComponent<TextRenderer>();
         textComp.Text.Value = $"Imported directory: {dirName}\nPath: {dirPath}";
-        
+
         SetupImportedObject(importSlot);
     }
 
     private void ImportUrl(Uri uri)
     {
         Logger.Log($"ClipboardImporter: Importing URL '{uri}'");
-        
+
         var importSlot = CreateImportSlot($"Import: URL");
-        
+
         // TODO: Handle different URL types
         // - Web pages: Create web panel
         // - Media URLs: Download and import
         // - Session/World URLs: Create session interface
-        
+
         var textComp = importSlot.AttachComponent<TextRenderer>();
         textComp.Text.Value = $"Imported URL: {uri}";
-        
+
         SetupImportedObject(importSlot);
     }
 
     private void ImportText(string text)
     {
         if (text.Length > 1000)
-            text = text.Substring(0, 1000) + "...";
-            
+            text = string.Concat(text.AsSpan(0, 1000), "...");
+
         Logger.Log($"ClipboardImporter: Importing text ({text.Length} chars)");
-        
+
         var importSlot = CreateImportSlot("Import: Text");
-        
+
         var textComp = importSlot.AttachComponent<TextRenderer>();
         textComp.Text.Value = text;
         textComp.Size.Value = 0.1f;
-        
+
         SetupImportedObject(importSlot);
     }
 
     private Slot CreateImportSlot(string name)
     {
         var importSlot = World.RootSlot.AddSlot(name);
-        
+
         if (SpawnInFrontOfUser.Value)
         {
             PositionInFrontOfUser(importSlot);
         }
-        
+
         return importSlot;
     }
 
@@ -238,7 +233,7 @@ public class ClipboardImporter : Component
                     {
                         var forward = headSlot.GlobalRotation * float3.Forward;
                         var spawnPosition = headSlot.GlobalPosition + forward * SpawnDistance.Value;
-                        
+
                         slot.GlobalPosition = spawnPosition;
                         slot.LookAt(headSlot.GlobalPosition, float3.Up);
                         return;
@@ -246,7 +241,7 @@ public class ClipboardImporter : Component
                 }
             }
         }
-        
+
         // Fallback position
         slot.GlobalPosition = new float3(0, 1.5f, 2);
     }

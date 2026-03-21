@@ -12,23 +12,23 @@ public class IKGrabBone : Component
     /// <summary>
     /// Whether grabbing this bone also grabs child bones.
     /// </summary>
-    public Sync<bool> GrabChildren { get; private set; }
+    public readonly Sync<bool> GrabChildren = new();
 
     /// <summary>
     /// Maximum force applied when grabbed.
     /// </summary>
-    public Sync<float> MaximumForce { get; private set; }
+    public readonly Sync<float> MaximumForce = new();
 
     /// <summary>
     /// How rigid the bone is when grabbed.
     /// </summary>
-    public Sync<float> Rigidity { get; private set; }
+    public readonly Sync<float> Rigidity = new();
 
-    public override void OnAwake()
+    public override void OnInit()
     {
-        base.OnAwake();
-        GrabChildren = new Sync<bool>(this, true);
-        MaximumForce = new Sync<float>(this, 100.0f);
-        Rigidity = new Sync<float>(this, 1.0f);
+        base.OnInit();
+        GrabChildren.Value  = true;
+        MaximumForce.Value  = 100.0f;
+        Rigidity.Value      = 1.0f;
     }
 }

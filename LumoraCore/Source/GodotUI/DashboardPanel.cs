@@ -16,17 +16,17 @@ public class DashboardPanel : GodotUIPanel
     /// <summary>
     /// Whether the dashboard is currently visible.
     /// </summary>
-    public Sync<bool> IsVisible { get; private set; } = null!;
+    public readonly Sync<bool> IsVisible;
 
     /// <summary>
     /// Distance from the user's head to spawn the panel.
     /// </summary>
-    public Sync<float> SpawnDistance { get; private set; } = null!;
+    public readonly Sync<float> SpawnDistance;
 
     /// <summary>
     /// Vertical offset from head position (negative = below eye level).
     /// </summary>
-    public Sync<float> VerticalOffset { get; private set; } = null!;
+    public readonly Sync<float> VerticalOffset;
 
     protected override string DefaultScenePath => "res://Scenes/UI/Dashboard/HomeDash.tscn";
     protected override float2 DefaultSize => new float2(900, 700);
@@ -37,11 +37,15 @@ public class DashboardPanel : GodotUIPanel
     {
         base.OnAwake();
 
-        IsVisible = new Sync<bool>(this, false);
-        SpawnDistance = new Sync<float>(this, 0.8f);
-        VerticalOffset = new Sync<float>(this, -0.1f);
-
         IsVisible.OnChanged += _ => NotifyChanged();
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        IsVisible.Value = false;
+        SpawnDistance.Value = 0.8f;
+        VerticalOffset.Value = -0.1f;
     }
 
     /// <summary>

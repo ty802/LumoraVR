@@ -2,7 +2,6 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 ﻿using Lumora.Core.Networking.Streams;
-using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
@@ -21,9 +20,6 @@ public class TransformStreamDriver : Component
     // Initialized by Worker.InitializeSyncMembers() via reflection
     public readonly SyncRef<Float3ValueStream> PositionStream = null!;
     public readonly SyncRef<FloatQValueStream> RotationStream = null!;
-
-    private int _debugCounter = 0;
-    private bool _loggedStreamInfo = false;
 
     /// <summary>
     /// Get the user that owns these streams.
@@ -45,20 +41,6 @@ public class TransformStreamDriver : Component
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
-
-        // Debug logging every ~2 seconds
-        _debugCounter++;
-        if (!_loggedStreamInfo && _debugCounter > 120)
-        {
-            _debugCounter = 0;
-            var posState = PositionStream?.State.ToString() ?? "null";
-            var posRefID = PositionStream?.Value.ToString() ?? "null";
-            var posTarget = PositionStream?.Target;
-            var user = User;
-            LumoraLogger.Log($"[TSD] {Slot.SlotName.Value}: PosState={posState} RefID={posRefID} Target={posTarget != null} User={user?.UserName?.Value ?? "null"} IsLocal={user?.IsLocal}");
-            if (user != null)
-                _loggedStreamInfo = true;
-        }
 
         var currentUser = User;
         if (currentUser == null)
@@ -116,7 +98,7 @@ public class TransformStreamDriver : Component
             if (!float.IsFinite(position.x) || !float.IsFinite(position.y) || !float.IsFinite(position.z))
                 return;
 
-            Slot.LocalPosition.Value = position;
+            Slot.LocalPosition.SetValueSilently(position, change: true);
         }
 
         // Apply rotation from stream
@@ -135,7 +117,7 @@ public class TransformStreamDriver : Component
             if (lengthSq < 0.0001f)
                 return;
 
-            Slot.LocalRotation.Value = rotation;
+            Slot.LocalRotation.SetValueSilently(rotation, change: true);
         }
     }
 }

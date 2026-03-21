@@ -19,7 +19,19 @@ public class ControlMessage : SyncMessage
         JoinReject,
         ServerClose,
         WorldSnapshot,
-        RequestFullState
+        RequestFullState,
+
+        // Asset transfer protocol
+        /// <summary>Client requests an asset by URI from the authority/owner.</summary>
+        AssetRequest,
+        /// <summary>Sender is about to transmit an asset: contains job ID, URI, total byte count.</summary>
+        AssetTransmissionStart,
+        /// <summary>One chunk of asset data: job ID, byte offset, chunk bytes.</summary>
+        AssetChunk,
+        /// <summary>Receiver pulls the next chunk(s).</summary>
+        AssetNextChunkRequest,
+        /// <summary>Sender cannot provide the requested asset.</summary>
+        AssetNotAvailable,
     }
 
     public override MessageType MessageType => MessageType.Control;

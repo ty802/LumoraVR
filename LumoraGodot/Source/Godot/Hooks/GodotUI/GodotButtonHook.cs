@@ -62,28 +62,32 @@ public class GodotButtonHook : GodotUIElementHook<GodotButton>
 
     private void ApplyButtonProperties()
     {
-        if (_button == null) return;
+        var button = _button ?? _control as Button;
+        if (button == null) return;
 
-        _button.Text = Owner.Text.Value ?? "";
-        _button.Disabled = Owner.Disabled.Value;
+        button.Text = Owner.Text.Value ?? "";
+        button.Disabled = Owner.Disabled.Value;
 
         // Font size
-        _button.AddThemeFontSizeOverride("font_size", Owner.FontSize.Value);
+        button.AddThemeFontSizeOverride("font_size", Owner.FontSize.Value);
 
         // Font color
         var fontColor = Owner.FontColor.Value;
         var gdFontColor = new Color(fontColor.r, fontColor.g, fontColor.b, fontColor.a);
-        _button.AddThemeColorOverride("font_color", gdFontColor);
-        _button.AddThemeColorOverride("font_hover_color", gdFontColor);
-        _button.AddThemeColorOverride("font_pressed_color", gdFontColor);
-        _button.AddThemeColorOverride("font_disabled_color", gdFontColor * 0.5f);
+        button.AddThemeColorOverride("font_color", gdFontColor);
+        button.AddThemeColorOverride("font_hover_color", gdFontColor);
+        button.AddThemeColorOverride("font_pressed_color", gdFontColor);
+        button.AddThemeColorOverride("font_disabled_color", gdFontColor * 0.5f);
 
-        // Apply style colors
-        var radius = (int)Owner.CornerRadius.Value;
-        ApplyStyleBox(_normalStyle, Owner.NormalColor.Value, radius);
-        ApplyStyleBox(_hoverStyle, Owner.HoverColor.Value, radius);
-        ApplyStyleBox(_pressedStyle, Owner.PressedColor.Value, radius);
-        ApplyStyleBox(_disabledStyle, Owner.DisabledColor.Value, radius);
+        // Apply style colors (only for created buttons — adopted buttons keep their scene styles)
+        if (_button != null)
+        {
+            var radius = (int)Owner.CornerRadius.Value;
+            ApplyStyleBox(_normalStyle, Owner.NormalColor.Value, radius);
+            ApplyStyleBox(_hoverStyle, Owner.HoverColor.Value, radius);
+            ApplyStyleBox(_pressedStyle, Owner.PressedColor.Value, radius);
+            ApplyStyleBox(_disabledStyle, Owner.DisabledColor.Value, radius);
+        }
     }
 
     private void ApplyStyleBox(StyleBoxFlat? styleBox, Lumora.Core.Math.color color, int radius)

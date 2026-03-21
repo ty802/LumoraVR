@@ -1332,6 +1332,14 @@ public class SessionSyncManager : IDisposable
                 }
                 break;
 
+            case ControlMessage.Message.AssetRequest:
+            case ControlMessage.Message.AssetTransmissionStart:
+            case ControlMessage.Message.AssetChunk:
+            case ControlMessage.Message.AssetNextChunkRequest:
+            case ControlMessage.Message.AssetNotAvailable:
+                Session.AssetTransferer?.ProcessMessage(message);
+                break;
+
             default:
                 LumoraLogger.Log($"ProcessControlMessage: {message.ControlMessageType}");
                 break;

@@ -31,47 +31,47 @@ public class VRIKAvatar : ImplementableComponent, IAvatarObjectComponent, IInput
 {
     // ── References ──────────────────────────────────────────────────────────
 
-    public SyncRef<SkeletonBuilder> Skeleton  { get; private set; }
-    public SyncRef<BipedRig>        Rig       { get; private set; }
-    public SyncRef<UserRoot>        UserRoot  { get; private set; }
+    public readonly SyncRef<SkeletonBuilder> Skeleton;
+    public readonly SyncRef<BipedRig>        Rig;
+    public readonly SyncRef<UserRoot>        UserRoot;
 
     // ── Settings ─────────────────────────────────────────────────────────────
 
-    public Sync<float> HeightCompensation  { get; private set; }
-    public Sync<float> AvatarHeight        { get; private set; }
-    public Sync<float> UserResizeThreshold { get; private set; }
-    public Sync<bool>  UseProceduralFeet   { get; private set; }
-    public Sync<bool>  IKEnabled           { get; private set; }
+    public readonly Sync<float> HeightCompensation;
+    public readonly Sync<float> AvatarHeight;
+    public readonly Sync<float> UserResizeThreshold;
+    public readonly Sync<bool>  UseProceduralFeet;
+    public readonly Sync<bool>  IKEnabled;
 
     // ── Proxy slots (one per tracked body node) ──────────────────────────────
     // Each proxy slot's global position is kept in sync with the corresponding
     // tracking slot by the AvatarPoseNode attached to it.
 
-    protected SyncRef<Slot> _headProxy;
-    protected SyncRef<Slot> _pelvisProxy;
-    protected SyncRef<Slot> _chestProxy;
-    protected SyncRef<Slot> _leftHandProxy;
-    protected SyncRef<Slot> _rightHandProxy;
-    protected SyncRef<Slot> _leftElbowProxy;
-    protected SyncRef<Slot> _rightElbowProxy;
-    protected SyncRef<Slot> _leftFootProxy;
-    protected SyncRef<Slot> _rightFootProxy;
-    protected SyncRef<Slot> _leftKneeProxy;
-    protected SyncRef<Slot> _rightKneeProxy;
+    protected readonly SyncRef<Slot> _headProxy;
+    protected readonly SyncRef<Slot> _pelvisProxy;
+    protected readonly SyncRef<Slot> _chestProxy;
+    protected readonly SyncRef<Slot> _leftHandProxy;
+    protected readonly SyncRef<Slot> _rightHandProxy;
+    protected readonly SyncRef<Slot> _leftElbowProxy;
+    protected readonly SyncRef<Slot> _rightElbowProxy;
+    protected readonly SyncRef<Slot> _leftFootProxy;
+    protected readonly SyncRef<Slot> _rightFootProxy;
+    protected readonly SyncRef<Slot> _leftKneeProxy;
+    protected readonly SyncRef<Slot> _rightKneeProxy;
 
     // ── Pose nodes (one per proxy, equips to tracking AvatarObjectSlot) ──────
 
-    protected SyncRef<AvatarPoseNode> _headNode;
-    protected SyncRef<AvatarPoseNode> _pelvisNode;
-    protected SyncRef<AvatarPoseNode> _chestNode;
-    protected SyncRef<AvatarPoseNode> _leftHandNode;
-    protected SyncRef<AvatarPoseNode> _rightHandNode;
-    protected SyncRef<AvatarPoseNode> _leftElbowNode;
-    protected SyncRef<AvatarPoseNode> _rightElbowNode;
-    protected SyncRef<AvatarPoseNode> _leftFootNode;
-    protected SyncRef<AvatarPoseNode> _rightFootNode;
-    protected SyncRef<AvatarPoseNode> _leftKneeNode;
-    protected SyncRef<AvatarPoseNode> _rightKneeNode;
+    protected readonly SyncRef<AvatarPoseNode> _headNode;
+    protected readonly SyncRef<AvatarPoseNode> _pelvisNode;
+    protected readonly SyncRef<AvatarPoseNode> _chestNode;
+    protected readonly SyncRef<AvatarPoseNode> _leftHandNode;
+    protected readonly SyncRef<AvatarPoseNode> _rightHandNode;
+    protected readonly SyncRef<AvatarPoseNode> _leftElbowNode;
+    protected readonly SyncRef<AvatarPoseNode> _rightElbowNode;
+    protected readonly SyncRef<AvatarPoseNode> _leftFootNode;
+    protected readonly SyncRef<AvatarPoseNode> _rightFootNode;
+    protected readonly SyncRef<AvatarPoseNode> _leftKneeNode;
+    protected readonly SyncRef<AvatarPoseNode> _rightKneeNode;
 
     // ── Internal state ────────────────────────────────────────────────────────
 
@@ -100,42 +100,14 @@ public class VRIKAvatar : ImplementableComponent, IAvatarObjectComponent, IInput
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
-    public override void OnAwake()
+    public override void OnInit()
     {
-        base.OnAwake();
-
-        Skeleton            = new SyncRef<SkeletonBuilder>(this, null);
-        Rig                 = new SyncRef<BipedRig>(this, null);
-        UserRoot            = new SyncRef<UserRoot>(this, null);
-        HeightCompensation  = new Sync<float>(this, 0.95f);
-        AvatarHeight        = new Sync<float>(this, 1.7f);
-        UserResizeThreshold = new Sync<float>(this, 0.2f);
-        UseProceduralFeet   = new Sync<bool>(this, true);
-        IKEnabled           = new Sync<bool>(this, true);
-
-        _headProxy       = new SyncRef<Slot>(this, null);
-        _pelvisProxy     = new SyncRef<Slot>(this, null);
-        _chestProxy      = new SyncRef<Slot>(this, null);
-        _leftHandProxy   = new SyncRef<Slot>(this, null);
-        _rightHandProxy  = new SyncRef<Slot>(this, null);
-        _leftElbowProxy  = new SyncRef<Slot>(this, null);
-        _rightElbowProxy = new SyncRef<Slot>(this, null);
-        _leftFootProxy   = new SyncRef<Slot>(this, null);
-        _rightFootProxy  = new SyncRef<Slot>(this, null);
-        _leftKneeProxy   = new SyncRef<Slot>(this, null);
-        _rightKneeProxy  = new SyncRef<Slot>(this, null);
-
-        _headNode       = new SyncRef<AvatarPoseNode>(this, null);
-        _pelvisNode     = new SyncRef<AvatarPoseNode>(this, null);
-        _chestNode      = new SyncRef<AvatarPoseNode>(this, null);
-        _leftHandNode   = new SyncRef<AvatarPoseNode>(this, null);
-        _rightHandNode  = new SyncRef<AvatarPoseNode>(this, null);
-        _leftElbowNode  = new SyncRef<AvatarPoseNode>(this, null);
-        _rightElbowNode = new SyncRef<AvatarPoseNode>(this, null);
-        _leftFootNode   = new SyncRef<AvatarPoseNode>(this, null);
-        _rightFootNode  = new SyncRef<AvatarPoseNode>(this, null);
-        _leftKneeNode   = new SyncRef<AvatarPoseNode>(this, null);
-        _rightKneeNode  = new SyncRef<AvatarPoseNode>(this, null);
+        base.OnInit();
+        HeightCompensation.Value  = 0.95f;
+        AvatarHeight.Value        = 1.7f;
+        UserResizeThreshold.Value = 0.2f;
+        UseProceduralFeet.Value   = true;
+        IKEnabled.Value           = true;
     }
 
     public override void OnStart()

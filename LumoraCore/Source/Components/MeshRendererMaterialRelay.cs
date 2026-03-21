@@ -13,11 +13,5 @@ public class MeshRendererMaterialRelay : Component
     /// <summary>
     /// The renderer whose materials this relay controls.
     /// </summary>
-    public SyncRef<SkinnedMeshRenderer> Renderer { get; private set; }
-
-    public override void OnAwake()
-    {
-        base.OnAwake();
-        Renderer = new SyncRef<SkinnedMeshRenderer>(this, null);
-    }
+    public readonly SyncRef<SkinnedMeshRenderer> Renderer;
 }

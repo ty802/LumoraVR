@@ -32,18 +32,19 @@ public abstract class GodotUIElementHook<T> : Hook<T> where T : GodotUIElement
 
         if (!string.IsNullOrEmpty(nodePath) && parentPanel != null)
         {
-            // Find the panel hook and get the existing node
+            Control? adopted = null;
             var panelHook = GodotUIPanelHook.FindHookForPanel(parentPanel);
             if (panelHook != null)
+                adopted = panelHook.GetNodeByPath(nodePath);
+            else
+                adopted = GodotUIPanelHook.FindNodeInCustomProvider(parentPanel, nodePath);
+
+            if (adopted != null)
             {
-                _control = panelHook.GetNodeByPath(nodePath);
-                if (_control != null)
-                {
-                    _isAdoptedNode = true;
-                    // Don't create new node, just apply our properties
-                    ApplyChanges();
-                    return;
-                }
+                _control = adopted;
+                _isAdoptedNode = true;
+                ApplyChanges();
+                return;
             }
         }
 
@@ -177,4 +178,14 @@ public abstract class GodotUIElementHook<T> : Hook<T> where T : GodotUIElement
         _control = null;
         _canvasHook = null;
     }
+}
+
+/// <summary>
+/// Concrete hook for base GodotUIElement (generic containers, Tree, etc.).
+/// For adopted nodes applies base properties only. For created nodes creates a plain Control.
+/// </summary>
+public class GodotBaseElementHook : GodotUIElementHook<GodotUIElement>
+{
+    public static IHook<GodotUIElement> Constructor() => new GodotBaseElementHook();
+    protected override Control CreateControl() => new Control();
 }

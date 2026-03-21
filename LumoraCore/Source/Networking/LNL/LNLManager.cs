@@ -54,7 +54,6 @@ public class LNLManager
         return listeners;
     }
 
-    // TODO: Call PollEvents() from platform driver update loop
     /// <summary>
     /// Poll all connections and listeners for events.
     /// Must be called every frame by platform driver.
@@ -85,7 +84,6 @@ public class LNLManager
         }
     }
 
-    // TODO: Call Stop() from platform shutdown
     /// <summary>
     /// Shutdown all connections and listeners.
     /// Should be called by platform driver on shutdown.

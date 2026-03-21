@@ -13,31 +13,32 @@ public class ObjectRoot : Component
     /// <summary>
     /// Optional display name for this object.
     /// </summary>
-    public Sync<string> ObjectName { get; private set; }
+    public readonly Sync<string> ObjectName = new();
 
     /// <summary>
     /// Whether this object can be grabbed.
     /// </summary>
-    public Sync<bool> Grabbable { get; private set; }
+    public readonly Sync<bool> Grabbable = new();
 
     /// <summary>
     /// Whether this object can be duplicated.
     /// </summary>
-    public Sync<bool> Duplicatable { get; private set; }
+    public readonly Sync<bool> Duplicatable = new();
 
     /// <summary>
     /// Whether this object can be destroyed by users.
     /// </summary>
-    public Sync<bool> Destroyable { get; private set; }
+    public readonly Sync<bool> Destroyable = new();
 
-    public override void OnAwake()
+    public override void OnInit()
     {
-        base.OnAwake();
+        base.OnInit();
 
-        ObjectName = new Sync<string>(this, string.Empty);
-        Grabbable = new Sync<bool>(this, true);
-        Duplicatable = new Sync<bool>(this, true);
-        Destroyable = new Sync<bool>(this, true);
+        // ObjectName = string.Empty (C# default null is close enough for Sync<string>, but original used string.Empty)
+        ObjectName.Value  = string.Empty;
+        Grabbable.Value   = true;
+        Duplicatable.Value = true;
+        Destroyable.Value = true;
     }
 
     /// <summary>

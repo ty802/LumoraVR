@@ -71,15 +71,20 @@ public class WorkerManager
         for (int i = 0; i < length; i++)
         {
             int index = startIndex + i;
+
+            // Skip indices we already know (happens when a full-snapshot delta re-sends all entries)
+            if (index < types.Count)
+                continue;
+
             if (index == 0)
             {
                 types.Add(null);
                 continue;
             }
-            
+
             string typeName = sender[index];
             Type type = GetType(typeName);
-            nameToIndex.Add(typeName, index);
+            nameToIndex[typeName] = index;
             types.Add(type);
         }
     }
@@ -123,7 +128,7 @@ public class WorkerManager
     {
         int index = (int)reader.Read7BitEncoded();
 
-        if (index > types.Count)
+        if (index >= types.Count)
         {
             throw new Exception($"Unknown type index: {index}, total known indexes: {types.Count}");
         }

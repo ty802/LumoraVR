@@ -1425,6 +1425,9 @@ public class World
 			TotalTime += scaledDelta;
 			LastDelta = (float)scaledDelta;
 
+			// Stage 0: Poll network transport so packets are dispatched before any world logic runs
+			_session?.Poll();
+
 			// Stage 1: Process synchronous actions (immediate state changes)
 			ProcessSynchronousActions();
 

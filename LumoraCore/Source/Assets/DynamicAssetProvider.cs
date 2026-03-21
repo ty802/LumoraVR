@@ -101,12 +101,19 @@ public abstract class DynamicAssetProvider<A> : AssetProvider<A> where A : Asset
 
     /// <summary>
     /// Mark the asset as needing an update.
+    /// Safe to call from any thread — defers the actual Godot work to the main thread.
     /// </summary>
     protected void MarkChangeDirty()
     {
         if (AssetReferenceCount > 0)
         {
-            UpdateAsset();
+            // Sync field changes fire on the SyncLoop thread.
+            // Defer UpdateAsset() so Godot resources are only touched on the main thread.
+            var world = World;
+            if (world != null)
+                world.RunSynchronously(UpdateAsset);
+            else
+                UpdateAsset();
         }
     }
 }

@@ -19,22 +19,22 @@ public class AvatarManager : ImplementableComponent
     /// <summary>
     /// Reference to the current equipped avatar root.
     /// </summary>
-    public SyncRef<Slot> CurrentAvatar { get; private set; }
+    public readonly SyncRef<Slot> CurrentAvatar = new();
 
     /// <summary>
     /// Reference to the user root this manager belongs to.
     /// </summary>
-    public SyncRef<UserRoot> UserRoot { get; private set; }
+    public readonly SyncRef<UserRoot> UserRoot = new();
 
     /// <summary>
     /// Default avatar slot (fallback when no custom avatar).
     /// </summary>
-    public SyncRef<Slot> DefaultAvatarSlot { get; private set; }
+    public readonly SyncRef<Slot> DefaultAvatarSlot = new();
 
     /// <summary>
     /// Whether the default avatar is currently equipped.
     /// </summary>
-    public Sync<bool> IsUsingDefaultAvatar { get; private set; }
+    public readonly Sync<bool> IsUsingDefaultAvatar = new();
 
     /// <summary>
     /// List of available imported avatars.
@@ -50,13 +50,15 @@ public class AvatarManager : ImplementableComponent
     {
         base.OnAwake();
 
-        CurrentAvatar = new SyncRef<Slot>(this, null);
-        UserRoot = new SyncRef<UserRoot>(this, null);
-        DefaultAvatarSlot = new SyncRef<Slot>(this, null);
-        IsUsingDefaultAvatar = new Sync<bool>(this, true);
         AvailableAvatars = new SyncRefList<Slot>(this);
 
         Logger.Log($"AvatarManager: Awake on slot '{Slot.SlotName.Value}'");
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        IsUsingDefaultAvatar.Value = true;
     }
 
     public override void OnStart()

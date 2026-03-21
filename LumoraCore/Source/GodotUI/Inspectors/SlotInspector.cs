@@ -22,32 +22,32 @@ public class SlotInspector : GodotUIPanel
     /// <summary>
     /// The root slot being inspected (shows hierarchy from this point).
     /// </summary>
-    public SyncRef<Slot> TargetSlot { get; private set; } = null!;
+    public readonly SyncRef<Slot> TargetSlot;
 
     /// <summary>
     /// The currently selected slot in the hierarchy.
     /// </summary>
-    public SyncRef<Slot> SelectedSlot { get; private set; } = null!;
+    public readonly SyncRef<Slot> SelectedSlot;
 
     /// <summary>
     /// Whether to show components for the selected slot.
     /// </summary>
-    public Sync<bool> ShowComponents { get; private set; } = null!;
+    public readonly Sync<bool> ShowComponents;
 
     /// <summary>
     /// Whether to show the hierarchy tree (false = show only selected slot properties).
     /// </summary>
-    public Sync<bool> ShowHierarchy { get; private set; } = null!;
+    public readonly Sync<bool> ShowHierarchy;
 
     /// <summary>
     /// Reference to the linked gizmo (if any).
     /// </summary>
-    public SyncRef<SlotGizmo> LinkedGizmo { get; private set; } = null!;
+    public readonly SyncRef<SlotGizmo> LinkedGizmo;
 
     /// <summary>
     /// Current depth in the hierarchy for nested inspectors.
     /// </summary>
-    public Sync<int> Depth { get; private set; } = null!;
+    public readonly Sync<int> Depth;
 
     /// <summary>
     /// Event fired when a slot is selected in the tree.
@@ -95,22 +95,19 @@ public class SlotInspector : GodotUIPanel
     public override void OnAwake()
     {
         base.OnAwake();
-        InitializeInspectorSyncMembers();
-    }
-
-    private void InitializeInspectorSyncMembers()
-    {
-        TargetSlot = new SyncRef<Slot>(this);
-        SelectedSlot = new SyncRef<Slot>(this);
-        ShowComponents = new Sync<bool>(this, true);
-        ShowHierarchy = new Sync<bool>(this, true);
-        LinkedGizmo = new SyncRef<SlotGizmo>(this);
-        Depth = new Sync<int>(this, 0);
 
         TargetSlot.OnTargetChange += OnTargetSlotChanged;
         SelectedSlot.OnTargetChange += OnSelectedSlotChanged;
         ShowComponents.OnChanged += _ => NotifyChanged();
         ShowHierarchy.OnChanged += _ => NotifyChanged();
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        ShowComponents.Value = true;
+        ShowHierarchy.Value = true;
+        Depth.Value = 0;
     }
 
     private void OnTargetSlotChanged(SyncRef<Slot> syncRef)

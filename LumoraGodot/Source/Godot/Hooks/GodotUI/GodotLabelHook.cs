@@ -39,19 +39,20 @@ public class GodotLabelHook : GodotUIElementHook<GodotLabel>
 
     private void ApplyLabelProperties()
     {
-        if (_label == null) return;
+        var label = _label ?? _control as Label;
+        if (label == null) return;
 
-        _label.Text = Owner.Text.Value ?? "";
+        label.Text = Owner.Text.Value ?? "";
 
         // Font size
-        _label.AddThemeFontSizeOverride("font_size", Owner.FontSize.Value);
+        label.AddThemeFontSizeOverride("font_size", Owner.FontSize.Value);
 
         // Font color
         var fontColor = Owner.FontColor.Value;
-        _label.AddThemeColorOverride("font_color", new Color(fontColor.r, fontColor.g, fontColor.b, fontColor.a));
+        label.AddThemeColorOverride("font_color", new Color(fontColor.r, fontColor.g, fontColor.b, fontColor.a));
 
         // Horizontal alignment
-        _label.HorizontalAlignment = Owner.HAlign.Value switch
+        label.HorizontalAlignment = Owner.HAlign.Value switch
         {
             LumoraHAlign.Left => global::Godot.HorizontalAlignment.Left,
             LumoraHAlign.Center => global::Godot.HorizontalAlignment.Center,
@@ -61,7 +62,7 @@ public class GodotLabelHook : GodotUIElementHook<GodotLabel>
         };
 
         // Vertical alignment
-        _label.VerticalAlignment = Owner.VAlign.Value switch
+        label.VerticalAlignment = Owner.VAlign.Value switch
         {
             LumoraVAlign.Top => global::Godot.VerticalAlignment.Top,
             LumoraVAlign.Center => global::Godot.VerticalAlignment.Center,
@@ -70,10 +71,10 @@ public class GodotLabelHook : GodotUIElementHook<GodotLabel>
         };
 
         // Auto wrap
-        _label.AutowrapMode = Owner.AutoWrap.Value ? TextServer.AutowrapMode.Word : TextServer.AutowrapMode.Off;
+        label.AutowrapMode = Owner.AutoWrap.Value ? TextServer.AutowrapMode.Word : TextServer.AutowrapMode.Off;
 
         // Clip text
-        _label.ClipText = Owner.ClipText.Value;
+        label.ClipText = Owner.ClipText.Value;
     }
 
     public override void Destroy(bool destroyingWorld)

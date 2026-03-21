@@ -28,16 +28,16 @@ public sealed class ControllerHandVisual : Component
     // ===== SYNC FIELDS =====
 
     /// <summary>Which hand side this visual represents.</summary>
-    public Sync<Chirality> HandSide { get; private set; }
+    public readonly Sync<Chirality> HandSide;
 
     /// <summary>Radius of the sphere rendered at each finger joint, in metres.</summary>
-    public Sync<float> JointRadius { get; private set; }
+    public readonly Sync<float> JointRadius;
 
     /// <summary>Radius of the cylinder rendered along each finger bone, in metres.</summary>
-    public Sync<float> BoneRadius { get; private set; }
+    public readonly Sync<float> BoneRadius;
 
     /// <summary>Uniform scale applied to controller-relative hand rest pose and mesh thickness.</summary>
-    public Sync<float> HandScale { get; private set; }
+    public readonly Sync<float> HandScale;
 
     // ===== INNER TYPES =====
 
@@ -98,13 +98,13 @@ public sealed class ControllerHandVisual : Component
 
     // ===== LIFECYCLE =====
 
-    public override void OnAwake()
+    public override void OnInit()
     {
-        base.OnAwake();
-        HandSide    = new Sync<Chirality>(this, Chirality.Right);
-        JointRadius = new Sync<float>(this, 0.0105f);
-        BoneRadius  = new Sync<float>(this, 0.0065f);
-        HandScale   = new Sync<float>(this, 1.12f);
+        base.OnInit();
+        HandSide.Value    = Chirality.Right;
+        JointRadius.Value = 0.0105f;
+        BoneRadius.Value  = 0.0065f;
+        HandScale.Value   = 1.12f;
     }
 
     public override void OnStart()

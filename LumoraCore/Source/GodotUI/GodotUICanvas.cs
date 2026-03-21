@@ -15,46 +15,46 @@ public class GodotUICanvas : ImplementableComponent
     /// <summary>
     /// Size of the UI canvas in pixels.
     /// </summary>
-    public Sync<float2> Size { get; private set; } = null!;
+    public readonly Sync<float2> Size;
 
     /// <summary>
     /// Pixels per unit (affects how large the UI appears in world space).
     /// Higher values = smaller UI in world.
     /// </summary>
-    public Sync<float> PixelsPerUnit { get; private set; } = null!;
+    public readonly Sync<float> PixelsPerUnit;
 
     /// <summary>
     /// Whether the canvas is interactive (receives input).
     /// </summary>
-    public Sync<bool> Interactive { get; private set; } = null!;
+    public readonly Sync<bool> Interactive;
 
     /// <summary>
     /// Background color of the canvas.
     /// </summary>
-    public Sync<color> BackgroundColor { get; private set; } = null!;
+    public readonly Sync<color> BackgroundColor;
 
     /// <summary>
     /// Whether the background is transparent.
     /// </summary>
-    public Sync<bool> TransparentBackground { get; private set; } = null!;
+    public readonly Sync<bool> TransparentBackground;
 
     public override void OnAwake()
     {
         base.OnAwake();
-        InitializeSyncMembers();
-    }
-
-    private void InitializeSyncMembers()
-    {
-        Size = new Sync<float2>(this, new float2(800, 600));
-        PixelsPerUnit = new Sync<float>(this, 1000f);  // 1000 pixels = 1 world unit
-        Interactive = new Sync<bool>(this, true);
-        BackgroundColor = new Sync<color>(this, new color(0.1f, 0.1f, 0.15f, 1f));
-        TransparentBackground = new Sync<bool>(this, false);
 
         Size.OnChanged += _ => NotifyChanged();
         PixelsPerUnit.OnChanged += _ => NotifyChanged();
         BackgroundColor.OnChanged += _ => NotifyChanged();
         TransparentBackground.OnChanged += _ => NotifyChanged();
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        Size.Value = new float2(800, 600);
+        PixelsPerUnit.Value = 1000f;  // 1000 pixels = 1 world unit
+        Interactive.Value = true;
+        BackgroundColor.Value = new color(0.1f, 0.1f, 0.15f, 1f);
+        TransparentBackground.Value = false;
     }
 }

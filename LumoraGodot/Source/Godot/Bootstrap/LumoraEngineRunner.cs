@@ -108,6 +108,12 @@ public partial class LumoraEngineRunner : Node
 
 	public override void _Ready()
 	{
+		if (!SteamManager.Initialize())
+		{
+			GetTree().Quit();
+			return;
+		}
+
 		if (HasCommandLineFlag(DebugConsoleFlag))
 		{
 			if (!TryAcquireDebugConsoleLock())
@@ -621,6 +627,18 @@ public partial class LumoraEngineRunner : Node
 		_inputInterface = _engine.InputInterface;
 		_engine.AudioManager.Initialize(AudioMixer.GetMixer());
 
+		// Register Godot-specific builtin asset loader (reads from res:// using FileAccess)
+		Lumora.Core.Networking.BuiltinAssetHelper.PlatformLoader = (relativePath) =>
+		{
+			string resPath = $"res://{relativePath}";
+			if (!FileAccess.FileExists(resPath))
+			{
+				LumoraLogger.Warn($"BuiltinAssetHelper: res:// path not found: '{resPath}'");
+				return null;
+			}
+			return FileAccess.GetFileAsBytes(resPath);
+		};
+
 		// Register input drivers
 		RegisterInputDrivers();
 
@@ -829,6 +847,8 @@ public partial class LumoraEngineRunner : Node
 			_missingInputInterfaceWarned = true;
 			LumoraLogger.Warn("LumoraEngineRunner: No InputInterface available in _Process");
 		}
+
+		SteamManager.RunCallbacks();
 
 		// Run engine update loop (includes one input pass + world updates).
 		// Avoid a duplicate InputInterface.UpdateInputs call here.
@@ -1183,6 +1203,7 @@ public partial class LumoraEngineRunner : Node
 		_debugUdpSender?.Dispose();
 		_engine?.Dispose();
 		_headOutput?.Dispose();
+		SteamManager.Shutdown();
 
 		base._ExitTree();
 	}

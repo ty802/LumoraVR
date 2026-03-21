@@ -352,6 +352,16 @@ public class SessionConnectionManager : IDisposable
         }
     }
 
+    /// <summary>
+    /// Poll network events for this session's connections and listeners.
+    /// Must be called every frame by the world update loop.
+    /// </summary>
+    public void Poll()
+    {
+        Listener?.Poll();
+        (HostConnection as LNLConnection)?.Poll();
+    }
+
     public void Dispose()
     {
         Listener?.Dispose();

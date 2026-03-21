@@ -29,22 +29,22 @@ public class ComponentInspector : GodotUIPanel
     /// <summary>
     /// The component being inspected.
     /// </summary>
-    public SyncRef<Component> TargetComponent { get; private set; } = null!;
+    public readonly SyncRef<Component> TargetComponent;
 
     /// <summary>
     /// Whether to allow removing this component from the slot.
     /// </summary>
-    public Sync<bool> AllowRemove { get; private set; } = null!;
+    public readonly Sync<bool> AllowRemove;
 
     /// <summary>
     /// Whether to show inherited properties from base classes.
     /// </summary>
-    public Sync<bool> ShowInherited { get; private set; } = null!;
+    public readonly Sync<bool> ShowInherited;
 
     /// <summary>
     /// Whether to show the component header with type name.
     /// </summary>
-    public Sync<bool> ShowHeader { get; private set; } = null!;
+    public readonly Sync<bool> ShowHeader;
 
     /// <summary>
     /// Event fired when a property value is changed.
@@ -64,17 +64,16 @@ public class ComponentInspector : GodotUIPanel
     public override void OnAwake()
     {
         base.OnAwake();
-        InitializeSyncMembers();
-    }
-
-    private void InitializeSyncMembers()
-    {
-        TargetComponent = new SyncRef<Component>(this);
-        AllowRemove = new Sync<bool>(this, true);
-        ShowInherited = new Sync<bool>(this, false);
-        ShowHeader = new Sync<bool>(this, true);
 
         TargetComponent.OnTargetChange += OnTargetComponentChanged;
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        AllowRemove.Value = true;
+        ShowInherited.Value = false;
+        ShowHeader.Value = true;
     }
 
     private void OnTargetComponentChanged(SyncRef<Component> syncRef)

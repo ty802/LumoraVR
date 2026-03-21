@@ -35,49 +35,41 @@ public class GodotLabel : GodotUIElement
     /// <summary>
     /// The text to display.
     /// </summary>
-    public Sync<string> Text { get; private set; } = null!;
+    public readonly Sync<string> Text;
 
     /// <summary>
     /// Font size in pixels.
     /// </summary>
-    public Sync<int> FontSize { get; private set; } = null!;
+    public readonly Sync<int> FontSize;
 
     /// <summary>
     /// Text color.
     /// </summary>
-    public Sync<color> FontColor { get; private set; } = null!;
+    public readonly Sync<color> FontColor;
 
     /// <summary>
     /// Horizontal text alignment.
     /// </summary>
-    public Sync<HorizontalAlignment> HAlign { get; private set; } = null!;
+    public readonly Sync<HorizontalAlignment> HAlign;
 
     /// <summary>
     /// Vertical text alignment.
     /// </summary>
-    public Sync<VerticalAlignment> VAlign { get; private set; } = null!;
+    public readonly Sync<VerticalAlignment> VAlign;
 
     /// <summary>
     /// Whether to auto-wrap text.
     /// </summary>
-    public Sync<bool> AutoWrap { get; private set; } = null!;
+    public readonly Sync<bool> AutoWrap;
 
     /// <summary>
     /// Whether to clip text that overflows.
     /// </summary>
-    public Sync<bool> ClipText { get; private set; } = null!;
+    public readonly Sync<bool> ClipText;
 
-    protected override void InitializeSyncMembers()
+    public override void OnAwake()
     {
-        base.InitializeSyncMembers();
-
-        Text = new Sync<string>(this, "Label");
-        FontSize = new Sync<int>(this, 16);
-        FontColor = new Sync<color>(this, color.White);
-        HAlign = new Sync<HorizontalAlignment>(this, HorizontalAlignment.Left);
-        VAlign = new Sync<VerticalAlignment>(this, VerticalAlignment.Top);
-        AutoWrap = new Sync<bool>(this, false);
-        ClipText = new Sync<bool>(this, false);
+        base.OnAwake();
 
         Text.OnChanged += _ => NotifyChanged();
         FontSize.OnChanged += _ => NotifyChanged();
@@ -86,5 +78,17 @@ public class GodotLabel : GodotUIElement
         VAlign.OnChanged += _ => NotifyChanged();
         AutoWrap.OnChanged += _ => NotifyChanged();
         ClipText.OnChanged += _ => NotifyChanged();
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        Text.Value = "Label";
+        FontSize.Value = 16;
+        FontColor.Value = color.White;
+        HAlign.Value = HorizontalAlignment.Left;
+        VAlign.Value = VerticalAlignment.Top;
+        AutoWrap.Value = false;
+        ClipText.Value = false;
     }
 }

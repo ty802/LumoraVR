@@ -6,6 +6,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="DiscordRichPresence" Version="1.2.1.24" />
+    <PackageReference Include="Steamworks.NET" Version="2024.8.0" />
     <PackageReference Include="LiteNetLib" Version="2.0.2" />
     <PackageReference Include="Wasmtime" Version="22.0.0" />
   </ItemGroup>
@@ -18,6 +19,11 @@
     <MakeDir Directories="$(ProjectDir)addons\lumora\bin" />
     <Copy SourceFiles="$(OutputPath)LumoraCore.dll" DestinationFolder="$(ProjectDir)addons\lumora\bin" />
     <Copy SourceFiles="$(OutputPath)LumoraCore.pdb" DestinationFolder="$(ProjectDir)addons\lumora\bin" Condition="Exists('$(OutputPath)LumoraCore.pdb')" />
+  </Target>
+
+  <!-- Copy steam_api64.dll to output after build -->
+  <Target Name="CopySteamAPI" AfterTargets="Build">
+    <Copy SourceFiles="$(ProjectDir)steam_api64.dll" DestinationFolder="$(OutputPath)" Condition="Exists('$(ProjectDir)steam_api64.dll')" />
   </Target>
 </Project>
 

@@ -13,29 +13,29 @@ public class Animator : Component
     /// <summary>
     /// Whether the animation loops.
     /// </summary>
-    public Sync<bool> Loop { get; private set; }
+    public readonly Sync<bool> Loop = new();
 
     /// <summary>
     /// Playback speed multiplier.
     /// </summary>
-    public Sync<float> Speed { get; private set; }
+    public readonly Sync<float> Speed = new();
 
     /// <summary>
     /// Current playback position in seconds.
     /// </summary>
-    public Sync<float> Position { get; private set; }
+    public readonly Sync<float> Position = new();
 
     /// <summary>
     /// Whether the animation is currently playing.
     /// </summary>
-    public Sync<bool> Playing { get; private set; }
+    public readonly Sync<bool> Playing = new();
 
-    public override void OnAwake()
+    public override void OnInit()
     {
-        base.OnAwake();
-        Loop = new Sync<bool>(this, true);
-        Speed = new Sync<float>(this, 1.0f);
-        Position = new Sync<float>(this, 0.0f);
-        Playing = new Sync<bool>(this, false);
+        base.OnInit();
+        Loop.Value  = true;
+        Speed.Value = 1.0f;
+        // Position = 0.0f (C# default, skip)
+        // Playing = false (C# default, skip)
     }
 }

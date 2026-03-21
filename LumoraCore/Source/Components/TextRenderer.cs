@@ -1,7 +1,6 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-using System;
 using Lumora.Core.Math;
 using Lumora.Core.Logging;
 
@@ -16,40 +15,42 @@ public class TextRenderer : ImplementableComponent
     /// <summary>
     /// The text to render.
     /// </summary>
-    public Sync<string> Text { get; private set; }
+    public readonly Sync<string> Text = new();
 
     /// <summary>
     /// Size of the text.
     /// </summary>
-    public Sync<float> Size { get; private set; }
+    public readonly Sync<float> Size = new();
 
     /// <summary>
     /// Color of the text.
     /// </summary>
-    public Sync<float4> Color { get; private set; }
+    public readonly Sync<float4> Color = new();
 
     /// <summary>
     /// Font to use for rendering.
     /// </summary>
-    public Sync<string> Font { get; private set; }
+    public readonly Sync<string> Font = new();
 
     /// <summary>
     /// Whether the text should always face the camera.
     /// </summary>
-    public Sync<bool> Billboard { get; private set; }
+    public readonly Sync<bool> Billboard = new();
+
+    public override void OnInit()
+    {
+        base.OnInit();
+
+        Text.Value      = "Hello World";
+        Size.Value      = 1.0f;
+        Color.Value     = new float4(1, 1, 1, 1); // White
+        Font.Value      = "Arial";
+        Billboard.Value = true;
+    }
 
     public override void OnAwake()
     {
         base.OnAwake();
-
-        Text = new Sync<string>(this, "Hello World");
-        Size = new Sync<float>(this, 1.0f);
-        Color = new Sync<float4>(this, new float4(1, 1, 1, 1)); // White
-        Font = new Sync<string>(this, "Arial");
-        Billboard = new Sync<bool>(this, true);
-
-        // Initialize sync members created in OnAwake
-        InitializeNewSyncMembers();
 
         Logger.Log($"TextRenderer: Awake on slot '{Slot.SlotName.Value}'");
     }
@@ -79,7 +80,7 @@ public class TextRenderer : ImplementableComponent
     /// </summary>
     public void SetSize(float size)
     {
-        Size.Value = System.Math.Max(0.01f, size);
+        Size.Value = size < 0.01f ? 0.01f : size;
     }
 
     /// <summary>

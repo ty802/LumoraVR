@@ -2,7 +2,6 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core.Input;
-using Lumora.Core.Math;
 using Lumora.Core.Logging;
 
 namespace Lumora.Core.Components;
@@ -17,22 +16,22 @@ public class BodyNodePositioner : Component
     /// <summary>
     /// Target user to get tracking from.
     /// </summary>
-    public SyncRef<User> User { get; private set; }
+    public readonly SyncRef<User> User = new();
 
     /// <summary>
     /// Which body node to track.
     /// </summary>
-    public Sync<BodyNode> Node { get; private set; }
+    public readonly Sync<BodyNode> Node = new();
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        Node.Value = BodyNode.Head;
+    }
 
     public override void OnAwake()
     {
         base.OnAwake();
-
-        User = new SyncRef<User>(this, null);
-        Node = new Sync<BodyNode>(this, BodyNode.Head);
-
-        // Initialize sync members created in OnAwake
-        InitializeNewSyncMembers();
 
         Logger.Log($"BodyNodePositioner: Awake on slot '{Slot.SlotName.Value}'");
     }

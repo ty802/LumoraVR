@@ -24,17 +24,17 @@ public class ComponentAttacher : GodotUIPanel
     /// <summary>
     /// The slot to attach components to.
     /// </summary>
-    public SyncRef<Slot> TargetSlot { get; private set; } = null!;
+    public readonly SyncRef<Slot> TargetSlot;
 
     /// <summary>
     /// Current search filter text.
     /// </summary>
-    public Sync<string> SearchFilter { get; private set; } = null!;
+    public readonly Sync<string> SearchFilter;
 
     /// <summary>
     /// Currently selected category filter.
     /// </summary>
-    public Sync<string> CategoryFilter { get; private set; } = null!;
+    public readonly Sync<string> CategoryFilter;
 
     /// <summary>
     /// Event fired when a component is attached.
@@ -57,14 +57,6 @@ public class ComponentAttacher : GodotUIPanel
     public override void OnAwake()
     {
         base.OnAwake();
-        InitializeAttacherSyncMembers();
-    }
-
-    private void InitializeAttacherSyncMembers()
-    {
-        TargetSlot = new SyncRef<Slot>(this);
-        SearchFilter = new Sync<string>(this, "");
-        CategoryFilter = new Sync<string>(this, "");
 
         SearchFilter.OnChanged += _ =>
         {
@@ -77,6 +69,13 @@ public class ComponentAttacher : GodotUIPanel
             OnCategoryChanged?.Invoke(CategoryFilter.Value ?? "");
             NotifyChanged();
         };
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        SearchFilter.Value = "";
+        CategoryFilter.Value = "";
     }
 
     /// <summary>

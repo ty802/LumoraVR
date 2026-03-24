@@ -21,17 +21,17 @@ public sealed class GodotImportDialogPanel : GodotUIPanel
     /// <summary>
     /// Source file path being imported.
     /// </summary>
-    public Sync<string> FilePath { get; private set; } = null!;
+    public readonly Sync<string> FilePath;
 
     /// <summary>
     /// Target slot for the import operation.
     /// </summary>
-    public SyncRef<Slot> TargetSlot { get; private set; } = null!;
+    public readonly SyncRef<Slot> TargetSlot;
 
     /// <summary>
     /// Whether closing/hiding the dialog should destroy the panel slot.
     /// </summary>
-    public Sync<bool> AutoDestroyOnClose { get; private set; } = null!;
+    public readonly Sync<bool> AutoDestroyOnClose;
 
     /// <summary>
     /// Local asset DB used for import persistence.
@@ -43,12 +43,15 @@ public sealed class GodotImportDialogPanel : GodotUIPanel
     {
         base.OnAwake();
 
-        FilePath = new Sync<string>(this, string.Empty);
-        TargetSlot = new SyncRef<Slot>(this);
-        AutoDestroyOnClose = new Sync<bool>(this, true);
-
         FilePath.OnChanged += _ => NotifyChanged();
         TargetSlot.OnChanged += _ => NotifyChanged();
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        FilePath.Value = string.Empty;
+        AutoDestroyOnClose.Value = true;
     }
 
     public override void OnAttach()

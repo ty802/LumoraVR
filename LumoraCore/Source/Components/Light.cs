@@ -16,80 +16,80 @@ public class Light : ImplementableComponent
     /// <summary>
     /// Type of light (Point, Directional, Spot)
     /// </summary>
-    public Sync<LightType> Type { get; private set; }
+    public readonly Sync<LightType> Type = new();
 
     /// <summary>
     /// Light color (RGB)
     /// </summary>
-    public Sync<color> LightColor { get; private set; }
+    public readonly Sync<color> LightColor = new();
 
     /// <summary>
     /// Light intensity (brightness multiplier)
     /// </summary>
-    public Sync<float> Intensity { get; private set; }
+    public readonly Sync<float> Intensity = new();
 
     /// <summary>
     /// Range of the light (for Point and Spot lights)
     /// </summary>
-    public Sync<float> Range { get; private set; }
+    public readonly Sync<float> Range = new();
 
     /// <summary>
     /// Spot angle in degrees (for Spot lights)
     /// </summary>
-    public Sync<float> SpotAngle { get; private set; }
+    public readonly Sync<float> SpotAngle = new();
 
     /// <summary>
     /// Shadow casting mode
     /// </summary>
-    public Sync<ShadowType> Shadows { get; private set; }
+    public readonly Sync<ShadowType> Shadows = new();
 
     /// <summary>
     /// Shadow strength (0-1)
     /// </summary>
-    public Sync<float> ShadowStrength { get; private set; }
+    public readonly Sync<float> ShadowStrength = new();
 
     /// <summary>
     /// Shadow bias to prevent acne
     /// </summary>
-    public Sync<float> ShadowBias { get; private set; }
+    public readonly Sync<float> ShadowBias = new();
 
     /// <summary>
     /// Shadow normal bias
     /// </summary>
-    public Sync<float> ShadowNormalBias { get; private set; }
+    public readonly Sync<float> ShadowNormalBias = new();
 
     /// <summary>
     /// Shadow near plane distance
     /// </summary>
-    public Sync<float> ShadowNearPlane { get; private set; }
+    public readonly Sync<float> ShadowNearPlane = new();
 
     /// <summary>
     /// Cookie texture for light masking (TODO: Replace with platform-agnostic texture type)
     /// </summary>
-    public Sync<object> Cookie { get; private set; }
+    public readonly Sync<object> Cookie = new();
 
     /// <summary>
     /// Cookie size for directional lights
     /// </summary>
-    public Sync<float> CookieSize { get; private set; }
+    public readonly Sync<float> CookieSize = new();
 
-    public override void OnAwake()
+    public override void OnInit()
     {
-        base.OnAwake();
+        base.OnInit();
 
-        // Initialize sync members
-        Type = new Sync<LightType>(this, LightType.Point);
-        LightColor = new Sync<color>(this, new color(1f, 1f, 1f, 1f));
-        Intensity = new Sync<float>(this, 1f);
-        Range = new Sync<float>(this, 10f);
-        SpotAngle = new Sync<float>(this, 30f);
-        Shadows = new Sync<ShadowType>(this, ShadowType.Hard);
-        ShadowStrength = new Sync<float>(this, 1f);
-        ShadowBias = new Sync<float>(this, 0.05f);
-        ShadowNormalBias = new Sync<float>(this, 0.4f);
-        ShadowNearPlane = new Sync<float>(this, 0.2f);
-        Cookie = new Sync<object>(this, default);
-        CookieSize = new Sync<float>(this, 10f);
+        // LightType.Point is value 0 — C# default, but set for clarity
+        // Type.Value = LightType.Point; // skip, it's enum 0
+        LightColor.Value       = new color(1f, 1f, 1f, 1f);
+        Intensity.Value        = 1f;
+        Range.Value            = 10f;
+        SpotAngle.Value        = 30f;
+        Shadows.Value          = ShadowType.Hard;
+        ShadowStrength.Value   = 1f;
+        ShadowBias.Value       = 0.05f;
+        ShadowNormalBias.Value = 0.4f;
+        ShadowNearPlane.Value  = 0.2f;
+        // Cookie = default (C# default null, skip)
+        CookieSize.Value       = 10f;
     }
 
     public override void OnStart()

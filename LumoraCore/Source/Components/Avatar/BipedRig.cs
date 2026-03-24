@@ -19,7 +19,7 @@ public class BipedRig : Component
     /// <summary>
     /// Optional forward axis hint for the rig.
     /// </summary>
-    public Sync<float3?> ForwardAxis { get; private set; }
+    public readonly Sync<float3?> ForwardAxis = new();
 
     /// <summary>
     /// Dictionary mapping BodyNode types to their corresponding Slot references.
@@ -93,9 +93,10 @@ public class BipedRig : Component
     {
         base.OnAwake();
 
-        ForwardAxis = new Sync<float3?>(this, null);
         Bones = new SyncRefDictionary<BodyNode, Slot>(this);
     }
+
+    // ForwardAxis default is null (C# default for float3?, skip OnInit)
 
     /// <summary>
     /// Try to get a bone slot for a body node type.

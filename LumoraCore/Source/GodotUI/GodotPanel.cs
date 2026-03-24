@@ -14,35 +14,39 @@ public class GodotPanel : GodotUIElement
     /// <summary>
     /// Background color of the panel.
     /// </summary>
-    public Sync<color> BackgroundColor { get; private set; } = null!;
+    public readonly Sync<color> BackgroundColor;
 
     /// <summary>
     /// Corner radius for rounded corners.
     /// </summary>
-    public Sync<float> CornerRadius { get; private set; } = null!;
+    public readonly Sync<float> CornerRadius;
 
     /// <summary>
     /// Border width.
     /// </summary>
-    public Sync<float> BorderWidth { get; private set; } = null!;
+    public readonly Sync<float> BorderWidth;
 
     /// <summary>
     /// Border color.
     /// </summary>
-    public Sync<color> BorderColor { get; private set; } = null!;
+    public readonly Sync<color> BorderColor;
 
-    protected override void InitializeSyncMembers()
+    public override void OnAwake()
     {
-        base.InitializeSyncMembers();
-
-        BackgroundColor = new Sync<color>(this, new color(0.15f, 0.15f, 0.2f, 1f));
-        CornerRadius = new Sync<float>(this, 4f);
-        BorderWidth = new Sync<float>(this, 0f);
-        BorderColor = new Sync<color>(this, new color(0.3f, 0.3f, 0.4f, 1f));
+        base.OnAwake();
 
         BackgroundColor.OnChanged += _ => NotifyChanged();
         CornerRadius.OnChanged += _ => NotifyChanged();
         BorderWidth.OnChanged += _ => NotifyChanged();
         BorderColor.OnChanged += _ => NotifyChanged();
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        BackgroundColor.Value = new color(0.15f, 0.15f, 0.2f, 1f);
+        CornerRadius.Value = 4f;
+        BorderWidth.Value = 0f;
+        BorderColor.Value = new color(0.3f, 0.3f, 0.4f, 1f);
     }
 }

@@ -30,12 +30,11 @@ public class ContextMenuItemSource : Component
     /// <summary>
     /// Priority for ordering. Higher priority sources run first (their items appear first).
     /// </summary>
-    public Sync<int> Priority { get; private set; }
+    public readonly Sync<int> Priority;
 
     public override void OnAwake()
     {
         base.OnAwake();
-        Priority = new Sync<int>(this, 0);
     }
 
     /// <summary>

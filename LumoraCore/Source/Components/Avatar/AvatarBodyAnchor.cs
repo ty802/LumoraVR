@@ -17,10 +17,10 @@ namespace Lumora.Core.Components.Avatar;
 public class AvatarBodyAnchor : Component, IAvatarObject, IAvatarObjectComponent
 {
     /// <summary>Which body node this slot represents in the avatar.</summary>
-    public Sync<BodyNode> Node { get; private set; }
+    public readonly Sync<BodyNode> Node = new();
 
     /// <summary>If true, destroys this slot when dequipped from an AvatarObjectSlot.</summary>
-    public Sync<bool> DestroyOnDequip { get; private set; }
+    public readonly Sync<bool> DestroyOnDequip = new();
 
     // IAvatarObject state
     private AvatarObjectSlot _equippingSlot;
@@ -34,11 +34,12 @@ public class AvatarBodyAnchor : Component, IAvatarObject, IAvatarObjectComponent
     public IEnumerable<BodyNode> MutuallyExclusiveNodes => System.Array.Empty<BodyNode>();
     public User ExplicitlyAllowedUser { get; private set; }
 
-    public override void OnAwake()
+    public override void OnInit()
     {
-        base.OnAwake();
-        Node = new Sync<BodyNode>(this, BodyNode.NONE);
-        DestroyOnDequip = new Sync<bool>(this, false);
+        base.OnInit();
+        // BodyNode.NONE may not be enum value 0 — set explicitly
+        Node.Value = BodyNode.NONE;
+        // DestroyOnDequip = false (C# default, skip)
     }
 
     public void Equip(AvatarObjectSlot slot)

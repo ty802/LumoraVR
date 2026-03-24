@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 ﻿using Godot;
+using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
 using System;
@@ -14,6 +15,8 @@ namespace Lumora.Godot.Hooks;
 /// </summary>
 public class LightHook : ComponentHook<Light>
 {
+    public static IHook<Light> Constructor() => new LightHook();
+
     private Node3D _lightContainer;
     private Light3D _light;
 

@@ -14,15 +14,15 @@ namespace Lumora.Core.Components.Avatar;
 public class AvatarRoot : Component
 {
     /// <summary>The user who owns this avatar.</summary>
-    public SyncRef<UserRoot> Owner { get; private set; }
+    public readonly SyncRef<UserRoot> Owner = new();
 
     /// <summary>Whether this avatar is currently active/visible.</summary>
-    public Sync<bool> IsActive { get; private set; }
+    public readonly Sync<bool> IsActive = new();
 
-    public override void OnAwake()
+    public override void OnInit()
     {
-        base.OnAwake();
-        Owner = new SyncRef<UserRoot>(this, null);
-        IsActive = new Sync<bool>(this, true);
+        base.OnInit();
+        // IsActive defaults to true (not C# default false)
+        IsActive.Value = true;
     }
 }

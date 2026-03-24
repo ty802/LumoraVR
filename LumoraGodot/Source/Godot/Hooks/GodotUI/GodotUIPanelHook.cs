@@ -1,11 +1,12 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+﻿using System;
+using System.Collections.Generic;
+using Godot;
 using Lumora.Core;
 using Lumora.Core.GodotUI;
 using Lumora.Core.Math;
-using System.Collections.Generic;
 using Lumora.Godot.UI;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
@@ -37,6 +38,18 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
 
     // Static registry for hooks (so element hooks can find their nodes)
     private static readonly Dictionary<GodotUIPanel, GodotUIPanelHook> _panelHooks = new();
+
+    // Secondary registry for non-GodotUIPanelHook panels (e.g. SceneInspectorHook)
+    private static readonly Dictionary<GodotUIPanel, Func<string, Control?>> _customNodeProviders = new();
+
+    public static void RegisterNodeProvider(GodotUIPanel panel, Func<string, Control?> provider)
+        => _customNodeProviders[panel] = provider;
+
+    public static void UnregisterNodeProvider(GodotUIPanel panel)
+        => _customNodeProviders.Remove(panel);
+
+    public static Control? FindNodeInCustomProvider(GodotUIPanel panel, string path)
+        => _customNodeProviders.TryGetValue(panel, out var p) ? p(path) : null;
 
     public static IHook<GodotUIPanel> Constructor()
     {

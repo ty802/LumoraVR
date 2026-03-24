@@ -21,13 +21,12 @@ public sealed class GodotMaterialInspector : GodotUIPanel
     /// <summary>
     /// Material to inspect.
     /// </summary>
-    public SyncRef<CustomShaderMaterial> Material { get; private set; } = null!;
+    public readonly SyncRef<CustomShaderMaterial> Material;
 
     public override void OnAwake()
     {
         base.OnAwake();
 
-        Material = new SyncRef<CustomShaderMaterial>(this);
         Material.OnTargetChange += _ => NotifyChanged();
     }
 

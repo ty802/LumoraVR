@@ -21,29 +21,27 @@ namespace Lumora.Core.Components;
 public class InspectorTip : Component
 {
     /// <summary>Which controller this tip lives on.</summary>
-    public Sync<Chirality> HandSide { get; private set; } = null!;
+    public readonly Sync<Chirality> HandSide;
 
     /// <summary>
     /// Distance in front of the controller where the inspector panel will be spawned.
     /// </summary>
-    public Sync<float> SpawnDistance { get; private set; } = null!;
+    public readonly Sync<float> SpawnDistance;
 
     /// <summary>
     /// If set, opening an inspector will reuse (move) this existing panel instead of
     /// creating a new one. Useful for keeping only one inspector open at a time.
     /// </summary>
-    public SyncRef<SceneInspector> PersistentInspector { get; private set; } = null!;
+    public readonly SyncRef<SceneInspector> PersistentInspector;
 
     private bool _prevTrigger;
     private bool _prevGrip;
 
-    public override void OnAwake()
+    public override void OnInit()
     {
-        base.OnAwake();
-
-        HandSide            = new Sync<Chirality>(this, Chirality.Right);
-        SpawnDistance       = new Sync<float>(this, 0.6f);
-        PersistentInspector = new SyncRef<SceneInspector>(this);
+        base.OnInit();
+        HandSide.Value = Chirality.Right;
+        SpawnDistance.Value = 0.6f;
     }
 
     public override void OnUpdate(float delta)

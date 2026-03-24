@@ -42,6 +42,7 @@ public static class GodotHookRegistry
         World.HookTypes.Register<RespawnPlane, Lumora.Godot.Hooks.RespawnPlaneHook>();
 
         // Specialized hooks
+        World.HookTypes.Register<Lumora.Core.Components.Light, Lumora.Godot.Hooks.LightHook>();
         World.HookTypes.Register<Lumora.Core.Components.Avatar.LocalViewOverride, Lumora.Godot.Hooks.LocalViewOverrideHook>();
         World.HookTypes.Register<SkeletonBuilder, Lumora.Godot.Hooks.SkeletonHook>();
         World.HookTypes.Register<SkinnedMeshRenderer, Lumora.Godot.Hooks.SkinnedMeshHook>();
@@ -51,6 +52,11 @@ public static class GodotHookRegistry
 
         // Godot UI hooks
         World.HookTypes.Register<GodotUIPanel, Lumora.Godot.Hooks.GodotUI.GodotUIPanelHook>();
+        World.HookTypes.Register<GodotUIElement, Lumora.Godot.Hooks.GodotUI.GodotBaseElementHook>();
+        World.HookTypes.Register<GodotLabel, Lumora.Godot.Hooks.GodotUI.GodotLabelHook>();
+        World.HookTypes.Register<GodotButton, Lumora.Godot.Hooks.GodotUI.GodotButtonHook>();
+        World.HookTypes.Register<GodotPanel, Lumora.Godot.Hooks.GodotUI.GodotPanelHook>();
+        World.HookTypes.Register<GodotScrollContainer, Lumora.Godot.Hooks.GodotUI.GodotScrollContainerHook>();
         World.HookTypes.Register<DashboardPanel, Lumora.Godot.Hooks.GodotUI.DashboardPanelHook>();
         World.HookTypes.Register<Lumora.Core.Components.UI.ContextMenuSystem, Lumora.Godot.Hooks.GodotUI.ContextMenuHook>();
         World.HookTypes.Register<GodotMaterialInspector, Lumora.Godot.Hooks.GodotUI.GodotMaterialInspectorHook>();

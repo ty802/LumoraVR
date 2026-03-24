@@ -15,10 +15,10 @@ namespace Lumora.Godot.Hooks;
 /// Platform physics hook for Godot.
 /// Also syncs XROrigin3D position with UserRoot for proper VR tracking.
 /// </summary>
-public class CharacterControllerHook : ComponentHook<CharacterController>
+public class CharacterControllerHook : ComponentHook<CharacterController>, ICharacterControllerHook
 {
     private CharacterBody3D _characterBody;
-    private Dictionary<object, CollisionShape3D> _collisionShapes = new Dictionary<object, CollisionShape3D>();
+    private Dictionary<Collider, CollisionShape3D> _collisionShapes = new Dictionary<Collider, CollisionShape3D>();
     private Vector3 _velocity;
     private Vector3 _moveDirection;
     private bool _jumpRequested;
@@ -359,12 +359,10 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
         }
     }
 
-    public void AddColliderShape(object collider)
+    public void AddColliderShape(Collider collider)
     {
         if (_collisionShapes.ContainsKey(collider))
-        {
             return;
-        }
 
         if (_characterBody == null)
         {
@@ -374,43 +372,32 @@ public class CharacterControllerHook : ComponentHook<CharacterController>
 
         CollisionShape3D collisionShape = new CollisionShape3D();
         collisionShape.Name = $"Shape_{collider.GetType().Name}";
-        if (collider is BoxCollider boxCollider)
+
+        switch (collider)
         {
-            BoxShape3D boxShape = new BoxShape3D();
-            float3 size = boxCollider.Size.Value;
-            boxShape.Size = new Vector3(size.x, size.y, size.z);
-            collisionShape.Shape = boxShape;
-        }
-        else if (collider is CapsuleCollider capsuleCollider)
-        {
-            CapsuleShape3D capsuleShape = new CapsuleShape3D();
-            capsuleShape.Height = capsuleCollider.Height.Value;
-            capsuleShape.Radius = capsuleCollider.Radius.Value;
-            collisionShape.Shape = capsuleShape;
-        }
-        else if (collider is SphereCollider sphereCollider)
-        {
-            SphereShape3D sphereShape = new SphereShape3D();
-            sphereShape.Radius = sphereCollider.Radius.Value;
-            collisionShape.Shape = sphereShape;
-        }
-        else
-        {
-            LumoraLogger.Warn($"CharacterControllerHook: Unknown collider type {collider.GetType().Name}");
+            case BoxCollider box:
+                float3 size = box.Size.Value;
+                collisionShape.Shape = new BoxShape3D { Size = new Vector3(size.x, size.y, size.z) };
+                break;
+            case CapsuleCollider capsule:
+                collisionShape.Shape = new CapsuleShape3D { Height = capsule.Height.Value, Radius = capsule.Radius.Value };
+                break;
+            case SphereCollider sphere:
+                collisionShape.Shape = new SphereShape3D { Radius = sphere.Radius.Value };
+                break;
+            default:
+                LumoraLogger.Warn($"CharacterControllerHook: Unknown collider type {collider.GetType().Name}");
+                break;
         }
 
-        // Apply collider offset so shapes line up with the avatar body
-        if (collider is Collider baseCollider)
-        {
-            var offset = baseCollider.Offset.Value;
-            collisionShape.Position = new Vector3(offset.x, offset.y, offset.z);
-        }
+        var offset = collider.Offset.Value;
+        collisionShape.Position = new Vector3(offset.x, offset.y, offset.z);
 
         _characterBody.AddChild(collisionShape);
         _collisionShapes[collider] = collisionShape;
     }
 
-    public void RemoveColliderShape(object collider)
+    public void RemoveColliderShape(Collider collider)
     {
         if (_collisionShapes.TryGetValue(collider, out CollisionShape3D shape))
         {

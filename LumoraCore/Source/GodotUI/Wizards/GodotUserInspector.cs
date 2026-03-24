@@ -22,7 +22,7 @@ public class GodotUserInspector : GodotUIPanel, IWorldEventReceiver
     /// <summary>
     /// Currently selected user to display details for.
     /// </summary>
-    public SyncRef<User> SelectedUser { get; private set; } = null!;
+    public readonly SyncRef<User> SelectedUser;
 
     /// <summary>
     /// Event fired when user selection changes.
@@ -38,7 +38,6 @@ public class GodotUserInspector : GodotUIPanel, IWorldEventReceiver
     {
         base.OnAwake();
 
-        SelectedUser = new SyncRef<User>(this);
         SelectedUser.OnChanged += _ =>
         {
             OnUserSelectionChanged?.Invoke(SelectedUser.Target);

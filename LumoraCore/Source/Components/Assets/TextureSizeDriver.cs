@@ -14,25 +14,22 @@ namespace Lumora.Core.Components.Assets;
 [ComponentCategory("Assets")]
 public sealed class TextureSizeDriver : Component
 {
-    public SyncRef<ImageProvider> Source { get; private set; }
-    public SyncRef<QuadMesh> Target { get; private set; }
-    public SyncRef<BoxCollider> ColliderTarget { get; private set; }
-    public Sync<float> MaxSide { get; private set; }
-    public Sync<float> ColliderDepth { get; private set; }
+    public readonly SyncRef<ImageProvider> Source = new();
+    public readonly SyncRef<QuadMesh> Target = new();
+    public readonly SyncRef<BoxCollider> ColliderTarget = new();
+    public readonly Sync<float> MaxSide = new();
+    public readonly Sync<float> ColliderDepth = new();
 
     private int _lastWidth;
     private int _lastHeight;
     private float _lastMaxSide;
     private bool _hasApplied;
 
-    public override void OnAwake()
+    public override void OnInit()
     {
-        base.OnAwake();
-        Source = new SyncRef<ImageProvider>(this, null);
-        Target = new SyncRef<QuadMesh>(this, null);
-        ColliderTarget = new SyncRef<BoxCollider>(this, null);
-        MaxSide = new Sync<float>(this, 1f);
-        ColliderDepth = new Sync<float>(this, 0.02f);
+        base.OnInit();
+        MaxSide.Value       = 1f;
+        ColliderDepth.Value = 0.02f;
     }
 
     public override void OnUpdate(float delta)

@@ -80,6 +80,7 @@ public class AssetRef<A> : SyncRef<IAssetProvider<A>>, IAssetRef where A : Asset
     protected override void RunObjectAvailable()
     {
         Target?.ReferenceSet(this);
+        SyncElementChanged(); // Target just resolved — re-trigger ApplyChanges so material gets applied
         base.RunObjectAvailable();
     }
 

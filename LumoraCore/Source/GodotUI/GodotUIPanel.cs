@@ -18,27 +18,27 @@ public class GodotUIPanel : ImplementableComponent
     /// <summary>
     /// Path to the Godot scene file to load (e.g. "res://Scenes/UI/MyPanel.tscn").
     /// </summary>
-    public Sync<string> ScenePath { get; private set; } = null!;
+    public readonly Sync<string> ScenePath;
 
     /// <summary>
     /// Size of the UI canvas in pixels.
     /// </summary>
-    public Sync<float2> Size { get; private set; } = null!;
+    public readonly Sync<float2> Size;
 
     /// <summary>
     /// Pixels per unit for world scale.
     /// </summary>
-    public Sync<float> PixelsPerUnit { get; private set; } = null!;
+    public readonly Sync<float> PixelsPerUnit;
 
     /// <summary>
     /// How often to refresh live data (in seconds). 0 = every frame.
     /// </summary>
-    public Sync<float> RefreshRate { get; private set; } = null!;
+    public readonly Sync<float> RefreshRate;
 
     /// <summary>
     /// Resolution multiplier for crisp text (default 2x).
     /// </summary>
-    public Sync<int> ResolutionScale { get; private set; } = null!;
+    public readonly Sync<int> ResolutionScale;
 
     private float _refreshTimer = 0f;
 
@@ -85,21 +85,21 @@ public class GodotUIPanel : ImplementableComponent
     public override void OnAwake()
     {
         base.OnAwake();
-        InitializeSyncMembers();
-    }
-
-    private void InitializeSyncMembers()
-    {
-        ScenePath = new Sync<string>(this, DefaultScenePath);
-        Size = new Sync<float2>(this, DefaultSize);
-        PixelsPerUnit = new Sync<float>(this, DefaultPixelsPerUnit);
-        RefreshRate = new Sync<float>(this, DefaultRefreshRate);
-        ResolutionScale = new Sync<int>(this, DefaultResolutionScale);
 
         ScenePath.OnChanged += _ => NotifyChanged();
         Size.OnChanged += _ => NotifyChanged();
         PixelsPerUnit.OnChanged += _ => NotifyChanged();
         ResolutionScale.OnChanged += _ => NotifyChanged();
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        ScenePath.Value = DefaultScenePath;
+        Size.Value = DefaultSize;
+        PixelsPerUnit.Value = DefaultPixelsPerUnit;
+        RefreshRate.Value = DefaultRefreshRate;
+        ResolutionScale.Value = DefaultResolutionScale;
     }
 
     public override void OnUpdate(float delta)

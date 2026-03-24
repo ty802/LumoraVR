@@ -220,6 +220,7 @@ public class SyncRef<T> : SyncField<RefID>, ISyncRef, IWorldElementReceiver
         T prevTarget = _target;
         _target = null;
 
+        base.ValueChanged();
         RunReferenceChanged();
 
         if (Value.IsNull)

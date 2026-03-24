@@ -35,31 +35,31 @@ public sealed class ControllerRayBeam : Component
     // ===== SYNC FIELDS =====
 
     /// <summary>Maximum cast distance in meters.</summary>
-    public Sync<float> MaxDistance { get; private set; }
+    public readonly Sync<float> MaxDistance;
 
     /// <summary>Visual radius of the beam cylinder in meters.</summary>
-    public Sync<float> BeamRadius { get; private set; }
+    public readonly Sync<float> BeamRadius;
 
     /// <summary>Forward offset from controller origin where the beam starts, in meters.</summary>
-    public Sync<float> BeamStartOffset { get; private set; }
+    public readonly Sync<float> BeamStartOffset;
 
     /// <summary>
     /// Which controller to poll for trigger state.
     /// Must match the hand side of the TrackedDevicePositioner on this slot.
     /// </summary>
-    public Sync<Chirality> ControllerSide { get; private set; }
+    public readonly Sync<Chirality> ControllerSide;
 
     /// <summary>Beam color when no RayTarget is within range.</summary>
-    public Sync<colorHDR> IdleColor { get; private set; }
+    public readonly Sync<colorHDR> IdleColor;
 
     /// <summary>Beam color when a RayTarget is hovered.</summary>
-    public Sync<colorHDR> HoverColor { get; private set; }
+    public readonly Sync<colorHDR> HoverColor;
 
     /// <summary>
     /// Distance tolerance for hover switching in meters.
     /// If the current target remains within (nearest hit + tolerance), hover stays on it.
     /// </summary>
-    public Sync<float> HoverSwitchTolerance { get; private set; }
+    public readonly Sync<float> HoverSwitchTolerance;
 
     // ===== PRIVATE STATE =====
 
@@ -89,13 +89,18 @@ public sealed class ControllerRayBeam : Component
     public override void OnAwake()
     {
         base.OnAwake();
-        MaxDistance = new Sync<float>(this, 8f);
-        BeamRadius = new Sync<float>(this, 0.003f);
-        BeamStartOffset = new Sync<float>(this, 0.020f);
-        ControllerSide = new Sync<Chirality>(this, Chirality.Right);
-        IdleColor = new Sync<colorHDR>(this, new colorHDR(0.30f, 0.85f, 1.00f, 0.55f));
-        HoverColor = new Sync<colorHDR>(this, new colorHDR(1.00f, 1.00f, 1.00f, 0.85f));
-        HoverSwitchTolerance = new Sync<float>(this, 0.05f);
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        MaxDistance.Value = 8f;
+        BeamRadius.Value = 0.003f;
+        BeamStartOffset.Value = 0.020f;
+        ControllerSide.Value = Chirality.Right;
+        IdleColor.Value = new colorHDR(0.30f, 0.85f, 1.00f, 0.55f);
+        HoverColor.Value = new colorHDR(1.00f, 1.00f, 1.00f, 0.85f);
+        HoverSwitchTolerance.Value = 0.05f;
     }
 
     public override void OnStart()

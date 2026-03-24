@@ -513,7 +513,7 @@ public partial class WorldBrowser : Control
         contentHBox.AddChild(thumbnailContainer);
 
         var thumbnailPanel = new PanelContainer();
-        thumbnailPanel.CustomMinimumSize = new Vector2(400, 300);
+        thumbnailPanel.CustomMinimumSize = new Vector2(400, 220);
         thumbnailContainer.AddChild(thumbnailPanel);
 
         _detailThumbnail = new TextureRect();
@@ -586,16 +586,11 @@ public partial class WorldBrowser : Control
         _detailDescription.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         descScroll.AddChild(_detailDescription);
 
-        // Spacer
-        var spacer = new Control();
-        spacer.SizeFlagsVertical = SizeFlags.ExpandFill;
-        detailsVBox.AddChild(spacer);
-
-        // Action buttons
+        // Action buttons (inside detailsVBox so they stay within the content area)
         var buttonHBox = new HBoxContainer();
         buttonHBox.Alignment = BoxContainer.AlignmentMode.End;
         buttonHBox.AddThemeConstantOverride("separation", 20);
-        mainVBox.AddChild(buttonHBox);
+        detailsVBox.AddChild(buttonHBox);
 
         _detailCloseButton = new Button();
         _detailCloseButton.Text = "Close";

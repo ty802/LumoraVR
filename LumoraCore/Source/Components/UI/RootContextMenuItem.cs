@@ -29,14 +29,14 @@ public class RootContextMenuItem : Component
 {
     // ── Synced settings ────────────────────────────────────────────────────────
 
-    public Sync<string> Label     { get; private set; }
-    public Sync<string> IconPath  { get; private set; }
-    public Sync<bool>   IsEnabled { get; private set; }
-    public Sync<bool>   IsToggle  { get; private set; }
-    public Sync<bool>   IsToggled { get; private set; }
+    public readonly Sync<string> Label     = new();
+    public readonly Sync<string> IconPath  = new();
+    public readonly Sync<bool>   IsEnabled = new();
+    public readonly Sync<bool>   IsToggle  = new();
+    public readonly Sync<bool>   IsToggled = new();
 
     /// <summary>Sort priority. Items with higher Priority appear earlier in the menu.</summary>
-    public Sync<int>    Priority  { get; private set; }
+    public readonly Sync<int>    Priority  = new();
 
     // ── Runtime-only ──────────────────────────────────────────────────────────
 
@@ -51,15 +51,16 @@ public class RootContextMenuItem : Component
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
-    public override void OnAwake()
+    public override void OnInit()
     {
-        base.OnAwake();
-        Label     = new Sync<string>(this, "");
-        IconPath  = new Sync<string>(this, "");
-        IsEnabled = new Sync<bool>(this, true);
-        IsToggle  = new Sync<bool>(this, false);
-        IsToggled = new Sync<bool>(this, false);
-        Priority  = new Sync<int>(this, 0);
+        base.OnInit();
+        // Label = "" (string null/empty treated same way, but match original)
+        Label.Value     = "";
+        IconPath.Value  = "";
+        IsEnabled.Value = true;
+        // IsToggle  = false (C# default, skip)
+        // IsToggled = false (C# default, skip)
+        // Priority  = 0 (C# default, skip)
     }
 
     // ── Conversion ────────────────────────────────────────────────────────────

@@ -1,8 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Math;
@@ -33,7 +32,7 @@ public class SkinnedMeshRenderer : ImplementableComponent
     /// <summary>
     /// Reference to the SkeletonBuilder (for skeleton binding).
     /// </summary>
-    public SyncRef<SkeletonBuilder> Skeleton { get; private set; }
+    public readonly SyncRef<SkeletonBuilder> Skeleton;
 
     // ===== MESH DATA =====
 
@@ -73,7 +72,7 @@ public class SkinnedMeshRenderer : ImplementableComponent
     /// <summary>
     /// Shadow casting mode.
     /// </summary>
-    public Sync<ShadowCastMode> ShadowCastMode { get; private set; }
+    public readonly Sync<ShadowCastMode> ShadowCastMode = new();
 
     /// <summary>
     /// The material to use for rendering.
@@ -83,12 +82,12 @@ public class SkinnedMeshRenderer : ImplementableComponent
     /// <summary>
     /// Whether to update the mesh when bones move.
     /// </summary>
-    public Sync<bool> UpdateWhenOffscreen { get; private set; }
+    public readonly Sync<bool> UpdateWhenOffscreen = new();
 
     /// <summary>
     /// Quality of skinning (number of bones per vertex).
     /// </summary>
-    public Sync<SkinQuality> Quality { get; private set; }
+    public readonly Sync<SkinQuality> Quality = new();
 
     // ===== CHANGE FLAGS =====
 
@@ -120,8 +119,6 @@ public class SkinnedMeshRenderer : ImplementableComponent
         // Initialize bone references
         Bones = new SyncRefList<Slot>(this);
         BoneNames = new SyncFieldList<string>(this);
-        Skeleton = new SyncRef<SkeletonBuilder>(this, null);
-
         // Initialize mesh data
         Vertices = new SyncFieldList<float3>(this);
         Normals = new SyncFieldList<float3>(this);
@@ -131,13 +128,7 @@ public class SkinnedMeshRenderer : ImplementableComponent
         BoneWeights = new SyncFieldList<float4>(this);
 
         // Initialize settings
-        ShadowCastMode = new Sync<ShadowCastMode>(this, Components.ShadowCastMode.On);
         Material = new AssetRef<MaterialAsset>(this);
-        UpdateWhenOffscreen = new Sync<bool>(this, true);
-        Quality = new Sync<SkinQuality>(this, Components.SkinQuality.FourBones);
-
-        // Initialize sync members created in OnAwake
-        InitializeNewSyncMembers();
 
         // Subscribe to changes
         Skeleton.OnChanged += (field) => { SkeletonChanged = true; RunApplyChanges(); };
@@ -150,6 +141,14 @@ public class SkinnedMeshRenderer : ImplementableComponent
         BoneWeights.OnChanged += (list) => { MeshDataChanged = true; RunApplyChanges(); };
 
         LumoraLogger.Log($"SkinnedMeshRenderer: Awake on slot '{Slot.SlotName.Value}'");
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        ShadowCastMode.Value    = Components.ShadowCastMode.On;
+        UpdateWhenOffscreen.Value = true;
+        Quality.Value           = SkinQuality.FourBones;
     }
 
     public override void OnUpdate(float delta)
@@ -257,7 +256,7 @@ public class SkinnedMeshRenderer : ImplementableComponent
     /// <summary>
     /// Find a bone slot by name in the hierarchy (recursive search).
     /// </summary>
-    private Slot FindBoneInHierarchy(Slot root, string boneName)
+    private static Slot FindBoneInHierarchy(Slot root, string boneName)
     {
         if (root == null || string.IsNullOrEmpty(boneName))
             return null;

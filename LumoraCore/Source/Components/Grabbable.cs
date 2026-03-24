@@ -12,17 +12,17 @@ public sealed class Grabbable : Component
     /// <summary>
     /// Whether this object can currently be grabbed.
     /// </summary>
-    public Sync<bool> AllowGrab { get; private set; }
+    public readonly Sync<bool> AllowGrab = new();
 
     /// <summary>
     /// Whether rotation should follow the grabber.
     /// </summary>
-    public Sync<bool> FollowRotation { get; private set; }
+    public readonly Sync<bool> FollowRotation = new();
 
-    public override void OnAwake()
+    public override void OnInit()
     {
-        base.OnAwake();
-        AllowGrab = new Sync<bool>(this, true);
-        FollowRotation = new Sync<bool>(this, true);
+        base.OnInit();
+        AllowGrab.Value      = true;
+        FollowRotation.Value = true;
     }
 }

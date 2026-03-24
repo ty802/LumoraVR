@@ -153,6 +153,11 @@ public class LANDiscovery : IDisposable
 
     private void ProcessAnnouncement(byte[] data, IPEndPoint source)
     {
+        // Ignore non-GZip packets — other apps may share the
+        // same UDP discovery port and broadcast in their own binary format (magic bytes 0x52 0x65 0x73).
+        if (data.Length < 2 || data[0] != 0x1F || data[1] != 0x8B)
+            return;
+
         try
         {
             byte[] decompressed = DecompressData(data);
@@ -201,7 +206,10 @@ public class LANDiscovery : IDisposable
         }
         catch (Exception ex)
         {
-            LumoraLogger.Warn($"Failed to process announcement: {ex.Message}");
+            var preview = data.Length > 8
+                ? BitConverter.ToString(data, 0, 8) + "..."
+                : BitConverter.ToString(data);
+            LumoraLogger.Warn($"Failed to process announcement from {source}: {ex.Message} (first bytes={preview}, len={data.Length})");
         }
     }
 

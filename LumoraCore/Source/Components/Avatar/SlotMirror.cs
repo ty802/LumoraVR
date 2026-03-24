@@ -14,17 +14,12 @@ namespace Lumora.Core.Components.Avatar;
 public class SlotMirror : Component
 {
     /// <summary>The slot whose transform will be driven to match this slot.</summary>
-    public SyncRef<Slot> DriveTarget { get; private set; }
+    public readonly SyncRef<Slot> DriveTarget = new();
 
     /// <summary>Also mirror scale (default false).</summary>
-    public Sync<bool> MirrorScale { get; private set; }
+    public readonly Sync<bool> MirrorScale = new();
 
-    public override void OnAwake()
-    {
-        base.OnAwake();
-        DriveTarget = new SyncRef<Slot>(this, null);
-        MirrorScale = new Sync<bool>(this, false);
-    }
+    // MirrorScale default is false (C# default, no OnInit needed)
 
     public override void OnUpdate(float delta)
     {

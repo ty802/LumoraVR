@@ -21,7 +21,25 @@ public static class AssetHookRegistry
         where TAsset : IAsset
         where THook : IAssetHook
     {
-        _assetToHook[typeof(TAsset)] = typeof(THook);
+        Register(typeof(TAsset), typeof(THook));
+    }
+
+    /// <summary>
+    /// Register a hook type for an asset type.
+    /// </summary>
+    public static void Register(Type assetType, Type hookType)
+    {
+        if (!typeof(IAsset).IsAssignableFrom(assetType))
+        {
+            throw new ArgumentException($"Asset type {assetType} must implement IAsset");
+        }
+
+        if (!typeof(IAssetHook).IsAssignableFrom(hookType))
+        {
+            throw new ArgumentException($"Hook type {hookType} must implement IAssetHook");
+        }
+
+        _assetToHook[assetType] = hookType;
     }
 
     /// <summary>

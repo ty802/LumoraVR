@@ -200,16 +200,16 @@ public static class ModelImporter
 public class ModelData : ImplementableComponent
 {
     /// <summary>Original source file path.</summary>
-    public Sync<string> SourcePath { get; private set; }
+    public readonly Sync<string> SourcePath;
 
     /// <summary>Local URI after import.</summary>
-    public Sync<string> LocalUri { get; private set; }
+    public readonly Sync<string> LocalUri;
 
     /// <summary>Whether this model is an avatar.</summary>
-    public Sync<bool> IsAvatar { get; private set; }
+    public readonly Sync<bool> IsAvatar;
 
     /// <summary>Whether the model has been loaded by the hook.</summary>
-    public Sync<bool> IsLoaded { get; private set; }
+    public readonly Sync<bool> IsLoaded;
 
     /// <summary>Import settings (not synced, set at import time).</summary>
     public ModelImportSettings ImportSettings { get; set; }
@@ -217,12 +217,15 @@ public class ModelData : ImplementableComponent
     public override void OnAwake()
     {
         base.OnAwake();
-        SourcePath = new Sync<string>(this, "");
-        LocalUri = new Sync<string>(this, "");
-        IsAvatar = new Sync<bool>(this, false);
-        IsLoaded = new Sync<bool>(this, false);
 
         // Subscribe to SourcePath changes to trigger hook update
         SourcePath.OnChanged += _ => RunApplyChanges();
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        SourcePath.Value = "";
+        LocalUri.Value   = "";
     }
 }

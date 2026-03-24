@@ -175,6 +175,13 @@ public class Engine : IDisposable
     public LocalDB? LocalDB { get; set; }
 
     /// <summary>
+    /// The asset transferer for the currently active session.
+    /// Set automatically when a session is created or joined; cleared on dispose.
+    /// AssetFetcher uses this to pull remote local:// assets from peers.
+    /// </summary>
+    public Networking.Session.SessionAssetTransferer? ActiveSessionTransferer { get; set; }
+
+    /// <summary>
     /// Root directory for lumres:// and res:// URI resolution.
     /// </summary>
     public string ResourceRoot { get; set; }

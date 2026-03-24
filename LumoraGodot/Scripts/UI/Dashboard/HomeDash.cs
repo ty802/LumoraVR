@@ -47,6 +47,7 @@ public partial class HomeDash : PanelContainer
     private Panel? _mainContentPanel;
     private MarginContainer? _contentMargin;
     private VBoxContainer? _homeContent;
+    private Control? _header;
 
     // Loaded content pages
     private readonly Dictionary<string, Control> _contentPages = new();
@@ -78,6 +79,7 @@ public partial class HomeDash : PanelContainer
         _btnExit = GetNodeOrNull<Button>("VBox/StatusBar/StatusMargin/StatusContent/NavBarPanel/NavBarMargin/NavBar/BtnExit");
 
         // Get content containers
+        _header = GetNodeOrNull<Control>("VBox/Header");
         _mainContentPanel = GetNodeOrNull<Panel>("VBox/ContentArea/MainContent");
         _contentMargin = GetNodeOrNull<MarginContainer>("VBox/ContentArea/MainContent/ContentMargin");
         _homeContent = GetNodeOrNull<VBoxContainer>("VBox/ContentArea/MainContent/ContentMargin/ContentVBox");
@@ -115,6 +117,7 @@ public partial class HomeDash : PanelContainer
 
         // Set initial logged out state
         SetLoggedOutState();
+        UpdateHeaderVisibility();
 
     }
 
@@ -162,8 +165,15 @@ public partial class HomeDash : PanelContainer
 
         _currentTab = tab;
         UpdateActiveButton();
+        UpdateHeaderVisibility();
         SwitchContent(tab);
 
+    }
+
+    private void UpdateHeaderVisibility()
+    {
+        if (_header != null)
+            _header.Visible = _currentTab == "Home";
     }
 
     private void SwitchContent(string tab)
@@ -582,4 +592,3 @@ public partial class HomeDash : PanelContainer
         }
     }
 }
-

@@ -3,6 +3,7 @@
 
 using Godot;
 using System;
+using System.Collections.Generic;
 using Lumora.CDN;
 
 namespace Lumora.Godot.UI;
@@ -15,12 +16,14 @@ public partial class Settings : Control
     // Tab buttons
     private Button? _tabProfile;
     private Button? _tabSecurity;
-    private Button? _tabPreferences;
+    private Button? _tabAudio;
+    private Button? _tabVideo;
 
     // Tab content
     private Control? _profileTab;
     private Control? _securityTab;
-    private Control? _preferencesTab;
+    private Control? _audioTab;
+    private Control? _videoTab;
 
     // Profile tab elements
     private Label? _avatarLabel;
@@ -43,6 +46,11 @@ public partial class Settings : Control
     private OptionButton? _outputDeviceOption;
     private OptionButton? _inputDeviceOption;
     private OptionButton? _qualityOption;
+    private OptionButton? _renderScaleOption;
+    private OptionButton? _antiAliasingOption;
+    private OptionButton? _shadowQualityOption;
+    private CheckButton? _aoToggle;
+    private CheckButton? _ssrToggle;
     private CheckButton? _fpsLimitToggle;
     private HSlider? _fpsLimitSlider;
     private Label? _fpsLimitValue;
@@ -56,6 +64,8 @@ public partial class Settings : Control
     private float _inputMeterLevel;
     private AudioStreamPlayer? _inputMonitorPlayer;
     private AudioEffectCapture? _inputCaptureEffect;
+    private readonly Dictionary<ulong, bool> _shadowRestoreStates = new();
+    private bool _sceneShadowsForcedOff;
 
     private const string InputMonitorBusName = "LumoraInputMonitor";
     private const float MeterAttackSpeed = 4.0f;
@@ -71,17 +81,24 @@ public partial class Settings : Control
 
     private string _currentTab = "Profile";
 
+    private const string TAB_PROFILE = "Profile";
+    private const string TAB_SECURITY = "Security";
+    private const string TAB_AUDIO = "Audio";
+    private const string TAB_VIDEO = "Video";
+
     public override void _Ready()
     {
         // Get tab buttons
         _tabProfile = GetNodeOrNull<Button>("VBox/Header/TabProfile");
         _tabSecurity = GetNodeOrNull<Button>("VBox/Header/TabSecurity");
-        _tabPreferences = GetNodeOrNull<Button>("VBox/Header/TabPreferences");
+        _tabAudio = GetNodeOrNull<Button>("VBox/Header/TabAudio");
+        _tabVideo = GetNodeOrNull<Button>("VBox/Header/TabVideo");
 
         // Get tab content containers
         _profileTab = GetNodeOrNull<Control>("VBox/ContentPanel/Margin/TabContainer/ProfileTab");
         _securityTab = GetNodeOrNull<Control>("VBox/ContentPanel/Margin/TabContainer/SecurityTab");
-        _preferencesTab = GetNodeOrNull<Control>("VBox/ContentPanel/Margin/TabContainer/PreferencesTab");
+        _audioTab = GetNodeOrNull<Control>("VBox/ContentPanel/Margin/TabContainer/AudioTab");
+        _videoTab = GetNodeOrNull<Control>("VBox/ContentPanel/Margin/TabContainer/VideoTab");
 
         // Get profile elements
         _avatarLabel = GetNodeOrNull<Label>("VBox/ContentPanel/Margin/TabContainer/ProfileTab/ProfileContent/AvatarSection/AvatarMargin/AvatarHBox/AvatarPreview/AvatarLabel");
@@ -96,17 +113,25 @@ public partial class Settings : Control
         _twoFactorStatus = GetNodeOrNull<Label>("VBox/ContentPanel/Margin/TabContainer/SecurityTab/SecurityContent/TwoFactorSection/TwoFactorMargin/TwoFactorHBox/TwoFactorInfo/TwoFactorStatus");
         _btnEnable2FA = GetNodeOrNull<Button>("VBox/ContentPanel/Margin/TabContainer/SecurityTab/SecurityContent/TwoFactorSection/TwoFactorMargin/TwoFactorHBox/BtnEnable2FA");
 
-        // Get preferences elements
-        _masterVolumeSlider = GetNodeOrNull<HSlider>("VBox/ContentPanel/Margin/TabContainer/PreferencesTab/PreferencesContent/AudioSection/AudioMargin/AudioVBox/MasterVolumeHBox/MasterSlider");
-        _musicVolumeSlider = GetNodeOrNull<HSlider>("VBox/ContentPanel/Margin/TabContainer/PreferencesTab/PreferencesContent/AudioSection/AudioMargin/AudioVBox/MusicVolumeHBox/MusicSlider");
-        _masterVolumeValue = GetNodeOrNull<Label>("VBox/ContentPanel/Margin/TabContainer/PreferencesTab/PreferencesContent/AudioSection/AudioMargin/AudioVBox/MasterVolumeHBox/MasterValue");
-        _musicVolumeValue = GetNodeOrNull<Label>("VBox/ContentPanel/Margin/TabContainer/PreferencesTab/PreferencesContent/AudioSection/AudioMargin/AudioVBox/MusicVolumeHBox/MusicValue");
-        _qualityOption = GetNodeOrNull<OptionButton>("VBox/ContentPanel/Margin/TabContainer/PreferencesTab/PreferencesContent/GraphicsSection/GraphicsMargin/GraphicsVBox/QualityHBox/QualityOption");
-        _fpsLimitToggle = GetNodeOrNull<CheckButton>("VBox/ContentPanel/Margin/TabContainer/PreferencesTab/PreferencesContent/GraphicsSection/GraphicsMargin/GraphicsVBox/FPSLimitHBox/FPSLimitToggle");
-        _fpsLimitSlider = GetNodeOrNull<HSlider>("VBox/ContentPanel/Margin/TabContainer/PreferencesTab/PreferencesContent/GraphicsSection/GraphicsMargin/GraphicsVBox/FPSLimitHBox/FPSLimitSlider");
-        _fpsLimitValue = GetNodeOrNull<Label>("VBox/ContentPanel/Margin/TabContainer/PreferencesTab/PreferencesContent/GraphicsSection/GraphicsMargin/GraphicsVBox/FPSLimitHBox/FPSLimitValue");
-        _vsyncToggle = GetNodeOrNull<CheckButton>("VBox/ContentPanel/Margin/TabContainer/PreferencesTab/PreferencesContent/GraphicsSection/GraphicsMargin/GraphicsVBox/VSyncHBox/VSyncToggle");
-        _fullscreenToggle = GetNodeOrNull<CheckButton>("VBox/ContentPanel/Margin/TabContainer/PreferencesTab/PreferencesContent/GraphicsSection/GraphicsMargin/GraphicsVBox/FullscreenHBox/FullscreenToggle");
+        // Get audio elements
+        _masterVolumeSlider = GetNodeOrNull<HSlider>("VBox/ContentPanel/Margin/TabContainer/AudioTab/AudioContent/AudioSection/AudioMargin/AudioVBox/MasterVolumeHBox/MasterSlider");
+        _musicVolumeSlider = GetNodeOrNull<HSlider>("VBox/ContentPanel/Margin/TabContainer/AudioTab/AudioContent/AudioSection/AudioMargin/AudioVBox/MusicVolumeHBox/MusicSlider");
+        _masterVolumeValue = GetNodeOrNull<Label>("VBox/ContentPanel/Margin/TabContainer/AudioTab/AudioContent/AudioSection/AudioMargin/AudioVBox/MasterVolumeHBox/MasterValue");
+        _musicVolumeValue = GetNodeOrNull<Label>("VBox/ContentPanel/Margin/TabContainer/AudioTab/AudioContent/AudioSection/AudioMargin/AudioVBox/MusicVolumeHBox/MusicValue");
+
+        // Get video elements
+        const string gfx = "VBox/ContentPanel/Margin/TabContainer/VideoTab/VideoContent/GraphicsSection/GraphicsMargin/GraphicsVBox";
+        _qualityOption = GetNodeOrNull<OptionButton>($"{gfx}/QualityHBox/QualityOption");
+        _renderScaleOption = GetNodeOrNull<OptionButton>($"{gfx}/RenderScaleHBox/RenderScaleOption");
+        _antiAliasingOption = GetNodeOrNull<OptionButton>($"{gfx}/AntiAliasingHBox/AntiAliasingOption");
+        _shadowQualityOption = GetNodeOrNull<OptionButton>($"{gfx}/ShadowQualityHBox/ShadowQualityOption");
+        _aoToggle = GetNodeOrNull<CheckButton>($"{gfx}/AOHBox/AOToggle");
+        _ssrToggle = GetNodeOrNull<CheckButton>($"{gfx}/SSRHBox/SSRToggle");
+        _fpsLimitToggle = GetNodeOrNull<CheckButton>($"{gfx}/FPSLimitHBox/FPSLimitToggle");
+        _fpsLimitSlider = GetNodeOrNull<HSlider>($"{gfx}/FPSLimitHBox/FPSLimitSlider");
+        _fpsLimitValue = GetNodeOrNull<Label>($"{gfx}/FPSLimitHBox/FPSLimitValue");
+        _vsyncToggle = GetNodeOrNull<CheckButton>($"{gfx}/VSyncHBox/VSyncToggle");
+        _fullscreenToggle = GetNodeOrNull<CheckButton>($"{gfx}/FullscreenHBox/FullscreenToggle");
 
         BuildAudioDeviceRows();
 
@@ -130,9 +155,10 @@ public partial class Settings : Control
     private void ConnectSignals()
     {
         // Tab buttons
-        _tabProfile?.Connect("pressed", Callable.From(() => SwitchTab("Profile")));
-        _tabSecurity?.Connect("pressed", Callable.From(() => SwitchTab("Security")));
-        _tabPreferences?.Connect("pressed", Callable.From(() => SwitchTab("Preferences")));
+        _tabProfile?.Connect("pressed", Callable.From(() => SwitchTab(TAB_PROFILE)));
+        _tabSecurity?.Connect("pressed", Callable.From(() => SwitchTab(TAB_SECURITY)));
+        _tabAudio?.Connect("pressed", Callable.From(() => SwitchTab(TAB_AUDIO)));
+        _tabVideo?.Connect("pressed", Callable.From(() => SwitchTab(TAB_VIDEO)));
 
         // Profile actions
         _btnChangeAvatar?.Connect("pressed", Callable.From(OnChangeAvatarPressed));
@@ -148,6 +174,11 @@ public partial class Settings : Control
         _outputDeviceOption?.Connect("item_selected", Callable.From<long>(OnOutputDeviceSelected));
         _inputDeviceOption?.Connect("item_selected", Callable.From<long>(OnInputDeviceSelected));
         _qualityOption?.Connect("item_selected", Callable.From<long>(OnQualitySelected));
+        _renderScaleOption?.Connect("item_selected", Callable.From<long>(OnRenderScaleSelected));
+        _antiAliasingOption?.Connect("item_selected", Callable.From<long>(OnAntiAliasingSelected));
+        _shadowQualityOption?.Connect("item_selected", Callable.From<long>(OnShadowQualitySelected));
+        _aoToggle?.Connect("toggled", Callable.From<bool>(OnAOToggled));
+        _ssrToggle?.Connect("toggled", Callable.From<bool>(OnSSRToggled));
         _fpsLimitToggle?.Connect("toggled", Callable.From<bool>(OnFPSLimitToggled));
         _fpsLimitSlider?.Connect("value_changed", Callable.From<double>(OnFPSLimitChanged));
         _vsyncToggle?.Connect("toggled", Callable.From<bool>(OnVSyncToggled));
@@ -159,19 +190,20 @@ public partial class Settings : Control
         if (_currentTab == tab) return;
         _currentTab = tab;
 
-        // Update visibility
-        if (_profileTab != null) _profileTab.Visible = tab == "Profile";
-        if (_securityTab != null) _securityTab.Visible = tab == "Security";
-        if (_preferencesTab != null) _preferencesTab.Visible = tab == "Preferences";
+        if (_profileTab != null) _profileTab.Visible = tab == TAB_PROFILE;
+        if (_securityTab != null) _securityTab.Visible = tab == TAB_SECURITY;
+        if (_audioTab != null) _audioTab.Visible = tab == TAB_AUDIO;
+        if (_videoTab != null) _videoTab.Visible = tab == TAB_VIDEO;
 
         UpdateTabVisuals();
     }
 
     private void UpdateTabVisuals()
     {
-        UpdateTabButton(_tabProfile, _currentTab == "Profile");
-        UpdateTabButton(_tabSecurity, _currentTab == "Security");
-        UpdateTabButton(_tabPreferences, _currentTab == "Preferences");
+        UpdateTabButton(_tabProfile, _currentTab == TAB_PROFILE);
+        UpdateTabButton(_tabSecurity, _currentTab == TAB_SECURITY);
+        UpdateTabButton(_tabAudio, _currentTab == TAB_AUDIO);
+        UpdateTabButton(_tabVideo, _currentTab == TAB_VIDEO);
     }
 
     private void UpdateTabButton(Button? button, bool isActive)
@@ -277,7 +309,6 @@ public partial class Settings : Control
         if (_masterVolumeValue != null)
             _masterVolumeValue.Text = $"{(int)value}%";
 
-        // TODO: Apply volume setting
         AudioServer.SetBusVolumeDb(AudioServer.GetBusIndex("Master"), LinearToDb((float)value / 100f));
     }
 
@@ -286,7 +317,6 @@ public partial class Settings : Control
         if (_musicVolumeValue != null)
             _musicVolumeValue.Text = $"{(int)value}%";
 
-        // TODO: Apply music volume setting
         var musicBus = AudioServer.GetBusIndex("Music");
         if (musicBus >= 0)
             AudioServer.SetBusVolumeDb(musicBus, LinearToDb((float)value / 100f));
@@ -294,14 +324,215 @@ public partial class Settings : Control
 
     private void OnQualitySelected(long index)
     {
-        string quality = index switch
+        // Preset applies render scale, AA, and shadow quality together, then syncs dropdowns
+        switch (index)
         {
-            0 => "Low",
-            1 => "Medium",
-            2 => "High",
-            _ => "Medium"
+            case 0: // Low
+                ApplyRenderScale(0.5f);
+                ApplyAntiAliasing(0);
+                ApplyShadowQuality(0);
+                ApplyAO(false);
+                ApplySSR(false);
+                SyncVideoControls(1, 0, 0, false, false);
+                break;
+            case 1: // Medium
+                ApplyRenderScale(0.75f);
+                ApplyAntiAliasing(1); // FXAA
+                ApplyShadowQuality(1);
+                ApplyAO(false);
+                ApplySSR(false);
+                SyncVideoControls(2, 1, 1, false, false);
+                break;
+            case 2: // High
+                ApplyRenderScale(1.0f);
+                ApplyAntiAliasing(2); // MSAA 2x
+                ApplyShadowQuality(2);
+                ApplyAO(true);
+                ApplySSR(false);
+                SyncVideoControls(2, 2, 2, true, false);
+                break;
+            case 3: // Ultra
+                ApplyRenderScale(1.0f);
+                ApplyAntiAliasing(3); // MSAA 4x
+                ApplyShadowQuality(3);
+                ApplyAO(true);
+                ApplySSR(true);
+                SyncVideoControls(2, 3, 3, true, true);
+                break;
+        }
+    }
+
+    private void SyncVideoControls(int renderScale, int aa, int shadows, bool ao, bool ssr)
+    {
+        if (_renderScaleOption != null) _renderScaleOption.Selected = renderScale;
+        if (_antiAliasingOption != null) _antiAliasingOption.Selected = aa;
+        if (_shadowQualityOption != null) _shadowQualityOption.Selected = shadows;
+        if (_aoToggle != null) _aoToggle.ButtonPressed = ao;
+        if (_ssrToggle != null) _ssrToggle.ButtonPressed = ssr;
+    }
+
+    private void OnRenderScaleSelected(long index)
+    {
+        float[] scales = { 0.5f, 0.67f, 1.0f, 1.25f, 1.5f };
+        if (index >= 0 && index < scales.Length)
+            ApplyRenderScale(scales[index]);
+    }
+
+    private void OnAntiAliasingSelected(long index) => ApplyAntiAliasing((int)index);
+
+    private void OnShadowQualitySelected(long index) => ApplyShadowQuality((int)index);
+
+    private void OnAOToggled(bool enabled) => ApplyAO(enabled);
+
+    private void OnSSRToggled(bool enabled) => ApplySSR(enabled);
+
+    private void ApplyRenderScale(float scale)
+    {
+        var viewport = GetViewport();
+        if (viewport == null) return;
+        viewport.Scaling3DMode = Viewport.Scaling3DModeEnum.Bilinear;
+        viewport.Scaling3DScale = scale;
+    }
+
+    private void ApplyAntiAliasing(int index)
+    {
+        var viewport = GetViewport();
+        if (viewport == null) return;
+        switch (index)
+        {
+            case 0: // Off
+                viewport.ScreenSpaceAA = Viewport.ScreenSpaceAAEnum.Disabled;
+                viewport.Msaa3D = Viewport.Msaa.Disabled;
+                viewport.UseTaa = false;
+                break;
+            case 1: // FXAA
+                viewport.ScreenSpaceAA = Viewport.ScreenSpaceAAEnum.Fxaa;
+                viewport.Msaa3D = Viewport.Msaa.Disabled;
+                viewport.UseTaa = false;
+                break;
+            case 2: // MSAA 2x
+                viewport.ScreenSpaceAA = Viewport.ScreenSpaceAAEnum.Disabled;
+                viewport.Msaa3D = Viewport.Msaa.Msaa2X;
+                viewport.UseTaa = false;
+                break;
+            case 3: // MSAA 4x
+                viewport.ScreenSpaceAA = Viewport.ScreenSpaceAAEnum.Disabled;
+                viewport.Msaa3D = Viewport.Msaa.Msaa4X;
+                viewport.UseTaa = false;
+                break;
+            case 4: // TAA
+                viewport.ScreenSpaceAA = Viewport.ScreenSpaceAAEnum.Disabled;
+                viewport.Msaa3D = Viewport.Msaa.Disabled;
+                viewport.UseTaa = true;
+                break;
+        }
+    }
+
+    private void ApplyShadowQuality(int index)
+    {
+        int atlasSize = index switch
+        {
+            0 => 1024,  // Keep a valid atlas size; "Off" is handled by disabling light shadow casting.
+            1 => 1024,  // Low
+            2 => 2048,  // Medium
+            3 => 4096,  // High
+            _ => 2048
         };
-        // TODO: Apply graphics quality setting
+
+        // This API changes directional shadow atlas resolution and depth format, not shadow enablement.
+        RenderingServer.DirectionalShadowAtlasSetSize(atlasSize, false);
+
+        if (index <= 0)
+        {
+            DisableSceneShadows();
+            ConfigurePositionalShadowAtlas(0);
+            return;
+        }
+
+        RestoreSceneShadows();
+        ConfigurePositionalShadowAtlas(atlasSize);
+    }
+
+    private void ApplyShadowQualityLegacy(int index)
+    {
+        // Shadow atlas size controls shadow resolution globally
+        int atlasSize = index switch
+        {
+            0 => 0,     // Off — disable shadow atlas
+            1 => 1024,  // Low
+            2 => 2048,  // Medium
+            3 => 4096,  // High
+            _ => 2048
+        };
+        RenderingServer.DirectionalShadowAtlasSetSize(atlasSize, index > 0);
+    }
+
+    private void ApplyAO(bool enabled)
+    {
+        var env = GetWorldEnvironment();
+        if (env?.Environment != null)
+            env.Environment.SsaoEnabled = enabled;
+    }
+
+    private void ApplySSR(bool enabled)
+    {
+        var env = GetWorldEnvironment();
+        if (env?.Environment != null)
+            env.Environment.SsrEnabled = enabled;
+    }
+
+    private WorldEnvironment? GetWorldEnvironment()
+    {
+        return GetTree().Root.FindChild("WorldEnvironment", true, false) as WorldEnvironment;
+    }
+
+    private void ConfigurePositionalShadowAtlas(int atlasSize)
+    {
+        var viewport = GetViewport();
+        if (viewport == null) return;
+
+        RenderingServer.ViewportSetPositionalShadowAtlasSize(viewport.GetViewportRid(), atlasSize, false);
+    }
+
+    private void DisableSceneShadows()
+    {
+        foreach (var light in EnumerateLights(GetTree().Root))
+        {
+            ulong instanceId = light.GetInstanceId();
+            if (!_shadowRestoreStates.ContainsKey(instanceId))
+                _shadowRestoreStates[instanceId] = light.ShadowEnabled;
+            light.ShadowEnabled = false;
+        }
+
+        _sceneShadowsForcedOff = true;
+    }
+
+    private void RestoreSceneShadows()
+    {
+        if (!_sceneShadowsForcedOff)
+            return;
+
+        foreach (var light in EnumerateLights(GetTree().Root))
+        {
+            ulong instanceId = light.GetInstanceId();
+            if (_shadowRestoreStates.TryGetValue(instanceId, out bool wasEnabled))
+                light.ShadowEnabled = wasEnabled;
+        }
+
+        _shadowRestoreStates.Clear();
+        _sceneShadowsForcedOff = false;
+    }
+
+    private static IEnumerable<Light3D> EnumerateLights(Node node)
+    {
+        if (node is Light3D light)
+            yield return light;
+
+        foreach (Node child in node.GetChildren())
+        {
+            foreach (var nestedLight in EnumerateLights(child))
+                yield return nestedLight;
+        }
     }
 
     private void OnFPSLimitToggled(bool enabled)
@@ -354,14 +585,8 @@ public partial class Settings : Control
     private void BuildAudioDeviceRows()
     {
         var audioVBox = GetNodeOrNull<VBoxContainer>(
-            "VBox/ContentPanel/Margin/TabContainer/PreferencesTab/PreferencesContent/AudioSection/AudioMargin/AudioVBox");
+            "VBox/ContentPanel/Margin/TabContainer/AudioTab/AudioContent/AudioSection/AudioMargin/AudioVBox");
         if (audioVBox == null) return;
-
-        // Expand the AudioSection panel to fit the extra rows
-        var audioSection = GetNodeOrNull<Panel>(
-            "VBox/ContentPanel/Margin/TabContainer/PreferencesTab/PreferencesContent/AudioSection");
-        if (audioSection != null)
-            audioSection.CustomMinimumSize = new Vector2(0, 300);
 
         _outputDeviceOption = BuildDeviceRow(audioVBox, "Output Device",
             AudioServer.GetOutputDeviceList(), AudioServer.OutputDevice, out _outputActivityBar);

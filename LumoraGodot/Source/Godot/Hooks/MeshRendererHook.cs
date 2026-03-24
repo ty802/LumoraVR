@@ -19,9 +19,8 @@ public class MeshRendererHook : MeshRendererHookBase<MeshRenderer, Node3D>
 
     protected override void AssignMesh(Node3D renderer, Mesh mesh)
     {
-        // This method is not used since UseMeshInstance = true
-        // The base class handles mesh assignment via MeshInstance3D
-        throw new System.NotImplementedException("AssignMesh should not be called when UseMeshInstance is true");
+        // Not reached: UseMeshInstance=true means the base class owns mesh assignment via MeshInstance3D.
+        LumoraLogger.Warn("MeshRendererHook.AssignMesh: unexpected call — base class should handle mesh assignment when UseMeshInstance is true.");
     }
 
     protected override void OnAttachRenderer()

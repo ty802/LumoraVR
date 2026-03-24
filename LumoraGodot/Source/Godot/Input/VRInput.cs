@@ -2,7 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 ﻿using System;
-using Lumora.Core.Logging;
+using Lumora.Core.Input;
 using Godot;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
@@ -91,7 +91,7 @@ public partial class VRInput : Node3D, IInputProvider
     public Vector2 GetMovementInputAxis => _leftHand.GetVector2("primary") * new Vector2(1, -1);
     public bool GetJumpInput => !InputManager.MovementLocked && ((bool)_leftHand.Get("ax_button") == true);
     public bool GetSprintInput => !InputManager.MovementLocked && ((_leftHand.GetVector2("primary") * new Vector2(1, -1)).LengthSquared() >= 0.5f) && ((_rightHand.GetVector2("primary") * new Vector2(1, -1)).LengthSquared() >= 0.5f);
-    public float GetHeight => 1.8f; //TODO
+    public float GetHeight => Lumora.Core.Engine.Current?.InputInterface?.UserHeight ?? InputInterface.DEFAULT_USER_HEIGHT;
     public Vector3 GetLimbPosition(IInputProvider.InputLimb limb) => _origin.Transform.TranslatedLocal(limb switch
     {
         IInputProvider.InputLimb.Head => _head.Position,

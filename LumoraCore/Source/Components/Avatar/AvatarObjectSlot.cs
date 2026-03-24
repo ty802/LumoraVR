@@ -25,27 +25,27 @@ public class AvatarObjectSlot : Component
     /// <summary>
     /// The body node this slot corresponds to.
     /// </summary>
-    public Sync<BodyNode> Node { get; private set; }
+    public readonly Sync<BodyNode> Node = new();
 
     /// <summary>
     /// Whether this slot is currently tracking.
     /// </summary>
-    public Sync<bool> IsTracking { get; private set; }
+    public readonly Sync<bool> IsTracking = new();
 
     /// <summary>
     /// Whether this slot's device is active.
     /// </summary>
-    public Sync<bool> IsActive { get; private set; }
+    public readonly Sync<bool> IsActive = new();
 
     /// <summary>
     /// Whether to drive the active state of equipped objects.
     /// </summary>
-    public Sync<bool> DriveActive { get; private set; }
+    public readonly Sync<bool> DriveActive = new();
 
     /// <summary>
     /// Whether to drive the scale of equipped objects.
     /// </summary>
-    public Sync<bool> DriveScale { get; private set; }
+    public readonly Sync<bool> DriveScale = new();
 
     /// <summary>
     /// List of pose filters to apply to tracking data.
@@ -88,11 +88,19 @@ public class AvatarObjectSlot : Component
         base.OnAwake();
 
         Equipped = new LinkRef<IAvatarObject>(this);
-        Node = new Sync<BodyNode>(this, BodyNode.NONE);
-        IsTracking = new Sync<bool>(this, true);
-        IsActive = new Sync<bool>(this, true);
-        DriveActive = new Sync<bool>(this, false);
-        DriveScale = new Sync<bool>(this, false);
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        // BodyNode.NONE is not enum value 0 — set it explicitly
+        Node.Value = BodyNode.NONE;
+        // IsTracking defaults to true (not C# default false)
+        IsTracking.Value = true;
+        // IsActive defaults to true
+        IsActive.Value = true;
+        // DriveActive = false (C# default, skip)
+        // DriveScale = false (C# default, skip)
     }
 
     public override void OnStart()

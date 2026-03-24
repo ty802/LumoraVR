@@ -22,52 +22,52 @@ public class TrackedDevicePositioner : Component, IInputUpdateReceiver
     /// <summary>
     /// Device index in the input system.
     /// </summary>
-    public Sync<int> DeviceIndex { get; private set; }
+    public readonly Sync<int> DeviceIndex;
 
     /// <summary>
     /// The body node this positioner corresponds to.
     /// </summary>
-    public Sync<BodyNode> CorrespondingBodyNode { get; private set; }
+    public readonly Sync<BodyNode> CorrespondingBodyNode;
 
     /// <summary>
     /// Auto-assign body node from device (if set, overrides DeviceIndex).
     /// </summary>
-    public Sync<BodyNode?> AutoBodyNode { get; private set; }
+    public readonly Sync<BodyNode?> AutoBodyNode;
 
     /// <summary>
     /// Whether to always render the reference model.
     /// </summary>
-    public Sync<bool> AlwaysRenderModel { get; private set; }
+    public readonly Sync<bool> AlwaysRenderModel;
 
     /// <summary>
     /// Reference to the reference model slot (controller model, etc).
     /// </summary>
-    public SyncRef<Slot> ReferenceModel { get; private set; }
+    public readonly SyncRef<Slot> ReferenceModel;
 
     /// <summary>
     /// Root slot for body node positioning offset.
     /// </summary>
-    public SyncRef<Slot> BodyNodeRoot { get; private set; }
+    public readonly SyncRef<Slot> BodyNodeRoot;
 
     /// <summary>
     /// Reference to the AvatarObjectSlot created for this body node.
     /// </summary>
-    public SyncRef<AvatarObjectSlot> ObjectSlot { get; private set; }
+    public readonly SyncRef<AvatarObjectSlot> ObjectSlot;
 
     /// <summary>
     /// Whether this device is currently tracking.
     /// </summary>
-    public Sync<bool> IsTracking { get; private set; }
+    public readonly Sync<bool> IsTracking;
 
     /// <summary>
     /// Whether this device is currently active.
     /// </summary>
-    public Sync<bool> IsActive { get; private set; }
+    public readonly Sync<bool> IsActive;
 
     /// <summary>
     /// Whether to create an AvatarObjectSlot for equipping.
     /// </summary>
-    public Sync<bool> CreateAvatarObjectSlot { get; private set; }
+    public readonly Sync<bool> CreateAvatarObjectSlot;
 
     // Internal state
     private UserRoot _userRoot;
@@ -140,19 +140,15 @@ public class TrackedDevicePositioner : Component, IInputUpdateReceiver
     public override void OnAwake()
     {
         base.OnAwake();
-
-        DeviceIndex = new Sync<int>(this, -1);
-        CorrespondingBodyNode = new Sync<BodyNode>(this, BodyNode.NONE);
-        AutoBodyNode = new Sync<BodyNode?>(this, null);
-        AlwaysRenderModel = new Sync<bool>(this, false);
-        ReferenceModel = new SyncRef<Slot>(this, null);
-        BodyNodeRoot = new SyncRef<Slot>(this, null);
-        ObjectSlot = new SyncRef<AvatarObjectSlot>(this, null);
-        IsTracking = new Sync<bool>(this, false);
-        IsActive = new Sync<bool>(this, false);
-        CreateAvatarObjectSlot = new Sync<bool>(this, true);
-
         FindUserRoot();
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        DeviceIndex.Value = -1;
+        CorrespondingBodyNode.Value = BodyNode.NONE;
+        CreateAvatarObjectSlot.Value = true;
     }
 
     public override void OnStart()

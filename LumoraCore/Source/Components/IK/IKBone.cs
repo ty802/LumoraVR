@@ -14,29 +14,28 @@ public class IKBone : Component
     /// <summary>
     /// The slot this bone controls.
     /// </summary>
-    public SyncRef<Slot> TransformTarget { get; private set; }
+    public readonly SyncRef<Slot> TransformTarget = new();
 
     /// <summary>
     /// Bone radius for collision/visualization.
     /// </summary>
-    public Sync<float> Radius { get; private set; }
+    public readonly Sync<float> Radius = new();
 
     /// <summary>
     /// Bone length.
     /// </summary>
-    public Sync<float> Height { get; private set; }
+    public readonly Sync<float> Height = new();
 
     /// <summary>
     /// Whether this bone is fixed in place.
     /// </summary>
-    public Sync<bool> Pinned { get; private set; }
+    public readonly Sync<bool> Pinned = new();
 
-    public override void OnAwake()
+    public override void OnInit()
     {
-        base.OnAwake();
-        TransformTarget = new SyncRef<Slot>(this, null);
-        Radius = new Sync<float>(this, 0.01f);
-        Height = new Sync<float>(this, 0.1f);
-        Pinned = new Sync<bool>(this, false);
+        base.OnInit();
+        Radius.Value = 0.01f;
+        Height.Value = 0.1f;
+        // Pinned = false (C# default, skip)
     }
 }

@@ -24,32 +24,32 @@ public class SceneInspector : GodotUIPanel
     /// <summary>
     /// The root slot for the hierarchy view.
     /// </summary>
-    public SyncRef<Slot> Root { get; private set; } = null!;
+    public readonly SyncRef<Slot> Root;
 
     /// <summary>
     /// The currently selected slot for component view.
     /// </summary>
-    public SyncRef<Slot> ComponentView { get; private set; } = null!;
+    public readonly SyncRef<Slot> ComponentView;
 
     /// <summary>
     /// Reference to the linked gizmo for the selected slot.
     /// </summary>
-    public SyncRef<SlotGizmo> LinkedGizmo { get; private set; } = null!;
+    public readonly SyncRef<SlotGizmo> LinkedGizmo;
 
     /// <summary>
     /// Whether the hierarchy panel is expanded.
     /// </summary>
-    public Sync<bool> HierarchyExpanded { get; private set; } = null!;
+    public readonly Sync<bool> HierarchyExpanded;
 
     /// <summary>
     /// Whether to show inherited component properties.
     /// </summary>
-    public Sync<bool> ShowInherited { get; private set; } = null!;
+    public readonly Sync<bool> ShowInherited;
 
     /// <summary>
     /// Split ratio between hierarchy and component panels (0-1).
     /// </summary>
-    public Sync<float> SplitRatio { get; private set; } = null!;
+    public readonly Sync<float> SplitRatio;
 
     /// <summary>
     /// Event fired when root changes.
@@ -87,20 +87,17 @@ public class SceneInspector : GodotUIPanel
     public override void OnAwake()
     {
         base.OnAwake();
-        InitializeSceneInspectorSyncMembers();
-    }
-
-    private void InitializeSceneInspectorSyncMembers()
-    {
-        Root = new SyncRef<Slot>(this);
-        ComponentView = new SyncRef<Slot>(this);
-        LinkedGizmo = new SyncRef<SlotGizmo>(this);
-        HierarchyExpanded = new Sync<bool>(this, true);
-        ShowInherited = new Sync<bool>(this, false);
-        SplitRatio = new Sync<float>(this, 0.4f);
 
         Root.OnTargetChange += OnRootTargetChanged;
         ComponentView.OnTargetChange += OnComponentViewTargetChanged;
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        HierarchyExpanded.Value = true;
+        ShowInherited.Value = false;
+        SplitRatio.Value = 0.4f;
     }
 
     private void OnRootTargetChanged(SyncRef<Slot> syncRef)

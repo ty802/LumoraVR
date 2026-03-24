@@ -13,7 +13,6 @@ namespace Lumora.Godot.Hooks;
 /// </summary>
 public class CameraHook : ComponentHook<Camera>
 {
-    private Node3D _cameraContainer;
     private Camera3D _camera;
 
     public Camera3D GodotCamera => _camera;
@@ -22,13 +21,9 @@ public class CameraHook : ComponentHook<Camera>
     {
         base.Initialize();
 
-        _cameraContainer = new Node3D();
-        _cameraContainer.Name = "CameraContainer";
-        attachedNode.AddChild(_cameraContainer);
-
         _camera = new Camera3D();
         _camera.Name = "Camera";
-        _cameraContainer.AddChild(_camera);
+        attachedNode.AddChild(_camera);
 
         _camera.Environment = null;
         _camera.Attributes = null;
@@ -74,11 +69,10 @@ public class CameraHook : ComponentHook<Camera>
 
     public override void Destroy(bool destroyingWorld)
     {
-        if (!destroyingWorld && _cameraContainer != null && GodotObject.IsInstanceValid(_cameraContainer))
+        if (!destroyingWorld && _camera != null && GodotObject.IsInstanceValid(_camera))
         {
-            _cameraContainer.QueueFree();
+            _camera.QueueFree();
         }
-        _cameraContainer = null;
         _camera = null;
 
         base.Destroy(destroyingWorld);

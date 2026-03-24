@@ -37,7 +37,7 @@ public class ContextMenuSystem : ImplementableComponent<IHook>
     // ── State ──────────────────────────────────────────────────────────────────
 
     /// <summary>Whether the menu is currently open.</summary>
-    public Sync<bool> IsOpen { get; private set; }
+    public readonly Sync<bool> IsOpen;
 
     /// <summary>The page currently being displayed (null when closed).</summary>
     public ContextMenuPage? CurrentPage { get; private set; }
@@ -65,7 +65,6 @@ public class ContextMenuSystem : ImplementableComponent<IHook>
     public override void OnAwake()
     {
         base.OnAwake();
-        IsOpen = new Sync<bool>(this, false);
     }
 
     // ── Public API ─────────────────────────────────────────────────────────────

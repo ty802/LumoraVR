@@ -1,8 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Math;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -23,7 +22,7 @@ public class SkeletonBuilder : ImplementableComponent
     /// Root bone slot reference.
     /// All bones in the skeleton must be descendants of this slot.
     /// </summary>
-    public SyncRef<Slot> RootBone { get; private set; }
+    public readonly SyncRef<Slot> RootBone;
 
     /// <summary>
     /// List of bone names in skeleton order.
@@ -46,7 +45,7 @@ public class SkeletonBuilder : ImplementableComponent
     /// <summary>
     /// Whether the skeleton has been built and is ready to use.
     /// </summary>
-    public Sync<bool> IsBuilt { get; private set; }
+    public readonly Sync<bool> IsBuilt = new();
 
     // ===== CHANGE TRACKING =====
 
@@ -61,11 +60,11 @@ public class SkeletonBuilder : ImplementableComponent
     {
         base.OnAwake();
 
-        RootBone = new SyncRef<Slot>(this, null);
         BoneNames = new SyncFieldList<string>(this);
         BoneSlots = new SyncRefList<Slot>(this);
         RestPoseTransforms = new SyncFieldList<float4x4>(this);
-        IsBuilt = new Sync<bool>(this, false);
+
+        // IsBuilt = false (C# default, no OnInit needed)
 
         RootBone.OnChanged += (field) => BoneHierarchyChanged = true;
         BoneNames.OnChanged += (list) => BoneHierarchyChanged = true;

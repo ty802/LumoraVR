@@ -36,6 +36,7 @@ public class SphereMesh : ProceduralMesh
     // ===== Private State =====
 
     private PhosSphere? sphere;
+    private PhosTriangleSubmesh? _submesh;
     private float _radius;
     private int _segments;
     private int _rings;
@@ -91,12 +92,14 @@ public class SphereMesh : ProceduralMesh
             if (sphere != null)
             {
                 sphere.Remove();
+                if (_submesh != null)
+                    mesh.Submeshes.Remove(_submesh);
             }
 
             // Create submesh and sphere
-            var submesh = new PhosTriangleSubmesh(mesh);
-            mesh.Submeshes.Add(submesh);
-            sphere = new PhosSphere(submesh, _segments, _rings, _shading);
+            _submesh = new PhosTriangleSubmesh(mesh);
+            mesh.Submeshes.Add(_submesh);
+            sphere = new PhosSphere(_submesh, _segments, _rings, _shading);
             geometryChanged = true;
         }
 
@@ -113,6 +116,7 @@ public class SphereMesh : ProceduralMesh
     protected override void ClearMeshData()
     {
         sphere = null;
+        _submesh = null;
     }
 
     // ===== Utility Methods =====
@@ -122,8 +126,7 @@ public class SphereMesh : ProceduralMesh
     /// </summary>
     public void CreateSphereCollider()
     {
-        // TODO: Implement when SphereCollider component exists
-        // var collider = Slot.AttachComponent<SphereCollider>();
-        // collider.Radius.DriveFrom(Radius);
+        var collider = Slot.AttachComponent<SphereCollider>();
+        collider.Radius.CreateDrive(() => Radius.Value);
     }
 }

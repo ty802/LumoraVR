@@ -21,5 +21,36 @@ Lumora VR is a feature-rich Social VR Platform designed for mid-range PC users w
 ## Support
 For questions or issues, please open an issue or make a PR.
 
+
 ## Licence
-LumoraVR is **source-available** — the code is visible and open for community contributions, but all rights are reserved by LUMORAVR LTD. Contributions become company property. You may fork this repository solely for the purpose of submitting pull requests back to this project. You may not redistribute, publish, or use this project or any fork of it as your own product. See [LICENSE](./LICENSE) for full terms. for full terms.
+
+LumoraVR is source-available under the [LumoraVR Source Available License v2.0](./LICENSE.md).
+
+**Non-commercial use is free.** Build, fork, host community servers, experiment, share — as long as no money changes hands.
+
+**Commercial use requires a paid licence.** Contact **legal@lumoravr.com**.
+
+**On 2030-03-24 this version becomes GPL v3** — fully open source, forever.
+
+**What you can do for free:**
+- View, study, run, and modify the source code for non-commercial purposes.
+- Host community or public servers, provided access is free and no revenue is generated.
+- Share or distribute non-commercial builds and modifications, clearly labelled as unofficial.
+- Fork for personal non-commercial experimentation or to submit pull requests.
+- Use the source code for non-commercial AI/ML research.
+
+**What requires a commercial licence:**
+- Running a paid or monetised service.
+- Distributing as part of a commercial product or selling access.
+- Publishing on commercial storefronts (Steam, Meta Store, App Store, Google Play, etc.).
+- Building a commercial social VR or shared-presence product with this code.
+- Training AI/ML models for commercial purposes.
+
+**Forks and modifications must:**
+- Use a different name — you may not call your fork "LumoraVR" or anything confusingly similar.
+- Include attribution — e.g. "Based on LumoraVR" in your readme or about screen.
+- Not use the LumoraVR name, logo, or branding to promote or represent your project.
+
+**Contributions:** By submitting a pull request you grant LUMORAVR LTD a perpetual, royalty-free licence to use your contribution for any purpose, including commercially. You retain ownership subject to this licence. See [CLA](.github/CLA.md).
+
+See [LICENSE.md](./LICENSE.md) for full terms.

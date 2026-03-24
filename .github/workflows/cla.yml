@@ -42,10 +42,11 @@ jobs:
           allowlist: 'bot*,dependabot[bot],github-actions[bot]'
           # exact phrase the contributor must comment - don't change this without updating PR template too
           signed-commit-message: 'CLA signed by @$contributorName'
+          re-trigger-comment: 'recheck cla'
           custom-notsigned-prcomment: |
             ## CLA Signature Required
 
-            Hey @${{ github.event.pull_request.user.login }} — before this PR can be reviewed or merged, you need to sign our **Contributor License Agreement**.
+            Hey @$contributorName — before this PR can be reviewed or merged, you need to sign our **Contributor License Agreement**.
 
             This is not optional. By contributing to LumoraVR you assign IP rights to LUMORAVR LTD. Read the full terms here:
             👉 [LumoraVR CLA]($pathToCLA)

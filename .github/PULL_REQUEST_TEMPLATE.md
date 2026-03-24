@@ -14,7 +14,7 @@
 - [ ] I have tested my changes locally
 - [ ] My code builds without errors (`dotnet build LumoraGodot/Lumora.sln`)
 - [ ] I have run `dotnet format LumoraGodot/Lumora.sln` and committed the result
-- [ ] I have read and agree to the [Contributor License Agreement](.github/CLA.md)
+- [ ] I have read and agree to the [Contributor License Agreement](/.github/CLA.md)
 
 ---
 

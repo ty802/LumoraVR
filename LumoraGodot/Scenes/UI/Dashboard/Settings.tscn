@@ -204,33 +204,16 @@ layout_mode = 2
 size_flags_horizontal = 3
 theme_override_constants/separation = 20
 
-[node name="ProfileHeader" type="Label" parent="VBox/ContentPanel/Margin/TabContainer/ProfileTab/ProfileContent"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
-theme_override_font_sizes/font_size = 18
-text = "Profile"
 
-[node name="ProfileDescription" type="Label" parent="VBox/ContentPanel/Margin/TabContainer/ProfileTab/ProfileContent"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_override_colors/font_color = Color(0.58, 0.58, 0.66, 1)
-theme_override_font_sizes/font_size = 11
-text = "Update your avatar and the profile details other users will see."
-
-[node name="AvatarSection" type="Panel" parent="VBox/ContentPanel/Margin/TabContainer/ProfileTab/ProfileContent"]
+[node name="AvatarSection" type="PanelContainer" parent="VBox/ContentPanel/Margin/TabContainer/ProfileTab/ProfileContent"]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_styles/panel = SubResource("StyleBoxFlat_card")
 
 [node name="AvatarMargin" type="MarginContainer" parent="VBox/ContentPanel/Margin/TabContainer/ProfileTab/ProfileContent/AvatarSection"]
 unique_name_in_owner = true
-layout_mode = 1
-anchors_preset = 15
-anchor_right = 1.0
-anchor_bottom = 1.0
-grow_horizontal = 2
-grow_vertical = 2
+layout_mode = 2
+size_flags_horizontal = 3
 theme_override_constants/margin_left = 18
 theme_override_constants/margin_top = 18
 theme_override_constants/margin_right = 18
@@ -334,33 +317,16 @@ layout_mode = 2
 size_flags_horizontal = 3
 theme_override_constants/separation = 20
 
-[node name="SecurityHeader" type="Label" parent="VBox/ContentPanel/Margin/TabContainer/SecurityTab/SecurityContent"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
-theme_override_font_sizes/font_size = 18
-text = "Security"
 
-[node name="SecurityDescription" type="Label" parent="VBox/ContentPanel/Margin/TabContainer/SecurityTab/SecurityContent"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_override_colors/font_color = Color(0.58, 0.58, 0.66, 1)
-theme_override_font_sizes/font_size = 11
-text = "Manage your password and strengthen account protection."
-
-[node name="PasswordSection" type="Panel" parent="VBox/ContentPanel/Margin/TabContainer/SecurityTab/SecurityContent"]
+[node name="PasswordSection" type="PanelContainer" parent="VBox/ContentPanel/Margin/TabContainer/SecurityTab/SecurityContent"]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_styles/panel = SubResource("StyleBoxFlat_card")
 
 [node name="PasswordMargin" type="MarginContainer" parent="VBox/ContentPanel/Margin/TabContainer/SecurityTab/SecurityContent/PasswordSection"]
 unique_name_in_owner = true
-layout_mode = 1
-anchors_preset = 15
-anchor_right = 1.0
-anchor_bottom = 1.0
-grow_horizontal = 2
-grow_vertical = 2
+layout_mode = 2
+size_flags_horizontal = 3
 theme_override_constants/margin_left = 18
 theme_override_constants/margin_top = 18
 theme_override_constants/margin_right = 18
@@ -409,19 +375,15 @@ theme_override_styles/normal = SubResource("StyleBoxFlat_button")
 theme_override_styles/hover = SubResource("StyleBoxFlat_button_hover")
 text = "Update Password"
 
-[node name="TwoFactorSection" type="Panel" parent="VBox/ContentPanel/Margin/TabContainer/SecurityTab/SecurityContent"]
+[node name="TwoFactorSection" type="PanelContainer" parent="VBox/ContentPanel/Margin/TabContainer/SecurityTab/SecurityContent"]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_styles/panel = SubResource("StyleBoxFlat_card")
 
 [node name="TwoFactorMargin" type="MarginContainer" parent="VBox/ContentPanel/Margin/TabContainer/SecurityTab/SecurityContent/TwoFactorSection"]
 unique_name_in_owner = true
-layout_mode = 1
-anchors_preset = 15
-anchor_right = 1.0
-anchor_bottom = 1.0
-grow_horizontal = 2
-grow_vertical = 2
+layout_mode = 2
+size_flags_horizontal = 3
 theme_override_constants/margin_left = 18
 theme_override_constants/margin_top = 18
 theme_override_constants/margin_right = 18
@@ -480,33 +442,16 @@ layout_mode = 2
 size_flags_horizontal = 3
 theme_override_constants/separation = 20
 
-[node name="AudioHeader" type="Label" parent="VBox/ContentPanel/Margin/TabContainer/AudioTab/AudioContent"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
-theme_override_font_sizes/font_size = 18
-text = "Audio"
 
-[node name="AudioDescription" type="Label" parent="VBox/ContentPanel/Margin/TabContainer/AudioTab/AudioContent"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_override_colors/font_color = Color(0.58, 0.58, 0.66, 1)
-theme_override_font_sizes/font_size = 11
-text = "Tune devices, levels, and monitoring for your session."
-
-[node name="AudioSection" type="Panel" parent="VBox/ContentPanel/Margin/TabContainer/AudioTab/AudioContent"]
+[node name="AudioSection" type="PanelContainer" parent="VBox/ContentPanel/Margin/TabContainer/AudioTab/AudioContent"]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_styles/panel = SubResource("StyleBoxFlat_card")
 
 [node name="AudioMargin" type="MarginContainer" parent="VBox/ContentPanel/Margin/TabContainer/AudioTab/AudioContent/AudioSection"]
 unique_name_in_owner = true
-layout_mode = 1
-anchors_preset = 15
-anchor_right = 1.0
-anchor_bottom = 1.0
-grow_horizontal = 2
-grow_vertical = 2
+layout_mode = 2
+size_flags_horizontal = 3
 theme_override_constants/margin_left = 18
 theme_override_constants/margin_top = 18
 theme_override_constants/margin_right = 18
@@ -602,33 +547,16 @@ layout_mode = 2
 size_flags_horizontal = 3
 theme_override_constants/separation = 20
 
-[node name="VideoHeader" type="Label" parent="VBox/ContentPanel/Margin/TabContainer/VideoTab/VideoContent"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
-theme_override_font_sizes/font_size = 18
-text = "Video"
 
-[node name="VideoDescription" type="Label" parent="VBox/ContentPanel/Margin/TabContainer/VideoTab/VideoContent"]
-unique_name_in_owner = true
-layout_mode = 2
-theme_override_colors/font_color = Color(0.58, 0.58, 0.66, 1)
-theme_override_font_sizes/font_size = 11
-text = "Control quality, performance, and display behavior."
-
-[node name="GraphicsSection" type="Panel" parent="VBox/ContentPanel/Margin/TabContainer/VideoTab/VideoContent"]
+[node name="GraphicsSection" type="PanelContainer" parent="VBox/ContentPanel/Margin/TabContainer/VideoTab/VideoContent"]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_styles/panel = SubResource("StyleBoxFlat_card")
 
 [node name="GraphicsMargin" type="MarginContainer" parent="VBox/ContentPanel/Margin/TabContainer/VideoTab/VideoContent/GraphicsSection"]
 unique_name_in_owner = true
-layout_mode = 1
-anchors_preset = 15
-anchor_right = 1.0
-anchor_bottom = 1.0
-grow_horizontal = 2
-grow_vertical = 2
+layout_mode = 2
+size_flags_horizontal = 3
 theme_override_constants/margin_left = 18
 theme_override_constants/margin_top = 18
 theme_override_constants/margin_right = 18

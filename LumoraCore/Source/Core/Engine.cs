@@ -411,9 +411,13 @@ public class Engine : IDisposable
             AudioManager = new();
             foreach (string name in new string[] { "Music", "Effects", "Voice" })
             {
-                if (AudioManager.Mixer.CreateAudioBus(name, out var bus) && AudioManager.Mixer.TryGetAudioBusByName("Master", out var master))
+                if (AudioManager.Mixer.TryCreateAudioBus(name, out var bus) && AudioManager.Mixer.TryGetAudioBusByName("Master", out var master))
                     bus.Target = master;
             }
+            if(AudioManager.Mixer.TryGetAudioBusByName("Voice",out var voicebus)){
+                voicebus.Mute = true;
+            }
+
 
             // Phase 3: Physics
             LumoraLogger.Log("Phase 3: Initializing Physics...");

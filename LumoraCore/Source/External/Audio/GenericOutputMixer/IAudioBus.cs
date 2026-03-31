@@ -3,7 +3,7 @@
 
 using System;
 using System.Collections.Generic;
-namespace Lumora.Core.External.GenericAudioOutputMixer;
+namespace Lumora.Core.External.Audio.GenericOutputMixer;
 
 public interface IAudioBus
 {
@@ -19,4 +19,5 @@ public interface IAudioBus
     //null audio bus is master
     public IAudioBus? Target { get; set; }
     public string Name { get; set; }
+    public bool Mute { get;  set; }
 }

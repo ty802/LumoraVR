@@ -4,7 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
-namespace Lumora.Core.External.GenericAudioOutputMixer;
+namespace Lumora.Core.External.Audio.GenericOutputMixer;
 
 public interface IAudioMixer
 {
@@ -13,12 +13,7 @@ public interface IAudioMixer
     ///the <see langword="return"/> value is <see langword="true"/> if successful and <see langword="false"/> if the bus exists
     ///the <paramref name="bus"/> paramerter is the created bus only popylated if the returniong true
     ///</summary>
-    public bool CreateAudioBus(string name, [NotNullWhen(true)] out IAudioBus? bus);
-    ///<summary>
-    ///Get The IAudioBus with the name <paramref name="name"/> or <see langword="throw"/>
-    ///NOT RECOMENDED
-    ///</summary>
-    public IAudioBus GetAudioBusByName(string name);
+    public bool TryCreateAudioBus(string name, [NotNullWhen(true)] out IAudioBus? bus);
     ///<summary>
     ///Is not null if audio bus exists
     ///<paramref name="name"/> is the name of the bus you want to get

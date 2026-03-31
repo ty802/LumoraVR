@@ -4,7 +4,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace Lumora.Core.External.GenericAudioOutputMixer;
+namespace Lumora.Core.External.Audio.GenericOutputMixer;
 
 public interface IAudioEffect : IDisposable
 {

@@ -4,7 +4,7 @@
 using System;
 using System.Collections.Generic;
 using Godot;
-using Lumora.Core.External.GenericAudioOutputMixer;
+using Lumora.Core.External.Audio.GenericOutputMixer;
 
 namespace Lumora.Source.Godot;
 
@@ -46,7 +46,35 @@ public partial class AudioBus : IAudioBus
         }
     }
 
-    public IAudioBus? Target
+    public bool Mute {
+        get
+        {
+            EnsureValid();
+            return AudioServer.IsBusMute(_busId);
+        }
+        set {
+            EnsureValid();
+            AudioServer.SetBusMute(_busId,value);
+        }
+    }
+    IAudioBus? IAudioBus.Target
+    {
+        get
+        {
+            EnsureValid();
+            string send = AudioServer.GetBusSend(_busId);
+            if (string.IsNullOrWhiteSpace(send))
+                return null;
+
+            return ((IAudioMixer)AudioMixer.GetMixer()).GetAudioBusByNameOrNull(send);
+        }
+        set
+        {
+            EnsureValid();
+            AudioServer.SetBusSend(_busId, value?.Name ?? "Master");
+        }
+    }
+    internal AudioBus? Target
     {
         get
         {
@@ -63,7 +91,6 @@ public partial class AudioBus : IAudioBus
             AudioServer.SetBusSend(_busId, value?.Name ?? "Master");
         }
     }
-
     public float GetVolumeDB()
     {
         EnsureValid();

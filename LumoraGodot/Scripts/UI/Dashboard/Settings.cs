@@ -767,27 +767,12 @@ public partial class Settings : Control
         _inputCaptureEffect = null;
         EnsureInputMonitorPath();
 
-        // Fallback if monitor setup fails on this machine/runtime.
-        if (_inputMeterBus < 0)
-            _inputMeterBus = FindInputMeterBus();
-
         if (_inputActivityBar != null)
         {
             _inputActivityBar.TooltipText = _inputMeterBus >= 0
                 ? $"Input meter on bus: {AudioServer.GetBusName(_inputMeterBus)}"
                 : "No input monitoring bus found";
         }
-    }
-
-    private static int FindInputMeterBus()
-    {
-        string[] candidates = { "Voice", "Record", "Input", "Mic", "Microphone", "Capture" };
-        for (int i = 0; i < candidates.Length; i++)
-        {
-            int bus = AudioServer.GetBusIndex(candidates[i]);
-            if (bus >= 0) return bus;
-        }
-        return -1;
     }
 
     private void EnsureInputMonitorPath()
@@ -801,57 +786,13 @@ public partial class Settings : Control
                 ProjectSettings.SetSetting("audio/driver/enable_input", true);
             }
 
-            int monitorBus = AudioServer.GetBusIndex(InputMonitorBusName);
-            if (monitorBus < 0)
+            if (!Source.Godot.AudioMixer.GetMixer().TryGetCaptureInfo(out _inputCaptureEffect, out var busid))
             {
-                monitorBus = AudioServer.BusCount;
-                AudioServer.AddBus(monitorBus);
-                AudioServer.SetBusName(monitorBus, InputMonitorBusName);
+                _inputMeterBus = -1;
+                _inputCaptureEffect = null;
+                return;
             }
-            // Keep bus effectively silent to avoid feedback while still allowing metering.
-            AudioServer.SetBusVolumeDb(monitorBus, -60f);
-
-            _inputMeterBus = monitorBus;
-
-            bool hasCaptureEffect = false;
-            int effects = AudioServer.GetBusEffectCount(monitorBus);
-            for (int i = 0; i < effects; i++)
-            {
-                var effect = AudioServer.GetBusEffect(monitorBus, i);
-                if (effect is AudioEffectCapture capture)
-                {
-                    _inputCaptureEffect = capture;
-                    hasCaptureEffect = true;
-                    break;
-                }
-            }
-
-            if (!hasCaptureEffect)
-            {
-                _inputCaptureEffect = new AudioEffectCapture();
-                AudioServer.AddBusEffect(monitorBus, _inputCaptureEffect, 0);
-            }
-
-            if (_inputMonitorPlayer == null)
-            {
-                _inputMonitorPlayer = new AudioStreamPlayer
-                {
-                    Name = "InputMeterMonitor",
-                    Bus = InputMonitorBusName,
-                    Stream = new AudioStreamMicrophone(),
-                    Autoplay = true,
-                    VolumeDb = 0f
-                };
-                AddChild(_inputMonitorPlayer);
-            }
-            else
-            {
-                _inputMonitorPlayer.Bus = InputMonitorBusName;
-                _inputMonitorPlayer.Stream ??= new AudioStreamMicrophone();
-            }
-
-            if (!_inputMonitorPlayer.Playing)
-                _inputMonitorPlayer.Play();
+            _inputMeterBus = busid.Value;
         }
         catch (Exception ex)
         {

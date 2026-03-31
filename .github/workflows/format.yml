@@ -21,13 +21,6 @@ jobs:
       with:
         fetch-depth: 0
         submodules: 'false'
-        token: ${{ secrets.GH_PAT }}
-
-    - name: Initialize submodules with PAT
-      # format check needs the full source tree or it'll shit itself on missing references
-      run: |
-        git config --global url."https://${{ secrets.GH_PAT }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
-        git submodule update --init --recursive
 
     - name: Setup .NET
       uses: actions/setup-dotnet@v5.2.0

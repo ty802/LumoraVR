@@ -1,0 +1,70 @@
+name: Reject .old.N Files
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  check-old-files:
+    name: Check for .old.N files
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      statuses: write
+
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Check for .old.N files in PR diff
+        id: check
+        run: |
+          # Get all files added or modified in this PR
+          git fetch origin ${{ github.base_ref }}
+          CHANGED_FILES=$(git diff --name-only --diff-filter=ACMR origin/${{ github.base_ref }}...HEAD)
+
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+
+          # Filter for files matching .old or .old.<digits> (e.g. file.old, file.old.1, file.old.42)
+          OLD_FILES=$(echo "$CHANGED_FILES" | grep -E '\.old(\.[0-9]+)?$' || true)
+
+          if [ -n "$OLD_FILES" ]; then
+            echo "found=true" >> $GITHUB_OUTPUT
+            # Use a delimiter to safely handle filenames with special chars
+            EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+            echo "files<<$EOF" >> $GITHUB_OUTPUT
+            echo "$OLD_FILES" >> $GITHUB_OUTPUT
+            echo "$EOF" >> $GITHUB_OUTPUT
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Comment on PR if .old files found
+        if: steps.check.outputs.found == 'true'
+        uses: actions/github-script@v8.0.0
+        with:
+          script: |
+            const files = `${{ steps.check.outputs.files }}`;
+            const fileList = files.trim().split('\n').map(f => `- \`${f}\``).join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: `## ❌ PR contains \`.old.N\` files\n\nThis PR adds or modifies the following versioned \`.old\` files, which are not allowed:\n\n${fileList}\n\nPlease remove these files before this PR can be merged.`
+            });
+
+      - name: Fail if .old files found
+        if: steps.check.outputs.found == 'true'
+        run: |
+          echo "::error::This PR contains .old.N files. Please remove them before merging."
+          echo "Offending files:"
+          echo "${{ steps.check.outputs.files }}"
+          exit 1
+
+      - name: All clear
+        if: steps.check.outputs.found == 'false'
+        run: echo "✅ No .old.N files found in this PR."

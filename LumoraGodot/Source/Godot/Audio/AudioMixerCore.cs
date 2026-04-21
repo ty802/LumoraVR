@@ -3,12 +3,13 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using Godot;
-using Lumora.Core.External.GenericAudioOutputMixer;
-
+using Lumora.Core.External.Audio.GenericOutputMixer;
+#nullable enable
 namespace Lumora.Source.Godot;
 
-public partial class AudioMixer : IAudioMixer
+public partial class AudioMixer
 {
     private static readonly AudioMixer _instance = new();
     public static AudioMixer GetMixer() => _instance;
@@ -41,7 +42,30 @@ public partial class AudioMixer : IAudioMixer
         }
     }
 
-    public bool CreateAudioBus(string name, out IAudioBus? bus)
+    private bool TryGetValidBusNoLock(string name, [NotNullWhen(true)] out AudioBus? bus)
+    {
+        bus = null;
+        if (!_buses.TryGetValue(name, out var raw))
+            return false;
+
+        if (!raw.IsValid)
+        {
+            _buses.Remove(name);
+            return false;
+        }
+
+        bus = raw;
+        return true;
+    }
+    internal AudioBus? GetAudioBusByNameOrNull(string name)
+    {
+        lock (_sync)
+        {
+            return TryGetValidBusNoLock(name,out var bus) ? bus : null;
+        }
+    }
+
+    public bool TryCreateAudioBus(string name, [NotNullWhen(true)] out AudioBus? bus)
     {
         lock (_sync)
         {
@@ -67,73 +91,28 @@ public partial class AudioMixer : IAudioMixer
             return true;
         }
     }
-
-    public IAudioBus GetAudioBusByName(string name)
+    internal bool TryGetCaptureInfo([NotNullWhen(true)] out AudioEffectCapture? captureEffect, [NotNullWhen(true)] out int? busindex)
     {
-        if (TryGetAudioBusByName(name, out var bus) && bus != null)
-            return bus;
-
-        throw new KeyNotFoundException($"Audio bus '{name}' was not found.");
-    }
-
-    public IAudioBus? GetAudioBusByNameOrNull(string name)
-    {
-        return TryGetAudioBusByName(name, out var bus) ? bus : null;
-    }
-
-    public bool TryGetAudioBusByName(string name, out IAudioBus? bus)
-    {
-        lock (_sync)
+        captureEffect = null;
+        busindex = null;
+        if (!TryGetValidBusNoLock("Voice", out var busobject))
+            return false;
+        busindex = busobject.BusId;
+        int effects = AudioServer.GetBusEffectCount(busindex.Value);
+        for (int i = 0; i < effects; i++)
         {
-            if (TryGetValidBusNoLock(name, out var found))
+            var effect = AudioServer.GetBusEffect(busindex.Value, i);
+            if (effect is AudioEffectCapture capture)
             {
-                bus = found;
-                return true;
+                captureEffect = capture;
+                break;
             }
-
-            bus = null;
-            return false;
         }
-    }
-
-    public IAudioBus[] GetAllBuses()
-    {
-        lock (_sync)
-        {
-            var result = new List<IAudioBus>(_buses.Count);
-            var staleKeys = new List<string>();
-
-            foreach (var kv in _buses)
-            {
-                if (!kv.Value.IsValid)
-                {
-                    staleKeys.Add(kv.Key);
-                    continue;
-                }
-
-                result.Add(kv.Value);
-            }
-
-            foreach (string key in staleKeys)
-                _buses.Remove(key);
-
-            return result.ToArray();
+        if(captureEffect is null){
+            captureEffect = new AudioEffectCapture();
+            if(captureEffect is null)return false;
+            AudioServer.AddBusEffect(busindex.Value,captureEffect);
         }
-    }
-
-    private bool TryGetValidBusNoLock(string name, out AudioBus? bus)
-    {
-        bus = null;
-        if (!_buses.TryGetValue(name, out var raw))
-            return false;
-
-        if (!raw.IsValid)
-        {
-            _buses.Remove(name);
-            return false;
-        }
-
-        bus = raw;
         return true;
     }
 }

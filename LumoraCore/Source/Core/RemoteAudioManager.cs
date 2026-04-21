@@ -5,7 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
-using Lumora.Core.External.GenericAudioOutputMixer;
+using Lumora.Core.External.Audio.GenericOutputMixer;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
@@ -14,9 +14,11 @@ public class RemoteAudioManager
 {
     private sealed class CacheBus : IAudioBus
     {
+
         private readonly List<IAudioEffect> _effects = new();
         private float _volumeDb;
 
+        public bool Mute {get; set;}
         public float Channels => 2f;
         public List<IAudioEffect> Effects => _effects;
         public IAudioBus? Target { get; set; }
@@ -53,7 +55,7 @@ public class RemoteAudioManager
             _buses["Master"] = new CacheBus { Name = "Master" };
         }
 
-        public bool CreateAudioBus(string name, [NotNullWhen(true)] out IAudioBus? bus)
+        public bool TryCreateAudioBus(string name, [NotNullWhen(true)] out IAudioBus? bus)
         {
             lock (_sync)
             {
@@ -127,6 +129,7 @@ public class RemoteAudioManager
     private IAudioMixer _mixer = new CacheMixer();
     public IAudioMixer Mixer => _mixer;
 
+    public Lumora.Core.External.Audio.Godot.IAudioCapureEffect? MicCapture {get; internal set;}
     public void Initialize(IAudioMixer mixer)
     {
         ArgumentNullException.ThrowIfNull(mixer);
@@ -153,7 +156,7 @@ public class RemoteAudioManager
         {
             if (!targetMixer.TryGetAudioBusByName(cachedBus.Name, out var targetBus) || targetBus == null)
             {
-                if (!targetMixer.CreateAudioBus(cachedBus.Name, out targetBus) || targetBus == null)
+                if (!targetMixer.TryCreateAudioBus(cachedBus.Name, out targetBus) || targetBus == null)
                 {
                     LumoraLogger.Log($"[Audio] Failed to create bus '{cachedBus.Name}' while importing cache.");
                     continue;
@@ -168,6 +171,15 @@ public class RemoteAudioManager
             {
                 LumoraLogger.Log($"[Audio] Failed to set volume on '{cachedBus.Name}': {ex.Message}");
             }
+            try
+            {
+                targetBus.Mute = cachedBus.Mute;
+            }
+            catch (Exception ex)
+            {
+                LumoraLogger.Log($"[Audio] Failed to set mute '{cachedBus.Name}': {ex.Message}");
+            }
+
         }
 
         foreach (IAudioBus cachedBus in cachedBuses)
@@ -182,6 +194,9 @@ public class RemoteAudioManager
                 continue;
 
             importedSource.Target = importedTarget;
+        }
+        if(targetMixer is External.Audio.Godot.IAudioOutputMixerWithInput inputmixer){
+            inputmixer.InitializeInput();
         }
     }
 }

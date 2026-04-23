@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using Godot;
 using Lumora.Core;
 using Lumora.Core.GodotUI;
+using Lumora.Core.GodotUI.Wizards;
 using Lumora.Core.Math;
 using Lumora.Godot.UI;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -35,6 +36,7 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
 
     // Registry of scene node paths to their Control instances
     private readonly Dictionary<string, Control> _nodeRegistry = new();
+    private string? _lastUserListSignature;
 
     // Static registry for hooks (so element hooks can find their nodes)
     private static readonly Dictionary<GodotUIPanel, GodotUIPanelHook> _panelHooks = new();
@@ -121,6 +123,11 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
         LoadScene();
 
         Owner.OnDataRefresh += RefreshUIData;
+        if (Owner is GodotUserInspector userInspector)
+        {
+            userInspector.OnUserListChanged += RefreshUserInspector;
+            userInspector.OnUserSelectionChanged += OnUserSelectionChanged;
+        }
 
         LumoraLogger.Log($"GodotUIPanelHook: Initialized for {Owner.GetType().Name}");
     }
@@ -296,13 +303,170 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
             if (_nodeRegistry.TryGetValue(path, out var control) && control is Label label)
             {
                 label.Text = value;
-
-                if (colors.TryGetValue(path, out var coreColor))
-                {
-                    label.AddThemeColorOverride("font_color", new Color(coreColor.r, coreColor.g, coreColor.b, coreColor.a));
-                }
+                AlignMetricValueLabel(path, label);
             }
         }
+
+        foreach (var (path, coreColor) in colors)
+        {
+            if (_nodeRegistry.TryGetValue(path, out var control) && control is Label label)
+            {
+                label.AddThemeColorOverride("font_color", new Color(coreColor.r, coreColor.g, coreColor.b, coreColor.a));
+            }
+        }
+
+        if (Owner is GodotUserInspector userInspector)
+        {
+            RefreshUserList(userInspector);
+        }
+    }
+
+    private static void AlignMetricValueLabel(string path, Label label)
+    {
+        if (!path.EndsWith("/Value", StringComparison.Ordinal) &&
+            !path.EndsWith("/Count", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (IsMetricValuePath(path))
+        {
+            label.HorizontalAlignment = global::Godot.HorizontalAlignment.Right;
+            label.CustomMinimumSize = new Vector2(Mathf.Max(label.CustomMinimumSize.X, 112f), label.CustomMinimumSize.Y);
+            return;
+        }
+
+        label.HorizontalAlignment = global::Godot.HorizontalAlignment.Left;
+    }
+
+    private static bool IsMetricValuePath(string path)
+    {
+        if (path.EndsWith("/Count", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return path.Contains("/Performance/", StringComparison.Ordinal) ||
+               path.Contains("/Memory/", StringComparison.Ordinal) ||
+               path.Contains("/WorldStats/", StringComparison.Ordinal);
+    }
+
+    private void RefreshUserInspector()
+    {
+        _lastUserListSignature = null;
+        RefreshUIData();
+    }
+
+    private void OnUserSelectionChanged(User? _)
+    {
+        _lastUserListSignature = null;
+        World?.RunInUpdates(1, RefreshUIData);
+    }
+
+    private void RefreshUserList(GodotUserInspector userInspector)
+    {
+        if (_nodeRegistry.TryGetValue("MainPanel/VBox/Content/LeftPanel/VBox/UserList/UserListContent", out var control) &&
+            control is VBoxContainer list)
+        {
+            var users = userInspector.GetUsers();
+            var selected = userInspector.SelectedUser.Target;
+            var signature = $"{selected?.ReferenceID.ToString() ?? "none"}|";
+
+            foreach (var user in users)
+            {
+                signature += $"{user.ReferenceID}:{user.UserName.Value}:{user.IsLocal}:{user.PresentInWorld.Value};";
+            }
+
+            if (_lastUserListSignature == signature)
+            {
+                return;
+            }
+
+            _lastUserListSignature = signature;
+            foreach (var child in list.GetChildren())
+            {
+                child.QueueFree();
+            }
+
+            if (users.Count == 0)
+            {
+                var empty = new Label
+                {
+                    Text = "No users",
+                    HorizontalAlignment = global::Godot.HorizontalAlignment.Center,
+                    CustomMinimumSize = new Vector2(0, 32)
+                };
+                empty.AddThemeColorOverride("font_color", new Color(0.75f, 0.75f, 0.82f));
+                empty.AddThemeFontSizeOverride("font_size", 14);
+                list.AddChild(empty);
+                return;
+            }
+
+            foreach (var user in users)
+            {
+                var isSelected = user == selected;
+                var isLocal = user.IsLocal;
+                var isPresent = user.PresentInWorld.Value;
+                var label = isLocal
+                    ? $"ME  {user.UserName.Value ?? "Unknown"}"
+                    : $"{(isPresent ? "ON" : "OFF")}  {user.UserName.Value ?? "Unknown"}";
+
+                var button = new Button
+                {
+                    Text = label,
+                    CustomMinimumSize = new Vector2(0, 34),
+                    Alignment = global::Godot.HorizontalAlignment.Left,
+                    TooltipText = $"{user.UserName.Value ?? "Unknown"} ({user.ReferenceID})"
+                };
+
+                var bg = isSelected
+                    ? new Color(0.18f, 0.35f, 0.5f, 0.95f)
+                    : isLocal
+                        ? new Color(0.08f, 0.24f, 0.28f, 0.9f)
+                        : isPresent
+                            ? new Color(0.1f, 0.18f, 0.12f, 0.85f)
+                            : new Color(0.2f, 0.09f, 0.09f, 0.75f);
+                var border = isSelected || isLocal
+                    ? new Color(0.38f, 0.85f, 1f, 1f)
+                    : isPresent
+                        ? new Color(0.36f, 0.8f, 0.45f, 0.85f)
+                        : new Color(0.95f, 0.36f, 0.36f, 0.8f);
+
+                button.AddThemeStyleboxOverride("normal", MakeUserButtonStyle(bg, border));
+                button.AddThemeStyleboxOverride("hover", MakeUserButtonStyle(bg.Lightened(0.12f), border));
+                button.AddThemeStyleboxOverride("pressed", MakeUserButtonStyle(bg.Darkened(0.08f), border));
+                button.AddThemeColorOverride("font_color", isLocal ? new Color(0.55f, 0.95f, 1f) : new Color(0.92f, 0.94f, 0.98f));
+                button.AddThemeFontSizeOverride("font_size", 14);
+
+                var capturedUser = user;
+                button.Pressed += () =>
+                {
+                    userInspector.SelectUser(capturedUser);
+                    World?.RunInUpdates(1, RefreshUIData);
+                };
+
+                list.AddChild(button);
+            }
+        }
+    }
+
+    private static StyleBoxFlat MakeUserButtonStyle(Color bg, Color border)
+    {
+        return new StyleBoxFlat
+        {
+            BgColor = bg,
+            BorderColor = border,
+            BorderWidthLeft = 1,
+            BorderWidthTop = 1,
+            BorderWidthRight = 1,
+            BorderWidthBottom = 1,
+            CornerRadiusTopLeft = 5,
+            CornerRadiusTopRight = 5,
+            CornerRadiusBottomRight = 5,
+            CornerRadiusBottomLeft = 5,
+            ContentMarginLeft = 8,
+            ContentMarginRight = 8
+        };
     }
 
     private void UpdateQuadSize()
@@ -385,6 +549,11 @@ public class GodotUIPanelHook : ComponentHook<GodotUIPanel>
     {
         _panelHooks.Remove(Owner);
         Owner.OnDataRefresh -= RefreshUIData;
+        if (Owner is GodotUserInspector userInspector)
+        {
+            userInspector.OnUserListChanged -= RefreshUserInspector;
+            userInspector.OnUserSelectionChanged -= OnUserSelectionChanged;
+        }
 
         if (!destroyingWorld)
         {

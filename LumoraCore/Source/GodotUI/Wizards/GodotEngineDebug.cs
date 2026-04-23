@@ -18,7 +18,7 @@ namespace Lumora.Core.GodotUI.Wizards;
 public class GodotEngineDebug : GodotUIPanel
 {
     protected override string DefaultScenePath => LumAssets.UI.EngineDebug;
-    protected override float2 DefaultSize => new float2(420, 360);
+    protected override float2 DefaultSize => new float2(560, 400);
 
     // Cache for type memory estimates
     private static readonly Dictionary<Type, long> _typeMemoryCache = new();
@@ -36,9 +36,10 @@ public class GodotEngineDebug : GodotUIPanel
         data["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldInfo/LocalUser/Value"] = World.LocalUser?.UserName.Value ?? "N/A";
 
         // Performance
-        var fps = World.LocalUser?.FPS.Value ?? 0f;
+        var fps = GetDisplayFps();
+        var frameTimeMs = GetDisplayFrameTimeMs(fps);
         data["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Performance/FPS/Value"] = $"{fps:F1}";
-        data["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Performance/FrameTime/Value"] = fps > 0 ? $"{1000f / fps:F2} ms" : "-";
+        data["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Performance/FrameTime/Value"] = frameTimeMs > 0 ? $"{frameTimeMs:F2} ms" : "-";
         data["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Performance/RenderTime/Value"] = $"{World.Metrics.RenderTimeMs:F2} ms";
         data["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Performance/PhysicsTime/Value"] = $"{World.Metrics.PhysicsTimeMs:F2} ms";
 
@@ -52,7 +53,7 @@ public class GodotEngineDebug : GodotUIPanel
         // World Statistics
         data["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldStats/Slots/Value"] = $"{World.Metrics.SlotCount:N0}";
         data["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldStats/Components/Value"] = $"{World.Metrics.ComponentCount:N0}";
-        data["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldStats/Users/Value"] = $"{World.GetAllUsers().Count}";
+        data["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldStats/Users/Value"] = $"{GetUserCount()}";
 
         var depthStats = GetSlotDepthStats();
         data["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldStats/MaxDepth/Value"] = $"{depthStats.maxDepth}";
@@ -83,12 +84,126 @@ public class GodotEngineDebug : GodotUIPanel
         return data;
     }
 
+    public override Dictionary<string, color> GetUIColors()
+    {
+        var colors = new Dictionary<string, color>();
+        if (World == null) return colors;
+
+        var fps = GetDisplayFps();
+        var frameTimeMs = GetDisplayFrameTimeMs(fps);
+        colors["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldInfo/WorldFocus/Value"] =
+            World.Focus == Lumora.Core.World.WorldFocus.Focused ? GoodColor : WarnColor;
+        colors["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldInfo/Authority/Value"] =
+            World.IsAuthority ? new color(0.45f, 0.8f, 1f, 1f) : new color(0.65f, 0.72f, 0.95f, 1f);
+        colors["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldInfo/LocalUser/Value"] =
+            World.LocalUser != null ? new color(0.45f, 0.95f, 1f, 1f) : BadColor;
+
+        colors["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Performance/FPS/Value"] = PerformanceColor(fps);
+        colors["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Performance/FrameTime/Value"] = FrameTimeColor(frameTimeMs);
+        colors["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Performance/RenderTime/Value"] =
+            MillisecondsColor(World.Metrics.RenderTimeMs, 8f, 14f);
+        colors["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Performance/PhysicsTime/Value"] =
+            MillisecondsColor(World.Metrics.PhysicsTimeMs, 6f, 12f);
+
+        colors["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Memory/StaticMem/Value"] =
+            BytesColor(GC.GetTotalMemory(false), 256L * 1024L * 1024L, 512L * 1024L * 1024L);
+        colors["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Memory/VideoMem/Value"] =
+            BytesColor(World.Metrics.VideoMemoryBytes, 768L * 1024L * 1024L, 1536L * 1024L * 1024L);
+        colors["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Memory/Objects/Value"] =
+            CountColor(World.Metrics.GodotObjectCount, 3000, 8000);
+        colors["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Memory/Nodes/Value"] =
+            CountColor(World.Metrics.GodotNodeCount, 1500, 5000);
+
+        colors["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldStats/Users/Value"] =
+            GetUserCount() > 0 ? GoodColor : BadColor;
+        colors["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldStats/Slots/Value"] =
+            CountColor(World.Metrics.SlotCount, 800, 2000);
+        colors["MainPanel/VBox/Content/LeftPanel/Scroll/VBox/WorldStats/Components/Value"] =
+            CountColor(World.Metrics.ComponentCount, 1500, 4000);
+
+        for (int i = 0; i < 10; i++)
+        {
+            colors[$"MainPanel/VBox/Content/RightPanel/VBox/ScrollContainer/MemoryList/Item{i}/Count"] =
+                i < 3 ? WarnColor : new color(0.62f, 0.9f, 0.62f, 1f);
+        }
+
+        return colors;
+    }
+
     private static string FormatBytes(long bytes)
     {
         if (bytes < 1024) return $"{bytes} B";
         if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F1} KB";
         if (bytes < 1024 * 1024 * 1024) return $"{bytes / (1024.0 * 1024.0):F1} MB";
         return $"{bytes / (1024.0 * 1024.0 * 1024.0):F2} GB";
+    }
+
+    private int GetUserCount()
+    {
+        if (World == null) return 0;
+
+        var users = World.GetAllUsers();
+        return World.LocalUser != null && !users.Contains(World.LocalUser)
+            ? users.Count + 1
+            : users.Count;
+    }
+
+    private static readonly color GoodColor = new(0.4f, 0.95f, 0.55f, 1f);
+    private static readonly color WarnColor = new(1f, 0.78f, 0.32f, 1f);
+    private static readonly color BadColor = new(1f, 0.36f, 0.36f, 1f);
+
+    private double GetDisplayFps()
+    {
+        if (World?.Metrics.GodotFps > 0)
+        {
+            return World.Metrics.GodotFps;
+        }
+
+        return World?.LocalUser?.FPS.Value ?? 0;
+    }
+
+    private double GetDisplayFrameTimeMs(double fps)
+    {
+        if (World?.Metrics.GodotFrameTimeMs > 0)
+        {
+            return World.Metrics.GodotFrameTimeMs;
+        }
+
+        return fps > 0 ? 1000.0 / fps : 0;
+    }
+
+    private static color PerformanceColor(double fps)
+    {
+        if (fps >= 72f) return GoodColor;
+        if (fps >= 45f) return WarnColor;
+        return BadColor;
+    }
+
+    private static color FrameTimeColor(double frameTimeMs)
+    {
+        if (frameTimeMs <= 0) return BadColor;
+        return MillisecondsColor(frameTimeMs, 13.9f, 22.2f);
+    }
+
+    private static color MillisecondsColor(double value, double warnAt, double badAt)
+    {
+        if (value <= warnAt) return GoodColor;
+        if (value <= badAt) return WarnColor;
+        return BadColor;
+    }
+
+    private static color BytesColor(long value, long warnAt, long badAt)
+    {
+        if (value <= warnAt) return GoodColor;
+        if (value <= badAt) return WarnColor;
+        return BadColor;
+    }
+
+    private static color CountColor(int value, int warnAt, int badAt)
+    {
+        if (value <= warnAt) return GoodColor;
+        if (value <= badAt) return WarnColor;
+        return BadColor;
     }
 
     /// <summary>

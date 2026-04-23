@@ -119,7 +119,13 @@ public class World
 		/// <summary>Peak update time in ms.</summary>
 		public double PeakUpdateTimeMs { get; internal set; }
 
-		/// <summary>Render time in ms (from engine).</summary>
+		/// <summary>Godot-reported frames per second.</summary>
+		public double GodotFps { get; set; }
+
+		/// <summary>Godot-reported frame time in ms.</summary>
+		public double GodotFrameTimeMs { get; set; }
+
+		/// <summary>Godot CPU process time in ms. Kept as RenderTimeMs for compatibility.</summary>
 		public double RenderTimeMs { get; set; }
 
 		/// <summary>Physics time in ms.</summary>

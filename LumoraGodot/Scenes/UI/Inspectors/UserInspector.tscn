@@ -36,7 +36,7 @@ corner_radius_bottom_left = 4
 
 [node name="UserInspector" type="Control" unique_id=144872538]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(320, 380)
+custom_minimum_size = Vector2(520, 420)
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
@@ -69,7 +69,7 @@ theme_override_constants/separation = 0
 
 [node name="Header" type="Panel" parent="MainPanel/VBox" unique_id=2045565619]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(0, 48)
+custom_minimum_size = Vector2(0, 44)
 layout_mode = 2
 theme_override_styles/panel = SubResource("header_bg")
 
@@ -104,25 +104,25 @@ text = "User: Select a user"
 horizontal_alignment = 2
 vertical_alignment = 1
 
+[node name="CloseButton" type="Button" parent="MainPanel/VBox/Header/HBox" unique_id=189450905]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(28, 28)
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 0.3, 0.3, 1)
+theme_override_font_sizes/font_size = 14
+text = "X"
+
 [node name="Content" type="HSplitContainer" parent="MainPanel/VBox" unique_id=1210231103]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_vertical = 3
 theme_override_constants/separation = 4
-split_offsets = PackedInt32Array(150, 0)
-split_offset = 150
-
-[node name="CloseButton" type="Button" parent="MainPanel/VBox/Content" unique_id=189450905]
-unique_name_in_owner = true
-custom_minimum_size = Vector2(32, 32)
-layout_mode = 2
-theme_override_colors/font_color = Color(1, 0.3, 0.3, 1)
-theme_override_font_sizes/font_size = 16
-text = "✕"
+split_offsets = PackedInt32Array(170, 0)
+split_offset = 170
 
 [node name="LeftPanel" type="Panel" parent="MainPanel/VBox/Content" unique_id=826127460]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(140, 0)
+custom_minimum_size = Vector2(160, 0)
 layout_mode = 2
 theme_override_styles/panel = SubResource("left_panel_bg")
 
@@ -359,7 +359,7 @@ layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.4, 0.9, 0.4, 1)
 theme_override_font_sizes/font_size = 13
-text = "✓"
+text = "yes"
 
 [node name="Spacer2" type="Control" parent="MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent" unique_id=1784508659]
 unique_name_in_owner = true

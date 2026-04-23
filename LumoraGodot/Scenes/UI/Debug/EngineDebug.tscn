@@ -43,7 +43,7 @@ corner_radius_bottom_left = 4
 
 [node name="EngineDebug" type="Control"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(420, 360)
+custom_minimum_size = Vector2(560, 400)
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
@@ -72,7 +72,7 @@ theme_override_constants/separation = 0
 
 [node name="Header" type="Panel" parent="MainPanel/VBox"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(0, 40)
+custom_minimum_size = Vector2(0, 44)
 layout_mode = 2
 theme_override_styles/panel = SubResource("header_bg")
 
@@ -90,7 +90,7 @@ unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_colors/font_color = Color(0.47, 0.37, 0.94, 1)
-theme_override_font_sizes/font_size = 16
+theme_override_font_sizes/font_size = 18
 text = "Engine Debug"
 vertical_alignment = 1
 
@@ -107,11 +107,11 @@ unique_name_in_owner = true
 layout_mode = 2
 size_flags_vertical = 3
 theme_override_constants/separation = 4
-split_offset = 280
+split_offset = 300
 
 [node name="LeftPanel" type="Panel" parent="MainPanel/VBox/Content"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(260, 0)
+custom_minimum_size = Vector2(280, 0)
 layout_mode = 2
 theme_override_styles/panel = SubResource("left_panel_bg")
 
@@ -297,7 +297,7 @@ custom_minimum_size = Vector2(90, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.5, 0.5, 0.55, 1)
 theme_override_font_sizes/font_size = 13
-text = "Render Time"
+text = "Process Time"
 
 [node name="Value" type="Label" parent="MainPanel/VBox/Content/LeftPanel/Scroll/VBox/Performance/RenderTime"]
 layout_mode = 2

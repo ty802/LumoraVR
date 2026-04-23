@@ -855,7 +855,7 @@ public partial class LumoraEngineRunner : Node
 		_engine?.Update(delta);
 
 		// Update Godot metrics for debug panels
-		UpdateGodotMetrics();
+		UpdateGodotMetrics(delta);
 		SendDebugPerf(delta);
 		SendDebugMemory(delta);
 
@@ -915,14 +915,21 @@ public partial class LumoraEngineRunner : Node
 	/// <summary>
 	/// Update Godot-specific metrics for debug panels.
 	/// </summary>
-	private void UpdateGodotMetrics()
+	private void UpdateGodotMetrics(double delta)
 	{
 		if (_engine?.WorldManager?.FocusedWorld == null) return;
 
 		var metrics = _engine.WorldManager.FocusedWorld.Metrics;
 		var perfMonitor = Performance.Singleton;
 
-		// Render time from Godot
+		metrics.GodotFps = perfMonitor.GetMonitor(Performance.Monitor.TimeFps);
+		if (metrics.GodotFps <= 0)
+		{
+			metrics.GodotFps = global::Godot.Engine.GetFramesPerSecond();
+		}
+		metrics.GodotFrameTimeMs = metrics.GodotFps > 0 ? 1000.0 / metrics.GodotFps : delta * 1000.0;
+
+		// Godot exposes this as CPU process time, not GPU render time.
 		metrics.RenderTimeMs = perfMonitor.GetMonitor(Performance.Monitor.TimeProcess) * 1000.0;
 		metrics.PhysicsTimeMs = perfMonitor.GetMonitor(Performance.Monitor.TimePhysicsProcess) * 1000.0;
 

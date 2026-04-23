@@ -17,7 +17,7 @@ namespace Lumora.Core.GodotUI.Wizards;
 public class GodotUserInspector : GodotUIPanel, IWorldEventReceiver
 {
     protected override string DefaultScenePath => LumAssets.UI.UserInspector;
-    protected override float2 DefaultSize => new float2(320, 380);
+    protected override float2 DefaultSize => new float2(520, 420);
 
     /// <summary>
     /// Currently selected user to display details for.
@@ -53,7 +53,7 @@ public class GodotUserInspector : GodotUIPanel, IWorldEventReceiver
         // Auto-select first user if none selected
         if (SelectedUser.Target == null && World != null)
         {
-            var users = World.GetAllUsers();
+            var users = GetUsers();
             if (users.Count > 0)
             {
                 SelectedUser.Target = users[0];
@@ -76,6 +76,7 @@ public class GodotUserInspector : GodotUIPanel, IWorldEventReceiver
         data["MainPanel/VBox/Header/HBox/UserTitle"] = user != null
             ? $"User: {user.UserName.Value} ({user.ReferenceID})"
             : "User: Select a user";
+        data["MainPanel/VBox/Content/LeftPanel/VBox/UsersLabel"] = $"USERS ({GetUsers().Count})";
 
         if (user == null) return data;
 
@@ -88,7 +89,7 @@ public class GodotUserInspector : GodotUIPanel, IWorldEventReceiver
         data["MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/Status/HeadDevice/Value"] = FormatHeadDevice(user.HeadDevice.Value);
         data["MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/Status/Platform/Value"] = user.UserPlatform.Value.ToString();
         data["MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/Status/VRActive/Value"] = user.VRActive.Value ? "true" : "false";
-        data["MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/Status/Present/Value"] = user.PresentInWorld.Value ? "✓" : "✗";
+        data["MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/Status/Present/Value"] = user.PresentInWorld.Value ? "yes" : "no";
 
         // Performance
         data["MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/Performance/FPS/Value"] = $"{user.FPS.Value:F1}";
@@ -104,11 +105,33 @@ public class GodotUserInspector : GodotUIPanel, IWorldEventReceiver
 
         if (user != null)
         {
+            colors["MainPanel/VBox/Header/HBox/UserTitle"] =
+                user.IsLocal ? new color(0.45f, 0.95f, 1f, 1f) : new color(0.8f, 0.8f, 0.9f, 1f);
+            colors["MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/Status/HeadDevice/Value"] =
+                user.VRActive.Value ? new color(0.45f, 0.85f, 1f, 1f) : new color(0.85f, 0.85f, 0.9f, 1f);
+            colors["MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/Status/VRActive/Value"] =
+                user.VRActive.Value ? GoodColor : MutedColor;
             colors["MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/Status/Present/Value"] =
-                user.PresentInWorld.Value ? new color(0.4f, 0.9f, 0.4f, 1f) : new color(0.9f, 0.4f, 0.4f, 1f);
+                user.PresentInWorld.Value ? GoodColor : BadColor;
+            colors["MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/Performance/FPS/Value"] =
+                PerformanceColor(user.FPS.Value);
+            colors["MainPanel/VBox/Content/RightPanel/ScrollContainer/DetailContent/Performance/Ping/Value"] =
+                user.Ping.Value <= 80 ? GoodColor : user.Ping.Value <= 160 ? WarnColor : BadColor;
         }
 
         return colors;
+    }
+
+    private static readonly color GoodColor = new(0.4f, 0.95f, 0.55f, 1f);
+    private static readonly color WarnColor = new(1f, 0.78f, 0.32f, 1f);
+    private static readonly color BadColor = new(1f, 0.36f, 0.36f, 1f);
+    private static readonly color MutedColor = new(0.62f, 0.66f, 0.74f, 1f);
+
+    private static color PerformanceColor(float fps)
+    {
+        if (fps >= 72f) return GoodColor;
+        if (fps >= 45f) return WarnColor;
+        return BadColor;
     }
 
     private static string TruncateString(string str, int maxLength)
@@ -176,6 +199,14 @@ public class GodotUserInspector : GodotUIPanel, IWorldEventReceiver
     {
         if (World == null)
             return Array.Empty<User>();
-        return World.GetAllUsers();
+
+        var users = World.GetAllUsers();
+        var localUser = World.LocalUser;
+        if (localUser != null && !users.Contains(localUser))
+        {
+            users.Insert(0, localUser);
+        }
+
+        return users;
     }
 }

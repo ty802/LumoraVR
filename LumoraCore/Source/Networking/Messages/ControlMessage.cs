@@ -177,3 +177,32 @@ public struct JoinGrantData
         };
     }
 }
+
+/// <summary>
+/// Join rejection data sent by authority when a user cannot enter a session.
+/// </summary>
+public struct JoinRejectData
+{
+    public string Reason;
+
+    public byte[] Encode()
+    {
+        using var ms = new MemoryStream();
+        using var writer = new BinaryWriter(ms);
+
+        writer.Write(Reason ?? "Join rejected");
+
+        return ms.ToArray();
+    }
+
+    public static JoinRejectData Decode(byte[] data)
+    {
+        using var ms = new MemoryStream(data);
+        using var reader = new BinaryReader(ms);
+
+        return new JoinRejectData
+        {
+            Reason = reader.ReadString()
+        };
+    }
+}

@@ -10,6 +10,7 @@ using Lumora.Core.Networking.LNL;
 using Lumora.Core.Networking.Sync;
 using LegacyJoinGrantData = Lumora.Core.Networking.Messages.JoinGrantData;
 using LegacyJoinRequestData = Lumora.Core.Networking.Messages.JoinRequestData;
+using LegacyJoinRejectData = Lumora.Core.Networking.Messages.JoinRejectData;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Session;
@@ -186,6 +187,8 @@ public class SessionConnectionManager : IDisposable
     {
         LumoraLogger.Log($"Peer disconnected: {peer.Identifier}");
 
+        Session.AssetTransferer?.ConnectionClosed(peer);
+
         lock (_lock)
         {
             _pendingConnections.Remove(peer);
@@ -212,11 +215,93 @@ public class SessionConnectionManager : IDisposable
         if (!isPending)
         {
             LumoraLogger.Warn($"HandleJoinRequest: Connection {connection.Identifier} was not pending");
+            SendJoinReject(connection, "Duplicate or stale join request");
             return;
         }
 
         LumoraLogger.Log($"HandleJoinRequest: Received from {connection.Identifier} - UserName='{requestData.UserName}'");
+        var rejectReason = ValidateJoinRequest(connection, requestData);
+        if (rejectReason != null)
+        {
+            LumoraLogger.Warn($"HandleJoinRequest: Rejected {connection.Identifier} - {rejectReason}");
+            SendJoinReject(connection, rejectReason);
+            return;
+        }
+
         SendJoinGrant(connection, requestData.UserName, requestData.MachineID);
+    }
+
+    private string? ValidateJoinRequest(IConnection connection, LegacyJoinRequestData requestData)
+    {
+        if (connection == null || !connection.IsOpen)
+            return "Connection is not open";
+
+        if (World == null || World.IsDisposed || World.IsDestroyed)
+            return "World is not available";
+
+        if (!World.IsAuthority)
+            return "Only the authority can approve joins";
+
+        if (!World.Configuration.AllowJoin)
+            return "This world is not accepting joins";
+
+        var maxUsers = GetEffectiveMaxUsers();
+        if (World.UserCount >= maxUsers)
+            return $"Session is full ({World.UserCount}/{maxUsers})";
+
+        if (!World.RefIDAllocator.CanAllocateMoreUsers)
+            return "Session has no remaining user allocation slots";
+
+        if (!string.IsNullOrWhiteSpace(requestData.UserName) && requestData.UserName.Length > 32)
+            return "Username is too long";
+
+        if (!string.IsNullOrWhiteSpace(requestData.MachineID) && requestData.MachineID.Length > 128)
+            return "Machine identifier is too long";
+
+        if (!string.IsNullOrWhiteSpace(requestData.UserID))
+        {
+            lock (_lock)
+            {
+                if (_connectionToUser.Values.Any(u => u.UserID?.Value == requestData.UserID))
+                    return "User is already connected";
+            }
+        }
+
+        return null;
+    }
+
+    private int GetEffectiveMaxUsers()
+    {
+        var metadataMax = Session?.Metadata?.MaxUsers ?? 0;
+        var configMax = World?.Configuration?.MaxUsers ?? 0;
+        var allocatorMax = World?.RefIDAllocator?.MaxUserCount ?? 1;
+        var requestedMax = metadataMax > 0 ? metadataMax : configMax;
+        return global::System.Math.Clamp(requestedMax > 0 ? requestedMax : allocatorMax, 1, allocatorMax);
+    }
+
+    private void SendJoinReject(IConnection connection, string reason)
+    {
+        if (connection == null)
+            return;
+
+        var rejectData = new LegacyJoinRejectData
+        {
+            Reason = string.IsNullOrWhiteSpace(reason) ? "Join rejected" : reason
+        };
+
+        var controlMessage = new ControlMessage(ControlMessage.Message.JoinReject)
+        {
+            Payload = rejectData.Encode()
+        };
+
+        var encoded = controlMessage.Encode();
+        connection.Send(encoded, encoded.Length, reliable: true, background: false);
+
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(250);
+            connection.Close();
+        });
     }
 
     private void SendJoinGrant(IConnection connection, string userName, string machineId)
@@ -239,7 +324,7 @@ public class SessionConnectionManager : IDisposable
             AssignedUserID = userID,
             AllocationIDStart = (ulong)allocStart,
             AllocationIDEnd = (ulong)allocEnd,
-            MaxUsers = World.RefIDAllocator.MaxUserCount,
+            MaxUsers = GetEffectiveMaxUsers(),
             WorldTime = World.TotalTime,
             StateVersion = World.StateVersion
         };
@@ -369,6 +454,7 @@ public class SessionConnectionManager : IDisposable
 
         lock (_lock)
         {
+            _pendingConnections.Clear();
             _connectionToUser.Clear();
             _userToConnection.Clear();
         }

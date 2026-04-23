@@ -51,10 +51,5 @@ internal sealed class SocialSpaceWorldTemplate : WorldTemplateDefinition
         groundCollider.Size.Value = groundMesh.Size.Value;
         groundCollider.Offset.Value = new float3(0f, -groundMesh.Size.Value.y * 0.5f, 0f);
 
-        var uiPanelsSlot = world.RootSlot.AddSlot("UIPanels");
-        uiPanelsSlot.LocalPosition.Value = new float3(0f, 1.4f, -2f);
-
-        AttachGodotUserInspectorPanel(uiPanelsSlot, new float3(-0.4f, 0f, 0f));
-        AttachGodotEngineDebugPanel(uiPanelsSlot, new float3(0.5f, 0f, 0f));
     }
 }

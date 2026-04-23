@@ -237,6 +237,11 @@ public class World
 	public InitializationState InitState => _initState;
 
 	/// <summary>
+	/// Human-readable initialization failure reason, if initialization failed.
+	/// </summary>
+	public string InitializationFailureReason { get; private set; } = "";
+
+	/// <summary>
 	/// The root Slot of this World.
 	/// </summary>
 	public Slot RootSlot { get; private set; }
@@ -528,6 +533,10 @@ public class World
 		// Initialize world
 		world.Initialize();
 
+		world._configuration.MaxUsers = global::System.Math.Max(1, maxUsers);
+		world._configuration.AllowJoin = true;
+		world._configuration.IsPublic = visibility == SessionVisibility.Public;
+
 		// Build session metadata
 		var metadata = new SessionMetadata
 		{
@@ -535,7 +544,7 @@ public class World
 			HostUsername = hostUserName ?? Environment.MachineName,
 			HostMachineId = Environment.MachineName,
 			Visibility = visibility,
-			MaxUsers = maxUsers
+			MaxUsers = world._configuration.MaxUsers
 		};
 
 		// Start session network (creates LNL listener) but don't create user yet
@@ -619,6 +628,7 @@ public class World
 		if (_state != WorldState.Created) return;
 
 		_initState = InitializationState.Created;
+		InitializationFailureReason = "";
 		LumoraLogger.Log($"World initializing data model (isAuthority={isAuthority})");
 
 		// Create reference controller BEFORE anything else
@@ -1303,12 +1313,13 @@ public class World
 	/// <summary>
 	/// Mark initialization failure.
 	/// </summary>
-	public void InitializationFailed()
+	public void InitializationFailed(string? reason = null)
 	{
 		var oldState = _state;
 		_initState = InitializationState.Failed;
 		_state = WorldState.Failed;
-		LumoraLogger.Log("World initialization failed");
+		InitializationFailureReason = string.IsNullOrWhiteSpace(reason) ? "World initialization failed" : reason;
+		LumoraLogger.Log($"World initialization failed: {InitializationFailureReason}");
 		OnStateChanged?.Invoke(oldState, _state);
 	}
 

@@ -31,6 +31,7 @@ public class Session : IDisposable
 
     private LANAnnouncer _lanAnnouncer;
     private SessionServerClient? _serverClient;
+    private BackendSessionDirectoryClient? _directoryClient;
 
     /// <summary>
     /// Event triggered when session is disconnected.
@@ -52,6 +53,16 @@ public class Session : IDisposable
     /// Session server port for public registration.
     /// </summary>
     public static int SessionServerPort { get; set; } = 8000;
+
+    /// <summary>
+    /// Backend API base URL used for authenticated public session directory registration.
+    /// </summary>
+    public static string BackendSessionDirectoryUrl { get; set; } = "http://localhost:5178/api";
+
+    /// <summary>
+    /// Provides the current backend auth token for host-owned session registration.
+    /// </summary>
+    public static Func<string?>? BackendAuthTokenProvider { get; set; }
 
     private Session(World world)
     {
@@ -116,6 +127,11 @@ public class Session : IDisposable
             metadata.Visibility == SessionVisibility.Public)
         {
             session.StartLANAnnouncer();
+        }
+
+        if (metadata.Visibility == SessionVisibility.Public)
+        {
+            session.StartPublicServerRegistration();
         }
 
         LumoraLogger.Log($"Session created as host with {session.Metadata.SessionURLs.Count} URLs");
@@ -202,9 +218,10 @@ public class Session : IDisposable
     /// </summary>
     private async void StartPublicServerRegistration()
     {
-        if (_serverClient != null)
+        if (_serverClient != null || _directoryClient != null)
             return;
 
+        var natRegistered = false;
         try
         {
             _serverClient = new SessionServerClient(SessionServerAddress, SessionServerPort);
@@ -214,6 +231,7 @@ public class Session : IDisposable
 
             if (connected)
             {
+                natRegistered = true;
                 LumoraLogger.Log($"Session registered with public server at {SessionServerAddress}:{SessionServerPort}");
             }
             else
@@ -228,6 +246,37 @@ public class Session : IDisposable
             LumoraLogger.Warn($"Session: Public server registration failed - {ex.Message}");
             _serverClient?.Dispose();
             _serverClient = null;
+        }
+
+        try
+        {
+            if (BackendAuthTokenProvider == null)
+            {
+                if (!natRegistered)
+                    LumoraLogger.Warn("Session: No backend auth token provider available for public directory registration");
+                return;
+            }
+
+            _directoryClient = new BackendSessionDirectoryClient(
+                BackendSessionDirectoryUrl,
+                () => BackendAuthTokenProvider?.Invoke());
+
+            var registered = await _directoryClient.StartAsync(Metadata, GetUserList);
+            if (registered)
+            {
+                LumoraLogger.Log($"Session registered with backend directory at {BackendSessionDirectoryUrl}");
+            }
+            else
+            {
+                _directoryClient.Dispose();
+                _directoryClient = null;
+            }
+        }
+        catch (Exception ex)
+        {
+            LumoraLogger.Warn($"Session: Backend directory registration failed - {ex.Message}");
+            _directoryClient?.Dispose();
+            _directoryClient = null;
         }
     }
 
@@ -261,6 +310,8 @@ public class Session : IDisposable
     {
         _serverClient?.Dispose();
         _serverClient = null;
+        _directoryClient?.Dispose();
+        _directoryClient = null;
     }
 
     /// <summary>
@@ -303,6 +354,7 @@ public class Session : IDisposable
 
         // Update session server
         _serverClient?.SendSessionUpdate(count, GetUserList());
+        _directoryClient?.SendHeartbeat(count, GetUserList());
     }
 
     /// <summary>

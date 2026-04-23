@@ -290,7 +290,9 @@ public class WorldLoadingService
                 break;
 
             case World.WorldState.Failed:
-                FailOperation(operation, "World initialization failed");
+                FailOperation(operation, string.IsNullOrWhiteSpace(operation.World?.InitializationFailureReason)
+                    ? "World initialization failed"
+                    : operation.World.InitializationFailureReason);
                 break;
         }
     }

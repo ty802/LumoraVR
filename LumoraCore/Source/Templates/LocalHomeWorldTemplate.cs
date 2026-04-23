@@ -63,13 +63,6 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
         ambientLight.Range.Value = 100f;
         ambientLight.Shadows.Value = ShadowType.None;
 
-        var uiPanelsSlot = world.RootSlot.AddSlot("UIPanels");
-        uiPanelsSlot.LocalPosition.Value = new float3(0f, 1.4f, -1.2f);
-
-        // Godot-based UI panels
-        AttachGodotUserInspectorPanel(uiPanelsSlot, new float3(-0.4f, 0f, 0f));
-        AttachGodotEngineDebugPanel(uiPanelsSlot, new float3(0.5f, 0f, 0f));
-
         // Add ClipboardImporter for paste functionality
         var clipboardSlot = world.RootSlot.AddSlot("ClipboardImporter");
         clipboardSlot.AttachComponent<ClipboardImporter>();

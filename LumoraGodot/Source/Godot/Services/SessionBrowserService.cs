@@ -4,6 +4,8 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Godot;
@@ -14,6 +16,7 @@ using Lumora.Godot.UI;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 using LumoraEngine = Lumora.Core.Engine;
 using HttpClient = System.Net.Http.HttpClient;
+using LumoraClient = Lumora.CDN.LumoraClient;
 
 namespace Lumora.Source.Godot.Services;
 
@@ -24,18 +27,21 @@ namespace Lumora.Source.Godot.Services;
 public partial class SessionBrowserService : Node
 {
 	// Session server configuration
-	[Export] public string SessionServerUrl { get; set; } = "http://localhost:8040";
+	[Export] public string SessionServerUrl { get; set; } = "http://localhost:5178/api";
+	[Export] public string LegacySessionServerUrl { get; set; } = "http://localhost:8040";
 	[Export] public float PublicRefreshInterval { get; set; } = 10f; // seconds
 
 	// References
 	private WorldBrowser _worldBrowser;
 	private SessionBrowser _sessionBrowser;
 	private HttpClient _httpClient;
+	private LumoraClient _authClient;
 
 	// State
 	private float _publicRefreshTimer;
 	private bool _isScanning;
 	private readonly Dictionary<string, WorldBrowser.WorldInfo> _discoveredWorlds = new();
+	private readonly object _worldsLock = new();
 
 	// Events
 	public event Action<string> OnJoinStarted;
@@ -46,6 +52,7 @@ public partial class SessionBrowserService : Node
 	{
 		_httpClient = new HttpClient();
 		_httpClient.Timeout = TimeSpan.FromSeconds(5);
+		ConfigureBackendSessionDirectory();
 
 		LumoraLogger.Log("SessionBrowserService: Initialized");
 	}
@@ -70,6 +77,18 @@ public partial class SessionBrowserService : Node
 		}
 	}
 
+	public void SetAuthClient(LumoraClient client)
+	{
+		_authClient = client;
+		ConfigureBackendSessionDirectory();
+	}
+
+	private void ConfigureBackendSessionDirectory()
+	{
+		Session.BackendSessionDirectoryUrl = SessionServerUrl;
+		Session.BackendAuthTokenProvider = () => _authClient?.CurrentSession?.Token;
+	}
+
 	/// <summary>
 	/// Start scanning for sessions (LAN + public server).
 	/// </summary>
@@ -80,7 +99,10 @@ public partial class SessionBrowserService : Node
 
 		_isScanning = true;
 		_worldBrowser?.ClearWorlds();
-		_discoveredWorlds.Clear();
+		lock (_worldsLock)
+		{
+			_discoveredWorlds.Clear();
+		}
 
 		// Start LAN discovery via SessionBrowser component
 		StartLANDiscovery();
@@ -175,13 +197,22 @@ public partial class SessionBrowserService : Node
 	private void OnLANSessionFound(SessionListEntry entry)
 	{
 		var worldInfo = ConvertToWorldInfo(entry, "lan");
-		_discoveredWorlds[entry.SessionId] = worldInfo;
+		lock (_worldsLock)
+		{
+			_discoveredWorlds[entry.SessionId] = worldInfo;
+		}
 		CallDeferred(nameof(UpdateUIDeferred), worldInfo.Id);
 	}
 
 	private void OnLANSessionLost(string sessionId)
 	{
-		if (_discoveredWorlds.Remove(sessionId))
+		bool removed;
+		lock (_worldsLock)
+		{
+			removed = _discoveredWorlds.Remove(sessionId);
+		}
+
+		if (removed)
 		{
 			CallDeferred(nameof(RefreshUIDeferred));
 		}
@@ -190,7 +221,10 @@ public partial class SessionBrowserService : Node
 	private void OnLANSessionUpdated(SessionListEntry entry)
 	{
 		var worldInfo = ConvertToWorldInfo(entry, "lan");
-		_discoveredWorlds[entry.SessionId] = worldInfo;
+		lock (_worldsLock)
+		{
+			_discoveredWorlds[entry.SessionId] = worldInfo;
+		}
 		CallDeferred(nameof(UpdateUIDeferred), worldInfo.Id);
 	}
 
@@ -202,18 +236,37 @@ public partial class SessionBrowserService : Node
 	{
 		try
 		{
-			var url = $"{SessionServerUrl}/sessions";
-			var response = await _httpClient.GetStringAsync(url);
-
-			var sessions = JsonSerializer.Deserialize<List<PublicSessionInfo>>(response,
-				new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+			var sessions = await TryFetchSessionListingsAsync(SessionServerUrl);
+			if (sessions == null && !string.IsNullOrWhiteSpace(LegacySessionServerUrl))
+			{
+				sessions = await TryFetchSessionListingsAsync(LegacySessionServerUrl);
+			}
 
 			if (sessions != null)
 			{
-				foreach (var session in sessions)
+				var seenPublicSessionIds = new HashSet<string>();
+
+				lock (_worldsLock)
 				{
-					var worldInfo = ConvertToWorldInfo(session);
-					_discoveredWorlds[session.SessionIdentifier] = worldInfo;
+					foreach (var session in sessions)
+					{
+						if (string.IsNullOrWhiteSpace(session.SessionIdentifier))
+							continue;
+
+						seenPublicSessionIds.Add(session.SessionIdentifier);
+						var worldInfo = ConvertToWorldInfo(session);
+						_discoveredWorlds[session.SessionIdentifier] = worldInfo;
+					}
+
+					var stalePublicIds = new List<string>();
+					foreach (var pair in _discoveredWorlds)
+					{
+						if (pair.Value.IsPublicListing && !seenPublicSessionIds.Contains(pair.Key))
+							stalePublicIds.Add(pair.Key);
+					}
+
+					foreach (var id in stalePublicIds)
+						_discoveredWorlds.Remove(id);
 				}
 
 				CallDeferred(nameof(RefreshUIDeferred));
@@ -235,13 +288,43 @@ public partial class SessionBrowserService : Node
 		}
 	}
 
+	private async Task<List<SessionListingDto>> TryFetchSessionListingsAsync(string baseUrl)
+	{
+		if (string.IsNullOrWhiteSpace(baseUrl))
+			return null;
+
+		try
+		{
+			var url = $"{baseUrl.TrimEnd('/')}/sessions";
+			var response = await _httpClient.GetStringAsync(url);
+
+			return JsonSerializer.Deserialize<List<SessionListingDto>>(response,
+				new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+		}
+		catch (HttpRequestException ex)
+		{
+			LumoraLogger.Log($"SessionBrowserService: Session source unavailable at {baseUrl} ({ex.Message})");
+			return null;
+		}
+		catch (TaskCanceledException)
+		{
+			return null;
+		}
+	}
+
 	#endregion
 
 	#region UI Updates (must run on main thread)
 
 	private void UpdateUIDeferred(string worldId)
 	{
-		if (_worldBrowser != null && _discoveredWorlds.TryGetValue(worldId, out var info))
+		WorldBrowser.WorldInfo info = null;
+		lock (_worldsLock)
+		{
+			_discoveredWorlds.TryGetValue(worldId, out info);
+		}
+
+		if (_worldBrowser != null && info != null)
 		{
 			_worldBrowser.UpdateWorld(info);
 		}
@@ -252,8 +335,14 @@ public partial class SessionBrowserService : Node
 		if (_worldBrowser == null)
 			return;
 
+		List<WorldBrowser.WorldInfo> worlds;
+		lock (_worldsLock)
+		{
+			worlds = new List<WorldBrowser.WorldInfo>(_discoveredWorlds.Values);
+		}
+
 		_worldBrowser.ClearWorlds();
-		foreach (var world in _discoveredWorlds.Values)
+		foreach (var world in worlds)
 		{
 			_worldBrowser.UpdateWorld(world);
 		}
@@ -320,7 +409,7 @@ public partial class SessionBrowserService : Node
 		}
 
 		// Check if it's a public session (need NAT punch)
-		if (world.Category == "featured" || world.Category == "active")
+		if (world.IsPublicListing)
 		{
 			// Use NAT punch for public sessions
 			_ = JoinViaNATPunchAsync(world.Name, world.Id);
@@ -434,6 +523,7 @@ public partial class SessionBrowserService : Node
 
 			System.Net.IPEndPoint punchedEndpoint = null;
 			var punchCompleted = new TaskCompletionSource<bool>();
+			var joinTicket = await TryCreateJoinTicketAsync(sessionId);
 
 			_natPunchClient.OnNATPunchSuccess += (endpoint) =>
 			{
@@ -442,7 +532,7 @@ public partial class SessionBrowserService : Node
 			};
 
 			// Request NAT punch
-			if (!await _natPunchClient.RequestNATPunchAsync(sessionId))
+			if (!await _natPunchClient.RequestNATPunchAsync(sessionId, joinTicket))
 			{
 				OnJoinFailed?.Invoke("Failed to initiate NAT punch");
 				return;
@@ -480,6 +570,38 @@ public partial class SessionBrowserService : Node
 		}
 	}
 
+	private async Task<string> TryCreateJoinTicketAsync(string sessionId)
+	{
+		if (_authClient?.IsAuthenticated != true || string.IsNullOrWhiteSpace(_authClient.CurrentSession?.Token))
+			return null;
+
+		try
+		{
+			var url = $"{SessionServerUrl.TrimEnd('/')}/sessions/{Uri.EscapeDataString(sessionId)}/join-ticket";
+			using var request = new HttpRequestMessage(HttpMethod.Post, url);
+			request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _authClient.CurrentSession.Token);
+			request.Content = new StringContent("{}", Encoding.UTF8, "application/json");
+
+			using var response = await _httpClient.SendAsync(request);
+			if (!response.IsSuccessStatusCode)
+			{
+				LumoraLogger.Warn($"SessionBrowserService: Join ticket request failed ({(int)response.StatusCode})");
+				return null;
+			}
+
+			var body = await response.Content.ReadAsStringAsync();
+			var ticket = JsonSerializer.Deserialize<JoinTicketResponseDto>(body,
+				new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+			return string.IsNullOrWhiteSpace(ticket?.JoinTicket) ? null : ticket.JoinTicket;
+		}
+		catch (Exception ex)
+		{
+			LumoraLogger.Warn($"SessionBrowserService: Join ticket request failed - {ex.Message}");
+			return null;
+		}
+	}
+
 	#endregion
 
 	#region Conversion Helpers
@@ -489,12 +611,14 @@ public partial class SessionBrowserService : Node
 		var info = new WorldBrowser.WorldInfo
 		{
 			Id = entry.SessionId,
+			WorldId = entry.SessionId,
 			Name = entry.Name ?? "Unknown Session",
 			Host = entry.HostUsername ?? "Unknown",
 			UserCount = entry.ActiveUsers,
 			MaxUsers = entry.MaxUsers,
 			ThumbnailUrl = entry.ThumbnailUrl ?? "",
-			Category = category
+			Category = category,
+			Tags = entry.Tags?.ToArray() ?? Array.Empty<string>()
 		};
 
 		// Decode base64 thumbnail if available
@@ -506,17 +630,25 @@ public partial class SessionBrowserService : Node
 		return info;
 	}
 
-	private static WorldBrowser.WorldInfo ConvertToWorldInfo(PublicSessionInfo session)
+	private static WorldBrowser.WorldInfo ConvertToWorldInfo(SessionListingDto session)
 	{
 		return new WorldBrowser.WorldInfo
 		{
 			Id = session.SessionIdentifier,
+			WorldId = string.IsNullOrWhiteSpace(session.WorldIdentifier) ? session.SessionIdentifier : session.WorldIdentifier,
 			Name = session.Name ?? "Unknown Session",
-			Host = "Public Server",
-			UserCount = 0, // Not provided by basic API
-			MaxUsers = 16,
+			Host = session.HostUsername ?? "Unknown",
+			UserCount = session.ActiveUsers,
+			MaxUsers = session.MaxUsers > 0 ? session.MaxUsers : 16,
 			ThumbnailUrl = "",
-			Category = session.Direct ? "active" : "featured"
+			Category = session.Direct ? "active" : "featured",
+			IsPublicListing = true,
+			Direct = session.Direct,
+			IsHeadless = session.IsHeadless,
+			Version = session.Version ?? "",
+			UptimeSeconds = session.UptimeSeconds,
+			Tags = session.Tags ?? Array.Empty<string>(),
+			Users = session.UserList ?? Array.Empty<string>()
 		};
 	}
 
@@ -553,15 +685,9 @@ public partial class SessionBrowserService : Node
 	}
 
 	#endregion
-}
 
-/// <summary>
-/// Session info from public session server API.
-/// </summary>
-public class PublicSessionInfo
-{
-	public string Name { get; set; }
-	public string SessionIdentifier { get; set; }
-	public string WorldIdentifier { get; set; }
-	public bool Direct { get; set; }
+	private sealed class JoinTicketResponseDto
+	{
+		public string JoinTicket { get; set; } = "";
+	}
 }

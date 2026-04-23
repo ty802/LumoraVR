@@ -9,6 +9,7 @@ using Lumora.Core;
 using Lumora.Core.Networking.Sync;
 using LegacyJoinGrantData = Lumora.Core.Networking.Messages.JoinGrantData;
 using LegacyJoinRequestData = Lumora.Core.Networking.Messages.JoinRequestData;
+using LegacyJoinRejectData = Lumora.Core.Networking.Messages.JoinRejectData;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Session;
@@ -1298,6 +1299,20 @@ public class SessionSyncManager : IDisposable
                 LumoraLogger.Log($"Switched allocation to user namespace: byte={userByte}, startPos={startPos}");
 
                 Session.World.OnJoinGrantReceived();
+                break;
+
+            case ControlMessage.Message.JoinReject:
+                var rejectData = message.Payload != null && message.Payload.Length > 0
+                    ? LegacyJoinRejectData.Decode(message.Payload)
+                    : new LegacyJoinRejectData { Reason = "Join rejected" };
+                var reason = string.IsNullOrWhiteSpace(rejectData.Reason) ? "Join rejected" : rejectData.Reason;
+                LumoraLogger.Warn($"ProcessControlMessage: Join rejected - {reason}");
+
+                if (!World.IsAuthority)
+                {
+                    World.InitializationFailed(reason);
+                    Session.Connections.HostConnection?.Close();
+                }
                 break;
 
             case ControlMessage.Message.JoinStartDelta:

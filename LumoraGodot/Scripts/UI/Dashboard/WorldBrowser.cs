@@ -5,6 +5,7 @@
 using System;
 using System.Collections.Generic;
 using Lumora.Source.Godot.Services;
+using LumoraClient = Lumora.CDN.LumoraClient;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Godot.UI;
@@ -17,15 +18,24 @@ public partial class WorldBrowser : Control
     // Service references
     private SessionBrowserService _browserService;
     private SessionThumbnailService _thumbnailService;
+    private LumoraClient? _authClient;
     public class WorldInfo
     {
         public string Id { get; set; } = "";
+        public string WorldId { get; set; } = "";
         public string Name { get; set; } = "";
         public string Host { get; set; } = "";
         public int UserCount { get; set; }
         public int MaxUsers { get; set; } = 16;
         public string ThumbnailUrl { get; set; } = "";
         public string Category { get; set; } = "";
+        public bool IsPublicListing { get; set; }
+        public bool Direct { get; set; }
+        public bool IsHeadless { get; set; }
+        public string Version { get; set; } = "";
+        public long UptimeSeconds { get; set; }
+        public string[] Tags { get; set; } = Array.Empty<string>();
+        public string[] Users { get; set; } = Array.Empty<string>();
         public Texture2D? Thumbnail { get; set; }
     }
 
@@ -140,6 +150,12 @@ public partial class WorldBrowser : Control
         LumoraLogger.Log("WorldBrowser: Initialized");
     }
 
+    public void SetClient(LumoraClient client)
+    {
+        _authClient = client;
+        _browserService?.SetAuthClient(client);
+    }
+
     private void InitializeSessionBrowser()
     {
         // Create or find SessionBrowserService
@@ -153,6 +169,8 @@ public partial class WorldBrowser : Control
 
         // Connect service to this UI
         _browserService.ConnectToUI(this);
+        if (_authClient != null)
+            _browserService.SetAuthClient(_authClient);
 
         // Subscribe to join events
         _browserService.OnJoinStarted += OnJoinStarted;
@@ -389,23 +407,20 @@ public partial class WorldBrowser : Control
             // Get current focused world (local home) to unfocus later
             var previousWorld = worldManager.FocusedWorld;
 
-            // Start session on default port
+            var visibility = visibilityIndex switch
+            {
+                0 => Lumora.Core.Networking.Session.SessionVisibility.Private,
+                1 => Lumora.Core.Networking.Session.SessionVisibility.LAN,
+                2 => Lumora.Core.Networking.Session.SessionVisibility.Public,
+                _ => Lumora.Core.Networking.Session.SessionVisibility.LAN
+            };
+
+            // Start session on default port for now; metadata carries the UI-selected policy.
             ushort port = 7777;
-            var world = worldManager.StartSession(name, port, null, templateName);
+            var world = worldManager.StartSession(name, port, null, templateName, visibility, maxUsers);
 
             if (world != null)
             {
-                // Set visibility
-                var visibility = visibilityIndex switch
-                {
-                    0 => Lumora.Core.Networking.Session.SessionVisibility.Private,
-                    1 => Lumora.Core.Networking.Session.SessionVisibility.LAN,
-                    2 => Lumora.Core.Networking.Session.SessionVisibility.Public,
-                    _ => Lumora.Core.Networking.Session.SessionVisibility.LAN
-                };
-
-                world.Session?.SetVisibility(visibility);
-
                 // Focus the new world
                 worldManager.FocusWorld(world);
                 SetCurrentWorld(name);

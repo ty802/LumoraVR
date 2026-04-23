@@ -136,12 +136,12 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
     /// <summary>
     /// Connect to session server as a client and request NAT punch to join a session.
     /// </summary>
-    public async Task<bool> RequestNATPunchAsync(string targetSessionId)
+    public async Task<bool> RequestNATPunchAsync(string targetSessionId, string? joinTicket = null)
     {
         if (_client != null && _client.IsRunning)
         {
             // Already running, just send the NAT punch request
-            SendNATPunchRequest(targetSessionId);
+            SendNATPunchRequest(targetSessionId, joinTicket);
             return true;
         }
 
@@ -166,7 +166,7 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
             _pollTask = Task.Run(PollLoop);
 
             // Send NAT punch request
-            SendNATPunchRequest(targetSessionId);
+            SendNATPunchRequest(targetSessionId, joinTicket);
 
             LumoraLogger.Log($"SessionServerClient: NAT punch request sent for session {targetSessionId}");
             return true;
@@ -181,12 +181,14 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
     /// <summary>
     /// Send NAT punch request to join a session.
     /// </summary>
-    private void SendNATPunchRequest(string targetSessionId)
+    private void SendNATPunchRequest(string targetSessionId, string? joinTicket)
     {
         // Send NAT punch request with client token
-        string token = $"client:{targetSessionId}";
+        string token = string.IsNullOrWhiteSpace(joinTicket)
+            ? $"client:{targetSessionId}"
+            : $"client:{targetSessionId}:{joinTicket}";
         _client.NatPunchModule.SendNatIntroduceRequest(_serverAddress, _serverPort, token);
-        LumoraLogger.Log($"SessionServerClient: Sent NAT punch request with token: {token}");
+        LumoraLogger.Log($"SessionServerClient: Sent NAT punch request for session {targetSessionId}");
     }
 
     /// <summary>

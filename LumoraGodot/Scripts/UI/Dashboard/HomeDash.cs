@@ -264,6 +264,12 @@ public partial class HomeDash : PanelContainer
                 settingsPage.SetUserData(_currentUser.Username, "", _currentUser.TwoFactorEnabled);
         }
 
+        if (tab == "Worlds" && page is WorldBrowser worldBrowser)
+        {
+            if (_client != null)
+                worldBrowser.SetClient(_client);
+        }
+
         // Initialize Inventory page
         if (tab == "Inventory" && page is InventoryBrowser inventoryPage)
         {
@@ -483,6 +489,12 @@ public partial class HomeDash : PanelContainer
                 inventoryPage.SetClient(_client);
 
             inventoryPage.SetCurrentUser(_currentUser);
+        }
+
+        if (_contentPages.TryGetValue("Worlds", out var worldsControl) && worldsControl is WorldBrowser worldBrowser)
+        {
+            if (_client != null)
+                worldBrowser.SetClient(_client);
         }
     }
 

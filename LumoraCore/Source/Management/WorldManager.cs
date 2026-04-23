@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Lumora.Core;
+using Lumora.Core.Networking.Session;
 using Lumora.Core.Templates;
 using World = Lumora.Core.World;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -158,12 +159,27 @@ public class WorldManager : IDisposable
     /// <returns>Created world</returns>
     public World StartSession(string name, ushort port, string hostUserName = null, string templateName = "Empty", Action<World> init = null)
     {
+        return StartSession(name, port, hostUserName, templateName, SessionVisibility.Private, 16, init);
+    }
+
+    /// <summary>
+    /// Start a hosted session with explicit discovery and capacity settings.
+    /// </summary>
+    public World StartSession(
+        string name,
+        ushort port,
+        string hostUserName,
+        string templateName,
+        SessionVisibility visibility,
+        int maxUsers,
+        Action<World> init = null)
+    {
         try
         {
-            LumoraLogger.Log($"WorldManager: Starting session '{name}' on port {port} with template '{templateName}'");
+            LumoraLogger.Log($"WorldManager: Starting session '{name}' on port {port} with template '{templateName}', visibility {visibility}, max {maxUsers}");
 
             // Use World static factory with template application
-            var world = World.StartSession(_engine, name, port, hostUserName, (w) =>
+            var world = World.StartSession(_engine, name, port, hostUserName, visibility, maxUsers, (w) =>
             {
                 WorldTemplates.ApplyTemplate(w, templateName);
                 init?.Invoke(w);

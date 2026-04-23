@@ -799,7 +799,7 @@ public class Engine : IDisposable
 
         // Dispose in reverse initialization order
         DisposeSubsystem("WorldManager", () => { WorldManager?.Dispose(); WorldManager = null!; });
-        DisposeSubsystem("AudioManager", () => { AudioManager = null!; });
+        DisposeSubsystem("AudioManager", () => { AudioManager.Dispose(); });
         DisposeSubsystem("ContentCache", () => { ContentCache?.Dispose(); ContentCache = null; CDNClient?.Dispose(); CDNClient = null; });
         DisposeSubsystem("AssetManager", () => { AssetManager?.Dispose(); AssetManager = null!; });
         DisposeSubsystem("CoroutineManager", () => { CoroutineManager?.Dispose(); CoroutineManager = null!; });

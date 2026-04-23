@@ -5,6 +5,7 @@ using Godot;
 using System;
 using System.Collections.Generic;
 using Lumora.CDN;
+using Lumora.Core.Components.Avatar;
 
 namespace Lumora.Godot.UI;
 
@@ -224,7 +225,27 @@ public partial class Settings : Control
 
     private void OnChangeAvatarPressed()
     {
-        // TODO: Open avatar picker
+        var manager = ResolveLocalAvatarManager();
+        if (manager == null)
+        {
+            GD.PrintErr("Settings: No local avatar manager is available");
+            return;
+        }
+
+        if (manager.AvailableAvatars.Count == 0)
+        {
+            manager.EquipDefaultAvatar();
+            GD.Print("Settings: Switched to default avatar");
+            return;
+        }
+
+        manager.CycleNextAvatar();
+
+        var avatarName = manager.CurrentAvatar.Target?.SlotName?.Value;
+        if (string.IsNullOrWhiteSpace(avatarName))
+            avatarName = "Avatar";
+
+        GD.Print($"Settings: Switched avatar to {avatarName}");
     }
 
     private void OnSaveProfilePressed()
@@ -926,5 +947,16 @@ public partial class Settings : Control
 
         if (_btnEnable2FA != null)
             _btnEnable2FA.Text = has2FA ? "Disable" : "Enable";
+    }
+
+    private static AvatarManager? ResolveLocalAvatarManager()
+    {
+        var localUserRoot = global::Lumora.Core.Engine.Current?.WorldManager?.FocusedWorld?.LocalUser?.Root;
+        if (localUserRoot == null)
+            return null;
+
+        var manager = localUserRoot.Slot.GetComponent<AvatarManager>() ?? localUserRoot.Slot.AttachComponent<AvatarManager>();
+        manager.UserRoot.Target ??= localUserRoot;
+        return manager;
     }
 }

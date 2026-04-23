@@ -11,7 +11,6 @@ using System.Threading.Tasks;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Components;
-using Lumora.Core.Components.Avatar;
 using Lumora.Core.Components.Assets;
 using Lumora.Core.GodotUI.Wizards;
 using Lumora.Core.Math;
@@ -25,6 +24,8 @@ namespace Lumora.Godot.Input;
 /// </summary>
 public partial class ClipboardImporter : Node
 {
+    private static readonly HashSet<string> ClipboardModelExtensions = new(ModelImporter.SupportedExtensions, StringComparer.OrdinalIgnoreCase);
+
     // Windows clipboard P/Invoke for file drops
     private const uint CF_HDROP = 15;
 
@@ -290,8 +291,16 @@ public partial class ClipboardImporter : Node
         }
 
         // Check common file extensions
-        var extensions = new[] { ".glb", ".gltf", ".vrm", ".png", ".jpg", ".jpeg", ".webp", ".obj", ".fbx", ".gdshader" };
-        foreach (var ext in extensions)
+        foreach (var ext in ClipboardModelExtensions)
+        {
+            if (content.EndsWith(ext, StringComparison.OrdinalIgnoreCase))
+            {
+                return File.Exists(content);
+            }
+        }
+
+        var otherExtensions = new[] { ".png", ".jpg", ".jpeg", ".webp", ".gdshader" };
+        foreach (var ext in otherExtensions)
         {
             if (content.EndsWith(ext, StringComparison.OrdinalIgnoreCase))
             {
@@ -401,11 +410,6 @@ public partial class ClipboardImporter : Node
 
         switch (extension)
         {
-            case ".glb":
-            case ".gltf":
-                await ImportModel(filePath, isAvatar: false, targetSlot);
-                break;
-
             case ".vrm":
                 await ImportModel(filePath, isAvatar: true, targetSlot);
                 break;
@@ -423,7 +427,14 @@ public partial class ClipboardImporter : Node
                 break;
 
             default:
-                GD.Print($"ClipboardImporter: Unsupported file type: {extension}");
+                if (ModelImporter.IsSupportedFormat(filePath))
+                {
+                    await ImportModel(filePath, isAvatar: false, targetSlot);
+                }
+                else
+                {
+                    GD.Print($"ClipboardImporter: Unsupported file type: {extension}");
+                }
                 break;
         }
     }
@@ -482,14 +493,7 @@ public partial class ClipboardImporter : Node
         {
             GD.Print($"ClipboardImporter: Model imported successfully");
 
-            bool avatarEquipped = false;
-            if (isAvatar && result.RootSlot != null)
-            {
-                avatarEquipped = TryEquipImportedAvatar(result.RootSlot);
-            }
-
-            // Position the imported object in front of the camera when not auto-equipped as avatar.
-            if (!avatarEquipped && _camera != null && result.RootSlot != null)
+            if (_camera != null && result.RootSlot != null)
             {
                 var spawnPosition = _camera.GlobalPosition + (-_camera.GlobalTransform.Basis.Z * 2.0f);
                 result.RootSlot.LocalPosition.Value = new Lumora.Core.Math.float3(
@@ -502,37 +506,6 @@ public partial class ClipboardImporter : Node
         else
         {
             GD.PrintErr($"ClipboardImporter: Model import failed: {result.ErrorMessage}");
-        }
-    }
-
-    private bool TryEquipImportedAvatar(Slot avatarSlot)
-    {
-        try
-        {
-            var world = avatarSlot?.World ?? _targetSlot?.World ?? _engine?.WorldManager?.FocusedWorld;
-            var localUserRoot = world?.LocalUser?.Root;
-            if (localUserRoot == null)
-            {
-                GD.Print("ClipboardImporter: Local user root not available, imported avatar left as regular object");
-                return false;
-            }
-
-            var manager = localUserRoot.Slot.GetComponent<AvatarManager>() ?? localUserRoot.Slot.AttachComponent<AvatarManager>();
-            manager.UserRoot.Target ??= localUserRoot;
-
-            if (!manager.EquipAvatar(avatarSlot))
-            {
-                GD.Print("ClipboardImporter: AvatarManager rejected avatar equip, leaving avatar in scene");
-                return false;
-            }
-
-            GD.Print("ClipboardImporter: Avatar imported and equipped");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            GD.PrintErr($"ClipboardImporter: Failed to auto-equip avatar: {ex.Message}");
-            return false;
         }
     }
 
@@ -621,11 +594,18 @@ public partial class ClipboardImporter : Node
             var path = uri.AbsolutePath;
             var extension = Path.GetExtension(path).ToLowerInvariant();
 
-        var knownExtensions = new[] { ".glb", ".gltf", ".vrm", ".png", ".jpg", ".jpeg", ".webp", ".obj", ".gdshader" };
-            foreach (var ext in knownExtensions)
-            {
-                if (extension == ext) return ext;
-            }
+        var knownExtensions = new List<string>(ModelImporter.SupportedExtensions)
+        {
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".gdshader"
+        };
+        foreach (var ext in knownExtensions)
+        {
+            if (extension == ext) return ext;
+        }
         }
         catch { }
 

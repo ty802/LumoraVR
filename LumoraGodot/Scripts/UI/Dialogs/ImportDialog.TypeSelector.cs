@@ -4,6 +4,7 @@
 using Godot;
 using System;
 using System.Collections.Generic;
+using Lumora.Core.Assets;
 
 namespace Lumora.Godot.UI;
 
@@ -12,11 +13,21 @@ namespace Lumora.Godot.UI;
 /// </summary>
 public partial class ImportDialog
 {
+    private static readonly string[] ModelImportExtensions = ModelImporter.SupportedExtensions;
+    private static readonly string[] AvatarImportExtensions = new[]
+    {
+        ".vrm",
+        ".glb",
+        ".gltf",
+        ".fbx",
+        ".dae"
+    };
+
     private static readonly (ImportType type, string label, string[] extensions)[] ImportOptions =
     {
         (ImportType.ImageTexture, "Image / Texture",   new[] { ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga" }),
-        (ImportType.Model3D,      "3D Model",          new[] { ".glb", ".gltf" }),
-        (ImportType.Avatar,       "Avatar (VRM/GLB)",  new[] { ".vrm", ".glb", ".gltf" }),
+        (ImportType.Model3D,      "3D Model",          ModelImportExtensions),
+        (ImportType.Avatar,       "Avatar",            AvatarImportExtensions),
         (ImportType.RawFile,      "Raw File",          Array.Empty<string>()),
     };
 

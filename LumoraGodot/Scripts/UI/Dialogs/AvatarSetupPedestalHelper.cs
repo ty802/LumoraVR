@@ -50,12 +50,12 @@ internal static class AvatarSetupPedestalHelper
         marker.AttachComponent<Grabbable>();
 
         var collider = marker.AttachComponent<SphereCollider>();
-        collider.Radius.Value = 0.045f;
+        collider.Radius.Value = 0.065f;
 
         var sphere = marker.AttachComponent<LumoraMeshes.SphereMesh>();
-        sphere.Radius.Value   = 0.04f;
-        sphere.Segments.Value = 20;
-        sphere.Rings.Value    = 12;
+        sphere.Radius.Value   = 0.055f;
+        sphere.Segments.Value = 24;
+        sphere.Rings.Value    = 16;
 
         var renderer = marker.AttachComponent<MeshRenderer>();
         renderer.Mesh.Target = sphere;
@@ -78,12 +78,12 @@ internal static class AvatarSetupPedestalHelper
 
         // Shaft
         var shaft = arrowRoot.AddSlot("Shaft");
-        shaft.LocalPosition.Value = new float3(0f, 0f, 0.06f);
+        shaft.LocalPosition.Value = new float3(0f, 0f, 0.08f);
         shaft.LocalRotation.Value = floatQ.FromEuler(new float3(MathF.PI * 0.5f, 0f, 0f));
 
         var shaftMesh = shaft.AttachComponent<LumoraMeshes.CylinderMesh>();
-        shaftMesh.Radius.Value   = 0.008f;
-        shaftMesh.Height.Value   = 0.12f;
+        shaftMesh.Radius.Value   = 0.012f;
+        shaftMesh.Height.Value   = 0.16f;
         shaftMesh.Segments.Value = 16;
 
         var shaftRenderer = shaft.AttachComponent<MeshRenderer>();
@@ -95,11 +95,11 @@ internal static class AvatarSetupPedestalHelper
 
         // Tip
         var tip = arrowRoot.AddSlot("Tip");
-        tip.LocalPosition.Value = new float3(0f, 0f, 0.13f);
+        tip.LocalPosition.Value = new float3(0f, 0f, 0.18f);
         tip.LocalRotation.Value = floatQ.Identity;
 
         var tipMesh = tip.AttachComponent<LumoraMeshes.BoxMesh>();
-        tipMesh.Size.Value = new float3(0.028f, 0.028f, 0.028f);
+        tipMesh.Size.Value = new float3(0.04f, 0.04f, 0.04f);
 
         var tipRenderer = tip.AttachComponent<MeshRenderer>();
         tipRenderer.Mesh.Target = tipMesh;

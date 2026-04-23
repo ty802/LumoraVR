@@ -23,6 +23,7 @@
     <PackageReference Include="LiteNetLib" Version="2.0.2" />
     <PackageReference Include="StbImageSharp" Version="2.30.15" />
     <PackageReference Include="SharpGLTF.Core" Version="1.0.6" />
+    <PackageReference Include="AssimpNetter" Version="6.0.4" />
   </ItemGroup>
 
   <ItemGroup>

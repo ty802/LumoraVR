@@ -11,7 +11,7 @@ using Lumora.Core.Assets;
 namespace Lumora.Godot.UI;
 
 /// <summary>
-/// Partial class: per-type import execution (image, 3D model/avatar, raw file).
+/// Partial class: per-type import execution.
 /// </summary>
 public partial class ImportDialog
 {
@@ -51,7 +51,11 @@ public partial class ImportDialog
             }
 
             SetSubtitle("Import completed");
-            SetCompletedStatus("Import queued. Model may take a moment to appear in-world.");
+            if (type == ImportType.Avatar)
+                SetCompletedStatus("Avatar imported as draft. Open Creator to finish it.");
+            else
+                SetCompletedStatus("Import queued. Model may take a moment to appear in-world.");
+
             GD.Print("ImportDialog: Import completed successfully");
             return true;
         }
@@ -75,7 +79,6 @@ public partial class ImportDialog
             localUri = await _localDB.ImportLocalAssetAsync(filePath, LocalDB.ImportLocation.Copy);
 
         _targetSlot.AddSlot(Path.GetFileNameWithoutExtension(filePath));
-        // TODO: Create ImageProvider component
         GD.Print($"ImportDialog: Image imported to {localUri ?? filePath}");
     }
 
@@ -94,22 +97,28 @@ public partial class ImportDialog
             result = await ModelImporter.ImportModelAsync(filePath, _targetSlot, null, _localDB, progress);
         }
 
-        if (result.Success)
-        {
-            _lastImportedAvatarSlot = isAvatar ? result.RootSlot : null;
-            _lastAvatarSetupPedestal = null;
-            UpdateAvatarSetupButton();
-
-            progress?.Report((0.90f, isAvatar ? "Finalizing avatar..." : "Finalizing model..."));
-            GD.Print($"ImportDialog: Model imported successfully to slot '{result.RootSlot?.SlotName.Value}'");
-            progress?.Report((1.0f, isAvatar ? "Avatar imported" : "Model import complete"));
-        }
-        else
+        if (!result.Success)
         {
             GD.PrintErr($"ImportDialog: Model import failed: {result.ErrorMessage}");
             progress?.Report((0f, $"Import failed: {result.ErrorMessage}"));
             throw new InvalidOperationException(result.ErrorMessage);
         }
+
+        if (isAvatar)
+        {
+            ResetAvatarCreatorState();
+            _lastImportedAvatarSlot = result.RootSlot;
+            UpdateAvatarSetupButton();
+        }
+        else
+        {
+            _lastImportedAvatarSlot = null;
+            UpdateAvatarSetupButton();
+        }
+
+        progress?.Report((0.90f, isAvatar ? "Avatar imported as draft..." : "Finalizing model..."));
+        GD.Print($"ImportDialog: Model imported successfully to slot '{result.RootSlot?.SlotName.Value}'");
+        progress?.Report((1.0f, isAvatar ? "Avatar imported as draft" : "Model import complete"));
     }
 
     private async Task ImportRawFile(string filePath)

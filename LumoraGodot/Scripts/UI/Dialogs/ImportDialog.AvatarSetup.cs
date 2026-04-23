@@ -4,144 +4,183 @@
 using Godot;
 using System;
 using Lumora.Core;
-using Lumora.Core.Components;
 using Lumora.Core.Components.Avatar;
-using Lumora.Core.Input;
-using Lumora.Core.Math;
 
 namespace Lumora.Godot.UI;
 
 /// <summary>
-/// Partial class: avatar setup pedestal button logic and pedestal spawning.
-/// Geometry helpers are in <see cref="AvatarSetupPedestalHelper"/>.
+/// Partial class: avatar creator button flow for imported avatars.
 /// </summary>
 public partial class ImportDialog
 {
     private void UpdateAvatarSetupButton()
     {
-        if (_btnAvatarSetup == null) return;
+        if (_btnAvatarSetup == null)
+            return;
 
-        var hasAvatar = _lastImportedAvatarSlot != null && !_lastImportedAvatarSlot.IsDestroyed;
-        _btnAvatarSetup.Visible  = hasAvatar;
+        if (_activeAvatarCreatorSession != null && !_activeAvatarCreatorSession.IsActive)
+            _activeAvatarCreatorSession = null;
+
+        var avatarSlot = ResolveImportedAvatarSlot();
+        var hasAvatar = avatarSlot != null;
+
+        _btnAvatarSetup.Visible = hasAvatar;
         _btnAvatarSetup.Disabled = _isImporting || !hasAvatar;
 
         if (!hasAvatar)
         {
-            _btnAvatarSetup.Text = "Setup Imported Avatar";
+            _btnAvatarSetup.Text = "Avatar Creator";
             return;
         }
 
-        var avatarName = _lastImportedAvatarSlot.SlotName?.Value;
-        if (string.IsNullOrWhiteSpace(avatarName))
-            avatarName = "Avatar";
-        _btnAvatarSetup.Text = $"Setup {avatarName}";
+        if (_activeAvatarCreatorSession != null && _activeAvatarCreatorSession.Matches(avatarSlot))
+        {
+            _btnAvatarSetup.Text = "Create Avatar";
+            return;
+        }
+
+        _btnAvatarSetup.Text = IsAvatarFinalized(avatarSlot)
+            ? "Equip Avatar"
+            : "Open Creator";
     }
 
     private void OnAvatarSetupPressed()
     {
-        if (_isImporting) return;
+        if (_isImporting)
+            return;
 
-        if (_lastImportedAvatarSlot == null || _lastImportedAvatarSlot.IsDestroyed)
+        var avatarSlot = ResolveImportedAvatarSlot();
+        if (avatarSlot == null)
         {
-            SetCompletedStatus("No imported avatar available to setup.", success: false);
-            _lastImportedAvatarSlot = null;
+            SetCompletedStatus("No imported avatar is available.", success: false);
             UpdateAvatarSetupButton();
             return;
         }
 
         try
         {
-            if (_lastAvatarSetupPedestal != null && !_lastAvatarSetupPedestal.IsDestroyed)
+            if (_activeAvatarCreatorSession != null && !_activeAvatarCreatorSession.IsActive)
+                _activeAvatarCreatorSession = null;
+
+            if (_activeAvatarCreatorSession != null && _activeAvatarCreatorSession.Matches(avatarSlot))
             {
-                SetSubtitle("Avatar setup pedestal already spawned");
-                SetCompletedStatus("Use the existing pedestal and markers. Re-import the avatar to create a fresh setup station.");
+                if (_activeAvatarCreatorSession.Finalize(out var finalizeMessage))
+                {
+                    _activeAvatarCreatorSession = null;
+                    SetSubtitle("Avatar created");
+                    SetCompletedStatus(finalizeMessage);
+                }
+                else
+                {
+                    SetCompletedStatus(finalizeMessage, success: false);
+                }
+
+                UpdateAvatarSetupButton();
                 return;
             }
 
-            var pedestal = SpawnAvatarSetupPedestal(_lastImportedAvatarSlot);
-            if (pedestal == null)
+            if (IsAvatarFinalized(avatarSlot))
             {
-                SetCompletedStatus("Failed to spawn avatar setup pedestal.", success: false);
+                if (TryEquipAvatar(avatarSlot, out var equipMessage))
+                {
+                    SetSubtitle("Avatar equipped");
+                    SetCompletedStatus(equipMessage);
+                }
+                else
+                {
+                    SetCompletedStatus(equipMessage, success: false);
+                }
+
+                UpdateAvatarSetupButton();
                 return;
             }
 
-            _lastAvatarSetupPedestal = pedestal;
-            SetSubtitle("Avatar setup pedestal spawned");
-            SetCompletedStatus("Move the wrist/viewpoint markers (balls). Arrows show facing direction.");
+            ResetAvatarCreatorState();
+
+            var setupParent = _targetSlot ?? avatarSlot.Parent ?? avatarSlot.World?.RootSlot;
+            if (setupParent == null)
+            {
+                SetCompletedStatus("Could not open the avatar creator.", success: false);
+                UpdateAvatarSetupButton();
+                return;
+            }
+
+            var session = new AvatarCreatorSession(avatarSlot, setupParent);
+            if (!session.Open(out var openMessage))
+            {
+                session.Dispose();
+                SetCompletedStatus(openMessage, success: false);
+                UpdateAvatarSetupButton();
+                return;
+            }
+
+            _activeAvatarCreatorSession = session;
+            SetSubtitle("Avatar creator open");
+            SetCompletedStatus(openMessage);
+            UpdateAvatarSetupButton();
         }
         catch (Exception ex)
         {
-            GD.PrintErr($"ImportDialog: Failed to spawn avatar setup pedestal: {ex.Message}");
-            SetCompletedStatus($"Avatar setup failed: {ex.Message}", success: false);
+            GD.PrintErr($"ImportDialog: Avatar creator action failed: {ex.Message}");
+            SetCompletedStatus($"Avatar action failed: {ex.Message}", success: false);
+            UpdateAvatarSetupButton();
         }
     }
 
-    /// <summary>
-    /// Spawn the avatar setup pedestal near the imported avatar, populate it with
-    /// bone-aligned grab markers and an AvatarMount slot.
-    /// </summary>
-    private Slot SpawnAvatarSetupPedestal(Slot avatarSlot)
+    private Slot? ResolveImportedAvatarSlot()
     {
-        if (avatarSlot == null || avatarSlot.IsDestroyed) return null;
+        if (_lastImportedAvatarSlot == null || _lastImportedAvatarSlot.IsDestroyed)
+        {
+            _lastImportedAvatarSlot = null;
+            return null;
+        }
 
-        var setupParent = _targetSlot ?? avatarSlot.Parent ?? avatarSlot.World?.RootSlot;
-        if (setupParent == null) return null;
+        return _lastImportedAvatarSlot;
+    }
 
-        // Remove any previous pedestal with the same name.
-        var pedestalName = $"{avatarSlot.SlotName.Value}_SetupPedestal";
-        var existing = setupParent.FindChild(pedestalName, recursive: false);
-        if (existing != null && !existing.IsDestroyed)
-            existing.Destroy();
+    private static bool IsAvatarFinalized(Slot avatarSlot)
+    {
+        if (avatarSlot == null || avatarSlot.IsDestroyed)
+            return false;
 
-        var avatarGlobalPos = avatarSlot.GlobalPosition;
-        var avatarGlobalRot = avatarSlot.GlobalRotation;
+        var descriptor = avatarSlot.GetComponent<AvatarDescriptor>();
+        if (descriptor?.IsFinalized.Value == true)
+            return true;
 
-        // ── Pedestal root ────────────────────────────────────────────────────
-        var pedestalRoot = setupParent.AddSlot(pedestalName);
-        pedestalRoot.GlobalPosition = avatarGlobalPos;
-        pedestalRoot.GlobalRotation = floatQ.Identity;
-        pedestalRoot.AttachComponent<Grabbable>();
+        var draft = avatarSlot.GetComponent<AvatarDraft>();
+        return draft?.IsFinalized.Value == true && draft.Descriptor.Target != null;
+    }
 
-        var pedestalCollider = pedestalRoot.AttachComponent<BoxCollider>();
-        pedestalCollider.Size.Value   = new float3(1.0f, 0.2f, 1.0f);
-        pedestalCollider.Offset.Value = new float3(0f,   0.1f, 0f);
+    private bool TryEquipAvatar(Slot avatarSlot, out string message)
+    {
+        message = string.Empty;
 
-        // ── Pedestal geometry (Base / Column / Top) ──────────────────────────
-        AvatarSetupPedestalHelper.CreatePedestalPart(pedestalRoot, "Base",   new float3(0f, 0.04f, 0f), radius: 0.42f, height: 0.08f, new colorHDR(0.12f, 0.14f, 0.20f, 1f));
-        AvatarSetupPedestalHelper.CreatePedestalPart(pedestalRoot, "Column", new float3(0f, 0.22f, 0f), radius: 0.10f, height: 0.28f, new colorHDR(0.20f, 0.24f, 0.34f, 1f));
-        AvatarSetupPedestalHelper.CreatePedestalPart(pedestalRoot, "Top",    new float3(0f, 0.36f, 0f), radius: 0.33f, height: 0.05f, new colorHDR(0.28f, 0.34f, 0.48f, 1f));
+        var localUserRoot = avatarSlot.World?.LocalUser?.Root ?? _targetSlot?.World?.LocalUser?.Root;
+        if (localUserRoot == null)
+        {
+            message = "Local user root is not available.";
+            return false;
+        }
 
-        // ── Avatar mount ────────────────────────────────────────────────────
-        var avatarMount = pedestalRoot.AddSlot("AvatarMount");
-        avatarMount.LocalPosition.Value = new float3(0f, 0.385f, 0f);
-        avatarMount.LocalRotation.Value = floatQ.Identity;
+        var manager = localUserRoot.Slot.GetComponent<AvatarManager>() ?? localUserRoot.Slot.AttachComponent<AvatarManager>();
+        manager.UserRoot.Target ??= localUserRoot;
 
-        avatarSlot.SetParent(avatarMount, preserveGlobalTransform: true);
-        avatarSlot.GlobalRotation = avatarGlobalRot;
-        avatarSlot.GlobalPosition = pedestalRoot.GlobalPosition + new float3(0f, 0.385f, 0f);
+        if (manager.CurrentAvatar.Target == avatarSlot)
+        {
+            message = "Avatar is already equipped.";
+            return true;
+        }
 
-        // ── Setup markers ───────────────────────────────────────────────────
-        var markersRoot = avatarSlot.FindChild(AvatarSetupMarkersRootName, recursive: false);
-        if (markersRoot != null && !markersRoot.IsDestroyed)
-            markersRoot.Destroy();
+        if (!manager.EquipAvatar(avatarSlot))
+        {
+            message = "Avatar could not be equipped.";
+            return false;
+        }
 
-        markersRoot = avatarSlot.AddSlot(AvatarSetupMarkersRootName);
-        markersRoot.LocalPosition.Value = float3.Zero;
-        markersRoot.LocalRotation.Value = floatQ.Identity;
-
-        var rig           = avatarSlot.GetComponentInChildren<BipedRig>();
-        var leftHandBone  = rig?.TryGetBone(BodyNode.LeftHand);
-        var rightHandBone = rig?.TryGetBone(BodyNode.RightHand);
-        var headBone      = rig?.TryGetBone(BodyNode.Head);
-
-        var leftMarker  = AvatarSetupPedestalHelper.CreateSetupMarker(markersRoot, "LeftWrist",  new colorHDR(0.25f, 0.65f, 1.0f, 0.9f), new float3(-0.22f, 1.25f, 0.08f));
-        var rightMarker = AvatarSetupPedestalHelper.CreateSetupMarker(markersRoot, "RightWrist", new colorHDR(1.0f,  0.45f, 0.25f, 0.9f), new float3( 0.22f, 1.25f, 0.08f));
-        var viewMarker  = AvatarSetupPedestalHelper.CreateSetupMarker(markersRoot, "Viewpoint",  new colorHDR(0.45f, 1.0f,  0.65f, 0.9f), new float3( 0f,    1.58f, 0.06f));
-
-        AvatarSetupPedestalHelper.ApplyMarkerFromBone(avatarSlot, leftMarker,  leftHandBone,  float3.Backward);
-        AvatarSetupPedestalHelper.ApplyMarkerFromBone(avatarSlot, rightMarker, rightHandBone, float3.Backward);
-        AvatarSetupPedestalHelper.ApplyMarkerFromBone(avatarSlot, viewMarker,  headBone,      float3.Backward, forwardOffset: 0.06f);
-
-        return pedestalRoot;
+        var avatarName = avatarSlot.SlotName?.Value;
+        message = string.IsNullOrWhiteSpace(avatarName)
+            ? "Avatar equipped."
+            : $"Equipped {avatarName}.";
+        return true;
     }
 }

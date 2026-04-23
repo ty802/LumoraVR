@@ -7,6 +7,7 @@ using System.IO;
 using System.Numerics;
 using System.Threading;
 using System.Threading.Tasks;
+using Assimp;
 using Lumora.Core.Phos;
 using Lumora.Core.Math;
 using SharpGLTF.Schema2;
@@ -161,6 +162,7 @@ public class MeshProvider : UrlAssetProvider<MeshDataAsset, MeshDataMetadata>
             {
                 ".glb" or ".gltf" => DecodeGltf(fileData),
                 ".obj" => DecodeObj(fileData),
+                ".fbx" or ".dae" or ".3ds" or ".blend" or ".stl" or ".ply" or ".x" or ".ase" => DecodeAssimp(fileData, ext),
                 _ => throw new NotSupportedException($"Unsupported mesh format: {ext}")
             };
         }
@@ -383,6 +385,101 @@ public class MeshProvider : UrlAssetProvider<MeshDataAsset, MeshDataMetadata>
         return phosMesh;
     }
 
+    private PhosMesh DecodeAssimp(byte[] fileData, string extension)
+    {
+        using var stream = new MemoryStream(fileData, writable: false);
+        using var context = new AssimpContext();
+
+        var scene = context.ImportFileFromStream(stream, GetAssimpPostProcessSteps(), extension);
+        if (scene == null || !scene.HasMeshes || scene.MeshCount == 0)
+            throw new InvalidOperationException($"Assimp could not decode mesh data for '{extension}'");
+
+        var phosMesh = new PhosMesh();
+        phosMesh.HasNormals = true;
+        phosMesh.HasUV0s = true;
+
+        var allPositions = new List<float3>();
+        var allNormals = new List<float3>();
+        var allUVs = new List<float2>();
+        var allIndices = new List<int>();
+        int vertexOffset = 0;
+
+        foreach (var mesh in scene.Meshes)
+        {
+            if (mesh == null || !mesh.HasVertices || mesh.VertexCount == 0)
+                continue;
+
+            for (int i = 0; i < mesh.VertexCount; i++)
+            {
+                var position = mesh.Vertices[i];
+                allPositions.Add(new float3(position.X, position.Y, position.Z));
+
+                if (mesh.HasNormals && i < mesh.Normals.Count)
+                {
+                    var normal = mesh.Normals[i];
+                    allNormals.Add(new float3(normal.X, normal.Y, normal.Z));
+                }
+                else
+                {
+                    allNormals.Add(float3.Up);
+                }
+
+                if (mesh.TextureCoordinateChannelCount > 0 &&
+                    mesh.TextureCoordinateChannels[0] != null &&
+                    i < mesh.TextureCoordinateChannels[0].Count)
+                {
+                    var uv = mesh.TextureCoordinateChannels[0][i];
+                    allUVs.Add(new float2(uv.X, uv.Y));
+                }
+                else
+                {
+                    allUVs.Add(float2.Zero);
+                }
+            }
+
+            foreach (var face in mesh.Faces)
+            {
+                if (!face.HasIndices || face.IndexCount < 3)
+                    continue;
+
+                for (int i = 0; i + 2 < face.Indices.Count; i += 3)
+                {
+                    allIndices.Add(vertexOffset + face.Indices[i]);
+                    allIndices.Add(vertexOffset + face.Indices[i + 2]);
+                    allIndices.Add(vertexOffset + face.Indices[i + 1]);
+                }
+            }
+
+            vertexOffset += mesh.VertexCount;
+        }
+
+        if (allPositions.Count == 0)
+        {
+            LumoraLogger.Warn($"MeshProvider: Assimp import produced no vertices for '{extension}'");
+            return phosMesh;
+        }
+
+        phosMesh.IncreaseVertexCount(allPositions.Count);
+        phosMesh.SetHasUV(0, true);
+
+        for (int i = 0; i < allPositions.Count; i++)
+        {
+            phosMesh.positions[i] = allPositions[i];
+            phosMesh.normals[i] = allNormals[i];
+            phosMesh.SetUV(0, i, allUVs[i]);
+        }
+
+        var submesh = new PhosTriangleSubmesh(phosMesh);
+        phosMesh.Submeshes.Add(submesh);
+        for (int i = 0; i + 2 < allIndices.Count; i += 3)
+        {
+            submesh.AddTriangle(allIndices[i], allIndices[i + 1], allIndices[i + 2]);
+        }
+
+        LumoraLogger.Debug($"MeshProvider: Decoded {extension} with {allPositions.Count} vertices, {allIndices.Count / 3} triangles");
+        return phosMesh;
+    }
+
     private (int v, int vt, int vn) ParseObjFaceVertex(string vertex)
     {
         var parts = vertex.Split('/');
@@ -409,5 +506,18 @@ public class MeshProvider : UrlAssetProvider<MeshDataAsset, MeshDataMetadata>
                 positions[i] *= scale;
             }
         }
+    }
+
+    private static PostProcessSteps GetAssimpPostProcessSteps()
+    {
+        return PostProcessSteps.Triangulate
+            | PostProcessSteps.JoinIdenticalVertices
+            | PostProcessSteps.GenerateSmoothNormals
+            | PostProcessSteps.SortByPrimitiveType
+            | PostProcessSteps.ImproveCacheLocality
+            | PostProcessSteps.FindInvalidData
+            | PostProcessSteps.ValidateDataStructure
+            | PostProcessSteps.PreTransformVertices
+            | PostProcessSteps.FlipUVs;
     }
 }

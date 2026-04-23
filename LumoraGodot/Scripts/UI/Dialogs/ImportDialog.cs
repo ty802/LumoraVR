@@ -7,7 +7,6 @@ using System.Collections.Generic;
 using System.IO;
 using Lumora.Core;
 using Lumora.Core.Assets;
-using Lumora.Core.Math;
 
 namespace Lumora.Godot.UI;
 
@@ -15,10 +14,10 @@ namespace Lumora.Godot.UI;
 /// Import dialog for selecting how to import files.
 /// Supports images, 3D models, avatars, and raw files.
 /// Functionality is split across partial class files:
-///   ImportDialog.TypeSelector.cs  — option button creation/filtering
-///   ImportDialog.Progress.cs      — progress bar and status reporting
-///   ImportDialog.Executor.cs      — per-type import logic
-///   ImportDialog.AvatarSetup.cs   — avatar setup pedestal flow
+///   ImportDialog.TypeSelector.cs  - option button creation/filtering
+///   ImportDialog.Progress.cs      - progress bar and status reporting
+///   ImportDialog.Executor.cs      - per-type import logic
+///   ImportDialog.AvatarSetup.cs   - avatar creator flow
 /// </summary>
 public partial class ImportDialog : Control
 {
@@ -31,9 +30,7 @@ public partial class ImportDialog : Control
     }
 
     private const string OptionButtonScenePath = "res://Scenes/UI/Components/ImportOptionButton.tscn";
-    internal const string AvatarSetupMarkersRootName = "AvatarSetupMarkers";
 
-    // ── UI node references ──────────────────────────────────────────────────
     private Button _btnClose;
     private Button _btnInfo;
     private Button _btnAvatarSetup;
@@ -47,7 +44,6 @@ public partial class ImportDialog : Control
     private PackedScene _optionButtonScene;
     private readonly List<Button> _optionButtons = new();
 
-    // ── State ───────────────────────────────────────────────────────────────
     private bool _isInitialized;
     private bool _isImporting;
     private ImportType? _selectedType;
@@ -55,25 +51,23 @@ public partial class ImportDialog : Control
     private LocalDB _localDB;
     private Slot _targetSlot;
     private Slot _lastImportedAvatarSlot;
-    private Slot _lastAvatarSetupPedestal;
+    private AvatarCreatorSession? _activeAvatarCreatorSession;
 
     public event Action<ImportType, string> ImportRequested;
     public event Action DialogClosed;
 
-    // ── Godot lifecycle ─────────────────────────────────────────────────────
-
     public override void _Ready()
     {
-        _btnClose            = GetNodeOrNull<Button>("MainMargin/VBox/Header/CloseButton");
-        _btnInfo             = GetNodeOrNull<Button>("MainMargin/VBox/Header/InfoButton");
-        _btnAvatarSetup      = GetNodeOrNull<Button>("MainMargin/VBox/AvatarSetupButton");
-        _titleLabel          = GetNodeOrNull<Label>("MainMargin/VBox/Header/Title");
-        _subtitleLabel       = GetNodeOrNull<Label>("MainMargin/VBox/Subtitle");
-        _optionsList         = GetNodeOrNull<VBoxContainer>("MainMargin/VBox/OptionsList");
-        _fileInfoLabel       = GetNodeOrNull<Label>("MainMargin/VBox/FileInfo");
-        _progressPanel       = GetNodeOrNull<Control>("MainMargin/VBox/ProgressPanel");
+        _btnClose = GetNodeOrNull<Button>("MainMargin/VBox/Header/CloseButton");
+        _btnInfo = GetNodeOrNull<Button>("MainMargin/VBox/Header/InfoButton");
+        _btnAvatarSetup = GetNodeOrNull<Button>("MainMargin/VBox/AvatarSetupButton");
+        _titleLabel = GetNodeOrNull<Label>("MainMargin/VBox/Header/Title");
+        _subtitleLabel = GetNodeOrNull<Label>("MainMargin/VBox/Subtitle");
+        _optionsList = GetNodeOrNull<VBoxContainer>("MainMargin/VBox/OptionsScroll/OptionsList");
+        _fileInfoLabel = GetNodeOrNull<Label>("MainMargin/VBox/FileInfo");
+        _progressPanel = GetNodeOrNull<Control>("MainMargin/VBox/ProgressPanel");
         _progressStatusLabel = GetNodeOrNull<Label>("MainMargin/VBox/ProgressPanel/Status");
-        _progressBar         = GetNodeOrNull<ProgressBar>("MainMargin/VBox/ProgressPanel/Bar");
+        _progressBar = GetNodeOrNull<ProgressBar>("MainMargin/VBox/ProgressPanel/Bar");
 
         _optionButtonScene = GD.Load<PackedScene>(OptionButtonScenePath);
         if (_optionButtonScene == null)
@@ -94,18 +88,18 @@ public partial class ImportDialog : Control
         _btnAvatarSetup?.Connect("pressed", Callable.From(OnAvatarSetupPressed));
     }
 
-    // ── Public API ──────────────────────────────────────────────────────────
-
-    /// <summary>Show the import dialog pre-configured for a specific file.</summary>
+    /// <summary>
+    /// Show the import dialog pre-configured for a specific file.
+    /// </summary>
     public void ShowForFile(string filePath, Slot targetSlot = null, LocalDB localDB = null)
     {
+        ResetAvatarCreatorState();
         _filePath = filePath;
         _targetSlot = targetSlot;
         _localDB = localDB;
         _selectedType = null;
         _isImporting = false;
         _lastImportedAvatarSlot = null;
-        _lastAvatarSetupPedestal = null;
 
         if (_isInitialized)
         {
@@ -115,16 +109,18 @@ public partial class ImportDialog : Control
         }
     }
 
-    /// <summary>Show the import dialog in generic (no file pre-selected) mode.</summary>
+    /// <summary>
+    /// Show the import dialog in generic mode.
+    /// </summary>
     public void ShowDialog(Slot targetSlot = null, LocalDB localDB = null)
     {
+        ResetAvatarCreatorState();
         _filePath = null;
         _targetSlot = targetSlot;
         _localDB = localDB;
         _selectedType = null;
         _isImporting = false;
         _lastImportedAvatarSlot = null;
-        _lastAvatarSetupPedestal = null;
 
         if (_isInitialized)
         {
@@ -147,19 +143,17 @@ public partial class ImportDialog : Control
     }
 
     public ImportType? GetSelectedType() => _selectedType;
+
     public string GetFilePath() => _filePath;
 
-    /// <summary>Set the LocalDB instance used for asset imports.</summary>
     public void SetLocalDB(LocalDB localDB) => _localDB = localDB;
 
-    /// <summary>Set the target slot that imported objects are placed into.</summary>
     public void SetTargetSlot(Slot targetSlot) => _targetSlot = targetSlot;
-
-    // ── Internal UI coordination ─────────────────────────────────────────────
 
     private void RefreshDialogForCurrentFile()
     {
-        if (!_isInitialized) return;
+        if (!_isInitialized)
+            return;
 
         if (string.IsNullOrWhiteSpace(_filePath))
         {
@@ -178,15 +172,23 @@ public partial class ImportDialog : Control
                 _fileInfoLabel.Text = _filePath;
                 _fileInfoLabel.Visible = true;
             }
+
             CreateOptionButtonsForFile(Path.GetExtension(_filePath).ToLowerInvariant());
         }
 
         SetImportInProgress(_isImporting);
+
+        var optionsScroll = GetNodeOrNull<ScrollContainer>("MainMargin/VBox/OptionsScroll");
+        if (optionsScroll != null)
+            optionsScroll.ScrollVertical = 0;
     }
 
     private void OnClosePressed()
     {
-        if (_isImporting) return;
+        if (_isImporting)
+            return;
+
+        ResetAvatarCreatorState();
         GD.Print("ImportDialog: Closed");
         DialogClosed?.Invoke();
         Hide();
@@ -196,18 +198,19 @@ public partial class ImportDialog : Control
     {
         GD.Print("ImportDialog: Info - Supported formats:");
         GD.Print("  Images: PNG, JPG, JPEG, WebP, BMP, TGA");
-        GD.Print("  3D Models: GLB, GLTF");
-        GD.Print("  Avatars: VRM, GLB, GLTF");
+        GD.Print("  3D Models: GLB, GLTF, FBX, OBJ, DAE, 3DS, BLEND, STL, PLY, X, ASE");
+        GD.Print("  Avatars: VRM, GLB, GLTF, FBX, DAE");
     }
 
     private async void OnOptionSelected(ImportType type)
     {
-        if (_isImporting) return;
+        if (_isImporting)
+            return;
 
         if (type != ImportType.Avatar)
         {
+            ResetAvatarCreatorState();
             _lastImportedAvatarSlot = null;
-            _lastAvatarSetupPedestal = null;
             UpdateAvatarSetupButton();
         }
 
@@ -221,5 +224,11 @@ public partial class ImportDialog : Control
 
         if (success)
             SetSubtitle("Import finished. Close when done.");
+    }
+
+    private void ResetAvatarCreatorState()
+    {
+        _activeAvatarCreatorSession?.Dispose();
+        _activeAvatarCreatorSession = null;
     }
 }

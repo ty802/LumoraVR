@@ -14,8 +14,8 @@ namespace Lumora.Core.GodotUI.Wizards;
 public sealed class GodotImportDialogPanel : GodotUIPanel
 {
     protected override string DefaultScenePath => LumAssets.UI.ImportDialog;
-    protected override float2 DefaultSize => new float2(320, 260);
-    protected override float DefaultPixelsPerUnit => 900f;
+    protected override float2 DefaultSize => new float2(460, 420);
+    protected override float DefaultPixelsPerUnit => 825f;
     protected override float DefaultRefreshRate => 0f;
 
     /// <summary>

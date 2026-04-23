@@ -49,6 +49,9 @@ public partial class ImportDialog
 
     private void ApplyProgressUpdate(float progress, string status)
     {
+        if (!_isImporting)
+            return;
+
         SetImportInProgress(true, status, progress);
     }
 

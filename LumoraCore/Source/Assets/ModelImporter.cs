@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using Lumora.Core.Components;
+using Lumora.Core.Components.Avatar;
 using Lumora.Core.Logging;
 using Lumora.Core.Math;
 
@@ -73,7 +74,18 @@ public static class ModelImporter
     /// </summary>
     public static readonly string[] SupportedExtensions = new[]
     {
-        ".glb", ".gltf", ".vrm"
+        ".glb",
+        ".gltf",
+        ".vrm",
+        ".fbx",
+        ".obj",
+        ".dae",
+        ".3ds",
+        ".blend",
+        ".stl",
+        ".ply",
+        ".x",
+        ".ase"
     };
 
     /// <summary>
@@ -152,6 +164,11 @@ public static class ModelImporter
             if (settings.IsAvatarImport)
             {
                 modelData.IsAvatar.Value = true;
+
+                var draft = modelSlot.GetComponent<AvatarDraft>() ?? modelSlot.AttachComponent<AvatarDraft>();
+                draft.IsFinalized.Value = false;
+                draft.SourcePathOrUri.Value = localUri ?? filePath;
+                draft.ImportProfile.Value = "AvatarImport";
             }
 
             progress?.Report((1.0f, "Import complete!"));

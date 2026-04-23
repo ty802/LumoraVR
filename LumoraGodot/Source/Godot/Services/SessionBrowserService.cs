@@ -3,6 +3,7 @@
 
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -411,8 +412,7 @@ public partial class SessionBrowserService : Node
 		// Check if it's a public session (need NAT punch)
 		if (world.IsPublicListing)
 		{
-			// Use NAT punch for public sessions
-			_ = JoinViaNATPunchAsync(world.Name, world.Id);
+			_ = JoinPublicSessionAsync(world);
 			return;
 		}
 
@@ -432,14 +432,18 @@ public partial class SessionBrowserService : Node
 	/// </summary>
 	private async Task JoinDirectAsync(string worldName, Uri joinUri)
 	{
+		await TryJoinDirectAsync(worldName, joinUri, reportFailure: true);
+	}
+
+	private async Task<bool> TryJoinDirectAsync(string worldName, Uri joinUri, bool reportFailure)
+	{
 		try
 		{
 			var loadingService = LumoraEngine.Current?.WorldLoadingService;
 			if (loadingService == null)
 			{
 				// Fall back to direct join if loading service not available
-				await JoinDirectLegacyAsync(worldName, joinUri);
-				return;
+				return await TryJoinDirectLegacyAsync(worldName, joinUri, reportFailure);
 			}
 
 			LumoraLogger.Log($"SessionBrowserService: Direct join to {joinUri} via WorldLoadingService");
@@ -448,8 +452,9 @@ public partial class SessionBrowserService : Node
 			var operation = loadingService.JoinSessionAsync(worldName, joinUri, focusWhenReady: true);
 			if (operation == null)
 			{
-				OnJoinFailed?.Invoke("Already loading another world");
-				return;
+				if (reportFailure)
+					OnJoinFailed?.Invoke("Already loading another world");
+				return false;
 			}
 
 			// Wait for completion
@@ -459,33 +464,40 @@ public partial class SessionBrowserService : Node
 			{
 				OnJoinSuccess?.Invoke(world);
 				LumoraLogger.Log($"SessionBrowserService: Successfully joined '{worldName}'");
+				return true;
 			}
 			else if (operation.IsCancelled)
 			{
-				OnJoinFailed?.Invoke("Join cancelled");
+				if (reportFailure)
+					OnJoinFailed?.Invoke("Join cancelled");
 			}
 			else
 			{
-				OnJoinFailed?.Invoke(operation.ErrorMessage ?? "Failed to join session");
+				if (reportFailure)
+					OnJoinFailed?.Invoke(operation.ErrorMessage ?? "Failed to join session");
 			}
 		}
 		catch (Exception ex)
 		{
 			LumoraLogger.Error($"SessionBrowserService: Direct join failed: {ex.Message}");
-			OnJoinFailed?.Invoke(ex.Message);
+			if (reportFailure)
+				OnJoinFailed?.Invoke(ex.Message);
 		}
+
+		return false;
 	}
 
 	/// <summary>
 	/// Legacy direct join without loading indicator.
 	/// </summary>
-	private async Task JoinDirectLegacyAsync(string worldName, Uri joinUri)
+	private async Task<bool> TryJoinDirectLegacyAsync(string worldName, Uri joinUri, bool reportFailure)
 	{
 		var worldManager = LumoraEngine.Current?.WorldManager;
 		if (worldManager == null)
 		{
-			OnJoinFailed?.Invoke("WorldManager not available");
-			return;
+			if (reportFailure)
+				OnJoinFailed?.Invoke("WorldManager not available");
+			return false;
 		}
 
 		var host = joinUri.Host;
@@ -499,17 +511,60 @@ public partial class SessionBrowserService : Node
 		{
 			worldManager.FocusWorld(joinedWorld);
 			OnJoinSuccess?.Invoke(joinedWorld);
+			return true;
 		}
-		else
-		{
+
+		if (reportFailure)
 			OnJoinFailed?.Invoke("Failed to join session");
+		return false;
+	}
+
+	private async Task JoinPublicSessionAsync(WorldBrowser.WorldInfo world)
+	{
+		var endpoints = BuildEndpointPlan(world);
+		if (endpoints.Count == 0)
+		{
+			OnJoinFailed?.Invoke("No valid connection method available");
+			return;
 		}
+
+		foreach (var endpoint in endpoints)
+		{
+			if (TryGetDirectUri(endpoint, out var directUri))
+			{
+				LumoraLogger.Log($"SessionBrowserService: Trying direct endpoint {directUri}");
+				if (await TryJoinDirectAsync(world.Name, directUri, reportFailure: false))
+					return;
+				continue;
+			}
+
+			if (IsNatEndpoint(endpoint))
+			{
+				var sessionId = GetSessionIdForEndpoint(endpoint, world.Id);
+				LumoraLogger.Log($"SessionBrowserService: Trying NAT endpoint for session {sessionId}");
+				if (await TryJoinViaNATPunchAsync(world.Name, sessionId, reportFailure: false))
+					return;
+				continue;
+			}
+
+			if (IsRelayEndpoint(endpoint))
+			{
+				LumoraLogger.Warn("SessionBrowserService: Relay endpoint advertised but relay joining is not implemented yet");
+			}
+		}
+
+		OnJoinFailed?.Invoke("No reachable connection method available");
 	}
 
 	/// <summary>
 	/// Join a session via NAT punch through the public server.
 	/// </summary>
 	private async Task JoinViaNATPunchAsync(string worldName, string sessionId)
+	{
+		await TryJoinViaNATPunchAsync(worldName, sessionId, reportFailure: true);
+	}
+
+	private async Task<bool> TryJoinViaNATPunchAsync(string worldName, string sessionId, bool reportFailure)
 	{
 		try
 		{
@@ -534,8 +589,9 @@ public partial class SessionBrowserService : Node
 			// Request NAT punch
 			if (!await _natPunchClient.RequestNATPunchAsync(sessionId, joinTicket))
 			{
-				OnJoinFailed?.Invoke("Failed to initiate NAT punch");
-				return;
+				if (reportFailure)
+					OnJoinFailed?.Invoke("Failed to initiate NAT punch");
+				return false;
 			}
 
 			// Wait for NAT punch to complete (timeout 10 seconds)
@@ -545,29 +601,116 @@ public partial class SessionBrowserService : Node
 			if (completedTask == timeoutTask || punchedEndpoint == null)
 			{
 				LumoraLogger.Warn("SessionBrowserService: NAT punch timeout");
-				OnJoinFailed?.Invoke("NAT punch timeout - host may be unreachable");
+				if (reportFailure)
+					OnJoinFailed?.Invoke("NAT punch timeout - host may be unreachable");
 				_natPunchClient?.Dispose();
 				_natPunchClient = null;
-				return;
+				return false;
 			}
 
 			LumoraLogger.Log($"SessionBrowserService: NAT punch succeeded, connecting to {punchedEndpoint}");
 
 			// Connect to the punched endpoint using WorldLoadingService
 			var joinUri = new Uri($"lnl://{punchedEndpoint.Address}:{punchedEndpoint.Port}");
-			await JoinDirectAsync(worldName, joinUri);
+			var joined = await TryJoinDirectAsync(worldName, joinUri, reportFailure);
 
 			// Clean up NAT punch client
 			_natPunchClient?.Dispose();
 			_natPunchClient = null;
+			return joined;
 		}
 		catch (Exception ex)
 		{
 			LumoraLogger.Error($"SessionBrowserService: NAT punch join failed: {ex.Message}");
-			OnJoinFailed?.Invoke(ex.Message);
+			if (reportFailure)
+				OnJoinFailed?.Invoke(ex.Message);
 			_natPunchClient?.Dispose();
 			_natPunchClient = null;
 		}
+
+		return false;
+	}
+
+	private static List<SessionConnectionEndpointDto> BuildEndpointPlan(WorldBrowser.WorldInfo world)
+	{
+		var now = DateTime.UtcNow;
+		var endpoints = (world.Endpoints ?? Array.Empty<SessionConnectionEndpointDto>())
+			.Where(endpoint => endpoint != null)
+			.Where(endpoint => !endpoint.ExpiresAt.HasValue || endpoint.ExpiresAt.Value > now)
+			.Where(endpoint => !string.IsNullOrWhiteSpace(endpoint.Kind) || !string.IsNullOrWhiteSpace(endpoint.Url))
+			.OrderBy(endpoint => endpoint.Priority)
+			.ToList();
+
+		if ((world.HasNat || world.IsPublicListing) && !endpoints.Any(IsNatEndpoint))
+		{
+			endpoints.Add(new SessionConnectionEndpointDto
+			{
+				Kind = "nat",
+				Url = $"lumora-session://{world.Id}",
+				Priority = 50,
+				Region = world.Region
+			});
+		}
+
+		return endpoints
+			.OrderBy(endpoint => endpoint.Priority)
+			.ToList();
+	}
+
+	private static bool TryGetDirectUri(SessionConnectionEndpointDto endpoint, out Uri uri)
+	{
+		uri = null;
+		if (endpoint == null || string.IsNullOrWhiteSpace(endpoint.Url))
+			return false;
+
+		if (!Uri.TryCreate(endpoint.Url, UriKind.Absolute, out var parsed))
+			return false;
+
+		var kind = endpoint.Kind ?? "";
+		if (string.Equals(kind, "direct", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(parsed.Scheme, "lnl", StringComparison.OrdinalIgnoreCase))
+		{
+			uri = parsed;
+			return true;
+		}
+
+		return false;
+	}
+
+	private static bool IsNatEndpoint(SessionConnectionEndpointDto endpoint)
+	{
+		if (endpoint == null)
+			return false;
+
+		if (string.Equals(endpoint.Kind, "nat", StringComparison.OrdinalIgnoreCase))
+			return true;
+
+		return Uri.TryCreate(endpoint.Url, UriKind.Absolute, out var uri) &&
+			string.Equals(uri.Scheme, "lumora-session", StringComparison.OrdinalIgnoreCase);
+	}
+
+	private static bool IsRelayEndpoint(SessionConnectionEndpointDto endpoint)
+	{
+		if (endpoint == null)
+			return false;
+
+		if (string.Equals(endpoint.Kind, "relay", StringComparison.OrdinalIgnoreCase))
+			return true;
+
+		return Uri.TryCreate(endpoint.Url, UriKind.Absolute, out var uri) &&
+			string.Equals(uri.Scheme, "lumora-relay", StringComparison.OrdinalIgnoreCase);
+	}
+
+	private static string GetSessionIdForEndpoint(SessionConnectionEndpointDto endpoint, string fallbackSessionId)
+	{
+		if (endpoint != null &&
+			Uri.TryCreate(endpoint.Url, UriKind.Absolute, out var uri) &&
+			!string.IsNullOrWhiteSpace(uri.Host))
+		{
+			return uri.Host;
+		}
+
+		return fallbackSessionId;
 	}
 
 	private async Task<string> TryCreateJoinTicketAsync(string sessionId)
@@ -608,6 +751,19 @@ public partial class SessionBrowserService : Node
 
 	private static WorldBrowser.WorldInfo ConvertToWorldInfo(SessionListEntry entry, string category)
 	{
+		var endpoints = entry.JoinUrl == null
+			? Array.Empty<SessionConnectionEndpointDto>()
+			: new[]
+			{
+				new SessionConnectionEndpointDto
+				{
+					Kind = "direct",
+					Url = entry.JoinUrl.ToString(),
+					Priority = 0,
+					Region = "lan"
+				}
+			};
+
 		var info = new WorldBrowser.WorldInfo
 		{
 			Id = entry.SessionId,
@@ -618,7 +774,13 @@ public partial class SessionBrowserService : Node
 			MaxUsers = entry.MaxUsers,
 			ThumbnailUrl = entry.ThumbnailUrl ?? "",
 			Category = category,
-			Tags = entry.Tags?.ToArray() ?? Array.Empty<string>()
+			Direct = entry.JoinUrl != null,
+			HasDirect = entry.JoinUrl != null,
+			HasNat = false,
+			HasRelay = false,
+			Region = "lan",
+			Tags = entry.Tags?.ToArray() ?? Array.Empty<string>(),
+			Endpoints = endpoints
 		};
 
 		// Decode base64 thumbnail if available
@@ -644,11 +806,17 @@ public partial class SessionBrowserService : Node
 			Category = session.Direct ? "active" : "featured",
 			IsPublicListing = true,
 			Direct = session.Direct,
+			HasDirect = session.HasDirect,
+			HasNat = session.HasNat,
+			HasRelay = session.HasRelay,
 			IsHeadless = session.IsHeadless,
 			Version = session.Version ?? "",
+			VersionHash = session.VersionHash ?? "",
+			Region = session.Region ?? "default",
 			UptimeSeconds = session.UptimeSeconds,
 			Tags = session.Tags ?? Array.Empty<string>(),
-			Users = session.UserList ?? Array.Empty<string>()
+			Users = session.UserList ?? Array.Empty<string>(),
+			Endpoints = session.Endpoints ?? Array.Empty<SessionConnectionEndpointDto>()
 		};
 	}
 

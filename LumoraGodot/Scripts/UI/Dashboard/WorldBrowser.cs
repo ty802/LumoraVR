@@ -4,6 +4,7 @@
 ﻿using Godot;
 using System;
 using System.Collections.Generic;
+using Lumora.Core.Networking.Session;
 using Lumora.Source.Godot.Services;
 using LumoraClient = Lumora.CDN.LumoraClient;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -31,11 +32,17 @@ public partial class WorldBrowser : Control
         public string Category { get; set; } = "";
         public bool IsPublicListing { get; set; }
         public bool Direct { get; set; }
+        public bool HasDirect { get; set; }
+        public bool HasNat { get; set; }
+        public bool HasRelay { get; set; }
         public bool IsHeadless { get; set; }
         public string Version { get; set; } = "";
+        public string VersionHash { get; set; } = "";
+        public string Region { get; set; } = "default";
         public long UptimeSeconds { get; set; }
         public string[] Tags { get; set; } = Array.Empty<string>();
         public string[] Users { get; set; } = Array.Empty<string>();
+        public SessionConnectionEndpointDto[] Endpoints { get; set; } = Array.Empty<SessionConnectionEndpointDto>();
         public Texture2D? Thumbnail { get; set; }
     }
 

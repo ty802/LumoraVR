@@ -91,6 +91,7 @@ public class SlotInspector : GodotUIPanel
 
     private Slot? _boundTarget;
     private Slot? _boundSelected;
+    private bool _closeStarted;
 
     public override void OnAwake()
     {
@@ -381,10 +382,19 @@ public class SlotInspector : GodotUIPanel
 
     public override void Close()
     {
-        // Clean up linked gizmo when inspector closes
-        if (LinkedGizmo.Target != null)
+        if (_closeStarted)
         {
-            GizmoHelper.DestroyGizmo(LinkedGizmo.Target.TargetSlot);
+            return;
+        }
+
+        _closeStarted = true;
+
+        // Clean up linked gizmo when inspector closes
+        var linkedGizmo = LinkedGizmo.Target;
+        LinkedGizmo.Target = null;
+        if (linkedGizmo?.TargetSlot != null)
+        {
+            GizmoHelper.DestroyGizmo(linkedGizmo.TargetSlot);
         }
 
         // Unsubscribe from events
@@ -393,6 +403,7 @@ public class SlotInspector : GodotUIPanel
             _boundTarget.OnChildAdded -= HandleChildAdded;
             _boundTarget.OnChildRemoved -= HandleChildRemoved;
             _boundTarget.OnNameChanged -= HandleNameChanged;
+            _boundTarget = null;
         }
 
         base.Close();

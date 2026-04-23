@@ -14,6 +14,7 @@ using Lumora.Core.Components;
 using Lumora.Core.Components.Assets;
 using Lumora.Core.GodotUI.Wizards;
 using Lumora.Core.Math;
+using Lumora.Godot.UI;
 using LumoraMeshes = Lumora.Core.Components.Meshes;
 
 namespace Lumora.Godot.Input;
@@ -359,7 +360,7 @@ public partial class ClipboardImporter : Node
 
             var dialogSlot = rootSlot.AddSlot("ImportDialog");
             var dialogPanel = dialogSlot.AttachComponent<GodotImportDialogPanel>();
-            dialogPanel.Configure(filePath, targetSlot, _localDB);
+            dialogPanel.Configure(filePath, targetSlot, _localDB, GetImportSpawnPosition(targetSlot, 2.0f));
             _activeImportDialogPanel = dialogPanel;
 
             PositionImportDialogPanel(dialogSlot, targetSlot);
@@ -376,23 +377,7 @@ public partial class ClipboardImporter : Node
     {
         if (_camera != null)
         {
-            var cameraPos = _camera.GlobalPosition;
-            var cameraForward = -_camera.GlobalBasis.Z;
-            var cameraRight = _camera.GlobalBasis.X;
-
-            // Slightly forward/right of center so it doesn't cover the crosshair.
-            var spawnPos = cameraPos + cameraForward * 0.55f + cameraRight * 0.20f;
-            dialogSlot.GlobalPosition = new float3(spawnPos.X, spawnPos.Y, spawnPos.Z);
-
-            var lookDir = cameraPos - spawnPos;
-            if (lookDir.LengthSquared() > 0.001f)
-            {
-                dialogSlot.GlobalRotation = floatQ.LookRotation(
-                    new float3(lookDir.X, 0f, lookDir.Z).Normalized,
-                    float3.Up
-                );
-            }
-
+            PanelPlacement.PlaceInFrontOfCamera(dialogSlot, _camera, 0.75f, 0.22f, -0.04f);
             return;
         }
 
@@ -493,12 +478,9 @@ public partial class ClipboardImporter : Node
         {
             GD.Print($"ClipboardImporter: Model imported successfully");
 
-            if (_camera != null && result.RootSlot != null)
+            if (result.RootSlot != null)
             {
-                var spawnPosition = _camera.GlobalPosition + (-_camera.GlobalTransform.Basis.Z * 2.0f);
-                result.RootSlot.LocalPosition.Value = new Lumora.Core.Math.float3(
-                    spawnPosition.X, spawnPosition.Y, spawnPosition.Z
-                );
+                result.RootSlot.GlobalPosition = GetImportSpawnPosition(targetSlot, 2.0f);
             }
 
             OnAssetImported?.Invoke(filePath, result.RootSlot);
@@ -802,10 +784,13 @@ public partial class ClipboardImporter : Node
     /// </summary>
     private void PositionInFrontOfCamera(Slot slot, float distance = 2.0f)
     {
+        if (slot == null)
+            return;
+
         if (_camera != null)
         {
             var spawnPosition = _camera.GlobalPosition + (-_camera.GlobalTransform.Basis.Z * distance);
-            slot.LocalPosition.Value = new float3(spawnPosition.X, spawnPosition.Y, spawnPosition.Z);
+            slot.GlobalPosition = new float3(spawnPosition.X, spawnPosition.Y, spawnPosition.Z);
 
             // Face the camera with the quad's front side (local backward) toward the viewer
             var cameraPos = _camera.GlobalPosition;
@@ -814,6 +799,21 @@ public partial class ClipboardImporter : Node
             {
                 slot.GlobalRotation = floatQ.LookRotation(-toCamera, float3.Up);
             }
+            return;
         }
+
+        slot.GlobalPosition = GetImportSpawnPosition(slot.Parent, distance);
+    }
+
+    private float3 GetImportSpawnPosition(Slot targetSlot, float distance)
+    {
+        if (_camera != null)
+        {
+            var spawnPosition = _camera.GlobalPosition + (-_camera.GlobalTransform.Basis.Z * distance);
+            return new float3(spawnPosition.X, spawnPosition.Y, spawnPosition.Z);
+        }
+
+        var origin = targetSlot?.GlobalPosition ?? float3.Zero;
+        return origin + new float3(0f, 0f, -distance);
     }
 }

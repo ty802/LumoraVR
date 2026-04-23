@@ -236,11 +236,11 @@ public class ComponentInspector : GodotUIPanel
         var picker = pickerSlot.AttachComponent<GodotUI.Wizards.ColorPickerPanel>();
         picker.SetTarget(component, memberName, memberName);
 
-        // Offset picker slightly to not overlap the inspector
-        pickerSlot.GlobalPosition = new float3(
-            Slot.GlobalPosition.x + 0.4f,
-            Slot.GlobalPosition.y,
-            Slot.GlobalPosition.z);
+        pickerSlot.GlobalPosition = Slot.GlobalPosition
+            + Slot.Right * 0.48f
+            + Slot.Up * 0.04f
+            + Slot.Forward * 0.03f;
+        pickerSlot.GlobalRotation = Slot.GlobalRotation;
 
         return picker;
     }

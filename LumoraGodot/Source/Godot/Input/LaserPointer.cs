@@ -189,15 +189,22 @@ public partial class LaserPointer : Node3D
 
     public override void _Input(InputEvent @event)
     {
-        if (_currentViewport == null) return;
+        if (!TryGetCurrentViewport(out var viewport)) return;
         if (@event is not InputEventKey keyEvent) return;
 
         // Forward keyboard events into focused controls inside the hovered SubViewport
         // so LineEdit/SpinBox editors can be typed into.
-        if (_currentViewport.GuiGetFocusOwner() == null) return;
+        try
+        {
+            if (viewport.GuiGetFocusOwner() == null) return;
 
-        var forwardedEvent = (InputEventKey)keyEvent.Duplicate();
-        _currentViewport.PushInput(forwardedEvent, true);
+            var forwardedEvent = (InputEventKey)keyEvent.Duplicate();
+            viewport.PushInput(forwardedEvent, true);
+        }
+        catch (ObjectDisposedException)
+        {
+            ClearCurrentUiTarget();
+        }
     }
 
     private void UpdateLaserFromInput()
@@ -281,22 +288,28 @@ public partial class LaserPointer : Node3D
         }
 
         // Handle disposed references.
-        if (_currentHitCollider != null && !GodotObject.IsInstanceValid(_currentHitCollider))
+        if (_currentHitCollider != null && !IsGodotObjectAlive(_currentHitCollider))
             _currentHitCollider = null;
 
-        if (_currentHitArea != null && !GodotObject.IsInstanceValid(_currentHitArea))
+        if (_currentHitArea != null && !IsGodotObjectAlive(_currentHitArea))
         {
             _currentHitArea = null;
             _currentViewport = null;
             _currentHitPanel = null;
         }
 
-        if (_currentSurfaceNode != null && !GodotObject.IsInstanceValid(_currentSurfaceNode))
+        if (_currentSurfaceNode != null && !IsGodotObjectAlive(_currentSurfaceNode))
             _currentSurfaceNode = null;
+
+        if (_currentViewport != null && !IsGodotObjectAlive(_currentViewport))
+            ClearCurrentUiTarget();
+
+        if (_currentHitPanel != null && !IsGodotObjectAlive(_currentHitPanel))
+            ClearCurrentUiTarget();
 
         if (newHitArea != _currentHitArea)
         {
-            if (_currentHitArea != null && GodotObject.IsInstanceValid(_currentHitArea))
+            if (_currentHitArea != null && IsGodotObjectAlive(_currentHitArea))
             {
                 OnPanelExit(_currentHitArea);
             }
@@ -308,7 +321,7 @@ public partial class LaserPointer : Node3D
 
         if (newSurfaceNode != _currentSurfaceNode)
         {
-            if (_currentSurfaceNode != null && GodotObject.IsInstanceValid(_currentSurfaceNode))
+            if (_currentSurfaceNode != null && IsGodotObjectAlive(_currentSurfaceNode))
             {
                 OnSurfaceExit(_currentSurfaceNode);
             }
@@ -340,27 +353,37 @@ public partial class LaserPointer : Node3D
 
     private void FindViewportForArea(Area3D area)
     {
-        // Look for SubViewport in siblings
-        var parent = area.GetParent();
-        if (parent == null)
+        try
         {
-            _currentViewport = null;
-            _currentHitPanel = null;
-            return;
-        }
-
-        foreach (var child in parent.GetChildren())
-        {
-            if (child is SubViewport viewport)
+            // Look for SubViewport in siblings
+            var parent = area.GetParent();
+            if (parent == null)
             {
-                _currentViewport = viewport;
-                _currentHitPanel = parent;
+                _currentViewport = null;
+                _currentHitPanel = null;
                 return;
             }
-        }
 
-        _currentViewport = null;
-        _currentHitPanel = null;
+            foreach (var child in parent.GetChildren())
+            {
+                if (child is SubViewport viewport)
+                {
+                    if (!IsGodotObjectAlive(viewport))
+                        continue;
+
+                    _currentViewport = viewport;
+                    _currentHitPanel = parent;
+                    return;
+                }
+            }
+
+            _currentViewport = null;
+            _currentHitPanel = null;
+        }
+        catch (ObjectDisposedException)
+        {
+            ClearCurrentUiTarget();
+        }
     }
 
     private void UpdateVisuals()
@@ -407,24 +430,28 @@ public partial class LaserPointer : Node3D
         // Trigger press
         if (triggerPressed && !_wasTriggerPressed)
         {
-            if (_isHoveringUI && _currentHitArea != null)
+            if (_isHoveringUI && _currentHitArea != null && IsGodotObjectAlive(_currentHitArea))
             {
                 OnPanelPress(_currentHitArea, _currentHitPoint);
             }
-            else if (_currentSurfaceNode != null)
+            else if (_currentSurfaceNode != null && IsGodotObjectAlive(_currentSurfaceNode))
             {
                 OnSurfacePress(_currentSurfaceNode, _currentHitPoint);
+            }
+            else
+            {
+                ClearCurrentUiTarget();
             }
         }
 
         // Trigger release
         if (!triggerPressed && _wasTriggerPressed)
         {
-            if (_currentHitArea != null)
+            if (_currentHitArea != null && IsGodotObjectAlive(_currentHitArea))
             {
                 OnPanelRelease(_currentHitArea, _currentHitPoint);
             }
-            else if (_currentSurfaceNode != null)
+            else if (_currentSurfaceNode != null && IsGodotObjectAlive(_currentSurfaceNode))
             {
                 OnSurfaceRelease(_currentSurfaceNode, _currentHitPoint);
             }
@@ -433,7 +460,7 @@ public partial class LaserPointer : Node3D
         _wasTriggerPressed = triggerPressed;
 
         // Send hover events to viewport
-        if (_isHoveringUI && _currentViewport != null)
+        if (_isHoveringUI && TryGetCurrentViewport(out _))
         {
             SendMouseMoveToViewport();
         }
@@ -451,10 +478,7 @@ public partial class LaserPointer : Node3D
         PanelExited?.Invoke(area);
 
         // Send mouse exit event
-        if (_currentViewport != null)
-        {
-            SendMouseExitToViewport();
-        }
+        SendMouseExitToViewport();
     }
 
     private void OnPanelPress(Area3D area, Vector3 hitPoint)
@@ -462,10 +486,7 @@ public partial class LaserPointer : Node3D
         LumoraLogger.Log($"LaserPointer ({Side}): Pressed panel {area.Name}");
         PanelPressed?.Invoke(area, hitPoint);
 
-        if (_currentViewport != null)
-        {
-            SendMousePressToViewport(true);
-        }
+        SendMousePressToViewport(true);
     }
 
     private void OnPanelRelease(Area3D area, Vector3 hitPoint)
@@ -473,10 +494,7 @@ public partial class LaserPointer : Node3D
         LumoraLogger.Log($"LaserPointer ({Side}): Released panel {area.Name}");
         PanelReleased?.Invoke(area, hitPoint);
 
-        if (_currentViewport != null)
-        {
-            SendMousePressToViewport(false);
-        }
+        SendMousePressToViewport(false);
     }
 
     private void OnSurfaceEnter(Node collider)
@@ -504,53 +522,72 @@ public partial class LaserPointer : Node3D
         return (area.CollisionLayer & UICollisionLayer) != 0;
     }
 
-    private Vector2 WorldToViewportPosition()
+    private bool TryGetViewportPosition(out Vector2 position, out SubViewport viewport)
     {
-        if (_currentHitPanel == null || _currentViewport == null)
-            return Vector2.Zero;
+        position = Vector2.Zero;
+        viewport = null;
+
+        if (!TryGetCurrentViewport(out viewport))
+            return false;
+
+        if (_currentHitPanel == null || !IsGodotObjectAlive(_currentHitPanel))
+        {
+            ClearCurrentUiTarget();
+            return false;
+        }
 
         // Get the parent node that contains Area3D + Viewport
         var panelNode = _currentHitPanel as Node3D;
         if (panelNode == null)
-            return Vector2.Zero;
+            return false;
 
-        // Convert world hit point to local panel space
-        var localPoint = panelNode.ToLocal(_currentHitPoint);
-
-        // Find the MeshInstance3D to get quad size
-        MeshInstance3D meshInstance = null;
-        foreach (var child in panelNode.GetChildren())
+        try
         {
-            if (child is MeshInstance3D mi && mi.Mesh is QuadMesh)
+            // Convert world hit point to local panel space
+            var localPoint = panelNode.ToLocal(_currentHitPoint);
+
+            // Find the MeshInstance3D to get quad size
+            MeshInstance3D meshInstance = null;
+            foreach (var child in panelNode.GetChildren())
             {
-                meshInstance = mi;
-                break;
+                if (child is MeshInstance3D mi && mi.Mesh is QuadMesh)
+                {
+                    meshInstance = mi;
+                    break;
+                }
             }
+
+            if (meshInstance == null || meshInstance.Mesh is not QuadMesh quadMesh)
+                return false;
+
+            // Quad is centered at origin, extends from -size/2 to +size/2
+            var quadSize = quadMesh.Size;
+
+            // Convert local position to UV (0-1 range)
+            // Note: Quad faces -Z, so X is left-right and Y is up-down
+            float u = (localPoint.X / quadSize.X) + 0.5f;
+            float v = 1f - ((localPoint.Y / quadSize.Y) + 0.5f); // Flip Y for viewport coords
+
+            // Clamp to valid range
+            u = Mathf.Clamp(u, 0f, 1f);
+            v = Mathf.Clamp(v, 0f, 1f);
+
+            // Convert to viewport pixel coordinates
+            var viewportSize = viewport.Size;
+            position = new Vector2(u * viewportSize.X, v * viewportSize.Y);
+            return true;
         }
-
-        if (meshInstance == null || meshInstance.Mesh is not QuadMesh quadMesh)
-            return Vector2.Zero;
-
-        // Quad is centered at origin, extends from -size/2 to +size/2
-        var quadSize = quadMesh.Size;
-
-        // Convert local position to UV (0-1 range)
-        // Note: Quad faces -Z, so X is left-right and Y is up-down
-        float u = (localPoint.X / quadSize.X) + 0.5f;
-        float v = 1f - ((localPoint.Y / quadSize.Y) + 0.5f); // Flip Y for viewport coords
-
-        // Clamp to valid range
-        u = Mathf.Clamp(u, 0f, 1f);
-        v = Mathf.Clamp(v, 0f, 1f);
-
-        // Convert to viewport pixel coordinates
-        var viewportSize = _currentViewport.Size;
-        return new Vector2(u * viewportSize.X, v * viewportSize.Y);
+        catch (ObjectDisposedException)
+        {
+            ClearCurrentUiTarget();
+            return false;
+        }
     }
 
     private void SendMouseMoveToViewport()
     {
-        var pos = WorldToViewportPosition();
+        if (!TryGetViewportPosition(out var pos, out var viewport))
+            return;
 
         var moveEvent = new InputEventMouseMotion();
         moveEvent.Position = pos;
@@ -558,12 +595,20 @@ public partial class LaserPointer : Node3D
         // Set button mask based on current trigger state
         moveEvent.ButtonMask = _wasTriggerPressed ? MouseButtonMask.Left : 0;
 
-        _currentViewport.PushInput(moveEvent, true);
+        try
+        {
+            viewport.PushInput(moveEvent, true);
+        }
+        catch (ObjectDisposedException)
+        {
+            ClearCurrentUiTarget();
+        }
     }
 
     private void SendMousePressToViewport(bool pressed)
     {
-        var pos = WorldToViewportPosition();
+        if (!TryGetViewportPosition(out var pos, out var viewport))
+            return;
 
         var clickEvent = new InputEventMouseButton();
         clickEvent.Position = pos;
@@ -574,17 +619,68 @@ public partial class LaserPointer : Node3D
         clickEvent.ButtonMask = pressed ? MouseButtonMask.Left : 0;
 
         LumoraLogger.Log($"LaserPointer: Sending mouse {(pressed ? "press" : "release")} at viewport pos {pos}");
-        _currentViewport.PushInput(clickEvent, true);
+        try
+        {
+            viewport.PushInput(clickEvent, true);
+        }
+        catch (ObjectDisposedException)
+        {
+            ClearCurrentUiTarget();
+        }
     }
 
     private void SendMouseExitToViewport()
     {
+        if (!TryGetCurrentViewport(out var viewport))
+            return;
+
         // Send mouse move to far outside position to trigger exit
         var exitEvent = new InputEventMouseMotion();
         exitEvent.Position = new Vector2(-1000, -1000);
         exitEvent.GlobalPosition = new Vector2(-1000, -1000);
 
-        _currentViewport?.PushInput(exitEvent, true);
+        try
+        {
+            viewport.PushInput(exitEvent, true);
+        }
+        catch (ObjectDisposedException)
+        {
+            ClearCurrentUiTarget();
+        }
+    }
+
+    private bool TryGetCurrentViewport(out SubViewport viewport)
+    {
+        viewport = _currentViewport;
+        if (IsGodotObjectAlive(viewport))
+            return true;
+
+        ClearCurrentUiTarget();
+        viewport = null;
+        return false;
+    }
+
+    private void ClearCurrentUiTarget()
+    {
+        _currentViewport = null;
+        _currentHitPanel = null;
+        _currentHitArea = null;
+        _isHoveringUI = false;
+    }
+
+    private static bool IsGodotObjectAlive(GodotObject godotObject)
+    {
+        if (godotObject == null)
+            return false;
+
+        try
+        {
+            return GodotObject.IsInstanceValid(godotObject);
+        }
+        catch (ObjectDisposedException)
+        {
+            return false;
+        }
     }
 
     public override void _ExitTree()

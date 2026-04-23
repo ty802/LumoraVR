@@ -732,9 +732,7 @@ public sealed class GodotMaterialInspectorHook : ComponentHook<GodotMaterialInsp
 
         if (pickerSlot != null)
         {
-            var offset = Owner.Slot.Right * 0.34f + Owner.Slot.Up * 0.06f + Owner.Slot.Forward * 0.03f;
-            pickerSlot.GlobalPosition = Owner.Slot.GlobalPosition + offset;
-            pickerSlot.GlobalRotation = Owner.Slot.GlobalRotation;
+            PanelPlacement.PlaceBesidePanel(pickerSlot, Owner.Slot, 0.48f, 0.06f, 0.03f);
         }
     }
 

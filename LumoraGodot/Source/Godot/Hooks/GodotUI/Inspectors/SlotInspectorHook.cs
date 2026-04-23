@@ -4,6 +4,7 @@
 ﻿using System.Collections.Generic;
 using Godot;
 using Lumora.Core;
+using Lumora.Core.Components;
 using Lumora.Core.GodotUI.Inspectors;
 using Lumora.Core.Math;
 using Lumora.Godot.UI;
@@ -46,6 +47,7 @@ public sealed class SlotInspectorHook : ComponentHook<SlotInspector>
     // State tracking
     private Slot? _boundTarget;
     private Slot? _boundSelected;
+    private bool _isClosing;
     private readonly Dictionary<TreeItem, Slot> _treeItemToSlot = new();
     private readonly Dictionary<Slot, TreeItem> _slotToTreeItem = new();
 
@@ -100,6 +102,8 @@ public sealed class SlotInspectorHook : ComponentHook<SlotInspector>
         BindSlot(Owner.TargetSlot.Target);
 
         Owner.OnDataRefresh += RefreshUI;
+        Owner.OnAttachComponentRequested += OnAttachComponentRequested;
+        Owner.OnClosing += OnOwnerClosing;
 
         LumoraLogger.Log("SlotInspectorHook: Initialized");
     }
@@ -235,6 +239,7 @@ public sealed class SlotInspectorHook : ComponentHook<SlotInspector>
 
     private void BindSlot(Slot? slot)
     {
+        if (_isClosing) return;
         if (_boundTarget == slot) return;
 
         UnbindSlot();
@@ -263,16 +268,19 @@ public sealed class SlotInspectorHook : ComponentHook<SlotInspector>
 
     private void OnChildAdded(Slot parent, Slot child)
     {
+        if (_isClosing) return;
         RebuildUI();
     }
 
     private void OnChildRemoved(Slot parent, Slot child)
     {
+        if (_isClosing) return;
         RebuildUI();
     }
 
     private void OnSlotNameChanged(Slot slot, string newName)
     {
+        if (_isClosing) return;
         RefreshUI();
     }
 
@@ -293,6 +301,8 @@ public sealed class SlotInspectorHook : ComponentHook<SlotInspector>
 
     private void RebuildUI()
     {
+        if (_isClosing) return;
+
         if (_titleLabel != null)
         {
             _titleLabel.Text = _boundTarget != null
@@ -306,6 +316,7 @@ public sealed class SlotInspectorHook : ComponentHook<SlotInspector>
 
     private void RebuildHierarchyTree()
     {
+        if (_isClosing) return;
         if (_hierarchyTree == null) return;
 
         _hierarchyTree.Clear();
@@ -350,6 +361,7 @@ public sealed class SlotInspectorHook : ComponentHook<SlotInspector>
 
     private void RebuildPropertiesPanel()
     {
+        if (_isClosing) return;
         if (_propertiesContainer == null) return;
 
         // Clear existing
@@ -523,11 +535,13 @@ public sealed class SlotInspectorHook : ComponentHook<SlotInspector>
 
     private void RefreshUI()
     {
+        if (_isClosing) return;
         RebuildPropertiesPanel();
     }
 
     public override void ApplyChanges()
     {
+        if (_isClosing) return;
         if (_viewport == null) return;
 
         var resScale = UIReadability.GetReadableResolutionScale(Owner.ResolutionScale.Value);
@@ -599,9 +613,44 @@ public sealed class SlotInspectorHook : ComponentHook<SlotInspector>
         _boxShape.Size = new Vector3(size.x / ppu, size.y / ppu, 0.01f);
     }
 
+    private void OnAttachComponentRequested(Slot slot)
+    {
+        if (_isClosing) return;
+        if (slot == null || slot.IsDestroyed)
+        {
+            return;
+        }
+
+        var parentSlot = Owner.Slot.Parent ?? Owner.Slot;
+        var slotName = $"ComponentAttacher_{Owner.Slot.ReferenceID}";
+        var attacherSlot = parentSlot.FindChild(slotName, recursive: false);
+        if (attacherSlot == null)
+        {
+            attacherSlot = parentSlot.AddSlot(slotName);
+        }
+
+        var attacher = attacherSlot.GetComponent<ComponentAttacher>();
+        if (attacher == null)
+        {
+            attacher = attacherSlot.AttachComponent<ComponentAttacher>();
+        }
+
+        attacher.Setup(slot);
+        if (attacherSlot.GetComponent<Grabbable>() == null)
+        {
+            attacherSlot.AttachComponent<Grabbable>();
+        }
+
+        PanelPlacement.PlaceBesidePanel(attacherSlot, Owner.Slot, 0.64f, 0f, 0.03f);
+        LumoraLogger.Log($"SlotInspectorHook: Opened ComponentAttacher for '{slot.Name.Value}'");
+    }
+
     public override void Destroy(bool destroyingWorld)
     {
+        _isClosing = true;
         Owner.OnDataRefresh -= RefreshUI;
+        Owner.OnAttachComponentRequested -= OnAttachComponentRequested;
+        Owner.OnClosing -= OnOwnerClosing;
         UnbindSlot();
 
         if (!destroyingWorld)
@@ -631,5 +680,22 @@ public sealed class SlotInspectorHook : ComponentHook<SlotInspector>
         _slotToTreeItem.Clear();
 
         base.Destroy(destroyingWorld);
+    }
+
+    private void OnOwnerClosing()
+    {
+        _isClosing = true;
+        UnbindSlot();
+
+        if (_meshInstance != null)
+        {
+            _meshInstance.Visible = false;
+        }
+
+        if (_collisionArea != null)
+        {
+            _collisionArea.Monitorable = false;
+            _collisionArea.Monitoring = false;
+        }
     }
 }

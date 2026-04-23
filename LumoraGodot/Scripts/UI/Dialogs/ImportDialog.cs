@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.IO;
 using Lumora.Core;
 using Lumora.Core.Assets;
+using Lumora.Core.Math;
 
 namespace Lumora.Godot.UI;
 
@@ -50,6 +51,8 @@ public partial class ImportDialog : Control
     private string _filePath;
     private LocalDB _localDB;
     private Slot _targetSlot;
+    private bool _hasImportSpawnPosition;
+    private float3 _importSpawnPosition;
     private Slot _lastImportedAvatarSlot;
     private AvatarCreatorSession? _activeAvatarCreatorSession;
 
@@ -91,12 +94,14 @@ public partial class ImportDialog : Control
     /// <summary>
     /// Show the import dialog pre-configured for a specific file.
     /// </summary>
-    public void ShowForFile(string filePath, Slot targetSlot = null, LocalDB localDB = null)
+    public void ShowForFile(string filePath, Slot targetSlot = null, LocalDB localDB = null, float3? importSpawnPosition = null)
     {
         ResetAvatarCreatorState();
         _filePath = filePath;
         _targetSlot = targetSlot;
         _localDB = localDB;
+        _hasImportSpawnPosition = importSpawnPosition.HasValue;
+        _importSpawnPosition = importSpawnPosition ?? float3.Zero;
         _selectedType = null;
         _isImporting = false;
         _lastImportedAvatarSlot = null;
@@ -118,6 +123,8 @@ public partial class ImportDialog : Control
         _filePath = null;
         _targetSlot = targetSlot;
         _localDB = localDB;
+        _hasImportSpawnPosition = false;
+        _importSpawnPosition = float3.Zero;
         _selectedType = null;
         _isImporting = false;
         _lastImportedAvatarSlot = null;

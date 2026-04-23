@@ -29,6 +29,16 @@ public sealed class GodotImportDialogPanel : GodotUIPanel
     public readonly SyncRef<Slot> TargetSlot;
 
     /// <summary>
+    /// Preferred world-space position for imported world objects.
+    /// </summary>
+    public readonly Sync<float3> ImportSpawnPosition;
+
+    /// <summary>
+    /// Whether ImportSpawnPosition should be applied after import.
+    /// </summary>
+    public readonly Sync<bool> HasImportSpawnPosition;
+
+    /// <summary>
     /// Whether closing/hiding the dialog should destroy the panel slot.
     /// </summary>
     public readonly Sync<bool> AutoDestroyOnClose;
@@ -45,6 +55,8 @@ public sealed class GodotImportDialogPanel : GodotUIPanel
 
         FilePath.OnChanged += _ => NotifyChanged();
         TargetSlot.OnChanged += _ => NotifyChanged();
+        ImportSpawnPosition.OnChanged += _ => NotifyChanged();
+        HasImportSpawnPosition.OnChanged += _ => NotifyChanged();
     }
 
     public override void OnInit()
@@ -52,6 +64,8 @@ public sealed class GodotImportDialogPanel : GodotUIPanel
         base.OnInit();
         FilePath.Value = string.Empty;
         AutoDestroyOnClose.Value = true;
+        ImportSpawnPosition.Value = float3.Zero;
+        HasImportSpawnPosition.Value = false;
     }
 
     public override void OnAttach()
@@ -65,11 +79,13 @@ public sealed class GodotImportDialogPanel : GodotUIPanel
         }
     }
 
-    public void Configure(string filePath, Slot targetSlot, LocalDB? localDB)
+    public void Configure(string filePath, Slot targetSlot, LocalDB? localDB, float3? importSpawnPosition = null)
     {
         FilePath.Value = filePath ?? string.Empty;
         TargetSlot.Target = targetSlot;
         LocalDB = localDB;
+        HasImportSpawnPosition.Value = importSpawnPosition.HasValue;
+        ImportSpawnPosition.Value = importSpawnPosition ?? float3.Zero;
         NotifyChanged();
     }
 }

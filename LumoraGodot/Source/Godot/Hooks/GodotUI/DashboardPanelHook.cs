@@ -4,7 +4,6 @@
 ﻿using Godot;
 using Lumora.Core;
 using Lumora.Core.GodotUI;
-using Lumora.Core.Math;
 using System.Collections.Generic;
 using Lumora.Source.Input;
 using Lumora.Godot.UI;
@@ -350,32 +349,12 @@ public class DashboardPanelHook : ComponentHook<DashboardPanel>
         var headPos = IInputProvider.LimbPosition(IInputProvider.InputLimb.Head);
         var headRot = IInputProvider.LimbRotation(IInputProvider.InputLimb.Head);
 
-        // Get forward direction (only use yaw, not pitch/roll)
-        var forward = headRot * Vector3.Forward;
-        forward.Y = 0;
-        forward = forward.Normalized();
-
-        if (forward.LengthSquared() < 0.001f)
-            forward = Vector3.Forward;
-
-        // Calculate panel position
-        var spawnDist = Owner.SpawnDistance.Value;
-        var vertOffset = Owner.VerticalOffset.Value;
-
-        var panelPos = headPos + forward * spawnDist + Vector3.Up * vertOffset;
-
-        // Face the user (look at head position)
-        var lookDir = (headPos - panelPos).Normalized();
-        lookDir.Y = 0;
-        if (lookDir.LengthSquared() < 0.001f)
-            lookDir = -Vector3.Forward;
-        lookDir = lookDir.Normalized();
-
-        var panelRot = Quaternion.FromEuler(new Vector3(0, Mathf.Atan2(lookDir.X, lookDir.Z), 0));
-
-        // Apply to slot
-        Owner.Slot.GlobalPosition = new float3(panelPos.X, panelPos.Y, panelPos.Z);
-        Owner.Slot.GlobalRotation = new floatQ(panelRot.X, panelRot.Y, panelRot.Z, panelRot.W);
+        PanelPlacement.PlaceInFrontOfHead(
+            Owner.Slot,
+            headPos,
+            headRot,
+            Owner.SpawnDistance.Value,
+            Owner.VerticalOffset.Value);
     }
 
     public override void ApplyChanges()

@@ -83,6 +83,7 @@ public class SceneInspector : GodotUIPanel
 
     private Slot? _previousRoot;
     private Slot? _previousSelection;
+    private bool _closeStarted;
 
     public override void OnAwake()
     {
@@ -322,10 +323,19 @@ public class SceneInspector : GodotUIPanel
 
     public override void Close()
     {
-        // Clean up gizmo
-        if (LinkedGizmo.Target != null)
+        if (_closeStarted)
         {
-            GizmoHelper.DestroyGizmo(LinkedGizmo.Target.TargetSlot);
+            return;
+        }
+
+        _closeStarted = true;
+
+        // Clean up gizmo
+        var linkedGizmo = LinkedGizmo.Target;
+        LinkedGizmo.Target = null;
+        if (linkedGizmo?.TargetSlot != null)
+        {
+            GizmoHelper.DestroyGizmo(linkedGizmo.TargetSlot);
         }
 
         // Unsubscribe from events
@@ -333,6 +343,7 @@ public class SceneInspector : GodotUIPanel
         {
             _previousRoot.OnChildAdded -= HandleChildAdded;
             _previousRoot.OnChildRemoved -= HandleChildRemoved;
+            _previousRoot = null;
         }
 
         base.Close();

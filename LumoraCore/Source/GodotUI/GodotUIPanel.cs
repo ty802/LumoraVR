@@ -58,6 +58,13 @@ public class GodotUIPanel : ImplementableComponent
     public event Action<string>? OnButtonPressed;
 
     /// <summary>
+    /// Event fired before panel destruction is scheduled.
+    /// </summary>
+    public event Action? OnClosing;
+
+    private bool _closeRequested;
+
+    /// <summary>
     /// Default scene path. Override in derived classes.
     /// </summary>
     protected virtual string DefaultScenePath => "";
@@ -158,7 +165,30 @@ public class GodotUIPanel : ImplementableComponent
     /// </summary>
     public virtual void Close()
     {
-        Slot.Destroy();
+        if (_closeRequested || Slot.IsDestroyed)
+        {
+            return;
+        }
+
+        _closeRequested = true;
+        OnClosing?.Invoke();
+
+        var slot = Slot;
+        slot.ActiveSelf.Value = false;
+
+        if (slot.World != null)
+        {
+            slot.World.RunInUpdates(1, () =>
+            {
+                if (!slot.IsDestroyed)
+                {
+                    slot.Destroy();
+                }
+            });
+            return;
+        }
+
+        slot.Destroy();
     }
 
 }

@@ -8,6 +8,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using Godot;
 using Lumora.Core;
+using Lumora.Core.Components;
 using Lumora.Core.GodotUI;
 using Lumora.Core.GodotUI.Inspectors;
 using Lumora.Core.Math;
@@ -44,6 +45,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
 
     // Scroll/drag state
     private bool _isDragging;
+    private bool _isClosing;
     private Vector2 _lastMousePos;
     private const float ScrollSpeed = 30f;
     private const float DragScrollSpeed = 2f;
@@ -131,6 +133,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         Owner.OnRootChanged += _rootChangedHandler;
         Owner.OnSelectionChanged += _selectionChangedHandler;
         Owner.OnAttachComponentRequested += OnAttachComponentRequested;
+        Owner.OnClosing += OnOwnerClosing;
 
         LumoraLogger.Log("SceneInspectorHook: Initialized");
     }
@@ -499,9 +502,6 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         _rootLabel = _loadedScene?.GetNodeOrNull<Label>("MainPanel/VBox/Header/RootRow/RootLabel");
 
         // Connect buttons
-        var closeBtn = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/TitleRow/HBox/CloseButton");
-        closeBtn?.Connect("pressed", Callable.From(() => Owner.Close()));
-
         _rootUpButton = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/RootRow/RootUpButton");
         _rootUpButton?.Connect("pressed", Callable.From(() => Owner.NavigateRootUp()));
 
@@ -703,6 +703,9 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
     {
         try
         {
+            if (_isClosing)
+                return;
+
             // Ignore transient inspector gizmo slots
             if (child.Name.Value.StartsWith("Gizmo_", StringComparison.Ordinal))
                 return;
@@ -716,7 +719,13 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         }
     }
 
-    private void OnSlotNameChanged(Slot slot, string newName) => World?.RunSynchronously(RefreshUI);
+    private void OnSlotNameChanged(Slot slot, string newName)
+    {
+        if (!_isClosing)
+        {
+            World?.RunSynchronously(RefreshUI);
+        }
+    }
 
     private Slot? _pendingFocus;
 
@@ -796,8 +805,33 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
 
     private void OnAttachComponentRequested(Slot slot)
     {
-        // The InspectorInputHandler will handle spawning the ComponentAttacher
-        LumoraLogger.Log($"SceneInspectorHook: Component attach requested for '{slot.Name.Value}'");
+        if (slot == null || slot.IsDestroyed)
+        {
+            return;
+        }
+
+        var parentSlot = Owner.Slot.Parent ?? Owner.Slot;
+        var slotName = $"ComponentAttacher_{Owner.Slot.ReferenceID}";
+        var attacherSlot = parentSlot.FindChild(slotName, recursive: false);
+        if (attacherSlot == null)
+        {
+            attacherSlot = parentSlot.AddSlot(slotName);
+        }
+
+        var attacher = attacherSlot.GetComponent<ComponentAttacher>();
+        if (attacher == null)
+        {
+            attacher = attacherSlot.AttachComponent<ComponentAttacher>();
+        }
+
+        attacher.Setup(slot);
+        if (attacherSlot.GetComponent<Grabbable>() == null)
+        {
+            attacherSlot.AttachComponent<Grabbable>();
+        }
+
+        PanelPlacement.PlaceBesidePanel(attacherSlot, Owner.Slot, 0.78f, 0f, 0.03f);
+        LumoraLogger.Log($"SceneInspectorHook: Opened ComponentAttacher for '{slot.Name.Value}'");
     }
 
     private void RebuildUI()
@@ -840,6 +874,9 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
     {
         try
         {
+            if (_isClosing)
+                return;
+
             if (_hierarchyTree == null) return;
 
             _hierarchyTree.Clear();
@@ -913,6 +950,9 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
     {
         try
         {
+            if (_isClosing)
+                return;
+
             if (_componentContainer == null) return;
 
             var selected = Owner.ComponentView.Target;
@@ -1221,6 +1261,9 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
 
     public override void ApplyChanges()
     {
+        if (_isClosing)
+            return;
+
         try
         {
             // Process any pending actions from tree interactions (deferred to avoid callback conflicts)
@@ -1316,10 +1359,12 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
 
     public override void Destroy(bool destroyingWorld)
     {
+        _isClosing = true;
         Owner.OnDataRefresh -= RefreshUI;
         if (_rootChangedHandler != null) Owner.OnRootChanged -= _rootChangedHandler;
         if (_selectionChangedHandler != null) Owner.OnSelectionChanged -= _selectionChangedHandler;
         Owner.OnAttachComponentRequested -= OnAttachComponentRequested;
+        Owner.OnClosing -= OnOwnerClosing;
 
         // Unsubscribe from all observed slots
         UnsubscribeAllSlots();
@@ -1371,5 +1416,29 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         _selectionChangedHandler = null;
 
         base.Destroy(destroyingWorld);
+    }
+
+    private void OnOwnerClosing()
+    {
+        _isClosing = true;
+        UnsubscribeAllSlots();
+
+        if (_observedComponentSlot != null)
+        {
+            _observedComponentSlot.OnComponentAdded -= OnComponentListChanged;
+            _observedComponentSlot.OnComponentRemoved -= OnComponentListChanged;
+            _observedComponentSlot = null;
+        }
+
+        if (_meshInstance != null)
+        {
+            _meshInstance.Visible = false;
+        }
+
+        if (_collisionArea != null)
+        {
+            _collisionArea.Monitorable = false;
+            _collisionArea.Monitoring = false;
+        }
     }
 }

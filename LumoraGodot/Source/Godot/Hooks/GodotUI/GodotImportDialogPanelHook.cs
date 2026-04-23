@@ -5,7 +5,7 @@
 using Godot;
 using Lumora.Core;
 using Lumora.Core.GodotUI.Wizards;
-using Lumora.Godot.UI;
+using Lumora.Core.Math;
 using Lumora.Godot.UI;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
@@ -33,6 +33,8 @@ public sealed class GodotImportDialogPanelHook : ComponentHook<GodotImportDialog
     private string _lastConfiguredFilePath = string.Empty;
     private Slot? _lastConfiguredTarget;
     private object? _lastConfiguredLocalDb;
+    private bool _lastConfiguredHasSpawn;
+    private float3 _lastConfiguredSpawn;
 
     public static IHook<GodotImportDialogPanel> Constructor()
     {
@@ -112,7 +114,10 @@ public sealed class GodotImportDialogPanelHook : ComponentHook<GodotImportDialog
             return;
         }
 
-        var changed = Owner.FilePath.GetWasChangedAndClear() || Owner.TargetSlot.GetWasChangedAndClear();
+        var changed = Owner.FilePath.GetWasChangedAndClear() ||
+                      Owner.TargetSlot.GetWasChangedAndClear() ||
+                      Owner.HasImportSpawnPosition.GetWasChangedAndClear() ||
+                      Owner.ImportSpawnPosition.GetWasChangedAndClear();
         if (changed)
         {
             ConfigureDialog(force: true);
@@ -181,6 +186,8 @@ public sealed class GodotImportDialogPanelHook : ComponentHook<GodotImportDialog
         var filePath = Owner.FilePath.Value ?? string.Empty;
         var targetSlot = Owner.TargetSlot.Target;
         var localDb = Owner.LocalDB;
+        var hasSpawn = Owner.HasImportSpawnPosition.Value;
+        var spawnPosition = Owner.ImportSpawnPosition.Value;
         if (string.IsNullOrWhiteSpace(filePath) || targetSlot == null)
         {
             return;
@@ -189,7 +196,9 @@ public sealed class GodotImportDialogPanelHook : ComponentHook<GodotImportDialog
         if (!force &&
             string.Equals(_lastConfiguredFilePath, filePath, StringComparison.Ordinal) &&
             ReferenceEquals(_lastConfiguredTarget, targetSlot) &&
-            ReferenceEquals(_lastConfiguredLocalDb, localDb))
+            ReferenceEquals(_lastConfiguredLocalDb, localDb) &&
+            _lastConfiguredHasSpawn == hasSpawn &&
+            _lastConfiguredSpawn == spawnPosition)
         {
             return;
         }
@@ -197,7 +206,9 @@ public sealed class GodotImportDialogPanelHook : ComponentHook<GodotImportDialog
         _lastConfiguredFilePath = filePath;
         _lastConfiguredTarget = targetSlot;
         _lastConfiguredLocalDb = localDb;
-        _dialog.ShowForFile(filePath, targetSlot, localDb);
+        _lastConfiguredHasSpawn = hasSpawn;
+        _lastConfiguredSpawn = spawnPosition;
+        _dialog.ShowForFile(filePath, targetSlot, localDb, hasSpawn ? spawnPosition : null);
     }
 
     private void OnDialogClosed()
@@ -290,6 +301,8 @@ public sealed class GodotImportDialogPanelHook : ComponentHook<GodotImportDialog
         _lastConfiguredFilePath = string.Empty;
         _lastConfiguredTarget = null;
         _lastConfiguredLocalDb = null;
+        _lastConfiguredHasSpawn = false;
+        _lastConfiguredSpawn = float3.Zero;
 
         base.Destroy(destroyingWorld);
     }

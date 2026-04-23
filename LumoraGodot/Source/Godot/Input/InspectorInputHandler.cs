@@ -6,8 +6,8 @@ using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.Components.Gizmos;
 using Lumora.Core.GodotUI.Inspectors;
-using Lumora.Core.Math;
 using Lumora.Godot.Hooks;
+using Lumora.Godot.UI;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 using GodotInput = Godot.Input;
 using LumoraEngine = Lumora.Core.Engine;
@@ -245,25 +245,8 @@ public partial class InspectorInputHandler : Node3D
         if (world == null || _camera == null)
             return null;
 
-        var cameraPos = _camera.GlobalPosition;
-        var cameraForward = -_camera.GlobalBasis.Z;
-        var cameraRight = _camera.GlobalBasis.X;
-
-        // Position: 0.6m in front, 0.4m to the left
-        var spawnPos = cameraPos + cameraForward * 0.6f - cameraRight * 0.4f;
-
         var inspectorSlot = world.RootSlot.AddSlot($"SceneInspector");
-        inspectorSlot.GlobalPosition = new float3(spawnPos.X, spawnPos.Y, spawnPos.Z);
-
-        // Face camera
-        var lookDir = cameraPos - spawnPos;
-        if (lookDir.LengthSquared() > 0.001f)
-        {
-            inspectorSlot.GlobalRotation = floatQ.LookRotation(
-                new float3(lookDir.X, 0, lookDir.Z).Normalized,
-                float3.Up
-            );
-        }
+        PanelPlacement.PlaceInFrontOfCamera(inspectorSlot, _camera, 0.85f, -0.45f, -0.05f);
 
         var inspector = inspectorSlot.AttachComponent<SceneInspector>();
         inspector.Root.Target = rootSlot;
@@ -272,7 +255,7 @@ public partial class InspectorInputHandler : Node3D
         // Make inspector grabbable
         inspectorSlot.AttachComponent<Grabbable>();
 
-        LumoraLogger.Log($"InspectorInputHandler: Spawned SceneInspector at {spawnPos}");
+        LumoraLogger.Log($"InspectorInputHandler: Spawned SceneInspector at {inspectorSlot.GlobalPosition}");
 
         return inspector;
     }
@@ -286,23 +269,8 @@ public partial class InspectorInputHandler : Node3D
         if (world == null || _camera == null)
             return null;
 
-        var cameraPos = _camera.GlobalPosition;
-        var cameraForward = -_camera.GlobalBasis.Z;
-        var cameraRight = _camera.GlobalBasis.X;
-
-        var spawnPos = cameraPos + cameraForward * 0.5f - cameraRight * 0.3f;
-
         var inspectorSlot = world.RootSlot.AddSlot($"Inspector_{targetSlot.Name.Value}");
-        inspectorSlot.GlobalPosition = new float3(spawnPos.X, spawnPos.Y, spawnPos.Z);
-
-        var lookDir = cameraPos - spawnPos;
-        if (lookDir.LengthSquared() > 0.001f)
-        {
-            inspectorSlot.GlobalRotation = floatQ.LookRotation(
-                new float3(lookDir.X, 0, lookDir.Z).Normalized,
-                float3.Up
-            );
-        }
+        PanelPlacement.PlaceInFrontOfCamera(inspectorSlot, _camera, 0.8f, -0.35f, -0.05f);
 
         var inspector = inspectorSlot.AttachComponent<SlotInspector>();
         inspector.Setup(targetSlot);
@@ -324,22 +292,8 @@ public partial class InspectorInputHandler : Node3D
         if (world == null || _camera == null)
             return null;
 
-        var cameraPos = _camera.GlobalPosition;
-        var cameraForward = -_camera.GlobalBasis.Z;
-
-        var spawnPos = cameraPos + cameraForward * 0.4f;
-
         var attacherSlot = world.RootSlot.AddSlot("ComponentAttacher");
-        attacherSlot.GlobalPosition = new float3(spawnPos.X, spawnPos.Y, spawnPos.Z);
-
-        var lookDir = cameraPos - spawnPos;
-        if (lookDir.LengthSquared() > 0.001f)
-        {
-            attacherSlot.GlobalRotation = floatQ.LookRotation(
-                new float3(lookDir.X, 0, lookDir.Z).Normalized,
-                float3.Up
-            );
-        }
+        PanelPlacement.PlaceInFrontOfCamera(attacherSlot, _camera, 0.75f, 0.35f, -0.05f);
 
         var attacher = attacherSlot.AttachComponent<ComponentAttacher>();
         attacher.Setup(targetSlot);

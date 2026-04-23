@@ -104,6 +104,8 @@ public partial class ImportDialog
             throw new InvalidOperationException(result.ErrorMessage);
         }
 
+        PositionImportedSlot(result.RootSlot);
+
         if (isAvatar)
         {
             ResetAvatarCreatorState();
@@ -119,6 +121,21 @@ public partial class ImportDialog
         progress?.Report((0.90f, isAvatar ? "Avatar imported as draft..." : "Finalizing model..."));
         GD.Print($"ImportDialog: Model imported successfully to slot '{result.RootSlot?.SlotName.Value}'");
         progress?.Report((1.0f, isAvatar ? "Avatar imported as draft" : "Model import complete"));
+    }
+
+    private void PositionImportedSlot(Slot importedSlot)
+    {
+        if (importedSlot == null || importedSlot.IsDestroyed)
+            return;
+
+        if (_hasImportSpawnPosition)
+        {
+            importedSlot.GlobalPosition = _importSpawnPosition;
+            return;
+        }
+
+        if (_targetSlot != null && !_targetSlot.IsDestroyed && !_targetSlot.IsRootSlot)
+            importedSlot.GlobalPosition = _targetSlot.GlobalPosition;
     }
 
     private async Task ImportRawFile(string filePath)

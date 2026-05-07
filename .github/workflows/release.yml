@@ -180,16 +180,9 @@ jobs:
           Expand-Archive -Path godot.zip -DestinationPath godot
           $consoleExe = Get-ChildItem godot -Recurse -Filter "*console*.exe" | Select-Object -First 1
           if (-not $consoleExe) { throw "Godot console exe not found in archive" }
-          New-Item -ItemType Directory -Force -Path "$HOME\bin" | Out-Null
-          Copy-Item $consoleExe.FullName "$HOME\bin\godot.exe"
-
-          $sharpDir = Get-ChildItem godot -Recurse -Directory -Filter "GodotSharp" | Select-Object -First 1
-          if ($sharpDir) {
-            Copy-Item -Recurse $sharpDir.FullName "$HOME\bin\GodotSharp"
-          }
-
-          Add-Content $env:GITHUB_PATH "$HOME\bin"
-          & "$HOME\bin\godot.exe" --version
+          "GODOT_EXE=$($consoleExe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Add-Content $env:GITHUB_PATH $consoleExe.Directory.FullName
+          & $consoleExe.FullName --version
 
           Invoke-WebRequest -Uri "https://github.com/godotengine/godot/releases/download/$gv/Godot_v${gv}_mono_export_templates.tpz" -OutFile templates.tpz
           $templatesDir = Join-Path $env:APPDATA "Godot\export_templates\$($gv -replace '-','.').mono"
@@ -239,17 +232,24 @@ jobs:
 
       - name: Godot import pass
         working-directory: ${{ env.GODOT_PROJECT_DIR }}
-        shell: bash
-        run: godot --headless --import || true
+        shell: pwsh
+        run: |
+          & $env:GODOT_EXE --headless --import
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Ignoring Godot import exit code $LASTEXITCODE"
+          }
 
       - name: Export Windows
         working-directory: ${{ env.GODOT_PROJECT_DIR }}
-        shell: bash
+        shell: pwsh
         run: |
-          set -euo pipefail
-          mkdir -p ../build/windows
-          godot --headless --export-release "Windows Desktop" ../build/windows/LumoraVR.exe
-          ls -la ../build/windows
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path "..\build\windows" | Out-Null
+          & $env:GODOT_EXE --headless --export-release "Windows Desktop" ..\build\windows\LumoraVR.exe
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          Get-ChildItem ..\build\windows
 
       - name: Package zip
         shell: pwsh

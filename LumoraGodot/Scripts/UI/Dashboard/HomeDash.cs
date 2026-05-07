@@ -107,6 +107,8 @@ public partial class HomeDash : PanelContainer
         _versionLabel = GetNodeOrNull<Label>("VBox/StatusBar/StatusMargin/StatusContent/VersionPanel/Version");
         _fpsValueLabel = GetNodeOrNull<Label>("VBox/Header/HeaderContent/FPSPanel/FPSVBox/FPSValue");
 
+        SetVersion(global::Lumora.Core.BuildInfo.Version);
+
         // Connect button signals
         ConnectButtons();
 
@@ -587,7 +589,7 @@ public partial class HomeDash : PanelContainer
     {
         if (_versionLabel != null)
         {
-            _versionLabel.Text = $"Lumora {version}";
+            _versionLabel.Text = $"Lumora v{version}";
         }
     }
 

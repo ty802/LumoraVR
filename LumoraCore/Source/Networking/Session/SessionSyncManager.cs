@@ -668,6 +668,18 @@ public class SessionSyncManager : IDisposable
                 case StreamMessage streamMessage:
                     if (World.IsAuthority)
                     {
+                        // Authority sees the original sender connection (no relay). A peer
+                        // can put any UserID in the StreamMessage, so we must reject the
+                        // message — and refuse to relay it — when the claimed UserID does
+                        // not belong to the connection it actually arrived on. Otherwise a
+                        // malicious peer can spoof another user's identity and we will
+                        // forward the spoofed stream data to everyone else in the session.
+                        if (!ValidateStreamSender(streamMessage))
+                        {
+                            streamMessage.Dispose();
+                            break;
+                        }
+
                         var forwarded = CloneStreamMessage(streamMessage);
                         AddStreamTargets(forwarded, excludeSender: true);
                         if (forwarded.Targets.Count > 0)
@@ -836,6 +848,34 @@ public class SessionSyncManager : IDisposable
                 EnqueueForTransmission(confirmation);
             }
         }
+    }
+
+    /// <summary>
+    /// Verify the StreamMessage's claimed UserID matches the user mapped to the
+    /// sender connection. Authority-side use only — clients receive relayed
+    /// stream messages whose Sender is the host, not the original peer.
+    /// </summary>
+    private bool ValidateStreamSender(StreamMessage streamMessage)
+    {
+        if (streamMessage.Sender == null)
+        {
+            LumoraLogger.Warn("StreamMessage with no Sender; dropping.");
+            return false;
+        }
+
+        if (!Session.Connections.TryGetUser(streamMessage.Sender, out var senderUser) || senderUser == null)
+        {
+            LumoraLogger.Warn($"StreamMessage from {streamMessage.Sender.Identifier}: no user mapping; dropping.");
+            return false;
+        }
+
+        if ((ulong)senderUser.ReferenceID != streamMessage.UserID)
+        {
+            LumoraLogger.Warn($"StreamMessage spoof: connection {streamMessage.Sender.Identifier} is user {senderUser.UserName?.Value} ({(ulong)senderUser.ReferenceID}) but claimed UserID {streamMessage.UserID}; dropping.");
+            return false;
+        }
+
+        return true;
     }
 
     private void AddStreamTargets(StreamMessage stream, bool excludeSender)

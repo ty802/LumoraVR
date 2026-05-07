@@ -40,4 +40,8 @@ public static class NetworkLimits
 
     /// <summary>Maximum byte length of an asset URI string carried in a control message.</summary>
     public const int MaxAssetUriBytes = 4 * 1024; // 4 KB
+
+    /// <summary>Maximum size of a single RawFrameMessage payload, in bytes. Sized for
+    /// codec frames (e.g. Opus 60 ms ≈ 960 B at 128 kbps); 4 KB leaves generous headroom.</summary>
+    public const int MaxRawFrameBytes = 4 * 1024;
 }

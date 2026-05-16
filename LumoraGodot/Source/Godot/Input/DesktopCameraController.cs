@@ -80,6 +80,7 @@ public partial class DesktopCameraController : Node
             Fov  = 90f,
             Near = 0.05f,
             Far  = 1000f,
+            PhysicsInterpolationMode = Node.PhysicsInterpolationModeEnum.Off,
         };
         AddChild(_overrideCamera);
 

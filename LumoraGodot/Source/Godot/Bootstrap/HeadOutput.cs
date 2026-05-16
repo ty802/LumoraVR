@@ -67,6 +67,7 @@ public partial class HeadOutput : Node
     public void Initialize(Camera3D camera)
     {
         _camera = camera;
+        DisableCameraInterpolation(_camera);
         _camera.Fov = DefaultFOV;
         _camera.Near = NearClip;
         _camera.Far = FarClip;
@@ -120,11 +121,20 @@ public partial class HeadOutput : Node
             _vrCamera.Name = "XRCamera3D";
             _xrOrigin.AddChild(_vrCamera);
         }
+        DisableCameraInterpolation(_vrCamera);
 
         // Use VR camera as primary
         _camera = _vrCamera;
 
         LumoraLogger.Log("HeadOutput: VR camera setup complete");
+    }
+
+    private static void DisableCameraInterpolation(Camera3D camera)
+    {
+        if (camera == null)
+            return;
+
+        camera.PhysicsInterpolationMode = Node.PhysicsInterpolationModeEnum.Off;
     }
 
     /// <summary>

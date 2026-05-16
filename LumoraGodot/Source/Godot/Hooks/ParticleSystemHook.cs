@@ -349,7 +349,7 @@ public sealed partial class ParticleSystemHook : ComponentHook<LumoraParticleSys
             _hook = hook;
         }
 
-        public override void _Process(double delta)
+        public override void _PhysicsProcess(double delta)
         {
             _hook?.Step((float)delta);
         }

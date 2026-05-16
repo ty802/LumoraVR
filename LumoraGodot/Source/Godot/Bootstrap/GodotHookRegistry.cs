@@ -43,6 +43,8 @@ public static class GodotHookRegistry
 
         // Specialized hooks
         World.HookTypes.Register<Lumora.Core.Components.Light, Lumora.Godot.Hooks.LightHook>();
+        World.HookTypes.Register<GradientSkybox, Lumora.Godot.Hooks.GradientSkyboxHook>();
+        World.HookTypes.Register<Lumora.Core.Components.ParticleSystem, Lumora.Godot.Hooks.ParticleSystemHook>();
         World.HookTypes.Register<Lumora.Core.Components.Avatar.LocalViewOverride, Lumora.Godot.Hooks.LocalViewOverrideHook>();
         World.HookTypes.Register<SkeletonBuilder, Lumora.Godot.Hooks.SkeletonHook>();
         World.HookTypes.Register<SkinnedMeshRenderer, Lumora.Godot.Hooks.SkinnedMeshHook>();

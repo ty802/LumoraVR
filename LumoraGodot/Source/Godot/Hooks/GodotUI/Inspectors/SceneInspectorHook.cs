@@ -52,12 +52,15 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
 
     // Buttons
     private Button? _rootUpButton;
+    private Button? _rootGoToTopButton;
     private Button? _setRootButton;
     private Button? _addChildButton;
     private Button? _duplicateButton;
     private Button? _destroyButton;
     private Button? _attachComponentButton;
     private CheckButton? _inheritedToggle;
+    // right-column header label that shows the currently selected slot - xlinka
+    private Label? _slotTitleLabel;
 
     // Collision for interaction
     private Area3D? _collisionArea;
@@ -325,13 +328,26 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
 
     private void CreateHeader(VBoxContainer parent)
     {
+        // Sizes for the inspector toolbar buttons. Reviewer flagged the default
+        // theme button sizing as far too small to comfortably click in VR or at
+        // dashboard scale.
+        const int ToolbarButtonHeight = 34;
+        const int SmallIconButton = 36;
+        const int DupDelWidth = 72;
+        const int AddChildWidth = 96;
+        const int SetRootWidth = 108;
+        const int AddComponentWidth = 150;
+        const int InheritedToggleWidth = 124;
+
         var headerBox = new VBoxContainer();
         headerBox.Name = "Header";
+        headerBox.AddThemeConstantOverride("separation", 8);
         parent.AddChild(headerBox);
 
         // Title row
         var titleRow = new HBoxContainer();
         titleRow.Name = "TitleRow";
+        titleRow.AddThemeConstantOverride("separation", 8);
         headerBox.AddChild(titleRow);
 
         _titleLabel = new Label();
@@ -344,20 +360,21 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         var closeButton = new Button();
         closeButton.Name = "CloseButton";
         closeButton.Text = "X";
-        closeButton.CustomMinimumSize = new Vector2(30, 30);
+        closeButton.CustomMinimumSize = new Vector2(SmallIconButton, SmallIconButton);
         closeButton.Pressed += () => Owner.Close();
         titleRow.AddChild(closeButton);
 
         // Root navigation row
         var rootRow = new HBoxContainer();
         rootRow.Name = "RootRow";
+        rootRow.AddThemeConstantOverride("separation", 8);
         headerBox.AddChild(rootRow);
 
         _rootUpButton = new Button();
         _rootUpButton.Name = "RootUpButton";
         _rootUpButton.Text = "^";
         _rootUpButton.TooltipText = "Navigate to parent";
-        _rootUpButton.CustomMinimumSize = new Vector2(30, 30);
+        _rootUpButton.CustomMinimumSize = new Vector2(SmallIconButton, SmallIconButton);
         _rootUpButton.Pressed += () => Owner.NavigateRootUp();
         rootRow.AddChild(_rootUpButton);
 
@@ -365,38 +382,44 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         _rootLabel.Name = "RootLabel";
         _rootLabel.Text = "Root: (none)";
         _rootLabel.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        _rootLabel.VerticalAlignment = global::Godot.VerticalAlignment.Center;
         rootRow.AddChild(_rootLabel);
 
         _setRootButton = new Button();
         _setRootButton.Name = "SetRootButton";
         _setRootButton.Text = "Set Root";
         _setRootButton.TooltipText = "Set selection as hierarchy root";
+        _setRootButton.CustomMinimumSize = new Vector2(SetRootWidth, ToolbarButtonHeight);
         _setRootButton.Pressed += () => Owner.SetSelectionAsRoot();
         rootRow.AddChild(_setRootButton);
 
         // Toolbar
         var toolbar = new HBoxContainer();
         toolbar.Name = "Toolbar";
+        toolbar.AddThemeConstantOverride("separation", 8);
         headerBox.AddChild(toolbar);
 
         _addChildButton = new Button();
         _addChildButton.Name = "AddChildButton";
         _addChildButton.Text = "+ Child";
         _addChildButton.TooltipText = "Add child slot";
+        _addChildButton.CustomMinimumSize = new Vector2(AddChildWidth, ToolbarButtonHeight);
         _addChildButton.Pressed += () => Owner.AddChild();
         toolbar.AddChild(_addChildButton);
 
         _duplicateButton = new Button();
         _duplicateButton.Name = "DuplicateButton";
-        _duplicateButton.Text = "Dup";
+        _duplicateButton.Text = "Duplicate";
         _duplicateButton.TooltipText = "Duplicate selection";
+        _duplicateButton.CustomMinimumSize = new Vector2(DupDelWidth + 28, ToolbarButtonHeight);
         _duplicateButton.Pressed += () => Owner.DuplicateSelection();
         toolbar.AddChild(_duplicateButton);
 
         _destroyButton = new Button();
         _destroyButton.Name = "DestroyButton";
-        _destroyButton.Text = "Del";
+        _destroyButton.Text = "Delete";
         _destroyButton.TooltipText = "Destroy selection";
+        _destroyButton.CustomMinimumSize = new Vector2(DupDelWidth, ToolbarButtonHeight);
         _destroyButton.Pressed += () => Owner.DestroySelection();
         toolbar.AddChild(_destroyButton);
 
@@ -408,6 +431,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         _attachComponentButton.Name = "AttachComponentButton";
         _attachComponentButton.Text = "+ Component";
         _attachComponentButton.TooltipText = "Attach component";
+        _attachComponentButton.CustomMinimumSize = new Vector2(AddComponentWidth, ToolbarButtonHeight);
         _attachComponentButton.Pressed += () => Owner.OpenComponentAttacher();
         toolbar.AddChild(_attachComponentButton);
 
@@ -415,6 +439,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         _inheritedToggle.Name = "InheritedToggle";
         _inheritedToggle.Text = "Inherited";
         _inheritedToggle.TooltipText = "Show inherited members";
+        _inheritedToggle.CustomMinimumSize = new Vector2(InheritedToggleWidth, ToolbarButtonHeight);
         _inheritedToggle.ButtonPressed = Owner.ShowInherited.Value;
         _inheritedToggle.Toggled += pressed =>
         {
@@ -492,35 +517,55 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
 
     private void CacheSceneNodes()
     {
-        // Cache key nodes from the .tscn layout (paths match SceneInspector.tscn)
-        _hierarchyTree = _loadedScene?.GetNodeOrNull<Tree>("MainPanel/VBox/SplitContainer/HierarchyPanel/VBox/HierarchyTree");
-        _componentContainer = _loadedScene?.GetNodeOrNull<VBoxContainer>("MainPanel/VBox/SplitContainer/ComponentPanel/VBox/ComponentScroll/ComponentContainer");
+        // paths follow the new Resonite-style SceneInspector.tscn layout - xlinka
+        const string hierarchyVBox = "MainPanel/VBox/SplitContainer/HierarchyPanel/VBox";
+        const string hierarchyHeader = hierarchyVBox + "/HierarchyHeader/HBox";
+        const string componentVBox = "MainPanel/VBox/SplitContainer/ComponentPanel/VBox";
+        // collapsed back to one row so title and action icons sit side by side - xlinka
+        const string slotHeader = componentVBox + "/SlotHeader/HBox";
+
+        _hierarchyTree = _loadedScene?.GetNodeOrNull<Tree>(hierarchyVBox + "/HierarchyTree");
+        _componentContainer = _loadedScene?.GetNodeOrNull<VBoxContainer>(componentVBox + "/ComponentScroll/ComponentContainer");
         _hierarchyScroll = null; // Tree handles its own scrolling
-        _componentScroll = _loadedScene?.GetNodeOrNull<ScrollContainer>("MainPanel/VBox/SplitContainer/ComponentPanel/VBox/ComponentScroll");
+        _componentScroll = _loadedScene?.GetNodeOrNull<ScrollContainer>(componentVBox + "/ComponentScroll");
         _splitContainer = _loadedScene?.GetNodeOrNull<HSplitContainer>("MainPanel/VBox/SplitContainer");
         _titleLabel = _loadedScene?.GetNodeOrNull<Label>("MainPanel/VBox/Header/TitleRow/HBox/Title");
-        _rootLabel = _loadedScene?.GetNodeOrNull<Label>("MainPanel/VBox/Header/RootRow/RootLabel");
+        _rootLabel = _loadedScene?.GetNodeOrNull<Label>(hierarchyHeader + "/RootLabel");
+        _slotTitleLabel = _loadedScene?.GetNodeOrNull<Label>(slotHeader + "/SlotTitle");
 
-        // Connect buttons
-        _rootUpButton = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/RootRow/RootUpButton");
+        // hierarchy nav lives in the left header now
+        _rootUpButton = _loadedScene?.GetNodeOrNull<Button>(hierarchyHeader + "/RootUpButton");
         _rootUpButton?.Connect("pressed", Callable.From(() => Owner.NavigateRootUp()));
 
-        _setRootButton = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/RootRow/SetRootButton");
+        _rootGoToTopButton = _loadedScene?.GetNodeOrNull<Button>(hierarchyHeader + "/RootGoToTopButton");
+        _rootGoToTopButton?.Connect("pressed", Callable.From(() =>
+        {
+            // walk parents until we find the world root slot - xlinka
+            var slot = Owner?.Root.Target;
+            if (slot == null) return;
+            while (slot!.Parent != null && !slot.IsRootSlot)
+                slot = slot.Parent;
+            Owner!.Root.Target = slot;
+        }));
+
+        // slot action icons live in the right header now
+        _setRootButton = _loadedScene?.GetNodeOrNull<Button>(slotHeader + "/SetRootButton");
         _setRootButton?.Connect("pressed", Callable.From(() => Owner.SetSelectionAsRoot()));
 
-        _addChildButton = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/Toolbar/HBox/AddChildButton");
+        _addChildButton = _loadedScene?.GetNodeOrNull<Button>(slotHeader + "/AddChildButton");
         _addChildButton?.Connect("pressed", Callable.From(() => Owner.AddChild()));
 
-        _duplicateButton = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/Toolbar/HBox/DuplicateButton");
+        _duplicateButton = _loadedScene?.GetNodeOrNull<Button>(slotHeader + "/DuplicateButton");
         _duplicateButton?.Connect("pressed", Callable.From(() => Owner.DuplicateSelection()));
 
-        _destroyButton = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/Toolbar/HBox/DestroyButton");
+        _destroyButton = _loadedScene?.GetNodeOrNull<Button>(slotHeader + "/DestroyButton");
         _destroyButton?.Connect("pressed", Callable.From(() => Owner.DestroySelection()));
 
-        _attachComponentButton = _loadedScene?.GetNodeOrNull<Button>("MainPanel/VBox/Header/Toolbar/HBox/AttachComponentButton");
+        // bottom of the right column. only place it should be - xlinka
+        _attachComponentButton = _loadedScene?.GetNodeOrNull<Button>(componentVBox + "/AttachComponentButton");
         _attachComponentButton?.Connect("pressed", Callable.From(() => Owner.OpenComponentAttacher()));
 
-        _inheritedToggle = _loadedScene?.GetNodeOrNull<CheckButton>("MainPanel/VBox/Header/Toolbar/HBox/InheritedToggle");
+        _inheritedToggle = _loadedScene?.GetNodeOrNull<CheckButton>(componentVBox + "/OptionsRow/InheritedToggle");
         if (_inheritedToggle != null)
         {
             _inheritedToggle.ButtonPressed = Owner.ShowInherited.Value;
@@ -710,7 +755,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
             if (child.Name.Value.StartsWith("Gizmo_", StringComparison.Ordinal))
                 return;
 
-            // May be called from SyncLoop thread — defer Godot UI work to main thread
+            // May be called from SyncLoop thread, defer Godot UI work to main thread
             World?.RunSynchronously(RebuildHierarchyTree);
         }
         catch (Exception ex)
@@ -843,12 +888,16 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
 
     private void UpdateLabels()
     {
+        // top title stays static. selection name lives in the right column header now - xlinka
         if (_titleLabel != null)
+            _titleLabel.Text = "Scene Inspector";
+
+        var selection = Owner.ComponentView.Target;
+        if (_slotTitleLabel != null)
         {
-            var selection = Owner.ComponentView.Target;
-            _titleLabel.Text = selection != null
-                ? $"Scene Inspector - {selection.Name.Value}"
-                : "Scene Inspector";
+            _slotTitleLabel.Text = selection != null
+                ? $"Slot: {selection.Name.Value}"
+                : "Slot: (none)";
         }
 
         if (_rootLabel != null)
@@ -859,8 +908,8 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         }
 
         // Update button states
-        var hasSelection = Owner.ComponentView.Target != null;
-        var canDelete = hasSelection && !Owner.ComponentView.Target!.IsRootSlot;
+        var hasSelection = selection != null;
+        var canDelete = hasSelection && !selection!.IsRootSlot;
 
         if (_duplicateButton != null) _duplicateButton.Disabled = !canDelete;
         if (_destroyButton != null) _destroyButton.Disabled = !canDelete;
@@ -868,6 +917,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         if (_attachComponentButton != null) _attachComponentButton.Disabled = !hasSelection;
         if (_setRootButton != null) _setRootButton.Disabled = !hasSelection;
         if (_rootUpButton != null) _rootUpButton.Disabled = _boundRoot == null || _boundRoot.IsRootSlot;
+        if (_rootGoToTopButton != null) _rootGoToTopButton.Disabled = _boundRoot == null || _boundRoot.IsRootSlot;
     }
 
     private void RebuildHierarchyTree()
@@ -1006,8 +1056,8 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
     {
         var header = new Label();
         header.Text = "Slot Properties";
-        header.AddThemeFontSizeOverride("font_size", 12);
-        header.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
+        header.AddThemeFontSizeOverride("font_size", 22);
+        header.AddThemeColorOverride("font_color", new Color(0.85f, 0.85f, 0.95f));
         _componentContainer!.AddChild(header);
 
         // Name
@@ -1030,8 +1080,23 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         var scaleRow = SyncMemberEditorBuilder.CreateEditorRow(slot.LocalScale, "Scale");
         if (scaleRow != null) _componentContainer.AddChild(scaleRow);
 
-        var separator = new HSeparator();
-        _componentContainer.AddChild(separator);
+        AddSectionDivider(_componentContainer);
+    }
+
+    // solid 1px tinted line. default HSeparator renders as a dashed/dotted artifact in our theme - xlinka
+    private static void AddSectionDivider(VBoxContainer parent)
+    {
+        var divider = new Panel();
+        divider.CustomMinimumSize = new Vector2(0, 2);
+        divider.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        var style = new StyleBoxFlat
+        {
+            BgColor = new Color(0.22f, 0.20f, 0.32f, 0.85f),
+            ContentMarginTop = 0,
+            ContentMarginBottom = 0,
+        };
+        divider.AddThemeStyleboxOverride("panel", style);
+        parent.AddChild(divider);
     }
 
     private void AddComponentsSection(Slot slot)
@@ -1039,15 +1104,16 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         // Components header with count
         var componentsHeader = new Label();
         componentsHeader.Text = $"Components ({slot.Components.Count})";
-        componentsHeader.AddThemeFontSizeOverride("font_size", 12);
-        componentsHeader.AddThemeColorOverride("font_color", new Color(0.7f, 0.7f, 0.7f));
+        componentsHeader.AddThemeFontSizeOverride("font_size", 22);
+        componentsHeader.AddThemeColorOverride("font_color", new Color(0.85f, 0.85f, 0.95f));
         _componentContainer!.AddChild(componentsHeader);
 
         if (slot.Components.Count == 0)
         {
             var noComponentsLabel = new Label();
             noComponentsLabel.Text = "No components attached";
-            noComponentsLabel.AddThemeColorOverride("font_color", new Color(0.5f, 0.5f, 0.5f));
+            noComponentsLabel.AddThemeFontSizeOverride("font_size", 18);
+            noComponentsLabel.AddThemeColorOverride("font_color", new Color(0.6f, 0.6f, 0.7f));
             _componentContainer.AddChild(noComponentsLabel);
             return;
         }
@@ -1089,12 +1155,14 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         var nameLabel = new Label();
         nameLabel.Text = component.GetType().Name;
         nameLabel.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
-        nameLabel.AddThemeFontSizeOverride("font_size", 13);
+        nameLabel.AddThemeFontSizeOverride("font_size", 20);
+        nameLabel.AddThemeColorOverride("font_color", new Color(0.95f, 0.85f, 1f));
         headerBox.AddChild(nameLabel);
 
         var removeBtn = new Button();
         removeBtn.Text = "X";
-        removeBtn.CustomMinimumSize = new Vector2(24, 24);
+        removeBtn.CustomMinimumSize = new Vector2(40, 40);
+        removeBtn.AddThemeFontSizeOverride("font_size", 18);
         removeBtn.Flat = true;
         removeBtn.TooltipText = "Remove component";
         removeBtn.Pressed += () =>
@@ -1112,6 +1180,9 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         var propsContainer = new VBoxContainer();
         propsContainer.Name = $"ComponentProps_{component.GetType().Name}";
         propsContainer.Visible = isExpanded; // Use tracked state
+        // Vertical breathing room between rows. Reviewer flagged inspector
+        // rows as visually packed. - xlinka
+        propsContainer.AddThemeConstantOverride("separation", 6);
 
         var shownMembers = new HashSet<ISyncMember>();
         int visiblePropertyCount = 0;
@@ -1174,8 +1245,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
                 _expandedComponents.Remove(componentKey);
         };
 
-        var separator = new HSeparator();
-        _componentContainer.AddChild(separator);
+        AddSectionDivider(_componentContainer);
     }
 
     private int AddFallbackPropertyEditors(Component component, VBoxContainer propsContainer, HashSet<ISyncMember> shownMembers)
@@ -1399,6 +1469,8 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         _componentScroll = null;
         _titleLabel = null;
         _rootLabel = null;
+        _slotTitleLabel = null;
+        _rootGoToTopButton = null;
         _splitContainer = null;
         _collisionArea = null;
         _collisionShape = null;

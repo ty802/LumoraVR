@@ -279,7 +279,36 @@ public partial class HeadOutput : Node
     }
 
     /// <summary>
-    /// Switch output type (e.g., VR <-> Screen).
+    /// Called by XRModeManager when the VR active state changes at runtime.
+    /// Updates the internal flag and re-runs VR camera setup if activating VR.
+    /// </summary>
+    public void NotifyVRActiveChanged(bool isActive)
+    {
+        _isVRActive = isActive;
+
+        if (isActive)
+        {
+            // Re-create or locate the XR camera hierarchy now that OpenXR is running.
+            SetupVRCamera();
+        }
+        else
+        {
+            // Ensure the regular desktop camera becomes current again.
+            if (_camera != null
+                && GodotObject.IsInstanceValid(_camera)
+                && _camera is not XRCamera3D)
+            {
+                _camera.MakeCurrent();
+            }
+        }
+
+        LumoraLogger.Log($"HeadOutput: VR active state → {isActive}");
+    }
+
+    /// <summary>
+    /// Switch output type (e.g., VR ↔ Screen).
+    /// When switching to VR call <see cref="NotifyVRActiveChanged"/> first so
+    /// <c>_isVRActive</c> is already up-to-date by the time this runs.
     /// </summary>
     public void SwitchOutputType(OutputType newType)
     {
@@ -288,13 +317,14 @@ public partial class HeadOutput : Node
 
         LumoraLogger.Log($"HeadOutput: Switching from {Type} to {newType}");
 
-        Type = newType;
-
+        // Guard: only allow VR if the XR interface has been activated.
         if (newType == OutputType.VR && !_isVRActive)
         {
-            LumoraLogger.Warn("Cannot switch to VR - XR interface not active");
-            Type = OutputType.Screen;
+            LumoraLogger.Warn("HeadOutput: Cannot switch to VR – XR interface is not active. Staying in Screen mode.");
+            return;
         }
+
+        Type = newType;
     }
 
     /// <summary>

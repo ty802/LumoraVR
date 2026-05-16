@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Reflection;
 using Godot;
@@ -22,14 +22,15 @@ namespace Lumora.Godot.Hooks.GodotUI.Inspectors;
 /// </summary>
 public static class SyncMemberEditorBuilder
 {
-    private const int LabelMinWidth = 128;
-    private const int EditorMinWidth = 210;
-    private const int IndentWidth = 16;
-    private const int RowMinHeight = 34;
-    private const int EditorFontSize = 14;
-    private const int HeaderFontSize = 16;
-    private const int SmallButtonSize = 30;
-    private const int ComponentSpinMinWidth = 82;
+    private const int LabelMinWidth = 110;
+    private const int EditorMinWidth = 200;
+    private const int EditorMaxWidth = 280;
+    private const int IndentWidth = 20;
+    private const int RowMinHeight = 60;
+    private const int EditorFontSize = 22;
+    private const int HeaderFontSize = 24;
+    private const int SmallButtonSize = 48;
+    private const int ComponentSpinMinWidth = 90;
 
     /// <summary>
     /// Create a property row with label and appropriate editor for a sync member.
@@ -90,11 +91,14 @@ public static class SyncMemberEditorBuilder
             row.AddChild(indent);
         }
 
-        // Label
+        // Label, top-aligned so multi-line/component rows read consistently from
+        // the top-left of each row. Reviewer noted labels drifted to the middle. - xlinka
         var label = new Label();
         label.Text = name;
         label.CustomMinimumSize = new Vector2(Mathf.Max(80, LabelMinWidth - (IndentWidth * depth)), RowMinHeight);
         label.SizeFlagsHorizontal = Control.SizeFlags.Fill;
+        label.SizeFlagsVertical = Control.SizeFlags.Fill;
+        label.VerticalAlignment = VerticalAlignment.Top;
         label.AddThemeFontSizeOverride("font_size", EditorFontSize);
         if (tooltipAttr != null)
         {
@@ -102,17 +106,23 @@ public static class SyncMemberEditorBuilder
         }
         row.AddChild(label);
 
-        // Editor control
+        // Editor control. wrap in a fixed-width container so primitive fields don't stretch across the panel - xlinka
         var editor = CreateEditor(syncMember, fieldInfo, readOnlyAttr != null);
         if (editor != null)
         {
             editor.CustomMinimumSize = new Vector2(EditorMinWidth, RowMinHeight);
-            editor.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+            editor.SizeFlagsHorizontal = Control.SizeFlags.Fill;
             if (tooltipAttr != null)
             {
                 editor.TooltipText = tooltipAttr.Text;
             }
-            row.AddChild(editor);
+
+            var editorSlot = new MarginContainer();
+            editorSlot.Name = $"EditorSlot_{name}";
+            editorSlot.CustomMinimumSize = new Vector2(EditorMaxWidth, RowMinHeight);
+            editorSlot.SizeFlagsHorizontal = Control.SizeFlags.Fill;
+            editorSlot.AddChild(editor);
+            row.AddChild(editorSlot);
         }
         else
         {
@@ -120,9 +130,14 @@ public static class SyncMemberEditorBuilder
             var valueLabel = new Label();
             valueLabel.Text = syncMember.GetValueAsObject()?.ToString() ?? "null";
             valueLabel.AddThemeFontSizeOverride("font_size", EditorFontSize);
-            valueLabel.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+            valueLabel.CustomMinimumSize = new Vector2(EditorMaxWidth, RowMinHeight);
+            valueLabel.SizeFlagsHorizontal = Control.SizeFlags.Fill;
             row.AddChild(valueLabel);
         }
+
+        // trailing filler eats remaining width so editors stay aligned at a sensible cap instead of stretching - xlinka
+        var rowFiller = new Control { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+        row.AddChild(rowFiller);
 
         container.AddChild(row);
         UIReadability.ApplyToTree(container);
@@ -501,11 +516,36 @@ public static class SyncMemberEditorBuilder
         return container;
     }
 
-    private static CheckBox CreateBoolEditor(IField field, bool readOnly)
+    private static HBoxContainer CreateBoolEditor(IField field, bool readOnly)
     {
+        // Wrapper container: CreateEditorRow forces ExpandFill on whatever we return,
+        // so we put the actual CheckBox inside a container with a left margin and a
+        // trailing spacer. That keeps the checkbox at a fixed 24x24 click target on
+        // the left without the hover/focus stylebox painting across the whole row.
+        var container = new HBoxContainer();
+        container.AddThemeConstantOverride("separation", 0);
+
+        var leftPad = new Control();
+        leftPad.CustomMinimumSize = new Vector2(6, 0);
+        container.AddChild(leftPad);
+
         var checkBox = new CheckBox();
         checkBox.ButtonPressed = (bool)(field.BoxedValue ?? false);
         checkBox.Disabled = readOnly || !field.CanWrite;
+        // chunky enough to hit with a VR controller. 24x24 was a desktop click target - xlinka
+        checkBox.CustomMinimumSize = new Vector2(48, 48);
+        checkBox.SizeFlagsHorizontal = Control.SizeFlags.ShrinkBegin;
+        checkBox.SizeFlagsVertical = Control.SizeFlags.ShrinkCenter;
+        checkBox.AddThemeFontSizeOverride("font_size", EditorFontSize);
+        // Strip the default Godot CheckBox text padding so the indicator sits flush.
+        checkBox.AddThemeConstantOverride("h_separation", 0);
+        container.AddChild(checkBox);
+
+        var spacer = new Control();
+        spacer.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        // MouseFilter = Ignore so the spacer doesn't eat clicks the row may want.
+        spacer.MouseFilter = Control.MouseFilterEnum.Ignore;
+        container.AddChild(spacer);
 
         checkBox.Toggled += (pressed) =>
         {
@@ -526,7 +566,19 @@ public static class SyncMemberEditorBuilder
             };
         }
 
-        return checkBox;
+        return container;
+    }
+
+    // bumps the inner LineEdit font of a SpinBox so VR users can read it. plain font_size override on SpinBox doesn't propagate - xlinka
+    private static void ApplyEditorFont(SpinBox spinBox)
+    {
+        spinBox.AddThemeFontSizeOverride("font_size", EditorFontSize);
+        spinBox.GetLineEdit()?.AddThemeFontSizeOverride("font_size", EditorFontSize);
+    }
+
+    private static void ApplyEditorFont(LineEdit lineEdit)
+    {
+        lineEdit.AddThemeFontSizeOverride("font_size", EditorFontSize);
     }
 
     private static SpinBox CreateIntEditor(IField field, bool readOnly)
@@ -537,6 +589,7 @@ public static class SyncMemberEditorBuilder
         spinBox.AllowLesser = true;
         spinBox.Value = Convert.ToDouble(field.BoxedValue ?? 0);
         spinBox.Editable = !readOnly && field.CanWrite;
+        ApplyEditorFont(spinBox);
 
         spinBox.ValueChanged += (value) =>
         {
@@ -568,6 +621,7 @@ public static class SyncMemberEditorBuilder
         spinBox.AllowLesser = true;
         spinBox.Value = Convert.ToDouble(field.BoxedValue ?? 0.0);
         spinBox.Editable = !readOnly && field.CanWrite;
+        ApplyEditorFont(spinBox);
 
         spinBox.ValueChanged += (value) =>
         {
@@ -601,6 +655,7 @@ public static class SyncMemberEditorBuilder
         var lineEdit = new LineEdit();
         lineEdit.Text = field.BoxedValue?.ToString() ?? "";
         lineEdit.Editable = !readOnly && field.CanWrite;
+        ApplyEditorFont(lineEdit);
 
         lineEdit.TextSubmitted += (text) =>
         {
@@ -631,6 +686,7 @@ public static class SyncMemberEditorBuilder
     private static HBoxContainer CreateFloat2Editor(IField field, bool readOnly)
     {
         var container = new HBoxContainer();
+        container.AddThemeConstantOverride("separation", 12);
         var value = (float2)(field.BoxedValue ?? float2.Zero);
 
         var xSpin = CreateComponentSpinBox("X", value.x, readOnly);
@@ -671,6 +727,7 @@ public static class SyncMemberEditorBuilder
     private static HBoxContainer CreateFloat3Editor(IField field, bool readOnly)
     {
         var container = new HBoxContainer();
+        container.AddThemeConstantOverride("separation", 12);
         var value = (float3)(field.BoxedValue ?? float3.Zero);
 
         var xSpin = CreateComponentSpinBox("X", value.x, readOnly);
@@ -717,6 +774,7 @@ public static class SyncMemberEditorBuilder
     private static HBoxContainer CreateFloat4Editor(IField field, bool readOnly)
     {
         var container = new HBoxContainer();
+        container.AddThemeConstantOverride("separation", 12);
         var value = (float4)(field.BoxedValue ?? float4.Zero);
 
         var xSpin = CreateComponentSpinBox("X", value.x, readOnly);

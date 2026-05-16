@@ -11,6 +11,7 @@ using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.GodotUI;
 using Lumora.Core.GodotUI.Inspectors;
+using Lumora.Core.GodotUI.Wizards;
 using Lumora.Core.Math;
 using Lumora.Core.Networking.Sync;
 using Lumora.Godot.UI;
@@ -26,11 +27,16 @@ namespace Lumora.Godot.Hooks.GodotUI.Inspectors;
 /// </summary>
 public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
 {
+    private const int InspectorScrollbarWidth = 18;
+
     // Viewport and rendering
     private SubViewport? _viewport;
     private MeshInstance3D? _meshInstance;
+    private MeshInstance3D? _backingInstance;
     private QuadMesh? _quadMesh;
+    private QuadMesh? _backingQuadMesh;
     private StandardMaterial3D? _material;
+    private StandardMaterial3D? _backingMaterial;
     private Node? _loadedScene;
 
     // UI containers
@@ -78,6 +84,10 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
     private readonly HashSet<string> _expandedComponents = new(); // Track which components are expanded by type name
     private Action<Slot?>? _rootChangedHandler;
     private Action<Slot?>? _selectionChangedHandler;
+    private static StyleBoxFlat? _scrollbarTrackStyle;
+    private static StyleBoxFlat? _scrollbarGrabberStyle;
+    private static StyleBoxFlat? _scrollbarGrabberHoverStyle;
+    private static StyleBoxFlat? _scrollbarGrabberPressedStyle;
 
     public static IHook<SceneInspector> Constructor()
     {
@@ -108,8 +118,11 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         // Create mesh for 3D display
         _meshInstance = new MeshInstance3D { Name = "SceneInspectorQuad" };
         _quadMesh = new QuadMesh();
+        _backingQuadMesh = new QuadMesh();
         UpdateQuadSize();
         _meshInstance.Mesh = _quadMesh;
+        _backingMaterial = WorldPanelBacking.CreateBackingMaterial();
+        _backingInstance = WorldPanelBacking.CreateBackingMesh("SceneInspectorBacking", _backingQuadMesh, _backingMaterial);
 
         // Create material
         _material = new StandardMaterial3D
@@ -119,10 +132,12 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
             CullMode = BaseMaterial3D.CullModeEnum.Disabled,
             TextureFilter = BaseMaterial3D.TextureFilterEnum.Linear
         };
+        WorldPanelBacking.ConfigureSurfaceMaterial(_material);
         _material.AlbedoTexture = _viewport.GetTexture();
         _meshInstance.MaterialOverride = _material;
 
         attachedNode.AddChild(_viewport);
+        attachedNode.AddChild(_backingInstance);
         attachedNode.AddChild(_meshInstance);
 
         CreateCollisionArea();
@@ -271,6 +286,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
                         UIReadability.ApplyToTree(control);
                     }
                     CacheSceneNodes();
+                    ApplyInspectorScrollbarTheme();
                     RebuildUI();
                     return;
                 }
@@ -322,6 +338,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         _viewport?.AddChild(_mainPanel);
         _loadedScene = _mainPanel;
         UIReadability.ApplyToTree(_mainPanel);
+        ApplyInspectorScrollbarTheme();
 
         RebuildUI();
     }
@@ -484,6 +501,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         // Add direct GUI input handling as fallback for PushInput events
         _hierarchyTree.GuiInput += OnTreeGuiInput;
         hierarchyVBox.AddChild(_hierarchyTree);
+        ApplyInspectorScrollbarTheme(_hierarchyTree);
 
         // Keep scroll reference as null since Tree handles its own scrolling
         _hierarchyScroll = null;
@@ -508,6 +526,7 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         _componentScroll.Name = "ComponentScroll";
         _componentScroll.SizeFlagsVertical = Control.SizeFlags.ExpandFill;
         componentVBox.AddChild(_componentScroll);
+        ApplyInspectorScrollbarTheme(_componentScroll);
 
         _componentContainer = new VBoxContainer();
         _componentContainer.Name = "ComponentContainer";
@@ -585,8 +604,90 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
             _hierarchyTree.MouseFilter = Control.MouseFilterEnum.Stop;
         }
 
+        ApplyInspectorScrollbarTheme();
+
         // Create Lumora bidirectional UI components for all static .tscn elements
         ParseStaticUIElements();
+    }
+
+    private void ApplyInspectorScrollbarTheme()
+    {
+        if (_loadedScene != null)
+        {
+            ApplyInspectorScrollbarTheme(_loadedScene);
+        }
+
+        if (_hierarchyTree != null)
+        {
+            ApplyInspectorScrollbarTheme(_hierarchyTree);
+        }
+
+        if (_componentScroll != null)
+        {
+            ApplyInspectorScrollbarTheme(_componentScroll);
+        }
+    }
+
+    private static void ApplyInspectorScrollbarTheme(Node root)
+    {
+        if (!GodotObject.IsInstanceValid(root)) return;
+
+        if (root is ScrollBar scrollbar)
+        {
+            ThemeScrollbar(scrollbar);
+        }
+
+        foreach (var child in root.GetChildren(true))
+        {
+            if (child is Node childNode)
+            {
+                ApplyInspectorScrollbarTheme(childNode);
+            }
+        }
+    }
+
+    private static void ThemeScrollbar(ScrollBar scrollbar)
+    {
+        scrollbar.CustomMinimumSize = scrollbar is VScrollBar
+            ? new Vector2(InspectorScrollbarWidth, 0f)
+            : new Vector2(0f, InspectorScrollbarWidth);
+        scrollbar.AddThemeConstantOverride("scroll_width", InspectorScrollbarWidth);
+        scrollbar.AddThemeStyleboxOverride("scroll", ScrollbarTrackStyle);
+        scrollbar.AddThemeStyleboxOverride("grabber", ScrollbarGrabberStyle);
+        scrollbar.AddThemeStyleboxOverride("grabber_highlight", ScrollbarGrabberHoverStyle);
+        scrollbar.AddThemeStyleboxOverride("grabber_pressed", ScrollbarGrabberPressedStyle);
+    }
+
+    private static StyleBoxFlat ScrollbarTrackStyle =>
+        _scrollbarTrackStyle ??= CreateScrollbarStyle(
+            new Color(0.065f, 0.055f, 0.095f, 0.95f),
+            new Color(0.23f, 0.19f, 0.38f, 0.85f));
+
+    private static StyleBoxFlat ScrollbarGrabberStyle =>
+        _scrollbarGrabberStyle ??= CreateScrollbarStyle(
+            new Color(0.34f, 0.27f, 0.62f, 0.95f),
+            new Color(0.48f, 0.39f, 0.88f, 1f));
+
+    private static StyleBoxFlat ScrollbarGrabberHoverStyle =>
+        _scrollbarGrabberHoverStyle ??= CreateScrollbarStyle(
+            new Color(0.48f, 0.38f, 0.84f, 1f),
+            new Color(0.66f, 0.55f, 1f, 1f));
+
+    private static StyleBoxFlat ScrollbarGrabberPressedStyle =>
+        _scrollbarGrabberPressedStyle ??= CreateScrollbarStyle(
+            new Color(0.26f, 0.2f, 0.5f, 1f),
+            new Color(0.58f, 0.48f, 0.95f, 1f));
+
+    private static StyleBoxFlat CreateScrollbarStyle(Color bgColor, Color borderColor)
+    {
+        var style = new StyleBoxFlat
+        {
+            BgColor = bgColor,
+            BorderColor = borderColor
+        };
+        style.SetBorderWidthAll(1);
+        style.SetCornerRadiusAll(8);
+        return style;
     }
 
     /// <summary>
@@ -1205,7 +1306,11 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
                         continue;
                 }
 
-                var row = SyncMemberEditorBuilder.CreateEditorRow(syncMember, memberName, fieldInfo);
+                var row = SyncMemberEditorBuilder.CreateEditorRow(
+                    syncMember,
+                    memberName,
+                    fieldInfo,
+                    openColorPicker: OpenColorPickerPanel);
                 if (row != null)
                 {
                     propsContainer.AddChild(row);
@@ -1274,7 +1379,10 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
 
             if (syncMember == null || shownMembers.Contains(syncMember)) continue;
 
-            var row = SyncMemberEditorBuilder.CreateEditorRow(syncMember, property.Name);
+            var row = SyncMemberEditorBuilder.CreateEditorRow(
+                syncMember,
+                property.Name,
+                openColorPicker: OpenColorPickerPanel);
             if (row == null) continue;
 
             propsContainer.AddChild(row);
@@ -1304,7 +1412,11 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
                 }
             }
 
-            var row = SyncMemberEditorBuilder.CreateEditorRow(syncMember, memberName!, field);
+            var row = SyncMemberEditorBuilder.CreateEditorRow(
+                syncMember,
+                memberName!,
+                field,
+                openColorPicker: OpenColorPickerPanel);
             if (row == null) continue;
 
             propsContainer.AddChild(row);
@@ -1313,6 +1425,59 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         }
 
         return addedRows;
+    }
+
+    private void OpenColorPickerPanel(ISyncMember syncMember, string memberName, bool hdr)
+    {
+        if (syncMember is not IField field || !field.CanWrite)
+        {
+            return;
+        }
+
+        var parentSlot = Owner.Slot.Parent ?? Owner.Slot;
+        var slotName = $"ColorPicker_{SanitizeSlotName(memberName)}_{syncMember.ReferenceID}";
+
+        var pickerSlot = parentSlot.FindChild(slotName, recursive: false);
+        var picker = pickerSlot?.GetComponent<ColorPickerPanel>();
+        if (picker == null)
+        {
+            pickerSlot = parentSlot.AddSlot(slotName);
+            picker = pickerSlot.AttachComponent<ColorPickerPanel>();
+        }
+
+        picker.SetTargetDirect(syncMember, memberName);
+        picker.ShowAlpha.Value = true;
+        picker.AllowHDR.Value = hdr;
+        picker.PixelsPerUnit.Value = Owner.PixelsPerUnit.Value;
+
+        if (pickerSlot != null)
+        {
+            PanelPlacement.PlaceBesidePanel(pickerSlot, Owner.Slot, 0.78f, 0.06f, 0.03f);
+        }
+    }
+
+    private static string SanitizeSlotName(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return "Color";
+        }
+
+        Span<char> chars = stackalloc char[raw.Length];
+        var len = 0;
+        foreach (var c in raw)
+        {
+            if (char.IsLetterOrDigit(c) || c == '_')
+            {
+                chars[len++] = c;
+            }
+            else if (len == 0 || chars[len - 1] != '_')
+            {
+                chars[len++] = '_';
+            }
+        }
+
+        return len == 0 ? "Color" : new string(chars[..len]);
     }
 
     private static bool IsBaseMemberType(Type? declaringType)
@@ -1357,6 +1522,8 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
                 _material.AlbedoTexture = _viewport.GetTexture();
             }
 
+            ApplyInspectorScrollbarTheme();
+
             if (Owner.Root.GetWasChangedAndClear())
             {
                 BindRoot(Owner.Root.Target);
@@ -1395,7 +1562,12 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         var size = Owner.Size.Value;
         var ppu = Owner.PixelsPerUnit.Value;
 
-        _quadMesh.Size = new Vector2(size.x / ppu, size.y / ppu);
+        var panelSize = new Vector2(size.x / ppu, size.y / ppu);
+        _quadMesh.Size = panelSize;
+        if (_backingQuadMesh != null)
+        {
+            _backingQuadMesh.Size = WorldPanelBacking.GetBackingSize(panelSize);
+        }
         UpdateCollisionSize();
     }
 
@@ -1455,8 +1627,11 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
             _loadedScene?.QueueFree();
             _collisionArea?.QueueFree();
             _viewport?.QueueFree();
+            _backingInstance?.QueueFree();
             _meshInstance?.QueueFree();
+            _backingMaterial?.Dispose();
             _material?.Dispose();
+            _backingQuadMesh?.Dispose();
             _quadMesh?.Dispose();
             _boxShape?.Dispose();
         }
@@ -1476,8 +1651,11 @@ public sealed class SceneInspectorHook : ComponentHook<SceneInspector>
         _collisionShape = null;
         _boxShape = null;
         _viewport = null;
+        _backingInstance = null;
         _meshInstance = null;
+        _backingMaterial = null;
         _material = null;
+        _backingQuadMesh = null;
         _quadMesh = null;
         _lastBuiltSelectionId = null;
         _lastViewportSize = Vector2I.Zero;

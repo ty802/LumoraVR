@@ -36,6 +36,7 @@ public partial class DesktopCameraController : Node
     private const float FreeCamBaseSpeed   = 5f;
     private const float FreeCamFastMult    = 4f;
     private const float LookReferenceHeight = 1080f;
+    private const uint FreeCamIndicatorLayer = 1u << 19;
 
     private static float LookSensitivity => (Mathf.Pi / LookReferenceHeight) * InterfaceSettings.MouseSensitivity;
 
@@ -82,6 +83,7 @@ public partial class DesktopCameraController : Node
             Far  = 1000f,
             PhysicsInterpolationMode = Node.PhysicsInterpolationModeEnum.Off,
         };
+        _overrideCamera.CullMask &= ~FreeCamIndicatorLayer;
         AddChild(_overrideCamera);
 
         CreateFreeCamIndicator();
@@ -94,6 +96,7 @@ public partial class DesktopCameraController : Node
 
         // Glowing sphere
         var mesh = new MeshInstance3D();
+        mesh.Layers = FreeCamIndicatorLayer;
         mesh.Mesh = new SphereMesh { Radius = 0.18f, Height = 0.36f };
         var mat = new StandardMaterial3D
         {
@@ -113,6 +116,7 @@ public partial class DesktopCameraController : Node
             NoDepthTest = true,
             PixelSize   = 0.004f,
             FontSize    = 28,
+            Layers      = FreeCamIndicatorLayer,
             Position    = new Vector3(0f, 0.38f, 0f),
         };
         _freeCamIndicator.AddChild(_freeCamLabel);

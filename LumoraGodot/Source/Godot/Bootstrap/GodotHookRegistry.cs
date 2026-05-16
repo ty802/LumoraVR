@@ -63,6 +63,7 @@ public static class GodotHookRegistry
         World.HookTypes.Register<Lumora.Core.Components.UI.ContextMenuSystem, Lumora.Godot.Hooks.GodotUI.ContextMenuHook>();
         World.HookTypes.Register<GodotMaterialInspector, Lumora.Godot.Hooks.GodotUI.GodotMaterialInspectorHook>();
         World.HookTypes.Register<GodotMaterialColorPicker, Lumora.Godot.Hooks.GodotUI.GodotMaterialColorPickerHook>();
+        World.HookTypes.Register<ColorPickerPanel, Lumora.Godot.Hooks.GodotUI.GodotColorPickerPanelHook>();
         World.HookTypes.Register<GodotImportDialogPanel, Lumora.Godot.Hooks.GodotUI.GodotImportDialogPanelHook>();
         World.HookTypes.Register<Nameplate, Lumora.Godot.Hooks.NameplateHook>();
 

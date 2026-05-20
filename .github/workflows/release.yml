@@ -433,15 +433,20 @@ jobs:
 
           # Godot performs this same `keytool -list` check before export.
           # Keep it here so bad secrets fail before any APK build work starts.
+          KEYTOOL_OUTPUT="$(mktemp)"
           if ! keytool -list \
             -keystore release.keystore \
             -storepass "${KEYSTORE_PASSWORD}" \
             -alias "${KEY_ALIAS}" \
-            >/dev/null 2>&1; then
+            >"${KEYTOOL_OUTPUT}" 2>&1; then
             echo "::error::Android release keystore validation failed."
             echo "::error::Check ANDROID_RELEASE_KEYSTORE_PASSWORD and ANDROID_RELEASE_KEY_ALIAS."
+            echo "keytool validation output:"
+            sed -e 's/[[:cntrl:]]//g' "${KEYTOOL_OUTPUT}" || true
+            rm -f "${KEYTOOL_OUTPUT}"
             exit 1
           fi
+          rm -f "${KEYTOOL_OUTPUT}"
 
           echo "Release keystore configured: $(stat -c '%s bytes' release.keystore)"
 
@@ -504,6 +509,7 @@ jobs:
           set -euo pipefail
 
           echo "Quest export diagnostics:"
+          echo "- workflow debug revision: android-quest-signing-v2"
           echo "- working directory: $(pwd)"
           echo "- release.keystore present: $([ -f release.keystore ] && echo yes || echo no)"
           if [ -f release.keystore ]; then

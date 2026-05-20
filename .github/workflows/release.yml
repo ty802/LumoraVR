@@ -558,9 +558,28 @@ jobs:
           credentials_path = Path(".godot/export_credentials.cfg")
           credentials_path.parent.mkdir(parents=True, exist_ok=True)
           credentials_path.write_text(content, encoding="utf-8")
+
+          preset_path = Path("export_presets.cfg")
+          lines = preset_path.read_text(encoding="utf-8").splitlines(keepends=True)
+          current_preset = None
+          patched = []
+          for line in lines:
+              stripped = line.strip()
+              if stripped.startswith("[preset.") and stripped.endswith("]") and ".options" not in stripped:
+                  current_preset = stripped.removeprefix("[preset.").removesuffix("]")
+              if current_preset in {"2", "3"}:
+                  if line.startswith("keystore/release="):
+                      line = f"keystore/release={q(keystore_path)}\n"
+                  elif line.startswith("keystore/release_user="):
+                      line = f"keystore/release_user={q(key_alias)}\n"
+                  elif line.startswith("keystore/release_password="):
+                      line = f"keystore/release_password={q(keystore_password)}\n"
+              patched.append(line)
+          preset_path.write_text("".join(patched), encoding="utf-8")
           PY
 
           echo "Godot export credentials configured for Android presets."
+          echo "Godot export presets patched for Android signing in this CI workspace."
 
       - name: Export Quest APK
         working-directory: ${{ env.GODOT_PROJECT_DIR }}
@@ -571,7 +590,7 @@ jobs:
           set -euo pipefail
 
           echo "Quest export diagnostics:"
-          echo "- workflow debug revision: android-quest-signing-v2"
+          echo "- workflow debug revision: android-quest-signing-v3"
           echo "- working directory: $(pwd)"
           echo "- release.keystore present: $([ -f release.keystore ] && echo yes || echo no)"
           if [ -f release.keystore ]; then
@@ -658,6 +677,11 @@ jobs:
         run: |
           rm -f release.keystore || true
           rm -f .godot/export_credentials.cfg || true
+          sed -i \
+            -e 's|^keystore/release=".*"|keystore/release=""|' \
+            -e 's|^keystore/release_user=".*"|keystore/release_user=""|' \
+            -e 's|^keystore/release_password=".*"|keystore/release_password=""|' \
+            export_presets.cfg || true
 
       - name: Package zips
         run: |

@@ -448,6 +448,7 @@ jobs:
           fi
           rm -f "${KEYTOOL_OUTPUT}"
 
+          echo "Android release keystore validation passed."
           echo "Release keystore configured: $(stat -c '%s bytes' release.keystore)"
 
       - name: Build .NET solution
@@ -518,6 +519,12 @@ jobs:
           echo "- android/build/build.gradle present: $([ -f android/build/build.gradle ] && echo yes || echo no)"
           echo "- KEYSTORE_PASSWORD set: $([ -n "${KEYSTORE_PASSWORD:-}" ] && echo yes || echo no)"
           echo "- KEY_ALIAS set: $([ -n "${KEY_ALIAS:-}" ] && echo yes || echo no)"
+          echo "- export_presets release fields set:"
+          awk -F= '
+            /^keystore\/release="/ { print "  release path: " ($2 == "\"\"" ? "empty" : "set") }
+            /^keystore\/release_user="/ { print "  release user: " ($2 == "\"\"" ? "empty" : "set") }
+            /^keystore\/release_password="/ { print "  release password: " ($2 == "\"\"" ? "empty" : "set") }
+          ' export_presets.cfg
 
           if [ -f release.keystore ] && [ -n "${KEYSTORE_PASSWORD:-}" ] && [ -n "${KEY_ALIAS:-}" ]; then
             echo "::add-mask::${KEYSTORE_PASSWORD}"
@@ -535,6 +542,7 @@ jobs:
               exit 1
             fi
             rm -f "${KEYTOOL_OUTPUT}"
+            echo "- Godot-style keytool validation: passed"
             export GODOT_ANDROID_KEYSTORE_RELEASE_PATH="$(pwd)/release.keystore"
             export GODOT_ANDROID_KEYSTORE_RELEASE_USER="${KEY_ALIAS}"
             export GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD="${KEYSTORE_PASSWORD}"

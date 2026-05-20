@@ -428,17 +428,38 @@ jobs:
         working-directory: ${{ env.GODOT_PROJECT_DIR }}
         run: godot --headless --import || true
 
-      - name: Install Android build template
+      - name: Install Android build template (manual extract)
         working-directory: ${{ env.GODOT_PROJECT_DIR }}
         run: |
           set -euo pipefail
-          # `godot --install-android-build-template` extracts the build template
-          # baked into the mono export templates into the project's `android/`
-          # directory. Required because preset.gradle_build.use_gradle_build=true.
-          # The command exits 0 even on partial success; we sanity-check the
-          # build.gradle ended up where Godot expects it.
-          godot --headless --install-android-build-template
-          test -f android/build/build.gradle || { echo "Android build template did not install correctly"; ls -laR android || true; exit 1; }
+          # The "official" route is `godot --headless --install-android-build-template`
+          # but that runs Godot in editor mode, which loads C# scripts via the
+          # editor's Debug-config assembly. We only build ExportRelease here,
+          # so the editor pass dies with "Cannot instantiate C# script".
+          #
+          # Editor mode also tries to spin up OpenXR (because xr/openxr/enabled
+          # is true in project.godot) and logs a noisy failure on Linux CI with
+          # no runtime installed. Avoiding the editor pass kills that too.
+          #
+          # Instead we extract android_source.zip directly. That zip ships
+          # inside the mono export templates and IS what install-android-build-
+          # template would have extracted - we just cut Godot out of the loop.
+          # - xlinka
+          GV="${GODOT_VERSION}"
+          TEMPLATE_DIR="$HOME/.local/share/godot/export_templates/${GV/-/.}.mono"
+          ANDROID_TEMPLATE_ZIP="${TEMPLATE_DIR}/android_source.zip"
+
+          if [ ! -f "${ANDROID_TEMPLATE_ZIP}" ]; then
+            echo "Android build template zip not found at: ${ANDROID_TEMPLATE_ZIP}"
+            echo "Listing template dir for debugging:"
+            ls -la "${TEMPLATE_DIR}" || true
+            exit 1
+          fi
+
+          mkdir -p android
+          unzip -q -o "${ANDROID_TEMPLATE_ZIP}" -d android/
+          test -f android/build/build.gradle || { echo "Android build template extracted but build.gradle missing"; ls -laR android || true; exit 1; }
+          echo "Android build template installed."
 
       - name: Export Quest APK
         working-directory: ${{ env.GODOT_PROJECT_DIR }}

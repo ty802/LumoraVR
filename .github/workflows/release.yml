@@ -410,6 +410,7 @@ jobs:
           # Android export environment overrides.
           printf '%s' "${KEYSTORE_B64}" | base64 -d > release.keystore
           echo "::add-mask::${KEYSTORE_PASSWORD}"
+          echo "::add-mask::${KEY_ALIAS}"
           if [ -n "${KEY_PASSWORD:-}" ]; then
             echo "::add-mask::${KEY_PASSWORD}"
           fi
@@ -423,25 +424,24 @@ jobs:
               -storepass "${KEYSTORE_PASSWORD}" \
               -keypass "${KEY_ENTRY_PASSWORD}" \
               -new "${KEYSTORE_PASSWORD}" \
-              >/dev/null; then
+              >/dev/null 2>&1; then
               echo "::error::Android key password update failed."
               echo "::error::Check ANDROID_RELEASE_KEY_PASSWORD, ANDROID_RELEASE_KEYSTORE_PASSWORD, and ANDROID_RELEASE_KEY_ALIAS."
               exit 1
             fi
           fi
 
-          if ! keytool -certreq \
-            -alias "${KEY_ALIAS}" \
+          # Godot performs this same `keytool -list` check before export.
+          # Keep it here so bad secrets fail before any APK build work starts.
+          if ! keytool -list \
             -keystore release.keystore \
             -storepass "${KEYSTORE_PASSWORD}" \
-            -keypass "${KEYSTORE_PASSWORD}" \
-            -file /tmp/lumora-release-key.csr \
-            >/dev/null; then
+            -alias "${KEY_ALIAS}" \
+            >/dev/null 2>&1; then
             echo "::error::Android release keystore validation failed."
-            echo "::error::Check ANDROID_RELEASE_KEYSTORE_PASSWORD and ANDROID_RELEASE_KEY_ALIAS. Godot requires the key password and keystore password to be the same."
+            echo "::error::Check ANDROID_RELEASE_KEYSTORE_PASSWORD and ANDROID_RELEASE_KEY_ALIAS."
             exit 1
           fi
-          rm -f /tmp/lumora-release-key.csr
 
           echo "Release keystore configured: $(stat -c '%s bytes' release.keystore)"
 
@@ -502,14 +502,45 @@ jobs:
           KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
         run: |
           set -euo pipefail
+
+          echo "Quest export diagnostics:"
+          echo "- working directory: $(pwd)"
+          echo "- release.keystore present: $([ -f release.keystore ] && echo yes || echo no)"
+          if [ -f release.keystore ]; then
+            echo "- release.keystore size: $(stat -c '%s bytes' release.keystore)"
+          fi
+          echo "- android/build/build.gradle present: $([ -f android/build/build.gradle ] && echo yes || echo no)"
+          echo "- KEYSTORE_PASSWORD set: $([ -n "${KEYSTORE_PASSWORD:-}" ] && echo yes || echo no)"
+          echo "- KEY_ALIAS set: $([ -n "${KEY_ALIAS:-}" ] && echo yes || echo no)"
+
           if [ -f release.keystore ] && [ -n "${KEYSTORE_PASSWORD:-}" ] && [ -n "${KEY_ALIAS:-}" ]; then
             echo "::add-mask::${KEYSTORE_PASSWORD}"
+            echo "::add-mask::${KEY_ALIAS}"
+            KEYTOOL_OUTPUT="$(mktemp)"
+            if ! keytool -list \
+              -keystore release.keystore \
+              -storepass "${KEYSTORE_PASSWORD}" \
+              -alias "${KEY_ALIAS}" \
+              >"${KEYTOOL_OUTPUT}" 2>&1; then
+              echo "::error::Godot signing credentials are not valid for release.keystore."
+              echo "keytool validation output:"
+              sed -e 's/[[:cntrl:]]//g' "${KEYTOOL_OUTPUT}" || true
+              rm -f "${KEYTOOL_OUTPUT}"
+              exit 1
+            fi
+            rm -f "${KEYTOOL_OUTPUT}"
             export GODOT_ANDROID_KEYSTORE_RELEASE_PATH="$(pwd)/release.keystore"
             export GODOT_ANDROID_KEYSTORE_RELEASE_USER="${KEY_ALIAS}"
             export GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD="${KEYSTORE_PASSWORD}"
+            echo "- Godot release keystore override path exists: $([ -f "${GODOT_ANDROID_KEYSTORE_RELEASE_PATH}" ] && echo yes || echo no)"
+            echo "- Godot release keystore override user set: yes"
+            echo "- Godot release keystore override password set: yes"
+          else
+            echo "::warning::Release keystore override not configured for Quest export; Godot may fail release signing."
           fi
+
           mkdir -p ../build/android
-          godot --headless --export-release "Quest" ../build/android/LumoraVR-Quest.apk
+          godot --headless --verbose --export-release "Quest" ../build/android/LumoraVR-Quest.apk
           ls -la ../build/android
 
       - name: Export Pico APK
@@ -521,6 +552,15 @@ jobs:
           set -euo pipefail
           if [ -f release.keystore ] && [ -n "${KEYSTORE_PASSWORD:-}" ] && [ -n "${KEY_ALIAS:-}" ]; then
             echo "::add-mask::${KEYSTORE_PASSWORD}"
+            echo "::add-mask::${KEY_ALIAS}"
+            if ! keytool -list \
+              -keystore release.keystore \
+              -storepass "${KEYSTORE_PASSWORD}" \
+              -alias "${KEY_ALIAS}" \
+              >/dev/null 2>&1; then
+              echo "::error::Godot signing credentials are not valid for release.keystore."
+              exit 1
+            fi
             export GODOT_ANDROID_KEYSTORE_RELEASE_PATH="$(pwd)/release.keystore"
             export GODOT_ANDROID_KEYSTORE_RELEASE_USER="${KEY_ALIAS}"
             export GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD="${KEYSTORE_PASSWORD}"

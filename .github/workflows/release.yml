@@ -280,8 +280,13 @@ jobs:
     #                                       (cat lumora-release.keystore | base64 -w0)
     #   ANDROID_RELEASE_KEYSTORE_PASSWORD  password set on the keystore at creation
     #   ANDROID_RELEASE_KEY_ALIAS          the -alias value passed to keytool -genkey
-    #   ANDROID_RELEASE_KEY_PASSWORD       password for the key inside the keystore
-    #                                       (often the same as the keystore pw)
+    #   ANDROID_RELEASE_KEY_PASSWORD       optional current key password, only
+    #                                       needed if it differs from the
+    #                                       keystore password
+    #
+    # Godot has one Android Release Password field. Generate the keystore with
+    # matching key and keystore passwords if possible. If the passwords differ,
+    # this workflow rewrites the temporary CI keystore copy before export.
     #
     # Generate the keystore once locally:
     #   keytool -genkey -v -keystore lumora-release.keystore -alias lumora \
@@ -296,10 +301,6 @@ jobs:
       ANDROID_NDK_VERSION: "23.2.8568313"
       ANDROID_BUILD_TOOLS_VERSION: "34.0.0"
       ANDROID_PLATFORM: "android-34"
-      KEYSTORE_B64:       ${{ secrets.ANDROID_RELEASE_KEYSTORE_B64 }}
-      KEYSTORE_PASSWORD:  ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
-      KEY_ALIAS:          ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
-      KEY_PASSWORD:       ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2
@@ -389,30 +390,58 @@ jobs:
 
       - name: Configure Android release keystore
         working-directory: ${{ env.GODOT_PROJECT_DIR }}
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
 
-          if [ -z "${KEYSTORE_B64:-}" ] || [ -z "${KEYSTORE_PASSWORD:-}" ] || [ -z "${KEY_ALIAS:-}" ] || [ -z "${KEY_PASSWORD:-}" ]; then
+          if [ -z "${KEYSTORE_B64:-}" ] || [ -z "${KEYSTORE_PASSWORD:-}" ] || [ -z "${KEY_ALIAS:-}" ]; then
             echo "::warning::One or more Android release keystore secrets are not set."
             echo "::warning::APKs will be debug-signed - fine for sideloading, NOT acceptable for store submission."
-            echo "::warning::Required secrets: ANDROID_RELEASE_KEYSTORE_B64, ANDROID_RELEASE_KEYSTORE_PASSWORD, ANDROID_RELEASE_KEY_ALIAS, ANDROID_RELEASE_KEY_PASSWORD"
+            echo "::warning::Required secrets: ANDROID_RELEASE_KEYSTORE_B64, ANDROID_RELEASE_KEYSTORE_PASSWORD, ANDROID_RELEASE_KEY_ALIAS"
             exit 0
           fi
 
           # Decode the keystore into the project root so the Godot exporter can
-          # find it via the relative path we write into export_presets.cfg.
-          echo "${KEYSTORE_B64}" | base64 -d > release.keystore
+          # find it via the absolute path passed through Godot's documented
+          # Android export environment overrides.
+          printf '%s' "${KEYSTORE_B64}" | base64 -d > release.keystore
+          echo "::add-mask::${KEYSTORE_PASSWORD}"
+          if [ -n "${KEY_PASSWORD:-}" ]; then
+            echo "::add-mask::${KEY_PASSWORD}"
+          fi
 
-          # sed-patch the keystore fields in both Quest (preset.2) and Pico
-          # (preset.3) presets. We require keystore passwords without these
-          # chars: & | / \ " - if you ever generate a key with one of those,
-          # switch this sed to a python -c json.dump instead.
-          # - xlinka
-          sed -i \
-            -e "s|^keystore/release=\".*\"|keystore/release=\"release.keystore\"|" \
-            -e "s|^keystore/release_user=\".*\"|keystore/release_user=\"${KEY_ALIAS}\"|" \
-            -e "s|^keystore/release_password=\".*\"|keystore/release_password=\"${KEY_PASSWORD}\"|" \
-            export_presets.cfg
+          KEY_ENTRY_PASSWORD="${KEY_PASSWORD:-$KEYSTORE_PASSWORD}"
+          if [ "${KEY_ENTRY_PASSWORD}" != "${KEYSTORE_PASSWORD}" ]; then
+            echo "Aligning temporary Android key password with keystore password for Godot export."
+            if ! keytool -keypasswd \
+              -alias "${KEY_ALIAS}" \
+              -keystore release.keystore \
+              -storepass "${KEYSTORE_PASSWORD}" \
+              -keypass "${KEY_ENTRY_PASSWORD}" \
+              -new "${KEYSTORE_PASSWORD}" \
+              >/dev/null; then
+              echo "::error::Android key password update failed."
+              echo "::error::Check ANDROID_RELEASE_KEY_PASSWORD, ANDROID_RELEASE_KEYSTORE_PASSWORD, and ANDROID_RELEASE_KEY_ALIAS."
+              exit 1
+            fi
+          fi
+
+          if ! keytool -certreq \
+            -alias "${KEY_ALIAS}" \
+            -keystore release.keystore \
+            -storepass "${KEYSTORE_PASSWORD}" \
+            -keypass "${KEYSTORE_PASSWORD}" \
+            -file /tmp/lumora-release-key.csr \
+            >/dev/null; then
+            echo "::error::Android release keystore validation failed."
+            echo "::error::Check ANDROID_RELEASE_KEYSTORE_PASSWORD and ANDROID_RELEASE_KEY_ALIAS. Godot requires the key password and keystore password to be the same."
+            exit 1
+          fi
+          rm -f /tmp/lumora-release-key.csr
 
           echo "Release keystore configured: $(stat -c '%s bytes' release.keystore)"
 
@@ -468,16 +497,34 @@ jobs:
 
       - name: Export Quest APK
         working-directory: ${{ env.GODOT_PROJECT_DIR }}
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
         run: |
           set -euo pipefail
+          if [ -f release.keystore ] && [ -n "${KEYSTORE_PASSWORD:-}" ] && [ -n "${KEY_ALIAS:-}" ]; then
+            echo "::add-mask::${KEYSTORE_PASSWORD}"
+            export GODOT_ANDROID_KEYSTORE_RELEASE_PATH="$(pwd)/release.keystore"
+            export GODOT_ANDROID_KEYSTORE_RELEASE_USER="${KEY_ALIAS}"
+            export GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD="${KEYSTORE_PASSWORD}"
+          fi
           mkdir -p ../build/android
           godot --headless --export-release "Quest" ../build/android/LumoraVR-Quest.apk
           ls -la ../build/android
 
       - name: Export Pico APK
         working-directory: ${{ env.GODOT_PROJECT_DIR }}
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
         run: |
           set -euo pipefail
+          if [ -f release.keystore ] && [ -n "${KEYSTORE_PASSWORD:-}" ] && [ -n "${KEY_ALIAS:-}" ]; then
+            echo "::add-mask::${KEYSTORE_PASSWORD}"
+            export GODOT_ANDROID_KEYSTORE_RELEASE_PATH="$(pwd)/release.keystore"
+            export GODOT_ANDROID_KEYSTORE_RELEASE_USER="${KEY_ALIAS}"
+            export GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD="${KEYSTORE_PASSWORD}"
+          fi
           godot --headless --export-release "Pico" ../build/android/LumoraVR-Pico.apk
           ls -la ../build/android
 
@@ -507,22 +554,14 @@ jobs:
           retention-days: 14
 
       # Defence-in-depth: even though GitHub-hosted runners are ephemeral, scrub
-      # the decoded keystore + the password we wrote into export_presets.cfg
-      # before the step boundary. Stops a hypothetical leak from anything that
-      # snapshots the workspace after the exports run.
+      # the decoded keystore before the step boundary. Stops a hypothetical
+      # leak from anything that snapshots the workspace after the exports run.
       # - xlinka
       - name: Scrub release keystore from workspace
         if: always()
         working-directory: ${{ env.GODOT_PROJECT_DIR }}
         run: |
           rm -f release.keystore || true
-          # Revert the sed-patched fields back to empty so the .cfg in the
-          # workspace doesn't carry the password into any cached state.
-          sed -i \
-            -e "s|^keystore/release=\".*\"|keystore/release=\"\"|" \
-            -e "s|^keystore/release_user=\".*\"|keystore/release_user=\"\"|" \
-            -e "s|^keystore/release_password=\".*\"|keystore/release_password=\"\"|" \
-            export_presets.cfg
 
   release:
     needs: [version, build-linux, build-windows, build-android]

@@ -456,10 +456,15 @@ jobs:
             exit 1
           fi
 
-          mkdir -p android
-          unzip -q -o "${ANDROID_TEMPLATE_ZIP}" -d android/
+          # Godot's --install-android-build-template extracts the zip into
+          # `android/build/` (not into `android/` itself). The zip's root
+          # contains the build files at top level. Extract there so paths
+          # line up with what gradle and the export preset expect.
+          rm -rf android
+          mkdir -p android/build
+          unzip -q -o "${ANDROID_TEMPLATE_ZIP}" -d android/build/
           test -f android/build/build.gradle || { echo "Android build template extracted but build.gradle missing"; ls -laR android || true; exit 1; }
-          echo "Android build template installed."
+          echo "Android build template installed at android/build/"
 
       - name: Export Quest APK
         working-directory: ${{ env.GODOT_PROJECT_DIR }}

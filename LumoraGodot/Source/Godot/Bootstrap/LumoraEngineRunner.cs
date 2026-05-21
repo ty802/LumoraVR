@@ -127,7 +127,7 @@ public partial class LumoraEngineRunner : Node
 		// - xlinka
 		GetViewport().PhysicsObjectPicking = false;
 
-		if (!SteamManager.Initialize())
+		if (ShouldUseSteam() && !SteamManager.Initialize())
 		{
 			GetTree().Quit();
 			return;
@@ -1007,7 +1007,8 @@ public partial class LumoraEngineRunner : Node
 			LumoraLogger.Warn("LumoraEngineRunner: No InputInterface available in _Process");
 		}
 
-		SteamManager.RunCallbacks();
+		if (ShouldUseSteam())
+			SteamManager.RunCallbacks();
 
 		// Run engine update loop (includes one input pass + world updates).
 		// Avoid a duplicate InputInterface.UpdateInputs call here.
@@ -1370,8 +1371,14 @@ public partial class LumoraEngineRunner : Node
 		_debugUdpSender?.Dispose();
 		_engine?.Dispose();
 		_headOutput?.Dispose();
-		SteamManager.Shutdown();
+		if (ShouldUseSteam())
+			SteamManager.Shutdown();
 
 		base._ExitTree();
+	}
+
+	private static bool ShouldUseSteam()
+	{
+		return !OS.HasFeature("android");
 	}
 }

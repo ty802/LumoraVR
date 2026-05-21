@@ -29,7 +29,7 @@ on:
         type: boolean
 
 env:
-  GODOT_VERSION: 4.6.2-stable
+  GODOT_VERSION: 4.7-dev4
   DOTNET_VERSION: 10.0.x
   SOLUTION_PATH: LumoraGodot/Lumora.sln
   GODOT_PROJECT_DIR: LumoraGodot
@@ -75,13 +75,13 @@ jobs:
           set -euo pipefail
           GV="${GODOT_VERSION}"
 
-          curl -fLO "https://github.com/godotengine/godot/releases/download/${GV}/Godot_v${GV}_mono_linux_x86_64.zip"
+          curl -fLO "https://godot-releases.nbg1.your-objectstorage.com/${GV}/Godot_v${GV}_mono_linux_x86_64.zip"
           unzip -q "Godot_v${GV}_mono_linux_x86_64.zip"
           sudo mv "Godot_v${GV}_mono_linux_x86_64" /opt/godot
           sudo ln -s "/opt/godot/Godot_v${GV}_mono_linux.x86_64" /usr/local/bin/godot
           godot --version
 
-          curl -fLO "https://github.com/godotengine/godot/releases/download/${GV}/Godot_v${GV}_mono_export_templates.tpz"
+          curl -fLO "https://godot-releases.nbg1.your-objectstorage.com/${GV}/Godot_v${GV}_mono_export_templates.tpz"
           TEMPLATE_DIR="$HOME/.local/share/godot/export_templates/${GV/-/.}.mono"
           mkdir -p "$TEMPLATE_DIR"
           rm -rf /tmp/tpl
@@ -176,7 +176,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $gv = $env:GODOT_VERSION
 
-          Invoke-WebRequest -Uri "https://github.com/godotengine/godot/releases/download/$gv/Godot_v${gv}_mono_win64.zip" -OutFile godot.zip
+          Invoke-WebRequest -Uri "https://godot-releases.nbg1.your-objectstorage.com/$gv/Godot_v${gv}_mono_win64.zip" -OutFile godot.zip
           Expand-Archive -Path godot.zip -DestinationPath godot
           $consoleExe = Get-ChildItem godot -Recurse -Filter "*console*.exe" | Select-Object -First 1
           if (-not $consoleExe) { throw "Godot console exe not found in archive" }
@@ -184,7 +184,7 @@ jobs:
           Add-Content $env:GITHUB_PATH $consoleExe.Directory.FullName
           & $consoleExe.FullName --version
 
-          Invoke-WebRequest -Uri "https://github.com/godotengine/godot/releases/download/$gv/Godot_v${gv}_mono_export_templates.tpz" -OutFile templates.tpz
+          Invoke-WebRequest -Uri "https://godot-releases.nbg1.your-objectstorage.com/$gv/Godot_v${gv}_mono_export_templates.tpz" -OutFile templates.tpz
           $templatesDir = Join-Path $env:APPDATA "Godot\export_templates\$($gv -replace '-','.').mono"
           New-Item -ItemType Directory -Force -Path $templatesDir | Out-Null
           if (Test-Path tpl) {
@@ -338,13 +338,13 @@ jobs:
           set -euo pipefail
           GV="${GODOT_VERSION}"
 
-          curl -fLO "https://github.com/godotengine/godot/releases/download/${GV}/Godot_v${GV}_mono_linux_x86_64.zip"
+          curl -fLO "https://godot-releases.nbg1.your-objectstorage.com/${GV}/Godot_v${GV}_mono_linux_x86_64.zip"
           unzip -q "Godot_v${GV}_mono_linux_x86_64.zip"
           sudo mv "Godot_v${GV}_mono_linux_x86_64" /opt/godot
           sudo ln -s "/opt/godot/Godot_v${GV}_mono_linux.x86_64" /usr/local/bin/godot
           godot --version
 
-          curl -fLO "https://github.com/godotengine/godot/releases/download/${GV}/Godot_v${GV}_mono_export_templates.tpz"
+          curl -fLO "https://godot-releases.nbg1.your-objectstorage.com/${GV}/Godot_v${GV}_mono_export_templates.tpz"
           TEMPLATE_DIR="$HOME/.local/share/godot/export_templates/${GV/-/.}.mono"
           mkdir -p "$TEMPLATE_DIR"
           rm -rf /tmp/tpl

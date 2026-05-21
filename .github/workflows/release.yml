@@ -469,7 +469,18 @@ jobs:
           mkdir -p android/build
           unzip -q -o "${ANDROID_TEMPLATE_ZIP}" -d android/build/
           test -f android/build/build.gradle || { echo "Android build template extracted but build.gradle missing"; ls -laR android || true; exit 1; }
-          echo "Android build template installed at android/build/"
+
+          # The editor's --install-android-build-template also writes a
+          # version marker file. Without it, the gradle export step fails
+          # with: "Trying to build from a gradle built template, but no
+          # version info for it exists." Content must match Godot's
+          # VERSION_FULL_CONFIG (major.minor.patch.status[.module_config])
+          # for the running editor; we derive it from GODOT_VERSION.
+          # - xlinka
+          GODOT_VERSION_FULL_CONFIG="${GV/-/.}.mono"
+          printf '%s' "${GODOT_VERSION_FULL_CONFIG}" > android/.build_version
+          printf '%s' "${GODOT_VERSION_FULL_CONFIG}" > android/build/version.txt
+          echo "Android build template installed at android/build/ (version: ${GODOT_VERSION_FULL_CONFIG})"
 
       - name: Export Quest APK (unsigned)
         working-directory: ${{ env.GODOT_PROJECT_DIR }}

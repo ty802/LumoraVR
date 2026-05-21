@@ -85,6 +85,7 @@ public partial class XRModeManager : Node
     // Bootstrap.tscn defines the XR sub-tree up-front; we just hold refs.
     private XROrigin3D _xrOrigin;
     private XRCamera3D _xrCamera;
+    private Viewport   _xrViewport;
 
     // =====================================================================
     //  KEY DETECTION
@@ -127,6 +128,7 @@ public partial class XRModeManager : Node
         var sceneRoot = GetTree()?.CurrentScene;
         _xrOrigin = sceneRoot?.GetNodeOrNull<XROrigin3D>("%XROrigin3D");
         _xrCamera = sceneRoot?.GetNodeOrNull<XRCamera3D>("%XRCamera3D");
+        _xrViewport = ResolveXRViewport(sceneRoot);
 
         ApplyRenderingMode(startingInVR);
         _headOutput?.NotifyVRActiveChanged(startingInVR);
@@ -436,9 +438,22 @@ public partial class XRModeManager : Node
 
     private void ApplyRenderingMode(bool vrActive)
     {
-        var viewport = GetViewport();
-        if (viewport != null)
-            viewport.UseXR = false;
+        var rootViewport = GetViewport();
+        var xrViewport = ResolveXRViewport(GetTree()?.CurrentScene);
+
+        if (rootViewport != null && rootViewport != xrViewport)
+            rootViewport.UseXR = false;
+
+        var keepXRViewportEnabled = vrActive || IsOpenXRSessionActive();
+
+        if (xrViewport != null)
+        {
+            xrViewport.UseXR = keepXRViewportEnabled;
+        }
+        else if (rootViewport != null)
+        {
+            rootViewport.UseXR = keepXRViewportEnabled;
+        }
 
         if (_xrOrigin != null && GodotObject.IsInstanceValid(_xrOrigin))
             _xrOrigin.Visible = true;
@@ -478,6 +493,35 @@ public partial class XRModeManager : Node
             if (!camerasShareViewport && _xrCamera != null && GodotObject.IsInstanceValid(_xrCamera))
                 _xrCamera.MakeCurrent();
         }
+    }
+
+    private Viewport ResolveXRViewport(Node sceneRoot = null)
+    {
+        if (_xrViewport != null && GodotObject.IsInstanceValid(_xrViewport))
+            return _xrViewport;
+
+        if (_xrCamera != null && GodotObject.IsInstanceValid(_xrCamera) && _xrCamera.IsInsideTree())
+        {
+            _xrViewport = _xrCamera.GetViewport();
+            if (_xrViewport != null)
+                return _xrViewport;
+        }
+
+        if (_xrOrigin != null && GodotObject.IsInstanceValid(_xrOrigin) && _xrOrigin.IsInsideTree())
+        {
+            _xrViewport = _xrOrigin.GetViewport();
+            if (_xrViewport != null)
+                return _xrViewport;
+        }
+
+        sceneRoot ??= GetTree()?.CurrentScene;
+        _xrViewport = sceneRoot?.GetNodeOrNull<SubViewport>("%XRViewport");
+        return _xrViewport;
+    }
+
+    private bool IsOpenXRSessionActive()
+    {
+        return _xrAvailable || XRServer.FindInterface("OpenXR")?.IsInitialized() == true;
     }
 
     private bool CamerasShareViewport()

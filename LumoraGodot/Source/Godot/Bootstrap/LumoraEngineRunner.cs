@@ -466,9 +466,9 @@ public partial class LumoraEngineRunner : Node
 	/// - Create a dedicated XR SubViewport when OpenXR is available
 	///
 	/// Architecture: the root viewport is always the normal desktop window.
-	/// The XR SubViewport owns the headset render path and remains UseXR=true
-	/// for the lifetime of the OpenXR session. F8 swaps input and camera
-	/// ownership; it does not tear down OpenXR.
+	/// The XR SubViewport owns the headset render path and XRModeManager keeps
+	/// that viewport UseXR=true while the OpenXR session is alive. F8 swaps
+	/// input and camera ownership; it does not tear down OpenXR.
 	/// - xlinka
 	/// </summary>
 	private async Task PhaseXRDetection()
@@ -826,8 +826,8 @@ public partial class LumoraEngineRunner : Node
 
 		// Create the XR Mode Manager - owns Desktop/VR provider nodes and handles F8 hot-swap.
 		// `_vrInitializedAtBoot` is the source of truth for whether PhaseXRDetection
-		// successfully brought up the OpenXR session and set the root viewport's
-		// UseXR to true.
+		// successfully brought up the OpenXR session. XRModeManager owns the
+		// active mode's viewport UseXR flag from here.
 		_xrModeManager = new XRModeManager();
 		_xrModeManager.Name = "XRModeManager";
 		AddChild(_xrModeManager);

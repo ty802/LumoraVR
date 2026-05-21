@@ -480,6 +480,14 @@ jobs:
           GODOT_VERSION_FULL_CONFIG="${GV/-/.}.mono"
           printf '%s' "${GODOT_VERSION_FULL_CONFIG}" > android/.build_version
           printf '%s' "${GODOT_VERSION_FULL_CONFIG}" > android/build/version.txt
+
+          # And the editor also drops .gdignore files so its filesystem
+          # scanner does not index the build template tree. Without these,
+          # the second Android export (Pico after Quest) sees the merged
+          # assets/resources Quest wrote, registers every OpenXR singleton
+          # twice, and creates .webp.import companions in res/mipmap-*/
+          # that gradle's resource merger then rejects. - xlinka
+          touch android/.gdignore android/build/.gdignore
           echo "Android build template installed at android/build/ (version: ${GODOT_VERSION_FULL_CONFIG})"
 
       - name: Export Quest APK (unsigned)

@@ -234,9 +234,21 @@ jobs:
         working-directory: ${{ env.GODOT_PROJECT_DIR }}
         shell: pwsh
         run: |
-          & $env:GODOT_EXE --headless --import
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "Ignoring Godot import exit code $LASTEXITCODE"
+          # Godot 4.6.2 on Windows imports cleanly but then hangs (or
+          # segfaults) on shutdown after "Loading editor layout" - the
+          # actual work is done by the time it gets stuck. Run with a
+          # hard timeout and kill it once it overruns; the cache it
+          # generated up to that point is what --export-release needs.
+          # - xlinka
+          $proc = Start-Process -FilePath $env:GODOT_EXE `
+            -ArgumentList '--headless','--import' `
+            -NoNewWindow -PassThru
+          if (-not $proc.WaitForExit(240000)) {
+            Write-Host "Godot import pass exceeded 240s; killing PID $($proc.Id)"
+            try { $proc.Kill($true) } catch { Write-Host "Kill failed: $_" }
+            $proc.WaitForExit(15000) | Out-Null
+          } elseif ($proc.ExitCode -ne 0) {
+            Write-Host "Ignoring Godot import exit code $($proc.ExitCode)"
           }
 
       - name: Export Windows

@@ -27,8 +27,6 @@ public partial class DesktopInput : Node3D, IInputProvider
     private Control _cursorUI;
     private CircleCursor _cursorDot;
     private RayCast3D _interactionRay;
-    private LaserInteractionManager _laserManager;
-    private GrabManager _grabManager;
 
     // Simulated hand positions
     private Vector3 _leftHandPosition;
@@ -72,16 +70,6 @@ public partial class DesktopInput : Node3D, IInputProvider
         // XRModeManager only creates DesktopInput while desktop mode is active,
         // so it should always own the global provider until it exits.
         IInputProvider.Instance = this;
-
-        // Create laser interaction manager for UI clicking
-        // The LaserPointer handles sending mouse events to SubViewports
-        _laserManager = new LaserInteractionManager();
-        _laserManager.Name = "LaserInteraction";
-        AddChild(_laserManager);
-
-        _grabManager = new GrabManager();
-        _grabManager.Name = "GrabManager";
-        AddChild(_grabManager);
 
         LumoraLogger.Log("DesktopInput initialized");
     }
@@ -197,9 +185,7 @@ public partial class DesktopInput : Node3D, IInputProvider
         {
             var centerPos = viewportSize / 2f - _cursorDot.CustomMinimumSize / 2f;
             _cursorDot.Position = centerPos;
-            // hovering UI or anything grabbable both warrant the hover tint - xlinka
-            bool hovering = _isHoveringUI || (_grabManager?.IsHoveringGrabbable ?? false);
-            _cursorDot.CursorColor = hovering
+            _cursorDot.CursorColor = _isHoveringUI
                 ? InterfaceSettings.ReticleHoverColor
                 : InterfaceSettings.ReticleColor;
         }

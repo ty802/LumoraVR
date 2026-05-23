@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using Godot;
 using Lumora.Core;
@@ -118,13 +119,7 @@ public partial class LumoraEngineRunner : Node
 
 	public override void _Ready()
 	{
-		// Disable Godot's built-in viewport object-picking before any frame
-		// renders. We use our own raycasts (LaserInteractionManager etc.) and
-		// the built-in path doesn't support stereo anyway, so leaving it on
-		// would log "Object picking can't be used when stereo rendering" the
-		// moment OpenXR comes up. Setting it here, in _Ready, is the earliest
-		// safe spot - long before PhaseXRDetection flips UseXR.
-		// - xlinka
+		// Godot object picking logs in stereo and is not part of engine-side interaction. - xlinka
 		GetViewport().PhysicsObjectPicking = false;
 
 		if (ShouldUseSteam() && !SteamManager.Initialize())
@@ -454,10 +449,32 @@ public partial class LumoraEngineRunner : Node
 
 		var args = GetAllCommandLineArgs().ToArray();
 		LumoraLogger.Log($"Command-line args: {string.Join(" ", args)}");
+		LogLaunchDiagnostics();
 		_xrLaunchMode = ResolveXrLaunchMode();
 		LumoraLogger.Log($"XR launch mode: {_xrLaunchMode}");
 
 		await Task.Delay(150); // Artificial delay to show phase message
+	}
+
+	private void LogLaunchDiagnostics()
+	{
+		LumoraLogger.Log($"Runtime: .NET {System.Environment.Version}, OS={RuntimeInformation.OSDescription}, Arch={RuntimeInformation.ProcessArchitecture}, CPUs={System.Environment.ProcessorCount}");
+		LumoraLogger.Log($"Godot platform: {OS.GetName()}, model={SafeDiagnostic(OS.GetModelName)}");
+		LumoraLogger.Log($"Display: window={DisplayServer.WindowGetSize()}, screen={DisplayServer.ScreenGetSize()}");
+		LumoraLogger.Log($"Renderer: {SafeDiagnostic(RenderingServer.GetVideoAdapterName)}");
+	}
+
+	private static string SafeDiagnostic(Func<string> read)
+	{
+		try
+		{
+			var value = read();
+			return string.IsNullOrWhiteSpace(value) ? "unknown" : value;
+		}
+		catch
+		{
+			return "unknown";
+		}
 	}
 
 	/// <summary>
@@ -857,13 +874,12 @@ public partial class LumoraEngineRunner : Node
 		_mouseDriver = new GodotMouseDriver();
 		_inputInterface.RegisterMouseDriver(_mouseDriver);
 
-		// VR driver - handles head and controller tracking at the low level
 		_vrDriver = new GodotVRDriver();
-		_inputInterface.RegisterVRDriver(_vrDriver);
 		_vrDriver.InitializeVR();
-
-		// Find any XR nodes that already exist in the scene (created during PhaseXRDetection)
 		_vrDriver.FindXRNodes(GetTree().Root);
+		_inputInterface.RegisterVRDriver(_vrDriver);
+		_vrDriver.LogRuntimeDiagnostics();
+		LumoraLogger.Log($"Input drivers: keyboard={_keyboardDriver.GetType().Name}, mouse={_mouseDriver.GetType().Name}, vr={_vrDriver.VRSystemName}, active={_vrDriver.IsVRActive}");
 
 		// Initialize LocalDB for asset storage
 		_localDB = new LocalDB();
@@ -1013,6 +1029,7 @@ public partial class LumoraEngineRunner : Node
 		// Run engine update loop (includes one input pass + world updates).
 		// Avoid a duplicate InputInterface.UpdateInputs call here.
 		_engine?.Update(delta);
+		_engine?.LateUpdate(delta);
 
 		// Update Godot metrics for debug panels
 		UpdateGodotMetrics(delta);

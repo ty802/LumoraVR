@@ -211,8 +211,9 @@ public static class DefaultAVI
         leftHandStreamDriver.RotationStream.Target = leftRotationStream;
         var leftHandVisual = leftHandSlot.AttachComponent<ControllerHandVisual>();
         leftHandVisual.HandSide.Value = Chirality.Left;
-        var leftRayBeam = leftHandSlot.AttachComponent<ControllerRayBeam>();
-        leftRayBeam.ControllerSide.Value = Chirality.Left;
+        leftHandSlot.AttachComponent<Lumora.Core.Components.Interaction.Grabber>();
+        var leftLaser = leftHandSlot.AttachComponent<Lumora.Core.Components.Interaction.InteractionLaser>();
+        leftLaser.ControllerSide.Value = Chirality.Left;
 
         // Create RightHand slot - UserRoot auto-resolves from "Body Nodes/RightHand"
         // Default resting at side (hip height, 0.25 m right).
@@ -227,8 +228,9 @@ public static class DefaultAVI
         rightHandStreamDriver.RotationStream.Target = rightRotationStream;
         var rightHandVisual = rightHandSlot.AttachComponent<ControllerHandVisual>();
         rightHandVisual.HandSide.Value = Chirality.Right;
-        var rightRayBeam = rightHandSlot.AttachComponent<ControllerRayBeam>();
-        rightRayBeam.ControllerSide.Value = Chirality.Right;
+        rightHandSlot.AttachComponent<Lumora.Core.Components.Interaction.Grabber>();
+        var rightLaser = rightHandSlot.AttachComponent<Lumora.Core.Components.Interaction.InteractionLaser>();
+        rightLaser.ControllerSide.Value = Chirality.Right;
 
         // Physics
         var collider = userSlot.AttachComponent<CapsuleCollider>();

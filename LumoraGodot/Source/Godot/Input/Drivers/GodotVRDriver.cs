@@ -124,6 +124,13 @@ public class GodotVRDriver : IVRDriver, IInputDriver
             ClearTrackingState();
     }
 
+    public void LogRuntimeDiagnostics()
+    {
+        global::Godot.GD.Print($"GodotVRDriver: Runtime='{RuntimeName}', System='{VRSystemName}', Platform={Platform}, Active={IsVRActive}");
+        global::Godot.GD.Print($"GodotVRDriver: HMD='{GetTrackerDescription("head")}', Left='{GetTrackerDescription("left_hand")}', Right='{GetTrackerDescription("right_hand")}'");
+        global::Godot.GD.Print($"GodotVRDriver: Profiles Left='{LeftInteractionProfile}', Right='{RightInteractionProfile}'");
+    }
+
     private void OnTrackerAdded(StringName trackerName, long type)
     {
         var tracker = XRServer.GetTracker(trackerName);
@@ -157,6 +164,16 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         if (tracker is not XRPositionalTracker pt) return string.Empty;
         var profile = pt.Profile;
         return string.IsNullOrEmpty(profile) ? string.Empty : profile;
+    }
+
+    private static string GetTrackerDescription(string trackerName)
+    {
+        var tracker = XRServer.GetTracker(trackerName);
+        if (tracker == null) return "none";
+        if (tracker is XRPositionalTracker positional && !string.IsNullOrWhiteSpace(positional.Description))
+            return positional.Description;
+        var name = tracker.Name.ToString();
+        return string.IsNullOrWhiteSpace(name) ? trackerName : name;
     }
 
     private VRPlatform DetectPlatform()

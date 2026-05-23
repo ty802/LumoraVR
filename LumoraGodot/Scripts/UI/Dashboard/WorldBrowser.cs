@@ -304,7 +304,7 @@ public partial class WorldBrowser : Control
 
         _hostTemplateInput = new OptionButton();
         _hostTemplateInput.AddItem("Grid Space", 0);
-        _hostTemplateInput.AddItem("Social Space", 1);
+        _hostTemplateInput.AddItem("Shader Test", 1);
         _hostTemplateInput.AddItem("Empty", 2);
         _hostTemplateInput.Selected = 0; // Default to Grid
         innerVbox.AddChild(_hostTemplateInput);
@@ -395,7 +395,7 @@ public partial class WorldBrowser : Control
         var templateName = templateIndex switch
         {
             0 => "Grid",
-            1 => "SocialSpace",
+            1 => "ShaderTest",
             2 => "Empty",
             _ => "Grid"
         };

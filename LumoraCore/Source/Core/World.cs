@@ -1475,20 +1475,13 @@ public class World
 			// Stage 5.5: Apply component changes (from sync field updates)
 			_updateManager?.RunChangeApplications();
 
-			// Stage 5.6: Sync slot hooks so transforms propagate to the platform scene graph
-			UpdateSlotHooks(RootSlot);
-
-			// Stage 5.7: Update hooks for orphaned slots (network-replicated slots not yet in tree)
-			UpdateOrphanedSlotHooks();
+			_updateManager?.ProcessHookUpdates((float)scaledDelta);
 
 			// Stage 6: Process changed elements
 			ProcessChangedElements();
 
 			// Stage 7: Process destructions
 			ProcessDestructions();
-
-			// Stage 8: Update hooks (sync with platform layer)
-			_updateManager?.ProcessHookUpdates((float)scaledDelta);
 
 			// Stage 9: Clean up trash bin
 			_trashBin?.Update();
@@ -1533,10 +1526,20 @@ public class World
 	{
 		if (_state != WorldState.Running) return;
 
-		var scaledDelta = delta * TimeScale;
+		_hookManager?.ImplementerLock(System.Threading.Thread.CurrentThread);
+		try
+		{
+			var scaledDelta = delta * TimeScale;
 
-		// Update cameras and final transforms
-		UpdateCameras((float)scaledDelta);
+			// Update cameras and final transforms
+			UpdateCameras((float)scaledDelta);
+
+			_updateManager?.ProcessHookUpdates((float)scaledDelta);
+		}
+		finally
+		{
+			_hookManager?.ImplementerUnlock();
+		}
 	}
 
 	/// <summary>
@@ -1563,46 +1566,6 @@ public class World
 	{
 		_updateManager?.RunStartups();
 		_updateManager?.RunUpdates(delta);
-	}
-
-	/// <summary>
-	/// Recursively apply slot hook updates so Node3D transforms stay in sync.
-	/// </summary>
-	private void UpdateSlotHooks(Slot slot)
-	{
-		if (slot == null)
-			return;
-
-		slot.Hook?.ApplyChanges();
-
-		foreach (var child in slot.Children)
-		{
-			UpdateSlotHooks(child);
-		}
-		foreach (var child in slot.LocalChildren)
-		{
-			UpdateSlotHooks(child);
-		}
-	}
-
-	/// <summary>
-	/// Update hooks for orphaned slots (slots not in the tree hierarchy).
-	/// This handles network-replicated slots whose parent hasn't resolved yet.
-	/// </summary>
-	private void UpdateOrphanedSlotHooks()
-	{
-		if (_slotBag == null)
-			return;
-
-		foreach (var kvp in _slotBag)
-		{
-			var slot = kvp.Value;
-			// Only update slots that aren't in the tree (no parent and not RootSlot)
-			if (slot != null && slot.Parent == null && slot != RootSlot && slot.Hook != null)
-			{
-				slot.Hook.ApplyChanges();
-			}
-		}
 	}
 
 	/// <summary>

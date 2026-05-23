@@ -154,6 +154,48 @@ public interface IMaterialAssetHook : IAssetHook
     bool IsValid { get; }
 }
 
+public interface IFontAssetHook : IAssetHook
+{
+    bool IsValid { get; }
+
+    // engine-side texture asset wrapping the font's glyph atlas - xlinka
+    TextureAsset? AtlasTexture { get; }
+
+    // load a font from a file path. format detected from extension (.ttf/.otf/.woff). - xlinka
+    void LoadFromFile(string path);
+
+    // return false if the codepoint isn't rasterized at this size (caller may request and retry) - xlinka
+    bool TryGetGlyph(int codepoint, float size, out GlyphMetrics metrics, out Math.Rect uvRect);
+
+    // ensure the given codepoint is in the atlas at the given size. async-friendly. - xlinka
+    void RequestGlyph(int codepoint, float size);
+
+    float GetLineHeight(float size);
+    float GetAscent(float size);
+    float GetDescent(float size);
+    float GetKerning(int leftCodepoint, int rightCodepoint, float size);
+
+    // MSDF reconstruction parameter — pixels of distance encoded around each glyph edge.
+    // The shader uses this to scale signed distance into screen-space pixel units. - xlinka
+    int PixelRange { get; }
+}
+
+public interface IMaterialPropertyBlockAssetHook : IAssetHook
+{
+    void SetFloat(string property, float value);
+    void SetInt(string property, int value);
+    void SetBool(string property, bool value);
+    void SetColor(string property, Math.colorHDR value);
+    void SetFloat2(string property, Math.float2 value);
+    void SetFloat3(string property, Math.float3 value);
+    void SetFloat4(string property, Math.float4 value);
+    void SetTexture(string property, TextureAsset texture);
+    void Clear();
+    void ApplyChanges(Action callback);
+    object ApplyToMaterial(object baseMaterial, MaterialType materialType);
+    bool IsValid { get; }
+}
+
 /// <summary>
 /// Texture wrap modes for sampling.
 /// </summary>

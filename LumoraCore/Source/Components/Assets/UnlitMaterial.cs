@@ -38,6 +38,8 @@ public class UnlitMaterial : MaterialProvider, ICommonMaterial
     /// </summary>
     public readonly AssetRef<TextureAsset> Texture;
 
+    public readonly Sync<bool> UseVertexColor;
+
     // ===== BLEND SETTINGS =====
 
     /// <summary>
@@ -85,6 +87,7 @@ public class UnlitMaterial : MaterialProvider, ICommonMaterial
         // Color and texture
         TintColor = new Sync<colorHDR>(this, colorHDR.White);
         Texture = new AssetRef<TextureAsset>(this);
+        UseVertexColor = new Sync<bool>(this, false);
 
         // Blend settings
         BlendMode = new Sync<BlendMode>(this, Assets.BlendMode.Opaque);
@@ -102,6 +105,8 @@ public class UnlitMaterial : MaterialProvider, ICommonMaterial
         asset.SetBlendMode(BlendMode.Value);
         asset.SetCulling(Culling.Value);
         asset.SetFloat("AlphaCutoff", AlphaCutoff.Value);
+        asset.SetBool("AlphaClip", BlendMode.Value == Assets.BlendMode.Cutout);
+        asset.SetBool("UseVertexColor", UseVertexColor.Value);
         asset.SetFloat("RenderQueue", RenderQueue.Value);
 
         // Texture transform

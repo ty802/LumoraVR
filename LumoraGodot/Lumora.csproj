@@ -12,6 +12,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\LumoraCore\LumoraCore.csproj" />
+    <ProjectReference Include="..\LumoraHooks\LumoraHooks.csproj" />
   </ItemGroup>
 
   <!-- Copy LumoraCore.dll to addons folder after build -->
@@ -21,9 +22,22 @@
     <Copy SourceFiles="$(OutputPath)LumoraCore.pdb" DestinationFolder="$(ProjectDir)addons\lumora\bin" Condition="Exists('$(OutputPath)LumoraCore.pdb')" />
   </Target>
 
+  <!-- Copy LumoraHooks.dll to addons folder after build -->
+  <Target Name="CopyLumoraHooksToAddons" AfterTargets="Build">
+    <MakeDir Directories="$(ProjectDir)addons\lumora\bin" />
+    <Copy SourceFiles="$(OutputPath)LumoraHooks.dll" DestinationFolder="$(ProjectDir)addons\lumora\bin" />
+    <Copy SourceFiles="$(OutputPath)LumoraHooks.pdb" DestinationFolder="$(ProjectDir)addons\lumora\bin" Condition="Exists('$(OutputPath)LumoraHooks.pdb')" />
+  </Target>
+
+  <!-- Copy LumoraMath.dll to addons folder after build -->
+  <Target Name="CopyLumoraMathToAddons" AfterTargets="Build">
+    <MakeDir Directories="$(ProjectDir)addons\lumora\bin" />
+    <Copy SourceFiles="$(OutputPath)LumoraMath.dll" DestinationFolder="$(ProjectDir)addons\lumora\bin" />
+    <Copy SourceFiles="$(OutputPath)LumoraMath.pdb" DestinationFolder="$(ProjectDir)addons\lumora\bin" Condition="Exists('$(OutputPath)LumoraMath.pdb')" />
+  </Target>
+
   <!-- Copy steam_api64.dll to output after build -->
   <Target Name="CopySteamAPI" AfterTargets="Build">
     <Copy SourceFiles="$(ProjectDir)steam_api64.dll" DestinationFolder="$(OutputPath)" Condition="Exists('$(ProjectDir)steam_api64.dll')" />
   </Target>
 </Project>
-

@@ -118,7 +118,7 @@ public class WorldManager : IDisposable
     /// Creates and initializes a new local world instance.
     /// </summary>
     /// <param name="name">World name</param>
-    /// <param name="templateName">Template to apply (LocalHome, Grid, Empty, SocialSpace)</param>
+    /// <param name="templateName">Template to apply (LocalHome, Grid, Empty, ShaderTest)</param>
     /// <param name="init">Initialization callback</param>
     /// <returns>Created world</returns>
     public World StartLocal(string name, string templateName = "Empty", Action<World> init = null)
@@ -154,7 +154,7 @@ public class WorldManager : IDisposable
     /// <param name="name">World name</param>
     /// <param name="port">Network port</param>
     /// <param name="hostUserName">Host user name</param>
-    /// <param name="templateName">Template to apply (LocalHome, Grid, Empty, SocialSpace)</param>
+    /// <param name="templateName">Template to apply (LocalHome, Grid, Empty, ShaderTest)</param>
     /// <param name="init">Initialization callback</param>
     /// <returns>Created world</returns>
     public World StartSession(string name, ushort port, string hostUserName = null, string templateName = "Empty", Action<World> init = null)

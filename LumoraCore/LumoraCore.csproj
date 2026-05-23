@@ -28,5 +28,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\LumoraCDN\LumoraCDN.csproj" />
+    <ProjectReference Include="..\LumoraMath\LumoraMath.csproj" />
   </ItemGroup>
 </Project>

@@ -1018,9 +1018,21 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
         Persistent.MarkNonPersistent();
 
-        LocalPosition.OnChanged += _ => InvalidateTransformCache();
-        LocalRotation.OnChanged += _ => InvalidateTransformCache();
-        LocalScale.OnChanged += _ => InvalidateTransformCache();
+        LocalPosition.OnChanged += _ =>
+        {
+            InvalidateTransformCache();
+            QueueHookUpdate();
+        };
+        LocalRotation.OnChanged += _ =>
+        {
+            InvalidateTransformCache();
+            QueueHookUpdate();
+        };
+        LocalScale.OnChanged += _ =>
+        {
+            InvalidateTransformCache();
+            QueueHookUpdate();
+        };
         ActiveSelf.OnChanged += _ =>
         {
             OnActiveChanged?.Invoke(this, ActiveSelf.Value);
@@ -1074,10 +1086,9 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// </summary>
     private void OnParentSlotRefValueChanged(RefID newValue)
     {
-        // If we have a hook and parent was unknown, trigger update now that we know the parent ref
         if (Hook != null && !ParentSlotRef.IsInInitPhase)
         {
-            Hook.ApplyChanges();
+            QueueHookUpdate();
         }
     }
 
@@ -1155,7 +1166,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
         if (oldParent == null && Hook != null)
         {
-            Hook.ApplyChanges();
+            QueueHookUpdate();
         }
     }
 
@@ -1287,6 +1298,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         Hook = (IHook<Slot>)Activator.CreateInstance(hookType);
         Hook?.AssignOwner(this);
         Hook?.Initialize();
+        QueueHookUpdate();
     }
 
     private void AttachToParentLists()
@@ -2316,7 +2328,18 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
     private void OnChanged()
     {
+        QueueHookUpdate();
         Changed?.Invoke(this);
+    }
+
+    private void QueueHookUpdate()
+    {
+        if (Hook == null || World == null || IsDestroyed)
+        {
+            return;
+        }
+
+        World.UpdateManager?.RegisterHookUpdate(this);
     }
 
     #endregion

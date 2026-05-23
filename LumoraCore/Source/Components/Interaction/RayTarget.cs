@@ -6,29 +6,16 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Interaction;
 
-/// <summary>
-/// Marks a slot as a target for controller ray interaction.
-/// Attach this component to any object that should respond to hover and activation
-/// events produced by a ControllerRayBeam. Hit detection uses a sphere centred on
-/// the slot's world position with radius HoverRadius.
-/// </summary>
+// sphere-based laser target with hover/activation events. now implements
+// IInteractionTarget so the new InteractionLaser picks it up alongside grabbables. - xlinka
 [ComponentCategory("Interaction")]
-public sealed class RayTarget : Component
+public sealed class RayTarget : Component, IInteractionTarget
 {
-    /// <summary>
-    /// Radius of the hit-detection sphere in metres.
-    /// </summary>
     public readonly Sync<float> HoverRadius = new();
-
-    /// <summary>
-    /// Whether this target can currently be activated by a trigger press.
-    /// </summary>
     public readonly Sync<bool> AllowActivation = new();
+    public readonly Sync<int> InteractionPriority = new();
 
-    /// <summary>
-    /// Whether a ControllerRayBeam ray is currently hovering over this target.
-    /// Set automatically by the beam; treat this as read-only from outside.
-    /// </summary>
+    // set automatically by the laser; treat as read-only from outside. - xlinka
     public readonly Sync<bool> IsHovered = new();
 
     /// <summary>
@@ -47,12 +34,24 @@ public sealed class RayTarget : Component
     /// </summary>
     public event Action<float3> Activated;
 
+    public int InteractionTargetPriority => InteractionPriority.Value;
+
+    public InteractionDescription GetInteractionDescription(InteractionLaser laser)
+    {
+        return new InteractionDescription
+        {
+            Name = Slot?.SlotName.Value,
+            Cursor = AllowActivation.Value ? LaserCursor.Default : LaserCursor.Disabled,
+            ForceActivate = false,
+        };
+    }
+
     public override void OnInit()
     {
         base.OnInit();
-        HoverRadius.Value     = 0.05f;
+        HoverRadius.Value = 0.05f;
         AllowActivation.Value = true;
-        // IsHovered = false (C# default, skip)
+        InteractionPriority.Value = 0;
     }
 
     internal void NotifyHoverEntered()

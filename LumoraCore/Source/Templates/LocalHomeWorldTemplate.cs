@@ -1,10 +1,14 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System;
+using Helio.UI;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Components;
+using Lumora.Core.Components.Assets;
 using Lumora.Core.Components.Meshes;
+using Lumora.Core.Components.UI;
 using Lumora.Core.Math;
 using Lumora.Core.Physics;
 
@@ -172,6 +176,8 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
         var clipboardSlot = world.RootSlot.AddSlot("ClipboardImporter");
         clipboardSlot.AttachComponent<ClipboardImporter>();
 
+        CreateHelioTestPanel(world);
+
         // Catch-all under the world. Bigger than ground so a user yeeted off-edge
         // still triggers respawn instead of falling forever. - xlinka
         var respawnSlot = world.RootSlot.AddSlot("RespawnPlane");
@@ -182,5 +188,70 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
         respawnPlane.ShowVisual.Value = false;
         respawnPlane.ShowDebug.Value = false;
         respawnPlane.UserRespawnPosition.Value = new float3(0f, 1f, 0f);
+    }
+
+    private static void CreateHelioTestPanel(World world)
+    {
+        var panelSlot = world.RootSlot.AddSlot("HelioTestPanel");
+        panelSlot.LocalPosition.Value = new float3(0f, 1.48f, -1.55f);
+        panelSlot.LocalScale.Value = new float3(0.00145f, 0.00145f, 0.00145f);
+
+        var fontSlot = panelSlot.AddSlot("UIFont");
+        var font = fontSlot.AttachComponent<FontProvider>();
+        font.URL.Value = new Uri("res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf");
+
+        var panel = panelSlot.AttachComponent<PanelShell>();
+        panel.Title.Value = "Helio LocalHome";
+        panel.Size.Value = new float2(520f, 320f);
+        panel.HeaderHeight.Value = 42f;
+        panel.Padding.Value = 12f;
+        panel.Font.Target = font;
+        panel.BackgroundColor.Value = new color(0.025f, 0.030f, 0.040f, 0.92f);
+        panel.HeaderColor.Value = new color(0.080f, 0.095f, 0.120f, 0.98f);
+
+        panel.RebuildContent(ui =>
+        {
+            ui.Font(font);
+            var layout = ui.VerticalLayout(8f, 10f);
+            Fill(layout.RectTransform!);
+
+            var status = ui.Text("Mesh UI live in LocalHome", 18f, new color(0.78f, 0.92f, 1f, 1f));
+
+            var button = ui.Button("Laser click test", (_, _) =>
+            {
+                status.Content.Value = $"Clicked {DateTime.Now:HH:mm:ss}";
+            }, new color(0.12f, 0.20f, 0.30f, 0.95f));
+            Fill(button.RectTransform!);
+
+            ui.HorizontalElementWithLabel("Checkbox", 0.58f, () =>
+            {
+                var checkbox = ui.Checkbox(false, (_, value) =>
+                {
+                    status.Content.Value = value ? "Checkbox on" : "Checkbox off";
+                }, new color(0.12f, 0.14f, 0.17f, 0.95f));
+                Fill(checkbox.RectTransform!);
+                return checkbox;
+            }, 0.04f);
+
+            ui.HorizontalElementWithLabel("Slider", 0.42f, () =>
+            {
+                var slider = ui.Slider(0.35f, 0f, 1f, (_, value) =>
+                {
+                    status.Content.Value = $"Slider {value:0.00}";
+                }, new color(0.10f, 0.14f, 0.18f, 0.95f));
+                Fill(slider.RectTransform!);
+                return slider;
+            }, 0.04f);
+
+            ui.NestOut();
+        });
+    }
+
+    private static void Fill(RectTransform rect)
+    {
+        rect.AnchorMin.Value = float2.Zero;
+        rect.AnchorMax.Value = float2.One;
+        rect.OffsetMin.Value = float2.Zero;
+        rect.OffsetMax.Value = float2.Zero;
     }
 }

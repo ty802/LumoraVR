@@ -259,8 +259,8 @@ public class MeshProvider : UrlAssetProvider<MeshDataAsset, MeshDataMetadata>
 
         for (int i = 0; i < allPositions.Count; i++)
         {
-            phosMesh.positions[i] = allPositions[i];
-            phosMesh.normals[i] = allNormals[i];
+            phosMesh.RawPositions[i] = allPositions[i];
+            phosMesh.RawNormals[i] = allNormals[i];
         }
 
         // Set UVs
@@ -355,10 +355,10 @@ public class MeshProvider : UrlAssetProvider<MeshDataAsset, MeshDataMetadata>
         {
             var (v, vt, vn) = faceIndices[i];
 
-            phosMesh.positions[i] = v > 0 && v <= positions.Count ? positions[v - 1] : float3.Zero;
+            phosMesh.RawPositions[i] = v > 0 && v <= positions.Count ? positions[v - 1] : float3.Zero;
 
             if (phosMesh.HasNormals)
-                phosMesh.normals[i] = vn > 0 && vn <= normals.Count ? normals[vn - 1] : float3.Up;
+                phosMesh.RawNormals[i] = vn > 0 && vn <= normals.Count ? normals[vn - 1] : float3.Up;
         }
 
         if (phosMesh.HasUV0s)
@@ -464,8 +464,8 @@ public class MeshProvider : UrlAssetProvider<MeshDataAsset, MeshDataMetadata>
 
         for (int i = 0; i < allPositions.Count; i++)
         {
-            phosMesh.positions[i] = allPositions[i];
-            phosMesh.normals[i] = allNormals[i];
+            phosMesh.RawPositions[i] = allPositions[i];
+            phosMesh.RawNormals[i] = allNormals[i];
             phosMesh.SetUV(0, i, allUVs[i]);
         }
 

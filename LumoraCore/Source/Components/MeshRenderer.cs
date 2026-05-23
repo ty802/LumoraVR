@@ -19,10 +19,8 @@ public class MeshRenderer : ImplementableComponent
     /// </summary>
     public readonly SyncRef<Component> Mesh;
 
-    /// <summary>
-    /// The material to use for rendering.
-    /// </summary>
-    public readonly AssetRef<MaterialAsset> Material;
+    public readonly SyncAssetList<MaterialAsset> Materials;
+    public readonly SyncAssetList<MaterialPropertyBlockAsset> MaterialPropertyBlocks;
 
     /// <summary>
     /// Shadow casting mode (Off, On, ShadowOnly, DoubleSided).
@@ -34,10 +32,37 @@ public class MeshRenderer : ImplementableComponent
     /// </summary>
     public readonly Sync<int> SortingOrder;
 
+    public bool MaterialsChanged { get; set; }
+    public bool MaterialPropertyBlocksChanged { get; set; }
+
+    // Mesh DATA changing (ClearSurfaces + re-add) is invisible to the SyncRef WasChanged path,
+    // so callers that rebuild the underlying ArrayMesh contents in place must flag us dirty
+    // explicitly or surface override materials end up stale. - xlinka
+    public void FlagSurfacesDirty()
+    {
+        MaterialsChanged = true;
+        MaterialPropertyBlocksChanged = true;
+        RunApplyChanges();
+    }
+
+    public AssetRef<MaterialAsset> Material
+    {
+        get
+        {
+            if (Materials.Count == 0)
+            {
+                return Materials.Add();
+            }
+
+            return Materials.GetElement(0);
+        }
+    }
+
     public MeshRenderer()
     {
         Mesh = new SyncRef<Component>(this);
-        Material = new AssetRef<MaterialAsset>(this);
+        Materials = new SyncAssetList<MaterialAsset>(this);
+        MaterialPropertyBlocks = new SyncAssetList<MaterialPropertyBlockAsset>(this);
         ShadowCastMode = new Sync<ShadowCastMode>(this, Components.ShadowCastMode.On);
         SortingOrder = new Sync<int>(this, 0);
     }
@@ -45,11 +70,25 @@ public class MeshRenderer : ImplementableComponent
     public override void OnAwake()
     {
         base.OnAwake();
+        Materials.OnChanged += OnMaterialsChanged;
+        MaterialPropertyBlocks.OnChanged += OnMaterialPropertyBlocksChanged;
         LumoraLogger.Log($"MeshRenderer: Awake on slot '{Slot.SlotName.Value}'");
+    }
+
+    private void OnMaterialsChanged(SyncAssetList<MaterialAsset> list)
+    {
+        MaterialsChanged = true;
+    }
+
+    private void OnMaterialPropertyBlocksChanged(SyncAssetList<MaterialPropertyBlockAsset> list)
+    {
+        MaterialPropertyBlocksChanged = true;
     }
 
     public override void OnDestroy()
     {
+        Materials.OnChanged -= OnMaterialsChanged;
+        MaterialPropertyBlocks.OnChanged -= OnMaterialPropertyBlocksChanged;
         base.OnDestroy();
         LumoraLogger.Log($"MeshRenderer: Destroyed on slot '{Slot?.SlotName.Value}'");
     }

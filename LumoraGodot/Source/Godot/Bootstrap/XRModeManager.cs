@@ -78,8 +78,6 @@ public partial class XRModeManager : Node
     private DesktopInput             _desktopInput;
     private DesktopCameraController  _desktopCamera;
     private EngineVRInputProvider    _vrInputProvider;
-    private LaserInteractionManager  _vrLaserManager;
-    private GrabManager              _vrGrabManager;
 
     // ===== XR SCENE NODES =====
     // Bootstrap.tscn defines the XR sub-tree up-front; we just hold refs.
@@ -592,21 +590,11 @@ public partial class XRModeManager : Node
     private void SetupVRInput()
     {
         FreeIfValid(ref _vrInputProvider);
-        FreeIfValid(ref _vrLaserManager);
-        FreeIfValid(ref _vrGrabManager);
 
         _vrInputProvider = new EngineVRInputProvider();
         _vrInputProvider.Name = "VRInputProvider";
         AddChild(_vrInputProvider);
         _vrInputProvider.Initialize(_inputInterface);
-
-        _vrLaserManager = new LaserInteractionManager();
-        _vrLaserManager.Name = "LaserInteraction";
-        AddChild(_vrLaserManager);
-
-        _vrGrabManager = new GrabManager();
-        _vrGrabManager.Name = "GrabManager";
-        AddChild(_vrGrabManager);
 
         LumoraLogger.Log("XRModeManager: VR input providers ready");
     }
@@ -614,8 +602,6 @@ public partial class XRModeManager : Node
     private void TeardownVRInput()
     {
         FreeIfValid(ref _vrInputProvider);
-        FreeIfValid(ref _vrLaserManager);
-        FreeIfValid(ref _vrGrabManager);
         LumoraLogger.Log("XRModeManager: VR input providers removed");
     }
 

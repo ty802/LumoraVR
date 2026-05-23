@@ -12,9 +12,7 @@ using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Components;
 using Lumora.Core.Components.Assets;
-using Lumora.Core.GodotUI.Wizards;
 using Lumora.Core.Math;
-using Lumora.Godot.UI;
 using LumoraMeshes = Lumora.Core.Components.Meshes;
 
 namespace Lumora.Godot.Input;
@@ -47,7 +45,6 @@ public partial class ClipboardImporter : Node
 
     private LocalDB _localDB;
     private Slot _targetSlot;
-    private GodotImportDialogPanel _activeImportDialogPanel;
     private Camera3D _camera;
     private Lumora.Core.Engine _engine;
 
@@ -330,58 +327,7 @@ public partial class ClipboardImporter : Node
 
         var extension = Path.GetExtension(filePath).ToLowerInvariant();
 
-        var targetSlot = GetTargetSlot();
-        if (targetSlot != null && ShowImportDialogInWorld(filePath, targetSlot))
-        {
-            return;
-        }
-
-        // Fallback: auto-import when a world panel cannot be created.
         await AutoImport(filePath, extension);
-    }
-
-    private bool ShowImportDialogInWorld(string filePath, Slot targetSlot)
-    {
-        try
-        {
-            var world = targetSlot.World ?? _engine?.WorldManager?.FocusedWorld;
-            var rootSlot = world?.RootSlot;
-            if (rootSlot == null)
-            {
-                GD.PrintErr("ClipboardImporter: Cannot open in-world import dialog (world root missing)");
-                return false;
-            }
-
-            if (_activeImportDialogPanel?.Slot != null && !_activeImportDialogPanel.Slot.IsDestroyed)
-            {
-                _activeImportDialogPanel.Slot.Destroy();
-                _activeImportDialogPanel = null;
-            }
-
-            var dialogSlot = rootSlot.AddSlot("ImportDialog");
-            var dialogPanel = dialogSlot.AttachComponent<GodotImportDialogPanel>();
-            dialogPanel.Configure(filePath, targetSlot, _localDB, GetImportSpawnPosition(targetSlot, 2.0f));
-            _activeImportDialogPanel = dialogPanel;
-
-            PositionImportDialogPanel(dialogSlot, targetSlot);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            GD.PrintErr($"ClipboardImporter: Failed to open in-world import dialog: {ex.Message}");
-            return false;
-        }
-    }
-
-    private void PositionImportDialogPanel(Slot dialogSlot, Slot targetSlot)
-    {
-        if (_camera != null)
-        {
-            PanelPlacement.PlaceInFrontOfCamera(dialogSlot, _camera, 0.75f, 0.22f, -0.04f);
-            return;
-        }
-
-        dialogSlot.GlobalPosition = targetSlot.GlobalPosition + new float3(0f, 0.25f, 0f);
     }
 
     private async Task AutoImport(string filePath, string extension)
@@ -773,12 +719,6 @@ public partial class ClipboardImporter : Node
         sphereSlot.AttachComponent<Grabbable>();
         var sphereCollider = sphereSlot.AttachComponent<SphereCollider>();
         sphereCollider.Radius.Value = 0.3f;
-
-        var inspectorSlot = rootSlot.AddSlot("MaterialInspector");
-        inspectorSlot.LocalPosition.Value = new float3(0.45f, 0f, 0f);
-
-        var inspector = inspectorSlot.AttachComponent<GodotMaterialInspector>();
-        inspector.Material.Target = material;
 
         GD.Print($"ClipboardImporter: Shader material created with local URI {localUri ?? filePath}");
         OnAssetImported?.Invoke(filePath, rootSlot);

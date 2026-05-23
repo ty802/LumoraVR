@@ -5,9 +5,6 @@
 using Lumora.Core.Components;
 using Lumora.Core.Components.Gizmos;
 using Lumora.Core.Components.Meshes;
-using Lumora.Core.GodotUI;
-using Lumora.Core.GodotUI.Inspectors;
-using Lumora.Core.GodotUI.Wizards;
 using Lumora.Core;
 
 namespace Lumora.Source.Godot.Bootstrap;
@@ -52,32 +49,16 @@ public static class GodotHookRegistry
         World.HookTypes.Register<CharacterController, Lumora.Godot.Hooks.CharacterControllerHook>();
         World.HookTypes.Register<Lumora.Core.Components.Avatar.GodotIKAvatar, Lumora.Godot.Hooks.GodotIKAvatarHook>();
 
-        // Godot UI hooks
-        World.HookTypes.Register<GodotUIPanel, Lumora.Godot.Hooks.GodotUI.GodotUIPanelHook>();
-        World.HookTypes.Register<GodotUIElement, Lumora.Godot.Hooks.GodotUI.GodotBaseElementHook>();
-        World.HookTypes.Register<GodotLabel, Lumora.Godot.Hooks.GodotUI.GodotLabelHook>();
-        World.HookTypes.Register<GodotButton, Lumora.Godot.Hooks.GodotUI.GodotButtonHook>();
-        World.HookTypes.Register<GodotPanel, Lumora.Godot.Hooks.GodotUI.GodotPanelHook>();
-        World.HookTypes.Register<GodotScrollContainer, Lumora.Godot.Hooks.GodotUI.GodotScrollContainerHook>();
-        World.HookTypes.Register<DashboardPanel, Lumora.Godot.Hooks.GodotUI.DashboardPanelHook>();
-        World.HookTypes.Register<Lumora.Core.Components.UI.ContextMenuSystem, Lumora.Godot.Hooks.GodotUI.ContextMenuHook>();
-        World.HookTypes.Register<GodotMaterialInspector, Lumora.Godot.Hooks.GodotUI.GodotMaterialInspectorHook>();
-        World.HookTypes.Register<GodotMaterialColorPicker, Lumora.Godot.Hooks.GodotUI.GodotMaterialColorPickerHook>();
-        World.HookTypes.Register<ColorPickerPanel, Lumora.Godot.Hooks.GodotUI.GodotColorPickerPanelHook>();
-        World.HookTypes.Register<GodotImportDialogPanel, Lumora.Godot.Hooks.GodotUI.GodotImportDialogPanelHook>();
+        // engine-side UI lives in HelioUI now. dialog/menu/inspector hooks gone with the GodotUI folder. - xlinka
         World.HookTypes.Register<Nameplate, Lumora.Godot.Hooks.NameplateHook>();
-
-        // Inspector hooks
-        World.HookTypes.Register<SlotInspector, Lumora.Godot.Hooks.GodotUI.Inspectors.SlotInspectorHook>();
-        World.HookTypes.Register<ComponentInspector, Lumora.Godot.Hooks.GodotUI.Inspectors.ComponentInspectorHook>();
-        World.HookTypes.Register<SceneInspector, Lumora.Godot.Hooks.GodotUI.Inspectors.SceneInspectorHook>();
-        World.HookTypes.Register<ComponentAttacher, Lumora.Godot.Hooks.GodotUI.Inspectors.ComponentAttacherHook>();
 
         // Gizmo hooks
         World.HookTypes.Register<SlotGizmo, Lumora.Godot.Hooks.Gizmos.SlotGizmoHook>();
 
         // Asset hooks
         AssetHookRegistry.Register<TextureAsset, Lumora.Godot.Hooks.TextureAssetHook>();
+        AssetHookRegistry.Register<FontAsset, Lumora.Godot.Hooks.FontAssetHook>();
         AssetHookRegistry.Register<MaterialAsset, Lumora.Godot.Hooks.MaterialAssetHook>();
+        AssetHookRegistry.Register<MaterialPropertyBlockAsset, Lumora.Godot.Hooks.MaterialPropertyBlockAssetHook>();
     }
 }

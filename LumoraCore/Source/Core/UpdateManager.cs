@@ -13,7 +13,8 @@ namespace Lumora.Core;
 public class UpdateManager
 {
     private World _world;
-    private HashSet<IImplementable> _pendingHookUpdates = new HashSet<IImplementable>();
+    private readonly Queue<IImplementable> _pendingHookUpdates = new Queue<IImplementable>();
+    private readonly HashSet<IImplementable> _queuedHookUpdates = new HashSet<IImplementable>();
     private readonly object _hookUpdatesLock = new object();
     private float _currentDeltaTime = 0f;
 
@@ -145,7 +146,10 @@ public class UpdateManager
         {
             lock (_hookUpdatesLock)
             {
-                _pendingHookUpdates.Add(component);
+                if (_queuedHookUpdates.Add(component))
+                {
+                    _pendingHookUpdates.Enqueue(component);
+                }
             }
         }
     }
@@ -275,25 +279,39 @@ public class UpdateManager
     /// </summary>
     public void ProcessHookUpdates(float deltaTime)
     {
-        List<IImplementable> pending;
-        lock (_hookUpdatesLock)
-        {
-            if (_pendingHookUpdates.Count == 0)
-                return;
-
-            // Snapshot to avoid collection modification during hook updates
-            pending = new List<IImplementable>(_pendingHookUpdates);
-            _pendingHookUpdates.Clear();
-        }
-
-        // Store delta time for hooks to access
         _currentDeltaTime = deltaTime;
 
-        foreach (var component in pending)
+        const int maxUpdates = 100000;
+        int processed = 0;
+
+        while (true)
         {
-            if (component is ImplementableComponent<IHook> impl)
+            IImplementable implementable;
+            lock (_hookUpdatesLock)
             {
-                impl.UpdateHook();
+                if (_pendingHookUpdates.Count == 0)
+                {
+                    return;
+                }
+
+                implementable = _pendingHookUpdates.Dequeue();
+                _queuedHookUpdates.Remove(implementable);
+            }
+
+            if (implementable == null || implementable.IsDestroyed ||
+                (implementable is Worker worker && worker.IsRemoved) ||
+                implementable.Hook == null)
+            {
+                continue;
+            }
+
+            implementable.Hook.ApplyChanges();
+
+            processed++;
+            if (processed >= maxUpdates)
+            {
+                Logging.Logger.Warn("UpdateManager: Hook update queue hit safety limit.");
+                return;
             }
         }
     }
@@ -306,6 +324,7 @@ public class UpdateManager
         lock (_hookUpdatesLock)
         {
             _pendingHookUpdates.Clear();
+            _queuedHookUpdates.Clear();
         }
         _updateBuckets.Clear();
         _startupQueue.Clear();

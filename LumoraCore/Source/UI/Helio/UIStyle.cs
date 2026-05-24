@@ -13,11 +13,14 @@ public struct UIStyle
     public color ForegroundColor;
     public color BackgroundColor;
     public float FontSize;
-    public IAssetProvider<FontAsset>? Font;
+    public IAssetProvider<FontSet>? Font;
     public float MinHeight;
     public float MinWidth;
+    public float PreferredWidth;
+    public float PreferredHeight;
     public float FlexibleWidth;
     public float FlexibleHeight;
+    public bool UseZeroMetrics;
 
     public static UIStyle Default => new UIStyle
     {
@@ -28,7 +31,10 @@ public struct UIStyle
         Font = null,
         MinHeight = 0f,
         MinWidth = 0f,
+        PreferredWidth = 0f,
+        PreferredHeight = 0f,
         FlexibleWidth = 1f,
         FlexibleHeight = 1f,
+        UseZeroMetrics = false,
     };
 }

@@ -20,11 +20,22 @@ public class PanelShell : UIComponent
     public readonly Sync<color> BackgroundColor;
     public readonly Sync<color> HeaderColor;
     public readonly Sync<color> TextColor;
-    public readonly AssetRef<FontAsset> Font;
+    public readonly AssetRef<FontSet> Font;
 
     private bool _built;
+    private RectTransform? _rootRect;
+    private Image? _backgroundImage;
     private Slot? _headerSlot;
+    private RectTransform? _headerRect;
+    private Image? _headerImage;
+    private RectTransform? _titleRect;
+    private Text? _titleText;
+    private Slot? _closeSlot;
+    private RectTransform? _closeRect;
+    private Image? _closeImage;
+    private Text? _closeText;
     private Slot? _contentSlot;
+    private RectTransform? _contentRect;
 
     public event Action<PanelShell>? CloseRequested;
 
@@ -56,15 +67,15 @@ public class PanelShell : UIComponent
         BackgroundColor = new Sync<color>(this, new color(0.035f, 0.040f, 0.050f, 0.92f));
         HeaderColor = new Sync<color>(this, new color(0.090f, 0.100f, 0.120f, 0.96f));
         TextColor = new Sync<color>(this, color.White);
-        Font = new AssetRef<FontAsset>(this);
+        Font = new AssetRef<FontSet>(this);
     }
 
-    // Note: deliberately NOT calling EnsureBuilt() from OnStart. The component lifecycle runs
-    // OnStart synchronously during AttachComponent, which happens BEFORE the caller sets
-    // Title/Size/Colors/etc on the freshly-attached component. Snapshotting those into the
-    // visual tree at that point captures the defaults (empty title, default size, default
-    // colors) and never refreshes. Defer the build until RebuildContent or a HeaderSlot/
-    // ContentSlot getter is actually called — by then the caller's config block is done. - xlinka
+    // Build lazily so callers can set fields immediately after AttachComponent. - xlinka
+    public override void OnChanges()
+    {
+        base.OnChanges();
+        UpdateVisualState();
+    }
 
     public UIBuilder CreateContentBuilder()
     {
@@ -96,60 +107,144 @@ public class PanelShell : UIComponent
         if (_built) return;
         _built = true;
 
-        var rootRect = RectTransform ?? Slot.GetComponent<RectTransform>() ?? Slot.AttachComponent<RectTransform>();
-        SetCenteredRect(rootRect, Size.Value);
-
+        _rootRect = RectTransform ?? Slot.GetComponent<RectTransform>() ?? Slot.AttachComponent<RectTransform>();
         _ = Slot.GetComponent<Canvas>() ?? Slot.AttachComponent<Canvas>();
-
-        var background = Slot.GetComponent<Image>() ?? Slot.AttachComponent<Image>();
-        background.Tint.Value = BackgroundColor.Value;
+        _backgroundImage = Slot.GetComponent<Image>() ?? Slot.AttachComponent<Image>();
 
         _headerSlot = Slot.AddSlot("Header");
-        var headerRect = _headerSlot.AttachComponent<RectTransform>();
-        headerRect.AnchorMin.Value = new float2(0f, 1f);
-        headerRect.AnchorMax.Value = new float2(1f, 1f);
-        headerRect.OffsetMin.Value = new float2(0f, -HeaderHeight.Value);
-        headerRect.OffsetMax.Value = float2.Zero;
-        _headerSlot.AttachComponent<Image>().Tint.Value = HeaderColor.Value;
+        _headerRect = _headerSlot.AttachComponent<RectTransform>();
+        _headerImage = _headerSlot.AttachComponent<Image>();
 
         var titleSlot = _headerSlot.AddSlot("Title");
-        var titleRect = titleSlot.AttachComponent<RectTransform>();
-        Fill(titleRect);
-        titleRect.OffsetMin.Value = new float2(Padding.Value, 0f);
-        titleRect.OffsetMax.Value = new float2(ShowCloseButton.Value ? -HeaderHeight.Value : -Padding.Value, 0f);
-        var titleText = titleSlot.AttachComponent<Text>();
-        titleText.Content.Value = Title.Value;
-        titleText.Color.Value = TextColor.Value;
-        titleText.Size.Value = 18f;
-        titleText.Font.Target = Font.Target;
+        _titleRect = titleSlot.AttachComponent<RectTransform>();
+        _titleText = titleSlot.AttachComponent<Text>();
+
+        _contentSlot = Slot.AddSlot("Content");
+        _contentRect = _contentSlot.AttachComponent<RectTransform>();
+
+        UpdateVisualState();
+    }
+
+    private void UpdateVisualState()
+    {
+        if (!_built)
+        {
+            return;
+        }
+
+        _rootRect ??= RectTransform ?? Slot.GetComponent<RectTransform>() ?? Slot.AttachComponent<RectTransform>();
+        SetCenteredRect(_rootRect, Size.Value);
+
+        if (_backgroundImage != null && !_backgroundImage.IsDestroyed)
+        {
+            Set(_backgroundImage.Tint, BackgroundColor.Value);
+        }
+
+        if (_headerRect != null && !_headerRect.IsDestroyed)
+        {
+            Set(_headerRect.AnchorMin, new float2(0f, 1f));
+            Set(_headerRect.AnchorMax, new float2(1f, 1f));
+            Set(_headerRect.OffsetMin, new float2(0f, -HeaderHeight.Value));
+            Set(_headerRect.OffsetMax, float2.Zero);
+        }
+
+        if (_headerImage != null && !_headerImage.IsDestroyed)
+        {
+            Set(_headerImage.Tint, HeaderColor.Value);
+        }
+
+        if (_titleRect != null && !_titleRect.IsDestroyed)
+        {
+            Fill(_titleRect);
+            Set(_titleRect.OffsetMin, new float2(Padding.Value, 0f));
+            Set(_titleRect.OffsetMax, new float2(ShowCloseButton.Value ? -HeaderHeight.Value : -Padding.Value, 0f));
+        }
+
+        if (_titleText != null && !_titleText.IsDestroyed)
+        {
+            Set(_titleText.Content, Title.Value);
+            Set(_titleText.Color, TextColor.Value);
+            Set(_titleText.Size, 18f);
+            SetTarget(_titleText.Font, Font.Target);
+        }
 
         if (ShowCloseButton.Value)
         {
-            var closeSlot = _headerSlot.AddSlot("Close");
-            var closeRect = closeSlot.AttachComponent<RectTransform>();
-            closeRect.AnchorMin.Value = new float2(1f, 0f);
-            closeRect.AnchorMax.Value = new float2(1f, 1f);
-            closeRect.OffsetMin.Value = new float2(-HeaderHeight.Value, 0f);
-            closeRect.OffsetMax.Value = float2.Zero;
-            var closeButton = closeSlot.AttachComponent<Button>();
-            closeButton.Clicked += (_, _) => Close();
-            closeSlot.AttachComponent<Image>().Tint.Value = new color(0.12f, 0.13f, 0.15f, 1f);
-
-            var closeLabel = closeSlot.AddSlot("Label");
-            var closeLabelRect = closeLabel.AttachComponent<RectTransform>();
-            Fill(closeLabelRect);
-            var closeText = closeLabel.AttachComponent<Text>();
-            closeText.Content.Value = "x";
-            closeText.Color.Value = TextColor.Value;
-            closeText.Size.Value = 18f;
-            closeText.Font.Target = Font.Target;
+            EnsureCloseButton();
+            UpdateCloseButton();
+        }
+        else
+        {
+            DestroyCloseButton();
         }
 
-        _contentSlot = Slot.AddSlot("Content");
-        var contentRect = _contentSlot.AttachComponent<RectTransform>();
-        Fill(contentRect);
-        contentRect.OffsetMin.Value = new float2(Padding.Value, Padding.Value);
-        contentRect.OffsetMax.Value = new float2(-Padding.Value, -HeaderHeight.Value - Padding.Value);
+        if (_contentRect != null && !_contentRect.IsDestroyed)
+        {
+            Fill(_contentRect);
+            Set(_contentRect.OffsetMin, new float2(Padding.Value, Padding.Value));
+            Set(_contentRect.OffsetMax, new float2(-Padding.Value, -HeaderHeight.Value - Padding.Value));
+        }
+    }
+
+    private void EnsureCloseButton()
+    {
+        if (_headerSlot == null || _headerSlot.IsDestroyed)
+        {
+            return;
+        }
+
+        if (_closeSlot != null && !_closeSlot.IsDestroyed)
+        {
+            return;
+        }
+
+        _closeSlot = _headerSlot.AddSlot("Close");
+        _closeRect = _closeSlot.AttachComponent<RectTransform>();
+        var closeButton = _closeSlot.AttachComponent<Button>();
+        closeButton.Clicked += (_, _) => Close();
+        _closeImage = _closeSlot.AttachComponent<Image>();
+
+        var closeLabel = _closeSlot.AddSlot("Label");
+        var closeLabelRect = closeLabel.AttachComponent<RectTransform>();
+        Fill(closeLabelRect);
+        _closeText = closeLabel.AttachComponent<Text>();
+    }
+
+    private void UpdateCloseButton()
+    {
+        if (_closeRect != null && !_closeRect.IsDestroyed)
+        {
+            Set(_closeRect.AnchorMin, new float2(1f, 0f));
+            Set(_closeRect.AnchorMax, new float2(1f, 1f));
+            Set(_closeRect.OffsetMin, new float2(-HeaderHeight.Value, 0f));
+            Set(_closeRect.OffsetMax, float2.Zero);
+        }
+
+        if (_closeImage != null && !_closeImage.IsDestroyed)
+        {
+            Set(_closeImage.Tint, new color(0.12f, 0.13f, 0.15f, 1f));
+        }
+
+        if (_closeText != null && !_closeText.IsDestroyed)
+        {
+            Set(_closeText.Content, "x");
+            Set(_closeText.Color, TextColor.Value);
+            Set(_closeText.Size, 18f);
+            SetTarget(_closeText.Font, Font.Target);
+        }
+    }
+
+    private void DestroyCloseButton()
+    {
+        if (_closeSlot != null && !_closeSlot.IsDestroyed)
+        {
+            _closeSlot.Destroy();
+        }
+
+        _closeSlot = null;
+        _closeRect = null;
+        _closeImage = null;
+        _closeText = null;
     }
 
     private static void DestroyChildren(Slot slot)
@@ -169,17 +264,33 @@ public class PanelShell : UIComponent
 
     private static void SetCenteredRect(RectTransform rect, in float2 size)
     {
-        rect.AnchorMin.Value = new float2(0.5f, 0.5f);
-        rect.AnchorMax.Value = new float2(0.5f, 0.5f);
-        rect.OffsetMin.Value = new float2(size.x * -0.5f, size.y * -0.5f);
-        rect.OffsetMax.Value = new float2(size.x * 0.5f, size.y * 0.5f);
+        Set(rect.AnchorMin, new float2(0.5f, 0.5f));
+        Set(rect.AnchorMax, new float2(0.5f, 0.5f));
+        Set(rect.OffsetMin, new float2(size.x * -0.5f, size.y * -0.5f));
+        Set(rect.OffsetMax, new float2(size.x * 0.5f, size.y * 0.5f));
     }
 
     private static void Fill(RectTransform rect)
     {
-        rect.AnchorMin.Value = float2.Zero;
-        rect.AnchorMax.Value = float2.One;
-        rect.OffsetMin.Value = float2.Zero;
-        rect.OffsetMax.Value = float2.Zero;
+        Set(rect.AnchorMin, float2.Zero);
+        Set(rect.AnchorMax, float2.One);
+        Set(rect.OffsetMin, float2.Zero);
+        Set(rect.OffsetMax, float2.Zero);
+    }
+
+    private static void Set<T>(Sync<T> field, T value)
+    {
+        if (!EqualityComparer<T>.Default.Equals(field.Value, value))
+        {
+            field.Value = value;
+        }
+    }
+
+    private static void SetTarget<T>(AssetRef<T> field, IAssetProvider<T>? target) where T : Asset
+    {
+        if (!ReferenceEquals(field.Target, target))
+        {
+            field.Target = target;
+        }
     }
 }

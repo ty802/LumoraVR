@@ -3,6 +3,7 @@
 
 using System;
 using Helio.UI;
+using Helio.UI.Layout;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Components;
@@ -193,16 +194,25 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
     private static void CreateHelioTestPanel(World world)
     {
         var panelSlot = world.RootSlot.AddSlot("HelioTestPanel");
-        panelSlot.LocalPosition.Value = new float3(0f, 1.48f, -1.55f);
-        panelSlot.LocalScale.Value = new float3(0.00145f, 0.00145f, 0.00145f);
+        panelSlot.LocalPosition.Value = new float3(0f, 1.52f, -1.68f);
+        panelSlot.LocalScale.Value = new float3(0.00135f, 0.00135f, 0.00135f);
 
         var fontSlot = panelSlot.AddSlot("UIFont");
         var font = fontSlot.AttachComponent<FontProvider>();
         font.URL.Value = new Uri("res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf");
+        font.FallbackURLs.Add(new Uri("res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf"));
+
+        var checkerSlot = panelSlot.AddSlot("UIValidationChecker");
+        var checker = checkerSlot.AttachComponent<CheckerTextureProvider>();
+        checker.Width.Value = 64;
+        checker.Height.Value = 64;
+        checker.CellSize.Value = 8;
+        checker.ColorA.Value = new color(0.12f, 0.62f, 0.90f, 1f);
+        checker.ColorB.Value = new color(0.95f, 0.30f, 0.56f, 1f);
 
         var panel = panelSlot.AttachComponent<PanelShell>();
-        panel.Title.Value = "Helio LocalHome";
-        panel.Size.Value = new float2(520f, 320f);
+        panel.Title.Value = "Helio Validation";
+        panel.Size.Value = new float2(700f, 520f);
         panel.HeaderHeight.Value = 42f;
         panel.Padding.Value = 12f;
         panel.Font.Target = font;
@@ -215,7 +225,25 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
             var layout = ui.VerticalLayout(8f, 10f);
             Fill(layout.RectTransform!);
 
-            var status = ui.Text("Mesh UI live in LocalHome", 18f, new color(0.78f, 0.92f, 1f, 1f));
+            var status = ui.Text("Validation ready: hover/press, scroll clip, raw/tiled images, font fallback.", 16f, new color(0.78f, 0.92f, 1f, 1f));
+            status.WordWrap.Value = true;
+            Fill(status.RectTransform!);
+
+            int shellClickCount = 0;
+            var shellButton = ui.Button("Live shell update", (_, _) =>
+            {
+                shellClickCount++;
+                bool alternate = shellClickCount % 2 == 1;
+                panel.Title.Value = alternate ? $"Helio Validation {shellClickCount}" : "Helio Validation";
+                panel.Padding.Value = alternate ? 18f : 12f;
+                panel.Size.Value = alternate ? new float2(720f, 540f) : new float2(700f, 520f);
+                panel.ShowCloseButton.Value = !alternate;
+                panel.HeaderColor.Value = alternate
+                    ? new color(0.13f, 0.08f, 0.18f, 0.98f)
+                    : new color(0.080f, 0.095f, 0.120f, 0.98f);
+                status.Content.Value = "PanelShell fields updated live";
+            }, new color(0.13f, 0.18f, 0.25f, 0.95f));
+            Fill(shellButton.RectTransform!);
 
             var button = ui.Button("Laser click test", (_, _) =>
             {
@@ -243,6 +271,45 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
                 return slider;
             }, 0.04f);
 
+            var scroll = ui.ScrollRect(out var scrollContent, new float2(1f, 1f), new color(0.035f, 0.045f, 0.060f, 0.94f));
+            Fill(scroll.RectTransform!);
+            const float scrollContentHeight = 260f;
+            ConfigureScrollContent(scrollContent, scrollContentHeight, 38f);
+            scroll.Scroll.Value = new float2(0f, 38f);
+            scroll.ScrollChanged += (_, value) =>
+            {
+                float y = Clamp(value.y, 0f, 150f);
+                ConfigureScrollContent(scrollContent, scrollContentHeight, y);
+                status.Content.Value = $"Scroll clip y={y:0}";
+            };
+
+            var scrollUi = new UIBuilder(scrollContent.Slot);
+            scrollUi.Font(font);
+            var scrollLayout = scrollUi.VerticalLayout(4f, 6f);
+            Fill(scrollLayout.RectTransform!);
+            for (int i = 1; i <= 9; i++)
+            {
+                var row = scrollUi.Text($"clipped scroll row {i:00} - content should stay inside the mask", 14f, new color(0.82f, 0.86f, 0.92f, 1f));
+                Fill(row.RectTransform!);
+            }
+            scrollUi.NestOut();
+
+            var imagePanel = ui.Panel(new color(0.035f, 0.040f, 0.050f, 0.96f));
+            Fill(imagePanel.RectTransform!);
+            ui.Nest();
+            var imageLayout = ui.HorizontalLayout(8f, 8f);
+            Fill(imageLayout.RectTransform!);
+            var raw = ui.RawImage(checker, color.White, new Rect(0.05f, 0.05f, 0.90f, 0.90f), true);
+            Fill(raw.RectTransform!);
+            var tiled = ui.TiledRawImage(checker, color.White, new float2(24f, 24f), new float2(8f, 6f));
+            Fill(tiled.RectTransform!);
+            ui.NestOut();
+            ui.NestOut();
+
+            var fallback = ui.Text("FontSet fallback path: ASCII + symbols <> [] {} + missing glyph fallback", 14f, new color(0.88f, 0.82f, 0.96f, 1f));
+            fallback.WordWrap.Value = true;
+            Fill(fallback.RectTransform!);
+
             ui.NestOut();
         });
     }
@@ -253,5 +320,20 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
         rect.AnchorMax.Value = float2.One;
         rect.OffsetMin.Value = float2.Zero;
         rect.OffsetMax.Value = float2.Zero;
+    }
+
+    private static void ConfigureScrollContent(RectTransform rect, float contentHeight, float scrollY)
+    {
+        rect.AnchorMin.Value = new float2(0f, 1f);
+        rect.AnchorMax.Value = new float2(1f, 1f);
+        rect.OffsetMin.Value = new float2(0f, -contentHeight + scrollY);
+        rect.OffsetMax.Value = new float2(0f, scrollY);
+    }
+
+    private static float Clamp(float value, float min, float max)
+    {
+        if (value < min) return min;
+        if (value > max) return max;
+        return value;
     }
 }

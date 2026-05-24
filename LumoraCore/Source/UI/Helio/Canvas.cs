@@ -104,7 +104,7 @@ public class Canvas : Component, ILaserPointerTarget
         }
 
         var candidate = default(HitCandidate);
-        ScanHitSlot(Slot, in context, ref candidate);
+        ScanHitSlot(Slot, in context, ref candidate, null);
         if (candidate.Interactable == null)
         {
             return false;
@@ -128,7 +128,7 @@ public class Canvas : Component, ILaserPointerTarget
         }
 
         var candidate = default(HitCandidate);
-        ScanHitSlot(Slot, in context, ref candidate);
+        ScanHitSlot(Slot, in context, ref candidate, null);
         var hovered = candidate.Interactable;
         int key = PointerKey(source, pointerId);
 
@@ -231,26 +231,7 @@ public class Canvas : Component, ILaserPointerTarget
         ComputeRects(Slot, null);
         _rootChunk.PrepareCompute();
 
-        foreach (var graphic in Slot.GetComponentsInChildren<Graphic>(true))
-        {
-            if (!graphic.Enabled.Value)
-            {
-                continue;
-            }
-
-            graphic.PrepareCompute();
-            if (graphic.RequiresPreGraphicsCompute)
-            {
-                var preGraphics = graphic.PreGraphicsCompute();
-                if (!preGraphics.IsCompletedSuccessfully)
-                {
-                    preGraphics.AsTask().GetAwaiter().GetResult();
-                }
-            }
-
-            _rootChunk.ContentRenderData.BeginGraphic();
-            graphic.ComputeGraphic(_rootChunk.ContentRenderData);
-        }
+        RenderGraphics(Slot, null);
 
         _rootChunk.SubmitChanges();
     }
@@ -259,6 +240,11 @@ public class Canvas : Component, ILaserPointerTarget
     // overrides into descendant subtrees via ReflowAfterParentChanged. - xlinka
     private void ComputeRects(Slot slot, RectTransform? parent)
     {
+        if (slot != Slot && !slot.ActiveSelf.Value)
+        {
+            return;
+        }
+
         var rect = slot.GetComponent<RectTransform>();
         var nextParent = parent;
 
@@ -406,8 +392,18 @@ public class Canvas : Component, ILaserPointerTarget
         return true;
     }
 
-    private void ScanHitSlot(Slot slot, in UIInteractionContext context, ref HitCandidate candidate)
+    private void ScanHitSlot(Slot slot, in UIInteractionContext context, ref HitCandidate candidate, Rect? clipRect)
     {
+        if (slot != Slot && !slot.ActiveSelf.Value)
+        {
+            return;
+        }
+
+        if (clipRect.HasValue && !clipRect.Value.Contains(context.LocalPoint))
+        {
+            return;
+        }
+
         foreach (var component in slot.Components)
         {
             switch (component)
@@ -421,19 +417,99 @@ public class Canvas : Component, ILaserPointerTarget
             }
         }
 
+        var nextClip = clipRect;
+        var mask = slot.GetComponent<Mask>();
+        var rect = slot.GetComponent<RectTransform>();
+        if (mask != null && mask.Enabled.Value && rect != null)
+        {
+            nextClip = nextClip.HasValue
+                ? nextClip.Value.Intersection(rect.LocalComputeRect)
+                : rect.LocalComputeRect;
+            if (nextClip.Value.IsEmpty)
+            {
+                return;
+            }
+        }
+
         foreach (var child in slot.Children)
         {
-            ScanHitSlot(child, in context, ref candidate);
+            ScanHitSlot(child, in context, ref candidate, nextClip);
         }
         foreach (var child in slot.LocalChildren)
         {
-            ScanHitSlot(child, in context, ref candidate);
+            ScanHitSlot(child, in context, ref candidate, nextClip);
         }
     }
 
     private static int PointerKey(UIInteractionSource source, int pointerId)
     {
         return ((int)source << 24) ^ pointerId;
+    }
+
+    private void RenderGraphics(Slot slot, Rect? clipRect)
+    {
+        if (slot != Slot && !slot.ActiveSelf.Value)
+        {
+            return;
+        }
+
+        if (clipRect.HasValue && clipRect.Value.IsEmpty)
+        {
+            return;
+        }
+
+        var mask = slot.GetComponent<Mask>();
+        var rect = slot.GetComponent<RectTransform>();
+        bool isMask = mask != null && mask.Enabled.Value && rect != null;
+        bool showOwnGraphics = !isMask || mask!.ShowMaskGraphic.Value;
+
+        mask?.PrepareCompute();
+
+        if (showOwnGraphics)
+        {
+            foreach (var graphic in slot.GetComponents<Graphic>())
+            {
+                if (!graphic.Enabled.Value)
+                {
+                    continue;
+                }
+
+                graphic.PrepareCompute();
+                if (graphic.RequiresPreGraphicsCompute)
+                {
+                    var preGraphics = graphic.PreGraphicsCompute();
+                    if (!preGraphics.IsCompletedSuccessfully)
+                    {
+                        preGraphics.AsTask().GetAwaiter().GetResult();
+                    }
+                }
+
+                _rootChunk!.ContentRenderData.BeginGraphic();
+                _rootChunk.ContentRenderData.SetClipRect(clipRect);
+                graphic.ComputeGraphic(_rootChunk.ContentRenderData);
+            }
+        }
+
+        var nextClip = clipRect;
+        if (isMask)
+        {
+            nextClip = nextClip.HasValue
+                ? nextClip.Value.Intersection(rect!.LocalComputeRect)
+                : rect!.LocalComputeRect;
+            if (nextClip.Value.IsEmpty)
+            {
+                return;
+            }
+        }
+
+        foreach (var child in slot.Children)
+        {
+            RenderGraphics(child, nextClip);
+        }
+        foreach (var child in slot.LocalChildren)
+        {
+            RenderGraphics(child, nextClip);
+        }
     }
 
     private static UIInteractionSource GetInteractionSource(InteractionLaser laser)

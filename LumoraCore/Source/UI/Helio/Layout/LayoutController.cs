@@ -9,7 +9,7 @@ namespace Helio.UI.Layout;
 // ArrangeChildren and rely on the canvas pump to call it.
 public abstract class LayoutController : UIComputeComponent, ILayoutElement
 {
-    // simple Phase 6 hook: position children into the layout's own LocalComputeRect.
+    // simple layout hook: position children into the layout's own LocalComputeRect.
     // canvas pump calls this after parents' anchor-rects are resolved. - xlinka
     public virtual void ArrangeChildren(IReadOnlyList<RectTransform> children) { }
 

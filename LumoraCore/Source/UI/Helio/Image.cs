@@ -17,6 +17,7 @@ public sealed class Image : Graphic
     public readonly Sync<float4> Borders;
     public readonly Sync<color> Tint;
     public readonly Sync<bool> NineSlice;
+    public readonly Sync<bool> PreserveAspect;
 
     private IAssetProvider<TextureAsset>? _texture;
     private IAssetProvider<MaterialAsset>? _material;
@@ -24,6 +25,7 @@ public sealed class Image : Graphic
     private float4 _borders;
     private color _tint;
     private bool _nineSlice;
+    private bool _preserveAspect;
     private MainTexturePropertyBlock? _textureBlock;
 
     public Image()
@@ -35,6 +37,7 @@ public sealed class Image : Graphic
         Borders = new Sync<float4>(this, float4.Zero);
         Tint = new Sync<color>(this, color.White);
         NineSlice = new Sync<bool>(this, false);
+        PreserveAspect = new Sync<bool>(this, false);
     }
 
     public override bool RequiresPreGraphicsCompute => false;
@@ -53,6 +56,7 @@ public sealed class Image : Graphic
         _borders = sprite != null ? sprite.Borders.Value : Borders.Value;
         _tint = Tint.Value;
         _nineSlice = NineSlice.Value && HasBorder(_borders);
+        _preserveAspect = PreserveAspect.Value;
     }
 
     public override void ComputeGraphic(GraphicsChunk.RenderData renderData)
@@ -78,7 +82,7 @@ public sealed class Image : Graphic
             return;
         }
 
-        WriteQuad(submesh, rect, _uvRect);
+        RawImage.GenerateImage(submesh.Mesh, submesh, rect, _uvRect, _texture?.Asset, _preserveAspect, in _tint);
     }
 
     public override bool IsPointInside(in float2 point)
@@ -101,24 +105,6 @@ public sealed class Image : Graphic
     private static MaterialMap MapMaterial(GraphicsChunk.RenderData renderData, IAssetProvider<MaterialAsset>? baseMaterial, object? key, bool usingDefaultMaterial)
     {
         return new MaterialMap(baseMaterial, key as IAssetProvider<MaterialPropertyBlockAsset>);
-    }
-
-    private void WriteQuad(PhosTriangleSubmesh submesh, in Rect rect, in Rect uv)
-    {
-        var mesh = submesh.Mesh;
-        PrepareMesh(mesh);
-
-        int first = mesh.VertexCount;
-        mesh.IncreaseVertexCount(4);
-
-        // Godot UV is Y-down: V=0 at texture top. Our world is Y-up: yMax is screen top.
-        // Screen top vertex (yMax) needs the smaller V to land on texture top. - xlinka
-        WriteVertex(mesh, first, new float3(rect.xMin, rect.yMax, 0f), new float2(uv.xMin, uv.yMin));
-        WriteVertex(mesh, first + 1, new float3(rect.xMax, rect.yMax, 0f), new float2(uv.xMax, uv.yMin));
-        WriteVertex(mesh, first + 2, new float3(rect.xMax, rect.yMin, 0f), new float2(uv.xMax, uv.yMax));
-        WriteVertex(mesh, first + 3, new float3(rect.xMin, rect.yMin, 0f), new float2(uv.xMin, uv.yMax));
-
-        submesh.AddQuadAsTriangles(first, first + 1, first + 2, first + 3);
     }
 
     private void WriteNineSlice(PhosTriangleSubmesh submesh, in Rect rect)
@@ -153,8 +139,8 @@ public sealed class Image : Graphic
             _uvRect.xMax
         };
 
-        // `ys` ascends in Y-up world space (yMin → yMax = bottom → top of screen).
-        // `vs` must ALSO ascend visually in atlas space — but atlas V is Y-down, so the
+        // `ys` ascends in Y-up world space (yMin to yMax = bottom to top of screen).
+        // `vs` must ALSO ascend visually in atlas space, but atlas V is Y-down, so the
         // row that aligns with screen-bottom is the LARGEST V (uv.yMax). Walk V in
         // reverse so ys[i] and vs[i] always describe the same physical row. - xlinka
         float[] vs =

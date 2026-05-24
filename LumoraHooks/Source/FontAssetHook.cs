@@ -59,6 +59,13 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
     {
         if (_glyphs.TryGetValue(codepoint, out var entry))
         {
+            if (entry.Missing)
+            {
+                metrics = default;
+                uvRect = default;
+                return false;
+            }
+
             // Cached metrics are stored at RasterSize; scale to the requested display size. - xlinka
             float scale = displaySize / RasterSize;
             metrics = new GlyphMetrics
@@ -93,7 +100,8 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
         int glyphIndex = GetGlyphIndex(codepoint, RasterSize);
         if (glyphIndex == 0 && codepoint != '?')
         {
-            glyphIndex = GetGlyphIndex('?', RasterSize);
+            StoreMissingGlyph(codepoint);
+            return;
         }
 
         if (glyphIndex == 0)
@@ -151,7 +159,7 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
             height / (float)AtlasSize
         );
 
-        _glyphs[codepoint] = new GlyphEntry(metrics, uv);
+        _glyphs[codepoint] = new GlyphEntry(metrics, uv, Missing: false);
     }
 
     public float GetLineHeight(float displaySize)
@@ -225,8 +233,14 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
 
         _glyphs[codepoint] = new GlyphEntry(
             new GlyphMetrics { Advance = advance, Offset = float2.Zero, Size = float2.Zero },
-            MathRect.Zero
+            MathRect.Zero,
+            Missing: false
         );
+    }
+
+    private void StoreMissingGlyph(int codepoint)
+    {
+        _glyphs[codepoint] = new GlyphEntry(default, MathRect.Zero, Missing: true);
     }
 
     private void EnsureAtlas()
@@ -327,5 +341,5 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
         return (byte)Math.Clamp((int)MathF.Round(value * 255f), 0, 255);
     }
 
-    private readonly record struct GlyphEntry(GlyphMetrics Metrics, MathRect UVRect);
+    private readonly record struct GlyphEntry(GlyphMetrics Metrics, MathRect UVRect, bool Missing);
 }

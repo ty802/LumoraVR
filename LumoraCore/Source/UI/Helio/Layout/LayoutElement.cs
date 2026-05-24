@@ -1,0 +1,119 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+using Lumora.Core;
+
+namespace Helio.UI.Layout;
+
+public sealed class LayoutElement : UIComputeComponent, ILayoutElement
+{
+    public readonly Sync<float> MinWidth;
+    public readonly Sync<float> PreferredWidth;
+    public readonly Sync<float> FlexibleWidth;
+    public readonly Sync<float> MinHeight;
+    public readonly Sync<float> PreferredHeight;
+    public readonly Sync<float> FlexibleHeight;
+    public readonly Sync<float> Area;
+    public readonly Sync<int> PriorityValue;
+    public readonly Sync<bool> UseZeroMetrics;
+
+    private float? _minWidth;
+    private float? _preferredWidth;
+    private float? _flexibleWidth;
+    private float? _minHeight;
+    private float? _preferredHeight;
+    private float? _flexibleHeight;
+    private float? _area;
+    private int _priority;
+
+    public LayoutElement()
+    {
+        MinWidth = new Sync<float>(this, -1f);
+        PreferredWidth = new Sync<float>(this, -1f);
+        FlexibleWidth = new Sync<float>(this, -1f);
+        MinHeight = new Sync<float>(this, -1f);
+        PreferredHeight = new Sync<float>(this, -1f);
+        FlexibleHeight = new Sync<float>(this, -1f);
+        Area = new Sync<float>(this, -1f);
+        PriorityValue = new Sync<int>(this, 1);
+        UseZeroMetrics = new Sync<bool>(this, false);
+    }
+
+    float? ILayoutElement.MinWidth => _minWidth;
+    float? ILayoutElement.PreferredWidth => _preferredWidth;
+    float? ILayoutElement.FlexibleWidth => _flexibleWidth;
+    float? ILayoutElement.MinHeight => _minHeight;
+    float? ILayoutElement.PreferredHeight => _preferredHeight;
+    float? ILayoutElement.FlexibleHeight => _flexibleHeight;
+    float? ILayoutElement.Area => _area;
+    int ILayoutElement.Priority => _priority;
+
+    public LayoutMetric ChangedMetrics { get; private set; }
+
+    public override void PrepareCompute()
+    {
+        PrepareValue(ref _minWidth, MinWidth.Value, LayoutMetric.MinWidth);
+        PrepareValue(ref _preferredWidth, PreferredWidth.Value, LayoutMetric.PreferredWidth);
+        PrepareValue(ref _flexibleWidth, FlexibleWidth.Value, LayoutMetric.FlexibleWidth);
+        PrepareValue(ref _minHeight, MinHeight.Value, LayoutMetric.MinHeight);
+        PrepareValue(ref _preferredHeight, PreferredHeight.Value, LayoutMetric.PreferredHeight);
+        PrepareValue(ref _flexibleHeight, FlexibleHeight.Value, LayoutMetric.FlexibleHeight);
+        PrepareValue(ref _area, Area.Value, LayoutMetric.Area);
+        _priority = PriorityValue.Value;
+    }
+
+    public void ClearChangedMetrics()
+    {
+        ChangedMetrics = LayoutMetric.None;
+    }
+
+    public void EnsureValidMetrics(LayoutDirection direction) { }
+
+    public LayoutMetric FilterChangedMetrics(LayoutMetric metrics)
+    {
+        return metrics & ~OverriddenMetrics;
+    }
+
+    public void LayoutRectWidthChanged() { }
+    public void LayoutRectHeightChanged() { }
+
+    protected override void FlagChanges(RectTransform rect)
+    {
+        rect.MarkChangeDirty();
+    }
+
+    private LayoutMetric OverriddenMetrics
+    {
+        get
+        {
+            LayoutMetric metrics = LayoutMetric.None;
+            if (_minWidth.HasValue) metrics |= LayoutMetric.MinWidth;
+            if (_preferredWidth.HasValue) metrics |= LayoutMetric.PreferredWidth;
+            if (_flexibleWidth.HasValue) metrics |= LayoutMetric.FlexibleWidth;
+            if (_minHeight.HasValue) metrics |= LayoutMetric.MinHeight;
+            if (_preferredHeight.HasValue) metrics |= LayoutMetric.PreferredHeight;
+            if (_flexibleHeight.HasValue) metrics |= LayoutMetric.FlexibleHeight;
+            if (_area.HasValue) metrics |= LayoutMetric.Area;
+            return metrics;
+        }
+    }
+
+    private void PrepareValue(ref float? field, float value, LayoutMetric metric)
+    {
+        float? next;
+        if (UseZeroMetrics.Value)
+        {
+            next = value < 0f ? null : value;
+        }
+        else
+        {
+            next = value <= 0f ? null : value;
+        }
+
+        if (field != next)
+        {
+            field = next;
+            ChangedMetrics |= metric;
+        }
+    }
+}

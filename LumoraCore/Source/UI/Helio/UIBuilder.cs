@@ -51,6 +51,7 @@ public class UIBuilder
             Current = Root.AddSlot(name);
             Current.AttachComponent<RectTransform>();
         }
+        SetupCurrentLayoutElement();
         return Current;
     }
 
@@ -139,7 +140,7 @@ public class UIBuilder
         return this;
     }
 
-    public UIBuilder Font(IAssetProvider<FontAsset>? value)
+    public UIBuilder Font(IAssetProvider<FontSet>? value)
     {
         var style = CurrentStyle;
         style.Font = value;
@@ -163,10 +164,34 @@ public class UIBuilder
         return this;
     }
 
+    public UIBuilder PreferredWidth(float value)
+    {
+        var style = CurrentStyle;
+        style.PreferredWidth = value;
+        CurrentStyle = style;
+        return this;
+    }
+
+    public UIBuilder PreferredHeight(float value)
+    {
+        var style = CurrentStyle;
+        style.PreferredHeight = value;
+        CurrentStyle = style;
+        return this;
+    }
+
     public UIBuilder FlexibleWidth(float value)
     {
         var style = CurrentStyle;
         style.FlexibleWidth = value;
+        CurrentStyle = style;
+        return this;
+    }
+
+    public UIBuilder UseZeroMetrics(bool value)
+    {
+        var style = CurrentStyle;
+        style.UseZeroMetrics = value;
         CurrentStyle = style;
         return this;
     }
@@ -349,12 +374,50 @@ public class UIBuilder
         return image;
     }
 
+    public RawImage RawImage(IAssetProvider<TextureAsset>? texture = null, color? tint = null, Rect? uvRect = null, bool preserveAspect = false)
+    {
+        Next("RawImage");
+        var image = Current.AttachComponent<RawImage>();
+        if (texture != null) image.Texture.Target = texture;
+        image.Tint.Value = tint ?? color.White;
+        image.UVRect.Value = uvRect ?? Rect.UnitRect;
+        image.PreserveAspect.Value = preserveAspect;
+        return image;
+    }
+
+    public TiledRawImage TiledRawImage(
+        IAssetProvider<TextureAsset>? texture = null,
+        color? tint = null,
+        float2? tileSize = null,
+        float2? tileOffset = null,
+        global::Helio.UI.TiledRawImage.TileSizeBasis sizeBasis = global::Helio.UI.TiledRawImage.TileSizeBasis.Absolute)
+    {
+        Next("TiledRawImage");
+        var image = Current.AttachComponent<TiledRawImage>();
+        if (texture != null) image.Texture.Target = texture;
+        image.Tint.Value = tint ?? color.White;
+        image.TileSize.Value = tileSize ?? new float2(32f, 32f);
+        image.TileOffset.Value = tileOffset ?? float2.Zero;
+        image.SizeBasis.Value = sizeBasis;
+        return image;
+    }
+
     public Image Panel(color? background = null)
     {
         Next("Panel");
         var image = Current.AttachComponent<Image>();
         image.Tint.Value = background ?? CurrentStyle.BackgroundColor;
         return image;
+    }
+
+    public Mask Mask(color? background = null, bool showMaskGraphic = false)
+    {
+        Next("Mask");
+        var image = Current.AttachComponent<Image>();
+        image.Tint.Value = background ?? CurrentStyle.BackgroundColor;
+        var mask = Current.AttachComponent<Mask>();
+        mask.ShowMaskGraphic.Value = showMaskGraphic;
+        return mask;
     }
 
     public Text Text(string content, float? size = null, color? color = null)
@@ -392,7 +455,20 @@ public class UIBuilder
         var image = Current.AttachComponent<Image>();
         image.Tint.Value = background ?? CurrentStyle.BackgroundColor;
         var checkbox = Current.AttachComponent<Checkbox>();
+        checkbox.AddColorDriver(image.Tint, image.Tint.Value);
         checkbox.IsChecked.Value = isChecked;
+
+        var checkSlot = Current.AddSlot("Check");
+        var checkRect = checkSlot.AttachComponent<RectTransform>();
+        checkRect.AnchorMin.Value = new float2(0.2f, 0.2f);
+        checkRect.AnchorMax.Value = new float2(0.8f, 0.8f);
+        checkRect.OffsetMin.Value = float2.Zero;
+        checkRect.OffsetMax.Value = float2.Zero;
+        var checkImage = checkSlot.AttachComponent<Image>();
+        var checkColor = CurrentStyle.ForegroundColor;
+        checkImage.Tint.Value = checkColor;
+        checkbox.SetCheckVisual(checkSlot.ActiveSelf);
+
         if (changed != null)
         {
             checkbox.ValueChanged += changed;
@@ -423,9 +499,33 @@ public class UIBuilder
         var image = Current.AttachComponent<Image>();
         image.Tint.Value = background ?? CurrentStyle.BackgroundColor;
         var slider = Current.AttachComponent<Slider>();
+        slider.AddColorDriver(image.Tint, image.Tint.Value);
         slider.Min.Value = min;
         slider.Max.Value = max;
         slider.Value.Value = value;
+
+        var trackSlot = Current.AddSlot("Track");
+        var trackRect = trackSlot.AttachComponent<RectTransform>();
+        trackRect.AnchorMin.Value = new float2(0f, 0.5f);
+        trackRect.AnchorMax.Value = new float2(1f, 0.5f);
+        trackRect.OffsetMin.Value = new float2(6f, -2f);
+        trackRect.OffsetMax.Value = new float2(-6f, 2f);
+        var trackImage = trackSlot.AttachComponent<Image>();
+        trackImage.Tint.Value = new color(0.30f, 0.32f, 0.38f, 0.95f);
+
+        var handleSlot = Current.AddSlot("Handle");
+        var handleRect = handleSlot.AttachComponent<RectTransform>();
+        float initialT = max > min ? (value - min) / (max - min) : 0f;
+        handleRect.AnchorMin.Value = new float2(initialT, 0.5f);
+        handleRect.AnchorMax.Value = new float2(initialT, 0.5f);
+        handleRect.OffsetMin.Value = new float2(-8f, -8f);
+        handleRect.OffsetMax.Value = new float2(8f, 8f);
+        var handleImage = handleSlot.AttachComponent<Image>();
+        handleImage.Tint.Value = CurrentStyle.ForegroundColor;
+        slider.HandleAnchorMinDrive?.DriveTarget(handleRect.AnchorMin);
+        slider.HandleAnchorMaxDrive?.DriveTarget(handleRect.AnchorMax);
+        slider.UpdateHandleDrives();
+
         if (changed != null)
         {
             slider.ValueChanged += changed;
@@ -439,6 +539,8 @@ public class UIBuilder
         Next("ScrollRect");
         var image = Current.AttachComponent<Image>();
         image.Tint.Value = background ?? CurrentStyle.BackgroundColor;
+        var mask = Current.AttachComponent<Mask>();
+        mask.ShowMaskGraphic.Value = true;
         var scroll = Current.AttachComponent<ScrollRect>();
         scroll.ScrollSensitivity.Value = sensitivity ?? float2.One;
 
@@ -455,7 +557,11 @@ public class UIBuilder
         Nest();
         var splits = SplitHorizontally(separation, gap, 1f - separation - gap);
         NestInto(splits[0]);
-        Text(label);
+        var labelText = Text(label);
+        // Default RectTransform is a 100x100 centered chunk; explicitly fill the split column
+        // and middle-align so the label sits flush left of its column and centered vertically. - xlinka
+        Fill(labelText.RectTransform!);
+        labelText.VerticalAlignment.Value = TextVerticalAlignment.Middle;
         NestOut();
         NestInto(splits[2]);
         T result = elementBuilder();
@@ -467,8 +573,26 @@ public class UIBuilder
     public Slot Spacer(string name = "Spacer")
     {
         Next(name);
-        // TODO - xlinka: LayoutElement min/preferred sizing once metrics solver lands
         return Current;
+    }
+
+    private void SetupCurrentLayoutElement()
+    {
+        if (Root.GetComponent<HorizontalLayout>() == null &&
+            Root.GetComponent<VerticalLayout>() == null &&
+            Root.GetComponent<GridLayout>() == null)
+        {
+            return;
+        }
+
+        var layout = Current.GetComponent<LayoutElement>() ?? Current.AttachComponent<LayoutElement>();
+        layout.MinWidth.Value = CurrentStyle.MinWidth;
+        layout.MinHeight.Value = CurrentStyle.MinHeight;
+        layout.PreferredWidth.Value = CurrentStyle.PreferredWidth;
+        layout.PreferredHeight.Value = CurrentStyle.PreferredHeight;
+        layout.FlexibleWidth.Value = CurrentStyle.FlexibleWidth;
+        layout.FlexibleHeight.Value = CurrentStyle.FlexibleHeight;
+        layout.UseZeroMetrics.Value = CurrentStyle.UseZeroMetrics;
     }
 
     private static void SetPadding(LayoutController layout, float padding)

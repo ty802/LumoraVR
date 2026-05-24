@@ -30,6 +30,8 @@ public class FieldHook<T> : ILinkRef
     /// </summary>
     public ILinkable Target => _target;
 
+    public SyncField<T> TargetField => _target;
+
     /// <summary>
     /// Whether the link is currently valid and active.
     /// </summary>

@@ -16,7 +16,7 @@ public class FontAsset : DynamicImplementableAsset<IFontAssetHook>
     // shared atlas texture for all glyphs at the currently-resident sizes. - xlinka
     public TextureAsset? AtlasTexture => Hook?.AtlasTexture;
 
-    public bool TryGetGlyph(int codepoint, float size, out GlyphMetrics metrics, out Rect uvRect)
+    public virtual bool TryGetGlyph(int codepoint, float size, out GlyphMetrics metrics, out Rect uvRect)
     {
         if (Hook != null && Hook.TryGetGlyph(codepoint, size, out metrics, out uvRect))
         {
@@ -28,12 +28,14 @@ public class FontAsset : DynamicImplementableAsset<IFontAssetHook>
         return false;
     }
 
-    public float GetLineHeight(float size) => Hook?.GetLineHeight(size) ?? size;
-    public float GetAscent(float size) => Hook?.GetAscent(size) ?? size * 0.8f;
-    public float GetDescent(float size) => Hook?.GetDescent(size) ?? size * 0.2f;
-    public int PixelRange => Hook?.PixelRange ?? 4;
+    public virtual void RequestGlyph(int codepoint, float size) => Hook?.RequestGlyph(codepoint, size);
 
-    public float GetKerning(int leftCodepoint, int rightCodepoint, float size)
+    public virtual float GetLineHeight(float size) => Hook?.GetLineHeight(size) ?? size;
+    public virtual float GetAscent(float size) => Hook?.GetAscent(size) ?? size * 0.8f;
+    public virtual float GetDescent(float size) => Hook?.GetDescent(size) ?? size * 0.2f;
+    public virtual int PixelRange => Hook?.PixelRange ?? 4;
+
+    public virtual float GetKerning(int leftCodepoint, int rightCodepoint, float size)
         => Hook?.GetKerning(leftCodepoint, rightCodepoint, size) ?? 0f;
 
     public void LoadFromFile(string path)

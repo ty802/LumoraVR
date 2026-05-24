@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Components;
+using Lumora.Core.Math;
 using Lumora.Core.Phos;
 
 namespace Helio.UI;
@@ -17,6 +18,7 @@ public sealed class GraphicsChunk
         private readonly Dictionary<MaterialKey, AssignedMaterial> _assignedMaterials = new();
         private readonly GraphicsChunk _chunk;
         private int _minimumSubmeshIndex;
+        private Rect? _clipRect;
 
         public PhosMesh Mesh { get; } = new();
 
@@ -27,6 +29,11 @@ public sealed class GraphicsChunk
         }
 
         public IReadOnlyDictionary<MaterialKey, AssignedMaterial> AssignedMaterials => _assignedMaterials;
+
+        public void SetClipRect(Rect? clipRect)
+        {
+            _clipRect = clipRect;
+        }
 
         public void PrepareCompute()
         {
@@ -235,12 +242,22 @@ public sealed class GraphicsChunk
             var baseMaterial = key.BaseMaterial ?? _chunk.GetDefaultUIMaterial();
             bool usingDefault = key.BaseMaterial == null;
 
+            MaterialMap map;
             if (key.Mapper != null)
             {
-                return key.Mapper(this, baseMaterial, key.Key, usingDefault);
+                map = key.Mapper(this, baseMaterial, key.Key, usingDefault);
+            }
+            else
+            {
+                map = new MaterialMap(baseMaterial);
             }
 
-            return new MaterialMap(baseMaterial);
+            if (!_clipRect.HasValue)
+            {
+                return map;
+            }
+
+            return new MaterialMap(_chunk.GetClippedMaterial(map.FilteredMaterial, _clipRect.Value), map.FilteredPropertyBlock);
         }
 
         private void PrepareMesh()
@@ -258,6 +275,7 @@ public sealed class GraphicsChunk
     public RenderData ContentRenderData { get; }
 
     private UIUnlitMaterial? _defaultMaterial;
+    private MaterialCloneCache? _materialCloneCache;
 
     public GraphicsChunk(Canvas canvas, RectTransform root)
     {
@@ -286,11 +304,25 @@ public sealed class GraphicsChunk
 
     public void PrepareCompute()
     {
+        _materialCloneCache?.BeginFrame();
         ContentRenderData.PrepareCompute();
     }
 
     public void SubmitChanges(int sortingOrder = 0)
     {
         ContentRenderData.SubmitChanges(sortingOrder);
+        _materialCloneCache?.EndFrame();
+    }
+
+    private IAssetProvider<MaterialAsset>? GetClippedMaterial(IAssetProvider<MaterialAsset>? source, in Rect clipRect)
+    {
+        if (source == null)
+        {
+            return null;
+        }
+
+        SetupComponents();
+        _materialCloneCache ??= new MaterialCloneCache(ChunkSlot);
+        return _materialCloneCache.GetClippedMaterial(source, clipRect);
     }
 }

@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Math;
 
@@ -10,6 +11,9 @@ namespace Helio.UI;
 public class InteractionElement : UIComponent, IUIInteractable
 {
     public readonly Sync<bool> Interactable;
+    public readonly Sync<color> BaseColor;
+    public readonly Sync<bool> IsHovering;
+    public readonly Sync<bool> IsPressed;
 
     public event Action<UIInteractionContext>? HoverEntered;
     public event Action<UIInteractionContext>? HoverExited;
@@ -21,9 +25,36 @@ public class InteractionElement : UIComponent, IUIInteractable
     public InteractionElement()
     {
         Interactable = new Sync<bool>(this, true);
+        BaseColor = new Sync<color>(this, color.White);
+        IsHovering = new Sync<bool>(this, false);
+        IsPressed = new Sync<bool>(this, false);
     }
 
     public bool CanInteract => Enabled.Value && Interactable.Value && Slot != null && Slot.IsActive;
+    public InteractionState CurrentInteractionState
+    {
+        get
+        {
+            if (!CanInteract) return InteractionState.Disabled;
+            if (IsPressed.Value) return InteractionState.Pressed;
+            if (IsHovering.Value) return InteractionState.Highlight;
+            return InteractionState.Normal;
+        }
+    }
+
+    public IEnumerable<ColorDriver> ColorDrivers => Slot?.GetComponents<ColorDriver>() ?? Array.Empty<ColorDriver>();
+
+    public ColorDriver AddColorDriver(IField<color> target, color? normalColor = null,
+        InteractionColorMode mode = InteractionColorMode.Explicit)
+    {
+        var driver = Slot.AttachComponent<ColorDriver>();
+        driver.Interaction.Target = this;
+        driver.Target.Target = target;
+        driver.TintColorMode.Value = mode;
+        driver.SetColors(normalColor ?? target.Value);
+        driver.Apply(this);
+        return driver;
+    }
 
     public virtual bool IsPointInside(in float2 point)
     {
@@ -33,12 +64,16 @@ public class InteractionElement : UIComponent, IUIInteractable
     public void NotifyHoverEnter(in UIInteractionContext context)
     {
         if (!CanInteract) return;
+        IsHovering.Value = true;
+        ApplyColorDrivers();
         OnHoverEnter(in context);
         HoverEntered?.Invoke(context);
     }
 
     public void NotifyHoverExit(in UIInteractionContext context)
     {
+        IsHovering.Value = false;
+        ApplyColorDrivers();
         OnHoverExit(in context);
         HoverExited?.Invoke(context);
     }
@@ -46,6 +81,8 @@ public class InteractionElement : UIComponent, IUIInteractable
     public void NotifyPress(in UIInteractionContext context)
     {
         if (!CanInteract) return;
+        IsPressed.Value = true;
+        ApplyColorDrivers();
         OnPress(in context);
         Pressed?.Invoke(context);
     }
@@ -59,6 +96,8 @@ public class InteractionElement : UIComponent, IUIInteractable
 
     public void NotifyRelease(in UIInteractionContext context)
     {
+        IsPressed.Value = false;
+        ApplyColorDrivers();
         OnRelease(in context);
         Released?.Invoke(context);
     }
@@ -76,4 +115,30 @@ public class InteractionElement : UIComponent, IUIInteractable
     protected virtual void OnDrag(in UIInteractionContext context) { }
     protected virtual void OnRelease(in UIInteractionContext context) { }
     protected virtual void OnSubmit(in UIInteractionContext context) { }
+
+    public override void OnChanges()
+    {
+        base.OnChanges();
+        ApplyColorDrivers();
+    }
+
+    public override void OnDisabled()
+    {
+        base.OnDisabled();
+        ApplyColorDrivers();
+    }
+
+    public override void OnEnabled()
+    {
+        base.OnEnabled();
+        ApplyColorDrivers();
+    }
+
+    protected void ApplyColorDrivers()
+    {
+        foreach (var driver in ColorDrivers)
+        {
+            driver.Apply(this);
+        }
+    }
 }

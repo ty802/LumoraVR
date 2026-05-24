@@ -1,6 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using Lumora.Core;
 using Lumora.Core.Assets;
@@ -10,11 +11,11 @@ using Lumora.Core.Phos;
 namespace Helio.UI;
 
 // emits one textured quad per glyph laid out within the RectTransform rect.
-// TODO - xlinka: line wrapping, word break, tab stops, kerning beyond pair table
+// TODO - xlinka: rich text, overflow modes, kerning beyond pair table
 public class Text : Graphic
 {
     public readonly Sync<string> Content;
-    public readonly AssetRef<FontAsset> Font;
+    public readonly AssetRef<FontSet> Font;
     public readonly AssetRef<MaterialAsset> Material;
     public readonly Sync<float> Size;
     public readonly Sync<color> Color;
@@ -24,7 +25,7 @@ public class Text : Graphic
     public readonly Sync<bool> WordWrap;
 
     private string _content = string.Empty;
-    private IAssetProvider<FontAsset>? _font;
+    private IAssetProvider<FontSet>? _font;
     private IAssetProvider<MaterialAsset>? _material;
     private float _size;
     private color _color;
@@ -32,13 +33,13 @@ public class Text : Graphic
     private TextVerticalAlignment _vAlign;
     private float _lineSpacing;
     private bool _wrap;
-    private UITextMaterial? _textMaterial;
-    private TextureAsset? _boundAtlas;
+    private readonly Dictionary<TextureAsset, UITextMaterial> _textMaterials = new();
+    private readonly List<LineLayout> _layoutLines = new();
 
     public Text()
     {
         Content = new Sync<string>(this, string.Empty);
-        Font = new AssetRef<FontAsset>(this);
+        Font = new AssetRef<FontSet>(this);
         Material = new AssetRef<MaterialAsset>(this);
         Size = new Sync<float>(this, 16f);
         Color = new Sync<color>(this, Lumora.Core.Math.color.White);
@@ -71,14 +72,15 @@ public class Text : Graphic
     public override ValueTask PreGraphicsCompute()
     {
         // request rasterization for every codepoint we're about to draw - xlinka
-        var fontAsset = _font?.Asset;
-        if (fontAsset == null || string.IsNullOrEmpty(_content)) return default;
+        var fontSet = _font?.Asset;
+        if (fontSet == null || string.IsNullOrEmpty(_content)) return default;
 
         for (int i = 0; i < _content.Length; i++)
         {
             int cp = char.ConvertToUtf32(_content, i);
             if (char.IsHighSurrogate(_content[i])) i++;
-            fontAsset.Hook?.RequestGlyph(cp, _size);
+            if (cp == '\r' || cp == '\n' || cp == '\t') continue;
+            fontSet.RequestGlyph(cp, _size);
         }
 
         return default;
@@ -89,18 +91,13 @@ public class Text : Graphic
         if (RectTransform == null) return;
         if (string.IsNullOrEmpty(_content)) return;
 
-        var fontAsset = _font?.Asset;
-        if (fontAsset == null || !fontAsset.IsValid) return;
+        var fontSet = _font?.Asset;
+        if (fontSet == null || !fontSet.IsValid) return;
 
-        var atlasTexture = fontAsset.AtlasTexture;
-        if (atlasTexture == null) return;
-
-        var textMaterial = _material ?? EnsureTextMaterial(atlasTexture);
-        var submesh = renderData.GetSubmesh(textMaterial);
         var mesh = renderData.Mesh;
 
         PrepareMesh(mesh);
-        LayoutAndEmit(fontAsset, submesh, mesh);
+        LayoutAndEmit(fontSet, renderData, mesh);
     }
 
     public override bool IsPointInside(in float2 point)
@@ -110,81 +107,128 @@ public class Text : Graphic
     // flip the DirectTexture and force the material asset to re-apply. - xlinka
     private UITextMaterial EnsureTextMaterial(TextureAsset atlas)
     {
-        if (_textMaterial == null)
+        if (_textMaterials.TryGetValue(atlas, out var material))
         {
-            var matSlot = Slot.AddLocalSlot("TextMaterial");
-            _textMaterial = matSlot.AttachComponent<UITextMaterial>();
+            return material;
         }
 
-        if (!ReferenceEquals(_boundAtlas, atlas))
-        {
-            _textMaterial.DirectTexture = atlas;
-            _boundAtlas = atlas;
-            _textMaterial.ForceUpdate();
-        }
-
-        return _textMaterial;
+        var matSlot = Slot.AddLocalSlot("TextMaterial");
+        material = matSlot.AttachComponent<UITextMaterial>();
+        material.DirectTexture = atlas;
+        material.ForceUpdate();
+        _textMaterials[atlas] = material;
+        return material;
     }
 
-    private void LayoutAndEmit(FontAsset font, PhosTriangleSubmesh submesh, PhosMesh mesh)
+    private IAssetProvider<MaterialAsset>? GetMaterialForFont(FontAsset font)
+    {
+        if (_material != null)
+        {
+            return _material;
+        }
+
+        var atlas = font.AtlasTexture;
+        return atlas != null ? EnsureTextMaterial(atlas) : null;
+    }
+
+    private void LayoutAndEmit(FontSet font, GraphicsChunk.RenderData renderData, PhosMesh mesh)
     {
         var rect = RectTransform!.LocalComputeRect;
-        // Top-align in Y-up: baseline sits one ascent below the top of the rect, so the
-        // tallest glyphs (caps + accents) reach exactly rect.yMax. Using lineHeight here
-        // (= ascent + descent) leaves a descender-sized gap above the text. - xlinka
-        float ascent = font.GetAscent(_size) * _lineSpacing;
-        float penY = rect.yMax - ascent;
+        BuildLines(font, _wrap ? rect.width : 0f);
+        if (_layoutLines.Count == 0) return;
 
-        // TODO - xlinka: wrap + multi-line
-        float lineWidth = MeasureLine(font, _content);
-        float penX = AlignLineStart(rect, lineWidth);
+        float ascent = font.GetAscent(_size);
+        float lineHeight = font.GetLineHeight(_size) * _lineSpacing;
+        if (lineHeight <= 0f) lineHeight = _size;
 
-        int prev = 0;
+        float blockHeight = lineHeight * _layoutLines.Count;
+        float blockTop = _vAlign switch
+        {
+            TextVerticalAlignment.Middle => rect.yMin + (rect.height + blockHeight) * 0.5f,
+            TextVerticalAlignment.Bottom => rect.yMin + blockHeight,
+            _ => rect.yMax,
+        };
+
+        for (int lineIndex = 0; lineIndex < _layoutLines.Count; lineIndex++)
+        {
+            var line = _layoutLines[lineIndex];
+            float penX = AlignLineStart(rect, line.Width);
+            float penY = blockTop - ascent - lineHeight * lineIndex;
+
+            for (int i = 0; i < line.Glyphs.Count; i++)
+            {
+                var glyph = line.Glyphs[i];
+                var material = GetMaterialForFont(glyph.Font);
+                if (material == null) continue;
+
+                var submesh = renderData.GetSubmesh(material);
+                EmitGlyph(submesh, mesh, penX + glyph.X, penY, glyph.Metrics, glyph.UV);
+            }
+        }
+    }
+
+    private void BuildLines(FontSet font, float maxWidth)
+    {
+        _layoutLines.Clear();
+
+        var line = new LineLayout();
+        var word = new LineLayout();
+        float pendingWhitespace = 0f;
+        int prevWordCodepoint = 0;
+        FontAsset? prevWordFont = null;
+
         for (int i = 0; i < _content.Length; i++)
         {
             int cp = char.ConvertToUtf32(_content, i);
             if (char.IsHighSurrogate(_content[i])) i++;
+            if (cp == '\r') continue;
 
-            if (!font.TryGetGlyph(cp, _size, out var metrics, out var uv))
+            if (cp == '\n')
             {
-                penX += _size * 0.5f;
-                prev = 0;
+                FlushWord(ref line, ref word, ref pendingWhitespace, maxWidth);
+                CommitLine(line);
+                line = new LineLayout();
+                pendingWhitespace = 0f;
+                prevWordCodepoint = 0;
+                prevWordFont = null;
                 continue;
             }
 
-            if (prev != 0)
+            if (IsCollapsibleWhitespace(cp))
             {
-                penX += font.GetKerning(prev, cp, _size);
+                FlushWord(ref line, ref word, ref pendingWhitespace, maxWidth);
+                if (line.Width > 0f)
+                {
+                    pendingWhitespace += MeasureWhitespace(font, cp);
+                }
+
+                prevWordCodepoint = 0;
+                prevWordFont = null;
+                continue;
             }
 
-            EmitGlyph(submesh, mesh, penX, penY, metrics, uv);
-            penX += metrics.Advance;
-            prev = cp;
+            AppendCodepoint(font, word, cp, ref prevWordCodepoint, ref prevWordFont);
         }
+
+        FlushWord(ref line, ref word, ref pendingWhitespace, maxWidth);
+        CommitLine(line);
     }
 
-    private float MeasureLine(FontAsset font, string line)
+    private void FlushWord(ref LineLayout line, ref LineLayout word, ref float pendingWhitespace, float maxWidth)
     {
-        float width = 0f;
-        int prev = 0;
-        for (int i = 0; i < line.Length; i++)
+        if (word.Width <= 0f && word.Glyphs.Count == 0) return;
+
+        float spacer = line.Width > 0f ? pendingWhitespace : 0f;
+        if (_wrap && maxWidth > 0f && line.Width > 0f && line.Width + spacer + word.Width > maxWidth)
         {
-            int cp = char.ConvertToUtf32(line, i);
-            if (char.IsHighSurrogate(line[i])) i++;
-            if (!font.TryGetGlyph(cp, _size, out var metrics, out _))
-            {
-                width += _size * 0.5f;
-                prev = 0;
-                continue;
-            }
-            if (prev != 0)
-            {
-                width += font.GetKerning(prev, cp, _size);
-            }
-            width += metrics.Advance;
-            prev = cp;
+            CommitLine(line);
+            line = new LineLayout();
+            spacer = 0f;
         }
-        return width;
+
+        AppendLayout(line, word, line.Width + spacer);
+        word = new LineLayout();
+        pendingWhitespace = 0f;
     }
 
     private float AlignLineStart(in Rect rect, float lineWidth)
@@ -195,6 +239,64 @@ public class Text : Graphic
             TextHorizontalAlignment.Right => rect.xMax - lineWidth,
             _ => rect.xMin,
         };
+    }
+
+    private static bool IsCollapsibleWhitespace(int codepoint)
+        => codepoint == ' ' || codepoint == '\t';
+
+    private float MeasureWhitespace(FontSet font, int codepoint)
+    {
+        if (codepoint == '\t')
+        {
+            return _size * 2f;
+        }
+
+        return font.TryGetGlyph(' ', _size, out var metrics, out _, out _)
+            ? metrics.Advance
+            : _size * 0.5f;
+    }
+
+    private void AppendCodepoint(FontSet font, LineLayout target, int codepoint, ref int prevCodepoint, ref FontAsset? prevFont)
+    {
+        float kerning = 0f;
+        float advance;
+
+        if (font.TryGetGlyph(codepoint, _size, out var metrics, out var uv, out var glyphFont) && glyphFont != null)
+        {
+            if (prevCodepoint != 0 && ReferenceEquals(prevFont, glyphFont))
+            {
+                kerning = font.GetKerning(glyphFont, prevCodepoint, codepoint, _size);
+            }
+
+            target.Glyphs.Add(new GlyphLayout(glyphFont, codepoint, metrics, uv, target.Width + kerning));
+            advance = metrics.Advance;
+            prevCodepoint = codepoint;
+            prevFont = glyphFont;
+        }
+        else
+        {
+            advance = _size * 0.5f;
+            prevCodepoint = 0;
+            prevFont = null;
+        }
+
+        target.Width += kerning + advance;
+    }
+
+    private static void AppendLayout(LineLayout target, LineLayout source, float startX)
+    {
+        for (int i = 0; i < source.Glyphs.Count; i++)
+        {
+            var glyph = source.Glyphs[i];
+            target.Glyphs.Add(glyph.WithX(startX + glyph.X));
+        }
+
+        target.Width = startX + source.Width;
+    }
+
+    private void CommitLine(LineLayout line)
+    {
+        _layoutLines.Add(line);
     }
 
     private void EmitGlyph(PhosTriangleSubmesh submesh, PhosMesh mesh, float penX, float penY, in GlyphMetrics metrics, in Rect uv)
@@ -232,5 +334,31 @@ public class Text : Graphic
     {
         mesh.HasColors = true;
         mesh.SetHasUV(0, true);
+    }
+
+    private sealed class LineLayout
+    {
+        public readonly List<GlyphLayout> Glyphs = new();
+        public float Width;
+    }
+
+    private readonly struct GlyphLayout
+    {
+        public readonly int Codepoint;
+        public readonly FontAsset Font;
+        public readonly GlyphMetrics Metrics;
+        public readonly Rect UV;
+        public readonly float X;
+
+        public GlyphLayout(FontAsset font, int codepoint, in GlyphMetrics metrics, in Rect uv, float x)
+        {
+            Font = font;
+            Codepoint = codepoint;
+            Metrics = metrics;
+            UV = uv;
+            X = x;
+        }
+
+        public GlyphLayout WithX(float x) => new(Font, Codepoint, Metrics, UV, x);
     }
 }

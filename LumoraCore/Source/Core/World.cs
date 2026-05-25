@@ -201,6 +201,7 @@ public class World
 	private object _syncLock = new object();
 	private readonly WorldMetrics _metrics = new WorldMetrics();
 	private readonly WorldConfiguration _configuration = new WorldConfiguration();
+	private readonly DataModelPermissionController _dataModelPermissions;
 
 	// Static global hook type registry (shared across all worlds)
 	private static HookTypeRegistry _staticHookTypes = new HookTypeRegistry();
@@ -419,6 +420,11 @@ public class World
 	public WorldConfiguration Configuration => _configuration;
 
 	/// <summary>
+	/// Hard permission gate for datamodel fields, collections, and replication.
+	/// </summary>
+	public DataModelPermissionController DataModelPermissions => _dataModelPermissions;
+
+	/// <summary>
 	/// Get a diagnostic summary of this world.
 	/// </summary>
 	public string GetDiagnostics()
@@ -465,6 +471,7 @@ public class World
 		_refIDAllocator = new RefIDAllocator(this);
 		_hookTypes = new HookTypeRegistry();
 		_updateManager = new UpdateManager(this);
+		_dataModelPermissions = new DataModelPermissionController(this);
 
 		// Initialize event receiver arrays
 		int length = Enum.GetValues(typeof(WorldEvent)).Length;

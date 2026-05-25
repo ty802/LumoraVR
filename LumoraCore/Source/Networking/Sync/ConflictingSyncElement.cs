@@ -162,6 +162,17 @@ public abstract class ConflictingSyncElement : SyncElement
             if (!messageNewer)
                 return MessageValidity.Conflict;
 
+            var surface = this is IField ? DataModelPermissionSurface.Field : DataModelPermissionSurface.SyncElement;
+            if (!AuthorizeDataModelMutation(
+                    DataModelPermissionAction.Write | DataModelPermissionAction.Replicate,
+                    surface,
+                    inboundMessage.SenderUser,
+                    isNetwork: true,
+                    throwOnError: false))
+            {
+                return MessageValidity.Conflict;
+            }
+
             return MessageValidity.Valid;
         }
 

@@ -1,0 +1,392 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using Lumora.Core.Networking.Sync;
+using LumoraLogger = Lumora.Core.Logging.Logger;
+
+namespace Lumora.Core;
+
+[Flags]
+public enum DataModelPermissionAction : ulong
+{
+    None = 0,
+    Read = 1UL << 0,
+    Write = 1UL << 1,
+    Create = 1UL << 2,
+    Destroy = 1UL << 3,
+    ReferenceWrite = 1UL << 4,
+    CollectionEnumerate = 1UL << 5,
+    CollectionAdd = 1UL << 6,
+    CollectionInsert = 1UL << 7,
+    CollectionSet = 1UL << 8,
+    CollectionRemove = 1UL << 9,
+    CollectionClear = 1UL << 10,
+    CollectionResize = 1UL << 11,
+    Replicate = 1UL << 12,
+    Serialize = 1UL << 13,
+    ConfigurePermissions = 1UL << 14,
+
+    CollectionMutation = CollectionAdd | CollectionInsert | CollectionSet | CollectionRemove | CollectionClear | CollectionResize,
+    Mutation = Write | Create | Destroy | ReferenceWrite | CollectionMutation,
+    All = ulong.MaxValue
+}
+
+public enum DataModelPermissionSurface
+{
+    Unknown,
+    Field,
+    SyncElement,
+    Array,
+    List,
+    Dictionary,
+    Bag,
+    ReplicatedDictionary,
+    Worker,
+    Slot,
+    Component,
+    User
+}
+
+public enum DataModelPermissionResult
+{
+    Abstain,
+    Allow,
+    Deny
+}
+
+public readonly struct DataModelPermissionRequest
+{
+    public readonly World? World;
+    public readonly User? Actor;
+    public readonly IWorldElement? Target;
+    public readonly IWorldElement? Parent;
+    public readonly ISyncMember? Member;
+    public readonly DataModelPermissionSurface Surface;
+    public readonly DataModelPermissionAction Action;
+    public readonly bool IsNetwork;
+    public readonly bool IsFullState;
+    public readonly int? Index;
+    public readonly object? Key;
+
+    public DataModelPermissionRequest(
+        World? world,
+        User? actor,
+        IWorldElement? target,
+        IWorldElement? parent,
+        ISyncMember? member,
+        DataModelPermissionSurface surface,
+        DataModelPermissionAction action,
+        bool isNetwork,
+        bool isFullState = false,
+        int? index = null,
+        object? key = null)
+    {
+        World = world;
+        Actor = actor;
+        Target = target;
+        Parent = parent;
+        Member = member;
+        Surface = surface;
+        Action = action;
+        IsNetwork = isNetwork;
+        IsFullState = isFullState;
+        Index = index;
+        Key = key;
+    }
+}
+
+public interface IDataModelPermissionRule
+{
+    DataModelPermissionResult Evaluate(in DataModelPermissionRequest request, out string? reason);
+}
+
+public sealed class DataModelPermissionRole
+{
+    public string Name { get; }
+    public DataModelPermissionAction AllowedOwnActions { get; set; }
+    public DataModelPermissionAction AllowedForeignActions { get; set; }
+
+    public DataModelPermissionRole(string name, DataModelPermissionAction allowedOwnActions, DataModelPermissionAction allowedForeignActions)
+    {
+        Name = string.IsNullOrWhiteSpace(name) ? "Unnamed" : name;
+        AllowedOwnActions = allowedOwnActions;
+        AllowedForeignActions = allowedForeignActions;
+    }
+
+    public bool Allows(DataModelPermissionAction action, bool ownsTarget)
+    {
+        var allowed = ownsTarget ? AllowedOwnActions : AllowedForeignActions;
+        return (allowed & action) == action;
+    }
+
+    public override string ToString() => Name;
+}
+
+public sealed class DataModelPermissionController
+{
+    private sealed class Scope : IDisposable
+    {
+        private readonly User? _previousActor;
+        private readonly int _previousBypassDepth;
+        private bool _disposed;
+
+        public Scope(User? actor, bool systemBypass)
+        {
+            _previousActor = s_currentActor.Value;
+            _previousBypassDepth = s_systemBypassDepth.Value;
+            s_currentActor.Value = actor;
+            if (systemBypass)
+            {
+                s_systemBypassDepth.Value = _previousBypassDepth + 1;
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            s_currentActor.Value = _previousActor;
+            s_systemBypassDepth.Value = _previousBypassDepth;
+            _disposed = true;
+        }
+    }
+
+    private static readonly ThreadLocal<User?> s_currentActor = new();
+    private static readonly ThreadLocal<int> s_systemBypassDepth = new();
+
+    private readonly World _world;
+    private readonly List<IDataModelPermissionRule> _rules = new();
+    private readonly Dictionary<RefID, DataModelPermissionRole> _userRoles = new();
+
+    public DataModelPermissionRole HostRole { get; } = new("Host", DataModelPermissionAction.All, DataModelPermissionAction.All);
+    public DataModelPermissionRole UserRole { get; } = new("User", DataModelPermissionAction.All, DataModelPermissionAction.None);
+    public DataModelPermissionRole GuestRole { get; } = new("Guest", DataModelPermissionAction.All, DataModelPermissionAction.None);
+
+    public bool Enabled { get; set; } = true;
+    public bool LogDeniedMutations { get; set; } = true;
+
+    public DataModelPermissionController(World world)
+    {
+        _world = world ?? throw new ArgumentNullException(nameof(world));
+    }
+
+    public IDisposable EnterActor(User? actor) => new Scope(actor, systemBypass: false);
+
+    public IDisposable EnterSystemBypass() => new Scope(s_currentActor.Value, systemBypass: true);
+
+    public void AddRule(IDataModelPermissionRule rule)
+    {
+        if (rule == null)
+        {
+            throw new ArgumentNullException(nameof(rule));
+        }
+
+        _rules.Add(rule);
+    }
+
+    public bool RemoveRule(IDataModelPermissionRule rule) => _rules.Remove(rule);
+
+    public void ClearRules() => _rules.Clear();
+
+    public void SetUserRole(User user, DataModelPermissionRole role)
+    {
+        if (user == null)
+        {
+            throw new ArgumentNullException(nameof(user));
+        }
+        if (role == null)
+        {
+            throw new ArgumentNullException(nameof(role));
+        }
+
+        _userRoles[user.ReferenceID] = role;
+    }
+
+    public void ClearUserRole(User user)
+    {
+        if (user != null)
+        {
+            _userRoles.Remove(user.ReferenceID);
+        }
+    }
+
+    public DataModelPermissionRole GetRole(User? user)
+    {
+        if (user == null)
+        {
+            return GuestRole;
+        }
+
+        if (IsHostUser(user))
+        {
+            return HostRole;
+        }
+
+        return _userRoles.TryGetValue(user.ReferenceID, out var role) ? role : UserRole;
+    }
+
+    public bool Authorize(in DataModelPermissionRequest request, out string? reason)
+    {
+        reason = null;
+        if (!Enabled)
+        {
+            return true;
+        }
+
+        var world = request.World ?? _world;
+        if (world.IsDisposed || world.State != World.WorldState.Running)
+        {
+            return true;
+        }
+
+        if (s_systemBypassDepth.Value > 0 || IsSystemMutation(request))
+        {
+            return true;
+        }
+
+        if (request.IsNetwork && !world.IsAuthority)
+        {
+            return true;
+        }
+
+        var actor = request.IsNetwork
+            ? request.Actor
+            : request.Actor ?? s_currentActor.Value ?? world.LocalUser;
+        if (actor == null)
+        {
+            reason = "no actor for datamodel mutation";
+            return Deny(request, reason);
+        }
+
+        foreach (var rule in _rules)
+        {
+            var result = rule.Evaluate(request, out var ruleReason);
+            if (result == DataModelPermissionResult.Allow)
+            {
+                return true;
+            }
+            if (result == DataModelPermissionResult.Deny)
+            {
+                reason = ruleReason ?? "denied by datamodel permission rule";
+                return Deny(request, reason);
+            }
+        }
+
+        var role = GetRole(actor);
+        bool ownsTarget = OwnsTarget(actor, request.Target) ||
+                          OwnsTarget(actor, request.Parent);
+
+        if (role.Allows(request.Action, ownsTarget))
+        {
+            return true;
+        }
+
+        reason = $"role '{role.Name}' cannot perform {request.Action} on {request.Surface}";
+        return Deny(request, reason);
+    }
+
+    public void Assert(in DataModelPermissionRequest request)
+    {
+        if (!Authorize(request, out var reason))
+        {
+            throw new UnauthorizedAccessException(reason ?? "datamodel mutation denied");
+        }
+    }
+
+    private bool Deny(in DataModelPermissionRequest request, string reason)
+    {
+        if (LogDeniedMutations)
+        {
+            var actor = request.IsNetwork
+                ? request.Actor
+                : request.Actor ?? s_currentActor.Value ?? request.World?.LocalUser;
+            var actorName = actor?.UserName?.Value ?? actor?.ReferenceID.ToString() ?? "none";
+            var target = request.Target?.ParentHierarchyToString() ?? request.Parent?.ParentHierarchyToString() ?? "(unknown)";
+            LumoraLogger.Warn($"Datamodel permission denied: actor={actorName}, action={request.Action}, surface={request.Surface}, target={target}, reason={reason}");
+        }
+
+        return false;
+    }
+
+    private static bool IsSystemMutation(in DataModelPermissionRequest request)
+    {
+        if (!request.IsNetwork && request.Target is { IsLocalElement: true })
+        {
+            return true;
+        }
+
+        if (request.Member is SyncElement { IsInInitPhase: true } or SyncElement { IsLoading: true })
+        {
+            return true;
+        }
+
+        return request.Target is SyncElement { IsInInitPhase: true } or SyncElement { IsLoading: true };
+    }
+
+    private bool IsHostUser(User user)
+    {
+        return user.IsHost || (_world.IsAuthority && ReferenceEquals(_world.LocalUser, user));
+    }
+
+    private static bool OwnsTarget(User actor, IWorldElement? target)
+    {
+        if (target == null)
+        {
+            return false;
+        }
+
+        if (ReferenceEquals(actor, target))
+        {
+            return true;
+        }
+
+        if (OwnsRefID(actor, target.ReferenceID))
+        {
+            return true;
+        }
+
+        if (target is Slot slot)
+        {
+            return ReferenceEquals(slot.ActiveUser, actor);
+        }
+
+        if (target is Component component)
+        {
+            return ReferenceEquals(component.Slot?.ActiveUser, actor);
+        }
+
+        if (target is SyncElement syncElement)
+        {
+            return OwnsTarget(actor, syncElement.Parent);
+        }
+
+        if (target is Worker worker)
+        {
+            return OwnsTarget(actor, worker.Parent);
+        }
+
+        return false;
+    }
+
+    private static bool OwnsRefID(User actor, RefID id)
+    {
+        if (id.IsNull || id.IsAuthorityID)
+        {
+            return false;
+        }
+
+        byte actorByte = actor.AllocationID.Value;
+        if (!RefIDConstants.IsValidUserByte(actorByte))
+        {
+            actorByte = actor.ReferenceID.GetUserByte();
+        }
+
+        return RefIDConstants.IsValidUserByte(actorByte) && id.GetUserByte() == actorByte;
+    }
+}

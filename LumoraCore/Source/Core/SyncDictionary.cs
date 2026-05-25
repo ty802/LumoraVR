@@ -47,6 +47,8 @@ public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<
 
     public void Add(TKey key, TValue value)
     {
+        if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionAdd, DataModelPermissionSurface.Dictionary, key: key))
+            return;
         if (!BeginModification()) return;
         _dict.Add(key, value);
         (_pendingOps ??= new List<DictOp>()).Add(new DictOp { Type = OpSet, Key = key, Value = value });
@@ -68,6 +70,8 @@ public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<
     public bool Remove(TKey key)
     {
         if (!_dict.ContainsKey(key)) return false;
+        if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionRemove, DataModelPermissionSurface.Dictionary, key: key))
+            return false;
         if (!BeginModification()) return false;
         _dict.Remove(key);
         (_pendingOps ??= new List<DictOp>()).Add(new DictOp { Type = OpRemove, Key = key });
@@ -90,6 +94,8 @@ public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<
     public void Clear()
     {
         if (_dict.Count == 0) return;
+        if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionClear, DataModelPermissionSurface.Dictionary))
+            return;
         if (!BeginModification()) return;
         _dict.Clear();
         _pendingOps?.Clear();
@@ -103,6 +109,9 @@ public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<
 
     private void SetKey(TKey key, TValue value)
     {
+        var action = _dict.ContainsKey(key) ? DataModelPermissionAction.CollectionSet : DataModelPermissionAction.CollectionAdd;
+        if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | action, DataModelPermissionSurface.Dictionary, key: key))
+            return;
         if (!BeginModification()) return;
         _dict[key] = value;
         (_pendingOps ??= new List<DictOp>()).Add(new DictOp { Type = OpSet, Key = key, Value = value });
@@ -208,6 +217,105 @@ public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<
             BlockModification();
             OnChanged?.Invoke(this);
             UnblockModification();
+        }
+    }
+
+    public override MessageValidity Validate(BinaryMessageBatch syncMessage, BinaryReader reader, List<ValidationGroup.Rule> rules)
+    {
+        var validity = base.Validate(syncMessage, reader, rules);
+        if (validity != MessageValidity.Valid || World?.IsAuthority != true)
+        {
+            return validity;
+        }
+
+        long position = reader.BaseStream.CanSeek ? reader.BaseStream.Position : -1;
+        try
+        {
+            bool isFull = reader.ReadBoolean();
+            if (isFull)
+            {
+                int count = (int)reader.Read7BitEncoded();
+                for (int i = 0; i < count; i++)
+                {
+                    var key = SyncCoder.Decode<TKey>(reader);
+                    _ = SyncCoder.Decode<TValue>(reader);
+                    if (!AuthorizeDataModelMutation(
+                            DataModelPermissionAction.Write | DataModelPermissionAction.CollectionSet | DataModelPermissionAction.Replicate,
+                            DataModelPermissionSurface.Dictionary,
+                            syncMessage.SenderUser,
+                            isNetwork: true,
+                            key: key,
+                            throwOnError: false))
+                    {
+                        return MessageValidity.Conflict;
+                    }
+                }
+                return MessageValidity.Valid;
+            }
+
+            int opCount = (int)reader.Read7BitEncoded();
+            for (int i = 0; i < opCount; i++)
+            {
+                byte type = reader.ReadByte();
+                if (type == OpSet)
+                {
+                    var key = SyncCoder.Decode<TKey>(reader);
+                    _ = SyncCoder.Decode<TValue>(reader);
+                    if (!AuthorizeDataModelMutation(
+                            DataModelPermissionAction.Write | DataModelPermissionAction.CollectionSet | DataModelPermissionAction.Replicate,
+                            DataModelPermissionSurface.Dictionary,
+                            syncMessage.SenderUser,
+                            isNetwork: true,
+                            key: key,
+                            throwOnError: false))
+                    {
+                        return MessageValidity.Conflict;
+                    }
+                }
+                else if (type == OpRemove)
+                {
+                    var key = SyncCoder.Decode<TKey>(reader);
+                    if (!AuthorizeDataModelMutation(
+                            DataModelPermissionAction.Write | DataModelPermissionAction.CollectionRemove | DataModelPermissionAction.Replicate,
+                            DataModelPermissionSurface.Dictionary,
+                            syncMessage.SenderUser,
+                            isNetwork: true,
+                            key: key,
+                            throwOnError: false))
+                    {
+                        return MessageValidity.Conflict;
+                    }
+                }
+                else if (type == OpClear)
+                {
+                    if (!AuthorizeDataModelMutation(
+                            DataModelPermissionAction.Write | DataModelPermissionAction.CollectionClear | DataModelPermissionAction.Replicate,
+                            DataModelPermissionSurface.Dictionary,
+                            syncMessage.SenderUser,
+                            isNetwork: true,
+                            throwOnError: false))
+                    {
+                        return MessageValidity.Conflict;
+                    }
+                }
+                else
+                {
+                    return MessageValidity.Conflict;
+                }
+            }
+
+            return MessageValidity.Valid;
+        }
+        catch
+        {
+            return MessageValidity.Conflict;
+        }
+        finally
+        {
+            if (position >= 0)
+            {
+                reader.BaseStream.Position = position;
+            }
         }
     }
 

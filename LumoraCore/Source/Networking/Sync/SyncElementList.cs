@@ -353,6 +353,12 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
 
     protected T InternalInsert(RefID id, int index, bool sync = true, bool change = true)
     {
+        if (!IsLoading && !IsInInitPhase)
+        {
+            var action = index == _records.Count ? DataModelPermissionAction.CollectionAdd : DataModelPermissionAction.CollectionInsert;
+            AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.Create | action, DataModelPermissionSurface.List, index: index, key: id);
+        }
+
         BeginModification();
 
         if (id != RefID.Null)
@@ -427,6 +433,11 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
         if (IsInInitPhase)
         {
             throw new InvalidOperationException("Cannot remove elements during initialization phase!");
+        }
+
+        if (!IsLoading)
+        {
+            AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionRemove, DataModelPermissionSurface.List, index: index);
         }
 
         BeginModification();
@@ -510,6 +521,11 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
 
     protected void InternalClear(bool sync = true, bool change = true, bool forceTrash = false)
     {
+        if (!IsLoading && !IsInInitPhase)
+        {
+            AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionClear, DataModelPermissionSurface.List);
+        }
+
         BeginModification();
 
         if (_records.Count == 0)
@@ -686,6 +702,103 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
                 case DeltaMessage.Remove:
                     InternalRemove(record.Index, sync: false);
                     break;
+            }
+        }
+    }
+
+    public override MessageValidity Validate(BinaryMessageBatch syncMessage, BinaryReader reader, List<ValidationGroup.Rule> rules)
+    {
+        var validity = base.Validate(syncMessage, reader, rules);
+        if (validity != MessageValidity.Valid || World?.IsAuthority != true)
+        {
+            return validity;
+        }
+
+        long position = reader.BaseStream.CanSeek ? reader.BaseStream.Position : -1;
+        try
+        {
+            var count = (uint)reader.Read7BitEncoded();
+            var offset = new RefID(reader.Read7BitEncoded());
+
+            for (uint i = 0; i < count; i++)
+            {
+                var record = DeltaRecord.Decode(reader, offset);
+                switch (record.Message)
+                {
+                    case DeltaMessage.Clear:
+                        if (!AuthorizeDataModelMutation(
+                                DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionClear | DataModelPermissionAction.Replicate,
+                                DataModelPermissionSurface.List,
+                                syncMessage.SenderUser,
+                                isNetwork: true,
+                                throwOnError: false))
+                        {
+                            return MessageValidity.Conflict;
+                        }
+                        break;
+                    case DeltaMessage.Add:
+                        if (!AuthorizeDataModelMutation(
+                                DataModelPermissionAction.Write | DataModelPermissionAction.Create | DataModelPermissionAction.CollectionAdd | DataModelPermissionAction.Replicate,
+                                DataModelPermissionSurface.List,
+                                syncMessage.SenderUser,
+                                isNetwork: true,
+                                key: record.Id,
+                                throwOnError: false))
+                        {
+                            return MessageValidity.Conflict;
+                        }
+                        break;
+                    case DeltaMessage.Insert:
+                        if (record.Index < 0 || record.Index > _records.Count)
+                        {
+                            return MessageValidity.Conflict;
+                        }
+                        if (!AuthorizeDataModelMutation(
+                                DataModelPermissionAction.Write | DataModelPermissionAction.Create | DataModelPermissionAction.CollectionInsert | DataModelPermissionAction.Replicate,
+                                DataModelPermissionSurface.List,
+                                syncMessage.SenderUser,
+                                isNetwork: true,
+                                index: record.Index,
+                                key: record.Id,
+                                throwOnError: false))
+                        {
+                            return MessageValidity.Conflict;
+                        }
+                        break;
+                    case DeltaMessage.Remove:
+                        if (record.Index < 0 || record.Index >= _records.Count)
+                        {
+                            return MessageValidity.Conflict;
+                        }
+                        if (!AuthorizeDataModelMutation(
+                                DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionRemove | DataModelPermissionAction.Replicate,
+                                DataModelPermissionSurface.List,
+                                syncMessage.SenderUser,
+                                isNetwork: true,
+                                index: record.Index,
+                                throwOnError: false))
+                        {
+                            return MessageValidity.Conflict;
+                        }
+                        break;
+                    case DeltaMessage.Empty:
+                        break;
+                    default:
+                        return MessageValidity.Conflict;
+                }
+            }
+
+            return MessageValidity.Valid;
+        }
+        catch
+        {
+            return MessageValidity.Conflict;
+        }
+        finally
+        {
+            if (position >= 0)
+            {
+                reader.BaseStream.Position = position;
             }
         }
     }

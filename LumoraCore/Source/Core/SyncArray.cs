@@ -52,6 +52,8 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
         set
         {
             if ((uint)index >= (uint)_count) throw new ArgumentOutOfRangeException(nameof(index));
+            if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionSet, DataModelPermissionSurface.Array, index: index))
+                return;
             if (!BeginModification()) return;
             _items[index] = value;
             if (!_structureChanged)
@@ -63,6 +65,8 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
 
     public void Add(T item)
     {
+        if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionAdd | DataModelPermissionAction.CollectionResize, DataModelPermissionSurface.Array, index: _count))
+            return;
         if (!BeginModification()) return;
         EnsureCapacity(_count + 1);
         int idx = _count;
@@ -85,6 +89,8 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
 
     public void AddRange(IEnumerable<T> items)
     {
+        if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionAdd | DataModelPermissionAction.CollectionResize, DataModelPermissionSurface.Array, index: _count))
+            return;
         if (!BeginModification()) return;
         int startIdx = _count;
         foreach (var item in items)
@@ -108,6 +114,8 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
     public void Insert(int index, T item)
     {
         if ((uint)index > (uint)_count) throw new ArgumentOutOfRangeException(nameof(index));
+        if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionInsert | DataModelPermissionAction.CollectionResize, DataModelPermissionSurface.Array, index: index))
+            return;
         if (!BeginModification()) return;
         EnsureCapacity(_count + 1);
         if (index < _count)
@@ -126,6 +134,8 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
     public void RemoveAt(int index)
     {
         if ((uint)index >= (uint)_count) throw new ArgumentOutOfRangeException(nameof(index));
+        if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionRemove | DataModelPermissionAction.CollectionResize, DataModelPermissionSurface.Array, index: index))
+            return;
         if (!BeginModification()) return;
         _count--;
         if (index < _count)
@@ -151,6 +161,8 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
     public void Clear()
     {
         if (_count == 0) return;
+        if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionClear | DataModelPermissionAction.CollectionResize, DataModelPermissionSurface.Array))
+            return;
         if (!BeginModification()) return;
         int old = _count;
         Array.Clear(_items, 0, _count);
@@ -254,6 +266,64 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
             T value = SyncCoder.Decode<T>(reader);
             if ((uint)idx < (uint)_count)
                 _items[idx] = value;
+        }
+    }
+
+    public override MessageValidity Validate(BinaryMessageBatch syncMessage, BinaryReader reader, List<ValidationGroup.Rule> rules)
+    {
+        var validity = base.Validate(syncMessage, reader, rules);
+        if (validity != MessageValidity.Valid || World?.IsAuthority != true)
+        {
+            return validity;
+        }
+
+        long position = reader.BaseStream.CanSeek ? reader.BaseStream.Position : -1;
+        try
+        {
+            byte mode = reader.ReadByte();
+            if (mode == ModeFullSnapshot)
+            {
+                if (!AuthorizeDataModelMutation(
+                        DataModelPermissionAction.Write | DataModelPermissionAction.CollectionSet | DataModelPermissionAction.CollectionResize | DataModelPermissionAction.Replicate,
+                        DataModelPermissionSurface.Array,
+                        syncMessage.SenderUser,
+                        isNetwork: true,
+                        throwOnError: false))
+                {
+                    return MessageValidity.Conflict;
+                }
+                return MessageValidity.Valid;
+            }
+
+            int changedCount = (int)reader.Read7BitEncoded();
+            for (int i = 0; i < changedCount; i++)
+            {
+                int idx = (int)reader.Read7BitEncoded();
+                _ = SyncCoder.Decode<T>(reader);
+                if (!AuthorizeDataModelMutation(
+                        DataModelPermissionAction.Write | DataModelPermissionAction.CollectionSet | DataModelPermissionAction.Replicate,
+                        DataModelPermissionSurface.Array,
+                        syncMessage.SenderUser,
+                        isNetwork: true,
+                        index: idx,
+                        throwOnError: false))
+                {
+                    return MessageValidity.Conflict;
+                }
+            }
+
+            return MessageValidity.Valid;
+        }
+        catch
+        {
+            return MessageValidity.Conflict;
+        }
+        finally
+        {
+            if (position >= 0)
+            {
+                reader.BaseStream.Position = position;
+            }
         }
     }
 

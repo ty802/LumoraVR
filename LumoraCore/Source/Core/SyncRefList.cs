@@ -48,6 +48,7 @@ public class SyncRefList<T> : IEnumerable<T?> where T : class, IWorldElement
             if (index < 0 || index >= _elements.Count)
                 throw new IndexOutOfRangeException($"Index {index} is out of range for SyncRefList with count {_elements.Count}");
 
+            Authorize(DataModelPermissionAction.Write | DataModelPermissionAction.ReferenceWrite | DataModelPermissionAction.CollectionSet, index, value);
             _elements[index] = value;
             MarkDirty();
         }
@@ -67,6 +68,7 @@ public class SyncRefList<T> : IEnumerable<T?> where T : class, IWorldElement
     /// </summary>
     public void Add(T? element)
     {
+        Authorize(DataModelPermissionAction.Write | DataModelPermissionAction.ReferenceWrite | DataModelPermissionAction.CollectionAdd, _elements.Count, element);
         _elements.Add(element);
         MarkDirty();
     }
@@ -76,6 +78,11 @@ public class SyncRefList<T> : IEnumerable<T?> where T : class, IWorldElement
     /// </summary>
     public bool Remove(T? element)
     {
+        int index = _elements.IndexOf(element);
+        if (index >= 0)
+        {
+            Authorize(DataModelPermissionAction.Write | DataModelPermissionAction.ReferenceWrite | DataModelPermissionAction.CollectionRemove, index, element);
+        }
         bool removed = _elements.Remove(element);
         if (removed)
             MarkDirty();
@@ -87,6 +94,7 @@ public class SyncRefList<T> : IEnumerable<T?> where T : class, IWorldElement
     /// </summary>
     public void RemoveAt(int index)
     {
+        Authorize(DataModelPermissionAction.Write | DataModelPermissionAction.ReferenceWrite | DataModelPermissionAction.CollectionRemove, index, _elements[index]);
         _elements.RemoveAt(index);
         MarkDirty();
     }
@@ -96,6 +104,7 @@ public class SyncRefList<T> : IEnumerable<T?> where T : class, IWorldElement
     /// </summary>
     public void Clear()
     {
+        Authorize(DataModelPermissionAction.Write | DataModelPermissionAction.ReferenceWrite | DataModelPermissionAction.CollectionClear, null, null);
         _elements.Clear();
         MarkDirty();
     }
@@ -122,6 +131,7 @@ public class SyncRefList<T> : IEnumerable<T?> where T : class, IWorldElement
     /// </summary>
     public void Insert(int index, T? element)
     {
+        Authorize(DataModelPermissionAction.Write | DataModelPermissionAction.ReferenceWrite | DataModelPermissionAction.CollectionInsert, index, element);
         _elements.Insert(index, element);
         MarkDirty();
     }
@@ -145,6 +155,29 @@ public class SyncRefList<T> : IEnumerable<T?> where T : class, IWorldElement
         {
             _owner.World?.MarkElementDirty(_owner);
         }
+    }
+
+    private void Authorize(DataModelPermissionAction action, int? index, object? key)
+    {
+        var permissions = _owner?.World?.DataModelPermissions;
+        if (permissions == null)
+        {
+            return;
+        }
+
+        var request = new DataModelPermissionRequest(
+            _owner.World,
+            null,
+            _owner,
+            null,
+            null,
+            DataModelPermissionSurface.List,
+            action,
+            isNetwork: false,
+            index: index,
+            key: key);
+
+        permissions.Assert(request);
     }
 
     /// <summary>

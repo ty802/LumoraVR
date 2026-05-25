@@ -203,6 +203,14 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
 
     protected void InternalAdd(TKey key, TValue element, bool isNewlyCreated, bool sync, bool triggerChanged)
     {
+        if (!IsLoading && !IsInInitPhase)
+        {
+            AuthorizeDataModelMutation(
+                DataModelPermissionAction.Write | DataModelPermissionAction.Create | DataModelPermissionAction.CollectionAdd,
+                DataModelPermissionSurface.ReplicatedDictionary,
+                key: key);
+        }
+
         _elements.Add(key, element);
         _cachedLastKey = key;
         _cachedLastValue = element;
@@ -228,6 +236,14 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
     {
         if (_elements.TryGetValue(key, out var value))
         {
+            if (!IsLoading && !IsInInitPhase)
+            {
+                AuthorizeDataModelMutation(
+                    DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionRemove,
+                    DataModelPermissionSurface.ReplicatedDictionary,
+                    key: key);
+            }
+
             _elements.Remove(key);
 
             if (EqualityComparer<TKey>.Default.Equals(key, _cachedLastKey))
@@ -391,6 +407,66 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
         {
             TKey key = DecodeKey(reader);
             InternalRemove(key, sync: false, triggerChanged: true);
+        }
+    }
+
+    public override MessageValidity Validate(BinaryMessageBatch syncMessage, BinaryReader reader, List<ValidationGroup.Rule> rules)
+    {
+        if (World?.IsAuthority != true)
+        {
+            return MessageValidity.Valid;
+        }
+
+        long position = reader.BaseStream.CanSeek ? reader.BaseStream.Position : -1;
+        try
+        {
+            uint addCount = (uint)reader.Read7BitEncoded();
+            for (int i = 0; i < addCount; i++)
+            {
+                _ = reader.ReadBoolean();
+                TKey key = DecodeKey(reader);
+                SkipElement(reader);
+
+                if (!AuthorizeDataModelMutation(
+                        DataModelPermissionAction.Write | DataModelPermissionAction.Create | DataModelPermissionAction.CollectionAdd | DataModelPermissionAction.Replicate,
+                        DataModelPermissionSurface.ReplicatedDictionary,
+                        syncMessage.SenderUser,
+                        isNetwork: true,
+                        key: key,
+                        throwOnError: false))
+                {
+                    return MessageValidity.Conflict;
+                }
+            }
+
+            uint removeCount = (uint)reader.Read7BitEncoded();
+            for (int i = 0; i < removeCount; i++)
+            {
+                TKey key = DecodeKey(reader);
+                if (!AuthorizeDataModelMutation(
+                        DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionRemove | DataModelPermissionAction.Replicate,
+                        DataModelPermissionSurface.ReplicatedDictionary,
+                        syncMessage.SenderUser,
+                        isNetwork: true,
+                        key: key,
+                        throwOnError: false))
+                {
+                    return MessageValidity.Conflict;
+                }
+            }
+
+            return MessageValidity.Valid;
+        }
+        catch
+        {
+            return MessageValidity.Conflict;
+        }
+        finally
+        {
+            if (position >= 0)
+            {
+                reader.BaseStream.Position = position;
+            }
         }
     }
 

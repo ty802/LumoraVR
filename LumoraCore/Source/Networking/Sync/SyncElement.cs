@@ -219,6 +219,48 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
 
     public bool IsBlockedByDrive => IsDriven && ActiveLink != null && ActiveLink.WasLinkGranted && !ActiveLink.IsModificationAllowed;
 
+    protected bool AuthorizeDataModelMutation(
+        DataModelPermissionAction action,
+        DataModelPermissionSurface surface = DataModelPermissionSurface.SyncElement,
+        User? actor = null,
+        bool isNetwork = false,
+        bool isFullState = false,
+        int? index = null,
+        object? key = null,
+        bool throwOnError = true)
+    {
+        var permissions = World?.DataModelPermissions;
+        if (permissions == null)
+        {
+            return true;
+        }
+
+        var request = new DataModelPermissionRequest(
+            World,
+            actor,
+            this,
+            Parent,
+            this,
+            surface,
+            action,
+            isNetwork,
+            isFullState,
+            index,
+            key);
+
+        if (permissions.Authorize(request, out var reason))
+        {
+            return true;
+        }
+
+        if (throwOnError)
+        {
+            throw new UnauthorizedAccessException(reason ?? "datamodel mutation denied");
+        }
+
+        return false;
+    }
+
     protected void BeginHook()
     {
         if (IsWithinHookCallback)
@@ -298,6 +340,15 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
                     DriveErrorLogged = true;
                     LumoraLogger.Warn(msg);
                 }
+                return false;
+            }
+
+            if (!IsLoading && !IsWithinHookCallback && !IsInInitPhase &&
+                !AuthorizeDataModelMutation(
+                    DataModelPermissionAction.Write,
+                    this is IField ? DataModelPermissionSurface.Field : DataModelPermissionSurface.SyncElement,
+                    throwOnError: throwOnError))
+            {
                 return false;
             }
         }

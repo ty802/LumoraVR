@@ -63,6 +63,7 @@ public class InteractionElement : UIComponent, IUIInteractable
 
     public void NotifyHoverEnter(in UIInteractionContext context)
     {
+        using var actorScope = EnterInteractionActor(in context);
         if (!CanInteract) return;
         IsHovering.Value = true;
         ApplyColorDrivers();
@@ -72,6 +73,7 @@ public class InteractionElement : UIComponent, IUIInteractable
 
     public void NotifyHoverExit(in UIInteractionContext context)
     {
+        using var actorScope = EnterInteractionActor(in context);
         IsHovering.Value = false;
         ApplyColorDrivers();
         OnHoverExit(in context);
@@ -80,6 +82,7 @@ public class InteractionElement : UIComponent, IUIInteractable
 
     public void NotifyPress(in UIInteractionContext context)
     {
+        using var actorScope = EnterInteractionActor(in context);
         if (!CanInteract) return;
         IsPressed.Value = true;
         ApplyColorDrivers();
@@ -89,6 +92,7 @@ public class InteractionElement : UIComponent, IUIInteractable
 
     public void NotifyDrag(in UIInteractionContext context)
     {
+        using var actorScope = EnterInteractionActor(in context);
         if (!CanInteract) return;
         OnDrag(in context);
         Dragged?.Invoke(context);
@@ -96,6 +100,7 @@ public class InteractionElement : UIComponent, IUIInteractable
 
     public void NotifyRelease(in UIInteractionContext context)
     {
+        using var actorScope = EnterInteractionActor(in context);
         IsPressed.Value = false;
         ApplyColorDrivers();
         OnRelease(in context);
@@ -104,6 +109,7 @@ public class InteractionElement : UIComponent, IUIInteractable
 
     public void NotifySubmit(in UIInteractionContext context)
     {
+        using var actorScope = EnterInteractionActor(in context);
         if (!CanInteract) return;
         OnSubmit(in context);
         Submitted?.Invoke(context);
@@ -115,6 +121,12 @@ public class InteractionElement : UIComponent, IUIInteractable
     protected virtual void OnDrag(in UIInteractionContext context) { }
     protected virtual void OnRelease(in UIInteractionContext context) { }
     protected virtual void OnSubmit(in UIInteractionContext context) { }
+
+    private IDisposable? EnterInteractionActor(in UIInteractionContext context)
+    {
+        var world = Slot?.World ?? context.Canvas?.World;
+        return world?.DataModelPermissions.EnterActor(context.Actor);
+    }
 
     public override void OnChanges()
     {

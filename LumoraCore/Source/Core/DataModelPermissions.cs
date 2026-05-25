@@ -165,8 +165,8 @@ public sealed class DataModelPermissionController
     private readonly Dictionary<RefID, DataModelPermissionRole> _userRoles = new();
 
     public DataModelPermissionRole HostRole { get; } = new("Host", DataModelPermissionAction.All, DataModelPermissionAction.All);
-    public DataModelPermissionRole UserRole { get; } = new("User", DataModelPermissionAction.All, DataModelPermissionAction.None);
-    public DataModelPermissionRole GuestRole { get; } = new("Guest", DataModelPermissionAction.All, DataModelPermissionAction.None);
+    public DataModelPermissionRole UserRole { get; } = new("User", DataModelPermissionAction.All, DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate);
+    public DataModelPermissionRole GuestRole { get; } = new("Guest", DataModelPermissionAction.All, DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate);
 
     public bool Enabled { get; set; } = true;
     public bool LogDeniedMutations { get; set; } = true;

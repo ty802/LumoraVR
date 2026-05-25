@@ -52,7 +52,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         hit = default;
         var source = GetInteractionSource(laser);
         int pointerId = GetPointerId(laser);
-        if (!TryHitTest(rayOrigin, rayDirection, source, pointerId, out var uiHit))
+        if (!TryHitTest(rayOrigin, rayDirection, source, pointerId, out var uiHit, GetInteractionActor(laser)))
         {
             return false;
         }
@@ -73,12 +73,12 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         in float3 rayDirection,
         bool isPressed)
     {
-        UpdatePointer(GetInteractionSource(laser), pointerId, rayOrigin, rayDirection, isPressed);
+        UpdatePointer(GetInteractionSource(laser), pointerId, rayOrigin, rayDirection, isPressed, GetInteractionActor(laser));
     }
 
     public void ClearLaserPointer(InteractionLaser laser, int pointerId)
     {
-        ClearPointer(GetInteractionSource(laser), pointerId);
+        ClearPointer(GetInteractionSource(laser), pointerId, GetInteractionActor(laser));
     }
 
     public bool ProcessLaserAxis(InteractionLaser laser, int pointerId, in float2 axis)
@@ -106,10 +106,11 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         float3 rayDirection,
         UIInteractionSource source,
         int pointerId,
-        out UIHit hit)
+        out UIHit hit,
+        User? actor = null)
     {
         hit = default;
-        if (!TryRayToCanvasPoint(rayOrigin, rayDirection, out var context, source, pointerId))
+        if (!TryRayToCanvasPoint(rayOrigin, rayDirection, out var context, source, pointerId, actor))
         {
             return false;
         }
@@ -130,11 +131,12 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         int pointerId,
         float3 rayOrigin,
         float3 rayDirection,
-        bool isPressed)
+        bool isPressed,
+        User? actor = null)
     {
-        if (!TryRayToCanvasPoint(rayOrigin, rayDirection, out var context, source, pointerId))
+        if (!TryRayToCanvasPoint(rayOrigin, rayDirection, out var context, source, pointerId, actor))
         {
-            ClearPointer(source, pointerId);
+            ClearPointer(source, pointerId, actor);
             return;
         }
 
@@ -209,7 +211,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         return DispatchSecondary(state.Hovered, in state.LastContext);
     }
 
-    public void ClearPointer(UIInteractionSource source, int pointerId)
+    public void ClearPointer(UIInteractionSource source, int pointerId, User? actor = null)
     {
         int key = PointerKey(source, pointerId);
         if (!_pointers.TryGetValue(key, out var state))
@@ -217,7 +219,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             return;
         }
 
-        var context = new UIInteractionContext(this, source, pointerId, float2.Zero, float3.Zero, float3.Zero, float3.Zero, 0f);
+        var context = new UIInteractionContext(this, source, pointerId, float2.Zero, float3.Zero, float3.Zero, float3.Zero, 0f, actor);
         state.Hovered?.NotifyHoverExit(in context);
         state.Pressed?.NotifyRelease(in context);
         _pointers.Remove(key);
@@ -415,7 +417,8 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         float3 rayDirection,
         out UIInteractionContext context,
         UIInteractionSource source,
-        int pointerId)
+        int pointerId,
+        User? actor = null)
     {
         context = default;
         EnsureRoot();
@@ -458,7 +461,8 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             worldPoint,
             rayOrigin,
             normalizedDirection,
-            distance);
+            distance,
+            actor);
         return true;
     }
 
@@ -666,6 +670,11 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     private static int GetPointerId(InteractionLaser laser)
     {
         return laser.ControllerSide.Value == Chirality.Left ? 1 : 2;
+    }
+
+    private static User? GetInteractionActor(InteractionLaser laser)
+    {
+        return laser?.Slot?.ActiveUser ?? laser?.World?.LocalUser;
     }
 
     private readonly struct HitCandidate

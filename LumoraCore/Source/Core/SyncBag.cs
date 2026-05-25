@@ -31,7 +31,14 @@ public class SyncBag<T> : ConflictingSyncElement, IEnumerable<T>
     private readonly List<T> _items = new();
     private List<BagOp>? _pendingOps;
 
-    public int Count => _items.Count;
+    public int Count
+    {
+        get
+        {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Bag);
+            return _items.Count;
+        }
+    }
 
     public event Action<SyncBag<T>>? OnChanged;
 
@@ -66,7 +73,11 @@ public class SyncBag<T> : ConflictingSyncElement, IEnumerable<T>
         return true;
     }
 
-    public bool Contains(T item) => _items.Contains(item);
+    public bool Contains(T item)
+    {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Bag, key: item);
+        return _items.Contains(item);
+    }
 
     public void Clear()
     {
@@ -262,8 +273,13 @@ public class SyncBag<T> : ConflictingSyncElement, IEnumerable<T>
 
     public override object? GetValueAsObject() => null;
 
-    public IEnumerator<T> GetEnumerator() => _items.GetEnumerator();
-    IEnumerator IEnumerable.GetEnumerator() => _items.GetEnumerator();
+    public IEnumerator<T> GetEnumerator()
+    {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Bag);
+        return _items.GetEnumerator();
+    }
+
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
     public override void Dispose()
     {

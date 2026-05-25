@@ -35,14 +35,25 @@ public class SyncRefList<T> : IEnumerable<T?> where T : class, IWorldElement
     /// <summary>
     /// Number of elements in the list.
     /// </summary>
-    public int Count => _elements.Count;
+    public int Count
+    {
+        get
+        {
+            Authorize(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, null, null);
+            return _elements.Count;
+        }
+    }
 
     /// <summary>
     /// Indexer to access elements.
     /// </summary>
     public T? this[int index]
     {
-        get => _elements[index];
+        get
+        {
+            Authorize(DataModelPermissionAction.Read, index, null);
+            return _elements[index];
+        }
         set
         {
             if (index < 0 || index >= _elements.Count)
@@ -114,6 +125,7 @@ public class SyncRefList<T> : IEnumerable<T?> where T : class, IWorldElement
     /// </summary>
     public bool Contains(T? element)
     {
+        Authorize(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, null, element);
         return _elements.Contains(element);
     }
 
@@ -123,6 +135,7 @@ public class SyncRefList<T> : IEnumerable<T?> where T : class, IWorldElement
     /// </summary>
     public int IndexOf(T? element)
     {
+        Authorize(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, null, element);
         return _elements.IndexOf(element);
     }
 
@@ -138,8 +151,13 @@ public class SyncRefList<T> : IEnumerable<T?> where T : class, IWorldElement
 
     // ===== ENUMERATION =====
 
-    public IEnumerator<T?> GetEnumerator() => _elements.GetEnumerator();
-    IEnumerator IEnumerable.GetEnumerator() => _elements.GetEnumerator();
+    public IEnumerator<T?> GetEnumerator()
+    {
+        Authorize(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, null, null);
+        return _elements.GetEnumerator();
+    }
+
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
     // ===== INTERNAL METHODS =====
 

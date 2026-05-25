@@ -38,7 +38,14 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
     /// <summary>
     /// Number of elements in the dictionary.
     /// </summary>
-    public int Count => _elements.Count;
+    public int Count
+    {
+        get
+        {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.ReplicatedDictionary);
+            return _elements.Count;
+        }
+    }
 
     /// <summary>
     /// Get element by key with caching for repeated access.
@@ -47,6 +54,7 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
     {
         get
         {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.ReplicatedDictionary, key: key);
             if (EqualityComparer<TKey>.Default.Equals(key, _cachedLastKey))
                 return _cachedLastValue;
 
@@ -60,12 +68,26 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
     /// <summary>
     /// All keys in the dictionary.
     /// </summary>
-    public Dictionary<TKey, TValue>.KeyCollection Keys => _elements.Keys;
+    public Dictionary<TKey, TValue>.KeyCollection Keys
+    {
+        get
+        {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.ReplicatedDictionary);
+            return _elements.Keys;
+        }
+    }
 
     /// <summary>
     /// All values in the dictionary.
     /// </summary>
-    public Dictionary<TKey, TValue>.ValueCollection Values => _elements.Values;
+    public Dictionary<TKey, TValue>.ValueCollection Values
+    {
+        get
+        {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.ReplicatedDictionary);
+            return _elements.Values;
+        }
+    }
 
     public override SyncMemberType MemberType => SyncMemberType.ReplicatedDictionary;
 
@@ -171,6 +193,7 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
     /// </summary>
     public bool TryGetValue(TKey key, out TValue value)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.ReplicatedDictionary, key: key);
         return _elements.TryGetValue(key, out value);
     }
 
@@ -179,22 +202,24 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
     /// </summary>
     public bool ContainsKey(TKey key)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.ReplicatedDictionary, key: key);
         return _elements.ContainsKey(key);
     }
 
     public Dictionary<TKey, TValue>.Enumerator GetEnumerator()
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.ReplicatedDictionary);
         return _elements.GetEnumerator();
     }
 
     IEnumerator<KeyValuePair<TKey, TValue>> IEnumerable<KeyValuePair<TKey, TValue>>.GetEnumerator()
     {
-        return _elements.GetEnumerator();
+        return GetEnumerator();
     }
 
     IEnumerator IEnumerable.GetEnumerator()
     {
-        return _elements.GetEnumerator();
+        return GetEnumerator();
     }
 
     #endregion

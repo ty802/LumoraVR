@@ -42,14 +42,29 @@ public class SyncDictionary<K, T> : ConflictingSyncElement, IEnumerable<KeyValue
     private Dictionary<K, T> _addedElements;
     private HashSet<K> _removedElements;
 
-    public int Count => _elements.Count;
+    public int Count
+    {
+        get
+        {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Dictionary);
+            return _elements.Count;
+        }
+    }
 
-    IEnumerable ISyncDictionary.Values => _elements.Values;
+    IEnumerable ISyncDictionary.Values
+    {
+        get
+        {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Dictionary);
+            return _elements.Values;
+        }
+    }
 
     IEnumerable<KeyValuePair<object, SyncElement>> ISyncDictionary.BoxedEntries
     {
         get
         {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Dictionary);
             foreach (var kvp in _elements)
             {
                 yield return new KeyValuePair<object, SyncElement>(kvp.Key, kvp.Value);
@@ -134,31 +149,43 @@ public class SyncDictionary<K, T> : ConflictingSyncElement, IEnumerable<KeyValue
 
     public T GetElement(K key)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.Dictionary, key: key);
         return _elements[key];
     }
 
     public bool ContainsKey(K key)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.Dictionary, key: key);
         return _elements.ContainsKey(key);
     }
 
     public bool TryGetElement(K key, out T element)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.Dictionary, key: key);
         return _elements.TryGetValue(key, out element);
     }
 
     public IEnumerator<KeyValuePair<K, T>> GetEnumerator()
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Dictionary);
         return _elements.GetEnumerator();
     }
 
     IEnumerator IEnumerable.GetEnumerator()
     {
-        return _elements.GetEnumerator();
+        return GetEnumerator();
     }
 
     private T InternalAdd(RefID? id, K key, bool sync = true, bool change = true)
     {
+        if (!IsLoading && !IsInInitPhase)
+        {
+            AuthorizeDataModelMutation(
+                DataModelPermissionAction.Write | DataModelPermissionAction.Create | DataModelPermissionAction.CollectionAdd,
+                DataModelPermissionSurface.Dictionary,
+                key: key);
+        }
+
         BeginModification();
 
         if (_elements.ContainsKey(key))
@@ -237,6 +264,14 @@ public class SyncDictionary<K, T> : ConflictingSyncElement, IEnumerable<KeyValue
             throw new InvalidOperationException("Cannot remove elements during initialization phase!");
         }
 
+        if (!IsLoading)
+        {
+            AuthorizeDataModelMutation(
+                DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionRemove,
+                DataModelPermissionSurface.Dictionary,
+                key: key);
+        }
+
         BeginModification();
 
         if (_elements.TryGetValue(key, out var element))
@@ -283,6 +318,13 @@ public class SyncDictionary<K, T> : ConflictingSyncElement, IEnumerable<KeyValue
         if (_elements.Count == 0)
         {
             return;
+        }
+
+        if (!IsLoading && !IsInInitPhase)
+        {
+            AuthorizeDataModelMutation(
+                DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionClear,
+                DataModelPermissionSurface.Dictionary);
         }
 
         BeginModification();
@@ -505,6 +547,89 @@ public class SyncDictionary<K, T> : ConflictingSyncElement, IEnumerable<KeyValue
             K key = SyncCoder.Decode<K>(reader);
             RefID id = new RefID(reader.Read7BitEncoded() + (ulong)offset);
             InternalAdd(id, key, sync: false);
+        }
+    }
+
+    public override MessageValidity Validate(BinaryMessageBatch syncMessage, BinaryReader reader, List<ValidationGroup.Rule> rules)
+    {
+        var validity = base.Validate(syncMessage, reader, rules);
+        if (validity != MessageValidity.Valid || World?.IsAuthority != true)
+        {
+            return validity;
+        }
+
+        long position = reader.BaseStream.CanSeek ? reader.BaseStream.Position : -1;
+        try
+        {
+            if (reader.ReadBoolean() &&
+                !AuthorizeDataModelMutation(
+                    DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionClear | DataModelPermissionAction.Replicate,
+                    DataModelPermissionSurface.Dictionary,
+                    syncMessage.SenderUser,
+                    isNetwork: true,
+                    throwOnError: false))
+            {
+                return MessageValidity.Conflict;
+            }
+
+            var removeCount = reader.Read7BitEncoded();
+            for (ulong i = 0; i < removeCount; i++)
+            {
+                K key = SyncCoder.Decode<K>(reader);
+                if (!AuthorizeDataModelMutation(
+                        DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionRemove | DataModelPermissionAction.Replicate,
+                        DataModelPermissionSurface.Dictionary,
+                        syncMessage.SenderUser,
+                        isNetwork: true,
+                        key: key,
+                        throwOnError: false))
+                {
+                    return MessageValidity.Conflict;
+                }
+            }
+
+            var addCount = reader.Read7BitEncoded();
+            RefID offset;
+            switch (addCount)
+            {
+                case 1:
+                    offset = RefID.Null;
+                    break;
+                case 0:
+                    return MessageValidity.Valid;
+                default:
+                    offset = new RefID(reader.Read7BitEncoded());
+                    break;
+            }
+
+            for (ulong i = 0; i < addCount; i++)
+            {
+                K key = SyncCoder.Decode<K>(reader);
+                _ = new RefID(reader.Read7BitEncoded() + (ulong)offset);
+                if (!AuthorizeDataModelMutation(
+                        DataModelPermissionAction.Write | DataModelPermissionAction.Create | DataModelPermissionAction.CollectionAdd | DataModelPermissionAction.Replicate,
+                        DataModelPermissionSurface.Dictionary,
+                        syncMessage.SenderUser,
+                        isNetwork: true,
+                        key: key,
+                        throwOnError: false))
+                {
+                    return MessageValidity.Conflict;
+                }
+            }
+
+            return MessageValidity.Valid;
+        }
+        catch
+        {
+            return MessageValidity.Conflict;
+        }
+        finally
+        {
+            if (position >= 0)
+            {
+                reader.BaseStream.Position = position;
+            }
         }
     }
 

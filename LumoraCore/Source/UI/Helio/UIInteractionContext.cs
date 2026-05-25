@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core.Math;
+using Lumora.Core;
 
 namespace Helio.UI;
 
@@ -15,6 +16,7 @@ public readonly struct UIInteractionContext
     public readonly float3 RayOrigin;
     public readonly float3 RayDirection;
     public readonly float Distance;
+    public readonly User? Actor;
 
     public UIInteractionContext(
         Canvas canvas,
@@ -24,7 +26,8 @@ public readonly struct UIInteractionContext
         in float3 worldPoint,
         in float3 rayOrigin,
         in float3 rayDirection,
-        float distance)
+        float distance,
+        User? actor = null)
     {
         Canvas = canvas;
         Source = source;
@@ -34,5 +37,6 @@ public readonly struct UIInteractionContext
         RayOrigin = rayOrigin;
         RayDirection = rayDirection;
         Distance = distance;
+        Actor = actor;
     }
 }

@@ -30,7 +30,14 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
     private bool _structureChanged;
     private HashSet<int>? _dirtyIndices;
 
-    public int Count => _count;
+    public int Count
+    {
+        get
+        {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Array);
+            return _count;
+        }
+    }
 
     public event Action<SyncArray<T>, int, int>? ElementsAdded;
     public event Action<SyncArray<T>, int, int>? ElementsRemoved;
@@ -47,6 +54,7 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
         get
         {
             if ((uint)index >= (uint)_count) throw new ArgumentOutOfRangeException(nameof(index));
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.Array, index: index);
             return _items[index];
         }
         set
@@ -178,6 +186,7 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
 
     public int IndexOf(T item)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Array, key: item);
         var comparer = EqualityComparer<T>.Default;
         for (int i = 0; i < _count; i++)
         {
@@ -337,6 +346,7 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
 
     public IEnumerator<T> GetEnumerator()
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Array);
         for (int i = 0; i < _count; i++)
             yield return _items[i];
     }

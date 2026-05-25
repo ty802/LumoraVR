@@ -31,9 +31,16 @@ public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<
     private readonly Dictionary<TKey, TValue> _dict = new();
     private List<DictOp>? _pendingOps;
 
-    public int Count => _dict.Count;
-    public IEnumerable<TKey> Keys => _dict.Keys;
-    public IEnumerable<TValue> Values => _dict.Values;
+    public int Count
+    {
+        get
+        {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Dictionary);
+            return _dict.Count;
+        }
+    }
+    public IEnumerable<TKey> Keys => EnumerateKeys();
+    public IEnumerable<TValue> Values => EnumerateValues();
 
     public event Action<SyncDictionary<TKey, TValue>>? OnChanged;
     public event Action<TKey, TValue>? OnKeyChanged;
@@ -41,7 +48,11 @@ public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<
 
     public TValue this[TKey key]
     {
-        get => _dict[key];
+        get
+        {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.Dictionary, key: key);
+            return _dict[key];
+        }
         set => SetKey(key, value);
     }
 
@@ -84,12 +95,29 @@ public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<
         return true;
     }
 
-    public bool ContainsKey(TKey key) => _dict.ContainsKey(key);
-    public bool ContainsValue(TValue value) => _dict.ContainsValue(value);
-    public bool TryGetValue(TKey key, out TValue value) => _dict.TryGetValue(key, out value);
+    public bool ContainsKey(TKey key)
+    {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.Dictionary, key: key);
+        return _dict.ContainsKey(key);
+    }
+
+    public bool ContainsValue(TValue value)
+    {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Dictionary, key: value);
+        return _dict.ContainsValue(value);
+    }
+
+    public bool TryGetValue(TKey key, out TValue value)
+    {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.Dictionary, key: key);
+        return _dict.TryGetValue(key, out value);
+    }
 
     public TValue GetValueOrDefault(TKey key, TValue defaultValue = default!)
-        => _dict.TryGetValue(key, out var v) ? v : defaultValue;
+    {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.Dictionary, key: key);
+        return _dict.TryGetValue(key, out var v) ? v : defaultValue;
+    }
 
     public void Clear()
     {
@@ -326,8 +354,31 @@ public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<
 
     public override object? GetValueAsObject() => null;
 
-    public IEnumerator<KeyValuePair<TKey, TValue>> GetEnumerator() => _dict.GetEnumerator();
-    IEnumerator IEnumerable.GetEnumerator() => _dict.GetEnumerator();
+    private IEnumerable<TKey> EnumerateKeys()
+    {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Dictionary);
+        foreach (var key in _dict.Keys)
+        {
+            yield return key;
+        }
+    }
+
+    private IEnumerable<TValue> EnumerateValues()
+    {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Dictionary);
+        foreach (var value in _dict.Values)
+        {
+            yield return value;
+        }
+    }
+
+    public IEnumerator<KeyValuePair<TKey, TValue>> GetEnumerator()
+    {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Dictionary);
+        return _dict.GetEnumerator();
+    }
+
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
     public override void Dispose()
     {

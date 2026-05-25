@@ -181,7 +181,14 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
     private List<NodeRecord> _records = new();
     private List<DeltaRecord> _deltaRecords;
 
-    public int Count => _records.Count;
+    public int Count
+    {
+        get
+        {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.List);
+            return _records.Count;
+        }
+    }
     public T this[int index] => GetElement(index);
     public IEnumerable<T> Elements => new SyncListEnumerableWrapper(this);
     IEnumerable ISyncList.Elements => Elements;
@@ -234,6 +241,7 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
 
     public T GetElement(int index)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.List, index: index);
         return _records[index].Node;
     }
 
@@ -321,6 +329,7 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
 
     public int IndexOfElement(T element)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.List, key: element);
         for (int i = 0; i < _records.Count; i++)
         {
             if (_records[i].Node == element)
@@ -333,21 +342,25 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
 
     public int FindIndex(Predicate<T> match)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.List);
         return _records.FindIndex(r => match(r.Node));
     }
 
     public int FindIndex(int startIndex, Predicate<T> match)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.List, index: startIndex);
         return _records.FindIndex(startIndex, r => match(r.Node));
     }
 
     public int FindIndex(int startIndex, int count, Predicate<T> match)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.List, index: startIndex);
         return _records.FindIndex(startIndex, count, r => match(r.Node));
     }
 
     protected Enumerator GetElementsEnumerator()
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.List);
         return new Enumerator(_records.GetEnumerator());
     }
 

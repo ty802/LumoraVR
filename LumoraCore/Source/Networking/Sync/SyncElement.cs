@@ -219,7 +219,7 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
 
     public bool IsBlockedByDrive => IsDriven && ActiveLink != null && ActiveLink.WasLinkGranted && !ActiveLink.IsModificationAllowed;
 
-    protected bool AuthorizeDataModelMutation(
+    protected bool AuthorizeDataModelAccess(
         DataModelPermissionAction action,
         DataModelPermissionSurface surface = DataModelPermissionSurface.SyncElement,
         User? actor = null,
@@ -259,6 +259,19 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
         }
 
         return false;
+    }
+
+    protected bool AuthorizeDataModelMutation(
+        DataModelPermissionAction action,
+        DataModelPermissionSurface surface = DataModelPermissionSurface.SyncElement,
+        User? actor = null,
+        bool isNetwork = false,
+        bool isFullState = false,
+        int? index = null,
+        object? key = null,
+        bool throwOnError = true)
+    {
+        return AuthorizeDataModelAccess(action, surface, actor, isNetwork, isFullState, index, key, throwOnError);
     }
 
     protected void BeginHook()
@@ -424,6 +437,9 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
                 throw new InvalidOperationException("Cannot do a full encode on a dirty element!");
         }
 
+        AuthorizeDataModelAccess(
+            DataModelPermissionAction.Serialize | DataModelPermissionAction.Replicate,
+            isFullState: forFullBatch);
         InternalEncodeFull(writer, outboundMessage);
     }
 
@@ -451,6 +467,7 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
 
     public virtual void EncodeDelta(BinaryWriter writer, BinaryMessageBatch outboundMessage)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Serialize | DataModelPermissionAction.Replicate);
         InternalEncodeDelta(writer, outboundMessage);
         IsSyncDirty = false;
         InternalClearDirty();
@@ -551,6 +568,7 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
     /// </summary>
     void ISyncMember.Encode(BinaryWriter writer)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Serialize);
         InternalEncodeDelta(writer, null!);
     }
 

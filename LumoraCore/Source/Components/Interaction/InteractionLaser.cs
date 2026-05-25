@@ -12,11 +12,6 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components.Interaction;
 
-// per-hand interaction laser. casts a ray, finds the best IInteractionTarget
-// by sphere/collider intersection + parent-chain walk, fires Activated on trigger.
-// also bridges legacy RayTarget hover/activated events. - xlinka
-//
-// TODO - xlinka: UI pointer routing, richer tool stack, release receivers.
 [ComponentCategory("XR/Interaction")]
 public sealed class InteractionLaser : Component
 {
@@ -29,35 +24,25 @@ public sealed class InteractionLaser : Component
     public readonly Sync<float> HoverSwitchTolerance = new();
     public readonly Sync<float> DefaultHoverRadius = new();
     public readonly Sync<float> StickyHitDistance = new();
-    public readonly Sync<float> HoldScrollStep = new();
-    public readonly Sync<float> HoldScaleStep = new();
-    public readonly Sync<float> HoldRotationSensitivity = new();
 
     private readonly List<TargetHit> _hitBuffer = new(64);
     private Slot? _beamSlot;
     private CurvedBeamMesh? _beamMesh;
     private UnlitMaterial? _beamMaterial;
-    private Grabber? _grabber;
+    private HandInteractionTool? _handTool;
     private IInteractionTarget? _currentTarget;
     private RayTarget? _currentRayTarget;
     private ILaserPointerTarget? _currentPointerTarget;
     private Slot? _currentHitSlot;
     private float3 _currentHitPoint;
     private float _currentHitDistance;
-    private bool _prevTriggerState;
-    private bool _prevGripState;
     private bool _prevSecondaryState;
     private float3 _smoothedHitPoint;
     private bool _hasSmoothedHitPoint;
-    private bool _isLaserHolding;
-    private float _heldDistance;
-    private floatQ _heldRotation = floatQ.Identity;
-    private bool _desktopRotateLockActive;
-    private float3 _desktopLockedHoldPosition;
-    private bool _desktopInputSuppressionActive;
 
-    public Grabber? Grabber => _grabber;
+    public Grabber? Grabber => _handTool?.Grabber ?? Slot?.GetComponent<Grabber>();
     public IInteractionTarget? CurrentTarget => _currentTarget;
+    public ILaserPointerTarget? CurrentPointerTarget => _currentPointerTarget;
     public float3 CurrentHitPoint => _currentHitPoint;
     public float CurrentHitDistance => _currentHitDistance;
     public bool IsActive => _currentTarget != null;
@@ -93,15 +78,13 @@ public sealed class InteractionLaser : Component
         HoverSwitchTolerance.Value = 0.05f;
         DefaultHoverRadius.Value = 0.05f;
         StickyHitDistance.Value = 0.08f;
-        HoldScrollStep.Value = 0.12f;
-        HoldScaleStep.Value = 0.10f;
-        HoldRotationSensitivity.Value = MathF.PI * 2f;
     }
 
     public override void OnStart()
     {
         base.OnStart();
-        _grabber = Slot.GetComponent<Grabber>() ?? Slot.AttachComponent<Grabber>();
+        _handTool = Slot.GetComponent<HandInteractionTool>() ?? Slot.AttachComponent<HandInteractionTool>();
+        _handTool.EnsureReady();
         BuildBeamVisual();
         LumoraLogger.Log($"InteractionLaser: Started on '{Slot.SlotName.Value}' side={ControllerSide.Value}");
     }
@@ -114,7 +97,7 @@ public sealed class InteractionLaser : Component
 
     public override void OnDestroy()
     {
-        SetDesktopInputSuppression(false);
+        _handTool?.ResetInteraction(releaseHeld: true);
         ClearCurrentTarget();
         base.OnDestroy();
     }
@@ -246,33 +229,25 @@ public sealed class InteractionLaser : Component
         _currentHitPoint = hoveredHitPoint;
         _currentHitDistance = hoveredDistance;
 
-        bool triggerNow = ReadTriggerPressed();
-        UpdatePointerTarget(hoveredTarget as ILaserPointerTarget, origin, direction, triggerNow);
+        _handTool ??= Slot.GetComponent<HandInteractionTool>();
+        _handTool?.SampleInput(this);
+
+        bool primaryNow = _handTool?.PrimaryHeld == true;
+        bool pointerPressed = _handTool?.IsHolding == true ? false : primaryNow;
+        UpdatePointerTarget(hoveredTarget as ILaserPointerTarget, origin, direction, pointerPressed);
         ProcessPointerActions();
 
-        if (triggerNow && !_prevTriggerState && _currentTarget != null && _currentPointerTarget == null)
-        {
-            _currentRayTarget?.NotifyActivated(_currentHitPoint);
-            Activated?.Invoke(_currentTarget, _currentHitPoint);
-        }
-        _prevTriggerState = triggerNow;
-
-        bool gripNow = ReadGripPressed();
-        if (gripNow && !_prevGripState)
-        {
-            TryGrabCurrentTarget();
-        }
-        else if (!gripNow && _prevGripState)
-        {
-            _grabber?.ReleaseAll();
-            ResetLaserHoldState();
-        }
-        _prevGripState = gripNow;
-
-        if (_isLaserHolding)
-        {
-            ApplyHeldObjectManipulation(delta, origin, direction);
-        }
+        _handTool?.ProcessFrame(
+            this,
+            delta,
+            origin,
+            direction,
+            _currentTarget,
+            _currentPointerTarget,
+            _currentRayTarget,
+            _currentHitSlot,
+            _currentHitPoint,
+            _currentHitDistance);
 
         float beamLength = hoveredTarget != null ? hoveredDistance : blockingDistance;
         if (showWorldBeam)
@@ -367,7 +342,7 @@ public sealed class InteractionLaser : Component
     private void ProcessPointerActions()
     {
         int pointerId = GetPointerId();
-        bool holding = _isLaserHolding && _grabber?.IsHoldingObjects == true;
+        bool holding = _handTool?.IsHolding == true;
 
         if (!holding && _currentPointerTarget is ILaserAxisTarget axisTarget)
         {
@@ -398,6 +373,11 @@ public sealed class InteractionLaser : Component
     private int GetPointerId()
     {
         return ControllerSide.Value == Chirality.Left ? 1 : 2;
+    }
+
+    internal void NotifyActivatedByTool(IInteractionTarget target, float3 point)
+    {
+        Activated?.Invoke(target, point);
     }
 
     // walk parent chain from the hit slot. take the highest-priority IInteractionTarget
@@ -461,56 +441,6 @@ public sealed class InteractionLaser : Component
         distance = projected;
         hitPoint = candidate;
         return true;
-    }
-
-    private void TryGrabCurrentTarget()
-    {
-        var grabber = _grabber ?? Slot.GetComponent<Grabber>() ?? Slot.AttachComponent<Grabber>();
-        _grabber = grabber;
-
-        var grabbable = FindBestGrabbable(_currentTarget, _currentHitSlot);
-        if (grabbable == null) return;
-
-        var holder = grabber.HolderSlot;
-        if (holder == null) return;
-
-        holder.GlobalPosition = _currentHitPoint;
-        holder.GlobalRotation = ComputeInitialHoldRotation();
-        holder.GlobalScale = float3.One;
-
-        if (!grabber.TryGrab(grabbable)) return;
-
-        _isLaserHolding = true;
-        _heldDistance = MathF.Max(0.05f, _currentHitDistance);
-        _heldRotation = holder.GlobalRotation;
-    }
-
-    private static IGrabbable? FindBestGrabbable(IInteractionTarget? target, Slot? hitSlot)
-    {
-        IGrabbable? best = target as IGrabbable;
-        int bestPriority = best?.GrabPriority ?? int.MinValue;
-
-        var current = hitSlot;
-        while (current != null)
-        {
-            if (!ReferenceEquals(current, hitSlot) && current.GetComponent<SearchBlock>() != null)
-            {
-                break;
-            }
-
-            foreach (var grabbable in current.GetComponentsImplementing<IGrabbable>())
-            {
-                if (grabbable.GrabPriority > bestPriority)
-                {
-                    best = grabbable;
-                    bestPriority = grabbable.GrabPriority;
-                }
-            }
-
-            current = current.Parent;
-        }
-
-        return best;
     }
 
     private bool TryApplyLaserModifiers(Slot hitSlot, float3 direction, float3 point, out float3 filteredPoint)
@@ -867,7 +797,7 @@ public sealed class InteractionLaser : Component
         SetIfChanged(_beamMesh.ActualTargetPoint, _beamSlot.GlobalPointToLocal(endPoint));
     }
 
-    private Slot? FindHeadSlot()
+    internal Slot? FindHeadSlot()
     {
         var current = Slot.Parent;
         while (current != null)
@@ -895,214 +825,6 @@ public sealed class InteractionLaser : Component
             current = current.Parent;
         }
         return null;
-    }
-
-    private floatQ ComputeInitialHoldRotation()
-    {
-        var input = Engine.Current?.InputInterface;
-        if (input != null && !input.IsVRActive)
-        {
-            var head = FindHeadSlot();
-            if (head != null)
-            {
-                return head.GlobalRotation;
-            }
-        }
-
-        return Slot.GlobalRotation;
-    }
-
-    private void ApplyHeldObjectManipulation(float delta, in float3 origin, in float3 direction)
-    {
-        if (!_isLaserHolding || _grabber == null || !_grabber.IsHoldingObjects)
-        {
-            ResetLaserHoldState();
-            return;
-        }
-
-        var holder = _grabber.HolderSlot;
-        if (holder == null || holder.IsRemoved)
-        {
-            ResetLaserHoldState();
-            return;
-        }
-
-        var input = Engine.Current?.InputInterface;
-        bool desktopRotateLocked = input != null && !input.IsVRActive && IsKeyHeld(input, Key.E);
-        SetDesktopInputSuppression(desktopRotateLocked);
-        if (desktopRotateLocked && !_desktopRotateLockActive)
-        {
-            _desktopLockedHoldPosition = holder.GlobalPosition;
-            _desktopRotateLockActive = true;
-        }
-
-        if (input != null)
-        {
-            if (input.IsVRActive)
-            {
-                ApplyVrHoldInputs(input, delta, holder);
-            }
-            else
-            {
-                ApplyDesktopHoldInputs(input, holder, desktopRotateLocked);
-            }
-        }
-
-        _heldDistance = Clamp(_heldDistance, 0.05f, MathF.Max(MaxDistance.Value, 0.05f));
-        if (desktopRotateLocked)
-        {
-            holder.GlobalPosition = _desktopLockedHoldPosition;
-        }
-        else
-        {
-            if (_desktopRotateLockActive)
-            {
-                _desktopRotateLockActive = false;
-                _heldDistance = ComputeDistanceAlongRay(origin, direction, holder.GlobalPosition);
-            }
-
-            holder.GlobalPosition = new float3(
-                origin.x + direction.x * _heldDistance,
-                origin.y + direction.y * _heldDistance,
-                origin.z + direction.z * _heldDistance);
-        }
-        holder.GlobalRotation = _heldRotation;
-    }
-
-    private void ApplyDesktopHoldInputs(InputInterface input, Slot holder, bool rotateLocked)
-    {
-        float scroll = input.Mouse?.ScrollWheelDelta.Value ?? 0f;
-        bool scaleModifier = IsScaleModifierHeld(input);
-        if (scroll != 0f)
-        {
-            if (scaleModifier && CanScaleHeldObjects())
-            {
-                ScaleHolder(holder, scroll * HoldScaleStep.Value);
-            }
-            else if (!rotateLocked)
-            {
-                float step = MathF.Max(0.05f, _heldDistance * HoldScrollStep.Value);
-                _heldDistance -= scroll * step;
-            }
-        }
-
-        if (!rotateLocked)
-        {
-            return;
-        }
-
-        float2 delta = input.Mouse?.DirectDelta.Value ?? float2.Zero;
-        if (delta == float2.Zero)
-        {
-            return;
-        }
-
-        var head = FindHeadSlot();
-        float3 yawAxis = head?.Up ?? float3.Up;
-        float3 pitchAxis = head?.Right ?? Slot.Right;
-        float yaw = -delta.x * HoldRotationSensitivity.Value;
-        float pitch = -delta.y * HoldRotationSensitivity.Value;
-        RotateHeldObjectsInPlace(yawAxis, yaw, pitchAxis, pitch);
-    }
-
-    private void ApplyVrHoldInputs(InputInterface input, float delta, Slot holder)
-    {
-        var controller = ControllerSide.Value == Chirality.Left
-            ? input.LeftController
-            : input.RightController;
-        if (controller == null) return;
-
-        float slide = ApplyDeadzone(controller.ThumbstickPosition.Y, 0.15f);
-        float rotate = ApplyDeadzone(controller.ThumbstickPosition.X, 0.15f);
-
-        if (controller.SecondaryButtonPressed && slide != 0f && CanScaleHeldObjects())
-        {
-            ScaleHolder(holder, slide * delta);
-        }
-        else if (slide != 0f)
-        {
-            _heldDistance += slide * MathF.Max(1f, _heldDistance) * 4f * delta;
-        }
-
-        if (rotate != 0f)
-        {
-            _heldRotation = floatQ.AxisAngle(float3.Up, rotate * MathF.PI * 2f * delta) * _heldRotation;
-        }
-    }
-
-    private void ScaleHolder(Slot holder, float delta)
-    {
-        float factor = MathF.Max(0.05f, 1f + delta);
-        var scale = holder.GlobalScale;
-        holder.GlobalScale = new float3(scale.x * factor, scale.y * factor, scale.z * factor);
-    }
-
-    private void RotateHeldObjectsInPlace(float3 yawAxis, float yaw, float3 pitchAxis, float pitch)
-    {
-        if (_grabber == null) return;
-
-        floatQ rotation = floatQ.AxisAngle(yawAxis, yaw) * floatQ.AxisAngle(pitchAxis, pitch);
-        foreach (var grabbable in _grabber.GrabbedObjects)
-        {
-            var slot = (grabbable as Component)?.Slot;
-            if (slot == null || slot.IsRemoved)
-            {
-                continue;
-            }
-
-            slot.GlobalRotation = rotation * slot.GlobalRotation;
-        }
-    }
-
-    private bool CanScaleHeldObjects()
-    {
-        if (_grabber == null) return false;
-        foreach (var grabbable in _grabber.GrabbedObjects)
-        {
-            if (grabbable == null || !grabbable.Scalable)
-            {
-                return false;
-            }
-
-            if (grabbable is Component component && component.IsDestroyed)
-            {
-                return false;
-            }
-        }
-        return _grabber.GrabbedObjects.Count > 0;
-    }
-
-    private void ResetLaserHoldState()
-    {
-        SetDesktopInputSuppression(false);
-        _isLaserHolding = false;
-        _heldDistance = 0f;
-        _heldRotation = floatQ.Identity;
-        _desktopRotateLockActive = false;
-        _desktopLockedHoldPosition = float3.Zero;
-    }
-
-    private void SetDesktopInputSuppression(bool active)
-    {
-        if (_desktopInputSuppressionActive == active)
-        {
-            return;
-        }
-
-        _desktopInputSuppressionActive = active;
-        Lumora.Core.Components.LocomotionController.SetDesktopInputSuppressed(this, active);
-    }
-
-    private static float ComputeDistanceAlongRay(float3 origin, float3 direction, float3 point)
-    {
-        float3 delta = point - origin;
-        float projected = float3.Dot(delta, direction);
-        if (projected > 0.05f)
-        {
-            return projected;
-        }
-
-        return MathF.Max(0.05f, delta.Length);
     }
 
     private float2 ReadPointerAxis()
@@ -1149,60 +871,6 @@ public sealed class InteractionLaser : Component
     private static float ApplyDeadzone(float value, float deadzone)
     {
         return MathF.Abs(value) < deadzone ? 0f : value;
-    }
-
-    private static float Clamp(float value, float min, float max)
-    {
-        if (value < min) return min;
-        if (value > max) return max;
-        return value;
-    }
-
-    private static bool IsScaleModifierHeld(InputInterface input)
-    {
-        return IsKeyHeld(input, Key.LeftShift) ||
-               IsKeyHeld(input, Key.RightShift) ||
-               IsKeyHeld(input, Key.LeftControl) ||
-               IsKeyHeld(input, Key.RightControl);
-    }
-
-    private static bool IsKeyHeld(InputInterface input, Key key)
-    {
-        return input.Keyboard?.IsKeyPressed(key) == true;
-    }
-
-    private bool ReadTriggerPressed()
-    {
-        var input = Engine.Current?.InputInterface;
-        if (input == null) return false;
-
-        bool vrTrigger = ControllerSide.Value == Chirality.Left
-            ? input.LeftController.TriggerPressed
-            : input.RightController.TriggerPressed;
-        if (vrTrigger) return true;
-
-        if (!input.IsVRActive && input.Mouse != null)
-        {
-            return ControllerSide.Value == Chirality.Right && input.Mouse.LeftButton.Held;
-        }
-        return false;
-    }
-
-    private bool ReadGripPressed()
-    {
-        var input = Engine.Current?.InputInterface;
-        if (input == null) return false;
-
-        bool vrGrip = ControllerSide.Value == Chirality.Left
-            ? input.LeftController.GripPressed || input.LeftController.GripValue > 0.5f
-            : input.RightController.GripPressed || input.RightController.GripValue > 0.5f;
-        if (vrGrip) return true;
-
-        if (!input.IsVRActive && input.Mouse != null)
-        {
-            return ControllerSide.Value == Chirality.Right && input.Mouse.RightButton.Held;
-        }
-        return false;
     }
 
     private static bool RaySphereIntersect(float3 origin, float3 direction, float3 center, float radius, out float t)

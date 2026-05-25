@@ -2,12 +2,13 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.Collections.Generic;
+using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Interaction;
 
 // owns a holder slot and a list of currently-grabbed IGrabbables. one per hand.
 // candidate selection (sphere/raycast) is driven externally by InteractionLaser. - xlinka
-// TODO - xlinka: release receivers, scaling reference, externally-held items
+// TODO - xlinka: release receivers, externally-held items
 [ComponentCategory("Interaction")]
 public class Grabber : Component
 {
@@ -37,8 +38,10 @@ public class Grabber : Component
         var holder = HolderSlot;
         if (holder == null) return false;
 
-        target.Grab(this, holder);
-        if (!_grabbed.Contains(target)) _grabbed.Add(target);
+        var grabbed = target.Grab(this, holder);
+        if (grabbed == null) return false;
+
+        if (!_grabbed.Contains(grabbed)) _grabbed.Add(grabbed);
         return true;
     }
 
@@ -56,6 +59,16 @@ public class Grabber : Component
             _grabbed[i].Release(this);
         }
         _grabbed.Clear();
+        ResetHolderTransform();
+    }
+
+    private void ResetHolderTransform()
+    {
+        if (_holderSlot == null || _holderSlot.IsRemoved) return;
+
+        _holderSlot.LocalPosition.Value = float3.Zero;
+        _holderSlot.LocalRotation.Value = floatQ.Identity;
+        _holderSlot.LocalScale.Value = float3.One;
     }
 
     public override void OnDestroy()

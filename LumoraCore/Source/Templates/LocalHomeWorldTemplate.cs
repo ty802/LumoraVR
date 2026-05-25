@@ -194,8 +194,8 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
     private static void CreateHelioTestPanel(World world)
     {
         var panelSlot = world.RootSlot.AddSlot("HelioTestPanel");
-        panelSlot.LocalPosition.Value = new float3(0f, 1.52f, -1.68f);
-        panelSlot.LocalScale.Value = new float3(0.00135f, 0.00135f, 0.00135f);
+        panelSlot.LocalPosition.Value = new float3(0f, 1.58f, -1.68f);
+        panelSlot.LocalScale.Value = new float3(0.00120f, 0.00120f, 0.00120f);
 
         var fontSlot = panelSlot.AddSlot("UIFont");
         var font = fontSlot.AttachComponent<FontProvider>();
@@ -210,105 +210,139 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
         checker.ColorA.Value = new color(0.12f, 0.62f, 0.90f, 1f);
         checker.ColorB.Value = new color(0.95f, 0.30f, 0.56f, 1f);
 
+        var checkerMaterialSlot = panelSlot.AddSlot("UIValidationCheckerMaterial");
+        var checkerMaterial = checkerMaterialSlot.AttachComponent<UIUnlitMaterial>();
+        checkerMaterial.Texture.Target = checker;
+        checkerMaterial.Culling.Value = Culling.None;
+        checkerMaterial.ZWrite.Value = ZWrite.Off;
+        checkerMaterial.RenderQueue.Value = 3005;
+
         var panel = panelSlot.AttachComponent<PanelShell>();
         panel.Title.Value = "Helio Validation";
-        panel.Size.Value = new float2(700f, 520f);
+        panel.Size.Value = new float2(760f, 660f);
         panel.HeaderHeight.Value = 42f;
-        panel.Padding.Value = 12f;
+        panel.Padding.Value = 14f;
         panel.Font.Target = font;
-        panel.BackgroundColor.Value = new color(0.025f, 0.030f, 0.040f, 0.92f);
-        panel.HeaderColor.Value = new color(0.080f, 0.095f, 0.120f, 0.98f);
+        panel.BackgroundColor.Value = new color(0.018f, 0.022f, 0.030f, 0.88f);
+        panel.HeaderColor.Value = new color(0.105f, 0.130f, 0.165f, 0.98f);
 
         panel.RebuildContent(ui =>
         {
             ui.Font(font);
             var layout = ui.VerticalLayout(8f, 10f);
+            layout.ForceExpandHeight.Value = false;
             Fill(layout.RectTransform!);
 
-            var status = ui.Text("Validation ready: hover/press, scroll clip, raw/tiled images, font fallback.", 16f, new color(0.78f, 0.92f, 1f, 1f));
+            var status = ui.Text("Validation ready: hover/press, scroll clip, raw/tiled images, font fallback.", 15f, new color(0.92f, 0.97f, 1f, 1f));
             status.WordWrap.Value = true;
+            status.VerticalAlignment.Value = TextVerticalAlignment.Middle;
             Fill(status.RectTransform!);
+            SetLayoutHeight(status.RectTransform!, 34f, 40f);
 
             int shellClickCount = 0;
-            var shellButton = ui.Button("Live shell update", (_, _) =>
+            var shellButton = ui.Button("Shell color update", (_, _) =>
             {
                 shellClickCount++;
                 bool alternate = shellClickCount % 2 == 1;
                 panel.Title.Value = alternate ? $"Helio Validation {shellClickCount}" : "Helio Validation";
-                panel.Padding.Value = alternate ? 18f : 12f;
-                panel.Size.Value = alternate ? new float2(720f, 540f) : new float2(700f, 520f);
-                panel.ShowCloseButton.Value = !alternate;
                 panel.HeaderColor.Value = alternate
-                    ? new color(0.13f, 0.08f, 0.18f, 0.98f)
-                    : new color(0.080f, 0.095f, 0.120f, 0.98f);
-                status.Content.Value = "PanelShell fields updated live";
-            }, new color(0.13f, 0.18f, 0.25f, 0.95f));
+                    ? new color(0.17f, 0.11f, 0.22f, 0.98f)
+                    : new color(0.105f, 0.130f, 0.165f, 0.98f);
+                status.Content.Value = "PanelShell title/header updated live";
+            }, new color(0.18f, 0.34f, 0.48f, 0.96f));
             Fill(shellButton.RectTransform!);
+            SetLayoutHeight(shellButton.RectTransform!, 34f, 36f);
 
             var button = ui.Button("Laser click test", (_, _) =>
             {
                 status.Content.Value = $"Clicked {DateTime.Now:HH:mm:ss}";
-            }, new color(0.12f, 0.20f, 0.30f, 0.95f));
+            }, new color(0.16f, 0.30f, 0.44f, 0.96f));
             Fill(button.RectTransform!);
+            SetLayoutHeight(button.RectTransform!, 34f, 36f);
 
-            ui.HorizontalElementWithLabel("Checkbox", 0.58f, () =>
+            var checkboxRow = ui.Panel(new color(0.052f, 0.060f, 0.074f, 0.92f));
+            Fill(checkboxRow.RectTransform!);
+            SetLayoutHeight(checkboxRow.RectTransform!, 32f, 34f);
+            ui.Nest();
+            var checkboxSplits = ui.SplitHorizontally(0.58f, 0.04f, 0.38f);
+            ui.NestInto(checkboxSplits[0]);
+            var checkboxLabel = ui.Text("Checkbox", 14f, new color(0.94f, 0.96f, 1f, 1f));
+            checkboxLabel.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+            Fill(checkboxLabel.RectTransform!);
+            ui.NestOut();
+            ui.NestInto(checkboxSplits[2]);
+            var checkbox = ui.Checkbox(false, (_, value) =>
             {
-                var checkbox = ui.Checkbox(false, (_, value) =>
-                {
-                    status.Content.Value = value ? "Checkbox on" : "Checkbox off";
-                }, new color(0.12f, 0.14f, 0.17f, 0.95f));
-                Fill(checkbox.RectTransform!);
-                return checkbox;
-            }, 0.04f);
+                status.Content.Value = value ? "Checkbox on" : "Checkbox off";
+            }, new color(0.78f, 0.82f, 0.88f, 1f));
+            FixedRect(checkbox.RectTransform!, new float2(0.5f, 0.5f), new float2(24f, 24f));
+            ui.NestOut();
+            ui.NestOut();
 
-            ui.HorizontalElementWithLabel("Slider", 0.42f, () =>
+            var sliderRow = ui.Panel(new color(0.052f, 0.060f, 0.074f, 0.92f));
+            Fill(sliderRow.RectTransform!);
+            SetLayoutHeight(sliderRow.RectTransform!, 32f, 34f);
+            ui.Nest();
+            var sliderSplits = ui.SplitHorizontally(0.42f, 0.04f, 0.54f);
+            ui.NestInto(sliderSplits[0]);
+            var sliderLabel = ui.Text("Slider", 14f, new color(0.94f, 0.96f, 1f, 1f));
+            sliderLabel.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+            Fill(sliderLabel.RectTransform!);
+            ui.NestOut();
+            ui.NestInto(sliderSplits[2]);
+            var slider = ui.Slider(0.35f, 0f, 1f, (_, value) =>
             {
-                var slider = ui.Slider(0.35f, 0f, 1f, (_, value) =>
-                {
-                    status.Content.Value = $"Slider {value:0.00}";
-                }, new color(0.10f, 0.14f, 0.18f, 0.95f));
-                Fill(slider.RectTransform!);
-                return slider;
-            }, 0.04f);
+                status.Content.Value = $"Slider {value:0.00}";
+            }, new color(0.18f, 0.24f, 0.30f, 0.96f));
+            Fill(slider.RectTransform!);
+            ui.NestOut();
+            ui.NestOut();
 
-            var scroll = ui.ScrollRect(out var scrollContent, new float2(1f, 1f), new color(0.035f, 0.045f, 0.060f, 0.94f));
+            var scroll = ui.ScrollRect(out var scrollContent, new float2(1f, 1f), new color(0.045f, 0.060f, 0.080f, 0.90f));
             Fill(scroll.RectTransform!);
+            SetLayoutHeight(scroll.RectTransform!, 150f, 190f, 1f);
             const float scrollContentHeight = 260f;
-            ConfigureScrollContent(scrollContent, scrollContentHeight, 38f);
-            scroll.Scroll.Value = new float2(0f, 38f);
+            ConfigureScrollContent(scrollContent, scrollContentHeight);
+            scroll.Scroll.Value = new float2(0f, 30f);
             scroll.ScrollChanged += (_, value) =>
             {
-                float y = Clamp(value.y, 0f, 150f);
-                ConfigureScrollContent(scrollContent, scrollContentHeight, y);
-                status.Content.Value = $"Scroll clip y={y:0}";
+                status.Content.Value = $"Scroll clip y={value.y:0}";
             };
 
             var scrollUi = new UIBuilder(scrollContent.Slot);
             scrollUi.Font(font);
             var scrollLayout = scrollUi.VerticalLayout(4f, 6f);
+            scrollLayout.ForceExpandHeight.Value = false;
             Fill(scrollLayout.RectTransform!);
             for (int i = 1; i <= 9; i++)
             {
-                var row = scrollUi.Text($"clipped scroll row {i:00} - content should stay inside the mask", 14f, new color(0.82f, 0.86f, 0.92f, 1f));
+                var row = scrollUi.Text($"clipped scroll row {i:00} - content should stay inside the mask", 14f, new color(0.92f, 0.95f, 1f, 1f));
+                row.VerticalAlignment.Value = TextVerticalAlignment.Middle;
                 Fill(row.RectTransform!);
+                SetLayoutHeight(row.RectTransform!, 22f, 24f);
             }
             scrollUi.NestOut();
 
-            var imagePanel = ui.Panel(new color(0.035f, 0.040f, 0.050f, 0.96f));
+            var imagePanel = ui.Panel(new color(0.045f, 0.052f, 0.066f, 0.92f));
             Fill(imagePanel.RectTransform!);
+            SetLayoutHeight(imagePanel.RectTransform!, 80f, 88f);
             ui.Nest();
             var imageLayout = ui.HorizontalLayout(8f, 8f);
             Fill(imageLayout.RectTransform!);
-            var raw = ui.RawImage(checker, color.White, new Rect(0.05f, 0.05f, 0.90f, 0.90f), true);
+            var raw = ui.RawImage(null, color.White, Rect.UnitRect, false);
+            raw.Material.Target = checkerMaterial;
             Fill(raw.RectTransform!);
-            var tiled = ui.TiledRawImage(checker, color.White, new float2(24f, 24f), new float2(8f, 6f));
+            var tiled = ui.TiledRawImage(null, color.White, new float2(24f, 24f), new float2(8f, 6f));
+            tiled.Material.Target = checkerMaterial;
             Fill(tiled.RectTransform!);
             ui.NestOut();
             ui.NestOut();
 
             var fallback = ui.Text("FontSet fallback path: ASCII + symbols <> [] {} + missing glyph fallback", 14f, new color(0.88f, 0.82f, 0.96f, 1f));
             fallback.WordWrap.Value = true;
+            fallback.VerticalAlignment.Value = TextVerticalAlignment.Middle;
             Fill(fallback.RectTransform!);
+            SetLayoutHeight(fallback.RectTransform!, 34f, 42f);
 
             ui.NestOut();
         });
@@ -322,18 +356,27 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
         rect.OffsetMax.Value = float2.Zero;
     }
 
-    private static void ConfigureScrollContent(RectTransform rect, float contentHeight, float scrollY)
+    private static void FixedRect(RectTransform rect, float2 anchor, float2 size)
+    {
+        rect.AnchorMin.Value = anchor;
+        rect.AnchorMax.Value = anchor;
+        rect.OffsetMin.Value = size * -0.5f;
+        rect.OffsetMax.Value = size * 0.5f;
+    }
+
+    private static void ConfigureScrollContent(RectTransform rect, float contentHeight)
     {
         rect.AnchorMin.Value = new float2(0f, 1f);
         rect.AnchorMax.Value = new float2(1f, 1f);
-        rect.OffsetMin.Value = new float2(0f, -contentHeight + scrollY);
-        rect.OffsetMax.Value = new float2(0f, scrollY);
+        rect.OffsetMin.Value = new float2(0f, -contentHeight);
+        rect.OffsetMax.Value = float2.Zero;
     }
 
-    private static float Clamp(float value, float min, float max)
+    private static void SetLayoutHeight(RectTransform rect, float minHeight, float preferredHeight, float flexibleHeight = 0f)
     {
-        if (value < min) return min;
-        if (value > max) return max;
-        return value;
+        var element = rect.Slot.GetComponent<LayoutElement>() ?? rect.Slot.AttachComponent<LayoutElement>();
+        element.MinHeight.Value = minHeight;
+        element.PreferredHeight.Value = preferredHeight;
+        element.FlexibleHeight.Value = flexibleHeight;
     }
 }

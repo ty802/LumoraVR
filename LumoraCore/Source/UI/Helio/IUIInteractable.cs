@@ -19,3 +19,13 @@ public interface IUIInteractable
     void NotifyRelease(in UIInteractionContext context);
     void NotifySubmit(in UIInteractionContext context);
 }
+
+public interface IUIAxisActionReceiver
+{
+    bool ProcessAxis(in UIInteractionContext context, in float2 axis);
+}
+
+public interface IUISecondaryActionReceiver
+{
+    bool TriggerSecondary(in UIInteractionContext context);
+}

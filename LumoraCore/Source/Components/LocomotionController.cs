@@ -37,6 +37,8 @@ public class LocomotionController : Component
     private bool _nextModuleHeld;
     private bool _prevModuleHeld;
     private readonly LocomotionPermissions _permissions = new LocomotionPermissions();
+    private static readonly object DesktopInputSuppressionLock = new();
+    private static readonly System.Collections.Generic.HashSet<object> DesktopInputSuppressionRequests = new();
 
     private float _pitch = 0.0f;
     private float _yaw = 0.0f;
@@ -80,6 +82,38 @@ public class LocomotionController : Component
     public static void SetMouseLookSuppressed(bool value)
     {
         MouseLookSuppressed = value;
+    }
+
+    /// <summary>
+    /// Set by interaction tools while they need exclusive mouse/keyboard control.
+    /// Blocks desktop mouse-look and character movement.
+    /// </summary>
+    public static bool DesktopInputSuppressed
+    {
+        get
+        {
+            lock (DesktopInputSuppressionLock)
+            {
+                return DesktopInputSuppressionRequests.Count > 0;
+            }
+        }
+    }
+
+    public static void SetDesktopInputSuppressed(object requester, bool value)
+    {
+        if (requester == null) return;
+
+        lock (DesktopInputSuppressionLock)
+        {
+            if (value)
+            {
+                DesktopInputSuppressionRequests.Add(requester);
+            }
+            else
+            {
+                DesktopInputSuppressionRequests.Remove(requester);
+            }
+        }
     }
 
     // ===== INITIALIZATION =====
@@ -199,6 +233,12 @@ public class LocomotionController : Component
     {
         if (_keyboardDriver == null || _modules.Count <= 1)
             return;
+        if (DesktopInputSuppressed || _mouse?.RightButton.Held == true)
+        {
+            _nextModuleHeld = _keyboardDriver.GetKeyState(EngineKey.E);
+            _prevModuleHeld = _keyboardDriver.GetKeyState(EngineKey.Q);
+            return;
+        }
 
         // Simple next/prev with Q/E
         bool nextDown = _keyboardDriver.GetKeyState(EngineKey.E);
@@ -265,7 +305,7 @@ public class LocomotionController : Component
         }
         _escapeWasPressed = escapePressed;
 
-        if (_mouse == null || !_mouseCaptured || FreeCamActive || MouseLookSuppressed)
+        if (_mouse == null || !_mouseCaptured || FreeCamActive || MouseLookSuppressed || DesktopInputSuppressed)
             return;
 
         // Use Mouse.DirectDelta - now populated via GodotMouseDriver.HandleInputEvent
@@ -408,6 +448,8 @@ public class LocomotionController : Component
             MouseCaptureRequested = false;
             _mouseCaptured = false;
         }
+
+        SetDesktopInputSuppressed(this, false);
 
         base.OnDestroy();
         // Destroyed

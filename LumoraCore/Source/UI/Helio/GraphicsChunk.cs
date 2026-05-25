@@ -14,6 +14,11 @@ public sealed class GraphicsChunk
 {
     public sealed class RenderData
     {
+        private const int DefaultLogicalRenderQueue = 3000;
+        private const int GodotRenderPriorityMin = -128;
+        private const int GodotRenderPriorityMax = 127;
+        private const int GodotRenderPriorityCount = GodotRenderPriorityMax - GodotRenderPriorityMin + 1;
+
         private readonly Dictionary<MaterialKey, List<PhosTriangleSubmesh>> _requestedMaterials = new();
         private readonly Dictionary<MaterialKey, AssignedMaterial> _assignedMaterials = new();
         private readonly GraphicsChunk _chunk;
@@ -21,6 +26,7 @@ public sealed class GraphicsChunk
         private Rect? _clipRect;
 
         public PhosMesh Mesh { get; } = new();
+        public Rect? ClipRect => _clipRect;
 
         public RenderData(GraphicsChunk chunk)
         {
@@ -49,13 +55,13 @@ public sealed class GraphicsChunk
         }
 
         public PhosTriangleSubmesh GetSubmesh(IAssetProvider<MaterialAsset>? material)
-            => GetSubmesh(new MaterialKey(material, null, null));
+            => GetSubmesh(new MaterialKey(material, null, null, _clipRect));
 
         public PhosTriangleSubmesh GetSubmesh(IAssetProvider<MaterialAsset>? material, MaterialMapper mapper)
-            => GetSubmesh(new MaterialKey(material, null, mapper));
+            => GetSubmesh(new MaterialKey(material, null, mapper, _clipRect));
 
         public PhosTriangleSubmesh GetSubmesh(IAssetProvider<MaterialAsset>? material, object? key, MaterialMapper? mapper)
-            => GetSubmesh(new MaterialKey(material, key, mapper));
+            => GetSubmesh(new MaterialKey(material, key, mapper, _clipRect));
 
         public PhosTriangleSubmesh GetSubmesh(in MaterialKey key)
         {
@@ -103,23 +109,172 @@ public sealed class GraphicsChunk
 
         private void AssignMaterials()
         {
-            int materialCount = Mesh.Submeshes.Count;
+            var requests = BuildMaterialRequests(out var submeshQueues, out var logicalQueues);
+            SortSubmeshesByRenderQueue(submeshQueues);
+
+            var surfaceIndexes = BuildSurfaceIndexes();
+            int materialCount = surfaceIndexes.Count;
             _chunk.MeshRenderer!.Materials.EnsureExactCount(materialCount);
             _chunk.MeshRenderer.MaterialPropertyBlocks.EnsureExactCount(materialCount);
+            _chunk.MeshRenderer.EnsureExactSurfaceRenderPriorityCount(materialCount);
+
+            var renderPriorityMap = BuildRenderPriorityMap(logicalQueues);
+            var activeMaterials = new HashSet<MaterialKey>();
+            foreach (var request in requests)
+            {
+                var indexes = new List<int>(request.Submeshes.Count);
+                foreach (var submesh in request.Submeshes)
+                {
+                    if (surfaceIndexes.TryGetValue(submesh, out int surfaceIndex))
+                    {
+                        indexes.Add(surfaceIndex);
+                    }
+                }
+
+                if (indexes.Count == 0)
+                {
+                    continue;
+                }
+
+                int renderPriority = renderPriorityMap.TryGetValue(request.LogicalRenderQueue, out var priority)
+                    ? priority
+                    : 0;
+                foreach (int index in indexes)
+                {
+                    _chunk.MeshRenderer.SetSurfaceRenderPriority(index, MeshRenderer.NoSurfaceRenderPriority);
+                }
+
+                var map = ApplyRenderPriority(request.Map, renderPriority);
+                activeMaterials.Add(request.Key);
+                UpdateMaterial(request.Key, indexes, in map);
+            }
+
+            RemoveUnusedMaterials(activeMaterials);
+        }
+
+        private List<MaterialRequest> BuildMaterialRequests(
+            out Dictionary<PhosTriangleSubmesh, int> submeshQueues,
+            out SortedSet<int> logicalQueues)
+        {
+            var requests = new List<MaterialRequest>(_requestedMaterials.Count);
+            submeshQueues = new Dictionary<PhosTriangleSubmesh, int>();
+            logicalQueues = new SortedSet<int>();
 
             foreach (var pair in _requestedMaterials)
             {
                 var map = GetMaterialMap(pair.Key);
-                var indexes = new List<int>(pair.Value.Count);
+                int logicalQueue = GetLogicalRenderQueue(map.FilteredMaterial);
+                logicalQueues.Add(logicalQueue);
+
                 foreach (var submesh in pair.Value)
                 {
-                    indexes.Add(submesh.Index);
+                    if (submesh.IndexCount > 0)
+                    {
+                        submeshQueues[submesh] = logicalQueue;
+                    }
                 }
 
-                UpdateMaterial(pair.Key, indexes, in map);
+                requests.Add(new MaterialRequest(pair.Key, pair.Value, in map, logicalQueue));
             }
 
-            RemoveUnusedMaterials();
+            return requests;
+        }
+
+        private void SortSubmeshesByRenderQueue(Dictionary<PhosTriangleSubmesh, int> submeshQueues)
+        {
+            if (submeshQueues.Count < 2)
+            {
+                return;
+            }
+
+            var originalIndexes = new Dictionary<PhosSubmesh, int>(Mesh.Submeshes.Count);
+            for (int i = 0; i < Mesh.Submeshes.Count; i++)
+            {
+                originalIndexes[Mesh.Submeshes[i]] = i;
+            }
+
+            Mesh.Submeshes.Sort((left, right) =>
+            {
+                int leftQueue = left is PhosTriangleSubmesh leftTriangle
+                    && submeshQueues.TryGetValue(leftTriangle, out int lq)
+                        ? lq
+                        : DefaultLogicalRenderQueue;
+                int rightQueue = right is PhosTriangleSubmesh rightTriangle
+                    && submeshQueues.TryGetValue(rightTriangle, out int rq)
+                        ? rq
+                        : DefaultLogicalRenderQueue;
+
+                int queueCompare = leftQueue.CompareTo(rightQueue);
+                return queueCompare != 0
+                    ? queueCompare
+                    : originalIndexes[left].CompareTo(originalIndexes[right]);
+            });
+        }
+
+        private static Dictionary<int, int> BuildRenderPriorityMap(SortedSet<int> logicalQueues)
+        {
+            var map = new Dictionary<int, int>(logicalQueues.Count);
+            if (logicalQueues.Count == 0)
+            {
+                return map;
+            }
+
+            int index = 0;
+            if (logicalQueues.Count <= GodotRenderPriorityCount)
+            {
+                int start = -logicalQueues.Count / 2;
+                foreach (int queue in logicalQueues)
+                {
+                    map[queue] = System.Math.Clamp(start + index, GodotRenderPriorityMin, GodotRenderPriorityMax);
+                    index++;
+                }
+                return map;
+            }
+
+            foreach (int queue in logicalQueues)
+            {
+                double t = logicalQueues.Count == 1 ? 0d : index / (double)(logicalQueues.Count - 1);
+                map[queue] = GodotRenderPriorityMin + (int)System.Math.Round(t * (GodotRenderPriorityCount - 1));
+                index++;
+            }
+
+            return map;
+        }
+
+        private MaterialMap ApplyRenderPriority(in MaterialMap map, int renderPriority)
+        {
+            var material = _chunk.GetRenderPriorityMaterial(map.FilteredMaterial, renderPriority);
+            return new MaterialMap(material, map.FilteredPropertyBlock);
+        }
+
+        private static int GetLogicalRenderQueue(IAssetProvider<MaterialAsset>? material)
+        {
+            int queue = material switch
+            {
+                UIUnlitMaterial ui => ui.RenderQueue.Value,
+                UITextMaterial text => text.RenderQueue.Value,
+                { IsAssetAvailable: true } => material.Asset.RenderQueue,
+                _ => DefaultLogicalRenderQueue,
+            };
+
+            return queue >= 0 ? queue : DefaultLogicalRenderQueue;
+        }
+
+        private Dictionary<PhosTriangleSubmesh, int> BuildSurfaceIndexes()
+        {
+            var indexes = new Dictionary<PhosTriangleSubmesh, int>();
+            int surfaceIndex = 0;
+            foreach (var submesh in Mesh.Submeshes)
+            {
+                if (submesh is not PhosTriangleSubmesh triangleSubmesh || triangleSubmesh.IndexCount <= 0)
+                {
+                    continue;
+                }
+
+                indexes[triangleSubmesh] = surfaceIndex++;
+            }
+
+            return indexes;
         }
 
         private void UpdateMaterial(in MaterialKey key, List<int> indexes, in MaterialMap map)
@@ -163,14 +318,14 @@ public sealed class GraphicsChunk
             return true;
         }
 
-        private void RemoveUnusedMaterials()
+        private void RemoveUnusedMaterials(HashSet<MaterialKey> activeMaterials)
         {
-            if (_assignedMaterials.Count == _requestedMaterials.Count)
+            if (_assignedMaterials.Count == activeMaterials.Count)
             {
                 bool allFound = true;
                 foreach (var key in _assignedMaterials.Keys)
                 {
-                    if (!_requestedMaterials.ContainsKey(key))
+                    if (!activeMaterials.Contains(key))
                     {
                         allFound = false;
                         break;
@@ -185,7 +340,7 @@ public sealed class GraphicsChunk
             List<MaterialKey>? remove = null;
             foreach (var pair in _assignedMaterials)
             {
-                if (_requestedMaterials.ContainsKey(pair.Key))
+                if (activeMaterials.Contains(pair.Key))
                 {
                     continue;
                 }
@@ -252,18 +407,38 @@ public sealed class GraphicsChunk
                 map = new MaterialMap(baseMaterial);
             }
 
-            if (!_clipRect.HasValue)
+            if (!key.ClipRect.HasValue)
             {
                 return map;
             }
 
-            return new MaterialMap(_chunk.GetClippedMaterial(map.FilteredMaterial, _clipRect.Value), map.FilteredPropertyBlock);
+            return new MaterialMap(_chunk.GetClippedMaterial(map.FilteredMaterial, key.ClipRect.Value), map.FilteredPropertyBlock);
         }
 
         private void PrepareMesh()
         {
             Mesh.HasColors = true;
             Mesh.SetHasUV(0, true);
+        }
+
+        private readonly struct MaterialRequest
+        {
+            public readonly MaterialKey Key;
+            public readonly List<PhosTriangleSubmesh> Submeshes;
+            public readonly MaterialMap Map;
+            public readonly int LogicalRenderQueue;
+
+            public MaterialRequest(
+                in MaterialKey key,
+                List<PhosTriangleSubmesh> submeshes,
+                in MaterialMap map,
+                int logicalRenderQueue)
+            {
+                Key = key;
+                Submeshes = submeshes;
+                Map = map;
+                LogicalRenderQueue = logicalRenderQueue;
+            }
         }
     }
 
@@ -324,5 +499,17 @@ public sealed class GraphicsChunk
         SetupComponents();
         _materialCloneCache ??= new MaterialCloneCache(ChunkSlot);
         return _materialCloneCache.GetClippedMaterial(source, clipRect);
+    }
+
+    private IAssetProvider<MaterialAsset>? GetRenderPriorityMaterial(IAssetProvider<MaterialAsset>? source, int renderPriority)
+    {
+        if (source == null)
+        {
+            return null;
+        }
+
+        SetupComponents();
+        _materialCloneCache ??= new MaterialCloneCache(ChunkSlot);
+        return _materialCloneCache.GetRenderPriorityMaterial(source, renderPriority);
     }
 }

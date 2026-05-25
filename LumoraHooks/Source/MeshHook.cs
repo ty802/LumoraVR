@@ -162,6 +162,7 @@ public class MeshHook : ComponentHook<ProceduralMesh>
     private void UploadTriangleSubmesh(PhosMesh phosMesh, PhosTriangleSubmesh submesh, MeshUploadHint uploadHint)
     {
         if (godotMesh == null) return;
+        if (submesh.IndexCount <= 0) return;
 
         var arrays = new global::Godot.Collections.Array();
         arrays.Resize((int)Mesh.ArrayType.Max);

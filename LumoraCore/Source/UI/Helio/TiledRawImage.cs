@@ -80,6 +80,12 @@ public sealed class TiledRawImage : Graphic
             return;
         }
 
+        var clipRect = renderData.ClipRect;
+        if (clipRect.HasValue && !rect.Overlaps(clipRect.Value))
+        {
+            return;
+        }
+
         var tileSize = ResolveTileSize(rect);
         if (tileSize.x <= 0f || tileSize.y <= 0f)
         {
@@ -88,7 +94,7 @@ public sealed class TiledRawImage : Graphic
 
         var textureBlock = EnsureTextureBlock();
         var submesh = renderData.GetSubmesh(_material, textureBlock, MapMaterial);
-        GenerateTiles(submesh.Mesh, submesh, rect, tileSize, _tileOffset, _texture, in _tint);
+        GenerateTiles(submesh.Mesh, submesh, rect, tileSize, _tileOffset, _texture, in _tint, clipRect);
     }
 
     public override bool IsPointInside(in float2 point)
@@ -103,7 +109,8 @@ public sealed class TiledRawImage : Graphic
         in float2 tileSize,
         in float2 tileOffset,
         TextureAsset? texture,
-        in color tint)
+        in color tint,
+        Rect? clipRect)
     {
         float startX = rect.xMin + PositiveModulo(tileOffset.x, tileSize.x);
         float startY = rect.yMin + PositiveModulo(tileOffset.y, tileSize.y);
@@ -143,7 +150,7 @@ public sealed class TiledRawImage : Graphic
                     (tileXMax - tileXMin) / tileSize.x,
                     (tileYMax - tileYMin) / tileSize.y
                 );
-                RawImage.GenerateImage(mesh, submesh, tileRect, uvRect, texture, false, in tint);
+                RawImage.GenerateImage(mesh, submesh, tileRect, uvRect, texture, false, in tint, clipRect);
             }
         }
     }

@@ -26,6 +26,11 @@ public class UITextMaterial : MaterialProvider, ICommonMaterial
     public readonly Sync<Rect> Rect;
     public readonly Sync<bool> RectClip;
     public readonly Sync<ColorMask> ColorMask;
+    public readonly Sync<StencilComparison> StencilComparison;
+    public readonly Sync<StencilOperation> StencilOperation;
+    public readonly Sync<byte> StencilID;
+    public readonly Sync<byte> StencilWriteMask;
+    public readonly Sync<byte> StencilReadMask;
 
     // Same DirectTexture override as UIUnlitMaterial — binds a transient atlas TextureAsset
     // (no owning provider component) without routing through an AssetRef. - xlinka
@@ -66,6 +71,11 @@ public class UITextMaterial : MaterialProvider, ICommonMaterial
         Rect = new Sync<Rect>(this, Lumora.Core.Math.Rect.Zero);
         RectClip = new Sync<bool>(this, false);
         ColorMask = new Sync<ColorMask>(this, Assets.ColorMask.RGBA);
+        StencilComparison = new Sync<StencilComparison>(this, Assets.StencilComparison.Always);
+        StencilOperation = new Sync<StencilOperation>(this, Assets.StencilOperation.Keep);
+        StencilID = new Sync<byte>(this, 0);
+        StencilWriteMask = new Sync<byte>(this, byte.MaxValue);
+        StencilReadMask = new Sync<byte>(this, byte.MaxValue);
     }
 
     protected override void UpdateMaterial(MaterialAsset asset)
@@ -88,5 +98,10 @@ public class UITextMaterial : MaterialProvider, ICommonMaterial
         asset.SetFloat4("Rect", new float4(rect.xMin, rect.yMin, rect.xMax, rect.yMax));
         asset.SetBool("RectClip", RectClip.Value);
         asset.SetInt("ColorMask", (int)ColorMask.Value);
+        asset.SetInt("StencilComparison", (int)StencilComparison.Value);
+        asset.SetInt("StencilOperation", (int)StencilOperation.Value);
+        asset.SetInt("StencilID", StencilID.Value);
+        asset.SetInt("StencilWriteMask", StencilWriteMask.Value);
+        asset.SetInt("StencilReadMask", StencilReadMask.Value);
     }
 }

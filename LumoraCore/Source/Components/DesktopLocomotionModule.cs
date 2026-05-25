@@ -40,7 +40,7 @@ public class DesktopLocomotionModule : ILocomotionModule
             return;
 
         // Yield all movement to DesktopCameraController when free-cam is active
-        if (LocomotionController.FreeCamActive)
+        if (LocomotionController.FreeCamActive || LocomotionController.DesktopInputSuppressed)
         {
             _characterController.SetMovementDirection(float3.Zero);
             return;

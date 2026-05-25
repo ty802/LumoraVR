@@ -13,12 +13,13 @@ using Lumora.Core.Math;
 namespace Helio.UI;
 
 // root of a UI tree. attach to a slot to make it (and descendants) a UI subtree. - xlinka
-public class Canvas : Component, ILaserPointerTarget
+public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSecondaryTarget
 {
     private sealed class PointerState
     {
         public IUIInteractable? Hovered;
         public IUIInteractable? Pressed;
+        public UIInteractionContext LastContext;
         public bool IsPressed;
     }
 
@@ -80,6 +81,16 @@ public class Canvas : Component, ILaserPointerTarget
         ClearPointer(GetInteractionSource(laser), pointerId);
     }
 
+    public bool ProcessLaserAxis(InteractionLaser laser, int pointerId, in float2 axis)
+    {
+        return ProcessAxis(GetInteractionSource(laser), pointerId, axis);
+    }
+
+    public bool TriggerLaserSecondary(InteractionLaser laser, int pointerId)
+    {
+        return TriggerSecondary(GetInteractionSource(laser), pointerId);
+    }
+
     public UIHit? HitTest(float3 rayOrigin, float3 rayDirection)
     {
         return TryHitTest(rayOrigin, rayDirection, out var hit) ? hit : null;
@@ -137,6 +148,7 @@ public class Canvas : Component, ILaserPointerTarget
             state = new PointerState();
             _pointers[key] = state;
         }
+        state.LastContext = context;
 
         if (!ReferenceEquals(state.Hovered, hovered))
         {
@@ -168,6 +180,33 @@ public class Canvas : Component, ILaserPointerTarget
         }
 
         state.IsPressed = isPressed;
+    }
+
+    public bool ProcessAxis(UIInteractionSource source, int pointerId, in float2 axis)
+    {
+        if (axis == float2.Zero)
+        {
+            return false;
+        }
+
+        int key = PointerKey(source, pointerId);
+        if (!_pointers.TryGetValue(key, out var state) || state.Hovered == null)
+        {
+            return false;
+        }
+
+        return DispatchAxis(state.Hovered, in state.LastContext, in axis);
+    }
+
+    public bool TriggerSecondary(UIInteractionSource source, int pointerId)
+    {
+        int key = PointerKey(source, pointerId);
+        if (!_pointers.TryGetValue(key, out var state) || state.Hovered == null)
+        {
+            return false;
+        }
+
+        return DispatchSecondary(state.Hovered, in state.LastContext);
     }
 
     public void ClearPointer(UIInteractionSource source, int pointerId)
@@ -229,6 +268,7 @@ public class Canvas : Component, ILaserPointerTarget
         }
 
         ComputeRects(Slot, null);
+        ApplyScrollRects(Slot);
         _rootChunk.PrepareCompute();
 
         RenderGraphics(Slot, null);
@@ -322,6 +362,36 @@ public class Canvas : Component, ILaserPointerTarget
         {
             foreach (var c in slot.Children) ReanchorAndDescend(c, parent);
             foreach (var c in slot.LocalChildren) ReanchorAndDescend(c, parent);
+        }
+    }
+
+    private void ApplyScrollRects(Slot slot)
+    {
+        if (slot != Slot && !slot.ActiveSelf.Value)
+        {
+            return;
+        }
+
+        foreach (var scroll in slot.GetComponents<ScrollRect>())
+        {
+            if (!scroll.Enabled.Value)
+            {
+                continue;
+            }
+
+            if (scroll.ApplyScroll(out var content) && content != null)
+            {
+                ApplyLayout(content.Slot, content);
+            }
+        }
+
+        foreach (var child in slot.Children)
+        {
+            ApplyScrollRects(child);
+        }
+        foreach (var child in slot.LocalChildren)
+        {
+            ApplyScrollRects(child);
         }
     }
 
@@ -444,6 +514,74 @@ public class Canvas : Component, ILaserPointerTarget
     private static int PointerKey(UIInteractionSource source, int pointerId)
     {
         return ((int)source << 24) ^ pointerId;
+    }
+
+    private bool DispatchAxis(IUIInteractable interactable, in UIInteractionContext context, in float2 axis)
+    {
+        foreach (var receiver in GetInteractionReceivers<IUIAxisActionReceiver>(interactable))
+        {
+            if (receiver.ProcessAxis(in context, in axis))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool DispatchSecondary(IUIInteractable interactable, in UIInteractionContext context)
+    {
+        foreach (var receiver in GetInteractionReceivers<IUISecondaryActionReceiver>(interactable))
+        {
+            if (receiver.TriggerSecondary(in context))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private IEnumerable<T> GetInteractionReceivers<T>(IUIInteractable interactable) where T : class
+    {
+        var directReceiver = interactable as T;
+        if (directReceiver != null)
+        {
+            yield return directReceiver;
+        }
+
+        if (interactable is not Component component || component.Slot == null)
+        {
+            yield break;
+        }
+
+        var current = component.Slot;
+        bool first = true;
+        while (current != null)
+        {
+            if (!first && current.GetComponent<SearchBlock>() != null)
+            {
+                yield break;
+            }
+
+            foreach (var receiver in current.GetComponentsImplementing<T>())
+            {
+                if (ReferenceEquals(receiver, directReceiver))
+                {
+                    continue;
+                }
+
+                yield return receiver;
+            }
+
+            if (ReferenceEquals(current, Slot))
+            {
+                yield break;
+            }
+
+            first = false;
+            current = current.Parent;
+        }
     }
 
     private void RenderGraphics(Slot slot, Rect? clipRect)

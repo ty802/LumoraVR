@@ -36,3 +36,13 @@ public interface ILaserPointerTarget : IInteractionTarget
 
     void ClearLaserPointer(InteractionLaser laser, int pointerId);
 }
+
+public interface ILaserAxisTarget
+{
+    bool ProcessLaserAxis(InteractionLaser laser, int pointerId, in float2 axis);
+}
+
+public interface ILaserSecondaryTarget
+{
+    bool TriggerLaserSecondary(InteractionLaser laser, int pointerId);
+}

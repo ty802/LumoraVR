@@ -14,25 +14,43 @@ public class PanelShell : UIComponent
 {
     public readonly Sync<string> Title;
     public readonly Sync<float2> Size;
+    public readonly Sync<bool> AllowGrab;
+    public readonly Sync<bool> Scalable;
+    public readonly Sync<bool> ShowHeader;
     public readonly Sync<float> HeaderHeight;
     public readonly Sync<float> Padding;
+    public readonly Sync<float> TitleTextSize;
+    public readonly Sync<float> CloseButtonPadding;
     public readonly Sync<bool> ShowCloseButton;
     public readonly Sync<color> BackgroundColor;
     public readonly Sync<color> HeaderColor;
+    public readonly Sync<color> HeaderSeparatorColor;
     public readonly Sync<color> TextColor;
+    public readonly Sync<color> CloseButtonColor;
+    public readonly Sync<color> CloseButtonHighlightColor;
+    public readonly Sync<color> CloseButtonPressedColor;
+    public readonly Sync<color> CloseButtonDisabledColor;
+    public readonly Sync<color> CloseIconColor;
     public readonly AssetRef<FontSet> Font;
 
     private bool _built;
+    private Grabbable? _grabbable;
     private RectTransform? _rootRect;
     private Image? _backgroundImage;
     private Slot? _headerSlot;
     private RectTransform? _headerRect;
     private Image? _headerImage;
+    private InteractionElement? _headerGrabSurface;
+    private Slot? _separatorSlot;
+    private RectTransform? _separatorRect;
+    private Image? _separatorImage;
     private RectTransform? _titleRect;
     private Text? _titleText;
     private Slot? _closeSlot;
     private RectTransform? _closeRect;
+    private Button? _closeButton;
     private Image? _closeImage;
+    private ColorDriver? _closeColorDriver;
     private Text? _closeText;
     private Slot? _contentSlot;
     private RectTransform? _contentRect;
@@ -61,12 +79,23 @@ public class PanelShell : UIComponent
     {
         Title = new Sync<string>(this, string.Empty);
         Size = new Sync<float2>(this, new float2(640f, 420f));
+        AllowGrab = new Sync<bool>(this, true);
+        Scalable = new Sync<bool>(this, true);
+        ShowHeader = new Sync<bool>(this, true);
         HeaderHeight = new Sync<float>(this, 44f);
         Padding = new Sync<float>(this, 8f);
+        TitleTextSize = new Sync<float>(this, 18f);
+        CloseButtonPadding = new Sync<float>(this, 4f);
         ShowCloseButton = new Sync<bool>(this, true);
         BackgroundColor = new Sync<color>(this, new color(0.035f, 0.040f, 0.050f, 0.92f));
         HeaderColor = new Sync<color>(this, new color(0.090f, 0.100f, 0.120f, 0.96f));
+        HeaderSeparatorColor = new Sync<color>(this, new color(0.16f, 0.18f, 0.22f, 0.95f));
         TextColor = new Sync<color>(this, color.White);
+        CloseButtonColor = new Sync<color>(this, new color(0.62f, 0.16f, 0.18f, 0.98f));
+        CloseButtonHighlightColor = new Sync<color>(this, new color(0.82f, 0.22f, 0.24f, 1f));
+        CloseButtonPressedColor = new Sync<color>(this, new color(0.42f, 0.08f, 0.10f, 1f));
+        CloseButtonDisabledColor = new Sync<color>(this, new color(0.25f, 0.25f, 0.28f, 0.7f));
+        CloseIconColor = new Sync<color>(this, color.Black);
         Font = new AssetRef<FontSet>(this);
     }
 
@@ -109,15 +138,21 @@ public class PanelShell : UIComponent
 
         _rootRect = RectTransform ?? Slot.GetComponent<RectTransform>() ?? Slot.AttachComponent<RectTransform>();
         _ = Slot.GetComponent<Canvas>() ?? Slot.AttachComponent<Canvas>();
+        _grabbable = Slot.GetComponent<Grabbable>() ?? Slot.AttachComponent<Grabbable>();
         _backgroundImage = Slot.GetComponent<Image>() ?? Slot.AttachComponent<Image>();
 
         _headerSlot = Slot.AddSlot("Header");
         _headerRect = _headerSlot.AttachComponent<RectTransform>();
         _headerImage = _headerSlot.AttachComponent<Image>();
+        _headerGrabSurface = _headerSlot.AttachComponent<InteractionElement>();
 
         var titleSlot = _headerSlot.AddSlot("Title");
         _titleRect = titleSlot.AttachComponent<RectTransform>();
         _titleText = titleSlot.AttachComponent<Text>();
+
+        _separatorSlot = _headerSlot.AddSlot("Separator");
+        _separatorRect = _separatorSlot.AttachComponent<RectTransform>();
+        _separatorImage = _separatorSlot.AttachComponent<Image>();
 
         _contentSlot = Slot.AddSlot("Content");
         _contentRect = _contentSlot.AttachComponent<RectTransform>();
@@ -134,17 +169,36 @@ public class PanelShell : UIComponent
 
         _rootRect ??= RectTransform ?? Slot.GetComponent<RectTransform>() ?? Slot.AttachComponent<RectTransform>();
         SetCenteredRect(_rootRect, Size.Value);
+        float headerSize = MathF.Max(0f, HeaderHeight.Value);
+        float headerHeight = ShowHeader.Value ? headerSize : 0f;
+        bool canGrab = AllowGrab.Value;
+
+        if (_grabbable != null && !_grabbable.IsDestroyed)
+        {
+            Set(_grabbable.AllowGrab, canGrab);
+            Set(_grabbable.Scalable, Scalable.Value);
+        }
 
         if (_backgroundImage != null && !_backgroundImage.IsDestroyed)
         {
             Set(_backgroundImage.Tint, BackgroundColor.Value);
         }
 
+        if (_headerSlot != null && !_headerSlot.IsDestroyed)
+        {
+            Set(_headerSlot.ActiveSelf, ShowHeader.Value);
+        }
+
+        if (_headerGrabSurface != null && !_headerGrabSurface.IsDestroyed)
+        {
+            Set(_headerGrabSurface.Interactable, canGrab);
+        }
+
         if (_headerRect != null && !_headerRect.IsDestroyed)
         {
             Set(_headerRect.AnchorMin, new float2(0f, 1f));
             Set(_headerRect.AnchorMax, new float2(1f, 1f));
-            Set(_headerRect.OffsetMin, new float2(0f, -HeaderHeight.Value));
+            Set(_headerRect.OffsetMin, new float2(0f, -headerSize));
             Set(_headerRect.OffsetMax, float2.Zero);
         }
 
@@ -153,18 +207,34 @@ public class PanelShell : UIComponent
             Set(_headerImage.Tint, HeaderColor.Value);
         }
 
+        if (_separatorRect != null && !_separatorRect.IsDestroyed)
+        {
+            Set(_separatorRect.AnchorMin, new float2(0f, 0f));
+            Set(_separatorRect.AnchorMax, new float2(1f, 0f));
+            Set(_separatorRect.OffsetMin, float2.Zero);
+            Set(_separatorRect.OffsetMax, new float2(0f, 2f));
+        }
+
+        if (_separatorImage != null && !_separatorImage.IsDestroyed)
+        {
+            Set(_separatorImage.Tint, HeaderSeparatorColor.Value);
+        }
+
         if (_titleRect != null && !_titleRect.IsDestroyed)
         {
+            float closeWidth = ShowCloseButton.Value ? headerSize : 0f;
             Fill(_titleRect);
             Set(_titleRect.OffsetMin, new float2(Padding.Value, 0f));
-            Set(_titleRect.OffsetMax, new float2(ShowCloseButton.Value ? -HeaderHeight.Value : -Padding.Value, 0f));
+            Set(_titleRect.OffsetMax, new float2(ShowCloseButton.Value ? -closeWidth : -Padding.Value, 0f));
         }
 
         if (_titleText != null && !_titleText.IsDestroyed)
         {
             Set(_titleText.Content, Title.Value);
             Set(_titleText.Color, TextColor.Value);
-            Set(_titleText.Size, 18f);
+            Set(_titleText.Size, TitleTextSize.Value);
+            Set(_titleText.HorizontalAlignment, TextHorizontalAlignment.Left);
+            Set(_titleText.VerticalAlignment, TextVerticalAlignment.Middle);
             SetTarget(_titleText.Font, Font.Target);
         }
 
@@ -182,7 +252,7 @@ public class PanelShell : UIComponent
         {
             Fill(_contentRect);
             Set(_contentRect.OffsetMin, new float2(Padding.Value, Padding.Value));
-            Set(_contentRect.OffsetMax, new float2(-Padding.Value, -HeaderHeight.Value - Padding.Value));
+            Set(_contentRect.OffsetMax, new float2(-Padding.Value, -headerHeight - Padding.Value));
         }
     }
 
@@ -200,9 +270,10 @@ public class PanelShell : UIComponent
 
         _closeSlot = _headerSlot.AddSlot("Close");
         _closeRect = _closeSlot.AttachComponent<RectTransform>();
-        var closeButton = _closeSlot.AttachComponent<Button>();
-        closeButton.Clicked += (_, _) => Close();
         _closeImage = _closeSlot.AttachComponent<Image>();
+        _closeButton = _closeSlot.AttachComponent<Button>();
+        _closeButton.Clicked += (_, _) => Close();
+        _closeColorDriver = _closeButton.SetupBackgroundColor(_closeImage.Tint);
 
         var closeLabel = _closeSlot.AddSlot("Label");
         var closeLabelRect = closeLabel.AttachComponent<RectTransform>();
@@ -214,22 +285,39 @@ public class PanelShell : UIComponent
     {
         if (_closeRect != null && !_closeRect.IsDestroyed)
         {
+            float headerSize = MathF.Max(0f, HeaderHeight.Value);
+            float inset = MathF.Max(0f, MathF.Min(CloseButtonPadding.Value, headerSize * 0.45f));
+            float buttonSize = MathF.Max(0f, headerSize - inset * 2f);
             Set(_closeRect.AnchorMin, new float2(1f, 0f));
             Set(_closeRect.AnchorMax, new float2(1f, 1f));
-            Set(_closeRect.OffsetMin, new float2(-HeaderHeight.Value, 0f));
-            Set(_closeRect.OffsetMax, float2.Zero);
+            Set(_closeRect.OffsetMin, new float2(-buttonSize - inset, inset));
+            Set(_closeRect.OffsetMax, new float2(-inset, -inset));
         }
 
-        if (_closeImage != null && !_closeImage.IsDestroyed)
+        if (_closeColorDriver != null && !_closeColorDriver.IsDestroyed)
         {
-            Set(_closeImage.Tint, new color(0.12f, 0.13f, 0.15f, 1f));
+            Set(_closeColorDriver.TintColorMode, InteractionColorMode.Direct);
+            Set(_closeColorDriver.NormalColor, CloseButtonColor.Value);
+            Set(_closeColorDriver.HighlightColor, CloseButtonHighlightColor.Value);
+            Set(_closeColorDriver.PressedColor, CloseButtonPressedColor.Value);
+            Set(_closeColorDriver.DisabledColor, CloseButtonDisabledColor.Value);
+            if (_closeButton != null && !_closeButton.IsDestroyed)
+            {
+                _closeColorDriver.Apply(_closeButton);
+            }
+        }
+        else if (_closeImage != null && !_closeImage.IsDestroyed)
+        {
+            Set(_closeImage.Tint, CloseButtonColor.Value);
         }
 
         if (_closeText != null && !_closeText.IsDestroyed)
         {
-            Set(_closeText.Content, "x");
-            Set(_closeText.Color, TextColor.Value);
-            Set(_closeText.Size, 18f);
+            Set(_closeText.Content, "X");
+            Set(_closeText.Color, CloseIconColor.Value);
+            Set(_closeText.Size, TitleTextSize.Value);
+            Set(_closeText.HorizontalAlignment, TextHorizontalAlignment.Center);
+            Set(_closeText.VerticalAlignment, TextVerticalAlignment.Middle);
             SetTarget(_closeText.Font, Font.Target);
         }
     }
@@ -243,7 +331,9 @@ public class PanelShell : UIComponent
 
         _closeSlot = null;
         _closeRect = null;
+        _closeButton = null;
         _closeImage = null;
+        _closeColorDriver = null;
         _closeText = null;
     }
 

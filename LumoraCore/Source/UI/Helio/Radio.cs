@@ -10,6 +10,7 @@ public sealed class Radio : InteractionElement
 {
     public readonly Sync<bool> IsChecked;
     public readonly Sync<string> Group;
+    public FieldDrive<bool>? CheckVisual { get; private set; }
 
     public event Action<Radio, bool>? ValueChanged;
 
@@ -19,11 +20,37 @@ public sealed class Radio : InteractionElement
         Group = new Sync<string>(this, string.Empty);
     }
 
+    public override void OnAwake()
+    {
+        base.OnAwake();
+        CheckVisual = new FieldDrive<bool>(World);
+    }
+
+    public override void OnChanges()
+    {
+        base.OnChanges();
+        UpdateCheckVisual();
+    }
+
+    public override void OnDestroy()
+    {
+        CheckVisual?.Release();
+        CheckVisual = null;
+        base.OnDestroy();
+    }
+
+    public void SetCheckVisual(IField<bool> target)
+    {
+        CheckVisual?.DriveTarget(target);
+        UpdateCheckVisual();
+    }
+
     protected override void OnSubmit(in UIInteractionContext context)
     {
         if (IsChecked.Value) return;
 
         IsChecked.Value = true;
+        UpdateCheckVisual();
         ValueChanged?.Invoke(this, true);
 
         var group = Group.Value;
@@ -37,7 +64,16 @@ public sealed class Radio : InteractionElement
             }
 
             radio.IsChecked.Value = false;
+            radio.UpdateCheckVisual();
             radio.ValueChanged?.Invoke(radio, false);
+        }
+    }
+
+    private void UpdateCheckVisual()
+    {
+        if (CheckVisual?.IsLinkValid == true)
+        {
+            CheckVisual.SetValue(IsChecked.Value);
         }
     }
 }

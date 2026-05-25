@@ -135,16 +135,21 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
                 ApplyShadowCastMode(Owner.ShadowCastMode.Value);
             }
 
-            bool materialsChanged = Owner.MaterialsChanged
+            bool materialRefsChanged = Owner.MaterialsChanged
                 || Owner.MaterialPropertyBlocksChanged
                 || AnyChanged(Owner.Materials)
-                || AnyChanged(Owner.MaterialPropertyBlocks)
-                || meshWasChanged;
+                || AnyChanged(Owner.MaterialPropertyBlocks);
+            bool surfacePrioritiesChanged = Owner.SurfaceRenderPrioritiesChanged
+                || AnyChanged(Owner.SurfaceRenderPriorities);
+            bool surfaceAssignmentsChanged = Owner.SurfaceAssignmentsChanged || meshWasChanged;
+            bool materialsChanged = materialRefsChanged || surfacePrioritiesChanged || surfaceAssignmentsChanged;
 
             if (materialsChanged)
             {
                 Owner.MaterialsChanged = false;
                 Owner.MaterialPropertyBlocksChanged = false;
+                Owner.SurfaceRenderPrioritiesChanged = false;
+                Owner.SurfaceAssignmentsChanged = false;
                 ApplyMaterials();
                 ApplyRenderQueue();
             }
@@ -197,10 +202,32 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
         var propertyBlock = GetPropertyBlockAsset(index);
         if (propertyBlock != null && propertyBlock.IsValid)
         {
-            return propertyBlock.ApplyToMaterial(materialAsset) as Material;
+            return ApplySurfaceRenderPriority(index, propertyBlock.ApplyToMaterial(materialAsset) as Material);
         }
 
-        return materialAsset.GodotMaterial as Material;
+        return ApplySurfaceRenderPriority(index, materialAsset.GodotMaterial as Material);
+    }
+
+    private Material ApplySurfaceRenderPriority(int index, Material material)
+    {
+        if (material == null)
+        {
+            return null;
+        }
+
+        int priority = Owner.GetSurfaceRenderPriority(index);
+        if (priority == Lumora.Core.Components.MeshRenderer.NoSurfaceRenderPriority)
+        {
+            return material;
+        }
+
+        if (material.RenderPriority == priority)
+        {
+            return material;
+        }
+
+        MaterialPropertyApplicator.ApplyGodotRenderPriority(material, priority);
+        return material;
     }
 
     private MaterialAsset GetMaterialAsset(int index)
@@ -235,6 +262,17 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
         foreach (var assetRef in list)
         {
             changed |= assetRef.GetWasChangedAndClear();
+        }
+
+        return changed;
+    }
+
+    private static bool AnyChanged(SyncIntList list)
+    {
+        bool changed = false;
+        foreach (var field in list)
+        {
+            changed |= field.GetWasChangedAndClear();
         }
 
         return changed;
@@ -329,4 +367,5 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
             }
         }
     }
+
 }

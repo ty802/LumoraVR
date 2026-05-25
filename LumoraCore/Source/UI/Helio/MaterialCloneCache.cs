@@ -12,6 +12,7 @@ public sealed class MaterialCloneCache
 {
     private readonly Slot _root;
     private readonly Dictionary<ClipMaterialKey, Entry> _clipMaterials = new();
+    private readonly Dictionary<PriorityMaterialKey, Entry> _priorityMaterials = new();
     private int _frame;
 
     public MaterialCloneCache(Slot owner)
@@ -27,6 +28,10 @@ public sealed class MaterialCloneCache
         {
             _frame = 1;
             foreach (var entry in _clipMaterials.Values)
+            {
+                entry.LastUsedFrame = 0;
+            }
+            foreach (var entry in _priorityMaterials.Values)
             {
                 entry.LastUsedFrame = 0;
             }
@@ -48,6 +53,21 @@ public sealed class MaterialCloneCache
         };
     }
 
+    public IAssetProvider<MaterialAsset>? GetRenderPriorityMaterial(IAssetProvider<MaterialAsset>? source, int renderPriority)
+    {
+        if (source == null || source.IsDestroyed)
+        {
+            return null;
+        }
+
+        return source switch
+        {
+            UIUnlitMaterial unlit => GetPriorityUIUnlit(unlit, renderPriority),
+            UITextMaterial text => GetPriorityUIText(text, renderPriority),
+            _ => source,
+        };
+    }
+
     public void EndFrame()
     {
         List<ClipMaterialKey>? remove = null;
@@ -64,6 +84,7 @@ public sealed class MaterialCloneCache
 
         if (remove == null)
         {
+            RemoveUnusedPriorityMaterials();
             return;
         }
 
@@ -73,12 +94,15 @@ public sealed class MaterialCloneCache
             entry.Slot.Destroy();
             _clipMaterials.Remove(key);
         }
+
+        RemoveUnusedPriorityMaterials();
     }
 
     public void Destroy()
     {
         _root.Destroy();
         _clipMaterials.Clear();
+        _priorityMaterials.Clear();
     }
 
     private UIUnlitMaterial GetClippedUIUnlit(UIUnlitMaterial source, in Rect clipRect)
@@ -113,7 +137,42 @@ public sealed class MaterialCloneCache
         return clone;
     }
 
+    private UIUnlitMaterial GetPriorityUIUnlit(UIUnlitMaterial source, int renderPriority)
+    {
+        var key = new PriorityMaterialKey(source, renderPriority);
+        if (!_priorityMaterials.TryGetValue(key, out var entry) || entry.Material is not UIUnlitMaterial clone || clone.IsDestroyed)
+        {
+            var slot = _root.AddLocalSlot("RenderPriorityMaterial");
+            clone = slot.AttachComponent<UIUnlitMaterial>();
+            entry = new Entry(slot, clone);
+            _priorityMaterials[key] = entry;
+        }
+
+        entry.LastUsedFrame = _frame;
+        CopyUIUnlit(source, clone, null, RenderQueueForGodotPriority(renderPriority));
+        return clone;
+    }
+
+    private UITextMaterial GetPriorityUIText(UITextMaterial source, int renderPriority)
+    {
+        var key = new PriorityMaterialKey(source, renderPriority);
+        if (!_priorityMaterials.TryGetValue(key, out var entry) || entry.Material is not UITextMaterial clone || clone.IsDestroyed)
+        {
+            var slot = _root.AddLocalSlot("RenderPriorityTextMaterial");
+            clone = slot.AttachComponent<UITextMaterial>();
+            entry = new Entry(slot, clone);
+            _priorityMaterials[key] = entry;
+        }
+
+        entry.LastUsedFrame = _frame;
+        CopyUIText(source, clone, null, RenderQueueForGodotPriority(renderPriority));
+        return clone;
+    }
+
     private static void CopyUIUnlit(UIUnlitMaterial source, UIUnlitMaterial clone, in Rect clipRect)
+        => CopyUIUnlit(source, clone, clipRect, null);
+
+    private static void CopyUIUnlit(UIUnlitMaterial source, UIUnlitMaterial clone, Rect? clipRect, int? renderQueueOverride)
     {
         bool changed = false;
         changed |= SetTarget(clone.Texture, source.Texture.Target);
@@ -128,15 +187,15 @@ public sealed class MaterialCloneCache
         changed |= Set(clone.Culling, source.Culling.Value);
         changed |= Set(clone.ZWrite, source.ZWrite.Value);
         changed |= Set(clone.ZTest, source.ZTest.Value);
-        changed |= Set(clone.RenderQueue, source.RenderQueue.Value);
+        changed |= Set(clone.RenderQueue, renderQueueOverride ?? source.RenderQueue.Value);
         changed |= Set(clone.ColorMask, source.ColorMask.Value);
         changed |= Set(clone.StencilComparison, source.StencilComparison.Value);
         changed |= Set(clone.StencilOperation, source.StencilOperation.Value);
         changed |= Set(clone.StencilID, source.StencilID.Value);
         changed |= Set(clone.StencilWriteMask, source.StencilWriteMask.Value);
         changed |= Set(clone.StencilReadMask, source.StencilReadMask.Value);
-        changed |= Set(clone.Rect, clipRect);
-        changed |= Set(clone.RectClip, true);
+        changed |= Set(clone.Rect, clipRect ?? source.Rect.Value);
+        changed |= Set(clone.RectClip, clipRect.HasValue || source.RectClip.Value);
 
         if (changed)
         {
@@ -145,6 +204,9 @@ public sealed class MaterialCloneCache
     }
 
     private static void CopyUIText(UITextMaterial source, UITextMaterial clone, in Rect clipRect)
+        => CopyUIText(source, clone, clipRect, null);
+
+    private static void CopyUIText(UITextMaterial source, UITextMaterial clone, Rect? clipRect, int? renderQueueOverride)
     {
         bool changed = false;
         changed |= SetTarget(clone.Texture, source.Texture.Target);
@@ -160,15 +222,52 @@ public sealed class MaterialCloneCache
         changed |= Set(clone.Culling, source.Culling.Value);
         changed |= Set(clone.ZWrite, source.ZWrite.Value);
         changed |= Set(clone.ZTest, source.ZTest.Value);
-        changed |= Set(clone.RenderQueue, source.RenderQueue.Value);
+        changed |= Set(clone.RenderQueue, renderQueueOverride ?? source.RenderQueue.Value);
         changed |= Set(clone.ColorMask, source.ColorMask.Value);
-        changed |= Set(clone.Rect, clipRect);
-        changed |= Set(clone.RectClip, true);
+        changed |= Set(clone.StencilComparison, source.StencilComparison.Value);
+        changed |= Set(clone.StencilOperation, source.StencilOperation.Value);
+        changed |= Set(clone.StencilID, source.StencilID.Value);
+        changed |= Set(clone.StencilWriteMask, source.StencilWriteMask.Value);
+        changed |= Set(clone.StencilReadMask, source.StencilReadMask.Value);
+        changed |= Set(clone.Rect, clipRect ?? source.Rect.Value);
+        changed |= Set(clone.RectClip, clipRect.HasValue || source.RectClip.Value);
 
         if (changed)
         {
             clone.ForceUpdate();
         }
+    }
+
+    private void RemoveUnusedPriorityMaterials()
+    {
+        List<PriorityMaterialKey>? remove = null;
+        foreach (var pair in _priorityMaterials)
+        {
+            if (pair.Value.LastUsedFrame == _frame)
+            {
+                continue;
+            }
+
+            remove ??= new List<PriorityMaterialKey>();
+            remove.Add(pair.Key);
+        }
+
+        if (remove == null)
+        {
+            return;
+        }
+
+        foreach (var key in remove)
+        {
+            var entry = _priorityMaterials[key];
+            entry.Slot.Destroy();
+            _priorityMaterials.Remove(key);
+        }
+    }
+
+    private static int RenderQueueForGodotPriority(int renderPriority)
+    {
+        return 3000 + System.Math.Clamp(renderPriority, -128, 127);
     }
 
     private static bool Set<T>(Sync<T> field, T value)
@@ -249,6 +348,30 @@ public sealed class MaterialCloneCache
         public override int GetHashCode()
         {
             return System.HashCode.Combine(_material, _clipRect);
+        }
+    }
+
+    private readonly struct PriorityMaterialKey
+    {
+        private readonly IAssetProvider<MaterialAsset> _material;
+        private readonly int _renderPriority;
+
+        public PriorityMaterialKey(IAssetProvider<MaterialAsset> material, int renderPriority)
+        {
+            _material = material;
+            _renderPriority = renderPriority;
+        }
+
+        public override bool Equals(object? obj)
+        {
+            return obj is PriorityMaterialKey other
+                && ReferenceEquals(_material, other._material)
+                && _renderPriority == other._renderPriority;
+        }
+
+        public override int GetHashCode()
+        {
+            return System.HashCode.Combine(_material, _renderPriority);
         }
     }
 }

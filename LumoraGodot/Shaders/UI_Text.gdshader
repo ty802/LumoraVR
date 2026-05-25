@@ -59,8 +59,9 @@ void fragment() {
 		coverage = texture(albedo_texture, UV).a;
 		// fwidth(coverage) = how fast coverage changes per screen pixel near this fragment.
 		// smoothstep across that range gives a ~1-screen-pixel-wide soft edge regardless
-		// of how zoomed in/out the text is. - xlinka
-		float aa = max(fwidth(coverage), 0.0001);
+		// of how zoomed in/out the text is. Coverage atlases are not true distance fields,
+		// so clamp the derivative at grazing angles or glyph interiors fade gray. - xlinka
+		float aa = clamp(fwidth(coverage), 0.0001, 0.25);
 		coverage = smoothstep(0.5 - aa, 0.5 + aa, coverage);
 	}
 	out_color.a *= coverage;

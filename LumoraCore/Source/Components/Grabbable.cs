@@ -20,6 +20,7 @@ public sealed class Grabbable : Component, IGrabbable
     public readonly Sync<int> InteractionPriority = new();
 
     private Grabber? _grabber;
+    private Slot? _lastParent;
 
     public bool IsGrabbed => _grabber != null;
     public Grabber? Grabber => _grabber;
@@ -66,6 +67,7 @@ public sealed class Grabbable : Component, IGrabbable
         if (!CanGrab(grabber)) return this;
 
         _grabber = grabber;
+        _lastParent = Slot?.Parent;
         // preserveGlobalTransform: keep world position when grabbed, so the object
         // doesn't snap to the hand origin. - xlinka
         Slot?.SetParent(holdSlot, preserveGlobalTransform: true);
@@ -79,7 +81,14 @@ public sealed class Grabbable : Component, IGrabbable
         if (_grabber != grabber) return;
 
         _grabber = null;
-        // TODO - xlinka: restore original parent. caller handles reparent for now.
+
+        var restoreParent = _lastParent;
+        if (restoreParent == null || restoreParent.IsDestroyed || (Slot != null && restoreParent.IsDescendantOf(Slot)))
+        {
+            restoreParent = World?.RootSlot;
+        }
+        _lastParent = null;
+        Slot?.SetParent(restoreParent, preserveGlobalTransform: true);
 
         if (!suppressEvents) OnLocalReleased?.Invoke(this);
     }

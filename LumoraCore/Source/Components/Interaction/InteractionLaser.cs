@@ -29,10 +29,13 @@ public sealed class InteractionLaser : Component
     public readonly Sync<float> HoverSwitchTolerance = new();
     public readonly Sync<float> DefaultHoverRadius = new();
     public readonly Sync<float> StickyHitDistance = new();
+    public readonly Sync<float> HoldScrollStep = new();
+    public readonly Sync<float> HoldScaleStep = new();
+    public readonly Sync<float> HoldRotationSensitivity = new();
 
     private readonly List<TargetHit> _hitBuffer = new(64);
     private Slot? _beamSlot;
-    private CylinderMesh? _beamMesh;
+    private CurvedBeamMesh? _beamMesh;
     private UnlitMaterial? _beamMaterial;
     private Grabber? _grabber;
     private IInteractionTarget? _currentTarget;
@@ -43,8 +46,15 @@ public sealed class InteractionLaser : Component
     private float _currentHitDistance;
     private bool _prevTriggerState;
     private bool _prevGripState;
+    private bool _prevSecondaryState;
     private float3 _smoothedHitPoint;
     private bool _hasSmoothedHitPoint;
+    private bool _isLaserHolding;
+    private float _heldDistance;
+    private floatQ _heldRotation = floatQ.Identity;
+    private bool _desktopRotateLockActive;
+    private float3 _desktopLockedHoldPosition;
+    private bool _desktopInputSuppressionActive;
 
     public Grabber? Grabber => _grabber;
     public IInteractionTarget? CurrentTarget => _currentTarget;
@@ -83,6 +93,9 @@ public sealed class InteractionLaser : Component
         HoverSwitchTolerance.Value = 0.05f;
         DefaultHoverRadius.Value = 0.05f;
         StickyHitDistance.Value = 0.08f;
+        HoldScrollStep.Value = 0.12f;
+        HoldScaleStep.Value = 0.10f;
+        HoldRotationSensitivity.Value = MathF.PI * 2f;
     }
 
     public override void OnStart()
@@ -101,6 +114,7 @@ public sealed class InteractionLaser : Component
 
     public override void OnDestroy()
     {
+        SetDesktopInputSuppression(false);
         ClearCurrentTarget();
         base.OnDestroy();
     }
@@ -109,15 +123,22 @@ public sealed class InteractionLaser : Component
     {
         _beamSlot = Slot.AddSlot("InteractionLaserVisual");
 
-        _beamMesh = _beamSlot.AttachComponent<CylinderMesh>();
+        _beamMesh = _beamSlot.AttachComponent<CurvedBeamMesh>();
         _beamMesh.Radius.Value = BeamRadius.Value;
-        _beamMesh.Height.Value = MaxDistance.Value;
-        _beamMesh.Segments.Value = 6;
+        _beamMesh.Sides.Value = 6;
+        _beamMesh.Segments.Value = 16;
+        _beamMesh.StartPoint.Value = float3.Zero;
+        _beamMesh.DirectTargetPoint.Value = float3.Backward * MaxDistance.Value;
+        _beamMesh.ActualTargetPoint.Value = float3.Backward * MaxDistance.Value;
+        _beamMesh.StartPointColor.Value = IdleColor.Value.ToLDR();
+        _beamMesh.EndPointColor.Value = IdleColor.Value.ToLDR();
 
         var matSlot = _beamSlot.AddSlot("InteractionLaserMaterial");
         _beamMaterial = matSlot.AttachComponent<UnlitMaterial>();
-        _beamMaterial.TintColor.Value = IdleColor.Value;
-        _beamMaterial.BlendMode.Value = BlendMode.Transparent;
+        _beamMaterial.TintColor.Value = colorHDR.White;
+        _beamMaterial.UseVertexColor.Value = true;
+        _beamMaterial.BlendMode.Value = BlendMode.Additive;
+        _beamMaterial.Culling.Value = Culling.None;
         _beamMaterial.RenderQueue.Value = 85;
 
         var renderer = _beamSlot.AttachComponent<MeshRenderer>();
@@ -227,6 +248,7 @@ public sealed class InteractionLaser : Component
 
         bool triggerNow = ReadTriggerPressed();
         UpdatePointerTarget(hoveredTarget as ILaserPointerTarget, origin, direction, triggerNow);
+        ProcessPointerActions();
 
         if (triggerNow && !_prevTriggerState && _currentTarget != null && _currentPointerTarget == null)
         {
@@ -243,30 +265,69 @@ public sealed class InteractionLaser : Component
         else if (!gripNow && _prevGripState)
         {
             _grabber?.ReleaseAll();
+            ResetLaserHoldState();
         }
         _prevGripState = gripNow;
+
+        if (_isLaserHolding)
+        {
+            ApplyHeldObjectManipulation(delta, origin, direction);
+        }
 
         float beamLength = hoveredTarget != null ? hoveredDistance : blockingDistance;
         if (showWorldBeam)
         {
-            PositionBeam(origin, direction, beamLength);
+            float3 beamEndPoint = hoveredTarget != null
+                ? _currentHitPoint
+                : new float3(
+                    origin.x + direction.x * beamLength,
+                    origin.y + direction.y * beamLength,
+                    origin.z + direction.z * beamLength);
+            PositionBeam(origin, direction, beamLength, beamEndPoint);
         }
 
         if (_beamMaterial != null)
         {
-            colorHDR wantedColor = hoveredTarget != null ? HoverColor.Value : IdleColor.Value;
-            colorHDR haveColor = _beamMaterial.TintColor.Value;
-            if (haveColor.r != wantedColor.r || haveColor.g != wantedColor.g ||
-                haveColor.b != wantedColor.b || haveColor.a != wantedColor.a)
-            {
-                _beamMaterial.TintColor.Value = wantedColor;
-            }
+            SetIfChanged(_beamMaterial.TintColor, colorHDR.White);
         }
 
         if (_beamMesh != null)
         {
+            color wantedColor = (hoveredTarget != null ? HoverColor.Value : IdleColor.Value).ToLDR();
             SetIfChanged(_beamMesh.Radius, BeamRadius.Value);
-            SetIfChanged(_beamMesh.Height, beamLength);
+            SetIfChanged(_beamMesh.StartPointColor, wantedColor);
+            SetIfChanged(_beamMesh.EndPointColor, wantedColor);
+        }
+    }
+
+    private static void SetIfChanged(Sync<colorHDR> field, colorHDR value)
+    {
+        colorHDR current = field.Value;
+        if (current.r != value.r || current.g != value.g ||
+            current.b != value.b || current.a != value.a)
+        {
+            field.Value = value;
+        }
+    }
+
+    private static void SetIfChanged(Sync<color> field, color value)
+    {
+        color current = field.Value;
+        if (current.r != value.r || current.g != value.g ||
+            current.b != value.b || current.a != value.a)
+        {
+            field.Value = value;
+        }
+    }
+
+    private static void SetIfChanged(Sync<float3> field, float3 value)
+    {
+        float3 current = field.Value;
+        if (MathF.Abs(current.x - value.x) > 0.0001f ||
+            MathF.Abs(current.y - value.y) > 0.0001f ||
+            MathF.Abs(current.z - value.z) > 0.0001f)
+        {
+            field.Value = value;
         }
     }
 
@@ -301,6 +362,29 @@ public sealed class InteractionLaser : Component
         }
 
         _currentPointerTarget?.UpdateLaserPointer(this, pointerId, origin, direction, isPressed);
+    }
+
+    private void ProcessPointerActions()
+    {
+        int pointerId = GetPointerId();
+        bool holding = _isLaserHolding && _grabber?.IsHoldingObjects == true;
+
+        if (!holding && _currentPointerTarget is ILaserAxisTarget axisTarget)
+        {
+            float2 axis = ReadPointerAxis();
+            if (axis != float2.Zero)
+            {
+                axisTarget.ProcessLaserAxis(this, pointerId, in axis);
+            }
+        }
+
+        bool secondaryNow = ReadSecondaryPressed();
+        if (!holding && secondaryNow && !_prevSecondaryState &&
+            _currentPointerTarget is ILaserSecondaryTarget secondaryTarget)
+        {
+            secondaryTarget.TriggerLaserSecondary(this, pointerId);
+        }
+        _prevSecondaryState = secondaryNow;
     }
 
     private void ClearPointerTarget()
@@ -387,7 +471,18 @@ public sealed class InteractionLaser : Component
         var grabbable = FindBestGrabbable(_currentTarget, _currentHitSlot);
         if (grabbable == null) return;
 
-        grabber.TryGrab(grabbable);
+        var holder = grabber.HolderSlot;
+        if (holder == null) return;
+
+        holder.GlobalPosition = _currentHitPoint;
+        holder.GlobalRotation = ComputeInitialHoldRotation();
+        holder.GlobalScale = float3.One;
+
+        if (!grabber.TryGrab(grabbable)) return;
+
+        _isLaserHolding = true;
+        _heldDistance = MathF.Max(0.05f, _currentHitDistance);
+        _heldRotation = holder.GlobalRotation;
     }
 
     private static IGrabbable? FindBestGrabbable(IInteractionTarget? target, Slot? hitSlot)
@@ -749,14 +844,27 @@ public sealed class InteractionLaser : Component
 
     private static float3 AbsVector(float3 v) => new(MathF.Abs(v.x), MathF.Abs(v.y), MathF.Abs(v.z));
 
-    private void PositionBeam(float3 origin, float3 direction, float length)
+    private void PositionBeam(float3 origin, float3 direction, float length, float3 endPoint)
     {
-        if (_beamSlot == null) return;
-        _beamSlot.GlobalPosition = new float3(
-            origin.x + direction.x * length * 0.5f,
-            origin.y + direction.y * length * 0.5f,
-            origin.z + direction.z * length * 0.5f);
-        _beamSlot.GlobalRotation = AlignYToDirection(direction);
+        if (_beamSlot == null || _beamMesh == null) return;
+
+        _beamSlot.GlobalPosition = origin;
+        _beamSlot.GlobalRotation = floatQ.Identity;
+        _beamSlot.GlobalScale = float3.One;
+
+        float3 localDirect = _beamSlot.GlobalDirectionToLocal(direction);
+        if (localDirect.Length > 0.0001f)
+        {
+            localDirect = localDirect.Normalized * length;
+        }
+        else
+        {
+            localDirect = float3.Backward * length;
+        }
+
+        SetIfChanged(_beamMesh.StartPoint, float3.Zero);
+        SetIfChanged(_beamMesh.DirectTargetPoint, localDirect);
+        SetIfChanged(_beamMesh.ActualTargetPoint, _beamSlot.GlobalPointToLocal(endPoint));
     }
 
     private Slot? FindHeadSlot()
@@ -789,6 +897,280 @@ public sealed class InteractionLaser : Component
         return null;
     }
 
+    private floatQ ComputeInitialHoldRotation()
+    {
+        var input = Engine.Current?.InputInterface;
+        if (input != null && !input.IsVRActive)
+        {
+            var head = FindHeadSlot();
+            if (head != null)
+            {
+                return head.GlobalRotation;
+            }
+        }
+
+        return Slot.GlobalRotation;
+    }
+
+    private void ApplyHeldObjectManipulation(float delta, in float3 origin, in float3 direction)
+    {
+        if (!_isLaserHolding || _grabber == null || !_grabber.IsHoldingObjects)
+        {
+            ResetLaserHoldState();
+            return;
+        }
+
+        var holder = _grabber.HolderSlot;
+        if (holder == null || holder.IsRemoved)
+        {
+            ResetLaserHoldState();
+            return;
+        }
+
+        var input = Engine.Current?.InputInterface;
+        bool desktopRotateLocked = input != null && !input.IsVRActive && IsKeyHeld(input, Key.E);
+        SetDesktopInputSuppression(desktopRotateLocked);
+        if (desktopRotateLocked && !_desktopRotateLockActive)
+        {
+            _desktopLockedHoldPosition = holder.GlobalPosition;
+            _desktopRotateLockActive = true;
+        }
+
+        if (input != null)
+        {
+            if (input.IsVRActive)
+            {
+                ApplyVrHoldInputs(input, delta, holder);
+            }
+            else
+            {
+                ApplyDesktopHoldInputs(input, holder, desktopRotateLocked);
+            }
+        }
+
+        _heldDistance = Clamp(_heldDistance, 0.05f, MathF.Max(MaxDistance.Value, 0.05f));
+        if (desktopRotateLocked)
+        {
+            holder.GlobalPosition = _desktopLockedHoldPosition;
+        }
+        else
+        {
+            if (_desktopRotateLockActive)
+            {
+                _desktopRotateLockActive = false;
+                _heldDistance = ComputeDistanceAlongRay(origin, direction, holder.GlobalPosition);
+            }
+
+            holder.GlobalPosition = new float3(
+                origin.x + direction.x * _heldDistance,
+                origin.y + direction.y * _heldDistance,
+                origin.z + direction.z * _heldDistance);
+        }
+        holder.GlobalRotation = _heldRotation;
+    }
+
+    private void ApplyDesktopHoldInputs(InputInterface input, Slot holder, bool rotateLocked)
+    {
+        float scroll = input.Mouse?.ScrollWheelDelta.Value ?? 0f;
+        bool scaleModifier = IsScaleModifierHeld(input);
+        if (scroll != 0f)
+        {
+            if (scaleModifier && CanScaleHeldObjects())
+            {
+                ScaleHolder(holder, scroll * HoldScaleStep.Value);
+            }
+            else if (!rotateLocked)
+            {
+                float step = MathF.Max(0.05f, _heldDistance * HoldScrollStep.Value);
+                _heldDistance -= scroll * step;
+            }
+        }
+
+        if (!rotateLocked)
+        {
+            return;
+        }
+
+        float2 delta = input.Mouse?.DirectDelta.Value ?? float2.Zero;
+        if (delta == float2.Zero)
+        {
+            return;
+        }
+
+        var head = FindHeadSlot();
+        float3 yawAxis = head?.Up ?? float3.Up;
+        float3 pitchAxis = head?.Right ?? Slot.Right;
+        float yaw = -delta.x * HoldRotationSensitivity.Value;
+        float pitch = -delta.y * HoldRotationSensitivity.Value;
+        RotateHeldObjectsInPlace(yawAxis, yaw, pitchAxis, pitch);
+    }
+
+    private void ApplyVrHoldInputs(InputInterface input, float delta, Slot holder)
+    {
+        var controller = ControllerSide.Value == Chirality.Left
+            ? input.LeftController
+            : input.RightController;
+        if (controller == null) return;
+
+        float slide = ApplyDeadzone(controller.ThumbstickPosition.Y, 0.15f);
+        float rotate = ApplyDeadzone(controller.ThumbstickPosition.X, 0.15f);
+
+        if (controller.SecondaryButtonPressed && slide != 0f && CanScaleHeldObjects())
+        {
+            ScaleHolder(holder, slide * delta);
+        }
+        else if (slide != 0f)
+        {
+            _heldDistance += slide * MathF.Max(1f, _heldDistance) * 4f * delta;
+        }
+
+        if (rotate != 0f)
+        {
+            _heldRotation = floatQ.AxisAngle(float3.Up, rotate * MathF.PI * 2f * delta) * _heldRotation;
+        }
+    }
+
+    private void ScaleHolder(Slot holder, float delta)
+    {
+        float factor = MathF.Max(0.05f, 1f + delta);
+        var scale = holder.GlobalScale;
+        holder.GlobalScale = new float3(scale.x * factor, scale.y * factor, scale.z * factor);
+    }
+
+    private void RotateHeldObjectsInPlace(float3 yawAxis, float yaw, float3 pitchAxis, float pitch)
+    {
+        if (_grabber == null) return;
+
+        floatQ rotation = floatQ.AxisAngle(yawAxis, yaw) * floatQ.AxisAngle(pitchAxis, pitch);
+        foreach (var grabbable in _grabber.GrabbedObjects)
+        {
+            var slot = (grabbable as Component)?.Slot;
+            if (slot == null || slot.IsRemoved)
+            {
+                continue;
+            }
+
+            slot.GlobalRotation = rotation * slot.GlobalRotation;
+        }
+    }
+
+    private bool CanScaleHeldObjects()
+    {
+        if (_grabber == null) return false;
+        foreach (var grabbable in _grabber.GrabbedObjects)
+        {
+            if (grabbable == null || !grabbable.Scalable)
+            {
+                return false;
+            }
+
+            if (grabbable is Component component && component.IsDestroyed)
+            {
+                return false;
+            }
+        }
+        return _grabber.GrabbedObjects.Count > 0;
+    }
+
+    private void ResetLaserHoldState()
+    {
+        SetDesktopInputSuppression(false);
+        _isLaserHolding = false;
+        _heldDistance = 0f;
+        _heldRotation = floatQ.Identity;
+        _desktopRotateLockActive = false;
+        _desktopLockedHoldPosition = float3.Zero;
+    }
+
+    private void SetDesktopInputSuppression(bool active)
+    {
+        if (_desktopInputSuppressionActive == active)
+        {
+            return;
+        }
+
+        _desktopInputSuppressionActive = active;
+        Lumora.Core.Components.LocomotionController.SetDesktopInputSuppressed(this, active);
+    }
+
+    private static float ComputeDistanceAlongRay(float3 origin, float3 direction, float3 point)
+    {
+        float3 delta = point - origin;
+        float projected = float3.Dot(delta, direction);
+        if (projected > 0.05f)
+        {
+            return projected;
+        }
+
+        return MathF.Max(0.05f, delta.Length);
+    }
+
+    private float2 ReadPointerAxis()
+    {
+        var input = Engine.Current?.InputInterface;
+        if (input == null) return float2.Zero;
+
+        if (!input.IsVRActive)
+        {
+            if (ControllerSide.Value != Chirality.Right)
+            {
+                return float2.Zero;
+            }
+
+            float scroll = input.Mouse?.ScrollWheelDelta.Value ?? 0f;
+            return scroll == 0f ? float2.Zero : new float2(0f, scroll);
+        }
+
+        var controller = ControllerSide.Value == Chirality.Left
+            ? input.LeftController
+            : input.RightController;
+        if (controller == null) return float2.Zero;
+
+        float x = ApplyDeadzone(controller.ThumbstickPosition.X, 0.20f);
+        float y = ApplyDeadzone(controller.ThumbstickPosition.Y, 0.20f);
+        return new float2(x, y);
+    }
+
+    private bool ReadSecondaryPressed()
+    {
+        var input = Engine.Current?.InputInterface;
+        if (input == null) return false;
+
+        if (input.IsVRActive)
+        {
+            return ControllerSide.Value == Chirality.Left
+                ? input.LeftController.SecondaryButtonPressed
+                : input.RightController.SecondaryButtonPressed;
+        }
+
+        return false;
+    }
+
+    private static float ApplyDeadzone(float value, float deadzone)
+    {
+        return MathF.Abs(value) < deadzone ? 0f : value;
+    }
+
+    private static float Clamp(float value, float min, float max)
+    {
+        if (value < min) return min;
+        if (value > max) return max;
+        return value;
+    }
+
+    private static bool IsScaleModifierHeld(InputInterface input)
+    {
+        return IsKeyHeld(input, Key.LeftShift) ||
+               IsKeyHeld(input, Key.RightShift) ||
+               IsKeyHeld(input, Key.LeftControl) ||
+               IsKeyHeld(input, Key.RightControl);
+    }
+
+    private static bool IsKeyHeld(InputInterface input, Key key)
+    {
+        return input.Keyboard?.IsKeyPressed(key) == true;
+    }
+
     private bool ReadTriggerPressed()
     {
         var input = Engine.Current?.InputInterface;
@@ -801,9 +1183,7 @@ public sealed class InteractionLaser : Component
 
         if (!input.IsVRActive && input.Mouse != null)
         {
-            return ControllerSide.Value == Chirality.Left
-                ? input.Mouse.RightButton.Held
-                : input.Mouse.LeftButton.Held;
+            return ControllerSide.Value == Chirality.Right && input.Mouse.LeftButton.Held;
         }
         return false;
     }
@@ -820,7 +1200,7 @@ public sealed class InteractionLaser : Component
 
         if (!input.IsVRActive && input.Mouse != null)
         {
-            return input.Mouse.MiddleButton.Held;
+            return ControllerSide.Value == Chirality.Right && input.Mouse.RightButton.Held;
         }
         return false;
     }

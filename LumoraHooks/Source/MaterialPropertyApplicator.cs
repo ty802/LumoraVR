@@ -28,7 +28,7 @@ internal static class MaterialPropertyApplicator
             return null;
         }
 
-        var clone = material.Duplicate(true) as Material;
+        var clone = material.Duplicate(false) as Material;
         if (clone == null)
         {
             return material;
@@ -49,7 +49,20 @@ internal static class MaterialPropertyApplicator
             return;
         }
 
-        material.RenderPriority = renderQueue < 0 ? 0 : System.Math.Clamp(renderQueue, -128, 127);
+        // Helio assigns per-surface priorities from its own logical render queue in
+        // MeshRendererHookBase. This fallback keeps direct material use reasonable.
+        int priority = renderQueue < 0 ? 0 : renderQueue >= 1000 ? renderQueue - 3000 : renderQueue;
+        ApplyGodotRenderPriority(material, priority);
+    }
+
+    public static void ApplyGodotRenderPriority(Material material, int priority)
+    {
+        if (material == null)
+        {
+            return;
+        }
+
+        material.RenderPriority = System.Math.Clamp(priority, -128, 127);
     }
 
     public static Variant ToVariant(object value)

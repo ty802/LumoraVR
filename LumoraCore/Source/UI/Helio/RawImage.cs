@@ -64,9 +64,15 @@ public sealed class RawImage : Graphic
             return;
         }
 
+        var clipRect = renderData.ClipRect;
+        if (clipRect.HasValue && !rect.Overlaps(clipRect.Value))
+        {
+            return;
+        }
+
         var textureBlock = EnsureTextureBlock();
         var submesh = renderData.GetSubmesh(_material, textureBlock, MapMaterial);
-        GenerateImage(submesh.Mesh, submesh, rect, _uvRect, _texture, _preserveAspect, in _tint);
+        GenerateImage(submesh.Mesh, submesh, rect, _uvRect, _texture, _preserveAspect, in _tint, clipRect);
     }
 
     public override bool IsPointInside(in float2 point)
@@ -81,10 +87,15 @@ public sealed class RawImage : Graphic
         Rect uvRect,
         TextureAsset? texture,
         bool preserveAspect,
-        in color tint)
+        in color tint,
+        Rect? clipRect = null)
     {
         PrepareMesh(mesh);
         rect = FitRect(rect, uvRect, texture, preserveAspect);
+        if (clipRect.HasValue && !ClipImage(ref rect, ref uvRect, clipRect.Value))
+        {
+            return -1;
+        }
 
         int first = mesh.VertexCount;
         mesh.IncreaseVertexCount(4);
@@ -158,6 +169,40 @@ public sealed class RawImage : Graphic
         }
 
         return rect;
+    }
+
+    private static bool ClipImage(ref Rect rect, ref Rect uvRect, in Rect clipRect)
+    {
+        var clipped = rect.Intersection(clipRect);
+        if (clipped.IsEmpty)
+        {
+            return false;
+        }
+
+        if (clipped == rect)
+        {
+            return true;
+        }
+
+        float left = (clipped.xMin - rect.xMin) / rect.width;
+        float right = (clipped.xMax - rect.xMin) / rect.width;
+        float top = (rect.yMax - clipped.yMax) / rect.height;
+        float bottom = (rect.yMax - clipped.yMin) / rect.height;
+
+        uvRect = Rect.FromMinMax(
+            new float2(
+                Lerp(uvRect.xMin, uvRect.xMax, left),
+                Lerp(uvRect.yMin, uvRect.yMax, top)),
+            new float2(
+                Lerp(uvRect.xMin, uvRect.xMax, right),
+                Lerp(uvRect.yMin, uvRect.yMax, bottom)));
+        rect = clipped;
+        return true;
+    }
+
+    private static float Lerp(float from, float to, float t)
+    {
+        return from + (to - from) * t;
     }
 
     private static void PrepareMesh(PhosMesh mesh)

@@ -171,6 +171,12 @@ public partial class DesktopCameraController : Node
     public override void _Input(InputEvent @event)
     {
         if (DashboardToggle.IsDashboardVisible) return;
+        if (LocomotionController.DesktopInputSuppressed)
+        {
+            _pendingTpMouse = Vector2.Zero;
+            _pendingFreeCamMouse = Vector2.Zero;
+            return;
+        }
 
         // Third-person: mouse orbits the camera around the character
         if (_mode == CameraMode.ThirdPerson && @event is InputEventMouseMotion tpMotion)
@@ -245,6 +251,10 @@ public partial class DesktopCameraController : Node
     private void UpdateThirdPerson()
     {
         if (_overrideCamera == null) return;
+        if (LocomotionController.DesktopInputSuppressed)
+        {
+            _pendingTpMouse = Vector2.Zero;
+        }
 
         // Apply mouse orbit delta
         var mouse       = _pendingTpMouse;
@@ -313,6 +323,11 @@ public partial class DesktopCameraController : Node
     {
         if (_overrideCamera == null) return;
         if (DashboardToggle.IsDashboardVisible) return;
+        if (LocomotionController.DesktopInputSuppressed)
+        {
+            _pendingFreeCamMouse = Vector2.Zero;
+            return;
+        }
 
         var mouse            = _pendingFreeCamMouse;
         _pendingFreeCamMouse = Vector2.Zero;

@@ -444,6 +444,8 @@ public class UIBuilder
 
         Nest();
         var text = Text(label, null, CurrentStyle.TextColor);
+        text.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
+        text.VerticalAlignment.Value = TextVerticalAlignment.Middle;
         Fill(text.RectTransform!);
         NestOut();
         return button;
@@ -452,21 +454,29 @@ public class UIBuilder
     public Checkbox Checkbox(bool isChecked = false, Action<Checkbox, bool>? changed = null, color? background = null)
     {
         Next("Checkbox");
-        var image = Current.AttachComponent<Image>();
-        image.Tint.Value = background ?? CurrentStyle.BackgroundColor;
         var checkbox = Current.AttachComponent<Checkbox>();
-        checkbox.AddColorDriver(image.Tint, image.Tint.Value);
         checkbox.IsChecked.Value = isChecked;
+        SetElementSize(Current, 24f, 24f);
 
-        var checkSlot = Current.AddSlot("Check");
+        var boxSlot = Current.AddSlot("Box");
+        var boxRect = boxSlot.AttachComponent<RectTransform>();
+        boxRect.AnchorMin.Value = new float2(0f, 0.5f);
+        boxRect.AnchorMax.Value = new float2(0f, 0.5f);
+        boxRect.OffsetMin.Value = new float2(0f, -12f);
+        boxRect.OffsetMax.Value = new float2(24f, 12f);
+        var boxImage = boxSlot.AttachComponent<Image>();
+        boxImage.Tint.Value = background ?? CurrentStyle.BackgroundColor;
+        checkbox.AddColorDriver(boxImage.Tint, boxImage.Tint.Value);
+
+        var checkSlot = boxSlot.AddSlot("Check");
         var checkRect = checkSlot.AttachComponent<RectTransform>();
-        checkRect.AnchorMin.Value = new float2(0.2f, 0.2f);
-        checkRect.AnchorMax.Value = new float2(0.8f, 0.8f);
+        checkRect.AnchorMin.Value = new float2(0.25f, 0.25f);
+        checkRect.AnchorMax.Value = new float2(0.75f, 0.75f);
         checkRect.OffsetMin.Value = float2.Zero;
         checkRect.OffsetMax.Value = float2.Zero;
         var checkImage = checkSlot.AttachComponent<Image>();
-        var checkColor = CurrentStyle.ForegroundColor;
-        checkImage.Tint.Value = checkColor;
+        checkImage.Tint.Value = CurrentStyle.ForegroundColor;
+        checkSlot.ActiveSelf.Value = isChecked;
         checkbox.SetCheckVisual(checkSlot.ActiveSelf);
 
         if (changed != null)
@@ -480,11 +490,32 @@ public class UIBuilder
     public Radio Radio(string group, bool isChecked = false, Action<Radio, bool>? changed = null, color? background = null)
     {
         Next("Radio");
-        var image = Current.AttachComponent<Image>();
-        image.Tint.Value = background ?? CurrentStyle.BackgroundColor;
         var radio = Current.AttachComponent<Radio>();
         radio.Group.Value = group;
         radio.IsChecked.Value = isChecked;
+        SetElementSize(Current, 24f, 24f);
+
+        var ringSlot = Current.AddSlot("Ring");
+        var ringRect = ringSlot.AttachComponent<RectTransform>();
+        ringRect.AnchorMin.Value = new float2(0f, 0.5f);
+        ringRect.AnchorMax.Value = new float2(0f, 0.5f);
+        ringRect.OffsetMin.Value = new float2(0f, -12f);
+        ringRect.OffsetMax.Value = new float2(24f, 12f);
+        var ringImage = ringSlot.AttachComponent<Image>();
+        ringImage.Tint.Value = background ?? CurrentStyle.BackgroundColor;
+        radio.AddColorDriver(ringImage.Tint, ringImage.Tint.Value);
+
+        var dotSlot = ringSlot.AddSlot("Dot");
+        var dotRect = dotSlot.AttachComponent<RectTransform>();
+        dotRect.AnchorMin.Value = new float2(0.3f, 0.3f);
+        dotRect.AnchorMax.Value = new float2(0.7f, 0.7f);
+        dotRect.OffsetMin.Value = float2.Zero;
+        dotRect.OffsetMax.Value = float2.Zero;
+        var dotImage = dotSlot.AttachComponent<Image>();
+        dotImage.Tint.Value = CurrentStyle.ForegroundColor;
+        dotSlot.ActiveSelf.Value = isChecked;
+        radio.SetCheckVisual(dotSlot.ActiveSelf);
+
         if (changed != null)
         {
             radio.ValueChanged += changed;
@@ -496,32 +527,31 @@ public class UIBuilder
     public Slider Slider(float value = 0f, float min = 0f, float max = 1f, Action<Slider, float>? changed = null, color? background = null)
     {
         Next("Slider");
-        var image = Current.AttachComponent<Image>();
-        image.Tint.Value = background ?? CurrentStyle.BackgroundColor;
         var slider = Current.AttachComponent<Slider>();
-        slider.AddColorDriver(image.Tint, image.Tint.Value);
         slider.Min.Value = min;
         slider.Max.Value = max;
         slider.Value.Value = value;
+        SetElementSize(Current, 96f, 24f);
 
         var trackSlot = Current.AddSlot("Track");
         var trackRect = trackSlot.AttachComponent<RectTransform>();
         trackRect.AnchorMin.Value = new float2(0f, 0.5f);
         trackRect.AnchorMax.Value = new float2(1f, 0.5f);
-        trackRect.OffsetMin.Value = new float2(6f, -2f);
-        trackRect.OffsetMax.Value = new float2(-6f, 2f);
+        trackRect.OffsetMin.Value = new float2(10f, -2f);
+        trackRect.OffsetMax.Value = new float2(-10f, 2f);
         var trackImage = trackSlot.AttachComponent<Image>();
-        trackImage.Tint.Value = new color(0.30f, 0.32f, 0.38f, 0.95f);
+        trackImage.Tint.Value = background ?? new color(0.30f, 0.32f, 0.38f, 0.95f);
 
         var handleSlot = Current.AddSlot("Handle");
         var handleRect = handleSlot.AttachComponent<RectTransform>();
         float initialT = max > min ? (value - min) / (max - min) : 0f;
         handleRect.AnchorMin.Value = new float2(initialT, 0.5f);
         handleRect.AnchorMax.Value = new float2(initialT, 0.5f);
-        handleRect.OffsetMin.Value = new float2(-8f, -8f);
-        handleRect.OffsetMax.Value = new float2(8f, 8f);
+        handleRect.OffsetMin.Value = new float2(-7f, -9f);
+        handleRect.OffsetMax.Value = new float2(7f, 9f);
         var handleImage = handleSlot.AttachComponent<Image>();
         handleImage.Tint.Value = CurrentStyle.ForegroundColor;
+        slider.AddColorDriver(handleImage.Tint, handleImage.Tint.Value);
         slider.HandleAnchorMinDrive?.DriveTarget(handleRect.AnchorMin);
         slider.HandleAnchorMaxDrive?.DriveTarget(handleRect.AnchorMax);
         slider.UpdateHandleDrives();
@@ -546,6 +576,7 @@ public class UIBuilder
 
         var contentSlot = Current.AddSlot("Content");
         content = contentSlot.AttachComponent<RectTransform>();
+        scroll.Content.Target = content;
         Fill(content);
         return scroll;
     }
@@ -593,6 +624,17 @@ public class UIBuilder
         layout.FlexibleWidth.Value = CurrentStyle.FlexibleWidth;
         layout.FlexibleHeight.Value = CurrentStyle.FlexibleHeight;
         layout.UseZeroMetrics.Value = CurrentStyle.UseZeroMetrics;
+    }
+
+    private static void SetElementSize(Slot slot, float width, float height)
+    {
+        var layout = slot.GetComponent<LayoutElement>() ?? slot.AttachComponent<LayoutElement>();
+        layout.MinWidth.Value = width;
+        layout.PreferredWidth.Value = width;
+        layout.FlexibleWidth.Value = 0f;
+        layout.MinHeight.Value = height;
+        layout.PreferredHeight.Value = height;
+        layout.FlexibleHeight.Value = 0f;
     }
 
     private static void SetPadding(LayoutController layout, float padding)

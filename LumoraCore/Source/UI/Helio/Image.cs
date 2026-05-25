@@ -73,16 +73,22 @@ public sealed class Image : Graphic
             return;
         }
 
+        var clipRect = renderData.ClipRect;
+        if (clipRect.HasValue && !rect.Overlaps(clipRect.Value))
+        {
+            return;
+        }
+
         var textureBlock = EnsureTextureBlock();
         var submesh = renderData.GetSubmesh(_material, textureBlock, MapMaterial);
 
         if (_nineSlice)
         {
-            WriteNineSlice(submesh, rect);
+            WriteNineSlice(submesh, rect, clipRect);
             return;
         }
 
-        RawImage.GenerateImage(submesh.Mesh, submesh, rect, _uvRect, _texture?.Asset, _preserveAspect, in _tint);
+        RawImage.GenerateImage(submesh.Mesh, submesh, rect, _uvRect, _texture?.Asset, _preserveAspect, in _tint, clipRect);
     }
 
     public override bool IsPointInside(in float2 point)
@@ -107,10 +113,9 @@ public sealed class Image : Graphic
         return new MaterialMap(baseMaterial, key as IAssetProvider<MaterialPropertyBlockAsset>);
     }
 
-    private void WriteNineSlice(PhosTriangleSubmesh submesh, in Rect rect)
+    private void WriteNineSlice(PhosTriangleSubmesh submesh, in Rect rect, Rect? clipRect)
     {
         var mesh = submesh.Mesh;
-        PrepareMesh(mesh);
 
         var borders = ClampBorders(rect, _borders);
         var uvBorders = GetUVBorders(borders, _texture?.Asset);
@@ -151,46 +156,26 @@ public sealed class Image : Graphic
             _uvRect.yMin
         };
 
-        int first = mesh.VertexCount;
-        mesh.IncreaseVertexCount(16);
-
-        for (int y = 0; y < 4; y++)
-        {
-            for (int x = 0; x < 4; x++)
-            {
-                int index = first + y * 4 + x;
-                WriteVertex(mesh, index, new float3(xs[x], ys[y], 0f), new float2(us[x], vs[y]));
-            }
-        }
-
         for (int y = 0; y < 3; y++)
         {
             for (int x = 0; x < 3; x++)
             {
-                int bottomLeft = first + y * 4 + x;
-                int bottomRight = bottomLeft + 1;
-                int topLeft = bottomLeft + 4;
-                int topRight = topLeft + 1;
-                submesh.AddQuadAsTriangles(topLeft, topRight, bottomRight, bottomLeft);
+                var cellRect = Rect.FromMinMax(
+                    new float2(xs[x], ys[y]),
+                    new float2(xs[x + 1], ys[y + 1]));
+
+                if (cellRect.IsEmpty)
+                {
+                    continue;
+                }
+
+                var cellUv = Rect.FromMinMax(
+                    new float2(us[x], vs[y + 1]),
+                    new float2(us[x + 1], vs[y]));
+
+                RawImage.GenerateImage(mesh, submesh, cellRect, cellUv, _texture?.Asset, false, in _tint, clipRect);
             }
         }
-    }
-
-    private void WriteVertex(PhosMesh mesh, int index, in float3 position, in float2 uv)
-    {
-        mesh.RawPositions[index] = position;
-        mesh.RawNormals[index] = float3.Backward;
-        mesh.RawTangents[index] = new float4(float3.Right, -1f);
-        mesh.RawColors[index] = _tint;
-        mesh.SetUV(0, index, uv);
-    }
-
-    private static void PrepareMesh(PhosMesh mesh)
-    {
-        mesh.HasNormals = true;
-        mesh.HasTangents = true;
-        mesh.HasColors = true;
-        mesh.SetHasUV(0, true);
     }
 
     private static bool HasBorder(in float4 borders)

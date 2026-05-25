@@ -3,6 +3,7 @@
 
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using Helio.UI.Layout;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Math;
@@ -12,7 +13,7 @@ namespace Helio.UI;
 
 // emits one textured quad per glyph laid out within the RectTransform rect.
 // TODO - xlinka: rich text, overflow modes, kerning beyond pair table
-public class Text : Graphic
+public class Text : Graphic, ILayoutElement
 {
     public readonly Sync<string> Content;
     public readonly AssetRef<FontSet> Font;
@@ -33,6 +34,8 @@ public class Text : Graphic
     private TextVerticalAlignment _vAlign;
     private float _lineSpacing;
     private bool _wrap;
+    private float _layoutPreferredWidth;
+    private float _layoutPreferredHeight;
     private readonly Dictionary<TextureAsset, UITextMaterial> _textMaterials = new();
     private readonly List<LineLayout> _layoutLines = new();
 
@@ -50,9 +53,19 @@ public class Text : Graphic
     }
 
     public override bool RequiresPreGraphicsCompute => true;
+    public float? MinWidth => 0f;
+    public float? PreferredWidth => _layoutPreferredWidth;
+    public float? FlexibleWidth => 0f;
+    public float? MinHeight => _layoutPreferredHeight;
+    public float? PreferredHeight => _layoutPreferredHeight;
+    public float? FlexibleHeight => 0f;
+    public float? Area => null;
+    public int Priority => 0;
+    public LayoutMetric ChangedMetrics { get; private set; }
 
     protected override void FlagChanges(RectTransform rect)
     {
+        ChangedMetrics = LayoutMetric.MinWidth | LayoutMetric.PreferredWidth | LayoutMetric.MinHeight | LayoutMetric.PreferredHeight;
         rect.MarkChangeDirty();
     }
 
@@ -102,6 +115,58 @@ public class Text : Graphic
 
     public override bool IsPointInside(in float2 point)
         => RectTransform?.LocalComputeRect.Contains(point) ?? false;
+
+    public void ClearChangedMetrics()
+    {
+        ChangedMetrics = LayoutMetric.None;
+    }
+
+    public void EnsureValidMetrics(LayoutDirection direction)
+    {
+        var fontSet = _font?.Asset;
+        if (fontSet == null || !fontSet.IsValid || string.IsNullOrEmpty(_content))
+        {
+            _layoutPreferredWidth = 0f;
+            _layoutPreferredHeight = 0f;
+            return;
+        }
+
+        var rect = RectTransform?.LocalComputeRect ?? default;
+        float wrapWidth = _wrap && rect.width > 0f ? rect.width : 0f;
+        BuildLines(fontSet, wrapWidth);
+
+        float width = 0f;
+        for (int i = 0; i < _layoutLines.Count; i++)
+        {
+            if (_layoutLines[i].Width > width)
+            {
+                width = _layoutLines[i].Width;
+            }
+        }
+
+        float lineHeight = fontSet.GetLineHeight(_size) * _lineSpacing;
+        if (lineHeight <= 0f)
+        {
+            lineHeight = _size;
+        }
+
+        _layoutPreferredWidth = width;
+        _layoutPreferredHeight = lineHeight * _layoutLines.Count;
+    }
+
+    public LayoutMetric FilterChangedMetrics(LayoutMetric metrics)
+    {
+        return metrics;
+    }
+
+    public void LayoutRectWidthChanged()
+    {
+        ChangedMetrics |= LayoutMetric.MinHeight | LayoutMetric.PreferredHeight;
+    }
+
+    public void LayoutRectHeightChanged()
+    {
+    }
 
     // Per-Text local UI_Text material with the atlas baked in. Atlas changes (font swap)
     // flip the DirectTexture and force the material asset to re-apply. - xlinka
@@ -162,7 +227,7 @@ public class Text : Graphic
                 if (material == null) continue;
 
                 var submesh = renderData.GetSubmesh(material);
-                EmitGlyph(submesh, mesh, penX + glyph.X, penY, glyph.Metrics, glyph.UV);
+                EmitGlyph(submesh, mesh, penX + glyph.X, penY, glyph.Metrics, glyph.UV, renderData.ClipRect);
             }
         }
     }
@@ -299,12 +364,50 @@ public class Text : Graphic
         _layoutLines.Add(line);
     }
 
-    private void EmitGlyph(PhosTriangleSubmesh submesh, PhosMesh mesh, float penX, float penY, in GlyphMetrics metrics, in Rect uv)
+    private void EmitGlyph(PhosTriangleSubmesh submesh, PhosMesh mesh, float penX, float penY, in GlyphMetrics metrics, in Rect uv, Rect? clipRect)
     {
         float xMin = penX + metrics.Offset.x;
         float yMin = penY + metrics.Offset.y;
         float xMax = xMin + metrics.Size.x;
         float yMax = yMin + metrics.Size.y;
+        float uMin = uv.xMin;
+        float uMax = uv.xMax;
+        float vMin = uv.yMin;
+        float vMax = uv.yMax;
+
+        if (clipRect.HasValue)
+        {
+            var clip = clipRect.Value;
+            if (xMax <= clip.xMin || xMin >= clip.xMax || yMax <= clip.yMin || yMin >= clip.yMax)
+            {
+                return;
+            }
+
+            if (xMin < clip.xMin)
+            {
+                float t = (clip.xMin - xMin) / (xMax - xMin);
+                uMin = Lerp(uMin, uMax, t);
+                xMin = clip.xMin;
+            }
+            if (xMax > clip.xMax)
+            {
+                float t = (clip.xMax - xMin) / (xMax - xMin);
+                uMax = Lerp(uMin, uMax, t);
+                xMax = clip.xMax;
+            }
+            if (yMin < clip.yMin)
+            {
+                float t = (clip.yMin - yMin) / (yMax - yMin);
+                vMax = Lerp(vMax, vMin, t);
+                yMin = clip.yMin;
+            }
+            if (yMax > clip.yMax)
+            {
+                float t = (clip.yMax - yMin) / (yMax - yMin);
+                vMin = Lerp(vMax, vMin, t);
+                yMax = clip.yMax;
+            }
+        }
 
         int v0 = mesh.VertexCount;
         mesh.IncreaseVertexCount(4);
@@ -322,13 +425,15 @@ public class Text : Graphic
         // Godot UV is Y-down (V=0 at the top of the texture, V=1 at the bottom). The atlas
         // stores glyphs with uv.yMin = top row and uv.yMax = bottom row, so the screen-TOP
         // vertex (yMax in Y-up world) needs the SMALLER V to land on atlas-top. - xlinka
-        mesh.SetUV(0, v0 + 0, new float2(uv.xMin, uv.yMin));
-        mesh.SetUV(0, v0 + 1, new float2(uv.xMax, uv.yMin));
-        mesh.SetUV(0, v0 + 2, new float2(uv.xMax, uv.yMax));
-        mesh.SetUV(0, v0 + 3, new float2(uv.xMin, uv.yMax));
+        mesh.SetUV(0, v0 + 0, new float2(uMin, vMin));
+        mesh.SetUV(0, v0 + 1, new float2(uMax, vMin));
+        mesh.SetUV(0, v0 + 2, new float2(uMax, vMax));
+        mesh.SetUV(0, v0 + 3, new float2(uMin, vMax));
 
         submesh.AddQuadAsTriangles(v0, v0 + 1, v0 + 2, v0 + 3);
     }
+
+    private static float Lerp(float a, float b, float t) => a + (b - a) * t;
 
     private static void PrepareMesh(PhosMesh mesh)
     {

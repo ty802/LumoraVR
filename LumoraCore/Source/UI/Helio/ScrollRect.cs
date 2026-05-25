@@ -7,8 +7,9 @@ using Lumora.Core.Math;
 
 namespace Helio.UI;
 
-public sealed class ScrollRect : InteractionElement
+public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
 {
+    public readonly SyncRef<RectTransform> Content;
     public readonly Sync<float2> Scroll;
     public readonly Sync<float2> ScrollSensitivity;
 
@@ -19,6 +20,7 @@ public sealed class ScrollRect : InteractionElement
 
     public ScrollRect()
     {
+        Content = new SyncRef<RectTransform>(this);
         Scroll = new Sync<float2>(this, float2.Zero);
         ScrollSensitivity = new Sync<float2>(this, float2.One);
     }
@@ -33,13 +35,80 @@ public sealed class ScrollRect : InteractionElement
     {
         var delta = context.LocalPoint - _pressPoint;
         var sensitivity = ScrollSensitivity.Value;
-        var value = new float2(
+        SetScroll(new float2(
             _pressScroll.x - delta.x * sensitivity.x,
-            _pressScroll.y - delta.y * sensitivity.y);
+            _pressScroll.y - delta.y * sensitivity.y));
+    }
 
-        if (Scroll.Value == value) return;
+    public bool ProcessAxis(in UIInteractionContext context, in float2 axis)
+    {
+        if (axis == float2.Zero)
+        {
+            return false;
+        }
+
+        var sensitivity = ScrollSensitivity.Value;
+        var value = new float2(
+            Scroll.Value.x - axis.x * sensitivity.x,
+            Scroll.Value.y - axis.y * sensitivity.y * 24f);
+        return SetScroll(value);
+    }
+
+    internal bool ApplyScroll(out RectTransform? content)
+    {
+        content = Content.Target;
+        var viewport = RectTransform;
+        if (viewport == null || content == null)
+        {
+            return false;
+        }
+
+        var viewportRect = viewport.LocalComputeRect;
+        var contentRect = content.LocalComputeRect;
+        if (viewportRect.IsEmpty || contentRect.IsEmpty)
+        {
+            return false;
+        }
+
+        var maxScroll = new float2(
+            MathF.Max(0f, contentRect.width - viewportRect.width),
+            MathF.Max(0f, contentRect.height - viewportRect.height));
+        var requested = Scroll.Value;
+        var clamped = new float2(
+            Clamp(requested.x, 0f, maxScroll.x),
+            Clamp(requested.y, 0f, maxScroll.y));
+
+        if (requested != clamped)
+        {
+            Scroll.Value = clamped;
+        }
+
+        if (clamped == float2.Zero)
+        {
+            return false;
+        }
+
+        content.SetLocalComputeRect(new Rect(
+            contentRect.x - clamped.x,
+            contentRect.y + clamped.y,
+            contentRect.width,
+            contentRect.height));
+        return true;
+    }
+
+    private static float Clamp(float value, float min, float max)
+    {
+        if (value < min) return min;
+        if (value > max) return max;
+        return value;
+    }
+
+    private bool SetScroll(float2 value)
+    {
+        if (Scroll.Value == value) return false;
 
         Scroll.Value = value;
         ScrollChanged?.Invoke(this, value);
+        return true;
     }
 }

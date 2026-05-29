@@ -118,12 +118,20 @@ public class CharacterController : ImplementableComponent, IColliderOwner
 
         if (!_isReady)
             TryInitializeLocalUser();
+    }
+
+    public override void OnFixedUpdate(float fixedDelta)
+    {
+        base.OnFixedUpdate(fixedDelta);
+
+        if (!_isReady)
+            TryInitializeLocalUser();
 
         if (!(_userRoot?.IsLocalUserRoot ?? false))
             return;
 
         if (_isReady && CharacterHook != null)
-            RunApplyChanges();
+            CharacterHook.Simulate(fixedDelta);
     }
 
     private void TryInitializeLocalUser()

@@ -1,50 +1,47 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
+using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
 
 namespace Lumora.Godot.Hooks;
 
-/// <summary>
-/// Hook for Camera component → Godot Camera3D.
-/// Platform camera hook for Godot.
-/// </summary>
-public class CameraHook : ComponentHook<Camera>
+// Camera component → Godot Camera3D. Clear mode and viewport rect are
+// recognized but pass through Godot's defaults today; expand the helpers
+// below once the corresponding camera features land. - xlinka
+[ImplementableHook(typeof(Camera))]
+public class CameraHook : NodeBackedComponentHook<Camera, Camera3D>
 {
-    private Camera3D _camera;
+    public Camera3D GodotCamera => PlatformNode;
 
-    public Camera3D GodotCamera => _camera;
-
-    public override void Initialize()
+    protected override Camera3D CreatePlatformNode()
     {
-        base.Initialize();
-
-        _camera = new Camera3D();
-        _camera.Name = "Camera";
-        _camera.PhysicsInterpolationMode = Node.PhysicsInterpolationModeEnum.Off;
-        attachedNode.AddChild(_camera);
-
-        _camera.Environment = null;
-        _camera.Attributes = null;
+        return new Camera3D
+        {
+            Name = "Camera",
+            PhysicsInterpolationMode = Node.PhysicsInterpolationModeEnum.Off,
+            Environment = null,
+            Attributes = null,
+        };
     }
 
-    public override void ApplyChanges()
+    protected override void SyncProperties()
     {
-        _camera.Projection = Owner.Projection.Value == ProjectionType.Orthographic
+        var camera = PlatformNode;
+        camera.Projection = Owner.Projection.Value == ProjectionType.Orthographic
             ? Camera3D.ProjectionType.Orthogonal
             : Camera3D.ProjectionType.Perspective;
-
-        _camera.Fov = Owner.FieldOfView.Value;
-        _camera.Size = Owner.OrthographicSize.Value;
-        _camera.Near = Owner.NearClip.Value;
-        _camera.Far = Owner.FarClip.Value;
+        camera.Fov = Owner.FieldOfView.Value;
+        camera.Size = Owner.OrthographicSize.Value;
+        camera.Near = Owner.NearClip.Value;
+        camera.Far = Owner.FarClip.Value;
 
         UpdateClearMode();
         UpdateViewport();
 
-        _camera.Current = Owner.Enabled.Value && Owner.Slot.IsActive;
+        camera.Current = Owner.Enabled.Value && Owner.Slot.IsActive;
     }
 
     private void UpdateClearMode()
@@ -52,11 +49,7 @@ public class CameraHook : ComponentHook<Camera>
         switch (Owner.Clear.Value)
         {
             case ClearMode.Skybox:
-                break;
-
             case ClearMode.Color:
-                break;
-
             case ClearMode.DepthOnly:
             case ClearMode.Nothing:
                 break;
@@ -66,16 +59,5 @@ public class CameraHook : ComponentHook<Camera>
     private void UpdateViewport()
     {
         float4 viewport = Owner.ViewportRect.Value;
-    }
-
-    public override void Destroy(bool destroyingWorld)
-    {
-        if (!destroyingWorld && _camera != null && GodotObject.IsInstanceValid(_camera))
-        {
-            _camera.QueueFree();
-        }
-        _camera = null;
-
-        base.Destroy(destroyingWorld);
     }
 }

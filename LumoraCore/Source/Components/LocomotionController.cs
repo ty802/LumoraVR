@@ -28,17 +28,15 @@ public class LocomotionController : Component
 
     private CharacterController _characterController;
     private UserRoot _userRoot;
+    private UserInputState _inputState;
     private Mouse _mouse;
     private IKeyboardDriver _keyboardDriver;
     private InputInterface _inputInterface;
-    private readonly System.Collections.Generic.List<ILocomotionModule> _modules = new();
-    private ILocomotionModule _activeModule;
-    private int _activeModuleIndex = -1;
+    private readonly System.Collections.Generic.List<LocomotionModule> _modules = new();
+    private LocomotionModule _activeModule;
     private bool _nextModuleHeld;
     private bool _prevModuleHeld;
     private readonly LocomotionPermissions _permissions = new LocomotionPermissions();
-    private static readonly object DesktopInputSuppressionLock = new();
-    private static readonly System.Collections.Generic.HashSet<object> DesktopInputSuppressionRequests = new();
 
     private float _pitch = 0.0f;
     private float _yaw = 0.0f;
@@ -48,72 +46,32 @@ public class LocomotionController : Component
     private bool _loggedMissingUserRoot = false;
     private bool _loggedActiveUserState = false;
 
-    /// <summary>
-    /// Property for platform layer to check if mouse should be captured
-    /// </summary>
-    public static bool MouseCaptureRequested { get; private set; } = false;
+    public UserInputState InputState => _inputState;
+    public LocomotionModule ActiveModule => _activeModule;
+    public System.Collections.Generic.IReadOnlyList<LocomotionModule> Modules => _modules;
 
-    /// <summary>
-    /// Allow modules/platform to request mouse capture state.
-    /// </summary>
-    public static void SetMouseCaptureRequested(bool state)
+    public void RegisterModule(LocomotionModule module)
     {
-        MouseCaptureRequested = state;
+        if (module == null || _modules.Contains(module))
+            return;
+        _modules.Add(module);
+        SortModules();
     }
 
-    /// <summary>
-    /// Set by DesktopCameraController when free-cam is active.
-    /// Blocks mouse look and character movement so the camera flies independently.
-    /// </summary>
-    public static bool FreeCamActive { get; private set; } = false;
-
-    public static void SetFreeCamActive(bool value)
+    public void UnregisterModule(LocomotionModule module)
     {
-        FreeCamActive = value;
-    }
-
-    /// <summary>
-    /// Set by DesktopCameraController in third-person mode.
-    /// Suppresses character mouse-look so the camera can orbit independently
-    /// while WASD movement continues normally.
-    /// </summary>
-    public static bool MouseLookSuppressed { get; private set; } = false;
-
-    public static void SetMouseLookSuppressed(bool value)
-    {
-        MouseLookSuppressed = value;
-    }
-
-    /// <summary>
-    /// Set by interaction tools while they need exclusive mouse/keyboard control.
-    /// Blocks desktop mouse-look and character movement.
-    /// </summary>
-    public static bool DesktopInputSuppressed
-    {
-        get
+        if (module == null) return;
+        if (_activeModule == module)
         {
-            lock (DesktopInputSuppressionLock)
-            {
-                return DesktopInputSuppressionRequests.Count > 0;
-            }
+            _activeModule.DeactivateInternal();
+            _activeModule = null;
         }
+        _modules.Remove(module);
     }
 
-    public static void SetDesktopInputSuppressed(object requester, bool value)
+    private void SortModules()
     {
-        if (requester == null) return;
-
-        lock (DesktopInputSuppressionLock)
-        {
-            if (value)
-            {
-                DesktopInputSuppressionRequests.Add(requester);
-            }
-            else
-            {
-                DesktopInputSuppressionRequests.Remove(requester);
-            }
-        }
+        _modules.Sort((a, b) => b.Priority.CompareTo(a.Priority));
     }
 
     // ===== INITIALIZATION =====
@@ -129,7 +87,7 @@ public class LocomotionController : Component
     private void CaptureMouse()
     {
         _mouseCaptured = true;
-        MouseCaptureRequested = true;
+        _inputState?.SetMouseCaptureRequested(true);
     }
 
     // ===== UPDATE =====
@@ -161,8 +119,7 @@ public class LocomotionController : Component
         // Apply head/body rotation before movement so basis uses latest look
         UpdateHead();
 
-        // Only send movement/jump commands if CharacterController is ready
-        _activeModule?.Update(delta);
+        _activeModule?.OnModuleUpdate(delta);
     }
 
     private bool TryInitializeLocalUser()
@@ -200,6 +157,8 @@ public class LocomotionController : Component
             return false;
         }
 
+        _inputState = Slot.GetComponent<UserInputState>() ?? Slot.AttachComponent<UserInputState>();
+
         _inputInterface = Lumora.Core.Engine.Current?.InputInterface;
         if (_inputInterface != null)
         {
@@ -212,74 +171,108 @@ public class LocomotionController : Component
             LumoraLogger.Warn("[LocomotionController] No InputInterface found - will try late binding");
         }
 
-        if (_modules.Count == 0)
-        {
-            _modules.Add(new VRLocomotionModule());
-            _modules.Add(new DesktopLocomotionModule());
-            _modules.Add(new NullLocomotionModule());
-        }
-
-        ActivateModule(IsVRActive() ? 0 : 1);
+        EnsureDefaultModules();
+        ActivateBestModule();
 
         if (!IsVRActive())
-            SetMouseCaptureRequested(true);
+            _inputState.SetMouseCaptureRequested(true);
 
-        LumoraLogger.Log($"LocomotionController: Initialized for user '{_userRoot.ActiveUser?.UserName?.Value}' (VR={IsVRActive()}, Module={_activeModule?.GetType().Name})");
+        LumoraLogger.Log($"LocomotionController: Initialized for user '{_userRoot.ActiveUser?.UserName?.Value}' (VR={IsVRActive()}, Module={_activeModule?.DisplayName})");
         _initialized = true;
         return true;
+    }
+
+    // Make sure baseline modules are attached, then pull in anything else
+    // already on the slot. PhysicalLocomotion is one module that handles both
+    // stick and WASD via LocomotionInputHelper, so we no longer attach a
+    // separate VR module or desktop module. - xlinka
+    private void EnsureDefaultModules()
+    {
+        Slot.GetOrAttachComponent<PhysicalLocomotion>();
+        Slot.GetOrAttachComponent<NullLocomotionModule>();
+
+        _modules.Clear();
+        foreach (var m in Slot.GetComponents<LocomotionModule>())
+            _modules.Add(m);
+        SortModules();
+    }
+
+    private LocomotionModule PickBestEligibleModule()
+    {
+        for (int i = 0; i < _modules.Count; i++)
+        {
+            if (_modules[i].CanActivate())
+                return _modules[i];
+        }
+        return null;
+    }
+
+    private void ActivateBestModule()
+    {
+        var pick = PickBestEligibleModule();
+        if (pick != null && pick != _activeModule)
+            ActivateModule(pick);
     }
 
     private void HandleModuleSwitching()
     {
         if (_keyboardDriver == null || _modules.Count <= 1)
             return;
-        if (DesktopInputSuppressed || _mouse?.RightButton.Held == true)
+        if ((_inputState?.DesktopInputSuppressed ?? false) || _mouse?.RightButton.Held == true)
         {
             _nextModuleHeld = _keyboardDriver.GetKeyState(EngineKey.E);
             _prevModuleHeld = _keyboardDriver.GetKeyState(EngineKey.Q);
             return;
         }
 
-        // Simple next/prev with Q/E
         bool nextDown = _keyboardDriver.GetKeyState(EngineKey.E);
         bool prevDown = _keyboardDriver.GetKeyState(EngineKey.Q);
 
-        if (nextDown && !_nextModuleHeld)
-        {
-            ActivateModule((_activeModuleIndex + 1) % _modules.Count);
-        }
-        if (prevDown && !_prevModuleHeld)
-        {
-            int idx = _activeModuleIndex - 1;
-            if (idx < 0) idx = _modules.Count - 1;
-            ActivateModule(idx);
-        }
+        if (nextDown && !_nextModuleHeld) CycleModule(+1);
+        if (prevDown && !_prevModuleHeld) CycleModule(-1);
 
         _nextModuleHeld = nextDown;
         _prevModuleHeld = prevDown;
     }
 
-    /// <summary>
-    /// Auto-select module based on platform state (VR vs Desktop).
-    /// </summary>
+    // Walk through modules from the current position, skipping anything whose
+    // CanActivate returns false. If nothing else is eligible, stay put.
+    private void CycleModule(int direction)
+    {
+        if (_modules.Count == 0) return;
+
+        int currentIdx = _activeModule != null ? _modules.IndexOf(_activeModule) : -1;
+        for (int step = 1; step <= _modules.Count; step++)
+        {
+            int idx = currentIdx + direction * step;
+            if (idx < 0) idx += _modules.Count * ((-idx / _modules.Count) + 1);
+            idx %= _modules.Count;
+            var candidate = _modules[idx];
+            if (candidate != _activeModule && candidate.CanActivate())
+            {
+                ActivateModule(candidate);
+                return;
+            }
+        }
+    }
+
+    // Re-evaluates eligibility each tick: if VR powered up or dropped out
+    // mid-session, we re-pick the best module. Cheap, three modules.
     private void EnsurePlatformModule()
     {
-        if (_modules.Count < 2)
-            return;
-
-        bool vrActive = IsVRActive();
-        int desiredIndex = vrActive ? 0 : 1; // 0=VR, 1=Desktop
-
-        if (_activeModuleIndex != desiredIndex)
+        if (_activeModule == null || !_activeModule.CanActivate())
         {
-            ActivateModule(desiredIndex);
+            ActivateBestModule();
+        }
+        else
+        {
+            var best = PickBestEligibleModule();
+            if (best != null && best.Priority > _activeModule.Priority)
+                ActivateModule(best);
         }
 
-        // On desktop ensure the mouse is captured so look works
-        if (!vrActive && !_mouseCaptured)
-        {
+        if (!IsVRActive() && !_mouseCaptured)
             CaptureMouse();
-        }
     }
 
     private bool IsVRActive()
@@ -300,12 +293,15 @@ public class LocomotionController : Component
         if (escapePressed && !_escapeWasPressed)
         {
             _mouseCaptured = !_mouseCaptured;
-            MouseCaptureRequested = _mouseCaptured;
+            _inputState?.SetMouseCaptureRequested(_mouseCaptured);
             LumoraLogger.Log($"[LocomotionController] Mouse capture toggled: {_mouseCaptured}");
         }
         _escapeWasPressed = escapePressed;
 
-        if (_mouse == null || !_mouseCaptured || FreeCamActive || MouseLookSuppressed || DesktopInputSuppressed)
+        bool freeCam = _inputState?.FreeCamActive ?? false;
+        bool lookSuppressed = _inputState?.MouseLookSuppressed ?? false;
+        bool inputSuppressed = _inputState?.DesktopInputSuppressed ?? false;
+        if (_mouse == null || !_mouseCaptured || freeCam || lookSuppressed || inputSuppressed)
             return;
 
         // Use Mouse.DirectDelta - now populated via GodotMouseDriver.HandleInputEvent
@@ -369,8 +365,14 @@ public class LocomotionController : Component
     public void ApplySnapTurn(float deltaYaw)
     {
         _yaw += deltaYaw;
-        // Apply immediately to slot
-        Slot.GlobalRotation *= floatQ.AxisAngle(float3.Up, deltaYaw);
+
+        if (_userRoot != null)
+        {
+            _userRoot.RotateYawAroundHead(deltaYaw);
+            return;
+        }
+
+        Slot.GlobalRotation = (floatQ.AxisAngle(float3.Up, deltaYaw) * Slot.GlobalRotation).Normalized;
     }
 
     /// <summary>
@@ -379,27 +381,19 @@ public class LocomotionController : Component
     /// </summary>
     public void GetMovementBasis(out float3 forward, out float3 right)
     {
-        // Get head body node from InputInterface for VR head tracking
-        var headDevice = _inputInterface?.GetBodyNode(Input.BodyNode.Head) as ITrackedDevice;
-
-        if (headDevice != null && headDevice.IsTracking)
+        if (_userRoot != null && _userRoot.HeadSlot != null)
         {
-            // VR mode: combine snap turn yaw with head rotation
-            // headDevice.RawRotation is in tracking space, we need to apply accumulated snap turn yaw
-            floatQ yawRotation = floatQ.AxisAngle(float3.Up, _yaw);
-            floatQ headRot = headDevice.RawRotation;
-            forward = yawRotation * (headRot * new float3(0, 0, -1)); // -Z is forward in Godot
-        }
-        else if (_userRoot != null && _userRoot.HeadSlot != null)
-        {
-            // Use UserRoot head slot direction
             forward = _userRoot.HeadFacingDirection;
+        }
+        else if (_inputInterface?.GetBodyNode(Input.BodyNode.Head) is ITrackedDevice headDevice && headDevice.IsTracking)
+        {
+            forward = headDevice.Rotation * float3.Backward;
         }
         else
         {
             // Desktop fallback: use yaw
             floatQ yawRotation = floatQ.AxisAngle(float3.Up, _yaw);
-            forward = yawRotation * new float3(0, 0, -1); // -Z is forward
+            forward = yawRotation * float3.Backward;
         }
 
         // Flatten to horizontal plane (remove vertical component)
@@ -415,22 +409,14 @@ public class LocomotionController : Component
         right = right.Normalized;
     }
 
-    /// <summary>
-    /// Activate module by index.
-    /// </summary>
-    private void ActivateModule(int index)
+    private void ActivateModule(LocomotionModule module)
     {
-        if (index < 0 || index >= _modules.Count)
+        if (module == null || !_permissions.CanUseLocomotion(module))
             return;
 
-        // Permissions placeholder (allow all for now)
-        if (!_permissions.CanUseLocomotion(_modules[index]))
-            return;
-
-        _activeModule?.Deactivate();
-        _activeModule = _modules[index];
-        _activeModuleIndex = index;
-        _activeModule?.Activate(this);
+        _activeModule?.DeactivateInternal();
+        _activeModule = module;
+        _activeModule.ActivateInternal(this);
     }
 
     /// <summary>
@@ -442,16 +428,14 @@ public class LocomotionController : Component
 
     public override void OnDestroy()
     {
-        // Release mouse capture request
         if (_mouseCaptured)
         {
-            MouseCaptureRequested = false;
+            _inputState?.SetMouseCaptureRequested(false);
             _mouseCaptured = false;
         }
 
-        SetDesktopInputSuppressed(this, false);
+        _inputState?.SetDesktopInputSuppressed(this, false);
 
         base.OnDestroy();
-        // Destroyed
     }
 }

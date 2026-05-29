@@ -13,6 +13,7 @@ namespace Lumora.Godot.Hooks;
 /// Hook for RespawnPlane - checks if objects are within bounds and below respawn height.
 /// Uses bounds checking for proper area detection.
 /// </summary>
+[ImplementableHook(typeof(RespawnPlane))]
 public class RespawnPlaneHook : ComponentHook<RespawnPlane>
 {
     private float3 _planePos;

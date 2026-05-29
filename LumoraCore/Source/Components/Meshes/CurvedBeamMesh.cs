@@ -22,6 +22,7 @@ public class CurvedBeamMesh : ProceduralMesh
     public readonly Sync<float3> ActualTargetPoint;
     public readonly Sync<color> StartPointColor;
     public readonly Sync<color> EndPointColor;
+    public readonly Sync<bool> Capped;
 
     private PhosTriangleSubmesh? _submesh;
     private float _radius;
@@ -32,6 +33,7 @@ public class CurvedBeamMesh : ProceduralMesh
     private float3 _actualTargetPoint;
     private color _startPointColor;
     private color _endPointColor;
+    private bool _capped;
     private int _lastVertexCount;
     private int _lastTriangleCount;
 
@@ -45,6 +47,7 @@ public class CurvedBeamMesh : ProceduralMesh
         ActualTargetPoint = new Sync<float3>(this, float3.Forward + float3.Right);
         StartPointColor = new Sync<color>(this, color.White);
         EndPointColor = new Sync<color>(this, color.White);
+        Capped = new Sync<bool>(this, true);
     }
 
     public override void OnAwake()
@@ -59,6 +62,7 @@ public class CurvedBeamMesh : ProceduralMesh
         SubscribeToChanges(ActualTargetPoint);
         SubscribeToChanges(StartPointColor);
         SubscribeToChanges(EndPointColor);
+        SubscribeToChanges(Capped);
     }
 
     protected override void PrepareAssetUpdateData()
@@ -71,13 +75,14 @@ public class CurvedBeamMesh : ProceduralMesh
         _actualTargetPoint = FilterInvalid(ActualTargetPoint.Value);
         _startPointColor = StartPointColor.Value;
         _endPointColor = EndPointColor.Value;
+        _capped = Capped.Value;
     }
 
     protected override void UpdateMeshData(PhosMesh mesh)
     {
         int ringCount = _segments;
-        int vertexCount = ringCount * _sides;
-        int triangleCount = (ringCount - 1) * _sides * 2;
+        int vertexCount = ringCount * _sides + (_capped ? 2 : 0);
+        int triangleCount = (ringCount - 1) * _sides * 2 + (_capped ? _sides * 2 : 0);
         bool topologyChanged = _submesh == null ||
                                _lastVertexCount != vertexCount ||
                                _lastTriangleCount != triangleCount;
@@ -143,6 +148,22 @@ public class CurvedBeamMesh : ProceduralMesh
             }
         }
 
+        int startCap = _segments * _sides;
+        int endCap = startCap + 1;
+        if (_capped)
+        {
+            float3 startTangent = GetTangent(0f);
+            float3 endTangent = GetTangent(1f);
+            mesh.RawPositions[startCap] = _startPoint;
+            mesh.RawPositions[endCap] = GetPoint(1f);
+            mesh.RawNormals[startCap] = -startTangent;
+            mesh.RawNormals[endCap] = endTangent;
+            mesh.RawColors[startCap] = _startPointColor;
+            mesh.RawColors[endCap] = _endPointColor;
+            mesh.RawUV0s[startCap] = new float2(0.5f, 0f);
+            mesh.RawUV0s[endCap] = new float2(0.5f, 1f);
+        }
+
         int triangle = 0;
         for (int i = 0; i < _segments - 1; i++)
         {
@@ -158,6 +179,17 @@ public class CurvedBeamMesh : ProceduralMesh
 
                 submesh.SetTriangle(triangle++, v0, v2, v1);
                 submesh.SetTriangle(triangle++, v1, v2, v3);
+            }
+        }
+
+        if (_capped)
+        {
+            int lastRow = (_segments - 1) * _sides;
+            for (int side = 0; side < _sides; side++)
+            {
+                int nextSide = (side + 1) % _sides;
+                submesh.SetTriangle(triangle++, startCap, nextSide, side);
+                submesh.SetTriangle(triangle++, endCap, lastRow + side, lastRow + nextSide);
             }
         }
     }

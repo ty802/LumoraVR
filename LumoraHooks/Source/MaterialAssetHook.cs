@@ -4,6 +4,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using Godot;
+using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Math;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -14,6 +15,7 @@ namespace Lumora.Godot.Hooks;
 /// Godot implementation of material asset hook.
 /// Creates and manages Godot StandardMaterial3D or ShaderMaterial resources.
 /// </summary>
+[ImplementableHook(typeof(MaterialAsset))]
 public class MaterialAssetHook : AssetHook, IMaterialAssetHook
 {
     private StandardMaterial3D _standardMaterial;
@@ -67,6 +69,11 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
             case MaterialType.Unlit:
                 _usesShaderMaterial = true;
                 _shaderMaterial = CreateShaderMaterial("res://Shaders/Unlit.gdshader", MaterialType.Unlit);
+                break;
+
+            case MaterialType.OverlayUnlit:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/Overlay_Unlit.gdshader", MaterialType.OverlayUnlit);
                 break;
 
             case MaterialType.UI_Unlit:
@@ -327,16 +334,12 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
     /// </summary>
     public void SetTexture(string property, TextureAsset texture)
     {
-        if (texture?.Hook is TextureAssetHook textureHook && textureHook.IsValid)
+        if (texture?.Hook is IGodotTexture textureHook && textureHook.IsValid)
         {
-            var godotTex = textureHook.GodotTexture;
-            var image = godotTex?.GetImage();
-            LumoraLogger.Log($"MaterialAssetHook.SetTexture: property={property}, texture valid, size={image?.GetWidth()}x{image?.GetHeight()}, format={image?.GetFormat()}");
-            _pendingProperties[property] = godotTex;
+            _pendingProperties[property] = textureHook.GodotTexture2D;
         }
         else
         {
-            LumoraLogger.Log($"MaterialAssetHook.SetTexture: property={property}, texture null or invalid (Hook={texture?.Hook}, IsValid={((texture?.Hook as TextureAssetHook)?.IsValid)})");
             _pendingProperties[property] = null;
         }
     }

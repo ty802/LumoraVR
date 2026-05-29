@@ -18,6 +18,7 @@ namespace Lumora.Godot.Hooks;
 ///
 /// When the context does not apply, restores normal shadow casting.
 /// </summary>
+[ImplementableHook(typeof(LocalViewOverride))]
 public class LocalViewOverrideHook : ComponentHook<LocalViewOverride>
 {
     private bool _wasApplied = false;

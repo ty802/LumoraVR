@@ -22,7 +22,7 @@ public sealed class CheckerTextureProvider : DynamicAssetProvider<TextureAsset>
         CellSize = new Sync<int>(this, 8);
         ColorA = new Sync<color>(this, new color(0.10f, 0.62f, 0.85f, 1f));
         ColorB = new Sync<color>(this, new color(0.95f, 0.28f, 0.55f, 1f));
-        GenerateMipmaps = new Sync<bool>(this, false);
+        GenerateMipmaps = new Sync<bool>(this, true);
     }
 
     protected override void OnAssetCreated(TextureAsset asset) { }

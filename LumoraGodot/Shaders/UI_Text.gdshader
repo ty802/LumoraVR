@@ -1,15 +1,13 @@
 shader_type spatial;
-// depth_test_disabled: matches UI_Unlit — UI is a logical 2D layer above world geometry,
-// ordering inside the UI is resolved by render_priority not depth. - xlinka
+// UI is rendered as a logical 2D layer above world geometry. Render priority
+// handles ordering inside the UI tree.
 render_mode unshaded, blend_mix, depth_draw_never, depth_test_disabled, cull_disabled;
 
-// UI text shader for rasterized-coverage atlases. Godot's runtime TTF rasterizer
-// outputs LA8 (luminance + alpha), which FontAssetHook stores as coverage in the
-// alpha channel. The shader does fwidth-based edge AA — coverage transitions over
-// ~1 screen pixel regardless of display size, so small text stays legible. - xlinka
+// FontAssetHook stores glyph coverage in alpha and uploads mipmaps so distance
+// sampling stays stable.
 
 uniform vec4 albedo_color : source_color = vec4(1.0);
-uniform sampler2D albedo_texture : filter_linear, repeat_disable;
+uniform sampler2D albedo_texture : filter_linear_mipmap, repeat_disable;
 uniform bool use_albedo_texture = true;
 uniform bool use_vertex_color = true;
 
@@ -19,9 +17,10 @@ uniform vec2 uv_offset = vec2(0.0);
 // Kept for future SDF/MSDF migration if we ever bake an offline atlas. Unused in
 // the current coverage path. - xlinka
 uniform float pixel_range = 4.0;
+uniform float coverage_gamma : hint_range(0.5, 2.0) = 0.9;
 
 uniform float alpha_cutoff : hint_range(0.0, 1.0) = 0.01;
-uniform bool alpha_clip = true;
+uniform bool alpha_clip = false;
 
 uniform bool rect_clip = false;
 uniform vec4 rect = vec4(0.0);
@@ -37,17 +36,22 @@ uniform int z_test = 4;
 
 varying vec2 local_pos;
 
+float rect_alpha(vec2 pos, vec4 clip_rect) {
+	vec2 edge = max(fwidth(pos), vec2(0.0001));
+	float left = smoothstep(clip_rect.x - edge.x, clip_rect.x + edge.x, pos.x);
+	float bottom = smoothstep(clip_rect.y - edge.y, clip_rect.y + edge.y, pos.y);
+	float right = 1.0 - smoothstep(clip_rect.z - edge.x, clip_rect.z + edge.x, pos.x);
+	float top = 1.0 - smoothstep(clip_rect.w - edge.y, clip_rect.w + edge.y, pos.y);
+	return clamp(left * bottom * right * top, 0.0, 1.0);
+}
+
 void vertex() {
 	local_pos = VERTEX.xy;
 	UV = UV * uv_scale + uv_offset;
 }
 
 void fragment() {
-	if (rect_clip) {
-		if (local_pos.x < rect.x || local_pos.y < rect.y || local_pos.x > rect.z || local_pos.y > rect.w) {
-			discard;
-		}
-	}
+	float clip_alpha = rect_clip ? rect_alpha(local_pos, rect) : 1.0;
 
 	vec4 out_color = albedo_color;
 	if (use_vertex_color) {
@@ -57,18 +61,16 @@ void fragment() {
 	float coverage = 1.0;
 	if (use_albedo_texture) {
 		coverage = texture(albedo_texture, UV).a;
-		// fwidth(coverage) = how fast coverage changes per screen pixel near this fragment.
-		// smoothstep across that range gives a ~1-screen-pixel-wide soft edge regardless
-		// of how zoomed in/out the text is. Coverage atlases are not true distance fields,
-		// so clamp the derivative at grazing angles or glyph interiors fade gray. - xlinka
-		float aa = clamp(fwidth(coverage), 0.0001, 0.25);
-		coverage = smoothstep(0.5 - aa, 0.5 + aa, coverage);
+		coverage = pow(clamp(coverage, 0.0, 1.0), coverage_gamma);
 	}
 	out_color.a *= coverage;
 
-	if (alpha_clip && out_color.a < alpha_cutoff) {
-		discard;
+	if (alpha_clip) {
+		float alpha_width = max(fwidth(out_color.a), 0.001);
+		out_color.a *= smoothstep(alpha_cutoff - alpha_width, alpha_cutoff + alpha_width, out_color.a);
 	}
+
+	out_color.a *= clip_alpha;
 
 	if ((color_mask % 2) == 0) out_color.r = 0.0;
 	if (((color_mask / 2) % 2) == 0) out_color.g = 0.0;

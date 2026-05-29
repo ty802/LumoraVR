@@ -16,6 +16,8 @@ public class WorldManagerHook : IWorldManagerHook
 
     public Node3D Root { get; private set; }
 
+    public static WorldManagerHook Instance { get; private set; }
+
     public static WorldManagerHook Constructor()
     {
         return new WorldManagerHook();
@@ -24,6 +26,7 @@ public class WorldManagerHook : IWorldManagerHook
     public void Initialize(WorldManager owner, object sceneRoot)
     {
         Owner = owner;
+        Instance = this;
 
         // Create root node for all worlds
         Root = new Node3D();
@@ -77,6 +80,11 @@ public class WorldManagerHook : IWorldManagerHook
         if (Root != null && GodotObject.IsInstanceValid(Root))
         {
             Root.QueueFree();
+        }
+
+        if (Instance == this)
+        {
+            Instance = null;
         }
 
         Root = null;

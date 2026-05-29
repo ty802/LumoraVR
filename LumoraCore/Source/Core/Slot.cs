@@ -179,6 +179,95 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// </summary>
     public override bool IsPersistent => Persistent.Value;
 
+    // Protected slots refuse Destroy / RemoveFromHierarchy calls. Set via
+    // MarkProtected, propagates up the lineage so the whole chain to the
+    // protected slot stays alive. Used for world root, user roots, dashboard
+    // anchors, anything that should never be destroyed by gameplay code or
+    // remote peers. - xlinka
+    public bool IsProtected { get; private set; }
+
+    // When true, Persistent flag is treated as forced-on. Set by passing
+    // forcePersistent=true to MarkProtected. The Persistent sync field stays
+    // writable but consumers should respect this when serializing.
+    public bool ForcedPersistent { get; private set; }
+
+    public void MarkProtected(bool forcePersistent = false)
+    {
+        IsProtected = true;
+        if (forcePersistent)
+        {
+            ForcedPersistent = true;
+            if (!Persistent.Value)
+                Persistent.Value = true;
+        }
+        _parent?.MarkProtected(forcePersistent);
+    }
+
+    // Cached nearest-ancestor UserRoot for this slot. Components that need to
+    // know "which user does this belong to" should read ActiveUserRoot
+    // instead of climbing the hierarchy. UserRoot.OnAwake calls
+    // Slot.RegisterUserRoot(this); the slot propagates the reference down to
+    // its children. On reparent the inherited value re-resolves from the new
+    // parent. Slots that hold their own UserRoot keep that ref and ignore
+    // parent propagation. - xlinka
+    public UserRoot ActiveUserRoot { get; private set; }
+
+    public User ActiveUser => ActiveUserRoot?.ActiveUser;
+
+    public event Action<Slot> ActiveUserRootChanged;
+
+    internal void RegisterUserRoot(UserRoot userRoot)
+    {
+        if (userRoot == null || userRoot == ActiveUserRoot)
+            return;
+
+        if (ActiveUserRoot != null
+            && ActiveUserRoot.Slot != null
+            && userRoot.Slot != null
+            && ActiveUserRoot.Slot != userRoot.Slot
+            && ActiveUserRoot.Slot.IsDescendantOf(userRoot.Slot))
+        {
+            return;
+        }
+
+        ActiveUserRoot = userRoot;
+        PropagateActiveUserRootToChildren();
+        ActiveUserRootChanged?.Invoke(this);
+    }
+
+    internal void UnregisterUserRootHierarchy(UserRoot userRoot)
+    {
+        if (userRoot == null || userRoot != ActiveUserRoot)
+            return;
+
+        ActiveUserRoot = null;
+        PropagateActiveUserRootToChildren();
+        ActiveUserRootChanged?.Invoke(this);
+    }
+
+    private void RefreshActiveUserRootFromParent()
+    {
+        // Slots holding their own UserRoot keep their ref; parent propagation skips them.
+        if (ActiveUserRoot != null && ActiveUserRoot.Slot == this)
+            return;
+
+        var inherited = _parent?.ActiveUserRoot;
+        if (inherited == ActiveUserRoot)
+            return;
+
+        ActiveUserRoot = inherited;
+        PropagateActiveUserRootToChildren();
+        ActiveUserRootChanged?.Invoke(this);
+    }
+
+    private void PropagateActiveUserRootToChildren()
+    {
+        foreach (var child in _children)
+            child.RefreshActiveUserRootFromParent();
+        foreach (var child in _localChildren)
+            child.RefreshActiveUserRootFromParent();
+    }
+
     /// <summary>
     /// Get all referenced objects from this slot (IWorker implementation).
     /// </summary>
@@ -348,40 +437,15 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     {
         get
         {
-            var current = this;
-            while (current != null)
-            {
-                var userRoot = current.GetComponent<UserRoot>();
-                if (userRoot != null)
-                {
-                    return userRoot.ActiveUser == World?.LocalUser;
-                }
-                current = current._parent;
-            }
-            return false;
+            var userRoot = ActiveUserRoot;
+            return userRoot != null && userRoot.ActiveUser == World?.LocalUser;
         }
     }
 
-    /// <summary>
-    /// Get the user root if this slot is under one.
-    /// </summary>
-    public UserRoot GetUserRoot()
-    {
-        var current = this;
-        while (current != null)
-        {
-            var userRoot = current.GetComponent<UserRoot>();
-            if (userRoot != null)
-                return userRoot;
-            current = current._parent;
-        }
-        return null;
-    }
-
-    /// <summary>
-    /// Get the active user if under a user root.
-    /// </summary>
-    public User ActiveUser => GetUserRoot()?.ActiveUser;
+    // Cached owning-user lookup lives on ActiveUserRoot. Old GetUserRoot()
+    // hierarchy walk was replaced once UserRoot.OnAwake started registering
+    // into Slot.RegisterUserRoot. - xlinka
+    public UserRoot GetUserRoot() => ActiveUserRoot;
 
     #endregion
 
@@ -1160,6 +1224,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         _parent = target;
 
         InvalidateTransformCache();
+        RefreshActiveUserRootFromParent();
         OnParentChanged?.Invoke(this, oldParent, target);
         ParentChanged?.Invoke(this);
         OnChanged();
@@ -2232,6 +2297,11 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     public void Destroy()
     {
         if (IsDestroyed) return;
+        if (IsProtected)
+        {
+            Logging.Logger.Warn($"Slot.Destroy: refusing to destroy protected slot '{Name.Value}' (RefID {ReferenceID})");
+            return;
+        }
 
         IsDestroyed = true;
 
@@ -2266,13 +2336,20 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// </summary>
     public void RemoveFromHierarchy()
     {
+        if (IsProtected)
+        {
+            Logging.Logger.Warn($"Slot.RemoveFromHierarchy: refusing on protected slot '{Name.Value}' (RefID {ReferenceID})");
+            return;
+        }
+
         _isRemoved = true;
         _parent?.DetachChildInternal(this);
         _parent = null;
     }
 
     /// <summary>
-    /// Destroy all children.
+    /// Destroy all children. Protected children are skipped; their Destroy()
+    /// call no-ops with a warning.
     /// </summary>
     public void DestroyChildren()
     {

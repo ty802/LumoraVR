@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 
 namespace Lumora.Core;
 
@@ -79,5 +80,33 @@ public class HookTypeRegistry
     public void Clear()
     {
         _componentToHook.Clear();
+    }
+
+    // Scan an assembly for hook classes tagged with [ImplementableHook(...)]
+    // and register each declared target. Returns the number of registrations
+    // added so callers can sanity-check at boot. - xlinka
+    public int RegisterFromAssembly(Assembly assembly)
+    {
+        if (assembly == null) return 0;
+
+        int registered = 0;
+        foreach (var type in assembly.GetTypes())
+        {
+            if (type.IsAbstract || !typeof(IHook).IsAssignableFrom(type))
+                continue;
+
+            var attrs = type.GetCustomAttributes(typeof(ImplementableHookAttribute), inherit: false);
+            foreach (ImplementableHookAttribute attr in attrs)
+            {
+                foreach (var target in attr.Targets)
+                {
+                    if (target == null) continue;
+                    if (!typeof(IImplementable).IsAssignableFrom(target)) continue;
+                    Register(target, type);
+                    registered++;
+                }
+            }
+        }
+        return registered;
     }
 }

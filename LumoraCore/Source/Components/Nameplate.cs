@@ -7,11 +7,17 @@ using Lumora.Core.Networking.Sync;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// User nameplate that displays above the user's head.
-/// Pill-shaped with transparent background, drop shadow, and rim glow.
-/// Rim glow color indicates user status (white = normal, grey = not logged in, colored = patreon tier).
-/// </summary>
+// User nameplate data + behavior. Sets sync field state from the target user
+// and keeps the slot positioned above the head.
+//
+// Visual rendering is intentionally not hooked. The ref engine renders
+// nameplates as standard mesh + UI primitives (text + image components on
+// child slots) routed through MeshRenderer / material connectors, not a
+// dedicated platform connector. The earlier NameplateHook violated that
+// pattern by loading a Godot .tscn into a SubViewport, so it was removed.
+// To restore visuals: in OnInit, build the slot hierarchy with Helio UI
+// (Canvas + RectTransform + Image background + Text label) and let the
+// MeshRenderer hook do the actual rendering. - xlinka
 [ComponentCategory("Users")]
 public class Nameplate : ImplementableComponent
 {

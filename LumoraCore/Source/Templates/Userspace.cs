@@ -28,7 +28,12 @@ namespace Lumora.Core.Templates
                 // Create root structure
                 var userspaceRoot = w.RootSlot.AddSlot("UserspaceRoot");
 
-                // dashboard panel removed with the GodotUI deletion. rebuild as a HelioUI canvas later. - xlinka
+                // Ref-style userspace dashboard root. UserspaceDashboard owns the
+                // open state and positions the Helio dash surface in front of the
+                // focused user's view when shown.
+                var dashboardSlot = userspaceRoot.AddSlot("UserspaceDashboard");
+                var dashboard = dashboardSlot.AttachComponent<UserspaceDashboard>();
+                dashboard.Close();
 
                 // Create Context Menu (radial arc menu, toggled with A/X or middle mouse)
                 var contextMenuSlot = userspaceRoot.AddSlot("ContextMenu");
@@ -38,7 +43,12 @@ namespace Lumora.Core.Templates
                 // these are always present. additional items are contributed at open-time
                 // by RootContextMenuItem / ContextMenuItemSource components. - xlinka
 
-                // TODO - xlinka: re-add Dashboard toggle item once HelioUI dashboard exists
+                var dashboardItem = contextMenuSlot.AttachComponent<RootContextMenuItem>();
+                dashboardItem.Label.Value = "Dashboard";
+                dashboardItem.IconPath.Value = "res://Icons/dashboard.png";
+                dashboardItem.Priority.Value = 100;
+                dashboardItem.Pressed += _ => dashboard.Toggle();
+
                 var closeItem = contextMenuSlot.AttachComponent<RootContextMenuItem>();
                 closeItem.Label.Value    = "Close Menu";
                 closeItem.IconPath.Value = "res://Icons/close.png";

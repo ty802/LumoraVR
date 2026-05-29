@@ -189,17 +189,8 @@ internal sealed class AvatarCreatorSession
 		CreateReferencePoint(referenceRoot, descriptor, AvatarReferenceKind.LeftHandGrip, "LeftHandGrip", _leftMarker);
 		CreateReferencePoint(referenceRoot, descriptor, AvatarReferenceKind.RightHandGrip, "RightHandGrip", _rightMarker);
 
-		var ikAvatar = _avatarSlot.GetComponentInChildren<GodotIKAvatar>();
-		if (ikAvatar == null)
-		{
-			var ikSlot = _avatarSlot.AddSlot("IK");
-			ikAvatar = ikSlot.AttachComponent<GodotIKAvatar>();
-		}
-
-		ikAvatar.Skeleton.Target = draft.Skeleton.Target;
-		ikAvatar.Enabled.Value = true;
-
 		var vrikAvatar = _avatarSlot.GetComponent<VRIKAvatar>() ?? _avatarSlot.AttachComponent<VRIKAvatar>();
+		vrikAvatar.Skeleton.Target = draft.Skeleton.Target;
 		vrikAvatar.Descriptor.Target = descriptor;
 
 		CloseSession(restoreOriginalTransform: true);

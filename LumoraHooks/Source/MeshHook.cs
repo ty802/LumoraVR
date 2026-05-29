@@ -16,6 +16,12 @@ namespace Lumora.Godot.Hooks;
 /// Platform mesh hook for Godot.
 /// </summary>
 #nullable enable
+[ImplementableHook(
+    typeof(ProceduralMesh),
+    typeof(Lumora.Core.Components.Meshes.BoxMesh),
+    typeof(Lumora.Core.Components.Meshes.QuadMesh),
+    typeof(Lumora.Core.Components.Meshes.CylinderMesh),
+    typeof(Lumora.Core.Components.Meshes.SphereMesh))]
 public class MeshHook : ComponentHook<ProceduralMesh>
 {
     private ArrayMesh? godotMesh;

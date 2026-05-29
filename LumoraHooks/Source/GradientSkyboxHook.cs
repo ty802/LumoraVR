@@ -13,6 +13,7 @@ namespace Lumora.Godot.Hooks;
 // focus. Worlds aren't unloaded when the user switches between them, so the
 // hook also lives across switches. We attach our gradient only while our world
 // is the focused one and restore the previous env when focus moves away. - xlinka
+[ImplementableHook(typeof(GradientSkybox))]
 public sealed class GradientSkyboxHook : ComponentHook<GradientSkybox>
 {
     private const string ShaderPath = "res://Shaders/GradientSkybox.gdshader";

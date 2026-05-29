@@ -4,12 +4,14 @@
 using System;
 using System.Collections.Generic;
 using Godot;
+using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Math;
 using MathRect = Lumora.Core.Math.Rect;
 
 namespace Lumora.Godot.Hooks;
 
+[ImplementableHook(typeof(FontAsset))]
 public sealed class FontAssetHook : AssetHook, IFontAssetHook
 {
     private const int AtlasSize = 2048;
@@ -141,7 +143,7 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
 
         sourceImage.Convert(Image.Format.Rgba8);
         CopyGlyph(sourceImage, sourceRect, dstX, dstY, width, height);
-        UploadAtlas();
+        ScheduleUpload();
 
         // Metrics are stored at RasterSize coordinates; TryGetGlyph scales on read. Quad size
         // matches the atlas region (width x height), so UV-to-quad ratio is 1:1. - xlinka
@@ -328,11 +330,27 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
         }
     }
 
+    private bool _uploadPending;
+
+    private void ScheduleUpload()
+    {
+        if (_uploadPending)
+            return;
+        _uploadPending = true;
+        Callable.From(FlushAtlasUpload).CallDeferred();
+    }
+
+    private void FlushAtlasUpload()
+    {
+        _uploadPending = false;
+        UploadAtlas();
+    }
+
     private void UploadAtlas()
     {
         if (_atlasTexture != null && _atlasPixels != null)
         {
-            _atlasTexture.SetImageData(_atlasPixels, AtlasSize, AtlasSize, false);
+            _atlasTexture.SetImageData(_atlasPixels, AtlasSize, AtlasSize, true);
         }
     }
 

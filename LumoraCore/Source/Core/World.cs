@@ -1520,10 +1520,18 @@ public class World
 	{
 		if (_state != WorldState.Running) return;
 
-		var scaledDelta = fixedDelta * TimeScale;
+		_hookManager?.ImplementerLock(System.Threading.Thread.CurrentThread);
+		try
+		{
+			var scaledDelta = fixedDelta * TimeScale;
 
-		// Update physics for all physics components
-		UpdatePhysics((float)scaledDelta);
+			// Update physics for all physics components
+			UpdatePhysics((float)scaledDelta);
+		}
+		finally
+		{
+			_hookManager?.ImplementerUnlock();
+		}
 	}
 
 	/// <summary>

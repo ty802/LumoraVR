@@ -2,6 +2,8 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 ﻿using System;
+using System.Collections;
+using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Math;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -59,28 +61,28 @@ public class UserRoot : Component
     private Slot _cachedRightFootSlot;
 
     // ===== BODY NODE ACCESSORS =====
+    //
+    // Resolved from the typed UserRootComponent registry rather than string-
+    // named child lookups. Any TrackedDevicePositioner under the user that
+    // declares AutoBodyNode == HeadNode shows up here automatically — slots
+    // can be renamed or moved without breaking the lookup. - xlinka
 
-    /// <summary>
-    /// Get the head slot. Cached for performance.
-    /// </summary>
-    public Slot HeadSlot
-    {
-        get
-        {
-            if ((_cachedHeadSlot == null || _cachedHeadSlot.IsDestroyed) && !IsDestroyed)
-            {
-                // Prefer Body Nodes tracking slots, then fall back to avatar bones
-                _cachedHeadSlot = Slot.FindChild("Body Nodes", recursive: false)?.FindChild("Head", recursive: false) ??
-                                  Slot.FindChild("Head", recursive: false) ??
-                                  Slot.FindChild("Avatar", recursive: false)?.FindChild("Head", recursive: false);
-            }
-            return _cachedHeadSlot;
-        }
-    }
+    public Slot HeadSlot => GetBodyNodeSlot(ref _cachedHeadSlot, Input.BodyNode.Head)
+                            ?? FallbackChildLookup(ref _cachedHeadSlot, "Head");
 
-    /// <summary>
-    /// Get the body slot.
-    /// </summary>
+    public Slot LeftHandSlot => GetBodyNodeSlot(ref _cachedLeftHandSlot, Input.BodyNode.LeftHand)
+                                ?? FallbackChildLookup(ref _cachedLeftHandSlot, "LeftHand");
+
+    public Slot RightHandSlot => GetBodyNodeSlot(ref _cachedRightHandSlot, Input.BodyNode.RightHand)
+                                 ?? FallbackChildLookup(ref _cachedRightHandSlot, "RightHand");
+
+    public Slot LeftFootSlot => GetBodyNodeSlot(ref _cachedLeftFootSlot, Input.BodyNode.LeftFoot)
+                                ?? FallbackChildLookup(ref _cachedLeftFootSlot, "LeftFoot");
+
+    public Slot RightFootSlot => GetBodyNodeSlot(ref _cachedRightFootSlot, Input.BodyNode.RightFoot)
+                                 ?? FallbackChildLookup(ref _cachedRightFootSlot, "RightFoot");
+
+    // Body component (avatar torso) - not a tracked device, still needs string lookup.
     public Slot BodySlot
     {
         get
@@ -93,76 +95,35 @@ public class UserRoot : Component
         }
     }
 
-    /// <summary>
-    /// Get the left hand slot.
-    /// </summary>
-    public Slot LeftHandSlot
+    private Slot GetBodyNodeSlot(ref Slot cache, Input.BodyNode node)
     {
-        get
-        {
-            if ((_cachedLeftHandSlot == null || _cachedLeftHandSlot.IsDestroyed) && !IsDestroyed)
-            {
-                _cachedLeftHandSlot =
-                    Slot.FindChild("Body Nodes", recursive: false)?.FindChild("LeftHand", recursive: false) ??
-                    Slot.FindChild("LeftHand", recursive: false) ??
-                    Slot.FindChild("Avatar", recursive: false)?.FindChild("LeftHand", recursive: false);
-            }
-            return _cachedLeftHandSlot;
-        }
+        if (cache != null && !cache.IsDestroyed)
+            return cache;
+        if (IsDestroyed)
+            return null;
+
+        var positioner = GetRegisteredComponent<TrackedDevicePositioner>(p => p.AutoBodyNode.Value == node);
+        var resolved = positioner?.BodyNodeRoot?.Target ?? positioner?.Slot;
+        if (resolved != null)
+            cache = resolved;
+        return resolved;
     }
 
-    /// <summary>
-    /// Get the right hand slot.
-    /// </summary>
-    public Slot RightHandSlot
+    // Old string-named child lookup. Kept as a fallback for slots that exist
+    // before the matching TrackedDevicePositioner registers, and for avatars
+    // built by templates that don't use tracked-device positioners at all.
+    // - xlinka
+    private Slot FallbackChildLookup(ref Slot cache, string name)
     {
-        get
-        {
-            if ((_cachedRightHandSlot == null || _cachedRightHandSlot.IsDestroyed) && !IsDestroyed)
-            {
-                _cachedRightHandSlot =
-                    Slot.FindChild("Body Nodes", recursive: false)?.FindChild("RightHand", recursive: false) ??
-                    Slot.FindChild("RightHand", recursive: false) ??
-                    Slot.FindChild("Avatar", recursive: false)?.FindChild("RightHand", recursive: false);
-            }
-            return _cachedRightHandSlot;
-        }
-    }
+        if (cache != null && !cache.IsDestroyed)
+            return cache;
+        if (IsDestroyed)
+            return null;
 
-    /// <summary>
-    /// Get the left foot slot.
-    /// </summary>
-    public Slot LeftFootSlot
-    {
-        get
-        {
-            if ((_cachedLeftFootSlot == null || _cachedLeftFootSlot.IsDestroyed) && !IsDestroyed)
-            {
-                _cachedLeftFootSlot =
-                    Slot.FindChild("Body Nodes", recursive: false)?.FindChild("LeftFoot", recursive: false) ??
-                    Slot.FindChild("LeftFoot", recursive: false) ??
-                    Slot.FindChild("Avatar", recursive: false)?.FindChild("LeftFoot", recursive: false);
-            }
-            return _cachedLeftFootSlot;
-        }
-    }
-
-    /// <summary>
-    /// Get the right foot slot.
-    /// </summary>
-    public Slot RightFootSlot
-    {
-        get
-        {
-            if ((_cachedRightFootSlot == null || _cachedRightFootSlot.IsDestroyed) && !IsDestroyed)
-            {
-                _cachedRightFootSlot =
-                    Slot.FindChild("Body Nodes", recursive: false)?.FindChild("RightFoot", recursive: false) ??
-                    Slot.FindChild("RightFoot", recursive: false) ??
-                    Slot.FindChild("Avatar", recursive: false)?.FindChild("RightFoot", recursive: false);
-            }
-            return _cachedRightFootSlot;
-        }
+        cache = Slot.FindChild("Body Nodes", recursive: false)?.FindChild(name, recursive: false) ??
+                Slot.FindChild(name, recursive: false) ??
+                Slot.FindChild("Avatar", recursive: false)?.FindChild(name, recursive: false);
+        return cache;
     }
 
     // ===== POSITION ACCESSORS =====
@@ -241,6 +202,35 @@ public class UserRoot : Component
     }
 
     /// <summary>
+    /// Rotate the user root while keeping the current head world position fixed.
+    /// This matches VR comfort expectations for snap and smooth turning.
+    /// </summary>
+    public void RotateAroundHead(floatQ deltaRotation)
+    {
+        if (Slot == null)
+            return;
+
+        var headBefore = HeadPosition;
+        Slot.GlobalRotation = (deltaRotation * Slot.GlobalRotation).Normalized;
+        var headAfter = HeadPosition;
+
+        var offset = headBefore - headAfter;
+        if (offset.LengthSquared > 0f)
+            Slot.GlobalPosition += offset;
+    }
+
+    /// <summary>
+    /// Rotate around world up while preserving the head world position.
+    /// </summary>
+    public void RotateYawAroundHead(float yawRadians)
+    {
+        if (System.Math.Abs(yawRadians) < 0.000001f)
+            return;
+
+        RotateAroundHead(floatQ.AxisAngle(float3.Up, yawRadians));
+    }
+
+    /// <summary>
     /// Check if we've received first positional tracking data.
     /// Used to know when VR tracking has started.
     /// </summary>
@@ -305,6 +295,97 @@ public class UserRoot : Component
     /// Called when synced fields change. Handles client-side local user detection.
     /// Simple direct object reference comparison.
     /// </summary>
+    public override void OnAwake()
+    {
+        base.OnAwake();
+        Slot?.RegisterUserRoot(this);
+    }
+
+    // Typed component cache. Every UserRootComponent in the user's slot
+    // hierarchy registers here. Lookups like "find the VRIKAvatar attached
+    // anywhere under this user" are O(1) by type instead of walking the
+    // slot tree + GetComponents per slot. - xlinka
+    private readonly HashSet<Component> _registeredComponents = new();
+    private readonly Dictionary<Type, IList> _perTypeComponents = new();
+
+    internal void RegisterComponent(Component component)
+    {
+        if (component == null || !_registeredComponents.Add(component))
+            return;
+
+        var type = component.GetType();
+        foreach (var kvp in _perTypeComponents)
+        {
+            if (kvp.Key.IsAssignableFrom(type))
+                kvp.Value.Add(component);
+        }
+    }
+
+    internal void UnregisterComponent(Component component)
+    {
+        if (component == null || !_registeredComponents.Remove(component))
+            return;
+
+        var type = component.GetType();
+        foreach (var kvp in _perTypeComponents)
+        {
+            if (kvp.Key.IsAssignableFrom(type))
+                kvp.Value.Remove(component);
+        }
+    }
+
+    private List<T> GetComponentsOfType<T>() where T : class
+    {
+        if (_perTypeComponents.TryGetValue(typeof(T), out var existing))
+            return (List<T>)existing;
+
+        var list = new List<T>();
+        foreach (var c in _registeredComponents)
+        {
+            if (c is T match)
+                list.Add(match);
+        }
+        _perTypeComponents[typeof(T)] = list;
+        return list;
+    }
+
+    public T GetRegisteredComponent<T>(Predicate<T> filter = null) where T : class
+    {
+        foreach (var item in GetComponentsOfType<T>())
+        {
+            if (item is Component c && c.IsDestroyed) continue;
+            if (filter == null || filter(item))
+                return item;
+        }
+        return null;
+    }
+
+    public void GetRegisteredComponents<T>(List<T> output, Predicate<T> filter = null) where T : class
+    {
+        foreach (var item in GetComponentsOfType<T>())
+        {
+            if (item is Component c && c.IsDestroyed) continue;
+            if (filter == null || filter(item))
+                output.Add(item);
+        }
+    }
+
+    public List<T> GetRegisteredComponents<T>(Predicate<T> filter = null) where T : class
+    {
+        var list = new List<T>();
+        GetRegisteredComponents(list, filter);
+        return list;
+    }
+
+    public void ForeachRegisteredComponent<T>(Action<T> action) where T : class
+    {
+        foreach (var item in GetComponentsOfType<T>())
+        {
+            if (item is Component c && c.IsDestroyed) continue;
+            action(item);
+        }
+    }
+
     public override void OnChanges()
     {
         base.OnChanges();
@@ -460,6 +541,8 @@ public class UserRoot : Component
     public override void OnDestroy()
     {
         LumoraLogger.Log($"UserRoot: Destroying UserRoot for user '{ActiveUser?.UserName.Value ?? "Unknown"}'");
+
+        Slot?.UnregisterUserRootHierarchy(this);
 
         // During world disposal users are disposed before slots/components.
         // Their Root setter is no longer valid, and the user object is going away anyway.

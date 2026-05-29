@@ -3,6 +3,7 @@
 
 using System.Collections.Generic;
 using Lumora.Core;
+using Lumora.Core.Components.Avatar.IK;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -10,19 +11,21 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 namespace Lumora.Core.Components.Avatar;
 
 /// <summary>
-/// VR avatar orchestrator.
+/// Full-body VR IK avatar. The single IK component - owns an engine-side
+/// FABRIK solver, no platform IK dependency.
 ///
 /// Responsibilities:
 /// 1. Create one proxy slot per tracked body node.
 /// 2. Equip one AvatarPoseNode per proxy onto the matching user tracking slot.
-/// 3. Wire the proxies into GodotIKAvatar so the hook can solve the skeleton.
+/// 3. Run the engine FullBodyIKSolver each frame from the proxy poses.
 /// 4. Apply authored reference offsets from the avatar creator flow.
 /// 5. Run procedural feet when foot tracking is absent.
 /// </summary>
 [ComponentCategory("Users/Common Avatar System")]
 [DefaultUpdateOrder(-5000)]
-public class VRIKAvatar : ImplementableComponent, IAvatarObjectComponent, IInputUpdateReceiver
+public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceiver
 {
+    private readonly FullBodyIKSolver _solver = new();
     private struct ReferenceOffset
     {
         public bool Valid;
@@ -98,6 +101,19 @@ public class VRIKAvatar : ImplementableComponent, IAvatarObjectComponent, IInput
         LumoraLogger.Log($"VRIKAvatar: Dequipped from {slot.Node.Value}");
     }
 
+    private readonly UserRootRegistrationTracker _userRootReg;
+
+    public VRIKAvatar()
+    {
+        _userRootReg = new UserRootRegistrationTracker(this);
+    }
+
+    public override void OnAwake()
+    {
+        base.OnAwake();
+        _userRootReg.Attach();
+    }
+
     public override void OnInit()
     {
         base.OnInit();
@@ -148,6 +164,8 @@ public class VRIKAvatar : ImplementableComponent, IAvatarObjectComponent, IInput
 
     public override void OnDestroy()
     {
+        _userRootReg.Detach();
+
         if (_isRegistered)
         {
             Engine.Current?.InputInterface?.UnregisterInputEventReceiver(this);
@@ -165,11 +183,10 @@ public class VRIKAvatar : ImplementableComponent, IAvatarObjectComponent, IInput
         if (!_isInitialized && Skeleton.Target != null && Skeleton.Target.IsBuilt.Value)
         {
             _isInitialized = true;
+            EnsureSolver();
             RecomputeReferenceOffsets();
             LumoraLogger.Log("VRIKAvatar: Late-start with skeleton");
         }
-
-        RunApplyChanges();
     }
 
     public void BeforeInputUpdate()
@@ -192,6 +209,43 @@ public class VRIKAvatar : ImplementableComponent, IAvatarObjectComponent, IInput
             return;
 
         ApplyReferenceOffsets();
+        SolveBody();
+    }
+
+    private void EnsureSolver()
+    {
+        if (Rig.Target != null && !Rig.Target.IsDestroyed)
+            _solver.Initialize(Rig.Target);
+    }
+
+    // Read final proxy poses and run the engine FABRIK solve onto the rig bones.
+    private void SolveBody()
+    {
+        if (!_solver.IsReady)
+        {
+            EnsureSolver();
+            if (!_solver.IsReady)
+                return;
+        }
+
+        _solver.Solve(
+            ProxyTarget(_headProxy.Target),
+            ProxyTarget(_leftHandProxy.Target),
+            ProxyTarget(_rightHandProxy.Target),
+            ProxyTarget(_leftFootProxy.Target),
+            ProxyTarget(_rightFootProxy.Target));
+    }
+
+    private static FullBodyIKSolver.Target ProxyTarget(Slot proxy)
+    {
+        if (proxy == null || proxy.IsDestroyed)
+            return default;
+        return new FullBodyIKSolver.Target
+        {
+            Valid = true,
+            Position = proxy.GlobalPosition,
+            Rotation = proxy.GlobalRotation,
+        };
     }
 
     /// <summary>
@@ -204,7 +258,7 @@ public class VRIKAvatar : ImplementableComponent, IAvatarObjectComponent, IInput
         UserRoot.Target = userRoot;
 
         EnsurePoseNodes();
-        WireToGodotIK();
+        EnsureSolver();
         RecomputeReferenceOffsets();
 
         _isInitialized = true;
@@ -260,7 +314,7 @@ public class VRIKAvatar : ImplementableComponent, IAvatarObjectComponent, IInput
         EquipPoseNodeToBodySlot(userRoot.LeftFootSlot, _leftFootNode.Target);
         EquipPoseNodeToBodySlot(userRoot.RightFootSlot, _rightFootNode.Target);
 
-        WireToGodotIK();
+        EnsureSolver();
         RecomputeReferenceOffsets();
         LumoraLogger.Log($"VRIKAvatar: Tracking connected for UserRoot '{userRoot.Slot.SlotName.Value}'");
     }
@@ -322,39 +376,6 @@ public class VRIKAvatar : ImplementableComponent, IAvatarObjectComponent, IInput
 
         avatarSlot.Equip(poseNode);
         LumoraLogger.Log($"VRIKAvatar: Equipped {poseNode.Node.Value} pose node -> '{bodySlot.SlotName.Value}'");
-    }
-
-    private void WireToGodotIK()
-    {
-        var godotIK = Slot.GetComponent<GodotIKAvatar>();
-        if (godotIK == null)
-        {
-            var current = Slot.Parent;
-            while (current != null && godotIK == null)
-            {
-                godotIK = current.GetComponent<GodotIKAvatar>();
-                current = current.Parent;
-            }
-        }
-
-        if (godotIK == null)
-        {
-            LumoraLogger.Warn("VRIKAvatar: No GodotIKAvatar found in hierarchy");
-            return;
-        }
-
-        if (_headProxy.Target != null)
-            godotIK.HeadTarget.Target = _headProxy.Target;
-        if (_leftHandProxy.Target != null)
-            godotIK.LeftHandTarget.Target = _leftHandProxy.Target;
-        if (_rightHandProxy.Target != null)
-            godotIK.RightHandTarget.Target = _rightHandProxy.Target;
-        if (_leftFootProxy.Target != null)
-            godotIK.LeftFootTarget.Target = _leftFootProxy.Target;
-        if (_rightFootProxy.Target != null)
-            godotIK.RightFootTarget.Target = _rightFootProxy.Target;
-
-        LumoraLogger.Log($"VRIKAvatar: Wired proxy slots to GodotIKAvatar on '{godotIK.Slot.SlotName.Value}'");
     }
 
     private void RecomputeReferenceOffsets()

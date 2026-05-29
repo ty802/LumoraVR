@@ -17,6 +17,7 @@ public class HorizontalLayout : LayoutController
     public readonly Sync<float> PaddingBottom;
     public readonly Sync<bool> ForceExpandWidth;
     public readonly Sync<bool> ForceExpandHeight;
+    public readonly Sync<bool> CenterChildren;
 
     private float _spacing;
     private float _padLeft;
@@ -25,6 +26,7 @@ public class HorizontalLayout : LayoutController
     private float _padBottom;
     private bool _forceExpandWidth;
     private bool _forceExpandHeight;
+    private bool _centerChildren;
     private readonly List<LayoutMetrics> _metrics = new();
     private readonly List<LayoutSizing.Element> _elements = new();
 
@@ -37,6 +39,7 @@ public class HorizontalLayout : LayoutController
         PaddingBottom = new Sync<float>(this, 0f);
         ForceExpandWidth = new Sync<bool>(this, true);
         ForceExpandHeight = new Sync<bool>(this, true);
+        CenterChildren = new Sync<bool>(this, false);
     }
 
     protected override void FlagChanges(RectTransform rect)
@@ -53,6 +56,7 @@ public class HorizontalLayout : LayoutController
         _padBottom = PaddingBottom.Value;
         _forceExpandWidth = ForceExpandWidth.Value;
         _forceExpandHeight = ForceExpandHeight.Value;
+        _centerChildren = CenterChildren.Value;
     }
 
     public override void ArrangeChildren(IReadOnlyList<RectTransform> children)
@@ -75,6 +79,23 @@ public class HorizontalLayout : LayoutController
         }
 
         LayoutSizing.Distribute(innerWidth, _spacing, _padLeft, _metrics, _elements, _forceExpandWidth);
+
+        if (_centerChildren && !_forceExpandWidth && _elements.Count > 0)
+        {
+            var first = _elements[0];
+            var last = _elements[_elements.Count - 1];
+            float contentWidth = (last.Offset + last.Size) - first.Offset;
+            float shift = (innerWidth - contentWidth) * 0.5f;
+            if (shift > 0f)
+            {
+                for (int i = 0; i < _elements.Count; i++)
+                {
+                    var element = _elements[i];
+                    element.Offset += shift;
+                    _elements[i] = element;
+                }
+            }
+        }
 
         for (int i = 0; i < children.Count; i++)
         {

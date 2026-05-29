@@ -21,6 +21,7 @@ using NumericsVector3 = System.Numerics.Vector3;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Godot.Hooks;
+using Lumora.Core.Components;
 
 /// <summary>
 /// Hook for ModelData component to runtime model scene instantiation.

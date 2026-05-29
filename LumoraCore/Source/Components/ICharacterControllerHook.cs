@@ -13,6 +13,7 @@ public interface ICharacterControllerHook : IHook
 {
     void AddColliderShape(Collider collider);
     void RemoveColliderShape(Collider collider);
+    void Simulate(float fixedDelta);
     void SetMovementDirection(float3 direction);
     void RequestJump();
     void SetCrouching(bool crouching);

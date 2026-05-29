@@ -16,7 +16,7 @@ namespace Lumora.Core.Components.Avatar;
 /// </summary>
 [ComponentCategory("Users/Common Avatar System")]
 [DefaultUpdateOrder(-7500)]
-public class AvatarPoseNode : Component, IAvatarObject, IInputUpdateReceiver
+public class AvatarPoseNode : UserRootComponent, IAvatarObject, IInputUpdateReceiver
 {
     /// <summary>
     /// The body node this pose node corresponds to.
@@ -281,20 +281,7 @@ public class AvatarPoseNode : Component, IAvatarObject, IInputUpdateReceiver
     /// <summary>
     /// Check if this component is under the local user.
     /// </summary>
-    private bool IsUnderLocalUser
-    {
-        get
-        {
-            var userRoot = Slot.GetComponent<UserRoot>();
-            var current = Slot.Parent;
-            while (userRoot == null && current != null)
-            {
-                userRoot = current.GetComponent<UserRoot>();
-                current = current.Parent;
-            }
-            return userRoot?.ActiveUser == World?.LocalUser;
-        }
-    }
+    private bool IsUnderLocalUser => Slot?.IsUnderLocalUser ?? false;
 
     /// <summary>
     /// Called before input update.

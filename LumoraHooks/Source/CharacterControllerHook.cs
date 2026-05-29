@@ -13,21 +13,26 @@ namespace Lumora.Godot.Hooks;
 /// <summary>
 /// Hook for CharacterController component → Godot CharacterBody3D.
 /// Platform physics hook for Godot.
-/// Also syncs XROrigin3D position with UserRoot for proper VR tracking.
 /// </summary>
-public class CharacterControllerHook : ComponentHook<CharacterController>, ICharacterControllerHook
+[ImplementableHook(typeof(CharacterController))]
+public partial class CharacterControllerHook : ComponentHook<CharacterController>, ICharacterControllerHook
 {
     private CharacterBody3D _characterBody;
     private Dictionary<Collider, CollisionShape3D> _collisionShapes = new Dictionary<Collider, CollisionShape3D>();
     private Vector3 _velocity;
     private Vector3 _moveDirection;
     private bool _jumpRequested;
-    private XROrigin3D _xrOrigin;
     private bool _isLocalUser;
     private bool _isCrouching;
     private float _currentHeight;
     private float _targetHeight;
     private bool _debugDumpDone;
+    private float3 _lastWrittenSlotPosition;
+    private bool _hasWrittenSlotPosition;
+    private CharacterPhysicsNode _physicsNode;
+    private readonly object _physicsPoseLock = new();
+    private float3 _pendingBodyPosition;
+    private bool _hasPendingBodyPosition;
 
     public CharacterBody3D GodotCharacterBody => _characterBody;
 
@@ -49,7 +54,7 @@ public class CharacterControllerHook : ComponentHook<CharacterController>, IChar
         // This is because:
         // 1. Godot's CharacterBody3D.MoveAndSlide() operates in world space
         // 2. If parented under a moving slot, the body would get double transforms
-        // 3. We sync position BACK to the slot after physics (see ApplyChanges)
+        // 3. The physics bridge flushes position BACK to the slot after Godot physics
         //
         // For remote users: They don't have a local CharacterBody3D - their slot position
         // is driven by network sync, so this doesn't create hierarchy issues.
@@ -58,9 +63,13 @@ public class CharacterControllerHook : ComponentHook<CharacterController>, IChar
         Node3D worldRoot = Owner?.World?.GodotSceneRoot as Node3D;
         Node parentNode = (Node)worldRoot ?? attachedNode;
         parentNode.AddChild(_characterBody);
+        _physicsNode = new CharacterPhysicsNode(this);
+        _characterBody.AddChild(_physicsNode);
 
         // Spawn the body at the slot's current transform so we start where the slot is placed
         _characterBody.GlobalTransform = attachedNode.GlobalTransform;
+        _lastWrittenSlotPosition = Owner.Slot.GlobalPosition;
+        _hasWrittenSlotPosition = true;
 
         _characterBody.FloorStopOnSlope = true;
         _characterBody.FloorMaxAngle = Mathf.DegToRad(45f);
@@ -83,40 +92,6 @@ public class CharacterControllerHook : ComponentHook<CharacterController>, IChar
         if (_isLocalUser)
             LocalPlayerBody = _characterBody;
 
-        // Find XROrigin3D in scene tree for VR tracking sync
-        if (_isLocalUser)
-        {
-            _xrOrigin = FindXROrigin();
-
-            // Do initial VR tracking sync at spawn position
-            var spawnPos = Owner.Slot.GlobalPosition;
-            SyncVRTracking(spawnPos);
-        }
-    }
-
-    /// <summary>
-    /// Find the XROrigin3D in the scene tree.
-    /// </summary>
-    private XROrigin3D FindXROrigin()
-    {
-        // Search from scene root
-        var root = attachedNode?.GetTree()?.Root;
-        if (root == null) return null;
-        return FindNodeOfType<XROrigin3D>(root);
-    }
-
-    private T FindNodeOfType<T>(Node node) where T : Node
-    {
-        if (node is T result)
-            return result;
-
-        foreach (var child in node.GetChildren())
-        {
-            var found = FindNodeOfType<T>(child);
-            if (found != null)
-                return found;
-        }
-        return null;
     }
 
     private int CountNodesOfType<T>(Node node) where T : Node
@@ -151,6 +126,11 @@ public class CharacterControllerHook : ComponentHook<CharacterController>, IChar
 
     public override void ApplyChanges()
     {
+        // Runtime movement is stepped from CharacterController.OnFixedUpdate.
+    }
+
+    public void Simulate(float fixedDelta)
+    {
         if (_characterBody == null || !_characterBody.IsInsideTree())
             return;
 
@@ -163,8 +143,24 @@ public class CharacterControllerHook : ComponentHook<CharacterController>, IChar
         if (Owner.World?.Focus == World.WorldFocus.Background)
             return;
 
-        // Get delta time from the UpdateManager
-        float delta = Owner?.World?.UpdateManager?.DeltaTime ?? (1f / 60f);
+        if (!SyncBodyToExternalSlotMove())
+            FlushPendingBodyPose();
+    }
+
+    private void StepGodotPhysics(float fixedDelta)
+    {
+        if (_characterBody == null || !_characterBody.IsInsideTree())
+            return;
+
+        if (Owner == null || Owner.World?.Focus == World.WorldFocus.Background)
+            return;
+
+        float delta = fixedDelta > 0f ? fixedDelta : (1f / 60f);
+
+        var bodyRid = _characterBody.GetRid();
+        var spaceRid = PhysicsServer3D.BodyGetSpace(bodyRid);
+        if (!spaceRid.IsValid)
+            return;
 
         // Apply gravity
         if (_characterBody.IsOnFloor())
@@ -219,16 +215,6 @@ public class CharacterControllerHook : ComponentHook<CharacterController>, IChar
             GD.Print("CharacterControllerHook: Jump!");
         }
 
-        // Move character - check if physics space is valid first
-        // When transitioning from ProcessMode.Disabled to Inherit, the physics space may not be ready
-        var bodyRid = _characterBody.GetRid();
-        var spaceRid = PhysicsServer3D.BodyGetSpace(bodyRid);
-        if (!spaceRid.IsValid)
-        {
-            // Physics space not ready yet, skip this frame
-            return;
-        }
-
         _characterBody.Velocity = _velocity;
         _characterBody.MoveAndSlide();
         _velocity = _characterBody.Velocity;
@@ -261,43 +247,64 @@ public class CharacterControllerHook : ComponentHook<CharacterController>, IChar
             ListNodesOfType<RigidBody3D>(root, "RigidBody3D");
         }
 
-        // Sync position back to slot
         var newPos = new float3(
             _characterBody.GlobalPosition.X,
             _characterBody.GlobalPosition.Y,
             _characterBody.GlobalPosition.Z
         );
-        Owner.Slot.GlobalPosition = newPos;
-
-        // Sync XROrigin3D and GlobalTrackingSpace for VR (local user only)
-        if (_isLocalUser)
+        lock (_physicsPoseLock)
         {
-            SyncVRTracking(newPos);
+            _pendingBodyPosition = newPos;
+            _hasPendingBodyPosition = true;
         }
-
-        Owner.World?.UpdateManager?.RegisterHookUpdate(Owner.Slot);
     }
 
-    /// <summary>
-    /// Sync XROrigin3D position and GlobalTrackingSpace with UserRoot position.
-    /// This ensures VR tracking is relative to the user's locomotion position.
-    /// </summary>
-    private void SyncVRTracking(float3 userPosition)
+    private bool SyncBodyToExternalSlotMove()
     {
-        // Update XROrigin3D position so VR camera follows user locomotion
-        if (_xrOrigin != null && GodotObject.IsInstanceValid(_xrOrigin))
+        if (_characterBody == null || Owner?.Slot == null)
+            return false;
+
+        var slotPos = Owner.Slot.GlobalPosition;
+        if (!_hasWrittenSlotPosition)
         {
-            _xrOrigin.GlobalPosition = new Vector3(userPosition.x, userPosition.y, userPosition.z);
+            _lastWrittenSlotPosition = slotPos;
+            _hasWrittenSlotPosition = true;
+            return false;
         }
 
-        // Update GlobalTrackingSpace so tracked device positions are transformed correctly
-        var inputInterface = Lumora.Core.Engine.Current?.InputInterface;
-        if (inputInterface?.GlobalTrackingSpace != null)
+        const float EXTERNAL_MOVE_THRESHOLD_SQ = 0.00001f * 0.00001f;
+        if ((slotPos - _lastWrittenSlotPosition).LengthSquared <= EXTERNAL_MOVE_THRESHOLD_SQ)
+            return false;
+
+        _characterBody.GlobalPosition = new Vector3(slotPos.x, slotPos.y, slotPos.z);
+        _velocity = Vector3.Zero;
+        _lastWrittenSlotPosition = slotPos;
+
+        lock (_physicsPoseLock)
         {
-            inputInterface.GlobalTrackingSpace.Position = userPosition;
-            // Also sync rotation if UserRoot has rotation
-            inputInterface.GlobalTrackingSpace.Rotation = Owner.Slot.GlobalRotation;
+            _hasPendingBodyPosition = false;
         }
+
+        return true;
+    }
+
+    private void FlushPendingBodyPose()
+    {
+        float3 newPos;
+        lock (_physicsPoseLock)
+        {
+            if (!_hasPendingBodyPosition)
+                return;
+
+            newPos = _pendingBodyPosition;
+            _hasPendingBodyPosition = false;
+        }
+
+        Owner.Slot.GlobalPosition = newPos;
+        _lastWrittenSlotPosition = newPos;
+        _hasWrittenSlotPosition = true;
+
+        Owner.World?.UpdateManager?.RegisterHookUpdate(Owner.Slot);
     }
 
     public void SetMovementDirection(float3 direction)
@@ -316,6 +323,17 @@ public class CharacterControllerHook : ComponentHook<CharacterController>, IChar
         {
             _characterBody.GlobalPosition = new Vector3(position.x, position.y, position.z);
             _velocity = Vector3.Zero;
+            _lastWrittenSlotPosition = position;
+            _hasWrittenSlotPosition = true;
+            lock (_physicsPoseLock)
+            {
+                _hasPendingBodyPosition = false;
+            }
+            if (Owner?.Slot != null)
+            {
+                Owner.Slot.GlobalPosition = position;
+                Owner.World?.UpdateManager?.RegisterHookUpdate(Owner.Slot);
+            }
         }
     }
 
@@ -410,14 +428,35 @@ public class CharacterControllerHook : ComponentHook<CharacterController>, IChar
         if (_isLocalUser && LocalPlayerBody == _characterBody)
             LocalPlayerBody = null;
 
+        if (!destroyingWorld && _physicsNode != null && GodotObject.IsInstanceValid(_physicsNode))
+        {
+            _physicsNode.QueueFree();
+        }
+
         if (!destroyingWorld && _characterBody != null && GodotObject.IsInstanceValid(_characterBody))
         {
             _characterBody.QueueFree();
         }
 
+        _physicsNode = null;
         _characterBody = null;
         _collisionShapes.Clear();
 
         base.Destroy(destroyingWorld);
+    }
+
+    private sealed partial class CharacterPhysicsNode : Node
+    {
+        private readonly CharacterControllerHook _hook;
+
+        public CharacterPhysicsNode(CharacterControllerHook hook)
+        {
+            _hook = hook;
+        }
+
+        public override void _PhysicsProcess(double delta)
+        {
+            _hook?.StepGodotPhysics((float)delta);
+        }
     }
 }

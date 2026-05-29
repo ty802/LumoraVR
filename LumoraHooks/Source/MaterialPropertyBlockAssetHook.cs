@@ -4,11 +4,13 @@
 using System;
 using System.Collections.Generic;
 using Godot;
+using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Math;
 
 namespace Lumora.Godot.Hooks;
 
+[ImplementableHook(typeof(MaterialPropertyBlockAsset))]
 public class MaterialPropertyBlockAssetHook : AssetHook, IMaterialPropertyBlockAssetHook
 {
     private readonly Dictionary<string, object> _properties = new();
@@ -60,9 +62,9 @@ public class MaterialPropertyBlockAssetHook : AssetHook, IMaterialPropertyBlockA
 
     public void SetTexture(string property, TextureAsset texture)
     {
-        if (texture?.Hook is TextureAssetHook textureHook && textureHook.IsValid)
+        if (texture?.Hook is IGodotTexture textureHook && textureHook.IsValid)
         {
-            _properties[property] = textureHook.GodotTexture;
+            _properties[property] = textureHook.GodotTexture2D;
         }
         else
         {
@@ -88,6 +90,11 @@ public class MaterialPropertyBlockAssetHook : AssetHook, IMaterialPropertyBlockA
         if (baseMaterial is not Material material)
         {
             return baseMaterial;
+        }
+
+        if (material is ShaderMaterial shaderMaterial && shaderMaterial.Shader == null)
+        {
+            return material;
         }
 
         ulong key = material.GetInstanceId();

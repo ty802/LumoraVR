@@ -3,32 +3,54 @@
 
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using Lumora.Core;
 using Lumora.Core.Assets;
+using Lumora.Core.Input;
 using Lumora.Core.Logging;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Avatar;
 
-/// <summary>
-/// Manages avatar equipping and swapping for a user.
-/// </summary>
+// Per-user avatar coordinator. Dispatches IAvatarObjects from a target avatar
+// slot tree onto the user's AvatarObjectSlots by matching BodyNode. Allows
+// a custom avatar's hands + default headset + default view to coexist on
+// the same user since each body node is filled independently. - xlinka
 [ComponentCategory("Avatar")]
-public class AvatarManager : ImplementableComponent
+public class AvatarManager : UserRootComponent
 {
     public readonly SyncRef<Slot> CurrentAvatar = new();
     public readonly SyncRef<UserRoot> UserRoot = new();
     public readonly SyncRef<Slot> DefaultAvatarSlot = new();
     public readonly Sync<bool> IsUsingDefaultAvatar = new();
 
+    // Plug-in supplier for default head/hands/view pieces when a body-node
+    // slot has nothing equipped. CommonAvatarBuilder installs itself here on
+    // user spawn. Set Target to null to disable auto-filling.
+    public readonly SyncRef<IEmptyAvatarSlotHandler> EmptySlotHandler = new();
+
+    private CancellationTokenSource _fillCts;
+    private bool _isFillingEmptySlots;
+
+    // Display name/color values used by name badges/tags. Per-user state that
+    // AvatarNameTagAssigner (when added) pushes into avatar text components.
+    public readonly Sync<string> NameTagText = new();
+    public readonly Sync<color> NameTagColor = new();
+    public readonly Sync<color> NameTagOutline = new();
+    public readonly Sync<color> NameTagBackground = new();
+
     public SyncRefList<Slot> AvailableAvatars { get; private set; }
 
     public event Action<Slot> OnAvatarChanged;
+
+    public bool IsEquippingManually { get; private set; }
 
     public override void OnAwake()
     {
         base.OnAwake();
         AvailableAvatars = new SyncRefList<Slot>(this);
+        NameTagColor.Value = color.White;
+        NameTagOutline.Value = color.Black;
         Logger.Log($"AvatarManager: Awake on slot '{Slot.SlotName.Value}'");
     }
 
@@ -42,22 +64,265 @@ public class AvatarManager : ImplementableComponent
     {
         base.OnStart();
         ResolveUserRoot();
+        EnsureRootObjectSlot();
+
+        // Fill default head/hands/view once everything's wired. If the handler
+        // isn't attached yet (SimpleUserSpawn sets it after AvatarManager
+        // attach), the fill is a no-op and EquipDefaultAvatar can re-trigger
+        // it later. - xlinka
+        FillEmptySlots();
     }
 
-    public bool CanEquipAvatar(Slot avatarSlot)
+    // Body-node dispatch equip. Walks target's IAvatarObject components,
+    // pairs them with the user's AvatarObjectSlots by BodyNode + priority,
+    // calls Equip on each pair, then reparents the target tree under us.
+    public bool Equip(Slot target, bool isManualEquip = false, bool forceDestroyOld = false, bool isFillingEmptySlot = false)
     {
-        return TryResolveFinalizedAvatar(
-            avatarSlot,
-            out _,
-            out _,
-            out _,
-            out _,
-            out _);
+        if (target == null || target.IsDestroyed)
+            return false;
+
+        ResolveUserRoot();
+        var userRoot = UserRoot.Target ?? Slot.ActiveUserRoot;
+        if (userRoot == null)
+        {
+            Logger.Warn("AvatarManager: Cannot equip, no user root");
+            return false;
+        }
+
+        IsEquippingManually = isManualEquip;
+
+        var equipObjects = new List<IAvatarObject>();
+        CollectEquippableObjects(target, equipObjects);
+        if (equipObjects.Count == 0)
+        {
+            Logger.Warn($"AvatarManager: No equippable IAvatarObject found on '{target.SlotName.Value}'");
+            return false;
+        }
+
+        // Descending priority — Root last (it's MaxValue and reparents the rest).
+        equipObjects.Sort((a, b) => -a.EquipOrderPriority.CompareTo(b.EquipOrderPriority));
+
+        // Collect user's body-node slots, deduping by BodyNode (one per node).
+        var objectSlots = new List<AvatarObjectSlot>();
+        var seenNodes = new HashSet<BodyNode>();
+        foreach (var s in userRoot.GetRegisteredComponents<AvatarObjectSlot>())
+        {
+            if (seenNodes.Add(s.Node.Value))
+                objectSlots.Add(s);
+        }
+
+        var pairs = new List<(AvatarObjectSlot objSlot, IAvatarObject obj)>();
+        var dequipped = new HashSet<IAvatarObject>();
+
+        foreach (var obj in equipObjects)
+        {
+            for (int i = 0; i < objectSlots.Count; i++)
+            {
+                var objSlot = objectSlots[i];
+                if (!objSlot.PreEquip(obj, dequipped)) continue;
+                pairs.Add((objSlot, obj));
+                objectSlots.RemoveAt(i);
+                break;
+            }
+        }
+
+        if (pairs.Count == 0)
+        {
+            Logger.Warn($"AvatarManager: No body-node slots matched on '{target.SlotName.Value}'");
+            return false;
+        }
+
+        if (forceDestroyOld)
+        {
+            foreach (var dq in dequipped)
+            {
+                if (dq is Component dqc && dqc.Slot != null && !dqc.Slot.IsDestroyed)
+                    dqc.Slot.Destroy();
+            }
+        }
+
+        foreach (var (objSlot, obj) in pairs)
+        {
+            objSlot.Equip(obj);
+        }
+
+        // Reparent the target under us so the dequipped tree doesn't leak in the world.
+        // AvatarRoot.Equip already reparents itself; this handles non-root targets.
+        if (target != Slot && !target.IsDescendantOf(Slot))
+        {
+            target.SetParent(Slot);
+        }
+
+        CurrentAvatar.Target = target;
+        IsUsingDefaultAvatar.Value = false;
+
+        if (!AvailableAvatars.Contains(target))
+            AvailableAvatars.Add(target);
+
+        if (!isFillingEmptySlot)
+        {
+            FillEmptySlots(objectSlots);
+        }
+
+        Logger.Log($"AvatarManager: Equipped {pairs.Count} object(s) from '{target.SlotName.Value}'");
+        OnAvatarChanged?.Invoke(target);
+        return true;
     }
 
-    /// <summary>
-    /// Equip a finalized avatar from a slot.
-    /// </summary>
+    // Walk the user's AvatarObjectSlots and ask EmptySlotHandler to fill any
+    // that have nothing equipped. Called automatically after every non-fill
+    // Equip(); also callable directly when the handler swaps. - xlinka
+    public void FillEmptySlots(List<AvatarObjectSlot> candidateSlots = null)
+    {
+        if (_isFillingEmptySlots) return;
+        if (EmptySlotHandler.Target == null) return;
+
+        var userRoot = UserRoot.Target ?? Slot?.ActiveUserRoot;
+        if (userRoot == null) return;
+
+        _fillCts?.Cancel();
+        _fillCts?.Dispose();
+        _fillCts = new CancellationTokenSource();
+        var token = _fillCts.Token;
+
+        candidateSlots ??= userRoot.GetRegisteredComponents<AvatarObjectSlot>();
+        _isFillingEmptySlots = true;
+        try
+        {
+            foreach (var slot in candidateSlots)
+            {
+                if (slot == null || slot.IsDestroyed) continue;
+                if (slot.HasEquipped) continue;
+                var handler = EmptySlotHandler.Target;
+                if (handler == null) break;
+                _ = handler.FillEmptySlot(slot.Node.Value, this, token);
+            }
+        }
+        finally
+        {
+            _isFillingEmptySlots = false;
+        }
+    }
+
+    public bool CanEquip(IAvatarObject avatarObject)
+    {
+        if (avatarObject == null) return false;
+        if (avatarObject.IsEquipped) return false;
+        if (avatarObject is Component c)
+        {
+            if (c.Slot == null || c.Slot.IsDestroyed) return false;
+            // Already under a user — can't equip something already worn.
+            if (c.Slot.ActiveUserRoot != null) return false;
+        }
+        if (Slot.ActiveUserRoot == null) return false;
+        return true;
+    }
+
+    private void CollectEquippableObjects(Slot slot, List<IAvatarObject> output)
+    {
+        if (slot == null || slot.IsDestroyed) return;
+
+        foreach (var c in slot.Components)
+        {
+            if (c is IAvatarObject obj && CanEquip(obj))
+                output.Add(obj);
+        }
+        foreach (var child in slot.Children)
+        {
+            CollectEquippableObjects(child, output);
+        }
+    }
+
+    private void EnsureRootObjectSlot()
+    {
+        if (Slot == null || Slot.ActiveUserRoot == null) return;
+
+        var existing = Slot.GetComponent<AvatarObjectSlot>();
+        if (existing == null || existing.Node.Value != BodyNode.Root)
+        {
+            var rootObjSlot = Slot.AttachComponent<AvatarObjectSlot>();
+            rootObjSlot.Node.Value = BodyNode.Root;
+        }
+    }
+
+    public void DequipCurrentAvatar()
+    {
+        if (CurrentAvatar.Target == null) return;
+
+        Logger.Log($"AvatarManager: Dequipping '{CurrentAvatar.Target.SlotName.Value}'");
+
+        ReleaseAvatarTracking(CurrentAvatar.Target);
+
+        var avatarRoot = CurrentAvatar.Target.GetComponent<AvatarRoot>();
+        if (avatarRoot != null)
+            avatarRoot.IsActive.Value = false;
+
+        CurrentAvatar.Target.ActiveSelf.Value = false;
+        CurrentAvatar.Target = null;
+    }
+
+    public void EquipDefaultAvatar()
+    {
+        Logger.Log("AvatarManager: Equipping default avatar via EmptySlotHandler");
+
+        DequipCurrentAvatar();
+        ResolveUserRoot();
+        FillEmptySlots();
+        IsUsingDefaultAvatar.Value = true;
+    }
+
+    public void RemoveAvatar(Slot avatarSlot)
+    {
+        if (avatarSlot == null) return;
+
+        if (CurrentAvatar.Target == avatarSlot)
+            EquipDefaultAvatar();
+
+        if (avatarSlot == DefaultAvatarSlot.Target) return;
+
+        AvailableAvatars.Remove(avatarSlot);
+        avatarSlot.Destroy();
+        Logger.Log("AvatarManager: Removed avatar");
+    }
+
+    public int GetAvatarIndex(Slot avatarSlot)
+    {
+        for (int i = 0; i < AvailableAvatars.Count; i++)
+        {
+            if (AvailableAvatars[i] == avatarSlot)
+                return i;
+        }
+        return -1;
+    }
+
+    public void CycleNextAvatar()
+    {
+        if (AvailableAvatars.Count == 0)
+        {
+            EquipDefaultAvatar();
+            return;
+        }
+        int currentIndex = GetAvatarIndex(CurrentAvatar.Target);
+        int nextIndex = (currentIndex + 1) % AvailableAvatars.Count;
+        EquipAvatar(AvailableAvatars[nextIndex]);
+    }
+
+    public void CyclePreviousAvatar()
+    {
+        if (AvailableAvatars.Count == 0)
+        {
+            EquipDefaultAvatar();
+            return;
+        }
+        int currentIndex = GetAvatarIndex(CurrentAvatar.Target);
+        int prevIndex = currentIndex - 1;
+        if (prevIndex < 0) prevIndex = AvailableAvatars.Count - 1;
+        EquipAvatar(AvailableAvatars[prevIndex]);
+    }
+
+    // Legacy single-avatar equip path: resolves the descriptor, sets up IK,
+    // then runs the new body-node dispatch. Kept so existing callers
+    // (Settings UI, ImportDialog) don't need to change. - xlinka
     public bool EquipAvatar(Slot avatarSlot)
     {
         if (!TryResolveFinalizedAvatar(
@@ -79,13 +344,6 @@ public class AvatarManager : ImplementableComponent
             return false;
         }
 
-        Logger.Log($"AvatarManager: Equipping avatar from slot '{avatarSlot.SlotName.Value}'");
-
-        var ikAvatar = EnsureGodotIKAvatar(avatarSlot);
-        ikAvatar.Skeleton.Target = skeleton;
-        ikAvatar.UserRoot.Target = UserRoot.Target;
-        ikAvatar.Enabled.Value = true;
-
         var vrikAvatar = avatarSlot.GetComponent<VRIKAvatar>() ?? avatarSlot.AttachComponent<VRIKAvatar>();
         vrikAvatar.Descriptor.Target = descriptor;
         if (!vrikAvatar.SetupFromDescriptor(descriptor, UserRoot.Target))
@@ -96,148 +354,19 @@ public class AvatarManager : ImplementableComponent
 
         DequipCurrentAvatar();
 
-        avatarSlot.SetParent(Slot);
-        avatarSlot.LocalPosition.Value = float3.Zero;
-        avatarSlot.LocalRotation.Value = floatQ.Identity;
-        avatarSlot.ActiveSelf.Value = true;
-
-        avatarRoot.Owner.Target = UserRoot.Target;
-        avatarRoot.IsActive.Value = true;
-
         descriptor.Root.Target = avatarRoot;
         descriptor.Skeleton.Target = skeleton;
         descriptor.Rig.Target = rig;
         descriptor.IsFinalized.Value = true;
 
-        CurrentAvatar.Target = avatarSlot;
-        IsUsingDefaultAvatar.Value = false;
-
-        if (!AvailableAvatars.Contains(avatarSlot))
-            AvailableAvatars.Add(avatarSlot);
-
-        Logger.Log("AvatarManager: Avatar equipped successfully");
-        OnAvatarChanged?.Invoke(avatarSlot);
-        return true;
+        return Equip(avatarSlot, isManualEquip: true);
     }
 
-    /// <summary>
-    /// Equip the default avatar.
-    /// </summary>
-    public void EquipDefaultAvatar()
+    public bool CanEquipAvatar(Slot avatarSlot)
     {
-        Logger.Log("AvatarManager: Equipping default avatar");
-
-        DequipCurrentAvatar();
-
-        if (DefaultAvatarSlot.Target != null)
-        {
-            DefaultAvatarSlot.Target.ActiveSelf.Value = true;
-            CurrentAvatar.Target = DefaultAvatarSlot.Target;
-        }
-        else
-        {
-            var avatarSlot = Slot.AddSlot("DefaultAvatar");
-            DefaultAVI.CreateDefaultAvatar(avatarSlot, UserRoot.Target);
-            DefaultAvatarSlot.Target = avatarSlot;
-            CurrentAvatar.Target = avatarSlot;
-        }
-
-        IsUsingDefaultAvatar.Value = true;
-        OnAvatarChanged?.Invoke(CurrentAvatar.Target);
+        return TryResolveFinalizedAvatar(avatarSlot, out _, out _, out _, out _, out _);
     }
 
-    /// <summary>
-    /// Dequip the current avatar and release its tracking slots.
-    /// </summary>
-    public void DequipCurrentAvatar()
-    {
-        if (CurrentAvatar.Target == null)
-            return;
-
-        Logger.Log($"AvatarManager: Dequipping avatar '{CurrentAvatar.Target.SlotName.Value}'");
-
-        ReleaseAvatarTracking(CurrentAvatar.Target);
-
-        var avatarRoot = CurrentAvatar.Target.GetComponent<AvatarRoot>();
-        if (avatarRoot != null)
-            avatarRoot.IsActive.Value = false;
-
-        CurrentAvatar.Target.ActiveSelf.Value = false;
-        CurrentAvatar.Target = null;
-    }
-
-    /// <summary>
-    /// Remove an avatar from available avatars and destroy it.
-    /// </summary>
-    public void RemoveAvatar(Slot avatarSlot)
-    {
-        if (avatarSlot == null)
-            return;
-
-        if (CurrentAvatar.Target == avatarSlot)
-            EquipDefaultAvatar();
-
-        if (avatarSlot == DefaultAvatarSlot.Target)
-            return;
-
-        AvailableAvatars.Remove(avatarSlot);
-        avatarSlot.Destroy();
-
-        Logger.Log("AvatarManager: Removed avatar");
-    }
-
-    /// <summary>
-    /// Get the index of an avatar in the available list.
-    /// </summary>
-    public int GetAvatarIndex(Slot avatarSlot)
-    {
-        for (int i = 0; i < AvailableAvatars.Count; i++)
-        {
-            if (AvailableAvatars[i] == avatarSlot)
-                return i;
-        }
-
-        return -1;
-    }
-
-    /// <summary>
-    /// Cycle to the next available avatar.
-    /// </summary>
-    public void CycleNextAvatar()
-    {
-        if (AvailableAvatars.Count == 0)
-        {
-            EquipDefaultAvatar();
-            return;
-        }
-
-        int currentIndex = GetAvatarIndex(CurrentAvatar.Target);
-        int nextIndex = (currentIndex + 1) % AvailableAvatars.Count;
-        EquipAvatar(AvailableAvatars[nextIndex]);
-    }
-
-    /// <summary>
-    /// Cycle to the previous available avatar.
-    /// </summary>
-    public void CyclePreviousAvatar()
-    {
-        if (AvailableAvatars.Count == 0)
-        {
-            EquipDefaultAvatar();
-            return;
-        }
-
-        int currentIndex = GetAvatarIndex(CurrentAvatar.Target);
-        int prevIndex = currentIndex - 1;
-        if (prevIndex < 0)
-            prevIndex = AvailableAvatars.Count - 1;
-
-        EquipAvatar(AvailableAvatars[prevIndex]);
-    }
-
-    /// <summary>
-    /// Import an avatar draft from disk. The imported avatar must be finalized before equip.
-    /// </summary>
     public async void ImportAndEquipAvatar(string filePath, LocalDB localDB = null)
     {
         Logger.Warn("AvatarManager: ImportAndEquipAvatar now imports a draft avatar that must be finalized before equip");
@@ -265,12 +394,8 @@ public class AvatarManager : ImplementableComponent
 
     private void ResolveUserRoot()
     {
-        if (UserRoot.Target != null)
-            return;
-
-        var userRoot = Slot.GetComponentInParent<UserRoot>();
-        if (userRoot != null)
-            UserRoot.Target = userRoot;
+        if (UserRoot.Target != null) return;
+        UserRoot.Target = Slot?.ActiveUserRoot ?? Slot?.GetComponentInParent<UserRoot>();
     }
 
     private bool TryResolveFinalizedAvatar(
@@ -330,25 +455,14 @@ public class AvatarManager : ImplementableComponent
         return true;
     }
 
-    private static GodotIKAvatar EnsureGodotIKAvatar(Slot avatarSlot)
-    {
-        var ikAvatar = avatarSlot.GetComponentInChildren<GodotIKAvatar>();
-        if (ikAvatar != null)
-            return ikAvatar;
-
-        var ikSlot = avatarSlot.AddSlot("IK");
-        return ikSlot.AttachComponent<GodotIKAvatar>();
-    }
-
     private static void ReleaseAvatarTracking(Slot avatarSlot)
     {
-        if (avatarSlot == null || avatarSlot.IsDestroyed)
-            return;
+        if (avatarSlot == null || avatarSlot.IsDestroyed) return;
 
-        var dequippedObjects = new HashSet<IAvatarObject>();
+        var dequipped = new HashSet<IAvatarObject>();
         foreach (var poseNode in avatarSlot.GetComponentsInChildren<AvatarPoseNode>())
         {
-            poseNode.EquippingSlot?.Dequip(dequippedObjects);
+            poseNode.EquippingSlot?.Dequip(dequipped);
         }
     }
 }

@@ -111,38 +111,48 @@ public partial class DesktopCameraController : Node
 
     private void CreateFreeCamIndicator()
     {
-        _freeCamIndicator = new Node3D { Name = "FreeCamIndicator" };
-        _freeCamIndicator.Visible = false;
-
-        // Glowing sphere
-        var mesh = new MeshInstance3D();
-        mesh.Layers = FreeCamIndicatorLayer;
-        mesh.Mesh = new SphereMesh { Radius = 0.18f, Height = 0.36f };
-        var mat = new StandardMaterial3D
+        try
         {
-            AlbedoColor     = new Color(0.55f, 0.55f, 1.0f),
-            EmissionEnabled = true,
-            Emission        = new Color(0.25f, 0.25f, 0.75f),
-        };
-        mesh.MaterialOverride = mat;
-        _freeCamIndicator.AddChild(mesh);
+            _freeCamIndicator = new Node3D { Name = "FreeCamIndicator" };
+            _freeCamIndicator.Visible = false;
 
-        // Billboard username label above the sphere
-        _freeCamLabel = new Label3D
+            // Glowing sphere
+            var mesh = new MeshInstance3D();
+            mesh.Layers = FreeCamIndicatorLayer;
+            mesh.Mesh = new SphereMesh { Radius = 0.18f, Height = 0.36f };
+            var mat = new StandardMaterial3D
+            {
+                AlbedoColor     = new Color(0.55f, 0.55f, 1.0f),
+                EmissionEnabled = true,
+                Emission        = new Color(0.25f, 0.25f, 0.75f),
+            };
+            mesh.MaterialOverride = mat;
+            _freeCamIndicator.AddChild(mesh);
+
+            // Billboard username label above the sphere
+            _freeCamLabel = new Label3D
+            {
+                Name        = "UsernameLabel",
+                Text        = "freecam",
+                Billboard   = BaseMaterial3D.BillboardModeEnum.Enabled,
+                NoDepthTest = true,
+                PixelSize   = 0.004f,
+                FontSize    = 28,
+                Layers      = FreeCamIndicatorLayer,
+                Position    = new Vector3(0f, 0.38f, 0f),
+            };
+            _freeCamIndicator.AddChild(_freeCamLabel);
+
+            // Add directly to the scene-tree root so it has a world-space transform
+            GetTree().Root.CallDeferred(Node.MethodName.AddChild, _freeCamIndicator);
+        }
+        catch (System.Exception ex)
         {
-            Name        = "UsernameLabel",
-            Text        = "freecam",
-            Billboard   = BaseMaterial3D.BillboardModeEnum.Enabled,
-            NoDepthTest = true,
-            PixelSize   = 0.004f,
-            FontSize    = 28,
-            Layers      = FreeCamIndicatorLayer,
-            Position    = new Vector3(0f, 0.38f, 0f),
-        };
-        _freeCamIndicator.AddChild(_freeCamLabel);
-
-        // Add directly to the scene-tree root so it has a world-space transform
-        GetTree().Root.CallDeferred(Node.MethodName.AddChild, _freeCamIndicator);
+            LumoraLogger.Warn($"DesktopCameraController: FreeCam indicator disabled ({ex.Message})");
+            _freeCamIndicator?.QueueFree();
+            _freeCamIndicator = null;
+            _freeCamLabel = null;
+        }
     }
 
     // ===== GODOT CALLBACKS =====
@@ -171,7 +181,7 @@ public partial class DesktopCameraController : Node
     public override void _Input(InputEvent @event)
     {
         if (DashboardToggle.IsDashboardVisible) return;
-        if (LocomotionController.DesktopInputSuppressed)
+        if (UserInputState.FocusedDesktopInputSuppressed)
         {
             _pendingTpMouse = Vector2.Zero;
             _pendingFreeCamMouse = Vector2.Zero;
@@ -204,16 +214,18 @@ public partial class DesktopCameraController : Node
         _mode      = newMode;
         ActiveMode = newMode;
 
+        var state = UserInputState.ForFocusedLocalUser;
+
         // --- Tear down previous ---
         if (prev == CameraMode.FreeCam)
         {
-            LocomotionController.SetFreeCamActive(false);
+            state?.SetFreeCamActive(false);
             _pendingFreeCamMouse = Vector2.Zero;
             if (_freeCamIndicator != null) _freeCamIndicator.Visible = false;
         }
         if (prev == CameraMode.ThirdPerson)
         {
-            LocomotionController.SetMouseLookSuppressed(false);
+            state?.SetMouseLookSuppressed(false);
             _pendingTpMouse = Vector2.Zero;
         }
 
@@ -226,11 +238,10 @@ public partial class DesktopCameraController : Node
                 break;
 
             case CameraMode.ThirdPerson:
-                // Seed orbit so camera starts directly behind the character
                 _tpOrbitYaw   = GetCharacterBodyYaw();
                 _tpOrbitPitch = TpDefaultPitch;
                 _pendingTpMouse = Vector2.Zero;
-                LocomotionController.SetMouseLookSuppressed(true);
+                state?.SetMouseLookSuppressed(true);
                 if (_overrideCamera != null) _overrideCamera.Current = true;
                 LumoraLogger.Log("[DesktopCameraController] Third-person (mouse=orbit, scroll=distance)");
                 break;
@@ -238,7 +249,7 @@ public partial class DesktopCameraController : Node
             case CameraMode.FreeCam:
                 SeedFreeCamFromActiveCamera();
                 RefreshFreeCamLabel();
-                LocomotionController.SetFreeCamActive(true);
+                state?.SetFreeCamActive(true);
                 if (_overrideCamera != null) _overrideCamera.Current = true;
                 if (_freeCamIndicator != null) _freeCamIndicator.Visible = true;
                 LumoraLogger.Log("[DesktopCameraController] Free-cam (WASD+mouse, Shift=fast, Space/Ctrl=vertical)");
@@ -251,7 +262,7 @@ public partial class DesktopCameraController : Node
     private void UpdateThirdPerson()
     {
         if (_overrideCamera == null) return;
-        if (LocomotionController.DesktopInputSuppressed)
+        if (UserInputState.FocusedDesktopInputSuppressed)
         {
             _pendingTpMouse = Vector2.Zero;
         }
@@ -323,7 +334,7 @@ public partial class DesktopCameraController : Node
     {
         if (_overrideCamera == null) return;
         if (DashboardToggle.IsDashboardVisible) return;
-        if (LocomotionController.DesktopInputSuppressed)
+        if (UserInputState.FocusedDesktopInputSuppressed)
         {
             _pendingFreeCamMouse = Vector2.Zero;
             return;

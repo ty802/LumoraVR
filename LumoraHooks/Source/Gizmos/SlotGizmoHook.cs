@@ -17,6 +17,7 @@ namespace Lumora.Godot.Hooks.Gizmos;
 /// Godot hook for rendering the SlotGizmo.
 /// Displays bounding box, name label, and toolbar buttons.
 /// </summary>
+[ImplementableHook(typeof(SlotGizmo))]
 public sealed class SlotGizmoHook : ComponentHook<SlotGizmo>
 {
 	// Materials

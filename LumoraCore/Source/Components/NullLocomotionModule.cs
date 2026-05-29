@@ -3,13 +3,11 @@
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Null locomotion module (no movement) used when locomotion is suppressed or unavailable.
-/// </summary>
-public class NullLocomotionModule : ILocomotionModule
+// Always-eligible fallback. Used when permissions deny everything else or
+// the user manually cycles through to "no locomotion". - xlinka
+public class NullLocomotionModule : LocomotionModule
 {
-    public void Activate(LocomotionController owner) { }
-    public void Deactivate() { }
-    public void Update(float delta) { }
-    public void Dispose() { }
+    public override int Priority => 0;
+    public override string DisplayName => "None";
+    public override void OnModuleUpdate(float delta) { }
 }

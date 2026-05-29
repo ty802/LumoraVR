@@ -46,7 +46,7 @@ public static class HumanoidMeshGenerator
         var boneIndexList = new List<int4>();
         var boneWeightList = new List<float4>();
 
-        // Define bone indices matching DefaultAVI skeleton order:
+        // Bone indices matching the SkeletonBuilder order used elsewhere:
         // 0=Root, 1=Hips, 2=Spine, 3=Chest, 4=UpperChest, 5=Neck, 6=Head
         // 7=LeftShoulder, 8=LeftUpperArm, 9=LeftLowerArm, 10=LeftHand
         // 11=RightShoulder, 12=RightUpperArm, 13=RightLowerArm, 14=RightHand

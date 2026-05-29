@@ -609,7 +609,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
 
         if (showOwnGraphics)
         {
-            foreach (var graphic in slot.GetComponents<Graphic>())
+            foreach (var graphic in new List<Graphic>(slot.GetComponents<Graphic>()))
             {
                 if (!graphic.Enabled.Value)
                 {

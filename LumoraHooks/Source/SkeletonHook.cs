@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 ﻿using Godot;
+using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
 using System.Collections.Generic;
@@ -14,6 +15,7 @@ namespace Lumora.Godot.Hooks;
 /// Creates and manages a Skeleton3D node with bone hierarchy.
 /// Platform skeleton hook for Godot.
 /// </summary>
+[ImplementableHook(typeof(SkeletonBuilder))]
 public class SkeletonHook : ComponentHook<SkeletonBuilder>
 {
     private Skeleton3D _skeleton;

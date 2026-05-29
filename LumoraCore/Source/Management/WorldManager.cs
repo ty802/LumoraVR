@@ -142,7 +142,7 @@ public class WorldManager : IDisposable
         }
         catch (Exception ex)
         {
-            LumoraLogger.Error($"WorldManager: Failed to start local world '{name}': {ex.Message}");
+            LumoraLogger.Error($"WorldManager: Failed to start local world '{name}': {ex}");
             return null;
         }
     }
@@ -193,7 +193,7 @@ public class WorldManager : IDisposable
         }
         catch (Exception ex)
         {
-            LumoraLogger.Error($"WorldManager: Failed to start session '{name}': {ex.Message}");
+            LumoraLogger.Error($"WorldManager: Failed to start session '{name}': {ex}");
             return null;
         }
     }

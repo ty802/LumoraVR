@@ -13,6 +13,7 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 namespace Lumora.Core.Components.Interaction;
 
 [ComponentCategory("XR/Interaction")]
+[DefaultUpdateOrder(-900)]
 public sealed class InteractionLaser : Component
 {
     public readonly Sync<float> MaxDistance = new();
@@ -24,12 +25,29 @@ public sealed class InteractionLaser : Component
     public readonly Sync<float> HoverSwitchTolerance = new();
     public readonly Sync<float> DefaultHoverRadius = new();
     public readonly Sync<float> StickyHitDistance = new();
+    public readonly Sync<float> VisualSmoothing = new();
+    public readonly Sync<float> CursorSize = new();
+    public readonly Sync<bool> ShowDesktopBeam = new();
+    public readonly Sync<bool> ShowDirectCursor = new();
 
     private readonly List<TargetHit> _hitBuffer = new(64);
     private Slot? _beamSlot;
+    private Slot? _pointSlot;
+    private Slot? _cursorSlot;
+    private Slot? _cursorRootSlot;
+    private Slot? _directCursorSlot;
+    private Slot? _directLineSlot;
     private CurvedBeamMesh? _beamMesh;
-    private UnlitMaterial? _beamMaterial;
-    private HandInteractionTool? _handTool;
+    private OverlayUnlitMaterial? _beamMaterial;
+    private OverlayUnlitMaterial? _cursorMaterial;
+    private OverlayUnlitMaterial? _directCursorMaterial;
+    private OverlayUnlitMaterial? _directLineMaterial;
+    private SegmentMesh? _directLineMesh;
+    private MeshRenderer? _beamRenderer;
+    private MeshRenderer? _cursorRenderer;
+    private MeshRenderer? _directCursorRenderer;
+    private MeshRenderer? _directLineRenderer;
+    private Slot? _ignoreRoot;
     private IInteractionTarget? _currentTarget;
     private RayTarget? _currentRayTarget;
     private ILaserPointerTarget? _currentPointerTarget;
@@ -39,12 +57,27 @@ public sealed class InteractionLaser : Component
     private bool _prevSecondaryState;
     private float3 _smoothedHitPoint;
     private bool _hasSmoothedHitPoint;
+    private bool _toolPrimaryPressed;
+    private bool _toolBlocksPointerActions;
+    private float3 _rayOrigin;
+    private float3 _rayDirection = float3.Backward;
+    private long _lastRefreshFrame = long.MinValue;
+    private float _laserVisibleLerp;
+    private float3 _visualActualPoint;
+    private bool _hasVisualActualPoint;
+    private color _currentStartColor = color.Transparent;
+    private color _currentEndColor = color.Transparent;
+    private float _lastDirectHitDistance;
+    private float2 _laserTextureOffset;
 
-    public Grabber? Grabber => _handTool?.Grabber ?? Slot?.GetComponent<Grabber>();
     public IInteractionTarget? CurrentTarget => _currentTarget;
+    public RayTarget? CurrentRayTarget => _currentRayTarget;
     public ILaserPointerTarget? CurrentPointerTarget => _currentPointerTarget;
+    public Slot? CurrentHitSlot => _currentHitSlot;
     public float3 CurrentHitPoint => _currentHitPoint;
     public float CurrentHitDistance => _currentHitDistance;
+    public float3 RayOrigin => _rayOrigin;
+    public float3 RayDirection => _rayDirection;
     public bool IsActive => _currentTarget != null;
 
     public event Action<IInteractionTarget?>? TargetChanged;
@@ -78,13 +111,15 @@ public sealed class InteractionLaser : Component
         HoverSwitchTolerance.Value = 0.05f;
         DefaultHoverRadius.Value = 0.05f;
         StickyHitDistance.Value = 0.08f;
+        VisualSmoothing.Value = 12f;
+        CursorSize.Value = 0.018f;
+        ShowDesktopBeam.Value = false;
+        ShowDirectCursor.Value = true;
     }
 
     public override void OnStart()
     {
         base.OnStart();
-        _handTool = Slot.GetComponent<HandInteractionTool>() ?? Slot.AttachComponent<HandInteractionTool>();
-        _handTool.EnsureReady();
         BuildBeamVisual();
         LumoraLogger.Log($"InteractionLaser: Started on '{Slot.SlotName.Value}' side={ControllerSide.Value}");
     }
@@ -92,14 +127,36 @@ public sealed class InteractionLaser : Component
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
-        CastAndUpdate(delta);
+        RefreshNow(delta);
     }
 
     public override void OnDestroy()
     {
-        _handTool?.ResetInteraction(releaseHeld: true);
         ClearCurrentTarget();
         base.OnDestroy();
+    }
+
+    public void SetIgnoreRoot(Slot? root)
+    {
+        _ignoreRoot = root;
+    }
+
+    public void SetToolState(bool primaryPressed, bool blockPointerActions)
+    {
+        _toolPrimaryPressed = primaryPressed;
+        _toolBlocksPointerActions = blockPointerActions;
+    }
+
+    public void RefreshNow(float delta)
+    {
+        long frame = Engine.Current?.FrameCount ?? -1;
+        if (frame >= 0 && _lastRefreshFrame == frame)
+        {
+            return;
+        }
+
+        _lastRefreshFrame = frame;
+        CastAndUpdate(delta);
     }
 
     private void BuildBeamVisual()
@@ -110,6 +167,7 @@ public sealed class InteractionLaser : Component
         _beamMesh.Radius.Value = BeamRadius.Value;
         _beamMesh.Sides.Value = 6;
         _beamMesh.Segments.Value = 16;
+        _beamMesh.Capped.Value = true;
         _beamMesh.StartPoint.Value = float3.Zero;
         _beamMesh.DirectTargetPoint.Value = float3.Backward * MaxDistance.Value;
         _beamMesh.ActualTargetPoint.Value = float3.Backward * MaxDistance.Value;
@@ -117,38 +175,98 @@ public sealed class InteractionLaser : Component
         _beamMesh.EndPointColor.Value = IdleColor.Value.ToLDR();
 
         var matSlot = _beamSlot.AddSlot("InteractionLaserMaterial");
-        _beamMaterial = matSlot.AttachComponent<UnlitMaterial>();
-        _beamMaterial.TintColor.Value = colorHDR.White;
+        _beamMaterial = matSlot.AttachComponent<OverlayUnlitMaterial>();
+        _beamMaterial.FrontTintColor.Value = colorHDR.White;
+        _beamMaterial.BehindTintColor.Value = new colorHDR(0.5f, 0.5f, 0.5f, 0.35f);
         _beamMaterial.UseVertexColor.Value = true;
         _beamMaterial.BlendMode.Value = BlendMode.Additive;
         _beamMaterial.Culling.Value = Culling.None;
-        _beamMaterial.RenderQueue.Value = 85;
+        _beamMaterial.RenderQueue.Value = 4010;
 
-        var renderer = _beamSlot.AttachComponent<MeshRenderer>();
-        renderer.Mesh.Target = _beamMesh;
-        renderer.Material.Target = _beamMaterial;
-        renderer.ShadowCastMode.Value = ShadowCastMode.Off;
-        renderer.SortingOrder.Value = 85;
+        _beamRenderer = _beamSlot.AttachComponent<MeshRenderer>();
+        _beamRenderer.Mesh.Target = _beamMesh;
+        _beamRenderer.Material.Target = _beamMaterial;
+        _beamRenderer.ShadowCastMode.Value = ShadowCastMode.Off;
+        _beamRenderer.SortingOrder.Value = 110;
+
+        _pointSlot = _beamSlot.AddSlot("Point");
+        _pointSlot.LocalPosition.Value = float3.Backward * MaxDistance.Value;
+
+        _cursorSlot = _pointSlot.AddSlot("Cursor");
+        _cursorMaterial = _cursorSlot.AttachComponent<OverlayUnlitMaterial>();
+        _cursorMaterial.BlendMode.Value = BlendMode.Additive;
+        _cursorMaterial.FrontTintColor.Value = colorHDR.White;
+        _cursorMaterial.BehindTintColor.Value = new colorHDR(1f, 1f, 1f, 0.35f);
+        _cursorMaterial.UseVertexColor.Value = true;
+        _cursorMaterial.RenderQueue.Value = 4005;
+
+        _cursorRootSlot = _cursorSlot.AddSlot("Image");
+        var cursorMesh = _cursorRootSlot.AttachComponent<QuadMesh>();
+        cursorMesh.Size.Value = float2.One * CursorSize.Value;
+        cursorMesh.DualSided.Value = true;
+        cursorMesh.Color = color.White;
+
+        _cursorRenderer = _cursorRootSlot.AttachComponent<MeshRenderer>();
+        _cursorRenderer.Mesh.Target = cursorMesh;
+        _cursorRenderer.Material.Target = _cursorMaterial;
+        _cursorRenderer.ShadowCastMode.Value = ShadowCastMode.Off;
+        _cursorRenderer.SortingOrder.Value = 105;
+
+        _directCursorSlot = _beamSlot.AddSlot("DirectCursor");
+        _directCursorMaterial = _directCursorSlot.AttachComponent<OverlayUnlitMaterial>();
+        _directCursorMaterial.BlendMode.Value = BlendMode.Additive;
+        _directCursorMaterial.FrontTintColor.Value = new colorHDR(1f, 1f, 1f, 0.25f);
+        _directCursorMaterial.BehindTintColor.Value = new colorHDR(1f, 1f, 1f, 0.15f);
+        _directCursorMaterial.UseVertexColor.Value = true;
+        _directCursorMaterial.RenderQueue.Value = 4000;
+
+        var directCursorMesh = _directCursorSlot.AttachComponent<QuadMesh>();
+        directCursorMesh.Size.Value = float2.One * (CursorSize.Value * 0.75f);
+        directCursorMesh.DualSided.Value = true;
+        directCursorMesh.Color = new color(1f, 1f, 1f, 0.25f);
+
+        _directCursorRenderer = _directCursorSlot.AttachComponent<MeshRenderer>();
+        _directCursorRenderer.Mesh.Target = directCursorMesh;
+        _directCursorRenderer.Material.Target = _directCursorMaterial;
+        _directCursorRenderer.ShadowCastMode.Value = ShadowCastMode.Off;
+        _directCursorRenderer.SortingOrder.Value = 100;
+
+        _directLineSlot = _beamSlot.AddSlot("DirectLine");
+        _directLineMesh = _directLineSlot.AttachComponent<SegmentMesh>();
+        _directLineMesh.Radius.Value = BeamRadius.Value * 0.75f;
+        _directLineMesh.Sides.Value = 6;
+        _directLineMesh.PointA.Value = float3.Backward * MaxDistance.Value;
+        _directLineMesh.PointB.Value = float3.Backward * MaxDistance.Value;
+        _directLineMesh.PointAColor.Value = new color(1f, 1f, 1f, 0.18f);
+        _directLineMesh.PointBColor.Value = new color(1f, 1f, 1f, 0.18f);
+
+        _directLineMaterial = _directLineSlot.AttachComponent<OverlayUnlitMaterial>();
+        _directLineMaterial.BlendMode.Value = BlendMode.Additive;
+        _directLineMaterial.FrontTintColor.Value = colorHDR.White;
+        _directLineMaterial.BehindTintColor.Value = new colorHDR(1f, 1f, 1f, 0.35f);
+        _directLineMaterial.UseVertexColor.Value = true;
+        _directLineMaterial.RenderQueue.Value = 4000;
+
+        _directLineRenderer = _directLineSlot.AttachComponent<MeshRenderer>();
+        _directLineRenderer.Mesh.Target = _directLineMesh;
+        _directLineRenderer.Material.Target = _directLineMaterial;
+        _directLineRenderer.ShadowCastMode.Value = ShadowCastMode.Off;
+        _directLineRenderer.SortingOrder.Value = 100;
+
+        _beamSlot.ActiveSelf.Value = false;
+        _cursorSlot.ActiveSelf.Value = false;
+        _directCursorSlot.ActiveSelf.Value = false;
+        _directLineSlot.ActiveSelf.Value = false;
     }
 
     private void CastAndUpdate(float delta)
     {
         if (_beamSlot == null || World?.RootSlot == null) return;
 
-        var inputCheck = Engine.Current?.InputInterface;
-        bool showWorldBeam = true;
-        if (inputCheck != null && !inputCheck.IsVRActive)
-        {
-            // desktop reticle is the cursor; hide the world-space beam to avoid divergence. - xlinka
-            showWorldBeam = false;
-        }
-        if (_beamSlot.ActiveSelf.Value != showWorldBeam)
-        {
-            _beamSlot.ActiveSelf.Value = showWorldBeam;
-        }
-
         float maxDist = MathF.Max(MaxDistance.Value, 0.01f);
         ResolveRayPose(out float3 origin, out float3 direction);
+        _rayOrigin = origin;
+        _rayDirection = direction;
 
         float blockingDistance = maxDist;
         if (TryFindNearestColliderHitDistance(origin, direction, maxDist, out float colliderHitDistance))
@@ -158,6 +276,14 @@ public sealed class InteractionLaser : Component
 
         _hitBuffer.Clear();
         CollectInteractionHits(World.RootSlot, origin, direction, maxDist, blockingDistance);
+
+        var engine = Lumora.Core.Engine.Current;
+        if (engine?.InputInterface?.IsDashboardOpen == true)
+        {
+            var userspace = engine.WorldManager?.UserspaceWorld;
+            if (userspace != null && userspace != World && userspace.RootSlot != null)
+                CollectInteractionHits(userspace.RootSlot, origin, direction, maxDist, blockingDistance);
+        }
 
         IInteractionTarget? hoveredTarget = null;
         Slot? hoveredSlot = null;
@@ -229,49 +355,23 @@ public sealed class InteractionLaser : Component
         _currentHitPoint = hoveredHitPoint;
         _currentHitDistance = hoveredDistance;
 
-        _handTool ??= Slot.GetComponent<HandInteractionTool>();
-        _handTool?.SampleInput(this);
-
-        bool primaryNow = _handTool?.PrimaryHeld == true;
-        bool pointerPressed = _handTool?.IsHolding == true ? false : primaryNow;
-        UpdatePointerTarget(hoveredTarget as ILaserPointerTarget, origin, direction, pointerPressed);
+        UpdatePointerTarget(hoveredTarget as ILaserPointerTarget, origin, direction, _toolPrimaryPressed);
         ProcessPointerActions();
 
-        _handTool?.ProcessFrame(
-            this,
-            delta,
-            origin,
-            direction,
-            _currentTarget,
-            _currentPointerTarget,
-            _currentRayTarget,
-            _currentHitSlot,
-            _currentHitPoint,
-            _currentHitDistance);
-
         float beamLength = hoveredTarget != null ? hoveredDistance : blockingDistance;
-        if (showWorldBeam)
-        {
-            float3 beamEndPoint = hoveredTarget != null
-                ? _currentHitPoint
-                : new float3(
-                    origin.x + direction.x * beamLength,
-                    origin.y + direction.y * beamLength,
-                    origin.z + direction.z * beamLength);
-            PositionBeam(origin, direction, beamLength, beamEndPoint);
-        }
-
-        if (_beamMaterial != null)
-        {
-            SetIfChanged(_beamMaterial.TintColor, colorHDR.White);
-        }
+        float3 beamEndPoint = hoveredTarget != null
+            ? _currentHitPoint
+            : new float3(
+                origin.x + direction.x * beamLength,
+                origin.y + direction.y * beamLength,
+                origin.z + direction.z * beamLength);
+        PositionBeam(origin, direction, beamLength, beamEndPoint, delta);
 
         if (_beamMesh != null)
         {
             color wantedColor = (hoveredTarget != null ? HoverColor.Value : IdleColor.Value).ToLDR();
             SetIfChanged(_beamMesh.Radius, BeamRadius.Value);
-            SetIfChanged(_beamMesh.StartPointColor, wantedColor);
-            SetIfChanged(_beamMesh.EndPointColor, wantedColor);
+            UpdateLaserVisual(delta, hoveredTarget != null, wantedColor, beamLength);
         }
     }
 
@@ -306,12 +406,163 @@ public sealed class InteractionLaser : Component
         }
     }
 
+    private static void SetIfChanged(Sync<float2> field, float2 value)
+    {
+        float2 current = field.Value;
+        if (MathF.Abs(current.x - value.x) > 0.0001f ||
+            MathF.Abs(current.y - value.y) > 0.0001f)
+        {
+            field.Value = value;
+        }
+    }
+
     private static void SetIfChanged(Sync<float> field, float value)
     {
         if (MathF.Abs(field.Value - value) > 0.0001f)
         {
             field.Value = value;
         }
+    }
+
+    private static void SetIfChanged(Sync<bool> field, bool value)
+    {
+        if (field.Value != value)
+        {
+            field.Value = value;
+        }
+    }
+
+    private void UpdateLaserVisual(float delta, bool hasTarget, color targetColor, float pointDistance)
+    {
+        var input = Engine.Current?.InputInterface;
+        bool isVr = input?.IsVRActive == true;
+        bool shouldShow = hasTarget || isVr;
+        float visualStep = MathF.Max(delta, 0f) * 6f;
+        _laserVisibleLerp = Progress01(_laserVisibleLerp, visualStep, shouldShow);
+
+        bool rootVisible = _laserVisibleLerp > 0.001f;
+        bool beamVisible = rootVisible && (isVr || ShowDesktopBeam.Value);
+        bool cursorVisible = rootVisible;
+        bool directVisible = rootVisible && ShowDirectCursor.Value && isVr;
+
+        if (_beamSlot != null) SetIfChanged(_beamSlot.ActiveSelf, rootVisible);
+        if (_cursorSlot != null) SetIfChanged(_cursorSlot.ActiveSelf, cursorVisible);
+        if (_directCursorSlot != null) SetIfChanged(_directCursorSlot.ActiveSelf, directVisible);
+        if (_directLineSlot != null) SetIfChanged(_directLineSlot.ActiveSelf, directVisible);
+        if (_beamRenderer != null) SetIfChanged(_beamRenderer.Enabled, beamVisible);
+        if (_cursorRenderer != null) SetIfChanged(_cursorRenderer.Enabled, cursorVisible);
+        if (_directCursorRenderer != null) SetIfChanged(_directCursorRenderer.Enabled, directVisible);
+        if (_directLineRenderer != null) SetIfChanged(_directLineRenderer.Enabled, directVisible);
+
+        if (!rootVisible)
+        {
+            return;
+        }
+
+        float endVisibility = MathF.Min(1f, _laserVisibleLerp * 2f);
+        float startVisibility = MathF.Min(1f, MathF.Max(0f, _laserVisibleLerp - 0.35f) / 0.65f);
+        float colorStep = System.Math.Clamp(MathF.Max(delta, 0f) * 10f, 0f, 1f);
+        _currentStartColor = color.Lerp(_currentStartColor, _currentEndColor, colorStep);
+        _currentEndColor = color.Lerp(_currentEndColor, targetColor, colorStep);
+
+        color startColor = color.Lerp(_currentStartColor, color.White, 0.25f) * startVisibility;
+        color endColor = color.Lerp(_currentEndColor, color.White, 0.25f) * endVisibility;
+        SetIfChanged(_beamMesh!.StartPointColor, startColor);
+        SetIfChanged(_beamMesh.EndPointColor, endColor);
+
+        color cursorColor = color.Lerp(_currentEndColor, color.White, 0.75f);
+        cursorColor.a *= endVisibility;
+        if (_cursorMaterial != null)
+        {
+            var tint = new colorHDR(cursorColor.r, cursorColor.g, cursorColor.b, cursorColor.a);
+            SetIfChanged(_cursorMaterial.FrontTintColor, tint);
+            SetIfChanged(_cursorMaterial.BehindTintColor, new colorHDR(cursorColor.r, cursorColor.g, cursorColor.b, cursorColor.a * 0.5f));
+        }
+
+        if (_directCursorMaterial != null)
+        {
+            var directTint = new colorHDR(cursorColor.r, cursorColor.g, cursorColor.b, cursorColor.a * 0.25f);
+            SetIfChanged(_directCursorMaterial.FrontTintColor, directTint);
+            SetIfChanged(_directCursorMaterial.BehindTintColor, new colorHDR(cursorColor.r, cursorColor.g, cursorColor.b, cursorColor.a * 0.15f));
+        }
+
+        if (_directLineMaterial != null)
+        {
+            var lineTint = new colorHDR(cursorColor.r, cursorColor.g, cursorColor.b, cursorColor.a * 0.25f);
+            SetIfChanged(_directLineMaterial.FrontTintColor, lineTint);
+            SetIfChanged(_directLineMaterial.BehindTintColor, new colorHDR(cursorColor.r, cursorColor.g, cursorColor.b, cursorColor.a * 0.15f));
+        }
+
+        OrientCursor(pointDistance);
+        _laserTextureOffset += new float2(0f, delta * 2f);
+        if (_beamMaterial != null)
+        {
+            SetIfChanged(_beamMaterial.FrontTextureOffset, _laserTextureOffset);
+            SetIfChanged(_beamMaterial.BehindTextureOffset, _laserTextureOffset);
+        }
+    }
+
+    private static float Progress01(float current, float amount, bool target)
+    {
+        if (target)
+        {
+            return System.Math.Clamp(current + amount, 0f, 1f);
+        }
+        return System.Math.Clamp(current - amount, 0f, 1f);
+    }
+
+    private void OrientCursor(float pointDistance)
+    {
+        if (_pointSlot == null || _cursorSlot == null)
+        {
+            return;
+        }
+
+        var head = FindHeadSlot();
+        float3 viewPosition = head?.GlobalPosition ?? (_rayOrigin - _rayDirection);
+        float3 viewUp = head?.Up ?? float3.Up;
+        float3 toView = viewPosition - _pointSlot.GlobalPosition;
+        if (toView.Length <= 0.0001f)
+        {
+            toView = -_rayDirection;
+        }
+        if (viewUp.Length <= 0.0001f)
+        {
+            viewUp = float3.Up;
+        }
+
+        _cursorSlot.GlobalRotation = SafeLookRotation(toView, viewUp);
+        float cursorScale = MathF.Max(0.35f, pointDistance) * 0.6f;
+        _cursorSlot.LocalScale.Value = float3.One * cursorScale;
+
+        if (_directCursorSlot != null)
+        {
+            _directCursorSlot.GlobalRotation = _cursorSlot.GlobalRotation;
+            _directCursorSlot.LocalScale.Value = float3.One * cursorScale;
+        }
+    }
+
+    private static floatQ SafeLookRotation(float3 forward, float3 up)
+    {
+        if (forward.Length <= 0.0001f)
+        {
+            return floatQ.Identity;
+        }
+
+        forward = forward.Normalized;
+        if (up.Length <= 0.0001f)
+        {
+            up = float3.Up;
+        }
+
+        up = up - forward * float3.Dot(up, forward);
+        if (up.Length <= 0.0001f)
+        {
+            up = MathF.Abs(float3.Dot(forward, float3.Up)) > 0.95f ? float3.Right : float3.Up;
+            up = up - forward * float3.Dot(up, forward);
+        }
+
+        return floatQ.LookRotation(forward, up.Normalized);
     }
 
     private void ClearCurrentTarget()
@@ -342,9 +593,8 @@ public sealed class InteractionLaser : Component
     private void ProcessPointerActions()
     {
         int pointerId = GetPointerId();
-        bool holding = _handTool?.IsHolding == true;
 
-        if (!holding && _currentPointerTarget is ILaserAxisTarget axisTarget)
+        if (!_toolBlocksPointerActions && _currentPointerTarget is ILaserAxisTarget axisTarget)
         {
             float2 axis = ReadPointerAxis();
             if (axis != float2.Zero)
@@ -354,7 +604,7 @@ public sealed class InteractionLaser : Component
         }
 
         bool secondaryNow = ReadSecondaryPressed();
-        if (!holding && secondaryNow && !_prevSecondaryState &&
+        if (!_toolBlocksPointerActions && secondaryNow && !_prevSecondaryState &&
             _currentPointerTarget is ILaserSecondaryTarget secondaryTarget)
         {
             secondaryTarget.TriggerLaserSecondary(this, pointerId);
@@ -774,7 +1024,7 @@ public sealed class InteractionLaser : Component
 
     private static float3 AbsVector(float3 v) => new(MathF.Abs(v.x), MathF.Abs(v.y), MathF.Abs(v.z));
 
-    private void PositionBeam(float3 origin, float3 direction, float length, float3 endPoint)
+    private void PositionBeam(float3 origin, float3 direction, float length, float3 endPoint, float delta)
     {
         if (_beamSlot == null || _beamMesh == null) return;
 
@@ -792,14 +1042,49 @@ public sealed class InteractionLaser : Component
             localDirect = float3.Backward * length;
         }
 
+        float3 localActual = _beamSlot.GlobalPointToLocal(endPoint);
+        if (!_hasVisualActualPoint)
+        {
+            _visualActualPoint = localActual;
+            _hasVisualActualPoint = true;
+        }
+        else
+        {
+            float t = 1f - MathF.Exp(-MathF.Max(VisualSmoothing.Value, 0f) * MathF.Max(delta, 0f));
+            _visualActualPoint = float3.Lerp(_visualActualPoint, localActual, System.Math.Clamp(t, 0f, 1f));
+        }
+
+        _lastDirectHitDistance = length;
         SetIfChanged(_beamMesh.StartPoint, float3.Zero);
         SetIfChanged(_beamMesh.DirectTargetPoint, localDirect);
-        SetIfChanged(_beamMesh.ActualTargetPoint, _beamSlot.GlobalPointToLocal(endPoint));
+        SetIfChanged(_beamMesh.ActualTargetPoint, _visualActualPoint);
+
+        if (_pointSlot != null)
+        {
+            SetIfChanged(_pointSlot.LocalPosition, _visualActualPoint);
+        }
+
+        if (_directCursorSlot != null)
+        {
+            SetIfChanged(_directCursorSlot.LocalPosition, localDirect);
+        }
+
+        if (_directLineMesh != null)
+        {
+            SetIfChanged(_directLineMesh.Radius, BeamRadius.Value * 0.75f);
+            SetIfChanged(_directLineMesh.PointA, localDirect);
+            SetIfChanged(_directLineMesh.PointB, _visualActualPoint);
+        }
     }
 
     internal Slot? FindHeadSlot()
     {
-        var current = Slot.Parent;
+        // Walk parent ActiveUserRoot directly - skips the per-ancestor GetComponent scan. - xlinka
+        var headSlot = Slot?.Parent?.ActiveUserRoot?.HeadSlot;
+        if (headSlot != null) return headSlot;
+
+        // Fallback: legacy ancestor walk for nested cases without registered UserRoot.
+        var current = Slot?.Parent;
         while (current != null)
         {
             var userRoot = current.GetComponent<UserRoot>();
@@ -899,6 +1184,7 @@ public sealed class InteractionLaser : Component
         while (current != null)
         {
             if (ReferenceEquals(current, Slot)) return true;
+            if (_ignoreRoot != null && ReferenceEquals(current, _ignoreRoot)) return true;
             current = current.Parent;
         }
         return false;

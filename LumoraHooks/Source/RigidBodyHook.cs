@@ -3,6 +3,7 @@
 
 ﻿using Godot;
 using System.Collections.Generic;
+using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -15,6 +16,7 @@ namespace Lumora.Godot.Hooks;
 /// Syncs physics simulation back to the Lumora slot transform.
 /// Uses colliders on the same slot for collision shapes.
 /// </summary>
+[ImplementableHook(typeof(LumoraRigidBody))]
 public class RigidBodyHook : ComponentHook<LumoraRigidBody>
 {
     private RigidBody3D _rigidBody;

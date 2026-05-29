@@ -24,8 +24,9 @@ void fragment() {
 		out_color *= COLOR;
 	}
 
-	if (alpha_clip && out_color.a < alpha_cutoff) {
-		discard;
+	if (alpha_clip) {
+		float alpha_width = max(fwidth(out_color.a), 0.001);
+		out_color.a *= smoothstep(alpha_cutoff - alpha_width, alpha_cutoff + alpha_width, out_color.a);
 	}
 
 	ALBEDO = out_color.rgb;

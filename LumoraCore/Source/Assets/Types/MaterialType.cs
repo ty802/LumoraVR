@@ -21,6 +21,8 @@ public enum MaterialType
     /// </summary>
     Unlit,
 
+    OverlayUnlit,
+
     UI_Unlit,
 
     /// <summary>

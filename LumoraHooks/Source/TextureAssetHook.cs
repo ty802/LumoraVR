@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 ﻿using Godot;
+using Lumora.Core;
 using Lumora.Core.Assets;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
@@ -11,7 +12,8 @@ namespace Lumora.Godot.Hooks;
 /// Godot implementation of texture asset hook.
 /// Creates and manages Godot ImageTexture resources.
 /// </summary>
-public class TextureAssetHook : AssetHook, ITextureAssetHook
+[ImplementableHook(typeof(TextureAsset))]
+public class TextureAssetHook : AssetHook, ITextureAssetHook, IGodotTexture
 {
     private ImageTexture _godotTexture;
     private TextureWrapMode _wrapU = TextureWrapMode.Repeat;
@@ -21,6 +23,11 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook
     /// Get the Godot ImageTexture.
     /// </summary>
     public ImageTexture GodotTexture => _godotTexture;
+
+    /// <summary>
+    /// Texture2D view for the material seam (IGodotTexture).
+    /// </summary>
+    public Texture2D GodotTexture2D => _godotTexture;
 
     /// <summary>
     /// Whether the texture is valid and usable.

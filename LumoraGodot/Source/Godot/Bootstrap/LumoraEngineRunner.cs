@@ -18,6 +18,7 @@ using Lumora.Core.Components.Meshes;
 using Lumora.Core.Templates;
 using Lumora.Source.Godot.Input.Drivers;
 using Lumora.Godot.Hooks;
+using Lumora.Source.Godot.Rendering;
 using Lumora.Source.Godot.UI;
 using Lumora.Source.Input;
 using Lumora.Source.UI;
@@ -522,6 +523,9 @@ public partial class LumoraEngineRunner : Node
 			return;
 		}
 
+		var openXRInterface = xrInterface as OpenXRInterface;
+		ViewportQuality.ConfigureOpenXRBeforeInitialize(openXRInterface, LumoraLogger.Log);
+
 		if (!xrInterface.IsInitialized())
 		{
 			LumoraLogger.Log("XR: OpenXR interface found but not initialized. Attempting Initialize()...");
@@ -547,7 +551,7 @@ public partial class LumoraEngineRunner : Node
 		if (XRServer.PrimaryInterface == null)
 			XRServer.PrimaryInterface = xrInterface;
 
-		_openXRInterface = xrInterface as OpenXRInterface;
+		_openXRInterface = openXRInterface;
 		GetViewport().UseXR = false;
 		ConfigureOpenXRViewport(EnsureXRViewport());
 		ConnectOpenXREvents(_openXRInterface);
@@ -599,6 +603,7 @@ public partial class LumoraEngineRunner : Node
 
 		DisplayServer.WindowSetVsyncMode(DisplayServer.VSyncMode.Disabled);
 		viewport.UseXR = true;
+		ViewportQuality.ConfigureOpenXRAfterInitialize(_openXRInterface, viewport, LumoraLogger.Log);
 	}
 
 	private void ConnectOpenXREvents(OpenXRInterface xrInterface)
@@ -717,6 +722,16 @@ public partial class LumoraEngineRunner : Node
 			_mainCamera = new Camera3D { Name = "MainCameraFallback" };
 			GetViewport().AddChild(_mainCamera);
 		}
+
+		// The main view must not draw the hidden capture layer (the dash renders
+		// its UI there for an offscreen render-texture grab) or the overlay
+		// layer. Render-texture cameras opt those layers back in. - xlinka
+		uint hiddenAndOverlay = (uint)(Lumora.Godot.Helpers.RenderHelper.HIDDEN_LAYER
+			| Lumora.Godot.Helpers.RenderHelper.OVERLAY_LAYER);
+		_mainCamera.CullMask &= ~hiddenAndOverlay;
+		var xrCamera = GetNodeOrNull<Camera3D>("%XRCamera3D");
+		if (xrCamera != null)
+			xrCamera.CullMask &= ~hiddenAndOverlay;
 
 		_headOutput = new HeadOutput();
 		AddChild(_headOutput);
@@ -857,15 +872,11 @@ public partial class LumoraEngineRunner : Node
 
 	/// <summary>
 	/// Register low-level input drivers (keyboard, mouse, VR tracking).
-	/// Mode-specific input providers (DesktopInput / VRInputProvider) are
-	/// created by XRModeManager after this call.
+	/// The desktop scene overlay (DesktopInput) is created by XRModeManager
+	/// when desktop mode is active; VR mode has no extra scene node.
 	/// </summary>
 	private void RegisterInputDrivers()
 	{
-		// Create InputManager for handling Godot input and mouse capture
-		var inputManager = new InputManager();
-		AddChild(inputManager);
-
 		// Keyboard driver
 		_keyboardDriver = new GodotKeyboardDriver();
 		_inputInterface.RegisterKeyboardDriver(_keyboardDriver);

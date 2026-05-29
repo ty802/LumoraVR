@@ -4,12 +4,11 @@
 using System;
 using System.Threading.Tasks;
 using Godot;
-using Lumora.Core;
 using Lumora.Core.Input;
 using Lumora.Source.Input;
-using Lumora.Godot.Input;
 using Lumora.Source.Godot.Input;
 using Lumora.Source.Godot.Input.Drivers;
+using Lumora.Source.Godot.Rendering;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Source.Godot.Bootstrap;
@@ -23,9 +22,9 @@ namespace Lumora.Source.Godot.Bootstrap;
 /// (When running from the Godot Editor, use <b>Shift+F8</b>. The editor consumes
 /// bare F8/F9 as its own Stop/Pause shortcuts before the game can see them.)
 ///
-/// The manager owns and recreates the mode-specific input provider nodes
-/// (DesktopInput + DesktopCameraController  ←→  EngineVRInputProvider + Laser/Grab managers)
-/// so the rest of the engine doesn't need to know which mode is active.
+/// The manager owns the desktop overlay nodes (cursor / camera controller) and
+/// flips XR viewport ownership when toggling. VR input data flows through
+/// InputInterface drivers directly, no extra provider node is needed.
 ///
 /// Rendering follows the BarkVR-style split-camera pattern: the desktop camera
 /// never has XR enabled, the XR camera only drives VR, and mode changes are
@@ -74,10 +73,10 @@ public partial class XRModeManager : Node
     private GodotVRDriver      _vrDriver;
 
     // ===== MANAGED INPUT NODES =====
-    // Only one set is alive at a time; the other is null.
+    // Desktop-only scene overlays; VR mode has no per-mode scene node since
+    // controller/head poses flow through InputInterface drivers. - xlinka
     private DesktopInput             _desktopInput;
     private DesktopCameraController  _desktopCamera;
-    private EngineVRInputProvider    _vrInputProvider;
 
     // ===== XR SCENE NODES =====
     // Bootstrap.tscn defines the XR sub-tree up-front; we just hold refs.
@@ -117,7 +116,7 @@ public partial class XRModeManager : Node
         _vrDriver       = vrDriver;
         IsVRActive      = startingInVR;
         Instance        = this;
-        _xrAvailable    = startingInVR || XRServer.FindInterface("OpenXR")?.IsInitialized() == true;
+        _xrAvailable    = startingInVR;
 
         // Bind XR nodes from Bootstrap.tscn. They exist for the whole process
         // lifetime now - no more runtime creation. Looking up via CurrentScene
@@ -128,14 +127,20 @@ public partial class XRModeManager : Node
         _xrCamera = sceneRoot?.GetNodeOrNull<XRCamera3D>("%XRCamera3D");
         _xrViewport = ResolveXRViewport(sceneRoot);
 
+        if (startingInVR)
+        {
+            ViewportQuality.ConfigureOpenXRAfterInitialize(
+                XRServer.FindInterface("OpenXR") as OpenXRInterface,
+                _xrViewport,
+                LumoraLogger.Log);
+        }
         ApplyRenderingMode(startingInVR);
         _headOutput?.NotifyVRActiveChanged(startingInVR);
         _headOutput?.SwitchOutputType(startingInVR ? HeadOutput.OutputType.VR : HeadOutput.OutputType.Screen);
 
-        // Spin up the correct input providers for the initial mode.
-        if (startingInVR)
-            SetupVRInput();
-        else
+        // Desktop mode needs its scene overlay (cursor, raycast, camera controller).
+        // VR has nothing extra to spin up here. - xlinka
+        if (!startingInVR)
             SetupDesktopInput();
 
         _initialized = true;
@@ -310,9 +315,6 @@ public partial class XRModeManager : Node
 
         LumoraLogger.Log("XRModeManager: Switching to Desktop mode...");
 
-        TeardownVRInput();
-        await WaitProcessFrames(1);
-
         ApplyRenderingMode(false);
         _headOutput?.NotifyVRActiveChanged(false);
         _headOutput?.SwitchOutputType(HeadOutput.OutputType.Screen);
@@ -343,6 +345,9 @@ public partial class XRModeManager : Node
                 LumoraLogger.Warn("XRModeManager: OpenXR interface not found. Is a VR runtime running? Switch aborted.");
                 return false;
             }
+
+            var openXRInterface = xrInterface as OpenXRInterface;
+            ViewportQuality.ConfigureOpenXRBeforeInitialize(openXRInterface, LumoraLogger.Log);
 
             if (!_xrAvailable)
                 LumoraLogger.Log("XRModeManager: OpenXR capability not established yet; checking runtime now.");
@@ -378,11 +383,9 @@ public partial class XRModeManager : Node
             await WaitProcessFrames(1);
 
             ApplyRenderingMode(true);
+            ViewportQuality.ConfigureOpenXRAfterInitialize(openXRInterface, ResolveXRViewport(GetTree()?.CurrentScene), LumoraLogger.Log);
             _headOutput?.NotifyVRActiveChanged(true);
             _headOutput?.SwitchOutputType(HeadOutput.OutputType.VR);
-            await WaitProcessFrames(1);
-
-            SetupVRInput();
             await WaitProcessFrames(1);
 
             IsVRActive = true;
@@ -442,10 +445,13 @@ public partial class XRModeManager : Node
         if (rootViewport != null && rootViewport != xrViewport)
             rootViewport.UseXR = false;
 
-        var keepXRViewportEnabled = vrActive || IsOpenXRSessionActive();
+        var keepXRViewportEnabled = vrActive && IsOpenXRSessionActive();
 
         if (xrViewport != null)
         {
+            if (keepXRViewportEnabled)
+                ViewportQuality.ApplyXrViewportDefaults(xrViewport);
+
             xrViewport.UseXR = keepXRViewportEnabled;
         }
         else if (rootViewport != null)
@@ -519,7 +525,7 @@ public partial class XRModeManager : Node
 
     private bool IsOpenXRSessionActive()
     {
-        return _xrAvailable || XRServer.FindInterface("OpenXR")?.IsInitialized() == true;
+        return _xrAvailable && XRServer.FindInterface("OpenXR")?.IsInitialized() == true;
     }
 
     private bool CamerasShareViewport()
@@ -585,24 +591,6 @@ public partial class XRModeManager : Node
         FreeIfValid(ref _desktopInput);
         FreeIfValid(ref _desktopCamera);
         LumoraLogger.Log("XRModeManager: Desktop input providers removed");
-    }
-
-    private void SetupVRInput()
-    {
-        FreeIfValid(ref _vrInputProvider);
-
-        _vrInputProvider = new EngineVRInputProvider();
-        _vrInputProvider.Name = "VRInputProvider";
-        AddChild(_vrInputProvider);
-        _vrInputProvider.Initialize(_inputInterface);
-
-        LumoraLogger.Log("XRModeManager: VR input providers ready");
-    }
-
-    private void TeardownVRInput()
-    {
-        FreeIfValid(ref _vrInputProvider);
-        LumoraLogger.Log("XRModeManager: VR input providers removed");
     }
 
     // =====================================================================

@@ -622,11 +622,12 @@ public class Engine : IDisposable
             // Stage 2: Global Coroutines
             CoroutineManager?.Update((float)delta);
 
-            // Stage 3: Fixed Updates (physics timestep)
-            ProcessFixedUpdates(delta);
-
-            // Stage 4: World Updates
+            // Stage 3: World Updates
             WorldManager?.Update(delta);
+
+            // Stage 4: Fixed Updates (physics timestep)
+            ProcessFixedUpdates(delta);
+            InputInterface?.SyncTrackingSpaceToFocusedLocalUser();
 
             // Stage 5: Asset Processing
             AssetManager?.Update((float)delta);

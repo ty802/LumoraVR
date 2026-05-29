@@ -12,6 +12,7 @@ namespace Lumora.Godot.Hooks;
 /// <summary>
 /// CPU-simulated engine particle renderer backed by a Godot MultiMesh draw call.
 /// </summary>
+[ImplementableHook(typeof(LumoraParticleSystem))]
 public sealed partial class ParticleSystemHook : ComponentHook<LumoraParticleSystem>
 {
     private const string ShaderPath = "res://Shaders/EngineParticle.gdshader";

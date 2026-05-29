@@ -13,6 +13,7 @@ namespace Lumora.Godot.Hooks;
 /// Platform mesh renderer hook for Godot.
 /// Now properly uses the asset system instead of hardcoded mesh creation.
 /// </summary>
+[ImplementableHook(typeof(MeshRenderer))]
 public class MeshRendererHook : MeshRendererHookBase<MeshRenderer, Node3D>
 {
     protected override bool UseMeshInstance => true;

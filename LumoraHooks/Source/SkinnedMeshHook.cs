@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 ﻿using Godot;
+using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Components;
 using System.Collections.Generic;
@@ -14,6 +15,7 @@ namespace Lumora.Godot.Hooks;
 /// Creates a deformable mesh that follows a skeleton's bone transforms.
 /// Uses bone slot references for proper bone index mapping.
 /// </summary>
+[ImplementableHook(typeof(SkinnedMeshRenderer))]
 public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
 {
     private MeshInstance3D _meshInstance;

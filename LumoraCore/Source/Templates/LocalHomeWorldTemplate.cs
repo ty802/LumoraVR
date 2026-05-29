@@ -177,7 +177,16 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
         var clipboardSlot = world.RootSlot.AddSlot("ClipboardImporter");
         clipboardSlot.AttachComponent<ClipboardImporter>();
 
-        CreateHelioTestPanel(world);
+        try
+        {
+            CreateHelioTestPanel(world);
+        }
+        catch (Exception ex)
+        {
+            // This is a local validation panel, not core world content. Do not let
+            // it prevent LocalHome/userspace from starting.
+            Lumora.Core.Logging.Logger.Warn($"LocalHome: Helio validation panel skipped: {ex}");
+        }
 
         // Catch-all under the world. Bigger than ground so a user yeeted off-edge
         // still triggers respawn instead of falling forever. - xlinka

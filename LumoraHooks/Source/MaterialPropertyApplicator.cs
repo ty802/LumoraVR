@@ -28,7 +28,21 @@ internal static class MaterialPropertyApplicator
             return null;
         }
 
-        var clone = material.Duplicate(false) as Material;
+        if (material is ShaderMaterial shaderMaterial && shaderMaterial.Shader == null)
+        {
+            return material;
+        }
+
+        Material clone;
+        try
+        {
+            clone = material.Duplicate(false) as Material;
+        }
+        catch
+        {
+            return material;
+        }
+
         if (clone == null)
         {
             return material;
@@ -192,10 +206,20 @@ internal static class MaterialPropertyApplicator
     private static string MapShaderProperty(MaterialType materialType, string property)
     {
         bool isUnlit = materialType is MaterialType.Unlit or MaterialType.UI_Unlit or MaterialType.UI_Text;
+        bool isOverlay = materialType == MaterialType.OverlayUnlit;
         bool isMetaball = materialType == MaterialType.Metaball;
 
         return property switch
         {
+            "FrontTintColor" when isOverlay => "front_color",
+            "BehindTintColor" when isOverlay => "behind_color",
+            "Texture" when isOverlay => "albedo_texture",
+            "AlbedoTexture" when isOverlay => "albedo_texture",
+            "FrontTextureScale" when isOverlay => "front_uv_scale",
+            "FrontTextureOffset" when isOverlay => "front_uv_offset",
+            "BehindTextureScale" when isOverlay => "behind_uv_scale",
+            "BehindTextureOffset" when isOverlay => "behind_uv_offset",
+            "UseVertexColor" when isOverlay => "use_vertex_color",
             "TintColor" when isUnlit => "albedo_color",
             "Texture" when isUnlit => "albedo_texture",
             "AlbedoColor" => "albedo_color",

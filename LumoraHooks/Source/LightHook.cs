@@ -1,127 +1,73 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using System;
+using Godot;
 using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
-using System;
 
 namespace Lumora.Godot.Hooks;
 
-/// <summary>
-/// Hook for Light component → Godot Light3D.
-/// Platform light hook for Godot.
-/// </summary>
-public class LightHook : ComponentHook<Light>
+// Light component → Godot Light3D. Light type (Directional/Point/Spot) maps
+// to different Godot subclasses so the platform node is rebuilt via
+// ReplacePlatformNode when Owner.Type changes. - xlinka
+[ImplementableHook(typeof(Light))]
+public class LightHook : NodeBackedComponentHook<Light, Light3D>
 {
     public static IHook<Light> Constructor() => new LightHook();
 
-    private Node3D _lightContainer;
-    private Light3D _light;
+    public Light3D GodotLight => PlatformNode;
 
-    public Light3D GodotLight => _light;
+    protected override Light3D CreatePlatformNode() => BuildLight(Owner.Type.Value);
 
-    public override void Initialize()
-    {
-        base.Initialize();
-
-        _lightContainer = new Node3D();
-        _lightContainer.Name = "LightContainer";
-        attachedNode.AddChild(_lightContainer);
-
-        CreateLight(Owner.Type.Value);
-    }
-
-    private void CreateLight(LightType type)
-    {
-        if (_light != null && GodotObject.IsInstanceValid(_light))
-        {
-            _light.QueueFree();
-        }
-
-        switch (type)
-        {
-            case LightType.Directional:
-                _light = new DirectionalLight3D();
-                _light.Name = "DirectionalLight";
-                break;
-
-            case LightType.Point:
-                _light = new OmniLight3D();
-                _light.Name = "PointLight";
-                break;
-
-            case LightType.Spot:
-                _light = new SpotLight3D();
-                _light.Name = "SpotLight";
-                break;
-
-            default:
-                throw new ArgumentException($"Unknown light type: {type}");
-        }
-
-        _lightContainer.AddChild(_light);
-    }
-
-    public override void ApplyChanges()
+    protected override void SyncProperties()
     {
         if (Owner.Type.GetWasChangedAndClear())
-        {
-            CreateLight(Owner.Type.Value);
-        }
+            ReplacePlatformNode(BuildLight(Owner.Type.Value));
 
-        color lightColor = Owner.LightColor.Value;
-        _light.LightColor = new Color(lightColor.r, lightColor.g, lightColor.b, lightColor.a);
+        var light = PlatformNode;
+        if (light == null) return;
 
-        _light.LightEnergy = Owner.Intensity.Value;
+        var c = Owner.LightColor.Value;
+        light.LightColor = new Color(c.r, c.g, c.b, c.a);
+        light.LightEnergy = Owner.Intensity.Value;
 
-        if (_light is OmniLight3D omni)
+        if (light is OmniLight3D omni)
         {
             omni.OmniRange = Owner.Range.Value;
         }
-        else if (_light is SpotLight3D spot)
+        else if (light is SpotLight3D spot)
         {
             spot.SpotRange = Owner.Range.Value;
             spot.SpotAngle = Owner.SpotAngle.Value;
         }
 
-        UpdateShadows();
-
-        _light.Visible = Owner.Enabled.Value;
-    }
-
-    private void UpdateShadows()
-    {
         switch (Owner.Shadows.Value)
         {
             case ShadowType.None:
-                _light.ShadowEnabled = false;
+                light.ShadowEnabled = false;
                 break;
-
             case ShadowType.Hard:
-                _light.ShadowEnabled = true;
-                break;
-
             case ShadowType.Soft:
-                _light.ShadowEnabled = true;
+                light.ShadowEnabled = true;
                 break;
         }
 
-        _light.ShadowOpacity = 1f - Owner.ShadowStrength.Value;
-        _light.ShadowBias = Owner.ShadowBias.Value;
-        _light.ShadowNormalBias = Owner.ShadowNormalBias.Value;
+        light.ShadowOpacity = 1f - Owner.ShadowStrength.Value;
+        light.ShadowBias = Owner.ShadowBias.Value;
+        light.ShadowNormalBias = Owner.ShadowNormalBias.Value;
+        light.Visible = Owner.Enabled.Value;
     }
 
-    public override void Destroy(bool destroyingWorld)
+    private static Light3D BuildLight(LightType type)
     {
-        if (!destroyingWorld && _lightContainer != null && GodotObject.IsInstanceValid(_lightContainer))
+        return type switch
         {
-            _lightContainer.QueueFree();
-        }
-        _lightContainer = null;
-        _light = null;
-
-        base.Destroy(destroyingWorld);
+            LightType.Directional => new DirectionalLight3D { Name = "DirectionalLight" },
+            LightType.Point => new OmniLight3D { Name = "PointLight" },
+            LightType.Spot => new SpotLight3D { Name = "SpotLight" },
+            _ => throw new ArgumentException($"Unknown light type: {type}")
+        };
     }
 }

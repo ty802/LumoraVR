@@ -18,6 +18,7 @@ namespace Lumora.Godot.Hooks;
 /// - Reference counting tracks how many components need the Node3D
 /// - When count reaches 0 and shouldDestroy is set, Node3D is freed
 /// </summary>
+[ImplementableHook(typeof(Slot))]
 public class SlotHook : Hook<Slot>, ISlotHook
 {
 	// Static registry to find Slot from Godot Node

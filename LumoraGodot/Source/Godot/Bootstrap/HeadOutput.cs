@@ -253,6 +253,8 @@ public partial class HeadOutput : Node
                 _xrOrigin.GlobalRotation = Vector3.Zero;
             }
         }
+
+        Lumora.Core.Engine.Current?.InputInterface?.SyncTrackingSpaceToFocusedLocalUser();
     }
 
     /// <summary>

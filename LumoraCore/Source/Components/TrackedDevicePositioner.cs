@@ -17,7 +17,7 @@ namespace Lumora.Core.Components;
 /// </summary>
 [ComponentCategory("Users")]
 [DefaultUpdateOrder(-1000000)] // Runs very early - before IK and other components
-public class TrackedDevicePositioner : Component, IInputUpdateReceiver
+public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
 {
     /// <summary>
     /// Device index in the input system.
@@ -209,13 +209,7 @@ public class TrackedDevicePositioner : Component, IInputUpdateReceiver
 
     private void FindUserRoot()
     {
-        _userRoot = Slot.GetComponent<UserRoot>();
-        var current = Slot.Parent;
-        while (_userRoot == null && current != null)
-        {
-            _userRoot = current.GetComponent<UserRoot>();
-            current = current.Parent;
-        }
+        _userRoot = Slot?.ActiveUserRoot;
     }
 
     /// <summary>
@@ -286,7 +280,8 @@ public class TrackedDevicePositioner : Component, IInputUpdateReceiver
     /// <summary>
     /// Called before main input update. Updates slot transform from tracking data.
     /// Tracking updates happen here before any other components read the slot transforms.
-    /// Sets LocalPosition directly from device.Position.
+    /// Body node slots are children of the user root, so tracked local pose is written directly.
+    /// World-space consumers should read ITrackedDevice.Position/Rotation.
     /// </summary>
     public void BeforeInputUpdate()
     {

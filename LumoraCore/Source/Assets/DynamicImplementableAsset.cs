@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 
 namespace Lumora.Core.Assets;
 
@@ -66,6 +67,32 @@ public static class AssetHookRegistry
     /// Clear all registrations.
     /// </summary>
     public static void Clear() => _assetToHook.Clear();
+
+    // See HookTypeRegistry.RegisterFromAssembly - same idea, asset side. - xlinka
+    public static int RegisterFromAssembly(Assembly assembly)
+    {
+        if (assembly == null) return 0;
+
+        int registered = 0;
+        foreach (var type in assembly.GetTypes())
+        {
+            if (type.IsAbstract || !typeof(IAssetHook).IsAssignableFrom(type))
+                continue;
+
+            var attrs = type.GetCustomAttributes(typeof(ImplementableHookAttribute), inherit: false);
+            foreach (ImplementableHookAttribute attr in attrs)
+            {
+                foreach (var target in attr.Targets)
+                {
+                    if (target == null) continue;
+                    if (!typeof(IAsset).IsAssignableFrom(target)) continue;
+                    Register(target, type);
+                    registered++;
+                }
+            }
+        }
+        return registered;
+    }
 }
 
 /// <summary>

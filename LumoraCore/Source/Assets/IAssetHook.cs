@@ -42,6 +42,18 @@ public interface ITextureAssetHook : IAssetHook
     bool IsValid { get; }
 }
 
+public interface IRenderTextureAssetHook : ITextureAssetHook
+{
+    void Configure(
+        int width,
+        int height,
+        int cullMask,
+        Math.color clearColor,
+        Math.float3 cameraPosition,
+        Math.floatQ cameraRotation,
+        float orthographicSize);
+}
+
 /// <summary>
 /// Hook interface for mesh data assets.
 /// </summary>

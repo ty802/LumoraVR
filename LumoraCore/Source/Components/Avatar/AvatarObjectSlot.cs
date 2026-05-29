@@ -15,7 +15,7 @@ namespace Lumora.Core.Components.Avatar;
 /// Used by TrackedDevicePositioner to create body node tracking points.
 /// </summary>
 [ComponentCategory("Users/Common Avatar System")]
-public class AvatarObjectSlot : Component
+public class AvatarObjectSlot : UserRootComponent
 {
     /// <summary>
     /// The currently equipped avatar object.
@@ -83,11 +83,42 @@ public class AvatarObjectSlot : Component
     // Internal state
     private UserRoot _userRoot;
 
+    private AvatarPoseSmoothLerp _autoSmoothing;
+
     public override void OnAwake()
     {
         base.OnAwake();
 
         Equipped = new LinkRef<IAvatarObject>(this);
+        Node.OnChanged += _ => RefreshAutoSmoothing();
+    }
+
+    // Hips/feet jitter visibly without smoothing in any IK/tracker setup
+    // (controller skew, network noise). Head and hands stay direct so input
+    // doesn't gain latency. Matches the ref's InstallSmoothing(node) check.
+    // - xlinka
+    private static bool ShouldAutoSmooth(BodyNode node)
+        => node == BodyNode.Hips || node == BodyNode.LeftFoot || node == BodyNode.RightFoot;
+
+    private void RefreshAutoSmoothing()
+    {
+        if (ShouldAutoSmooth(Node.Value))
+        {
+            if (_autoSmoothing == null)
+            {
+                var smoothSlot = Slot.AddSlot("AutoSmoothing");
+                _autoSmoothing = smoothSlot.AttachComponent<AvatarPoseSmoothLerp>();
+                _autoSmoothing.PositionSmoothSpeed.Value = -1f;
+                _autoSmoothing.RotationSmoothSpeed.Value = 20f;
+                AddFilter(_autoSmoothing);
+            }
+        }
+        else if (_autoSmoothing != null)
+        {
+            RemoveFilter(_autoSmoothing);
+            _autoSmoothing.Slot?.Destroy();
+            _autoSmoothing = null;
+        }
     }
 
     public override void OnInit()
@@ -111,13 +142,7 @@ public class AvatarObjectSlot : Component
 
     private void FindUserRoot()
     {
-        _userRoot = Slot.GetComponent<UserRoot>();
-        var current = Slot.Parent;
-        while (_userRoot == null && current != null)
-        {
-            _userRoot = current.GetComponent<UserRoot>();
-            current = current.Parent;
-        }
+        _userRoot = Slot?.ActiveUserRoot;
     }
 
     /// <summary>

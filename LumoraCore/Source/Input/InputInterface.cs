@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Lumora.Core;
+using Lumora.Core.Components;
 using Lumora.Core.Logging;
 using Lumora.Core.Math;
 
@@ -59,6 +60,8 @@ public class InputInterface : IDisposable
     public bool VR_Active => IsVRActive;
     public float UserHeight { get; set; } = DEFAULT_USER_HEIGHT;
 
+    public bool IsDashboardOpen { get; set; }
+
     // Global tracking offset
     public float3 GlobalTrackingOffset { get; set; } = float3.Zero;
     public float3 CustomTrackingOffset { get; set; } = float3.Zero;
@@ -87,6 +90,23 @@ public class InputInterface : IDisposable
                 return HeadOutputDevice.VR;
             return HeadOutputDevice.Screen;  // Desktop mode
         }
+    }
+
+    /// <summary>
+    /// Sync tracking-space transform from the focused local user root.
+    /// Called before XR sampling and after output/root updates so raw device poses
+    /// and transformed poses agree on the same user root.
+    /// </summary>
+    public bool SyncTrackingSpaceToFocusedLocalUser()
+    {
+        UserRoot root = _engine?.WorldManager?.FocusedWorld?.LocalUser?.Root;
+        if (root == null || root.IsDestroyed || root.Slot == null)
+            return false;
+
+        GlobalTrackingSpace.Position = root.Slot.GlobalPosition;
+        GlobalTrackingSpace.Rotation = root.Slot.GlobalRotation;
+        GlobalTrackingSpace.Scale = root.GlobalScale;
+        return true;
     }
 
     public InputInterface()
@@ -411,6 +431,8 @@ public class InputInterface : IDisposable
     /// </summary>
     public void UpdateInputs(float deltaTime)
     {
+        SyncTrackingSpaceToFocusedLocalUser();
+
         // Update drivers in order by their UpdateOrder buckets
         foreach (var bucket in _inputDriverUpdateBuckets)
         {

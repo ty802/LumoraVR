@@ -39,6 +39,19 @@ public class LocalViewOverride : ImplementableComponent<IHook>
     public readonly Sync<bool>   HasScaleOverride = new();
     public readonly Sync<float3> ScaleOverride    = new();
 
+    private readonly UserRootRegistrationTracker _userRootReg;
+
+    public LocalViewOverride()
+    {
+        _userRootReg = new UserRootRegistrationTracker(this);
+    }
+
+    public override void OnAwake()
+    {
+        base.OnAwake();
+        _userRootReg.Attach();
+    }
+
     public override void OnInit()
     {
         base.OnInit();
@@ -49,5 +62,11 @@ public class LocalViewOverride : ImplementableComponent<IHook>
         RotationOverride.Value = floatQ.Identity;
         // HasScaleOverride = false (C# default, skip)
         ScaleOverride.Value    = float3.One;
+    }
+
+    public override void OnDestroy()
+    {
+        _userRootReg.Detach();
+        base.OnDestroy();
     }
 }

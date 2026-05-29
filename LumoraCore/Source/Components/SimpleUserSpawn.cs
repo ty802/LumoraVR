@@ -1,28 +1,23 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Components.Avatar;
+using Lumora.Core.Math;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Spawns users at this slot's position when they join the world.
-/// Creates UserRoot hierarchy and avatar.
-///
-/// Flow:
-/// 1. TrackedDevicePositioner reads device input and creates AvatarObjectSlot
-/// 2. AvatarPoseNode on skeleton bones equips to AvatarObjectSlot
-/// 3. AvatarPoseNode directly drives bone transforms
-/// </summary>
+// Spawns users at this slot's position when they join the world. Creates the
+// user slot + UserRoot, then delegates the full setup to a CommonAvatarBuilder
+// (found/created on this slot). Per-world build config lives on the builder.
+// - xlinka
 [ComponentCategory("Users")]
 public class SimpleUserSpawn : Component, IWorldEventReceiver
 {
-    // Track spawned users to prevent duplicates
-    private Dictionary<User, Slot> _userSlots = new Dictionary<User, Slot>();
+    private readonly Dictionary<User, Slot> _userSlots = new();
 
     public override void OnAwake()
     {
@@ -45,16 +40,11 @@ public class SimpleUserSpawn : Component, IWorldEventReceiver
     public void OnUserJoined(User user)
     {
         if (user == null) return;
-
-        // CRITICAL: Only authority spawns users!
-        // Clients receive the spawned slots via network sync.
         if (!World.IsAuthority)
         {
-            LumoraLogger.Log($"SimpleUserSpawn: Client ignoring OnUserJoined for '{user.UserName.Value}' - authority will spawn and sync");
+            LumoraLogger.Log($"SimpleUserSpawn: Client ignoring OnUserJoined for '{user.UserName.Value}' - authority spawns and syncs");
             return;
         }
-
-        // Prevent duplicate spawns
         if (_userSlots.ContainsKey(user))
         {
             LumoraLogger.Warn($"SimpleUserSpawn: User '{user.UserName.Value}' already spawned, ignoring duplicate");
@@ -65,25 +55,23 @@ public class SimpleUserSpawn : Component, IWorldEventReceiver
 
         try
         {
-            // Create user slot at spawn position
             var userName = user.UserName.Value;
             if (string.IsNullOrEmpty(userName))
-            {
                 userName = $"User_{user.ReferenceID}";
-            }
 
             var userSlot = World.RootSlot.AddSlot($"User {userName}");
             userSlot.Persistent.Value = false;
             userSlot.LocalPosition.Value = Slot.LocalPosition.Value;
             userSlot.LocalRotation.Value = Slot.LocalRotation.Value;
 
-            // Track the user slot
             _userSlots.Add(user, userSlot);
 
-            // Use DefaultAVI to spawn user with full skeleton avatar
-            DefaultAVI.SpawnWithDefaultAvatar(userSlot, user);
+            var userRoot = userSlot.AttachComponent<UserRoot>();
+            userRoot.Initialize(user);
 
-            LumoraLogger.Log($"SimpleUserSpawn: [Authority] Spawned user '{userName}' - slots will sync to clients");
+            GetBuilder().BuildAvatar(userRoot);
+
+            LumoraLogger.Log($"SimpleUserSpawn: [Authority] Spawned '{userName}' - sync to clients");
         }
         catch (Exception ex)
         {
@@ -94,10 +82,7 @@ public class SimpleUserSpawn : Component, IWorldEventReceiver
     public void OnUserLeft(User user)
     {
         if (user == null) return;
-
-        // Only authority manages user slots
         if (!World.IsAuthority) return;
-
         if (_userSlots.TryGetValue(user, out var slot))
         {
             slot.Destroy();
@@ -105,7 +90,11 @@ public class SimpleUserSpawn : Component, IWorldEventReceiver
         }
     }
 
-    // Unused interface methods
     public void OnFocusChanged(World.WorldFocus focus) { }
     public void OnWorldDestroy() { }
+
+    private IAvatarBuilder GetBuilder()
+    {
+        return Slot.GetComponent<CommonAvatarBuilder>() ?? Slot.AttachComponent<CommonAvatarBuilder>();
+    }
 }

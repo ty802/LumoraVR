@@ -52,7 +52,7 @@ public class GodotMouseDriver : IMouseDriver, IInputDriver
             desiredMouseMode = global::Godot.Input.MouseModeEnum.Hidden;
         }
         // Honor capture requests from locomotion when dashboard is closed
-        else if (Lumora.Core.Components.LocomotionController.MouseCaptureRequested)
+        else if (Lumora.Core.Components.UserInputState.FocusedMouseCaptureRequested)
         {
             desiredMouseMode = global::Godot.Input.MouseModeEnum.Captured;
         }

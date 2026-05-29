@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 ﻿using Godot;
+using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
@@ -15,6 +16,7 @@ namespace Lumora.Godot.Hooks
     /// Creates a StaticBody3D or RigidBody3D with a CollisionShape3D and keeps it synced to the slot.
     /// CharacterController colliders are handled separately by CharacterControllerHook.
     /// </summary>
+    [ImplementableHook(typeof(BoxCollider), typeof(CapsuleCollider), typeof(SphereCollider), typeof(CylinderCollider))]
     public class PhysicsColliderHook : ComponentHook<Collider>
     {
         private Node3D _bodyNode;

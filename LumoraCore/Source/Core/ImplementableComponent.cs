@@ -71,23 +71,16 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
         return hook;
     }
 
-    /// <summary>
-    /// Register this component for hook update.
-    /// </summary>
+    // Queue this component for hook ApplyChanges at the next ProcessHookUpdates
+    // drain (end of frame, post-decode). Sync field setters call into this via
+    // OnChanges, so we never fire Hook.ApplyChanges synchronously mid-decode.
+    // - xlinka
     internal void RunApplyChanges()
     {
         if (Hook != null && World != null)
         {
             World.UpdateManager?.RegisterHookUpdate(this);
         }
-    }
-
-    /// <summary>
-    /// Apply changes from this component to the hook.
-    /// </summary>
-    internal void UpdateHook()
-    {
-        Hook?.ApplyChanges();
     }
 
     /// <summary>
@@ -125,13 +118,15 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
         }
     }
 
-    /// <summary>
-    /// When component changes, apply changes to the hook.
-    /// </summary>
+    // Sync field change handler. Queues the hook for ApplyChanges at the next
+    // drain instead of firing it synchronously. That way hooks never see
+    // partially-decoded sync state from a replication batch, and SlotHook /
+    // any hook that reads multiple fields together sees a consistent snapshot.
+    // - xlinka
     public override void OnChanges()
     {
         base.OnChanges();
-        UpdateHook();
+        RunApplyChanges();
     }
 
     /// <summary>

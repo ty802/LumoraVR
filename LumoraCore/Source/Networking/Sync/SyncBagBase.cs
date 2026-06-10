@@ -7,7 +7,9 @@ using Lumora.Core;
 
 namespace Lumora.Core.Networking.Sync;
 
-public abstract class SyncBagBase<TKey, TValue> : ReplicatedDictionary<TKey, TValue> where TValue : class, IWorldElement
+public abstract class SyncBagBase<TKey, TValue> : ReplicatedDictionary<TKey, TValue>
+    where TKey : notnull
+    where TValue : class, IWorldElement
 {
     public int RemoveAll(Predicate<TValue> match)
     {

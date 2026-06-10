@@ -9,7 +9,7 @@ namespace Lumora.Godot.Hooks;
 
 internal static class MaterialPropertyApplicator
 {
-    public static void Apply(Material material, MaterialType materialType, string property, object value)
+    public static void Apply(Material? material, MaterialType materialType, string property, object value)
     {
         if (material is StandardMaterial3D standardMaterial)
         {
@@ -25,18 +25,39 @@ internal static class MaterialPropertyApplicator
     {
         if (material == null)
         {
-            return null;
+            return null!;
         }
 
-        if (material is ShaderMaterial shaderMaterial && shaderMaterial.Shader == null)
+        if (material is ShaderMaterial shaderMaterial)
         {
-            return material;
+            if (shaderMaterial.Shader == null)
+            {
+                return material;
+            }
+
+            // Build a fresh ShaderMaterial rather than Resource.Duplicate(false). Godot's
+            // internal duplicate copies properties via material_set_param against the
+            // clone's render-server material RID, which logs "Parameter 'material' is
+            // null" when that RID hasn't been bound yet (timing window during canvas
+            // material assignment, frequent on first-frame rebuilds). Copying the
+            // shader + visible params explicitly avoids the renderer-side step. - xlinka
+            var fresh = new ShaderMaterial
+            {
+                Shader = shaderMaterial.Shader,
+                RenderPriority = shaderMaterial.RenderPriority,
+            };
+            CopyShaderParameters(shaderMaterial, fresh);
+            foreach (var (property, value) in properties)
+            {
+                Apply(fresh, materialType, property, value);
+            }
+            return fresh;
         }
 
         Material clone;
         try
         {
-            clone = material.Duplicate(false) as Material;
+            clone = (material.Duplicate(false) as Material)!;
         }
         catch
         {
@@ -54,6 +75,25 @@ internal static class MaterialPropertyApplicator
         }
 
         return clone;
+    }
+
+    private static void CopyShaderParameters(ShaderMaterial source, ShaderMaterial dest)
+    {
+        var shader = source.Shader;
+        if (shader == null) return;
+
+        var uniforms = shader.GetShaderUniformList();
+        foreach (var entry in uniforms)
+        {
+            if (entry.VariantType != Variant.Type.Dictionary) continue;
+            var dict = entry.AsGodotDictionary();
+            if (!dict.TryGetValue("name", out var nameVar)) continue;
+            string name = nameVar.AsString();
+            if (string.IsNullOrEmpty(name)) continue;
+            var value = source.GetShaderParameter(name);
+            if (value.VariantType == Variant.Type.Nil) continue;
+            dest.SetShaderParameter(name, value);
+        }
     }
 
     public static void ApplyRenderPriority(Material material, int renderQueue)

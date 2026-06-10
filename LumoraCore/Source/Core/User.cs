@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Lumora.Core.Input;
 using Lumora.Core.Networking.Sync;
@@ -95,7 +95,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
     public int ImmediateStreamCount { get; set; }
 
     // ISyncObject implementation
-    public List<ISyncMember> SyncMembers => _syncMembers;
+    public new List<ISyncMember> SyncMembers => _syncMembers;
     public bool IsAuthority => World?.IsAuthority ?? false;
 
     /// <summary>
@@ -119,7 +119,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
 
     public int StreamCount => streamBag.Count;
 
-    public StreamGroupManager StreamGroupManager { get; private set; }
+    public StreamGroupManager StreamGroupManager { get; private set; } = null!;
 
     public uint StreamConfigurationVersion => streamConfiguration.Value;
 
@@ -128,7 +128,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
     /// </summary>
     public bool IsLocal => World?.LocalUser == this;
 
-    private Components.UserRoot _root;
+    private Components.UserRoot _root = null!;
     public readonly SyncRef<Components.UserRoot> UserRootRef = new();
 
     /// <summary>
@@ -273,7 +273,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
 
     public IStream GetStream(RefID id)
     {
-        return streamBag.TryGetValue(id, out var stream) ? stream : null;
+        return (streamBag.TryGetValue(id, out var stream) ? stream : null) ?? null!;
     }
 
     public S AddStream<S>() where S : Networking.Streams.Stream, new()
@@ -428,7 +428,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
 
     #endregion
 
-    public void Dispose()
+    public override void Dispose()
     {
         if (IsDisposed) return;
         IsDisposed = true;
@@ -477,3 +477,4 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
         return $"User({UserName.Value ?? UserID.Value}, ID={ReferenceID})";
     }
 }
+

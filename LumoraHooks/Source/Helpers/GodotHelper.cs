@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using Lumora.Core;
 using Lumora.Core.Math;
 using Lumora.Source.Godot.Extensions;
@@ -21,11 +21,11 @@ public static class GodotHelper
     public static Node3D GetGeneratedNode3D(this Slot slot, bool forceGenerate = false)
     {
         if (slot == null)
-            return null;
+            return null!;
 
         var slotHook = slot.Hook as SlotHook;
         if (slotHook == null)
-            return null;
+            return null!;
 
         if (forceGenerate)
             return slotHook.ForceGetNode3D();
@@ -76,3 +76,4 @@ public static class GodotHelper
     //     return hook?.GodotMesh;
     // }
 }
+

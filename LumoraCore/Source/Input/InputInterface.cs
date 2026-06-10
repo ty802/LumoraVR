@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -32,14 +32,14 @@ public class InputInterface : IDisposable
     public const float DEFAULT_USER_HEIGHT = 1.75f;
     public const float EYE_HEAD_OFFSET = 0.125f;
 
-    private Lumora.Core.Engine _engine;
+    private Lumora.Core.Engine _engine = null!;
     private List<IInputDriver> _inputDrivers = new List<IInputDriver>();
     private List<UpdateBucket> _inputDriverUpdateBuckets = new List<UpdateBucket>();
     private List<IInputDevice> _inputDevices = new List<IInputDevice>();
     private bool _initialized = false;
 
     // Body node tracking for avatar and input mapping
-    private ITrackedDevice[] _bodyNodes;
+    private ITrackedDevice[] _bodyNodes = null!;
 
     // Input event receivers (for TrackedDevicePositioner etc.)
     private List<IInputUpdateReceiver> _inputReceivers = new List<IInputUpdateReceiver>();
@@ -48,13 +48,13 @@ public class InputInterface : IDisposable
     public TrackingSpace GlobalTrackingSpace { get; private set; } = new TrackingSpace();
 
     // Standard devices
-    public Mouse Mouse { get; private set; }
-    public Keyboard Keyboard { get; private set; }
+    public Mouse Mouse { get; private set; } = null!;
+    public Keyboard Keyboard { get; private set; } = null!;
 
     // VR devices (legacy compatibility)
-    public VRController LeftController { get; private set; }
-    public VRController RightController { get; private set; }
-    public HeadDevice HeadDevice { get; private set; }
+    public VRController LeftController { get; private set; } = null!;
+    public VRController RightController { get; private set; } = null!;
+    public HeadDevice HeadDevice { get; private set; } = null!;
 
     // VR state - synced from VR drivers automatically
     public bool VR_Active => IsVRActive;
@@ -67,8 +67,8 @@ public class InputInterface : IDisposable
     public float3 CustomTrackingOffset { get; set; } = float3.Zero;
 
     // Driver interfaces
-    private IKeyboardDriver _keyboardDriver;
-    private IMouseDriver _mouseDriver;
+    private IKeyboardDriver _keyboardDriver = null!;
+    private IMouseDriver _mouseDriver = null!;
     private List<IVRDriver> _vrDrivers = new List<IVRDriver>();
     private HashSet<string> _loggedBodyNodeAssignments = new HashSet<string>();
 
@@ -99,7 +99,7 @@ public class InputInterface : IDisposable
     /// </summary>
     public bool SyncTrackingSpaceToFocusedLocalUser()
     {
-        UserRoot root = _engine?.WorldManager?.FocusedWorld?.LocalUser?.Root;
+        UserRoot root = _engine?.WorldManager?.FocusedWorld?.LocalUser?.Root!;
         if (root == null || root.IsDestroyed || root.Slot == null)
             return false;
 
@@ -175,7 +175,7 @@ public class InputInterface : IDisposable
     {
         int index = (int)node;
         if (index < 0 || index >= _bodyNodes.Length)
-            return null;
+            return null!;
         return _bodyNodes[index];
     }
 
@@ -318,7 +318,7 @@ public class InputInterface : IDisposable
         driver.RegisterInputs(this);
 
         // Find or create UpdateBucket for this driver's order
-        UpdateBucket bucket = _inputDriverUpdateBuckets.FirstOrDefault(b => b.Order == driver.UpdateOrder);
+        UpdateBucket bucket = _inputDriverUpdateBuckets.FirstOrDefault(b => b.Order == driver.UpdateOrder)!;
         if (bucket == null)
         {
             bucket = new UpdateBucket(driver.UpdateOrder);
@@ -552,16 +552,16 @@ public class InputInterface : IDisposable
     public IInputDevice GetDevice(int index)
     {
         if (index < 0 || index >= _inputDevices.Count)
-            return null;
+            return null!;
         return _inputDevices[index];
     }
 
     public T GetDevice<T>(string name) where T : class, IInputDevice
     {
-        return _inputDevices.FirstOrDefault(d => d.Name == name) as T;
+        return (_inputDevices.FirstOrDefault(d => d.Name == name) as T) ?? null!;
     }
 
-    public T GetDevice<T>(Predicate<T> predicate = null) where T : class, IInputDevice
+    public T GetDevice<T>(Predicate<T> predicate = null!) where T : class, IInputDevice
     {
         foreach (var device in _inputDevices)
         {
@@ -570,10 +570,10 @@ public class InputInterface : IDisposable
                 return typedDevice;
             }
         }
-        return null;
+        return null!;
     }
 
-    public void GetDevices<T>(List<T> list, Predicate<T> predicate = null) where T : class, IInputDevice
+    public void GetDevices<T>(List<T> list, Predicate<T> predicate = null!) where T : class, IInputDevice
     {
         foreach (var device in _inputDevices)
         {
@@ -611,16 +611,16 @@ public class InputInterface : IDisposable
         _inputDevices.Clear();
 
         // Clear body nodes
-        _bodyNodes = null;
+        _bodyNodes = null!;
 
         // Clear references
-        _keyboardDriver = null;
-        _mouseDriver = null;
-        Mouse = null;
-        Keyboard = null;
-        LeftController = null;
-        RightController = null;
-        HeadDevice = null;
+        _keyboardDriver = null!;
+        _mouseDriver = null!;
+        Mouse = null!;
+        Keyboard = null!;
+        LeftController = null!;
+        RightController = null!;
+        HeadDevice = null!;
 
         _initialized = false;
         Logger.Log("InputInterface: Disposed");

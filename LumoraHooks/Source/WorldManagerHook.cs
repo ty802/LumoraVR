@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using Lumora.Core.Management;
 
 namespace Lumora.Godot.Hooks;
@@ -12,11 +12,11 @@ namespace Lumora.Godot.Hooks;
 /// </summary>
 public class WorldManagerHook : IWorldManagerHook
 {
-    public WorldManager Owner { get; private set; }
+    public WorldManager Owner { get; private set; } = null!;
 
-    public Node3D Root { get; private set; }
+    public Node3D Root { get; private set; } = null!;
 
-    public static WorldManagerHook Instance { get; private set; }
+    public static WorldManagerHook Instance { get; private set; } = null!;
 
     public static WorldManagerHook Constructor()
     {
@@ -70,7 +70,7 @@ public class WorldManagerHook : IWorldManagerHook
         if (world.Hook is WorldHook worldHook)
         {
             worldHook.Destroy();
-            world.Hook = null;
+            world.Hook = null!;
         }
 
     }
@@ -84,10 +84,11 @@ public class WorldManagerHook : IWorldManagerHook
 
         if (Instance == this)
         {
-            Instance = null;
+            Instance = null!;
         }
 
-        Root = null;
-        Owner = null;
+        Root = null!;
+        Owner = null!;
     }
 }
+

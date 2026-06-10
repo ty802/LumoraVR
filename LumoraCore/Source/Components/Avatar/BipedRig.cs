@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
@@ -24,7 +24,7 @@ public class BipedRig : Component
     /// <summary>
     /// Dictionary mapping BodyNode types to their corresponding Slot references.
     /// </summary>
-    public SyncRefDictionary<BodyNode, Slot> Bones { get; private set; }
+    public SyncRefDictionary<BodyNode, Slot> Bones { get; private set; } = null!;
 
     /// <summary>
     /// Minimal set of bones required for a valid biped rig.
@@ -105,7 +105,7 @@ public class BipedRig : Component
     {
         if (Bones.TryGetTarget(boneType, out var target))
             return target;
-        return null;
+        return null!;
     }
 
     /// <summary>
@@ -314,7 +314,7 @@ public class SlotRef
 {
     public Slot Target { get; set; }
 
-    public SlotRef(Slot target = null)
+    public SlotRef(Slot target = null!)
     {
         Target = target;
     }
@@ -367,13 +367,13 @@ public class SyncRefDictionary<TKey, TValue> : System.Collections.Generic.IEnume
             target = typedTarget;
             return target != null;
         }
-        target = default;
+        target = default!;
         return false;
     }
 
     public TValue this[TKey key]
     {
-        get => _dict.TryGetValue(key, out var sr) && sr.Target is TValue t ? t : default;
+        get => (_dict.TryGetValue(key, out var sr) && sr.Target is TValue t ? t : default) ?? null!;
         set => Add(key, value);
     }
 
@@ -387,3 +387,4 @@ public class SyncRefDictionary<TKey, TValue> : System.Collections.Generic.IEnume
         return GetEnumerator();
     }
 }
+

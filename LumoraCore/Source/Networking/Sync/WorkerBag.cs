@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -44,13 +44,13 @@ public class WorkerBag<C> : SyncRefIDBagBase<C> where C : ComponentBase<C>
     protected override C CreateElementWithKey(RefID key, BinaryReader reader)
     {
         if (World?.Workers == null)
-            return null;
+            return null!;
 
         var type = World.Workers.DecodeType(reader);
         if (type == null || !typeof(C).IsAssignableFrom(type))
         {
             LumoraLogger.Error($"WorkerBag: Unknown component type for {key}");
-            return null;
+            return null!;
         }
 
         return (C)WorkerManager.Instantiate(type);

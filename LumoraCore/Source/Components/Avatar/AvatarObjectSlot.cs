@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Input;
@@ -20,7 +20,7 @@ public class AvatarObjectSlot : UserRootComponent
     /// <summary>
     /// The currently equipped avatar object.
     /// </summary>
-    public LinkRef<IAvatarObject> Equipped { get; private set; }
+    public LinkRef<IAvatarObject> Equipped { get; private set; } = null!;
 
     /// <summary>
     /// The body node this slot corresponds to.
@@ -81,9 +81,9 @@ public class AvatarObjectSlot : UserRootComponent
     public bool HasEquipped => Equipped?.Target != null;
 
     // Internal state
-    private UserRoot _userRoot;
+    private UserRoot _userRoot = null!;
 
-    private AvatarPoseSmoothLerp _autoSmoothing;
+    private AvatarPoseSmoothLerp _autoSmoothing = null!;
 
     public override void OnAwake()
     {
@@ -95,8 +95,7 @@ public class AvatarObjectSlot : UserRootComponent
 
     // Hips/feet jitter visibly without smoothing in any IK/tracker setup
     // (controller skew, network noise). Head and hands stay direct so input
-    // doesn't gain latency. Matches the ref's InstallSmoothing(node) check.
-    // - xlinka
+    // doesn't gain latency. - xlinka
     private static bool ShouldAutoSmooth(BodyNode node)
         => node == BodyNode.Hips || node == BodyNode.LeftFoot || node == BodyNode.RightFoot;
 
@@ -117,14 +116,14 @@ public class AvatarObjectSlot : UserRootComponent
         {
             RemoveFilter(_autoSmoothing);
             _autoSmoothing.Slot?.Destroy();
-            _autoSmoothing = null;
+            _autoSmoothing = null!;
         }
     }
 
     public override void OnInit()
     {
         base.OnInit();
-        // BodyNode.NONE is not enum value 0 — set it explicitly
+        // BodyNode.NONE is not enum value 0 â€” set it explicitly
         Node.Value = BodyNode.NONE;
         // IsTracking defaults to true (not C# default false)
         IsTracking.Value = true;
@@ -142,13 +141,13 @@ public class AvatarObjectSlot : UserRootComponent
 
     private void FindUserRoot()
     {
-        _userRoot = Slot?.ActiveUserRoot;
+        _userRoot = Slot?.ActiveUserRoot!;
     }
 
     /// <summary>
     /// Check if this slot is under the local user.
     /// </summary>
-    public bool IsUnderLocalUser
+    public new bool IsUnderLocalUser
     {
         get
         {
@@ -168,7 +167,7 @@ public class AvatarObjectSlot : UserRootComponent
             Dequip(dequippedObjects);
 
             // Call OnPreEquip on all IAvatarObjectComponent in the avatar's slot
-            ForeachObjectComponent(avatarObject as Component, (c) =>
+            ForeachObjectComponent((avatarObject as Component)!, (c) =>
             {
                 try
                 {
@@ -194,7 +193,7 @@ public class AvatarObjectSlot : UserRootComponent
         avatarObject.Equip(this);
 
         // Call OnEquip on all IAvatarObjectComponent
-        ForeachObjectComponent(avatarObject as Component, (c) =>
+        ForeachObjectComponent((avatarObject as Component)!, (c) =>
         {
             try
             {
@@ -220,7 +219,7 @@ public class AvatarObjectSlot : UserRootComponent
         dequippedObjects?.Add(Equipped.Target);
 
         // Call OnDequip on all IAvatarObjectComponent
-        ForeachObjectComponent(Equipped.Target as Component, (c) =>
+        ForeachObjectComponent((Equipped.Target as Component)!, (c) =>
         {
             try
             {
@@ -233,7 +232,7 @@ public class AvatarObjectSlot : UserRootComponent
         });
 
         Equipped.Target.Dequip();
-        Equipped.Target = null;
+        Equipped.Target = null!;
     }
 
     /// <summary>
@@ -304,7 +303,7 @@ public class AvatarObjectSlot : UserRootComponent
         }
 
         // Convert this slot's world transform into UserRoot-local space.
-        // Using global→local conversion handles any depth of nesting under UserRoot
+        // Using globalâ†’local conversion handles any depth of nesting under UserRoot
         // (e.g. UserRoot > Body Nodes > Head > BodyNode) correctly.
         position   = space.GlobalPointToLocal(Slot.GlobalPosition);
         rotation   = space.GlobalRotation.Inverse * Slot.GlobalRotation;
@@ -325,7 +324,7 @@ public class AvatarObjectSlot : UserRootComponent
 /// </summary>
 public class LinkRef<T> where T : class
 {
-    private T _target;
+    private T _target = null!;
     private readonly Component _owner;
 
     public T Target
@@ -339,3 +338,4 @@ public class LinkRef<T> where T : class
         _owner = owner;
     }
 }
+

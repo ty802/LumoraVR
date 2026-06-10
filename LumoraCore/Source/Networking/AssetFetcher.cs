@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -15,12 +15,12 @@ namespace Lumora.Core.Networking;
 /// Platform-agnostic async asset fetcher.
 ///
 /// Supported URI schemes
-///   local://machineId/hash  — served from LocalDB; if not held locally, requested
+///   local://machineId/hash  â€” served from LocalDB; if not held locally, requested
 ///                             from the active session peer via SessionAssetTransferer.
-///   file:///abs/path        — direct disk read.
-///   http:// / https://      — HTTP download.
-///   builtin://…             — built-in engine assets.
-///   test://…                — local test assets (editor/dev only).
+///   file:///abs/path        â€” direct disk read.
+///   http:// / https://      â€” HTTP download.
+///   builtin://â€¦             â€” built-in engine assets.
+///   test://â€¦                â€” local test assets (editor/dev only).
 /// </summary>
 public static class AssetFetcher
 {
@@ -36,14 +36,14 @@ public static class AssetFetcher
     /// </summary>
     public static void FetchAsset(string uri, Action<byte[]> callback)
     {
-        // ── local:// — may need peer-to-peer transfer ──────────────────────────
+        // â”€â”€ local:// â€” may need peer-to-peer transfer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (uri.StartsWith("local://", StringComparison.Ordinal))
         {
             FetchLocalAsset(uri, callback);
             return;
         }
 
-        // ── Coalesce duplicate in-flight requests ──────────────────────────────
+        // â”€â”€ Coalesce duplicate in-flight requests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (_active.TryGetValue(uri, out var existing))
         {
             existing.callbacks.Add(callback);
@@ -69,7 +69,7 @@ public static class AssetFetcher
             if (!task.IsCompleted)
                 continue;
 
-            byte[] result = task.IsCompletedSuccessfully ? task.Result : null;
+            byte[] result = task.IsCompletedSuccessfully ? task.Result : null!;
             foreach (var cb in callbacks)
             {
                 try { cb(result); }
@@ -82,7 +82,7 @@ public static class AssetFetcher
             _active.Remove(uri);
     }
 
-    // ── local:// ──────────────────────────────────────────────────────────────
+    // â”€â”€ local:// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private static void FetchLocalAsset(string uri, Action<byte[]> callback)
     {
@@ -112,7 +112,7 @@ public static class AssetFetcher
                 if (localPath == null)
                 {
                     LumoraLogger.Warn($"AssetFetcher: peer could not provide '{uri}'");
-                    callback(null);
+                    callback(null!);
                     return;
                 }
 
@@ -129,17 +129,17 @@ public static class AssetFetcher
                 catch (Exception ex)
                 {
                     LumoraLogger.Error($"AssetFetcher: error reading received asset '{localPath}': {ex.Message}");
-                    callback(null);
+                    callback(null!);
                 }
             });
             return;
         }
 
-        LumoraLogger.Warn($"AssetFetcher: '{uri}' not in LocalDB and no active session — cannot fetch");
-        callback(null);
+        LumoraLogger.Warn($"AssetFetcher: '{uri}' not in LocalDB and no active session â€” cannot fetch");
+        callback(null!);
     }
 
-    // ── Synchronous fetcher for non-local URIs ────────────────────────────────
+    // â”€â”€ Synchronous fetcher for non-local URIs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private static byte[] FetchSync(string uri)
     {
@@ -160,12 +160,12 @@ public static class AssetFetcher
                 return Http.GetByteArrayAsync(u).GetAwaiter().GetResult();
 
             LumoraLogger.Warn($"AssetFetcher: unsupported URI scheme '{u.Scheme}' in '{uri}'");
-            return null;
+            return null!;
         }
         catch (Exception ex)
         {
             LumoraLogger.Error($"AssetFetcher: failed to fetch '{uri}': {ex.Message}");
-            return null;
+            return null!;
         }
     }
 }

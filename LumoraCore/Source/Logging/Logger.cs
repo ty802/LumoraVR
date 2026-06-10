@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -42,12 +42,17 @@ namespace Lumora.Core.Logging
             Task.Run(() => ProcessLogQueue(_cancellationTokenSource.Token));
         }
 
-        public static event Action<string> OnFormattedLogMessageWritten;
-        public static event Action<string> OnPrettyLogMessageWritten;
-        public static event Action<LogLevel, string, string> OnLogWritten;
+        public static event Action<string> OnFormattedLogMessageWritten = null!;
+        public static event Action<string> OnPrettyLogMessageWritten = null!;
+        public static event Action<LogLevel, string, string> OnLogWritten = null!;
+
+        // Flip to true when actively diagnosing â€” Debug calls are firehose and choke
+        // the console/file otherwise. - xlinka
+        public static bool EnableDebug { get; set; } = false;
 
         private static void WriteLog(LogLevel level, string message)
         {
+            if (!EnableDebug && level == LogLevel.DEBUG) return;
             string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
             string logEntry = $"[{timestamp}] [{level}] {message}";
             _logQueue.Enqueue(logEntry);

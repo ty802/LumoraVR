@@ -67,8 +67,10 @@ public abstract class WidgetPreset : Component
         float radius = CornerRadius.Value;
         bool hasBorder = BorderColor.Value.a > 0.01f;
 
-        var bg = content.AttachComponent<Image>();
-        bg.Tint.Value = hasBorder ? BorderColor.Value : Background.Value;
+        var bg = content.AttachComponent<BorderedImage>();
+        bg.Tint.Value = Background.Value;
+        bg.BorderTint.Value = hasBorder ? BorderColor.Value : new color(0f, 0f, 0f, 0f);
+        bg.BorderThickness.Value = hasBorder ? 3f : 0f;
         if (BackgroundSprite.Target != null)
         {
             bg.Texture.Target = BackgroundSprite.Target;
@@ -79,20 +81,12 @@ public abstract class WidgetPreset : Component
         var fillRoot = content;
         if (hasBorder)
         {
-            fillRoot = content.AddSlot("Fill");
+            fillRoot = content.AddSlot("Inner");
             var rect = fillRoot.AttachComponent<RectTransform>();
             rect.AnchorMin.Value = float2.Zero;
             rect.AnchorMax.Value = float2.One;
-            rect.OffsetMin.Value = new float2(2f, 2f);
-            rect.OffsetMax.Value = new float2(-2f, -2f);
-            var fill = fillRoot.AttachComponent<Image>();
-            fill.Tint.Value = Background.Value;
-            if (BackgroundSprite.Target != null)
-            {
-                fill.Texture.Target = BackgroundSprite.Target;
-                fill.NineSlice.Value = true;
-                fill.Borders.Value = new float4(radius, radius, radius, radius);
-            }
+            rect.OffsetMin.Value = new float2(3f, 3f);
+            rect.OffsetMax.Value = new float2(-3f, -3f);
         }
 
         Build(widget, fillRoot);

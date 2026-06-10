@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Lumora.Core;
+using Lumora.Core;
 
 namespace Lumora.Godot.Hooks;
 
@@ -9,19 +9,19 @@ namespace Lumora.Godot.Hooks;
 /// Base class for all Godot hooks.
 /// Base platform hook for Godot.
 ///
-/// Pattern: LumoraCore Component (data) → Hook (bridge) → Godot Node/Resource (implementation)
+/// Pattern: LumoraCore Component (data) -> Hook (bridge) -> Godot Node/Resource (implementation)
 /// </summary>
 public abstract class Hook<D> : IHook<D> where D : IImplementable
 {
 	/// <summary>
 	/// The component that owns this hook.
 	/// </summary>
-	public D Owner { get; private set; }
+	public D Owner { get; private set; } = default!;
 
 	/// <summary>
 	/// The world this hook belongs to.
 	/// </summary>
-	protected World World => Owner?.World;
+	protected World World => Owner?.World!;
 
 	/// <summary>
 	/// Explicit interface implementation for non-generic IHook.
@@ -41,7 +41,7 @@ public abstract class Hook<D> : IHook<D> where D : IImplementable
 	/// </summary>
 	public void RemoveOwner()
 	{
-		Owner = default(D);
+		Owner = default(D)!;
 	}
 
 	/// <summary>
@@ -70,3 +70,4 @@ public abstract class Hook<D> : IHook<D> where D : IImplementable
 		Destroy(false);
 	}
 }
+

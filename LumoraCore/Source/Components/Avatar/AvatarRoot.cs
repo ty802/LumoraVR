@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.Collections.Generic;
@@ -43,7 +43,7 @@ public class AvatarRoot : Component, IAvatarObject
                     return objSlot;
                 current = current.Parent;
             }
-            return null;
+            return null!;
         }
     }
 
@@ -52,7 +52,7 @@ public class AvatarRoot : Component, IAvatarObject
         get { yield break; }
     }
 
-    public User ExplicitlyAllowedUser { get; private set; }
+    public User ExplicitlyAllowedUser { get; private set; } = null!;
 
     public override void OnInit()
     {
@@ -77,7 +77,7 @@ public class AvatarRoot : Component, IAvatarObject
 
     public void Dequip()
     {
-        Owner.Target = null;
+        Owner.Target = null!;
         IsActive.Value = false;
     }
 

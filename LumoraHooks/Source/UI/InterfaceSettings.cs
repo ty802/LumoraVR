@@ -29,7 +29,7 @@ public static class InterfaceSettings
     private static float _mouseSensitivity = 1f;
     private static float _mouseSmoothing = 0f;
 
-    public static event Action Changed;
+    public static event Action Changed = null!;
 
     public static float ReticleSize
     {

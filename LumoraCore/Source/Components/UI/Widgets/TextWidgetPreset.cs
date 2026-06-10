@@ -27,6 +27,7 @@ public abstract class TextWidgetPreset : WidgetPreset
     protected override void Build(Widget widget, Slot root)
     {
         var builder = new UIBuilder(root);
+        BuildBackground(root);
         builder.Font(Font.Target).FontSize(TextSize.Value);
         var text = builder.Text(string.Empty, TextSize.Value, TextColor.Value);
         text.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
@@ -36,6 +37,9 @@ public abstract class TextWidgetPreset : WidgetPreset
             FillRect(rect);
         SetupText(text);
     }
+
+    // runs before the text so anything added here is an earlier sibling, rendered behind it - xlinka
+    protected virtual void BuildBackground(Slot root) { }
 
     protected abstract void SetupText(Text text);
 }

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using Lumora.Core;
 using Lumora.Core.Components;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -9,13 +9,13 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 namespace Lumora.Godot.Hooks;
 
 /// <summary>
-/// Hook for HeadOutput component → Godot Camera3D.
+/// Hook for HeadOutput component Ã¢â€ â€™ Godot Camera3D.
 /// Manages camera attachment to user's head slot and follows head position/rotation.
 /// </summary>
 [ImplementableHook(typeof(HeadOutput))]
 public class HeadOutputHook : ComponentHook<HeadOutput>
 {
-    private Camera3D _camera;
+    private Camera3D _camera = null!;
     private bool _isInitialized = false;
     private bool _loggedMissingUserRoot = false;
 
@@ -106,9 +106,10 @@ public class HeadOutputHook : ComponentHook<HeadOutput>
             _camera.QueueFree();
         }
 
-        _camera = null;
+        _camera = null!;
         _isInitialized = false;
 
         base.Destroy(destroyingWorld);
     }
 }
+

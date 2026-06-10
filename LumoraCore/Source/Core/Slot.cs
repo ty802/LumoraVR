@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -23,7 +23,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     private readonly List<Slot> _children = new();
     private readonly List<Slot> _localChildren = new();
     private readonly List<Component> _components = new();
-    private Slot _parent;
+    private Slot _parent = null!;
     private bool _isRemoved;
 
     // Transform caching with dirty flags
@@ -56,51 +56,55 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// <summary>
     /// Event fired when this slot changes.
     /// </summary>
-    public event Action<IChangeable> Changed;
+    public event Action<IChangeable> Changed = null!;
 
     /// <summary>
     /// Event fired when a child is added.
     /// </summary>
-    public event Action<Slot, Slot> OnChildAdded;
+    public event Action<Slot, Slot> OnChildAdded = null!;
 
     /// <summary>
     /// Event fired when a child is removed.
     /// </summary>
-    public event Action<Slot, Slot> OnChildRemoved;
+    public event Action<Slot, Slot> OnChildRemoved = null!;
 
     /// <summary>
     /// Event fired when a component is added.
     /// </summary>
-    public event Action<Slot, Component> OnComponentAdded;
+    public event Action<Slot, Component> OnComponentAdded = null!;
 
     /// <summary>
     /// Event fired when a component is removed.
     /// </summary>
-    public event Action<Slot, Component> OnComponentRemoved;
+    public event Action<Slot, Component> OnComponentRemoved = null!;
 
     /// <summary>
     /// Event fired when parent changes.
     /// </summary>
-    public event Action<Slot, Slot, Slot> OnParentChanged;
+    public event Action<Slot, Slot, Slot> OnParentChanged = null!;
 
     /// <summary>
     /// Event fired when active state changes.
     /// </summary>
-    public event Action<Slot, bool> OnActiveChanged;
+    public event Action<Slot, bool> OnActiveChanged = null!;
 
     /// <summary>
     /// Event fired when name changes.
     /// </summary>
-    public event Action<Slot, string> OnNameChanged;
+    public event Action<Slot, string> OnNameChanged = null!;
 
     /// <summary>
     /// Event fired when children order is invalidated.
     /// </summary>
-    public event Action<Slot> ChildrenOrderInvalidated;
+    public event Action<Slot> ChildrenOrderInvalidated
+    {
+        add { }
+        remove { }
+    }
 
     // Simplified event aliases for UI compatibility
-    public event Action<Slot> ActiveChanged;
-    public event Action<Slot> ParentChanged;
+    public event Action<Slot> ActiveChanged = null!;
+    public event Action<Slot> ParentChanged = null!;
 
     #endregion
 
@@ -210,11 +214,11 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     // its children. On reparent the inherited value re-resolves from the new
     // parent. Slots that hold their own UserRoot keep that ref and ignore
     // parent propagation. - xlinka
-    public UserRoot ActiveUserRoot { get; private set; }
+    public UserRoot ActiveUserRoot { get; private set; } = null!;
 
-    public User ActiveUser => ActiveUserRoot?.ActiveUser;
+    public User ActiveUser => (ActiveUserRoot?.ActiveUser) ?? null!;
 
-    public event Action<Slot> ActiveUserRootChanged;
+    public event Action<Slot> ActiveUserRootChanged = null!;
 
     internal void RegisterUserRoot(UserRoot userRoot)
     {
@@ -240,7 +244,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         if (userRoot == null || userRoot != ActiveUserRoot)
             return;
 
-        ActiveUserRoot = null;
+        ActiveUserRoot = null!;
         PropagateActiveUserRootToChildren();
         ActiveUserRootChanged?.Invoke(this);
     }
@@ -255,7 +259,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         if (inherited == ActiveUserRoot)
             return;
 
-        ActiveUserRoot = inherited;
+        ActiveUserRoot = inherited!;
         PropagateActiveUserRootToChildren();
         ActiveUserRootChanged?.Invoke(this);
     }
@@ -295,7 +299,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// <summary>
     /// The hook that implements this slot in the engine (e.g., Godot Node3D).
     /// </summary>
-    public IHook<Slot> Hook { get; private set; }
+    public IHook<Slot> Hook { get; private set; } = null!;
 
     /// <summary>
     /// Explicit interface implementation for non-generic IHook.
@@ -310,7 +314,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// <summary>
     /// Whether this Slot has been removed from the hierarchy but not destroyed.
     /// </summary>
-    public bool IsRemoved => _isRemoved;
+    public override bool IsRemoved => _isRemoved;
 
     /// <summary>
     /// Read-only list of child Slots.
@@ -454,7 +458,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// <summary>
     /// The parent Slot in the hierarchy (null if root).
     /// </summary>
-    public Slot Parent
+    public new Slot Parent
     {
         get => _parent;
         set => SetParent(value, preserveGlobalTransform: false);
@@ -490,7 +494,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         if (newParent != null && newParent.IsRemoved)
         {
             Logging.Logger.Warn($"Trying to assign a removed parent for slot '{Name?.Value}', resetting to root.");
-            newParent = World?.RootSlot;
+            newParent = World?.RootSlot!;
         }
 
         if (newParent != null && newParent.IsDescendantOf(this))
@@ -511,7 +515,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
         // Update ParentSlotRef - this triggers OnParentSlotRefChanged which updates
         // _parent, child collections, and fires events
-        ParentSlotRef.Target = newParent;
+        ParentSlotRef.Target = newParent!;
 
         InvalidateGlobalTransforms();
 
@@ -1172,7 +1176,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         if (IsRootSlot)
         {
             Logging.Logger.Warn($"Tried to assign root slot parent. NewParent={syncRef.Target}");
-            World?.RunSynchronously(() => syncRef.Target = null);
+            World?.RunSynchronously(() => syncRef.Target = null!);
             return;
         }
 
@@ -1360,7 +1364,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         Type hookType = World.HookTypes.GetHookType(typeof(Slot));
         if (hookType == null) return;
 
-        Hook = (IHook<Slot>)Activator.CreateInstance(hookType);
+        Hook = (IHook<Slot>)Activator.CreateInstance(hookType)!;
         Hook?.AssignOwner(this);
         Hook?.Initialize();
         QueueHookUpdate();
@@ -1499,7 +1503,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
         if (World == null)
         {
-            var component = (Component)Activator.CreateInstance(componentType);
+            var component = (Component)Activator.CreateInstance(componentType)!;
             if (!_components.Contains(component))
             {
                 _components.Add(component);
@@ -1524,7 +1528,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// </summary>
     public T GetComponent<T>() where T : Component
     {
-        return _components.OfType<T>().FirstOrDefault();
+        return _components.OfType<T>().FirstOrDefault()!;
     }
 
     /// <summary>
@@ -1532,7 +1536,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// </summary>
     public Component GetComponent(Type type)
     {
-        return _components.FirstOrDefault(c => type.IsInstanceOfType(c));
+        return _components.FirstOrDefault(c => type.IsInstanceOfType(c))!;
     }
 
     /// <summary>
@@ -1574,7 +1578,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// </summary>
     public T GetComponent<T>(Func<T, bool> predicate) where T : Component
     {
-        return _components.OfType<T>().FirstOrDefault(predicate);
+        return _components.OfType<T>().FirstOrDefault(predicate)!;
     }
 
     /// <summary>
@@ -1588,7 +1592,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             if (comp != null) return comp;
         }
 
-        return _parent?.GetComponentInParent<T>(true);
+        return (_parent?.GetComponentInParent<T>(true)) ?? null!;
     }
 
     /// <summary>
@@ -1614,7 +1618,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             if (comp != null) return comp;
         }
 
-        return null;
+        return null!;
     }
 
     /// <summary>
@@ -1656,7 +1660,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 	/// <summary>
 	/// Remove a Component from this Slot.
 	/// </summary>
-	public void RemoveComponent(Component component)
+	public new void RemoveComponent(Component component)
 	{
         if (component == null)
             return;
@@ -1811,7 +1815,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     public Slot GetChild(int index)
     {
         if (index < 0 || index >= _children.Count)
-            return null;
+            return null!;
         return _children[index];
     }
 
@@ -1830,7 +1834,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// </summary>
     public Slot GetChild(string name)
     {
-        return _children.FirstOrDefault(c => c.Name.Value == name);
+        return _children.FirstOrDefault(c => c.Name.Value == name)!;
     }
 
     /// <summary>
@@ -1858,7 +1862,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
                     return found;
             }
         }
-        return null;
+        return null!;
     }
 
     /// <summary>
@@ -1922,7 +1926,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             if (child == null)
             {
                 if (!createIfMissing)
-                    return null;
+                    return null!;
                 child = current.AddSlot(part);
             }
             current = child;
@@ -2042,7 +2046,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// </summary>
     public Slot FindCommonAncestor(Slot other)
     {
-        if (other == null) return null;
+        if (other == null) return null!;
 
         var ancestors = new HashSet<Slot>(GetAncestors(true));
         foreach (var ancestor in other.GetAncestors(true))
@@ -2050,7 +2054,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             if (ancestors.Contains(ancestor))
                 return ancestor;
         }
-        return null;
+        return null!;
     }
 
     /// <summary>
@@ -2073,11 +2077,11 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// <summary>
     /// Duplicate this slot and its contents.
     /// </summary>
-    public Slot Duplicate(Slot newParent = null, bool preserveGlobalTransform = false)
+    public Slot Duplicate(Slot newParent = null!, bool preserveGlobalTransform = false)
     {
         newParent ??= _parent;
         if (newParent == null || World == null)
-            return null;
+            return null!;
 
         // Create reference mapping for resolving references after duplication
         var refMap = new Dictionary<RefID, RefID>();
@@ -2203,7 +2207,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// <summary>
     /// Create a deep copy with all references resolved.
     /// </summary>
-    public Slot DeepCopy(Slot newParent = null)
+    public Slot DeepCopy(Slot newParent = null!)
     {
         return Duplicate(newParent, false);
     }
@@ -2344,7 +2348,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
         _isRemoved = true;
         _parent?.DetachChildInternal(this);
-        _parent = null;
+        _parent = null!;
     }
 
     /// <summary>
@@ -2621,11 +2625,11 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             if (syncMember != null)
             {
                 var value = syncMember.GetValueAsObject();
-                WriteValue(writer, value);
+                WriteValue(writer, value!);
             }
             else
             {
-                WriteValue(writer, null);
+                WriteValue(writer, null!);
             }
         }
     }
@@ -2790,7 +2794,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
         return typeCode switch
         {
-            0 => null,
+            0 => null!,
             1 => reader.ReadBoolean(),
             2 => reader.ReadInt32(),
             3 => reader.ReadSingle(),
@@ -2805,7 +2809,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             12 => new RefID(reader.ReadUInt64()),
             13 => ReadEnumValue(reader),
             255 => reader.ReadString(), // String fallback
-            _ => null
+            _ => null!
         };
     }
 

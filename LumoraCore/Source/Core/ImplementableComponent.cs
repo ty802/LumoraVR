@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -21,7 +21,7 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
     /// <summary>
     /// The hook that implements this component in the engine.
     /// </summary>
-    public C Hook { get; private set; }
+    public C Hook { get; private set; } = null!;
 
     /// <summary>
     /// Explicit interface implementation for non-generic IImplementable.
@@ -55,7 +55,7 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
         if (World == null)
         {
             Logging.Logger.Warn($"ImplementableComponent.InstantiateHook: World is NULL for {GetType().Name}!");
-            return null;
+            return null!;
         }
 
         Type componentType = GetType();
@@ -64,11 +64,11 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
         if (hookType == null)
         {
             Logging.Logger.Warn($"ImplementableComponent.InstantiateHook: No hook registered for {componentType.FullName}!");
-            return null;
+            return null!;
         }
 
-        var hook = (C)Activator.CreateInstance(hookType);
-        return hook;
+        var hook = (C)Activator.CreateInstance(hookType)!;
+        return hook!;
     }
 
     // Queue this component for hook ApplyChanges at the next ProcessHookUpdates
@@ -147,7 +147,7 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
         {
             Hook.Destroy(World?.IsDisposed ?? false);
             Hook.RemoveOwner();
-            Hook = null;
+            Hook = null!;
         }
     }
 }

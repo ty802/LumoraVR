@@ -16,7 +16,7 @@ public interface IImplementable : IWorldElement
     /// <summary>
     /// The world this component belongs to.
     /// </summary>
-    World World { get; }
+    new World World { get; }
 
     /// <summary>
     /// The slot this component is attached to.

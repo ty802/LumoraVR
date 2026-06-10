@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -190,7 +190,7 @@ public class World
 	private readonly List<IWorldEventReceiver>[] _worldEventReceivers;
 	private WorldState _state = WorldState.Created;
 	private InitializationState _initState = InitializationState.Created;
-	private Session _session;
+	private Session _session = null!;
 	private HookManager _hookManager;
 	private TrashBin _trashBin;
 	private RefIDAllocator _refIDAllocator;
@@ -207,13 +207,13 @@ public class World
 	private static HookTypeRegistry _staticHookTypes = new HookTypeRegistry();
 
 	// Platform hook for world rendering
-	public IWorldHook Hook { get; set; }
+	public IWorldHook Hook { get; set; } = null!;
 
 	// Godot scene access - set by WorldHook
-	public object GodotSceneRoot { get; set; }
+	public object GodotSceneRoot { get; set; } = null!;
 
 	// Reference to the WorldManager that owns this World
-	public Management.WorldManager WorldManager { get; internal set; }
+	public Management.WorldManager WorldManager { get; internal set; } = null!;
 
 	private static int _worldEventTypeCount = Enum.GetValues(typeof(WorldEvent)).Length;
 
@@ -245,7 +245,7 @@ public class World
 	/// <summary>
 	/// The root Slot of this World.
 	/// </summary>
-	public Slot RootSlot { get; private set; }
+	public Slot RootSlot { get; private set; } = null!;
 
 	/// <summary>
 	/// Display name of this World.
@@ -282,22 +282,22 @@ public class World
 	/// <summary>
 	/// URLs that can be used to connect to this session.
 	/// </summary>
-	public IReadOnlyList<Uri> SessionURLs => (IReadOnlyList<Uri>)_session?.Metadata?.SessionURLs ?? Array.Empty<Uri>();
+	public IReadOnlyList<Uri> SessionURLs => (_session?.Metadata?.SessionURLs as IReadOnlyList<Uri>) ?? Array.Empty<Uri>();
 
 	/// <summary>
 	/// Synchronization controller for this world.
 	/// </summary>
-	public SyncController SyncController { get; private set; }
+	public SyncController SyncController { get; private set; } = null!;
 
 	/// <summary>
 	/// Reference controller for object lookup and async resolution.
 	/// </summary>
-	public ReferenceController ReferenceController { get; private set; }
+	public ReferenceController ReferenceController { get; private set; } = null!;
 
 	/// <summary>
 	/// Worker manager for type encoding/decoding during sync.
 	/// </summary>
-	public WorkerManager Workers { get; private set; }
+	public WorkerManager Workers { get; private set; } = null!;
 
 	/// <summary>
 	/// Thread-safe hook manager for world modifications.
@@ -327,7 +327,7 @@ public class World
 	/// <summary>
 	/// Local user (client's own user).
 	/// </summary>
-	public User LocalUser { get; private set; }
+	public User LocalUser { get; private set; } = null!;
 
 	/// <summary>
 	/// Time scale for the World simulation.
@@ -455,12 +455,12 @@ public class World
 	/// <summary>
 	/// Event triggered when a Slot is added to the World.
 	/// </summary>
-	public event Action<Slot> OnSlotAdded;
+	public event Action<Slot> OnSlotAdded = null!;
 
 	/// <summary>
 	/// Event triggered when a Slot is removed from the World.
 	/// </summary>
-	public event Action<Slot> OnSlotRemoved;
+	public event Action<Slot> OnSlotRemoved = null!;
 
 	public World()
 	{
@@ -485,7 +485,7 @@ public class World
 	/// <summary>
 	/// Create a local-only world (single user, no networking).
 	/// </summary>
-	public static World LocalWorld(Engine engine, string name, Action<World> init = null)
+	public static World LocalWorld(Engine engine, string name, Action<World> init = null!)
 	{
 		var world = new World();
 		world.WorldName.Value = name;
@@ -513,7 +513,7 @@ public class World
 	/// <summary>
 	/// Start a hosted session (authority/server).
 	/// </summary>
-	public static World StartSession(Engine engine, string name, ushort port, string hostUserName = null, Action<World> init = null)
+	public static World StartSession(Engine engine, string name, ushort port, string hostUserName = null!, Action<World> init = null!)
 	{
 		return StartSession(engine, name, port, hostUserName, SessionVisibility.Private, 16, init);
 	}
@@ -528,7 +528,7 @@ public class World
 		string hostUserName,
 		SessionVisibility visibility,
 		int maxUsers = 16,
-		Action<World> init = null)
+		Action<World> init = null!)
 	{
 		var world = new World();
 		world.WorldName.Value = name;
@@ -564,7 +564,7 @@ public class World
 		init?.Invoke(world);
 
 		// Now create the host user (triggers OnUserJoined after SimpleUserSpawn is ready)
-		world.CreateHostUser(hostUserName);
+		world.CreateHostUser(hostUserName!);
 
 		// Start running
 		world.StartRunning();
@@ -844,7 +844,7 @@ public class World
 	/// </summary>
 	public IWorldElement FindElement(RefID refID)
 	{
-		return ReferenceController?.GetObjectOrNull(refID);
+		return (ReferenceController?.GetObjectOrNull(refID)) ?? null!;
 	}
 
 	/// <summary>
@@ -860,7 +860,7 @@ public class World
 	/// </summary>
 	public IWorldElement TryRetrieveFromTrash(ulong tick, RefID id)
 	{
-		return ReferenceController?.TryRetrieveFromTrash(tick, id);
+		return (ReferenceController?.TryRetrieveFromTrash(tick, id)) ?? null!;
 	}
 
 	/// <summary>
@@ -899,7 +899,7 @@ public class World
 			if (found != null) return found;
 		}
 
-		return null;
+		return null!;
 	}
 
 	/// <summary>
@@ -1039,8 +1039,8 @@ public class World
 		{
 			user?.ConfigureLocalTrackingStreams();
 		}
-		AddUser(user);
-		LumoraLogger.Log($"Local user set: {user.UserName.Value}");
+		AddUser(user!);
+		LumoraLogger.Log($"Local user set: {user!.UserName.Value}");
 	}
 
 	/// <summary>
@@ -1057,7 +1057,7 @@ public class World
 	/// <summary>
 	/// Start a new session as host (authority).
 	/// </summary>
-	public void StartSession(ushort port = 7777, string hostUserName = null)
+	public void StartSession(ushort port = 7777, string hostUserName = null!)
 	{
 		StartSessionNetwork(port);
 		CreateHostUser(hostUserName);
@@ -1067,7 +1067,7 @@ public class World
 	/// Start the session network without creating the host user.
 	/// Used internally to allow init callback to run before user creation.
 	/// </summary>
-	private void StartSessionNetwork(ushort port, SessionMetadata metadata = null)
+	private void StartSessionNetwork(ushort port, SessionMetadata metadata = null!)
 	{
 		if (_session != null)
 		{
@@ -1107,7 +1107,7 @@ public class World
 	/// <summary>
 	/// Create the host user for a locally hosted session.
 	/// </summary>
-	public User CreateHostUser(string userName = null)
+	public User CreateHostUser(string userName = null!)
 	{
 		var (rangeStart, rangeEnd) = _refIDAllocator.GetAuthorityIDRange();
 
@@ -1201,7 +1201,7 @@ public class World
 		{
 			NetworkInitStart();
 
-			_session = await Session.JoinSessionAsync(this, new[] { address });
+			_session = (await Session.JoinSessionAsync(this, new[] { address }))!;
 			if (_session == null)
 			{
 				InitializationFailed();
@@ -1401,7 +1401,7 @@ public class World
 		if (_session != null)
 		{
 			_session.Dispose();
-			_session = null;
+			_session = null!;
 			LumoraLogger.Log("Left session");
 		}
 	}
@@ -1834,7 +1834,7 @@ public class World
 			
 			RunSynchronously(() =>
 			{
-				SessionJoinIndicator.CreateIndicatorAsync(currentWorld, this, _session?.Sync, indicator =>
+				SessionJoinIndicator.CreateIndicatorAsync(currentWorld, this, _session!.Sync, indicator =>
 				{
 					if (indicator != null)
 					{
@@ -1891,7 +1891,7 @@ public class World
 		try
 		{
 			_session?.Dispose();
-			_session = null;
+			_session = null!;
 		}
 		catch (Exception ex)
 		{
@@ -1902,7 +1902,7 @@ public class World
 		try
 		{
 			SyncController?.Dispose();
-			SyncController = null;
+			SyncController = null!;
 		}
 		catch (Exception ex)
 		{
@@ -1930,7 +1930,7 @@ public class World
 			// Destroy queues component OnDestroy callbacks; flush them before managers
 			// and the ReferenceController are cleared so components can unregister cleanly.
 			_updateManager?.RunDestructions();
-			RootSlot = null;
+			RootSlot = null!;
 		}
 		catch (Exception ex)
 		{
@@ -1958,7 +1958,7 @@ public class World
 		try
 		{
 			_hookManager?.Dispose();
-			_hookManager = null;
+			_hookManager = null!;
 		}
 		catch (Exception ex)
 		{
@@ -1968,7 +1968,7 @@ public class World
 		try
 		{
 			// TrashBin doesn't have Dispose, just clear reference
-			_trashBin = null;
+			_trashBin = null!;
 		}
 		catch (Exception ex)
 		{
@@ -1978,7 +1978,7 @@ public class World
 		try
 		{
 			// UpdateManager doesn't have Dispose, just clear reference
-			_updateManager = null;
+			_updateManager = null!;
 		}
 		catch (Exception ex)
 		{
@@ -1987,8 +1987,8 @@ public class World
 
 		try
 		{
-			_refIDAllocator = null;
-			_hookTypes = null;
+			_refIDAllocator = null!;
+			_hookTypes = null!;
 		}
 		catch (Exception ex)
 		{
@@ -1998,7 +1998,7 @@ public class World
 		try
 		{
 			ReferenceController?.Dispose();
-			ReferenceController = null;
+			ReferenceController = null!;
 		}
 		catch (Exception ex)
 		{
@@ -2008,3 +2008,4 @@ public class World
 		LumoraLogger.Log($"World: Disposed world '{WorldName.Value}'");
 	}
 }
+

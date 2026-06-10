@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -52,7 +52,7 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
 
     internal class NodeRecord
     {
-        public T Node;
+        public T Node = null!;
         public bool IsDirty;
         public int DeltaRecordIndex;
     }
@@ -100,17 +100,17 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
 
         public static DeltaRecord Remove(int index)
         {
-            return new DeltaRecord(null, index, RefID.Null, DeltaMessage.Remove);
+            return new DeltaRecord(null!, index, RefID.Null, DeltaMessage.Remove);
         }
 
         public static DeltaRecord Clear()
         {
-            return new DeltaRecord(null, -1, RefID.Null, DeltaMessage.Clear);
+            return new DeltaRecord(null!, -1, RefID.Null, DeltaMessage.Clear);
         }
 
         public static DeltaRecord Empty()
         {
-            return new DeltaRecord(null, -1, RefID.Null, DeltaMessage.Empty);
+            return new DeltaRecord(null!, -1, RefID.Null, DeltaMessage.Empty);
         }
 
         public void Encode(BinaryWriter writer, RefID offset)
@@ -146,7 +146,7 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
             {
                 id = new RefID(reader.Read7BitEncoded() + (ulong)offset);
             }
-            return new DeltaRecord(null, index, id, message);
+            return new DeltaRecord(null!, index, id, message);
         }
     }
 
@@ -179,7 +179,7 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
     }
 
     private List<NodeRecord> _records = new();
-    private List<DeltaRecord> _deltaRecords;
+    private List<DeltaRecord> _deltaRecords = null!;
 
     public int Count
     {
@@ -196,21 +196,21 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
     /// <summary>
     /// Event triggered when elements are added.
     /// </summary>
-    public event SyncListElementsEvent<T> ElementsAdded;
+    public event SyncListElementsEvent<T> ElementsAdded = null!;
 
     /// <summary>
     /// Event triggered when elements are removed.
     /// </summary>
-    public event SyncListElementsEvent<T> ElementsRemoved;
+    public event SyncListElementsEvent<T> ElementsRemoved = null!;
 
     /// <summary>
     /// Event triggered before elements are removed.
     /// </summary>
-    public event SyncListElementsEvent<T> ElementsRemoving;
+    public event SyncListElementsEvent<T> ElementsRemoving = null!;
 
-    private event SyncListElementsEvent _genElementsAdded;
-    private event SyncListElementsEvent _genElementsRemoved;
-    private event SyncListEvent _genListCleared;
+    private event SyncListElementsEvent _genElementsAdded = null!;
+    private event SyncListElementsEvent _genElementsRemoved = null!;
+    private event SyncListEvent _genListCleared = null!;
 
     event SyncListElementsEvent ISyncList.ElementsAdded
     {
@@ -522,7 +522,7 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
 
         if (moveToTrash)
         {
-            World.ReferenceController.MoveToTrash(record.Node as IWorldElement, World.SyncTick);
+            World.ReferenceController.MoveToTrash((record.Node as IWorldElement)!, World.SyncTick);
         }
         else if (!record.IsDirty)
         {
@@ -560,7 +560,7 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
         {
             if (sync || forceTrash)
             {
-                World.ReferenceController.MoveToTrash(record.Node as IWorldElement, World.SyncTick);
+                World.ReferenceController.MoveToTrash((record.Node as IWorldElement)!, World.SyncTick);
             }
             else
             {
@@ -830,10 +830,10 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
         }
 
         _deltaRecords.Clear();
-        _deltaRecords = null;
+        _deltaRecords = null!;
     }
 
-    public override object GetValueAsObject() => null;
+    public override object GetValueAsObject() => null!;
 
     public override void Dispose()
     {
@@ -842,16 +842,16 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
             record.Node?.Dispose();
         }
         _records.Clear();
-        _records = null;
+        _records = null!;
         _deltaRecords?.Clear();
-        _deltaRecords = null;
+        _deltaRecords = null!;
 
-        ElementsAdded = null;
-        ElementsRemoved = null;
-        ElementsRemoving = null;
-        _genElementsAdded = null;
-        _genElementsRemoved = null;
-        _genListCleared = null;
+        ElementsAdded = null!;
+        ElementsRemoved = null!;
+        ElementsRemoving = null!;
+        _genElementsAdded = null!;
+        _genElementsRemoved = null!;
+        _genListCleared = null!;
 
         base.Dispose();
     }

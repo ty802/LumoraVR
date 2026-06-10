@@ -183,7 +183,7 @@ public struct float4 : IEquatable<float4>
     public static bool operator !=(float4 a, float4 b) => !(a == b);
 
     public bool Equals(float4 other) => x == other.x && y == other.y && z == other.z && w == other.w;
-    public override bool Equals(object obj) => obj is float4 other && Equals(other);
+    public override bool Equals(object? obj) => obj is float4 other && Equals(other);
     public override int GetHashCode() => HashCode.Combine(x, y, z, w);
     public override string ToString() => $"({x}, {y}, {z}, {w})";
 
@@ -211,4 +211,3 @@ public struct float4 : IEquatable<float4>
     /// Conversion from Godot Color.
     /// </summary>
 }
-

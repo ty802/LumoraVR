@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using Godot;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
@@ -124,3 +124,4 @@ public partial class SystemInfoHook : Node
         return $"FPS: {CurrentFPS:F1} (Avg: {AverageFPS:F1}) | GPU: {GPUTimeMs:F2}ms | Device: {OutputDevice}";
     }
 }
+

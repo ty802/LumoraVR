@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -33,7 +33,7 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
 
     object IField.BoxedValue
     {
-        get => Value;
+        get => Value!;
         set => Value = (T)value;
     }
 
@@ -59,7 +59,7 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
         set
         {
             // If hooked, NOT modification allowed, and not in special state, call hook
-            if (IsHooked && !ActiveLink.IsModificationAllowed &&
+            if (IsHooked && !ActiveLink!.IsModificationAllowed &&
                 (_flags & HOOK_CHECK_FLAGS) == 0 &&
                 ActiveLink is FieldHook<T> fieldHook && fieldHook.ValueSetHook != null)
             {
@@ -268,7 +268,7 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
     /// <summary>
     /// Notify parent and fire Changed event.
     /// </summary>
-    protected void SyncElementChanged(IChangeable member = null)
+    protected void SyncElementChanged(IChangeable member = null!)
     {
         member = member ?? this;
         try

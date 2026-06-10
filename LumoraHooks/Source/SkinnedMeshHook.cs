@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Components;
@@ -11,22 +11,22 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 namespace Lumora.Godot.Hooks;
 
 /// <summary>
-/// Hook for SkinnedMeshRenderer component → Godot MeshInstance3D + Skeleton3D.
+/// Hook for SkinnedMeshRenderer component ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Godot MeshInstance3D + Skeleton3D.
 /// Creates a deformable mesh that follows a skeleton's bone transforms.
 /// Uses bone slot references for proper bone index mapping.
 /// </summary>
 [ImplementableHook(typeof(SkinnedMeshRenderer))]
 public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
 {
-    private MeshInstance3D _meshInstance;
-    private ArrayMesh _arrayMesh;
-    private StandardMaterial3D _material;
-    private SkeletonHook _skeletonHook;
-    private Skeleton3D _skeleton;
+    private MeshInstance3D _meshInstance = null!;
+    private ArrayMesh _arrayMesh = null!;
+    private StandardMaterial3D _material = null!;
+    private SkeletonHook _skeletonHook = null!;
+    private Skeleton3D _skeleton = null!;
     private bool _meshApplied;
     private bool _skeletonBound;
 
-    // Maps mesh bone index → Godot skeleton bone index
+    // Maps mesh bone index ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Godot skeleton bone index
     private Dictionary<int, int> _boneIndexMap = new Dictionary<int, int>();
 
     public override void Initialize()
@@ -120,7 +120,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         // First try to get skeleton from SkeletonBuilder reference
         if (Owner.Skeleton.Target != null)
         {
-            _skeletonHook = Owner.Skeleton.Target.Hook as SkeletonHook;
+            _skeletonHook = (Owner.Skeleton.Target.Hook as SkeletonHook)!;
             if (_skeletonHook != null)
             {
                 _skeleton = _skeletonHook.GetSkeleton();
@@ -131,7 +131,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         if (_skeleton == null && Owner.Bones.Count > 0 && Owner.Bones[0] != null)
         {
             // Find skeleton by looking for parent Skeleton3D in the scene
-            var boneSlot = Owner.Bones[0];
+            var boneSlot = Owner.Bones[0]!;
             var slotHook = boneSlot.Hook as SlotHook;
             if (slotHook != null)
             {
@@ -477,13 +477,14 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         _arrayMesh?.Dispose();
         _material?.Dispose();
 
-        _meshInstance = null;
-        _arrayMesh = null;
-        _material = null;
-        _skeletonHook = null;
-        _skeleton = null;
+        _meshInstance = null!;
+        _arrayMesh = null!;
+        _material = null!;
+        _skeletonHook = null!;
+        _skeleton = null!;
         _boneIndexMap.Clear();
 
         base.Destroy(destroyingWorld);
     }
 }
+

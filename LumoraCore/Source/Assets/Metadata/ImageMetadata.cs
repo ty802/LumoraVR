@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 namespace Lumora.Core.Assets;
@@ -22,7 +22,7 @@ public class ImageMetadata : IAssetMetadata
     /// <summary>
     /// Image format string (e.g., "PNG", "JPEG", "WEBP").
     /// </summary>
-    public string Format { get; set; }
+    public string Format { get; set; } = null!;
 
     /// <summary>
     /// Whether the image has an alpha channel.

@@ -18,11 +18,11 @@ public sealed partial class ParticleSystemHook : ComponentHook<LumoraParticleSys
     private const string ShaderPath = "res://Shaders/EngineParticle.gdshader";
     private const int HardMaxParticles = 4096;
 
-    private ParticleProcessNode _processNode;
-    private MultiMeshInstance3D _instance;
-    private MultiMesh _multiMesh;
-    private global::Godot.SphereMesh _particleMesh;
-    private ShaderMaterial _material;
+    private ParticleProcessNode _processNode = null!;
+    private MultiMeshInstance3D _instance = null!;
+    private MultiMesh _multiMesh = null!;
+    private global::Godot.SphereMesh _particleMesh = null!;
+    private ShaderMaterial _material = null!;
     private Particle[] _particles = Array.Empty<Particle>();
     private int _activeCount;
     private uint _rngState;
@@ -318,11 +318,11 @@ public sealed partial class ParticleSystemHook : ComponentHook<LumoraParticleSys
             _processNode.QueueFree();
         }
 
-        _processNode = null;
-        _instance = null;
-        _multiMesh = null;
-        _particleMesh = null;
-        _material = null;
+        _processNode = null!;
+        _instance = null!;
+        _multiMesh = null!;
+        _particleMesh = null!;
+        _material = null!;
         _particles = Array.Empty<Particle>();
         _activeCount = 0;
 

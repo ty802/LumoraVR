@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
@@ -11,13 +11,13 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 namespace Lumora.Godot.Hooks;
 
 /// <summary>
-/// Hook for CharacterController component → Godot CharacterBody3D.
+/// Hook for CharacterController component ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Godot CharacterBody3D.
 /// Platform physics hook for Godot.
 /// </summary>
 [ImplementableHook(typeof(CharacterController))]
 public partial class CharacterControllerHook : ComponentHook<CharacterController>, ICharacterControllerHook
 {
-    private CharacterBody3D _characterBody;
+    private CharacterBody3D _characterBody = null!;
     private Dictionary<Collider, CollisionShape3D> _collisionShapes = new Dictionary<Collider, CollisionShape3D>();
     private Vector3 _velocity;
     private Vector3 _moveDirection;
@@ -29,7 +29,7 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
     private bool _debugDumpDone;
     private float3 _lastWrittenSlotPosition;
     private bool _hasWrittenSlotPosition;
-    private CharacterPhysicsNode _physicsNode;
+    private CharacterPhysicsNode _physicsNode = null!;
     private readonly object _physicsPoseLock = new();
     private float3 _pendingBodyPosition;
     private bool _hasPendingBodyPosition;
@@ -37,10 +37,10 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
     public CharacterBody3D GodotCharacterBody => _characterBody;
 
     /// <summary>
-    /// The local player's Godot CharacterBody3D — set when the local user's hook is initialised,
+    /// The local player's Godot CharacterBody3D ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â set when the local user's hook is initialised,
     /// cleared on destroy. Read by DesktopCameraController for third-person orbit.
     /// </summary>
-    public static CharacterBody3D LocalPlayerBody { get; private set; }
+    public static CharacterBody3D LocalPlayerBody { get; private set; } = null!;
 
     public override void Initialize()
     {
@@ -60,15 +60,15 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         // is driven by network sync, so this doesn't create hierarchy issues.
         //
         // This is a Godot-specific architectural choice, not a bug.
-        Node3D worldRoot = Owner?.World?.GodotSceneRoot as Node3D;
-        Node parentNode = (Node)worldRoot ?? attachedNode;
+        Node3D worldRoot = (Owner?.World?.GodotSceneRoot as Node3D)!;
+        Node parentNode = (Node)worldRoot ?? attachedNode!;
         parentNode.AddChild(_characterBody);
         _physicsNode = new CharacterPhysicsNode(this);
         _characterBody.AddChild(_physicsNode);
 
         // Spawn the body at the slot's current transform so we start where the slot is placed
-        _characterBody.GlobalTransform = attachedNode.GlobalTransform;
-        _lastWrittenSlotPosition = Owner.Slot.GlobalPosition;
+        _characterBody.GlobalTransform = attachedNode!.GlobalTransform;
+        _lastWrittenSlotPosition = Owner!.Slot.GlobalPosition;
         _hasWrittenSlotPosition = true;
 
         _characterBody.FloorStopOnSlope = true;
@@ -416,9 +416,9 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
 
     public void RemoveColliderShape(Collider collider)
     {
-        if (_collisionShapes.TryGetValue(collider, out CollisionShape3D shape))
+        if (_collisionShapes.TryGetValue(collider, out CollisionShape3D? shape))
         {
-            shape.QueueFree();
+            shape?.QueueFree();
             _collisionShapes.Remove(collider);
         }
     }
@@ -426,7 +426,7 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
     public override void Destroy(bool destroyingWorld)
     {
         if (_isLocalUser && LocalPlayerBody == _characterBody)
-            LocalPlayerBody = null;
+            LocalPlayerBody = null!;
 
         if (!destroyingWorld && _physicsNode != null && GodotObject.IsInstanceValid(_physicsNode))
         {
@@ -438,8 +438,8 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
             _characterBody.QueueFree();
         }
 
-        _physicsNode = null;
-        _characterBody = null;
+        _physicsNode = null!;
+        _characterBody = null!;
         _collisionShapes.Clear();
 
         base.Destroy(destroyingWorld);
@@ -460,3 +460,4 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         }
     }
 }
+

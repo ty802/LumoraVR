@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core.Math;
@@ -31,10 +31,10 @@ public class UIUnlitMaterial : MaterialProvider, ICommonMaterial
 
     protected override MaterialType MaterialType => MaterialType.UI_Unlit;
 
-    // Texture override that bypasses the AssetRef provider chain — used by text submeshes
+    // Texture override that bypasses the AssetRef provider chain â€” used by text submeshes
     // where the font atlas is a transient `TextureAsset` with no owning provider component.
     // Bakes the atlas directly into the material instead of routing through a property block. - xlinka
-    public TextureAsset DirectTexture { get; set; }
+    public TextureAsset DirectTexture { get; set; } = null!;
 
     public colorHDR Color
     {
@@ -55,7 +55,13 @@ public class UIUnlitMaterial : MaterialProvider, ICommonMaterial
         TextureOffset = new Sync<float2>(this, float2.Zero);
         TintColor = new Sync<colorHDR>(this, colorHDR.White);
         UseVertexColor = new Sync<bool>(this, true);
-        AlphaClip = new Sync<bool>(this, true);
+        // AlphaClip + the fwidth-widening smoothstep in UI_Unlit.gdshader is only
+        // meaningful for SDF text edges (see UITextMaterial). On image quads the
+        // texture already provides correct alpha; turning it on causes the
+        // smoothstep transition to widen at glancing viewing angles (because
+        // fwidth derivatives spike), which fades buttons toward transparent and
+        // produces the "washed colors at angle" artifact. - xlinka
+        AlphaClip = new Sync<bool>(this, false);
         AlphaCutoff = new Sync<float>(this, 0.01f);
         BlendMode = new Sync<BlendMode>(this, Assets.BlendMode.Alpha);
         Culling = new Sync<Culling>(this, Assets.Culling.None);

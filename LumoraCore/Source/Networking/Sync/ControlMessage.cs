@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.IO;
@@ -38,9 +38,9 @@ public class ControlMessage : SyncMessage
     public override bool Reliable => true;
 
     public Message ControlMessageType { get; set; }
-    public byte[] Payload { get; set; }
+    public byte[] Payload { get; set; } = null!;
 
-    public ControlMessage(Message type, IConnection sender = null)
+    public ControlMessage(Message type, IConnection sender = null!)
         : base(0, 0, sender)
     {
         ControlMessageType = type;

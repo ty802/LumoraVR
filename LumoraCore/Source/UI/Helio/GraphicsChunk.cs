@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.Collections.Generic;
@@ -91,6 +91,10 @@ public sealed class GraphicsChunk
             return _chunk.ChunkSlot.AddLocalSlot("PropertyBlock").AttachComponent<T>();
         }
 
+        public UITextMaterial GetSharedTextMaterial(TextureAsset atlas) => _chunk.GetSharedTextMaterial(atlas);
+
+        public MainTexturePropertyBlock GetSharedImageBlock(IAssetProvider<TextureAsset> texture) => _chunk.GetSharedImageBlock(texture);
+
         internal void SubmitChanges(int sortingOrder)
         {
             _chunk.SetupComponents();
@@ -109,7 +113,7 @@ public sealed class GraphicsChunk
 
         private void AssignMaterials()
         {
-            var requests = BuildMaterialRequests(out var submeshQueues, out var logicalQueues);
+            var requests = BuildMaterialRequests(out var submeshQueues);
             SortSubmeshesByRenderQueue(submeshQueues);
 
             var surfaceIndexes = BuildSurfaceIndexes();
@@ -118,7 +122,14 @@ public sealed class GraphicsChunk
             _chunk.MeshRenderer.MaterialPropertyBlocks.EnsureExactCount(materialCount);
             _chunk.MeshRenderer.EnsureExactSurfaceRenderPriorityCount(materialCount);
 
-            var renderPriorityMap = BuildRenderPriorityMap(logicalQueues);
+            // Each surface needs its OWN Godot render_priority based on submission
+            // order (tree depth-first, after SortSubmeshesByRenderQueue), AND its own
+            // cloned material â€” MeshRendererHook applies priority by mutating
+            // Material.RenderPriority in place, so if surfaces shared a material
+            // their priorities would collapse to whichever value was written last.
+            // Coplanar UI quads then fall back to Godot's distance sort, which
+            // flips with camera angle and produces the "wash" artifact. - xlinka
+            var perSurfacePriorities = BuildPerSurfacePriorities(materialCount, _chunk.RenderOnTop);
             var activeMaterials = new HashSet<MaterialKey>();
             foreach (var request in requests)
             {
@@ -136,35 +147,80 @@ public sealed class GraphicsChunk
                     continue;
                 }
 
-                int renderPriority = renderPriorityMap.TryGetValue(request.LogicalRenderQueue, out var priority)
-                    ? priority
-                    : 0;
-                foreach (int index in indexes)
-                {
-                    _chunk.MeshRenderer.SetSurfaceRenderPriority(index, MeshRenderer.NoSurfaceRenderPriority);
-                }
-
-                var map = ApplyRenderPriority(request.Map, renderPriority);
                 activeMaterials.Add(request.Key);
-                UpdateMaterial(request.Key, indexes, in map);
+                var singleIndex = new List<int>(1);
+                foreach (int surfaceIndex in indexes)
+                {
+                    int priority = perSurfacePriorities[surfaceIndex];
+                    _chunk.MeshRenderer.SetSurfaceRenderPriority(surfaceIndex, priority);
+                    var clonedMaterial = _chunk.GetRenderPriorityMaterial(request.Map.FilteredMaterial, priority);
+                    var clonedMap = new MaterialMap(clonedMaterial, request.Map.FilteredPropertyBlock);
+                    singleIndex.Clear();
+                    singleIndex.Add(surfaceIndex);
+                    UpdateMaterial(request.Key, singleIndex, in clonedMap);
+                }
             }
 
             RemoveUnusedMaterials(activeMaterials);
         }
 
+        // Distribute [0..materialCount-1] surface indexes across Godot's
+        // [-128..127] render_priority range. With <= 256 surfaces each surface
+        // gets a unique slot; beyond that, slots collapse (rare for a single UI
+        // chunk). - xlinka
+        private static int[] BuildPerSurfacePriorities(int materialCount, bool packHigh)
+        {
+            var result = new int[materialCount];
+            if (materialCount == 0) return result;
+
+            // Overlay chunks (nested GraphicChunkRoots) must render above everything in the root
+            // chunk. Godot sorts transparent surfaces by render_priority first, so pack this chunk's
+            // surfaces into the top of the range while keeping them ordered. - xlinka
+            if (packHigh)
+            {
+                int start = GodotRenderPriorityMax - materialCount + 1;
+                if (start < GodotRenderPriorityMin) start = GodotRenderPriorityMin;
+                for (int i = 0; i < materialCount; i++)
+                {
+                    result[i] = System.Math.Min(GodotRenderPriorityMax, start + i);
+                }
+                return result;
+            }
+
+            if (materialCount == 1)
+            {
+                result[0] = 0;
+                return result;
+            }
+
+            if (materialCount <= GodotRenderPriorityCount)
+            {
+                int start = GodotRenderPriorityMin + (GodotRenderPriorityCount - materialCount) / 2;
+                for (int i = 0; i < materialCount; i++)
+                {
+                    result[i] = start + i;
+                }
+                return result;
+            }
+
+            for (int i = 0; i < materialCount; i++)
+            {
+                double t = i / (double)(materialCount - 1);
+                result[i] = GodotRenderPriorityMin + (int)System.Math.Round(t * (GodotRenderPriorityCount - 1));
+            }
+            return result;
+        }
+
         private List<MaterialRequest> BuildMaterialRequests(
-            out Dictionary<PhosTriangleSubmesh, int> submeshQueues,
-            out SortedSet<int> logicalQueues)
+            out Dictionary<PhosTriangleSubmesh, int> submeshQueues)
         {
             var requests = new List<MaterialRequest>(_requestedMaterials.Count);
             submeshQueues = new Dictionary<PhosTriangleSubmesh, int>();
-            logicalQueues = new SortedSet<int>();
 
             foreach (var pair in _requestedMaterials)
             {
                 var map = GetMaterialMap(pair.Key);
                 int logicalQueue = GetLogicalRenderQueue(map.FilteredMaterial);
-                logicalQueues.Add(logicalQueue);
 
                 foreach (var submesh in pair.Value)
                 {
@@ -209,42 +265,6 @@ public sealed class GraphicsChunk
                     ? queueCompare
                     : originalIndexes[left].CompareTo(originalIndexes[right]);
             });
-        }
-
-        private static Dictionary<int, int> BuildRenderPriorityMap(SortedSet<int> logicalQueues)
-        {
-            var map = new Dictionary<int, int>(logicalQueues.Count);
-            if (logicalQueues.Count == 0)
-            {
-                return map;
-            }
-
-            int index = 0;
-            if (logicalQueues.Count <= GodotRenderPriorityCount)
-            {
-                int start = -logicalQueues.Count / 2;
-                foreach (int queue in logicalQueues)
-                {
-                    map[queue] = System.Math.Clamp(start + index, GodotRenderPriorityMin, GodotRenderPriorityMax);
-                    index++;
-                }
-                return map;
-            }
-
-            foreach (int queue in logicalQueues)
-            {
-                double t = logicalQueues.Count == 1 ? 0d : index / (double)(logicalQueues.Count - 1);
-                map[queue] = GodotRenderPriorityMin + (int)System.Math.Round(t * (GodotRenderPriorityCount - 1));
-                index++;
-            }
-
-            return map;
-        }
-
-        private MaterialMap ApplyRenderPriority(in MaterialMap map, int renderPriority)
-        {
-            var material = _chunk.GetRenderPriorityMaterial(map.FilteredMaterial, renderPriority);
-            return new MaterialMap(material, map.FilteredPropertyBlock);
         }
 
         private static int GetLogicalRenderQueue(IAssetProvider<MaterialAsset>? material)
@@ -374,14 +394,14 @@ public sealed class GraphicsChunk
             var material = map.FilteredMaterial;
             if (!ReferenceEquals(materialRef.Target, material))
             {
-                materialRef.Target = material;
+                materialRef.Target = material!;
             }
 
             var propertyBlockRef = _chunk.MeshRenderer.MaterialPropertyBlocks.GetElement(index);
             var propertyBlock = map.FilteredPropertyBlock;
             if (!ReferenceEquals(propertyBlockRef.Target, propertyBlock))
             {
-                propertyBlockRef.Target = propertyBlock;
+                propertyBlockRef.Target = propertyBlock!;
             }
         }
 
@@ -449,8 +469,17 @@ public sealed class GraphicsChunk
     public MeshRenderer? MeshRenderer { get; private set; }
     public RenderData ContentRenderData { get; }
 
+    // Nested chunks render above the root chunk: their surfaces pack into the top render_priority band. - xlinka
+    public bool RenderOnTop { get; set; }
+
     private UIUnlitMaterial? _defaultMaterial;
     private MaterialCloneCache? _materialCloneCache;
+
+    // Shared per-atlas/per-texture materials so every Text/Image doesn't spawn its own material and
+    // its own mesh surface. Collapsing the surface count is what makes the per-frame Godot mesh
+    // re-upload cheap (each surface is a full AddSurfaceFromArrays). - xlinka
+    private readonly Dictionary<TextureAsset, UITextMaterial> _sharedTextMaterials = new();
+    private readonly Dictionary<IAssetProvider<TextureAsset>, MainTexturePropertyBlock> _sharedImageBlocks = new();
 
     public GraphicsChunk(Canvas canvas, RectTransform root)
     {
@@ -462,6 +491,33 @@ public sealed class GraphicsChunk
     public void SetupComponents()
     {
         ChunkSlot ??= Canvas.Slot.AddLocalSlot("GraphicsChunk");
+    }
+
+    // All text drawn from the same atlas shares one material â†’ one submesh per atlas (per clip). - xlinka
+    public UITextMaterial GetSharedTextMaterial(TextureAsset atlas)
+    {
+        SetupComponents();
+        if (!_sharedTextMaterials.TryGetValue(atlas, out var material) || material.IsDestroyed)
+        {
+            material = ChunkSlot.AddLocalSlot("TextMaterial").AttachComponent<UITextMaterial>();
+            material.DirectTexture = atlas;
+            material.ForceUpdate();
+            _sharedTextMaterials[atlas] = material;
+        }
+        return material;
+    }
+
+    // All images using the same texture share one property block â†’ one submesh per texture. - xlinka
+    public MainTexturePropertyBlock GetSharedImageBlock(IAssetProvider<TextureAsset> texture)
+    {
+        SetupComponents();
+        if (!_sharedImageBlocks.TryGetValue(texture, out var block) || block.IsDestroyed)
+        {
+            block = ChunkSlot.AddLocalSlot("ImageBlock").AttachComponent<MainTexturePropertyBlock>();
+            block.Texture.Target = texture;
+            _sharedImageBlocks[texture] = block;
+        }
+        return block;
     }
 
     public IAssetProvider<MaterialAsset> GetDefaultUIMaterial()
@@ -489,6 +545,14 @@ public sealed class GraphicsChunk
         _materialCloneCache?.EndFrame();
     }
 
+    // Tear down a nested chunk whose GraphicChunkRoot was removed from the tree. - xlinka
+    public void Dispose()
+    {
+        _materialCloneCache?.Destroy();
+        _materialCloneCache = null;
+        ChunkSlot?.Destroy();
+    }
+
     private IAssetProvider<MaterialAsset>? GetClippedMaterial(IAssetProvider<MaterialAsset>? source, in Rect clipRect)
     {
         if (source == null)
@@ -501,13 +565,14 @@ public sealed class GraphicsChunk
         return _materialCloneCache.GetClippedMaterial(source, clipRect);
     }
 
-    private IAssetProvider<MaterialAsset>? GetRenderPriorityMaterial(IAssetProvider<MaterialAsset>? source, int renderPriority)
+    // Per-surface render priority requires its own cloned material because the
+    // MeshRendererHook mutates Material.RenderPriority in place. Without cloning,
+    // all surfaces sharing the source material collapse to whichever priority
+    // was written last â†’ coplanar UI quads fall back to Godot's distance sort
+    // and flip order as the camera rotates ("colors lost at angle"). - xlinka
+    internal IAssetProvider<MaterialAsset>? GetRenderPriorityMaterial(IAssetProvider<MaterialAsset>? source, int renderPriority)
     {
-        if (source == null)
-        {
-            return null;
-        }
-
+        if (source == null) return null;
         SetupComponents();
         _materialCloneCache ??= new MaterialCloneCache(ChunkSlot);
         return _materialCloneCache.GetRenderPriorityMaterial(source, renderPriority);

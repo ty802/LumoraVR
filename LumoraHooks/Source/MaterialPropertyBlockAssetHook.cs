@@ -64,11 +64,11 @@ public class MaterialPropertyBlockAssetHook : AssetHook, IMaterialPropertyBlockA
     {
         if (texture?.Hook is IGodotTexture textureHook && textureHook.IsValid)
         {
-            _properties[property] = textureHook.GodotTexture2D;
+            _properties[property] = textureHook.GodotTexture2D!;
         }
         else
         {
-            _properties[property] = null;
+            _properties[property] = null!;
         }
 
         ClearVariants();

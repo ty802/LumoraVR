@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -12,10 +12,10 @@ namespace Lumora.Core.Components.UI;
 /// Central manager for the user's radial context menu.
 ///
 /// Architecture:
-///   ContextMenuSystem           → owns the page stack and item collection
-///   ContextMenuHook (Godot)     → subscribes to events, handles rendering
-///   ContextMenuItemSource       → contributes contextual items at open time
-///   RootContextMenuItem         → contributes permanent items at open time
+///   ContextMenuSystem           â†’ owns the page stack and item collection
+///   ContextMenuHook (Godot)     â†’ subscribes to events, handles rendering
+///   ContextMenuItemSource       â†’ contributes contextual items at open time
+///   RootContextMenuItem         â†’ contributes permanent items at open time
 ///
 /// Usage:
 /// <code>
@@ -34,10 +34,10 @@ namespace Lumora.Core.Components.UI;
 [ComponentCategory("UI/Context Menu")]
 public class ContextMenuSystem : ImplementableComponent<IHook>
 {
-    // ── State ──────────────────────────────────────────────────────────────────
+    // â”€â”€ State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// <summary>Whether the menu is currently open.</summary>
-    public readonly Sync<bool> IsOpen;
+    public readonly Sync<bool> IsOpen = null!;
 
     /// <summary>The page currently being displayed (null when closed).</summary>
     public ContextMenuPage? CurrentPage { get; private set; }
@@ -45,7 +45,7 @@ public class ContextMenuSystem : ImplementableComponent<IHook>
     /// <summary>True if there are pages below the current one (i.e. PopPage() would go back).</summary>
     public bool HasPageHistory => _pageStack.Count > 0;
 
-    // ── Events ─────────────────────────────────────────────────────────────────
+    // â”€â”€ Events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// <summary>Fired when the menu opens. Provides the initial page to display.</summary>
     public event Action<ContextMenuPage>? MenuOpened;
@@ -56,18 +56,18 @@ public class ContextMenuSystem : ImplementableComponent<IHook>
     /// <summary>Fired when navigation moves to a different page (sub-page or back).</summary>
     public event Action<ContextMenuPage>? PageChanged;
 
-    // ── Internal ───────────────────────────────────────────────────────────────
+    // â”€â”€ Internal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private readonly Stack<ContextMenuPage> _pageStack = new();
 
-    // ── Lifecycle ──────────────────────────────────────────────────────────────
+    // â”€â”€ Lifecycle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     public override void OnAwake()
     {
         base.OnAwake();
     }
 
-    // ── Public API ─────────────────────────────────────────────────────────────
+    // â”€â”€ Public API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// <summary>
     /// Toggle the root context menu open or closed.
@@ -160,7 +160,7 @@ public class ContextMenuSystem : ImplementableComponent<IHook>
         }
     }
 
-    // ── Internal ───────────────────────────────────────────────────────────────
+    // â”€â”€ Internal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// <summary>
     /// Build the root page by collecting items from the slot hierarchy.
@@ -209,3 +209,4 @@ public class ContextMenuSystem : ImplementableComponent<IHook>
             CollectRecursive<T>(child, results);
     }
 }
+

@@ -40,7 +40,7 @@ public class SyncList<T> : SyncElementList<T>, IEnumerable<T>, IEnumerable, ILis
         }
     }
 
-    public new Enumerator GetEnumerator()
+    public Enumerator GetEnumerator()
     {
         return GetElementsEnumerator();
     }

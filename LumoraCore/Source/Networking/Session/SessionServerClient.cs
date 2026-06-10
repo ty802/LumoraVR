@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
@@ -31,30 +31,30 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
     public const int DEFAULT_PORT = 8000;
 
     // Connection state
-    private NetManager _client;
-    private NetPeer _serverPeer;
-    private CancellationTokenSource _cts;
-    private Task _pollTask;
-    private SessionMetadata _pendingMetadata;
-    private Func<string[]> _getUserListFunc;
+    private NetManager _client = null!;
+    private NetPeer _serverPeer = null!;
+    private CancellationTokenSource _cts = null!;
+    private Task _pollTask = null!;
+    private SessionMetadata _pendingMetadata = null!;
+    private Func<string[]> _getUserListFunc = null!;
 
     // Session state
-    public string ServerSecret { get; private set; }
-    public string AssignedSessionId { get; private set; }
+    public string ServerSecret { get; private set; } = null!;
+    public string AssignedSessionId { get; private set; } = null!;
     public bool IsConnected => _serverPeer != null && _serverPeer.ConnectionState == ConnectionState.Connected;
     public bool IsReady { get; private set; }
 
     // Events
-    public event Action OnConnected;
-    public event Action<string> OnDisconnected;
-    public event Action OnNATIntroStarted;
-    public event Action<string> OnRelayConfirmed;
-    public event Action<byte[]> OnRelayDataReceived;
+    public event Action OnConnected = null!;
+    public event Action<string> OnDisconnected = null!;
+    public event Action OnNATIntroStarted = null!;
+    public event Action<string> OnRelayConfirmed = null!;
+    public event Action<byte[]> OnRelayDataReceived = null!;
 
     /// <summary>
     /// Event raised when NAT punch succeeds and we have an endpoint to connect to.
     /// </summary>
-    public event Action<IPEndPoint> OnNATPunchSuccess;
+    public event Action<IPEndPoint> OnNATPunchSuccess = null!;
 
     private readonly string _serverAddress;
     private readonly int _serverPort;
@@ -68,7 +68,7 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
     /// <summary>
     /// Connect to the session server as a host (registers session).
     /// </summary>
-    public async Task<bool> ConnectAsync(SessionMetadata metadata, Func<string[]> getUserListFunc = null)
+    public async Task<bool> ConnectAsync(SessionMetadata metadata, Func<string[]> getUserListFunc = null!)
     {
         if (IsConnected)
             return true;
@@ -240,11 +240,11 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
         if (_serverPeer != null)
         {
             _serverPeer.Disconnect();
-            _serverPeer = null;
+            _serverPeer = null!;
         }
 
         _client?.Stop();
-        _client = null;
+        _client = null!;
 
         OnDisconnected?.Invoke("Disconnected");
         LumoraLogger.Log("SessionServerClient: Disconnected");
@@ -350,7 +350,7 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
     public void OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo)
     {
         LumoraLogger.Log($"SessionServerClient: Disconnected - {disconnectInfo.Reason}");
-        _serverPeer = null;
+        _serverPeer = null!;
         IsReady = false;
         OnDisconnected?.Invoke(disconnectInfo.Reason.ToString());
     }
@@ -448,3 +448,4 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
         _cts?.Dispose();
     }
 }
+

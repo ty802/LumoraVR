@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using Lumora.Godot.Hooks;
 using Godot;
 using Lumora.Core;
@@ -667,3 +667,4 @@ public sealed class SlotGizmoHook : ComponentHook<SlotGizmo>
 		base.Destroy(destroyingWorld);
 	}
 }
+

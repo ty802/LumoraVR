@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -11,7 +11,7 @@ namespace Lumora.Core.Assets;
 /// </summary>
 public class TextureAsset : DynamicImplementableAsset<ITextureAssetHook>
 {
-    private byte[] _pixelData;
+    private byte[] _pixelData = null!;
     private int _width;
     private int _height;
     private bool _hasMipmaps;
@@ -104,7 +104,7 @@ public class TextureAsset : DynamicImplementableAsset<ITextureAssetHook>
 
     public override void Unload()
     {
-        _pixelData = null;
+        _pixelData = null!;
         _width = 0;
         _height = 0;
         _hasMipmaps = false;

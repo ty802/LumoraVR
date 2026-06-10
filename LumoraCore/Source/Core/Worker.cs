@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -12,7 +12,7 @@ public abstract class Worker : IWorker
 {
     protected readonly WorkerInitInfo InitInfo;
 
-    public World World { get; private set; }
+    public World World { get; private set; } = null!;
     public IWorldElement? Parent { get; private set; }
 
     public RefID ReferenceID { get; private set; } = RefID.Null;
@@ -27,7 +27,7 @@ public abstract class Worker : IWorker
     public bool GloballyRegistered => InitInfo.RegisterGlobally;
 
     public Type WorkerType => GetType();
-    public string WorkerTypeName => WorkerType.FullName;
+    public string WorkerTypeName => WorkerType.FullName!;
 
     public int SyncMemberCount => InitInfo.SyncMemberFields.Length;
 
@@ -49,7 +49,7 @@ public abstract class Worker : IWorker
 
     public virtual ISyncMember GetSyncMember(int index)
     {
-        return InitInfo.SyncMemberFields[index].GetValue(this) as ISyncMember;
+        return (InitInfo.SyncMemberFields[index].GetValue(this) as ISyncMember) ?? null!;
     }
 
     public FieldInfo GetSyncMemberFieldInfo(int index)
@@ -80,19 +80,19 @@ public abstract class Worker : IWorker
     public IField TryGetField(string name)
     {
         if (string.IsNullOrEmpty(name))
-            return null;
+            return null!;
 
         if (InitInfo.SyncMemberNameToIndex.TryGetValue(name, out var index))
         {
-            return GetSyncMember(index) as IField;
+            return (GetSyncMember(index) as IField) ?? null!;
         }
 
-        return null;
+        return null!;
     }
 
     public IField<T> TryGetField<T>(string name)
     {
-        return TryGetField(name) as IField<T>;
+        return (TryGetField(name) as IField<T>) ?? null!;
     }
 
     public virtual IEnumerable<IWorldElement> GetReferencedObjects(bool assetRefOnly, bool persistentOnly = true)
@@ -249,7 +249,7 @@ public abstract class Worker : IWorker
         }
 
         World?.ReferenceController?.UnregisterObject(this);
-        World = null;
+        World = null!;
         Parent = null;
         IsDestroyed = true;
     }

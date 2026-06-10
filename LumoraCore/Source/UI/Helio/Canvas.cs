@@ -28,6 +28,30 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     private GraphicChunkRoot? _chunkRoot;
     private GraphicsChunk? _rootChunk;
 
+    // Per-chunk rendering: each GraphicChunkRoot below the canvas owns an independent mesh, so a
+    // subtree that animates (e.g. the FPS sparkline) re-uploads only its own small mesh instead of
+    // the whole canvas. The root chunk is everything not under a nested GraphicChunkRoot. - xlinka
+    private readonly Dictionary<GraphicChunkRoot, GraphicsChunk> _chunkMap = new();
+    private readonly Dictionary<GraphicChunkRoot, bool> _chunkBuilt = new();
+    private readonly HashSet<GraphicChunkRoot> _dirtyChunks = new();
+    private readonly HashSet<GraphicChunkRoot> _seenChunkRoots = new();
+    private readonly List<GraphicChunkRoot> _chunkScratch = new();
+    private bool _rootDirty = true;
+    private bool _fullDirty = true;
+
+    // Full refresh: rebuild the root chunk and every nested chunk. - xlinka
+    public void MarkDirty() => _fullDirty = true;
+
+    // Route a change to the chunk that owns it, so only that chunk re-renders/uploads. - xlinka
+    public void MarkDirty(RectTransform rect)
+    {
+        var root = FindChunkRoot(rect.Slot);
+        if (root == null)
+            _rootDirty = true;
+        else
+            _dirtyChunks.Add(root);
+    }
+
     public RectTransform? RootRectTransform => _rootRect;
     public GraphicChunkRoot? ChunkRoot => _chunkRoot;
     public GraphicsChunk? RootChunk => _rootChunk;
@@ -231,6 +255,12 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         EnsureRoot();
     }
 
+    public override void OnEnabled()
+    {
+        base.OnEnabled();
+        _fullDirty = true;
+    }
+
     public void EnsureRoot()
     {
         _rootRect ??= Slot.GetComponent<RectTransform>() ?? Slot.AttachComponent<RectTransform>();
@@ -246,6 +276,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     public override void OnCommonUpdate()
     {
         base.OnCommonUpdate();
+        if (!_rootDirty && !_fullDirty && _dirtyChunks.Count == 0) return;
         RebuildGraphics();
     }
 
@@ -261,6 +292,12 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         base.OnDestroy();
     }
 
+    // TEMP perf instrumentation: throttled phase timing to find the rebuild bottleneck. - xlinka
+    private double _perfCompute, _perfDraw;
+    private int _perfRebuilds;
+    private long _perfLastLogMs;
+    private long _chunkDiagLastMs;
+
     private void RebuildGraphics()
     {
         EnsureRoot();
@@ -269,13 +306,156 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             return;
         }
 
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        // Layout stays global and runs every rebuild — it's cheap (a few ms) and keeps rects
+        // correct across chunk boundaries without any cross-chunk coupling. - xlinka
         ComputeRects(Slot, null);
         ApplyScrollRects(Slot);
-        _rootChunk.PrepareCompute();
+        _perfCompute += sw.Elapsed.TotalMilliseconds; sw.Restart();
 
-        RenderGraphics(Slot, null);
+        bool renderRoot = _fullDirty || _rootDirty;
+        if (renderRoot)
+        {
+            _seenChunkRoots.Clear();
+            _rootChunk.PrepareCompute();
+            RenderPartition(_rootChunk.ContentRenderData, Slot, null, null);
+            _rootChunk.SubmitChanges(0);
 
-        _rootChunk.SubmitChanges();
+            // Render every nested chunk that's dirty/unbuilt. RenderChunk can discover deeper
+            // nested roots, so drain a worklist until stable. - xlinka
+            _chunkScratch.Clear();
+            _chunkScratch.AddRange(_seenChunkRoots);
+            for (int i = 0; i < _chunkScratch.Count; i++)
+            {
+                var root = _chunkScratch[i];
+                bool built = _chunkBuilt.TryGetValue(root, out var b) && b;
+                if (_fullDirty || _dirtyChunks.Contains(root) || !built)
+                    RenderChunk(root);
+                foreach (var r in _seenChunkRoots)
+                    if (!_chunkScratch.Contains(r)) _chunkScratch.Add(r);
+            }
+
+            CleanupChunks();
+        }
+        else
+        {
+            // Only nested chunks changed (e.g. the sparkline): re-render just those, leaving the
+            // root chunk's mesh (the whole file browser) resident and un-uploaded. - xlinka
+            foreach (var root in _dirtyChunks)
+            {
+                if (_chunkMap.ContainsKey(root))
+                    RenderChunk(root);
+            }
+        }
+
+        _rootDirty = false;
+        _fullDirty = false;
+        _dirtyChunks.Clear();
+        _perfDraw += sw.Elapsed.TotalMilliseconds;
+
+        _perfRebuilds++;
+        long nowMs = System.Environment.TickCount64;
+        if (nowMs - _perfLastLogMs >= 1000)
+        {
+            int n = _perfRebuilds;
+            Lumora.Core.Logging.Logger.Log(
+                $"[CanvasPerf '{Slot?.SlotName.Value}'] {n} rebuilds/s | " +
+                $"layout={_perfCompute:0.0} draw={_perfDraw:0.0} ms/s chunks={_chunkMap.Count} " +
+                $"(avg/rebuild: {(_perfCompute + _perfDraw) / System.Math.Max(1, n):0.0}ms)");
+            _perfCompute = _perfDraw = 0;
+            _perfRebuilds = 0;
+            _perfLastLogMs = nowMs;
+        }
+    }
+
+    private void RenderChunk(GraphicChunkRoot root)
+    {
+        if (!_chunkMap.TryGetValue(root, out var chunk))
+            return;
+
+        var clip = ComputeInheritedClip(root.Slot);
+        chunk.PrepareCompute();
+        RenderPartition(chunk.ContentRenderData, root.Slot, clip, root);
+        chunk.SubmitChanges(1);
+        _chunkBuilt[root] = true;
+
+        // TEMP: is the chunk producing geometry, and is its renderer alive / on top? - xlinka
+        long nowMs = System.Environment.TickCount64;
+        if (nowMs - _chunkDiagLastMs >= 1000)
+        {
+            _chunkDiagLastMs = nowMs;
+            var mr = chunk.MeshRenderer;
+            int matCount = mr?.Materials.Count ?? -1;
+            int p0 = mr != null && matCount > 0 ? mr.GetSurfaceRenderPriority(0) : -999;
+            int pLast = mr != null && matCount > 0 ? mr.GetSurfaceRenderPriority(matCount - 1) : -999;
+            Lumora.Core.Logging.Logger.Log(
+                $"[ChunkDiag '{root.Slot.SlotName.Value}'] verts={chunk.ContentRenderData.Mesh.VertexCount} " +
+                $"onTop={chunk.RenderOnTop} mr={(mr != null ? mr.Enabled.Value.ToString() : "null")} " +
+                $"chunkSlot={(chunk.ChunkSlot != null ? chunk.ChunkSlot.SlotName.Value : "null")} " +
+                $"mats={matCount} prio[0]={p0} prio[last]={pLast}");
+        }
+    }
+
+    private void EnsureChunk(GraphicChunkRoot root)
+    {
+        if (_chunkMap.ContainsKey(root))
+            return;
+        var rect = root.Slot.GetComponent<RectTransform>();
+        if (rect == null)
+            return;
+        var chunk = new GraphicsChunk(this, rect);
+        chunk.RenderOnTop = true;
+        _chunkMap[root] = chunk;
+        _chunkBuilt[root] = false;
+    }
+
+    private void CleanupChunks()
+    {
+        _chunkScratch.Clear();
+        foreach (var pair in _chunkMap)
+        {
+            if (!_seenChunkRoots.Contains(pair.Key))
+                _chunkScratch.Add(pair.Key);
+        }
+        foreach (var root in _chunkScratch)
+        {
+            _chunkMap[root].Dispose();
+            _chunkMap.Remove(root);
+            _chunkBuilt.Remove(root);
+        }
+    }
+
+    // Nearest GraphicChunkRoot strictly below the canvas slot, or null if the rect belongs to the
+    // root chunk. The canvas slot's own GraphicChunkRoot is the root marker, not a nested chunk. - xlinka
+    private GraphicChunkRoot? FindChunkRoot(Slot? slot)
+    {
+        while (slot != null && !ReferenceEquals(slot, Slot))
+        {
+            var cr = slot.GetComponent<GraphicChunkRoot>();
+            if (cr != null)
+                return cr;
+            slot = slot.Parent;
+        }
+        return null;
+    }
+
+    // Clip a nested chunk inherits from masks on its ancestors (above the chunk root). - xlinka
+    private Rect? ComputeInheritedClip(Slot start)
+    {
+        Rect? clip = null;
+        for (var s = start.Parent; s != null; s = s.Parent)
+        {
+            var mask = s.GetComponent<Mask>();
+            var rect = s.GetComponent<RectTransform>();
+            if (mask != null && mask.Enabled.Value && rect != null)
+            {
+                clip = clip.HasValue ? clip.Value.Intersection(rect.LocalComputeRect) : rect.LocalComputeRect;
+            }
+            if (ReferenceEquals(s, Slot))
+                break;
+        }
+        return clip;
     }
 
     // bottom-up: anchor-rect every descendant, then apply this layout, which propagates
@@ -588,7 +768,9 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         }
     }
 
-    private void RenderGraphics(Slot slot, Rect? clipRect)
+    // Render a slot subtree into one chunk's mesh, stopping at any nested GraphicChunkRoot (those
+    // render into their own chunk). ownRoot is the chunk root we're rendering for (null = root). - xlinka
+    private void RenderPartition(GraphicsChunk.RenderData rd, Slot slot, Rect? clipRect, GraphicChunkRoot? ownRoot)
     {
         if (slot != Slot && !slot.ActiveSelf.Value)
         {
@@ -626,9 +808,9 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
                     }
                 }
 
-                _rootChunk!.ContentRenderData.BeginGraphic();
-                _rootChunk.ContentRenderData.SetClipRect(clipRect);
-                graphic.ComputeGraphic(_rootChunk.ContentRenderData);
+                rd.BeginGraphic();
+                rd.SetClipRect(clipRect);
+                graphic.ComputeGraphic(rd);
             }
         }
 
@@ -646,12 +828,25 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
 
         foreach (var child in slot.Children)
         {
-            RenderGraphics(child, nextClip);
+            RenderChildPartition(rd, child, nextClip, ownRoot);
         }
         foreach (var child in slot.LocalChildren)
         {
-            RenderGraphics(child, nextClip);
+            RenderChildPartition(rd, child, nextClip, ownRoot);
         }
+    }
+
+    private void RenderChildPartition(GraphicsChunk.RenderData rd, Slot child, Rect? clip, GraphicChunkRoot? ownRoot)
+    {
+        var childRoot = child.GetComponent<GraphicChunkRoot>();
+        if (childRoot != null && !ReferenceEquals(childRoot, ownRoot) && child.GetComponent<RectTransform>() != null)
+        {
+            // chunk boundary: register it and skip — it renders into its own mesh
+            EnsureChunk(childRoot);
+            _seenChunkRoots.Add(childRoot);
+            return;
+        }
+        RenderPartition(rd, child, clip, ownRoot);
     }
 
     private static UIInteractionSource GetInteractionSource(InteractionLaser laser)

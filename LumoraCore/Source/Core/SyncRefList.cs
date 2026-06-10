@@ -15,7 +15,6 @@ public class SyncRefList<T> : IEnumerable<T?> where T : class, IWorldElement
 {
     private readonly List<T?> _elements;
     private IWorldElement _owner;
-    private bool _isSyncing;
 
     /// <summary>
     /// Event triggered when the list changes.
@@ -169,7 +168,7 @@ public class SyncRefList<T> : IEnumerable<T?> where T : class, IWorldElement
         IsDirty = true;
         OnChanged?.Invoke(this);
 
-        if (!_isSyncing && _owner != null)
+        if (_owner != null)
         {
             _owner.World?.MarkElementDirty(_owner);
         }
@@ -184,7 +183,7 @@ public class SyncRefList<T> : IEnumerable<T?> where T : class, IWorldElement
         }
 
         var request = new DataModelPermissionRequest(
-            _owner.World,
+            _owner!.World,
             null,
             _owner,
             null,

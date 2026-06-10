@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -30,7 +30,7 @@ public class ContextMenuItemSource : Component
     /// <summary>
     /// Priority for ordering. Higher priority sources run first (their items appear first).
     /// </summary>
-    public readonly Sync<int> Priority;
+    public readonly Sync<int> Priority = null!;
 
     public override void OnAwake()
     {

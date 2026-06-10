@@ -1,13 +1,12 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Lumora.Core;
 using Lumora.Core.Networking;
-using Lumora.Core.Networking.LNL;
 using Lumora.Core.Networking.Sync;
 using LegacyJoinGrantData = Lumora.Core.Networking.Messages.JoinGrantData;
 using LegacyJoinRequestData = Lumora.Core.Networking.Messages.JoinRequestData;
@@ -26,18 +25,18 @@ public class SessionConnectionManager : IDisposable
     private readonly Dictionary<IConnection, User> _connectionToUser = new();
     private readonly Dictionary<User, IConnection> _userToConnection = new();
     private readonly HashSet<IConnection> _pendingConnections = new(); // Connections waiting for JoinRequest
-    private readonly Dictionary<string, int> _pendingByIp = new();     // IP → count of pending connections
+    private readonly Dictionary<string, int> _pendingByIp = new();     // IP â†’ count of pending connections
 
     public Session Session { get; private set; }
-    public World World => Session?.World;
+    public World World => (Session?.World) ?? null!;
 
-    public LNLListener Listener { get; private set; }
-    public IConnection HostConnection { get; private set; }
+    public IListener Listener { get; private set; } = null!;
+    public IConnection HostConnection { get; private set; } = null!;
 
     /// <summary>
     /// Event triggered when host connection is lost (client side).
     /// </summary>
-    public event Action OnHostDisconnected;
+    public event Action OnHostDisconnected = null!;
 
     public SessionConnectionManager(Session session)
     {
@@ -45,27 +44,41 @@ public class SessionConnectionManager : IDisposable
     }
 
     /// <summary>
-    /// Start listening for connections (host only).
+    /// Start listening for connections (host only). Picks the
+    /// highest-priority registered <see cref="INetworkManager"/> as the
+    /// transport. Override the scheme with <paramref name="preferredScheme"/>
+    /// to pin a specific transport (e.g. "lnl" for direct UDP). - xlinka
     /// </summary>
-    public bool StartListener(ushort port)
+    public bool StartListener(ushort port, string preferredScheme = null!)
     {
         if (Listener != null)
         {
             throw new InvalidOperationException("Listener already started");
         }
 
-        Listener = new LNLListener(LNLManager.APP_ID, port, System.Net.IPAddress.Any);
+        var manager = preferredScheme != null
+            ? NetworkManagerRegistry.FindForScheme(preferredScheme)
+            : NetworkManagerRegistry.Managers.FirstOrDefault();
 
-        if (!Listener.IsInitialized)
+        if (manager == null)
         {
-            LumoraLogger.Error("Failed to start listener");
+            LumoraLogger.Error($"StartListener: no network manager registered (scheme={preferredScheme ?? "any"})");
+            return false;
+        }
+
+        var sessionId = Session?.Metadata?.SessionId;
+        Listener = manager.CreateListener(port, sessionId!);
+
+        if (Listener == null || !Listener.IsActive)
+        {
+            LumoraLogger.Error($"Failed to start {manager.GetType().Name} listener on port {port}");
             return false;
         }
 
         Listener.PeerConnected += OnPeerConnected;
         Listener.PeerDisconnected += OnPeerDisconnected;
 
-        LumoraLogger.Log($"Listener started on port {port}");
+        LumoraLogger.Log($"Listener started ({manager.GetType().Name}, port {port}, sessionId={sessionId ?? "(none)"})");
         return true;
     }
 
@@ -83,12 +96,14 @@ public class SessionConnectionManager : IDisposable
 
         LumoraLogger.Log($"Connecting to {uri}");
 
-        var connection = new LNLConnection(
-            LNLManager.APP_ID,
-            uri,
-            dontRoute: false,
-            bindIP: System.Net.IPAddress.Any
-        );
+        var manager = NetworkManagerRegistry.FindForUri(uri);
+        if (manager == null)
+        {
+            LumoraLogger.Error($"ConnectToAsync: no registered network manager handles scheme '{uri.Scheme}'");
+            return false;
+        }
+
+        var connection = manager.CreateConnection(uri);
 
         var taskCompletionSource = new TaskCompletionSource<bool>();
 
@@ -117,7 +132,7 @@ public class SessionConnectionManager : IDisposable
         };
 
         connection.DataReceived += (data, length) => OnConnectionDataReceived(connection, data, length);
-        connection.Connect(null);
+        connection.Connect(null!);
 
         var timeoutTask = Task.Delay(10000);
         var completedTask = await Task.WhenAny(taskCompletionSource.Task, timeoutTask);
@@ -171,7 +186,7 @@ public class SessionConnectionManager : IDisposable
         LumoraLogger.Log($"Sent JoinRequest to host - UserName='{requestData.UserName}'");
     }
 
-    private void OnPeerConnected(LNLPeer peer)
+    private void OnPeerConnected(IConnection peer)
     {
         var ip = GetIpKey(peer);
 
@@ -209,7 +224,7 @@ public class SessionConnectionManager : IDisposable
         LumoraLogger.Log($"Peer {peer.Identifier} added to pending - waiting for JoinRequest");
     }
 
-    private void OnPeerDisconnected(LNLPeer peer)
+    private void OnPeerDisconnected(IConnection peer)
     {
         LumoraLogger.Log($"Peer disconnected: {peer.Identifier}");
 
@@ -444,7 +459,13 @@ public class SessionConnectionManager : IDisposable
     {
         lock (_lock)
         {
-            return _connectionToUser.TryGetValue(connection, out user);
+            if (_connectionToUser.TryGetValue(connection, out var found))
+            {
+                user = found;
+                return true;
+            }
+            user = default!;
+            return false;
         }
     }
 
@@ -455,7 +476,13 @@ public class SessionConnectionManager : IDisposable
     {
         lock (_lock)
         {
-            return _userToConnection.TryGetValue(user, out connection);
+            if (_userToConnection.TryGetValue(user, out var found))
+            {
+                connection = found;
+                return true;
+            }
+            connection = default!;
+            return false;
         }
     }
 
@@ -487,12 +514,16 @@ public class SessionConnectionManager : IDisposable
     /// </summary>
     public void Poll()
     {
-        Listener?.Poll();
-        (HostConnection as LNLConnection)?.Poll();
+        // Per-session poll. Most transports also have a global poll driven by
+        // NetworkManagerRegistry.UpdateAll() from the engine update loop, which
+        // covers any listeners/connections created outside the session. - xlinka
+        if (Listener is LNL.LNLListener lnlListener) lnlListener.Poll();
+        HostConnection?.Poll();
     }
 
     public void Dispose()
     {
+        Listener?.Close();
         Listener?.Dispose();
         HostConnection?.Close();
 
@@ -505,3 +536,4 @@ public class SessionConnectionManager : IDisposable
         }
     }
 }
+

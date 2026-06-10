@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -20,14 +20,14 @@ public abstract class UrlAssetProvider<A, M> : AssetProvider<A>, IAssetConsumer
 {
     public readonly Sync<Uri> URL;
 
-    private A _asset;
-    private M _metadata;
-    private Uri _loadedUrl;
+    private A _asset = null!;
+    private M _metadata = null!;
+    private Uri _loadedUrl = null!;
     private bool _isReady;
-    private CancellationTokenSource _loadCancellation;
+    private CancellationTokenSource _loadCancellation = null!;
     private readonly object _loadLock = new object();
 
-    public override A Asset => _isReady ? _asset : null;
+    public override A Asset => (_isReady ? _asset : null) ?? null!;
 
     public override bool IsAssetAvailable
     {
@@ -52,7 +52,7 @@ public abstract class UrlAssetProvider<A, M> : AssetProvider<A>, IAssetConsumer
 
     protected UrlAssetProvider()
     {
-        URL = new Sync<Uri>(this, null);
+        URL = new Sync<Uri>(this, null!);
         URL.OnChanged += _ => OnUrlChanged();
     }
 
@@ -220,9 +220,9 @@ public abstract class UrlAssetProvider<A, M> : AssetProvider<A>, IAssetConsumer
             _isReady = false;
             _asset.UnregisterConsumer(this);
             _asset.Unload();
-            _asset = null;
-            _metadata = null;
-            _loadedUrl = null;
+            _asset = null!;
+            _metadata = null!;
+            _loadedUrl = null!;
             AssetRemoved();
             OnAssetUnloaded();
         }
@@ -308,3 +308,4 @@ public abstract class UrlAssetProvider<A, M> : AssetProvider<A>, IAssetConsumer
         base.OnDestroy();
     }
 }
+

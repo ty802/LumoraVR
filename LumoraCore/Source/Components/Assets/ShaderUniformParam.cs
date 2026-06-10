@@ -14,7 +14,7 @@ namespace Lumora.Core.Components.Assets;
 public sealed class ShaderUniformParam : SyncElement
 {
     public override SyncMemberType MemberType => SyncMemberType.Object;
-    public readonly Sync<string> Name = new();
+    public new readonly Sync<string> Name = new();
     public readonly Sync<ShaderUniformType> Type = new();
     public readonly Sync<float4> Value = new();
     public readonly Sync<float2> Range = new();
@@ -22,7 +22,7 @@ public sealed class ShaderUniformParam : SyncElement
     public readonly Sync<bool> IsColor = new();
     public readonly AssetRef<TextureAsset> Texture = new();
 
-    public override void Initialize(World world, IWorldElement parent)
+    public override void Initialize(World world, IWorldElement? parent)
     {
         base.Initialize(world, parent);
         SyncMemberDiscovery.DiscoverAndInitializeSyncMembers(this, world, this);

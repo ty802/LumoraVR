@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -50,7 +50,7 @@ public class HookTypeRegistry
     public Type GetHookType(Type componentType)
     {
         // Check exact type first
-        if (_componentToHook.TryGetValue(componentType, out Type hookType))
+        if (_componentToHook.TryGetValue(componentType, out Type? hookType))
             return hookType;
 
         // Walk up inheritance chain to find a registered base type
@@ -62,7 +62,7 @@ public class HookTypeRegistry
             baseType = baseType.BaseType;
         }
 
-        return null;
+        return null!;
     }
 
     /// <summary>

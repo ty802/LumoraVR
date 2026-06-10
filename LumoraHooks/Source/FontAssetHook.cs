@@ -20,8 +20,9 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
     // One rasterization size for the entire atlas, scaled per Text on read. Godot's
     // MultichannelSignedDistanceField flag silently no-ops for LoadDynamicFont (verified
     // via diag: srcFormat=La8 with R=G=B=255, coverage in the alpha channel only). Treat
-    // the cache as plain coverage and let the shader do fwidth-based edge AA. - xlinka
-    private const int RasterSize = 48;
+    // the cache as plain coverage and let the shader do fwidth-based edge AA. Raised the
+    // raster to 96 so 10-24px text has detail to downsample from. - xlinka
+    private const int RasterSize = 96;
     private const int PixelRangeHint = 4;
 
     private readonly Dictionary<int, GlyphEntry> _glyphs = new();
@@ -31,10 +32,12 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
     private int _penX;
     private int _penY;
     private int _rowHeight;
+    private int _cacheGeneration;
 
     public bool IsValid => _font != null;
     public TextureAsset? AtlasTexture => _atlasTexture;
     public int PixelRange => PixelRangeHint;
+    public int CacheGeneration => _cacheGeneration;
 
     public void LoadFromFile(string path)
     {
@@ -162,6 +165,7 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
         );
 
         _glyphs[codepoint] = new GlyphEntry(metrics, uv, Missing: false);
+        _cacheGeneration++;
     }
 
     public float GetLineHeight(float displaySize)
@@ -238,11 +242,13 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
             MathRect.Zero,
             Missing: false
         );
+        _cacheGeneration++;
     }
 
     private void StoreMissingGlyph(int codepoint)
     {
         _glyphs[codepoint] = new GlyphEntry(default, MathRect.Zero, Missing: true);
+        _cacheGeneration++;
     }
 
     private void EnsureAtlas()
@@ -263,6 +269,7 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
         _penX = Padding;
         _penY = Padding;
         _rowHeight = 0;
+        _cacheGeneration++;
         UploadAtlas();
     }
 

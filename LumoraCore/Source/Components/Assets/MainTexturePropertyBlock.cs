@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 namespace Lumora.Core.Assets;
@@ -8,7 +8,7 @@ public class MainTexturePropertyBlock : MaterialPropertyBlockProvider
 {
     public readonly AssetRef<TextureAsset> Texture;
 
-    public TextureAsset DirectTexture { get; set; }
+    public TextureAsset DirectTexture { get; set; } = null!;
 
     public MainTexturePropertyBlock()
     {

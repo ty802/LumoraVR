@@ -13,7 +13,7 @@ public static class ViewportQuality
     private const float DesktopXrSupersampleScale = 1.5f;
     private const float StandaloneXrSupersampleScale = 1.15f;
 
-    public static void ConfigureOpenXRBeforeInitialize(OpenXRInterface xrInterface, Action<string> log = null)
+    public static void ConfigureOpenXRBeforeInitialize(OpenXRInterface? xrInterface, Action<string>? log = null)
     {
         if (xrInterface == null)
             return;
@@ -32,7 +32,7 @@ public static class ViewportQuality
         log?.Invoke($"OpenXR quality: render target multiplier set to {multiplier:0.##} before initialization.");
     }
 
-    public static void ConfigureOpenXRAfterInitialize(OpenXRInterface xrInterface, Viewport viewport, Action<string> log = null)
+    public static void ConfigureOpenXRAfterInitialize(OpenXRInterface? xrInterface, Viewport? viewport, Action<string>? log = null)
     {
         if (xrInterface == null || !xrInterface.IsInitialized())
         {
@@ -80,7 +80,7 @@ public static class ViewportQuality
         }
     }
 
-    public static void ApplyXrViewportDefaults(Viewport viewport)
+    public static void ApplyXrViewportDefaults(Viewport? viewport)
     {
         if (viewport == null)
             return;

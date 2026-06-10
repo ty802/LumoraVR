@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Reflection;
 using Lumora.Core;
@@ -37,14 +37,14 @@ public static class SyncMemberDiscovery
             if (typeof(ISyncMember).IsAssignableFrom(field.FieldType))
             {
                 // Get existing value or create new instance
-                ISyncMember syncMember = (ISyncMember)field.GetValue(target);
+                ISyncMember syncMember = (ISyncMember)field.GetValue(target)!;
 
                 if (syncMember == null)
                 {
                     // Create new instance if null
                     try
                     {
-                        syncMember = (ISyncMember)Activator.CreateInstance(field.FieldType);
+                        syncMember = (ISyncMember)Activator.CreateInstance(field.FieldType)!;
                         field.SetValue(target, syncMember);
                     }
                     catch (Exception ex)
@@ -90,14 +90,14 @@ public static class SyncMemberDiscovery
             if (typeof(ISyncMember).IsAssignableFrom(field.FieldType))
             {
                 // Get existing value or create new instance
-                ISyncMember syncMember = (ISyncMember)field.GetValue(target);
+                ISyncMember syncMember = (ISyncMember)field.GetValue(target)!;
 
                 if (syncMember == null)
                 {
                     // Create new instance if null
                     try
                     {
-                        syncMember = (ISyncMember)Activator.CreateInstance(field.FieldType);
+                        syncMember = (ISyncMember)Activator.CreateInstance(field.FieldType)!;
                         field.SetValue(target, syncMember);
                     }
                     catch (Exception ex)
@@ -141,7 +141,7 @@ public static class SyncMemberDiscovery
             {
                 try
                 {
-                    ISyncMember syncMember = (ISyncMember)prop.GetValue(target);
+                    ISyncMember syncMember = (ISyncMember)prop.GetValue(target)!;
 
                     if (syncMember != null)
                     {
@@ -266,3 +266,4 @@ public static class SyncMemberDiscovery
         }
     }
 }
+

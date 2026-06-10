@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using Lumora.Core;
 using Lumora.Core.Management;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -15,16 +15,16 @@ namespace Lumora.Source.Godot.UI;
 public partial class WorldLoadingIndicator : CanvasLayer
 {
     // UI elements
-    private ColorRect _backgroundOverlay;
-    private PanelContainer _panel;
-    private Label _titleLabel;
-    private Label _statusLabel;
-    private ProgressBar _progressBar;
-    private Label _percentLabel;
-    private Button _cancelButton;
+    private ColorRect _backgroundOverlay = null!;
+    private PanelContainer _panel = null!;
+    private Label _titleLabel = null!;
+    private Label _statusLabel = null!;
+    private ProgressBar _progressBar = null!;
+    private Label _percentLabel = null!;
+    private Button _cancelButton = null!;
 
-    private WorldLoadingOperation _currentOperation;
-    private static WorldLoadingIndicator _instance;
+    private WorldLoadingOperation _currentOperation = null!;
+    private static WorldLoadingIndicator _instance = null!;
 
     public static WorldLoadingIndicator Instance => _instance;
 
@@ -44,7 +44,7 @@ public partial class WorldLoadingIndicator : CanvasLayer
     {
         UnsubscribeFromEvents();
         if (_instance == this)
-            _instance = null;
+            _instance = null!;
     }
 
     private void CreateUI()
@@ -161,7 +161,7 @@ public partial class WorldLoadingIndicator : CanvasLayer
 
     private void OnLoadingFailed(WorldLoadingOperation operation)
     {
-        CallDeferred(nameof(ShowError), operation.ErrorMessage);
+        CallDeferred(nameof(ShowError), operation.ErrorMessage ?? string.Empty);
     }
 
     private void ShowIndicator(string worldName)
@@ -188,7 +188,7 @@ public partial class WorldLoadingIndicator : CanvasLayer
     private void HideIndicator()
     {
         Visible = false;
-        _currentOperation = null;
+        _currentOperation = null!;
         LumoraLogger.Log("WorldLoadingIndicator: Hidden");
     }
 
@@ -239,3 +239,4 @@ public partial class WorldLoadingIndicator : CanvasLayer
         LumoraLogger.Log("WorldLoadingIndicator: Created and added to scene tree");
     }
 }
+

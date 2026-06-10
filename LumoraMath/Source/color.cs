@@ -6,6 +6,8 @@ using System.Runtime.InteropServices;
 
 namespace Lumora.Core.Math;
 
+#pragma warning disable CS8981
+
 /// <summary>
 /// RGBA color with 32-bit floating point components.
 /// Pure C# implementation for color representation (LumoraMath).
@@ -208,7 +210,7 @@ public struct color : IEquatable<color>
     public static bool operator !=(color a, color b) => !(a == b);
 
     public bool Equals(color other) => r == other.r && g == other.g && b == other.b && a == other.a;
-    public override bool Equals(object obj) => obj is color other && Equals(other);
+    public override bool Equals(object? obj) => obj is color other && Equals(other);
     public override int GetHashCode() => HashCode.Combine(r, g, b, a);
     public override string ToString() => $"({r:F3}, {g:F3}, {b:F3}, {a:F3})";
 
@@ -228,4 +230,3 @@ public struct color : IEquatable<color>
     /// Implicit conversion from Godot Color.
     /// </summary>
 }
-

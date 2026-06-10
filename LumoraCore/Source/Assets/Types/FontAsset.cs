@@ -16,6 +16,9 @@ public class FontAsset : DynamicImplementableAsset<IFontAssetHook>
     // shared atlas texture for all glyphs at the currently-resident sizes. - xlinka
     public TextureAsset? AtlasTexture => Hook?.AtlasTexture;
 
+    // Changes whenever the atlas gains a glyph. Text shaping caches against it. - xlinka
+    public int CacheGeneration => Hook?.CacheGeneration ?? 0;
+
     public virtual bool TryGetGlyph(int codepoint, float size, out GlyphMetrics metrics, out Rect uvRect)
     {
         if (Hook != null && Hook.TryGetGlyph(codepoint, size, out metrics, out uvRect))

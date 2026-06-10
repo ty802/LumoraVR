@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core.Math;
@@ -23,7 +23,7 @@ public abstract class PhosShape
     public float3 Scale = float3.One;
 
     /// <summary>Parent mesh this shape belongs to</summary>
-    public PhosMesh Mesh { get; private set; }
+    public PhosMesh Mesh { get; private set; } = null!;
 
     /// <summary>All vertices created by this shape</summary>
     public PhosVertexCollection AllVertices { get; protected set; }

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
 using Lumora.Source.Input;
@@ -33,23 +33,23 @@ public class GodotVRDriver : IVRDriver, IInputDriver
     public string LeftInteractionProfile  => GetTrackerInteractionProfile("left_hand");
     public string RightInteractionProfile => GetTrackerInteractionProfile("right_hand");
 
-    private XRInterface _xrInterface;
-    private InputInterface _inputInterface;
+    private XRInterface _xrInterface = null!;
+    private InputInterface _inputInterface = null!;
     private bool _modeActive;
     private bool _trackerAddedConnected;
 
     // Godot XR nodes for tracking (proper Godot 4.x pattern)
-    private XRCamera3D _xrCamera;
-    private XRController3D _leftController;
-    private XRController3D _rightController;
-    private XROrigin3D _xrOrigin;
+    private XRCamera3D _xrCamera = null!;
+    private XRController3D _leftController = null!;
+    private XRController3D _rightController = null!;
+    private XROrigin3D _xrOrigin = null!;
 
     // Tracked devices for body node system
-    private TrackedObject _headTrackedObject;
-    private TrackedObject _leftControllerTrackedObject;
-    private TrackedObject _rightControllerTrackedObject;
-    private TrackedObject _leftHandTrackedObject;
-    private TrackedObject _rightHandTrackedObject;
+    private TrackedObject _headTrackedObject = null!;
+    private TrackedObject _leftControllerTrackedObject = null!;
+    private TrackedObject _rightControllerTrackedObject = null!;
+    private TrackedObject _leftHandTrackedObject = null!;
+    private TrackedObject _rightHandTrackedObject = null!;
     private readonly Dictionary<BodyNode, TrackedObject> _handSkeletonTrackedObjects = new();
 
     private static readonly FingerType[] FingerOrder = new[]
@@ -206,7 +206,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
     /// Find or create XR nodes in the scene tree for proper Godot 4.x tracking.
     /// XRController3D nodes MUST exist for Godot to track controllers via OpenXR.
     /// </summary>
-    public void FindXRNodes(Node sceneRoot)
+    public void FindXRNodes(Node? sceneRoot)
     {
         if (sceneRoot == null) return;
 
@@ -292,7 +292,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
             if (found != null)
                 return found;
         }
-        return null;
+        return null!;
     }
 
     private System.Collections.Generic.IEnumerable<Node> GetAllNodes(Node node)
@@ -540,7 +540,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
 
         tracked.IsTracking = isTracking;
         tracked.IsDeviceActive = isTracking;
-        tracked.TrackingSpace = _inputInterface?.GlobalTrackingSpace;
+        tracked.TrackingSpace = _inputInterface?.GlobalTrackingSpace!;
     }
 
     private void SetHandNodePose(BodyNode node, float3 position, floatQ rotation, bool isTracking)
@@ -552,7 +552,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         tracked.RawRotation = rotation;
         tracked.IsTracking = isTracking;
         tracked.IsDeviceActive = isTracking;
-        tracked.TrackingSpace = _inputInterface?.GlobalTrackingSpace;
+        tracked.TrackingSpace = _inputInterface?.GlobalTrackingSpace!;
     }
 
     private static float3[] GetOpenPosePoints(FingerType finger)
@@ -744,7 +744,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         _headTrackedObject.RawRotation = rotation;
         _headTrackedObject.IsTracking = isTracking;
         _headTrackedObject.IsDeviceActive = isTracking;
-        _headTrackedObject.TrackingSpace = _inputInterface?.GlobalTrackingSpace;
+        _headTrackedObject.TrackingSpace = _inputInterface?.GlobalTrackingSpace!;
     }
 
     /// <summary>
@@ -807,7 +807,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         controllerObj.RawRotation = rotation;
         controllerObj.IsTracking = isTracking;
         controllerObj.IsDeviceActive = isTracking;
-        controllerObj.TrackingSpace = _inputInterface?.GlobalTrackingSpace;
+        controllerObj.TrackingSpace = _inputInterface?.GlobalTrackingSpace!;
 
         // Update hand tracked object (same position as controller for now)
         if (handObj != null)
@@ -816,7 +816,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
             handObj.RawRotation = rotation;
             handObj.IsTracking = isTracking;
             handObj.IsDeviceActive = isTracking;
-            handObj.TrackingSpace = _inputInterface?.GlobalTrackingSpace;
+            handObj.TrackingSpace = _inputInterface?.GlobalTrackingSpace!;
         }
     }
 
@@ -861,7 +861,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         tracked.RawRotation = floatQ.Identity;
         tracked.IsTracking = false;
         tracked.IsDeviceActive = false;
-        tracked.TrackingSpace = null;
+        tracked.TrackingSpace = null!;
     }
 
     private static void ClearLegacyDevice(HeadDevice headDevice)
@@ -1003,7 +1003,8 @@ public class GodotVRDriver : IVRDriver, IInputDriver
 
         _modeActive = false;
         ClearTrackingState();
-        _xrInterface = null;
+        _xrInterface = null!;
         GD.Print("GodotVRDriver: VR shutdown");
     }
 }
+

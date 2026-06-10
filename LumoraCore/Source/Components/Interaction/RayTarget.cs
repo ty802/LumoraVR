@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -21,18 +21,18 @@ public sealed class RayTarget : Component, IInteractionTarget
     /// <summary>
     /// Fired once when a ray first enters the hover sphere.
     /// </summary>
-    public event Action HoverEntered;
+    public event Action HoverEntered = null!;
 
     /// <summary>
     /// Fired once when the hovering ray exits the sphere or the beam is destroyed.
     /// </summary>
-    public event Action HoverExited;
+    public event Action HoverExited = null!;
 
     /// <summary>
     /// Fired when this target is activated (trigger pressed while hovered).
     /// The float3 parameter is the world-space intersection point on the hover sphere.
     /// </summary>
-    public event Action<float3> Activated;
+    public event Action<float3> Activated = null!;
 
     public int InteractionTargetPriority => InteractionPriority.Value;
 

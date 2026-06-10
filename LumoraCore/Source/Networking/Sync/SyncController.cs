@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using Lumora.Core;
@@ -408,8 +408,8 @@ public class SyncController
 				{
 					// Defense in depth: every stream's actual Owner must equal the user the
 					// message claims to be from. A peer could otherwise embed RefIDs of
-					// streams owned by a different user — even if the sender check upstream
-					// passes for *their own* UserID — and inject data attributed to others.
+					// streams owned by a different user â€” even if the sender check upstream
+					// passes for *their own* UserID â€” and inject data attributed to others.
 					if (stream.Owner != user)
 					{
 						LumoraLogger.Warn($"ApplyStreams: stream {streamRefID} is owned by {stream.Owner?.UserName?.Value} but message claims user {user.UserName?.Value} ({message.UserID}); dropping rest of message.");
@@ -454,3 +454,4 @@ public class SyncController
 		}
 	}
 }
+

@@ -3,7 +3,7 @@ render_mode unshaded, blend_add, depth_draw_never, depth_test_disabled, cull_dis
 
 uniform vec4 front_color : source_color = vec4(1.0);
 uniform vec4 behind_color : source_color = vec4(0.5, 0.5, 0.5, 0.5);
-uniform sampler2D albedo_texture : source_color, filter_linear_mipmap, repeat_enable;
+uniform sampler2D albedo_texture : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform bool use_albedo_texture = false;
 
 uniform vec2 front_uv_scale = vec2(1.0);

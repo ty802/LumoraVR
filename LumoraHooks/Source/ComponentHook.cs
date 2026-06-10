@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using Lumora.Core;
 
 namespace Lumora.Godot.Hooks;
@@ -26,13 +26,13 @@ public abstract class ComponentHook<D, C> : Hook<D> where D : ImplementableCompo
     /// <summary>
     /// The SlotHook for the owner's slot.
     /// </summary>
-    protected SlotHook slotHook { get; private set; }
+    protected SlotHook slotHook { get; private set; } = null!;
 
     /// <summary>
     /// The Node3D attached to the slot (Godot equivalent of GameObject).
     /// Component hooks can create child nodes under this node.
     /// </summary>
-    protected Node3D attachedNode { get; private set; }
+    protected Node3D attachedNode { get; private set; } = null!;
 
     /// <summary>
     /// Initialize the component hook.
@@ -54,7 +54,8 @@ public abstract class ComponentHook<D, C> : Hook<D> where D : ImplementableCompo
         {
             slotHook.FreeNode3D();
         }
-        slotHook = null;
-        attachedNode = null;
+        slotHook = null!;
+        attachedNode = null!;
     }
 }
+

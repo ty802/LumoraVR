@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Lumora.Core;
+using Lumora.Core;
 using Lumora.Core.Assets;
 
 namespace Lumora.Godot.Hooks;
@@ -14,7 +14,7 @@ namespace Lumora.Godot.Hooks;
 /// </summary>
 public abstract class AssetHook : IAssetHook
 {
-    protected IAsset asset;
+    protected IAsset asset = null!;
 
     /// <summary>
     /// The engine instance. Assets are global and not tied to a specific world.
@@ -25,7 +25,7 @@ public abstract class AssetHook : IAssetHook
     /// The currently focused world (convenience accessor).
     /// May be null if no world is focused.
     /// </summary>
-    public World FocusedWorld => Engine?.WorldManager?.FocusedWorld;
+    public World FocusedWorld => Engine?.WorldManager?.FocusedWorld!;
 
     /// <summary>
     /// The asset this hook is attached to.
@@ -46,3 +46,4 @@ public abstract class AssetHook : IAssetHook
     /// </summary>
     public abstract void Unload();
 }
+

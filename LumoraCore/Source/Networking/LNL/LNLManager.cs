@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Net;
 using LiteNetLib;
@@ -24,7 +24,7 @@ public class LNLManager
     /// <summary>
     /// Create a new client connection to a server.
     /// </summary>
-    public LNLConnection CreateConnection(Uri uri, bool dontRoute = false, IPAddress bindIP = null)
+    public LNLConnection CreateConnection(Uri uri, bool dontRoute = false, IPAddress bindIP = null!)
     {
         bindIP ??= IPAddress.Any;
 
@@ -105,3 +105,4 @@ public class LNLManager
         LumoraLogger.Log("LNL Manager shut down");
     }
 }
+

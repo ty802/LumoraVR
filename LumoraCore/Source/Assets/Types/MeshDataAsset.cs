@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -13,7 +13,7 @@ namespace Lumora.Core.Assets;
 /// </summary>
 public class MeshDataAsset : DynamicImplementableAsset<IMeshAssetHook>
 {
-    private PhosMesh _meshData;
+    private PhosMesh _meshData = null!;
     private BoundingBox _bounds;
     private int _activeRequestCount;
     private bool _keepReadable;
@@ -130,7 +130,7 @@ public class MeshDataAsset : DynamicImplementableAsset<IMeshAssetHook>
         {
             _meshData?.Clear();
         }
-        _meshData = null;
+        _meshData = null!;
         _bounds = new BoundingBox();
         _activeRequestCount = 0;
         base.Unload();

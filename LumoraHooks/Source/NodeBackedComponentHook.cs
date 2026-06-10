@@ -6,19 +6,19 @@ using Lumora.Core;
 
 namespace Lumora.Godot.Hooks;
 
-// Intermediate generic base mirroring the ref engine's pattern of having a
-// platform-typed component connector layer between the generic ComponentHook
-// and concrete simple hooks (lights, cameras, anything that's basically "a
-// child node hanging off the slot's Node3D"). Subclasses declare the platform
-// node type via N and only have to:
+// Intermediate generic base for hooks whose only job is "manage one platform
+// node hanging off the slot's Node3D" (lights, cameras, etc.). Sits between
+// the generic ComponentHook and concrete simple hooks so the boilerplate
+// (lifecycle, parenting, teardown) lives in one place. Subclasses declare the
+// platform node type via N and only have to:
 //   1) build the node in CreatePlatformNode()
 //   2) push owner state into it in SyncProperties()
-// Lifecycle, parenting, and teardown live here. - xlinka
+// - xlinka
 public abstract class NodeBackedComponentHook<D, N> : ComponentHook<D>
     where D : ImplementableComponent<IHook>
     where N : Node
 {
-    private N _node;
+    private N _node = null!;
 
     public N PlatformNode => _node;
 
@@ -75,7 +75,7 @@ public abstract class NodeBackedComponentHook<D, N> : ComponentHook<D>
     {
         if (!destroyingWorld && _node != null && GodotObject.IsInstanceValid(_node))
             _node.QueueFree();
-        _node = null;
+        _node = null!;
         base.Destroy(destroyingWorld);
     }
 }

@@ -61,7 +61,7 @@ public static class Coder<T>
         var type = typeof(T);
         if (Encoders.TryGetValue(type, out var encoder))
         {
-            encoder(writer, value);
+            encoder(writer, value!);
             return;
         }
         throw new NotSupportedException($"Type {type} is not supported for encoding");

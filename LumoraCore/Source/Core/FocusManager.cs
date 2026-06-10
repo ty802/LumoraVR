@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
@@ -11,9 +11,9 @@ namespace Lumora.Core;
 /// </summary>
 public class FocusManager
 {
-    private World _focusedWorld;
-    private World _previousFocusedWorld;
-    private World _userspaceWorld;
+    private World _focusedWorld = null!;
+    private World _previousFocusedWorld = null!;
+    private World _userspaceWorld = null!;
 
     /// <summary>
     /// The currently focused world (main world user is in).
@@ -34,7 +34,7 @@ public class FocusManager
             }
             _focusedWorld = value;
 
-            OnFocusedWorldChanged?.Invoke(oldWorld, value);
+            OnFocusedWorldChanged?.Invoke(oldWorld!, value);
             LumoraLogger.Log($"FocusManager: Focused world changed from '{oldWorld?.WorldName.Value ?? "none"}' to '{value?.WorldName.Value ?? "none"}'");
         }
     }
@@ -64,7 +64,7 @@ public class FocusManager
     /// <summary>
     /// Event triggered when the focused world changes.
     /// </summary>
-    public event Action<World, World> OnFocusedWorldChanged;
+    public event Action<World, World> OnFocusedWorldChanged = null!;
 
     /// <summary>
     /// Switch focus to a different world.
@@ -126,3 +126,4 @@ public class FocusManager
         return _userspaceWorld == world;
     }
 }
+

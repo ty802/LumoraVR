@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core.Assets;
@@ -106,8 +106,8 @@ public sealed class DevToolItem : ToolItem
         }
 
         var gizmo = GizmoHelper.ToggleGizmo(target);
-        SelectedSlot.Target = gizmo == null ? null : target;
-        CurrentGizmoSlot.Target = (gizmo as Component)?.Slot;
+        SelectedSlot.Target = gizmo == null ? null! : target!;
+        CurrentGizmoSlot.Target = (gizmo as Component)?.Slot!;
         return true;
     }
 

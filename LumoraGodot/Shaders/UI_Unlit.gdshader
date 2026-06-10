@@ -4,7 +4,12 @@ shader_type spatial;
 render_mode unshaded, blend_mix, depth_draw_never, depth_test_disabled, cull_disabled;
 
 uniform vec4 albedo_color : source_color = vec4(1.0);
-uniform sampler2D albedo_texture : source_color, filter_linear_mipmap, repeat_disable;
+// Plain bilinear, NO mipmaps, NO aniso. UI textures at glancing viewing angles
+// otherwise drop to a higher mip level (because screen-space derivatives grow
+// along the foreshortened axis) — rounded-rect sprites lose their alpha shape
+// and tinted backgrounds wash toward grey/white. UI is interactive and viewed
+// close, mip 0 sampling everywhere matches what the designer painted. - xlinka
+uniform sampler2D albedo_texture : source_color, filter_linear, repeat_disable;
 uniform bool use_albedo_texture = false;
 
 uniform vec2 uv_scale = vec2(1.0);

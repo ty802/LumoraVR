@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Components;
@@ -19,12 +19,12 @@ namespace Lumora.Godot.Hooks
     [ImplementableHook(typeof(BoxCollider), typeof(CapsuleCollider), typeof(SphereCollider), typeof(CylinderCollider))]
     public class PhysicsColliderHook : ComponentHook<Collider>
     {
-        private Node3D _bodyNode;
-        private CollisionShape3D _collisionShape;
-        private Shape3D _shape;
+        private Node3D _bodyNode = null!;
+        private CollisionShape3D _collisionShape = null!;
+        private Shape3D _shape = null!;
         private bool _isDynamic;
-        private PhysicsMaterial _material;
-        private MeshInstance3D _debugMesh;
+        private PhysicsMaterial _material = null!;
+        private MeshInstance3D _debugMesh = null!;
         private static bool _showDebugColliders = false;
 
         public override void Initialize()
@@ -79,7 +79,7 @@ namespace Lumora.Godot.Hooks
             UpdateTransform();
 
             // Enable/disable collision
-            _bodyNode.Visible = Owner.Enabled;
+            _bodyNode!.Visible = Owner.Enabled;
             if (_bodyNode is Area3D)
             {
                 // sensor only. on physics layer for engine-side interaction, mask=0 so nothing pushes against it - xlinka
@@ -140,8 +140,8 @@ namespace Lumora.Godot.Hooks
             }
 
             // Parent under world root to avoid double transforms
-            Node3D worldRoot = Owner?.World?.GodotSceneRoot as Node3D;
-            Node parentNode = (Node)worldRoot ?? attachedNode;
+            Node3D worldRoot = (Owner?.World?.GodotSceneRoot as Node3D)!;
+            Node parentNode = (Node)worldRoot ?? attachedNode!;
             parentNode.AddChild(_bodyNode);
         }
 
@@ -227,7 +227,7 @@ namespace Lumora.Godot.Hooks
             if (_debugMesh != null && GodotObject.IsInstanceValid(_debugMesh))
             {
                 _debugMesh.QueueFree();
-                _debugMesh = null;
+                _debugMesh = null!;
             }
 
             if (_bodyNode == null || !GodotObject.IsInstanceValid(_bodyNode))
@@ -305,7 +305,7 @@ namespace Lumora.Godot.Hooks
             {
                 _debugMesh.QueueFree();
             }
-            _debugMesh = null;
+            _debugMesh = null!;
         }
 
         private bool ShouldShowDebugForCollider()
@@ -338,7 +338,7 @@ namespace Lumora.Godot.Hooks
             return slot.GetComponent<Lumora.Core.Components.RigidBody>() == null;
         }
 
-        private static ArrayMesh BuildBoxWireMesh(Vector3 size)
+        private static ArrayMesh? BuildBoxWireMesh(Vector3 size)
         {
             float hx = size.X * 0.5f;
             float hy = size.Y * 0.5f;
@@ -377,7 +377,7 @@ namespace Lumora.Godot.Hooks
             return BuildLineMesh(vertices, indices);
         }
 
-        private static ArrayMesh BuildLineMesh(System.Collections.Generic.List<Vector3> vertices, System.Collections.Generic.List<int> indices)
+        private static ArrayMesh? BuildLineMesh(System.Collections.Generic.List<Vector3> vertices, System.Collections.Generic.List<int> indices)
         {
             if (vertices.Count == 0) return null;
             var mesh = new ArrayMesh();
@@ -448,10 +448,11 @@ namespace Lumora.Godot.Hooks
                 _bodyNode.QueueFree();
             }
 
-            _debugMesh = null;
-            _collisionShape = null;
-            _bodyNode = null;
-            _shape = null;
+            _debugMesh = null!;
+            _collisionShape = null!;
+            _bodyNode = null!;
+            _shape = null!;
         }
     }
 }
+

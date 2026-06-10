@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Lumora.Core;
@@ -19,29 +19,29 @@ public class Session : IDisposable
 {
     public World World { get; private set; }
     public SessionConnectionManager Connections { get; private set; }
-    public SessionSyncManager Sync { get; private set; }
-    public SessionAssetTransferer AssetTransferer { get; private set; }
+    public SessionSyncManager Sync { get; private set; } = null!;
+    public SessionAssetTransferer AssetTransferer { get; private set; } = null!;
 
     /// <summary>
     /// Session metadata describing identity, settings, and state.
     /// </summary>
-    public SessionMetadata Metadata { get; private set; }
+    public SessionMetadata Metadata { get; private set; } = null!;
 
     public bool IsDisposed { get; private set; }
     public TimeSpan Latency { get; set; }
 
-    private LANAnnouncer _lanAnnouncer;
+    private LANAnnouncer _lanAnnouncer = null!;
     private SessionServerClient? _serverClient;
     private BackendSessionDirectoryClient? _directoryClient;
 
     /// <summary>
     /// Event triggered when session is disconnected.
     /// </summary>
-    public event Action OnDisconnected;
+    public event Action OnDisconnected = null!;
 
     /// <summary>
     /// Callback fired when a <see cref="RawFrameMessage"/> arrives, after sender
-    /// validation and authority-side relay. Runs on the sync thread — keep the
+    /// validation and authority-side relay. Runs on the sync thread â€” keep the
     /// callback fast (push to a lock-free queue and return). The
     /// <paramref name="payload"/> memory is only valid for the duration of the
     /// invocation; copy bytes out if you need to retain them.
@@ -117,7 +117,7 @@ public class Session : IDisposable
         session.Metadata.HostUsername ??= Environment.UserName;
         session.Metadata.ActiveUsers = 1;
 
-        LumoraLogger.Log($"Creating new session '{metadata.Name}' on port {port}");
+        LumoraLogger.Log($"Creating new session '{metadata!.Name}' on port {port}");
         LumoraLogger.Log($"Session ID: {session.Metadata.SessionId}");
 
         // Start listener
@@ -226,7 +226,7 @@ public class Session : IDisposable
     {
         _lanAnnouncer?.StopAnnouncing();
         _lanAnnouncer?.Dispose();
-        _lanAnnouncer = null;
+        _lanAnnouncer = null!;
     }
 
     /// <summary>
@@ -457,12 +457,13 @@ public class Session : IDisposable
 
         AssetTransferer?.Dispose();
         if (Engine.Current?.ActiveSessionTransferer == AssetTransferer)
-            Engine.Current.ActiveSessionTransferer = null;
+            Engine.Current!.ActiveSessionTransferer = null!;
 
         Sync?.Dispose();
         Connections?.Dispose();
 
-        World = null;
-        Metadata = null;
+        World = null!;
+        Metadata = null!;
     }
 }
+

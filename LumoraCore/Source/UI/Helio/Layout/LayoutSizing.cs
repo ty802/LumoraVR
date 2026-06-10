@@ -26,6 +26,11 @@ internal static class LayoutSizing
         }
     }
 
+    public static bool IsIgnored(RectTransform rect)
+    {
+        return rect.Slot.GetComponent<IgnoreLayout>() != null;
+    }
+
     public static LayoutMetrics GetMetrics(RectTransform rect, LayoutDirection direction)
     {
         var result = default(LayoutMetrics);

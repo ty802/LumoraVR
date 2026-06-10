@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
@@ -18,11 +18,11 @@ public class RespawnPlaneHook : ComponentHook<RespawnPlane>
 {
     private float3 _planePos;
     private float2 _halfSize;
-    private MeshInstance3D _visualMesh;
-    private PlaneMesh _planeMesh;
-    private StandardMaterial3D _visualMaterial;
-    private MeshInstance3D _debugMesh;
-    private StandardMaterial3D _debugMaterial;
+    private MeshInstance3D _visualMesh = null!;
+    private PlaneMesh _planeMesh = null!;
+    private StandardMaterial3D _visualMaterial = null!;
+    private MeshInstance3D _debugMesh = null!;
+    private StandardMaterial3D _debugMaterial = null!;
     private float2 _lastDebugSize;
     private bool _hasDebugSize;
 
@@ -143,7 +143,7 @@ public class RespawnPlaneHook : ComponentHook<RespawnPlane>
             var userPos = user.Root.Slot.GlobalPosition;
             if (IsInBounds(userPos))
             {
-                var spawnPos = Owner.UserRespawnPosition.Value;
+                var spawnPos = Owner!.UserRespawnPosition.Value;
                 TeleportUser(user, spawnPos);
             }
         }
@@ -157,7 +157,7 @@ public class RespawnPlaneHook : ComponentHook<RespawnPlane>
         if (slot == null || slot.IsDestroyed) return;
 
         // Check this slot
-        RespawnData respawnData = null;
+        RespawnData respawnData = null!;
         foreach (var data in slot.GetComponents<RespawnData>())
         {
             respawnData = data;
@@ -216,11 +216,11 @@ public class RespawnPlaneHook : ComponentHook<RespawnPlane>
             _planeMesh?.Dispose();
         }
 
-        _visualMesh = null;
-        _debugMesh = null;
-        _visualMaterial = null;
-        _debugMaterial = null;
-        _planeMesh = null;
+        _visualMesh = null!;
+        _debugMesh = null!;
+        _visualMaterial = null!;
+        _debugMaterial = null!;
+        _planeMesh = null!;
         _hasDebugSize = false;
 
         base.Destroy(destroyingWorld);
@@ -243,7 +243,7 @@ public class RespawnPlaneHook : ComponentHook<RespawnPlane>
         }
     }
 
-    private static ArrayMesh BuildPlaneWireMesh(Vector2 size)
+    private static ArrayMesh? BuildPlaneWireMesh(Vector2 size)
     {
         float hx = size.X * 0.5f;
         float hz = size.Y * 0.5f;
@@ -267,7 +267,7 @@ public class RespawnPlaneHook : ComponentHook<RespawnPlane>
         return BuildLineMesh(vertices, indices);
     }
 
-    private static ArrayMesh BuildLineMesh(System.Collections.Generic.List<Vector3> vertices, System.Collections.Generic.List<int> indices)
+    private static ArrayMesh? BuildLineMesh(System.Collections.Generic.List<Vector3> vertices, System.Collections.Generic.List<int> indices)
     {
         if (vertices.Count == 0) return null;
         var mesh = new ArrayMesh();
@@ -288,3 +288,4 @@ public class RespawnPlaneHook : ComponentHook<RespawnPlane>
         indices.Add(start + 1);
     }
 }
+

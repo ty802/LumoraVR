@@ -17,7 +17,7 @@ public interface IUpdatable : IWorldElement
     /// <summary>
     /// Whether the component has been destroyed.
     /// </summary>
-    bool IsDestroyed { get; }
+    new bool IsDestroyed { get; }
 
     /// <summary>
     /// Whether the component has pending changes to apply.

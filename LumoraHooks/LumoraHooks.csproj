@@ -4,6 +4,7 @@
     <OutputType>Library</OutputType>
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <LangVersion>preview</LangVersion>
+    <Nullable>enable</Nullable>
     <RootNamespace>Lumora.Godot.Hooks</RootNamespace>
     <AssemblyName>LumoraHooks</AssemblyName>
     <Description>LumoraHooks - Godot-side hook layer that bridges LumoraCore components to Godot scene nodes.</Description>

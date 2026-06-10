@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -17,6 +17,7 @@ namespace Lumora.Core.Networking.Sync;
 /// <typeparam name="TKey">Key type (typically RefID)</typeparam>
 /// <typeparam name="TValue">Value type that implements IWorldElement</typeparam>
 public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumerable<KeyValuePair<TKey, TValue>>
+    where TKey : notnull
     where TValue : class, IWorldElement
 {
     /// <summary>
@@ -30,8 +31,8 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
     }
 
     protected Dictionary<TKey, TValue> _elements;
-    private TKey _cachedLastKey;
-    private TValue _cachedLastValue;
+    private TKey _cachedLastKey = default!;
+    private TValue _cachedLastValue = default!;
     private List<AdditionRecord> _pendingAdditions;
     private List<TKey> _pendingRemovals;
 
@@ -94,12 +95,12 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
     /// <summary>
     /// Fired when an element is added.
     /// </summary>
-    public event Action<ReplicatedDictionary<TKey, TValue>, TKey, TValue, bool> OnElementAdded;
+    public event Action<ReplicatedDictionary<TKey, TValue>, TKey, TValue, bool> OnElementAdded = null!;
 
     /// <summary>
     /// Fired when an element is removed.
     /// </summary>
-    public event Action<ReplicatedDictionary<TKey, TValue>, TKey, TValue> OnElementRemoved;
+    public event Action<ReplicatedDictionary<TKey, TValue>, TKey, TValue> OnElementRemoved = null!;
 
     protected ReplicatedDictionary()
     {
@@ -194,7 +195,13 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
     public bool TryGetValue(TKey key, out TValue value)
     {
         AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.ReplicatedDictionary, key: key);
-        return _elements.TryGetValue(key, out value);
+        if (_elements.TryGetValue(key, out var found))
+        {
+            value = found;
+            return true;
+        }
+        value = default!;
+        return false;
     }
 
     /// <summary>
@@ -273,8 +280,8 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
 
             if (EqualityComparer<TKey>.Default.Equals(key, _cachedLastKey))
             {
-                _cachedLastKey = default;
-                _cachedLastValue = null;
+                _cachedLastKey = default!;
+                _cachedLastValue = null!;
             }
 
             if (sync)

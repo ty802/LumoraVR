@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using Godot;
 using Lumora.Core;
 using Lumora.Core.Math;
@@ -10,7 +10,7 @@ using Lumora.Core.Logging;
 namespace Lumora.Godot.Hooks;
 
 /// <summary>
-/// Hook for Slot → Godot Node3D.
+/// Hook for Slot ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Godot Node3D.
 /// Platform slot hook for Godot.
 ///
 /// Uses lazy creation pattern:
@@ -24,11 +24,11 @@ public class SlotHook : Hook<Slot>, ISlotHook
 	// Static registry to find Slot from Godot Node
 	private static readonly Dictionary<Node, Slot> _nodeToSlot = new();
 
-	private Slot _lastParent;
+	private Slot _lastParent = null!;
 	private int _node3DRequests;
 	private bool _shouldDestroy;
-	private SlotHook _parentHook;
-	private WorldHook _worldHook;
+	private SlotHook _parentHook = null!;
+	private WorldHook _worldHook = null!;
 	private bool _didDeferLog;
 
 	/// <summary>
@@ -60,7 +60,7 @@ public class SlotHook : Hook<Slot>, ISlotHook
 	/// <summary>
 	/// The generated Node3D for this slot (created on-demand).
 	/// </summary>
-	public Node3D GeneratedNode3D { get; private set; }
+	public Node3D GeneratedNode3D { get; private set; } = null!;
 
 	/// <summary>
 	/// Get the world hook for this slot.
@@ -102,7 +102,7 @@ public class SlotHook : Hook<Slot>, ISlotHook
 		{
 			GenerateNode3D();
 		}
-		return GeneratedNode3D;
+		return GeneratedNode3D!;
 	}
 
 	/// <summary>
@@ -153,9 +153,9 @@ public class SlotHook : Hook<Slot>, ISlotHook
 			_nodeToSlot.Remove(GeneratedNode3D);
 		}
 
-		GeneratedNode3D = null;
-		_lastParent = null;
-		_parentHook = null;
+		GeneratedNode3D = null!;
+		_lastParent = null!;
+		_parentHook = null!;
 	}
 
 	/// <summary>
@@ -208,7 +208,7 @@ public class SlotHook : Hook<Slot>, ISlotHook
 		if (_parentHook != null)
 		{
 			_parentHook.FreeNode3D();
-			_parentHook = null;
+			_parentHook = null!;
 		}
 
 		// Set new parent
@@ -246,7 +246,7 @@ public class SlotHook : Hook<Slot>, ISlotHook
 			if (isActualRootSlot)
 			{
 				// Get the world's Godot scene root directly
-				var worldRoot = Owner.World.GodotSceneRoot as Node3D;
+				var worldRoot = Owner.World!.GodotSceneRoot as Node3D;
 				if (worldRoot != null)
 				{
 					if (GeneratedNode3D.GetParent() != worldRoot)
@@ -431,3 +431,4 @@ public class SlotHook : Hook<Slot>, ISlotHook
 public interface ISlotHook : IHook<Slot>
 {
 }
+

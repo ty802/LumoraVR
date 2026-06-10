@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -33,52 +33,52 @@ public class SlotGizmo : ImplementableComponent, IGizmo
     /// <summary>
     /// The slot this gizmo is manipulating.
     /// </summary>
-    public readonly SyncRef<Slot> TargetSlotRef;
+    public readonly SyncRef<Slot> TargetSlotRef = null!;
 
     /// <summary>
     /// Whether this gizmo is active.
     /// </summary>
-    public readonly Sync<bool> Active;
+    public readonly Sync<bool> Active = null!;
 
     /// <summary>
     /// Whether the gizmo is in folded (minimal) mode.
     /// </summary>
-    public readonly Sync<bool> IsFolded;
+    public readonly Sync<bool> IsFolded = null!;
 
     /// <summary>
     /// Whether to use local space for transformations.
     /// </summary>
-    public readonly Sync<bool> IsLocalSpace;
+    public readonly Sync<bool> IsLocalSpace = null!;
 
     /// <summary>
     /// The currently active transform mode (0=translate, 1=rotate, 2=scale).
     /// </summary>
-    public readonly Sync<int> ActiveMode;
+    public readonly Sync<int> ActiveMode = null!;
 
     /// <summary>
     /// Reference to the linked inspector (if any).
     /// </summary>
-    public readonly SyncRef<Component> LinkedInspector;
+    public readonly SyncRef<Component> LinkedInspector = null!;
 
     /// <summary>
     /// Event fired when gizmo mode changes.
     /// </summary>
-    public event Action<int> OnModeChanged;
+    public event Action<int> OnModeChanged = null!;
 
     /// <summary>
     /// Event fired when space mode changes.
     /// </summary>
-    public event Action<bool> OnSpaceChanged;
+    public event Action<bool> OnSpaceChanged = null!;
 
     /// <summary>
     /// Event fired when requesting to open parent gizmo.
     /// </summary>
-    public event Action OnOpenParentRequested;
+    public event Action OnOpenParentRequested = null!;
 
     /// <summary>
     /// IGizmo interface implementation.
     /// </summary>
-    public Slot TargetSlot => TargetSlotRef?.Target;
+    public Slot TargetSlot => (TargetSlotRef?.Target) ?? null!;
 
     /// <summary>
     /// IGizmo interface implementation.

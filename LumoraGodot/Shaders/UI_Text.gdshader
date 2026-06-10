@@ -7,7 +7,14 @@ render_mode unshaded, blend_mix, depth_draw_never, depth_test_disabled, cull_dis
 // sampling stays stable.
 
 uniform vec4 albedo_color : source_color = vec4(1.0);
-uniform sampler2D albedo_texture : filter_linear_mipmap, repeat_disable;
+// Plain bilinear, no mipmaps, no aniso. At glancing angles screen-space
+// derivatives grow along the foreshortened axis and the GPU picks higher mip
+// levels of the font atlas — the glyph alpha blurs, then the fwidth-widened
+// smoothstep below preserves the blurred shape with a thick fuzzy edge, so
+// glyph interiors disappear and labels bleed white across the whole quad.
+// Forcing mip 0 keeps glyphs sharp at any angle. The 96-px atlas raster is
+// high enough that distant text reads cleanly without mipmaps. - xlinka
+uniform sampler2D albedo_texture : filter_linear, repeat_disable;
 uniform bool use_albedo_texture = true;
 uniform bool use_vertex_color = true;
 
@@ -19,8 +26,11 @@ uniform vec2 uv_offset = vec2(0.0);
 uniform float pixel_range = 4.0;
 uniform float coverage_gamma : hint_range(0.5, 2.0) = 0.9;
 
-uniform float alpha_cutoff : hint_range(0.0, 1.0) = 0.01;
-uniform bool alpha_clip = false;
+// Crisp text at any distance/angle: smoothstep across the half-coverage
+// threshold using fwidth so the edge stays ~1px wide in screen space, rather
+// than soft-alphaing the whole glyph coverage. - xlinka
+uniform float alpha_cutoff : hint_range(0.0, 1.0) = 0.5;
+uniform bool alpha_clip = true;
 
 uniform bool rect_clip = false;
 uniform vec4 rect = vec4(0.0);

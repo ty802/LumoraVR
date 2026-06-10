@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Godot;
 using Lumora.Core;
@@ -16,7 +16,7 @@ public static class RenderHelper
     /// <summary>
     /// Callback to register cameras with rendering system.
     /// </summary>
-    public static Action<Camera3D> RegisterCamera;
+    public static Action<Camera3D> RegisterCamera = null!;
 
     // Render layer bit assignments. Bit 0 (layer 1) is the default "public" layer.
     // Cameras can mask layers via VisualInstance3D.Layers / Camera3D.CullMask.
@@ -129,3 +129,4 @@ public static class RenderHelper
         }
     }
 }
+

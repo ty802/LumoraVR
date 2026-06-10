@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -17,9 +17,9 @@ public class AssetManager : IDisposable
 {
     private class AssetEntry
     {
-        public string Uri { get; set; }
-        public object Asset { get; set; }
-        public Type AssetType { get; set; }
+        public string Uri { get; set; } = null!;
+        public object Asset { get; set; } = null!;
+        public Type AssetType { get; set; } = null!;
         public int ReferenceCount { get; set; }
         public DateTime LastAccessed { get; set; }
         public long SizeInBytes { get; set; }
@@ -93,10 +93,10 @@ public class AssetManager : IDisposable
     public async Task<T> LoadAssetAsync<T>(string uri) where T : class
     {
         if (string.IsNullOrEmpty(uri))
-            return null;
+            return null!;
 
         // Check cache first
-        TaskCompletionSource<T> loadingTask = null;
+        TaskCompletionSource<T> loadingTask = null!;
         lock (_cacheLock)
         {
             // Check if already loaded
@@ -106,13 +106,13 @@ public class AssetManager : IDisposable
                 {
                     existingEntry.ReferenceCount++;
                     existingEntry.LastAccessed = DateTime.Now;
-                    return existingEntry.Asset as T;
+                    return (existingEntry.Asset as T) ?? null!;
                 }
                 else if (existingEntry.State == AssetLoadState.Loading)
                 {
                     // Asset is already being loaded, wait for it
                     loadingTask = new TaskCompletionSource<T>();
-                    existingEntry.LoadCallbacks.Add(asset => loadingTask.SetResult(asset as T));
+                    existingEntry.LoadCallbacks.Add(asset => loadingTask.SetResult((asset as T)!));
                 }
             }
         }
@@ -179,7 +179,7 @@ public class AssetManager : IDisposable
             {
                 entry.State = AssetLoadState.Failed;
                 Logger.Error($"AssetManager: Failed to load '{uri}'");
-                return null;
+                return null!;
             }
         }
         catch (Exception ex)
@@ -202,18 +202,18 @@ public class AssetManager : IDisposable
     public T GetAsset<T>(string uri) where T : class
     {
         if (string.IsNullOrEmpty(uri))
-            return null;
+            return null!;
 
         lock (_cacheLock)
         {
             if (_assetCache.TryGetValue(uri, out var entry) && entry.State == AssetLoadState.Loaded)
             {
                 entry.LastAccessed = DateTime.Now;
-                return entry.Asset as T;
+                return (entry.Asset as T) ?? null!;
             }
         }
 
-        return null;
+        return null!;
     }
 
     /// <summary>
@@ -346,42 +346,42 @@ public class AssetManager : IDisposable
             case ".jpeg":
             case ".bmp":
             case ".tga":
-                return _loaders.GetValueOrDefault("texture");
+                return _loaders.GetValueOrDefault("texture")!;
 
             case ".obj":
             case ".fbx":
             case ".gltf":
             case ".glb":
-                return _loaders.GetValueOrDefault("mesh");
+                return _loaders.GetValueOrDefault("mesh")!;
 
             case ".wav":
             case ".mp3":
             case ".ogg":
-                return _loaders.GetValueOrDefault("audio");
+                return _loaders.GetValueOrDefault("audio")!;
 
             case ".mat":
-                return _loaders.GetValueOrDefault("material");
+                return _loaders.GetValueOrDefault("material")!;
 
             case ".shader":
             case ".glsl":
-                return _loaders.GetValueOrDefault("shader");
+                return _loaders.GetValueOrDefault("shader")!;
         }
 
         // Determine by type name
         var typeName = assetType.Name.ToLower();
 
         if (typeName.Contains("texture"))
-            return _loaders.GetValueOrDefault("texture");
+            return _loaders.GetValueOrDefault("texture")!;
         if (typeName.Contains("mesh"))
-            return _loaders.GetValueOrDefault("mesh");
+            return _loaders.GetValueOrDefault("mesh")!;
         if (typeName.Contains("audio"))
-            return _loaders.GetValueOrDefault("audio");
+            return _loaders.GetValueOrDefault("audio")!;
         if (typeName.Contains("material"))
-            return _loaders.GetValueOrDefault("material");
+            return _loaders.GetValueOrDefault("material")!;
         if (typeName.Contains("shader"))
-            return _loaders.GetValueOrDefault("shader");
+            return _loaders.GetValueOrDefault("shader")!;
 
-        return null;
+        return null!;
     }
 
     /// <summary>
@@ -433,7 +433,7 @@ public class TextureAssetLoader : BaseAssetLoader
     {
         // Placeholder implementation
         await Task.Delay(10); // Simulate loading
-        return default(T);
+        return default(T)!;
     }
 
     public override long EstimateSize(object asset)
@@ -466,7 +466,7 @@ public class MeshAssetLoader : BaseAssetLoader
     {
         // Placeholder implementation
         await Task.Delay(10); // Simulate loading
-        return default(T);
+        return default(T)!;
     }
 
     public override long EstimateSize(object asset)
@@ -496,7 +496,7 @@ public class AudioAssetLoader : BaseAssetLoader
     {
         // Placeholder implementation
         await Task.Delay(10); // Simulate loading
-        return default(T);
+        return default(T)!;
     }
 
     public override long EstimateSize(object asset)
@@ -516,7 +516,7 @@ public class MaterialAssetLoader : BaseAssetLoader
     {
         // Placeholder implementation
         await Task.Delay(10); // Simulate loading
-        return default(T);
+        return default(T)!;
     }
 
     public override long EstimateSize(object asset)
@@ -536,7 +536,7 @@ public class ShaderAssetLoader : BaseAssetLoader
     {
         // Placeholder implementation
         await Task.Delay(10); // Simulate loading
-        return default(T);
+        return default(T)!;
     }
 
     public override long EstimateSize(object asset)

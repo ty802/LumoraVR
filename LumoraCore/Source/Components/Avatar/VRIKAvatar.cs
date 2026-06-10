@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.Collections.Generic;
@@ -33,40 +33,40 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
         public floatQ LocalRotation;
     }
 
-    public readonly SyncRef<SkeletonBuilder> Skeleton;
-    public readonly SyncRef<BipedRig> Rig;
-    public readonly SyncRef<UserRoot> UserRoot;
-    public readonly SyncRef<AvatarDescriptor> Descriptor;
+    public readonly SyncRef<SkeletonBuilder> Skeleton = null!;
+    public readonly SyncRef<BipedRig> Rig = null!;
+    public readonly SyncRef<UserRoot> UserRoot = null!;
+    public readonly SyncRef<AvatarDescriptor> Descriptor = null!;
 
-    public readonly Sync<float> HeightCompensation;
-    public readonly Sync<float> AvatarHeight;
-    public readonly Sync<float> UserResizeThreshold;
-    public readonly Sync<bool> UseProceduralFeet;
-    public readonly Sync<bool> IKEnabled;
+    public readonly Sync<float> HeightCompensation = null!;
+    public readonly Sync<float> AvatarHeight = null!;
+    public readonly Sync<float> UserResizeThreshold = null!;
+    public readonly Sync<bool> UseProceduralFeet = null!;
+    public readonly Sync<bool> IKEnabled = null!;
 
-    protected readonly SyncRef<Slot> _headProxy;
-    protected readonly SyncRef<Slot> _pelvisProxy;
-    protected readonly SyncRef<Slot> _chestProxy;
-    protected readonly SyncRef<Slot> _leftHandProxy;
-    protected readonly SyncRef<Slot> _rightHandProxy;
-    protected readonly SyncRef<Slot> _leftElbowProxy;
-    protected readonly SyncRef<Slot> _rightElbowProxy;
-    protected readonly SyncRef<Slot> _leftFootProxy;
-    protected readonly SyncRef<Slot> _rightFootProxy;
-    protected readonly SyncRef<Slot> _leftKneeProxy;
-    protected readonly SyncRef<Slot> _rightKneeProxy;
+    protected readonly SyncRef<Slot> _headProxy = null!;
+    protected readonly SyncRef<Slot> _pelvisProxy = null!;
+    protected readonly SyncRef<Slot> _chestProxy = null!;
+    protected readonly SyncRef<Slot> _leftHandProxy = null!;
+    protected readonly SyncRef<Slot> _rightHandProxy = null!;
+    protected readonly SyncRef<Slot> _leftElbowProxy = null!;
+    protected readonly SyncRef<Slot> _rightElbowProxy = null!;
+    protected readonly SyncRef<Slot> _leftFootProxy = null!;
+    protected readonly SyncRef<Slot> _rightFootProxy = null!;
+    protected readonly SyncRef<Slot> _leftKneeProxy = null!;
+    protected readonly SyncRef<Slot> _rightKneeProxy = null!;
 
-    protected readonly SyncRef<AvatarPoseNode> _headNode;
-    protected readonly SyncRef<AvatarPoseNode> _pelvisNode;
-    protected readonly SyncRef<AvatarPoseNode> _chestNode;
-    protected readonly SyncRef<AvatarPoseNode> _leftHandNode;
-    protected readonly SyncRef<AvatarPoseNode> _rightHandNode;
-    protected readonly SyncRef<AvatarPoseNode> _leftElbowNode;
-    protected readonly SyncRef<AvatarPoseNode> _rightElbowNode;
-    protected readonly SyncRef<AvatarPoseNode> _leftFootNode;
-    protected readonly SyncRef<AvatarPoseNode> _rightFootNode;
-    protected readonly SyncRef<AvatarPoseNode> _leftKneeNode;
-    protected readonly SyncRef<AvatarPoseNode> _rightKneeNode;
+    protected readonly SyncRef<AvatarPoseNode> _headNode = null!;
+    protected readonly SyncRef<AvatarPoseNode> _pelvisNode = null!;
+    protected readonly SyncRef<AvatarPoseNode> _chestNode = null!;
+    protected readonly SyncRef<AvatarPoseNode> _leftHandNode = null!;
+    protected readonly SyncRef<AvatarPoseNode> _rightHandNode = null!;
+    protected readonly SyncRef<AvatarPoseNode> _leftElbowNode = null!;
+    protected readonly SyncRef<AvatarPoseNode> _rightElbowNode = null!;
+    protected readonly SyncRef<AvatarPoseNode> _leftFootNode = null!;
+    protected readonly SyncRef<AvatarPoseNode> _rightFootNode = null!;
+    protected readonly SyncRef<AvatarPoseNode> _leftKneeNode = null!;
+    protected readonly SyncRef<AvatarPoseNode> _rightKneeNode = null!;
 
     private bool _isInitialized;
     private bool _isRegistered;

@@ -56,22 +56,52 @@ public class RectTransform : Component
     public new void MarkChangeDirty()
     {
         _dataModelFlags |= DataModelFlag.RectChanged | DataModelFlag.LayoutChanged;
+        SignalCanvasDirty();
     }
 
     public void MarkInvalidateHorizontalLayout()
     {
         _dataModelFlags |= DataModelFlag.LayoutChanged;
+        SignalCanvasDirty();
     }
 
     public void MarkInvalidateVerticalLayout()
     {
         _dataModelFlags |= DataModelFlag.LayoutChanged;
+        SignalCanvasDirty();
     }
 
     // called by UIComputeComponents on this slot when enable/disable/attach/destroy happens - xlinka
     public void NotifyComponentsChanged()
     {
         _dataModelFlags |= DataModelFlag.ComponentsChanged;
+        SignalCanvasDirty();
+    }
+
+    public override void OnChanges()
+    {
+        base.OnChanges();
+        MarkChangeDirty();
+    }
+
+    private void SignalCanvasDirty()
+    {
+        if (_registeredCanvas != null)
+        {
+            _registeredCanvas.MarkDirty(this);
+            return;
+        }
+        var s = Slot;
+        while (s != null)
+        {
+            var canvas = s.GetComponent<Canvas>();
+            if (canvas != null)
+            {
+                canvas.MarkDirty(this);
+                return;
+            }
+            s = s.Parent;
+        }
     }
 
     internal void SetLocalComputeRect(in Rect rect) => _localComputeRect = rect;

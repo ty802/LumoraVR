@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
@@ -44,7 +44,7 @@ public class RefIDAllocator
     /// <summary>
     /// Allocate an ID range for a new user.
     /// </summary>
-    public RefIDRange AllocateUserIDRange(User user = null)
+    public RefIDRange AllocateUserIDRange(User user = null!)
     {
         lock (_lock)
         {
@@ -71,7 +71,7 @@ public class RefIDAllocator
     /// <summary>
     /// Allocate an ID range for a new user (tuple version for compatibility).
     /// </summary>
-    public (RefID start, RefID end) AllocateUserIDRangeTuple(User user = null)
+    public (RefID start, RefID end) AllocateUserIDRangeTuple(User user = null!)
     {
         var range = AllocateUserIDRange(user);
         return (range.Start, range.End);
@@ -210,7 +210,7 @@ public class RefIDAllocator
     {
         lock (_lock)
         {
-            return _userByteToUser.TryGetValue(userByte, out var user) ? user : null;
+            return (_userByteToUser.TryGetValue(userByte, out var user) ? user : null) ?? null!;
         }
     }
 
@@ -220,7 +220,7 @@ public class RefIDAllocator
     public User GetOwner(RefID refId)
     {
         if (refId.IsNull || refId.IsLocalID || refId.IsAuthorityID)
-            return null;
+            return null!;
 
         return GetUserForByte(refId.GetUserByte());
     }
@@ -343,3 +343,4 @@ public class RefIDAllocator
 
     #endregion
 }
+

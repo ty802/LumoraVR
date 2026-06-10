@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Components;
@@ -12,14 +12,14 @@ using LumoraRigidBody = Lumora.Core.Components.RigidBody;
 namespace Lumora.Godot.Hooks;
 
 /// <summary>
-/// Hook for RigidBody component → Godot RigidBody3D.
+/// Hook for RigidBody component ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ Godot RigidBody3D.
 /// Syncs physics simulation back to the Lumora slot transform.
 /// Uses colliders on the same slot for collision shapes.
 /// </summary>
 [ImplementableHook(typeof(LumoraRigidBody))]
 public class RigidBodyHook : ComponentHook<LumoraRigidBody>
 {
-    private RigidBody3D _rigidBody;
+    private RigidBody3D _rigidBody = null!;
     private bool _hasCollisionShape;
     private bool _positionInitialized;
     private int _framesSinceInit;
@@ -27,7 +27,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
     private readonly List<MeshInstance3D> _debugEdges = new();
     private const int DebugCircleSegments = 24;
     private static bool _showDebugEdges = true;
-    private static StandardMaterial3D _debugLineMaterial;
+    private static StandardMaterial3D _debugLineMaterial = null!;
 
     public RigidBody3D GodotRigidBody => _rigidBody;
 
@@ -64,7 +64,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         // When RigidBody syncs position to Slot, SlotHook updates attachedNode. If RigidBody were a child,
         // it would move WITH the parent, causing double-movement each frame.
         // Both RigidBody and attachedNode should be under worldRoot as siblings.
-        Node3D worldRoot = Owner?.World?.GodotSceneRoot as Node3D;
+        Node3D worldRoot = (Owner?.World?.GodotSceneRoot as Node3D)!;
         if (worldRoot != null)
         {
             worldRoot.AddChild(_rigidBody);
@@ -82,7 +82,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
             else
             {
                 // Last resort - will cause issues but at least the body exists
-                attachedNode.AddChild(_rigidBody);
+                attachedNode!.AddChild(_rigidBody);
                 LumoraLogger.Warn($"RigidBodyHook: Added as child of attachedNode (will have transform issues!)");
             }
             _pendingWorldRootReparent = true;
@@ -99,7 +99,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
             _rigidBody.TreeEntered += OnTreeEntered;
         }
 
-        LumoraLogger.Log($"RigidBodyHook: Created RigidBody3D for '{Owner.Slot.SlotName.Value}' with {_rigidBody.GetChildCount()} collision shapes (frozen until static colliders ready)");
+        LumoraLogger.Log($"RigidBodyHook: Created RigidBody3D for '{Owner!.Slot.SlotName.Value}' with {_rigidBody.GetChildCount()} collision shapes (frozen until static colliders ready)");
     }
 
     private void OnTreeEntered()
@@ -337,7 +337,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
 
         if (_rigidBody.GetParent() != worldRoot)
         {
-            var slotPos = Owner.Slot.GlobalPosition;
+            var slotPos = Owner!.Slot.GlobalPosition;
             var slotRot = Owner.Slot.GlobalRotation;
 
             if (_rigidBody.GetParent() != null)
@@ -363,7 +363,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
 
         if (Owner.IsKinematic.Value)
         {
-            // Kinematic mode: sync Slot → RigidBody (for grabbing)
+            // Kinematic mode: sync Slot ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ RigidBody (for grabbing)
             // The slot is being moved by the grabber, RigidBody needs to follow
             var slotPos = Owner.Slot.GlobalPosition;
             var slotRot = Owner.Slot.GlobalRotation;
@@ -372,7 +372,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         }
         else
         {
-            // Dynamic mode: sync RigidBody → Slot (physics simulation)
+            // Dynamic mode: sync RigidBody ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ Slot (physics simulation)
             var globalPos = _rigidBody.GlobalPosition;
             var globalRot = _rigidBody.GlobalBasis.GetRotationQuaternion();
 
@@ -393,7 +393,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         }
 
         ClearDebugEdges();
-        _rigidBody = null;
+        _rigidBody = null!;
         base.Destroy(destroyingWorld);
     }
 
@@ -425,7 +425,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         AddDebugEdgeMesh(mesh, offset, "DebugCylinderEdges");
     }
 
-    private void AddDebugEdgeMesh(ArrayMesh mesh, Vector3 offset, string name)
+    private void AddDebugEdgeMesh(ArrayMesh? mesh, Vector3 offset, string name)
     {
         if (mesh == null) return;
         var meshInstance = new MeshInstance3D
@@ -465,7 +465,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         return _debugLineMaterial;
     }
 
-    private static ArrayMesh BuildBoxWireMesh(Vector3 size)
+    private static ArrayMesh? BuildBoxWireMesh(Vector3 size)
     {
         float hx = size.X * 0.5f;
         float hy = size.Y * 0.5f;
@@ -504,7 +504,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         return BuildLineMesh(vertices, indices);
     }
 
-    private static ArrayMesh BuildSphereWireMesh(float radius)
+    private static ArrayMesh? BuildSphereWireMesh(float radius)
     {
         var vertices = new List<Vector3>();
         var indices = new List<int>();
@@ -516,7 +516,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         return BuildLineMesh(vertices, indices);
     }
 
-    private static ArrayMesh BuildCylinderWireMesh(float radius, float height)
+    private static ArrayMesh? BuildCylinderWireMesh(float radius, float height)
     {
         var vertices = new List<Vector3>();
         var indices = new List<int>();
@@ -536,7 +536,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         return BuildLineMesh(vertices, indices);
     }
 
-    private static ArrayMesh BuildCapsuleWireMesh(float radius, float height)
+    private static ArrayMesh? BuildCapsuleWireMesh(float radius, float height)
     {
         var vertices = new List<Vector3>();
         var indices = new List<int>();
@@ -556,7 +556,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         return BuildLineMesh(vertices, indices);
     }
 
-    private static ArrayMesh BuildLineMesh(List<Vector3> vertices, List<int> indices)
+    private static ArrayMesh? BuildLineMesh(List<Vector3> vertices, List<int> indices)
     {
         if (vertices.Count == 0) return null;
         var mesh = new ArrayMesh();
@@ -589,3 +589,4 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         indices.Add(start + 1);
     }
 }
+

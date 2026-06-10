@@ -84,7 +84,7 @@ public partial class ImportDialog
 
 	private async Task ImportImage(string filePath)
 	{
-		string localUri = null;
+		string localUri = null!;
 		if (_localDB != null)
 			localUri = await _localDB.ImportLocalAssetAsync(filePath, LocalDB.ImportLocation.Copy);
 
@@ -136,7 +136,7 @@ public partial class ImportDialog
 		else
 		{
 			progress?.Report((0.05f, "Preparing model import..."));
-			result = await ModelImporter.ImportModelAsync(filePath, _targetSlot, null, _localDB, progress);
+			result = await ModelImporter.ImportModelAsync(filePath, _targetSlot, null!, _localDB, progress);
 		}
 
 		if (!result.Success)
@@ -156,7 +156,7 @@ public partial class ImportDialog
 		}
 		else
 		{
-			_lastImportedAvatarSlot = null;
+			_lastImportedAvatarSlot = null!;
 			UpdateAvatarSetupButton();
 		}
 
@@ -192,7 +192,7 @@ public partial class ImportDialog
 	// mirrors ClipboardImporter.ImportShader so paste and file-pick produce the same setup - xlinka
 	private async Task ImportShader(string filePath)
 	{
-		string localUri = null;
+		string localUri = null!;
 		if (_localDB != null)
 			localUri = await _localDB.ImportLocalAssetAsync(filePath, LocalDB.ImportLocation.Copy);
 

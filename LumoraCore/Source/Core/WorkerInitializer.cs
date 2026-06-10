@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -58,7 +58,7 @@ internal static class WorkerInitializer
             info.SyncMemberNondrivable[i] = field.GetCustomAttribute<NonDrivableAttribute>() != null;
             info.SyncMemberDontCopy[i] = field.GetCustomAttribute<DontCopyAttribute>() != null;
 
-            string name = field.GetCustomAttribute<NameOverrideAttribute>()?.Name;
+            string name = field.GetCustomAttribute<NameOverrideAttribute>()?.Name!;
             if (string.IsNullOrEmpty(name))
             {
                 name = field.Name;
@@ -144,7 +144,7 @@ internal static class WorkerInitializer
     {
         if (workerType.BaseType != typeof(Worker))
         {
-            GatherWorkerFields(workerType.BaseType, fields);
+            GatherWorkerFields(workerType.BaseType!, fields);
         }
 
         var declared = workerType.GetFields(BindingFlags.DeclaredOnly | BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
@@ -202,7 +202,7 @@ internal static class WorkerInitializer
             current = current.BaseType;
         }
 
-        return null;
+        return null!;
     }
 
     private static bool IsAssignableFromGeneric(this Type genericType, Type toCheck)

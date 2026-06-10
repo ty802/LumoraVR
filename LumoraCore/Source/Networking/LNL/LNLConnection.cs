@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Net;
 using LiteNetLib;
 using LiteNetLib.Utils;
@@ -16,22 +16,22 @@ namespace Lumora.Core.Networking.LNL;
 public class LNLConnection : IConnection, INetEventListener
 {
     private readonly NetManager _client;
-    private NetPeer _peer;
+    private NetPeer _peer = null!;
     private readonly string _appId;
     private readonly object _lockObj = new();
     private bool _hasClosed;
 
     public bool IsOpen { get; private set; }
-    public string FailReason { get; private set; }
-    public IPAddress IP => _peer?.Address;
+    public string FailReason { get; private set; } = null!;
+    public IPAddress IP => (_peer?.Address) ?? null!;
     public Uri Address { get; private set; }
     public string Identifier { get; private set; }
     public ulong ReceivedBytes { get; private set; }
 
-    public event Action<IConnection> Closed;
-    public event Action<IConnection> Connected;
-    public event Action<IConnection> ConnectionFailed;
-    public event Action<byte[], int> DataReceived;
+    public event Action<IConnection> Closed = null!;
+    public event Action<IConnection> Connected = null!;
+    public event Action<IConnection> ConnectionFailed = null!;
+    public event Action<byte[], int> DataReceived = null!;
 
     public LNLConnection(string appId, Uri address, bool dontRoute, IPAddress bindIP)
     {
@@ -78,7 +78,7 @@ public class LNLConnection : IConnection, INetEventListener
         if (_peer != null)
         {
             _client.DisconnectPeer(_peer);
-            _peer = null;
+            _peer = null!;
         }
         _client.Stop();
         InformClosed();
@@ -186,3 +186,4 @@ public class LNLConnection : IConnection, INetEventListener
         // Not used for client connections
     }
 }
+

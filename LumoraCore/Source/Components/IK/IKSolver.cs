@@ -10,7 +10,7 @@ namespace Lumora.Core.Components.IK;
 [ComponentCategory("IK")]
 public class IKSolver : Component
 {
-    public readonly Sync<bool>  Enabled          = new();
+    public new readonly Sync<bool>  Enabled          = new();
     public readonly Sync<float> TimeStepDuration = new();
     public readonly Sync<int>   ControlIterations = new();
     public readonly Sync<int>   FixerIterations   = new();

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -95,7 +95,7 @@ public class SyncDelegate<T> : SyncField<WorldDelegate>, IWorldElementReceiver w
             if (del.Target == null)
             {
                 // Static delegate
-                info = new WorldDelegate(RefID.Null, methodName, method.DeclaringType);
+                info = new WorldDelegate(RefID.Null, methodName, method.DeclaringType!);
             }
             else
             {
@@ -106,7 +106,7 @@ public class SyncDelegate<T> : SyncField<WorldDelegate>, IWorldElementReceiver w
                 if (targetElement.World != World)
                     throw new ArgumentException("Delegate target belongs to a different world");
 
-                info = new WorldDelegate(targetElement.ReferenceID, methodName, null);
+                info = new WorldDelegate(targetElement.ReferenceID, methodName, null!);
             }
 
             _target = value;

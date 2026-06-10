@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -77,7 +77,7 @@ public class MaterialPropertyBlockAsset : DynamicImplementableAsset<IMaterialPro
     {
         if (material == null)
         {
-            return null;
+            return null!;
         }
 
         return Hook?.ApplyToMaterial(material.GodotMaterial, material.MaterialType) ?? material.GodotMaterial;

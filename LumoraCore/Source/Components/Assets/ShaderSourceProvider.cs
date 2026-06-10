@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -30,7 +30,7 @@ public sealed class ShaderSourceProvider : UrlAssetProvider<ShaderSourceAsset, S
         var bytes = await LoadFileBytes(url, token);
         if (bytes == null || bytes.Length == 0)
         {
-            return null;
+            return null!;
         }
 
         var asset = new ShaderSourceAsset();

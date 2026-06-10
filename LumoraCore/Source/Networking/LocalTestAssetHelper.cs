@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.IO;
@@ -7,7 +7,7 @@ namespace Lumora.Core.Networking;
 
 public static class LocalTestAssetHelper
 {
-    private const bool EnableLocalTest = true; //DISABLE THIS IN PROD
+    private static readonly bool EnableLocalTest = true; //DISABLE THIS IN PROD
 
     private const string LocalTestSchema = "localtest://";
 
@@ -21,7 +21,7 @@ public static class LocalTestAssetHelper
     public static byte[] GetLocalTestAssetData(string path)
     {
         if (!ValidPath(path))
-            return null;
+            return null!;
 
         string relativePath = path.Substring(LocalTestSchema.Length);
         string fullPath = Path.Combine(System.AppDomain.CurrentDomain.BaseDirectory, relativePath);
@@ -29,7 +29,7 @@ public static class LocalTestAssetHelper
         if (!File.Exists(fullPath))
         {
             Logging.Logger.Warn($"LocalTestAssetHelper: File not found at '{fullPath}'");
-            return null;
+            return null!;
         }
 
         return File.ReadAllBytes(fullPath);

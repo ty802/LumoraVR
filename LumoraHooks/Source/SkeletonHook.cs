@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
@@ -11,14 +11,14 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 namespace Lumora.Godot.Hooks;
 
 /// <summary>
-/// Hook for SkeletonBuilder component → Godot Skeleton3D.
+/// Hook for SkeletonBuilder component Ã¢â€ â€™ Godot Skeleton3D.
 /// Creates and manages a Skeleton3D node with bone hierarchy.
 /// Platform skeleton hook for Godot.
 /// </summary>
 [ImplementableHook(typeof(SkeletonBuilder))]
 public class SkeletonHook : ComponentHook<SkeletonBuilder>
 {
-    private Skeleton3D _skeleton;
+    private Skeleton3D _skeleton = null!;
     private Dictionary<string, int> _boneNameToIndex = new Dictionary<string, int>();
     private Dictionary<int, Transform3D> _boneRestPoses = new Dictionary<int, Transform3D>();
 
@@ -329,10 +329,11 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
             _skeleton.QueueFree();
         }
 
-        _skeleton = null;
+        _skeleton = null!;
         _boneNameToIndex.Clear();
         _boneRestPoses.Clear();
 
         base.Destroy(destroyingWorld);
     }
 }
+

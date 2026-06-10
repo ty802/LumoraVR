@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.Collections.Generic;
@@ -21,19 +21,19 @@ public sealed class FullBodyIKSolver
         public floatQ Rotation;
     }
 
-    private BipedRig _rig;
+    private BipedRig _rig = null!;
     private bool _captured;
 
     // Spine chain (filtered to existing bones, hips..head).
     private readonly List<Slot> _spine = new();
-    private float[] _spineLengths;
-    private float3[] _spineJoints;
+    private float[] _spineLengths = null!;
+    private float3[] _spineJoints = null!;
 
     // Limb bone slots.
-    private Slot _lShoulder, _lUpper, _lLower, _lHand;
-    private Slot _rShoulder, _rUpper, _rLower, _rHand;
-    private Slot _lHip, _lKnee, _lFoot;
-    private Slot _rHip, _rKnee, _rFoot;
+    private Slot _lShoulder = null!, _lUpper = null!, _lLower = null!, _lHand = null!;
+    private Slot _rShoulder = null!, _rUpper = null!, _rLower = null!, _rHand = null!;
+    private Slot _lHip = null!, _lKnee = null!, _lFoot = null!;
+    private Slot _rHip = null!, _rKnee = null!, _rFoot = null!;
 
     // Rest bone lengths.
     private float _lUpperArmLen, _lLowerArmLen;
@@ -111,8 +111,8 @@ public sealed class FullBodyIKSolver
         CaptureRest(_spine);
         CaptureRestChain(_lShoulder, _lUpper, _lLower, _lHand);
         CaptureRestChain(_rShoulder, _rUpper, _rLower, _rHand);
-        CaptureRestChain(_lHip, _lKnee, _lFoot, null);
-        CaptureRestChain(_rHip, _rKnee, _rFoot, null);
+        CaptureRestChain(_lHip, _lKnee, _lFoot, null!);
+        CaptureRestChain(_rHip, _rKnee, _rFoot, null!);
 
         _captured = true;
     }

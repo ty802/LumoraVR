@@ -18,10 +18,10 @@ public partial class DesktopInput : Node3D
     private const float MaxRayDistance = 100f;
     private const uint UICollisionLayer = 1u << 3;
 
-    private Camera3D _camera;
-    private Control _cursorUI;
-    private CircleCursor _cursorDot;
-    private RayCast3D _interactionRay;
+    private Camera3D _camera = null!;
+    private Control _cursorUI = null!;
+    private CircleCursor _cursorDot = null!;
+    private RayCast3D _interactionRay = null!;
 
     private Vector3 _leftHandPosition;
     private Vector3 _rightHandPosition;

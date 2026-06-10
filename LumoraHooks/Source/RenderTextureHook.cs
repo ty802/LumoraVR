@@ -11,8 +11,8 @@ namespace Lumora.Godot.Hooks;
 [ImplementableHook(typeof(RenderTexture))]
 public class RenderTextureHook : AssetHook, IRenderTextureAssetHook, IGodotTexture
 {
-    private SubViewport _viewport;
-    private Camera3D _camera;
+    private SubViewport _viewport = null!;
+    private Camera3D _camera = null!;
 
     private int _width = 1024;
     private int _height = 1024;
@@ -22,7 +22,7 @@ public class RenderTextureHook : AssetHook, IRenderTextureAssetHook, IGodotTextu
     private Quaternion _cameraRotation = Quaternion.Identity;
     private float _orthoSize = 1f;
 
-    public Texture2D GodotTexture2D => _viewport != null && GodotObject.IsInstanceValid(_viewport)
+    public Texture2D? GodotTexture2D => _viewport != null && GodotObject.IsInstanceValid(_viewport)
         ? _viewport.GetTexture()
         : null;
 
@@ -108,7 +108,7 @@ public class RenderTextureHook : AssetHook, IRenderTextureAssetHook, IGodotTextu
         {
             _viewport.QueueFree();
         }
-        _viewport = null;
-        _camera = null;
+        _viewport = null!;
+        _camera = null!;
     }
 }

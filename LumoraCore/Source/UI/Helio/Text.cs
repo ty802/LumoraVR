@@ -36,8 +36,19 @@ public class Text : Graphic, ILayoutElement
     private bool _wrap;
     private float _layoutPreferredWidth;
     private float _layoutPreferredHeight;
-    private readonly Dictionary<TextureAsset, UITextMaterial> _textMaterials = new();
     private readonly List<LineLayout> _layoutLines = new();
+
+    // Shaping is the dominant per-rebuild cost (per-glyph atlas + kerning lookups, line
+    // breaking, allocations). The canvas rebuilds the whole tree on any change, so cache the
+    // shaped lines and only re-run BuildLines when a shaping input changes. The atlas never
+    // repacks, so cached glyph UVs stay valid until the font gains glyphs (CacheGeneration). - xlinka
+    private bool _linesValid;
+    private string? _shapedContent;
+    private FontSet? _shapedFont;
+    private float _shapedSize;
+    private bool _shapedWrap;
+    private float _shapedMaxWidth;
+    private int _shapedGeneration;
 
     public Text()
     {
@@ -133,7 +144,7 @@ public class Text : Graphic, ILayoutElement
 
         var rect = RectTransform?.LocalComputeRect ?? default;
         float wrapWidth = _wrap && rect.width > 0f ? rect.width : 0f;
-        BuildLines(fontSet, wrapWidth);
+        EnsureLines(fontSet, wrapWidth);
 
         float width = 0f;
         for (int i = 0; i < _layoutLines.Count; i++)
@@ -168,38 +179,23 @@ public class Text : Graphic, ILayoutElement
     {
     }
 
-    // Per-Text local UI_Text material with the atlas baked in. Atlas changes (font swap)
-    // flip the DirectTexture and force the material asset to re-apply. - xlinka
-    private UITextMaterial EnsureTextMaterial(TextureAsset atlas)
-    {
-        if (_textMaterials.TryGetValue(atlas, out var material))
-        {
-            return material;
-        }
-
-        var matSlot = Slot.AddLocalSlot("TextMaterial");
-        material = matSlot.AttachComponent<UITextMaterial>();
-        material.DirectTexture = atlas;
-        material.ForceUpdate();
-        _textMaterials[atlas] = material;
-        return material;
-    }
-
-    private IAssetProvider<MaterialAsset>? GetMaterialForFont(FontAsset font)
+    private IAssetProvider<MaterialAsset>? GetMaterialForFont(GraphicsChunk.RenderData renderData, FontAsset font)
     {
         if (_material != null)
         {
             return _material;
         }
 
+        // Shared per-atlas material (owned by the chunk) so all text batches into one submesh
+        // instead of one surface per Text component. - xlinka
         var atlas = font.AtlasTexture;
-        return atlas != null ? EnsureTextMaterial(atlas) : null;
+        return atlas != null ? renderData.GetSharedTextMaterial(atlas) : null;
     }
 
     private void LayoutAndEmit(FontSet font, GraphicsChunk.RenderData renderData, PhosMesh mesh)
     {
         var rect = RectTransform!.LocalComputeRect;
-        BuildLines(font, _wrap ? rect.width : 0f);
+        EnsureLines(font, _wrap && rect.width > 0f ? rect.width : 0f);
         if (_layoutLines.Count == 0) return;
 
         float ascent = font.GetAscent(_size);
@@ -223,13 +219,41 @@ public class Text : Graphic, ILayoutElement
             for (int i = 0; i < line.Glyphs.Count; i++)
             {
                 var glyph = line.Glyphs[i];
-                var material = GetMaterialForFont(glyph.Font);
+                var material = GetMaterialForFont(renderData, glyph.Font);
                 if (material == null) continue;
 
                 var submesh = renderData.GetSubmesh(material);
                 EmitGlyph(submesh, mesh, penX + glyph.X, penY, glyph.Metrics, glyph.UV, renderData.ClipRect);
             }
         }
+    }
+
+    // Re-shape only when an input that affects line breaking changed. font.CacheGeneration
+    // covers lazily-rasterized glyphs: it bumps as the atlas fills, so a provisional shape
+    // (glyph not resident yet) is reshaped once the glyph lands, then stays cached. - xlinka
+    private void EnsureLines(FontSet font, float maxWidth)
+    {
+        int generation = font.CacheGeneration;
+        if (_linesValid
+            && ReferenceEquals(_shapedFont, font)
+            && _shapedContent == _content
+            && _shapedSize == _size
+            && _shapedWrap == _wrap
+            && _shapedMaxWidth == maxWidth
+            && _shapedGeneration == generation)
+        {
+            return;
+        }
+
+        BuildLines(font, maxWidth);
+
+        _shapedFont = font;
+        _shapedContent = _content;
+        _shapedSize = _size;
+        _shapedWrap = _wrap;
+        _shapedMaxWidth = maxWidth;
+        _shapedGeneration = generation;
+        _linesValid = true;
     }
 
     private void BuildLines(FontSet font, float maxWidth)

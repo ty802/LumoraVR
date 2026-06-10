@@ -194,7 +194,7 @@ public struct float3 : IEquatable<float3>
     public static bool operator !=(float3 a, float3 b) => !(a == b);
 
     public bool Equals(float3 other) => x == other.x && y == other.y && z == other.z;
-    public override bool Equals(object obj) => obj is float3 other && Equals(other);
+    public override bool Equals(object? obj) => obj is float3 other && Equals(other);
     public override int GetHashCode() => HashCode.Combine(x, y, z);
     public override string ToString() => $"({x}, {y}, {z})";
 
@@ -214,4 +214,3 @@ public struct float3 : IEquatable<float3>
     /// Implicit conversion from Godot Vector3.
     /// </summary>
 }
-

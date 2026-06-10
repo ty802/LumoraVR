@@ -33,13 +33,13 @@ public partial class ImportDialog
             return;
         }
 
-        if (_activeAvatarCreatorSession != null && _activeAvatarCreatorSession.Matches(avatarSlot))
+        if (_activeAvatarCreatorSession != null && _activeAvatarCreatorSession.Matches(avatarSlot!))
         {
             _btnAvatarSetup.Text = "Create Avatar";
             return;
         }
 
-        _btnAvatarSetup.Text = IsAvatarFinalized(avatarSlot)
+        _btnAvatarSetup.Text = IsAvatarFinalized(avatarSlot!)
             ? "Equip Avatar"
             : "Open Creator";
     }
@@ -131,7 +131,7 @@ public partial class ImportDialog
     {
         if (_lastImportedAvatarSlot == null || _lastImportedAvatarSlot.IsDestroyed)
         {
-            _lastImportedAvatarSlot = null;
+            _lastImportedAvatarSlot = null!;
             return null;
         }
 

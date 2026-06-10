@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -37,7 +37,7 @@ public abstract class Asset : IAsset
     // Locking state
     private SpinLock lockRequestLock = new SpinLock(enableThreadOwnerTracking: false);
     private List<object> readLocks = new List<object>();
-    private object writeLock;
+    private object writeLock = null!;
     private Queue<LockRequest> lockRequests = new Queue<LockRequest>();
 
     // Consumer notifications
@@ -48,10 +48,10 @@ public abstract class Asset : IAsset
     public bool HighPriorityIntegration { get; set; }
     internal int UnloadKey { get; set; }
     public int Version { get; protected set; }
-    public object Owner { get; protected set; }
+    public object Owner { get; protected set; } = null!;
     public AssetType AssetType { get; protected set; }
     public AssetLoadState LoadState { get; protected set; }
-    public Uri AssetURL { get; private set; }
+    public Uri AssetURL { get; private set; } = null!;
 
     /// <summary>
     /// Number of active requests for this asset.
@@ -319,7 +319,7 @@ public abstract class Asset : IAsset
             {
                 throw new InvalidOperationException($"Current writeLock and passed lockObject do not match! writeLock: {writeLock?.GetHashCode()}, lockObject: {lockObject?.GetHashCode()}");
             }
-            writeLock = null;
+            writeLock = null!;
         }
         finally
         {
@@ -382,7 +382,7 @@ public abstract class Asset : IAsset
     private void ProcessLockRequestQueue()
     {
         bool lockTaken = false;
-        List<Action<IAsset>> list = null;
+        List<Action<IAsset>> list = null!;
         try
         {
             lockRequestLock.Enter(ref lockTaken);
@@ -430,3 +430,4 @@ public abstract class Asset : IAsset
         }
     }
 }
+

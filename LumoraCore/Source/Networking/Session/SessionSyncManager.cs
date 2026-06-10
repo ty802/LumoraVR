@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
@@ -37,9 +37,9 @@ public class SessionSyncManager : IDisposable
     }
 
     // Threads
-    private Thread _decodeThread;
-    private Thread _encodeThread;
-    private Thread _syncThread;
+    private Thread _decodeThread = null!;
+    private Thread _encodeThread = null!;
+    private Thread _syncThread = null!;
 
     // Thread synchronization
     private readonly AutoResetEvent _decodeThreadEvent = new(false);
@@ -60,7 +60,6 @@ public class SessionSyncManager : IDisposable
 
     // State
     private bool _running;
-    private bool _stopProcessing;
     private bool _isDisposed;
     private bool _acceptDeltas;
 
@@ -93,7 +92,7 @@ public class SessionSyncManager : IDisposable
 
     // Debug
     public SyncLoopStage DEBUG_SyncLoopStage { get; private set; }
-    public SyncMessage ProcessingSyncMessage { get; private set; }
+    public SyncMessage ProcessingSyncMessage { get; private set; } = null!;
 
     // Statistics
     public int TotalProcessedMessages { get; private set; }
@@ -109,7 +108,7 @@ public class SessionSyncManager : IDisposable
     public int LastGeneratedDeltaChanges { get; private set; }
 
     public Session Session { get; private set; }
-    public World World => Session?.World;
+    public World World => (Session?.World) ?? null!;
     public int SyncRate { get; set; } = 20;
 
     public SessionSyncManager(Session session)
@@ -184,7 +183,6 @@ public class SessionSyncManager : IDisposable
     /// </summary>
     public void StopProcessing()
     {
-        _stopProcessing = true;
         _syncThreadEvent.Set();
     }
 
@@ -355,7 +353,7 @@ public class SessionSyncManager : IDisposable
                         TotalProcessedMessages++;
                     }
 
-                    ProcessingSyncMessage = null;
+                    ProcessingSyncMessage = null!;
                 }
 
                 DEBUG_SyncLoopStage = SyncLoopStage.ExitedMessageProcessing;
@@ -517,7 +515,7 @@ public class SessionSyncManager : IDisposable
 
                 if (World.IsAuthority)
                 {
-                    List<User> usersToInit = null;
+                    List<User> usersToInit = null!;
                     lock (_newUsersLock)
                     {
                         if (_newUsersToInitialize.Count > 0)
@@ -675,7 +673,7 @@ public class SessionSyncManager : IDisposable
                     {
                         // Authority sees the original sender connection (no relay). A peer
                         // can put any UserID in the StreamMessage, so we must reject the
-                        // message — and refuse to relay it — when the claimed UserID does
+                        // message â€” and refuse to relay it â€” when the claimed UserID does
                         // not belong to the connection it actually arrived on. Otherwise a
                         // malicious peer can spoof another user's identity and we will
                         // forward the spoofed stream data to everyone else in the session.
@@ -937,7 +935,7 @@ public class SessionSyncManager : IDisposable
 
     /// <summary>
     /// Verify a user-attributed message's claimed UserID matches the user mapped
-    /// to the sender connection. Authority-side use only — clients receive
+    /// to the sender connection. Authority-side use only â€” clients receive
     /// messages relayed via the host, whose Sender is the host connection rather
     /// than the original peer.
     /// </summary>
@@ -976,7 +974,7 @@ public class SessionSyncManager : IDisposable
         if (World.IsAuthority)
         {
             var connections = Session.Connections.GetAllConnections();
-            HashSet<User> initializingUsers = null;
+            HashSet<User> initializingUsers = null!;
 
             lock (_newUsersLock)
             {
@@ -1228,7 +1226,7 @@ public class SessionSyncManager : IDisposable
         var decoded = TryDecodePendingRecord(record, isFull);
         if (decoded)
         {
-            DropPendingRecord(record.TargetID, isFull, null);
+            DropPendingRecord(record.TargetID, isFull, null!);
             return;
         }
 
@@ -1536,3 +1534,4 @@ public class SessionSyncManager : IDisposable
         LumoraLogger.Log("SessionSyncManager disposed");
     }
 }
+

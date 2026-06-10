@@ -22,7 +22,9 @@ public class CurrentDateTimeTextDriver : Component
     {
         base.OnCommonUpdate();
         var text = Target.Target;
-        if (text != null)
-            text.Content.Value = System.DateTime.Now.ToString(Format.Value);
+        if (text == null) return;
+        var next = System.DateTime.Now.ToString(Format.Value);
+        if (text.Content.Value != next)
+            text.Content.Value = next;
     }
 }

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.Collections.Generic;
@@ -55,7 +55,7 @@ public class StreamGroupManager
     /// </summary>
     public string GetGroupName(ushort index)
     {
-        return _indexToName.TryGetValue(index, out var name) ? name : null;
+        return (_indexToName.TryGetValue(index, out var name) ? name : null) ?? null!;
     }
 
     /// <summary>
@@ -103,7 +103,7 @@ public class StreamGroupManager
     /// </summary>
     public StreamGroup GetGroup(ushort index)
     {
-        return _groups.TryGetValue(index, out var group) ? group : null;
+        return (_groups.TryGetValue(index, out var group) ? group : null) ?? null!;
     }
 
     /// <summary>

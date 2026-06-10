@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core.Networking;
@@ -16,7 +16,7 @@ public class FullBatch : BinaryMessageBatch
     public bool UseBackgroundQueue { get; set; }
     public override bool Background => UseBackgroundQueue;
 
-    public FullBatch(ulong stateVersion, ulong syncTick, IConnection sender = null)
+    public FullBatch(ulong stateVersion, ulong syncTick, IConnection sender = null!)
         : base(stateVersion, syncTick, sender)
     {
     }

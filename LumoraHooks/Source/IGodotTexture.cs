@@ -7,6 +7,6 @@ namespace Lumora.Godot.Hooks;
 
 public interface IGodotTexture
 {
-    Texture2D GodotTexture2D { get; }
+    Texture2D? GodotTexture2D { get; }
     bool IsValid { get; }
 }

@@ -11,11 +11,15 @@ namespace Lumora.Core.Components.UI;
 
 public class WizardForm : UIComponent
 {
+    public readonly Sync<float> SlideDuration;
+    public readonly Sync<float2> CanvasSize;
+
     private readonly List<Action<UIBuilder>> _path = new();
     private Slot? _swapSlot;
     private SwapPanel? _swapPanel;
 
     public int Depth => _path.Count;
+
     public SwapPanel? SwapPanel
     {
         get
@@ -23,6 +27,23 @@ public class WizardForm : UIComponent
             EnsureSwapPanel();
             return _swapPanel;
         }
+    }
+
+    protected virtual float DefaultSlideDuration => 0.25f;
+    protected virtual float2 DefaultCanvasSize => new float2(400f, 800f);
+    public virtual float CanvasScale => 0.5f / CanvasSize.Value.y;
+
+    public WizardForm()
+    {
+        SlideDuration = new Sync<float>(this, 0.25f);
+        CanvasSize = new Sync<float2>(this, new float2(400f, 800f));
+    }
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        SlideDuration.Value = DefaultSlideDuration;
+        CanvasSize.Value = DefaultCanvasSize;
     }
 
     public override void OnStart()
@@ -70,6 +91,7 @@ public class WizardForm : UIComponent
         _swapSlot = Slot.AddSlot("WizardPages");
         Fill(_swapSlot.AttachComponent<RectTransform>());
         _swapPanel = _swapSlot.AttachComponent<SwapPanel>();
+        _swapPanel.Duration.Value = SlideDuration.Value;
     }
 
     private static void Fill(RectTransform rect)

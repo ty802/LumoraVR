@@ -7,6 +7,7 @@ using Helio.UI.Layout;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Components.Assets;
+using Lumora.Core.Components.Import;
 using Lumora.Core.Components.Interaction;
 using Lumora.Core.Components.Meshes;
 using Lumora.Core.Input;
@@ -17,6 +18,10 @@ namespace Lumora.Core.Components.UI;
 public class UserspaceDashboard : UIComponent
 {
     private const int CaptureHeight = 720;
+    // Render the offscreen texture at this multiple of the logical canvas size, then
+    // downsample on display. 2x means text/edges land between display pixels with proper
+    // detail to filter from instead of stretching 1:1+ from a 1280x720 buffer. - xlinka
+    private const int SupersampleScale = 2;
     private const float CanvasScale = 0.001f;
     private const float CaptureDistance = 1f;
     private static readonly float3 RigWorldPosition = new float3(0f, 1000f, 0f);
@@ -135,7 +140,7 @@ public class UserspaceDashboard : UIComponent
 
         _captureWidth = w;
         if (_dashboard != null) _dashboard.Size.Value = new float2(w, CaptureHeight);
-        if (_renderTexture != null) _renderTexture.Width.Value = w;
+        if (_renderTexture != null) _renderTexture.Width.Value = w * SupersampleScale;
         if (_displayMesh != null)
             _displayMesh.Size.Value = new float2(DisplayHeight.Value * ((float)w / CaptureHeight), DisplayHeight.Value);
     }
@@ -157,6 +162,55 @@ public class UserspaceDashboard : UIComponent
     {
         var canvas = _canvasSlot?.GetComponent<Canvas>();
         canvas?.ClearPointer(UIInteractionSource.Desktop, 0, World?.LocalUser);
+    }
+
+    public bool FeedAxis(float2 axis)
+    {
+        var canvas = _canvasSlot?.GetComponent<Canvas>();
+        if (canvas == null) return false;
+        return canvas.ProcessAxis(UIInteractionSource.Desktop, 0, in axis);
+    }
+
+    private string _searchBuffer = string.Empty;
+
+    public void FeedSearchChar(char c)
+    {
+        if (_dashboard?.CurrentScreen is FileBrowserScreen fb && fb.ConsumeChar(c))
+            return;
+        _searchBuffer += c;
+        ApplySearch();
+    }
+
+    public void FeedSearchBackspace()
+    {
+        if (_dashboard?.CurrentScreen is FileBrowserScreen fb && fb.ConsumeBackspace())
+            return;
+        if (_searchBuffer.Length == 0) return;
+        _searchBuffer = _searchBuffer.Substring(0, _searchBuffer.Length - 1);
+        ApplySearch();
+    }
+
+    public bool FeedEnter()
+    {
+        return _dashboard?.CurrentScreen is FileBrowserScreen fb && fb.ConsumeEnter();
+    }
+
+    public bool FeedEscape()
+    {
+        return _dashboard?.CurrentScreen is FileBrowserScreen fb && fb.ConsumeEscape();
+    }
+
+    public void ClearSearch()
+    {
+        if (_searchBuffer.Length == 0) return;
+        _searchBuffer = string.Empty;
+        ApplySearch();
+    }
+
+    private void ApplySearch()
+    {
+        if (_dashboard?.CurrentScreen is FileBrowserScreen fb)
+            fb.SetSearch(_searchBuffer);
     }
 
     public void UpdateVrPointer(InteractionLaser laser, int pointerId, float2 normalized, bool pressed)
@@ -193,8 +247,16 @@ public class UserspaceDashboard : UIComponent
         BuildDefaultScreens();
     }
 
+    private static readonly Uri DefaultFontUri = new("res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf");
+
     private void EnsureFont()
     {
+        // Register the font URL so import dialogs can create their own
+        // FontProviders in their own world (avoids cross-world AssetRef
+        // rejection). Sharing a FontProvider component instance across
+        // worlds doesn't work — SyncRef.Target rejects it. - xlinka
+        ImportDialog.DefaultFontUrl ??= DefaultFontUri;
+
         if (Font.Target != null) return;
 
         _fontProvider ??= Slot.FindChild("UIFont", recursive: false)?.GetComponent<FontProvider>();
@@ -202,8 +264,8 @@ public class UserspaceDashboard : UIComponent
         {
             var fontSlot = Slot.AddSlot("UIFont");
             _fontProvider = fontSlot.AttachComponent<FontProvider>();
-            _fontProvider.URL.Value = new Uri("res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf");
-            _fontProvider.FallbackURLs.Add(new Uri("res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf"));
+            _fontProvider.URL.Value = DefaultFontUri;
+            _fontProvider.FallbackURLs.Add(DefaultFontUri);
         }
 
         Font.Target = _fontProvider;
@@ -230,8 +292,8 @@ public class UserspaceDashboard : UIComponent
         _dashboard.Font.Target = Font.Target;
 
         _renderTexture = _renderRig.AttachComponent<RenderTextureProvider>();
-        _renderTexture.Width.Value = _captureWidth;
-        _renderTexture.Height.Value = CaptureHeight;
+        _renderTexture.Width.Value = _captureWidth * SupersampleScale;
+        _renderTexture.Height.Value = CaptureHeight * SupersampleScale;
         _renderTexture.CullMask.Value = RenderLayerOverride.HiddenLayer;
         _renderTexture.OrthographicSize.Value = CaptureHeight * CanvasScale;
         _renderTexture.CameraPosition.Value = RigWorldPosition + new float3(0f, 0f, CaptureDistance);
@@ -273,23 +335,22 @@ public class UserspaceDashboard : UIComponent
         if (_defaultScreensBuilt || _dashboard == null) return;
         _defaultScreensBuilt = true;
 
-        AddInfoScreen("Home", new color(0.94f, 0.81f, 0f, 1f), "Home",
+        AddInfoScreen("Home", new color(0.94f, 0.81f, 0f, 1f),
             "Your home space and quick actions.");
-        AddInfoScreen("Worlds", new color(0.20f, 0.80f, 1f, 1f), "Worlds",
+        AddInfoScreen("Worlds", new color(0.20f, 0.80f, 1f, 1f),
             "Browse, open and manage worlds.");
-        AddInfoScreen("Session", new color(0.25f, 0.55f, 1f, 1f), "Session",
+        AddInfoScreen("Session", new color(0.25f, 0.55f, 1f, 1f),
             "Session controls and the users in this session.");
-        AddInfoScreen("Settings", new color(1f, 0.22f, 0.28f, 1f), "Settings",
+        AddInfoScreen("Settings", new color(1f, 0.22f, 0.28f, 1f),
             "Interface, input, audio and locomotion settings.");
-        AddInfoScreen("Friends", new color(0.30f, 1f, 0.80f, 1f), "Friends",
+        AddInfoScreen("Friends", new color(0.30f, 1f, 0.80f, 1f),
             "Friends, requests and messages.");
-        AddInfoScreen("Inventory", new color(0.85f, 0.60f, 0.22f, 1f), "Inventory",
+        AddInfoScreen("Inventory", new color(0.85f, 0.60f, 0.22f, 1f),
             "Your saved items and avatars.");
-        AddInfoScreen("Files", new color(0.70f, 0.66f, 0.32f, 1f), "Files",
-            "Import and browse files.");
+        _dashboard?.AddScreen<FileBrowserScreen>("Files", new color(0.70f, 0.66f, 0.32f, 1f));
     }
 
-    private void AddInfoScreen(string label, color accent, string title, string body)
+    private void AddInfoScreen(string label, color accent, string body)
     {
         if (_dashboard == null) return;
 
@@ -301,9 +362,6 @@ public class UserspaceDashboard : UIComponent
         builder.Font(Font.Target).TextColor(color.White).BackgroundColor(new color(0.06f, 0.07f, 0.09f, 0.82f));
         var layout = builder.VerticalLayout(12f, 22f);
         Fill(layout.RectTransform!);
-
-        builder.FontSize(30f).MinHeight(42f).PreferredHeight(48f).Text(title, 30f, color.White);
-        Fill(builder.Current.GetComponent<RectTransform>()!);
 
         builder.FontSize(18f).MinHeight(120f).PreferredHeight(160f).FlexibleHeight(0f);
         var text = builder.Text(body, 18f, new color(0.82f, 0.87f, 0.92f, 1f));

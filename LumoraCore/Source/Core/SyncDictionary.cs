@@ -16,6 +16,7 @@ namespace Lumora.Core;
 /// Use this instead of wrapping individual Sync&lt;T&gt; fields for keyed collections.
 /// </summary>
 public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<KeyValuePair<TKey, TValue>>
+    where TKey : notnull
 {
     private const byte OpSet = 0;
     private const byte OpRemove = 1;
@@ -110,7 +111,13 @@ public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<
     public bool TryGetValue(TKey key, out TValue value)
     {
         AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.Dictionary, key: key);
-        return _dict.TryGetValue(key, out value);
+        if (_dict.TryGetValue(key, out var found))
+        {
+            value = found;
+            return true;
+        }
+        value = default!;
+        return false;
     }
 
     public TValue GetValueOrDefault(TKey key, TValue defaultValue = default!)

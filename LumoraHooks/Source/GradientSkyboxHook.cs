@@ -18,13 +18,13 @@ public sealed class GradientSkyboxHook : ComponentHook<GradientSkybox>
 {
     private const string ShaderPath = "res://Shaders/GradientSkybox.gdshader";
 
-    private WorldEnvironment _worldEnvironment;
-    private global::Godot.Environment _previousEnvironment;
+    private WorldEnvironment _worldEnvironment = null!;
+    private global::Godot.Environment _previousEnvironment = null!;
     private bool _ownsWorldEnvironment;
-    private global::Godot.Environment _environment;
-    private Sky _sky;
-    private ShaderMaterial _skyMaterial;
-    private FocusManager _focusManager;
+    private global::Godot.Environment _environment = null!;
+    private Sky _sky = null!;
+    private ShaderMaterial _skyMaterial = null!;
+    private FocusManager _focusManager = null!;
     private bool _gradientActive;
 
     public static IHook<GradientSkybox> Constructor() => new GradientSkyboxHook();
@@ -70,7 +70,7 @@ public sealed class GradientSkyboxHook : ComponentHook<GradientSkybox>
 
         ApplyChanges();
 
-        _focusManager = Lumora.Core.Engine.Current?.FocusManager;
+        _focusManager = Lumora.Core.Engine.Current?.FocusManager!;
         if (_focusManager != null)
         {
             _focusManager.OnFocusedWorldChanged += OnFocusedWorldChanged;
@@ -144,7 +144,7 @@ public sealed class GradientSkyboxHook : ComponentHook<GradientSkybox>
 
     private WorldEnvironment FindWorldEnvironment()
     {
-        return attachedNode.GetTree()?.Root?.FindChild("WorldEnvironment", true, false) as WorldEnvironment;
+        return (attachedNode.GetTree()?.Root?.FindChild("WorldEnvironment", true, false) as WorldEnvironment)!;
     }
 
     private void SetColor(string uniform, color value)
@@ -157,7 +157,7 @@ public sealed class GradientSkyboxHook : ComponentHook<GradientSkybox>
         if (_focusManager != null)
         {
             _focusManager.OnFocusedWorldChanged -= OnFocusedWorldChanged;
-            _focusManager = null;
+            _focusManager = null!;
         }
 
         RestorePreviousEnv();
@@ -171,11 +171,11 @@ public sealed class GradientSkyboxHook : ComponentHook<GradientSkybox>
         _sky?.Dispose();
         _skyMaterial?.Dispose();
 
-        _worldEnvironment = null;
-        _previousEnvironment = null;
-        _environment = null;
-        _sky = null;
-        _skyMaterial = null;
+        _worldEnvironment = null!;
+        _previousEnvironment = null!;
+        _environment = null!;
+        _sky = null!;
+        _skyMaterial = null!;
 
         base.Destroy(destroyingWorld);
     }

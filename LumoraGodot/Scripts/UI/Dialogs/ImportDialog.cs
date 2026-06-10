@@ -33,33 +33,33 @@ public partial class ImportDialog : Control
 
     private const string OptionButtonScenePath = "res://Scenes/UI/Components/ImportOptionButton.tscn";
 
-    private Button _btnClose;
-    private Button _btnInfo;
-    private Button _btnAvatarSetup;
-    private Label _titleLabel;
-    private Label _subtitleLabel;
-    private VBoxContainer _optionsList;
-    private Label _fileInfoLabel;
-    private Control _progressPanel;
-    private Label _progressStatusLabel;
-    private ProgressBar _progressBar;
-    private PackedScene _optionButtonScene;
+    private Button _btnClose = null!;
+    private Button _btnInfo = null!;
+    private Button _btnAvatarSetup = null!;
+    private Label _titleLabel = null!;
+    private Label _subtitleLabel = null!;
+    private VBoxContainer _optionsList = null!;
+    private Label _fileInfoLabel = null!;
+    private Control _progressPanel = null!;
+    private Label _progressStatusLabel = null!;
+    private ProgressBar _progressBar = null!;
+    private PackedScene _optionButtonScene = null!;
     private readonly List<Button> _optionButtons = new();
 
     private bool _isInitialized;
     private bool _isImporting;
     private ImportType? _selectedType;
-    private string _filePath;
-    private LocalDB _localDB;
-    private Slot _targetSlot;
+    private string _filePath = null!;
+    private LocalDB _localDB = null!;
+    private Slot _targetSlot = null!;
     private bool _hasImportSpawnPosition;
     private float3 _importSpawnPosition;
-    private Slot _lastImportedAvatarSlot;
+    private Slot _lastImportedAvatarSlot = null!;
     private AvatarCreatorSession? _activeAvatarCreatorSession;
-    private Control _infoTooltip;
+    private Control _infoTooltip = null!;
 
-    public event Action<ImportType, string> ImportRequested;
-    public event Action DialogClosed;
+    public event Action<ImportType, string> ImportRequested = null!;
+    public event Action DialogClosed = null!;
 
     public override void _Ready()
     {
@@ -96,7 +96,7 @@ public partial class ImportDialog : Control
     /// <summary>
     /// Show the import dialog pre-configured for a specific file.
     /// </summary>
-    public void ShowForFile(string filePath, Slot targetSlot = null, LocalDB localDB = null, float3? importSpawnPosition = null)
+    public void ShowForFile(string filePath, Slot targetSlot = null!, LocalDB localDB = null!, float3? importSpawnPosition = null)
     {
         ResetAvatarCreatorState();
         _filePath = filePath;
@@ -106,7 +106,7 @@ public partial class ImportDialog : Control
         _importSpawnPosition = importSpawnPosition ?? float3.Zero;
         _selectedType = null;
         _isImporting = false;
-        _lastImportedAvatarSlot = null;
+        _lastImportedAvatarSlot = null!;
 
         if (_isInitialized)
         {
@@ -119,17 +119,17 @@ public partial class ImportDialog : Control
     /// <summary>
     /// Show the import dialog in generic mode.
     /// </summary>
-    public void ShowDialog(Slot targetSlot = null, LocalDB localDB = null)
+    public void ShowDialog(Slot targetSlot = null!, LocalDB localDB = null!)
     {
         ResetAvatarCreatorState();
-        _filePath = null;
+        _filePath = null!;
         _targetSlot = targetSlot;
         _localDB = localDB;
         _hasImportSpawnPosition = false;
         _importSpawnPosition = float3.Zero;
         _selectedType = null;
         _isImporting = false;
-        _lastImportedAvatarSlot = null;
+        _lastImportedAvatarSlot = null!;
 
         if (_isInitialized)
         {
@@ -209,7 +209,7 @@ public partial class ImportDialog : Control
         if (_infoTooltip != null && IsInstanceValid(_infoTooltip))
         {
             _infoTooltip.QueueFree();
-            _infoTooltip = null;
+            _infoTooltip = null!;
             return;
         }
 
@@ -289,7 +289,7 @@ public partial class ImportDialog : Control
             {
                 tooltipRef.QueueFree();
                 if (_infoTooltip == tooltipRef)
-                    _infoTooltip = null;
+                    _infoTooltip = null!;
             }
         };
     }
@@ -317,7 +317,7 @@ public partial class ImportDialog : Control
         if (type != ImportType.Avatar)
         {
             ResetAvatarCreatorState();
-            _lastImportedAvatarSlot = null;
+            _lastImportedAvatarSlot = null!;
             UpdateAvatarSetupButton();
         }
 

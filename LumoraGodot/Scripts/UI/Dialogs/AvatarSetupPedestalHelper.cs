@@ -113,7 +113,7 @@ internal static class AvatarSetupPedestalHelper
     /// Snap a marker to a bone's world position/rotation, expressed in avatar-local space.
     /// If <paramref name="bone"/> is null the marker keeps its default position.
     /// </summary>
-    internal static void ApplyMarkerFromBone(Slot avatarRoot, Slot marker, Slot bone, float3 fallbackForward, float forwardOffset = 0f)
+    internal static void ApplyMarkerFromBone(Slot avatarRoot, Slot marker, Slot? bone, float3 fallbackForward, float forwardOffset = 0f)
     {
         if (avatarRoot == null || marker == null || bone == null || bone.IsDestroyed)
             return;

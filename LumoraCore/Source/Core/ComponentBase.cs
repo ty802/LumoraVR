@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -21,7 +21,7 @@ public abstract class ComponentBase<C> : Worker, IUpdatable, IChangeable, IIniti
     private bool _isChangeDirty;
     private bool _wasEnabled;
 
-    internal ContainerWorker<C> Container { get; private set; }
+    internal ContainerWorker<C> Container { get; private set; } = null!;
 
     public bool IsStarted { get; private set; }
     public bool IsValid { get; private set; }

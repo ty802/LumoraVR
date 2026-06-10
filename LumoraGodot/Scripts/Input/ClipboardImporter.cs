@@ -12,6 +12,7 @@ using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Components;
 using Lumora.Core.Components.Assets;
+using Lumora.Core.Components.Import;
 using Lumora.Core.Math;
 using LumoraMeshes = Lumora.Core.Components.Meshes;
 
@@ -43,15 +44,15 @@ public partial class ClipboardImporter : Node
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     private static extern uint DragQueryFile(IntPtr hDrop, uint iFile, StringBuilder lpszFile, uint cch);
 
-    private LocalDB _localDB;
-    private Slot _targetSlot;
-    private Camera3D _camera;
-    private Lumora.Core.Engine _engine;
+    private LocalDB _localDB = null!;
+    private Slot _targetSlot = null!;
+    private Camera3D _camera = null!;
+    private Lumora.Core.Engine _engine = null!;
 
     /// <summary>
     /// Event fired when an asset is imported from clipboard.
     /// </summary>
-    public event Action<string, Slot> OnAssetImported;
+    public event Action<string, Slot> OnAssetImported = null!;
 
     public override void _Ready()
     {
@@ -69,16 +70,44 @@ public partial class ClipboardImporter : Node
 
     /// <summary>
     /// Handle files dropped onto the window (drag & drop).
+    /// Routes through UniversalImporter so the matching import dialog (Image/Model/
+    /// Video/Folder) appears at the user's view, rather than auto-importing silently.
+    /// - xlinka
     /// </summary>
     private async void OnFilesDropped(string[] files)
     {
         GD.Print($"ClipboardImporter: {files.Length} file(s) dropped");
 
+        var world = _engine?.WorldManager?.FocusedWorld;
+        if (world == null)
+        {
+            GD.PrintErr("ClipboardImporter: No focused world for drop");
+            return;
+        }
+
+        var (pos, rot) = GetSpawnPose();
         foreach (var filePath in files)
         {
-            GD.Print($"ClipboardImporter: Processing dropped file: {filePath}");
-            await HandleFilePath(filePath);
+            var normalized = NormalizeFilePath(filePath);
+            GD.Print($"ClipboardImporter: Processing dropped file: {normalized}");
+            UniversalImporter.Import(normalized, world, pos, rot);
         }
+        await Task.CompletedTask;
+    }
+
+    private (float3 position, floatQ rotation) GetSpawnPose()
+    {
+        if (_camera != null)
+        {
+            var camPos = _camera.GlobalPosition;
+            var camFwd = -_camera.GlobalTransform.Basis.Z;
+            var spawn = camPos + camFwd * 1.0f;
+            return (
+                new float3(spawn.X, spawn.Y, spawn.Z),
+                floatQ.LookRotation(new float3(camFwd.X, camFwd.Y, camFwd.Z), float3.Up)
+            );
+        }
+        return (float3.Zero, floatQ.Identity);
     }
 
     /// <summary>
@@ -97,6 +126,56 @@ public partial class ClipboardImporter : Node
     public void SetEngine(Lumora.Core.Engine engine)
     {
         _engine = engine;
+        RegisterImportHandlers();
+    }
+
+    private void RegisterImportHandlers()
+    {
+        ImportHandlers.Image = new ImageHandler(this);
+        ImportHandlers.Model = new ModelHandler(this);
+        ImportHandlers.Raw = new RawFileHandler(this);
+        GD.Print("ClipboardImporter: Registered Image/Model/Raw import handlers");
+    }
+
+    private sealed class ImageHandler : IImageImportHandler
+    {
+        private readonly ClipboardImporter _owner;
+        public ImageHandler(ClipboardImporter owner) { _owner = owner; }
+        public Task ImportAsync(Slot slot, string path) => _owner.PopulateImageSlotAsync(slot, path);
+    }
+
+    private sealed class ModelHandler : IModelImportHandler
+    {
+        private readonly ClipboardImporter _owner;
+        public ModelHandler(ClipboardImporter owner) { _owner = owner; }
+        public Task ImportAsync(Slot slot, string path, ModelImportRequest request)
+        {
+            // ModelImportRequest fields aren't propagated into ModelImporter yet;
+            // path goes straight through. - xlinka
+            var ext = Path.GetExtension(path).ToLowerInvariant();
+            bool isAvatar = ext == ".vrm";
+            return _owner.PopulateModelSlotAsync(slot, path, isAvatar);
+        }
+    }
+
+    private sealed class RawFileHandler : IRawFileImportHandler
+    {
+        private readonly ClipboardImporter _owner;
+        public RawFileHandler(ClipboardImporter owner) { _owner = owner; }
+        public Task ImportAsync(Slot slot, string path)
+        {
+            var ext = Path.GetExtension(path).ToLowerInvariant();
+            return ext switch
+            {
+                ".png" or ".jpg" or ".jpeg" or ".webp" or ".bmp" or ".tga"
+                    => _owner.PopulateImageSlotAsync(slot, path),
+                ".gdshader"
+                    => _owner.PopulateShaderSlotAsync(slot, path),
+                _ when ModelImporter.IsSupportedFormat(path)
+                    => _owner.PopulateModelSlotAsync(slot, path, isAvatar: ext == ".vrm"),
+                _ => Task.CompletedTask,
+            };
+        }
     }
 
     /// <summary>
@@ -108,7 +187,7 @@ public partial class ClipboardImporter : Node
             return _targetSlot;
 
         // Try to get from focused world
-        return _engine?.WorldManager?.FocusedWorld?.RootSlot;
+        return _engine?.WorldManager?.FocusedWorld?.RootSlot!;
     }
 
     /// <summary>
@@ -158,12 +237,12 @@ public partial class ClipboardImporter : Node
                     return files;
 
                 // Get number of files
-                uint fileCount = DragQueryFile(hDrop, 0xFFFFFFFF, null, 0);
+                uint fileCount = DragQueryFile(hDrop, 0xFFFFFFFF, null!, 0);
 
                 for (uint i = 0; i < fileCount; i++)
                 {
                     // Get required buffer size
-                    uint size = DragQueryFile(hDrop, i, null, 0) + 1;
+                    uint size = DragQueryFile(hDrop, i, null!, 0) + 1;
                     var sb = new StringBuilder((int)size);
                     DragQueryFile(hDrop, i, sb, size);
                     files.Add(sb.ToString());
@@ -314,82 +393,65 @@ public partial class ClipboardImporter : Node
         return content?.Trim().Trim('"') ?? string.Empty;
     }
 
-    private async Task HandleFilePath(string filePath)
+    private Task HandleFilePath(string filePath)
     {
         filePath = NormalizeFilePath(filePath);
         GD.Print($"ClipboardImporter: Handling file path: {filePath}");
 
-        if (!File.Exists(filePath))
+        if (!File.Exists(filePath) && !Directory.Exists(filePath))
         {
-            GD.PrintErr($"ClipboardImporter: File not found: {filePath}");
-            return;
+            GD.PrintErr($"ClipboardImporter: Path not found: {filePath}");
+            return Task.CompletedTask;
         }
 
-        var extension = Path.GetExtension(filePath).ToLowerInvariant();
+        var world = _engine?.WorldManager?.FocusedWorld;
+        if (world == null)
+        {
+            GD.PrintErr("ClipboardImporter: No focused world for paste");
+            return Task.CompletedTask;
+        }
 
-        await AutoImport(filePath, extension);
+        var (pos, rot) = GetSpawnPose();
+        UniversalImporter.Import(filePath, world, pos, rot);
+        return Task.CompletedTask;
     }
 
-    private async Task AutoImport(string filePath, string extension)
+    // Single chokepoint for any clipboard/url/text path that ends up as a file.
+    // Routes through UniversalImporter so the matching import dialog appears
+    // instead of doing a silent in-place attach. - xlinka
+    private Task AutoImport(string filePath)
     {
-        var targetSlot = GetTargetSlot();
-        if (targetSlot == null)
+        var world = _engine?.WorldManager?.FocusedWorld;
+        if (world == null)
         {
-            GD.PrintErr("ClipboardImporter: No target slot available");
-            return;
+            GD.PrintErr("ClipboardImporter: No focused world for auto import");
+            return Task.CompletedTask;
         }
 
-        switch (extension)
-        {
-            case ".vrm":
-                await ImportModel(filePath, isAvatar: true, targetSlot);
-                break;
-
-            case ".png":
-            case ".jpg":
-            case ".jpeg":
-            case ".webp":
-            case ".bmp":
-            case ".tga":
-                await ImportImage(filePath, targetSlot);
-                break;
-            case ".gdshader":
-                await ImportShader(filePath, targetSlot);
-                break;
-
-            default:
-                if (ModelImporter.IsSupportedFormat(filePath))
-                {
-                    await ImportModel(filePath, isAvatar: false, targetSlot);
-                }
-                else
-                {
-                    GD.Print($"ClipboardImporter: Unsupported file type: {extension}");
-                }
-                break;
-        }
+        var (pos, rot) = GetSpawnPose();
+        UniversalImporter.Import(filePath, world, pos, rot);
+        return Task.CompletedTask;
     }
 
     /// <summary>
     /// Handle image data from clipboard (e.g., screenshots, copied images).
     /// </summary>
-    private async Task HandleClipboardImage()
+    private Task HandleClipboardImage()
     {
         var image = DisplayServer.ClipboardGetImage();
         if (image == null || image.IsEmpty())
         {
             GD.PrintErr("ClipboardImporter: Failed to get image from clipboard");
-            return;
+            return Task.CompletedTask;
         }
 
-        var targetSlot = GetTargetSlot();
-        if (targetSlot == null)
+        var world = _engine?.WorldManager?.FocusedWorld;
+        if (world == null)
         {
-            GD.PrintErr("ClipboardImporter: No target slot available");
-            return;
+            GD.PrintErr("ClipboardImporter: No focused world for clipboard image");
+            return Task.CompletedTask;
         }
 
-        // Save image to temp file
         var tempDir = OS.GetUserDataDir() + "/tmp";
         Directory.CreateDirectory(tempDir);
         var tempPath = tempDir + "/clipboard_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".png";
@@ -398,73 +460,35 @@ public partial class ClipboardImporter : Node
         if (error != Error.Ok)
         {
             GD.PrintErr($"ClipboardImporter: Failed to save clipboard image: {error}");
-            return;
+            return Task.CompletedTask;
         }
 
         GD.Print($"ClipboardImporter: Saved clipboard image to {tempPath}");
-        await ImportImage(tempPath, targetSlot);
+        var (pos, rot) = GetSpawnPose();
+        UniversalImporter.Import(tempPath, world, pos, rot);
+        return Task.CompletedTask;
     }
 
-    private async Task ImportModel(string filePath, bool isAvatar, Slot targetSlot)
+    // Attach quad+texture+grabbable to an existing slot. The dialog flow creates
+    // the slot ahead of time (at the user-chosen spawn pose); this method only
+    // populates it. - xlinka
+    public async Task PopulateImageSlotAsync(Slot imageSlot, string filePath)
     {
-        GD.Print($"ClipboardImporter: Importing model as {(isAvatar ? "avatar" : "3D model")}: {filePath}");
+        GD.Print($"ClipboardImporter: Populating image slot: {filePath}");
 
-        ModelImportResult result;
-
-        if (isAvatar)
-        {
-            result = await ModelImporter.ImportAvatarAsync(filePath, targetSlot, _localDB);
-        }
-        else
-        {
-            result = await ModelImporter.ImportModelAsync(filePath, targetSlot, null, _localDB);
-        }
-
-        if (result.Success)
-        {
-            GD.Print($"ClipboardImporter: Model imported successfully");
-
-            if (result.RootSlot != null)
-            {
-                result.RootSlot.GlobalPosition = GetImportSpawnPosition(targetSlot, 2.0f);
-            }
-
-            OnAssetImported?.Invoke(filePath, result.RootSlot);
-        }
-        else
-        {
-            GD.PrintErr($"ClipboardImporter: Model import failed: {result.ErrorMessage}");
-        }
-    }
-
-    private async Task ImportImage(string filePath, Slot targetSlot)
-    {
-        GD.Print($"ClipboardImporter: Importing image: {filePath}");
-
-        // Import to LocalDB
-        string localUri = null;
+        string localUri = null!;
         if (_localDB != null)
         {
             localUri = await _localDB.ImportLocalAssetAsync(filePath, LocalDB.ImportLocation.Copy);
         }
 
-        // Create image slot
-        var fileName = Path.GetFileNameWithoutExtension(filePath);
-        var imageSlot = targetSlot.AddSlot(fileName);
-
-        // Position in front of camera
-        PositionInFrontOfCamera(imageSlot);
-
-        // Add QuadMesh for geometry
         var quadMesh = imageSlot.AttachComponent<LumoraMeshes.QuadMesh>();
         quadMesh.Size.Value = new float2(1.0f, 1.0f);
         quadMesh.DualSided.Value = true;
 
-        // Add MeshRenderer
         var meshRenderer = imageSlot.AttachComponent<MeshRenderer>();
         meshRenderer.Mesh.Target = quadMesh;
 
-        // ImageProvider before BoxCollider so PhysicsColliderHook spawns a sensor not a wall - xlinka
         var imageProvider = imageSlot.AttachComponent<ImageProvider>();
         var imageUri = new Uri(localUri ?? filePath);
         imageProvider.URL.Value = imageUri;
@@ -479,7 +503,6 @@ public partial class ClipboardImporter : Node
         sizeDriver.Target.Target = quadMesh;
         sizeDriver.ColliderTarget.Target = collider;
 
-        // Add UnlitMaterial and connect texture
         var material = imageSlot.AttachComponent<UnlitMaterial>();
         material.Texture.Target = imageProvider;
         material.TextureScale.Value = new float2(-1f, 1f);
@@ -487,9 +510,30 @@ public partial class ClipboardImporter : Node
         material.BlendMode.Value = BlendMode.Transparent;
         meshRenderer.Material.Target = material;
 
-        GD.Print($"ClipboardImporter: Image imported with visual components to {localUri ?? filePath}");
-
+        GD.Print($"ClipboardImporter: Image populated with visual components from {localUri ?? filePath}");
         OnAssetImported?.Invoke(filePath, imageSlot);
+    }
+
+    public async Task PopulateModelSlotAsync(Slot slot, string filePath, bool isAvatar)
+    {
+        GD.Print($"ClipboardImporter: Populating model slot as {(isAvatar ? "avatar" : "3D model")}: {filePath}");
+        ModelImportResult result;
+        if (isAvatar)
+        {
+            result = await ModelImporter.ImportAvatarAsync(filePath, slot, _localDB);
+        }
+        else
+        {
+            result = await ModelImporter.ImportModelAsync(filePath, slot, null!, _localDB);
+        }
+        if (result.Success)
+        {
+            OnAssetImported?.Invoke(filePath, result.RootSlot);
+        }
+        else
+        {
+            GD.PrintErr($"ClipboardImporter: Model import failed: {result.ErrorMessage}");
+        }
     }
 
     private async Task HandleUrl(string url)
@@ -510,7 +554,8 @@ public partial class ClipboardImporter : Node
         var tempPath = await DownloadFile(url);
         if (!string.IsNullOrEmpty(tempPath))
         {
-            await AutoImport(tempPath, extension);
+            _ = extension;
+            await AutoImport(tempPath);
         }
     }
 
@@ -537,7 +582,7 @@ public partial class ClipboardImporter : Node
         }
         catch { }
 
-        return null;
+        return null!;
     }
 
     private async Task<string> DownloadFile(string url)
@@ -568,7 +613,7 @@ public partial class ClipboardImporter : Node
                 else
                 {
                     GD.PrintErr($"ClipboardImporter: Download failed with code {responseCode}");
-                    tcs.SetResult(null);
+                    tcs.SetResult(null!);
                 }
             };
 
@@ -577,7 +622,7 @@ public partial class ClipboardImporter : Node
             {
                 httpRequest.QueueFree();
                 GD.PrintErr($"ClipboardImporter: Failed to start request: {error}");
-                return null;
+                return null!;
             }
 
             return await tcs.Task;
@@ -585,7 +630,7 @@ public partial class ClipboardImporter : Node
         catch (Exception ex)
         {
             GD.PrintErr($"ClipboardImporter: Exception downloading file: {ex.Message}");
-            return null;
+            return null!;
         }
     }
 
@@ -599,7 +644,7 @@ public partial class ClipboardImporter : Node
             var extension = DetectFileTypeFromHeader(tempPath);
             if (!string.IsNullOrEmpty(extension))
             {
-                await AutoImport(tempPath, extension);
+                await AutoImport(tempPath);
             }
         }
     }
@@ -610,7 +655,8 @@ public partial class ClipboardImporter : Node
         {
             using var file = File.OpenRead(filePath);
             var header = new byte[12];
-            file.Read(header, 0, 12);
+            var bytesToRead = (int)System.Math.Min(header.Length, file.Length);
+            file.ReadExactly(header, 0, bytesToRead);
 
             // PNG
             if (header[0] == 0x89 && header[1] == 0x50 && header[2] == 0x4E && header[3] == 0x47)
@@ -631,7 +677,7 @@ public partial class ClipboardImporter : Node
         }
         catch { }
 
-        return null;
+        return null!;
     }
 
     private async Task HandleText(string text)
@@ -678,22 +724,22 @@ public partial class ClipboardImporter : Node
 
     private async Task ImportShader(string filePath, Slot targetSlot)
     {
-        GD.Print($"ClipboardImporter: Importing shader: {filePath}");
+        var shaderName = Path.GetFileNameWithoutExtension(filePath);
+        if (string.IsNullOrWhiteSpace(shaderName)) shaderName = "CustomShader";
+        var rootSlot = targetSlot.AddSlot($"{shaderName}_ShaderWorkbench");
+        PositionInFrontOfCamera(rootSlot);
+        await PopulateShaderSlotAsync(rootSlot, filePath);
+    }
 
-        string localUri = null;
+    public async Task PopulateShaderSlotAsync(Slot rootSlot, string filePath)
+    {
+        GD.Print($"ClipboardImporter: Populating shader workbench: {filePath}");
+
+        string localUri = null!;
         if (_localDB != null)
         {
             localUri = await _localDB.ImportLocalAssetAsync(filePath, LocalDB.ImportLocation.Copy);
         }
-
-        var shaderName = Path.GetFileNameWithoutExtension(filePath);
-        if (string.IsNullOrWhiteSpace(shaderName))
-        {
-            shaderName = "CustomShader";
-        }
-
-        var rootSlot = targetSlot.AddSlot($"{shaderName}_ShaderWorkbench");
-        PositionInFrontOfCamera(rootSlot);
 
         var sourceSlot = rootSlot.AddSlot("ShaderSource");
         var shaderProvider = sourceSlot.AttachComponent<ShaderSourceProvider>();
@@ -715,7 +761,6 @@ public partial class ClipboardImporter : Node
         meshRenderer.Mesh.Target = sphereMesh;
         meshRenderer.Material.Target = material;
 
-        // Grabbable + collider, in that order so PhysicsColliderHook makes it a sensor not a wall - xlinka
         sphereSlot.AttachComponent<Grabbable>();
         var sphereCollider = sphereSlot.AttachComponent<SphereCollider>();
         sphereCollider.Radius.Value = 0.3f;

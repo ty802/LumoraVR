@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using Godot;
 using Lumora.Core;
 using Lumora.Godot.Helpers;
@@ -14,9 +14,9 @@ namespace Lumora.Godot.Hooks;
 /// </summary>
 public class WorldHook : IWorldHook
 {
-    public World Owner { get; private set; }
+    public World Owner { get; private set; } = null!;
 
-    public Node3D WorldRoot { get; private set; }
+    public Node3D WorldRoot { get; private set; } = null!;
 
     private readonly Dictionary<Node3D, int> _layerSnapshot = new();
 
@@ -96,7 +96,7 @@ public class WorldHook : IWorldHook
             else
             {
                 // For child slots, ensure parent has its Node3D first
-                if (slot.Parent.Hook is SlotHook parentHook)
+                if (slot.Parent?.Hook is SlotHook parentHook)
                 {
                     Node3D parentNode3D = parentHook.GeneratedNode3D;
                     if (parentNode3D == null)
@@ -159,7 +159,8 @@ public class WorldHook : IWorldHook
             WorldRoot.QueueFree();
         }
 
-        WorldRoot = null;
-        Owner = null;
+        WorldRoot = null!;
+        Owner = null!;
     }
 }
+

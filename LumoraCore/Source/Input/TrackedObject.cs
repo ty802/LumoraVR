@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core.Math;
@@ -21,7 +21,7 @@ public class TrackedObject : InputDevice, ITrackedDevice
     /// <summary>
     /// The tracking space for coordinate transformation.
     /// </summary>
-    public TrackingSpace TrackingSpace { get; set; }
+    public TrackingSpace TrackingSpace { get; set; } = null!;
 
     /// <summary>
     /// Whether this device is currently tracking.

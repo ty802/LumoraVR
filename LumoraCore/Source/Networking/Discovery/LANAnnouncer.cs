@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.IO;
 using System.IO.Compression;
 using System.Net;
@@ -30,9 +30,9 @@ public class LANAnnouncer : IDisposable
     /// </summary>
     public const int BroadcastIntervalMs = 5000;
 
-    private UdpClient _udpClient;
-    private CancellationTokenSource _cts;
-    private SessionMetadata _metadata;
+    private UdpClient _udpClient = null!;
+    private CancellationTokenSource _cts = null!;
+    private SessionMetadata _metadata = null!;
     private Guid _announcerId;
     private bool _isRunning;
     private bool _isDisposed;
@@ -172,8 +172,8 @@ public class LANAnnouncer : IDisposable
         }
         catch { }
 
-        _udpClient = null;
-        _cts = null;
+        _udpClient = null!;
+        _cts = null!;
 
         LumoraLogger.Log("LAN announcer stopped");
     }
@@ -204,10 +204,11 @@ public class LANAnnouncement
     /// <summary>
     /// Session metadata being announced.
     /// </summary>
-    public SessionMetadata Metadata { get; set; }
+    public SessionMetadata Metadata { get; set; } = null!;
 
     /// <summary>
     /// Protocol version for compatibility.
     /// </summary>
     public int ProtocolVersion { get; set; } = 1;
 }
+

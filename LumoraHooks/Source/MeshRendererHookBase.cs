@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Components;
@@ -24,14 +24,14 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
         public U meshRenderer;
     }
 
-    private MeshInstance3D meshInstance;
+    private MeshInstance3D meshInstance = null!;
     private int _lastSurfaceOverrideCount;
 
     protected abstract bool UseMeshInstance { get; }
 
     protected bool meshWasChanged { get; private set; }
 
-    public U MeshRenderer { get; protected set; }
+    public U MeshRenderer { get; protected set; } = null!;
 
     protected abstract void AssignMesh(U renderer, Mesh mesh);
 
@@ -81,7 +81,7 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
                     gameObject.AddChild(meshInstance);
                 }
 
-                MeshRenderer = gameObject as U;
+                MeshRenderer = (gameObject as U)!;
                 OnAttachRenderer();
             }
 
@@ -196,23 +196,23 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
         var materialAsset = GetMaterialAsset(index);
         if (materialAsset == null)
         {
-            return null;
+            return null!;
         }
 
         var propertyBlock = GetPropertyBlockAsset(index);
         if (propertyBlock != null && propertyBlock.IsValid)
         {
-            return ApplySurfaceRenderPriority(index, propertyBlock.ApplyToMaterial(materialAsset) as Material);
+            return ApplySurfaceRenderPriority(index, (propertyBlock.ApplyToMaterial(materialAsset) as Material)!);
         }
 
-        return ApplySurfaceRenderPriority(index, materialAsset.GodotMaterial as Material);
+        return ApplySurfaceRenderPriority(index, (materialAsset.GodotMaterial as Material)!);
     }
 
     private Material ApplySurfaceRenderPriority(int index, Material material)
     {
         if (material == null)
         {
-            return null;
+            return null!;
         }
 
         int priority = Owner.GetSurfaceRenderPriority(index);
@@ -234,7 +234,7 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
     {
         if (Owner.Materials.Count == 0)
         {
-            return null;
+            return null!;
         }
 
         int materialIndex = System.Math.Min(index, Owner.Materials.Count - 1);
@@ -245,7 +245,7 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
     {
         if (Owner.MaterialPropertyBlocks.Count == 0 || index >= Owner.MaterialPropertyBlocks.Count)
         {
-            return null;
+            return null!;
         }
 
         return Owner.MaterialPropertyBlocks.GetElement(index).Asset;
@@ -290,8 +290,8 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
     public override void Destroy(bool destroyingWorld)
     {
         CleanupRenderer(destroyingWorld);
-        meshInstance = null;
-        MeshRenderer = default(U);
+        meshInstance = null!;
+        MeshRenderer = default!;
         base.Destroy(destroyingWorld);
     }
 
@@ -303,7 +303,7 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
     protected virtual Mesh GetGodotMeshFromAsset()
     {
         var meshComponent = Owner.Mesh.Target;
-        if (meshComponent == null) return null;
+        if (meshComponent == null) return null!;
 
         // Handle ProceduralMesh components - get mesh from their hook
         if (meshComponent is LumoraMeshes.ProceduralMesh proceduralMesh)
@@ -317,12 +317,12 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
                 }
             }
             LumoraLogger.Debug("MeshRendererHookBase: ProceduralMesh hook not ready");
-            return null;
+            return null!;
         }
 
         // TODO: Handle MeshDataAssetProvider components when needed
         LumoraLogger.Warn($"MeshRendererHookBase: Unsupported mesh component type {meshComponent.GetType().Name}");
-        return null;
+        return null!;
     }
 
     protected virtual void ApplySortingOrder(int sortingOrder)
@@ -369,3 +369,4 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
     }
 
 }
+

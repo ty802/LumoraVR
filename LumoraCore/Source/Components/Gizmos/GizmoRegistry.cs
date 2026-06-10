@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -94,7 +94,7 @@ public static class GizmoRegistry
             baseType = baseType.BaseType;
         }
 
-        return null;
+        return null!;
     }
 
     /// <summary>
@@ -129,8 +129,8 @@ public static class GizmoRegistry
     /// </summary>
     public static IGizmo GetGizmoForSlot(Slot slot)
     {
-        if (slot == null) return null;
-        return _activeGizmos.TryGetValue(slot, out var gizmo) ? gizmo : null;
+        if (slot == null) return null!;
+        return (_activeGizmos.TryGetValue(slot, out var gizmo) ? gizmo : null) ?? null!;
     }
 
     /// <summary>

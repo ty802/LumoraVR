@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Input;
@@ -36,7 +36,7 @@ public class AvatarPoseNode : UserRootComponent, IAvatarObject, IInputUpdateRece
     /// <summary>
     /// Body nodes that cannot be equipped simultaneously.
     /// </summary>
-    public SyncFieldList<BodyNode> MutuallyExclusiveNodes_ { get; private set; }
+    public SyncFieldList<BodyNode> MutuallyExclusiveNodes_ { get; private set; } = null!;
 
     /// <summary>
     /// Output: Whether tracking is currently active.
@@ -54,14 +54,14 @@ public class AvatarPoseNode : UserRootComponent, IAvatarObject, IInputUpdateRece
     public readonly Sync<bool> SourceIsActive = new();
 
     // Internal references
-    protected readonly SyncRef<AvatarObjectSlot> _objectSlot;
-    protected readonly SyncRef<Slot> _source;
+    protected readonly SyncRef<AvatarObjectSlot> _objectSlot = null!;
+    protected readonly SyncRef<Slot> _source = null!;
 
     // Field drives for position/rotation
-    protected FieldDrive<float3> _position;
-    protected FieldDrive<floatQ> _rotation;
-    protected FieldDrive<float3> _scale;
-    protected FieldDrive<bool> _active;
+    protected FieldDrive<float3> _position = null!;
+    protected FieldDrive<floatQ> _rotation = null!;
+    protected FieldDrive<float3> _scale = null!;
+    protected FieldDrive<bool> _active = null!;
 
     // Internal state
     private bool _isRegistered;
@@ -70,9 +70,9 @@ public class AvatarPoseNode : UserRootComponent, IAvatarObject, IInputUpdateRece
     BodyNode IAvatarObject.Node => Node.Value;
     public bool IsEquipped => EquippingSlot != null;
     public int EquipOrderPriority => EquipOrderPriority_.Value;
-    public AvatarObjectSlot EquippingSlot => _objectSlot?.Target;
+    public AvatarObjectSlot EquippingSlot => (_objectSlot?.Target) ?? null!;
     public IEnumerable<BodyNode> MutuallyExclusiveNodes => MutuallyExclusiveNodes_;
-    public User ExplicitlyAllowedUser { get; private set; }
+    public User ExplicitlyAllowedUser { get; private set; } = null!;
 
     /// <summary>
     /// Whether equipped and the source is active.
@@ -104,7 +104,7 @@ public class AvatarPoseNode : UserRootComponent, IAvatarObject, IInputUpdateRece
     public override void OnInit()
     {
         base.OnInit();
-        // BodyNode.NONE may not be enum value 0 — set explicitly
+        // BodyNode.NONE may not be enum value 0 â€” set explicitly
         Node.Value = BodyNode.NONE;
         // EquipOrderPriority_ = 0 (C# default, skip)
         // RunAfterInputUpdate = false (C# default, skip)
@@ -138,7 +138,7 @@ public class AvatarPoseNode : UserRootComponent, IAvatarObject, IInputUpdateRece
             _isRegistered = false;
         }
 
-        ExplicitlyAllowedUser = null;
+        ExplicitlyAllowedUser = null!;
         base.OnDestroy();
     }
 
@@ -176,8 +176,8 @@ public class AvatarPoseNode : UserRootComponent, IAvatarObject, IInputUpdateRece
     /// </summary>
     public void Dequip()
     {
-        _objectSlot.Target = null;
-        _source.Target = null;
+        _objectSlot.Target = null!;
+        _source.Target = null!;
         _position.ReleaseLink();
         _rotation.ReleaseLink();
         _scale.ReleaseLink();
@@ -189,7 +189,7 @@ public class AvatarPoseNode : UserRootComponent, IAvatarObject, IInputUpdateRece
     /// <summary>
     /// Equip this pose node to an AvatarObjectSlot.
     /// RunUpdate() writes Slot.LocalPosition/Rotation directly each frame, so we must NOT
-    /// set up FieldDrives on those fields here — a FieldDrive would take ownership of the
+    /// set up FieldDrives on those fields here â€” a FieldDrive would take ownership of the
     /// field and silently block the direct writes in RunUpdate().
     /// </summary>
     public void Equip(AvatarObjectSlot slot)
@@ -281,7 +281,7 @@ public class AvatarPoseNode : UserRootComponent, IAvatarObject, IInputUpdateRece
     /// <summary>
     /// Check if this component is under the local user.
     /// </summary>
-    private bool IsUnderLocalUser => Slot?.IsUnderLocalUser ?? false;
+    private new bool IsUnderLocalUser => Slot?.IsUnderLocalUser ?? false;
 
     /// <summary>
     /// Called before input update.
@@ -305,3 +305,4 @@ public class AvatarPoseNode : UserRootComponent, IAvatarObject, IInputUpdateRece
         }
     }
 }
+

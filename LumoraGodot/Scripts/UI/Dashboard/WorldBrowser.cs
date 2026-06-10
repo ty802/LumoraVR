@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using System;
 using System.Collections.Generic;
 using Lumora.Core.Networking.Session;
@@ -17,8 +17,8 @@ namespace Lumora.Godot.UI;
 public partial class WorldBrowser : Control
 {
 	// Service references
-	private SessionBrowserService _browserService;
-	private SessionThumbnailService _thumbnailService;
+	private SessionBrowserService _browserService = null!;
+	private SessionThumbnailService _thumbnailService = null!;
 	private LumoraClient? _authClient;
 	public class WorldInfo
 	{
@@ -55,14 +55,14 @@ public partial class WorldBrowser : Control
 
 	private static readonly CategoryInfo[] DefaultCategories = new[]
 	{
-		new CategoryInfo { Id = "featured", Name = "Featured", Icon = "⭐" },
-		new CategoryInfo { Id = "active", Name = "Active Sessions", Icon = "🟢" },
-		new CategoryInfo { Id = "social", Name = "Social", Icon = "💬" },
-		new CategoryInfo { Id = "games", Name = "Games", Icon = "🎮" },
-		new CategoryInfo { Id = "art", Name = "Art", Icon = "🎨" },
-		new CategoryInfo { Id = "education", Name = "Educational", Icon = "📚" },
-		new CategoryInfo { Id = "my_worlds", Name = "My Worlds", Icon = "📁" },
-		new CategoryInfo { Id = "recent", Name = "Recent", Icon = "🕐" },
+		new CategoryInfo { Id = "featured", Name = "Featured", Icon = "ÃƒÆ’Ã‚Â¢Ãƒâ€šÃ‚Â­Ãƒâ€šÃ‚Â" },
+		new CategoryInfo { Id = "active", Name = "Active Sessions", Icon = "ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸Ãƒâ€¦Ã‚Â¸Ãƒâ€šÃ‚Â¢" },
+		new CategoryInfo { Id = "social", Name = "Social", Icon = "ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢Ãƒâ€šÃ‚Â¬" },
+		new CategoryInfo { Id = "games", Name = "Games", Icon = "ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸Ãƒâ€¦Ã‚Â½Ãƒâ€šÃ‚Â®" },
+		new CategoryInfo { Id = "art", Name = "Art", Icon = "ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸Ãƒâ€¦Ã‚Â½Ãƒâ€šÃ‚Â¨" },
+		new CategoryInfo { Id = "education", Name = "Educational", Icon = "ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒâ€¦Ã‚Â¡" },
+		new CategoryInfo { Id = "my_worlds", Name = "My Worlds", Icon = "ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒâ€šÃ‚Â" },
+		new CategoryInfo { Id = "recent", Name = "Recent", Icon = "ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚Â" },
 	};
 
 	private const string WorldCardScenePath = "res://Scenes/UI/Components/WorldCard.tscn";
@@ -424,7 +424,7 @@ public partial class WorldBrowser : Control
 
 			// Start session on default port for now; metadata carries the UI-selected policy.
 			ushort port = 7777;
-			var world = worldManager.StartSession(name, port, null, templateName, visibility, maxUsers);
+			var world = worldManager.StartSession(name, port, null!, templateName, visibility, maxUsers);
 
 			if (world != null)
 			{
@@ -720,7 +720,7 @@ public partial class WorldBrowser : Control
 		var fm = engine?.FocusManager;
 		if (wm == null) return;
 
-		Lumora.Core.World target = null;
+		Lumora.Core.World target = null!;
 		foreach (var w in wm.Worlds)
 		{
 			if (w?.Session?.Metadata?.SessionId == worldInfo.Id)
@@ -743,25 +743,25 @@ public partial class WorldBrowser : Control
 		wm.DestroyWorld(target);
 	}
 
-	private static Lumora.Core.World PickFallbackWorld(
+	private static Lumora.Core.World? PickFallbackWorld(
 		Lumora.Core.Management.WorldManager wm,
 		Lumora.Core.World closing,
-		Lumora.Core.World preferred)
+		Lumora.Core.World? preferred)
 	{
-		bool IsUsable(Lumora.Core.World w) =>
+		bool IsUsable(Lumora.Core.World? w) =>
 			w != null && w != closing && !w.IsDestroyed && w.State == Lumora.Core.World.WorldState.Running;
 
 		if (IsUsable(preferred)) return preferred;
 
-		Lumora.Core.World localHome = null;
-		Lumora.Core.World anyOther = null;
+		Lumora.Core.World localHome = null!;
+		Lumora.Core.World anyOther = null!;
 		foreach (var w in wm.Worlds)
 		{
 			if (!IsUsable(w)) continue;
 			if (w.WorldName.Value == "LocalHome") { localHome = w; break; }
 			anyOther ??= w;
 		}
-		return localHome ?? anyOther;
+		return localHome ?? anyOther!;
 	}
 
 	#endregion
@@ -958,3 +958,4 @@ public partial class WorldBrowser : Control
 		RefreshWorldList();
 	}
 }
+

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using System;
 using Lumora.Core;
 
@@ -14,12 +14,12 @@ namespace Lumora.Source.Godot.UI;
 public partial class LoadingScreen : Control
 {
 	// ===== UI NODE REFERENCES =====
-	private Label _statusLabel;
-	private Label _percentageLabel;
-	private ProgressBar _progressBar;
-	private AnimationPlayer _animationPlayer;
-	private Control _loadingSpinner;
-	private Label _versionLabel;
+	private Label _statusLabel = null!;
+	private Label _percentageLabel = null!;
+	private ProgressBar _progressBar = null!;
+	private AnimationPlayer _animationPlayer = null!;
+	private Control _loadingSpinner = null!;
+	private Label _versionLabel = null!;
 
 	// ===== STATE =====
 	private float _targetProgress = 0f;
@@ -100,7 +100,7 @@ public partial class LoadingScreen : Control
 	/// <summary>
 	/// Hide the loading screen with fade-out animation.
 	/// </summary>
-	public void Hide()
+	public new void Hide()
 	{
 		if (!_isVisible)
 			return;
@@ -173,7 +173,7 @@ public partial class LoadingScreen : Control
 	/// <summary>
 	/// Shorthand method to update phase using enum index.
 	/// </summary>
-	public void UpdatePhase(int phaseIndex, string customMessage = null)
+	public void UpdatePhase(int phaseIndex, string customMessage = null!)
 	{
 		string[] defaultMessages = new[]
 		{
@@ -202,3 +202,4 @@ public partial class LoadingScreen : Control
 		}
 	}
 }
+

@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using Lumora.Core;
@@ -17,10 +17,11 @@ namespace Lumora.Core.Assets;
 public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : Asset, new()
 {
     private HashSet<IAssetRef> references = new HashSet<IAssetRef>();
-    private HashSet<IAssetRef> updatedListeners;
-    private Action _sendAssetCreatedDelegate;
-    private Action _sendAssetUpdatedDelegate;
-    private Action _sendAssetRemovedDelegate;
+    private HashSet<IAssetRef> updatedListeners = null!;
+    private Action _sendAssetCreatedDelegate = null!;
+    private Action _sendAssetUpdatedDelegate = null!;
+    private Action _sendAssetRemovedDelegate = null!;
+    private bool _refreshing;
 
     // ===== PROPERTIES =====
 
@@ -96,13 +97,24 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
 
     private void RefreshAssetState()
     {
-        if (AssetReferenceCount == 0 && IsAssetAvailable)
+        // Guards against ApplyChanges re-entering OnChanges via a Sync write-back, which
+        // would otherwise spin: OnChanges -> Update -> ApplyChanges -> OnChanges. - xlinka
+        if (_refreshing) return;
+        _refreshing = true;
+        try
         {
-            FreeAsset();
+            if (AssetReferenceCount == 0 && IsAssetAvailable)
+            {
+                FreeAsset();
+            }
+            else if (AssetReferenceCount > 0)
+            {
+                UpdateAsset();
+            }
         }
-        else if (AssetReferenceCount > 0)
+        finally
         {
-            UpdateAsset();
+            _refreshing = false;
         }
     }
 
@@ -170,7 +182,7 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
         LumoraLogger.Debug($"AssetProvider.SendAssetCreated: [{GetType().Name}] IsDestroyed={IsDestroyed}, refCount={references?.Count ?? 0}");
         if (IsDestroyed) return;
 
-        foreach (IAssetRef reference in references)
+        foreach (IAssetRef reference in references!)
         {
             LumoraLogger.Debug($"AssetProvider.SendAssetCreated: [{GetType().Name}] Notifying reference {reference.GetType().Name}");
             reference.AssetUpdated();
@@ -219,7 +231,7 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
         if (IsDestroyed)
         {
             references.Clear();
-            references = null;
+            references = null!;
         }
     }
 
@@ -228,7 +240,7 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
         if (assetURL == null)
         {
             LumoraLogger.Debug("AssetProvider.ProcessURL: URL is null");
-            return null;
+            return null!;
         }
 
         LumoraLogger.Debug($"AssetProvider.ProcessURL: Processing {assetURL} (scheme: {assetURL.Scheme})");
@@ -239,7 +251,7 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
             if (string.IsNullOrEmpty(filename))
             {
                 LumoraLogger.Warn($"AssetProvider: Invalid lumdb URI: {assetURL}");
-                return null;
+                return null!;
             }
             assetURL = new Uri($"lumora:///{filename}");
         }
@@ -260,14 +272,14 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
             if (string.IsNullOrWhiteSpace(resourceRoot))
             {
                 LumoraLogger.Warn($"AssetProvider: Resource root not set; cannot resolve {assetURL}");
-                return null;
+                return null!;
             }
 
             var relativePath = GetUriRelativePath(assetURL);
             if (string.IsNullOrEmpty(relativePath))
             {
                 LumoraLogger.Warn($"AssetProvider: Invalid resource URI: {assetURL}");
-                return null;
+                return null!;
             }
 
             relativePath = relativePath.Replace('/', Path.DirectorySeparatorChar);
@@ -296,7 +308,7 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
                 }
             }
             LumoraLogger.Warn($"AssetProvider: Could not resolve local URI: {assetURL}");
-            return null;
+            return null!;
         }
 
         return assetURL;
@@ -318,3 +330,4 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
         return $"{uri.Host}/{path}";
     }
 }
+

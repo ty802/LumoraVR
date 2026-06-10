@@ -72,6 +72,7 @@ public class GridLayout : LayoutController
 
         for (int i = 0; i < children.Count; i++)
         {
+            if (LayoutSizing.IsIgnored(children[i])) continue;
             int col = i % cols;
             int row = i / cols;
             float x = xStart + col * (cellW + _spacing);

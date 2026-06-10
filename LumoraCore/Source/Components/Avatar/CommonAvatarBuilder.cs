@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -40,7 +40,7 @@ public class CommonAvatarBuilder : Component, IAvatarBuilder, IEmptyAvatarSlotHa
     public readonly Sync<bool> HideHeadFromLocalUser = new();
 
     // Fired after a user's avatar setup completes. (user, avatarSlot)
-    public event Action<User, Slot> OnAvatarSetupFinish;
+    public event Action<User, Slot> OnAvatarSetupFinish = null!;
 
     public override void OnInit()
     {
@@ -109,7 +109,7 @@ public class CommonAvatarBuilder : Component, IAvatarBuilder, IEmptyAvatarSlotHa
             avatarManager.FillEmptySlots();
         }
 
-        OnAvatarSetupFinish?.Invoke(user, avatarSlot);
+        OnAvatarSetupFinish?.Invoke(user!, avatarSlot!);
         LumoraLogger.Log($"CommonAvatarBuilder: Built avatar for '{user?.UserName?.Value ?? "(null)"}'");
     }
 

@@ -35,13 +35,13 @@ namespace Lumora.Source.Godot.Bootstrap;
 public partial class XRModeManager : Node
 {
     // ===== SINGLETON =====
-    public static XRModeManager Instance { get; private set; }
+    public static XRModeManager Instance { get; private set; } = null!;
 
     /// <summary>
     /// Fired after every successful mode switch.
     /// <c>true</c> = VR is now active, <c>false</c> = Desktop is now active.
     /// </summary>
-    public static event Action<bool> ModeChanged;
+    public static event Action<bool> ModeChanged = null!;
 
     /// <summary>
     /// The Camera3D currently driving rendering for the active mode.
@@ -66,23 +66,23 @@ public partial class XRModeManager : Node
     private const ulong SwitchCooldownMsec = 500;
 
     // ===== REFERENCES (provided at Initialize) =====
-    private Lumora.Core.Engine _engine;
-    private HeadOutput         _headOutput;
-    private InputInterface     _inputInterface;
-    private Camera3D           _mainCamera;
-    private GodotVRDriver      _vrDriver;
+    private Lumora.Core.Engine _engine = null!;
+    private HeadOutput         _headOutput = null!;
+    private InputInterface     _inputInterface = null!;
+    private Camera3D           _mainCamera = null!;
+    private GodotVRDriver      _vrDriver = null!;
 
     // ===== MANAGED INPUT NODES =====
     // Desktop-only scene overlays; VR mode has no per-mode scene node since
     // controller/head poses flow through InputInterface drivers. - xlinka
-    private DesktopInput             _desktopInput;
-    private DesktopCameraController  _desktopCamera;
+    private DesktopInput             _desktopInput = null!;
+    private DesktopCameraController  _desktopCamera = null!;
 
     // ===== XR SCENE NODES =====
     // Bootstrap.tscn defines the XR sub-tree up-front; we just hold refs.
-    private XROrigin3D _xrOrigin;
-    private XRCamera3D _xrCamera;
-    private Viewport   _xrViewport;
+    private XROrigin3D _xrOrigin = null!;
+    private XRCamera3D _xrCamera = null!;
+    private Viewport   _xrViewport = null!;
 
     // =====================================================================
     //  KEY DETECTION
@@ -123,8 +123,8 @@ public partial class XRModeManager : Node
         // because XRModeManager is added at runtime and has no Owner, which
         // makes `GetNode("%X")` from `this` fail.
         var sceneRoot = GetTree()?.CurrentScene;
-        _xrOrigin = sceneRoot?.GetNodeOrNull<XROrigin3D>("%XROrigin3D");
-        _xrCamera = sceneRoot?.GetNodeOrNull<XRCamera3D>("%XRCamera3D");
+        _xrOrigin = sceneRoot?.GetNodeOrNull<XROrigin3D>("%XROrigin3D")!;
+        _xrCamera = sceneRoot?.GetNodeOrNull<XRCamera3D>("%XRCamera3D")!;
         _xrViewport = ResolveXRViewport(sceneRoot);
 
         if (startingInVR)
@@ -211,7 +211,7 @@ public partial class XRModeManager : Node
     }
 
     // =====================================================================
-    //  SWITCH  →  DESKTOP
+    //  SWITCH  ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢  DESKTOP
     // =====================================================================
 
     /// <summary>
@@ -223,7 +223,7 @@ public partial class XRModeManager : Node
     }
 
     // =====================================================================
-    //  SWITCH  →  VR
+    //  SWITCH  ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢  VR
     // =====================================================================
 
     /// <summary>
@@ -499,7 +499,7 @@ public partial class XRModeManager : Node
         }
     }
 
-    private Viewport ResolveXRViewport(Node sceneRoot = null)
+    private Viewport ResolveXRViewport(Node? sceneRoot = null)
     {
         if (_xrViewport != null && GodotObject.IsInstanceValid(_xrViewport))
             return _xrViewport;
@@ -518,9 +518,9 @@ public partial class XRModeManager : Node
                 return _xrViewport;
         }
 
-        sceneRoot ??= GetTree()?.CurrentScene;
-        _xrViewport = sceneRoot?.GetNodeOrNull<SubViewport>("%XRViewport");
-        return _xrViewport;
+        sceneRoot ??= GetTree()?.CurrentScene!;
+        _xrViewport = sceneRoot?.GetNodeOrNull<SubViewport>("%XRViewport")!;
+        return _xrViewport!;
     }
 
     private bool IsOpenXRSessionActive()
@@ -606,6 +606,6 @@ public partial class XRModeManager : Node
     {
         if (node != null && GodotObject.IsInstanceValid(node))
             node.QueueFree();   // deferred, safe to call from any callback
-        node = null;
+        node = null!;
     }
 }

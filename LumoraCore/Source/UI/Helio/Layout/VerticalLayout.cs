@@ -71,13 +71,16 @@ public class VerticalLayout : LayoutController
         _metrics.Clear();
         for (int i = 0; i < children.Count; i++)
         {
-            _metrics.Add(LayoutSizing.GetMetrics(children[i], LayoutDirection.Vertical));
+            _metrics.Add(LayoutSizing.IsIgnored(children[i])
+                ? default
+                : LayoutSizing.GetMetrics(children[i], LayoutDirection.Vertical));
         }
 
         LayoutSizing.Distribute(innerHeight, _spacing, _padTop, _metrics, _elements, _forceExpandHeight);
 
         for (int i = 0; i < children.Count; i++)
         {
+            if (LayoutSizing.IsIgnored(children[i])) continue;
             var element = _elements[i];
             float childWidth = availableWidth;
             float childX = xMin;
@@ -105,6 +108,7 @@ public class VerticalLayout : LayoutController
 
         for (int i = 0; i < count; i++)
         {
+            if (LayoutSizing.IsIgnored(RectTransform.RectChildren[i])) continue;
             var metrics = LayoutSizing.GetMetrics(RectTransform.RectChildren[i], direction);
             if (direction == LayoutDirection.Vertical)
             {

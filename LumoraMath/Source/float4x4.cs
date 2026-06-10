@@ -345,7 +345,7 @@ public struct float4x4 : IEquatable<float4x4>
     public bool Equals(float4x4 other) =>
         c0.Equals(other.c0) && c1.Equals(other.c1) && c2.Equals(other.c2) && c3.Equals(other.c3);
 
-    public override bool Equals(object obj) => obj is float4x4 other && Equals(other);
+    public override bool Equals(object? obj) => obj is float4x4 other && Equals(other);
 
     public override int GetHashCode() => HashCode.Combine(c0, c1, c2, c3);
 

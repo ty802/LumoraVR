@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using Lumora.Godot.Hooks;
 using Lumora.Source.UI;
 using Lumora.Source.Godot.UI;
@@ -12,8 +12,8 @@ namespace Lumora.Source.Godot.Input;
 
 /// <summary>
 /// Desktop camera modes:
-///   F5 — third-person orbit (mouse orbits camera around character; press again for first-person)
-///   F6 — free-cam fly      (WASD+mouse, character frozen; press again for first-person)
+///   F5 Ã¢â‚¬â€ third-person orbit (mouse orbits camera around character; press again for first-person)
+///   F6 Ã¢â‚¬â€ free-cam fly      (WASD+mouse, character frozen; press again for first-person)
 ///
 /// Creates its own Camera3D child and sets Current=true to take over rendering,
 /// which automatically demotes the CameraHook head-slot camera.
@@ -41,10 +41,10 @@ public partial class DesktopCameraController : Node
     private static float LookSensitivity => (Mathf.Pi / LookReferenceHeight) * InterfaceSettings.MouseSensitivity;
 
     // ===== REFERENCES =====
-    private Lumora.Core.Engine _engine;
-    private Camera3D  _overrideCamera;
-    private Node3D    _freeCamIndicator;
-    private Label3D   _freeCamLabel;
+    private Lumora.Core.Engine _engine = null!;
+    private Camera3D  _overrideCamera = null!;
+    private Node3D    _freeCamIndicator = null!;
+    private Label3D   _freeCamLabel = null!;
 
     // ===== STATE =====
     public static CameraMode ActiveMode { get; private set; } = CameraMode.FirstPerson;
@@ -99,12 +99,12 @@ public partial class DesktopCameraController : Node
     {
         if (_overrideCamera != null && GodotObject.IsInstanceValid(_overrideCamera))
             _overrideCamera.QueueFree();
-        _overrideCamera = null;
+        _overrideCamera = null!;
 
         if (_freeCamIndicator != null && GodotObject.IsInstanceValid(_freeCamIndicator))
             _freeCamIndicator.QueueFree();
-        _freeCamIndicator = null;
-        _freeCamLabel = null;
+        _freeCamIndicator = null!;
+        _freeCamLabel = null!;
 
         base._ExitTree();
     }
@@ -150,8 +150,8 @@ public partial class DesktopCameraController : Node
         {
             LumoraLogger.Warn($"DesktopCameraController: FreeCam indicator disabled ({ex.Message})");
             _freeCamIndicator?.QueueFree();
-            _freeCamIndicator = null;
-            _freeCamLabel = null;
+            _freeCamIndicator = null!;
+            _freeCamLabel = null!;
         }
     }
 
@@ -374,3 +374,4 @@ public partial class DesktopCameraController : Node
             _freeCamIndicator.GlobalPosition = _freeCamPos;
     }
 }
+

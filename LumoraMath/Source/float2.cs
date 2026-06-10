@@ -95,7 +95,7 @@ public struct float2 : IEquatable<float2>
 
     public bool Equals(float2 other) => x == other.x && y == other.y;
 
-    public override bool Equals(object obj) => obj is float2 other && Equals(other);
+    public override bool Equals(object? obj) => obj is float2 other && Equals(other);
 
     public override int GetHashCode() => HashCode.Combine(x, y);
 
@@ -105,4 +105,3 @@ public struct float2 : IEquatable<float2>
 
 
 }
-

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core.Math;
@@ -60,7 +60,7 @@ public abstract class ToolItem : Component
 
     internal void SetActiveTool(Tool? tool)
     {
-        OverrideActiveTool.Target = tool;
+        OverrideActiveTool.Target = tool!;
     }
 
     public virtual bool UpdateTool(float primaryStrength, float2 secondaryAxis)

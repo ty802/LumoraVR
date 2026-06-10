@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -46,7 +46,7 @@ public class RawFrameMessage : SyncMessage
     /// <summary>Caller-managed sequence number; framework does not interpret it.</summary>
     public ushort Sequence { get; set; }
 
-    private byte[] _payloadBuffer;
+    private byte[] _payloadBuffer = null!;
     private int _payloadLength;
     private bool _payloadPooled;
 
@@ -56,7 +56,7 @@ public class RawFrameMessage : SyncMessage
     /// <summary>Length of the payload in bytes.</summary>
     public int PayloadLength => _payloadLength;
 
-    public RawFrameMessage(ulong stateVersion, ulong syncTick, IConnection sender = null)
+    public RawFrameMessage(ulong stateVersion, ulong syncTick, IConnection sender = null!)
         : base(stateVersion, syncTick, sender)
     {
     }
@@ -87,7 +87,7 @@ public class RawFrameMessage : SyncMessage
 
     public override byte[] Encode()
     {
-        // Upper bound: type(1) + 3×varint64(10) + RefID(8) + seq(2) + payloadLen varint(10).
+        // Upper bound: type(1) + 3Ã—varint64(10) + RefID(8) + seq(2) + payloadLen varint(10).
         const int HeaderUpperBound = 1 + 10 + 10 + 10 + 8 + 2 + 10;
         int upper = HeaderUpperBound + _payloadLength;
         var buf = new byte[upper];
@@ -174,7 +174,7 @@ public class RawFrameMessage : SyncMessage
     {
         if (_payloadPooled && _payloadBuffer != null)
             ArrayPool<byte>.Shared.Return(_payloadBuffer);
-        _payloadBuffer = null;
+        _payloadBuffer = null!;
         _payloadLength = 0;
         _payloadPooled = false;
     }

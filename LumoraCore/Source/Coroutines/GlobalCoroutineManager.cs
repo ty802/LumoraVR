@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -28,7 +28,7 @@ public class GlobalCoroutineManager : IDisposable
     /// <summary>
     /// Start a new coroutine.
     /// </summary>
-    public Coroutine StartCoroutine(IEnumerator routine, string name = null)
+    public Coroutine StartCoroutine(IEnumerator routine, string name = null!)
     {
         if (routine == null)
             throw new ArgumentNullException(nameof(routine));
@@ -142,7 +142,7 @@ public class GlobalCoroutineManager : IDisposable
 public class Coroutine
 {
     private IEnumerator _routine;
-    private object _current;
+    private object _current = null!;
     private bool _isRunning;
     private float _waitTimer;
 
@@ -178,26 +178,26 @@ public class Coroutine
         if (_current is WaitForSeconds waitForSeconds)
         {
             _waitTimer = waitForSeconds.Seconds;
-            _current = null;
+            _current = null!;
             return true;
         }
         else if (_current is WaitForEndOfFrame)
         {
             // Continue next frame
-            _current = null;
+            _current = null!;
             return true;
         }
         else if (_current is WaitUntil waitUntil)
         {
             if (!waitUntil.Condition())
                 return true;
-            _current = null;
+            _current = null!;
         }
         else if (_current is WaitWhile waitWhile)
         {
             if (waitWhile.Condition())
                 return true;
-            _current = null;
+            _current = null!;
         }
 
         // Advance the coroutine
@@ -229,8 +229,8 @@ public class Coroutine
     public void Stop()
     {
         _isRunning = false;
-        _routine = null;
-        _current = null;
+        _routine = null!;
+        _current = null!;
     }
 }
 
@@ -288,7 +288,7 @@ public static class CoroutineExtensions
     /// <summary>
     /// Start a coroutine on the global manager.
     /// </summary>
-    public static Coroutine StartGlobalCoroutine(this IEnumerator routine, string name = null)
+    public static Coroutine StartGlobalCoroutine(this IEnumerator routine, string name = null!)
     {
         if (Engine.Current?.CoroutineManager != null)
         {
@@ -296,6 +296,6 @@ public static class CoroutineExtensions
         }
 
         Logger.Warn("Cannot start global coroutine - Engine or CoroutineManager not initialized");
-        return null;
+        return null!;
     }
 }

@@ -112,18 +112,27 @@ public class PhosMesh
         int oldCount = VertexCount;
         VertexCount += count;
 
-        // Resize arrays
-        EnsureArray(true, ref positions, VertexCount, float3.Zero);
-        EnsureArray(HasNormals, ref normals, VertexCount, float3.Zero);
-        EnsureArray(HasTangents, ref tangents, VertexCount, float4.Zero);
-        EnsureArray(HasColors, ref colors, VertexCount, color.White);
-        EnsureArray(HasBoneBindings, ref boneBindings, VertexCount, new PhosBoneBinding());
+        // Grow backing arrays geometrically. Emitters (UI glyphs/quads) call this once per quad,
+        // so resizing to the exact VertexCount every time made buffer growth O(n^2): each quad
+        // reallocated and copied the whole buffer. Over-allocate to amortize to O(n). VertexCount
+        // stays exact and every consumer reads up to VertexCount, never array.Length. - xlinka
+        int capacity = positions.Length;
+        if (capacity < VertexCount)
+        {
+            capacity = System.Math.Max(VertexCount, System.Math.Max(capacity * 2, 64));
+        }
+
+        EnsureArray(true, ref positions, capacity, float3.Zero);
+        EnsureArray(HasNormals, ref normals, capacity, float3.Zero);
+        EnsureArray(HasTangents, ref tangents, capacity, float4.Zero);
+        EnsureArray(HasColors, ref colors, capacity, color.White);
+        EnsureArray(HasBoneBindings, ref boneBindings, capacity, new PhosBoneBinding());
 
         // Resize UV channels
         for (int i = 0; i < UVChannelCount; i++)
         {
             if (uvChannels[i].uv2D != null)
-                EnsureArray(true, ref uvChannels[i].uv2D!, VertexCount, float2.Zero);
+                EnsureArray(true, ref uvChannels[i].uv2D!, capacity, float2.Zero);
         }
 
         // Resize flags

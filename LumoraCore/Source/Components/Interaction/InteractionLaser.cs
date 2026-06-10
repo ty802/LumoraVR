@@ -1097,7 +1097,7 @@ public sealed class InteractionLaser : Component
             current = current.Parent;
         }
 
-        current = Slot.Parent;
+        current = Slot!.Parent;
         while (current != null)
         {
             if (current.Name.Value == "Body Nodes")

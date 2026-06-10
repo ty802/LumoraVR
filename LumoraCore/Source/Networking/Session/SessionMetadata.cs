@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -40,7 +40,7 @@ public class SessionMetadata
     /// <summary>
     /// Unique session identifier (format: S-{guid}).
     /// </summary>
-    public string SessionId { get; set; }
+    public string SessionId { get; set; } = null!;
 
     /// <summary>
     /// List of URLs that can be used to connect to this session.
@@ -50,27 +50,27 @@ public class SessionMetadata
     /// <summary>
     /// User ID of the session host.
     /// </summary>
-    public string HostUserId { get; set; }
+    public string HostUserId { get; set; } = null!;
 
     /// <summary>
     /// Display name of the session host.
     /// </summary>
-    public string HostUsername { get; set; }
+    public string HostUsername { get; set; } = null!;
 
     /// <summary>
     /// Machine identifier of the host.
     /// </summary>
-    public string HostMachineId { get; set; }
+    public string HostMachineId { get; set; } = null!;
 
     /// <summary>
     /// Display name of the session.
     /// </summary>
-    public string Name { get; set; }
+    public string Name { get; set; } = null!;
 
     /// <summary>
     /// Optional description of the session.
     /// </summary>
-    public string Description { get; set; }
+    public string Description { get; set; } = null!;
 
     /// <summary>
     /// Session visibility/access level.
@@ -110,7 +110,7 @@ public class SessionMetadata
     /// <summary>
     /// URL to session thumbnail image (for public servers).
     /// </summary>
-    public string ThumbnailUrl { get; set; }
+    public string ThumbnailUrl { get; set; } = null!;
 
     /// <summary>
     /// Base64-encoded thumbnail image data (for LAN discovery).
@@ -121,7 +121,7 @@ public class SessionMetadata
     /// <summary>
     /// Version hash for compatibility checking.
     /// </summary>
-    public string VersionHash { get; set; }
+    public string VersionHash { get; set; } = null!;
 
     /// <summary>
     /// Tags for categorization and filtering.

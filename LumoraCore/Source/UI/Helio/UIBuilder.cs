@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -427,7 +427,7 @@ public class UIBuilder
         text.Content.Value = content;
         text.Size.Value = size ?? CurrentStyle.FontSize;
         text.Color.Value = color ?? CurrentStyle.TextColor;
-        text.Font.Target = CurrentStyle.Font;
+        text.Font.Target = CurrentStyle.Font!;
         return text;
     }
 

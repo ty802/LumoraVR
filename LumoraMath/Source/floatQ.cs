@@ -312,7 +312,7 @@ public struct floatQ : IEquatable<floatQ>
     public static bool operator !=(floatQ a, floatQ b) => !(a == b);
 
     public bool Equals(floatQ other) => x == other.x && y == other.y && z == other.z && w == other.w;
-    public override bool Equals(object obj) => obj is floatQ other && Equals(other);
+    public override bool Equals(object? obj) => obj is floatQ other && Equals(other);
     public override int GetHashCode() => HashCode.Combine(x, y, z, w);
     public override string ToString() => $"({x}, {y}, {z}, {w})";
 
@@ -332,4 +332,3 @@ public struct floatQ : IEquatable<floatQ>
     /// Implicit conversion from Godot Quaternion.
     /// </summary>
 }
-

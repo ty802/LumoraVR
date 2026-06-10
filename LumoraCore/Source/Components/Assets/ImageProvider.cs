@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -54,10 +54,10 @@ public class ImageProvider : UrlAssetProvider<TextureAsset, ImageMetadata>
     protected override async Task<TextureAsset> LoadAssetData(Uri url, ImageMetadata metadata, CancellationToken token)
     {
         byte[] fileData = await LoadFileBytes(url, token);
-        if (token.IsCancellationRequested) return null;
+        if (token.IsCancellationRequested) return null!;
 
         byte[] rgbaPixels = DecodeImageToRgba(fileData, metadata);
-        if (rgbaPixels == null) return null;
+        if (rgbaPixels == null) return null!;
 
         var asset = new TextureAsset();
         asset.InitializeDynamic();  // Create the hook before setting data
@@ -85,7 +85,7 @@ public class ImageProvider : UrlAssetProvider<TextureAsset, ImageMetadata>
         {
             using var stream = File.OpenRead(url.LocalPath);
             var buffer = new byte[System.Math.Min(headerSize, stream.Length)];
-            await stream.ReadAsync(buffer, 0, buffer.Length, token);
+            await stream.ReadExactlyAsync(buffer.AsMemory(0, buffer.Length), token);
             return buffer;
         }
 
@@ -160,7 +160,7 @@ public class ImageProvider : UrlAssetProvider<TextureAsset, ImageMetadata>
         }
 
         // Try to get info from file extension
-        string ext = Path.GetExtension(url.IsFile ? url.LocalPath : url.AbsolutePath)?.ToLowerInvariant();
+        string ext = Path.GetExtension(url.IsFile ? url.LocalPath : url.AbsolutePath)?.ToLowerInvariant()!;
         switch (ext)
         {
             case ".png":
@@ -215,7 +215,7 @@ public class ImageProvider : UrlAssetProvider<TextureAsset, ImageMetadata>
         if (fileData == null || fileData.Length == 0)
         {
             LumoraLogger.Warn("ImageProvider: Empty file data");
-            return null;
+            return null!;
         }
 
         try
@@ -233,7 +233,7 @@ public class ImageProvider : UrlAssetProvider<TextureAsset, ImageMetadata>
         catch (Exception ex)
         {
             LumoraLogger.Error($"ImageProvider: Failed to decode image - {ex.Message}");
-            return null;
+            return null!;
         }
     }
 
@@ -241,7 +241,7 @@ public class ImageProvider : UrlAssetProvider<TextureAsset, ImageMetadata>
     {
         if (rgba == null || width <= 0 || height <= 0)
         {
-            return rgba;
+            return rgba!;
         }
 
         int stride = width * 4;
@@ -261,3 +261,4 @@ public class ImageProvider : UrlAssetProvider<TextureAsset, ImageMetadata>
         return flipped;
     }
 }
+

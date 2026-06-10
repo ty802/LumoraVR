@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -242,7 +242,7 @@ public class PhysicsWorld : IDisposable
             return;
 
         _rigidBodies.Remove(body);
-        body.World = null;
+        body.World = null!;
     }
 
     /// <summary>
@@ -475,7 +475,7 @@ public class PhysicsWorld : IDisposable
 /// </summary>
 public class RigidBody
 {
-    public PhysicsWorld World { get; set; }
+    public PhysicsWorld World { get; set; } = null!;
 
     // Transform
     public Vector3 Position { get; set; }
@@ -499,7 +499,7 @@ public class RigidBody
     public float AngularDamping { get; set; } = 0.1f;
 
     // User data
-    public object UserData { get; set; }
+    public object UserData { get; set; } = null!;
 
     /// <summary>
     /// Apply a force to the rigid body.

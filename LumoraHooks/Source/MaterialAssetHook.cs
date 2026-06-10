@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Godot;
 using Lumora.Core;
@@ -18,11 +18,11 @@ namespace Lumora.Godot.Hooks;
 [ImplementableHook(typeof(MaterialAsset))]
 public class MaterialAssetHook : AssetHook, IMaterialAssetHook
 {
-    private StandardMaterial3D _standardMaterial;
-    private ShaderMaterial _shaderMaterial;
+    private StandardMaterial3D _standardMaterial = null!;
+    private ShaderMaterial _shaderMaterial = null!;
     private MaterialType _materialType;
     private bool _usesShaderMaterial;
-    private string _customShaderPath;
+    private string _customShaderPath = null!;
     private int _renderQueue = -1;
 
     // Pending properties to apply
@@ -54,9 +54,9 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
 
         // Dispose existing materials
         _standardMaterial?.Dispose();
-        _standardMaterial = null;
+        _standardMaterial = null!;
         _shaderMaterial?.Dispose();
-        _shaderMaterial = null;
+        _shaderMaterial = null!;
 
         // Create appropriate material type
         switch (type)
@@ -336,11 +336,11 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
     {
         if (texture?.Hook is IGodotTexture textureHook && textureHook.IsValid)
         {
-            _pendingProperties[property] = textureHook.GodotTexture2D;
+            _pendingProperties[property] = textureHook.GodotTexture2D!;
         }
         else
         {
-            _pendingProperties[property] = null;
+            _pendingProperties[property] = null!;
         }
     }
 
@@ -624,11 +624,12 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
     public override void Unload()
     {
         _standardMaterial?.Dispose();
-        _standardMaterial = null;
+        _standardMaterial = null!;
 
         _shaderMaterial?.Dispose();
-        _shaderMaterial = null;
+        _shaderMaterial = null!;
 
         _pendingProperties.Clear();
     }
 }
+

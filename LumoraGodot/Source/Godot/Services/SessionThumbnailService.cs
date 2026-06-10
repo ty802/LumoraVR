@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using Godot;
 using Lumora.Core;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -101,17 +101,17 @@ public partial class SessionThumbnailService : Node
         // Get the main viewport
         var viewport = GetViewport();
         if (viewport == null)
-            return null;
+            return null!;
 
         // Get the viewport texture
         var viewportTexture = viewport.GetTexture();
         if (viewportTexture == null)
-            return null;
+            return null!;
 
         // Get image from texture
         var image = viewportTexture.GetImage();
         if (image == null)
-            return null;
+            return null!;
 
         // Resize to thumbnail size
         image.Resize(ThumbnailWidth, ThumbnailHeight, Image.Interpolation.Bilinear);
@@ -119,7 +119,7 @@ public partial class SessionThumbnailService : Node
         // Convert to JPEG bytes (smaller than PNG)
         var jpegData = image.SaveJpgToBuffer(JpegQuality / 100f);
         if (jpegData == null || jpegData.Length == 0)
-            return null;
+            return null!;
 
         // Convert to base64
         return Convert.ToBase64String(jpegData);
@@ -133,3 +133,4 @@ public partial class SessionThumbnailService : Node
         _captureTimer = CaptureInterval; // Will trigger on next frame
     }
 }
+

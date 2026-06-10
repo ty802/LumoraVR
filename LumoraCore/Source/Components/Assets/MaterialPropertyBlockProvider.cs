@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -8,7 +8,7 @@ namespace Lumora.Core.Assets;
 [ComponentCategory("Assets/Material Property Blocks")]
 public abstract class MaterialPropertyBlockProvider : DynamicAssetProvider<MaterialPropertyBlockAsset>
 {
-    private Action _assetUpdatedCallback;
+    private Action _assetUpdatedCallback = null!;
 
     protected override void OnAssetCreated(MaterialPropertyBlockAsset asset)
     {

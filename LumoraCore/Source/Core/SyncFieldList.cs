@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -46,7 +46,7 @@ public class SyncFieldList<T> : SyncElementList<Sync<T>>, IEnumerable<T>, IEnume
 
         public T Current => _baseEnumerator.Current.Value;
 
-        object IEnumerator.Current => Current;
+        object IEnumerator.Current => Current!;
 
         internal Enumerator(SyncElementList<Sync<T>>.Enumerator baseEnumerator)
         {
@@ -154,7 +154,7 @@ public class SyncFieldList<T> : SyncElementList<Sync<T>>, IEnumerable<T>, IEnume
         return GetElement(index);
     }
 
-    public new Enumerator GetEnumerator()
+    public Enumerator GetEnumerator()
     {
         return new Enumerator(GetElementsEnumerator());
     }

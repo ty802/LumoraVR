@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core.Math;
@@ -11,9 +11,9 @@ namespace Lumora.Core.Input;
 /// </summary>
 public abstract class ControllerProperty
 {
-    public IInputDevice Device { get; private set; }
+    public IInputDevice Device { get; private set; } = null!;
     public int Index { get; private set; } = -1;
-    public string Name { get; private set; }
+    public string Name { get; private set; } = null!;
 
     internal void Initialize(IInputDevice device, int index, string name)
     {

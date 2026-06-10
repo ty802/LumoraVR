@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -15,7 +15,7 @@ namespace Lumora.Godot.Hooks;
 [ImplementableHook(typeof(TextureAsset))]
 public class TextureAssetHook : AssetHook, ITextureAssetHook, IGodotTexture
 {
-    private ImageTexture _godotTexture;
+    private ImageTexture _godotTexture = null!;
     private TextureWrapMode _wrapU = TextureWrapMode.Repeat;
     private TextureWrapMode _wrapV = TextureWrapMode.Repeat;
 
@@ -139,7 +139,8 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook, IGodotTexture
         if (_godotTexture != null)
         {
             _godotTexture.Dispose();
-            _godotTexture = null;
+            _godotTexture = null!;
         }
     }
 }
+

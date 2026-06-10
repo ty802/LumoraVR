@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using Lumora.Core.Math;
 
 namespace Lumora.Godot.Extensions;
@@ -101,3 +101,4 @@ public static class MathExtensions
         return new float4(v.X, v.Y, v.Z, v.W);
     }
 }
+

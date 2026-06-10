@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -14,10 +14,12 @@ namespace Lumora.Core.Components.UI;
 
 public class Dashboard : UIComponent
 {
-    private static readonly color AccentColor = new color(0.47f, 0.37f, 0.94f, 1f);
-    private static readonly color ButtonColor = new color(0.15f, 0.13f, 0.25f, 0.7f);
-    private static readonly color BorderColor = new color(0.34f, 0.29f, 0.52f, 0.65f);
+    private static readonly color AccentColor = new color(0.50f, 0.40f, 0.96f, 0.55f);
+    private static readonly color ButtonColor = new color(0.22f, 0.20f, 0.34f, 0.45f);
+    private static readonly color WidgetFill = new color(0.17f, 0.16f, 0.26f, 0.45f);
+    private static readonly color BorderColor = new color(0.52f, 0.46f, 0.82f, 0.45f);
     private const float CornerRadius = 14f;
+    private const float BorderThickness = 3f;
     private const float Outer = 16f;
     private const float Gap = 12f;
 
@@ -42,7 +44,7 @@ public class Dashboard : UIComponent
     private Slot? _navSlot;
     private Slot? _screenHostSlot;
     private WidgetGrid? _facetGrid;
-    private Text? _subtitle;
+    private Text? _title;
     private DashboardScreen? _currentScreen;
 
     public IReadOnlyList<DashboardScreen> Screens => _screens;
@@ -57,10 +59,10 @@ public class Dashboard : UIComponent
         Size = new Sync<float2>(this, new float2(1180f, 720f));
         HeaderHeight = new Sync<float>(this, 60f);
         StatusHeight = new Sync<float>(this, 60f);
-        BackgroundColor = new Sync<color>(this, new color(0.05f, 0.04f, 0.10f, 0.55f));
-        HeaderColor = new Sync<color>(this, new color(0.13f, 0.11f, 0.20f, 0.74f));
-        StatusColor = new Sync<color>(this, new color(0.12f, 0.10f, 0.19f, 0.74f));
-        ContentColor = new Sync<color>(this, new color(0.09f, 0.08f, 0.14f, 0.5f));
+        BackgroundColor = new Sync<color>(this, new color(0.05f, 0.04f, 0.10f, 0.40f));
+        HeaderColor = new Sync<color>(this, new color(0.13f, 0.11f, 0.20f, 0.55f));
+        StatusColor = new Sync<color>(this, new color(0.12f, 0.10f, 0.19f, 0.55f));
+        ContentColor = new Sync<color>(this, new color(0.09f, 0.08f, 0.14f, 0.35f));
         Title = new Sync<string>(this, "Lumora");
         Version = new Sync<string>(this, "Lumora v2026.05.29");
         Font = new AssetRef<FontSet>(this);
@@ -119,8 +121,8 @@ public class Dashboard : UIComponent
         _currentScreen?.HideScreen();
         _currentScreen = screen;
         _currentScreen.ShowScreen();
-        if (_subtitle != null)
-            _subtitle.Content.Value = screen.Label.Value + " Dashboard";
+        if (_title != null)
+            _title.Content.Value = screen.Label.Value;
         UpdateButtonHighlights();
         ScreenChanged?.Invoke(_currentScreen);
     }
@@ -162,19 +164,41 @@ public class Dashboard : UIComponent
         rect.OffsetMax.Value = new float2(-Outer, -Outer);
         RoundedPanel(_headerSlot, HeaderColor.Value, BorderColor);
 
-        var builder = new UIBuilder(_headerSlot);
-        builder.Font(Font.Target);
-        var title = builder.Text(Title.Value, 22f, new color(0.92f, 0.92f, 0.96f, 1f));
-        title.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
-        title.VerticalAlignment.Value = TextVerticalAlignment.Bottom;
-        AnchorBox(title.RectTransform!, new float2(0f, 0.5f), new float2(0.6f, 1f), new float2(18f, 0f), new float2(0f, -8f));
-
-        _subtitle = builder.Text("Home Dashboard", 11f, new color(0.5f, 0.5f, 0.6f, 1f));
-        _subtitle.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
-        _subtitle.VerticalAlignment.Value = TextVerticalAlignment.Top;
-        AnchorBox(_subtitle.RectTransform!, new float2(0f, 0f), new float2(0.6f, 0.5f), new float2(18f, 6f), float2.Zero);
+        BuildTitleBox(_headerSlot);
 
         BuildFacets();
+    }
+
+    private void BuildTitleBox(Slot headerSlot)
+    {
+        var box = headerSlot.AddSlot("TitleBox");
+        var rect = box.AttachComponent<RectTransform>();
+        rect.AnchorMin.Value = new float2(0f, 0f);
+        rect.AnchorMax.Value = new float2(0f, 1f);
+        rect.OffsetMin.Value = new float2(14f, 10f);
+        rect.OffsetMax.Value = new float2(186f, -10f);
+
+        var bg = box.AttachComponent<BorderedImage>();
+        bg.Tint.Value = WidgetFill;
+        bg.BorderTint.Value = BorderColor;
+        bg.BorderThickness.Value = BorderThickness;
+        if (_rounded != null)
+        {
+            bg.Texture.Target = _rounded;
+            bg.NineSlice.Value = true;
+            bg.Borders.Value = new float4(12f, 12f, 12f, 12f);
+        }
+
+        var builder = new UIBuilder(box);
+        builder.Font(Font.Target);
+        _title = builder.Text(Title.Value, 20f, new color(0.95f, 0.95f, 0.98f, 1f));
+        _title.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
+        _title.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+        var titleRect = _title.RectTransform!;
+        titleRect.AnchorMin.Value = float2.Zero;
+        titleRect.AnchorMax.Value = float2.One;
+        titleRect.OffsetMin.Value = new float2(10f, 0f);
+        titleRect.OffsetMax.Value = new float2(-10f, 0f);
     }
 
     private void BuildFacets()
@@ -202,9 +226,9 @@ public class Dashboard : UIComponent
         preset.Font.Target = Font.Target;
         preset.GridX.Value = gridX;
         preset.TextColor.Value = textColor;
-        preset.Background.Value = new color(0.12f, 0.11f, 0.18f, 0.85f);
+        preset.Background.Value = WidgetFill;
         preset.BorderColor.Value = BorderColor;
-        preset.BackgroundSprite.Target = _rounded;
+        preset.BackgroundSprite.Target = _rounded!;
         preset.CornerRadius.Value = 12f;
     }
 
@@ -257,9 +281,9 @@ public class Dashboard : UIComponent
 
         var preset = slot.AttachComponent<ConnectionWidgetPreset>();
         preset.Font.Target = Font.Target;
-        preset.BackgroundSprite.Target = _rounded;
+        preset.BackgroundSprite.Target = _rounded!;
         preset.CornerRadius.Value = 12f;
-        preset.Background.Value = new color(0.12f, 0.11f, 0.18f, 0.85f);
+        preset.Background.Value = WidgetFill;
         preset.BorderColor.Value = BorderColor;
     }
 
@@ -274,11 +298,11 @@ public class Dashboard : UIComponent
 
         var preset = slot.AttachComponent<LabelWidgetPreset>();
         preset.Font.Target = Font.Target;
-        preset.BackgroundSprite.Target = _rounded;
+        preset.BackgroundSprite.Target = _rounded!;
         preset.CornerRadius.Value = 12f;
-        preset.Background.Value = new color(0.12f, 0.11f, 0.18f, 0.85f);
+        preset.Background.Value = WidgetFill;
         preset.BorderColor.Value = BorderColor;
-        preset.TextColor.Value = new color(0.5f, 0.5f, 0.55f, 1f);
+        preset.TextColor.Value = new color(0.7f, 0.7f, 0.78f, 1f);
         preset.TextSize.Value = 10f;
         preset.LabelText.Value = Version.Value;
     }
@@ -294,11 +318,37 @@ public class Dashboard : UIComponent
     {
         if (_navSlot == null) return;
 
-        var builder = new UIBuilder(_navSlot);
-        builder.Font(Font.Target).FontSize(12f).MinWidth(84f).PreferredWidth(96f);
-        var button = builder.Button(screen.Label.Value, (_, _) => SwitchTo(screen), ButtonColor);
-        MakeRounded(button.Slot.GetComponent<Image>());
-        _buttonSlots[screen] = button.Slot;
+        var slot = _navSlot.AddSlot(screen.Label.Value);
+        slot.AttachComponent<RectTransform>();
+        var layout = slot.AttachComponent<LayoutElement>();
+        layout.MinWidth.Value = 84f;
+        layout.PreferredWidth.Value = 96f;
+
+        var img = slot.AttachComponent<BorderedImage>();
+        img.Tint.Value = ButtonColor;
+        img.BorderTint.Value = BorderColor;
+        img.BorderThickness.Value = BorderThickness;
+        if (_rounded != null)
+        {
+            img.Texture.Target = _rounded;
+            img.NineSlice.Value = true;
+            img.Borders.Value = new float4(CornerRadius, CornerRadius, CornerRadius, CornerRadius);
+        }
+
+        var builder = new UIBuilder(slot);
+        builder.Font(Font.Target).FontSize(12f);
+        var text = builder.Text(screen.Label.Value, 12f, new color(0.92f, 0.92f, 0.96f, 1f));
+        text.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
+        text.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+        if (text.RectTransform != null)
+            Fill(text.RectTransform);
+
+        var button = slot.AttachComponent<Button>();
+        button.Clicked += (_, _) => SwitchTo(screen);
+        button.AddColorDriver(img.Tint, ButtonColor, InteractionColorMode.Direct);
+
+        _buttonSlots[screen] = slot;
+        Slot.GetComponent<Canvas>()?.MarkDirty();
     }
 
     private void UpdateButtonHighlights()
@@ -312,31 +362,21 @@ public class Dashboard : UIComponent
             driver.SetColors(active ? AccentColor : ButtonColor);
             driver.Apply();
         }
+        Slot.GetComponent<Canvas>()?.MarkDirty();
     }
 
     private void RoundedPanel(Slot slot, color fill, color border)
     {
-        var borderImg = slot.GetComponent<Image>() ?? slot.AttachComponent<Image>();
-        MakeRounded(borderImg);
-        borderImg.Tint.Value = border;
-
-        var fillSlot = slot.AddSlot("Fill");
-        var rect = fillSlot.AttachComponent<RectTransform>();
-        rect.AnchorMin.Value = float2.Zero;
-        rect.AnchorMax.Value = float2.One;
-        rect.OffsetMin.Value = new float2(2f, 2f);
-        rect.OffsetMax.Value = new float2(-2f, -2f);
-        var fillImg = fillSlot.AttachComponent<Image>();
-        MakeRounded(fillImg);
-        fillImg.Tint.Value = fill;
-    }
-
-    private void MakeRounded(Image? img)
-    {
-        if (img == null || _rounded == null) return;
-        img.Texture.Target = _rounded;
-        img.NineSlice.Value = true;
-        img.Borders.Value = new float4(CornerRadius, CornerRadius, CornerRadius, CornerRadius);
+        var img = slot.GetComponent<BorderedImage>() ?? slot.AttachComponent<BorderedImage>();
+        img.Tint.Value = fill;
+        img.BorderTint.Value = border;
+        img.BorderThickness.Value = BorderThickness;
+        if (_rounded != null)
+        {
+            img.Texture.Target = _rounded;
+            img.NineSlice.Value = true;
+            img.Borders.Value = new float4(CornerRadius, CornerRadius, CornerRadius, CornerRadius);
+        }
     }
 
     private void ApplyRootSize()
@@ -346,14 +386,6 @@ public class Dashboard : UIComponent
         _rootRect.AnchorMax.Value = new float2(0.5f, 0.5f);
         _rootRect.OffsetMin.Value = Size.Value * -0.5f;
         _rootRect.OffsetMax.Value = Size.Value * 0.5f;
-    }
-
-    private static void AnchorBox(RectTransform rect, float2 anchorMin, float2 anchorMax, float2 offsetMin, float2 offsetMax)
-    {
-        rect.AnchorMin.Value = anchorMin;
-        rect.AnchorMax.Value = anchorMax;
-        rect.OffsetMin.Value = offsetMin;
-        rect.OffsetMax.Value = offsetMax;
     }
 
     private static void Fill(RectTransform rect)

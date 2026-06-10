@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -44,7 +44,7 @@ public class LocalDB : IDisposable
     /// </summary>
     public string BasePath => _basePath;
 
-    public LocalDB(string basePath = null)
+    public LocalDB(string basePath = null!)
     {
         _basePath = basePath ?? GetDefaultBasePath();
         _machineId = GetOrCreateMachineId();
@@ -77,7 +77,7 @@ public class LocalDB : IDisposable
         if (!File.Exists(filePath))
         {
             Logger.Error($"LocalDB: File not found: {filePath}");
-            return null;
+            return null!;
         }
 
         // Calculate content hash for deduplication
@@ -142,7 +142,7 @@ public class LocalDB : IDisposable
         catch (Exception ex)
         {
             Logger.Error($"LocalDB: Failed to import '{filePath}': {ex.Message}");
-            return null;
+            return null!;
         }
     }
 
@@ -152,12 +152,12 @@ public class LocalDB : IDisposable
     public string GetFilePath(string localUri)
     {
         if (!localUri.StartsWith("local://"))
-            return null;
+            return null!;
 
         // Parse URI: local://[machineId]/[hash]
         var parts = localUri.Substring(8).Split('/');
         if (parts.Length < 2)
-            return null;
+            return null!;
 
         var hash = parts[1];
 
@@ -169,7 +169,7 @@ public class LocalDB : IDisposable
             }
         }
 
-        return null;
+        return null!;
     }
 
     /// <summary>
@@ -184,7 +184,7 @@ public class LocalDB : IDisposable
     /// <summary>
     /// Get a temporary file path for import operations.
     /// </summary>
-    public string GetTempFilePath(string extension = null)
+    public string GetTempFilePath(string extension = null!)
     {
         var fileName = Guid.NewGuid().ToString("N");
         if (!string.IsNullOrEmpty(extension))
@@ -334,11 +334,11 @@ public class LocalDB : IDisposable
 /// </summary>
 public class LocalAssetRecord
 {
-    public string Hash { get; set; }
-    public string LocalUri { get; set; }
-    public string FilePath { get; set; }
-    public string OriginalPath { get; set; }
-    public string OriginalFileName { get; set; }
+    public string Hash { get; set; } = null!;
+    public string LocalUri { get; set; } = null!;
+    public string FilePath { get; set; } = null!;
+    public string OriginalPath { get; set; } = null!;
+    public string OriginalFileName { get; set; } = null!;
     public DateTime ImportedAt { get; set; }
     public long FileSize { get; set; }
     public Dictionary<string, string> Metadata { get; set; } = new();

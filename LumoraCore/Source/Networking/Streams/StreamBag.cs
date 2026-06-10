@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -17,7 +17,7 @@ public class StreamBag
     /// <summary>
     /// The user that owns this bag.
     /// </summary>
-    public User User { get; private set; }
+    public User User { get; private set; } = null!;
 
     /// <summary>
     /// Number of streams in the bag.
@@ -32,12 +32,12 @@ public class StreamBag
     /// <summary>
     /// Event triggered when a stream is added.
     /// </summary>
-    public event Action<Stream> StreamAdded;
+    public event Action<Stream> StreamAdded = null!;
 
     /// <summary>
     /// Event triggered when a stream is removed.
     /// </summary>
-    public event Action<Stream> StreamRemoved;
+    public event Action<Stream> StreamRemoved = null!;
 
     /// <summary>
     /// Initialize the bag with its owning user.
@@ -97,7 +97,7 @@ public class StreamBag
     /// </summary>
     public Stream Get(RefID id)
     {
-        return _streams.TryGetValue(id, out var stream) ? stream : null;
+        return (_streams.TryGetValue(id, out var stream) ? stream : null) ?? null!;
     }
 
     /// <summary>
@@ -105,7 +105,13 @@ public class StreamBag
     /// </summary>
     public bool TryGet(RefID id, out Stream stream)
     {
-        return _streams.TryGetValue(id, out stream);
+        if (_streams.TryGetValue(id, out var found))
+        {
+            stream = found;
+            return true;
+        }
+        stream = default!;
+        return false;
     }
 
     /// <summary>

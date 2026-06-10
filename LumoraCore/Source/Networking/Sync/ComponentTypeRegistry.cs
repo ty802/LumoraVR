@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -63,7 +63,7 @@ public static class ComponentTypeRegistry
 		}
 		catch (ReflectionTypeLoadException ex)
 		{
-			types = ex.Types.Where(t => t != null).ToArray();
+			types = ex.Types.Where(t => t != null).Select(t => t!).ToArray();
 		}
 
 		foreach (var type in types)
@@ -135,7 +135,7 @@ public static class ComponentTypeRegistry
 	public static Type ResolveType(string id)
 	{
 		if (string.IsNullOrEmpty(id))
-			return null;
+			return null!;
 
 		lock (_lock)
 		{
@@ -161,6 +161,7 @@ public static class ComponentTypeRegistry
 		}
 
 		LumoraLogger.Error($"ComponentTypeRegistry: Failed to resolve component type '{id}'");
-		return null;
+		return null!;
 	}
 }
+

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -27,7 +27,7 @@ public class UpdateManager
     private Dictionary<IInitializable, List<IInitializable>> _initializableChildren = new Dictionary<IInitializable, List<IInitializable>>();
 
     // Currently updating component (for debugging)
-    public IUpdatable CurrentlyUpdating { get; private set; }
+    public IUpdatable CurrentlyUpdating { get; private set; } = null!;
 
     public UpdateManager(World world)
     {
@@ -177,7 +177,7 @@ public class UpdateManager
                 }
                 finally
                 {
-                    CurrentlyUpdating = null;
+                    CurrentlyUpdating = null!;
                 }
             }
         }
@@ -209,7 +209,7 @@ public class UpdateManager
                     }
                     finally
                     {
-                        CurrentlyUpdating = null;
+                        CurrentlyUpdating = null!;
                     }
                 }
             }
@@ -242,7 +242,7 @@ public class UpdateManager
                     }
                     finally
                     {
-                        CurrentlyUpdating = null;
+                        CurrentlyUpdating = null!;
                     }
                 }
             }
@@ -268,7 +268,7 @@ public class UpdateManager
             }
             finally
             {
-                CurrentlyUpdating = null;
+                CurrentlyUpdating = null!;
             }
         }
     }

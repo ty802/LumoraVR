@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -24,7 +24,7 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
     /// </summary>
     private int _modificationLevel;
 
-    protected World _world;
+    protected World _world = null!;
     protected RefID _referenceID;
 
     // ISyncMember fields
@@ -203,7 +203,7 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
     /// </summary>
     protected virtual bool IsDriven => IsDrivable && ActiveLink != null && ActiveLink.IsDriving;
 
-    protected virtual ILinkRef ActiveLink => null;
+    protected virtual ILinkRef ActiveLink => null!;
 
     protected virtual string Name => GetType().Name;
     
@@ -612,7 +612,7 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
     /// </summary>
     public static IWorldElement TryRetrieveFromTrash(World world, ulong tick, RefID id)
     {
-        return world?.ReferenceController?.TryRetrieveFromTrash(tick, id);
+        return (world?.ReferenceController?.TryRetrieveFromTrash(tick, id)) ?? null!;
     }
 
     /// <summary>
@@ -635,7 +635,7 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
 
         IsDisposed = true;
         _parent = null;
-        World = null;
+        World = null!;
     }
 
     public void Destroy()
@@ -653,3 +653,4 @@ public enum MessageValidity
     Conflict,
     Ignore
 }
+

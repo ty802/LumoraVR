@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using Lumora.Core;
 using Lumora.Core.Components.Meshes;
 using Lumora.Core.Phos;
@@ -66,7 +66,7 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         meshInstance.MaterialOverride = material;
 
         // Get slot hook and request Node3D
-        if (Owner.Slot?.Hook is SlotHook hook)
+        if (Owner!.Slot?.Hook is SlotHook hook)
         {
             _meshSlotHook = hook;
             parentNode = _meshSlotHook.RequestNode3D();
@@ -137,9 +137,17 @@ public class MeshHook : ComponentHook<ProceduralMesh>
     /// Upload PhosMesh to Godot ArrayMesh.
     /// Only uploads channels marked dirty in the upload hint.
     /// </summary>
+    // TEMP perf instrumentation: aggregate time spent re-uploading meshes to Godot. - xlinka
+    private static double _uploadMsAccum;
+    private static int _uploadCount;
+    private static long _uploadVerts;
+    private static long _uploadLastLogMs;
+
     private void UploadMesh(PhosMesh phosMesh, MeshUploadHint uploadHint)
     {
         if (godotMesh == null) return;
+
+        long startTicks = System.Diagnostics.Stopwatch.GetTimestamp();
 
         godotMesh.ClearSurfaces();
 
@@ -149,6 +157,20 @@ public class MeshHook : ComponentHook<ProceduralMesh>
             {
                 UploadTriangleSubmesh(phosMesh, triangleSubmesh, uploadHint);
             }
+        }
+
+        _uploadMsAccum += (System.Diagnostics.Stopwatch.GetTimestamp() - startTicks) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+        _uploadCount++;
+        _uploadVerts += phosMesh.VertexCount;
+        long nowMs = System.Environment.TickCount64;
+        if (nowMs - _uploadLastLogMs >= 1000)
+        {
+            Lumora.Core.Logging.Logger.Log(
+                $"[MeshUploadPerf] {_uploadCount} uploads/s | {_uploadMsAccum:0.0} ms/s | {_uploadVerts} verts/s");
+            _uploadMsAccum = 0;
+            _uploadCount = 0;
+            _uploadVerts = 0;
+            _uploadLastLogMs = nowMs;
         }
 
         if (_uiDiagLogged < 3 && Owner.Slot?.Parent?.SlotName?.Value == "HelioTestPanel")
@@ -252,7 +274,7 @@ public class MeshHook : ComponentHook<ProceduralMesh>
             var indices = new int[submesh.IndexCount];
             for (int i = 0; i < submesh.IndexCount; i++)
             {
-                indices[i] = submesh.RawIndices[i];
+                indices[i] = submesh.RawIndices![i];
             }
             arrays[(int)Mesh.ArrayType.Index] = indices;
         }
@@ -288,3 +310,4 @@ public class MeshHook : ComponentHook<ProceduralMesh>
     /// </summary>
     public MeshInstance3D? GetMeshInstance() => meshInstance;
 }
+

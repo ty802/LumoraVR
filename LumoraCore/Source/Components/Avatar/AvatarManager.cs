@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -29,7 +29,7 @@ public class AvatarManager : UserRootComponent
     // user spawn. Set Target to null to disable auto-filling.
     public readonly SyncRef<IEmptyAvatarSlotHandler> EmptySlotHandler = new();
 
-    private CancellationTokenSource _fillCts;
+    private CancellationTokenSource _fillCts = null!;
     private bool _isFillingEmptySlots;
 
     // Display name/color values used by name badges/tags. Per-user state that
@@ -39,9 +39,9 @@ public class AvatarManager : UserRootComponent
     public readonly Sync<color> NameTagOutline = new();
     public readonly Sync<color> NameTagBackground = new();
 
-    public SyncRefList<Slot> AvailableAvatars { get; private set; }
+    public SyncRefList<Slot> AvailableAvatars { get; private set; } = null!;
 
-    public event Action<Slot> OnAvatarChanged;
+    public event Action<Slot> OnAvatarChanged = null!;
 
     public bool IsEquippingManually { get; private set; }
 
@@ -99,7 +99,7 @@ public class AvatarManager : UserRootComponent
             return false;
         }
 
-        // Descending priority — Root last (it's MaxValue and reparents the rest).
+        // Descending priority â€” Root last (it's MaxValue and reparents the rest).
         equipObjects.Sort((a, b) => -a.EquipOrderPriority.CompareTo(b.EquipOrderPriority));
 
         // Collect user's body-node slots, deduping by BodyNode (one per node).
@@ -172,7 +172,7 @@ public class AvatarManager : UserRootComponent
     // Walk the user's AvatarObjectSlots and ask EmptySlotHandler to fill any
     // that have nothing equipped. Called automatically after every non-fill
     // Equip(); also callable directly when the handler swaps. - xlinka
-    public void FillEmptySlots(List<AvatarObjectSlot> candidateSlots = null)
+    public void FillEmptySlots(List<AvatarObjectSlot> candidateSlots = null!)
     {
         if (_isFillingEmptySlots) return;
         if (EmptySlotHandler.Target == null) return;
@@ -211,7 +211,7 @@ public class AvatarManager : UserRootComponent
         if (avatarObject is Component c)
         {
             if (c.Slot == null || c.Slot.IsDestroyed) return false;
-            // Already under a user — can't equip something already worn.
+            // Already under a user â€” can't equip something already worn.
             if (c.Slot.ActiveUserRoot != null) return false;
         }
         if (Slot.ActiveUserRoot == null) return false;
@@ -258,7 +258,7 @@ public class AvatarManager : UserRootComponent
             avatarRoot.IsActive.Value = false;
 
         CurrentAvatar.Target.ActiveSelf.Value = false;
-        CurrentAvatar.Target = null;
+        CurrentAvatar.Target = null!;
     }
 
     public void EquipDefaultAvatar()
@@ -304,7 +304,7 @@ public class AvatarManager : UserRootComponent
         }
         int currentIndex = GetAvatarIndex(CurrentAvatar.Target);
         int nextIndex = (currentIndex + 1) % AvailableAvatars.Count;
-        EquipAvatar(AvailableAvatars[nextIndex]);
+        EquipAvatar(AvailableAvatars[nextIndex]!);
     }
 
     public void CyclePreviousAvatar()
@@ -317,7 +317,7 @@ public class AvatarManager : UserRootComponent
         int currentIndex = GetAvatarIndex(CurrentAvatar.Target);
         int prevIndex = currentIndex - 1;
         if (prevIndex < 0) prevIndex = AvailableAvatars.Count - 1;
-        EquipAvatar(AvailableAvatars[prevIndex]);
+        EquipAvatar(AvailableAvatars[prevIndex]!);
     }
 
     // Legacy single-avatar equip path: resolves the descriptor, sets up IK,
@@ -367,7 +367,7 @@ public class AvatarManager : UserRootComponent
         return TryResolveFinalizedAvatar(avatarSlot, out _, out _, out _, out _, out _);
     }
 
-    public async void ImportAndEquipAvatar(string filePath, LocalDB localDB = null)
+    public async void ImportAndEquipAvatar(string filePath, LocalDB localDB = null!)
     {
         Logger.Warn("AvatarManager: ImportAndEquipAvatar now imports a draft avatar that must be finalized before equip");
 
@@ -395,7 +395,7 @@ public class AvatarManager : UserRootComponent
     private void ResolveUserRoot()
     {
         if (UserRoot.Target != null) return;
-        UserRoot.Target = Slot?.ActiveUserRoot ?? Slot?.GetComponentInParent<UserRoot>();
+        UserRoot.Target = Slot?.ActiveUserRoot ?? Slot?.GetComponentInParent<UserRoot>()!;
     }
 
     private bool TryResolveFinalizedAvatar(
@@ -406,10 +406,10 @@ public class AvatarManager : UserRootComponent
         out BipedRig rig,
         out string reason)
     {
-        descriptor = null;
-        avatarRoot = null;
-        skeleton = null;
-        rig = null;
+        descriptor = null!;
+        avatarRoot = null!;
+        skeleton = null!;
+        rig = null!;
         reason = string.Empty;
 
         if (avatarSlot == null || avatarSlot.IsDestroyed)

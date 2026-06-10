@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.Components.Avatar;
@@ -13,7 +13,7 @@ namespace Lumora.Godot.Hooks;
 /// Godot hook for LocalViewOverride.
 ///
 /// When Context == UserView and this slot belongs to the local user,
-/// sets every MeshInstance3D under the slot to ShadowsOnly — invisible
+/// sets every MeshInstance3D under the slot to ShadowsOnly â€” invisible
 /// to the camera but still casting shadows on the floor.
 ///
 /// When the context does not apply, restores normal shadow casting.
@@ -58,7 +58,7 @@ public class LocalViewOverrideHook : ComponentHook<LocalViewOverride>
         base.Destroy(destroyingWorld);
     }
 
-    // ── Helpers ────────────────────────────────────────────────────────────────
+    // â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private void SetMeshCastShadow(GeometryInstance3D.ShadowCastingSetting setting)
     {
@@ -86,3 +86,4 @@ public class LocalViewOverrideHook : ComponentHook<LocalViewOverride>
         return false;
     }
 }
+

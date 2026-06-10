@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using Lumora.Core.Assets;
 using Lumora.Core.Phos;
 
@@ -13,7 +13,7 @@ namespace Lumora.Godot.Hooks;
 /// </summary>
 public class MeshAssetHook : AssetHook, IMeshAssetHook
 {
-    private ArrayMesh _godotMesh;
+    private ArrayMesh _godotMesh = null!;
 
     /// <summary>
     /// Get the Godot ArrayMesh.
@@ -171,7 +171,7 @@ public class MeshAssetHook : AssetHook, IMeshAssetHook
         return arrays;
     }
 
-    private global::Godot.Collections.Array BuildSurfaceArraysNoIndices(PhosMesh mesh)
+    private global::Godot.Collections.Array? BuildSurfaceArraysNoIndices(PhosMesh mesh)
     {
         var arrays = new global::Godot.Collections.Array();
         arrays.Resize((int)Mesh.ArrayType.Max);
@@ -227,7 +227,8 @@ public class MeshAssetHook : AssetHook, IMeshAssetHook
         if (_godotMesh != null)
         {
             _godotMesh.Dispose();
-            _godotMesh = null;
+            _godotMesh = null!;
         }
     }
 }
+

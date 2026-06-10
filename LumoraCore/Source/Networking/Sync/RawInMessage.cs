@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 namespace Lumora.Core.Networking.Sync;
@@ -8,8 +8,8 @@ namespace Lumora.Core.Networking.Sync;
 /// </summary>
 public class RawInMessage
 {
-    public byte[] Data { get; set; }
+    public byte[] Data { get; set; } = null!;
     public int Offset { get; set; }
     public int Length { get; set; }
-    public IConnection Sender { get; set; }
+    public IConnection Sender { get; set; } = null!;
 }

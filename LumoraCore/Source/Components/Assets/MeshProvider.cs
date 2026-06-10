@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Numerics;
@@ -103,10 +103,10 @@ public class MeshProvider : UrlAssetProvider<MeshDataAsset, MeshDataMetadata>
     protected override async Task<MeshDataAsset> LoadAssetData(Uri url, MeshDataMetadata metadata, CancellationToken token)
     {
         byte[] fileData = await LoadFileBytes(url, token);
-        if (token.IsCancellationRequested) return null;
+        if (token.IsCancellationRequested) return null!;
 
         PhosMesh mesh = DecodeMesh(fileData, url);
-        if (mesh == null) return null;
+        if (mesh == null) return null!;
 
         // Apply import scale if not 1.0
         float scale = ImportScale.Value;
@@ -151,7 +151,7 @@ public class MeshProvider : UrlAssetProvider<MeshDataAsset, MeshDataMetadata>
         if (fileData == null || fileData.Length == 0)
         {
             LumoraLogger.Warn("MeshProvider: Empty file data");
-            return null;
+            return null!;
         }
 
         string ext = Path.GetExtension(url.AbsolutePath)?.ToLowerInvariant() ?? "";
@@ -169,7 +169,7 @@ public class MeshProvider : UrlAssetProvider<MeshDataAsset, MeshDataMetadata>
         catch (Exception ex)
         {
             LumoraLogger.Error($"MeshProvider: Failed to decode mesh - {ex.Message}");
-            return null;
+            return null!;
         }
     }
 
@@ -521,3 +521,4 @@ public class MeshProvider : UrlAssetProvider<MeshDataAsset, MeshDataMetadata>
             | PostProcessSteps.FlipUVs;
     }
 }
+

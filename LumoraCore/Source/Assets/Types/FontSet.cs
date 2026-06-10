@@ -13,6 +13,18 @@ public sealed class FontSet : DynamicAsset
     public IReadOnlyList<FontAsset> Fonts => _fonts;
     public bool IsValid => _fonts.Count > 0;
 
+    // Aggregate atlas generation across member fonts; bumps when any gains a glyph. - xlinka
+    public int CacheGeneration
+    {
+        get
+        {
+            int g = 0;
+            foreach (var font in _fonts)
+                g += font.CacheGeneration;
+            return g;
+        }
+    }
+
     public void AddFont(FontAsset font)
     {
         if (font != null)

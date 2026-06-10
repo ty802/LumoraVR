@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading;
@@ -140,16 +140,16 @@ public class EngineMetrics
 /// </summary>
 public class Engine : IDisposable
 {
-    private static Engine _instance;
+    private static Engine _instance = null!;
     private static readonly object _instanceLock = new object();
 
     private EngineState _state = EngineState.NotInitialized;
     private readonly object _stateLock = new object();
     private bool _hostingLocalHome;
     private int? _localHomePort;
-    private World _pendingUserSpaceSetup;
+    private World _pendingUserSpaceSetup = null!;
     private readonly Dictionary<string, SubsystemStatus> _subsystemStatus = new Dictionary<string, SubsystemStatus>();
-    private Exception _initializationError;
+    private Exception _initializationError = null!;
 
     // Engine timing
     private readonly Stopwatch _engineTimer = new Stopwatch();
@@ -158,14 +158,14 @@ public class Engine : IDisposable
     private const double DefaultFixedTimestep = 1.0 / 60.0;
 
     // Core subsystems
-    public WorldManager WorldManager { get; private set; }
-    public WorldLoadingService WorldLoadingService { get; private set; }
-    public FocusManager FocusManager { get; private set; }
-    public Input.InputInterface InputInterface { get; private set; }
-    public AssetManager AssetManager { get; private set; }
-    public GlobalCoroutineManager CoroutineManager { get; private set; }
-    public PhysicsManager PhysicsManager { get; private set; }
-    public RemoteAudioManager AudioManager { get; private set; }
+    public WorldManager WorldManager { get; private set; } = null!;
+    public WorldLoadingService WorldLoadingService { get; private set; } = null!;
+    public FocusManager FocusManager { get; private set; } = null!;
+    public Input.InputInterface InputInterface { get; private set; } = null!;
+    public AssetManager AssetManager { get; private set; } = null!;
+    public GlobalCoroutineManager CoroutineManager { get; private set; } = null!;
+    public PhysicsManager PhysicsManager { get; private set; } = null!;
+    public RemoteAudioManager AudioManager { get; private set; } = null!;
 
     // CDN / Content delivery
     public LumoraClient? CDNClient { get; private set; }
@@ -184,20 +184,20 @@ public class Engine : IDisposable
     /// <summary>
     /// Root directory for lumres:// and res:// URI resolution.
     /// </summary>
-    public string ResourceRoot { get; set; }
+    public string ResourceRoot { get; set; } = null!;
 
     // Events
     /// <summary>Fired when engine state changes.</summary>
-    public event Action<EngineState> OnStateChanged;
+    public event Action<EngineState> OnStateChanged = null!;
 
     /// <summary>Fired before each update cycle.</summary>
-    public event Action<double> OnPreUpdate;
+    public event Action<double> OnPreUpdate = null!;
 
     /// <summary>Fired after each update cycle.</summary>
-    public event Action<double> OnPostUpdate;
+    public event Action<double> OnPostUpdate = null!;
 
     /// <summary>Fired when a subsystem status changes.</summary>
-    public event Action<string, SubsystemStatus> OnSubsystemStatusChanged;
+    public event Action<string, SubsystemStatus> OnSubsystemStatusChanged = null!;
 
     #region Static Properties
 
@@ -460,10 +460,10 @@ public class Engine : IDisposable
         catch (Exception ex)
         {
             LumoraLogger.Error($"Engine initialization failed: {ex.Message}");
-            LumoraLogger.Error(ex.StackTrace);
+            LumoraLogger.Error(ex.StackTrace ?? ex.Message);
             State = EngineState.Failed;
             _initializationError = ex;
-            lock (_instanceLock) { _instance = null; }
+            lock (_instanceLock) { _instance = null!; }
             throw;
         }
     }
@@ -546,7 +546,7 @@ public class Engine : IDisposable
         var world = WorldManager?.GetWorldByName("LocalHome");
         if (world != null)
         {
-            WorldManager.SwitchToWorld(world);
+            WorldManager!.SwitchToWorld(world);
             LumoraLogger.Log("Engine: Switched to LocalHome world.");
         }
         else
@@ -568,7 +568,7 @@ public class Engine : IDisposable
     /// <summary>
     /// Clear the pending userspace setup.
     /// </summary>
-    public void ClearPendingUserSpaceSetup() => _pendingUserSpaceSetup = null;
+    public void ClearPendingUserSpaceSetup() => _pendingUserSpaceSetup = null!;
 
     /// <summary>
     /// Join the local home world.
@@ -635,7 +635,7 @@ public class Engine : IDisposable
         catch (Exception ex)
         {
             LumoraLogger.Error($"Engine Update error: {ex.Message}");
-            if (ShowDebug) LumoraLogger.Error(ex.StackTrace);
+            if (ShowDebug) LumoraLogger.Error(ex.StackTrace ?? ex.Message);
         }
 
         OnPostUpdate?.Invoke(delta);
@@ -722,14 +722,14 @@ public class Engine : IDisposable
         LumoraLogger.Log("=====================================");
 
         // Dispose in reverse initialization order
-        DisposeSubsystem("WorldManager", () => { WorldManager?.Dispose(); WorldManager = null; });
-        DisposeSubsystem("PhysicsManager", () => { PhysicsManager?.Dispose(); PhysicsManager = null; });
-        DisposeSubsystem("AudioManager", () => { AudioManager = null; });
+        DisposeSubsystem("WorldManager", () => { WorldManager?.Dispose(); WorldManager = null!; });
+        DisposeSubsystem("PhysicsManager", () => { PhysicsManager?.Dispose(); PhysicsManager = null!; });
+        DisposeSubsystem("AudioManager", () => { AudioManager = null!; });
         DisposeSubsystem("ContentCache", () => { ContentCache?.Dispose(); ContentCache = null; CDNClient?.Dispose(); CDNClient = null; });
-        DisposeSubsystem("AssetManager", () => { AssetManager?.Dispose(); AssetManager = null; });
-        DisposeSubsystem("CoroutineManager", () => { CoroutineManager?.Dispose(); CoroutineManager = null; });
-        DisposeSubsystem("InputInterface", () => { InputInterface?.Dispose(); InputInterface = null; });
-        DisposeSubsystem("FocusManager", () => { FocusManager = null; });
+        DisposeSubsystem("AssetManager", () => { AssetManager?.Dispose(); AssetManager = null!; });
+        DisposeSubsystem("CoroutineManager", () => { CoroutineManager?.Dispose(); CoroutineManager = null!; });
+        DisposeSubsystem("InputInterface", () => { InputInterface?.Dispose(); InputInterface = null!; });
+        DisposeSubsystem("FocusManager", () => { FocusManager = null!; });
 
         _engineTimer.Stop();
         var runTime = _engineTimer.Elapsed.TotalSeconds;
@@ -739,7 +739,7 @@ public class Engine : IDisposable
         lock (_instanceLock)
         {
             if (_instance == this)
-                _instance = null;
+                _instance = null!;
         }
 
         LumoraLogger.Log("=====================================");
@@ -792,3 +792,4 @@ public class Engine : IDisposable
 
     #endregion
 }
+

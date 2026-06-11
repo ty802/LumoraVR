@@ -12,8 +12,8 @@ namespace Lumora.Source.Godot.Input;
 
 /// <summary>
 /// Desktop camera modes:
-///   F5 Ã¢â‚¬â€ third-person orbit (mouse orbits camera around character; press again for first-person)
-///   F6 Ã¢â‚¬â€ free-cam fly      (WASD+mouse, character frozen; press again for first-person)
+///   F5 - third-person orbit (mouse orbits camera around character; press again for first-person)
+///   F6 - free-cam fly      (WASD+mouse, character frozen; press again for first-person)
 ///
 /// Creates its own Camera3D child and sets Current=true to take over rendering,
 /// which automatically demotes the CameraHook head-slot camera.
@@ -22,7 +22,7 @@ public partial class DesktopCameraController : Node
 {
     public enum CameraMode { FirstPerson, ThirdPerson, FreeCam }
 
-    // ===== THIRD-PERSON SETTINGS =====
+    // THIRD-PERSON SETTINGS
     private const float TpDefaultDistance = 3.5f;
     private const float TpMinDistance     = 1.0f;
     private const float TpMaxDistance     = 12.0f;
@@ -32,7 +32,7 @@ public partial class DesktopCameraController : Node
     private const float TpMinPitch        = -0.35f; // slightly below horizon
     private const float TpMaxPitch        =  1.40f; // nearly top-down
 
-    // ===== FREE-CAM SETTINGS =====
+    // FREE-CAM SETTINGS
     private const float FreeCamBaseSpeed   = 5f;
     private const float FreeCamFastMult    = 4f;
     private const float LookReferenceHeight = 1080f;
@@ -40,13 +40,13 @@ public partial class DesktopCameraController : Node
 
     private static float LookSensitivity => (Mathf.Pi / LookReferenceHeight) * InterfaceSettings.MouseSensitivity;
 
-    // ===== REFERENCES =====
+    // REFERENCES
     private Lumora.Core.Engine _engine = null!;
     private Camera3D  _overrideCamera = null!;
     private Node3D    _freeCamIndicator = null!;
     private Label3D   _freeCamLabel = null!;
 
-    // ===== STATE =====
+    // STATE
     public static CameraMode ActiveMode { get; private set; } = CameraMode.FirstPerson;
 
     private CameraMode _mode      = CameraMode.FirstPerson;
@@ -65,7 +65,7 @@ public partial class DesktopCameraController : Node
     private float   _freeCamPitch;
     private Vector2 _pendingFreeCamMouse;
 
-    // ===== INIT =====
+    // INIT
 
     public void Initialize(Lumora.Core.Engine engine)
     {
@@ -155,7 +155,7 @@ public partial class DesktopCameraController : Node
         }
     }
 
-    // ===== GODOT CALLBACKS =====
+    // GODOT CALLBACKS
 
     public override void _Process(double delta)
     {
@@ -206,7 +206,7 @@ public partial class DesktopCameraController : Node
         }
     }
 
-    // ===== MODE SWITCHING =====
+    // MODE SWITCHING
 
     private void SwitchMode(CameraMode newMode)
     {
@@ -216,7 +216,7 @@ public partial class DesktopCameraController : Node
 
         var state = UserInputState.ForFocusedLocalUser;
 
-        // --- Tear down previous ---
+        // Tear down previous
         if (prev == CameraMode.FreeCam)
         {
             state?.SetFreeCamActive(false);
@@ -229,7 +229,7 @@ public partial class DesktopCameraController : Node
             _pendingTpMouse = Vector2.Zero;
         }
 
-        // --- Set up new ---
+        // Set up new
         switch (newMode)
         {
             case CameraMode.FirstPerson:
@@ -257,7 +257,7 @@ public partial class DesktopCameraController : Node
         }
     }
 
-    // ===== THIRD-PERSON =====
+    // THIRD-PERSON
 
     private void UpdateThirdPerson()
     {
@@ -309,7 +309,7 @@ public partial class DesktopCameraController : Node
         return new Quaternion(rot.x, rot.y, rot.z, rot.w).GetEuler().Y;
     }
 
-    // ===== FREE CAM =====
+    // FREE CAM
 
     private void SeedFreeCamFromActiveCamera()
     {

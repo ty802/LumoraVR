@@ -9,7 +9,7 @@ namespace Lumora.Core.Components.Import;
 // Only carries fields the dialog actually drives today; the handler can fill in
 // implementation-specific defaults for everything else. Grow this struct as the
 // model pipeline gains features (PBS materials, animations, point clouds, etc.)
-// — don't add fields here speculatively. - xlinka
+// - don't add fields here speculatively. - xlinka
 public sealed class ModelImportRequest
 {
     public float Scale = 1f;

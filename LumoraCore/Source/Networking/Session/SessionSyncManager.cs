@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -226,7 +226,7 @@ public class SessionSyncManager : IDisposable
         }
     }
 
-    // ===== DECODE THREAD =====
+    // DECODE THREAD
 
     private void DecodeLoop()
     {
@@ -265,7 +265,7 @@ public class SessionSyncManager : IDisposable
         LumoraLogger.Log("DecodeLoop stopped");
     }
 
-    // ===== ENCODE THREAD =====
+    // ENCODE THREAD
 
     private void EncodeLoop()
     {
@@ -314,7 +314,7 @@ public class SessionSyncManager : IDisposable
         LumoraLogger.Log("EncodeLoop stopped");
     }
 
-    // ===== SYNC THREAD =====
+    // SYNC THREAD
 
     private void SyncLoop()
     {
@@ -673,7 +673,7 @@ public class SessionSyncManager : IDisposable
                     {
                         // Authority sees the original sender connection (no relay). A peer
                         // can put any UserID in the StreamMessage, so we must reject the
-                        // message â€” and refuse to relay it â€” when the claimed UserID does
+                        // message - and refuse to relay it - when the claimed UserID does
                         // not belong to the connection it actually arrived on. Otherwise a
                         // malicious peer can spoof another user's identity and we will
                         // forward the spoofed stream data to everyone else in the session.
@@ -935,7 +935,7 @@ public class SessionSyncManager : IDisposable
 
     /// <summary>
     /// Verify a user-attributed message's claimed UserID matches the user mapped
-    /// to the sender connection. Authority-side use only â€” clients receive
+    /// to the sender connection. Authority-side use only - clients receive
     /// messages relayed via the host, whose Sender is the host connection rather
     /// than the original peer.
     /// </summary>

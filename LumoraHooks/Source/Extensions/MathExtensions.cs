@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Godot;
@@ -12,7 +12,7 @@ namespace Lumora.Godot.Extensions;
 /// </summary>
 public static class MathExtensions
 {
-    // ===== float3 conversions =====
+    // float3 conversions
 
     public static Vector3 ToGodot(this float3 v)
     {
@@ -24,7 +24,7 @@ public static class MathExtensions
         return new float3(v.X, v.Y, v.Z);
     }
 
-    // ===== float2 conversions =====
+    // float2 conversions
 
     public static Vector2 ToGodot(this float2 v)
     {
@@ -36,7 +36,7 @@ public static class MathExtensions
         return new float2(v.X, v.Y);
     }
 
-    // ===== floatQ (quaternion) conversions =====
+    // floatQ (quaternion) conversions
 
     public static Quaternion ToGodot(this floatQ q)
     {
@@ -48,7 +48,7 @@ public static class MathExtensions
         return new floatQ(q.X, q.Y, q.Z, q.W);
     }
 
-    // ===== float4x4 (matrix) conversions =====
+    // float4x4 (matrix) conversions
 
     public static Transform3D ToGodot(this float4x4 m)
     {
@@ -77,7 +77,7 @@ public static class MathExtensions
         );
     }
 
-    // ===== color conversions =====
+    // color conversions
 
     public static Color ToGodot(this color c)
     {
@@ -89,7 +89,7 @@ public static class MathExtensions
         return new color(c.R, c.G, c.B, c.A);
     }
 
-    // ===== float4 conversions (used for colors/vectors) =====
+    // float4 conversions (used for colors/vectors)
 
     public static Vector4 ToGodot(this float4 v)
     {

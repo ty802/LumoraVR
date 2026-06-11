@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.Collections.Generic;
@@ -14,10 +14,19 @@ namespace Lumora.Core.Components;
 /// Implements IColliderOwner pattern for collision management.
 /// Physics behaviour is delegated to ICharacterControllerHook (e.g. CharacterControllerHook in LumoraGodot).
 /// </summary>
+// Very late update order: locomotion modules write movement input earlier in
+// the same frame, then the character steps once per render frame. - xlinka
 [ComponentCategory("Physics")]
+[DefaultUpdateOrder(1000000)]
 public class CharacterController : ImplementableComponent, IColliderOwner
 {
-    // ===== MOVEMENT PARAMETERS =====
+    // When set, the character body follows this slot's ground projection
+    // (room-scale head) instead of the root origin, and physics writes back
+    // only the delta it produced. Walking into a wall physically pushes the
+    // root back; turning around the head never disturbs the body.
+    public readonly SyncRef<Slot> HeadReference = new();
+
+    // MOVEMENT PARAMETERS
 
     public float Speed { get; set; } = 5.0f;
     public float AirSpeed { get; set; } = 1.0f;
@@ -28,7 +37,7 @@ public class CharacterController : ImplementableComponent, IColliderOwner
     public float CrouchHeight { get; set; } = 1.0f;
     public float CrouchTransitionSpeed { get; set; } = 8.0f;
 
-    // ===== STATE =====
+    // STATE
 
     private readonly List<Collider> _colliders = new List<Collider>();
     private bool _isReady = false;
@@ -43,7 +52,7 @@ public class CharacterController : ImplementableComponent, IColliderOwner
 
     private ICharacterControllerHook CharacterHook => (Hook as ICharacterControllerHook) ?? null!;
 
-    // ===== IColliderOwner IMPLEMENTATION =====
+    // IColliderOwner IMPLEMENTATION
 
     public bool Kinematic => false;
 
@@ -72,7 +81,7 @@ public class CharacterController : ImplementableComponent, IColliderOwner
 
     public void PostprocessBoundsOffset(ref float3 offset) { }
 
-    // ===== INITIALIZATION =====
+    // INITIALIZATION
 
     public override void OnAwake()
     {
@@ -110,7 +119,7 @@ public class CharacterController : ImplementableComponent, IColliderOwner
 
     public IReadOnlyList<Collider> GetColliders() => _colliders;
 
-    // ===== UPDATE =====
+    // UPDATE
 
     public override void OnUpdate(float delta)
     {
@@ -118,20 +127,16 @@ public class CharacterController : ImplementableComponent, IColliderOwner
 
         if (!_isReady)
             TryInitializeLocalUser();
-    }
-
-    public override void OnFixedUpdate(float fixedDelta)
-    {
-        base.OnFixedUpdate(fixedDelta);
-
-        if (!_isReady)
-            TryInitializeLocalUser();
 
         if (!(_userRoot?.IsLocalUserRoot ?? false))
             return;
 
+        // Step once per render frame (not on a fixed tick): a 60Hz root on a
+        // 90-144Hz headset reads as stutter, and two unsynchronized clocks
+        // beat against each other. Camera output runs after the engine update
+        // in the same frame, so the step result is visible immediately.
         if (_isReady && CharacterHook != null)
-            CharacterHook.Simulate(fixedDelta);
+            CharacterHook.Simulate(delta);
     }
 
     private void TryInitializeLocalUser()
@@ -168,7 +173,7 @@ public class CharacterController : ImplementableComponent, IColliderOwner
         LumoraLogger.Log($"CharacterController: Initialized for local user '{_userRoot.ActiveUser.UserName.Value}' with {_colliders.Count} colliders");
     }
 
-    // ===== PUBLIC API (Called by LocomotionController) =====
+    // PUBLIC API (Called by LocomotionController)
 
     public bool IsReady => _isReady;
 
@@ -228,7 +233,7 @@ public class CharacterController : ImplementableComponent, IColliderOwner
 
     public float3 GetVelocity() => _velocity;
 
-    // ===== CLEANUP =====
+    // CLEANUP
 
     public override void OnDestroy()
     {

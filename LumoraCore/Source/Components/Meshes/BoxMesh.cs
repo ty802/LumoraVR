@@ -12,7 +12,7 @@ namespace Lumora.Core.Components.Meshes;
 /// </summary>
 public class BoxMesh : ProceduralMesh
 {
-    // ===== Sync Fields =====
+    // Sync Fields
 
     /// <summary>Size of the box</summary>
     public readonly Sync<float3> Size;
@@ -23,14 +23,14 @@ public class BoxMesh : ProceduralMesh
     /// <summary>Scale UVs proportionally with size</summary>
     public readonly Sync<bool> ScaleUVWithSize;
 
-    // ===== Private State =====
+    // Private State
 
     private PhosBox? box;
     private float3 _size;
     private float3 _uvScale;
     private bool _scaleUVWithSize;
 
-    // ===== Constructor =====
+    // Constructor
 
     public BoxMesh()
     {
@@ -39,7 +39,7 @@ public class BoxMesh : ProceduralMesh
         ScaleUVWithSize = new Sync<bool>(this, false);
     }
 
-    // ===== Lifecycle =====
+    // Lifecycle
 
     public override void OnAwake()
     {
@@ -51,7 +51,7 @@ public class BoxMesh : ProceduralMesh
         SubscribeToChanges(ScaleUVWithSize);
     }
 
-    // ===== Mesh Generation =====
+    // Mesh Generation
 
     protected override void PrepareAssetUpdateData()
     {
@@ -96,7 +96,7 @@ public class BoxMesh : ProceduralMesh
         box = null;
     }
 
-    // ===== Utility Methods =====
+    // Utility Methods
 
     /// <summary>
     /// Create a box collider component that matches this box mesh.

@@ -1,11 +1,11 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Assets;
 
-// Dedicated UI text material â€” owns its font atlas directly via DirectTexture and uses
+// Dedicated UI text material - owns its font atlas directly via DirectTexture and uses
 // the MSDF UI_Text shader. PixelRange must match the value baked into the atlas. - xlinka
 [ComponentCategory("Assets/Materials/UI/Text")]
 public class UITextMaterial : MaterialProvider, ICommonMaterial
@@ -32,7 +32,7 @@ public class UITextMaterial : MaterialProvider, ICommonMaterial
     public readonly Sync<byte> StencilWriteMask;
     public readonly Sync<byte> StencilReadMask;
 
-    // Same DirectTexture override as UIUnlitMaterial â€” binds a transient atlas TextureAsset
+    // Same DirectTexture override as UIUnlitMaterial - binds a transient atlas TextureAsset
     // (no owning provider component) without routing through an AssetRef. - xlinka
     public TextureAsset DirectTexture { get; set; } = null!;
 
@@ -67,7 +67,7 @@ public class UITextMaterial : MaterialProvider, ICommonMaterial
         Culling = new Sync<Culling>(this, Assets.Culling.None);
         ZWrite = new Sync<ZWrite>(this, Assets.ZWrite.Off);
         ZTest = new Sync<ZTest>(this, Assets.ZTest.LessOrEqual);
-        // Text sits visually on top of UI quads â€” bump the priority so Godot's transparent
+        // Text sits visually on top of UI quads - bump the priority so Godot's transparent
         // sort pass draws text fragments AFTER the panel/header/button backgrounds in
         // the same chunk. Backgrounds use queue 3000 via GraphicsChunk.GetDefaultUIMaterial. - xlinka
         RenderQueue = new Sync<int>(this, 3010);

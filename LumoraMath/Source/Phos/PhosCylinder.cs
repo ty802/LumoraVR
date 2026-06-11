@@ -36,7 +36,7 @@ public class PhosCylinder : PhosShape
     private int _totalVertices;
     private int _totalTriangles;
 
-    // ===== Constructors =====
+    // Constructors
 
     public PhosCylinder(PhosTriangleSubmesh submesh, int segments = 32) : base(submesh.Mesh)
     {

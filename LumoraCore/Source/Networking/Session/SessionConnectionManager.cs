@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -25,7 +25,7 @@ public class SessionConnectionManager : IDisposable
     private readonly Dictionary<IConnection, User> _connectionToUser = new();
     private readonly Dictionary<User, IConnection> _userToConnection = new();
     private readonly HashSet<IConnection> _pendingConnections = new(); // Connections waiting for JoinRequest
-    private readonly Dictionary<string, int> _pendingByIp = new();     // IP â†’ count of pending connections
+    private readonly Dictionary<string, int> _pendingByIp = new();     // IP -> count of pending connections
 
     public Session Session { get; private set; }
     public World World => (Session?.World) ?? null!;

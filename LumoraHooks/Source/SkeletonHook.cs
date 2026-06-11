@@ -11,7 +11,7 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 namespace Lumora.Godot.Hooks;
 
 /// <summary>
-/// Hook for SkeletonBuilder component Ã¢â€ â€™ Godot Skeleton3D.
+/// Hook for SkeletonBuilder component -> Godot Skeleton3D.
 /// Creates and manages a Skeleton3D node with bone hierarchy.
 /// Platform skeleton hook for Godot.
 /// </summary>

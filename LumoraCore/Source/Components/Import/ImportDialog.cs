@@ -37,7 +37,7 @@ public abstract class ImportDialog : Component
 
     // World-agnostic font URL for import dialogs. UserspaceDashboard registers
     // its font URL into this at engine startup; each dialog instantiates its own
-    // FontProvider on its own slot (in its own world) from this URL — avoids
+    // FontProvider on its own slot (in its own world) from this URL - avoids
     // the cross-world AssetRef.Target rejection that happens when a synced/local
     // ref points across separate World instances. - xlinka
     public static System.Uri? DefaultFontUrl { get; set; }
@@ -88,7 +88,7 @@ public abstract class ImportDialog : Component
     {
         if (_panel != null) return;
 
-        // Apply canvas→world scale so the panel renders at PhysicalHeight meters
+        // Apply canvas->world scale so the panel renders at PhysicalHeight meters
         // tall regardless of canvas px height. Without this, 1 canvas px = 1 world
         // unit and the panel fills the view. - xlinka
         var canvasScale = CanvasSize.y > 0f ? PhysicalHeight / CanvasSize.y : 0.001f;
@@ -221,7 +221,7 @@ public abstract class ImportDialog : Component
     }
 
     // Attach GridLayout directly to the body slot. Subsequent GridButton calls
-    // add direct children of body which the grid arranges into rows × cols. - xlinka
+    // add direct children of body which the grid arranges into rows x cols. - xlinka
     protected void SetupGrid(UIBuilder ui)
     {
         var grid = ui.Current.AttachComponent<GridLayout>();
@@ -259,7 +259,7 @@ public abstract class ImportDialog : Component
         boxBuilder.PopStyle();
     }
 
-    // Build a button styled like a file browser card — BorderedImage background
+    // Build a button styled like a file browser card - BorderedImage background
     // with rounded corners, centered label. - xlinka
     protected void GridButton(UIBuilder ui, string label, Action onClick, color? tint = null)
     {

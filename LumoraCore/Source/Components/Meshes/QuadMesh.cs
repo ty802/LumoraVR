@@ -13,7 +13,7 @@ namespace Lumora.Core.Components.Meshes;
 /// </summary>
 public class QuadMesh : ProceduralMesh
 {
-    // ===== Sync Fields =====
+    // Sync Fields
 
     /// <summary>Rotation of the quad</summary>
     public readonly Sync<floatQ> Rotation;
@@ -48,7 +48,7 @@ public class QuadMesh : ProceduralMesh
     /// <summary>Color for lower-right corner</summary>
     public readonly Sync<color> LowerRightColor;
 
-    // ===== Private State =====
+    // Private State
 
     private PhosQuad? quad;
     private PhosQuad? otherSide;  // For dual-sided rendering
@@ -62,7 +62,7 @@ public class QuadMesh : ProceduralMesh
     private bool _useColors;
     private color _ulColor, _urColor, _llColor, _lrColor;
 
-    // ===== Constructor =====
+    // Constructor
 
     public QuadMesh()
     {
@@ -79,7 +79,7 @@ public class QuadMesh : ProceduralMesh
         LowerRightColor = new Sync<color>(this, color.White);
     }
 
-    // ===== Lifecycle =====
+    // Lifecycle
 
     public override void OnAwake()
     {
@@ -99,7 +99,7 @@ public class QuadMesh : ProceduralMesh
         SubscribeToChanges(LowerRightColor);
     }
 
-    // ===== Mesh Generation =====
+    // Mesh Generation
 
     protected override void PrepareAssetUpdateData()
     {
@@ -121,7 +121,7 @@ public class QuadMesh : ProceduralMesh
     {
         bool geometryChanged = false;
 
-        // ===== Front Side =====
+        // Front Side
 
         if (quad == null)
         {
@@ -163,7 +163,7 @@ public class QuadMesh : ProceduralMesh
         // Regenerate front side vertex data
         quad.Update();
 
-        // ===== Back Side (if dual-sided) =====
+        // Back Side (if dual-sided)
 
         if (_dualSided)
         {
@@ -225,7 +225,7 @@ public class QuadMesh : ProceduralMesh
         otherSide = null;
     }
 
-    // ===== Utility Properties =====
+    // Utility Properties
 
     /// <summary>
     /// Set/get solid color (all corners same color).

@@ -50,7 +50,7 @@ public class PhosSphere : PhosShape
     private int _rings;
     private SphereShading _shading;
 
-    // ===== Vertex/Triangle Count Calculation =====
+    // Vertex/Triangle Count Calculation
 
     /// <summary>
     /// Calculate total vertex count for given segments and rings.
@@ -77,7 +77,7 @@ public class PhosSphere : PhosShape
     public int TotalVertices => CalculateVertexCount(Segments, Rings);
     public int TotalTriangles => CalculateTriangleCount(Segments, Rings);
 
-    // ===== Constructors =====
+    // Constructors
 
     /// <summary>
     /// Create a sphere from an existing first vertex.
@@ -114,7 +114,7 @@ public class PhosSphere : PhosShape
         FirstVertex = AddSphereGeometry(submesh, segments, rings, AllTriangles);
     }
 
-    // ===== Sphere Methods =====
+    // Sphere Methods
 
     /// <summary>
     /// Check if sphere needs to be regenerated (topology changed).
@@ -140,7 +140,7 @@ public class PhosSphere : PhosShape
         UpdateSphereVertices(Mesh, FirstVertex.Index, Radius, _segments, _rings, UVScale, Position, Rotation, Color, _shading);
     }
 
-    // ===== Static Geometry Creation =====
+    // Static Geometry Creation
 
     /// <summary>
     /// Add sphere geometry to a submesh.

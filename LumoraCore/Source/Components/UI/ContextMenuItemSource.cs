@@ -41,6 +41,8 @@ public class ContextMenuItemSource : Component
     /// Override to add items to the context menu page.
     /// Called each time the context menu opens (before it is shown).
     /// Items already added by higher-priority sources are visible in page.Items.
+    /// The context carries the summoning pointer and the slot it was aimed at,
+    /// for contextual actions like "Equip Avatar".
     /// </summary>
-    public virtual void PopulateContextMenu(ContextMenuPage page) { }
+    public virtual void PopulateContextMenu(ContextMenuPage page, ContextMenuContext context) { }
 }

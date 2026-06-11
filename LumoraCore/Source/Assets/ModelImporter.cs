@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -160,15 +160,12 @@ public static class ModelImporter
 
             progress?.Report((0.5f, "Setting up model structure..."));
 
-            // If this is an avatar import, mark it as such
+            // If this is an avatar import, mark it as such. The avatar is
+            // self-describing - skeleton/rig/reference components attached by
+            // the creator flow are all the metadata it needs.
             if (settings.IsAvatarImport)
             {
                 modelData.IsAvatar.Value = true;
-
-                var draft = modelSlot.GetComponent<AvatarDraft>() ?? modelSlot.AttachComponent<AvatarDraft>();
-                draft.IsFinalized.Value = false;
-                draft.SourcePathOrUri.Value = localUri ?? filePath;
-                draft.ImportProfile.Value = "AvatarImport";
             }
 
             progress?.Report((1.0f, "Import complete!"));

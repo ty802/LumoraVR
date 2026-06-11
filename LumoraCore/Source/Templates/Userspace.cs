@@ -35,26 +35,9 @@ namespace Lumora.Core.Templates
                 var dashboard = dashboardSlot.AttachComponent<UserspaceDashboard>();
                 dashboard.Close();
 
-                // Create Context Menu (radial arc menu, toggled with A/X or middle mouse)
-                var contextMenuSlot = userspaceRoot.AddSlot("ContextMenu");
-                contextMenuSlot.AttachComponent<ContextMenuSystem>();
-
-                // ── Default root items ─────────────────────────────────────────
-                // these are always present. additional items are contributed at open-time
-                // by RootContextMenuItem / ContextMenuItemSource components. - xlinka
-
-                var dashboardItem = contextMenuSlot.AttachComponent<RootContextMenuItem>();
-                dashboardItem.Label.Value = "Dashboard";
-                dashboardItem.IconPath.Value = "res://Icons/dashboard.png";
-                dashboardItem.Priority.Value = 100;
-                dashboardItem.Pressed += _ => dashboard.Toggle();
-
-                var closeItem = contextMenuSlot.AttachComponent<RootContextMenuItem>();
-                closeItem.Label.Value    = "Close Menu";
-                closeItem.IconPath.Value = "res://Icons/close.png";
-                closeItem.Priority.Value = -100;
-
-                Logger.Log("Userspace: Context menu created");
+                // The radial context menu lives per-user in the game world
+                // (built by CommonAvatarBuilder, opened by HandTool). Items
+                // come from ContextMenuItemSource components at open time.
                 Logger.Log("Userspace: Userspace world initialized");
             });
 

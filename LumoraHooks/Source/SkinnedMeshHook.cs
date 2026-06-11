@@ -11,7 +11,7 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 namespace Lumora.Godot.Hooks;
 
 /// <summary>
-/// Hook for SkinnedMeshRenderer component ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Godot MeshInstance3D + Skeleton3D.
+/// Hook for SkinnedMeshRenderer component -> Godot MeshInstance3D + Skeleton3D.
 /// Creates a deformable mesh that follows a skeleton's bone transforms.
 /// Uses bone slot references for proper bone index mapping.
 /// </summary>
@@ -26,7 +26,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
     private bool _meshApplied;
     private bool _skeletonBound;
 
-    // Maps mesh bone index ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Godot skeleton bone index
+    // Maps mesh bone index -> Godot skeleton bone index
     private Dictionary<int, int> _boneIndexMap = new Dictionary<int, int>();
 
     public override void Initialize()

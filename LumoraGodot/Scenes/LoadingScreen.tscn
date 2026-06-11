@@ -1,4 +1,4 @@
-[gd_scene load_steps=7 format=3 uid="uid://cqx7y3n8m4pj5"]
+[gd_scene format=3 uid="uid://cqx7y3n8m4pj5"]
 
 [ext_resource type="Script" uid="uid://dgojwxd44m8xu" path="res://Source/Godot/UI/LoadingScreen.cs" id="1_loading"]
 [ext_resource type="Texture2D" uid="uid://cnr803pygny8k" path="res://Assets/Textures/lumoravricon.svg" id="2_logo"]
@@ -26,17 +26,19 @@ corner_radius_top_right = 6
 corner_radius_bottom_right = 6
 corner_radius_bottom_left = 6
 
-[node name="LoadingScreen" type="Control"]
+[node name="LoadingScreen" type="Control" unique_id=74930852]
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
+offset_left = -1.0
+offset_right = -1.0
 grow_horizontal = 2
 grow_vertical = 2
 mouse_filter = 2
 script = ExtResource("1_loading")
 
-[node name="Background" type="Panel" parent="."]
+[node name="Background" type="Panel" parent="." unique_id=1641994943]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -46,7 +48,7 @@ grow_vertical = 2
 mouse_filter = 2
 theme_override_styles/panel = SubResource("background_panel")
 
-[node name="CenterContainer" type="CenterContainer" parent="."]
+[node name="CenterContainer" type="CenterContainer" parent="." unique_id=1989931994]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -55,12 +57,12 @@ grow_horizontal = 2
 grow_vertical = 2
 mouse_filter = 2
 
-[node name="VBoxContainer" type="VBoxContainer" parent="CenterContainer"]
+[node name="VBoxContainer" type="VBoxContainer" parent="CenterContainer" unique_id=1119638131]
 layout_mode = 2
 theme_override_constants/separation = 48
 alignment = 1
 
-[node name="Logo" type="TextureRect" parent="CenterContainer/VBoxContainer"]
+[node name="Logo" type="TextureRect" parent="CenterContainer/VBoxContainer" unique_id=1607047007]
 modulate = Color(1, 1, 1, 0.9694911)
 custom_minimum_size = Vector2(256, 256)
 layout_mode = 2
@@ -70,7 +72,7 @@ texture = ExtResource("2_logo")
 expand_mode = 1
 stretch_mode = 5
 
-[node name="TitleLabel" type="Label" parent="CenterContainer/VBoxContainer"]
+[node name="TitleLabel" type="Label" parent="CenterContainer/VBoxContainer" unique_id=1471352395]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.47, 0.37, 0.94, 1)
 theme_override_fonts/font = ExtResource("3_font")
@@ -78,7 +80,7 @@ theme_override_font_sizes/font_size = 48
 text = "LUMORA"
 horizontal_alignment = 1
 
-[node name="SubtitleLabel" type="Label" parent="CenterContainer/VBoxContainer"]
+[node name="SubtitleLabel" type="Label" parent="CenterContainer/VBoxContainer" unique_id=37740095]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.6, 0.6, 0.7, 1)
 theme_override_fonts/font = ExtResource("3_font")
@@ -86,16 +88,16 @@ theme_override_font_sizes/font_size = 20
 text = "Powered by LumoraCore Engine"
 horizontal_alignment = 1
 
-[node name="Spacer" type="Control" parent="CenterContainer/VBoxContainer"]
+[node name="Spacer" type="Control" parent="CenterContainer/VBoxContainer" unique_id=399365380]
 custom_minimum_size = Vector2(0, 32)
 layout_mode = 2
 
-[node name="ProgressContainer" type="VBoxContainer" parent="CenterContainer/VBoxContainer"]
+[node name="ProgressContainer" type="VBoxContainer" parent="CenterContainer/VBoxContainer" unique_id=259075403]
 custom_minimum_size = Vector2(600, 0)
 layout_mode = 2
 theme_override_constants/separation = 16
 
-[node name="StatusLabel" type="Label" parent="CenterContainer/VBoxContainer/ProgressContainer"]
+[node name="StatusLabel" type="Label" parent="CenterContainer/VBoxContainer/ProgressContainer" unique_id=1410297324]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.8, 0.8, 0.9, 1)
 theme_override_fonts/font = ExtResource("3_font")
@@ -103,21 +105,21 @@ theme_override_font_sizes/font_size = 18
 text = "Initializing..."
 horizontal_alignment = 1
 
-[node name="ProgressBarContainer" type="MarginContainer" parent="CenterContainer/VBoxContainer/ProgressContainer"]
+[node name="ProgressBarContainer" type="MarginContainer" parent="CenterContainer/VBoxContainer/ProgressContainer" unique_id=1677626498]
 layout_mode = 2
 theme_override_constants/margin_left = 0
 theme_override_constants/margin_top = 0
 theme_override_constants/margin_right = 0
 theme_override_constants/margin_bottom = 0
 
-[node name="ProgressBar" type="ProgressBar" parent="CenterContainer/VBoxContainer/ProgressContainer/ProgressBarContainer"]
+[node name="ProgressBar" type="ProgressBar" parent="CenterContainer/VBoxContainer/ProgressContainer/ProgressBarContainer" unique_id=1506033074]
 custom_minimum_size = Vector2(0, 24)
 layout_mode = 2
 theme_override_styles/background = SubResource("progress_background")
 theme_override_styles/fill = SubResource("progress_fill")
 show_percentage = false
 
-[node name="PercentageLabel" type="Label" parent="CenterContainer/VBoxContainer/ProgressContainer"]
+[node name="PercentageLabel" type="Label" parent="CenterContainer/VBoxContainer/ProgressContainer" unique_id=1252236723]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.47, 0.37, 0.94, 1)
 theme_override_fonts/font = ExtResource("3_font")
@@ -125,7 +127,7 @@ theme_override_font_sizes/font_size = 24
 text = "0%"
 horizontal_alignment = 1
 
-[node name="VersionLabel" type="Label" parent="."]
+[node name="VersionLabel" type="Label" parent="." unique_id=264343720]
 layout_mode = 1
 anchors_preset = 7
 anchor_left = 0.5

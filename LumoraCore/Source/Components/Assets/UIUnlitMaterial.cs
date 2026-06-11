@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core.Math;
@@ -31,7 +31,7 @@ public class UIUnlitMaterial : MaterialProvider, ICommonMaterial
 
     protected override MaterialType MaterialType => MaterialType.UI_Unlit;
 
-    // Texture override that bypasses the AssetRef provider chain â€” used by text submeshes
+    // Texture override that bypasses the AssetRef provider chain - used by text submeshes
     // where the font atlas is a transient `TextureAsset` with no owning provider component.
     // Bakes the atlas directly into the material instead of routing through a property block. - xlinka
     public TextureAsset DirectTexture { get; set; } = null!;

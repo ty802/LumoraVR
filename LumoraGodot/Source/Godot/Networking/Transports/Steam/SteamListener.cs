@@ -186,7 +186,7 @@ public sealed class SteamListener : IListener
                 if (_connectionsBySteamId.TryGetValue(remoteSteamId.m_SteamID, out var openedConn) && openedConn.IsOpen)
                 {
                     // Connection just transitioned to Open as the second channel
-                    // came up Ã¢â‚¬â€ emit PeerConnected here too in case Connecting
+                    // came up - emit PeerConnected here too in case Connecting
                     // already fired before AllConnected returned true. - xlinka
                     PeerConnected?.Invoke(openedConn);
                 }

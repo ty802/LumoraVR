@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -474,7 +474,20 @@ public class InputInterface : IDisposable
     {
         // Receivers can unregister or be destroyed as part of world teardown.
         // Iterate a snapshot and prune stale world elements before invoking them.
-        foreach (var receiver in _inputReceivers.ToArray())
+        //
+        // Dispatch in component update order, not registration order: device
+        // positioners (-1000000) must write body-node slots before pose nodes
+        // (-7500) consume them, and nested pose nodes rely on parent-before-
+        // child ordering (EnsureCorrectUpdateOrder) - registration order made
+        // both a matter of luck, costing a frame of lag per misordered link.
+        var snapshot = _inputReceivers.ToArray();
+        Array.Sort(snapshot, (a, b) =>
+        {
+            int orderA = (a as Component)?.UpdateOrder ?? 0;
+            int orderB = (b as Component)?.UpdateOrder ?? 0;
+            return orderA.CompareTo(orderB);
+        });
+        foreach (var receiver in snapshot)
         {
             if (!_inputReceivers.Contains(receiver))
                 continue;

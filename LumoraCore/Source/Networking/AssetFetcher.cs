@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -15,12 +15,12 @@ namespace Lumora.Core.Networking;
 /// Platform-agnostic async asset fetcher.
 ///
 /// Supported URI schemes
-///   local://machineId/hash  â€” served from LocalDB; if not held locally, requested
+///   local://machineId/hash - served from LocalDB; if not held locally, requested
 ///                             from the active session peer via SessionAssetTransferer.
-///   file:///abs/path        â€” direct disk read.
-///   http:// / https://      â€” HTTP download.
-///   builtin://â€¦             â€” built-in engine assets.
-///   test://â€¦                â€” local test assets (editor/dev only).
+///   file:///abs/path - direct disk read.
+///   http:// / https:// - HTTP download.
+///   builtin://... - built-in engine assets.
+///   test://... - local test assets (editor/dev only).
 /// </summary>
 public static class AssetFetcher
 {
@@ -36,14 +36,14 @@ public static class AssetFetcher
     /// </summary>
     public static void FetchAsset(string uri, Action<byte[]> callback)
     {
-        // â”€â”€ local:// â€” may need peer-to-peer transfer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // local:// - may need peer-to-peer transfer
         if (uri.StartsWith("local://", StringComparison.Ordinal))
         {
             FetchLocalAsset(uri, callback);
             return;
         }
 
-        // â”€â”€ Coalesce duplicate in-flight requests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Coalesce duplicate in-flight requests
         if (_active.TryGetValue(uri, out var existing))
         {
             existing.callbacks.Add(callback);
@@ -82,7 +82,7 @@ public static class AssetFetcher
             _active.Remove(uri);
     }
 
-    // â”€â”€ local:// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // local://
 
     private static void FetchLocalAsset(string uri, Action<byte[]> callback)
     {
@@ -135,11 +135,11 @@ public static class AssetFetcher
             return;
         }
 
-        LumoraLogger.Warn($"AssetFetcher: '{uri}' not in LocalDB and no active session â€” cannot fetch");
+        LumoraLogger.Warn($"AssetFetcher: '{uri}' not in LocalDB and no active session - cannot fetch");
         callback(null!);
     }
 
-    // â”€â”€ Synchronous fetcher for non-local URIs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Synchronous fetcher for non-local URIs
 
     private static byte[] FetchSync(string uri)
     {

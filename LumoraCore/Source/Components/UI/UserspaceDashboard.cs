@@ -254,7 +254,7 @@ public class UserspaceDashboard : UIComponent
         // Register the font URL so import dialogs can create their own
         // FontProviders in their own world (avoids cross-world AssetRef
         // rejection). Sharing a FontProvider component instance across
-        // worlds doesn't work — SyncRef.Target rejects it. - xlinka
+        // worlds doesn't work - SyncRef.Target rejects it. - xlinka
         ImportDialog.DefaultFontUrl ??= DefaultFontUri;
 
         if (Font.Target != null) return;

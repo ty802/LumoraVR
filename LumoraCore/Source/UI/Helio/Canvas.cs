@@ -308,7 +308,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        // Layout stays global and runs every rebuild — it's cheap (a few ms) and keeps rects
+        // Layout stays global and runs every rebuild - it's cheap (a few ms) and keeps rects
         // correct across chunk boundaries without any cross-chunk coupling. - xlinka
         ComputeRects(Slot, null);
         ApplyScrollRects(Slot);
@@ -841,7 +841,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         var childRoot = child.GetComponent<GraphicChunkRoot>();
         if (childRoot != null && !ReferenceEquals(childRoot, ownRoot) && child.GetComponent<RectTransform>() != null)
         {
-            // chunk boundary: register it and skip — it renders into its own mesh
+            // chunk boundary: register it and skip - it renders into its own mesh
             EnsureChunk(childRoot);
             _seenChunkRoots.Add(childRoot);
             return;

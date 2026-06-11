@@ -12,7 +12,7 @@ using LumoraRigidBody = Lumora.Core.Components.RigidBody;
 namespace Lumora.Godot.Hooks;
 
 /// <summary>
-/// Hook for RigidBody component ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ Godot RigidBody3D.
+/// Hook for RigidBody component -> Godot RigidBody3D.
 /// Syncs physics simulation back to the Lumora slot transform.
 /// Uses colliders on the same slot for collision shapes.
 /// </summary>
@@ -363,7 +363,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
 
         if (Owner.IsKinematic.Value)
         {
-            // Kinematic mode: sync Slot ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ RigidBody (for grabbing)
+            // Kinematic mode: sync Slot -> RigidBody (for grabbing)
             // The slot is being moved by the grabber, RigidBody needs to follow
             var slotPos = Owner.Slot.GlobalPosition;
             var slotRot = Owner.Slot.GlobalRotation;
@@ -372,7 +372,7 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         }
         else
         {
-            // Dynamic mode: sync RigidBody ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ Slot (physics simulation)
+            // Dynamic mode: sync RigidBody -> Slot (physics simulation)
             var globalPos = _rigidBody.GlobalPosition;
             var globalRot = _rigidBody.GlobalBasis.GetRotationQuaternion();
 

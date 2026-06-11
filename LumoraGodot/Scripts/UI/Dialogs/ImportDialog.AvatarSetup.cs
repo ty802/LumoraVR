@@ -4,6 +4,7 @@
 using Godot;
 using System;
 using Lumora.Core;
+using Lumora.Core.Components;
 using Lumora.Core.Components.Avatar;
 
 namespace Lumora.Godot.UI;
@@ -138,17 +139,15 @@ public partial class ImportDialog
         return _lastImportedAvatarSlot;
     }
 
+    // An avatar is ready when its component tree carries a built skeleton and
+    // rig - there is no separate finalize state.
     private static bool IsAvatarFinalized(Slot avatarSlot)
     {
         if (avatarSlot == null || avatarSlot.IsDestroyed)
             return false;
 
-        var descriptor = avatarSlot.GetComponent<AvatarDescriptor>();
-        if (descriptor?.IsFinalized.Value == true)
-            return true;
-
-        var draft = avatarSlot.GetComponent<AvatarDraft>();
-        return draft?.IsFinalized.Value == true && draft.Descriptor.Target != null;
+        return avatarSlot.GetComponentInChildren<SkeletonBuilder>() != null
+            && avatarSlot.GetComponentInChildren<BipedRig>() != null;
     }
 
     private bool TryEquipAvatar(Slot avatarSlot, out string message)

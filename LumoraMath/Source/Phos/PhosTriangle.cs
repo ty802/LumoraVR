@@ -14,7 +14,7 @@ public struct PhosTriangle
     private int version;
     private PhosTriangleSubmesh submesh;
 
-    // ===== Properties =====
+    // Properties
 
     /// <summary>Parent submesh</summary>
     public PhosTriangleSubmesh Submesh => submesh;
@@ -35,7 +35,7 @@ public struct PhosTriangle
         }
     }
 
-    // ===== Vertex Index Access =====
+    // Vertex Index Access
 
     public int Vertex0Index
     {
@@ -79,7 +79,7 @@ public struct PhosTriangle
         }
     }
 
-    // ===== Vertex Access =====
+    // Vertex Access
 
     public PhosVertex Vertex0
     {
@@ -99,7 +99,7 @@ public struct PhosTriangle
         set => Vertex2Index = value.Index;
     }
 
-    // ===== Constructor =====
+    // Constructor
 
     internal PhosTriangle(int index, PhosTriangleSubmesh submesh)
     {
@@ -116,7 +116,7 @@ public struct PhosTriangle
         }
     }
 
-    // ===== Version Tracking =====
+    // Version Tracking
 
     internal bool UpdateIndex()
     {

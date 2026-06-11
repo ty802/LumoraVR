@@ -245,7 +245,7 @@ internal static class MaterialPropertyApplicator
 
     private static string MapShaderProperty(MaterialType materialType, string property)
     {
-        bool isUnlit = materialType is MaterialType.Unlit or MaterialType.UI_Unlit or MaterialType.UI_Text;
+        bool isUnlit = materialType is MaterialType.Unlit or MaterialType.UI_Unlit or MaterialType.UI_Text or MaterialType.Text;
         bool isOverlay = materialType == MaterialType.OverlayUnlit;
         bool isMetaball = materialType == MaterialType.Metaball;
 

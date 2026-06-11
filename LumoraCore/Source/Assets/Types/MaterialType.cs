@@ -26,9 +26,15 @@ public enum MaterialType
     UI_Unlit,
 
     /// <summary>
-    /// Dedicated UI text material — rasterized coverage atlas + fwidth-based AA.
+    /// Dedicated UI text material - rasterized coverage atlas + fwidth-based AA.
     /// </summary>
     UI_Text,
+
+    /// <summary>
+    /// World-space text material (nameplates, labels) - same glyph coverage
+    /// path as UI_Text but depth-tested so text occludes behind geometry.
+    /// </summary>
+    Text,
 
     /// <summary>
     /// Custom shader material - uses user-provided .gdshader file.

@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core.Math;
@@ -34,7 +34,7 @@ public abstract class PhosShape
     /// <summary>All points created by this shape</summary>
     public PhosPointCollection AllPoints { get; protected set; }
 
-    // ===== Constructor =====
+    // Constructor
 
     protected PhosShape(PhosMesh mesh)
     {
@@ -49,7 +49,7 @@ public abstract class PhosShape
         Mesh = mesh;
     }
 
-    // ===== Abstract Methods =====
+    // Abstract Methods
 
     /// <summary>
     /// Update the shape's mesh data.
@@ -57,7 +57,7 @@ public abstract class PhosShape
     /// </summary>
     public abstract void Update();
 
-    // ===== Removal =====
+    // Removal
 
     /// <summary>
     /// Remove this shape from the mesh.
@@ -81,7 +81,7 @@ public abstract class PhosShape
         AllVertices.Clear();
     }
 
-    // ===== Transform Helpers =====
+    // Transform Helpers
 
     /// <summary>
     /// Apply position, rotation, and scale transforms to all vertices.

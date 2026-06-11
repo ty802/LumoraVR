@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -18,9 +18,11 @@ namespace Lumora.Core.Components.Avatar;
 public class AvatarObjectSlot : UserRootComponent
 {
     /// <summary>
-    /// The currently equipped avatar object.
+    /// The currently equipped avatar object. Synced so every peer can see
+    /// equip state (pose nodes derive their drive links from it, and
+    /// FillEmptySlots must not re-fill slots the authority already filled).
     /// </summary>
-    public LinkRef<IAvatarObject> Equipped { get; private set; } = null!;
+    public readonly SyncRef<IAvatarObject> Equipped = null!;
 
     /// <summary>
     /// The body node this slot corresponds to.
@@ -88,8 +90,6 @@ public class AvatarObjectSlot : UserRootComponent
     public override void OnAwake()
     {
         base.OnAwake();
-
-        Equipped = new LinkRef<IAvatarObject>(this);
         Node.OnChanged += _ => RefreshAutoSmoothing();
     }
 
@@ -101,6 +101,11 @@ public class AvatarObjectSlot : UserRootComponent
 
     private void RefreshAutoSmoothing()
     {
+        // Node syncs, so OnChanged fires on every peer. Only the authority
+        // mutates the slot tree; the smoothing components replicate from there.
+        if (World?.IsAuthority != true)
+            return;
+
         if (ShouldAutoSmooth(Node.Value))
         {
             if (_autoSmoothing == null)
@@ -120,10 +125,27 @@ public class AvatarObjectSlot : UserRootComponent
         }
     }
 
+    // The filter list is per-peer, but pose computation now runs on every
+    // peer. Non-authority peers pick up the replicated smoothing component
+    // here once it arrives; the enum gate keeps the FindChild walk off the
+    // hot path for nodes that never smooth.
+    private void EnsureReplicatedSmoothing()
+    {
+        if (_autoSmoothing != null || !ShouldAutoSmooth(Node.Value))
+            return;
+
+        var smoothing = Slot?.FindChild("AutoSmoothing", recursive: false)?.GetComponent<AvatarPoseSmoothLerp>();
+        if (smoothing != null)
+        {
+            _autoSmoothing = smoothing;
+            AddFilter(smoothing);
+        }
+    }
+
     public override void OnInit()
     {
         base.OnInit();
-        // BodyNode.NONE is not enum value 0 â€” set it explicitly
+        // BodyNode.NONE is not enum value 0 - set it explicitly
         Node.Value = BodyNode.NONE;
         // IsTracking defaults to true (not C# default false)
         IsTracking.Value = true;
@@ -302,8 +324,10 @@ public class AvatarObjectSlot : UserRootComponent
             return Slot;
         }
 
+        EnsureReplicatedSmoothing();
+
         // Convert this slot's world transform into UserRoot-local space.
-        // Using globalâ†’local conversion handles any depth of nesting under UserRoot
+        // Using global->local conversion handles any depth of nesting under UserRoot
         // (e.g. UserRoot > Body Nodes > Head > BodyNode) correctly.
         position   = space.GlobalPointToLocal(Slot.GlobalPosition);
         rotation   = space.GlobalRotation.Inverse * Slot.GlobalRotation;
@@ -318,24 +342,3 @@ public class AvatarObjectSlot : UserRootComponent
         return space;
     }
 }
-
-/// <summary>
-/// A reference to an IAvatarObject that can be linked.
-/// </summary>
-public class LinkRef<T> where T : class
-{
-    private T _target = null!;
-    private readonly Component _owner;
-
-    public T Target
-    {
-        get => _target;
-        set => _target = value;
-    }
-
-    public LinkRef(Component owner)
-    {
-        _owner = owner;
-    }
-}
-

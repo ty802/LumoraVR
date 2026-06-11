@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -40,7 +40,7 @@ public class UpdateManager
     /// </summary>
     public float DeltaTime => _currentDeltaTime;
 
-    // ===== Registration Methods =====
+    // Registration Methods
 
     /// <summary>
     /// Register a component for startup (runs before first update).
@@ -154,7 +154,7 @@ public class UpdateManager
         }
     }
 
-    // ===== Update Execution =====
+    // Update Execution
 
     /// <summary>
     /// Run all startup callbacks.

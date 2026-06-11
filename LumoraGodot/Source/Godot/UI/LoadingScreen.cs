@@ -13,7 +13,7 @@ namespace Lumora.Source.Godot.UI;
 /// </summary>
 public partial class LoadingScreen : Control
 {
-	// ===== UI NODE REFERENCES =====
+	// UI NODE REFERENCES
 	private Label _statusLabel = null!;
 	private Label _percentageLabel = null!;
 	private ProgressBar _progressBar = null!;
@@ -21,13 +21,13 @@ public partial class LoadingScreen : Control
 	private Control _loadingSpinner = null!;
 	private Label _versionLabel = null!;
 
-	// ===== STATE =====
+	// STATE
 	private float _targetProgress = 0f;
 	private float _currentProgress = 0f;
 	private bool _isVisible = true;
 	private bool _fadeOutQueued = false;
 
-	// ===== CONFIGURATION =====
+	// CONFIGURATION
 	private const float PROGRESS_SMOOTH_SPEED = 2.0f; // How fast progress bar animates
 	private const float SPINNER_ROTATION_SPEED = 2.0f; // Radians per second
 
@@ -146,7 +146,7 @@ public partial class LoadingScreen : Control
 		// AnimationPlayer removed; keep handler to avoid errors if signal still exists
 	}
 
-	// ===== PHASE-SPECIFIC HELPER METHODS =====
+	// PHASE-SPECIFIC HELPER METHODS
 
 	/// <summary>
 	/// Predefined status messages for each initialization phase.
@@ -202,4 +202,3 @@ public partial class LoadingScreen : Control
 		}
 	}
 }
-

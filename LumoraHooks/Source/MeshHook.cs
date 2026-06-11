@@ -21,7 +21,8 @@ namespace Lumora.Godot.Hooks;
     typeof(Lumora.Core.Components.Meshes.BoxMesh),
     typeof(Lumora.Core.Components.Meshes.QuadMesh),
     typeof(Lumora.Core.Components.Meshes.CylinderMesh),
-    typeof(Lumora.Core.Components.Meshes.SphereMesh))]
+    typeof(Lumora.Core.Components.Meshes.SphereMesh),
+    typeof(Lumora.Core.Components.TextRenderer))]
 public class MeshHook : ComponentHook<ProceduralMesh>
 {
     private ArrayMesh? godotMesh;

@@ -242,7 +242,7 @@ public partial class Settings : Control
         if (header == null || tabContainer == null || _tabVideo == null)
             return;
 
-        // ----- header button -----
+        // header button
         _tabInterface = new Button();
         _tabInterface.Name = "TabInterface";
         _tabInterface.Text = "Interface";
@@ -252,7 +252,7 @@ public partial class Settings : Control
         if (videoFontSize > 0) _tabInterface.AddThemeFontSizeOverride("font_size", videoFontSize);
         header.AddChild(_tabInterface);
 
-        // ----- tab content -----
+        // tab content
         var scroll = new ScrollContainer();
         scroll.Name = "InterfaceTab";
         scroll.HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled;

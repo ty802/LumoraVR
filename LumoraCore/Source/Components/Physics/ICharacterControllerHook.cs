@@ -13,7 +13,9 @@ public interface ICharacterControllerHook : IHook
 {
     void AddColliderShape(Collider collider);
     void RemoveColliderShape(Collider collider);
-    void Simulate(float fixedDelta);
+    // Steps character motion once per render frame: re-base body from the
+    // root, simulate, write the physics delta back to the root.
+    void Simulate(float delta);
     void SetMovementDirection(float3 direction);
     void RequestJump();
     void SetCrouching(bool crouching);

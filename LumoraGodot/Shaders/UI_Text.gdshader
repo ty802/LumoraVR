@@ -9,7 +9,7 @@ render_mode unshaded, blend_mix, depth_draw_never, depth_test_disabled, cull_dis
 uniform vec4 albedo_color : source_color = vec4(1.0);
 // Plain bilinear, no mipmaps, no aniso. At glancing angles screen-space
 // derivatives grow along the foreshortened axis and the GPU picks higher mip
-// levels of the font atlas — the glyph alpha blurs, then the fwidth-widened
+// levels of the font atlas - the glyph alpha blurs, then the fwidth-widened
 // smoothstep below preserves the blurred shape with a thick fuzzy edge, so
 // glyph interiors disappear and labels bleed white across the whole quad.
 // Forcing mip 0 keeps glyphs sharp at any angle. The 96-px atlas raster is

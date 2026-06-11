@@ -16,7 +16,7 @@ namespace Lumora.Core.Phos;
 /// </summary>
 public class PhosMesh
 {
-    // ===== Vertex Data Arrays =====
+    // Vertex Data Arrays
     internal float3[] positions = Array.Empty<float3>();
     internal float3[] normals = Array.Empty<float3>();
     internal float4[] tangents = Array.Empty<float4>();
@@ -25,7 +25,7 @@ public class PhosMesh
     internal PhosBoneBinding[] boneBindings = Array.Empty<PhosBoneBinding>();
     internal BitArray flags = new BitArray(0);
 
-    // ===== Vertex Tracking =====
+    // Vertex Tracking
     internal int[] vertexIDs = Array.Empty<int>();  // For version tracking
     private int _currentVertexID = 0;
 
@@ -38,7 +38,7 @@ public class PhosMesh
     /// <summary>Enable removal tracking (required for vertex/triangle removal)</summary>
     public bool TrackRemovals { get; set; }
 
-    // ===== Metadata Flags =====
+    // Metadata Flags
     /// <summary>Whether this mesh has normal data</summary>
     public bool HasNormals { get; set; }
 
@@ -88,20 +88,20 @@ public class PhosMesh
     /// <summary>Raw array of UV channel 3 - direct access</summary>
     public float2[] RawUV3s => uvChannels[3].uv2D ?? Array.Empty<float2>();
 
-    // ===== Submeshes =====
+    // Submeshes
     /// <summary>List of submeshes (different topology groups)</summary>
     public List<PhosSubmesh> Submeshes { get; } = new List<PhosSubmesh>();
 
-    // ===== Blend Shapes =====
+    // Blend Shapes
     /// <summary>List of blend shapes (morph targets)</summary>
     public List<PhosBlendShape> BlendShapes { get; } = new List<PhosBlendShape>();
 
-    // ===== Constructor =====
+    // Constructor
     public PhosMesh()
     {
     }
 
-    // ===== Vertex Management =====
+    // Vertex Management
 
     /// <summary>
     /// Increase vertex count by specified amount.
@@ -277,7 +277,7 @@ public class PhosMesh
         BlendShapes.Clear();
     }
 
-    // ===== UV Channel Management =====
+    // UV Channel Management
 
     /// <summary>
     /// Set whether a UV channel is present.
@@ -340,7 +340,7 @@ public class PhosMesh
         return uvChannels[channel];
     }
 
-    // ===== Normals/Tangents/Colors Management =====
+    // Normals/Tangents/Colors Management
 
     internal void CheckNormals()
     {
@@ -389,7 +389,7 @@ public class PhosMesh
         }
     }
 
-    // ===== Submesh Management =====
+    // Submesh Management
 
     /// <summary>
     /// Get index of a submesh.
@@ -399,7 +399,7 @@ public class PhosMesh
         return Submeshes.IndexOf(submesh);
     }
 
-    // ===== Blend Shape Management =====
+    // Blend Shape Management
 
     /// <summary>
     /// Get or create a blend shape by name.
@@ -416,7 +416,7 @@ public class PhosMesh
         return newShape;
     }
 
-    // ===== Utility Methods =====
+    // Utility Methods
 
     /// <summary>
     /// Calculate bounding box of entire mesh.
@@ -432,7 +432,7 @@ public class PhosMesh
         return bounds;
     }
 
-    // ===== Internal Helper Methods =====
+    // Internal Helper Methods
 
     internal void EnsureArray<T>(bool condition, ref T[] array, int size, T defaultValue)
     {

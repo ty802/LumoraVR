@@ -239,6 +239,10 @@ public sealed class HandTool : Tool
             {
                 _activeSecondaryToolItem = toolItem;
             }
+            else if (!IsHoldingObjects)
+            {
+                ToggleContextMenu(laser);
+            }
         }
         else if (_secondaryHeld && _activeSecondaryToolItem != null)
         {
@@ -251,6 +255,23 @@ public sealed class HandTool : Tool
         }
 
         _prevSecondaryHeld = _secondaryHeld;
+    }
+
+    // Secondary press with no tool/held-object claim toggles the user's
+    // radial context menu at the laser, carrying what it was pointing at so
+    // sources can add contextual actions (equip avatar, etc.).
+    private void ToggleContextMenu(InteractionLaser laser)
+    {
+        var userRootSlot = Slot?.ActiveUserRoot?.Slot;
+        var menu = userRootSlot?.GetComponentInChildren<UI.ContextMenuSystem>();
+        if (menu == null)
+            return;
+
+        menu.Toggle(new UI.ContextMenuContext
+        {
+            Pointer = _laserSlot ?? Slot,
+            Target = laser?.CurrentHitSlot,
+        });
     }
 
     private void ProcessGrip(InteractionLaser laser)

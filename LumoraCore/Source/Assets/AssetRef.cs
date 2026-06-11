@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core;
@@ -80,7 +80,7 @@ public class AssetRef<A> : SyncRef<IAssetProvider<A>>, IAssetRef where A : Asset
     protected override void RunObjectAvailable()
     {
         Target?.ReferenceSet(this);
-        SyncElementChanged(); // Target just resolved â€” re-trigger ApplyChanges so material gets applied
+        SyncElementChanged(); // Target just resolved - re-trigger ApplyChanges so material gets applied
         base.RunObjectAvailable();
     }
 

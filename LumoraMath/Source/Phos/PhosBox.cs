@@ -9,7 +9,7 @@ namespace Lumora.Core.Phos;
 
 /// <summary>
 /// Procedural box mesh generator.
-/// Creates a box with 24 vertices (6 faces × 4 vertices) and 12 triangles (6 faces × 2 triangles).
+/// Creates a box with 24 vertices (6 faces x 4 vertices) and 12 triangles (6 faces x 2 triangles).
 /// PhosMeshSys box primitive.
 /// </summary>
 public class PhosBox : PhosShape
@@ -29,7 +29,7 @@ public class PhosBox : PhosShape
     /// <summary>Optional solid color (null = no vertex colors)</summary>
     public color? Color;
 
-    // ===== Constructors =====
+    // Constructors
 
     /// <summary>
     /// Create a box from an existing first vertex.
@@ -54,7 +54,7 @@ public class PhosBox : PhosShape
         FirstVertex = AddCubeGeometry(submesh, AllTriangles);
     }
 
-    // ===== Box Methods =====
+    // Box Methods
 
     /// <summary>
     /// Remove this box from the mesh.
@@ -82,7 +82,7 @@ public class PhosBox : PhosShape
         UpdateBoxVertices(Mesh, index, Size, UVScale, Position, Rotation, Color);
     }
 
-    // ===== Static Geometry Creation =====
+    // Static Geometry Creation
 
     /// <summary>
     /// Connect vertices to triangles for a cube.
@@ -136,7 +136,7 @@ public class PhosBox : PhosShape
         return firstVertex;
     }
 
-    // ===== Vertex Offset Calculation =====
+    // Vertex Offset Calculation
 
     /// <summary>
     /// Get vertex offset from box center based on face and corner.
@@ -156,7 +156,7 @@ public class PhosBox : PhosShape
         };
     }
 
-    // ===== Static Box Update Methods =====
+    // Static Box Update Methods
 
     /// <summary>
     /// Update box vertices for an axis-aligned bounding box.

@@ -33,19 +33,19 @@ public partial class HeadOutput : Node
         Static
     }
 
-    // ===== CONFIGURATION =====
+    // CONFIGURATION
     [Export] public OutputType Type { get; set; } = OutputType.Screen;
     [Export] public float DefaultFOV { get; set; } = 90f;
     [Export] public float NearClip { get; set; } = 0.25f; // Clips through head sphere
     [Export] public float FarClip { get; set; } = 1000f;
 
-    // ===== CAMERA REFERENCES =====
+    // CAMERA REFERENCES
     private Camera3D _camera = null!;
     private Camera3D _desktopCamera = null!;
     private XRCamera3D _vrCamera = null!;
     private XROrigin3D _xrOrigin = null!;
 
-    // ===== STATE =====
+    // STATE
     private bool _isVRActive = false;
     private Vector3 _overridePosition = Vector3.Zero;
     private Quaternion _overrideRotation = Quaternion.Identity;
@@ -351,11 +351,11 @@ public partial class HeadOutput : Node
             UseDesktopCamera();
         }
 
-        LumoraLogger.Log($"HeadOutput: VR active state ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ {isActive}");
+        LumoraLogger.Log($"HeadOutput: VR active state -> {isActive}");
     }
 
     /// <summary>
-    /// Switch output type (e.g., VR ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬Â Screen).
+    /// Switch output type (e.g., VR <-> Screen).
     /// When switching to VR call <see cref="NotifyVRActiveChanged"/> first so
     /// <c>_isVRActive</c> is already up-to-date by the time this runs.
     /// </summary>

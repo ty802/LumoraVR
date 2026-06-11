@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -25,7 +25,7 @@ namespace Lumora.Core.Components;
 [ComponentCategory("XR/Visuals")]
 public sealed class ControllerHandVisual : Component
 {
-    // ===== SYNC FIELDS =====
+    // SYNC FIELDS
 
     /// <summary>Which hand side this visual represents.</summary>
     public readonly Sync<Chirality> HandSide = null!;
@@ -39,7 +39,7 @@ public sealed class ControllerHandVisual : Component
     /// <summary>Uniform scale applied to controller-relative hand rest pose and mesh thickness.</summary>
     public readonly Sync<float> HandScale = null!;
 
-    // ===== INNER TYPES =====
+    // INNER TYPES
 
     private readonly struct JointEntry
     {
@@ -58,7 +58,7 @@ public sealed class ControllerHandVisual : Component
             { NodeA = a; NodeB = b; VisualSlot = slot; Cylinder = mesh; }
     }
 
-    // ===== PRIVATE STATE =====
+    // PRIVATE STATE
 
     private Slot         _handSkeletonRoot = null!;
     private PBS_Metallic _handMaterial = null!;
@@ -67,7 +67,7 @@ public sealed class ControllerHandVisual : Component
     private Dictionary<BodyNode, float3> _jointWorldPositions = null!;
     private Dictionary<BodyNode, float3> _restPoseLocalPositions = null!;
 
-    // ===== FINGER TOPOLOGY =====
+    // FINGER TOPOLOGY
 
     // Thumb has no Intermediate segment; all other fingers have five segments.
     private static readonly FingerType[] AllFingers = new[]
@@ -96,7 +96,7 @@ public sealed class ControllerHandVisual : Component
         FingerSegmentType.Tip,
     };
 
-    // ===== LIFECYCLE =====
+    // LIFECYCLE
 
     public override void OnInit()
     {
@@ -135,7 +135,7 @@ public sealed class ControllerHandVisual : Component
         base.OnDestroy();
     }
 
-    // ===== VISUAL CONSTRUCTION =====
+    // VISUAL CONSTRUCTION
 
     private void BuildHandSkeleton()
     {
@@ -211,7 +211,7 @@ public sealed class ControllerHandVisual : Component
         _bones.Add(new BoneEntry(nodeA, nodeB, slot, cylinder));
     }
 
-    // ===== PER-FRAME UPDATE =====
+    // PER-FRAME UPDATE
 
     private void RefreshVisuals()
     {
@@ -365,7 +365,7 @@ public sealed class ControllerHandVisual : Component
         return map;
     }
 
-    // ===== STATIC HELPERS =====
+    // STATIC HELPERS
 
     /// <summary>
     /// Returns the ordered sequence of BodyNodes for a single finger on the given side.
@@ -393,7 +393,7 @@ public sealed class ControllerHandVisual : Component
 
         float3 dir = new float3(direction.x / len, direction.y / len, direction.z / len);
 
-        // Rotation axis = cross(Up, dir). Angle = acos(Up Â· dir).
+        // Rotation axis = cross(Up, dir). Angle = acos(Up  dot  dir).
         float3 axis    = float3.Cross(float3.Up, dir);
         float  axisLen = axis.Length;
 

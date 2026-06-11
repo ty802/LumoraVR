@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -6,14 +6,20 @@ using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
-using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components.Avatar;
 
 /// <summary>
-/// A component that receives pose data from an AvatarObjectSlot and drives a slot's transform.
-/// This is the key component that bridges tracking data to avatar bones.
+/// Receives pose data from an AvatarObjectSlot and drives a slot's transform.
+/// This is the component that bridges tracking data to avatar bones.
 /// </summary>
+// Equip only assigns the synced refs (_objectSlot/_source). Drive links are
+// derived from those refs in RefreshDriveLinks on EVERY peer, and the drives
+// write local-only values: each peer computes bone poses itself from the
+// body-node transforms (which already replicate via tracking streams), so the
+// results never generate sync traffic. Writing the fields directly here would
+// double-send every bone every frame and fight the remote peer's own
+// computation. - xlinka
 [ComponentCategory("Users/Common Avatar System")]
 [DefaultUpdateOrder(-7500)]
 public class AvatarPoseNode : UserRootComponent, IAvatarObject, IInputUpdateReceiver
@@ -53,17 +59,16 @@ public class AvatarPoseNode : UserRootComponent, IAvatarObject, IInputUpdateRece
     /// </summary>
     public readonly Sync<bool> SourceIsActive = new();
 
-    // Internal references
+    // Replicated equip state. Drive links below are derived from these.
     protected readonly SyncRef<AvatarObjectSlot> _objectSlot = null!;
     protected readonly SyncRef<Slot> _source = null!;
 
-    // Field drives for position/rotation
+    // Local drive links, established per-peer from the synced refs.
     protected FieldDrive<float3> _position = null!;
     protected FieldDrive<floatQ> _rotation = null!;
     protected FieldDrive<float3> _scale = null!;
     protected FieldDrive<bool> _active = null!;
 
-    // Internal state
     private bool _isRegistered;
 
     // IAvatarObject implementation
@@ -95,29 +100,23 @@ public class AvatarPoseNode : UserRootComponent, IAvatarObject, IInputUpdateRece
 
         MutuallyExclusiveNodes_ = new SyncFieldList<BodyNode>();
 
-        _position = new FieldDrive<float3>(World);
-        _rotation = new FieldDrive<floatQ>(World);
-        _scale = new FieldDrive<float3>(World);
-        _active = new FieldDrive<bool>(World);
+        _position = new FieldDrive<float3>(World) { LocalValueOnly = true };
+        _rotation = new FieldDrive<floatQ>(World) { LocalValueOnly = true };
+        _scale = new FieldDrive<float3>(World) { LocalValueOnly = true };
+        _active = new FieldDrive<bool>(World) { LocalValueOnly = true };
     }
 
     public override void OnInit()
     {
         base.OnInit();
-        // BodyNode.NONE may not be enum value 0 â€” set explicitly
+        // BodyNode.NONE may not be enum value 0 - set explicitly
         Node.Value = BodyNode.NONE;
-        // EquipOrderPriority_ = 0 (C# default, skip)
-        // RunAfterInputUpdate = false (C# default, skip)
-        // IsTracking = false (C# default, skip)
-        // SourceIsTracking = false (C# default, skip)
-        // SourceIsActive = false (C# default, skip)
     }
 
     public override void OnStart()
     {
         base.OnStart();
 
-        // Register for input updates
         var input = Engine.Current?.InputInterface;
         if (input != null)
         {
@@ -126,11 +125,20 @@ public class AvatarPoseNode : UserRootComponent, IAvatarObject, IInputUpdateRece
         }
 
         EnsureCorrectUpdateOrder();
+        RefreshDriveLinks();
+    }
+
+    public override void OnChanges()
+    {
+        base.OnChanges();
+        // _source replicates; every peer derives its local drive links from it
+        // so remote bones are driven (and excluded from inbound field writes)
+        // exactly like local ones.
+        RefreshDriveLinks();
     }
 
     public override void OnDestroy()
     {
-        // Unregister from input updates
         if (_isRegistered)
         {
             var input = Engine.Current?.InputInterface;
@@ -138,6 +146,7 @@ public class AvatarPoseNode : UserRootComponent, IAvatarObject, IInputUpdateRece
             _isRegistered = false;
         }
 
+        ReleaseDriveLinks();
         ExplicitlyAllowedUser = null!;
         base.OnDestroy();
     }
@@ -147,7 +156,6 @@ public class AvatarPoseNode : UserRootComponent, IAvatarObject, IInputUpdateRece
     /// </summary>
     private void EnsureCorrectUpdateOrder(bool updateChildren = true)
     {
-        // Find parent AvatarPoseNode
         var parent = Slot.Parent;
         while (parent != null)
         {
@@ -160,7 +168,6 @@ public class AvatarPoseNode : UserRootComponent, IAvatarObject, IInputUpdateRece
             parent = parent.Parent;
         }
 
-        // Update children
         if (updateChildren)
         {
             foreach (var child in Slot.Children)
@@ -172,32 +179,71 @@ public class AvatarPoseNode : UserRootComponent, IAvatarObject, IInputUpdateRece
     }
 
     /// <summary>
+    /// Equip this pose node to an AvatarObjectSlot. Only assigns the synced
+    /// refs; drive links follow on every peer via OnChanges.
+    /// </summary>
+    public void Equip(AvatarObjectSlot slot)
+    {
+        _objectSlot.Target = slot;
+        _source.Target = slot.Slot;
+        RefreshDriveLinks();
+    }
+
+    /// <summary>
     /// Dequip this pose node from its current slot.
     /// </summary>
     public void Dequip()
     {
         _objectSlot.Target = null!;
         _source.Target = null!;
-        _position.ReleaseLink();
-        _rotation.ReleaseLink();
-        _scale.ReleaseLink();
-        _active.ReleaseLink();
-
-        LumoraLogger.Log($"AvatarPoseNode: Dequipped {Node.Value} from '{Slot.SlotName.Value}'");
+        RefreshDriveLinks();
     }
 
-    /// <summary>
-    /// Equip this pose node to an AvatarObjectSlot.
-    /// RunUpdate() writes Slot.LocalPosition/Rotation directly each frame, so we must NOT
-    /// set up FieldDrives on those fields here â€” a FieldDrive would take ownership of the
-    /// field and silently block the direct writes in RunUpdate().
-    /// </summary>
-    public void Equip(AvatarObjectSlot slot)
+    private void RefreshDriveLinks()
     {
-        _objectSlot.Target = slot;
-        _source.Target     = slot.Slot;
+        if (Slot == null || IsDestroyed)
+            return;
 
-        LumoraLogger.Log($"AvatarPoseNode: Equipped {Node.Value} to '{Slot.SlotName.Value}'");
+        if (_source?.Target != null && _objectSlot?.Target != null)
+        {
+            if (!_position.IsLinkValid)
+                _position.DriveTarget(Slot.LocalPosition);
+            if (!_rotation.IsLinkValid)
+                _rotation.DriveTarget(Slot.LocalRotation);
+
+            var objSlot = _objectSlot.Target;
+            if (objSlot.DriveScale.Value)
+            {
+                if (!_scale.IsLinkValid)
+                    _scale.DriveTarget(Slot.LocalScale);
+            }
+            else if (_scale.IsLinkValid)
+            {
+                _scale.ReleaseLink();
+            }
+
+            if (objSlot.DriveActive.Value)
+            {
+                if (!_active.IsLinkValid)
+                    _active.DriveTarget(Slot.ActiveSelf);
+            }
+            else if (_active.IsLinkValid)
+            {
+                _active.ReleaseLink();
+            }
+        }
+        else
+        {
+            ReleaseDriveLinks();
+        }
+    }
+
+    private void ReleaseDriveLinks()
+    {
+        _position?.ReleaseLink();
+        _rotation?.ReleaseLink();
+        _scale?.ReleaseLink();
+        _active?.ReleaseLink();
     }
 
     /// <summary>
@@ -214,74 +260,61 @@ public class AvatarPoseNode : UserRootComponent, IAvatarObject, IInputUpdateRece
 
     /// <summary>
     /// Run the pose update - called by BeforeInputUpdate or AfterInputUpdate.
+    /// Runs on every peer; results are written through local-only drives.
     /// </summary>
     private void RunUpdate()
     {
-        if (_source?.Target != null && EquippingSlot != null)
+        var equippingSlot = EquippingSlot;
+        if (_source?.Target != null && equippingSlot != null && !equippingSlot.IsDestroyed)
         {
-            // Get filtered pose data from the slot
-            float3 position;
-            floatQ rotation;
-            bool isTracking;
-            var space = EquippingSlot.GetFilteredPoseData(out position, out rotation, out isTracking);
+            if (!_position.IsLinkValid || !_rotation.IsLinkValid)
+                RefreshDriveLinks();
 
-            // Update outputs
-            IsTracking.Value = isTracking;
-            SourceIsTracking.Value = EquippingSlot.IsTracking.Value;
-            SourceIsActive.Value = EquippingSlot.IsActive.Value;
+            var space = equippingSlot.GetFilteredPoseData(out var position, out var rotation, out var isTracking);
 
-            // Transform position from user space to local space
-            if (Slot.Parent != null)
+            SetOutput(IsTracking, isTracking);
+            SetOutput(SourceIsTracking, equippingSlot.IsTracking.Value);
+            SetOutput(SourceIsActive, equippingSlot.IsActive.Value);
+
+            // Pose is in user-root-local space. Full space conversion (not
+            // position + rotation composition) so user scale is respected.
+            var parent = Slot.Parent;
+            if (parent != null)
             {
-                // Convert from user root space to slot's parent space
-                // First to global, then to local
-                var globalPos = space.GlobalPosition + (space.GlobalRotation * position);
-                var globalRot = space.GlobalRotation * rotation;
-
-                // Then to local space
-                Slot.LocalPosition.Value = Slot.Parent.GlobalPointToLocal(globalPos);
-                Slot.LocalRotation.Value = Slot.Parent.GlobalRotation.Inverse * globalRot;
+                _position.SetValue(parent.GlobalPointToLocal(space.LocalPointToGlobal(position)));
+                _rotation.SetValue(parent.GlobalRotationToLocal(space.LocalRotationToGlobal(rotation)));
             }
             else
             {
-                // No parent, use directly
-                Slot.LocalPosition.Value = position;
-                Slot.LocalRotation.Value = rotation;
+                _position.SetValue(position);
+                _rotation.SetValue(rotation);
             }
 
-            // Update scale if driven
-            if (_scale.IsActive)
+            if (_scale.IsLinkValid)
             {
-                Slot.LocalScale.Value = EquippingSlot.Slot.LocalScale.Value;
+                _scale.SetValue(equippingSlot.Slot.LocalScale.Value);
             }
 
-            // Update active if driven
-            if (_active.IsActive)
+            if (_active.IsLinkValid)
             {
-                Slot.ActiveSelf.Value = EquippingSlot.Slot.ActiveSelf.Value;
+                _active.SetValue(equippingSlot.Slot.ActiveSelf.Value);
             }
         }
         else
         {
-            // Not equipped
-            IsTracking.Value = false;
-            SourceIsTracking.Value = false;
-
-            // Release drives if under local user
-            if (IsUnderLocalUser)
-            {
-                _position.ReleaseLink();
-                _rotation.ReleaseLink();
-                _scale.ReleaseLink();
-                _active.ReleaseLink();
-            }
+            SetOutput(IsTracking, false);
+            SetOutput(SourceIsTracking, false);
+            ReleaseDriveLinks();
         }
     }
 
-    /// <summary>
-    /// Check if this component is under the local user.
-    /// </summary>
-    private new bool IsUnderLocalUser => Slot?.IsUnderLocalUser ?? false;
+    // Sync<bool> writes invalidate sync data unconditionally; these outputs
+    // flip rarely, so only write on actual change.
+    private static void SetOutput(Sync<bool> field, bool value)
+    {
+        if (field.Value != value)
+            field.Value = value;
+    }
 
     /// <summary>
     /// Called before input update.
@@ -305,4 +338,3 @@ public class AvatarPoseNode : UserRootComponent, IAvatarObject, IInputUpdateRece
         }
     }
 }
-

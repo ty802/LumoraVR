@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -32,7 +32,7 @@ public class UserRoot : Component
         RightFoot
     }
 
-    // ===== USER REFERENCE =====
+    // USER REFERENCE
     /// <summary>
     /// Synced reference to the user that owns this UserRoot.
     /// This syncs over the network so clients can identify their own UserRoot.
@@ -52,7 +52,7 @@ public class UserRoot : Component
     /// </summary>
     public bool IsLocalUserRoot => TargetUser?.Target != null && TargetUser.Target == World?.LocalUser;
 
-    // ===== CACHED BODY NODES =====
+    // CACHED BODY NODES
     private Slot _cachedHeadSlot = null!;
     private Slot _cachedBodySlot = null!;
     private Slot _cachedLeftHandSlot = null!;
@@ -60,11 +60,11 @@ public class UserRoot : Component
     private Slot _cachedLeftFootSlot = null!;
     private Slot _cachedRightFootSlot = null!;
 
-    // ===== BODY NODE ACCESSORS =====
+    // BODY NODE ACCESSORS
     //
     // Resolved from the typed UserRootComponent registry rather than string-
     // named child lookups. Any TrackedDevicePositioner under the user that
-    // declares AutoBodyNode == HeadNode shows up here automatically â€” slots
+    // declares AutoBodyNode == HeadNode shows up here automatically - slots
     // can be renamed or moved without breaking the lookup. - xlinka
 
     public Slot HeadSlot => GetBodyNodeSlot(ref _cachedHeadSlot, Input.BodyNode.Head)
@@ -104,6 +104,15 @@ public class UserRoot : Component
 
         var positioner = GetRegisteredComponent<TrackedDevicePositioner>(p => p.AutoBodyNode.Value == node);
         var resolved = positioner?.BodyNodeRoot?.Target ?? positioner?.Slot;
+
+        // Not every body node is device-tracked: hands are AvatarObjectSlots
+        // riding under the controller positioners. Resolve through the
+        // registered object slots before giving up.
+        if (resolved == null)
+        {
+            resolved = GetRegisteredComponent<Avatar.AvatarObjectSlot>(s => s.Node.Value == node)?.Slot;
+        }
+
         if (resolved != null)
             cache = resolved;
         return resolved!;
@@ -126,7 +135,7 @@ public class UserRoot : Component
         return cache!;
     }
 
-    // ===== POSITION ACCESSORS =====
+    // POSITION ACCESSORS
 
     /// <summary>
     /// Head position in world space.
@@ -263,7 +272,7 @@ public class UserRoot : Component
         }
     }
 
-    // ===== INITIALIZATION =====
+    // INITIALIZATION
 
     /// <summary>
     /// Initialize this UserRoot with a User.

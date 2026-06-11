@@ -34,7 +34,7 @@ namespace Lumora.Source.Godot.Bootstrap;
 /// </summary>
 public partial class XRModeManager : Node
 {
-    // ===== SINGLETON =====
+    // SINGLETON
     public static XRModeManager Instance { get; private set; } = null!;
 
     /// <summary>
@@ -51,7 +51,7 @@ public partial class XRModeManager : Node
     /// </summary>
     public Camera3D CurrentCamera => IsVRActive ? _xrCamera : _mainCamera;
 
-    // ===== STATE =====
+    // STATE
     /// <summary>Whether VR mode is currently active.</summary>
     public bool IsVRActive { get; private set; }
 
@@ -65,32 +65,32 @@ public partial class XRModeManager : Node
 
     private const ulong SwitchCooldownMsec = 500;
 
-    // ===== REFERENCES (provided at Initialize) =====
+    // REFERENCES (provided at Initialize)
     private Lumora.Core.Engine _engine = null!;
     private HeadOutput         _headOutput = null!;
     private InputInterface     _inputInterface = null!;
     private Camera3D           _mainCamera = null!;
     private GodotVRDriver      _vrDriver = null!;
 
-    // ===== MANAGED INPUT NODES =====
+    // MANAGED INPUT NODES
     // Desktop-only scene overlays; VR mode has no per-mode scene node since
     // controller/head poses flow through InputInterface drivers. - xlinka
     private DesktopInput             _desktopInput = null!;
     private DesktopCameraController  _desktopCamera = null!;
 
-    // ===== XR SCENE NODES =====
+    // XR SCENE NODES
     // Bootstrap.tscn defines the XR sub-tree up-front; we just hold refs.
     private XROrigin3D _xrOrigin = null!;
     private XRCamera3D _xrCamera = null!;
     private Viewport   _xrViewport = null!;
 
-    // =====================================================================
-    //  KEY DETECTION
-    // =====================================================================
 
-    // =====================================================================
+    //  KEY DETECTION
+
+
+
     //  INITIALIZATION
-    // =====================================================================
+
 
     /// <summary>
     /// Initialize the manager.  Call this once after the engine is fully ready.
@@ -150,9 +150,9 @@ public partial class XRModeManager : Node
         LumoraLogger.Log($"XRModeManager: Press {keyHint} at any time to toggle between Desktop and VR.");
     }
 
-    // =====================================================================
+
     //  INPUT HANDLING
-    // =====================================================================
+
 
     // _Input is kept ONLY as a diagnostic - if F8 ever reaches the event
     // pipeline we log it. The actual toggle is driven from _Process polling
@@ -198,9 +198,9 @@ public partial class XRModeManager : Node
             SyncDesktopMirrorCamera();
     }
 
-    // =====================================================================
+
     //  PUBLIC TOGGLE API
-    // =====================================================================
+
 
     /// <summary>
     /// Toggle between Desktop and VR mode. Safe to call from any thread / signal.
@@ -210,9 +210,9 @@ public partial class XRModeManager : Node
         QueueModeSwitch(!IsVRActive);
     }
 
-    // =====================================================================
-    //  SWITCH  ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢  DESKTOP
-    // =====================================================================
+
+    // Switch to Desktop
+
 
     /// <summary>
     /// Switch to Desktop (screen) rendering and input mode.
@@ -222,9 +222,9 @@ public partial class XRModeManager : Node
         QueueModeSwitch(false);
     }
 
-    // =====================================================================
-    //  SWITCH  ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢  VR
-    // =====================================================================
+
+    // Switch to VR
+
 
     /// <summary>
     /// Switch to VR rendering and input mode.
@@ -433,9 +433,9 @@ public partial class XRModeManager : Node
     }
 
 
-    // =====================================================================
+
     //  INPUT PROVIDER SETUP / TEARDOWN
-    // =====================================================================
+
 
     private void ApplyRenderingMode(bool vrActive)
     {
@@ -593,9 +593,9 @@ public partial class XRModeManager : Node
         LumoraLogger.Log("XRModeManager: Desktop input providers removed");
     }
 
-    // =====================================================================
+
     //  UTILITIES
-    // =====================================================================
+
 
     /// <summary>
     /// Queue a node for deletion at the end of the current frame.

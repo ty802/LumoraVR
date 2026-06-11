@@ -12,7 +12,7 @@ namespace Lumora.Core.Assets;
 [ComponentCategory("Assets/Materials")]
 public class PBS_Metallic : MaterialProvider, ICommonMaterial
 {
-    // ===== TEXTURE TRANSFORM =====
+    // TEXTURE TRANSFORM
 
     /// <summary>
     /// UV texture scale.
@@ -24,7 +24,7 @@ public class PBS_Metallic : MaterialProvider, ICommonMaterial
     /// </summary>
     public readonly Sync<float2> TextureOffset;
 
-    // ===== ALBEDO =====
+    // ALBEDO
 
     /// <summary>
     /// Base color (albedo) of the material.
@@ -36,7 +36,7 @@ public class PBS_Metallic : MaterialProvider, ICommonMaterial
     /// </summary>
     public readonly AssetRef<TextureAsset> AlbedoTexture;
 
-    // ===== METALLIC/ROUGHNESS =====
+    // METALLIC/ROUGHNESS
 
     /// <summary>
     /// Metallic value (0 = dielectric, 1 = metal).
@@ -53,7 +53,7 @@ public class PBS_Metallic : MaterialProvider, ICommonMaterial
     /// </summary>
     public readonly AssetRef<TextureAsset> MetallicMap;
 
-    // ===== NORMAL MAP =====
+    // NORMAL MAP
 
     /// <summary>
     /// Normal map texture for surface detail.
@@ -65,7 +65,7 @@ public class PBS_Metallic : MaterialProvider, ICommonMaterial
     /// </summary>
     public readonly Sync<float> NormalScale;
 
-    // ===== EMISSION =====
+    // EMISSION
 
     /// <summary>
     /// Emissive color (self-illumination).
@@ -77,14 +77,14 @@ public class PBS_Metallic : MaterialProvider, ICommonMaterial
     /// </summary>
     public readonly AssetRef<TextureAsset> EmissiveMap;
 
-    // ===== OCCLUSION =====
+    // OCCLUSION
 
     /// <summary>
     /// Ambient occlusion map.
     /// </summary>
     public readonly AssetRef<TextureAsset> OcclusionMap;
 
-    // ===== BLEND SETTINGS =====
+    // BLEND SETTINGS
 
     /// <summary>
     /// Blend mode (Opaque, Cutout, Transparent, Additive).
@@ -108,7 +108,7 @@ public class PBS_Metallic : MaterialProvider, ICommonMaterial
 
     protected override MaterialType MaterialType => MaterialType.PBS_Metallic;
 
-    // ===== ICommonMaterial IMPLEMENTATION =====
+    // ICommonMaterial IMPLEMENTATION
 
     public colorHDR Color
     {

@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core.Math;
@@ -15,7 +15,7 @@ namespace Lumora.Core.Components;
 [ComponentCategory("Physics")]
 public class RigidBody : ImplementableComponent
 {
-    // ===== SYNC FIELDS =====
+    // SYNC FIELDS
 
     /// <summary>Mass in kilograms</summary>
     public readonly Sync<float> Mass;
@@ -48,7 +48,7 @@ public class RigidBody : ImplementableComponent
     public readonly Sync<bool> FreezeRotationY;
     public readonly Sync<bool> FreezeRotationZ;
 
-    // ===== RUNTIME STATE (set by hook) =====
+    // RUNTIME STATE (set by hook)
 
     /// <summary>Is the body currently sleeping (not moving)</summary>
     public bool IsSleeping { get; set; }
@@ -56,7 +56,7 @@ public class RigidBody : ImplementableComponent
     /// <summary>Is the body currently colliding with something</summary>
     public bool IsColliding { get; set; }
 
-    // ===== INITIALIZATION =====
+    // INITIALIZATION
 
     public RigidBody()
     {
@@ -94,7 +94,7 @@ public class RigidBody : ImplementableComponent
         RunApplyChanges();
     }
 
-    // ===== FORCE METHODS =====
+    // FORCE METHODS
 
     /// <summary>
     /// Apply a force at the center of mass.

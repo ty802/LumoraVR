@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -149,7 +149,7 @@ public static class HumanoidMeshGenerator
         LumoraLogger.Log($"HumanoidMeshGenerator: Generated mesh with {vertices.Length} vertices, {indices.Length / 3} triangles, {boneNames.Length} bones");
     }
 
-    // ===== MESH PRIMITIVE GENERATORS =====
+    // MESH PRIMITIVE GENERATORS
 
     private static void AddSphere(List<float3> vertices, List<float3> normals, List<float2> uvs,
         List<int> indices, List<int4> boneIndices, List<float4> boneWeights,

@@ -9,7 +9,7 @@ using Lumora.Core.Math;
 
 namespace Lumora.Godot.Hooks;
 
-// Light component → Godot Light3D. Light type (Directional/Point/Spot) maps
+// Light component -> Godot Light3D. Light type (Directional/Point/Spot) maps
 // to different Godot subclasses so the platform node is rebuilt via
 // ReplacePlatformNode when Owner.Type changes. - xlinka
 [ImplementableHook(typeof(Light))]

@@ -86,6 +86,11 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
                 _shaderMaterial = CreateShaderMaterial("res://Shaders/UI_Text.gdshader", MaterialType.UI_Text);
                 break;
 
+            case MaterialType.Text:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/Text_Unlit.gdshader", MaterialType.Text);
+                break;
+
             case MaterialType.Custom:
                 _usesShaderMaterial = true;
                 _shaderMaterial = new ShaderMaterial();
@@ -493,17 +498,20 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         // Convert property name to shader parameter name (snake_case)
         string shaderParam = ToSnakeCase(property);
 
-        // Map common property names to shader uniform names
+        // Map common property names to shader uniform names. The UI/text
+        // shaders share the Unlit albedo_* uniform family but keep their own
+        // alpha_cutoff (Unlit uses alpha_scissor_threshold).
         bool isUnlit = _materialType == MaterialType.Unlit;
+        bool isAlbedoShader = isUnlit || _materialType is MaterialType.UI_Unlit or MaterialType.UI_Text or MaterialType.Text;
         bool isMetaball = _materialType == MaterialType.Metaball;
         string mappedParam = property switch
         {
-            "TintColor" => isUnlit ? "albedo_color" : "tint_color",
-            "Texture" => isUnlit ? "albedo_texture" : "main_texture",
+            "TintColor" => isAlbedoShader ? "albedo_color" : "tint_color",
+            "Texture" => isAlbedoShader ? "albedo_texture" : "main_texture",
             "AlbedoColor" => "albedo_color",
             "AlbedoTexture" => "albedo_texture",
-            "TextureScale" => isUnlit ? "uv_scale" : "texture_scale",
-            "TextureOffset" => isUnlit ? "uv_offset" : "texture_offset",
+            "TextureScale" => isAlbedoShader ? "uv_scale" : "texture_scale",
+            "TextureOffset" => isAlbedoShader ? "uv_offset" : "texture_offset",
             "AlphaCutoff" => isUnlit ? "alpha_scissor_threshold" : "alpha_cutoff",
             // Metaball uniforms. explicit map so refactors of the C# field names don't break the shader binding - xlinka
             "TintA" when isMetaball => "tint_a",
@@ -526,7 +534,7 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
 
         if (value == null)
         {
-            if (property == "Texture" && isUnlit)
+            if (property == "Texture" && isAlbedoShader)
             {
                 _shaderMaterial.SetShaderParameter("use_albedo_texture", false);
             }
@@ -556,7 +564,7 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         {
             LumoraLogger.Debug($"MaterialAssetHook.ApplyShaderMaterialProperty: Setting {mappedParam} = {value?.GetType().Name}");
             _shaderMaterial.SetShaderParameter(mappedParam, variantValue);
-            if (property == "Texture" && isUnlit)
+            if (property == "Texture" && isAlbedoShader)
             {
                 _shaderMaterial.SetShaderParameter("use_albedo_texture", value is Texture2D);
             }

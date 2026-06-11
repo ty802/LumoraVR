@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -41,7 +41,7 @@ public class Session : IDisposable
 
     /// <summary>
     /// Callback fired when a <see cref="RawFrameMessage"/> arrives, after sender
-    /// validation and authority-side relay. Runs on the sync thread â€” keep the
+    /// validation and authority-side relay. Runs on the sync thread - keep the
     /// callback fast (push to a lock-free queue and return). The
     /// <paramref name="payload"/> memory is only valid for the duration of the
     /// invocation; copy bytes out if you need to retain them.

@@ -22,7 +22,7 @@ public class PhosTriangleSubmesh : PhosSubmesh
     {
     }
 
-    // ===== Triangle Creation =====
+    // Triangle Creation
 
     /// <summary>
     /// Add a new triangle and return a reference to it.
@@ -69,7 +69,7 @@ public class PhosTriangleSubmesh : PhosSubmesh
         return AddTriangle(v0.Index, v1.Index, v2.Index);
     }
 
-    // ===== Triangle Access =====
+    // Triangle Access
 
     /// <summary>
     /// Set triangle vertex indices.
@@ -120,7 +120,7 @@ public class PhosTriangleSubmesh : PhosSubmesh
         v2 = indices[index + 2];
     }
 
-    // ===== Triangle Removal =====
+    // Triangle Removal
 
     /// <summary>
     /// Remove a triangle.
@@ -146,7 +146,7 @@ public class PhosTriangleSubmesh : PhosSubmesh
         });
     }
 
-    // ===== Quad Helper Methods =====
+    // Quad Helper Methods
 
     /// <summary>
     /// Create a quad from two triangles.

@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.Collections.Generic;
@@ -48,6 +48,28 @@ public sealed class FullBodyIKSolver
     private readonly Dictionary<Slot, floatQ> _restRot = new();
 
     public bool IsReady => _captured && _rig != null && !_rig.IsDestroyed;
+
+    // Bone writes are LOCAL: every peer runs this solve from the replicated
+    // proxy poses, so broadcasting the results would have each peer's
+    // float-noise-different skeleton fighting every other peer's - visible as
+    // constant bone jitter. Change events still fire so transform caches and
+    // the Godot hooks update. - xlinka
+    private static void WriteGlobalPosition(Slot bone, in float3 position)
+    {
+        var parent = bone.Parent;
+        var local = parent != null ? parent.GlobalPointToLocal(position) : position;
+        if ((bone.LocalPosition.Value - local).LengthSquared > 1e-12f)
+            bone.LocalPosition.SetValueSilently(local, change: true);
+    }
+
+    private static void WriteGlobalRotation(Slot bone, in floatQ rotation)
+    {
+        var parent = bone.Parent;
+        var local = parent != null ? parent.GlobalRotationToLocal(rotation) : rotation;
+        float dot = floatQ.Dot(local, bone.LocalRotation.Value);
+        if (1f - (dot < 0 ? -dot : dot) > 1e-9f)
+            bone.LocalRotation.SetValueSilently(local, change: true);
+    }
 
     public void Initialize(BipedRig rig)
     {
@@ -196,7 +218,7 @@ public sealed class FullBodyIKSolver
         forward = forward.LengthSquared > 1e-6f ? forward.Normalized : float3.Backward;
 
         float3 hipsPos = headPos + new float3(0f, -_spineTotalLength, 0f) + forward * (_spineTotalLength * 0.12f);
-        _spine[0].GlobalPosition = hipsPos;
+        WriteGlobalPosition(_spine[0], hipsPos);
 
         for (int i = 0; i < n; i++)
             _spineJoints[i] = _spine[i].GlobalPosition;
@@ -208,14 +230,14 @@ public sealed class FullBodyIKSolver
         for (int i = 0; i < n - 1; i++)
         {
             var bone = _spine[i];
-            bone.GlobalPosition = _spineJoints[i];
+            WriteGlobalPosition(bone, _spineJoints[i]);
             ApplySwing(bone, _spineJoints[i + 1] - _spineJoints[i]);
         }
 
         // Head bone takes the target rotation directly.
         var head = _spine[n - 1];
-        head.GlobalPosition = _spineJoints[n - 1];
-        head.GlobalRotation = headTarget.Rotation;
+        WriteGlobalPosition(head, _spineJoints[n - 1]);
+        WriteGlobalRotation(head, headTarget.Rotation);
     }
 
     private void SolveArm(Slot chest, Slot shoulder, Slot upper, Slot lower, Slot hand,
@@ -238,14 +260,14 @@ public sealed class FullBodyIKSolver
 
         FabrikSolver.SolveTwoBone(root, pole, target.Position, upperLen, lowerLen, out var mid, out var end);
 
-        upper.GlobalPosition = root;
+        WriteGlobalPosition(upper, root);
         ApplySwing(upper, mid - root);
 
-        lower.GlobalPosition = mid;
+        WriteGlobalPosition(lower, mid);
         ApplySwing(lower, end - mid);
 
-        hand.GlobalPosition = end;
-        hand.GlobalRotation = target.Rotation;
+        WriteGlobalPosition(hand, end);
+        WriteGlobalRotation(hand, target.Rotation);
     }
 
     private void SolveLeg(Slot hips, Slot hip, Slot knee, Slot foot,
@@ -265,15 +287,15 @@ public sealed class FullBodyIKSolver
 
         FabrikSolver.SolveTwoBone(root, pole, target.Position, upperLen, lowerLen, out var mid, out var end);
 
-        hip.GlobalPosition = root;
+        WriteGlobalPosition(hip, root);
         ApplySwing(hip, mid - root);
 
-        knee.GlobalPosition = mid;
+        WriteGlobalPosition(knee, mid);
         ApplySwing(knee, end - mid);
 
-        foot.GlobalPosition = end;
+        WriteGlobalPosition(foot, end);
         if (target.Valid)
-            foot.GlobalRotation = target.Rotation;
+            WriteGlobalRotation(foot, target.Rotation);
     }
 
     // Swing a bone's rest direction onto the solved bone direction.
@@ -287,6 +309,6 @@ public sealed class FullBodyIKSolver
         // restDir is already world-space (captured as child world pos - bone
         // world pos), so swing straight from it to the solved direction.
         var swing = FabrikSolver.FromToRotation(restDir, solvedDir);
-        bone.GlobalRotation = swing * restRot;
+        WriteGlobalRotation(bone, swing * restRot);
     }
 }

@@ -9,7 +9,7 @@ using Lumora.Core.Phos;
 namespace Helio.UI;
 
 // One Graphic, two layers, one submesh. Emits a BorderTint rect under a Tint rect inset
-// by BorderThickness — same draw call. Replaces the Border/Fill child-slot pattern that
+// by BorderThickness - same draw call. Replaces the Border/Fill child-slot pattern that
 // produced inconsistent rendering across multiple buttons. - xlinka
 public sealed class BorderedImage : Graphic
 {

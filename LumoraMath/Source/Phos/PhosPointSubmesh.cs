@@ -22,7 +22,7 @@ public class PhosPointSubmesh : PhosSubmesh
     {
     }
 
-    // ===== Point Creation =====
+    // Point Creation
 
     /// <summary>
     /// Add a new point and return a reference to it.
@@ -67,7 +67,7 @@ public class PhosPointSubmesh : PhosSubmesh
         return AddPoint(vertex.Index);
     }
 
-    // ===== Point Access =====
+    // Point Access
 
     /// <summary>
     /// Set point vertex index.
@@ -112,7 +112,7 @@ public class PhosPointSubmesh : PhosSubmesh
         return indices[index];
     }
 
-    // ===== Point Removal =====
+    // Point Removal
 
     /// <summary>
     /// Remove a point.

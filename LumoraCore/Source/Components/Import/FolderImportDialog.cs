@@ -12,7 +12,7 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Import;
 
-// Lightweight single-panel dialog — doesn't inherit from ImportDialog because the
+// Lightweight single-panel dialog - doesn't inherit from ImportDialog because the
 // flow is just a vertical list of registry entries (no wizard/back/grid). - xlinka
 [ComponentCategory("Assets/Import")]
 public sealed class FolderImportDialog : Component

@@ -60,9 +60,9 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
             TryLoadModel(force: sourceChanged || uriChanged);
     }
 
-    // ------------------------------------------------------------------
+
     // Model loading
-    // ------------------------------------------------------------------
+
 
     private void TryLoadModel(bool force)
     {
@@ -252,9 +252,9 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
              | AssimpPostProcessSteps.FlipUVs;
     }
 
-    // ------------------------------------------------------------------
+
     // Scale / bounds
-    // ------------------------------------------------------------------
+
 
     private void ApplyImportSettings(Node3D modelRoot)
     {
@@ -451,9 +451,9 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
         yield return p + s;
     }
 
-    // ------------------------------------------------------------------
+
     // Slot hierarchy with real Lumora components
-    // ------------------------------------------------------------------
+
 
     private void BuildSlotHierarchy(Node3D modelRoot)
     {
@@ -757,9 +757,9 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
         }
     }
 
-    // ------------------------------------------------------------------
+
     // Skeleton + BipedRig
-    // ------------------------------------------------------------------
+
 
     private SkeletonBuilder? BuildSkeletonComponents(Skeleton3D skeleton, Slot skeletonSlot)
     {
@@ -956,9 +956,9 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
         return float4x4.TRS(slot.LocalPosition.Value, slot.LocalRotation.Value, slot.LocalScale.Value);
     }
 
-    // ------------------------------------------------------------------
+
     // Mesh component attachment
-    // ------------------------------------------------------------------
+
 
     /// <summary>
     /// Attach MeshRenderer + PBS_Metallic to a static mesh node.
@@ -1036,9 +1036,9 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
         LumoraLogger.Log($"ModelDataHook: Attached SkinnedMeshRenderer(s) for '{godotMesh.Name}' ({surfaceCount} surfaces)");
     }
 
-    // ------------------------------------------------------------------
+
     // Mesh data extraction
-    // ------------------------------------------------------------------
+
 
     private static bool ExtractSurfaceMeshData(global::Godot.Mesh mesh, int surfIdx,
         out float3[] vertices, out float3[] normals, out float2[] uvs, out int[] indices,
@@ -1295,9 +1295,9 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
         weights.w *= inv;
     }
 
-    // ------------------------------------------------------------------
+
     // Material population
-    // ------------------------------------------------------------------
+
 
     private static void PopulatePBSFromGodotMaterial(PBS_Metallic pbs, global::Godot.Material? godotMat)
     {
@@ -1368,9 +1368,9 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
             pbs.BlendMode.Value = BlendMode.Opaque;
     }
 
-    // ------------------------------------------------------------------
+
     // Assimp helpers
-    // ------------------------------------------------------------------
+
 
     private static void RegisterNamedSlot(Slot slot, Dictionary<string, Slot> namedSlots)
     {
@@ -1420,9 +1420,9 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
         slot.LocalScale.Value = new float3(scale.X, scale.Y, scale.Z);
     }
 
-    // ------------------------------------------------------------------
+
     // Cleanup
-    // ------------------------------------------------------------------
+
 
     private void ClearLoadedModel()
     {

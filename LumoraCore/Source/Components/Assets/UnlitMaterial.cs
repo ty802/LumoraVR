@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core.Math;
@@ -14,7 +14,7 @@ namespace Lumora.Core.Assets;
 [ComponentCategory("Assets/Materials")]
 public class UnlitMaterial : MaterialProvider, ICommonMaterial
 {
-    // ===== TEXTURE TRANSFORM =====
+    // TEXTURE TRANSFORM
 
     /// <summary>
     /// UV texture scale.
@@ -26,7 +26,7 @@ public class UnlitMaterial : MaterialProvider, ICommonMaterial
     /// </summary>
     public readonly Sync<float2> TextureOffset;
 
-    // ===== COLOR AND TEXTURE =====
+    // COLOR AND TEXTURE
 
     /// <summary>
     /// Base color/tint.
@@ -40,7 +40,7 @@ public class UnlitMaterial : MaterialProvider, ICommonMaterial
 
     public readonly Sync<bool> UseVertexColor;
 
-    // ===== BLEND SETTINGS =====
+    // BLEND SETTINGS
 
     /// <summary>
     /// Blend mode (Opaque, Cutout, Transparent, Additive).
@@ -64,7 +64,7 @@ public class UnlitMaterial : MaterialProvider, ICommonMaterial
 
     protected override MaterialType MaterialType => MaterialType.Unlit;
 
-    // ===== ICommonMaterial IMPLEMENTATION =====
+    // ICommonMaterial IMPLEMENTATION
 
     public colorHDR Color
     {

@@ -859,4 +859,3 @@ public partial class SessionBrowserService : Node
 		public string JoinTicket { get; set; } = "";
 	}
 }
-

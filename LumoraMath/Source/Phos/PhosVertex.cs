@@ -17,7 +17,7 @@ public struct PhosVertex
     private int version;
     private PhosMesh mesh;
 
-    // ===== Properties =====
+    // Properties
 
     /// <summary>Parent mesh this vertex belongs to</summary>
     public PhosMesh Mesh => mesh;
@@ -35,7 +35,7 @@ public struct PhosVertex
         }
     }
 
-    // ===== Position =====
+    // Position
 
     public ref float3 PositionUnsafe => ref mesh.positions[index];
 
@@ -53,7 +53,7 @@ public struct PhosVertex
         }
     }
 
-    // ===== Normal =====
+    // Normal
 
     public ref float3 NormalUnsafe => ref mesh.normals[index];
 
@@ -73,7 +73,7 @@ public struct PhosVertex
         }
     }
 
-    // ===== Tangent =====
+    // Tangent
 
     public ref float4 Tangent4Unsafe => ref mesh.tangents[index];
 
@@ -105,7 +105,7 @@ public struct PhosVertex
         }
     }
 
-    // ===== Color =====
+    // Color
 
     public ref color ColorUnsafe => ref mesh.colors[index];
 
@@ -125,7 +125,7 @@ public struct PhosVertex
         }
     }
 
-    // ===== Bone Binding =====
+    // Bone Binding
 
     public ref PhosBoneBinding BoneBindingUnsafe => ref mesh.boneBindings[index];
 
@@ -145,7 +145,7 @@ public struct PhosVertex
         }
     }
 
-    // ===== UV Coordinates =====
+    // UV Coordinates
 
     public ref float2 UV0Unsafe => ref mesh.uvChannels[0].uv2D![index];
     public ref float2 UV1Unsafe => ref mesh.uvChannels[1].uv2D![index];
@@ -176,7 +176,7 @@ public struct PhosVertex
         set => SetUV(3, value);
     }
 
-    // ===== Flags =====
+    // Flags
 
     public bool FlagUnsafe
     {
@@ -200,7 +200,7 @@ public struct PhosVertex
         }
     }
 
-    // ===== Constructor =====
+    // Constructor
 
     internal PhosVertex(int index, PhosMesh mesh)
     {
@@ -217,7 +217,7 @@ public struct PhosVertex
         }
     }
 
-    // ===== Methods =====
+    // Methods
 
     /// <summary>
     /// Copy all data from another vertex.
@@ -316,7 +316,7 @@ public struct PhosVertex
         mesh.GetBlendShape(key).Frames[frame].SetTangentDelta(index, delta);
     }
 
-    // ===== Version Tracking =====
+    // Version Tracking
 
     /// <summary>
     /// Update index if vertex was moved due to removals.

@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.Collections.Generic;
@@ -16,7 +16,7 @@ namespace Lumora.Core.Components;
 [ComponentCategory("Animation")]
 public class SkeletonBuilder : ImplementableComponent
 {
-    // ===== SYNC FIELDS =====
+    // SYNC FIELDS
 
     /// <summary>
     /// Root bone slot reference.
@@ -47,14 +47,14 @@ public class SkeletonBuilder : ImplementableComponent
     /// </summary>
     public readonly Sync<bool> IsBuilt = new();
 
-    // ===== CHANGE TRACKING =====
+    // CHANGE TRACKING
 
     /// <summary>
     /// Flag indicating bone hierarchy has changed and needs rebuild.
     /// </summary>
     public bool BoneHierarchyChanged { get; set; }
 
-    // ===== LIFECYCLE =====
+    // LIFECYCLE
 
     public override void OnAwake()
     {
@@ -100,7 +100,7 @@ public class SkeletonBuilder : ImplementableComponent
         LumoraLogger.Log($"SkeletonBuilder: Destroyed on slot '{Slot?.SlotName.Value}'");
     }
 
-    // ===== PUBLIC API =====
+    // PUBLIC API
 
     /// <summary>
     /// Build the skeleton from the current slot hierarchy.
@@ -196,7 +196,7 @@ public class SkeletonBuilder : ImplementableComponent
         LumoraLogger.Log("SkeletonBuilder: Cleared all bones");
     }
 
-    // ===== PRIVATE METHODS =====
+    // PRIVATE METHODS
 
     /// <summary>
     /// Recursively collect all bone slots under a root.

@@ -187,12 +187,12 @@ public interface IFontAssetHook : IAssetHook
     float GetDescent(float size);
     float GetKerning(int leftCodepoint, int rightCodepoint, float size);
 
-    // MSDF reconstruction parameter — pixels of distance encoded around each glyph edge.
+    // MSDF reconstruction parameter - pixels of distance encoded around each glyph edge.
     // The shader uses this to scale signed distance into screen-space pixel units. - xlinka
     int PixelRange { get; }
 
     // Bumped whenever a glyph entry is added to the atlas. The atlas never repacks, so a
-    // shaped run stays valid until this changes — text shaping caches against it. - xlinka
+    // shaped run stays valid until this changes - text shaping caches against it. - xlinka
     int CacheGeneration { get; }
 }
 

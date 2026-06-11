@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core;
@@ -73,6 +73,8 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
     private UserRoot _userRoot = null!;
     private bool _isRegistered;
     private int _debugLogCounter = 0;
+    private TransformStreamDriver _streamDriver = null!;
+    private bool _streamDriverChecked;
 
     /// <summary>
     /// Get the tracked device from InputInterface.
@@ -353,13 +355,30 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
         float dot = floatQ.Dot(rot, currentRot);
         float rotDelta = 1.0f - (dot < 0 ? -dot : dot);
 
+        // When a TransformStreamDriver shares this slot, the stream is the
+        // transport - writing the fields with sync generation would send every
+        // pose twice. Silent writes keep change events (Godot hook, stream
+        // sampling) while skipping the duplicate field sync.
+        if (!_streamDriverChecked)
+        {
+            _streamDriver = Slot.GetComponent<TransformStreamDriver>()!;
+            _streamDriverChecked = true;
+        }
+        bool streamed = _streamDriver != null && !_streamDriver.IsDestroyed;
+
         if (posDeltaSq > POS_THRESHOLD_SQ)
         {
-            Slot.LocalPosition.Value = pos;
+            if (streamed)
+                Slot.LocalPosition.SetValueSilently(pos, change: true);
+            else
+                Slot.LocalPosition.Value = pos;
         }
         if (rotDelta > ROT_THRESHOLD)
         {
-            Slot.LocalRotation.Value = rot;
+            if (streamed)
+                Slot.LocalRotation.SetValueSilently(rot, change: true);
+            else
+                Slot.LocalRotation.Value = rot;
         }
 
         // Update tracking state

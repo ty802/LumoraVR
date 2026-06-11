@@ -6,7 +6,7 @@ namespace Lumora.Core.Networking;
 /// <summary>
 /// Hard upper bounds for any size/count field that crosses the network trust
 /// boundary. Anything a peer can declare must be checked against one of these
-/// before allocation. Treat the values as defensive ceilings — the legitimate
+/// before allocation. Treat the values as defensive ceilings - the legitimate
 /// traffic should never come close.
 /// </summary>
 public static class NetworkLimits
@@ -42,6 +42,6 @@ public static class NetworkLimits
     public const int MaxAssetUriBytes = 4 * 1024; // 4 KB
 
     /// <summary>Maximum size of a single RawFrameMessage payload, in bytes. Sized for
-    /// codec frames (e.g. Opus 60 ms ≈ 960 B at 128 kbps); 4 KB leaves generous headroom.</summary>
+    /// codec frames (e.g. Opus 60 ms approx 960 B at 128 kbps); 4 KB leaves generous headroom.</summary>
     public const int MaxRawFrameBytes = 4 * 1024;
 }

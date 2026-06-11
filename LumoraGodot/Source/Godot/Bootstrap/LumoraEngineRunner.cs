@@ -47,7 +47,7 @@ public partial class LumoraEngineRunner : Node
 	private const double DebugPerfSendIntervalSec = 0.25;
 	private const double DebugMemorySendIntervalSec = 0.5;
 
-	// ===== CONFIGURATION =====
+	// CONFIGURATION
 	[Export] public bool VerboseInit { get; set; } = false;
 	[Export] public bool DumpSceneTreeOnReady { get; set; } = false;
 	[Export] public bool AutoHostLocalHome { get; set; } = true;
@@ -55,14 +55,14 @@ public partial class LumoraEngineRunner : Node
 	[Export] public int LocalHomePort { get; set; } = 44844;
 	[Export] public int MaximumXrRefreshRate { get; set; } = 90;
 
-	// ===== CORE SYSTEMS =====
+	// CORE SYSTEMS
 	private Lumora.Core.Engine _engine = null!;
 	private HeadOutput _headOutput = null!;
 	private SystemInfoHook _systemInfoHook = null!;
 	private InputInterface _inputInterface = null!;
 	private LoadingScreen _loadingScreen = null!;
 
-	// ===== INPUT DRIVERS =====
+	// INPUT DRIVERS
 	private GodotMouseDriver _mouseDriver = null!;
 	private GodotKeyboardDriver _keyboardDriver = null!;
 	private GodotVRDriver _vrDriver = null!;
@@ -71,7 +71,7 @@ public partial class LumoraEngineRunner : Node
 	private InspectorInputHandler _inspectorInputHandler = null!;
 	private DebugUdpSender? _debugUdpSender;
 
-	// ===== STATE =====
+	// STATE
 	private bool _engineInitialized = false;
 	private bool _shutdownRequested = false;
 	private bool _missingInputInterfaceWarned = false;
@@ -90,7 +90,7 @@ public partial class LumoraEngineRunner : Node
 	private bool _xrIsFocused;
 	private static readonly Dictionary<Type, long> ComponentMemoryEstimateCache = new();
 
-	// ===== SCENE REFERENCES =====
+	// SCENE REFERENCES
 	private Node3D _inputRoot = null!;
 	private Camera3D _mainCamera = null!;
 	private SubViewport _xrViewport = null!;
@@ -1408,7 +1408,7 @@ public partial class LumoraEngineRunner : Node
 		_ownsDebugConsoleLock = false;
 
 		_debugUdpSender?.Dispose();
-		// Stop transports before the SteamAPI shuts down ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the Steam manager
+		// Stop transports before the SteamAPI shuts down - the Steam manager
 		// frees its sockets/poll groups via SteamNetworkingSockets calls that
 		// need the API still up. - xlinka
 		NetworkManagerRegistry.StopAll();
@@ -1446,7 +1446,7 @@ public partial class LumoraEngineRunner : Node
 			}
 			else
 			{
-				LumoraLogger.Warn("LumoraEngineRunner: SteamNetworkManager unavailable ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â falling back to LNL only");
+				LumoraLogger.Warn("LumoraEngineRunner: SteamNetworkManager unavailable - falling back to LNL only");
 			}
 		}
 	}

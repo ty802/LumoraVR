@@ -81,7 +81,7 @@ public class PhosQuad : PhosShape
         }
     }
 
-    // ===== Constructors =====
+    // Constructors
 
     /// <summary>
     /// Create a quad from an existing first vertex.
@@ -122,7 +122,7 @@ public class PhosQuad : PhosShape
         Triangle1 = quadTriangles.second;
     }
 
-    // ===== Quad Methods =====
+    // Quad Methods
 
     /// <summary>
     /// Remove this quad from the mesh.

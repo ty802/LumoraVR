@@ -12,7 +12,7 @@ namespace Lumora.Core.Components.Import;
 // Confirmation dialog for image imports. Only exposes options the image pipeline
 // actually supports today: a flat-quad import or a raw-file passthrough. Sphere
 // projections (360/180), stereo layouts, LUT, screenshot metadata, etc. are not
-// implemented and intentionally not shown — add buttons here when those land. - xlinka
+// implemented and intentionally not shown - add buttons here when those land. - xlinka
 [ComponentCategory("Assets/Import")]
 public sealed class ImageImportDialog : ImportDialog
 {

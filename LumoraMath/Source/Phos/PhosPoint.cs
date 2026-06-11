@@ -14,7 +14,7 @@ public struct PhosPoint
     private int version;
     private PhosPointSubmesh submesh;
 
-    // ===== Properties =====
+    // Properties
 
     /// <summary>Parent submesh</summary>
     public PhosPointSubmesh Submesh => submesh;
@@ -35,7 +35,7 @@ public struct PhosPoint
         }
     }
 
-    // ===== Vertex Index Access =====
+    // Vertex Index Access
 
     public int VertexIndex
     {
@@ -51,7 +51,7 @@ public struct PhosPoint
         }
     }
 
-    // ===== Vertex Access =====
+    // Vertex Access
 
     public PhosVertex Vertex
     {
@@ -59,7 +59,7 @@ public struct PhosPoint
         set => VertexIndex = value.Index;
     }
 
-    // ===== Constructor =====
+    // Constructor
 
     internal PhosPoint(int index, PhosPointSubmesh submesh)
     {
@@ -76,7 +76,7 @@ public struct PhosPoint
         }
     }
 
-    // ===== Version Tracking =====
+    // Version Tracking
 
     internal bool UpdateIndex()
     {

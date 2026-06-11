@@ -71,7 +71,7 @@ public class SyncRefList<T> : IEnumerable<T?> where T : class, IWorldElement
         IsDirty = false;
     }
 
-    // ===== LIST OPERATIONS =====
+    // LIST OPERATIONS
 
     /// <summary>
     /// Add an element to the list.
@@ -148,7 +148,7 @@ public class SyncRefList<T> : IEnumerable<T?> where T : class, IWorldElement
         MarkDirty();
     }
 
-    // ===== ENUMERATION =====
+    // ENUMERATION
 
     public IEnumerator<T?> GetEnumerator()
     {
@@ -158,7 +158,7 @@ public class SyncRefList<T> : IEnumerable<T?> where T : class, IWorldElement
 
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
-    // ===== INTERNAL METHODS =====
+    // INTERNAL METHODS
 
     /// <summary>
     /// Mark this list as dirty for network sync.

@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core;
@@ -14,7 +14,7 @@ namespace Lumora.Core.Components;
 [ComponentCategory("Physics/Colliders")]
 public class CapsuleCollider : Collider
 {
-    // ===== SYNC FIELDS =====
+    // SYNC FIELDS
 
     public readonly Sync<float> Height;
     public readonly Sync<float> Radius;
@@ -29,7 +29,7 @@ public class CapsuleCollider : Collider
         set => Height.Value = value + Radius.Value * 2f;
     }
 
-    // ===== INITIALIZATION =====
+    // INITIALIZATION
 
     public CapsuleCollider()
     {
@@ -45,7 +45,7 @@ public class CapsuleCollider : Collider
         LumoraLogger.Log($"CapsuleCollider: Initialized with Height={Height.Value}, Radius={Radius.Value}");
     }
 
-    // ===== ABSTRACT METHOD IMPLEMENTATIONS =====
+    // ABSTRACT METHOD IMPLEMENTATIONS
 
     public override object CreateGodotShape()
     {

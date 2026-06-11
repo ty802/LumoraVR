@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -42,7 +42,7 @@ public abstract class BinaryMessageBatch : SyncMessage
         _writer = new BinaryWriter(_stream);
     }
 
-    // ===== DATA RECORD MANAGEMENT =====
+    // DATA RECORD MANAGEMENT
 
 	/// <summary>
 	/// Begin writing a new data record for a sync element.
@@ -187,7 +187,7 @@ public abstract class BinaryMessageBatch : SyncMessage
 		}
 	}
 
-    // ===== ENCODING/DECODING =====
+    // ENCODING/DECODING
 
     /// <summary>
     /// Encode this batch to bytes for transmission.

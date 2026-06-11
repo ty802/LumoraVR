@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.Collections.Generic;
@@ -16,7 +16,7 @@ namespace Lumora.Core.Components;
 [ComponentCategory("Rendering")]
 public class SkinnedMeshRenderer : ImplementableComponent
 {
-    // ===== BONE REFERENCES =====
+    // BONE REFERENCES
 
     /// <summary>
     /// Direct references to bone slots in order matching mesh bone indices.
@@ -34,7 +34,7 @@ public class SkinnedMeshRenderer : ImplementableComponent
     /// </summary>
     public readonly SyncRef<SkeletonBuilder> Skeleton = null!;
 
-    // ===== MESH DATA =====
+    // MESH DATA
 
     /// <summary>
     /// Mesh vertex positions (XYZ coordinates).
@@ -67,7 +67,7 @@ public class SkinnedMeshRenderer : ImplementableComponent
     /// </summary>
     public SyncFieldList<float4> BoneWeights { get; private set; } = null!;
 
-    // ===== SETTINGS =====
+    // SETTINGS
 
     /// <summary>
     /// Shadow casting mode.
@@ -89,7 +89,7 @@ public class SkinnedMeshRenderer : ImplementableComponent
     /// </summary>
     public readonly Sync<SkinQuality> Quality = new();
 
-    // ===== CHANGE FLAGS =====
+    // CHANGE FLAGS
 
     /// <summary>
     /// Flag indicating mesh data has changed and needs rebuild.
@@ -172,7 +172,7 @@ public class SkinnedMeshRenderer : ImplementableComponent
         LumoraLogger.Log($"SkinnedMeshRenderer: Destroyed on slot '{Slot?.SlotName.Value}'");
     }
 
-    // ===== BONE SETUP =====
+    // BONE SETUP
 
     /// <summary>
     /// Setup bones by finding them in the hierarchy by name.
@@ -295,7 +295,7 @@ public class SkinnedMeshRenderer : ImplementableComponent
         return GetBone(index);
     }
 
-    // ===== MESH DATA METHODS =====
+    // MESH DATA METHODS
 
     /// <summary>
     /// Set the mesh data from arrays.

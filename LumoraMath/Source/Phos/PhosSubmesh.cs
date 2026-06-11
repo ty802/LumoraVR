@@ -20,7 +20,7 @@ public abstract class PhosSubmesh
 
     private int _currentID = 0;
 
-    // ===== Abstract Properties =====
+    // Abstract Properties
 
     /// <summary>Topology of this submesh (triangles, quads, lines, points)</summary>
     public abstract PhosTopology Topology { get; }
@@ -28,7 +28,7 @@ public abstract class PhosSubmesh
     /// <summary>Number of indices per primitive (3 for triangles, 4 for quads, etc.)</summary>
     public abstract int IndicesPerElement { get; }
 
-    // ===== Properties =====
+    // Properties
 
     /// <summary>Index of this submesh in the parent mesh</summary>
     public int Index => Mesh.IndexOfSubmesh(this);
@@ -55,14 +55,14 @@ public abstract class PhosSubmesh
     /// <summary>Version number for primitive tracking</summary>
     internal int PrimitivesVersion { get; private set; } = -1;
 
-    // ===== Constructor =====
+    // Constructor
 
     protected PhosSubmesh(PhosMesh mesh)
     {
         Mesh = mesh;
     }
 
-    // ===== Count Management =====
+    // Count Management
 
     /// <summary>
     /// Set count and generate sequential indices.
@@ -186,7 +186,7 @@ public abstract class PhosSubmesh
         Count -= count;
     }
 
-    // ===== Helper Methods =====
+    // Helper Methods
 
     private void EnsureCapacity(int capacity)
     {

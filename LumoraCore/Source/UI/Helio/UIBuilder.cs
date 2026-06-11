@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -330,7 +330,7 @@ public class UIBuilder
         content.OffsetMax.Value = new float2(-size, 0f);
     }
 
-    // ===== layout containers =====
+    // layout containers
 
     public HorizontalLayout HorizontalLayout(float spacing = 0f, float padding = 0f)
     {
@@ -363,7 +363,7 @@ public class UIBuilder
         return layout;
     }
 
-    // ===== leaf elements =====
+    // leaf elements
 
     public Image Image(IAssetProvider<TextureAsset>? texture = null, color? tint = null)
     {

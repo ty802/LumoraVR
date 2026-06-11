@@ -55,14 +55,14 @@ public partial class WorldBrowser : Control
 
 	private static readonly CategoryInfo[] DefaultCategories = new[]
 	{
-		new CategoryInfo { Id = "featured", Name = "Featured", Icon = "ÃƒÆ’Ã‚Â¢Ãƒâ€šÃ‚Â­Ãƒâ€šÃ‚Â" },
-		new CategoryInfo { Id = "active", Name = "Active Sessions", Icon = "ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸Ãƒâ€¦Ã‚Â¸Ãƒâ€šÃ‚Â¢" },
-		new CategoryInfo { Id = "social", Name = "Social", Icon = "ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢Ãƒâ€šÃ‚Â¬" },
-		new CategoryInfo { Id = "games", Name = "Games", Icon = "ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸Ãƒâ€¦Ã‚Â½Ãƒâ€šÃ‚Â®" },
-		new CategoryInfo { Id = "art", Name = "Art", Icon = "ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸Ãƒâ€¦Ã‚Â½Ãƒâ€šÃ‚Â¨" },
-		new CategoryInfo { Id = "education", Name = "Educational", Icon = "ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒâ€¦Ã‚Â¡" },
-		new CategoryInfo { Id = "my_worlds", Name = "My Worlds", Icon = "ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒâ€šÃ‚Â" },
-		new CategoryInfo { Id = "recent", Name = "Recent", Icon = "ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚Â" },
+		new CategoryInfo { Id = "featured", Name = "Featured" },
+		new CategoryInfo { Id = "active", Name = "Active Sessions" },
+		new CategoryInfo { Id = "social", Name = "Social" },
+		new CategoryInfo { Id = "games", Name = "Games" },
+		new CategoryInfo { Id = "art", Name = "Art" },
+		new CategoryInfo { Id = "education", Name = "Educational" },
+		new CategoryInfo { Id = "my_worlds", Name = "My Worlds" },
+		new CategoryInfo { Id = "recent", Name = "Recent" },
 	};
 
 	private const string WorldCardScenePath = "res://Scenes/UI/Components/WorldCard.tscn";
@@ -777,7 +777,7 @@ public partial class WorldBrowser : Control
 		foreach (var category in DefaultCategories)
 		{
 			var button = _categoryButtonScene.Instantiate<Button>();
-			button.Text = $"  {category.Icon}  {category.Name}";
+			button.Text = category.Name;
 			_categoriesList.AddChild(button);
 
 			var capturedId = category.Id;
@@ -958,4 +958,3 @@ public partial class WorldBrowser : Control
 		RefreshWorldList();
 	}
 }
-

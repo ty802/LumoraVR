@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core;
@@ -14,11 +14,11 @@ namespace Lumora.Core.Components;
 [ComponentCategory("Physics/Colliders")]
 public class BoxCollider : Collider
 {
-    // ===== SYNC FIELDS =====
+    // SYNC FIELDS
 
     public readonly Sync<float3> Size;
 
-    // ===== INITIALIZATION =====
+    // INITIALIZATION
 
     public BoxCollider()
     {
@@ -32,7 +32,7 @@ public class BoxCollider : Collider
         LumoraLogger.Log($"BoxCollider: Initialized with Size={Size.Value}");
     }
 
-    // ===== ABSTRACT METHOD IMPLEMENTATIONS =====
+    // ABSTRACT METHOD IMPLEMENTATIONS
 
     public override object CreateGodotShape()
     {

@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -46,7 +46,7 @@ namespace Lumora.Core.Logging
         public static event Action<string> OnPrettyLogMessageWritten = null!;
         public static event Action<LogLevel, string, string> OnLogWritten = null!;
 
-        // Flip to true when actively diagnosing â€” Debug calls are firehose and choke
+        // Flip to true when actively diagnosing - Debug calls are firehose and choke
         // the console/file otherwise. - xlinka
         public static bool EnableDebug { get; set; } = false;
 

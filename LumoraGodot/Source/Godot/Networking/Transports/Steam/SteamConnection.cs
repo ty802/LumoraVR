@@ -15,7 +15,7 @@ namespace Lumora.Godot.Networking.Transports.Steam;
 /// <summary>
 /// One peer connection over SteamNetworkingSockets. Maintains two channels
 /// (foreground + background) so high-priority frames don't queue behind bulk
-/// asset transfers ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â same shape as the LNL transport's reliable/sequenced
+/// asset transfers - same shape as the LNL transport's reliable/sequenced
 /// channel split. Handles >512KB reliable payloads via length-prefix +
 /// fragment reassembly; small frames go straight through. - xlinka
 /// </summary>
@@ -203,7 +203,7 @@ public sealed class SteamConnection : IConnection
     {
         if (!IsOpen) return;
         // nLanes=0 so we skip per-lane status; we only care about overall ping
-        // / send rate / pending bytes. pLanes still has to be a valid ref ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
+        // / send rate / pending bytes. pLanes still has to be a valid ref  - 
         // pass a stack-local sentinel. - xlinka
         SteamNetConnectionRealTimeLaneStatus_t lanes = default;
         SteamNetworkingSockets.GetConnectionRealTimeStatus(_connections[0], ref _lastMainStatus, 0, ref lanes);

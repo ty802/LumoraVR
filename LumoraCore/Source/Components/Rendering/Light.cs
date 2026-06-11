@@ -77,7 +77,7 @@ public class Light : ImplementableComponent
     {
         base.OnInit();
 
-        // LightType.Point is value 0 — C# default, but set for clarity
+        // LightType.Point is value 0 - C# default, but set for clarity
         // Type.Value = LightType.Point; // skip, it's enum 0
         LightColor.Value       = new color(1f, 1f, 1f, 1f);
         Intensity.Value        = 1f;

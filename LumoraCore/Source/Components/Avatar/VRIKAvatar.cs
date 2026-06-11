@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.Collections.Generic;
@@ -36,7 +36,6 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
     public readonly SyncRef<SkeletonBuilder> Skeleton = null!;
     public readonly SyncRef<BipedRig> Rig = null!;
     public readonly SyncRef<UserRoot> UserRoot = null!;
-    public readonly SyncRef<AvatarDescriptor> Descriptor = null!;
 
     public readonly Sync<float> HeightCompensation = null!;
     public readonly Sync<float> AvatarHeight = null!;
@@ -141,9 +140,6 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
         if (Rig.Target == null)
             Rig.Target = Slot.GetComponent<BipedRig>() ?? Slot.GetComponentInChildren<BipedRig>();
 
-        if (Descriptor.Target == null)
-            Descriptor.Target = Slot.GetComponent<AvatarDescriptor>();
-
         if (UserRoot.Target == null)
         {
             var userRoot = Slot.GetComponent<UserRoot>();
@@ -208,7 +204,6 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
         if (!IKEnabled.Value || !_isInitialized)
             return;
 
-        ApplyReferenceOffsets();
         SolveBody();
     }
 
@@ -229,22 +224,36 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
         }
 
         _solver.Solve(
-            ProxyTarget(_headProxy.Target),
-            ProxyTarget(_leftHandProxy.Target),
-            ProxyTarget(_rightHandProxy.Target),
-            ProxyTarget(_leftFootProxy.Target),
-            ProxyTarget(_rightFootProxy.Target));
+            ProxyTarget(_headProxy.Target, _viewOffset),
+            ProxyTarget(_leftHandProxy.Target, _leftHandOffset),
+            ProxyTarget(_rightHandProxy.Target, _rightHandOffset),
+            ProxyTarget(_leftFootProxy.Target, _leftFootOffset),
+            ProxyTarget(_rightFootProxy.Target, _rightFootOffset));
     }
 
-    private static FullBodyIKSolver.Target ProxyTarget(Slot proxy)
+    // Calibration offsets are folded into the TARGET, never written back to
+    // the proxy: the proxies are driven by pose nodes every frame, and a
+    // second writer would both fight the drives and generate sync churn.
+    private static FullBodyIKSolver.Target ProxyTarget(Slot proxy, in ReferenceOffset offset)
     {
         if (proxy == null || proxy.IsDestroyed)
             return default;
+
+        var position = proxy.GlobalPosition;
+        var rotation = proxy.GlobalRotation;
+
+        if (offset.Valid)
+        {
+            var adjustedRotation = rotation * offset.LocalRotation.Inverse;
+            position -= adjustedRotation * offset.LocalPosition;
+            rotation = adjustedRotation;
+        }
+
         return new FullBodyIKSolver.Target
         {
             Valid = true,
-            Position = proxy.GlobalPosition,
-            Rotation = proxy.GlobalRotation,
+            Position = position,
+            Rotation = rotation,
         };
     }
 
@@ -266,29 +275,19 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
     }
 
     /// <summary>
-    /// Full avatar setup using a finalized avatar descriptor.
+    /// Full avatar setup discovering skeleton and rig from the avatar tree.
+    /// An avatar is self-describing: its components ARE the metadata.
     /// </summary>
-    public bool SetupFromDescriptor(AvatarDescriptor descriptor, UserRoot userRoot)
+    public bool SetupFromAvatar(UserRoot userRoot)
     {
-        if (descriptor == null)
-        {
-            LumoraLogger.Warn("VRIKAvatar: Cannot setup from a null descriptor");
-            return false;
-        }
-
-        Descriptor.Target = descriptor;
-        descriptor.ResolveAvatarData(Slot);
-
-        var skeleton = descriptor.Skeleton.Target ?? Slot.GetComponentInChildren<SkeletonBuilder>();
-        var rig = descriptor.Rig.Target ?? Slot.GetComponentInChildren<BipedRig>();
+        var skeleton = Skeleton.Target ?? Slot.GetComponent<SkeletonBuilder>() ?? Slot.GetComponentInChildren<SkeletonBuilder>();
+        var rig = Rig.Target ?? Slot.GetComponent<BipedRig>() ?? Slot.GetComponentInChildren<BipedRig>();
         if (skeleton == null || rig == null)
         {
-            LumoraLogger.Warn("VRIKAvatar: Descriptor is missing skeleton or rig references");
+            LumoraLogger.Warn("VRIKAvatar: Avatar tree has no skeleton or rig");
             return false;
         }
 
-        descriptor.Skeleton.Target = skeleton;
-        descriptor.Rig.Target = rig;
         Setup(skeleton, rig, userRoot);
         SetupTracking(userRoot);
         return true;
@@ -378,6 +377,9 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
         LumoraLogger.Log($"VRIKAvatar: Equipped {poseNode.Node.Value} pose node -> '{bodySlot.SlotName.Value}'");
     }
 
+    // Calibration is read straight from AvatarReferencePoint components in
+    // the avatar tree (placed by the creator flow) - the data IS the
+    // components, no metadata sidecar.
     private void RecomputeReferenceOffsets()
     {
         _viewOffset = default;
@@ -386,16 +388,28 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
         _leftFootOffset = default;
         _rightFootOffset = default;
 
-        var descriptor = Descriptor.Target;
         var rig = Rig.Target;
-        if (descriptor == null || rig == null)
+        if (rig == null)
             return;
 
-        TryComputeReferenceOffset(rig.TryGetBone(BodyNode.Head), descriptor.ViewReference.Target, ref _viewOffset);
-        TryComputeReferenceOffset(rig.TryGetBone(BodyNode.LeftHand), descriptor.LeftHandReference.Target, ref _leftHandOffset);
-        TryComputeReferenceOffset(rig.TryGetBone(BodyNode.RightHand), descriptor.RightHandReference.Target, ref _rightHandOffset);
-        TryComputeReferenceOffset(rig.TryGetBone(BodyNode.LeftFoot), descriptor.LeftFootReference.Target, ref _leftFootOffset);
-        TryComputeReferenceOffset(rig.TryGetBone(BodyNode.RightFoot), descriptor.RightFootReference.Target, ref _rightFootOffset);
+        Slot? view = null, leftHand = null, rightHand = null, leftFoot = null, rightFoot = null;
+        foreach (var point in Slot.GetComponentsInChildren<AvatarReferencePoint>())
+        {
+            switch (point.Kind.Value)
+            {
+                case AvatarReferenceKind.View: view ??= point.Slot; break;
+                case AvatarReferenceKind.LeftHandGrip: leftHand ??= point.Slot; break;
+                case AvatarReferenceKind.RightHandGrip: rightHand ??= point.Slot; break;
+                case AvatarReferenceKind.LeftFoot: leftFoot ??= point.Slot; break;
+                case AvatarReferenceKind.RightFoot: rightFoot ??= point.Slot; break;
+            }
+        }
+
+        TryComputeReferenceOffset(rig.TryGetBone(BodyNode.Head), view!, ref _viewOffset);
+        TryComputeReferenceOffset(rig.TryGetBone(BodyNode.LeftHand), leftHand!, ref _leftHandOffset);
+        TryComputeReferenceOffset(rig.TryGetBone(BodyNode.RightHand), rightHand!, ref _rightHandOffset);
+        TryComputeReferenceOffset(rig.TryGetBone(BodyNode.LeftFoot), leftFoot!, ref _leftFootOffset);
+        TryComputeReferenceOffset(rig.TryGetBone(BodyNode.RightFoot), rightFoot!, ref _rightFootOffset);
     }
 
     private static void TryComputeReferenceOffset(Slot bone, Slot reference, ref ReferenceOffset offset)
@@ -408,29 +422,6 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
         offset.LocalPosition = boneRotation.Inverse * (reference.GlobalPosition - bone.GlobalPosition);
         offset.LocalRotation = boneRotation.Inverse * reference.GlobalRotation;
         offset.Valid = true;
-    }
-
-    private void ApplyReferenceOffsets()
-    {
-        ApplyReferenceOffset(_headProxy.Target, _viewOffset);
-        ApplyReferenceOffset(_leftHandProxy.Target, _leftHandOffset);
-        ApplyReferenceOffset(_rightHandProxy.Target, _rightHandOffset);
-        ApplyReferenceOffset(_leftFootProxy.Target, _leftFootOffset);
-        ApplyReferenceOffset(_rightFootProxy.Target, _rightFootOffset);
-    }
-
-    private static void ApplyReferenceOffset(Slot proxy, in ReferenceOffset offset)
-    {
-        if (proxy == null || proxy.IsDestroyed || !offset.Valid)
-            return;
-
-        var referencePosition = proxy.GlobalPosition;
-        var referenceRotation = proxy.GlobalRotation;
-        var desiredRotation = referenceRotation * offset.LocalRotation.Inverse;
-        var desiredPosition = referencePosition - (desiredRotation * offset.LocalPosition);
-
-        proxy.GlobalRotation = desiredRotation;
-        proxy.GlobalPosition = desiredPosition;
     }
 
     private void UpdateProceduralFeet()
@@ -449,29 +440,37 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
         floatQ bodyRot = floatQ.LookRotation(forward, float3.Up);
         float3 right = bodyRot * float3.Right;
 
-        const float heightOffset = -1.6f;
         const float footSeparation = 0.15f;
+
+        // Feet anchor to the user-root ground plane, not a fixed offset below
+        // the head - crouching or head bob must not lift the feet off the
+        // floor with you.
+        float groundY = UserRoot.Target?.Slot != null
+            ? UserRoot.Target.Slot.GlobalPosition.y
+            : headPos.y - 1.6f;
 
         SetProceduralFoot(
             _leftFootProxy.Target,
             _leftFootNode.Target,
-            headPos + new float3(0f, heightOffset, 0f) - right * footSeparation);
+            new float3(headPos.x, groundY, headPos.z) - right * footSeparation);
 
         SetProceduralFoot(
             _rightFootProxy.Target,
             _rightFootNode.Target,
-            headPos + new float3(0f, heightOffset, 0f) + right * footSeparation);
+            new float3(headPos.x, groundY, headPos.z) + right * footSeparation);
     }
 
+    // Local write: every peer computes the same feet from the replicated
+    // head/root, broadcasting them would just be churn.
     private static void SetProceduralFoot(Slot proxy, AvatarPoseNode node, float3 worldPos)
     {
         if (proxy == null || (node?.IsEquippedAndActive ?? false))
             return;
 
         var parent = proxy.Parent;
-        proxy.LocalPosition.Value = parent != null
-            ? parent.GlobalPointToLocal(worldPos)
-            : worldPos;
+        var local = parent != null ? parent.GlobalPointToLocal(worldPos) : worldPos;
+        if ((proxy.LocalPosition.Value - local).LengthSquared > 1e-10f)
+            proxy.LocalPosition.SetValueSilently(local, change: true);
     }
 
     public void LogDiagnosticInfo()

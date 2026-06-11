@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -237,7 +237,7 @@ public abstract class AsyncProceduralProvider<A> : DynamicAssetProvider<A> where
         _hasError = false;
     }
 
-    // ===== Abstract Methods =====
+    // Abstract Methods
 
     /// <summary>
     /// Capture state from sync fields before the async update begins.
@@ -268,7 +268,7 @@ public abstract class AsyncProceduralProvider<A> : DynamicAssetProvider<A> where
     /// </summary>
     protected abstract void OnGenerationFailed(string error);
 
-    // ===== Virtual Methods =====
+    // Virtual Methods
 
     /// <summary>
     /// Called after asset integration is complete.

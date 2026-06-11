@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -16,7 +16,7 @@ namespace Lumora.Core.Components;
 [ComponentCategory("Physics/Colliders")]
 public abstract class Collider : ImplementableComponent
 {
-    // ===== SYNC FIELDS =====
+    // SYNC FIELDS
 
     public readonly Sync<float3> Offset;
     public readonly Sync<ColliderType> Type;
@@ -24,7 +24,7 @@ public abstract class Collider : ImplementableComponent
     public readonly Sync<bool> CharacterCollider;
     public readonly Sync<bool> IgnoreRaycasts;
 
-    // ===== STATE =====
+    // STATE
 
     protected IColliderOwner _owner = null!;
     protected bool _shapeChanged = true;
@@ -49,7 +49,7 @@ public abstract class Collider : ImplementableComponent
         }
     }
 
-    // ===== INITIALIZATION =====
+    // INITIALIZATION
 
     public Collider()
     {
@@ -98,7 +98,7 @@ public abstract class Collider : ImplementableComponent
         RunApplyChanges();
     }
 
-    // ===== UPDATE =====
+    // UPDATE
 
     public override void OnUpdate(float delta)
     {
@@ -138,7 +138,7 @@ public abstract class Collider : ImplementableComponent
 
     }
 
-    // ===== ABSTRACT METHODS =====
+    // ABSTRACT METHODS
 
     /// <summary>
     /// Create the Godot collision shape for this collider (returns Shape3D).
@@ -151,7 +151,7 @@ public abstract class Collider : ImplementableComponent
     /// </summary>
     public abstract object GetLocalBounds();
 
-    // ===== CLEANUP =====
+    // CLEANUP
 
     public override void OnDestroy()
     {

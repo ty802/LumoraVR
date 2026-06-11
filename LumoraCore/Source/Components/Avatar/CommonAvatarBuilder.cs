@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -39,6 +39,12 @@ public class CommonAvatarBuilder : Component, IAvatarBuilder, IEmptyAvatarSlotHa
     public readonly Sync<colorHDR> DefaultTint = new();
     public readonly Sync<bool> HideHeadFromLocalUser = new();
 
+    // Grip offset from the tracked controller pose to the hand body node.
+    // Hands are a separate body node from controllers so avatar hand meshes
+    // equip with a correct wrist pose instead of raw controller pose.
+    public readonly Sync<float3> HandGripPositionOffset = new();
+    public readonly Sync<floatQ> HandGripRotationOffset = new();
+
     // Fired after a user's avatar setup completes. (user, avatarSlot)
     public event Action<User, Slot> OnAvatarSetupFinish = null!;
 
@@ -53,9 +59,11 @@ public class CommonAvatarBuilder : Component, IAvatarBuilder, IEmptyAvatarSlotHa
         FillEmptySlots.Value = true;
         DefaultTint.Value = new colorHDR(0.8f, 0.8f, 0.8f, 1f);
         HideHeadFromLocalUser.Value = true;
+        HandGripPositionOffset.Value = float3.Zero;
+        HandGripRotationOffset.Value = floatQ.Identity;
     }
 
-    // ===== IAvatarBuilder =====
+    // IAvatarBuilder
 
     public void BuildAvatar(UserRoot userRoot)
     {
@@ -69,9 +77,9 @@ public class CommonAvatarBuilder : Component, IAvatarBuilder, IEmptyAvatarSlotHa
         var userSlot = userRoot.Slot;
 
         var bodyNodes = userSlot.AddSlot("Body Nodes");
-        BuildHeadNode(bodyNodes, user);
-        BuildHandNode(bodyNodes, user, Chirality.Left);
-        BuildHandNode(bodyNodes, user, Chirality.Right);
+        var headSlot = BuildHeadNode(bodyNodes, user);
+        BuildControllerNode(bodyNodes, user, Chirality.Left);
+        BuildControllerNode(bodyNodes, user, Chirality.Right);
 
         if (SetupCollider.Value)
         {
@@ -80,7 +88,10 @@ public class CommonAvatarBuilder : Component, IAvatarBuilder, IEmptyAvatarSlotHa
             collider.Height.Value = 1.8f;
             collider.Radius.Value = 0.3f;
             collider.Offset.Value = new float3(0, 0.9f, 0);
-            userSlot.AttachComponent<CharacterController>();
+            var characterController = userSlot.AttachComponent<CharacterController>();
+            // Body follows the head's ground projection so the collider stays
+            // under the player in room-scale, not at the root origin.
+            characterController.HeadReference.Target = headSlot;
         }
 
         if (SetupLocomotion.Value)
@@ -89,20 +100,21 @@ public class CommonAvatarBuilder : Component, IAvatarBuilder, IEmptyAvatarSlotHa
         if (SetupHeadOutput.Value)
             userSlot.AttachComponent<HeadOutput>();
 
-        if (SetupNameplate.Value && user != null)
-        {
-            var nameplateSlot = userRoot.HeadSlot?.AddSlot("Nameplate");
-            if (nameplateSlot != null)
-            {
-                nameplateSlot.LocalPosition.Value = float3.Zero;
-                nameplateSlot.LocalRotation.Value = floatQ.Identity;
-                nameplateSlot.AttachComponent<Nameplate>().Initialize(user);
-            }
-        }
+        // Per-user radial context menu + the avatar equip/dequip actions it
+        // offers when pointing at an avatar.
+        var menuSlot = userSlot.AddSlot("Context Menu");
+        menuSlot.AttachComponent<UI.ContextMenuSystem>();
+        menuSlot.AttachComponent<AvatarContextActions>();
+        menuSlot.AttachComponent<UI.DashboardContextAction>();
 
         var avatarSlot = userSlot.AddSlot("Avatar");
         var avatarManager = avatarSlot.AttachComponent<AvatarManager>();
         avatarManager.UserRoot.Target = userRoot;
+        // Name badge is composed by AvatarManager (mesh text + assigner)  - 
+        // the manager just needs the display data and the toggle.
+        avatarManager.AutoAddNameBadge.Value = SetupNameplate.Value;
+        if (user != null)
+            avatarManager.NameTagText.Value = user.UserName.Value ?? string.Empty;
         if (FillEmptySlots.Value)
         {
             avatarManager.EmptySlotHandler.Target = this;
@@ -113,7 +125,7 @@ public class CommonAvatarBuilder : Component, IAvatarBuilder, IEmptyAvatarSlotHa
         LumoraLogger.Log($"CommonAvatarBuilder: Built avatar for '{user?.UserName?.Value ?? "(null)"}'");
     }
 
-    private void BuildHeadNode(Slot bodyNodes, User user)
+    private Slot BuildHeadNode(Slot bodyNodes, User user)
     {
         var headSlot = bodyNodes.AddSlot("Head");
         headSlot.LocalPosition.Value = new float3(0f, DefaultHeight, 0f);
@@ -128,35 +140,48 @@ public class CommonAvatarBuilder : Component, IAvatarBuilder, IEmptyAvatarSlotHa
             stream.PositionStream.Target = posStream;
             stream.RotationStream.Target = rotStream;
         }
+
+        return headSlot;
     }
 
-    private void BuildHandNode(Slot bodyNodes, User user, Chirality side)
+    // Controllers and hands are distinct body nodes. The controller slot is
+    // device-tracked (positioner + streams) and carries the interaction tool.
+    // The hand slot rides under it with a grip offset and owns its own
+    // AvatarObjectSlot, so avatar hand meshes equip a wrist pose - and a
+    // full-hand piece can declare the controller node mutually exclusive to
+    // suppress controller visuals. - xlinka
+    private void BuildControllerNode(Slot bodyNodes, User user, Chirality side)
     {
         bool isLeft = side == Chirality.Left;
-        var name = isLeft ? "LeftHand" : "RightHand";
-        var hand = bodyNodes.AddSlot(name);
-        hand.LocalPosition.Value = new float3(isLeft ? -0.25f : 0.25f, 1.0f, 0f);
-        hand.LocalRotation.Value = isLeft
+        var controllerNode = isLeft ? BodyNode.LeftController : BodyNode.RightController;
+        var handNode = isLeft ? BodyNode.LeftHand : BodyNode.RightHand;
+
+        var controller = bodyNodes.AddSlot(isLeft ? "LeftController" : "RightController");
+        controller.LocalPosition.Value = new float3(isLeft ? -0.25f : 0.25f, 1.0f, 0f);
+        controller.LocalRotation.Value = isLeft
             ? floatQ.Euler(MathF.PI / 2f, -MathF.PI / 2f, 0f)
             : floatQ.Euler(-MathF.PI / 2f, -MathF.PI / 2f, 0f);
 
-        var sourceNode = isLeft ? BodyNode.LeftController : BodyNode.RightController;
-        var positioner = hand.AttachComponent<TrackedDevicePositioner>();
-        positioner.AutoBodyNode.Value = sourceNode;
+        var positioner = controller.AttachComponent<TrackedDevicePositioner>();
+        positioner.AutoBodyNode.Value = controllerNode;
 
         if (user != null)
         {
-            var stream = hand.AttachComponent<TransformStreamDriver>();
-            user.GetTrackingStreams(sourceNode, out var posStream, out var rotStream);
+            var stream = controller.AttachComponent<TransformStreamDriver>();
+            user.GetTrackingStreams(controllerNode, out var posStream, out var rotStream);
             stream.PositionStream.Target = posStream;
             stream.RotationStream.Target = rotStream;
         }
 
-        hand.AttachComponent<ControllerHandVisual>().HandSide.Value = side;
+        var hand = controller.AddSlot(isLeft ? "LeftHand" : "RightHand");
+        hand.LocalPosition.Value = HandGripPositionOffset.Value;
+        hand.LocalRotation.Value = HandGripRotationOffset.Value;
+        var handObjectSlot = hand.AttachComponent<AvatarObjectSlot>();
+        handObjectSlot.Node.Value = handNode;
 
         if (SetupHandTools.Value)
         {
-            var toolSlot = hand.AddSlot("HandTool");
+            var toolSlot = controller.AddSlot("HandTool");
             var tool = toolSlot.AttachComponent<HandTool>();
             tool.Side.Value = side;
             if (!isLeft)
@@ -164,22 +189,53 @@ public class CommonAvatarBuilder : Component, IAvatarBuilder, IEmptyAvatarSlotHa
         }
     }
 
-    // ===== IEmptyAvatarSlotHandler =====
+    // IEmptyAvatarSlotHandler
 
+    // Default pieces are EQUIPPED avatar objects (not permanent fixtures) so
+    // equipping a real avatar dequips them and AvatarDestroyOnDequip removes
+    // the visuals automatically. - xlinka
     public Task FillEmptySlot(BodyNode node, AvatarManager manager, CancellationToken cancellationToken)
     {
         if (cancellationToken.IsCancellationRequested || manager == null || manager.IsDestroyed)
             return Task.CompletedTask;
 
-        // Only the head gets a default visual. Hands already carry a
-        // ControllerHandVisual finger skeleton from BuildHandNode. - xlinka
-        if (node != BodyNode.Head)
-            return Task.CompletedTask;
+        Slot piece;
+        switch (node)
+        {
+            case BodyNode.Head:
+                piece = BuildDefaultHead(manager);
+                break;
+            case BodyNode.LeftHand:
+            case BodyNode.RightHand:
+                piece = BuildDefaultHand(manager, node);
+                break;
+            default:
+                return Task.CompletedTask;
+        }
 
-        var piece = manager.Slot.AddSlot("BasicHead");
+        if (cancellationToken.IsCancellationRequested)
+        {
+            piece.Destroy();
+            return Task.CompletedTask;
+        }
+
+        if (!manager.Equip(piece, isManualEquip: false, forceDestroyOld: false, isFillingEmptySlot: true))
+        {
+            LumoraLogger.Warn($"CommonAvatarBuilder: default {node} fill equip failed");
+            piece.Destroy();
+        }
+        return Task.CompletedTask;
+    }
+
+    // Pieces are built OUTSIDE the user root: CanEquip rejects objects that
+    // already sit under a user, and Equip reparents the piece in afterwards.
+    private Slot BuildDefaultHead(AvatarManager manager)
+    {
+        var piece = manager.World.RootSlot.AddSlot("BasicHead");
         piece.Persistent.Value = false;
 
         piece.AttachComponent<AvatarPoseNode>().Node.Value = BodyNode.Head;
+        piece.AttachComponent<AvatarDestroyOnDequip>();
 
         var visual = piece.AddSlot("Visual");
         var mesh = visual.AttachComponent<SphereMesh>();
@@ -202,17 +258,20 @@ public class CommonAvatarBuilder : Component, IAvatarBuilder, IEmptyAvatarSlotHa
             localView.ScaleOverride.Value = float3.Zero;
         }
 
-        if (cancellationToken.IsCancellationRequested)
-        {
-            piece.Destroy();
-            return Task.CompletedTask;
-        }
+        return piece;
+    }
 
-        if (!manager.Equip(piece, isManualEquip: false, forceDestroyOld: false, isFillingEmptySlot: true))
-        {
-            LumoraLogger.Warn("CommonAvatarBuilder: head fill equip failed");
-            piece.Destroy();
-        }
-        return Task.CompletedTask;
+    private static Slot BuildDefaultHand(AvatarManager manager, BodyNode node)
+    {
+        bool isLeft = node == BodyNode.LeftHand;
+        var piece = manager.World.RootSlot.AddSlot(isLeft ? "BasicLeftHand" : "BasicRightHand");
+        piece.Persistent.Value = false;
+
+        piece.AttachComponent<AvatarPoseNode>().Node.Value = node;
+        piece.AttachComponent<AvatarDestroyOnDequip>();
+        piece.AttachComponent<ControllerHandVisual>().HandSide.Value =
+            isLeft ? Chirality.Left : Chirality.Right;
+
+        return piece;
     }
 }

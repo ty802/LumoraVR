@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -317,6 +317,22 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
         {
             InvalidateSyncElement();
         }
+
+        ValueChanged();
+    }
+
+    /// <summary>
+    /// Set a driven value without generating sync data. For drives whose
+    /// source state replicates on its own and whose computation runs on every
+    /// peer (avatar pose driving) - broadcasting the result would duplicate
+    /// the source traffic and fight the remote peer's own computation.
+    /// </summary>
+    internal void SetDrivenValueLocal(T value)
+    {
+        if (SyncCoder.Equals(_value, value)) return;
+
+        _value = value;
+        WasChanged = true;
 
         ValueChanged();
     }

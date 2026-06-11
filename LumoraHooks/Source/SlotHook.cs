@@ -10,7 +10,7 @@ using Lumora.Core.Logging;
 namespace Lumora.Godot.Hooks;
 
 /// <summary>
-/// Hook for Slot ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Godot Node3D.
+/// Hook for Slot -> Godot Node3D.
 /// Platform slot hook for Godot.
 ///
 /// Uses lazy creation pattern:

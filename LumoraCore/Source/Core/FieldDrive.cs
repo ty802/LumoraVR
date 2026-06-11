@@ -13,6 +13,15 @@ public class FieldDrive<T> : FieldHook<T>
 
     public override bool IsModificationAllowed => true;
 
+    /// <summary>
+    /// When true, driven writes update the field locally without generating
+    /// sync data. Use when the drive's inputs already replicate and the drive
+    /// runs on every peer - each peer computes the same value itself, so
+    /// broadcasting the result would double the traffic and fight the remote
+    /// computation. Leave false for drives that exist on a single peer.
+    /// </summary>
+    public bool LocalValueOnly { get; set; }
+
     public IField<T>? Field => Target as IField<T>;
 
     public T Value
@@ -83,7 +92,14 @@ public class FieldDrive<T> : FieldHook<T>
 
         if (Target is SyncField<T> syncTarget)
         {
-            syncTarget.SetDrivenValue(value);
+            if (LocalValueOnly)
+            {
+                syncTarget.SetDrivenValueLocal(value);
+            }
+            else
+            {
+                syncTarget.SetDrivenValue(value);
+            }
         }
     }
 }

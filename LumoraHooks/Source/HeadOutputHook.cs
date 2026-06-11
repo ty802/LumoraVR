@@ -9,7 +9,7 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 namespace Lumora.Godot.Hooks;
 
 /// <summary>
-/// Hook for HeadOutput component Ã¢â€ â€™ Godot Camera3D.
+/// Hook for HeadOutput component -> Godot Camera3D.
 /// Manages camera attachment to user's head slot and follows head position/rotation.
 /// </summary>
 [ImplementableHook(typeof(HeadOutput))]

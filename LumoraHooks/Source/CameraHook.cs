@@ -8,7 +8,7 @@ using Lumora.Core.Math;
 
 namespace Lumora.Godot.Hooks;
 
-// Camera component → Godot Camera3D. Clear mode and viewport rect are
+// Camera component -> Godot Camera3D. Clear mode and viewport rect are
 // recognized but pass through Godot's defaults today; expand the helpers
 // below once the corresponding camera features land. - xlinka
 [ImplementableHook(typeof(Camera))]

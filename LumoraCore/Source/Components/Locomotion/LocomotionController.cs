@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -17,14 +17,14 @@ namespace Lumora.Core.Components;
 [ComponentCategory("Users")]
 public class LocomotionController : Component
 {
-    // ===== PARAMETERS =====
+    // PARAMETERS
 
     // DirectDelta is now normalized (1.0 = full screen height swipe).
     // Sensitivity of Pi means a full screen-height swipe = 180 degrees.
     public float MouseSensitivity { get; set; } = MathF.PI;
     public float MaxPitch { get; set; } = 89.0f;
 
-    // ===== STATE =====
+    // STATE
 
     private CharacterController _characterController = null!;
     private UserRoot _userRoot = null!;
@@ -74,7 +74,7 @@ public class LocomotionController : Component
         _modules.Sort((a, b) => b.Priority.CompareTo(a.Priority));
     }
 
-    // ===== INITIALIZATION =====
+    // INITIALIZATION
 
     public override void OnAwake()
     {
@@ -90,7 +90,7 @@ public class LocomotionController : Component
         _inputState?.SetMouseCaptureRequested(true);
     }
 
-    // ===== UPDATE =====
+    // UPDATE
 
     public override void OnUpdate(float delta)
     {
@@ -347,7 +347,7 @@ public class LocomotionController : Component
             _userRoot.HeadSlot.LocalRotation.Value = newHeadRot;
 
         // Drive hand aim: right hand tilts up when looking up, left stays at rest.
-        // Rest pitch = -Ï€/2 (fingers down). Add camera pitch so hand aims forward when looking level.
+        // Rest pitch = -pi/2 (fingers down). Add camera pitch so hand aims forward when looking level.
         float restPitch = -MathF.PI / 2f;
         var rightHandSlot = _userRoot.RightHandSlot;
         if (rightHandSlot != null)
@@ -402,7 +402,7 @@ public class LocomotionController : Component
             forward = new float3(0, 0, -1); // Default forward is -Z
         forward = forward.Normalized;
 
-        // Right as perpendicular on horizontal plane (Forward Ã— Up = Right in right-handed system)
+        // Right as perpendicular on horizontal plane (Forward x Up = Right in right-handed system)
         right = float3.Cross(forward, float3.Up);
         if (right.LengthSquared < 1e-4f)
             right = float3.Right;
@@ -424,7 +424,7 @@ public class LocomotionController : Component
     /// </summary>
     public CharacterController CharacterController => _characterController;
 
-    // ===== CLEANUP =====
+    // CLEANUP
 
     public override void OnDestroy()
     {

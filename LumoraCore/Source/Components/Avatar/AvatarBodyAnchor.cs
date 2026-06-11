@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.Collections.Generic;
@@ -25,7 +25,7 @@ public class AvatarBodyAnchor : Component, IAvatarObject, IAvatarObjectComponent
     // IAvatarObject state
     private AvatarObjectSlot _equippingSlot = null!;
 
-    // ===== IAvatarObject =====
+    // IAvatarObject
 
     BodyNode IAvatarObject.Node => Node.Value;
     public bool IsEquipped => _equippingSlot != null;
@@ -37,7 +37,7 @@ public class AvatarBodyAnchor : Component, IAvatarObject, IAvatarObjectComponent
     public override void OnInit()
     {
         base.OnInit();
-        // BodyNode.NONE may not be enum value 0 â€” set explicitly
+        // BodyNode.NONE may not be enum value 0 - set explicitly
         Node.Value = BodyNode.NONE;
         // DestroyOnDequip = false (C# default, skip)
     }
@@ -61,7 +61,7 @@ public class AvatarBodyAnchor : Component, IAvatarObject, IAvatarObjectComponent
         ExplicitlyAllowedUser = user;
     }
 
-    // ===== IAvatarObjectComponent =====
+    // IAvatarObjectComponent
 
     public void OnPreEquip(AvatarObjectSlot slot) { }
 

@@ -143,7 +143,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
             global::Godot.GD.Print($"GodotVRDriver: HMD device: {desc}");
     }
 
-    // ===== Platform / interaction profile introspection =====
+    // Platform / interaction profile introspection
     //
     // OpenXRInterface exposes `runtime_name` as a registered Godot property,
     // and XRPositionalTracker exposes the active OpenXR interaction profile
@@ -700,8 +700,14 @@ public class GodotVRDriver : IVRDriver, IInputDriver
 
     /// <summary>
     /// Update head tracking from HMD.
-    /// Uses XRCamera3D if available, falls back to XRServer.GetHmdTransform().
+    /// Reads the XR server directly; XRCamera3D node transform is a fallback.
     /// </summary>
+    // Scene-node transforms (XRCamera3D/XRController3D.Position) are written
+    // during those nodes' own internal process, in tree order - sampling them
+    // from the engine runner can read a frame-stale pose while the headset
+    // view is late-latched to the freshest one. The XR server pose data is
+    // updated at frame begin, before any process callbacks, so hands/head
+    // stay in lockstep with the rendered view. - xlinka
     private void UpdateHeadTracking()
     {
         if (_headTrackedObject == null)
@@ -711,20 +717,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         float3 position = new float3(0, 1.7f, 0);
         floatQ rotation = floatQ.Identity;
 
-        // Try XRCamera3D first (proper Godot 4.x pattern)
-        // Only use XR tracking if VR interface is actually active
-        if (IsVRActive && _xrCamera != null && GodotObject.IsInstanceValid(_xrCamera))
-        {
-            // Get position relative to XROrigin (playspace-relative)
-            var pos = _xrCamera.Position;
-            var quat = _xrCamera.Quaternion;
-
-            position = new float3(pos.X, pos.Y, pos.Z);
-            rotation = new floatQ(quat.X, quat.Y, quat.Z, quat.W);
-            isTracking = true;
-        }
-        // Fall back to XRServer
-        else if (IsVRActive)
+        if (IsVRActive)
         {
             Transform3D headTransform = XRServer.GetHmdTransform();
 
@@ -733,8 +726,17 @@ public class GodotVRDriver : IVRDriver, IInputDriver
                 var pos = headTransform.Origin;
                 position = new float3(pos.X, pos.Y, pos.Z);
 
-                var basis = headTransform.Basis;
-                var quat = basis.GetRotationQuaternion();
+                var quat = headTransform.Basis.GetRotationQuaternion();
+                rotation = new floatQ(quat.X, quat.Y, quat.Z, quat.W);
+                isTracking = true;
+            }
+            // Fall back to the camera node (playspace-relative, same space)
+            else if (_xrCamera != null && GodotObject.IsInstanceValid(_xrCamera))
+            {
+                var pos = _xrCamera.Position;
+                var quat = _xrCamera.Quaternion;
+
+                position = new float3(pos.X, pos.Y, pos.Z);
                 rotation = new floatQ(quat.X, quat.Y, quat.Z, quat.W);
                 isTracking = true;
             }
@@ -749,7 +751,8 @@ public class GodotVRDriver : IVRDriver, IInputDriver
 
     /// <summary>
     /// Update controller tracking.
-    /// Uses XRController3D if available, falls back to XRPositionalTracker.
+    /// Reads the XR server tracker pose directly; XRController3D node
+    /// transform is a fallback (it can be a frame stale - see UpdateHeadTracking).
     /// </summary>
     private void UpdateControllerTracking(TrackedObject controllerObj, TrackedObject handObj, Chirality side)
     {
@@ -760,46 +763,48 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         float3 position = float3.Zero;
         floatQ rotation = floatQ.Identity;
 
-        // Get the appropriate XRController3D
         var xrController = side == Chirality.Left ? _leftController : _rightController;
 
-        // Try XRController3D first (proper Godot 4.x pattern)
-        if (xrController != null && GodotObject.IsInstanceValid(xrController))
+        if (IsVRActive)
         {
-            // Get position relative to XROrigin (playspace-relative)
+            // Godot 4 standard tracker names. (The old "/user/hand/left" form is
+            // an OpenXR action path, not a Godot tracker name - it never resolved.)
+            var trackerName = new StringName(side == Chirality.Left ? "left_hand" : "right_hand");
+            if (XRServer.GetTracker(trackerName) is XRPositionalTracker positionalTracker)
+            {
+                // Query the same pose the controller node renders with so the
+                // hand offset doesn't shift, then fall through grip/aim/default.
+                XRPose? pose = null;
+                if (xrController != null && GodotObject.IsInstanceValid(xrController) && !xrController.Pose.IsEmpty)
+                    pose = positionalTracker.GetPose(xrController.Pose);
+                if (pose == null || !pose.HasTrackingData)
+                    pose = positionalTracker.GetPose(new StringName("grip"));
+                if (pose == null || !pose.HasTrackingData)
+                    pose = positionalTracker.GetPose(new StringName("aim"));
+                if (pose == null || !pose.HasTrackingData)
+                    pose = positionalTracker.GetPose(new StringName("default"));
+
+                if (pose != null && pose.HasTrackingData && pose.Transform != Transform3D.Identity)
+                {
+                    var transform = pose.Transform;
+                    position = new float3(transform.Origin.X, transform.Origin.Y, transform.Origin.Z);
+
+                    var quat = transform.Basis.GetRotationQuaternion();
+                    rotation = new floatQ(quat.X, quat.Y, quat.Z, quat.W);
+                    isTracking = true;
+                }
+            }
+        }
+
+        // Fall back to the controller node transform (playspace-relative)
+        if (!isTracking && xrController != null && GodotObject.IsInstanceValid(xrController) && xrController.GetIsActive())
+        {
             var pos = xrController.Position;
             var quat = xrController.Quaternion;
 
             position = new float3(pos.X, pos.Y, pos.Z);
             rotation = new floatQ(quat.X, quat.Y, quat.Z, quat.W);
-            isTracking = xrController.GetIsActive();
-        }
-        // Fall back to XRPositionalTracker
-        else if (IsVRActive)
-        {
-            string sideName = side == Chirality.Left ? "left" : "right";
-            var trackerName = new StringName($"/user/hand/{sideName}");
-            var tracker = XRServer.GetTracker(trackerName);
-
-            if (tracker != null && tracker is XRPositionalTracker positionalTracker)
-            {
-                // Prefer grip pose for hand placement
-                var gripPose = positionalTracker.GetPose(new StringName("grip"));
-                var aimPose = positionalTracker.GetPose(new StringName("aim"));
-                var defaultPose = positionalTracker.GetPose(new StringName("default"));
-                var pose = gripPose.HasTrackingData ? gripPose : (aimPose.HasTrackingData ? aimPose : defaultPose);
-
-                if (pose.HasTrackingData && pose.Transform != Transform3D.Identity)
-                {
-                    var transform = pose.Transform;
-                    position = new float3(transform.Origin.X, transform.Origin.Y, transform.Origin.Z);
-
-                    var basis = transform.Basis;
-                    var quat = basis.GetRotationQuaternion();
-                    rotation = new floatQ(quat.X, quat.Y, quat.Z, quat.W);
-                    isTracking = true;
-                }
-            }
+            isTracking = true;
         }
 
         // Update controller tracked object

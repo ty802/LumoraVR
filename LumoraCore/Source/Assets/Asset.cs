@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -63,7 +63,7 @@ public abstract class Asset : IAsset
     /// </summary>
     public virtual float UnloadDelay => 5.0f; // Default 5 seconds
 
-    // ===== INITIALIZATION =====
+    // INITIALIZATION
 
     /// <summary>
     /// Initialize a static asset with a URL.
@@ -109,7 +109,7 @@ public abstract class Asset : IAsset
         AssetURL = assetUrl;
     }
 
-    // ===== CONSUMER MANAGEMENT =====
+    // CONSUMER MANAGEMENT
 
     /// <summary>
     /// Register a consumer to receive asset state change notifications.
@@ -180,7 +180,7 @@ public abstract class Asset : IAsset
         }
     }
 
-    // ===== LOAD STATE MANAGEMENT =====
+    // LOAD STATE MANAGEMENT
 
     protected void CheckStatic()
     {
@@ -223,14 +223,14 @@ public abstract class Asset : IAsset
         NotifyConsumers();
     }
 
-    // ===== ABSTRACT METHODS =====
+    // ABSTRACT METHODS
 
     /// <summary>
     /// Queue this asset for unloading.
     /// </summary>
     public abstract void Unload();
 
-    // ===== LOCKING SYSTEM =====
+    // LOCKING SYSTEM
 
     public void RequestWrite(Action<IAsset> callback)
     {

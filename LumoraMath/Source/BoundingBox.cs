@@ -15,7 +15,7 @@ public struct BoundingBox
     /// <summary>Maximum point of the bounding box</summary>
     public float3 Max;
 
-    // ===== Constructors =====
+    // Constructors
 
     public BoundingBox(float3 min, float3 max)
     {
@@ -23,7 +23,7 @@ public struct BoundingBox
         Max = max;
     }
 
-    // ===== Properties =====
+    // Properties
 
     /// <summary>Center of the bounding box</summary>
     public float3 Center => (Min + Max) * 0.5f;
@@ -34,7 +34,7 @@ public struct BoundingBox
     /// <summary>Half extents of the bounding box</summary>
     public float3 Extents => Size * 0.5f;
 
-    // ===== Methods =====
+    // Methods
 
     /// <summary>
     /// Make the bounding box empty (inverted min/max).

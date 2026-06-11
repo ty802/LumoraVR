@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Godot;
@@ -9,7 +9,7 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 namespace Lumora.Godot.Hooks;
 
 /// <summary>
-/// Hook for MeshRenderer component â†’ Godot MeshInstance3D.
+/// Hook for MeshRenderer component -> Godot MeshInstance3D.
 /// Platform mesh renderer hook for Godot.
 /// Now properly uses the asset system instead of hardcoded mesh creation.
 /// </summary>
@@ -21,7 +21,7 @@ public class MeshRendererHook : MeshRendererHookBase<MeshRenderer, Node3D>
     protected override void AssignMesh(Node3D renderer, Mesh mesh)
     {
         // Not reached: UseMeshInstance=true means the base class owns mesh assignment via MeshInstance3D.
-        LumoraLogger.Warn("MeshRendererHook.AssignMesh: unexpected call â€” base class should handle mesh assignment when UseMeshInstance is true.");
+        LumoraLogger.Warn("MeshRendererHook.AssignMesh: unexpected call - base class should handle mesh assignment when UseMeshInstance is true.");
     }
 
     protected override void OnAttachRenderer()

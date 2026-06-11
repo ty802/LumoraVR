@@ -182,7 +182,7 @@ public class SwapPanel : UIComponent
         Fill(_containerSlot.AttachComponent<RectTransform>());
     }
 
-    // cubic ease-in-out — softer than linear, no overshoot. - xlinka
+    // cubic ease-in-out - softer than linear, no overshoot. - xlinka
     private static float Ease(float t)
     {
         return t < 0.5f ? 4f * t * t * t : 1f - MathF.Pow(-2f * t + 2f, 3f) * 0.5f;

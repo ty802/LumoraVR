@@ -11,9 +11,18 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 namespace Lumora.Godot.Hooks;
 
 /// <summary>
-/// Hook for CharacterController component ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Godot CharacterBody3D.
+/// Hook for CharacterController component -> Godot CharacterBody3D.
 /// Platform physics hook for Godot.
 /// </summary>
+// Motion model: every step the body is RE-BASED from the engine root (plus the
+// head reference's ground projection in room-scale), the move is simulated,
+// and only the delta physics produced is written back to the root. Root edits
+// from anywhere (snap turn, smooth turn, teleport, physical walking) are
+// incorporated automatically on the next re-base - there is no "external move"
+// detection and nothing ever zeroes velocity behind the player's back.
+// Stepping happens once per render frame from CharacterController.OnUpdate on
+// the main thread; MoveAndSlide is a kinematic test-move, safe outside the
+// physics tick. - xlinka
 [ImplementableHook(typeof(CharacterController))]
 public partial class CharacterControllerHook : ComponentHook<CharacterController>, ICharacterControllerHook
 {
@@ -26,18 +35,11 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
     private bool _isCrouching;
     private float _currentHeight;
     private float _targetHeight;
-    private bool _debugDumpDone;
-    private float3 _lastWrittenSlotPosition;
-    private bool _hasWrittenSlotPosition;
-    private CharacterPhysicsNode _physicsNode = null!;
-    private readonly object _physicsPoseLock = new();
-    private float3 _pendingBodyPosition;
-    private bool _hasPendingBodyPosition;
 
     public CharacterBody3D GodotCharacterBody => _characterBody;
 
     /// <summary>
-    /// The local player's Godot CharacterBody3D ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â set when the local user's hook is initialised,
+    /// The local player's Godot CharacterBody3D - set when the local user's hook is initialised,
     /// cleared on destroy. Read by DesktopCameraController for third-person orbit.
     /// </summary>
     public static CharacterBody3D LocalPlayerBody { get; private set; } = null!;
@@ -49,27 +51,14 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         _characterBody = new CharacterBody3D();
         _characterBody.Name = $"@CharacterBody3D_{Owner?.Slot?.Name?.Value ?? "Unknown"}";
 
-       
-        // In Lumora/Godot, we parent CharacterBody3D to WORLD ROOT to avoid double transforms.
-        // This is because:
-        // 1. Godot's CharacterBody3D.MoveAndSlide() operates in world space
-        // 2. If parented under a moving slot, the body would get double transforms
-        // 3. The physics bridge flushes position BACK to the slot after Godot physics
-        //
-        // For remote users: They don't have a local CharacterBody3D - their slot position
-        // is driven by network sync, so this doesn't create hierarchy issues.
-        //
-        // This is a Godot-specific architectural choice, not a bug.
+        // Parent to world root: MoveAndSlide operates in world space and the
+        // body is re-based from the slot every step, so it must not inherit
+        // slot transforms on top of that.
         Node3D worldRoot = (Owner?.World?.GodotSceneRoot as Node3D)!;
         Node parentNode = (Node)worldRoot ?? attachedNode!;
         parentNode.AddChild(_characterBody);
-        _physicsNode = new CharacterPhysicsNode(this);
-        _characterBody.AddChild(_physicsNode);
 
-        // Spawn the body at the slot's current transform so we start where the slot is placed
         _characterBody.GlobalTransform = attachedNode!.GlobalTransform;
-        _lastWrittenSlotPosition = Owner!.Slot.GlobalPosition;
-        _hasWrittenSlotPosition = true;
 
         _characterBody.FloorStopOnSlope = true;
         _characterBody.FloorMaxAngle = Mathf.DegToRad(45f);
@@ -80,7 +69,7 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         _characterBody.CollisionMask = 1u;
 
         // Initialize crouch state
-        _currentHeight = Owner.StandingHeight;
+        _currentHeight = Owner!.StandingHeight;
         _targetHeight = Owner.StandingHeight;
         _isCrouching = false;
 
@@ -91,77 +80,68 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         // Expose body for DesktopCameraController third-person mode
         if (_isLocalUser)
             LocalPlayerBody = _characterBody;
-
-    }
-
-    private int CountNodesOfType<T>(Node node) where T : Node
-    {
-        int count = node is T ? 1 : 0;
-        foreach (var child in node.GetChildren())
-        {
-            count += CountNodesOfType<T>(child);
-        }
-        return count;
-    }
-
-    private void ListNodesOfType<T>(Node node, string typeName) where T : Node
-    {
-        if (node is T typed)
-        {
-            var pos = typed is Node3D n3d ? n3d.GlobalPosition : Vector3.Zero;
-            int childCount = typed.GetChildCount();
-            GD.Print($"  {typeName}: '{typed.Name}' at ({pos.X:F1}, {pos.Y:F1}, {pos.Z:F1}), children={childCount}");
-
-            // For physics bodies, check collision info
-            if (typed is CollisionObject3D col)
-            {
-                GD.Print($"    Layer={col.CollisionLayer}, Mask={col.CollisionMask}");
-            }
-        }
-        foreach (var child in node.GetChildren())
-        {
-            ListNodesOfType<T>(child, typeName);
-        }
     }
 
     public override void ApplyChanges()
     {
-        // Runtime movement is stepped from CharacterController.OnFixedUpdate.
+        // Runtime movement is stepped from CharacterController.OnUpdate.
     }
 
-    public void Simulate(float fixedDelta)
+    public void Simulate(float delta)
     {
         if (_characterBody == null || !_characterBody.IsInsideTree())
             return;
 
-        // If the owner is not ready, skip processing
-        if (Owner == null)
+        if (Owner?.Slot == null)
             return;
 
         // Skip physics processing if the world is not focused (background worlds have ProcessMode.Disabled)
-        // When transitioning from Disabled to Inherit, the physics space may not be ready yet
         if (Owner.World?.Focus == World.WorldFocus.Background)
             return;
 
-        if (!SyncBodyToExternalSlotMove())
-            FlushPendingBodyPose();
-    }
-
-    private void StepGodotPhysics(float fixedDelta)
-    {
-        if (_characterBody == null || !_characterBody.IsInsideTree())
+        if (delta <= 0f)
             return;
-
-        if (Owner == null || Owner.World?.Focus == World.WorldFocus.Background)
-            return;
-
-        float delta = fixedDelta > 0f ? fixedDelta : (1f / 60f);
 
         var bodyRid = _characterBody.GetRid();
         var spaceRid = PhysicsServer3D.BodyGetSpace(bodyRid);
         if (!spaceRid.IsValid)
             return;
 
+        // Re-base the body from the engine root. With a head reference the
+        // body stands at the head's ground projection so the collider follows
+        // the player through room-scale space.
+        var referencePos = ComputeReferencePosition();
+        _characterBody.GlobalPosition = new Vector3(referencePos.x, referencePos.y, referencePos.z);
+
+        StepMovement(delta);
+
+        // Write back only the delta the physics step produced (collision
+        // response, gravity, locomotion). Head-relative motion already lives
+        // in the tracking data; the root must not absorb it twice.
+        var bodyPos = _characterBody.GlobalPosition;
+        var moved = new float3(bodyPos.X, bodyPos.Y, bodyPos.Z) - referencePos;
+        if (moved.LengthSquared > 1e-12f)
+        {
+            Owner.Slot.GlobalPosition += moved;
+            Owner.World?.UpdateManager?.RegisterHookUpdate(Owner.Slot);
+        }
+    }
+
+    private float3 ComputeReferencePosition()
+    {
+        var root = Owner.Slot;
+        var head = Owner.HeadReference.Target;
+        if (head == null || head.IsDestroyed)
+            return root.GlobalPosition;
+
+        // Head position in root space, projected to the root's ground plane.
+        var local = root.GlobalPointToLocal(head.GlobalPosition);
+        local.y = 0f;
+        return root.LocalPointToGlobal(local);
+    }
+
+    private void StepMovement(float delta)
+    {
         // Apply gravity
         if (_characterBody.IsOnFloor())
         {
@@ -171,7 +151,6 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         }
         else
         {
-            // Apply gravity
             _velocity.Y -= 9.81f * delta * 2.0f; // 2x gravity for snappier feel
         }
 
@@ -212,7 +191,6 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         {
             _velocity.Y = Owner.JumpSpeed;
             _jumpRequested = false;
-            GD.Print("CharacterControllerHook: Jump!");
         }
 
         _characterBody.Velocity = _velocity;
@@ -227,84 +205,11 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
             var collider = collision.GetCollider();
             if (collider is RigidBody3D rigidBody)
             {
-                // Apply impulse based on movement direction and mass
                 var pushDir = -collision.GetNormal();
                 var pushForce = pushDir * Owner.Speed * 0.5f;
                 rigidBody.ApplyCentralImpulse(new Vector3(pushForce.X, 0, pushForce.Z));
             }
         }
-
-        // DEBUG: One-time check for RigidBody3D nodes in scene
-        if (!_debugDumpDone && _characterBody.IsInsideTree())
-        {
-            _debugDumpDone = true;
-            var root = _characterBody.GetTree().Root;
-            int rigidCount = CountNodesOfType<RigidBody3D>(root);
-            int staticCount = CountNodesOfType<StaticBody3D>(root);
-            GD.Print($"DEBUG PHYSICS BODIES: RigidBody3D={rigidCount}, StaticBody3D={staticCount}");
-
-            // List all RigidBody3D nodes
-            ListNodesOfType<RigidBody3D>(root, "RigidBody3D");
-        }
-
-        var newPos = new float3(
-            _characterBody.GlobalPosition.X,
-            _characterBody.GlobalPosition.Y,
-            _characterBody.GlobalPosition.Z
-        );
-        lock (_physicsPoseLock)
-        {
-            _pendingBodyPosition = newPos;
-            _hasPendingBodyPosition = true;
-        }
-    }
-
-    private bool SyncBodyToExternalSlotMove()
-    {
-        if (_characterBody == null || Owner?.Slot == null)
-            return false;
-
-        var slotPos = Owner.Slot.GlobalPosition;
-        if (!_hasWrittenSlotPosition)
-        {
-            _lastWrittenSlotPosition = slotPos;
-            _hasWrittenSlotPosition = true;
-            return false;
-        }
-
-        const float EXTERNAL_MOVE_THRESHOLD_SQ = 0.00001f * 0.00001f;
-        if ((slotPos - _lastWrittenSlotPosition).LengthSquared <= EXTERNAL_MOVE_THRESHOLD_SQ)
-            return false;
-
-        _characterBody.GlobalPosition = new Vector3(slotPos.x, slotPos.y, slotPos.z);
-        _velocity = Vector3.Zero;
-        _lastWrittenSlotPosition = slotPos;
-
-        lock (_physicsPoseLock)
-        {
-            _hasPendingBodyPosition = false;
-        }
-
-        return true;
-    }
-
-    private void FlushPendingBodyPose()
-    {
-        float3 newPos;
-        lock (_physicsPoseLock)
-        {
-            if (!_hasPendingBodyPosition)
-                return;
-
-            newPos = _pendingBodyPosition;
-            _hasPendingBodyPosition = false;
-        }
-
-        Owner.Slot.GlobalPosition = newPos;
-        _lastWrittenSlotPosition = newPos;
-        _hasWrittenSlotPosition = true;
-
-        Owner.World?.UpdateManager?.RegisterHookUpdate(Owner.Slot);
     }
 
     public void SetMovementDirection(float3 direction)
@@ -319,21 +224,13 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
 
     public void Teleport(float3 position)
     {
+        _velocity = Vector3.Zero;
         if (_characterBody != null)
-        {
             _characterBody.GlobalPosition = new Vector3(position.x, position.y, position.z);
-            _velocity = Vector3.Zero;
-            _lastWrittenSlotPosition = position;
-            _hasWrittenSlotPosition = true;
-            lock (_physicsPoseLock)
-            {
-                _hasPendingBodyPosition = false;
-            }
-            if (Owner?.Slot != null)
-            {
-                Owner.Slot.GlobalPosition = position;
-                Owner.World?.UpdateManager?.RegisterHookUpdate(Owner.Slot);
-            }
+        if (Owner?.Slot != null)
+        {
+            Owner.Slot.GlobalPosition = position;
+            Owner.World?.UpdateManager?.RegisterHookUpdate(Owner.Slot);
         }
     }
 
@@ -428,36 +325,14 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         if (_isLocalUser && LocalPlayerBody == _characterBody)
             LocalPlayerBody = null!;
 
-        if (!destroyingWorld && _physicsNode != null && GodotObject.IsInstanceValid(_physicsNode))
-        {
-            _physicsNode.QueueFree();
-        }
-
         if (!destroyingWorld && _characterBody != null && GodotObject.IsInstanceValid(_characterBody))
         {
             _characterBody.QueueFree();
         }
 
-        _physicsNode = null!;
         _characterBody = null!;
         _collisionShapes.Clear();
 
         base.Destroy(destroyingWorld);
     }
-
-    private sealed partial class CharacterPhysicsNode : Node
-    {
-        private readonly CharacterControllerHook _hook;
-
-        public CharacterPhysicsNode(CharacterControllerHook hook)
-        {
-            _hook = hook;
-        }
-
-        public override void _PhysicsProcess(double delta)
-        {
-            _hook?.StepGodotPhysics((float)delta);
-        }
-    }
 }
-

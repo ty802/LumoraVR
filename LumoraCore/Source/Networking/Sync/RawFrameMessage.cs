@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -87,7 +87,7 @@ public class RawFrameMessage : SyncMessage
 
     public override byte[] Encode()
     {
-        // Upper bound: type(1) + 3Ã—varint64(10) + RefID(8) + seq(2) + payloadLen varint(10).
+        // Upper bound: type(1) + 3xvarint64(10) + RefID(8) + seq(2) + payloadLen varint(10).
         const int HeaderUpperBound = 1 + 10 + 10 + 10 + 8 + 2 + 10;
         int upper = HeaderUpperBound + _payloadLength;
         var buf = new byte[upper];

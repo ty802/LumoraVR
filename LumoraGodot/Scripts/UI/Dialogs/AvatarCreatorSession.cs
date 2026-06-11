@@ -69,14 +69,9 @@ internal sealed class AvatarCreatorSession
 			return false;
 		}
 
-		var draft = _avatarSlot.GetComponent<AvatarDraft>();
-		if (draft == null)
-		{
-			message = "Imported avatar is missing draft metadata.";
-			return false;
-		}
-
-		if (draft.IsFinalized.Value)
+		// Already calibrated = reference points exist in the tree. The avatar
+		// is self-describing; there is no separate draft/finalize state.
+		if (_avatarSlot.GetComponentInChildren<AvatarReferencePoint>() != null)
 		{
 			message = "Avatar has already been created.";
 			return false;
@@ -89,7 +84,8 @@ internal sealed class AvatarCreatorSession
 			return false;
 		}
 
-		if (!draft.RefreshResolvedReferences())
+		if (_avatarSlot.GetComponentInChildren<SkeletonBuilder>() == null ||
+			_avatarSlot.GetComponentInChildren<BipedRig>() == null)
 		{
 			message = "Avatar rig is not ready yet.";
 			return false;
@@ -151,31 +147,18 @@ internal sealed class AvatarCreatorSession
 			return false;
 		}
 
-		var draft = _avatarSlot.GetComponent<AvatarDraft>();
-		if (draft == null)
-		{
-			message = "Avatar draft metadata is missing.";
-			return false;
-		}
-
-		if (!draft.RefreshResolvedReferences() || draft.Skeleton.Target == null || draft.Rig.Target == null)
+		var skeleton = _avatarSlot.GetComponentInChildren<SkeletonBuilder>();
+		var rig = _avatarSlot.GetComponentInChildren<BipedRig>();
+		if (skeleton == null || rig == null)
 		{
 			message = "Avatar rig is not ready yet.";
 			return false;
 		}
 
-		var avatarRoot = _avatarSlot.GetComponent<AvatarRoot>() ?? _avatarSlot.AttachComponent<AvatarRoot>();
-		var descriptor = _avatarSlot.GetComponent<AvatarDescriptor>() ?? _avatarSlot.AttachComponent<AvatarDescriptor>();
-
-		descriptor.Root.Target = avatarRoot;
-		descriptor.Skeleton.Target = draft.Skeleton.Target;
-		descriptor.Rig.Target = draft.Rig.Target;
-		descriptor.IsFinalized.Value = true;
-		descriptor.HasFeetCalibration.Value = false;
-		descriptor.HasPelvisCalibration.Value = false;
-
-		draft.Descriptor.Target = descriptor;
-		draft.IsFinalized.Value = true;
+		// Calibration is encoded as components in the avatar tree: AvatarRoot
+		// tag + AvatarReferencePoint slots placed where the markers were.
+		if (_avatarSlot.GetComponent<AvatarRoot>() == null)
+			_avatarSlot.AttachComponent<AvatarRoot>();
 
 		var referenceRoot = _avatarSlot.FindChild(ReferenceRootName, recursive: false);
 		if (referenceRoot != null && !referenceRoot.IsDestroyed)
@@ -185,13 +168,13 @@ internal sealed class AvatarCreatorSession
 		referenceRoot.LocalPosition.Value = float3.Zero;
 		referenceRoot.LocalRotation.Value = floatQ.Identity;
 
-		CreateReferencePoint(referenceRoot, descriptor, AvatarReferenceKind.View, "View", _viewMarker);
-		CreateReferencePoint(referenceRoot, descriptor, AvatarReferenceKind.LeftHandGrip, "LeftHandGrip", _leftMarker);
-		CreateReferencePoint(referenceRoot, descriptor, AvatarReferenceKind.RightHandGrip, "RightHandGrip", _rightMarker);
+		CreateReferencePoint(referenceRoot, AvatarReferenceKind.View, "View", _viewMarker);
+		CreateReferencePoint(referenceRoot, AvatarReferenceKind.LeftHandGrip, "LeftHandGrip", _leftMarker);
+		CreateReferencePoint(referenceRoot, AvatarReferenceKind.RightHandGrip, "RightHandGrip", _rightMarker);
 
 		var vrikAvatar = _avatarSlot.GetComponent<VRIKAvatar>() ?? _avatarSlot.AttachComponent<VRIKAvatar>();
-		vrikAvatar.Skeleton.Target = draft.Skeleton.Target;
-		vrikAvatar.Descriptor.Target = descriptor;
+		vrikAvatar.Skeleton.Target = skeleton;
+		vrikAvatar.Rig.Target = rig;
 
 		CloseSession(restoreOriginalTransform: true);
 
@@ -230,7 +213,6 @@ internal sealed class AvatarCreatorSession
 
 	private void CreateReferencePoint(
 		Slot referenceRoot,
-		AvatarDescriptor descriptor,
 		AvatarReferenceKind kind,
 		string name,
 		Slot? marker)
@@ -244,7 +226,6 @@ internal sealed class AvatarCreatorSession
 
 		var point = referenceSlot.AttachComponent<AvatarReferencePoint>();
 		point.Kind.Value = kind;
-		descriptor.SetReferenceSlot(kind, referenceSlot);
 	}
 
 	private void CloseSession(bool restoreOriginalTransform)

@@ -60,7 +60,7 @@ public sealed class SteamNetworkManager : INetworkManager
 
     public int Priority => 100;
 
-    /// <summary>Steam relay has no host port ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â addressing is identity-based.</summary>
+    /// <summary>Steam relay has no host port - addressing is identity-based.</summary>
     public bool UsesPort => false;
 
     /// <summary>
@@ -95,7 +95,7 @@ public sealed class SteamNetworkManager : INetworkManager
         }
         catch (Exception ex)
         {
-            LumoraLogger.Warn($"SteamNetworkManager: init failed ({ex.Message}) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Steam transport disabled");
+            LumoraLogger.Warn($"SteamNetworkManager: init failed ({ex.Message}) - Steam transport disabled");
             return false;
         }
     }
@@ -217,7 +217,7 @@ public sealed class SteamNetworkManager : INetworkManager
     /// </summary>
     internal static bool NeedReassembly(uint size)
     {
-        // The 4-byte case is the prefix itself ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â never reassemble it. - xlinka
+        // The 4-byte case is the prefix itself - never reassemble it. - xlinka
         if (size == 4) return true;
         return size > MaxSendableMessageSize;
     }

@@ -475,7 +475,7 @@ public sealed class FileBrowserScreen : DashboardScreen
 
     private (float3 position, floatQ rotation) ResolveSpawnPose()
     {
-        // Prefer the local user's head — that's where they're looking, so dialogs/spawned
+        // Prefer the local user's head - that's where they're looking, so dialogs/spawned
         // items land in front of them. Fall back to the dashboard panel's transform if
         // no head is registered yet (loading screens, etc). - xlinka
         var head = World?.LocalUser?.Root?.HeadSlot;

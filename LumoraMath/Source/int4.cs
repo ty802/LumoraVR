@@ -18,7 +18,7 @@ public struct int4 : IEquatable<int4>
     public int z;
     public int w;
 
-    // ===== CONSTRUCTORS =====
+    // CONSTRUCTORS
 
     public int4(int x, int y, int z, int w)
     {
@@ -33,12 +33,12 @@ public struct int4 : IEquatable<int4>
         x = y = z = w = value;
     }
 
-    // ===== CONSTANTS =====
+    // CONSTANTS
 
     public static int4 Zero => new int4(0, 0, 0, 0);
     public static int4 One => new int4(1, 1, 1, 1);
 
-    // ===== INDEXER =====
+    // INDEXER
 
     public int this[int index]
     {
@@ -66,7 +66,7 @@ public struct int4 : IEquatable<int4>
         }
     }
 
-    // ===== OPERATORS =====
+    // OPERATORS
 
     public static int4 operator +(int4 a, int4 b) => new int4(a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w);
     public static int4 operator -(int4 a, int4 b) => new int4(a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w);
@@ -77,7 +77,7 @@ public struct int4 : IEquatable<int4>
     public static bool operator ==(int4 a, int4 b) => a.x == b.x && a.y == b.y && a.z == b.z && a.w == b.w;
     public static bool operator !=(int4 a, int4 b) => !(a == b);
 
-    // ===== OBJECT OVERRIDES =====
+    // OBJECT OVERRIDES
 
     public override bool Equals(object? obj) => obj is int4 other && Equals(other);
     public bool Equals(int4 other) => x == other.x && y == other.y && z == other.z && w == other.w;

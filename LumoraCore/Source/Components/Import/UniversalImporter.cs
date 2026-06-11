@@ -50,7 +50,7 @@ public static class UniversalImporter
             case AssetClass.Cubemap:
             case AssetClass.Special:
             case AssetClass.Shader:
-                // Pipelines for these classes aren't ported yet — fall through to the
+                // Pipelines for these classes aren't ported yet - fall through to the
                 // raw-file path so the file at least appears in the world as a grabbable
                 // placeholder. Once StaticBinary/StaticAudioClip/etc. land, branch here. - xlinka
                 ImportRawList(list, world, position, rotation);

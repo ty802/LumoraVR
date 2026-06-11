@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -101,7 +101,7 @@ public abstract class DynamicAssetProvider<A> : AssetProvider<A> where A : Asset
 
     /// <summary>
     /// Mark the asset as needing an update.
-    /// Safe to call from any thread â€” defers the actual Godot work to the main thread.
+    /// Safe to call from any thread - defers the actual Godot work to the main thread.
     /// </summary>
     protected new void MarkChangeDirty()
     {

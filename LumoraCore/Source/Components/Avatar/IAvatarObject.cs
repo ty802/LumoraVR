@@ -8,8 +8,9 @@ namespace Lumora.Core.Components.Avatar;
 
 /// <summary>
 /// Interface for avatar objects that can be equipped to body node slots.
+/// Extends IWorldElement so equip state can replicate through SyncRef.
 /// </summary>
-public interface IAvatarObject
+public interface IAvatarObject : IWorldElement
 {
     /// <summary>
     /// The body node this avatar object corresponds to.

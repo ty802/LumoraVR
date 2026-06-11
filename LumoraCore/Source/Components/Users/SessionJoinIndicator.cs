@@ -60,13 +60,17 @@ public class SessionJoinIndicator : Component
 
         // Create visual hierarchy
         Visual.Target = Slot.AddSlot("SessionJoinVisual");
-        
+
+        var fontProvider = Visual.Target.AttachComponent<Lumora.Core.Components.Assets.FontProvider>();
+        fontProvider.URL.Value = new Uri("res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf");
+
         // Main status text slot
         var statusSlot = Visual.Target.AddSlot("StatusText");
         var statusRenderer = statusSlot.AttachComponent<TextRenderer>();
         statusRenderer.Text.Value = "Joining session...";
-        statusRenderer.Size.Value = 0.8f;
-        statusRenderer.Color.Value = new float4(1f, 1f, 1f, 1f); // White
+        statusRenderer.Size.Value = 0.1f;
+        statusRenderer.Color.Value = color.White;
+        statusRenderer.Font.Target = fontProvider;
         StatusText.Target = statusRenderer;
 
         // Progress details text slot (smaller, below main text)
@@ -74,8 +78,9 @@ public class SessionJoinIndicator : Component
         progressSlot.LocalPosition.Value = new float3(0, -0.15f, 0);
         var progressRenderer = progressSlot.AttachComponent<TextRenderer>();
         progressRenderer.Text.Value = "Connecting...";
-        progressRenderer.Size.Value = 0.4f;
-        progressRenderer.Color.Value = new float4(0.8f, 0.8f, 0.8f, 1f); // Light gray
+        progressRenderer.Size.Value = 0.05f;
+        progressRenderer.Color.Value = new color(0.8f, 0.8f, 0.8f, 1f);
+        progressRenderer.Font.Target = fontProvider;
         ProgressText.Target = progressRenderer;
 
         // Initialize sync members created in OnAwake
@@ -227,8 +232,10 @@ public class SessionJoinIndicator : Component
             var forward = headRot * float3.Forward;
             var targetPosition = headPos + forward * 1.5f + float3.Down * 0.3f;
 
-            // Look at the user
-            var lookDir = headPos - targetPosition;
+            // Face the user: LookRotation receives the AWAY direction so the
+            // readable front of the text quads is toward the viewer (same
+            // convention as FaceLocalUser).
+            var lookDir = targetPosition - headPos;
             lookDir.y = 0; // Keep level
             if (lookDir.LengthSquared > 0.001f)
             {

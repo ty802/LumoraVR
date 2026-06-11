@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.Collections.Generic;
@@ -124,7 +124,7 @@ public sealed class GraphicsChunk
 
             // Each surface needs its OWN Godot render_priority based on submission
             // order (tree depth-first, after SortSubmeshesByRenderQueue), AND its own
-            // cloned material â€” MeshRendererHook applies priority by mutating
+            // cloned material - MeshRendererHook applies priority by mutating
             // Material.RenderPriority in place, so if surfaces shared a material
             // their priorities would collapse to whichever value was written last.
             // Coplanar UI quads then fall back to Godot's distance sort, which
@@ -493,7 +493,7 @@ public sealed class GraphicsChunk
         ChunkSlot ??= Canvas.Slot.AddLocalSlot("GraphicsChunk");
     }
 
-    // All text drawn from the same atlas shares one material â†’ one submesh per atlas (per clip). - xlinka
+    // All text drawn from the same atlas shares one material -> one submesh per atlas (per clip). - xlinka
     public UITextMaterial GetSharedTextMaterial(TextureAsset atlas)
     {
         SetupComponents();
@@ -507,7 +507,7 @@ public sealed class GraphicsChunk
         return material;
     }
 
-    // All images using the same texture share one property block â†’ one submesh per texture. - xlinka
+    // All images using the same texture share one property block -> one submesh per texture. - xlinka
     public MainTexturePropertyBlock GetSharedImageBlock(IAssetProvider<TextureAsset> texture)
     {
         SetupComponents();
@@ -568,7 +568,7 @@ public sealed class GraphicsChunk
     // Per-surface render priority requires its own cloned material because the
     // MeshRendererHook mutates Material.RenderPriority in place. Without cloning,
     // all surfaces sharing the source material collapse to whichever priority
-    // was written last â†’ coplanar UI quads fall back to Godot's distance sort
+    // was written last -> coplanar UI quads fall back to Godot's distance sort
     // and flip order as the camera rotates ("colors lost at angle"). - xlinka
     internal IAssetProvider<MaterialAsset>? GetRenderPriorityMaterial(IAssetProvider<MaterialAsset>? source, int renderPriority)
     {

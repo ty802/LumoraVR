@@ -7,7 +7,7 @@ using Lumora.Core.Math;
 
 namespace Helio.UI;
 
-public sealed class Button : InteractionElement
+public class Button : InteractionElement
 {
     public event Action<Button, UIInteractionContext>? Clicked;
 

@@ -8,7 +8,7 @@ namespace Lumora.Core.Components.Avatar;
 /// <summary>
 /// Each frame, drives a target slot's transform to match this slot's global position/rotation.
 /// Allows a slot anywhere in the hierarchy to "virtually follow" this slot without being a
-/// real child of it — useful for bridging VR tracker positions into avatar bone proxies.
+/// real child of it - useful for bridging VR tracker positions into avatar bone proxies.
 /// </summary>
 [ComponentCategory("Avatar")]
 public class SlotMirror : Component

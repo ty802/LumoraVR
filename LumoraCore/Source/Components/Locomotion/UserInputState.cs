@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.Collections.Generic;
@@ -85,7 +85,7 @@ public class UserInputState : Component
         base.OnDestroy();
     }
 
-    // === Convenience accessors for code that doesn't hold a Slot ===
+    // Convenience accessors for code that doesn't hold a Slot
 
     public static UserInputState ForFocusedLocalUser
     {

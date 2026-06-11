@@ -1,7 +1,6 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-using System.Collections.Generic;
 using System.Threading.Tasks;
 using Helio.UI.Layout;
 using Lumora.Core;
@@ -36,19 +35,9 @@ public class Text : Graphic, ILayoutElement
     private bool _wrap;
     private float _layoutPreferredWidth;
     private float _layoutPreferredHeight;
-    private readonly List<LineLayout> _layoutLines = new();
 
-    // Shaping is the dominant per-rebuild cost (per-glyph atlas + kerning lookups, line
-    // breaking, allocations). The canvas rebuilds the whole tree on any change, so cache the
-    // shaped lines and only re-run BuildLines when a shaping input changes. The atlas never
-    // repacks, so cached glyph UVs stay valid until the font gains glyphs (CacheGeneration). - xlinka
-    private bool _linesValid;
-    private string? _shapedContent;
-    private FontSet? _shapedFont;
-    private float _shapedSize;
-    private bool _shapedWrap;
-    private float _shapedMaxWidth;
-    private int _shapedGeneration;
+    // Shared shaping engine with built-in result caching (see TextShaper).
+    private readonly TextShaper _shaper = new();
 
     public Text()
     {
@@ -97,15 +86,8 @@ public class Text : Graphic, ILayoutElement
     {
         // request rasterization for every codepoint we're about to draw - xlinka
         var fontSet = _font?.Asset;
-        if (fontSet == null || string.IsNullOrEmpty(_content)) return default;
-
-        for (int i = 0; i < _content.Length; i++)
-        {
-            int cp = char.ConvertToUtf32(_content, i);
-            if (char.IsHighSurrogate(_content[i])) i++;
-            if (cp == '\r' || cp == '\n' || cp == '\t') continue;
-            fontSet.RequestGlyph(cp, _size);
-        }
+        if (fontSet != null)
+            TextShaper.RequestGlyphs(fontSet, _content, _size);
 
         return default;
     }
@@ -144,16 +126,7 @@ public class Text : Graphic, ILayoutElement
 
         var rect = RectTransform?.LocalComputeRect ?? default;
         float wrapWidth = _wrap && rect.width > 0f ? rect.width : 0f;
-        EnsureLines(fontSet, wrapWidth);
-
-        float width = 0f;
-        for (int i = 0; i < _layoutLines.Count; i++)
-        {
-            if (_layoutLines[i].Width > width)
-            {
-                width = _layoutLines[i].Width;
-            }
-        }
+        _shaper.Shape(fontSet, _content, _size, _wrap, wrapWidth);
 
         float lineHeight = fontSet.GetLineHeight(_size) * _lineSpacing;
         if (lineHeight <= 0f)
@@ -161,8 +134,8 @@ public class Text : Graphic, ILayoutElement
             lineHeight = _size;
         }
 
-        _layoutPreferredWidth = width;
-        _layoutPreferredHeight = lineHeight * _layoutLines.Count;
+        _layoutPreferredWidth = _shaper.MaxLineWidth;
+        _layoutPreferredHeight = lineHeight * _shaper.Lines.Count;
     }
 
     public LayoutMetric FilterChangedMetrics(LayoutMetric metrics)
@@ -195,14 +168,15 @@ public class Text : Graphic, ILayoutElement
     private void LayoutAndEmit(FontSet font, GraphicsChunk.RenderData renderData, PhosMesh mesh)
     {
         var rect = RectTransform!.LocalComputeRect;
-        EnsureLines(font, _wrap && rect.width > 0f ? rect.width : 0f);
-        if (_layoutLines.Count == 0) return;
+        _shaper.Shape(font, _content, _size, _wrap, _wrap && rect.width > 0f ? rect.width : 0f);
+        var lines = _shaper.Lines;
+        if (lines.Count == 0) return;
 
         float ascent = font.GetAscent(_size);
         float lineHeight = font.GetLineHeight(_size) * _lineSpacing;
         if (lineHeight <= 0f) lineHeight = _size;
 
-        float blockHeight = lineHeight * _layoutLines.Count;
+        float blockHeight = lineHeight * lines.Count;
         float blockTop = _vAlign switch
         {
             TextVerticalAlignment.Middle => rect.yMin + (rect.height + blockHeight) * 0.5f,
@@ -210,9 +184,9 @@ public class Text : Graphic, ILayoutElement
             _ => rect.yMax,
         };
 
-        for (int lineIndex = 0; lineIndex < _layoutLines.Count; lineIndex++)
+        for (int lineIndex = 0; lineIndex < lines.Count; lineIndex++)
         {
-            var line = _layoutLines[lineIndex];
+            var line = lines[lineIndex];
             float penX = AlignLineStart(rect, line.Width);
             float penY = blockTop - ascent - lineHeight * lineIndex;
 
@@ -228,98 +202,6 @@ public class Text : Graphic, ILayoutElement
         }
     }
 
-    // Re-shape only when an input that affects line breaking changed. font.CacheGeneration
-    // covers lazily-rasterized glyphs: it bumps as the atlas fills, so a provisional shape
-    // (glyph not resident yet) is reshaped once the glyph lands, then stays cached. - xlinka
-    private void EnsureLines(FontSet font, float maxWidth)
-    {
-        int generation = font.CacheGeneration;
-        if (_linesValid
-            && ReferenceEquals(_shapedFont, font)
-            && _shapedContent == _content
-            && _shapedSize == _size
-            && _shapedWrap == _wrap
-            && _shapedMaxWidth == maxWidth
-            && _shapedGeneration == generation)
-        {
-            return;
-        }
-
-        BuildLines(font, maxWidth);
-
-        _shapedFont = font;
-        _shapedContent = _content;
-        _shapedSize = _size;
-        _shapedWrap = _wrap;
-        _shapedMaxWidth = maxWidth;
-        _shapedGeneration = generation;
-        _linesValid = true;
-    }
-
-    private void BuildLines(FontSet font, float maxWidth)
-    {
-        _layoutLines.Clear();
-
-        var line = new LineLayout();
-        var word = new LineLayout();
-        float pendingWhitespace = 0f;
-        int prevWordCodepoint = 0;
-        FontAsset? prevWordFont = null;
-
-        for (int i = 0; i < _content.Length; i++)
-        {
-            int cp = char.ConvertToUtf32(_content, i);
-            if (char.IsHighSurrogate(_content[i])) i++;
-            if (cp == '\r') continue;
-
-            if (cp == '\n')
-            {
-                FlushWord(ref line, ref word, ref pendingWhitespace, maxWidth);
-                CommitLine(line);
-                line = new LineLayout();
-                pendingWhitespace = 0f;
-                prevWordCodepoint = 0;
-                prevWordFont = null;
-                continue;
-            }
-
-            if (IsCollapsibleWhitespace(cp))
-            {
-                FlushWord(ref line, ref word, ref pendingWhitespace, maxWidth);
-                if (line.Width > 0f)
-                {
-                    pendingWhitespace += MeasureWhitespace(font, cp);
-                }
-
-                prevWordCodepoint = 0;
-                prevWordFont = null;
-                continue;
-            }
-
-            AppendCodepoint(font, word, cp, ref prevWordCodepoint, ref prevWordFont);
-        }
-
-        FlushWord(ref line, ref word, ref pendingWhitespace, maxWidth);
-        CommitLine(line);
-    }
-
-    private void FlushWord(ref LineLayout line, ref LineLayout word, ref float pendingWhitespace, float maxWidth)
-    {
-        if (word.Width <= 0f && word.Glyphs.Count == 0) return;
-
-        float spacer = line.Width > 0f ? pendingWhitespace : 0f;
-        if (_wrap && maxWidth > 0f && line.Width > 0f && line.Width + spacer + word.Width > maxWidth)
-        {
-            CommitLine(line);
-            line = new LineLayout();
-            spacer = 0f;
-        }
-
-        AppendLayout(line, word, line.Width + spacer);
-        word = new LineLayout();
-        pendingWhitespace = 0f;
-    }
-
     private float AlignLineStart(in Rect rect, float lineWidth)
     {
         return _hAlign switch
@@ -328,64 +210,6 @@ public class Text : Graphic, ILayoutElement
             TextHorizontalAlignment.Right => rect.xMax - lineWidth,
             _ => rect.xMin,
         };
-    }
-
-    private static bool IsCollapsibleWhitespace(int codepoint)
-        => codepoint == ' ' || codepoint == '\t';
-
-    private float MeasureWhitespace(FontSet font, int codepoint)
-    {
-        if (codepoint == '\t')
-        {
-            return _size * 2f;
-        }
-
-        return font.TryGetGlyph(' ', _size, out var metrics, out _, out _)
-            ? metrics.Advance
-            : _size * 0.5f;
-    }
-
-    private void AppendCodepoint(FontSet font, LineLayout target, int codepoint, ref int prevCodepoint, ref FontAsset? prevFont)
-    {
-        float kerning = 0f;
-        float advance;
-
-        if (font.TryGetGlyph(codepoint, _size, out var metrics, out var uv, out var glyphFont) && glyphFont != null)
-        {
-            if (prevCodepoint != 0 && ReferenceEquals(prevFont, glyphFont))
-            {
-                kerning = font.GetKerning(glyphFont, prevCodepoint, codepoint, _size);
-            }
-
-            target.Glyphs.Add(new GlyphLayout(glyphFont, codepoint, metrics, uv, target.Width + kerning));
-            advance = metrics.Advance;
-            prevCodepoint = codepoint;
-            prevFont = glyphFont;
-        }
-        else
-        {
-            advance = _size * 0.5f;
-            prevCodepoint = 0;
-            prevFont = null;
-        }
-
-        target.Width += kerning + advance;
-    }
-
-    private static void AppendLayout(LineLayout target, LineLayout source, float startX)
-    {
-        for (int i = 0; i < source.Glyphs.Count; i++)
-        {
-            var glyph = source.Glyphs[i];
-            target.Glyphs.Add(glyph.WithX(startX + glyph.X));
-        }
-
-        target.Width = startX + source.Width;
-    }
-
-    private void CommitLine(LineLayout line)
-    {
-        _layoutLines.Add(line);
     }
 
     private void EmitGlyph(PhosTriangleSubmesh submesh, PhosMesh mesh, float penX, float penY, in GlyphMetrics metrics, in Rect uv, Rect? clipRect)
@@ -463,31 +287,5 @@ public class Text : Graphic, ILayoutElement
     {
         mesh.HasColors = true;
         mesh.SetHasUV(0, true);
-    }
-
-    private sealed class LineLayout
-    {
-        public readonly List<GlyphLayout> Glyphs = new();
-        public float Width;
-    }
-
-    private readonly struct GlyphLayout
-    {
-        public readonly int Codepoint;
-        public readonly FontAsset Font;
-        public readonly GlyphMetrics Metrics;
-        public readonly Rect UV;
-        public readonly float X;
-
-        public GlyphLayout(FontAsset font, int codepoint, in GlyphMetrics metrics, in Rect uv, float x)
-        {
-            Font = font;
-            Codepoint = codepoint;
-            Metrics = metrics;
-            UV = uv;
-            X = x;
-        }
-
-        public GlyphLayout WithX(float x) => new(Font, Codepoint, Metrics, UV, x);
     }
 }

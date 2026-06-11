@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core;
@@ -13,12 +13,12 @@ namespace Lumora.Core.Components;
 [ComponentCategory("Physics/Colliders")]
 public class CylinderCollider : Collider
 {
-    // ===== SYNC FIELDS =====
+    // SYNC FIELDS
 
     public readonly Sync<float> Radius;
     public readonly Sync<float> Height;
 
-    // ===== INITIALIZATION =====
+    // INITIALIZATION
 
     public CylinderCollider()
     {
@@ -34,7 +34,7 @@ public class CylinderCollider : Collider
         LumoraLogger.Log($"CylinderCollider: Initialized with Radius={Radius.Value}, Height={Height.Value}");
     }
 
-    // ===== ABSTRACT METHOD IMPLEMENTATIONS =====
+    // ABSTRACT METHOD IMPLEMENTATIONS
 
     public override object CreateGodotShape()
     {

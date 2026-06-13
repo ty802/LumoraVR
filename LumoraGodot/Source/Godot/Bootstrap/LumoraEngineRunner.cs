@@ -118,6 +118,15 @@ public partial class LumoraEngineRunner : Node
 
 	public override void _Ready()
 	{
+		{
+			if(HasCommandLineFlag("--Wait-For-Debugger")){
+			var timeout = Task.Delay(40000);
+			while(!Debugger.IsAttached && !timeout.IsCompleted)
+			{
+				System.Threading.Thread.Sleep(100);
+			}
+			}
+		}
 		// Disable Godot's built-in viewport object-picking before any frame
 		// renders. We use our own raycasts (LaserInteractionManager etc.) and
 		// the built-in path doesn't support stereo anyway, so leaving it on

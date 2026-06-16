@@ -20,11 +20,13 @@ public static class SteamManager
     {
         try
         {
+            #if !TOOLS
             if (SteamAPI.RestartAppIfNecessary(new AppId_t(AppId)))
             {
                 LumoraLogger.Log("SteamManager: Relaunching via Steam client...");
                 return false;
             }
+            #endif
 
             Initialized = SteamAPI.Init();
 

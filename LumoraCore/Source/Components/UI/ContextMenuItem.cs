@@ -15,7 +15,7 @@ namespace Lumora.Core.Components.UI;
 /// </summary>
 public class ContextMenuItem
 {
-    // ── Display ────────────────────────────────────────────────────────────────
+    // Display
 
     /// <summary>Text label shown on the arc segment.</summary>
     public string Label { get; set; } = "";
@@ -26,13 +26,13 @@ public class ContextMenuItem
     /// <summary>Arc fill color (RGBA 0-1).</summary>
     public float[] FillColor { get; set; } = { 0.12f, 0.12f, 0.12f, 0.9f };
 
-    /// <summary>Arc border/outline color.</summary>
-    public float[] OutlineColor { get; set; } = { 0.45f, 0.45f, 0.45f, 1f };
+    /// <summary>Arc border/outline color. Subtle and dark so segments read as one ring.</summary>
+    public float[] OutlineColor { get; set; } = { 0.10f, 0.11f, 0.14f, 0.9f };
 
     /// <summary>Label text color.</summary>
     public float[] LabelColor { get; set; } = { 1f, 1f, 1f, 1f };
 
-    // ── State ──────────────────────────────────────────────────────────────────
+    // State
 
     /// <summary>Whether this item responds to interaction.</summary>
     public bool IsEnabled { get; set; } = true;
@@ -43,7 +43,7 @@ public class ContextMenuItem
     /// <summary>Current toggled state. Only meaningful when IsToggle is true.</summary>
     public bool IsToggled { get; set; } = false;
 
-    // ── Actions ────────────────────────────────────────────────────────────────
+    // Actions
 
     /// <summary>
     /// Callback fired when the item is pressed.
@@ -56,9 +56,9 @@ public class ContextMenuItem
     /// </summary>
     public ContextMenuPage? SubPage { get; set; }
 
-    // ── Polar coordinate layout (set by ContextMenuPage.LayoutItems) ───────────
+    // Polar coordinate layout (set by ContextMenuPage.LayoutItems)
 
-    /// <summary>Start angle in degrees. 0° = right, increases clockwise.</summary>
+    /// <summary>Start angle in degrees. 0 degrees = right, increases clockwise.</summary>
     public float AngleStart { get; internal set; }
 
     /// <summary>Angular size of this segment in degrees.</summary>
@@ -70,7 +70,7 @@ public class ContextMenuItem
     /// <summary>Radial depth in pixels (inner-to-outer arc width).</summary>
     public float Thickness { get; set; } = 80f;
 
-    // ── Computed helpers ───────────────────────────────────────────────────────
+    // Computed helpers
 
     public float AngleEnd     => AngleStart + ArcLength;
     public float AngleMiddle  => AngleStart + ArcLength * 0.5f;
@@ -90,12 +90,12 @@ public class ContextMenuPage
     /// <summary>All items on this page. Laid out by LayoutItems().</summary>
     public List<ContextMenuItem> Items { get; } = new();
 
-    /// <summary>Gap in degrees between adjacent items (default 5°).</summary>
-    public float SeparationAngle { get; set; } = 5f;
+    /// <summary>Gap in degrees between adjacent items (default 5 degrees).</summary>
+    public float SeparationAngle { get; set; } = 2f;
 
     public ContextMenuPage(string title = "") => Title = title;
 
-    // ── Fluent builder ─────────────────────────────────────────────────────────
+    // Fluent builder
 
     public ContextMenuPage AddItem(ContextMenuItem item)
     {
@@ -115,10 +115,10 @@ public class ContextMenuPage
         return this;
     }
 
-    // ── Layout ─────────────────────────────────────────────────────────────────
+    // Layout
 
     /// <summary>
-    /// Distribute all items evenly around 360°, respecting SeparationAngle gaps.
+    /// Distribute all items evenly around 360 degrees, respecting SeparationAngle gaps.
     /// Call this before passing a page to ContextMenuView.
     /// </summary>
     public void LayoutItems()
@@ -129,7 +129,7 @@ public class ContextMenuPage
         float available = 360f - totalGap;
         float slice     = available / Items.Count;
 
-        // Start at top (-90° = 12 o'clock)
+        // Start at top (-90 degrees = 12 o'clock)
         float angle = -90f;
         foreach (var item in Items)
         {

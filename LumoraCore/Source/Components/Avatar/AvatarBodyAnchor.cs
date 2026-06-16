@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Input;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -23,21 +23,21 @@ public class AvatarBodyAnchor : Component, IAvatarObject, IAvatarObjectComponent
     public readonly Sync<bool> DestroyOnDequip = new();
 
     // IAvatarObject state
-    private AvatarObjectSlot _equippingSlot;
+    private AvatarObjectSlot _equippingSlot = null!;
 
-    // ===== IAvatarObject =====
+    // IAvatarObject
 
     BodyNode IAvatarObject.Node => Node.Value;
     public bool IsEquipped => _equippingSlot != null;
     public int EquipOrderPriority => 0;
     public AvatarObjectSlot EquippingSlot => _equippingSlot;
     public IEnumerable<BodyNode> MutuallyExclusiveNodes => System.Array.Empty<BodyNode>();
-    public User ExplicitlyAllowedUser { get; private set; }
+    public User ExplicitlyAllowedUser { get; private set; } = null!;
 
     public override void OnInit()
     {
         base.OnInit();
-        // BodyNode.NONE may not be enum value 0 — set explicitly
+        // BodyNode.NONE may not be enum value 0 - set explicitly
         Node.Value = BodyNode.NONE;
         // DestroyOnDequip = false (C# default, skip)
     }
@@ -50,7 +50,7 @@ public class AvatarBodyAnchor : Component, IAvatarObject, IAvatarObjectComponent
 
     public void Dequip()
     {
-        _equippingSlot = null;
+        _equippingSlot = null!;
         LumoraLogger.Log($"AvatarBodyAnchor: Dequipped {Node.Value}");
         if (DestroyOnDequip.Value)
             Slot.Destroy();
@@ -61,7 +61,7 @@ public class AvatarBodyAnchor : Component, IAvatarObject, IAvatarObjectComponent
         ExplicitlyAllowedUser = user;
     }
 
-    // ===== IAvatarObjectComponent =====
+    // IAvatarObjectComponent
 
     public void OnPreEquip(AvatarObjectSlot slot) { }
 
@@ -69,3 +69,4 @@ public class AvatarBodyAnchor : Component, IAvatarObject, IAvatarObjectComponent
 
     public void OnDequip(AvatarObjectSlot slot) { }
 }
+

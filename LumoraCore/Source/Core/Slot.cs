@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -6,9 +6,12 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Threading.Tasks;
+using Lumora.Core.Assets;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
 using Lumora.Core.Networking.Sync;
+using Lumora.Core.Persistence;
 
 namespace Lumora.Core;
 
@@ -23,7 +26,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     private readonly List<Slot> _children = new();
     private readonly List<Slot> _localChildren = new();
     private readonly List<Component> _components = new();
-    private Slot _parent;
+    private Slot _parent = null!;
     private bool _isRemoved;
 
     // Transform caching with dirty flags
@@ -56,51 +59,72 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// <summary>
     /// Event fired when this slot changes.
     /// </summary>
-    public event Action<IChangeable> Changed;
+    public event Action<IChangeable> Changed = null!;
 
     /// <summary>
     /// Event fired when a child is added.
     /// </summary>
-    public event Action<Slot, Slot> OnChildAdded;
+    public event Action<Slot, Slot> OnChildAdded = null!;
 
     /// <summary>
     /// Event fired when a child is removed.
     /// </summary>
-    public event Action<Slot, Slot> OnChildRemoved;
+    public event Action<Slot, Slot> OnChildRemoved = null!;
 
     /// <summary>
     /// Event fired when a component is added.
     /// </summary>
-    public event Action<Slot, Component> OnComponentAdded;
+    public event Action<Slot, Component> OnComponentAdded = null!;
 
     /// <summary>
     /// Event fired when a component is removed.
     /// </summary>
-    public event Action<Slot, Component> OnComponentRemoved;
+    public event Action<Slot, Component> OnComponentRemoved = null!;
 
     /// <summary>
     /// Event fired when parent changes.
     /// </summary>
-    public event Action<Slot, Slot, Slot> OnParentChanged;
+    public event Action<Slot, Slot, Slot> OnParentChanged = null!;
 
     /// <summary>
     /// Event fired when active state changes.
     /// </summary>
-    public event Action<Slot, bool> OnActiveChanged;
+    public event Action<Slot, bool> OnActiveChanged = null!;
 
     /// <summary>
     /// Event fired when name changes.
     /// </summary>
-    public event Action<Slot, string> OnNameChanged;
+    public event Action<Slot, string> OnNameChanged = null!;
 
     /// <summary>
     /// Event fired when children order is invalidated.
     /// </summary>
-    public event Action<Slot> ChildrenOrderInvalidated;
+    public event Action<Slot> ChildrenOrderInvalidated
+    {
+        add { }
+        remove { }
+    }
 
     // Simplified event aliases for UI compatibility
-    public event Action<Slot> ActiveChanged;
-    public event Action<Slot> ParentChanged;
+    public event Action<Slot> ActiveChanged = null!;
+    public event Action<Slot> ParentChanged = null!;
+
+    /// <summary>Fired when this slot's persistence flag changes.</summary>
+    public event Action<Slot> PersistentChanged = null!;
+
+    /// <summary>Fired when this slot's order offset changes.</summary>
+    public event Action<Slot> OrderOffsetChanged = null!;
+
+    /// <summary>Fired at the start of destruction, before children/components are torn down.</summary>
+    public event Action<Slot> OnPrepareDestroy = null!;
+
+    /// <summary>
+    /// Fired once per frame (deferred) when this slot's world transform changed — either its own
+    /// local transform or that of an ancestor. Handlers run before hook/connector updates, so a
+    /// handler that re-drives a transform takes effect the same frame. Subscribe to react to
+    /// movement without polling every frame in OnUpdate.
+    /// </summary>
+    public event Action<Slot> WorldTransformChanged = null!;
 
     #endregion
 
@@ -179,6 +203,95 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// </summary>
     public override bool IsPersistent => Persistent.Value;
 
+    // Protected slots refuse Destroy / RemoveFromHierarchy calls. Set via
+    // MarkProtected, propagates up the lineage so the whole chain to the
+    // protected slot stays alive. Used for world root, user roots, dashboard
+    // anchors, anything that should never be destroyed by gameplay code or
+    // remote peers. - xlinka
+    public bool IsProtected { get; private set; }
+
+    // When true, Persistent flag is treated as forced-on. Set by passing
+    // forcePersistent=true to MarkProtected. The Persistent sync field stays
+    // writable but consumers should respect this when serializing.
+    public bool ForcedPersistent { get; private set; }
+
+    public void MarkProtected(bool forcePersistent = false)
+    {
+        IsProtected = true;
+        if (forcePersistent)
+        {
+            ForcedPersistent = true;
+            if (!Persistent.Value)
+                Persistent.Value = true;
+        }
+        _parent?.MarkProtected(forcePersistent);
+    }
+
+    // Cached nearest-ancestor UserRoot for this slot. Components that need to
+    // know "which user does this belong to" should read ActiveUserRoot
+    // instead of climbing the hierarchy. UserRoot.OnAwake calls
+    // Slot.RegisterUserRoot(this); the slot propagates the reference down to
+    // its children. On reparent the inherited value re-resolves from the new
+    // parent. Slots that hold their own UserRoot keep that ref and ignore
+    // parent propagation. - xlinka
+    public UserRoot ActiveUserRoot { get; private set; } = null!;
+
+    public User ActiveUser => (ActiveUserRoot?.ActiveUser) ?? null!;
+
+    public event Action<Slot> ActiveUserRootChanged = null!;
+
+    internal void RegisterUserRoot(UserRoot userRoot)
+    {
+        if (userRoot == null || userRoot == ActiveUserRoot)
+            return;
+
+        if (ActiveUserRoot != null
+            && ActiveUserRoot.Slot != null
+            && userRoot.Slot != null
+            && ActiveUserRoot.Slot != userRoot.Slot
+            && ActiveUserRoot.Slot.IsDescendantOf(userRoot.Slot))
+        {
+            return;
+        }
+
+        ActiveUserRoot = userRoot;
+        PropagateActiveUserRootToChildren();
+        ActiveUserRootChanged?.Invoke(this);
+    }
+
+    internal void UnregisterUserRootHierarchy(UserRoot userRoot)
+    {
+        if (userRoot == null || userRoot != ActiveUserRoot)
+            return;
+
+        ActiveUserRoot = null!;
+        PropagateActiveUserRootToChildren();
+        ActiveUserRootChanged?.Invoke(this);
+    }
+
+    private void RefreshActiveUserRootFromParent()
+    {
+        // Slots holding their own UserRoot keep their ref; parent propagation skips them.
+        if (ActiveUserRoot != null && ActiveUserRoot.Slot == this)
+            return;
+
+        var inherited = _parent?.ActiveUserRoot;
+        if (inherited == ActiveUserRoot)
+            return;
+
+        ActiveUserRoot = inherited!;
+        PropagateActiveUserRootToChildren();
+        ActiveUserRootChanged?.Invoke(this);
+    }
+
+    private void PropagateActiveUserRootToChildren()
+    {
+        foreach (var child in _children)
+            child.RefreshActiveUserRootFromParent();
+        foreach (var child in _localChildren)
+            child.RefreshActiveUserRootFromParent();
+    }
+
     /// <summary>
     /// Get all referenced objects from this slot (IWorker implementation).
     /// </summary>
@@ -206,7 +319,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// <summary>
     /// The hook that implements this slot in the engine (e.g., Godot Node3D).
     /// </summary>
-    public IHook<Slot> Hook { get; private set; }
+    public IHook<Slot> Hook { get; private set; } = null!;
 
     /// <summary>
     /// Explicit interface implementation for non-generic IHook.
@@ -221,7 +334,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// <summary>
     /// Whether this Slot has been removed from the hierarchy but not destroyed.
     /// </summary>
-    public bool IsRemoved => _isRemoved;
+    public override bool IsRemoved => _isRemoved;
 
     /// <summary>
     /// Read-only list of child Slots.
@@ -348,40 +461,15 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     {
         get
         {
-            var current = this;
-            while (current != null)
-            {
-                var userRoot = current.GetComponent<UserRoot>();
-                if (userRoot != null)
-                {
-                    return userRoot.ActiveUser == World?.LocalUser;
-                }
-                current = current._parent;
-            }
-            return false;
+            var userRoot = ActiveUserRoot;
+            return userRoot != null && userRoot.ActiveUser == World?.LocalUser;
         }
     }
 
-    /// <summary>
-    /// Get the user root if this slot is under one.
-    /// </summary>
-    public UserRoot GetUserRoot()
-    {
-        var current = this;
-        while (current != null)
-        {
-            var userRoot = current.GetComponent<UserRoot>();
-            if (userRoot != null)
-                return userRoot;
-            current = current._parent;
-        }
-        return null;
-    }
-
-    /// <summary>
-    /// Get the active user if under a user root.
-    /// </summary>
-    public User ActiveUser => GetUserRoot()?.ActiveUser;
+    // Cached owning-user lookup lives on ActiveUserRoot. Old GetUserRoot()
+    // hierarchy walk was replaced once UserRoot.OnAwake started registering
+    // into Slot.RegisterUserRoot. - xlinka
+    public UserRoot GetUserRoot() => ActiveUserRoot;
 
     #endregion
 
@@ -390,7 +478,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// <summary>
     /// The parent Slot in the hierarchy (null if root).
     /// </summary>
-    public Slot Parent
+    public new Slot Parent
     {
         get => _parent;
         set => SetParent(value, preserveGlobalTransform: false);
@@ -426,7 +514,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         if (newParent != null && newParent.IsRemoved)
         {
             Logging.Logger.Warn($"Trying to assign a removed parent for slot '{Name?.Value}', resetting to root.");
-            newParent = World?.RootSlot;
+            newParent = World?.RootSlot!;
         }
 
         if (newParent != null && newParent.IsDescendantOf(this))
@@ -447,7 +535,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
         // Update ParentSlotRef - this triggers OnParentSlotRefChanged which updates
         // _parent, child collections, and fires events
-        ParentSlotRef.Target = newParent;
+        ParentSlotRef.Target = newParent!;
 
         InvalidateGlobalTransforms();
 
@@ -479,6 +567,27 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// Check if this slot is active and not destroyed.
     /// </summary>
     public bool IsActiveAndEnabled => IsActive && !IsDestroyed && !_isRemoved;
+
+    // When this slot's ActiveSelf flips, every descendant whose own ActiveSelf is true had its
+    // EFFECTIVE active state flip too - fire ActiveChanged on them so effective-active listeners
+    // (UI RectTransforms) react. Descendants that are themselves inactive stay inactive regardless,
+    // so their subtree is skipped. This is what makes ActiveChanged an EFFECTIVE-active signal.
+    private void PropagateActiveChangedToDescendants()
+    {
+        foreach (var child in Children)
+            PropagateActiveChangedToChild(child);
+        foreach (var child in LocalChildren)
+            PropagateActiveChangedToChild(child);
+    }
+
+    private static void PropagateActiveChangedToChild(Slot child)
+    {
+        if (child == null || child.IsDestroyed || !child.ActiveSelf.Value)
+            return;
+        child.OnActiveChanged?.Invoke(child, true);
+        child.ActiveChanged?.Invoke(child);
+        child.PropagateActiveChangedToDescendants();
+    }
 
     /// <summary>
     /// Set active state, optionally affecting children.
@@ -769,6 +878,12 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
     private void InvalidateGlobalTransforms()
     {
+        // Queue the deferred WorldTransformChanged for any slot that actually has a listener (cheap
+        // null check; the queue dedups). Done before the dirty early-return so this slot always
+        // registers; descendants register as the cascade visits them.
+        if (WorldTransformChanged != null)
+            World?.UpdateManager?.RegisterMovedSlot(this);
+
         if ((_transformDirty & DIRTY_ALL_GLOBAL) == DIRTY_ALL_GLOBAL)
             return;
 
@@ -776,6 +891,12 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
         foreach (var child in _children)
             child.InvalidateGlobalTransforms();
+    }
+
+    /// <summary>Invoke this slot's deferred WorldTransformChanged event (driven by the UpdateManager).</summary>
+    internal void FireWorldTransformChanged()
+    {
+        WorldTransformChanged?.Invoke(this);
     }
 
     private void EnsureValidTRS()
@@ -885,6 +1006,122 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     {
         return GlobalRotation * localRotation;
     }
+
+    // ── Vector conversions (rotation + scale, no translation) ───────────────────
+    // Like the direction conversions but carry scale; the direction helpers above
+    // already use MultiplyVector, so these are the explicitly-named "vector" forms.
+
+    /// <summary>Transform a vector (rotation + scale, no translation) from local to global space.</summary>
+    public float3 LocalVectorToGlobal(in float3 localVector)
+        => IsRootSlot ? localVector : LocalToWorld.MultiplyVector(in localVector);
+
+    /// <summary>Transform a vector (rotation + scale, no translation) from global to local space.</summary>
+    public float3 GlobalVectorToLocal(in float3 globalVector)
+        => IsRootSlot ? globalVector : WorldToLocal.MultiplyVector(in globalVector);
+
+    // ── Scale conversions ───────────────────────────────────────────────────────
+
+    /// <summary>Convert a scale expressed in this slot's local space into global space.</summary>
+    public float3 LocalScaleToGlobal(in float3 localScale)
+        => IsRootSlot ? localScale : localScale * GlobalScale;
+
+    /// <summary>Convert a scale expressed in global space into this slot's local space.</summary>
+    public float3 GlobalScaleToLocal(in float3 globalScale)
+        => IsRootSlot ? globalScale : globalScale / GlobalScale;
+
+    /// <summary>Uniform-scale convenience: averages the components after conversion.</summary>
+    public float LocalScaleToGlobal(float localScale)
+        => IsRootSlot ? localScale : AvgComponent(LocalScaleToGlobal(new float3(localScale, localScale, localScale)));
+
+    /// <summary>Uniform-scale convenience: averages the components after conversion.</summary>
+    public float GlobalScaleToLocal(float globalScale)
+        => IsRootSlot ? globalScale : AvgComponent(GlobalScaleToLocal(new float3(globalScale, globalScale, globalScale)));
+
+    // ── Parent-space conversions (this slot's local space ↔ its parent's space) ──
+
+    public float3 LocalPointToParent(in float3 localPoint)
+        => IsRootSlot ? localPoint : LocalTransform.MultiplyPoint(in localPoint);
+
+    public float3 ParentPointToLocal(in float3 parentPoint)
+        => IsRootSlot ? parentPoint : LocalTransform.Inverse.MultiplyPoint(in parentPoint);
+
+    public float3 LocalDirectionToParent(in float3 localDirection)
+        => IsRootSlot ? localDirection : LocalRotation.Value * localDirection;
+
+    public float3 ParentDirectionToLocal(in float3 parentDirection)
+        => IsRootSlot ? parentDirection : LocalRotation.Value.Inverse * parentDirection;
+
+    public float3 LocalVectorToParent(in float3 localVector)
+        => IsRootSlot ? localVector : LocalTransform.MultiplyVector(in localVector);
+
+    public float3 ParentVectorToLocal(in float3 parentVector)
+        => IsRootSlot ? parentVector : LocalTransform.Inverse.MultiplyVector(in parentVector);
+
+    public floatQ LocalRotationToParent(in floatQ localRotation)
+        => IsRootSlot ? localRotation : LocalRotation.Value * localRotation;
+
+    public floatQ ParentRotationToLocal(in floatQ parentRotation)
+        => IsRootSlot ? parentRotation : LocalRotation.Value.Inverse * parentRotation;
+
+    public float3 LocalScaleToParent(in float3 localScale)
+        => IsRootSlot ? localScale : LocalScale.Value * localScale;
+
+    public float LocalScaleToParent(float localScale)
+        => IsRootSlot ? localScale : AvgComponent(LocalScale.Value * new float3(localScale, localScale, localScale));
+
+    // ── Arbitrary-space conversions (this slot's local space ↔ another slot's) ───
+    // Composed through the cached Global↔Local primitives, with shortcuts when the
+    // target space is this slot or its direct parent.
+
+    public float3 LocalPointToSpace(in float3 localPoint, Slot space)
+    {
+        if (ReferenceEquals(space, this)) return localPoint;
+        if (ReferenceEquals(space, Parent)) return LocalPointToParent(in localPoint);
+        return space.GlobalPointToLocal(LocalPointToGlobal(in localPoint));
+    }
+
+    public float3 SpacePointToLocal(in float3 spacePoint, Slot space)
+    {
+        if (ReferenceEquals(space, this)) return spacePoint;
+        if (ReferenceEquals(space, Parent)) return ParentPointToLocal(in spacePoint);
+        return GlobalPointToLocal(space.LocalPointToGlobal(in spacePoint));
+    }
+
+    public float3 LocalDirectionToSpace(in float3 localDirection, Slot space)
+        => ReferenceEquals(space, this) ? localDirection : space.GlobalDirectionToLocal(LocalDirectionToGlobal(localDirection));
+
+    public float3 SpaceDirectionToLocal(in float3 spaceDirection, Slot space)
+        => ReferenceEquals(space, this) ? spaceDirection : GlobalDirectionToLocal(space.LocalDirectionToGlobal(spaceDirection));
+
+    public float3 LocalVectorToSpace(in float3 localVector, Slot space)
+        => ReferenceEquals(space, this) ? localVector : space.GlobalVectorToLocal(LocalVectorToGlobal(in localVector));
+
+    public float3 SpaceVectorToLocal(in float3 spaceVector, Slot space)
+        => ReferenceEquals(space, this) ? spaceVector : GlobalVectorToLocal(space.LocalVectorToGlobal(in spaceVector));
+
+    public float3 LocalScaleToSpace(in float3 localScale, Slot space)
+        => ReferenceEquals(space, this) ? localScale : space.GlobalScaleToLocal(LocalScaleToGlobal(in localScale));
+
+    public float LocalScaleToSpace(float localScale, Slot space)
+        => ReferenceEquals(space, this) ? localScale : space.GlobalScaleToLocal(LocalScaleToGlobal(localScale));
+
+    public float3 SpaceScaleToLocal(in float3 spaceScale, Slot space)
+        => ReferenceEquals(space, this) ? spaceScale : GlobalScaleToLocal(space.LocalScaleToGlobal(in spaceScale));
+
+    public float SpaceScaleToLocal(float spaceScale, Slot space)
+        => ReferenceEquals(space, this) ? spaceScale : GlobalScaleToLocal(space.LocalScaleToGlobal(spaceScale));
+
+    public floatQ LocalRotationToSpace(in floatQ localRotation, Slot space)
+        => ReferenceEquals(space, this) ? localRotation : space.GlobalRotationToLocal(LocalRotationToGlobal(localRotation));
+
+    public floatQ SpaceRotationToLocal(in floatQ spaceRotation, Slot space)
+        => ReferenceEquals(space, this) ? spaceRotation : GlobalRotationToLocal(space.LocalRotationToGlobal(spaceRotation));
+
+    /// <summary>Matrix that maps this slot's local space into <paramref name="space"/>'s local space.</summary>
+    public float4x4 GetLocalToSpaceMatrix(Slot space)
+        => space.WorldToLocal * LocalToWorld;
+
+    private static float AvgComponent(float3 v) => (v.x + v.y + v.z) / 3f;
 
     /// <summary>
     /// Look at a target position.
@@ -1018,19 +1255,45 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
         Persistent.MarkNonPersistent();
 
-        LocalPosition.OnChanged += _ => InvalidateTransformCache();
-        LocalRotation.OnChanged += _ => InvalidateTransformCache();
-        LocalScale.OnChanged += _ => InvalidateTransformCache();
+        LocalPosition.OnChanged += _ =>
+        {
+            InvalidateTransformCache();
+            QueueHookUpdate();
+        };
+        LocalRotation.OnChanged += _ =>
+        {
+            InvalidateTransformCache();
+            QueueHookUpdate();
+        };
+        LocalScale.OnChanged += _ =>
+        {
+            InvalidateTransformCache();
+            QueueHookUpdate();
+        };
         ActiveSelf.OnChanged += _ =>
         {
             OnActiveChanged?.Invoke(this, ActiveSelf.Value);
             ActiveChanged?.Invoke(this);
+            // Effective active: descendants whose own ActiveSelf is true just had their effective
+            // active flip with this ancestor, so fire ActiveChanged on them too (mirrors the
+            // reference, whose ActiveChanged is effective). This is what lets a canvas re-render
+            // content shown by reactivating an ancestor (e.g. the dashboard's parked render rig)
+            // without any forced-rebuild hack. No listeners other than UI RectTransforms, so safe.
+            PropagateActiveChangedToDescendants();
             OnChanged();
         };
         Name.OnChanged += _ =>
         {
             OnNameChanged?.Invoke(this, Name.Value);
             OnChanged();
+        };
+        Persistent.OnChanged += _ =>
+        {
+            PersistentChanged?.Invoke(this);
+        };
+        OrderOffset.OnChanged += _ =>
+        {
+            OrderOffsetChanged?.Invoke(this);
         };
 
         // When ParentSlotRef changes (from network sync), update internal parent-child structure
@@ -1074,10 +1337,9 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// </summary>
     private void OnParentSlotRefValueChanged(RefID newValue)
     {
-        // If we have a hook and parent was unknown, trigger update now that we know the parent ref
         if (Hook != null && !ParentSlotRef.IsInInitPhase)
         {
-            Hook.ApplyChanges();
+            QueueHookUpdate();
         }
     }
 
@@ -1097,7 +1359,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         if (IsRootSlot)
         {
             Logging.Logger.Warn($"Tried to assign root slot parent. NewParent={syncRef.Target}");
-            World?.RunSynchronously(() => syncRef.Target = null);
+            World?.RunSynchronously(() => syncRef.Target = null!);
             return;
         }
 
@@ -1149,13 +1411,14 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         _parent = target;
 
         InvalidateTransformCache();
+        RefreshActiveUserRootFromParent();
         OnParentChanged?.Invoke(this, oldParent, target);
         ParentChanged?.Invoke(this);
         OnChanged();
 
         if (oldParent == null && Hook != null)
         {
-            Hook.ApplyChanges();
+            QueueHookUpdate();
         }
     }
 
@@ -1284,9 +1547,10 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         Type hookType = World.HookTypes.GetHookType(typeof(Slot));
         if (hookType == null) return;
 
-        Hook = (IHook<Slot>)Activator.CreateInstance(hookType);
+        Hook = (IHook<Slot>)Activator.CreateInstance(hookType)!;
         Hook?.AssignOwner(this);
         Hook?.Initialize();
+        QueueHookUpdate();
     }
 
     private void AttachToParentLists()
@@ -1422,7 +1686,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
         if (World == null)
         {
-            var component = (Component)Activator.CreateInstance(componentType);
+            var component = (Component)Activator.CreateInstance(componentType)!;
             if (!_components.Contains(component))
             {
                 _components.Add(component);
@@ -1447,7 +1711,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// </summary>
     public T GetComponent<T>() where T : Component
     {
-        return _components.OfType<T>().FirstOrDefault();
+        return _components.OfType<T>().FirstOrDefault()!;
     }
 
     /// <summary>
@@ -1455,7 +1719,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// </summary>
     public Component GetComponent(Type type)
     {
-        return _components.FirstOrDefault(c => type.IsInstanceOfType(c));
+        return _components.FirstOrDefault(c => type.IsInstanceOfType(c))!;
     }
 
     /// <summary>
@@ -1497,7 +1761,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// </summary>
     public T GetComponent<T>(Func<T, bool> predicate) where T : Component
     {
-        return _components.OfType<T>().FirstOrDefault(predicate);
+        return _components.OfType<T>().FirstOrDefault(predicate)!;
     }
 
     /// <summary>
@@ -1511,7 +1775,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             if (comp != null) return comp;
         }
 
-        return _parent?.GetComponentInParent<T>(true);
+        return (_parent?.GetComponentInParent<T>(true)) ?? null!;
     }
 
     /// <summary>
@@ -1537,7 +1801,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             if (comp != null) return comp;
         }
 
-        return null;
+        return null!;
     }
 
     /// <summary>
@@ -1576,10 +1840,111 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
+    /// <summary>
+    /// Find a Component on this slot or its parents first, falling back to the children.
+    /// </summary>
+    public T GetComponentInParentsOrChildren<T>() where T : Component
+    {
+        var comp = GetComponentInParents<T>();
+        return comp != null ? comp : GetComponentInChildren<T>(includeSelf: false);
+    }
+
+    /// <summary>
+    /// Find a Component on this slot or its children first, falling back to the parents.
+    /// </summary>
+    public T GetComponentInChildrenOrParents<T>() where T : Component
+    {
+        var comp = GetComponentInChildren<T>();
+        return comp != null ? comp : GetComponentInParents<T>(includeSelf: false);
+    }
+
+    /// <summary>
+    /// Run an action over every Component of type T in this slot and its parent hierarchy.
+    /// </summary>
+    public void ForeachComponentInParents<T>(Action<T> action, bool includeSelf = true) where T : Component
+    {
+        foreach (var comp in GetComponentsInParent<T>(includeSelf))
+            action(comp);
+    }
+
+    // Filtered query overloads (predicate + skip-disabled). The filter is required so the
+    // parameterless calls above stay unambiguous; pass null to match any component.
+    // "Disabled" = the owning slot is inactive or the component's Enabled flag is false.
+
+    /// <summary>Find the first Component of type T on this slot or its children matching the filter.</summary>
+    public T GetComponentInChildren<T>(Predicate<T>? filter, bool excludeDisabled = false) where T : Component
+    {
+        if (excludeDisabled && !IsActive)
+            return null!;
+        foreach (var comp in _components.OfType<T>())
+        {
+            if (excludeDisabled && !comp.Enabled.Value) continue;
+            if (filter == null || filter(comp)) return comp;
+        }
+        foreach (var child in EnumerateAllChildren())
+        {
+            var found = child.GetComponentInChildren<T>(filter, excludeDisabled);
+            if (found != null) return found;
+        }
+        return null!;
+    }
+
+    /// <summary>Enumerate Components of type T on this slot and its children matching the filter.</summary>
+    public IEnumerable<T> GetComponentsInChildren<T>(Predicate<T>? filter, bool excludeDisabled = false) where T : Component
+    {
+        if (excludeDisabled && !IsActive)
+            yield break;
+        foreach (var comp in _components.OfType<T>())
+        {
+            if (excludeDisabled && !comp.Enabled.Value) continue;
+            if (filter == null || filter(comp)) yield return comp;
+        }
+        foreach (var child in EnumerateAllChildren())
+            foreach (var comp in child.GetComponentsInChildren<T>(filter, excludeDisabled))
+                yield return comp;
+    }
+
+    /// <summary>Find the first Component of type T on this slot or its parents matching the filter.</summary>
+    public T GetComponentInParents<T>(Predicate<T>? filter, bool excludeDisabled = false) where T : Component
+    {
+        var current = this;
+        while (current != null)
+        {
+            if (!excludeDisabled || current.IsActive)
+            {
+                foreach (var comp in current._components.OfType<T>())
+                {
+                    if (excludeDisabled && !comp.Enabled.Value) continue;
+                    if (filter == null || filter(comp)) return comp;
+                }
+            }
+            current = current._parent;
+        }
+        return null!;
+    }
+
+    /// <summary>Enumerate Components of type T on this slot and its parents matching the filter.</summary>
+    public IEnumerable<T> GetComponentsInParent<T>(Predicate<T>? filter, bool excludeDisabled = false) where T : Component
+    {
+        var current = this;
+        while (current != null)
+        {
+            if (!excludeDisabled || current.IsActive)
+            {
+                foreach (var comp in current._components.OfType<T>())
+                {
+                    if (excludeDisabled && !comp.Enabled.Value) continue;
+                    if (filter == null || filter(comp)) yield return comp;
+                }
+            }
+            current = current._parent;
+        }
+    }
+
 	/// <summary>
 	/// Remove a Component from this Slot.
 	/// </summary>
-	public void RemoveComponent(Component component)
+	public new void RemoveComponent(Component component)
 	{
         if (component == null)
             return;
@@ -1627,6 +1992,362 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
         foreach (var child in EnumerateAllChildren())
             child.ForeachComponentInChildren(action, true);
+    }
+
+    #endregion
+
+    #region Persistence
+
+    // Components and child slots are polymorphic/recursive, so they're serialized explicitly here
+    // rather than through the generic member loop; the "Components" member bag is excluded from it.
+    protected override bool ShouldSerializeMember(ISyncMember member)
+        => !ReferenceEquals(member, componentBag);
+
+    public override DataTreeNode Save(SaveControl control)
+    {
+        var dictionary = (DataTreeDictionary)base.Save(control);
+
+        // Components are type-tagged so the loader knows what to instantiate.
+        var componentList = new DataTreeList();
+        foreach (var component in Components)
+        {
+            if (component == null || !component.IsPersistent)
+                continue;
+            componentList.Add(WorkerSaveLoad.SaveWorker(component, control));
+        }
+        dictionary.Add("Components", componentList);
+
+        // Child slots recurse (always Slot type, so no tag needed).
+        var childList = new DataTreeList();
+        foreach (var child in Children)
+        {
+            if (child == null || !child.IsPersistent)
+                continue;
+            childList.Add(child.Save(control));
+        }
+        dictionary.Add("Children", childList);
+
+        return dictionary;
+    }
+
+    public override void Load(DataTreeNode node, LoadControl control)
+    {
+        if (node is not DataTreeDictionary dictionary)
+            return;
+
+        // Members first (associates this slot's RefID with its saved GUID).
+        base.Load(dictionary, control);
+
+        if (dictionary.TryGetList("Components") is { } componentList)
+        {
+            foreach (var entry in componentList.Children)
+            {
+                var (typeName, data) = WorkerSaveLoad.ExtractWorker(entry);
+                var type = WorkerManager.GetType(typeName);
+                if (type == null || !typeof(Component).IsAssignableFrom(type))
+                {
+                    Lumora.Core.Logging.Logger.Warn($"Slot.Load: unknown component type '{typeName}', skipping.");
+                    continue;
+                }
+                // runOnAttachBehavior: false so the loaded state isn't overwritten by attach defaults.
+                var component = AttachComponent(type, runOnAttachBehavior: false);
+                component.Load(data, control);
+            }
+        }
+
+        if (dictionary.TryGetList("Children") is { } childList)
+        {
+            foreach (var entry in childList.Children)
+            {
+                var child = AddSlot(string.Empty);
+                child.Load(entry, control);
+            }
+        }
+    }
+
+    // GRAPH SAVE / LOAD — serialize this slot's subtree as a self-contained graph (optionally with
+    // its asset dependencies). Lets an object be written to a file/record and loaded into ANY
+    // world (spawning, inventory, copy-paste).
+
+    /// <summary>Add this slot and every slot beneath it (including local children) to <paramref name="set"/>.</summary>
+    public void GenerateHierarchy(HashSet<Slot> set)
+    {
+        if (set == null || !set.Add(this))
+            return;
+        foreach (var child in EnumerateAllChildren())
+            child.GenerateHierarchy(set);
+    }
+
+    /// <summary>
+    /// Serialize this slot's subtree into a self-contained <see cref="SavedGraph"/>. References that
+    /// point outside the subtree (and its collected dependencies) are nulled so the graph stands alone.
+    /// </summary>
+    public SavedGraph SaveObject(DependencyHandling dependencyHandling = DependencyHandling.BreakExternal,
+                                 bool saveNonPersistent = false, ReferenceTranslator? refTranslator = null)
+    {
+        if (World == null)
+            throw new InvalidOperationException("Cannot SaveObject a slot that isn't in a world.");
+
+        refTranslator ??= new ReferenceTranslator();
+        var control = new SaveControl(this, refTranslator) { SaveNonPersistent = saveNonPersistent };
+
+        var rootHierarchy = new HashSet<Slot>();
+        GenerateHierarchy(rootHierarchy);
+
+        // CollectAssets brings along referenced asset-provider components; CollectAll brings along
+        // every referenced slot (deep copy). dependencyHierarchy = all slots covered by collected
+        // slot-dependencies (used for the allow-set + dedup).
+        List<Component>? assetDependencies = null;
+        List<Slot>? slotDependencies = null;
+        var dependencyHierarchy = new HashSet<Slot>();
+
+        if (dependencyHandling == DependencyHandling.CollectAssets)
+        {
+            assetDependencies = new List<Component>();
+            CollectAssetDependencies(rootHierarchy, new HashSet<Component>(), assetDependencies, saveNonPersistent);
+        }
+        else if (dependencyHandling == DependencyHandling.CollectAll)
+        {
+            slotDependencies = new List<Slot>();
+            CollectDependencySlots(rootHierarchy, dependencyHierarchy, slotDependencies, saveNonPersistent);
+        }
+
+        // References may target anything inside the subtree or a collected dependency (slots, their
+        // components, and all their sync members); everything else is nulled for self-containment.
+        var allowed = new HashSet<RefID>();
+        foreach (var slot in rootHierarchy)
+            AddSlotReferenceableIds(slot, allowed);
+        foreach (var slot in dependencyHierarchy)
+            AddSlotReferenceableIds(slot, allowed);
+        if (assetDependencies != null)
+            foreach (var dependency in assetDependencies)
+                AddReferenceableIds(dependency, allowed);
+        control.ReferenceFilter = r => (r == RefID.Null || allowed.Contains(r)) ? r : RefID.Null;
+
+        var dictionary = new DataTreeDictionary();
+        dictionary.Add("Object", Save(control));
+
+        if (slotDependencies != null && slotDependencies.Count > 0)
+        {
+            var dependencyList = new DataTreeList();
+            foreach (var dependency in slotDependencies)
+                dependencyList.Add(dependency.Save(control));
+            dictionary.Add("Dependencies", dependencyList);
+        }
+
+        if (assetDependencies != null && assetDependencies.Count > 0)
+        {
+            control.SaveNonPersistent = true; // dependency components save regardless of slot persistence
+            var assetList = new DataTreeList();
+            foreach (var dependency in assetDependencies)
+                assetList.Add(WorkerSaveLoad.SaveWorker(dependency, control));
+            dictionary.Add("Assets", assetList);
+        }
+
+        var typeVersions = new DataTreeDictionary();
+        control.StoreTypeVersions(typeVersions);
+        dictionary.Add("TypeVersions", typeVersions);
+
+        return new SavedGraph(dictionary);
+    }
+
+    private static void AddReferenceableIds(Worker worker, HashSet<RefID> set)
+    {
+        set.Add(worker.ReferenceID);
+        for (int i = 0; i < worker.SyncMemberCount; i++)
+        {
+            var member = worker.GetSyncMember(i);
+            if (member != null)
+                set.Add(member.ReferenceID);
+        }
+    }
+
+    // Gather asset-provider (or PreserveWithAssets) components referenced from inside the subtree
+    // but living outside it, recursively (assets can reference other assets).
+    private static void CollectAssetDependencies(HashSet<Slot> rootHierarchy, HashSet<Component> seen,
+                                                 List<Component> output, bool saveNonPersistent)
+    {
+        foreach (var slot in rootHierarchy)
+        {
+            CollectWorkerAssetRefs(slot, rootHierarchy, seen, output, saveNonPersistent);
+            foreach (var component in slot.Components)
+                CollectWorkerAssetRefs(component, rootHierarchy, seen, output, saveNonPersistent);
+        }
+    }
+
+    private static void CollectWorkerAssetRefs(Worker worker, HashSet<Slot> rootHierarchy,
+        HashSet<Component> seen, List<Component> output, bool saveNonPersistent)
+    {
+        for (int i = 0; i < worker.SyncMemberCount; i++)
+        {
+            if (worker.GetSyncMember(i) is not ISyncRef syncRef)
+                continue;
+            if (syncRef.Target is not Component target || target.IsDestroyed)
+                continue;
+            if (target is not IAssetProvider && !target.PreserveWithAssets)
+                continue;
+            if (target.Slot != null && rootHierarchy.Contains(target.Slot))
+                continue; // already inside the saved subtree
+            if (!saveNonPersistent && !target.IsPersistent)
+                continue;
+            if (!seen.Add(target))
+                continue;
+            output.Add(target);
+            CollectWorkerAssetRefs(target, rootHierarchy, seen, output, saveNonPersistent);
+        }
+    }
+
+    private static void AddSlotReferenceableIds(Slot slot, HashSet<RefID> set)
+    {
+        AddReferenceableIds(slot, set);
+        foreach (var component in slot.Components)
+            AddReferenceableIds(component, set);
+    }
+
+    // Gather every slot referenced from inside the subtree but living outside it, recursively
+    // (each collected dependency subtree is itself scanned for further external references).
+    private static void CollectDependencySlots(HashSet<Slot> rootHierarchy, HashSet<Slot> dependencyHierarchy,
+                                               List<Slot> output, bool saveNonPersistent)
+    {
+        var toScan = new Queue<Slot>(rootHierarchy);
+        while (toScan.Count > 0)
+        {
+            var slot = toScan.Dequeue();
+            ScanForDependencySlots(slot, rootHierarchy, dependencyHierarchy, output, toScan, saveNonPersistent);
+            foreach (var component in slot.Components)
+                ScanForDependencySlots(component, rootHierarchy, dependencyHierarchy, output, toScan, saveNonPersistent);
+        }
+    }
+
+    private static void ScanForDependencySlots(Worker worker, HashSet<Slot> rootHierarchy,
+        HashSet<Slot> dependencyHierarchy, List<Slot> output, Queue<Slot> toScan, bool saveNonPersistent)
+    {
+        for (int i = 0; i < worker.SyncMemberCount; i++)
+        {
+            if (worker.GetSyncMember(i) is not ISyncRef syncRef)
+                continue;
+            var target = syncRef.Target;
+            if (target == null || target.IsDestroyed)
+                continue;
+            var slot = target as Slot ?? (target as Component)?.Slot;
+            if (slot == null || slot.IsDestroyed)
+                continue;
+            if (rootHierarchy.Contains(slot) || dependencyHierarchy.Contains(slot))
+                continue;
+            if (!saveNonPersistent && !slot.IsPersistent)
+                continue;
+
+            // New top-level dependency: save the whole subtree it roots, drop any earlier-collected
+            // root that turns out to live inside it, and queue its (new) slots for further scanning.
+            var subtree = new HashSet<Slot>();
+            slot.GenerateHierarchy(subtree);
+            output.RemoveAll(existing => subtree.Contains(existing));
+            output.Add(slot);
+            foreach (var s in subtree)
+                if (dependencyHierarchy.Add(s))
+                    toScan.Enqueue(s);
+        }
+    }
+
+    /// <summary>
+    /// Load a graph produced by <see cref="SaveObject"/> into this slot. Any collected "Assets" are
+    /// attached under <paramref name="assetsRoot"/> (or a new child of the world root) so their
+    /// references resolve. Intended for an empty target slot (e.g. <c>parent.AddSlot().LoadObject(…)</c>).
+    /// </summary>
+    public void LoadObject(DataTreeDictionary node, Slot? assetsRoot = null, ReferenceTranslator? refTranslator = null)
+    {
+        if (IsDestroyed)
+            throw new InvalidOperationException("Cannot LoadObject onto a destroyed slot.");
+        if (World == null)
+            throw new InvalidOperationException("Cannot LoadObject onto a slot that isn't in a world.");
+
+        refTranslator ??= new ReferenceTranslator();
+        var control = new LoadControl(World, refTranslator);
+
+        try
+        {
+            if (node.TryGetDictionary("TypeVersions") is { } typeVersions)
+                control.LoadTypeVersions(typeVersions);
+
+            // The saved root's own parent reference was nulled by the filter; remember where this
+            // slot lives so loading the (parentless) object doesn't detach it from the hierarchy.
+            var originalParent = _parent;
+
+            if (node.TryGetNode("Object") is { } objectNode)
+                Load(objectNode, control);
+
+            if (originalParent != null && !ReferenceEquals(_parent, originalParent))
+                SetParent(originalParent, preserveGlobalTransform: false);
+
+            if (node.TryGetList("Dependencies") is { } dependencyList && dependencyList.Children.Count > 0)
+            {
+                var dependencyHost = World.RootSlot.AddSlot(Name + " - Dependencies");
+                foreach (var entry in dependencyList.Children)
+                    dependencyHost.AddSlot(string.Empty).Load(entry, control);
+            }
+
+            if (node.TryGetList("Assets") is { } assetList && assetList.Children.Count > 0)
+            {
+                var host = assetsRoot ?? World.RootSlot.AddSlot(Name + " - Assets");
+                foreach (var entry in assetList.Children)
+                {
+                    var (typeName, data) = WorkerSaveLoad.ExtractWorker(entry);
+                    var type = WorkerManager.GetType(typeName);
+                    if (type == null || !typeof(Component).IsAssignableFrom(type))
+                    {
+                        Lumora.Core.Logging.Logger.Warn($"Slot.LoadObject: unknown asset component type '{typeName}', skipping.");
+                        continue;
+                    }
+                    var component = host.AttachComponent(type, runOnAttachBehavior: false);
+                    component.Load(data, control);
+                }
+            }
+        }
+        finally
+        {
+            control.FinishLoad();
+        }
+    }
+
+    /// <summary>Save this slot's subtree to a file in the binary data-tree format.</summary>
+    public void SaveObjectToFile(string path, DependencyHandling dependencyHandling = DependencyHandling.CollectAssets,
+                                 bool saveNonPersistent = false)
+    {
+        var graph = SaveObject(dependencyHandling, saveNonPersistent);
+        File.WriteAllBytes(path, graph.SaveToBytes());
+    }
+
+    /// <summary>Load a graph from a file into this slot.</summary>
+    public void LoadObjectFromFile(string path, Slot? assetsRoot = null, ReferenceTranslator? refTranslator = null)
+    {
+        if (DataTreeConverter.LoadFromBytes(File.ReadAllBytes(path)) is DataTreeDictionary dictionary)
+            LoadObject(dictionary, assetsRoot, refTranslator);
+        else
+            throw new InvalidDataException("File does not contain a saved object graph.");
+    }
+
+    /// <summary>
+    /// Asynchronously load a graph from a local file: the bytes are read off-thread, then the actual
+    /// load is marshaled back onto the world update thread (data-model mutations must happen there).
+    /// </summary>
+    public async Task LoadObjectAsync(string path, Slot? assetsRoot = null, ReferenceTranslator? refTranslator = null)
+    {
+        var bytes = await File.ReadAllBytesAsync(path).ConfigureAwait(false);
+        var node = DataTreeConverter.LoadFromBytes(bytes);
+        var completion = new TaskCompletionSource();
+        RunSynchronously(() =>
+        {
+            try
+            {
+                if (!IsDestroyed && node is DataTreeDictionary dictionary)
+                    LoadObject(dictionary, assetsRoot, refTranslator);
+            }
+            finally
+            {
+                completion.SetResult();
+            }
+        });
+        await completion.Task.ConfigureAwait(false);
     }
 
     #endregion
@@ -1734,7 +2455,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     public Slot GetChild(int index)
     {
         if (index < 0 || index >= _children.Count)
-            return null;
+            return null!;
         return _children[index];
     }
 
@@ -1753,7 +2474,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// </summary>
     public Slot GetChild(string name)
     {
-        return _children.FirstOrDefault(c => c.Name.Value == name);
+        return _children.FirstOrDefault(c => c.Name.Value == name)!;
     }
 
     /// <summary>
@@ -1781,7 +2502,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
                     return found;
             }
         }
-        return null;
+        return null!;
     }
 
     /// <summary>
@@ -1808,6 +2529,39 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     public IEnumerable<Slot> FindChildrenByTag(string tag, bool recursive = false)
     {
         return FindChildren(s => s.Tag.Value == tag, recursive);
+    }
+
+    /// <summary>
+    /// Set the tag on this slot and every slot beneath it.
+    /// </summary>
+    public void TagHierarchy(string tag)
+    {
+        Tag.Value = tag;
+        foreach (var child in EnumerateAllChildren())
+            child.TagHierarchy(tag);
+    }
+
+    /// <summary>
+    /// Collect every descendant slot whose tag matches (whole hierarchy).
+    /// </summary>
+    public List<Slot> GetChildrenWithTag(string tag)
+    {
+        var result = new List<Slot>();
+        GetChildrenWithTag(tag, result);
+        return result;
+    }
+
+    /// <summary>
+    /// Fill <paramref name="children"/> with every descendant slot whose tag matches.
+    /// </summary>
+    public void GetChildrenWithTag(string tag, List<Slot> children)
+    {
+        foreach (var child in EnumerateAllChildren())
+        {
+            if (child.Tag.Value == tag)
+                children.Add(child);
+            child.GetChildrenWithTag(tag, children);
+        }
     }
 
     /// <summary>
@@ -1845,7 +2599,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             if (child == null)
             {
                 if (!createIfMissing)
-                    return null;
+                    return null!;
                 child = current.AddSlot(part);
             }
             current = child;
@@ -1886,6 +2640,51 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         _children.Remove(child);
         index = System.Math.Clamp(index, 0, _children.Count);
         _children.Insert(index, child);
+    }
+
+    /// <summary>
+    /// Move this slot to <paramref name="index"/> within its parent's child list.
+    /// </summary>
+    public void InsertAtIndex(int index)
+    {
+        _parent?.MoveChildToIndex(this, index);
+    }
+
+    /// <summary>
+    /// Swap the sibling positions of two slots that share the same parent.
+    /// </summary>
+    public static void SwapChildren(Slot a, Slot b)
+    {
+        if (a == null || b == null || ReferenceEquals(a, b))
+            return;
+        var parent = a._parent;
+        if (parent == null || !ReferenceEquals(parent, b._parent))
+            return;
+
+        int indexA = a.SiblingIndex;
+        int indexB = b.SiblingIndex;
+        // Move the lower-indexed slot's target first; each MoveChildToIndex re-clamps
+        // against the current list, so doing them in this order lands both correctly.
+        if (indexA < indexB)
+        {
+            parent.MoveChildToIndex(b, indexA);
+            parent.MoveChildToIndex(a, indexB);
+        }
+        else
+        {
+            parent.MoveChildToIndex(a, indexB);
+            parent.MoveChildToIndex(b, indexA);
+        }
+    }
+
+    /// <summary>
+    /// Add a child slot and move it to a specific index in the child list.
+    /// </summary>
+    public Slot InsertSlot(int index, string name = "Slot")
+    {
+        var slot = AddSlot(name);
+        MoveChildToIndex(slot, index);
+        return slot;
     }
 
     /// <summary>
@@ -1965,7 +2764,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// </summary>
     public Slot FindCommonAncestor(Slot other)
     {
-        if (other == null) return null;
+        if (other == null) return null!;
 
         var ancestors = new HashSet<Slot>(GetAncestors(true));
         foreach (var ancestor in other.GetAncestors(true))
@@ -1973,7 +2772,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             if (ancestors.Contains(ancestor))
                 return ancestor;
         }
-        return null;
+        return null!;
     }
 
     /// <summary>
@@ -1996,110 +2795,301 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// <summary>
     /// Duplicate this slot and its contents.
     /// </summary>
-    public Slot Duplicate(Slot newParent = null, bool preserveGlobalTransform = false)
+    public Slot Duplicate(Slot newParent = null!, bool preserveGlobalTransform = false)
     {
         newParent ??= _parent;
         if (newParent == null || World == null)
-            return null;
+            return null!;
+        if (IsRootSlot)
+            return null!;
+        if (newParent == this || newParent.IsDescendantOf(this))
+            return null!;
 
-        // Create reference mapping for resolving references after duplication
-        var refMap = new Dictionary<RefID, RefID>();
+        // Three phases:
+        //  1. Clone the slot/component tree and map every source element's RefID
+        //     to its clone.
+        //  2. Copy member values - leaves copy immediately; every member registers
+        //     its RefID in the map and every reference is deferred (a reference
+        //     can't bind before its target's clone exists).
+        //  3. Transfer references against the now-complete map, so a ref that
+        //     pointed inside the source tree points at its clone instead of the
+        //     original. This is what makes the copy a self-contained instance -
+        //     drives, color drivers and any field-targeting ref follow the clone.
+        var elementMap = new Dictionary<RefID, RefID>();
+        var slotPairs = new List<(Slot source, Slot clone)>();
+        var componentPairs = new List<(Component source, Component target)>();
+        var deferredRefs = new List<(ISyncRef cloneRef, ISyncRef sourceRef)>();
 
-        return DuplicateInternal(newParent, preserveGlobalTransform, refMap);
-    }
+        var clone = DuplicateStructure(newParent, elementMap, slotPairs, componentPairs);
+        if (clone == null)
+            return null!;
 
-    private Slot DuplicateInternal(Slot newParent, bool preserveGlobalTransform, Dictionary<RefID, RefID> refMap)
-    {
-        var clone = newParent.AddSlot(Name.Value + " (Copy)");
-        refMap[ReferenceID] = clone.ReferenceID;
+        foreach (var (source, target) in slotPairs)
+            CopySlotMembers(source, target, elementMap, deferredRefs);
 
-        // Copy transform
+        foreach (var (source, target) in componentPairs)
+            CopyComponentData(source, target, elementMap, deferredRefs);
+
+        foreach (var (cloneRef, sourceRef) in deferredRefs)
+            TransferReference(cloneRef, sourceRef, elementMap);
+
         if (preserveGlobalTransform)
         {
             clone.GlobalPosition = GlobalPosition;
             clone.GlobalRotation = GlobalRotation;
             clone.GlobalScale = GlobalScale;
         }
-        else
-        {
-            clone.LocalPosition.Value = LocalPosition.Value;
-            clone.LocalRotation.Value = LocalRotation.Value;
-            clone.LocalScale.Value = LocalScale.Value;
-        }
 
-        // Copy properties
-        clone.ActiveSelf.Value = ActiveSelf.Value;
-        clone.Tag.Value = Tag.Value;
-        clone.Persistent.Value = Persistent.Value;
-        clone.OrderOffset.Value = OrderOffset.Value;
-
-        // Duplicate components with data copying
-        foreach (var component in _components)
+        // Post-fixup hook: runs after all data and references are in place so
+        // components can rebind runtime state.
+        foreach (var (_, target) in componentPairs)
         {
-            var compType = component.GetType();
-            var cloneComp = clone.AttachComponent(compType);
-            refMap[component.ReferenceID] = cloneComp.ReferenceID;
-            CopyComponentData(component, cloneComp, refMap);
-        }
-
-        // Duplicate children
-        foreach (var child in _children)
-        {
-            child.DuplicateInternal(clone, false, refMap);
+            try
+            {
+                target.OnDuplicate();
+            }
+            catch (Exception ex)
+            {
+                Logging.Logger.Warn($"OnDuplicate failed for {target.GetType().Name}: {ex.Message}");
+            }
         }
 
         return clone;
     }
 
-    /// <summary>
-    /// Copy all sync field data from source to target component.
-    /// </summary>
-    private void CopyComponentData(Component source, Component target, Dictionary<RefID, RefID> refMap)
+    private Slot? DuplicateStructure(
+        Slot newParent,
+        Dictionary<RefID, RefID> elementMap,
+        List<(Slot source, Slot clone)> slotPairs,
+        List<(Component source, Component target)> componentPairs)
     {
-        var type = source.GetType();
+        // An active user's root - their body, tracking and input rig - must
+        // never be duplicated.
+        if (ActiveUserRoot != null && ActiveUserRoot.Slot == this)
+            return null;
 
-        // Get all sync field properties
-        var properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            .Where(p => typeof(ISyncMember).IsAssignableFrom(p.PropertyType));
+        var clone = newParent.AddSlot(Name.Value);
+        elementMap[ReferenceID] = clone.ReferenceID;
+        slotPairs.Add((this, clone));
 
-        foreach (var prop in properties)
+        foreach (var component in _components)
         {
+            if (component.DontDuplicate)
+                continue;
+
+            // Attach behaviors stay off for clones: the copied data IS the
+            // state, and OnAttach side effects (auto-attached helpers, default
+            // setup) would fight it.
+            var cloneComp = clone.AttachComponent(component.GetType(), runOnAttachBehavior: false);
+            elementMap[component.ReferenceID] = cloneComp.ReferenceID;
+            componentPairs.Add((component, cloneComp));
+        }
+
+        foreach (var child in _children)
+        {
+            child.DuplicateStructure(clone, elementMap, slotPairs, componentPairs);
+        }
+
+        return clone;
+    }
+
+    // All slot-level sync members copied generically (transform, name, tag,
+    // active state, and anything added later); only hierarchy plumbing is
+    // excluded.
+    private void CopySlotMembers(Slot source, Slot clone, Dictionary<RefID, RefID> elementMap,
+        List<(ISyncRef cloneRef, ISyncRef sourceRef)> deferredRefs)
+    {
+        foreach (var field in typeof(Slot).GetFields(BindingFlags.Public | BindingFlags.Instance)
+                     .Where(f => typeof(ISyncMember).IsAssignableFrom(f.FieldType)))
+        {
+            if (field.Name == nameof(ParentSlotRef))
+                continue;
             try
             {
-                var sourceField = prop.GetValue(source) as ISyncMember;
-                var targetField = prop.GetValue(target) as ISyncMember;
-
-                if (sourceField != null && targetField != null)
-                {
-                    CopySyncMemberValue(sourceField, targetField, refMap);
-                }
+                CopyMemberPair(field.GetValue(source) as ISyncMember, field.GetValue(clone) as ISyncMember, elementMap, deferredRefs);
             }
             catch (Exception ex)
             {
-                Logging.Logger.Warn($"Failed to copy property {prop.Name}: {ex.Message}");
+                Logging.Logger.Warn($"Failed to copy slot member {field.Name}: {ex.Message}");
+            }
+        }
+
+        foreach (var prop in typeof(Slot).GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                     .Where(p => typeof(ISyncMember).IsAssignableFrom(p.PropertyType) && p.GetIndexParameters().Length == 0))
+        {
+            try
+            {
+                CopyMemberPair(prop.GetValue(source) as ISyncMember, prop.GetValue(clone) as ISyncMember, elementMap, deferredRefs);
+            }
+            catch (Exception ex)
+            {
+                Logging.Logger.Warn($"Failed to copy slot member {prop.Name}: {ex.Message}");
             }
         }
     }
 
+    // Cached per-type member layout for duplication. Reflecting GetProperties/
+    // GetFields + LINQ filtering on every component of every duplicate was the
+    // main duplication cost; resolve the member list once per type and reuse it.
+    private sealed class CopyPlan
+    {
+        public MemberInfo[] SyncMembers = Array.Empty<MemberInfo>();
+        public MemberInfo[] RefLists = Array.Empty<MemberInfo>();
+    }
+
+    private static readonly Dictionary<Type, CopyPlan> _copyPlans = new();
+
+    private static CopyPlan GetCopyPlan(Type type)
+    {
+        if (_copyPlans.TryGetValue(type, out var cached))
+            return cached;
+
+        var sync = new List<MemberInfo>();
+        var refLists = new List<MemberInfo>();
+        foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        {
+            if (prop.GetIndexParameters().Length != 0)
+                continue;
+            if (typeof(ISyncMember).IsAssignableFrom(prop.PropertyType))
+                sync.Add(prop);
+            else if (IsSyncRefList(prop.PropertyType))
+                refLists.Add(prop);
+        }
+        foreach (var field in type.GetFields(BindingFlags.Public | BindingFlags.Instance))
+        {
+            if (typeof(ISyncMember).IsAssignableFrom(field.FieldType))
+                sync.Add(field);
+            else if (IsSyncRefList(field.FieldType))
+                refLists.Add(field);
+        }
+
+        var plan = new CopyPlan { SyncMembers = sync.ToArray(), RefLists = refLists.ToArray() };
+        _copyPlans[type] = plan;
+        return plan;
+    }
+
+    private static object? GetMemberValue(MemberInfo member, object instance)
+        => member is PropertyInfo p ? p.GetValue(instance) : ((FieldInfo)member).GetValue(instance);
+
     /// <summary>
-    /// Copy value from one sync member to another.
+    /// Copy all sync member data from source to target component, using the
+    /// cached member layout for the type.
     /// </summary>
-    private void CopySyncMemberValue(ISyncMember source, ISyncMember target, Dictionary<RefID, RefID> refMap)
+    private void CopyComponentData(Component source, Component target, Dictionary<RefID, RefID> elementMap,
+        List<(ISyncRef cloneRef, ISyncRef sourceRef)> deferredRefs)
+    {
+        var plan = GetCopyPlan(source.GetType());
+
+        foreach (var member in plan.SyncMembers)
+        {
+            try
+            {
+                CopyMemberPair(GetMemberValue(member, source) as ISyncMember, GetMemberValue(member, target) as ISyncMember, elementMap, deferredRefs);
+            }
+            catch (Exception ex)
+            {
+                Logging.Logger.Warn($"Failed to copy member {member.Name}: {ex.Message}");
+            }
+        }
+
+        // SyncRefList<T> predates the sync-member contract, so it isn't an
+        // ISyncMember - copy it explicitly or bone/avatar lists vanish on duplicate.
+        foreach (var member in plan.RefLists)
+        {
+            try
+            {
+                CopySyncRefList(GetMemberValue(member, source), GetMemberValue(member, target), elementMap);
+            }
+            catch (Exception ex)
+            {
+                Logging.Logger.Warn($"Failed to copy ref list {member.Name}: {ex.Message}");
+            }
+        }
+    }
+
+    private static bool IsSyncRefList(Type type)
+        => type.IsGenericType && type.GetGenericTypeDefinition() == typeof(SyncRefList<>);
+
+    private void CopySyncRefList(object? sourceList, object? targetList, Dictionary<RefID, RefID> refMap)
+    {
+        if (sourceList == null || targetList == null)
+            return;
+        if (sourceList is not System.Collections.IEnumerable sourceElements)
+            return;
+
+        var addMethod = targetList.GetType().GetMethod("Add");
+        if (addMethod == null)
+            return;
+
+        foreach (var element in sourceElements)
+        {
+            object? resolved = element;
+            // Elements pointing inside the duplicated tree follow their clones;
+            // external elements stay shared with the original.
+            if (element is IWorldElement worldElement
+                && refMap.TryGetValue(worldElement.ReferenceID, out var remapped))
+            {
+                resolved = World?.FindElement(remapped) ?? element;
+            }
+            addMethod.Invoke(targetList, new[] { resolved });
+        }
+    }
+
+    private void CopyMemberPair(ISyncMember? sourceMember, ISyncMember? targetMember,
+        Dictionary<RefID, RefID> elementMap, List<(ISyncRef cloneRef, ISyncRef sourceRef)> deferredRefs)
+    {
+        if (sourceMember != null && targetMember != null)
+        {
+            CopySyncMemberValue(sourceMember, targetMember, elementMap, deferredRefs);
+        }
+    }
+
+    /// <summary>
+    /// Copy value from one sync member to another. Every member registers its
+    /// RefID in the map so references aimed at it can be remapped; references
+    /// themselves are deferred and resolved once the whole tree exists.
+    /// </summary>
+    private void CopySyncMemberValue(ISyncMember source, ISyncMember target,
+        Dictionary<RefID, RefID> elementMap, List<(ISyncRef cloneRef, ISyncRef sourceRef)> deferredRefs)
     {
         var sourceType = source.GetType();
         var targetType = target.GetType();
 
         if (sourceType != targetType) return;
 
-        // Handle SyncRef types - need to remap references
-        if (sourceType.IsGenericType && sourceType.GetGenericTypeDefinition() == typeof(SyncRef<>))
+        // Register this member (field, ref, or list element) so any reference in
+        // the tree that targets it can be relocated to the clone's member. Without
+        // this a ref aimed at a field stays bound to the original's field.
+        elementMap[source.ReferenceID] = target.ReferenceID;
+
+        // References (SyncRef and subclasses like AssetRef) are deferred, not bound
+        // here: the target's clone may not exist yet. The transfer phase resolves
+        // them against the complete map.
+        if (source is ISyncRef sourceRef && target is ISyncRef targetRef)
         {
-            var sourceValue = source.GetValueAsObject();
-            if (sourceValue is RefID refId && refMap.TryGetValue(refId, out var newRefId))
+            // Delegates carry a method name (and possibly a static type) beside the
+            // target; copy that now so the clone keeps the same handler once its
+            // target is remapped in the transfer phase.
+            if (source is ISyncDelegate sourceDelegate && target is ISyncDelegate targetDelegate)
+                targetDelegate.SetMethod(sourceDelegate.MethodName, sourceDelegate.StaticType);
+
+            deferredRefs.Add((targetRef, sourceRef));
+            return;
+        }
+
+        // Lists (SyncList/SyncAssetList): grow the clone's list and copy
+        // element-wise, recursing so elements register and nested refs defer.
+        if (source is ISyncList sourceList && target is ISyncList targetList)
+        {
+            int count = sourceList.Count;
+            for (int i = 0; i < count; i++)
             {
-                // Set remapped reference
-                var valueProperty = targetType.GetProperty("Value");
-                valueProperty?.SetValue(target, newRefId);
+                var sourceElement = sourceList.GetElement(i);
+                var targetElement = i < targetList.Count ? targetList.GetElement(i) : targetList.AddElement();
+                if (sourceElement != null && targetElement != null)
+                {
+                    CopySyncMemberValue(sourceElement, targetElement, elementMap, deferredRefs);
+                }
             }
             return;
         }
@@ -2123,10 +3113,27 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
+    // Resolve a deferred reference now that the whole clone tree and its member
+    // map exist. A ref whose target lived inside the source tree points at the
+    // clone of that target; an external non-link ref stays shared with the
+    // original (materials, fonts); an external link is left null - a forked link
+    // would fight the original over the same target.
+    private void TransferReference(ISyncRef cloneRef, ISyncRef sourceRef, Dictionary<RefID, RefID> elementMap)
+    {
+        var sourceTarget = sourceRef.Value;
+        if (sourceTarget == RefID.Null)
+            return;
+
+        if (elementMap.TryGetValue(sourceTarget, out var clonedTarget))
+            cloneRef.Value = clonedTarget;
+        else if (sourceRef is not ILinkRef)
+            cloneRef.Value = sourceTarget;
+    }
+
     /// <summary>
     /// Create a deep copy with all references resolved.
     /// </summary>
-    public Slot DeepCopy(Slot newParent = null)
+    public Slot DeepCopy(Slot newParent = null!)
     {
         return Duplicate(newParent, false);
     }
@@ -2220,8 +3227,14 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     public void Destroy()
     {
         if (IsDestroyed) return;
+        if (IsProtected)
+        {
+            Logging.Logger.Warn($"Slot.Destroy: refusing to destroy protected slot '{Name.Value}' (RefID {ReferenceID})");
+            return;
+        }
 
         IsDestroyed = true;
+        OnPrepareDestroy?.Invoke(this);
 
         // Destroy all children
         foreach (var child in _children.ToArray())
@@ -2254,13 +3267,20 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// </summary>
     public void RemoveFromHierarchy()
     {
+        if (IsProtected)
+        {
+            Logging.Logger.Warn($"Slot.RemoveFromHierarchy: refusing on protected slot '{Name.Value}' (RefID {ReferenceID})");
+            return;
+        }
+
         _isRemoved = true;
         _parent?.DetachChildInternal(this);
-        _parent = null;
+        _parent = null!;
     }
 
     /// <summary>
-    /// Destroy all children.
+    /// Destroy all children. Protected children are skipped; their Destroy()
+    /// call no-ops with a warning.
     /// </summary>
     public void DestroyChildren()
     {
@@ -2316,7 +3336,18 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
     private void OnChanged()
     {
+        QueueHookUpdate();
         Changed?.Invoke(this);
+    }
+
+    private void QueueHookUpdate()
+    {
+        if (Hook == null || World == null || IsDestroyed)
+        {
+            return;
+        }
+
+        World.UpdateManager?.RegisterHookUpdate(this);
     }
 
     #endregion
@@ -2388,7 +3419,9 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             var type = Type.GetType(typeName);
             if (type != null)
             {
-                var comp = AttachComponent(type);
+                // Decoded data is the component's state; attach behaviors would
+                // overwrite it with defaults and auto-attach duplicate helpers.
+                var comp = AttachComponent(type, runOnAttachBehavior: false);
                 comp.Decode(reader);
                 refLookup[compRefId] = comp;
             }
@@ -2486,7 +3519,8 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             var type = Type.GetType(typeName);
             if (type != null)
             {
-                var comp = AttachComponent(type);
+                // Same as decode: loaded data is the state, attach behaviors off.
+                var comp = AttachComponent(type, runOnAttachBehavior: false);
                 LoadComponentFromBinary(reader, comp);
             }
             else
@@ -2521,11 +3555,11 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             if (syncMember != null)
             {
                 var value = syncMember.GetValueAsObject();
-                WriteValue(writer, value);
+                WriteValue(writer, value!);
             }
             else
             {
-                WriteValue(writer, null);
+                WriteValue(writer, null!);
             }
         }
     }
@@ -2690,7 +3724,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
         return typeCode switch
         {
-            0 => null,
+            0 => null!,
             1 => reader.ReadBoolean(),
             2 => reader.ReadInt32(),
             3 => reader.ReadSingle(),
@@ -2705,7 +3739,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             12 => new RefID(reader.ReadUInt64()),
             13 => ReadEnumValue(reader),
             255 => reader.ReadString(), // String fallback
-            _ => null
+            _ => null!
         };
     }
 

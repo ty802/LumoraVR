@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -75,7 +75,7 @@ public abstract class ConflictingSyncElement : SyncElement
     /// <summary>
     /// User who last modified this element.
     /// </summary>
-    public User LastModifyingUser { get; private set; }
+    public User LastModifyingUser { get; private set; } = null!;
 
     /// <summary>
     /// Whether this element's changes have been confirmed.
@@ -96,7 +96,7 @@ public abstract class ConflictingSyncElement : SyncElement
     /// <summary>
     /// Event fired when this element is invalidated due to a conflict.
     /// </summary>
-    public event Action Invalidated;
+    public event Action Invalidated = null!;
 
     public ConflictingSyncElement()
     {
@@ -161,6 +161,17 @@ public abstract class ConflictingSyncElement : SyncElement
 
             if (!messageNewer)
                 return MessageValidity.Conflict;
+
+            var surface = this is IField ? DataModelPermissionSurface.Field : DataModelPermissionSurface.SyncElement;
+            if (!AuthorizeDataModelMutation(
+                    DataModelPermissionAction.Write | DataModelPermissionAction.Replicate,
+                    surface,
+                    inboundMessage.SenderUser,
+                    isNetwork: true,
+                    throwOnError: false))
+            {
+                return MessageValidity.Conflict;
+            }
 
             return MessageValidity.Valid;
         }
@@ -248,8 +259,8 @@ public abstract class ConflictingSyncElement : SyncElement
 
     public override void Dispose()
     {
-        LastModifyingUser = null;
-        Invalidated = null;
+        LastModifyingUser = null!;
+        Invalidated = null!;
         base.Dispose();
     }
 }

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.Collections.Generic;
@@ -115,10 +115,10 @@ public class ConfirmationMessage
     /// <summary>
     /// If rejected, the corrected value from authority.
     /// </summary>
-    public byte[] CorrectedData { get; set; }
+    public byte[] CorrectedData { get; set; } = null!;
 
     /// <summary>
     /// Human-readable reason for rejection (for debugging/logging).
     /// </summary>
-    public string RejectionReason { get; set; }
+    public string RejectionReason { get; set; } = null!;
 }

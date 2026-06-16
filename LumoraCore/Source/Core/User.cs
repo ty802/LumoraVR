@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Lumora.Core.Input;
 using Lumora.Core.Networking.Sync;
@@ -95,7 +95,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
     public int ImmediateStreamCount { get; set; }
 
     // ISyncObject implementation
-    public List<ISyncMember> SyncMembers => _syncMembers;
+    public new List<ISyncMember> SyncMembers => _syncMembers;
     public bool IsAuthority => World?.IsAuthority ?? false;
 
     /// <summary>
@@ -119,7 +119,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
 
     public int StreamCount => streamBag.Count;
 
-    public StreamGroupManager StreamGroupManager { get; private set; }
+    public StreamGroupManager StreamGroupManager { get; private set; } = null!;
 
     public uint StreamConfigurationVersion => streamConfiguration.Value;
 
@@ -128,7 +128,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
     /// </summary>
     public bool IsLocal => World?.LocalUser == this;
 
-    private Components.UserRoot _root;
+    private Components.UserRoot _root = null!;
     public readonly SyncRef<Components.UserRoot> UserRootRef = new();
 
     /// <summary>
@@ -243,6 +243,47 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
     }
 
     /// <summary>
+    /// Kick this user from the world. Host-authoritative; cannot kick the host.
+    /// </summary>
+    public void Kick()
+    {
+        if (World == null || !World.IsAuthority)
+        {
+            LumoraLogger.Warn("Kick requires host authority");
+            return;
+        }
+        if (IsHost)
+        {
+            LumoraLogger.Warn("Cannot kick the host");
+            return;
+        }
+        LumoraLogger.Log($"Kicking user '{UserName.Value}'");
+        World.RemoveUser(this);
+    }
+
+    /// <summary>
+    /// Ban this user: record a temp + persistent ban (keyed by user/machine id, scoped to this world)
+    /// so they can't rejoin, then kick. Host-authoritative; cannot ban the host.
+    /// </summary>
+    public void Ban()
+    {
+        if (World == null || !World.IsAuthority)
+        {
+            LumoraLogger.Warn("Ban requires host authority");
+            return;
+        }
+        if (IsHost)
+        {
+            LumoraLogger.Warn("Cannot ban the host");
+            return;
+        }
+        LumoraLogger.Log($"Banning user '{UserName.Value}'");
+        Security.BanManager.TempBan(UserID.Value, MachineID.Value);
+        Security.BanManager.AddBan(UserName.Value, UserID.Value, MachineID.Value, World.WorldName.Value);
+        World.RemoveUser(this);
+    }
+
+    /// <summary>
     /// Get all dirty sync members that need to be sent over network.
     /// </summary>
     public List<ISyncMember> GetDirtySyncMembers()
@@ -273,7 +314,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
 
     public IStream GetStream(RefID id)
     {
-        return streamBag.TryGetValue(id, out var stream) ? stream : null;
+        return (streamBag.TryGetValue(id, out var stream) ? stream : null) ?? null!;
     }
 
     public S AddStream<S>() where S : Networking.Streams.Stream, new()
@@ -428,7 +469,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
 
     #endregion
 
-    public void Dispose()
+    public override void Dispose()
     {
         if (IsDisposed) return;
         IsDisposed = true;
@@ -477,3 +518,4 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
         return $"User({UserName.Value ?? UserID.Value}, ID={ReferenceID})";
     }
 }
+

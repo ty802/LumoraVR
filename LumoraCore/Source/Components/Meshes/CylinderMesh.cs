@@ -12,7 +12,7 @@ namespace Lumora.Core.Components.Meshes;
 /// </summary>
 public class CylinderMesh : ProceduralMesh
 {
-    // ===== Sync Fields =====
+    // Sync Fields
 
     /// <summary>Radius of the cylinder</summary>
     public readonly Sync<float> Radius;
@@ -26,7 +26,7 @@ public class CylinderMesh : ProceduralMesh
     /// <summary>UV scale for texture mapping</summary>
     public readonly Sync<float2> UVScale;
 
-    // ===== Private State =====
+    // Private State
 
     private PhosCylinder? cylinder;
     private float _radius;
@@ -34,7 +34,7 @@ public class CylinderMesh : ProceduralMesh
     private int _segments;
     private float2 _uvScale;
 
-    // ===== Constructor =====
+    // Constructor
 
     public CylinderMesh()
     {
@@ -44,7 +44,7 @@ public class CylinderMesh : ProceduralMesh
         UVScale = new Sync<float2>(this, new float2(1f, 1f));
     }
 
-    // ===== Lifecycle =====
+    // Lifecycle
 
     public override void OnAwake()
     {
@@ -57,7 +57,7 @@ public class CylinderMesh : ProceduralMesh
         SubscribeToChanges(UVScale);
     }
 
-    // ===== Mesh Generation =====
+    // Mesh Generation
 
     protected override void PrepareAssetUpdateData()
     {

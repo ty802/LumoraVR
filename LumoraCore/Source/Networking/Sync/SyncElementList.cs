@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -8,6 +8,7 @@ using System.IO;
 using Lumora.Core;
 using Lumora.Core.Logging;
 using Lumora.Core.Networking;
+using Lumora.Core.Persistence;
 
 namespace Lumora.Core.Networking.Sync;
 
@@ -52,7 +53,7 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
 
     internal class NodeRecord
     {
-        public T Node;
+        public T Node = null!;
         public bool IsDirty;
         public int DeltaRecordIndex;
     }
@@ -100,17 +101,17 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
 
         public static DeltaRecord Remove(int index)
         {
-            return new DeltaRecord(null, index, RefID.Null, DeltaMessage.Remove);
+            return new DeltaRecord(null!, index, RefID.Null, DeltaMessage.Remove);
         }
 
         public static DeltaRecord Clear()
         {
-            return new DeltaRecord(null, -1, RefID.Null, DeltaMessage.Clear);
+            return new DeltaRecord(null!, -1, RefID.Null, DeltaMessage.Clear);
         }
 
         public static DeltaRecord Empty()
         {
-            return new DeltaRecord(null, -1, RefID.Null, DeltaMessage.Empty);
+            return new DeltaRecord(null!, -1, RefID.Null, DeltaMessage.Empty);
         }
 
         public void Encode(BinaryWriter writer, RefID offset)
@@ -146,7 +147,7 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
             {
                 id = new RefID(reader.Read7BitEncoded() + (ulong)offset);
             }
-            return new DeltaRecord(null, index, id, message);
+            return new DeltaRecord(null!, index, id, message);
         }
     }
 
@@ -179,9 +180,16 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
     }
 
     private List<NodeRecord> _records = new();
-    private List<DeltaRecord> _deltaRecords;
+    private List<DeltaRecord> _deltaRecords = null!;
 
-    public int Count => _records.Count;
+    public int Count
+    {
+        get
+        {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.List);
+            return _records.Count;
+        }
+    }
     public T this[int index] => GetElement(index);
     public IEnumerable<T> Elements => new SyncListEnumerableWrapper(this);
     IEnumerable ISyncList.Elements => Elements;
@@ -189,21 +197,21 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
     /// <summary>
     /// Event triggered when elements are added.
     /// </summary>
-    public event SyncListElementsEvent<T> ElementsAdded;
+    public event SyncListElementsEvent<T> ElementsAdded = null!;
 
     /// <summary>
     /// Event triggered when elements are removed.
     /// </summary>
-    public event SyncListElementsEvent<T> ElementsRemoved;
+    public event SyncListElementsEvent<T> ElementsRemoved = null!;
 
     /// <summary>
     /// Event triggered before elements are removed.
     /// </summary>
-    public event SyncListElementsEvent<T> ElementsRemoving;
+    public event SyncListElementsEvent<T> ElementsRemoving = null!;
 
-    private event SyncListElementsEvent _genElementsAdded;
-    private event SyncListElementsEvent _genElementsRemoved;
-    private event SyncListEvent _genListCleared;
+    private event SyncListElementsEvent _genElementsAdded = null!;
+    private event SyncListElementsEvent _genElementsRemoved = null!;
+    private event SyncListEvent _genListCleared = null!;
 
     event SyncListElementsEvent ISyncList.ElementsAdded
     {
@@ -234,6 +242,7 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
 
     public T GetElement(int index)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.List, index: index);
         return _records[index].Node;
     }
 
@@ -299,6 +308,31 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
         InternalClear();
     }
 
+    // PERSISTENCE — a list saves as a DataTreeList of its elements (each an ISyncMember that
+    // serializes itself); on load it rebuilds element-by-element. Covers SyncList/SyncFieldList/
+    // SyncAssetList/SyncIntList via this base.
+
+    public override DataTreeNode Save(SaveControl control)
+    {
+        var list = new DataTreeList();
+        foreach (var element in Elements)
+            list.Add(element.Save(control));
+        return list;
+    }
+
+    public override void Load(DataTreeNode node, LoadControl control)
+    {
+        if (node is not DataTreeList list)
+            return;
+
+        Clear();
+        foreach (var child in list.Children)
+        {
+            var element = Add();
+            element.Load(child, control);
+        }
+    }
+
     public void EnsureMinimumCount(int count)
     {
         while (Count < count)
@@ -321,6 +355,7 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
 
     public int IndexOfElement(T element)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.List, key: element);
         for (int i = 0; i < _records.Count; i++)
         {
             if (_records[i].Node == element)
@@ -333,26 +368,36 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
 
     public int FindIndex(Predicate<T> match)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.List);
         return _records.FindIndex(r => match(r.Node));
     }
 
     public int FindIndex(int startIndex, Predicate<T> match)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.List, index: startIndex);
         return _records.FindIndex(startIndex, r => match(r.Node));
     }
 
     public int FindIndex(int startIndex, int count, Predicate<T> match)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.List, index: startIndex);
         return _records.FindIndex(startIndex, count, r => match(r.Node));
     }
 
     protected Enumerator GetElementsEnumerator()
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.List);
         return new Enumerator(_records.GetEnumerator());
     }
 
     protected T InternalInsert(RefID id, int index, bool sync = true, bool change = true)
     {
+        if (!IsLoading && !IsInInitPhase)
+        {
+            var action = index == _records.Count ? DataModelPermissionAction.CollectionAdd : DataModelPermissionAction.CollectionInsert;
+            AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.Create | action, DataModelPermissionSurface.List, index: index, key: id);
+        }
+
         BeginModification();
 
         if (id != RefID.Null)
@@ -429,6 +474,11 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
             throw new InvalidOperationException("Cannot remove elements during initialization phase!");
         }
 
+        if (!IsLoading)
+        {
+            AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionRemove, DataModelPermissionSurface.List, index: index);
+        }
+
         BeginModification();
 
         if (change)
@@ -498,7 +548,7 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
 
         if (moveToTrash)
         {
-            World.ReferenceController.MoveToTrash(record.Node as IWorldElement, World.SyncTick);
+            World.ReferenceController.MoveToTrash((record.Node as IWorldElement)!, World.SyncTick);
         }
         else if (!record.IsDirty)
         {
@@ -510,6 +560,11 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
 
     protected void InternalClear(bool sync = true, bool change = true, bool forceTrash = false)
     {
+        if (!IsLoading && !IsInInitPhase)
+        {
+            AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionClear, DataModelPermissionSurface.List);
+        }
+
         BeginModification();
 
         if (_records.Count == 0)
@@ -531,7 +586,7 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
         {
             if (sync || forceTrash)
             {
-                World.ReferenceController.MoveToTrash(record.Node as IWorldElement, World.SyncTick);
+                World.ReferenceController.MoveToTrash((record.Node as IWorldElement)!, World.SyncTick);
             }
             else
             {
@@ -690,6 +745,103 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
         }
     }
 
+    public override MessageValidity Validate(BinaryMessageBatch syncMessage, BinaryReader reader, List<ValidationGroup.Rule> rules)
+    {
+        var validity = base.Validate(syncMessage, reader, rules);
+        if (validity != MessageValidity.Valid || World?.IsAuthority != true)
+        {
+            return validity;
+        }
+
+        long position = reader.BaseStream.CanSeek ? reader.BaseStream.Position : -1;
+        try
+        {
+            var count = (uint)reader.Read7BitEncoded();
+            var offset = new RefID(reader.Read7BitEncoded());
+
+            for (uint i = 0; i < count; i++)
+            {
+                var record = DeltaRecord.Decode(reader, offset);
+                switch (record.Message)
+                {
+                    case DeltaMessage.Clear:
+                        if (!AuthorizeDataModelMutation(
+                                DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionClear | DataModelPermissionAction.Replicate,
+                                DataModelPermissionSurface.List,
+                                syncMessage.SenderUser,
+                                isNetwork: true,
+                                throwOnError: false))
+                        {
+                            return MessageValidity.Conflict;
+                        }
+                        break;
+                    case DeltaMessage.Add:
+                        if (!AuthorizeDataModelMutation(
+                                DataModelPermissionAction.Write | DataModelPermissionAction.Create | DataModelPermissionAction.CollectionAdd | DataModelPermissionAction.Replicate,
+                                DataModelPermissionSurface.List,
+                                syncMessage.SenderUser,
+                                isNetwork: true,
+                                key: record.Id,
+                                throwOnError: false))
+                        {
+                            return MessageValidity.Conflict;
+                        }
+                        break;
+                    case DeltaMessage.Insert:
+                        if (record.Index < 0 || record.Index > _records.Count)
+                        {
+                            return MessageValidity.Conflict;
+                        }
+                        if (!AuthorizeDataModelMutation(
+                                DataModelPermissionAction.Write | DataModelPermissionAction.Create | DataModelPermissionAction.CollectionInsert | DataModelPermissionAction.Replicate,
+                                DataModelPermissionSurface.List,
+                                syncMessage.SenderUser,
+                                isNetwork: true,
+                                index: record.Index,
+                                key: record.Id,
+                                throwOnError: false))
+                        {
+                            return MessageValidity.Conflict;
+                        }
+                        break;
+                    case DeltaMessage.Remove:
+                        if (record.Index < 0 || record.Index >= _records.Count)
+                        {
+                            return MessageValidity.Conflict;
+                        }
+                        if (!AuthorizeDataModelMutation(
+                                DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionRemove | DataModelPermissionAction.Replicate,
+                                DataModelPermissionSurface.List,
+                                syncMessage.SenderUser,
+                                isNetwork: true,
+                                index: record.Index,
+                                throwOnError: false))
+                        {
+                            return MessageValidity.Conflict;
+                        }
+                        break;
+                    case DeltaMessage.Empty:
+                        break;
+                    default:
+                        return MessageValidity.Conflict;
+                }
+            }
+
+            return MessageValidity.Valid;
+        }
+        catch
+        {
+            return MessageValidity.Conflict;
+        }
+        finally
+        {
+            if (position >= 0)
+            {
+                reader.BaseStream.Position = position;
+            }
+        }
+    }
+
     protected override void InternalClearDirty()
     {
         if (_deltaRecords == null)
@@ -704,10 +856,10 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
         }
 
         _deltaRecords.Clear();
-        _deltaRecords = null;
+        _deltaRecords = null!;
     }
 
-    public override object GetValueAsObject() => null;
+    public override object GetValueAsObject() => null!;
 
     public override void Dispose()
     {
@@ -716,16 +868,16 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
             record.Node?.Dispose();
         }
         _records.Clear();
-        _records = null;
+        _records = null!;
         _deltaRecords?.Clear();
-        _deltaRecords = null;
+        _deltaRecords = null!;
 
-        ElementsAdded = null;
-        ElementsRemoved = null;
-        ElementsRemoving = null;
-        _genElementsAdded = null;
-        _genElementsRemoved = null;
-        _genListCleared = null;
+        ElementsAdded = null!;
+        ElementsRemoved = null!;
+        ElementsRemoving = null!;
+        _genElementsAdded = null!;
+        _genElementsRemoved = null!;
+        _genListCleared = null!;
 
         base.Dispose();
     }

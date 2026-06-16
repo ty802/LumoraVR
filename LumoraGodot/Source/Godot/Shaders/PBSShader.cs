@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using Godot;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
@@ -12,8 +12,8 @@ namespace Lumora.Source.Godot.Shaders;
 /// </summary>
 public class PBSShader
 {
-    private static Shader _shaderResource;
-    private ShaderMaterial _material;
+    private static Shader _shaderResource = null!;
+    private ShaderMaterial _material = null!;
 
     private const string SHADER_PATH = "res://Shaders/PBS.gdshader";
 
@@ -113,7 +113,7 @@ public class PBSShader
     /// </summary>
     public Texture2D GetAlbedoTexture()
     {
-        return _material?.GetShaderParameter("albedo_texture").As<Texture2D>();
+        return _material?.GetShaderParameter("albedo_texture").As<Texture2D>()!;
     }
 
     /// <summary>
@@ -147,7 +147,7 @@ public class PBSShader
     /// </summary>
     public Texture2D GetMetallicTexture()
     {
-        return _material?.GetShaderParameter("metallic_texture").As<Texture2D>();
+        return _material?.GetShaderParameter("metallic_texture").As<Texture2D>()!;
     }
 
     /// <summary>
@@ -197,7 +197,7 @@ public class PBSShader
     /// </summary>
     public Texture2D GetNormalMap()
     {
-        return _material?.GetShaderParameter("normal_texture").As<Texture2D>();
+        return _material?.GetShaderParameter("normal_texture").As<Texture2D>()!;
     }
 
     /// <summary>
@@ -246,7 +246,7 @@ public class PBSShader
     /// </summary>
     public Texture2D GetEmissionTexture()
     {
-        return _material?.GetShaderParameter("emission_texture").As<Texture2D>();
+        return _material?.GetShaderParameter("emission_texture").As<Texture2D>()!;
     }
 
     /// <summary>
@@ -280,7 +280,7 @@ public class PBSShader
     /// </summary>
     public Texture2D GetOcclusionMap()
     {
-        return _material?.GetShaderParameter("ao_texture").As<Texture2D>();
+        return _material?.GetShaderParameter("ao_texture").As<Texture2D>()!;
     }
 
     /// <summary>
@@ -376,6 +376,7 @@ public class PBSShader
     public void Dispose()
     {
         _material?.Dispose();
-        _material = null;
+        _material = null!;
     }
 }
+

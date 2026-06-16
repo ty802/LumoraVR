@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -206,7 +206,7 @@ public class ReferenceController : IDisposable
     public IWorldElement GetObjectOrNull(in RefID id)
     {
         _objects.TryGetValue(id, out var element);
-        return element;
+        return element!;
     }
     
     /// <summary>
@@ -231,7 +231,7 @@ public class ReferenceController : IDisposable
             element = typed;
             return true;
         }
-        element = null;
+        element = null!;
         return false;
     }
     
@@ -456,7 +456,7 @@ public class ReferenceController : IDisposable
             _trashedObjects.Remove(id);
             return entry.Element;
         }
-        return null;
+        return null!;
     }
     
     /// <summary>
@@ -576,3 +576,4 @@ public class ReferenceController : IDisposable
     
     #endregion
 }
+

@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Lumora.CDN;
 using Lumora.Core.Assets;
@@ -57,7 +57,7 @@ public sealed class CustomShaderMaterial : MaterialProvider
     /// </summary>
     public readonly Sync<int> RenderQueue;
 
-    private string _lastShaderHash;
+    private string _lastShaderHash = null!;
     private readonly Dictionary<ShaderUniformParam, UniformObserver> _uniformObservers = new();
     private bool _isUpdatingMaterial;
 
@@ -328,3 +328,4 @@ public sealed class CustomShaderMaterial : MaterialProvider
         base.OnDestroy();
     }
 }
+

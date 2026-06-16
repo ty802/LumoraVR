@@ -13,7 +13,7 @@ namespace Lumora.Core.Components.Meshes;
 [ComponentCategory("Assets/Procedural Meshes")]
 public class SphereMesh : ProceduralMesh
 {
-    // ===== Sync Fields =====
+    // Sync Fields
 
     /// <summary>Radius of the sphere</summary>
     public readonly Sync<float> Radius;
@@ -33,7 +33,7 @@ public class SphereMesh : ProceduralMesh
     /// <summary>Render both sides of the sphere</summary>
     public readonly Sync<bool> DualSided;
 
-    // ===== Private State =====
+    // Private State
 
     private PhosSphere? sphere;
     private PhosTriangleSubmesh? _submesh;
@@ -43,7 +43,7 @@ public class SphereMesh : ProceduralMesh
     private float2 _uvScale;
     private SphereShading _shading;
 
-    // ===== Constructor =====
+    // Constructor
 
     public SphereMesh()
     {
@@ -55,7 +55,7 @@ public class SphereMesh : ProceduralMesh
         DualSided = new Sync<bool>(this, false);
     }
 
-    // ===== Lifecycle =====
+    // Lifecycle
 
     public override void OnAwake()
     {
@@ -70,7 +70,7 @@ public class SphereMesh : ProceduralMesh
         SubscribeToChanges(DualSided);
     }
 
-    // ===== Mesh Generation =====
+    // Mesh Generation
 
     protected override void PrepareAssetUpdateData()
     {
@@ -119,7 +119,7 @@ public class SphereMesh : ProceduralMesh
         _submesh = null;
     }
 
-    // ===== Utility Methods =====
+    // Utility Methods
 
     /// <summary>
     /// Create a sphere collider component that matches this sphere mesh.

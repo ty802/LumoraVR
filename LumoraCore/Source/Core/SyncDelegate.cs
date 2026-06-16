@@ -1,17 +1,32 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
 using Lumora.Core.Networking.Sync;
+using Lumora.Core.Persistence;
 
 namespace Lumora.Core;
 
 /// <summary>
+/// Non-generic view of a delegate reference: exposes the method name and static
+/// type separately from the target. Duplication uses this to carry the method
+/// across to the clone while the target RefID is remapped through ISyncRef.
+/// </summary>
+public interface ISyncDelegate
+{
+    string? MethodName { get; set; }
+    Type? StaticType { get; }
+    void SetMethod(string? method, Type? staticType);
+}
+
+/// <summary>
 /// A synchronized delegate reference that extends SyncField<WorldDelegate>.
 /// Stores delegate target RefID and method name, resolving targets via ReferenceController.
+/// As an ISyncRef the target participates in duplication remapping, so an action
+/// bound to a world element follows the clone instead of the original.
 /// </summary>
 /// <typeparam name="T">Delegate type.</typeparam>
-public class SyncDelegate<T> : SyncField<WorldDelegate>, IWorldElementReceiver where T : Delegate
+public class SyncDelegate<T> : SyncField<WorldDelegate>, IWorldElementReceiver, ISyncRef, ISyncDelegate where T : Delegate
 {
     private T? _target;
     private IWorldElement? _targetElement;
@@ -95,7 +110,7 @@ public class SyncDelegate<T> : SyncField<WorldDelegate>, IWorldElementReceiver w
             if (del.Target == null)
             {
                 // Static delegate
-                info = new WorldDelegate(RefID.Null, methodName, method.DeclaringType);
+                info = new WorldDelegate(RefID.Null, methodName, method.DeclaringType!);
             }
             else
             {
@@ -106,7 +121,7 @@ public class SyncDelegate<T> : SyncField<WorldDelegate>, IWorldElementReceiver w
                 if (targetElement.World != World)
                     throw new ArgumentException("Delegate target belongs to a different world");
 
-                info = new WorldDelegate(targetElement.ReferenceID, methodName, null);
+                info = new WorldDelegate(targetElement.ReferenceID, methodName, null!);
             }
 
             _target = value;
@@ -139,6 +154,37 @@ public class SyncDelegate<T> : SyncField<WorldDelegate>, IWorldElementReceiver w
     }
 
     public void Clear() => Target = null;
+
+    // ISyncRef: the reference part is the target RefID; the method name and static
+    // type ride along in the WorldDelegate value and are preserved when the target
+    // is reassigned. Duplication's transfer phase sets Value (RefID) to the clone's
+    // target, leaving the method intact.
+    RefID ISyncRef.Value
+    {
+        get => Value.Target;
+        set => Value = new WorldDelegate(value, Value.Method, Value.Type);
+    }
+
+    IWorldElement ISyncRef.Target
+    {
+        get => _targetElement!;
+        set => Value = new WorldDelegate(value?.ReferenceID ?? RefID.Null, Value.Method, Value.Type);
+    }
+
+    Type ISyncRef.TargetType => typeof(IWorldElement);
+
+    bool ISyncRef.TrySet(IWorldElement target)
+    {
+        Value = new WorldDelegate(target?.ReferenceID ?? RefID.Null, Value.Method, Value.Type);
+        return true;
+    }
+
+    Type? ISyncDelegate.StaticType => Value.Type;
+
+    void ISyncDelegate.SetMethod(string? method, Type? staticType)
+    {
+        Value = new WorldDelegate(Value.Target, method ?? string.Empty, staticType!);
+    }
 
     public bool TrySet(Delegate? target)
     {
@@ -261,6 +307,35 @@ public class SyncDelegate<T> : SyncField<WorldDelegate>, IWorldElementReceiver w
         {
             return null;
         }
+    }
+
+    // Persist the delegate as a remappable target reference + method name. The raw WorldDelegate
+    // value has no coder (so the inherited SyncField.Save would throw); instead save the target as
+    // a reference (RefID, remapped on load) plus the method/type. On load we seed the method/type
+    // then request the target, so the action rebinds once its target element loads - this is what
+    // makes button/checkbox/slider actions survive a world save/load round-trip.
+    public override DataTreeNode Save(SaveControl control)
+    {
+        var info = Value;
+        var dictionary = new DataTreeDictionary();
+        dictionary.Add("Method", info.Method ?? string.Empty);
+        dictionary.Add("Type", info.Type?.AssemblyQualifiedName ?? string.Empty);
+        if (info.Target != RefID.Null)
+            dictionary.Add("Target", control.SaveReference(info.Target));
+        return dictionary;
+    }
+
+    public override void Load(DataTreeNode node, LoadControl control)
+    {
+        if (node is not DataTreeDictionary dictionary)
+            return;
+        var method = dictionary.ExtractOrDefault("Method", string.Empty);
+        var typeName = dictionary.ExtractOrDefault("Type", string.Empty);
+        var type = string.IsNullOrEmpty(typeName) ? null : Type.GetType(typeName);
+        // Seed method/type first; the delegate rebinds when the target reference resolves.
+        ((ISyncDelegate)this).SetMethod(method, type);
+        if (dictionary.TryGetNode("Target") is { } targetNode)
+            control.RequestReference(targetNode, this);
     }
 
     public override object? GetValueAsObject() => Value;

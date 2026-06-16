@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Net;
@@ -1122,3 +1122,4 @@ public partial class DebugWindow : Control
         return $"{bytes / (1024.0 * 1024.0 * 1024.0):F2} GB";
     }
 }
+

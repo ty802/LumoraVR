@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.Collections.Generic;
@@ -34,7 +34,7 @@ public class ValidationContext
     /// <summary>
     /// User who sent the change.
     /// </summary>
-    public User SenderUser => Message?.SenderUser;
+    public User SenderUser => (Message?.SenderUser) ?? null!;
 
     /// <summary>
     /// The sync element being validated.
@@ -114,5 +114,5 @@ public class ValidatedAttribute : System.Attribute
     /// <summary>
     /// Custom validator type to use.
     /// </summary>
-    public System.Type ValidatorType { get; set; }
+    public System.Type ValidatorType { get; set; } = null!;
 }

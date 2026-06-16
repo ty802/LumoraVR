@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.IO;
 using Lumora.Core.Networking;
 using Lumora.Core.Networking.Sync;
+using Lumora.Core.Persistence;
 
 namespace Lumora.Core;
 
@@ -16,6 +17,7 @@ namespace Lumora.Core;
 /// Use this instead of wrapping individual Sync&lt;T&gt; fields for keyed collections.
 /// </summary>
 public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<KeyValuePair<TKey, TValue>>
+    where TKey : notnull
 {
     private const byte OpSet = 0;
     private const byte OpRemove = 1;
@@ -31,9 +33,16 @@ public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<
     private readonly Dictionary<TKey, TValue> _dict = new();
     private List<DictOp>? _pendingOps;
 
-    public int Count => _dict.Count;
-    public IEnumerable<TKey> Keys => _dict.Keys;
-    public IEnumerable<TValue> Values => _dict.Values;
+    public int Count
+    {
+        get
+        {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Dictionary);
+            return _dict.Count;
+        }
+    }
+    public IEnumerable<TKey> Keys => EnumerateKeys();
+    public IEnumerable<TValue> Values => EnumerateValues();
 
     public event Action<SyncDictionary<TKey, TValue>>? OnChanged;
     public event Action<TKey, TValue>? OnKeyChanged;
@@ -41,12 +50,18 @@ public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<
 
     public TValue this[TKey key]
     {
-        get => _dict[key];
+        get
+        {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.Dictionary, key: key);
+            return _dict[key];
+        }
         set => SetKey(key, value);
     }
 
     public void Add(TKey key, TValue value)
     {
+        if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionAdd, DataModelPermissionSurface.Dictionary, key: key))
+            return;
         if (!BeginModification()) return;
         _dict.Add(key, value);
         (_pendingOps ??= new List<DictOp>()).Add(new DictOp { Type = OpSet, Key = key, Value = value });
@@ -68,6 +83,8 @@ public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<
     public bool Remove(TKey key)
     {
         if (!_dict.ContainsKey(key)) return false;
+        if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionRemove, DataModelPermissionSurface.Dictionary, key: key))
+            return false;
         if (!BeginModification()) return false;
         _dict.Remove(key);
         (_pendingOps ??= new List<DictOp>()).Add(new DictOp { Type = OpRemove, Key = key });
@@ -80,16 +97,70 @@ public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<
         return true;
     }
 
-    public bool ContainsKey(TKey key) => _dict.ContainsKey(key);
-    public bool ContainsValue(TValue value) => _dict.ContainsValue(value);
-    public bool TryGetValue(TKey key, out TValue value) => _dict.TryGetValue(key, out value);
+    public bool ContainsKey(TKey key)
+    {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.Dictionary, key: key);
+        return _dict.ContainsKey(key);
+    }
+
+    public bool ContainsValue(TValue value)
+    {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Dictionary, key: value);
+        return _dict.ContainsValue(value);
+    }
+
+    public bool TryGetValue(TKey key, out TValue value)
+    {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.Dictionary, key: key);
+        if (_dict.TryGetValue(key, out var found))
+        {
+            value = found;
+            return true;
+        }
+        value = default!;
+        return false;
+    }
 
     public TValue GetValueOrDefault(TKey key, TValue defaultValue = default!)
-        => _dict.TryGetValue(key, out var v) ? v : defaultValue;
+    {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.Dictionary, key: key);
+        return _dict.TryGetValue(key, out var v) ? v : defaultValue;
+    }
+
+    // PERSISTENCE — a DataTreeList of { Key, Value } entries (value types via the coder).
+    public override DataTreeNode Save(SaveControl control)
+    {
+        var list = new DataTreeList();
+        foreach (var pair in this)
+        {
+            var entry = new DataTreeDictionary();
+            entry.Add("Key", DataTreeCoder.Encode(pair.Key));
+            entry.Add("Value", DataTreeCoder.Encode(pair.Value));
+            list.Add(entry);
+        }
+        return list;
+    }
+
+    public override void Load(DataTreeNode node, LoadControl control)
+    {
+        if (node is not DataTreeList list)
+            return;
+        Clear();
+        foreach (var child in list.Children)
+        {
+            if (child is not DataTreeDictionary entry)
+                continue;
+            var key = DataTreeCoder.Decode<TKey>(entry["Key"]);
+            var value = DataTreeCoder.Decode<TValue>(entry["Value"]);
+            Add(key, value);
+        }
+    }
 
     public void Clear()
     {
         if (_dict.Count == 0) return;
+        if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionClear, DataModelPermissionSurface.Dictionary))
+            return;
         if (!BeginModification()) return;
         _dict.Clear();
         _pendingOps?.Clear();
@@ -103,6 +174,9 @@ public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<
 
     private void SetKey(TKey key, TValue value)
     {
+        var action = _dict.ContainsKey(key) ? DataModelPermissionAction.CollectionSet : DataModelPermissionAction.CollectionAdd;
+        if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | action, DataModelPermissionSurface.Dictionary, key: key))
+            return;
         if (!BeginModification()) return;
         _dict[key] = value;
         (_pendingOps ??= new List<DictOp>()).Add(new DictOp { Type = OpSet, Key = key, Value = value });
@@ -211,6 +285,105 @@ public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<
         }
     }
 
+    public override MessageValidity Validate(BinaryMessageBatch syncMessage, BinaryReader reader, List<ValidationGroup.Rule> rules)
+    {
+        var validity = base.Validate(syncMessage, reader, rules);
+        if (validity != MessageValidity.Valid || World?.IsAuthority != true)
+        {
+            return validity;
+        }
+
+        long position = reader.BaseStream.CanSeek ? reader.BaseStream.Position : -1;
+        try
+        {
+            bool isFull = reader.ReadBoolean();
+            if (isFull)
+            {
+                int count = (int)reader.Read7BitEncoded();
+                for (int i = 0; i < count; i++)
+                {
+                    var key = SyncCoder.Decode<TKey>(reader);
+                    _ = SyncCoder.Decode<TValue>(reader);
+                    if (!AuthorizeDataModelMutation(
+                            DataModelPermissionAction.Write | DataModelPermissionAction.CollectionSet | DataModelPermissionAction.Replicate,
+                            DataModelPermissionSurface.Dictionary,
+                            syncMessage.SenderUser,
+                            isNetwork: true,
+                            key: key,
+                            throwOnError: false))
+                    {
+                        return MessageValidity.Conflict;
+                    }
+                }
+                return MessageValidity.Valid;
+            }
+
+            int opCount = (int)reader.Read7BitEncoded();
+            for (int i = 0; i < opCount; i++)
+            {
+                byte type = reader.ReadByte();
+                if (type == OpSet)
+                {
+                    var key = SyncCoder.Decode<TKey>(reader);
+                    _ = SyncCoder.Decode<TValue>(reader);
+                    if (!AuthorizeDataModelMutation(
+                            DataModelPermissionAction.Write | DataModelPermissionAction.CollectionSet | DataModelPermissionAction.Replicate,
+                            DataModelPermissionSurface.Dictionary,
+                            syncMessage.SenderUser,
+                            isNetwork: true,
+                            key: key,
+                            throwOnError: false))
+                    {
+                        return MessageValidity.Conflict;
+                    }
+                }
+                else if (type == OpRemove)
+                {
+                    var key = SyncCoder.Decode<TKey>(reader);
+                    if (!AuthorizeDataModelMutation(
+                            DataModelPermissionAction.Write | DataModelPermissionAction.CollectionRemove | DataModelPermissionAction.Replicate,
+                            DataModelPermissionSurface.Dictionary,
+                            syncMessage.SenderUser,
+                            isNetwork: true,
+                            key: key,
+                            throwOnError: false))
+                    {
+                        return MessageValidity.Conflict;
+                    }
+                }
+                else if (type == OpClear)
+                {
+                    if (!AuthorizeDataModelMutation(
+                            DataModelPermissionAction.Write | DataModelPermissionAction.CollectionClear | DataModelPermissionAction.Replicate,
+                            DataModelPermissionSurface.Dictionary,
+                            syncMessage.SenderUser,
+                            isNetwork: true,
+                            throwOnError: false))
+                    {
+                        return MessageValidity.Conflict;
+                    }
+                }
+                else
+                {
+                    return MessageValidity.Conflict;
+                }
+            }
+
+            return MessageValidity.Valid;
+        }
+        catch
+        {
+            return MessageValidity.Conflict;
+        }
+        finally
+        {
+            if (position >= 0)
+            {
+                reader.BaseStream.Position = position;
+            }
+        }
+    }
+
     protected override void InternalClearDirty()
     {
         _pendingOps?.Clear();
@@ -218,8 +391,31 @@ public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<
 
     public override object? GetValueAsObject() => null;
 
-    public IEnumerator<KeyValuePair<TKey, TValue>> GetEnumerator() => _dict.GetEnumerator();
-    IEnumerator IEnumerable.GetEnumerator() => _dict.GetEnumerator();
+    private IEnumerable<TKey> EnumerateKeys()
+    {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Dictionary);
+        foreach (var key in _dict.Keys)
+        {
+            yield return key;
+        }
+    }
+
+    private IEnumerable<TValue> EnumerateValues()
+    {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Dictionary);
+        foreach (var value in _dict.Values)
+        {
+            yield return value;
+        }
+    }
+
+    public IEnumerator<KeyValuePair<TKey, TValue>> GetEnumerator()
+    {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Dictionary);
+        return _dict.GetEnumerator();
+    }
+
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
     public override void Dispose()
     {

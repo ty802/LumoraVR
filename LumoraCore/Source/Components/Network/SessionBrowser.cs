@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Lumora.Core.Networking.Discovery;
@@ -16,7 +16,7 @@ namespace Lumora.Core.Components.Network;
 [ComponentCategory("Network")]
 public class SessionBrowser : Component
 {
-    private LANDiscovery _discovery;
+    private LANDiscovery _discovery = null!;
     private readonly List<SessionListEntry> _sessions = new();
     private readonly object _sessionsLock = new();
 
@@ -42,17 +42,17 @@ public class SessionBrowser : Component
     /// <summary>
     /// Event raised when a new session is discovered.
     /// </summary>
-    public event Action<SessionListEntry> OnSessionFound;
+    public event Action<SessionListEntry> OnSessionFound = null!;
 
     /// <summary>
     /// Event raised when a session is no longer available.
     /// </summary>
-    public event Action<string> OnSessionLost;
+    public event Action<string> OnSessionLost = null!;
 
     /// <summary>
     /// Event raised when a session's info is updated.
     /// </summary>
-    public event Action<SessionListEntry> OnSessionUpdated;
+    public event Action<SessionListEntry> OnSessionUpdated = null!;
 
     public SessionBrowser()
     {
@@ -114,7 +114,7 @@ public class SessionBrowser : Component
         _discovery.SessionUpdated -= OnDiscoveryUpdated;
         _discovery.StopDiscovery();
         _discovery.Dispose();
-        _discovery = null;
+        _discovery = null!;
 
         IsScanning.Value = false;
 
@@ -151,7 +151,7 @@ public class SessionBrowser : Component
     {
         lock (_sessionsLock)
         {
-            return _sessions.FirstOrDefault(s => s.SessionId == sessionId);
+            return _sessions.FirstOrDefault(s => s.SessionId == sessionId)!;
         }
     }
 
@@ -170,11 +170,11 @@ public class SessionBrowser : Component
 
     private void OnDiscoveryLost(string sessionId)
     {
-        SessionListEntry removed = null;
+        SessionListEntry removed = null!;
 
         lock (_sessionsLock)
         {
-            removed = _sessions.FirstOrDefault(s => s.SessionId == sessionId);
+            removed = _sessions.FirstOrDefault(s => s.SessionId == sessionId)!;
             if (removed != null)
             {
                 _sessions.Remove(removed);
@@ -231,22 +231,22 @@ public class SessionListEntry
     /// <summary>
     /// Unique session identifier.
     /// </summary>
-    public string SessionId { get; set; }
+    public string SessionId { get; set; } = null!;
 
     /// <summary>
     /// Display name of the session.
     /// </summary>
-    public string Name { get; set; }
+    public string Name { get; set; } = null!;
 
     /// <summary>
     /// Session description.
     /// </summary>
-    public string Description { get; set; }
+    public string Description { get; set; } = null!;
 
     /// <summary>
     /// Name of the session host.
     /// </summary>
-    public string HostUsername { get; set; }
+    public string HostUsername { get; set; } = null!;
 
     /// <summary>
     /// Current number of users in the session.
@@ -266,12 +266,12 @@ public class SessionListEntry
     /// <summary>
     /// URL to join this session.
     /// </summary>
-    public Uri JoinUrl { get; set; }
+    public Uri JoinUrl { get; set; } = null!;
 
     /// <summary>
     /// URL to session thumbnail image.
     /// </summary>
-    public string ThumbnailUrl { get; set; }
+    public string ThumbnailUrl { get; set; } = null!;
 
     /// <summary>
     /// Base64-encoded thumbnail image data.
@@ -293,3 +293,4 @@ public class SessionListEntry
         return $"{Name} ({ActiveUsers}/{MaxUsers}) - {HostUsername}";
     }
 }
+

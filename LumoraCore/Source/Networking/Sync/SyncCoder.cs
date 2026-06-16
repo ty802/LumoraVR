@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -80,7 +80,7 @@ public static class SyncCoder
         [typeof(WorldDelegate)] = r => DecodeWorldDelegate(r),
         [typeof(BoundingBox)] = r => DecodeBoundingBox(r),
         [typeof(BodyNode)] = r => (BodyNode)r.ReadInt32(),
-        [typeof(BodyNode?)] = r => DecodeNullableBodyNode(r),
+        [typeof(BodyNode?)] = r => DecodeNullableBodyNode(r)!,
         [typeof(object)] = r => DecodeObject(r),
     };
 
@@ -98,7 +98,7 @@ public static class SyncCoder
         [typeof(float)] = 0f,
         [typeof(double)] = 0d,
         [typeof(string)] = string.Empty,
-        [typeof(Uri)] = null,
+        [typeof(Uri)] = null!,
         [typeof(float2)] = new float2(0, 0),
         [typeof(float3)] = new float3(0, 0, 0),
         [typeof(float4)] = new float4(0, 0, 0, 0),
@@ -110,8 +110,8 @@ public static class SyncCoder
         [typeof(WorldDelegate)] = default(WorldDelegate),
         [typeof(BoundingBox)] = new BoundingBox(),
         [typeof(BodyNode)] = BodyNode.NONE,
-        [typeof(BodyNode?)] = null,
-        [typeof(object)] = null,
+        [typeof(BodyNode?)] = null!,
+        [typeof(object)] = null!,
     };
 
     public static void Encode<T>(BinaryWriter writer, T value)
@@ -128,7 +128,7 @@ public static class SyncCoder
             {
                 // Log error but don't crash - write default value instead
                 Console.WriteLine($"SyncCoder: Failed to encode {type}: {ex.Message}");
-                EncodeObject(writer, null); // Write safe null marker
+                EncodeObject(writer, null!); // Write safe null marker
             }
             return;
         }
@@ -149,7 +149,7 @@ public static class SyncCoder
 
         // Instead of throwing, log the error and write a null marker
         Console.WriteLine($"SyncCoder: Type {type} not supported - using null encoding");
-        EncodeObject(writer, null);
+        EncodeObject(writer, null!);
     }
 
     public static T Decode<T>(BinaryReader reader)
@@ -251,7 +251,7 @@ public static class SyncCoder
                 type = Type.GetType(typeName);
             }
         }
-        return new WorldDelegate(target, method, type);
+        return new WorldDelegate(target, method, type!);
     }
 
     /// <summary>
@@ -290,7 +290,7 @@ public static class SyncCoder
         writer.Write(hasValue);
         if (hasValue)
         {
-            writer.Write((int)value.Value);
+            writer.Write((int)value.GetValueOrDefault());
         }
     }
 
@@ -324,6 +324,6 @@ public static class SyncCoder
     {
         // Read the null marker to maintain stream consistency
         reader.ReadBoolean(); // consume the false value
-        return null;
+        return null!;
     }
 }

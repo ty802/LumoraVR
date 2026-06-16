@@ -1,10 +1,11 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Lumora.Core;
+using Lumora.Core.Helpers;
 using Lumora.Core.Networking.Session;
 using Lumora.Core.Templates;
 using World = Lumora.Core.World;
@@ -29,19 +30,19 @@ public class WorldManager : IDisposable
     private readonly List<World> _privateOverlayWorlds = new();
     private readonly object _worldsLock = new object();
 
-    private World _focusedWorld;
-    private World _userspaceWorld;
-    private World _setWorldFocus; // Queued focus change
+    private World _focusedWorld = null!;
+    private World _userspaceWorld = null!;
+    private World _setWorldFocus = null!; // Queued focus change
     private bool _initialized = false;
-    private Engine _engine;
+    private Engine _engine = null!;
 
     // Platform hook for world container
-    public IWorldManagerHook Hook { get; set; }
+    public IWorldManagerHook Hook { get; set; } = null!;
 
     // Events for world lifecycle notifications
-    public event Action<World> WorldAdded;
-    public event Action<World> WorldRemoved;
-    public event Action<World> WorldFocused;
+    public event Action<World> WorldAdded = null!;
+    public event Action<World> WorldRemoved = null!;
+    public event Action<World> WorldFocused = null!;
 
     /// <summary>
     /// Currently focused world (main world user is interacting with).
@@ -118,10 +119,10 @@ public class WorldManager : IDisposable
     /// Creates and initializes a new local world instance.
     /// </summary>
     /// <param name="name">World name</param>
-    /// <param name="templateName">Template to apply (LocalHome, Grid, Empty, SocialSpace)</param>
+    /// <param name="templateName">Template to apply (LocalHome, Grid, Empty, ShaderTest)</param>
     /// <param name="init">Initialization callback</param>
     /// <returns>Created world</returns>
-    public World StartLocal(string name, string templateName = "Empty", Action<World> init = null)
+    public World StartLocal(string name, string templateName = "Empty", Action<World> init = null!)
     {
         try
         {
@@ -142,8 +143,8 @@ public class WorldManager : IDisposable
         }
         catch (Exception ex)
         {
-            LumoraLogger.Error($"WorldManager: Failed to start local world '{name}': {ex.Message}");
-            return null;
+            LumoraLogger.Error($"WorldManager: Failed to start local world '{name}': {ex}");
+            return null!;
         }
     }
 
@@ -154,10 +155,10 @@ public class WorldManager : IDisposable
     /// <param name="name">World name</param>
     /// <param name="port">Network port</param>
     /// <param name="hostUserName">Host user name</param>
-    /// <param name="templateName">Template to apply (LocalHome, Grid, Empty, SocialSpace)</param>
+    /// <param name="templateName">Template to apply (LocalHome, Grid, Empty, ShaderTest)</param>
     /// <param name="init">Initialization callback</param>
     /// <returns>Created world</returns>
-    public World StartSession(string name, ushort port, string hostUserName = null, string templateName = "Empty", Action<World> init = null)
+    public World StartSession(string name, ushort port, string hostUserName = null!, string templateName = "Empty", Action<World> init = null!)
     {
         return StartSession(name, port, hostUserName, templateName, SessionVisibility.Private, 16, init);
     }
@@ -172,7 +173,7 @@ public class WorldManager : IDisposable
         string templateName,
         SessionVisibility visibility,
         int maxUsers,
-        Action<World> init = null)
+        Action<World> init = null!)
     {
         try
         {
@@ -193,9 +194,22 @@ public class WorldManager : IDisposable
         }
         catch (Exception ex)
         {
-            LumoraLogger.Error($"WorldManager: Failed to start session '{name}': {ex.Message}");
-            return null;
+            LumoraLogger.Error($"WorldManager: Failed to start session '{name}': {ex}");
+            return null!;
         }
+    }
+
+    /// <summary>
+    /// Create and host a new world from a template and focus it. Picks a free local UDP port and
+    /// hosts under the machine name. Returns the new world, or null on failure.
+    /// </summary>
+    public World HostNewWorld(string templateName, string worldName, SessionVisibility visibility, int maxUsers)
+    {
+        ushort port = (ushort)(SimpleIpHelpers.GetAvailablePortUdp(10) ?? 6000);
+        var world = StartSession(worldName, port, Environment.MachineName, templateName, visibility, System.Math.Max(1, maxUsers), null!);
+        if (world != null)
+            SwitchToWorld(world);
+        return world!;
     }
 
     /// <summary>
@@ -225,7 +239,7 @@ public class WorldManager : IDisposable
         catch (Exception ex)
         {
             LumoraLogger.Error($"WorldManager: Failed to join session at {address}:{port}: {ex.Message}");
-            return null;
+            return null!;
         }
     }
 
@@ -243,7 +257,7 @@ public class WorldManager : IDisposable
             if (world == null)
             {
                 LumoraLogger.Error($"WorldManager: Failed to join session at {address}:{port}");
-                return null;
+                return null!;
             }
 
             AddWorld(world);
@@ -253,7 +267,7 @@ public class WorldManager : IDisposable
         catch (Exception ex)
         {
             LumoraLogger.Error($"WorldManager: Failed to join session at {address}:{port}: {ex.Message}");
-            return null;
+            return null!;
         }
     }
 
@@ -307,20 +321,20 @@ public class WorldManager : IDisposable
             LumoraLogger.Log("WorldManager: Disconnected world was focused, switching to fallback");
 
             // Find fallback world (LocalHome or any available world)
-            World fallbackWorld = null;
+            World fallbackWorld = null!;
             lock (_worldsLock)
             {
                 // Prefer LocalHome world
                 fallbackWorld = _worlds.Find(w => !w.IsDestroyed && 
                                                   w.State == World.WorldState.Running && 
-                                                  w.WorldName.Value == "LocalHome");
+                                                  w.WorldName.Value == "LocalHome")!;
 
                 // If no LocalHome, use any available running world
                 if (fallbackWorld == null)
                 {
                     fallbackWorld = _worlds.Find(w => !w.IsDestroyed && 
                                                       w.State == World.WorldState.Running &&
-                                                      w != disconnectedWorld);
+                                                      w != disconnectedWorld)!;
                 }
             }
 
@@ -332,7 +346,7 @@ public class WorldManager : IDisposable
             else
             {
                 LumoraLogger.Warn("WorldManager: No fallback world available after disconnect");
-                _focusedWorld = null;
+                _focusedWorld = null!;
             }
         }
 
@@ -388,7 +402,7 @@ public class WorldManager : IDisposable
     {
         lock (_worldsLock)
         {
-            return _worlds.Find(w => w.WorldName.Value == name);
+            return _worlds.Find(w => w.WorldName.Value == name)!;
         }
     }
 
@@ -493,7 +507,7 @@ public class WorldManager : IDisposable
     private void ProcessFocusChange()
     {
         World targetWorld = _setWorldFocus;
-        _setWorldFocus = null;
+        _setWorldFocus = null!;
 
         // Auto-fallback if focused world destroyed
         if (_focusedWorld != null && _focusedWorld.IsDestroyed && targetWorld == null)
@@ -501,7 +515,7 @@ public class WorldManager : IDisposable
             // Find first non-destroyed background world
             lock (_worldsLock)
             {
-                targetWorld = _worlds.Find(w => !w.IsDestroyed && w.State == World.WorldState.Running);
+                targetWorld = _worlds.Find(w => !w.IsDestroyed && w.State == World.WorldState.Running)!;
             }
         }
 
@@ -578,7 +592,7 @@ public class WorldManager : IDisposable
                     // Clear focus if this was focused world
                     if (_focusedWorld == world)
                     {
-                        _focusedWorld = null;
+                        _focusedWorld = null!;
                     }
 
                     // Remove from list
@@ -730,7 +744,7 @@ public class WorldManager : IDisposable
             _destroyWorlds.Clear();
         }
 
-        _focusedWorld = null;
+        _focusedWorld = null!;
         _initialized = false;
     }
 }

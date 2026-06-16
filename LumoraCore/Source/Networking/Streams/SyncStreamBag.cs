@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -17,7 +17,7 @@ public class SyncStreamBag : SyncRefIDBagBase<Stream>
     /// <summary>
     /// The user that owns this bag.
     /// </summary>
-    public User Owner { get; private set; }
+    public User Owner { get; private set; } = null!;
 
     public SyncStreamBag()
     {

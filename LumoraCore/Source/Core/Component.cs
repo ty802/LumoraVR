@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -10,7 +10,7 @@ namespace Lumora.Core;
 
 public abstract class Component : ComponentBase<Component>
 {
-    public Slot Slot { get; private set; }
+    public Slot Slot { get; private set; } = null!;
 
     public bool IsUnderLocalUser => Slot?.IsUnderLocalUser ?? false;
 
@@ -18,7 +18,7 @@ public abstract class Component : ComponentBase<Component>
 
     internal override void Initialize(ContainerWorker<Component> container, bool isNew)
     {
-        Slot = container as Slot;
+        Slot = (container as Slot)!;
         base.Initialize(container, isNew);
     }
 

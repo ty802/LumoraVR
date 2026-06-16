@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Lumora.Core.Input;
+using Lumora.Core.Input;
 using Lumora.Core.Math;
 using Godot;
 using Lumora.Source.UI;
@@ -52,7 +52,7 @@ public class GodotMouseDriver : IMouseDriver, IInputDriver
             desiredMouseMode = global::Godot.Input.MouseModeEnum.Hidden;
         }
         // Honor capture requests from locomotion when dashboard is closed
-        else if (Lumora.Core.Components.LocomotionController.MouseCaptureRequested)
+        else if (Lumora.Core.Components.UserInputState.FocusedMouseCaptureRequested)
         {
             desiredMouseMode = global::Godot.Input.MouseModeEnum.Captured;
         }
@@ -104,12 +104,12 @@ public class GodotMouseDriver : IMouseDriver, IInputDriver
             motion = motion.Normalized() * MaxReasonableMotionPerFrame;
         }
 
-        float sensitivity = InterfaceSettings.MouseSensitivity;
+        float sensitivity = Lumora.Core.EngineSettings.MouseSensitivity;
         float2 normalizedDelta = new float2(
             motion.X / LookReferenceHeight,
             motion.Y / LookReferenceHeight) * sensitivity;
 
-        float smoothFactor = InterfaceSettings.MouseSmoothing;
+        float smoothFactor = Lumora.Core.EngineSettings.MouseSmoothing;
         if (smoothFactor > 0f)
         {
             _smoothedDelta = float2.Lerp(_smoothedDelta, normalizedDelta, 1f - smoothFactor);
@@ -164,3 +164,4 @@ public class GodotMouseDriver : IMouseDriver, IInputDriver
         // Update mouse via UpdateMouse() called by InputInterface
     }
 }
+

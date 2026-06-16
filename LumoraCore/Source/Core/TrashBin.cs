@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
@@ -181,7 +181,8 @@ public class TrashBin
 /// </summary>
 internal class TrashEntry
 {
-	public IWorldElement Element { get; set; }
+	public IWorldElement Element { get; set; } = null!;
 	public RefID RefID { get; set; }
 	public double TrashedTime { get; set; }
 }
+

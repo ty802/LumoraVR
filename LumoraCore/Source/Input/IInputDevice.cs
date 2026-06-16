@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.Collections.Generic;
@@ -31,10 +31,10 @@ public class InputDevice : IInputDevice
 {
     private List<ControllerProperty> _properties = new List<ControllerProperty>();
 
-    public InputInterface Input { get; private set; }
+    public InputInterface Input { get; private set; } = null!;
     public bool IsDeviceActive { get; set; } = true;
     public int DeviceIndex { get; private set; }
-    public string Name { get; private set; }
+    public string Name { get; private set; } = null!;
     public int PropertyCount => _properties.Count;
 
     public virtual void Initialize(InputInterface input, int deviceIndex, string name)
@@ -53,12 +53,12 @@ public class InputDevice : IInputDevice
     public T GetProperty<T>(int index) where T : ControllerProperty
     {
         if (index < 0 || index >= _properties.Count)
-            return null;
-        return _properties[index] as T;
+            return null!;
+        return (_properties[index] as T) ?? null!;
     }
 
     public T GetProperty<T>(string name) where T : ControllerProperty
     {
-        return _properties.Find(p => p.Name == name) as T;
+        return (_properties.Find(p => p.Name == name) as T) ?? null!;
     }
 }

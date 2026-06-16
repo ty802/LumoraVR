@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core.Math;
@@ -20,27 +20,27 @@ public abstract class Gizmo : ImplementableComponent, IGizmo
     /// <summary>
     /// The slot this gizmo is manipulating.
     /// </summary>
-    public readonly SyncRef<Slot> TargetSlotRef;
+    public readonly SyncRef<Slot> TargetSlotRef = null!;
 
     /// <summary>
     /// Whether this gizmo is currently active and visible.
     /// </summary>
-    public readonly Sync<bool> Active;
+    public readonly Sync<bool> Active = null!;
 
     /// <summary>
     /// The base color of this gizmo.
     /// </summary>
-    public readonly Sync<color> GizmoColor;
+    public readonly Sync<color> GizmoColor = null!;
 
     /// <summary>
     /// Whether this gizmo is currently being interacted with.
     /// </summary>
-    public readonly Sync<bool> IsInteracting;
+    public readonly Sync<bool> IsInteracting = null!;
 
     /// <summary>
     /// IGizmo interface implementation.
     /// </summary>
-    public Slot TargetSlot => TargetSlotRef?.Target;
+    public Slot TargetSlot => (TargetSlotRef?.Target) ?? null!;
 
     /// <summary>
     /// IGizmo interface implementation.

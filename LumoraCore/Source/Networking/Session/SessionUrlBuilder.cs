@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -31,7 +31,7 @@ public static class SessionUrlBuilder
     /// <param name="port">Port number</param>
     /// <param name="sessionId">Optional session ID to include in path</param>
     /// <returns>The constructed URI</returns>
-    public static Uri BuildLNLUrl(string host, int port, string sessionId = null)
+    public static Uri BuildLNLUrl(string host, int port, string sessionId = null!)
     {
         string path = !string.IsNullOrEmpty(sessionId) ? $"/{sessionId}" : "";
         return new Uri($"{LNLScheme}://{host}:{port}{path}");
@@ -40,7 +40,7 @@ public static class SessionUrlBuilder
     /// <summary>
     /// Build a LAN wildcard URL (for local network discovery).
     /// </summary>
-    public static Uri BuildLANUrl(int port, string sessionId = null)
+    public static Uri BuildLANUrl(int port, string sessionId = null!)
     {
         return BuildLNLUrl("*", port, sessionId);
     }
@@ -53,7 +53,7 @@ public static class SessionUrlBuilder
     /// <returns>True if a valid session ID was found</returns>
     public static bool TryParseSessionId(Uri uri, out string sessionId)
     {
-        sessionId = null;
+        sessionId = null!;
 
         if (uri == null)
             return false;
@@ -74,7 +74,7 @@ public static class SessionUrlBuilder
     /// </summary>
     public static bool TryParseHostPort(Uri uri, out string host, out int port)
     {
-        host = null;
+        host = null!;
         port = 0;
 
         if (uri == null)
@@ -150,7 +150,7 @@ public static class SessionUrlBuilder
     public static string ToEndpointString(Uri uri)
     {
         if (uri == null)
-            return null;
+            return null!;
 
         int port = uri.Port > 0 ? uri.Port : DefaultPort;
         return $"{uri.Host}:{port}";

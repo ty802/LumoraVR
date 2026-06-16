@@ -1,0 +1,18 @@
+<Project Sdk="Godot.NET.Sdk/4.7.0-dev.4">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <LangVersion>preview</LangVersion>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Lumora.Godot.Hooks</RootNamespace>
+    <AssemblyName>LumoraHooks</AssemblyName>
+    <Description>LumoraHooks - Godot-side hook layer that bridges LumoraCore components to Godot scene nodes.</Description>
+    <Company>Lumora Project</Company>
+    <Product>LumoraHooks</Product>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\LumoraCore\LumoraCore.csproj" />
+  </ItemGroup>
+</Project>

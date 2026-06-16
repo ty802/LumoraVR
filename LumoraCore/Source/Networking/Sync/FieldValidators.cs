@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -132,7 +132,7 @@ public static class FieldValidators
     {
         return (value, field) =>
         {
-            if (value == null) return null;
+            if (value == null) return null!;
             return value.Length > maxLength ? value.Substring(0, maxLength) : value;
         };
     }
@@ -150,7 +150,7 @@ public static class FieldValidators
     /// </summary>
     public static Func<string, IField<string>, string> Trim()
     {
-        return (value, field) => value?.Trim();
+        return (value, field) => value?.Trim() ?? null!;
     }
 
     /// <summary>

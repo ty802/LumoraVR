@@ -40,7 +40,7 @@ public partial class ImportDialog
     }
 
     /// <summary>
-    /// Thread-safe progress report — deferred to main thread via CallDeferred.
+    /// Thread-safe progress report - deferred to main thread via CallDeferred.
     /// </summary>
     private void ReportProgress(float progress, string status)
     {

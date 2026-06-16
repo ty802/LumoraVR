@@ -57,11 +57,11 @@ public class ModelImportSettings
 public class ModelImportResult
 {
     public bool Success { get; set; }
-    public string ErrorMessage { get; set; }
-    public Slot RootSlot { get; set; }
-    public SkeletonBuilder Skeleton { get; set; }
+    public string ErrorMessage { get; set; } = null!;
+    public Slot RootSlot { get; set; } = null!;
+    public SkeletonBuilder Skeleton { get; set; } = null!;
     public List<SkinnedMeshRenderer> SkinnedMeshes { get; set; } = new();
-    public string LocalUri { get; set; }
+    public string LocalUri { get; set; } = null!;
 }
 
 /// <summary>
@@ -81,7 +81,6 @@ public static class ModelImporter
         ".obj",
         ".dae",
         ".3ds",
-        ".blend",
         ".stl",
         ".ply",
         ".x",
@@ -109,9 +108,9 @@ public static class ModelImporter
     public static async Task<ModelImportResult> ImportModelAsync(
         string filePath,
         Slot targetSlot,
-        ModelImportSettings settings = null,
-        LocalDB localDB = null,
-        IProgress<(float progress, string status)> progress = null)
+        ModelImportSettings? settings = null,
+        LocalDB? localDB = null,
+        IProgress<(float progress, string status)>? progress = null)
     {
         settings ??= new ModelImportSettings();
         var result = new ModelImportResult();
@@ -135,7 +134,7 @@ public static class ModelImporter
             progress?.Report((0.1f, "Reading model file..."));
 
             // Import to LocalDB if provided
-            string localUri = null;
+            string localUri = null!;
             if (localDB != null)
             {
                 localUri = await localDB.ImportLocalAssetAsync(filePath, LocalDB.ImportLocation.Copy);
@@ -160,15 +159,12 @@ public static class ModelImporter
 
             progress?.Report((0.5f, "Setting up model structure..."));
 
-            // If this is an avatar import, mark it as such
+            // If this is an avatar import, mark it as such. The avatar is
+            // self-describing - skeleton/rig/reference components attached by
+            // the creator flow are all the metadata it needs.
             if (settings.IsAvatarImport)
             {
                 modelData.IsAvatar.Value = true;
-
-                var draft = modelSlot.GetComponent<AvatarDraft>() ?? modelSlot.AttachComponent<AvatarDraft>();
-                draft.IsFinalized.Value = false;
-                draft.SourcePathOrUri.Value = localUri ?? filePath;
-                draft.ImportProfile.Value = "AvatarImport";
             }
 
             progress?.Report((1.0f, "Import complete!"));
@@ -192,8 +188,8 @@ public static class ModelImporter
     public static async Task<ModelImportResult> ImportAvatarAsync(
         string filePath,
         Slot targetSlot,
-        LocalDB localDB = null,
-        IProgress<(float progress, string status)> progress = null)
+        LocalDB? localDB = null,
+        IProgress<(float progress, string status)>? progress = null)
     {
         var settings = new ModelImportSettings
         {
@@ -217,19 +213,19 @@ public static class ModelImporter
 public class ModelData : ImplementableComponent
 {
     /// <summary>Original source file path.</summary>
-    public readonly Sync<string> SourcePath;
+    public readonly Sync<string> SourcePath = null!;
 
     /// <summary>Local URI after import.</summary>
-    public readonly Sync<string> LocalUri;
+    public readonly Sync<string> LocalUri = null!;
 
     /// <summary>Whether this model is an avatar.</summary>
-    public readonly Sync<bool> IsAvatar;
+    public readonly Sync<bool> IsAvatar = null!;
 
     /// <summary>Whether the model has been loaded by the hook.</summary>
-    public readonly Sync<bool> IsLoaded;
+    public readonly Sync<bool> IsLoaded = null!;
 
     /// <summary>Import settings (not synced, set at import time).</summary>
-    public ModelImportSettings ImportSettings { get; set; }
+    public ModelImportSettings ImportSettings { get; set; } = null!;
 
     public override void OnAwake()
     {

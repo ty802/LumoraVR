@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -28,10 +28,10 @@ public abstract class AsyncProceduralProvider<A> : DynamicAssetProvider<A> where
     private int _completedUpdates;
     private bool _hasError;
 
-    private Action<IAsset> _onWriteLockAcquired;
-    private Action _backgroundUpdateAction;
-    private Func<Task> _asyncUpdateAction;
-    private AssetIntegratedCallback _integratedCallback;
+    private Action<IAsset> _onWriteLockAcquired = null!;
+    private Action _backgroundUpdateAction = null!;
+    private Func<Task> _asyncUpdateAction = null!;
+    private AssetIntegratedCallback _integratedCallback = null!;
 
     /// <summary>
     /// Number of completed asset updates.
@@ -237,7 +237,7 @@ public abstract class AsyncProceduralProvider<A> : DynamicAssetProvider<A> where
         _hasError = false;
     }
 
-    // ===== Abstract Methods =====
+    // Abstract Methods
 
     /// <summary>
     /// Capture state from sync fields before the async update begins.
@@ -268,7 +268,7 @@ public abstract class AsyncProceduralProvider<A> : DynamicAssetProvider<A> where
     /// </summary>
     protected abstract void OnGenerationFailed(string error);
 
-    // ===== Virtual Methods =====
+    // Virtual Methods
 
     /// <summary>
     /// Called after asset integration is complete.
@@ -302,3 +302,4 @@ public abstract class AsyncProceduralProvider<A> : DynamicAssetProvider<A> where
         base.OnDestroy();
     }
 }
+

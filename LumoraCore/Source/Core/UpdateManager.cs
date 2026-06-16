@@ -13,8 +13,12 @@ namespace Lumora.Core;
 public class UpdateManager
 {
     private World _world;
-    private HashSet<IImplementable> _pendingHookUpdates = new HashSet<IImplementable>();
+    private readonly Queue<IImplementable> _pendingHookUpdates = new Queue<IImplementable>();
+    private readonly HashSet<IImplementable> _queuedHookUpdates = new HashSet<IImplementable>();
     private readonly object _hookUpdatesLock = new object();
+
+    private readonly HashSet<Slot> _pendingMovedSlots = new HashSet<Slot>();
+    private readonly object _movedSlotsLock = new object();
     private float _currentDeltaTime = 0f;
 
     // Bucketed update system for ordered execution
@@ -26,7 +30,7 @@ public class UpdateManager
     private Dictionary<IInitializable, List<IInitializable>> _initializableChildren = new Dictionary<IInitializable, List<IInitializable>>();
 
     // Currently updating component (for debugging)
-    public IUpdatable CurrentlyUpdating { get; private set; }
+    public IUpdatable CurrentlyUpdating { get; private set; } = null!;
 
     public UpdateManager(World world)
     {
@@ -39,7 +43,7 @@ public class UpdateManager
     /// </summary>
     public float DeltaTime => _currentDeltaTime;
 
-    // ===== Registration Methods =====
+    // Registration Methods
 
     /// <summary>
     /// Register a component for startup (runs before first update).
@@ -145,12 +149,15 @@ public class UpdateManager
         {
             lock (_hookUpdatesLock)
             {
-                _pendingHookUpdates.Add(component);
+                if (_queuedHookUpdates.Add(component))
+                {
+                    _pendingHookUpdates.Enqueue(component);
+                }
             }
         }
     }
 
-    // ===== Update Execution =====
+    // Update Execution
 
     /// <summary>
     /// Run all startup callbacks.
@@ -173,7 +180,7 @@ public class UpdateManager
                 }
                 finally
                 {
-                    CurrentlyUpdating = null;
+                    CurrentlyUpdating = null!;
                 }
             }
         }
@@ -205,7 +212,7 @@ public class UpdateManager
                     }
                     finally
                     {
-                        CurrentlyUpdating = null;
+                        CurrentlyUpdating = null!;
                     }
                 }
             }
@@ -238,7 +245,7 @@ public class UpdateManager
                     }
                     finally
                     {
-                        CurrentlyUpdating = null;
+                        CurrentlyUpdating = null!;
                     }
                 }
             }
@@ -264,7 +271,7 @@ public class UpdateManager
             }
             finally
             {
-                CurrentlyUpdating = null;
+                CurrentlyUpdating = null!;
             }
         }
     }
@@ -275,27 +282,101 @@ public class UpdateManager
     /// </summary>
     public void ProcessHookUpdates(float deltaTime)
     {
-        List<IImplementable> pending;
-        lock (_hookUpdatesLock)
-        {
-            if (_pendingHookUpdates.Count == 0)
-                return;
-
-            // Snapshot to avoid collection modification during hook updates
-            pending = new List<IImplementable>(_pendingHookUpdates);
-            _pendingHookUpdates.Clear();
-        }
-
-        // Store delta time for hooks to access
         _currentDeltaTime = deltaTime;
 
-        foreach (var component in pending)
+        const int maxUpdates = 100000;
+        int processed = 0;
+
+        while (true)
         {
-            if (component is ImplementableComponent<IHook> impl)
+            IImplementable implementable;
+            lock (_hookUpdatesLock)
             {
-                impl.UpdateHook();
+                if (_pendingHookUpdates.Count == 0)
+                {
+                    return;
+                }
+
+                implementable = _pendingHookUpdates.Dequeue();
+                _queuedHookUpdates.Remove(implementable);
+            }
+
+            if (implementable == null || implementable.IsDestroyed ||
+                (implementable is Worker worker && worker.IsRemoved) ||
+                implementable.Hook == null)
+            {
+                continue;
+            }
+
+            // Contain hook failures like every other phase. A throwing hook used to
+            // abort the whole world update mid-frame, which left queued startups,
+            // changed-element processing and destructions undrained - destroyed UI
+            // kept getting hover writes and the same hook re-threw every frame. - xlinka
+            try
+            {
+                implementable.Hook.ApplyChanges();
+            }
+            catch (Exception ex)
+            {
+                Logging.Logger.Error($"UpdateManager: Error in hook update for {implementable}: {ex}");
+            }
+
+            processed++;
+            if (processed >= maxUpdates)
+            {
+                Logging.Logger.Warn("UpdateManager: Hook update queue hit safety limit.");
+                return;
             }
         }
+    }
+
+    /// <summary>
+    /// Register a slot whose world transform changed this frame. Deduplicated; the queued slots
+    /// fire their WorldTransformChanged event once, in <see cref="ProcessMovedSlots"/>.
+    /// </summary>
+    public void RegisterMovedSlot(Slot slot)
+    {
+        if (slot == null || slot.IsDestroyed)
+            return;
+        lock (_movedSlotsLock)
+        {
+            _pendingMovedSlots.Add(slot);
+        }
+    }
+
+    /// <summary>
+    /// Fire deferred WorldTransformChanged events for slots that moved this frame, parents before
+    /// children. Runs before hook updates so a handler that re-drives a transform reaches the
+    /// engine the same frame. Returns the number fired.
+    /// </summary>
+    public int ProcessMovedSlots()
+    {
+        List<Slot> batch;
+        lock (_movedSlotsLock)
+        {
+            if (_pendingMovedSlots.Count == 0)
+                return 0;
+            batch = new List<Slot>(_pendingMovedSlots);
+            _pendingMovedSlots.Clear();
+        }
+
+        // Parents before children, so a child handler reading parent state sees it updated.
+        batch.Sort((a, b) => a.Depth.CompareTo(b.Depth));
+
+        foreach (var slot in batch)
+        {
+            if (slot == null || slot.IsDestroyed)
+                continue;
+            try
+            {
+                slot.FireWorldTransformChanged();
+            }
+            catch (Exception ex)
+            {
+                Logging.Logger.Error($"UpdateManager: Error in moved event for {slot}: {ex}");
+            }
+        }
+        return batch.Count;
     }
 
     /// <summary>
@@ -306,6 +387,11 @@ public class UpdateManager
         lock (_hookUpdatesLock)
         {
             _pendingHookUpdates.Clear();
+            _queuedHookUpdates.Clear();
+        }
+        lock (_movedSlotsLock)
+        {
+            _pendingMovedSlots.Clear();
         }
         _updateBuckets.Clear();
         _startupQueue.Clear();

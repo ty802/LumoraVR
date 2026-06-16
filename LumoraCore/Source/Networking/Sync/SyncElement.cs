@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -24,7 +24,7 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
     /// </summary>
     private int _modificationLevel;
 
-    protected World _world;
+    protected World _world = null!;
     protected RefID _referenceID;
 
     // ISyncMember fields
@@ -51,6 +51,17 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
         IsDrivable = true;
         IsInInitPhase = true;
     }
+
+    /// <summary>
+    /// Serialize this member into the persistence data tree. Overridden by the concrete member
+    /// types (fields, references, lists); the base throws so an unhandled type is caught at save.
+    /// </summary>
+    public virtual Persistence.DataTreeNode Save(Persistence.SaveControl control)
+        => throw new NotSupportedException($"{GetType().Name} does not support persistence.");
+
+    /// <summary>Restore this member's value from the persistence data tree.</summary>
+    public virtual void Load(Persistence.DataTreeNode node, Persistence.LoadControl control)
+        => throw new NotSupportedException($"{GetType().Name} does not support persistence.");
 
     /// <summary>
     /// Initialize this sync element with the world and parent.
@@ -203,7 +214,7 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
     /// </summary>
     protected virtual bool IsDriven => IsDrivable && ActiveLink != null && ActiveLink.IsDriving;
 
-    protected virtual ILinkRef ActiveLink => null;
+    protected virtual ILinkRef ActiveLink => null!;
 
     protected virtual string Name => GetType().Name;
     
@@ -218,6 +229,61 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
     public virtual string ParentHierarchyToString() => Name;
 
     public bool IsBlockedByDrive => IsDriven && ActiveLink != null && ActiveLink.WasLinkGranted && !ActiveLink.IsModificationAllowed;
+
+    protected bool AuthorizeDataModelAccess(
+        DataModelPermissionAction action,
+        DataModelPermissionSurface surface = DataModelPermissionSurface.SyncElement,
+        User? actor = null,
+        bool isNetwork = false,
+        bool isFullState = false,
+        int? index = null,
+        object? key = null,
+        bool throwOnError = true)
+    {
+        var permissions = World?.DataModelPermissions;
+        if (permissions == null)
+        {
+            return true;
+        }
+
+        var request = new DataModelPermissionRequest(
+            World,
+            actor,
+            this,
+            Parent,
+            this,
+            surface,
+            action,
+            isNetwork,
+            isFullState,
+            index,
+            key);
+
+        if (permissions.Authorize(request, out var reason))
+        {
+            return true;
+        }
+
+        if (throwOnError)
+        {
+            throw new UnauthorizedAccessException(reason ?? "datamodel mutation denied");
+        }
+
+        return false;
+    }
+
+    protected bool AuthorizeDataModelMutation(
+        DataModelPermissionAction action,
+        DataModelPermissionSurface surface = DataModelPermissionSurface.SyncElement,
+        User? actor = null,
+        bool isNetwork = false,
+        bool isFullState = false,
+        int? index = null,
+        object? key = null,
+        bool throwOnError = true)
+    {
+        return AuthorizeDataModelAccess(action, surface, actor, isNetwork, isFullState, index, key, throwOnError);
+    }
 
     protected void BeginHook()
     {
@@ -300,6 +366,15 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
                 }
                 return false;
             }
+
+            if (!IsLoading && !IsWithinHookCallback && !IsInInitPhase &&
+                !AuthorizeDataModelMutation(
+                    DataModelPermissionAction.Write,
+                    this is IField ? DataModelPermissionSurface.Field : DataModelPermissionSurface.SyncElement,
+                    throwOnError: throwOnError))
+            {
+                return false;
+            }
         }
 
         _modificationLevel++;
@@ -373,6 +448,9 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
                 throw new InvalidOperationException("Cannot do a full encode on a dirty element!");
         }
 
+        AuthorizeDataModelAccess(
+            DataModelPermissionAction.Serialize | DataModelPermissionAction.Replicate,
+            isFullState: forFullBatch);
         InternalEncodeFull(writer, outboundMessage);
     }
 
@@ -400,6 +478,7 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
 
     public virtual void EncodeDelta(BinaryWriter writer, BinaryMessageBatch outboundMessage)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Serialize | DataModelPermissionAction.Replicate);
         InternalEncodeDelta(writer, outboundMessage);
         IsSyncDirty = false;
         InternalClearDirty();
@@ -500,6 +579,7 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
     /// </summary>
     void ISyncMember.Encode(BinaryWriter writer)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Serialize);
         InternalEncodeDelta(writer, null!);
     }
 
@@ -543,7 +623,7 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
     /// </summary>
     public static IWorldElement TryRetrieveFromTrash(World world, ulong tick, RefID id)
     {
-        return world?.ReferenceController?.TryRetrieveFromTrash(tick, id);
+        return (world?.ReferenceController?.TryRetrieveFromTrash(tick, id)) ?? null!;
     }
 
     /// <summary>
@@ -566,7 +646,7 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
 
         IsDisposed = true;
         _parent = null;
-        World = null;
+        World = null!;
     }
 
     public void Destroy()
@@ -584,3 +664,4 @@ public enum MessageValidity
     Conflict,
     Ignore
 }
+

@@ -1,10 +1,15 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System;
+using Helio.UI;
+using Helio.UI.Layout;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Components;
+using Lumora.Core.Components.Assets;
 using Lumora.Core.Components.Meshes;
+using Lumora.Core.Components.UI;
 using Lumora.Core.Math;
 using Lumora.Core.Physics;
 
@@ -172,6 +177,18 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
         var clipboardSlot = world.RootSlot.AddSlot("ClipboardImporter");
         clipboardSlot.AttachComponent<ClipboardImporter>();
 
+        try
+        {
+            CreateHelioTestPanel(world);
+        }
+        catch (Exception ex)
+        {
+            // This is a local validation panel, not core world content. Do not let
+            // it prevent LocalHome/userspace from starting.
+            Lumora.Core.Logging.Logger.Warn($"LocalHome: Helio validation panel skipped: {ex}");
+        }
+
+
         // Catch-all under the world. Bigger than ground so a user yeeted off-edge
         // still triggers respawn instead of falling forever. - xlinka
         var respawnSlot = world.RootSlot.AddSlot("RespawnPlane");
@@ -182,5 +199,181 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
         respawnPlane.ShowVisual.Value = false;
         respawnPlane.ShowDebug.Value = false;
         respawnPlane.UserRespawnPosition.Value = new float3(0f, 1f, 0f);
+    }
+
+    private static void CreateHelioTestPanel(World world)
+    {
+        var panelSlot = world.RootSlot.AddSlot("HelioTestPanel");
+        panelSlot.LocalPosition.Value = new float3(0f, 1.58f, -1.68f);
+        panelSlot.LocalScale.Value = new float3(0.00120f, 0.00120f, 0.00120f);
+
+        var fontSlot = panelSlot.AddSlot("UIFont");
+        var font = fontSlot.AttachComponent<FontProvider>();
+        font.URL.Value = new Uri("res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf");
+        font.FallbackURLs.Add(new Uri("res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf"));
+
+        var checkerSlot = panelSlot.AddSlot("UIValidationChecker");
+        var checker = checkerSlot.AttachComponent<CheckerTextureProvider>();
+        checker.Width.Value = 64;
+        checker.Height.Value = 64;
+        checker.CellSize.Value = 8;
+        checker.ColorA.Value = new color(0.12f, 0.62f, 0.90f, 1f);
+        checker.ColorB.Value = new color(0.95f, 0.30f, 0.56f, 1f);
+
+        var checkerMaterialSlot = panelSlot.AddSlot("UIValidationCheckerMaterial");
+        var checkerMaterial = checkerMaterialSlot.AttachComponent<UIUnlitMaterial>();
+        checkerMaterial.Texture.Target = checker;
+        checkerMaterial.Culling.Value = Culling.None;
+        checkerMaterial.ZWrite.Value = ZWrite.Off;
+        checkerMaterial.RenderQueue.Value = 3005;
+
+        var panel = panelSlot.AttachComponent<PanelShell>();
+        panel.Title.Value = "Helio Validation";
+        panel.Size.Value = new float2(760f, 660f);
+        panel.HeaderHeight.Value = 42f;
+        panel.Padding.Value = 14f;
+        panel.Font.Target = font;
+        panel.BackgroundColor.Value = new color(0.018f, 0.022f, 0.030f, 0.88f);
+        panel.HeaderColor.Value = new color(0.105f, 0.130f, 0.165f, 0.98f);
+
+        panel.RebuildContent(ui =>
+        {
+            ui.Font(font);
+            var layout = ui.VerticalLayout(8f, 10f);
+            layout.ForceExpandHeight.Value = false;
+            Fill(layout.RectTransform!);
+
+            var status = ui.Text("Validation ready: hover/press, scroll clip, raw/tiled images, font fallback.", 15f, new color(0.92f, 0.97f, 1f, 1f));
+            status.WordWrap.Value = true;
+            status.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+            Fill(status.RectTransform!);
+            SetLayoutHeight(status.RectTransform!, 34f, 40f);
+
+            // Handlers live on a component (not closures) so the panel's controls
+            // survive duplication - a cloned panel drives its own labels.
+            var actions = panel.Slot.GetComponent<HelioTestActions>() ?? panel.Slot.AttachComponent<HelioTestActions>();
+            actions.Panel.Target = panel;
+            actions.Status.Target = status;
+
+            var shellButton = ui.Button("Shell color update", actions.OnShellPressed, new color(0.18f, 0.34f, 0.48f, 0.96f));
+            Fill(shellButton.RectTransform!);
+            SetLayoutHeight(shellButton.RectTransform!, 34f, 36f);
+
+            var button = ui.Button("Laser click test", actions.OnLaserPressed, new color(0.16f, 0.30f, 0.44f, 0.96f));
+            Fill(button.RectTransform!);
+            SetLayoutHeight(button.RectTransform!, 34f, 36f);
+
+            var checkboxRow = ui.Panel(new color(0.052f, 0.060f, 0.074f, 0.92f));
+            Fill(checkboxRow.RectTransform!);
+            SetLayoutHeight(checkboxRow.RectTransform!, 32f, 34f);
+            ui.Nest();
+            var checkboxSplits = ui.SplitHorizontally(0.58f, 0.04f, 0.38f);
+            ui.NestInto(checkboxSplits[0]);
+            var checkboxLabel = ui.Text("Checkbox", 14f, new color(0.94f, 0.96f, 1f, 1f));
+            checkboxLabel.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+            Fill(checkboxLabel.RectTransform!);
+            ui.NestOut();
+            ui.NestInto(checkboxSplits[2]);
+            var checkbox = ui.Checkbox(false, actions.OnCheckboxChanged, new color(0.78f, 0.82f, 0.88f, 1f));
+            FixedRect(checkbox.RectTransform!, new float2(0.5f, 0.5f), new float2(24f, 24f));
+            ui.NestOut();
+            ui.NestOut();
+
+            var sliderRow = ui.Panel(new color(0.052f, 0.060f, 0.074f, 0.92f));
+            Fill(sliderRow.RectTransform!);
+            SetLayoutHeight(sliderRow.RectTransform!, 32f, 34f);
+            ui.Nest();
+            var sliderSplits = ui.SplitHorizontally(0.42f, 0.04f, 0.54f);
+            ui.NestInto(sliderSplits[0]);
+            var sliderLabel = ui.Text("Slider", 14f, new color(0.94f, 0.96f, 1f, 1f));
+            sliderLabel.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+            Fill(sliderLabel.RectTransform!);
+            ui.NestOut();
+            ui.NestInto(sliderSplits[2]);
+            var slider = ui.Slider(0.35f, 0f, 1f, actions.OnSliderChanged, new color(0.18f, 0.24f, 0.30f, 0.96f));
+            Fill(slider.RectTransform!);
+            ui.NestOut();
+            ui.NestOut();
+
+            var scroll = ui.ScrollRect(out var scrollContent, new float2(1f, 1f), new color(0.045f, 0.060f, 0.080f, 0.90f));
+            Fill(scroll.RectTransform!);
+            SetLayoutHeight(scroll.RectTransform!, 150f, 190f, 1f);
+            const float scrollContentHeight = 260f;
+            ConfigureScrollContent(scrollContent, scrollContentHeight);
+            scroll.Scroll.Value = new float2(0f, 30f);
+            scroll.ScrollChanged += (_, value) =>
+            {
+                status.Content.Value = $"Scroll clip y={value.y:0}";
+            };
+
+            var scrollUi = new UIBuilder(scrollContent.Slot);
+            scrollUi.Font(font);
+            var scrollLayout = scrollUi.VerticalLayout(4f, 6f);
+            scrollLayout.ForceExpandHeight.Value = false;
+            Fill(scrollLayout.RectTransform!);
+            for (int i = 1; i <= 9; i++)
+            {
+                var row = scrollUi.Text($"clipped scroll row {i:00} - content should stay inside the mask", 14f, new color(0.92f, 0.95f, 1f, 1f));
+                row.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+                Fill(row.RectTransform!);
+                SetLayoutHeight(row.RectTransform!, 22f, 24f);
+            }
+            scrollUi.NestOut();
+
+            var imagePanel = ui.Panel(new color(0.045f, 0.052f, 0.066f, 0.92f));
+            Fill(imagePanel.RectTransform!);
+            SetLayoutHeight(imagePanel.RectTransform!, 80f, 88f);
+            ui.Nest();
+            var imageLayout = ui.HorizontalLayout(8f, 8f);
+            Fill(imageLayout.RectTransform!);
+            var raw = ui.RawImage(null, color.White, Rect.UnitRect, false);
+            raw.Material.Target = checkerMaterial;
+            Fill(raw.RectTransform!);
+            var tiled = ui.TiledRawImage(null, color.White, new float2(24f, 24f), new float2(8f, 6f));
+            tiled.Material.Target = checkerMaterial;
+            Fill(tiled.RectTransform!);
+            ui.NestOut();
+            ui.NestOut();
+
+            var fallback = ui.Text("FontSet fallback path: ASCII + symbols <> [] {} + missing glyph fallback", 14f, new color(0.88f, 0.82f, 0.96f, 1f));
+            fallback.WordWrap.Value = true;
+            fallback.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+            Fill(fallback.RectTransform!);
+            SetLayoutHeight(fallback.RectTransform!, 34f, 42f);
+
+            ui.NestOut();
+        });
+    }
+
+    private static void Fill(RectTransform rect)
+    {
+        rect.AnchorMin.Value = float2.Zero;
+        rect.AnchorMax.Value = float2.One;
+        rect.OffsetMin.Value = float2.Zero;
+        rect.OffsetMax.Value = float2.Zero;
+    }
+
+    private static void FixedRect(RectTransform rect, float2 anchor, float2 size)
+    {
+        rect.AnchorMin.Value = anchor;
+        rect.AnchorMax.Value = anchor;
+        rect.OffsetMin.Value = size * -0.5f;
+        rect.OffsetMax.Value = size * 0.5f;
+    }
+
+    private static void ConfigureScrollContent(RectTransform rect, float contentHeight)
+    {
+        rect.AnchorMin.Value = new float2(0f, 1f);
+        rect.AnchorMax.Value = new float2(1f, 1f);
+        rect.OffsetMin.Value = new float2(0f, -contentHeight);
+        rect.OffsetMax.Value = float2.Zero;
+    }
+
+    private static void SetLayoutHeight(RectTransform rect, float minHeight, float preferredHeight, float flexibleHeight = 0f)
+    {
+        var element = rect.Slot.GetComponent<LayoutElement>() ?? rect.Slot.AttachComponent<LayoutElement>();
+        element.MinHeight.Value = minHeight;
+        element.PreferredHeight.Value = preferredHeight;
+        element.FlexibleHeight.Value = flexibleHeight;
     }
 }

@@ -16,16 +16,16 @@ namespace Lumora.Core.Networking.Session;
 /// Handles peer-to-peer asset transfer over the control message channel.
 ///
 /// Protocol:
-///   Client  →  AssetRequest(uri)         →  Host/Owner
-///   Host    →  AssetTransmissionStart(id, uri, totalBytes)  →  Client
-///   Client  →  AssetNextChunkRequest(id)  →  Host   (first pull fetches 16 chunks)
-///   Host    →  AssetChunk(id, offset, data) ×N  →  Client
-///   …repeat until done…
-///   Host    →  AssetNotAvailable(uri)     →  Client  (if it can't serve the file)
+///   Client -> AssetRequest(uri) -> Host/Owner
+///   Host -> AssetTransmissionStart(id, uri, totalBytes) -> Client
+///   Client -> AssetNextChunkRequest(id) -> Host   (first pull fetches 16 chunks)
+///   Host -> AssetChunk(id, offset, data) xN -> Client
+///   ...repeat until done...
+///   Host -> AssetNotAvailable(uri) -> Client  (if it can't serve the file)
 /// </summary>
 public class SessionAssetTransferer : IDisposable
 {
-    // ── Job identity ──────────────────────────────────────────────────────────
+    // Job identity
 
     private readonly struct JobID : IEquatable<JobID>
     {
@@ -34,11 +34,11 @@ public class SessionAssetTransferer : IDisposable
 
         public JobID(IConnection connection, int id) { Connection = connection; ID = id; }
         public bool Equals(JobID other) => Connection == other.Connection && ID == other.ID;
-        public override bool Equals(object obj) => obj is JobID j && Equals(j);
+        public override bool Equals(object? obj) => obj is JobID j && Equals(j);
         public override int GetHashCode() => HashCode.Combine(Connection, ID);
     }
 
-    // ── Outbound (we are sending) ─────────────────────────────────────────────
+    // Outbound (we are sending)
 
     private sealed class FileTransmitJob
     {
@@ -96,7 +96,7 @@ public class SessionAssetTransferer : IDisposable
         }
     }
 
-    // ── Inbound (we are receiving) ────────────────────────────────────────────
+    // Inbound (we are receiving)
 
     private sealed class FileReceiveJob
     {
@@ -134,7 +134,7 @@ public class SessionAssetTransferer : IDisposable
             int size = reader.ReadInt32();
 
             // Bound the chunk size, reject negative offsets, and ensure the chunk lands
-            // inside the pre-declared buffer — the latter prevents an OOB write via
+            // inside the pre-declared buffer - the latter prevents an OOB write via
             // a peer crafting offset+size > _totalSize after a legitimate Initialize.
             if (size < 0 || size > NetworkLimits.MaxAssetChunkBytes)
                 throw new InvalidDataException($"Asset chunk size {size} out of bounds (cap {NetworkLimits.MaxAssetChunkBytes}).");
@@ -165,7 +165,7 @@ public class SessionAssetTransferer : IDisposable
         }
     }
 
-    // ── State ─────────────────────────────────────────────────────────────────
+    // State
 
     private const int MaxTransmitJobs = 4;
 
@@ -183,12 +183,12 @@ public class SessionAssetTransferer : IDisposable
         Session = session;
     }
 
-    // ── Public API ────────────────────────────────────────────────────────────
+    // Public API
 
     /// <summary>
     /// Request an asset by URI. Sends AssetRequest to the host (clients) or to the
     /// asset owner's connection (if we are the authority).
-    /// <paramref name="onGathered"/> receives (uri, localFilePath) — path is null on failure.
+    /// <paramref name="onGathered"/> receives (uri, localFilePath) - path is null on failure.
     /// </summary>
     public void RequestAsset(Uri assetUri, Action<Uri, string> onGathered)
     {
@@ -201,14 +201,14 @@ public class SessionAssetTransferer : IDisposable
             IConnection target;
             if (Session.World.IsAuthority)
             {
-                // Authority → request from the machine that owns this local:// asset
+                // Authority -> request from the machine that owns this local:// asset
                 var machineId = assetUri.Host;
                 var owner = Session.World.GetAllUsers()
                     ?.FirstOrDefault(u => u.MachineID?.Value == machineId);
                 if (owner == null || !Session.Connections.TryGetConnection(owner, out target))
                 {
                     LumoraLogger.Warn($"AssetTransferer: no peer for machine '{machineId}', cannot fetch {uriStr}");
-                    onGathered(assetUri, null);
+                    onGathered(assetUri, null!);
                     return;
                 }
             }
@@ -219,7 +219,7 @@ public class SessionAssetTransferer : IDisposable
 
             if (target == null)
             {
-                onGathered(assetUri, null);
+                onGathered(assetUri, null!);
                 return;
             }
 
@@ -282,7 +282,7 @@ public class SessionAssetTransferer : IDisposable
                 if (_assetRequests.TryGetValue(uriStr, out var cb))
                 {
                     _assetRequests.Remove(uriStr);
-                    cb(job.AssetUri, null);
+                    cb(job.AssetUri, null!);
                 }
             }
 
@@ -290,7 +290,7 @@ public class SessionAssetTransferer : IDisposable
         }
     }
 
-    // ── Message handlers ──────────────────────────────────────────────────────
+    // Message handlers
 
     private void HandleAssetRequest(ControlMessage message)
     {
@@ -303,7 +303,7 @@ public class SessionAssetTransferer : IDisposable
 
         // Try to resolve locally via LocalDB
         var localDB = Engine.Current?.LocalDB;
-        string localPath = null;
+        string localPath = null!;
         if (assetUri.Scheme == "local" && localDB != null)
             localPath = localDB.GetFilePath(uriStr);
 
@@ -315,7 +315,7 @@ public class SessionAssetTransferer : IDisposable
         }
         else
         {
-            LumoraLogger.Warn($"AssetTransferer: cannot serve {uriStr} — not found locally");
+            LumoraLogger.Warn($"AssetTransferer: cannot serve {uriStr} - not found locally");
             var msg = new ControlMessage(ControlMessage.Message.AssetNotAvailable);
             msg.Targets.Add(message.Sender);
             using var ms = new MemoryStream();
@@ -407,11 +407,11 @@ public class SessionAssetTransferer : IDisposable
         if (_assetRequests.TryGetValue(uriStr, out var cb))
         {
             _assetRequests.Remove(uriStr);
-            cb(new Uri(uriStr), null);
+            cb(new Uri(uriStr), null!);
         }
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
+    // Helpers
 
     private void RefreshJobs()
     {

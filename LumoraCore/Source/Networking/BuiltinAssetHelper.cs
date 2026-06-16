@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -28,7 +28,7 @@ public static class BuiltinAssetHelper
     /// Platform-specific asset loader. Set by the platform layer (e.g. LumoraEngineRunner).
     /// Receives the relative path (without "builtin://") and returns the raw bytes.
     /// </summary>
-    public static Func<string, byte[]> PlatformLoader { get; set; }
+    public static Func<string, byte[]> PlatformLoader { get; set; } = null!;
 
     public static bool ValidPath(string path)
     {
@@ -40,12 +40,12 @@ public static class BuiltinAssetHelper
     public static byte[] GetBuiltinAssetData(string path)
     {
         if (!ValidPath(path))
-            return null;
+            return null!;
 
         if (PlatformLoader == null)
         {
             Logging.Logger.Warn($"BuiltinAssetHelper: No PlatformLoader registered, cannot load '{path}'");
-            return null;
+            return null!;
         }
 
         string relativePath = path.Substring(BuiltinSchema.Length);

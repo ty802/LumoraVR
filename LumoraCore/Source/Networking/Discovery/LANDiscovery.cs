@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
@@ -37,8 +37,8 @@ public class LANDiscovery : IDisposable
     /// </summary>
     public const int CleanupIntervalMs = 10000;
 
-    private UdpClient _listener;
-    private CancellationTokenSource _cts;
+    private UdpClient _listener = null!;
+    private CancellationTokenSource _cts = null!;
     private readonly Dictionary<string, DiscoveredSession> _sessions = new();
     private readonly object _sessionsLock = new();
     private Guid _localAnnouncerId;
@@ -48,17 +48,17 @@ public class LANDiscovery : IDisposable
     /// <summary>
     /// Event raised when a new session is discovered.
     /// </summary>
-    public event Action<DiscoveredSession> SessionFound;
+    public event Action<DiscoveredSession> SessionFound = null!;
 
     /// <summary>
     /// Event raised when a session is no longer available.
     /// </summary>
-    public event Action<string> SessionLost;
+    public event Action<string> SessionLost = null!;
 
     /// <summary>
     /// Event raised when an existing session's metadata is updated.
     /// </summary>
-    public event Action<DiscoveredSession> SessionUpdated;
+    public event Action<DiscoveredSession> SessionUpdated = null!;
 
     /// <summary>
     /// All currently discovered sessions.
@@ -153,7 +153,7 @@ public class LANDiscovery : IDisposable
 
     private void ProcessAnnouncement(byte[] data, IPEndPoint source)
     {
-        // Ignore non-GZip packets — other apps may share the
+        // Ignore non-GZip packets - other apps may share the
         // same UDP discovery port and broadcast in their own binary format (magic bytes 0x52 0x65 0x73).
         if (data.Length < 2 || data[0] != 0x1F || data[1] != 0x8B)
             return;
@@ -279,7 +279,7 @@ public class LANDiscovery : IDisposable
     {
         lock (_sessionsLock)
         {
-            return _sessions.TryGetValue(sessionId, out var session) ? session : null;
+            return (_sessions.TryGetValue(sessionId, out var session) ? session : null) ?? null!;
         }
     }
 
@@ -317,8 +317,8 @@ public class LANDiscovery : IDisposable
         }
         catch { }
 
-        _listener = null;
-        _cts = null;
+        _listener = null!;
+        _cts = null!;
 
         LumoraLogger.Log("LAN discovery stopped");
     }
@@ -349,12 +349,12 @@ public class DiscoveredSession
     /// <summary>
     /// Metadata of the discovered session.
     /// </summary>
-    public SessionMetadata Metadata { get; set; }
+    public SessionMetadata Metadata { get; set; } = null!;
 
     /// <summary>
     /// IP address the announcement came from.
     /// </summary>
-    public IPAddress SourceIP { get; set; }
+    public IPAddress SourceIP { get; set; } = null!;
 
     /// <summary>
     /// When this session was last seen (for timeout tracking).
@@ -392,6 +392,7 @@ public class DiscoveredSession
                 Metadata.SessionId);
         }
 
-        return null;
+        return null!;
     }
 }
+

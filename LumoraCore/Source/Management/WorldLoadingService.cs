@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -14,12 +14,12 @@ namespace Lumora.Core.Management;
 /// </summary>
 public class WorldLoadingOperation
 {
-    public string WorldName { get; set; }
-    public Uri Address { get; set; }
-    public World World { get; internal set; }
+    public string WorldName { get; set; } = null!;
+    public Uri Address { get; set; } = null!;
+    public World World { get; internal set; } = null!;
     public WorldLoadingPhase Phase { get; internal set; }
     public float Progress { get; internal set; }
-    public string StatusMessage { get; internal set; }
+    public string StatusMessage { get; internal set; } = null!;
     public bool IsComplete { get; internal set; }
     public bool IsFailed { get; internal set; }
     public string? ErrorMessage { get; internal set; }
@@ -35,7 +35,7 @@ public class WorldLoadingOperation
     public void Cancel()
     {
         IsCancelled = true;
-        CompletionSource.TrySetResult(null);
+        CompletionSource.TrySetResult(null!);
     }
 }
 
@@ -58,28 +58,28 @@ public enum WorldLoadingPhase
 public class WorldLoadingService
 {
     private readonly Engine _engine;
-    private WorldLoadingOperation _currentOperation;
-    private SessionJoinIndicator _currentIndicator;
+    private WorldLoadingOperation _currentOperation = null!;
+    private SessionJoinIndicator _currentIndicator = null!;
 
     /// <summary>
     /// Fired when world loading progress updates.
     /// </summary>
-    public event Action<WorldLoadingOperation> OnLoadingProgress;
+    public event Action<WorldLoadingOperation> OnLoadingProgress = null!;
 
     /// <summary>
     /// Fired when world loading starts.
     /// </summary>
-    public event Action<WorldLoadingOperation> OnLoadingStarted;
+    public event Action<WorldLoadingOperation> OnLoadingStarted = null!;
 
     /// <summary>
     /// Fired when world loading completes successfully.
     /// </summary>
-    public event Action<WorldLoadingOperation> OnLoadingComplete;
+    public event Action<WorldLoadingOperation> OnLoadingComplete = null!;
 
     /// <summary>
     /// Fired when world loading fails.
     /// </summary>
-    public event Action<WorldLoadingOperation> OnLoadingFailed;
+    public event Action<WorldLoadingOperation> OnLoadingFailed = null!;
 
     /// <summary>
     /// Currently active loading operation, or null if none.
@@ -110,7 +110,7 @@ public class WorldLoadingService
         if (IsLoading)
         {
             LumoraLogger.Warn("WorldLoadingService: Already loading a world");
-            return null;
+            return null!;
         }
 
         var uri = new UriBuilder("lnl", address, port).Uri;
@@ -125,7 +125,7 @@ public class WorldLoadingService
         if (IsLoading)
         {
             LumoraLogger.Warn("WorldLoadingService: Already loading a world");
-            return null;
+            return null!;
         }
 
         var operation = new WorldLoadingOperation
@@ -265,7 +265,7 @@ public class WorldLoadingService
         {
             if (_currentOperation == operation)
             {
-                _currentOperation = null;
+                _currentOperation = null!;
             }
         }
     }
@@ -318,7 +318,7 @@ public class WorldLoadingService
         DestroySessionJoinIndicator();
 
         OnLoadingFailed?.Invoke(operation);
-        operation.CompletionSource.TrySetResult(null);
+        operation.CompletionSource.TrySetResult(null!);
     }
 
     /// <summary>
@@ -372,7 +372,7 @@ public class WorldLoadingService
             return;
 
         _currentIndicator.TargetWorld = operation.World;
-        _currentIndicator.SessionSync = operation.World.Session?.Sync;
+        _currentIndicator.SessionSync = operation.World.Session?.Sync!;
     }
 
     /// <summary>
@@ -386,7 +386,7 @@ public class WorldLoadingService
         try
         {
             var indicator = _currentIndicator;
-            _currentIndicator = null;
+            _currentIndicator = null!;
 
             // Destroy on the userspace world's thread
             indicator.World?.RunSynchronously(() =>

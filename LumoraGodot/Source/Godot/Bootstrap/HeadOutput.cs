@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using Godot;
 using Lumora.Core;
 using Lumora.Godot.Extensions;
@@ -33,19 +33,19 @@ public partial class HeadOutput : Node
         Static
     }
 
-    // ===== CONFIGURATION =====
+    // CONFIGURATION
     [Export] public OutputType Type { get; set; } = OutputType.Screen;
     [Export] public float DefaultFOV { get; set; } = 90f;
     [Export] public float NearClip { get; set; } = 0.25f; // Clips through head sphere
     [Export] public float FarClip { get; set; } = 1000f;
 
-    // ===== CAMERA REFERENCES =====
-    private Camera3D _camera;
-    private Camera3D _desktopCamera;
-    private XRCamera3D _vrCamera;
-    private XROrigin3D _xrOrigin;
+    // CAMERA REFERENCES
+    private Camera3D _camera = null!;
+    private Camera3D _desktopCamera = null!;
+    private XRCamera3D _vrCamera = null!;
+    private XROrigin3D _xrOrigin = null!;
 
-    // ===== STATE =====
+    // STATE
     private bool _isVRActive = false;
     private Vector3 _overridePosition = Vector3.Zero;
     private Quaternion _overrideRotation = Quaternion.Identity;
@@ -110,8 +110,8 @@ public partial class HeadOutput : Node
         }
 
         var sceneRoot = GetTree()?.CurrentScene;
-        _xrOrigin = sceneRoot?.GetNodeOrNull<XROrigin3D>("%XROrigin3D");
-        _vrCamera = sceneRoot?.GetNodeOrNull<XRCamera3D>("%XRCamera3D");
+        _xrOrigin = sceneRoot?.GetNodeOrNull<XROrigin3D>("%XROrigin3D")!;
+        _vrCamera = sceneRoot?.GetNodeOrNull<XRCamera3D>("%XRCamera3D")!;
 
         if (_xrOrigin == null || _vrCamera == null)
         {
@@ -184,7 +184,7 @@ public partial class HeadOutput : Node
     /// <summary>
     /// Update camera positioning based on focused world.
     /// </summary>
-    public void UpdatePositioning(Lumora.Core.Engine engine)
+    public void UpdatePositioning(Lumora.Core.Engine? engine)
     {
         if (_camera == null || engine == null)
             return;
@@ -253,6 +253,8 @@ public partial class HeadOutput : Node
                 _xrOrigin.GlobalRotation = Vector3.Zero;
             }
         }
+
+        Lumora.Core.Engine.Current?.InputInterface?.SyncTrackingSpaceToFocusedLocalUser();
     }
 
     /// <summary>
@@ -349,11 +351,11 @@ public partial class HeadOutput : Node
             UseDesktopCamera();
         }
 
-        LumoraLogger.Log($"HeadOutput: VR active state → {isActive}");
+        LumoraLogger.Log($"HeadOutput: VR active state -> {isActive}");
     }
 
     /// <summary>
-    /// Switch output type (e.g., VR ↔ Screen).
+    /// Switch output type (e.g., VR <-> Screen).
     /// When switching to VR call <see cref="NotifyVRActiveChanged"/> first so
     /// <c>_isVRActive</c> is already up-to-date by the time this runs.
     /// </summary>
@@ -382,11 +384,12 @@ public partial class HeadOutput : Node
     /// <summary>
     /// Cleanup.
     /// </summary>
-    public void Dispose()
+    public new void Dispose()
     {
-        _camera = null;
-        _desktopCamera = null;
-        _vrCamera = null;
-        _xrOrigin = null;
+        _camera = null!;
+        _desktopCamera = null!;
+        _vrCamera = null!;
+        _xrOrigin = null!;
     }
 }
+

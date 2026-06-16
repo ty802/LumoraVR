@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -79,7 +79,7 @@ public abstract class ContainerWorker<C> : Worker where C : ComponentBase<C>
             }
         }
 
-        return null;
+        return null!;
     }
 
     protected virtual void CheckAttachComponent(Type componentType)
@@ -167,7 +167,7 @@ public abstract class ContainerWorker<C> : Worker where C : ComponentBase<C>
     {
         component?.RunOnDetach();
         component?.PrepareDestruction();
-        RunComponentRemoved(component);
+        RunComponentRemoved(component!);
     }
 
     public virtual void EndInitPhase()

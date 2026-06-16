@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -30,7 +30,7 @@ public class ContextMenuItemSource : Component
     /// <summary>
     /// Priority for ordering. Higher priority sources run first (their items appear first).
     /// </summary>
-    public readonly Sync<int> Priority;
+    public readonly Sync<int> Priority = null!;
 
     public override void OnAwake()
     {
@@ -41,6 +41,8 @@ public class ContextMenuItemSource : Component
     /// Override to add items to the context menu page.
     /// Called each time the context menu opens (before it is shown).
     /// Items already added by higher-priority sources are visible in page.Items.
+    /// The context carries the summoning pointer and the slot it was aimed at,
+    /// for contextual actions like "Equip Avatar".
     /// </summary>
-    public virtual void PopulateContextMenu(ContextMenuPage page) { }
+    public virtual void PopulateContextMenu(ContextMenuPage page, ContextMenuContext context) { }
 }

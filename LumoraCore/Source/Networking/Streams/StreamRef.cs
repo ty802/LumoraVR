@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -15,7 +15,7 @@ namespace Lumora.Core.Networking.Streams;
 public class StreamRef<T> : SyncElement where T : Stream
 {
     private RefID _targetID;
-    private T _target;
+    private T _target = null!;
 
     /// <summary>
     /// The RefID of the target stream.
@@ -29,7 +29,7 @@ public class StreamRef<T> : SyncElement where T : Stream
                 return;
 
             _targetID = value;
-            _target = null; // Will be resolved on next access
+            _target = null!; // Will be resolved on next access
             InvalidateSyncElement();
         }
     }
@@ -45,9 +45,9 @@ public class StreamRef<T> : SyncElement where T : Stream
             {
                 // Try to resolve the reference
                 var element = World?.ReferenceController?.GetObjectOrNull(_targetID);
-                _target = element as T;
+                _target = (element as T)!;
             }
-            return _target;
+            return _target!;
         }
         set
         {
@@ -75,7 +75,7 @@ public class StreamRef<T> : SyncElement where T : Stream
     protected override void InternalDecodeFull(BinaryReader reader, BinaryMessageBatch inboundMessage)
     {
         _targetID = new RefID(reader.ReadUInt64());
-        _target = null; // Will be resolved on next access
+        _target = null!; // Will be resolved on next access
     }
 
     protected override void InternalEncodeDelta(BinaryWriter writer, BinaryMessageBatch outboundMessage)
@@ -95,9 +95,9 @@ public class StreamRef<T> : SyncElement where T : Stream
 
     public override void Dispose()
     {
-        _target = null;
+        _target = null!;
         base.Dispose();
     }
 
-    public static implicit operator T(StreamRef<T> streamRef) => streamRef?.Target;
+    public static implicit operator T(StreamRef<T> streamRef) => (streamRef?.Target) ?? null!;
 }

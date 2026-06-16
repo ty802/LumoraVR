@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
@@ -33,10 +33,10 @@ public partial class SessionBrowserService : Node
 	[Export] public float PublicRefreshInterval { get; set; } = 10f; // seconds
 
 	// References
-	private WorldBrowser _worldBrowser;
-	private SessionBrowser _sessionBrowser;
-	private HttpClient _httpClient;
-	private LumoraClient _authClient;
+	private WorldBrowser _worldBrowser = null!;
+	private SessionBrowser _sessionBrowser = null!;
+	private HttpClient _httpClient = null!;
+	private LumoraClient _authClient = null!;
 
 	// State
 	private float _publicRefreshTimer;
@@ -45,9 +45,9 @@ public partial class SessionBrowserService : Node
 	private readonly object _worldsLock = new();
 
 	// Events
-	public event Action<string> OnJoinStarted;
-	public event Action<World> OnJoinSuccess;
-	public event Action<string> OnJoinFailed;
+	public event Action<string> OnJoinStarted = null!;
+	public event Action<World> OnJoinSuccess = null!;
+	public event Action<string> OnJoinFailed = null!;
 
 	public override void _Ready()
 	{
@@ -172,11 +172,11 @@ public partial class SessionBrowserService : Node
 		// Find existing or create new SessionBrowser
 		if (_sessionBrowser == null)
 		{
-			_sessionBrowser = world.RootSlot?.GetComponentInChildren<SessionBrowser>();
+			_sessionBrowser = world.RootSlot?.GetComponentInChildren<SessionBrowser>()!;
 			if (_sessionBrowser == null)
 			{
 				var browserSlot = world.RootSlot?.AddSlot("SessionBrowser");
-				_sessionBrowser = browserSlot?.AttachComponent<SessionBrowser>();
+				_sessionBrowser = browserSlot?.AttachComponent<SessionBrowser>()!;
 			}
 
 			// Only attach events once when we first get the browser
@@ -289,10 +289,10 @@ public partial class SessionBrowserService : Node
 		}
 	}
 
-	private async Task<List<SessionListingDto>> TryFetchSessionListingsAsync(string baseUrl)
+	private async Task<List<SessionListingDto>?> TryFetchSessionListingsAsync(string baseUrl)
 	{
 		if (string.IsNullOrWhiteSpace(baseUrl))
-			return null;
+			return null!;
 
 		try
 		{
@@ -305,11 +305,11 @@ public partial class SessionBrowserService : Node
 		catch (HttpRequestException ex)
 		{
 			LumoraLogger.Log($"SessionBrowserService: Session source unavailable at {baseUrl} ({ex.Message})");
-			return null;
+			return null!;
 		}
 		catch (TaskCanceledException)
 		{
-			return null;
+			return null!;
 		}
 	}
 
@@ -319,7 +319,7 @@ public partial class SessionBrowserService : Node
 
 	private void UpdateUIDeferred(string worldId)
 	{
-		WorldBrowser.WorldInfo info = null;
+		WorldBrowser.WorldInfo? info = null;
 		lock (_worldsLock)
 		{
 			_discoveredWorlds.TryGetValue(worldId, out info);
@@ -353,7 +353,7 @@ public partial class SessionBrowserService : Node
 
 	#region Join Flow
 
-	private SessionServerClient _natPunchClient;
+	private SessionServerClient _natPunchClient = null!;
 
 	private void OnWorldSelected(WorldBrowser.WorldInfo world)
 	{
@@ -576,7 +576,7 @@ public partial class SessionBrowserService : Node
 				Session.SessionServerAddress,
 				Session.SessionServerPort);
 
-			System.Net.IPEndPoint punchedEndpoint = null;
+			System.Net.IPEndPoint punchedEndpoint = null!;
 			var punchCompleted = new TaskCompletionSource<bool>();
 			var joinTicket = await TryCreateJoinTicketAsync(sessionId);
 
@@ -604,7 +604,7 @@ public partial class SessionBrowserService : Node
 				if (reportFailure)
 					OnJoinFailed?.Invoke("NAT punch timeout - host may be unreachable");
 				_natPunchClient?.Dispose();
-				_natPunchClient = null;
+				_natPunchClient = null!;
 				return false;
 			}
 
@@ -616,7 +616,7 @@ public partial class SessionBrowserService : Node
 
 			// Clean up NAT punch client
 			_natPunchClient?.Dispose();
-			_natPunchClient = null;
+			_natPunchClient = null!;
 			return joined;
 		}
 		catch (Exception ex)
@@ -625,7 +625,7 @@ public partial class SessionBrowserService : Node
 			if (reportFailure)
 				OnJoinFailed?.Invoke(ex.Message);
 			_natPunchClient?.Dispose();
-			_natPunchClient = null;
+			_natPunchClient = null!;
 		}
 
 		return false;
@@ -659,7 +659,7 @@ public partial class SessionBrowserService : Node
 
 	private static bool TryGetDirectUri(SessionConnectionEndpointDto endpoint, out Uri uri)
 	{
-		uri = null;
+		uri = null!;
 		if (endpoint == null || string.IsNullOrWhiteSpace(endpoint.Url))
 			return false;
 
@@ -713,10 +713,10 @@ public partial class SessionBrowserService : Node
 		return fallbackSessionId;
 	}
 
-	private async Task<string> TryCreateJoinTicketAsync(string sessionId)
+	private async Task<string?> TryCreateJoinTicketAsync(string sessionId)
 	{
 		if (_authClient?.IsAuthenticated != true || string.IsNullOrWhiteSpace(_authClient.CurrentSession?.Token))
-			return null;
+			return null!;
 
 		try
 		{
@@ -729,19 +729,19 @@ public partial class SessionBrowserService : Node
 			if (!response.IsSuccessStatusCode)
 			{
 				LumoraLogger.Warn($"SessionBrowserService: Join ticket request failed ({(int)response.StatusCode})");
-				return null;
+				return null!;
 			}
 
 			var body = await response.Content.ReadAsStringAsync();
 			var ticket = JsonSerializer.Deserialize<JoinTicketResponseDto>(body,
 				new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
-			return string.IsNullOrWhiteSpace(ticket?.JoinTicket) ? null : ticket.JoinTicket;
+			return string.IsNullOrWhiteSpace(ticket?.JoinTicket) ? null : ticket.JoinTicket!;
 		}
 		catch (Exception ex)
 		{
 			LumoraLogger.Warn($"SessionBrowserService: Join ticket request failed - {ex.Message}");
-			return null;
+			return null!;
 		}
 	}
 
@@ -840,7 +840,7 @@ public partial class SessionBrowserService : Node
 			if (error != Error.Ok)
 			{
 				LumoraLogger.Warn("SessionBrowserService: Failed to decode thumbnail image");
-				return null;
+				return null!;
 			}
 
 			return ImageTexture.CreateFromImage(image);
@@ -848,7 +848,7 @@ public partial class SessionBrowserService : Node
 		catch (Exception ex)
 		{
 			LumoraLogger.Warn($"SessionBrowserService: Thumbnail decode error - {ex.Message}");
-			return null;
+			return null!;
 		}
 	}
 

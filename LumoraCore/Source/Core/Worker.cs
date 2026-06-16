@@ -1,10 +1,12 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
 using System.Collections.Generic;
 using System.Reflection;
 using Lumora.Core.Networking.Sync;
+using Lumora.Core.Persistence;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
 
@@ -12,7 +14,7 @@ public abstract class Worker : IWorker
 {
     protected readonly WorkerInitInfo InitInfo;
 
-    public World World { get; private set; }
+    public World World { get; private set; } = null!;
     public IWorldElement? Parent { get; private set; }
 
     public RefID ReferenceID { get; private set; } = RefID.Null;
@@ -27,7 +29,7 @@ public abstract class Worker : IWorker
     public bool GloballyRegistered => InitInfo.RegisterGlobally;
 
     public Type WorkerType => GetType();
-    public string WorkerTypeName => WorkerType.FullName;
+    public string WorkerTypeName => WorkerType.FullName!;
 
     public int SyncMemberCount => InitInfo.SyncMemberFields.Length;
 
@@ -49,7 +51,7 @@ public abstract class Worker : IWorker
 
     public virtual ISyncMember GetSyncMember(int index)
     {
-        return InitInfo.SyncMemberFields[index].GetValue(this) as ISyncMember;
+        return (InitInfo.SyncMemberFields[index].GetValue(this) as ISyncMember) ?? null!;
     }
 
     public FieldInfo GetSyncMemberFieldInfo(int index)
@@ -61,6 +63,77 @@ public abstract class Worker : IWorker
     {
         return InitInfo.SyncMemberNames[index];
     }
+
+    // PERSISTENCE
+    // Serialize this worker as { ID, memberName: member.Save(), ... }. Slot overrides to also write
+    // its child slots; a slot's components live in its "Components" member and serialize through it.
+
+    public virtual DataTreeNode Save(SaveControl control)
+    {
+        var dictionary = new DataTreeDictionary();
+        dictionary.Add("ID", control.SaveReference(ReferenceID));
+        for (int i = 0; i < SyncMemberCount; i++)
+        {
+            var member = GetSyncMember(i);
+            if (member == null || !ShouldSerializeMember(member))
+                continue;
+            var memberName = GetSyncMemberName(i);
+            try
+            {
+                dictionary.Add(memberName, member.Save(control));
+            }
+            catch (NotSupportedException)
+            {
+                // The member's value type has no coder (e.g. a SyncField<object> holding a runtime
+                // value). For such members, still record the member's identity ("<name>-ID" = its
+                // RefID) so references to it resolve on load, instead of dropping the member and
+                // aborting the save.
+                dictionary.Add(memberName + "-ID", control.SaveReference(member.ReferenceID));
+            }
+        }
+        return dictionary;
+    }
+
+    public virtual void Load(DataTreeNode node, LoadControl control)
+    {
+        if (node is not DataTreeDictionary dictionary)
+            return;
+
+        var idNode = dictionary.TryGetNode("ID");
+        if (idNode != null)
+            control.AssociateReference(ReferenceID, idNode);
+
+        for (int i = 0; i < SyncMemberCount; i++)
+        {
+            var member = GetSyncMember(i);
+            if (member == null || !ShouldSerializeMember(member))
+                continue;
+            var memberName = GetSyncMemberName(i);
+            var memberNode = dictionary.TryGetNode(memberName);
+            if (memberNode != null)
+            {
+                try
+                {
+                    member.Load(memberNode, control);
+                }
+                catch (Exception ex)
+                {
+                    LumoraLogger.Error($"Worker.Load: member '{memberName}' on {WorkerTypeName} failed: {ex.Message}");
+                }
+                continue;
+            }
+
+            // Saved as identity-only ("<name>-ID" for non-codeable/non-persistent members):
+            // register the member's RefID so references to it still resolve on load.
+            var memberIdNode = dictionary.TryGetNode(memberName + "-ID");
+            if (memberIdNode != null)
+                control.AssociateReference(member.ReferenceID, memberIdNode);
+        }
+    }
+
+    /// <summary>Whether a member is serialized (both saved and loaded). Override to skip ones
+    /// handled specially by the worker (e.g. a slot serializes its components itself).</summary>
+    protected virtual bool ShouldSerializeMember(ISyncMember member) => true;
 
     public int IndexOfMember(ISyncMember member)
     {
@@ -80,19 +153,19 @@ public abstract class Worker : IWorker
     public IField TryGetField(string name)
     {
         if (string.IsNullOrEmpty(name))
-            return null;
+            return null!;
 
         if (InitInfo.SyncMemberNameToIndex.TryGetValue(name, out var index))
         {
-            return GetSyncMember(index) as IField;
+            return (GetSyncMember(index) as IField) ?? null!;
         }
 
-        return null;
+        return null!;
     }
 
     public IField<T> TryGetField<T>(string name)
     {
-        return TryGetField(name) as IField<T>;
+        return (TryGetField(name) as IField<T>) ?? null!;
     }
 
     public virtual IEnumerable<IWorldElement> GetReferencedObjects(bool assetRefOnly, bool persistentOnly = true)
@@ -249,7 +322,7 @@ public abstract class Worker : IWorker
         }
 
         World?.ReferenceController?.UnregisterObject(this);
-        World = null;
+        World = null!;
         Parent = null;
         IsDestroyed = true;
     }

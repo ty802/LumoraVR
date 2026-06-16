@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -15,12 +15,16 @@ namespace Lumora.Core.Networking.Sync;
 /// <summary>
 /// Delegate for dictionary element events.
 /// </summary>
-public delegate void SyncDictionaryElementEvent<K, T>(K key, T element, SyncDictionary<K, T> dictionary) where T : SyncElement, new();
+public delegate void SyncDictionaryElementEvent<K, T>(K key, T element, SyncDictionary<K, T> dictionary)
+    where K : notnull
+    where T : SyncElement, new();
 
 /// <summary>
 /// Delegate for general dictionary events.
 /// </summary>
-public delegate void SyncDictionaryEvent<K, T>(SyncDictionary<K, T> dictionary) where T : SyncElement, new();
+public delegate void SyncDictionaryEvent<K, T>(SyncDictionary<K, T> dictionary)
+    where K : notnull
+    where T : SyncElement, new();
 
 /// <summary>
 /// Interface for synchronized dictionaries.
@@ -34,25 +38,42 @@ public interface ISyncDictionary
 /// <summary>
 /// Network-synchronized dictionary with SyncElement values.
 /// </summary>
-public class SyncDictionary<K, T> : ConflictingSyncElement, IEnumerable<KeyValuePair<K, T>>, ISyncDictionary where T : SyncElement, new()
+public class SyncDictionary<K, T> : ConflictingSyncElement, IEnumerable<KeyValuePair<K, T>>, ISyncDictionary
+    where K : notnull
+    where T : SyncElement, new()
 {
     public override SyncMemberType MemberType => SyncMemberType.Dictionary;
     private Dictionary<K, T> _elements;
     private bool _wasCleared;
-    private Dictionary<K, T> _addedElements;
-    private HashSet<K> _removedElements;
+    private Dictionary<K, T> _addedElements = null!;
+    private HashSet<K> _removedElements = null!;
 
-    public int Count => _elements.Count;
+    public int Count
+    {
+        get
+        {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Dictionary);
+            return _elements.Count;
+        }
+    }
 
-    IEnumerable ISyncDictionary.Values => _elements.Values;
+    IEnumerable ISyncDictionary.Values
+    {
+        get
+        {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Dictionary);
+            return _elements.Values;
+        }
+    }
 
     IEnumerable<KeyValuePair<object, SyncElement>> ISyncDictionary.BoxedEntries
     {
         get
         {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Dictionary);
             foreach (var kvp in _elements)
             {
-                yield return new KeyValuePair<object, SyncElement>(kvp.Key, kvp.Value);
+                yield return new KeyValuePair<object, SyncElement>(kvp.Key!, kvp.Value);
             }
         }
     }
@@ -60,22 +81,22 @@ public class SyncDictionary<K, T> : ConflictingSyncElement, IEnumerable<KeyValue
     /// <summary>
     /// Event triggered when an element is added.
     /// </summary>
-    public event SyncDictionaryElementEvent<K, T> ElementAdded;
+    public event SyncDictionaryElementEvent<K, T> ElementAdded = null!;
 
     /// <summary>
     /// Event triggered when an element is removed.
     /// </summary>
-    public event SyncDictionaryElementEvent<K, T> ElementRemoved;
+    public event SyncDictionaryElementEvent<K, T> ElementRemoved = null!;
 
     /// <summary>
     /// Event triggered before the dictionary is cleared.
     /// </summary>
-    public event SyncDictionaryEvent<K, T> BeforeClear;
+    public event SyncDictionaryEvent<K, T> BeforeClear = null!;
 
     /// <summary>
     /// Event triggered after the dictionary is cleared.
     /// </summary>
-    public event SyncDictionaryEvent<K, T> Cleared;
+    public event SyncDictionaryEvent<K, T> Cleared = null!;
 
     public SyncDictionary()
     {
@@ -134,31 +155,49 @@ public class SyncDictionary<K, T> : ConflictingSyncElement, IEnumerable<KeyValue
 
     public T GetElement(K key)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.Dictionary, key: key);
         return _elements[key];
     }
 
     public bool ContainsKey(K key)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.Dictionary, key: key);
         return _elements.ContainsKey(key);
     }
 
     public bool TryGetElement(K key, out T element)
     {
-        return _elements.TryGetValue(key, out element);
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.Dictionary, key: key);
+        if (_elements.TryGetValue(key, out var found))
+        {
+            element = found;
+            return true;
+        }
+        element = default!;
+        return false;
     }
 
     public IEnumerator<KeyValuePair<K, T>> GetEnumerator()
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Dictionary);
         return _elements.GetEnumerator();
     }
 
     IEnumerator IEnumerable.GetEnumerator()
     {
-        return _elements.GetEnumerator();
+        return GetEnumerator();
     }
 
     private T InternalAdd(RefID? id, K key, bool sync = true, bool change = true)
     {
+        if (!IsLoading && !IsInInitPhase)
+        {
+            AuthorizeDataModelMutation(
+                DataModelPermissionAction.Write | DataModelPermissionAction.Create | DataModelPermissionAction.CollectionAdd,
+                DataModelPermissionSurface.Dictionary,
+                key: key);
+        }
+
         BeginModification();
 
         if (_elements.ContainsKey(key))
@@ -237,6 +276,14 @@ public class SyncDictionary<K, T> : ConflictingSyncElement, IEnumerable<KeyValue
             throw new InvalidOperationException("Cannot remove elements during initialization phase!");
         }
 
+        if (!IsLoading)
+        {
+            AuthorizeDataModelMutation(
+                DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionRemove,
+                DataModelPermissionSurface.Dictionary,
+                key: key);
+        }
+
         BeginModification();
 
         if (_elements.TryGetValue(key, out var element))
@@ -285,6 +332,13 @@ public class SyncDictionary<K, T> : ConflictingSyncElement, IEnumerable<KeyValue
             return;
         }
 
+        if (!IsLoading && !IsInInitPhase)
+        {
+            AuthorizeDataModelMutation(
+                DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionClear,
+                DataModelPermissionSurface.Dictionary);
+        }
+
         BeginModification();
 
         if (change)
@@ -311,9 +365,9 @@ public class SyncDictionary<K, T> : ConflictingSyncElement, IEnumerable<KeyValue
         if (sync && GenerateSyncData)
         {
             _removedElements?.Clear();
-            _removedElements = null;
+            _removedElements = null!;
             _addedElements?.Clear();
-            _addedElements = null;
+            _addedElements = null!;
             _wasCleared = true;
             InvalidateSyncElement();
         }
@@ -508,16 +562,99 @@ public class SyncDictionary<K, T> : ConflictingSyncElement, IEnumerable<KeyValue
         }
     }
 
+    public override MessageValidity Validate(BinaryMessageBatch syncMessage, BinaryReader reader, List<ValidationGroup.Rule> rules)
+    {
+        var validity = base.Validate(syncMessage, reader, rules);
+        if (validity != MessageValidity.Valid || World?.IsAuthority != true)
+        {
+            return validity;
+        }
+
+        long position = reader.BaseStream.CanSeek ? reader.BaseStream.Position : -1;
+        try
+        {
+            if (reader.ReadBoolean() &&
+                !AuthorizeDataModelMutation(
+                    DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionClear | DataModelPermissionAction.Replicate,
+                    DataModelPermissionSurface.Dictionary,
+                    syncMessage.SenderUser,
+                    isNetwork: true,
+                    throwOnError: false))
+            {
+                return MessageValidity.Conflict;
+            }
+
+            var removeCount = reader.Read7BitEncoded();
+            for (ulong i = 0; i < removeCount; i++)
+            {
+                K key = SyncCoder.Decode<K>(reader);
+                if (!AuthorizeDataModelMutation(
+                        DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionRemove | DataModelPermissionAction.Replicate,
+                        DataModelPermissionSurface.Dictionary,
+                        syncMessage.SenderUser,
+                        isNetwork: true,
+                        key: key,
+                        throwOnError: false))
+                {
+                    return MessageValidity.Conflict;
+                }
+            }
+
+            var addCount = reader.Read7BitEncoded();
+            RefID offset;
+            switch (addCount)
+            {
+                case 1:
+                    offset = RefID.Null;
+                    break;
+                case 0:
+                    return MessageValidity.Valid;
+                default:
+                    offset = new RefID(reader.Read7BitEncoded());
+                    break;
+            }
+
+            for (ulong i = 0; i < addCount; i++)
+            {
+                K key = SyncCoder.Decode<K>(reader);
+                _ = new RefID(reader.Read7BitEncoded() + (ulong)offset);
+                if (!AuthorizeDataModelMutation(
+                        DataModelPermissionAction.Write | DataModelPermissionAction.Create | DataModelPermissionAction.CollectionAdd | DataModelPermissionAction.Replicate,
+                        DataModelPermissionSurface.Dictionary,
+                        syncMessage.SenderUser,
+                        isNetwork: true,
+                        key: key,
+                        throwOnError: false))
+                {
+                    return MessageValidity.Conflict;
+                }
+            }
+
+            return MessageValidity.Valid;
+        }
+        catch
+        {
+            return MessageValidity.Conflict;
+        }
+        finally
+        {
+            if (position >= 0)
+            {
+                reader.BaseStream.Position = position;
+            }
+        }
+    }
+
     protected override void InternalClearDirty()
     {
         _wasCleared = false;
         _removedElements?.Clear();
-        _removedElements = null;
+        _removedElements = null!;
         _addedElements?.Clear();
-        _addedElements = null;
+        _addedElements = null!;
     }
 
-    public override object GetValueAsObject() => null;
+    public override object GetValueAsObject() => null!;
 
     public override void Dispose()
     {
@@ -529,10 +666,10 @@ public class SyncDictionary<K, T> : ConflictingSyncElement, IEnumerable<KeyValue
         _addedElements?.Clear();
         _removedElements?.Clear();
 
-        ElementAdded = null;
-        ElementRemoved = null;
-        BeforeClear = null;
-        Cleared = null;
+        ElementAdded = null!;
+        ElementRemoved = null!;
+        BeforeClear = null!;
+        Cleared = null!;
 
         base.Dispose();
     }

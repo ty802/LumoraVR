@@ -1,8 +1,9 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 
 namespace Lumora.Core.Assets;
 
@@ -59,13 +60,39 @@ public static class AssetHookRegistry
             baseType = baseType.BaseType;
         }
 
-        return null;
+        return null!;
     }
 
     /// <summary>
     /// Clear all registrations.
     /// </summary>
     public static void Clear() => _assetToHook.Clear();
+
+    // See HookTypeRegistry.RegisterFromAssembly - same idea, asset side. - xlinka
+    public static int RegisterFromAssembly(Assembly assembly)
+    {
+        if (assembly == null) return 0;
+
+        int registered = 0;
+        foreach (var type in assembly.GetTypes())
+        {
+            if (type.IsAbstract || !typeof(IAssetHook).IsAssignableFrom(type))
+                continue;
+
+            var attrs = type.GetCustomAttributes(typeof(ImplementableHookAttribute), inherit: false);
+            foreach (ImplementableHookAttribute attr in attrs)
+            {
+                foreach (var target in attr.Targets)
+                {
+                    if (target == null) continue;
+                    if (!typeof(IAsset).IsAssignableFrom(target)) continue;
+                    Register(target, type);
+                    registered++;
+                }
+            }
+        }
+        return registered;
+    }
 }
 
 /// <summary>
@@ -78,7 +105,7 @@ public abstract class DynamicImplementableAsset<C> : DynamicAsset where C : clas
     /// The engine-specific hook that implements this asset.
     /// For materials, this would be a Godot ShaderMaterial wrapper.
     /// </summary>
-    public C Hook { get; private set; }
+    public C Hook { get; private set; } = null!;
 
     /// <summary>
     /// Create the hook instance for this asset.
@@ -89,9 +116,9 @@ public abstract class DynamicImplementableAsset<C> : DynamicAsset where C : clas
         Type hookType = GetHookType();
         if (hookType == null)
         {
-            return null;
+            return null!;
         }
-        return (C)Activator.CreateInstance(hookType);
+        return (C)Activator.CreateInstance(hookType)!;
     }
 
     /// <summary>
@@ -103,9 +130,9 @@ public abstract class DynamicImplementableAsset<C> : DynamicAsset where C : clas
         return AssetHookRegistry.GetHookType(GetType());
     }
 
-    public override void InitializeDynamic()
+    public override void InitializeDynamic(AssetManager? manager = null)
     {
-        base.InitializeDynamic();
+        base.InitializeDynamic(manager);
         InitializeHook();
     }
 

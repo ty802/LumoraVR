@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <LangVersion>13</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>Lumora.Core.Math</RootNamespace>
+    <AssemblyName>LumoraMath</AssemblyName>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Description>LumoraMath - Math primitives (float2/3/4, floatQ, color, matrices, bounds) and mesh buffer types. Platform-agnostic leaf assembly.</Description>
+    <Company>Lumora Project</Company>
+    <Product>LumoraMath</Product>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+</Project>

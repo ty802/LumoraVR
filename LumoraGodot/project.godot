@@ -202,11 +202,12 @@ menu_button={
 
 [physics]
 
-common/physics_interpolation=true
+#TheenginewriteseveryNode3Dtransformonceperrenderframefromtheengine#updateinLumoraEngineRunner._Process(input->worldupdate->SlotHookflush->#camerapositioning,allbeforetheframerenders).Godot'sphysicsinterpolation#assumestransformsonlychangeonthefixedphysicstick,soitsmearsevery#engine-drivennodebetweenstaleticksnapshotswhilethecamera(whichoptsout)#stayscrisp--thatmismatchiswhatmadehands,heldobjects,theavatar,andthe#contextmenujitterwhilemovingeventhoughtheyarerigidchildrenoftheuser#root.Per-render-frametransformwritesandinterpolationaremutuallyexclusive#wedrivetransformseveryframe,sotheinterpolationlayerstaysoff.common/physics_interpolation=false
 
 [rendering]
 
 textures/vram_compression/import_etc2_astc=true
+textures/default_filters/anisotropic_filtering_level=4
 
 [xr]
 

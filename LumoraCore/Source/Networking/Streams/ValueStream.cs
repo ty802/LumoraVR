@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -43,7 +43,7 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
         }
     }
 
-    protected T _value;
+    protected T _value = default!;
 
     // Sync members for configuration
     protected readonly Sync<bool> _isInterpolated = new();
@@ -131,7 +131,7 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
     /// <summary>
     /// Event triggered when the value changes.
     /// </summary>
-    public event Action<IChangeable> Changed;
+    public event Action<IChangeable> Changed = null!;
 
     protected override void OnInit()
     {
@@ -289,7 +289,7 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
     public override void Dispose()
     {
         _dataPoints.Clear();
-        Changed = null;
+        Changed = null!;
         base.Dispose();
     }
 }

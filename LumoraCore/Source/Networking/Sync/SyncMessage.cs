@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -18,7 +18,7 @@ public abstract class SyncMessage : IDisposable
     public ulong SenderSyncTick { get; set; }
     public double SenderTime { get; set; }
     public float SecondsSinceReceived { get; set; }
-    public User SenderUser { get; set; }
+    public User SenderUser { get; set; } = null!;
     public IConnection Sender { get; set; }
     public List<IConnection> Targets { get; } = new();
 
@@ -26,7 +26,7 @@ public abstract class SyncMessage : IDisposable
     public virtual bool Reliable => true;
     public virtual bool Background => false;
 
-    protected SyncMessage(ulong stateVersion, ulong syncTick, IConnection sender = null)
+    protected SyncMessage(ulong stateVersion, ulong syncTick, IConnection sender = null!)
     {
         SenderStateVersion = stateVersion;
         SenderSyncTick = syncTick;
@@ -54,7 +54,7 @@ public abstract class SyncMessage : IDisposable
         var stateVersion = reader.Read7BitEncoded();
         var syncTick = reader.Read7BitEncoded();
 
-        SyncMessage message = messageType switch
+        SyncMessage message = (messageType switch
         {
             MessageType.Delta => BinaryMessageBatch.Decode(raw.Data) as DeltaBatch,
             MessageType.Full => BinaryMessageBatch.Decode(raw.Data) as FullBatch,
@@ -63,7 +63,7 @@ public abstract class SyncMessage : IDisposable
             MessageType.Stream => StreamMessage.Decode(reader),
             MessageType.RawFrame => RawFrameMessage.Decode(reader),
             _ => throw new InvalidOperationException($"Unknown message type: {messageType}")
-        };
+        })!;
 
         message.SenderStateVersion = stateVersion;
         message.SenderSyncTick = syncTick;

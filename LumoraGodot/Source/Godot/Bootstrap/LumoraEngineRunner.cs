@@ -6,17 +6,22 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using Godot;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
+using Lumora.Core.Networking;
+using Lumora.Core.Networking.LNL;
 using Lumora.Core.Networking.Sync;
+using Lumora.Godot.Networking.Transports.Steam;
 using Lumora.Core.Components.Meshes;
 using Lumora.Core.Templates;
 using Lumora.Source.Godot.Input.Drivers;
 using Lumora.Godot.Hooks;
+using Lumora.Source.Godot.Rendering;
 using Lumora.Source.Godot.UI;
 using Lumora.Source.Input;
 using Lumora.Source.UI;
@@ -42,7 +47,7 @@ public partial class LumoraEngineRunner : Node
 	private const double DebugPerfSendIntervalSec = 0.25;
 	private const double DebugMemorySendIntervalSec = 0.5;
 
-	// ===== CONFIGURATION =====
+	// CONFIGURATION
 	[Export] public bool VerboseInit { get; set; } = false;
 	[Export] public bool DumpSceneTreeOnReady { get; set; } = false;
 	[Export] public bool AutoHostLocalHome { get; set; } = true;
@@ -50,23 +55,23 @@ public partial class LumoraEngineRunner : Node
 	[Export] public int LocalHomePort { get; set; } = 44844;
 	[Export] public int MaximumXrRefreshRate { get; set; } = 90;
 
-	// ===== CORE SYSTEMS =====
-	private Lumora.Core.Engine _engine;
-	private HeadOutput _headOutput;
-	private SystemInfoHook _systemInfoHook;
-	private InputInterface _inputInterface;
-	private LoadingScreen _loadingScreen;
+	// CORE SYSTEMS
+	private Lumora.Core.Engine _engine = null!;
+	private HeadOutput _headOutput = null!;
+	private SystemInfoHook _systemInfoHook = null!;
+	private InputInterface _inputInterface = null!;
+	private LoadingScreen _loadingScreen = null!;
 
-	// ===== INPUT DRIVERS =====
-	private GodotMouseDriver _mouseDriver;
-	private GodotKeyboardDriver _keyboardDriver;
-	private GodotVRDriver _vrDriver;
-	private ClipboardImporter _clipboardImporter;
-	private LocalDB _localDB;
-	private InspectorInputHandler _inspectorInputHandler;
+	// INPUT DRIVERS
+	private GodotMouseDriver _mouseDriver = null!;
+	private GodotKeyboardDriver _keyboardDriver = null!;
+	private GodotVRDriver _vrDriver = null!;
+	private ClipboardImporter _clipboardImporter = null!;
+	private LocalDB _localDB = null!;
+	private InspectorInputHandler _inspectorInputHandler = null!;
 	private DebugUdpSender? _debugUdpSender;
 
-	// ===== STATE =====
+	// STATE
 	private bool _engineInitialized = false;
 	private bool _shutdownRequested = false;
 	private bool _missingInputInterfaceWarned = false;
@@ -77,18 +82,18 @@ public partial class LumoraEngineRunner : Node
 	private XrLaunchMode _xrLaunchMode = XrLaunchMode.Auto;
 
 	// XRModeManager handles F8 runtime switching between Desktop and VR.
-	private XRModeManager _xrModeManager;
+	private XRModeManager _xrModeManager = null!;
 	private ThreadingMutex? _debugConsoleInstanceMutex;
 	private bool _ownsDebugConsoleLock;
-	private OpenXRInterface _openXRInterface;
+	private OpenXRInterface _openXRInterface = null!;
 	private bool _openXRSignalsConnected;
 	private bool _xrIsFocused;
 	private static readonly Dictionary<Type, long> ComponentMemoryEstimateCache = new();
 
-	// ===== SCENE REFERENCES =====
-	private Node3D _inputRoot;
-	private Camera3D _mainCamera;
-	private SubViewport _xrViewport;
+	// SCENE REFERENCES
+	private Node3D _inputRoot = null!;
+	private Camera3D _mainCamera = null!;
+	private SubViewport _xrViewport = null!;
 	private bool _vrInitializedAtBoot;
 
 	/// <summary>
@@ -118,13 +123,7 @@ public partial class LumoraEngineRunner : Node
 
 	public override void _Ready()
 	{
-		// Disable Godot's built-in viewport object-picking before any frame
-		// renders. We use our own raycasts (LaserInteractionManager etc.) and
-		// the built-in path doesn't support stereo anyway, so leaving it on
-		// would log "Object picking can't be used when stereo rendering" the
-		// moment OpenXR comes up. Setting it here, in _Ready, is the earliest
-		// safe spot - long before PhaseXRDetection flips UseXR.
-		// - xlinka
+		// Godot object picking logs in stereo and is not part of engine-side interaction. - xlinka
 		GetViewport().PhysicsObjectPicking = false;
 
 		if (ShouldUseSteam() && !SteamManager.Initialize())
@@ -454,10 +453,32 @@ public partial class LumoraEngineRunner : Node
 
 		var args = GetAllCommandLineArgs().ToArray();
 		LumoraLogger.Log($"Command-line args: {string.Join(" ", args)}");
+		LogLaunchDiagnostics();
 		_xrLaunchMode = ResolveXrLaunchMode();
 		LumoraLogger.Log($"XR launch mode: {_xrLaunchMode}");
 
 		await Task.Delay(150); // Artificial delay to show phase message
+	}
+
+	private void LogLaunchDiagnostics()
+	{
+		LumoraLogger.Log($"Runtime: .NET {System.Environment.Version}, OS={RuntimeInformation.OSDescription}, Arch={RuntimeInformation.ProcessArchitecture}, CPUs={System.Environment.ProcessorCount}");
+		LumoraLogger.Log($"Godot platform: {OS.GetName()}, model={SafeDiagnostic(OS.GetModelName)}");
+		LumoraLogger.Log($"Display: window={DisplayServer.WindowGetSize()}, screen={DisplayServer.ScreenGetSize()}");
+		LumoraLogger.Log($"Renderer: {SafeDiagnostic(RenderingServer.GetVideoAdapterName)}");
+	}
+
+	private static string SafeDiagnostic(Func<string> read)
+	{
+		try
+		{
+			var value = read();
+			return string.IsNullOrWhiteSpace(value) ? "unknown" : value;
+		}
+		catch
+		{
+			return "unknown";
+		}
 	}
 
 	/// <summary>
@@ -505,6 +526,9 @@ public partial class LumoraEngineRunner : Node
 			return;
 		}
 
+		var openXRInterface = xrInterface as OpenXRInterface;
+		ViewportQuality.ConfigureOpenXRBeforeInitialize(openXRInterface, LumoraLogger.Log);
+
 		if (!xrInterface.IsInitialized())
 		{
 			LumoraLogger.Log("XR: OpenXR interface found but not initialized. Attempting Initialize()...");
@@ -530,7 +554,7 @@ public partial class LumoraEngineRunner : Node
 		if (XRServer.PrimaryInterface == null)
 			XRServer.PrimaryInterface = xrInterface;
 
-		_openXRInterface = xrInterface as OpenXRInterface;
+		_openXRInterface = openXRInterface!;
 		GetViewport().UseXR = false;
 		ConfigureOpenXRViewport(EnsureXRViewport());
 		ConnectOpenXREvents(_openXRInterface);
@@ -582,6 +606,7 @@ public partial class LumoraEngineRunner : Node
 
 		DisplayServer.WindowSetVsyncMode(DisplayServer.VSyncMode.Disabled);
 		viewport.UseXR = true;
+		ViewportQuality.ConfigureOpenXRAfterInitialize(_openXRInterface, viewport, LumoraLogger.Log);
 	}
 
 	private void ConnectOpenXREvents(OpenXRInterface xrInterface)
@@ -701,6 +726,16 @@ public partial class LumoraEngineRunner : Node
 			GetViewport().AddChild(_mainCamera);
 		}
 
+		// The main view must not draw the hidden capture layer (the dash renders
+		// its UI there for an offscreen render-texture grab) or the overlay
+		// layer. Render-texture cameras opt those layers back in. - xlinka
+		uint hiddenAndOverlay = (uint)(Lumora.Godot.Helpers.RenderHelper.HIDDEN_LAYER
+			| Lumora.Godot.Helpers.RenderHelper.OVERLAY_LAYER);
+		_mainCamera.CullMask &= ~hiddenAndOverlay;
+		var xrCamera = GetNodeOrNull<Camera3D>("%XRCamera3D");
+		if (xrCamera != null)
+			xrCamera.CullMask &= ~hiddenAndOverlay;
+
 		_headOutput = new HeadOutput();
 		AddChild(_headOutput);
 		_headOutput.Initialize(_mainCamera);
@@ -748,6 +783,7 @@ public partial class LumoraEngineRunner : Node
 				AutoConnectLocalHome = this.AutoConnectLocalHome
 			};
 			_engine.ResourceRoot = ProjectSettings.GlobalizePath("res://");
+			_engine.QuitRequested += OnQuitRequested;
 			if (VerboseInit)
 			{
 				LumoraLogger.Debug("PhaseEngineCoreInit: Engine instance created");
@@ -816,7 +852,7 @@ public partial class LumoraEngineRunner : Node
 			if (!FileAccess.FileExists(resPath))
 			{
 				LumoraLogger.Warn($"BuiltinAssetHelper: res:// path not found: '{resPath}'");
-				return null;
+				return null!;
 			}
 			return FileAccess.GetFileAsBytes(resPath);
 		};
@@ -840,15 +876,11 @@ public partial class LumoraEngineRunner : Node
 
 	/// <summary>
 	/// Register low-level input drivers (keyboard, mouse, VR tracking).
-	/// Mode-specific input providers (DesktopInput / VRInputProvider) are
-	/// created by XRModeManager after this call.
+	/// The desktop scene overlay (DesktopInput) is created by XRModeManager
+	/// when desktop mode is active; VR mode has no extra scene node.
 	/// </summary>
 	private void RegisterInputDrivers()
 	{
-		// Create InputManager for handling Godot input and mouse capture
-		var inputManager = new InputManager();
-		AddChild(inputManager);
-
 		// Keyboard driver
 		_keyboardDriver = new GodotKeyboardDriver();
 		_inputInterface.RegisterKeyboardDriver(_keyboardDriver);
@@ -857,13 +889,12 @@ public partial class LumoraEngineRunner : Node
 		_mouseDriver = new GodotMouseDriver();
 		_inputInterface.RegisterMouseDriver(_mouseDriver);
 
-		// VR driver - handles head and controller tracking at the low level
 		_vrDriver = new GodotVRDriver();
-		_inputInterface.RegisterVRDriver(_vrDriver);
 		_vrDriver.InitializeVR();
-
-		// Find any XR nodes that already exist in the scene (created during PhaseXRDetection)
 		_vrDriver.FindXRNodes(GetTree().Root);
+		_inputInterface.RegisterVRDriver(_vrDriver);
+		_vrDriver.LogRuntimeDiagnostics();
+		LumoraLogger.Log($"Input drivers: keyboard={_keyboardDriver.GetType().Name}, mouse={_mouseDriver.GetType().Name}, vr={_vrDriver.VRSystemName}, active={_vrDriver.IsVRActive}");
 
 		// Initialize LocalDB for asset storage
 		_localDB = new LocalDB();
@@ -879,7 +910,7 @@ public partial class LumoraEngineRunner : Node
 		_clipboardImporter = new ClipboardImporter();
 		_clipboardImporter.Name = "ClipboardImporter";
 		AddChild(_clipboardImporter);
-		_clipboardImporter.Initialize(_localDB, null, _mainCamera);
+		_clipboardImporter.Initialize(_localDB, null!, _mainCamera);
 		_clipboardImporter.OnAssetImported += OnClipboardAssetImported;
 		LumoraLogger.Log("ClipboardImporter: Created for paste handling");
 	}
@@ -952,6 +983,8 @@ public partial class LumoraEngineRunner : Node
 
 		_engineInitialized = true;
 
+		RegisterNetworkManagers();
+
 		// Set up clipboard importer with engine reference for dynamic slot lookup
 		if (_clipboardImporter != null)
 		{
@@ -1010,9 +1043,16 @@ public partial class LumoraEngineRunner : Node
 		if (ShouldUseSteam())
 			SteamManager.RunCallbacks();
 
+		// Pump every registered network manager (LNL + Steam if present). Status-
+		// changed callbacks fire during SteamManager.RunCallbacks() above, so
+		// dispatching transports after that ensures connection state transitions
+		// are observed in the same frame they occur. - xlinka
+		NetworkManagerRegistry.UpdateAll();
+
 		// Run engine update loop (includes one input pass + world updates).
 		// Avoid a duplicate InputInterface.UpdateInputs call here.
 		_engine?.Update(delta);
+		_engine?.LateUpdate(delta);
 
 		// Update Godot metrics for debug panels
 		UpdateGodotMetrics(delta);
@@ -1057,6 +1097,16 @@ public partial class LumoraEngineRunner : Node
 	{
 		LumoraLogger.Log("Engine shutdown requested");
 		_shutdownRequested = true;
+	}
+
+	/// <summary>
+	/// Core requested an application quit (e.g. the dashboard Exit screen). Defer the tree quit
+	/// so it runs at a safe point rather than mid engine-update.
+	/// </summary>
+	private void OnQuitRequested()
+	{
+		LumoraLogger.Log("LumoraEngineRunner: Quit requested; closing application");
+		Callable.From(() => GetTree().Quit()).CallDeferred();
 	}
 
 
@@ -1369,6 +1419,10 @@ public partial class LumoraEngineRunner : Node
 		_ownsDebugConsoleLock = false;
 
 		_debugUdpSender?.Dispose();
+		// Stop transports before the SteamAPI shuts down - the Steam manager
+		// frees its sockets/poll groups via SteamNetworkingSockets calls that
+		// need the API still up. - xlinka
+		NetworkManagerRegistry.StopAll();
 		_engine?.Dispose();
 		_headOutput?.Dispose();
 		if (ShouldUseSteam())
@@ -1380,5 +1434,31 @@ public partial class LumoraEngineRunner : Node
 	private static bool ShouldUseSteam()
 	{
 		return !OS.HasFeature("android");
+	}
+
+	/// <summary>
+	/// Stand up the transports and register them with the central registry.
+	/// Runs once after the engine is initialized so transports can publish
+	/// session URIs the moment a host opens a listener. LNL is always
+	/// registered; Steam is registered only when SteamAPI initialised
+	/// successfully and SteamNetworkingSockets is available. - xlinka
+	/// </summary>
+	private static void RegisterNetworkManagers()
+	{
+		var lnl = new LNLNetworkManager();
+		NetworkManagerRegistry.Register(lnl);
+
+		if (ShouldUseSteam() && SteamManager.Initialized)
+		{
+			var steam = new SteamNetworkManager();
+			if (steam.Initialize())
+			{
+				NetworkManagerRegistry.Register(steam);
+			}
+			else
+			{
+				LumoraLogger.Warn("LumoraEngineRunner: SteamNetworkManager unavailable - falling back to LNL only");
+			}
+		}
 	}
 }

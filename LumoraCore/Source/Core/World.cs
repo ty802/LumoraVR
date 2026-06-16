@@ -1,13 +1,14 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Lumora.Core.Networking.Session;
 using Lumora.Core.Networking.Sync;
 using Lumora.Core.Components;
+using Lumora.Core.Persistence;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
@@ -148,6 +149,25 @@ public class World
 	}
 
 	/// <summary>
+	/// Who is allowed to join a world, from most to least restrictive.
+	/// </summary>
+	public enum WorldAccessLevel
+	{
+		Private,
+		LAN,
+		Contacts,
+		ContactsPlus,
+		/// <summary>Only members of the group hosting this world.</summary>
+		GroupMembers,
+		/// <summary>Group members plus guests they bring.</summary>
+		GroupPlus,
+		/// <summary>Anyone, but listed/hosted under the group.</summary>
+		GroupPublic,
+		RegisteredUsers,
+		Anyone,
+	}
+
+	/// <summary>
 	/// World configuration settings.
 	/// </summary>
 	public class WorldConfiguration
@@ -160,6 +180,30 @@ public class World
 
 		/// <summary>Whether the world is publicly visible.</summary>
 		public bool IsPublic { get; set; } = false;
+
+		/// <summary>Who is allowed to join this world.</summary>
+		public WorldAccessLevel AccessLevel { get; set; } = WorldAccessLevel.Private;
+
+		/// <summary>Hint that the world is built to run well on mobile/standalone headsets.</summary>
+		public bool MobileFriendly { get; set; } = false;
+
+		/// <summary>When true, the world is in edit mode (relaxes some runtime gates for the host).</summary>
+		public bool EditMode { get; set; } = false;
+
+		/// <summary>Hide this session from public session listings.</summary>
+		public bool HideFromSessionLists { get; set; } = false;
+
+		/// <summary>Automatically kick users that have been AFK for too long.</summary>
+		public bool AutoKickAFK { get; set; } = false;
+
+		/// <summary>Minutes of inactivity before an AFK user is kicked (when enabled).</summary>
+		public int MaxAFKMinutes { get; set; } = 30;
+
+		/// <summary>Periodically release assets no longer referenced by the world.</summary>
+		public bool CleanupUnusedAssets { get; set; } = true;
+
+		/// <summary>Seconds between unused-asset cleanup passes.</summary>
+		public float AssetCleanupInterval { get; set; } = 300f;
 
 		/// <summary>World description.</summary>
 		public string Description { get; set; } = "";
@@ -175,6 +219,48 @@ public class World
 
 		/// <summary>Maximum world size in MB.</summary>
 		public int MaxWorldSizeMB { get; set; } = 512;
+
+		/// <summary>Serialize these settings so they persist with the world save.</summary>
+		public Persistence.DataTreeDictionary Save()
+		{
+			var data = new Persistence.DataTreeDictionary();
+			data.Add("MaxUsers", MaxUsers);
+			data.Add("AllowJoin", AllowJoin);
+			data.Add("IsPublic", IsPublic);
+			data.Add("AccessLevel", (int)AccessLevel);
+			data.Add("MobileFriendly", MobileFriendly);
+			data.Add("EditMode", EditMode);
+			data.Add("HideFromSessionLists", HideFromSessionLists);
+			data.Add("AutoKickAFK", AutoKickAFK);
+			data.Add("MaxAFKMinutes", MaxAFKMinutes);
+			data.Add("CleanupUnusedAssets", CleanupUnusedAssets);
+			data.Add("AssetCleanupInterval", AssetCleanupInterval);
+			data.Add("AutoSaveInterval", AutoSaveInterval);
+			data.Add("MaxWorldSizeMB", MaxWorldSizeMB);
+			data.Add("EnablePersistence", EnablePersistence);
+			data.Add("Description", Description ?? "");
+			return data;
+		}
+
+		/// <summary>Restore settings from a previously-saved world.</summary>
+		public void Load(Persistence.DataTreeDictionary data)
+		{
+			MaxUsers = data.ExtractOrDefault("MaxUsers", MaxUsers);
+			AllowJoin = data.ExtractOrDefault("AllowJoin", AllowJoin);
+			IsPublic = data.ExtractOrDefault("IsPublic", IsPublic);
+			AccessLevel = (WorldAccessLevel)data.ExtractOrDefault("AccessLevel", (int)AccessLevel);
+			MobileFriendly = data.ExtractOrDefault("MobileFriendly", MobileFriendly);
+			EditMode = data.ExtractOrDefault("EditMode", EditMode);
+			HideFromSessionLists = data.ExtractOrDefault("HideFromSessionLists", HideFromSessionLists);
+			AutoKickAFK = data.ExtractOrDefault("AutoKickAFK", AutoKickAFK);
+			MaxAFKMinutes = data.ExtractOrDefault("MaxAFKMinutes", MaxAFKMinutes);
+			CleanupUnusedAssets = data.ExtractOrDefault("CleanupUnusedAssets", CleanupUnusedAssets);
+			AssetCleanupInterval = data.ExtractOrDefault("AssetCleanupInterval", AssetCleanupInterval);
+			AutoSaveInterval = data.ExtractOrDefault("AutoSaveInterval", AutoSaveInterval);
+			MaxWorldSizeMB = data.ExtractOrDefault("MaxWorldSizeMB", MaxWorldSizeMB);
+			EnablePersistence = data.ExtractOrDefault("EnablePersistence", EnablePersistence);
+			Description = data.ExtractOrDefault("Description", Description ?? "");
+		}
 	}
 
 	private readonly HashSet<IWorldElement> _dirtyElements = new();
@@ -190,7 +276,7 @@ public class World
 	private readonly List<IWorldEventReceiver>[] _worldEventReceivers;
 	private WorldState _state = WorldState.Created;
 	private InitializationState _initState = InitializationState.Created;
-	private Session _session;
+	private Session _session = null!;
 	private HookManager _hookManager;
 	private TrashBin _trashBin;
 	private RefIDAllocator _refIDAllocator;
@@ -201,18 +287,27 @@ public class World
 	private object _syncLock = new object();
 	private readonly WorldMetrics _metrics = new WorldMetrics();
 	private readonly WorldConfiguration _configuration = new WorldConfiguration();
+	private readonly DataModelPermissionController _dataModelPermissions;
 
 	// Static global hook type registry (shared across all worlds)
 	private static HookTypeRegistry _staticHookTypes = new HookTypeRegistry();
 
 	// Platform hook for world rendering
-	public IWorldHook Hook { get; set; }
+	public IWorldHook Hook { get; set; } = null!;
 
 	// Godot scene access - set by WorldHook
-	public object GodotSceneRoot { get; set; }
+	public object GodotSceneRoot { get; set; } = null!;
+
+	private Physics.WorldPhysics _physics = null!;
+
+	/// <summary>
+	/// Component-facing physics service for this world: collision queries (routed to the platform
+	/// physics engine via the world hook) and physics settings. The platform owns the simulation.
+	/// </summary>
+	public Physics.WorldPhysics Physics => _physics ??= new Physics.WorldPhysics(this);
 
 	// Reference to the WorldManager that owns this World
-	public Management.WorldManager WorldManager { get; internal set; }
+	public Management.WorldManager WorldManager { get; internal set; } = null!;
 
 	private static int _worldEventTypeCount = Enum.GetValues(typeof(WorldEvent)).Length;
 
@@ -244,7 +339,7 @@ public class World
 	/// <summary>
 	/// The root Slot of this World.
 	/// </summary>
-	public Slot RootSlot { get; private set; }
+	public Slot RootSlot { get; private set; } = null!;
 
 	/// <summary>
 	/// Display name of this World.
@@ -281,22 +376,22 @@ public class World
 	/// <summary>
 	/// URLs that can be used to connect to this session.
 	/// </summary>
-	public IReadOnlyList<Uri> SessionURLs => (IReadOnlyList<Uri>)_session?.Metadata?.SessionURLs ?? Array.Empty<Uri>();
+	public IReadOnlyList<Uri> SessionURLs => (_session?.Metadata?.SessionURLs as IReadOnlyList<Uri>) ?? Array.Empty<Uri>();
 
 	/// <summary>
 	/// Synchronization controller for this world.
 	/// </summary>
-	public SyncController SyncController { get; private set; }
+	public SyncController SyncController { get; private set; } = null!;
 
 	/// <summary>
 	/// Reference controller for object lookup and async resolution.
 	/// </summary>
-	public ReferenceController ReferenceController { get; private set; }
+	public ReferenceController ReferenceController { get; private set; } = null!;
 
 	/// <summary>
 	/// Worker manager for type encoding/decoding during sync.
 	/// </summary>
-	public WorkerManager Workers { get; private set; }
+	public WorkerManager Workers { get; private set; } = null!;
 
 	/// <summary>
 	/// Thread-safe hook manager for world modifications.
@@ -326,7 +421,7 @@ public class World
 	/// <summary>
 	/// Local user (client's own user).
 	/// </summary>
-	public User LocalUser { get; private set; }
+	public User LocalUser { get; private set; } = null!;
 
 	/// <summary>
 	/// Time scale for the World simulation.
@@ -419,6 +514,69 @@ public class World
 	public WorldConfiguration Configuration => _configuration;
 
 	/// <summary>
+	/// Hard permission gate for datamodel fields, collections, and replication.
+	/// </summary>
+	public DataModelPermissionController DataModelPermissions => _dataModelPermissions;
+
+	// PERSISTENCE
+	// Serialize/restore the whole world (its slot tree) to/from a data tree. Permissions are NOT
+	// serialized: they're a hard runtime policy derived from ownership/authority, applied live.
+	// The local home is hosted by the local user (authority), so save/load pass the permission gate.
+
+	private const int WorldFormatVersion = 1;
+
+	/// <summary>Serialize this world's data (name + slot tree) into a data tree.</summary>
+	public DataTreeDictionary SaveWorld()
+	{
+		var translator = new ReferenceTranslator();
+		var control = new SaveControl(RootSlot, translator);
+
+		// Save the tree first so type versions are collected before they're stored.
+		var rootNode = RootSlot.Save(control);
+
+		var dictionary = new DataTreeDictionary();
+		dictionary.Add("FormatVersion", WorldFormatVersion);
+		dictionary.Add("Name", WorldName.Value);
+
+		var typeVersions = new DataTreeDictionary();
+		control.StoreTypeVersions(typeVersions);
+		dictionary.Add("TypeVersions", typeVersions);
+
+		dictionary.Add("Config", _configuration.Save());
+		dictionary.Add("Root", rootNode);
+		return dictionary;
+	}
+
+	/// <summary>Restore this world's contents from a data tree into the (already-created) root slot.</summary>
+	public void LoadWorld(DataTreeDictionary dictionary)
+	{
+		var translator = new ReferenceTranslator();
+		var control = new LoadControl(this, translator);
+
+		try
+		{
+			if (dictionary.TryGetDictionary("TypeVersions") is { } typeVersions)
+				control.LoadTypeVersions(typeVersions);
+
+			if (dictionary.ContainsKey("Name"))
+				WorldName.Value = dictionary.ExtractOrDefault("Name", WorldName.Value);
+
+			if (dictionary.TryGetDictionary("Config") is { } config)
+				_configuration.Load(config);
+
+			if (dictionary.TryGetNode("Root") is { } rootNode)
+				RootSlot.Load(rootNode, control);
+		}
+		finally
+		{
+			// Always resolve deferred refs + report leftovers, even if a sub-load threw, so a
+			// partial load doesn't leave dangling waiters. A thrown load still propagates to the
+			// caller (WorldStorage.LoadFromFile) so it can fall back to the template.
+			control.FinishLoad();
+		}
+	}
+
+	/// <summary>
 	/// Get a diagnostic summary of this world.
 	/// </summary>
 	public string GetDiagnostics()
@@ -449,12 +607,12 @@ public class World
 	/// <summary>
 	/// Event triggered when a Slot is added to the World.
 	/// </summary>
-	public event Action<Slot> OnSlotAdded;
+	public event Action<Slot> OnSlotAdded = null!;
 
 	/// <summary>
 	/// Event triggered when a Slot is removed from the World.
 	/// </summary>
-	public event Action<Slot> OnSlotRemoved;
+	public event Action<Slot> OnSlotRemoved = null!;
 
 	public World()
 	{
@@ -465,6 +623,7 @@ public class World
 		_refIDAllocator = new RefIDAllocator(this);
 		_hookTypes = new HookTypeRegistry();
 		_updateManager = new UpdateManager(this);
+		_dataModelPermissions = new DataModelPermissionController(this);
 
 		// Initialize event receiver arrays
 		int length = Enum.GetValues(typeof(WorldEvent)).Length;
@@ -478,7 +637,7 @@ public class World
 	/// <summary>
 	/// Create a local-only world (single user, no networking).
 	/// </summary>
-	public static World LocalWorld(Engine engine, string name, Action<World> init = null)
+	public static World LocalWorld(Engine engine, string name, Action<World> init = null!)
 	{
 		var world = new World();
 		world.WorldName.Value = name;
@@ -506,7 +665,7 @@ public class World
 	/// <summary>
 	/// Start a hosted session (authority/server).
 	/// </summary>
-	public static World StartSession(Engine engine, string name, ushort port, string hostUserName = null, Action<World> init = null)
+	public static World StartSession(Engine engine, string name, ushort port, string hostUserName = null!, Action<World> init = null!)
 	{
 		return StartSession(engine, name, port, hostUserName, SessionVisibility.Private, 16, init);
 	}
@@ -521,7 +680,7 @@ public class World
 		string hostUserName,
 		SessionVisibility visibility,
 		int maxUsers = 16,
-		Action<World> init = null)
+		Action<World> init = null!)
 	{
 		var world = new World();
 		world.WorldName.Value = name;
@@ -557,7 +716,7 @@ public class World
 		init?.Invoke(world);
 
 		// Now create the host user (triggers OnUserJoined after SimpleUserSpawn is ready)
-		world.CreateHostUser(hostUserName);
+		world.CreateHostUser(hostUserName!);
 
 		// Start running
 		world.StartRunning();
@@ -837,7 +996,7 @@ public class World
 	/// </summary>
 	public IWorldElement FindElement(RefID refID)
 	{
-		return ReferenceController?.GetObjectOrNull(refID);
+		return (ReferenceController?.GetObjectOrNull(refID)) ?? null!;
 	}
 
 	/// <summary>
@@ -853,7 +1012,7 @@ public class World
 	/// </summary>
 	public IWorldElement TryRetrieveFromTrash(ulong tick, RefID id)
 	{
-		return ReferenceController?.TryRetrieveFromTrash(tick, id);
+		return (ReferenceController?.TryRetrieveFromTrash(tick, id)) ?? null!;
 	}
 
 	/// <summary>
@@ -892,7 +1051,7 @@ public class World
 			if (found != null) return found;
 		}
 
-		return null;
+		return null!;
 	}
 
 	/// <summary>
@@ -930,6 +1089,14 @@ public class World
 	public void AddUser(User user)
 	{
 		if (user == null) return;
+
+		// Reject banned users (host-authoritative). Never ban-check our own/host user.
+		if (IsAuthority && LocalUser != null && user != LocalUser
+			&& Security.BanManager.IsBanned(user.UserID?.Value, user.MachineID?.Value, WorldName?.Value))
+		{
+			LumoraLogger.Warn($"Rejecting banned user '{user.UserName.Value}'");
+			return;
+		}
 
 		lock (_users)
 		{
@@ -1032,8 +1199,8 @@ public class World
 		{
 			user?.ConfigureLocalTrackingStreams();
 		}
-		AddUser(user);
-		LumoraLogger.Log($"Local user set: {user.UserName.Value}");
+		AddUser(user!);
+		LumoraLogger.Log($"Local user set: {user!.UserName.Value}");
 	}
 
 	/// <summary>
@@ -1050,7 +1217,7 @@ public class World
 	/// <summary>
 	/// Start a new session as host (authority).
 	/// </summary>
-	public void StartSession(ushort port = 7777, string hostUserName = null)
+	public void StartSession(ushort port = 7777, string hostUserName = null!)
 	{
 		StartSessionNetwork(port);
 		CreateHostUser(hostUserName);
@@ -1060,7 +1227,7 @@ public class World
 	/// Start the session network without creating the host user.
 	/// Used internally to allow init callback to run before user creation.
 	/// </summary>
-	private void StartSessionNetwork(ushort port, SessionMetadata metadata = null)
+	private void StartSessionNetwork(ushort port, SessionMetadata metadata = null!)
 	{
 		if (_session != null)
 		{
@@ -1100,7 +1267,7 @@ public class World
 	/// <summary>
 	/// Create the host user for a locally hosted session.
 	/// </summary>
-	public User CreateHostUser(string userName = null)
+	public User CreateHostUser(string userName = null!)
 	{
 		var (rangeStart, rangeEnd) = _refIDAllocator.GetAuthorityIDRange();
 
@@ -1194,7 +1361,7 @@ public class World
 		{
 			NetworkInitStart();
 
-			_session = await Session.JoinSessionAsync(this, new[] { address });
+			_session = (await Session.JoinSessionAsync(this, new[] { address }))!;
 			if (_session == null)
 			{
 				InitializationFailed();
@@ -1394,7 +1561,7 @@ public class World
 		if (_session != null)
 		{
 			_session.Dispose();
-			_session = null;
+			_session = null!;
 			LumoraLogger.Log("Left session");
 		}
 	}
@@ -1475,20 +1642,17 @@ public class World
 			// Stage 5.5: Apply component changes (from sync field updates)
 			_updateManager?.RunChangeApplications();
 
-			// Stage 5.6: Sync slot hooks so transforms propagate to the platform scene graph
-			UpdateSlotHooks(RootSlot);
+			// Stage 5.6: Fire deferred WorldTransformChanged events. Before hooks, so a handler
+			// that re-drives a transform gets pushed to the engine this same frame.
+			_updateManager?.ProcessMovedSlots();
 
-			// Stage 5.7: Update hooks for orphaned slots (network-replicated slots not yet in tree)
-			UpdateOrphanedSlotHooks();
+			_updateManager?.ProcessHookUpdates((float)scaledDelta);
 
 			// Stage 6: Process changed elements
 			ProcessChangedElements();
 
 			// Stage 7: Process destructions
 			ProcessDestructions();
-
-			// Stage 8: Update hooks (sync with platform layer)
-			_updateManager?.ProcessHookUpdates((float)scaledDelta);
 
 			// Stage 9: Clean up trash bin
 			_trashBin?.Update();
@@ -1520,10 +1684,18 @@ public class World
 	{
 		if (_state != WorldState.Running) return;
 
-		var scaledDelta = fixedDelta * TimeScale;
+		_hookManager?.ImplementerLock(System.Threading.Thread.CurrentThread);
+		try
+		{
+			var scaledDelta = fixedDelta * TimeScale;
 
-		// Update physics for all physics components
-		UpdatePhysics((float)scaledDelta);
+			// Update physics for all physics components
+			UpdatePhysics((float)scaledDelta);
+		}
+		finally
+		{
+			_hookManager?.ImplementerUnlock();
+		}
 	}
 
 	/// <summary>
@@ -1533,10 +1705,20 @@ public class World
 	{
 		if (_state != WorldState.Running) return;
 
-		var scaledDelta = delta * TimeScale;
+		_hookManager?.ImplementerLock(System.Threading.Thread.CurrentThread);
+		try
+		{
+			var scaledDelta = delta * TimeScale;
 
-		// Update cameras and final transforms
-		UpdateCameras((float)scaledDelta);
+			// Update cameras and final transforms
+			UpdateCameras((float)scaledDelta);
+
+			_updateManager?.ProcessHookUpdates((float)scaledDelta);
+		}
+		finally
+		{
+			_hookManager?.ImplementerUnlock();
+		}
 	}
 
 	/// <summary>
@@ -1563,46 +1745,6 @@ public class World
 	{
 		_updateManager?.RunStartups();
 		_updateManager?.RunUpdates(delta);
-	}
-
-	/// <summary>
-	/// Recursively apply slot hook updates so Node3D transforms stay in sync.
-	/// </summary>
-	private void UpdateSlotHooks(Slot slot)
-	{
-		if (slot == null)
-			return;
-
-		slot.Hook?.ApplyChanges();
-
-		foreach (var child in slot.Children)
-		{
-			UpdateSlotHooks(child);
-		}
-		foreach (var child in slot.LocalChildren)
-		{
-			UpdateSlotHooks(child);
-		}
-	}
-
-	/// <summary>
-	/// Update hooks for orphaned slots (slots not in the tree hierarchy).
-	/// This handles network-replicated slots whose parent hasn't resolved yet.
-	/// </summary>
-	private void UpdateOrphanedSlotHooks()
-	{
-		if (_slotBag == null)
-			return;
-
-		foreach (var kvp in _slotBag)
-		{
-			var slot = kvp.Value;
-			// Only update slots that aren't in the tree (no parent and not RootSlot)
-			if (slot != null && slot.Parent == null && slot != RootSlot && slot.Hook != null)
-			{
-				slot.Hook.ApplyChanges();
-			}
-		}
 	}
 
 	/// <summary>
@@ -1856,7 +1998,7 @@ public class World
 			
 			RunSynchronously(() =>
 			{
-				SessionJoinIndicator.CreateIndicatorAsync(currentWorld, this, _session?.Sync, indicator =>
+				SessionJoinIndicator.CreateIndicatorAsync(currentWorld, this, _session!.Sync, indicator =>
 				{
 					if (indicator != null)
 					{
@@ -1913,7 +2055,7 @@ public class World
 		try
 		{
 			_session?.Dispose();
-			_session = null;
+			_session = null!;
 		}
 		catch (Exception ex)
 		{
@@ -1924,7 +2066,7 @@ public class World
 		try
 		{
 			SyncController?.Dispose();
-			SyncController = null;
+			SyncController = null!;
 		}
 		catch (Exception ex)
 		{
@@ -1952,7 +2094,7 @@ public class World
 			// Destroy queues component OnDestroy callbacks; flush them before managers
 			// and the ReferenceController are cleared so components can unregister cleanly.
 			_updateManager?.RunDestructions();
-			RootSlot = null;
+			RootSlot = null!;
 		}
 		catch (Exception ex)
 		{
@@ -1980,7 +2122,7 @@ public class World
 		try
 		{
 			_hookManager?.Dispose();
-			_hookManager = null;
+			_hookManager = null!;
 		}
 		catch (Exception ex)
 		{
@@ -1990,7 +2132,7 @@ public class World
 		try
 		{
 			// TrashBin doesn't have Dispose, just clear reference
-			_trashBin = null;
+			_trashBin = null!;
 		}
 		catch (Exception ex)
 		{
@@ -2000,7 +2142,7 @@ public class World
 		try
 		{
 			// UpdateManager doesn't have Dispose, just clear reference
-			_updateManager = null;
+			_updateManager = null!;
 		}
 		catch (Exception ex)
 		{
@@ -2009,8 +2151,8 @@ public class World
 
 		try
 		{
-			_refIDAllocator = null;
-			_hookTypes = null;
+			_refIDAllocator = null!;
+			_hookTypes = null!;
 		}
 		catch (Exception ex)
 		{
@@ -2020,7 +2162,7 @@ public class World
 		try
 		{
 			ReferenceController?.Dispose();
-			ReferenceController = null;
+			ReferenceController = null!;
 		}
 		catch (Exception ex)
 		{
@@ -2030,3 +2172,4 @@ public class World
 		LumoraLogger.Log($"World: Disposed world '{WorldName.Value}'");
 	}
 }
+

@@ -71,7 +71,10 @@ public interface IAssetProvider : IWorldElement
 /// <summary>
 /// Generic interface for typed asset providers.
 /// </summary>
-public interface IAssetProvider<A> : IAssetProvider where A : Asset
+// Covariant in A: a provider of a derived asset (e.g. RenderTexture) is usable
+// wherever a provider of its base (TextureAsset) is expected, so render textures
+// bind into any TextureAsset slot. A appears only in output position here. - xlinka
+public interface IAssetProvider<out A> : IAssetProvider where A : Asset
 {
     /// <summary>
     /// The typed asset instance.

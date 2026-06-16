@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
@@ -60,9 +60,9 @@ public class WorkerManager
 
     public void InformOfTypeUse(Type type)
     {
-        if (World.IsAuthority && !nameToIndex.ContainsKey(type.FullName))
+        if (World.IsAuthority && !nameToIndex.ContainsKey(type.FullName!))
         {
-            typesToRegister.Add(type.FullName);
+            typesToRegister.Add(type.FullName!);
         }
     }
 
@@ -78,7 +78,7 @@ public class WorkerManager
 
             if (index == 0)
             {
-                types.Add(null);
+                types.Add(null!);
                 continue;
             }
 
@@ -92,7 +92,7 @@ public class WorkerManager
     public int GetIndex(Type type)
     {
         int value = 0;
-        nameToIndex.TryGetValue(type.FullName, out value);
+        nameToIndex.TryGetValue(type.FullName!, out value);
         if (value == 0)
         {
             InformOfTypeUse(type);
@@ -117,7 +117,7 @@ public class WorkerManager
         if (index == 0)
         {
             // Type not in index table yet, write full name
-            writer.Write(type.FullName);
+            writer.Write(type.FullName!);
         }
     }
 
@@ -154,7 +154,7 @@ public class WorkerManager
     {
         try
         {
-            return (IWorker)Activator.CreateInstance(type);
+            return (IWorker)Activator.CreateInstance(type)!;
         }
         catch (Exception ex)
         {
@@ -176,7 +176,7 @@ public class WorkerManager
 
     public static Type GetType(string typename)
     {
-        Type type = Type.GetType(typename);
+        Type type = Type.GetType(typename)!;
         if (type != null)
         {
             return type;
@@ -185,7 +185,7 @@ public class WorkerManager
         Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
         for (int i = 0; i < assemblies.Length; i++)
         {
-            type = assemblies[i].GetType(typename);
+            type = assemblies[i].GetType(typename)!;
             if (type != null)
             {
                 return type;
@@ -193,6 +193,7 @@ public class WorkerManager
         }
         
         LumoraLogger.Error("Unable to find type: " + typename);
-        return null;
+        return null!;
     }
 }
+

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using Lumora.Core;
@@ -35,14 +35,14 @@ public abstract class BinaryMessageBatch : SyncMessage
     public override bool Reliable => true;
     public override bool Background => false;
 
-    public BinaryMessageBatch(ulong stateVersion, ulong syncTick, IConnection sender = null)
+    public BinaryMessageBatch(ulong stateVersion, ulong syncTick, IConnection sender = null!)
         : base(stateVersion, syncTick, sender)
     {
         _stream = new MemoryStream();
         _writer = new BinaryWriter(_stream);
     }
 
-    // ===== DATA RECORD MANAGEMENT =====
+    // DATA RECORD MANAGEMENT
 
 	/// <summary>
 	/// Begin writing a new data record for a sync element.
@@ -187,7 +187,7 @@ public abstract class BinaryMessageBatch : SyncMessage
 		}
 	}
 
-    // ===== ENCODING/DECODING =====
+    // ENCODING/DECODING
 
     /// <summary>
     /// Encode this batch to bytes for transmission.
@@ -337,3 +337,4 @@ public enum MessageType : byte
     /// </summary>
     RawFrame = 9
 }
+

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -17,6 +17,7 @@ namespace Lumora.Core.Networking.Sync;
 /// <typeparam name="TKey">Key type (typically RefID)</typeparam>
 /// <typeparam name="TValue">Value type that implements IWorldElement</typeparam>
 public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumerable<KeyValuePair<TKey, TValue>>
+    where TKey : notnull
     where TValue : class, IWorldElement
 {
     /// <summary>
@@ -30,15 +31,22 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
     }
 
     protected Dictionary<TKey, TValue> _elements;
-    private TKey _cachedLastKey;
-    private TValue _cachedLastValue;
+    private TKey _cachedLastKey = default!;
+    private TValue _cachedLastValue = default!;
     private List<AdditionRecord> _pendingAdditions;
     private List<TKey> _pendingRemovals;
 
     /// <summary>
     /// Number of elements in the dictionary.
     /// </summary>
-    public int Count => _elements.Count;
+    public int Count
+    {
+        get
+        {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.ReplicatedDictionary);
+            return _elements.Count;
+        }
+    }
 
     /// <summary>
     /// Get element by key with caching for repeated access.
@@ -47,6 +55,7 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
     {
         get
         {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.ReplicatedDictionary, key: key);
             if (EqualityComparer<TKey>.Default.Equals(key, _cachedLastKey))
                 return _cachedLastValue;
 
@@ -60,24 +69,38 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
     /// <summary>
     /// All keys in the dictionary.
     /// </summary>
-    public Dictionary<TKey, TValue>.KeyCollection Keys => _elements.Keys;
+    public Dictionary<TKey, TValue>.KeyCollection Keys
+    {
+        get
+        {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.ReplicatedDictionary);
+            return _elements.Keys;
+        }
+    }
 
     /// <summary>
     /// All values in the dictionary.
     /// </summary>
-    public Dictionary<TKey, TValue>.ValueCollection Values => _elements.Values;
+    public Dictionary<TKey, TValue>.ValueCollection Values
+    {
+        get
+        {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.ReplicatedDictionary);
+            return _elements.Values;
+        }
+    }
 
     public override SyncMemberType MemberType => SyncMemberType.ReplicatedDictionary;
 
     /// <summary>
     /// Fired when an element is added.
     /// </summary>
-    public event Action<ReplicatedDictionary<TKey, TValue>, TKey, TValue, bool> OnElementAdded;
+    public event Action<ReplicatedDictionary<TKey, TValue>, TKey, TValue, bool> OnElementAdded = null!;
 
     /// <summary>
     /// Fired when an element is removed.
     /// </summary>
-    public event Action<ReplicatedDictionary<TKey, TValue>, TKey, TValue> OnElementRemoved;
+    public event Action<ReplicatedDictionary<TKey, TValue>, TKey, TValue> OnElementRemoved = null!;
 
     protected ReplicatedDictionary()
     {
@@ -171,7 +194,14 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
     /// </summary>
     public bool TryGetValue(TKey key, out TValue value)
     {
-        return _elements.TryGetValue(key, out value);
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.ReplicatedDictionary, key: key);
+        if (_elements.TryGetValue(key, out var found))
+        {
+            value = found;
+            return true;
+        }
+        value = default!;
+        return false;
     }
 
     /// <summary>
@@ -179,22 +209,24 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
     /// </summary>
     public bool ContainsKey(TKey key)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.ReplicatedDictionary, key: key);
         return _elements.ContainsKey(key);
     }
 
     public Dictionary<TKey, TValue>.Enumerator GetEnumerator()
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.ReplicatedDictionary);
         return _elements.GetEnumerator();
     }
 
     IEnumerator<KeyValuePair<TKey, TValue>> IEnumerable<KeyValuePair<TKey, TValue>>.GetEnumerator()
     {
-        return _elements.GetEnumerator();
+        return GetEnumerator();
     }
 
     IEnumerator IEnumerable.GetEnumerator()
     {
-        return _elements.GetEnumerator();
+        return GetEnumerator();
     }
 
     #endregion
@@ -203,6 +235,14 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
 
     protected void InternalAdd(TKey key, TValue element, bool isNewlyCreated, bool sync, bool triggerChanged)
     {
+        if (!IsLoading && !IsInInitPhase)
+        {
+            AuthorizeDataModelMutation(
+                DataModelPermissionAction.Write | DataModelPermissionAction.Create | DataModelPermissionAction.CollectionAdd,
+                DataModelPermissionSurface.ReplicatedDictionary,
+                key: key);
+        }
+
         _elements.Add(key, element);
         _cachedLastKey = key;
         _cachedLastValue = element;
@@ -228,12 +268,20 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
     {
         if (_elements.TryGetValue(key, out var value))
         {
+            if (!IsLoading && !IsInInitPhase)
+            {
+                AuthorizeDataModelMutation(
+                    DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionRemove,
+                    DataModelPermissionSurface.ReplicatedDictionary,
+                    key: key);
+            }
+
             _elements.Remove(key);
 
             if (EqualityComparer<TKey>.Default.Equals(key, _cachedLastKey))
             {
-                _cachedLastKey = default;
-                _cachedLastValue = null;
+                _cachedLastKey = default!;
+                _cachedLastValue = null!;
             }
 
             if (sync)
@@ -391,6 +439,66 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
         {
             TKey key = DecodeKey(reader);
             InternalRemove(key, sync: false, triggerChanged: true);
+        }
+    }
+
+    public override MessageValidity Validate(BinaryMessageBatch syncMessage, BinaryReader reader, List<ValidationGroup.Rule> rules)
+    {
+        if (World?.IsAuthority != true)
+        {
+            return MessageValidity.Valid;
+        }
+
+        long position = reader.BaseStream.CanSeek ? reader.BaseStream.Position : -1;
+        try
+        {
+            uint addCount = (uint)reader.Read7BitEncoded();
+            for (int i = 0; i < addCount; i++)
+            {
+                _ = reader.ReadBoolean();
+                TKey key = DecodeKey(reader);
+                SkipElement(reader);
+
+                if (!AuthorizeDataModelMutation(
+                        DataModelPermissionAction.Write | DataModelPermissionAction.Create | DataModelPermissionAction.CollectionAdd | DataModelPermissionAction.Replicate,
+                        DataModelPermissionSurface.ReplicatedDictionary,
+                        syncMessage.SenderUser,
+                        isNetwork: true,
+                        key: key,
+                        throwOnError: false))
+                {
+                    return MessageValidity.Conflict;
+                }
+            }
+
+            uint removeCount = (uint)reader.Read7BitEncoded();
+            for (int i = 0; i < removeCount; i++)
+            {
+                TKey key = DecodeKey(reader);
+                if (!AuthorizeDataModelMutation(
+                        DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionRemove | DataModelPermissionAction.Replicate,
+                        DataModelPermissionSurface.ReplicatedDictionary,
+                        syncMessage.SenderUser,
+                        isNetwork: true,
+                        key: key,
+                        throwOnError: false))
+                {
+                    return MessageValidity.Conflict;
+                }
+            }
+
+            return MessageValidity.Valid;
+        }
+        catch
+        {
+            return MessageValidity.Conflict;
+        }
+        finally
+        {
+            if (position >= 0)
+            {
+                reader.BaseStream.Position = position;
+            }
         }
     }
 

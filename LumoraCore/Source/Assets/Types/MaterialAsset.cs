@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -160,7 +160,7 @@ public class MaterialAsset : DynamicImplementableAsset<IMaterialAssetHook>
     /// <summary>
     /// Get the underlying Godot material object.
     /// </summary>
-    public object GodotMaterial => Hook?.GodotMaterial;
+    public object GodotMaterial => (Hook?.GodotMaterial) ?? null!;
 
     /// <summary>
     /// Renderer queue requested by this material (-1 = default queue).

@@ -3,7 +3,6 @@
 
 using System;
 using Lumora.Core.Components.UI;
-using Lumora.Core.GodotUI;
 using Lumora.Core.Logging;
 
 namespace Lumora.Core.Templates
@@ -29,39 +28,16 @@ namespace Lumora.Core.Templates
                 // Create root structure
                 var userspaceRoot = w.RootSlot.AddSlot("UserspaceRoot");
 
-                // Create Dashboard panel (hidden by default, toggled with menu button/Escape)
-                var dashboardSlot = userspaceRoot.AddSlot("Dashboard");
-                var dashboardPanel = dashboardSlot.AttachComponent<DashboardPanel>();
-                dashboardPanel.IsVisible.Value = false;
+                // Userspace dashboard root. UserspaceDashboard owns the open
+                // state and positions the Helio dash surface in front of the
+                // focused user's view when shown.
+                var dashboardSlot = userspaceRoot.AddSlot("UserspaceDashboard");
+                var dashboard = dashboardSlot.AttachComponent<UserspaceDashboard>();
+                dashboard.Close();
 
-                Logger.Log("Userspace: Dashboard panel created");
-
-                // Create Context Menu (radial arc menu, toggled with A/X or middle mouse)
-                var contextMenuSlot = userspaceRoot.AddSlot("ContextMenu");
-                contextMenuSlot.AttachComponent<ContextMenuSystem>();
-
-                // ── Default root items ─────────────────────────────────────────
-                // These are always present. Additional items are contributed at
-                // open-time by RootContextMenuItem / ContextMenuItemSource components
-                // attached anywhere in the world hierarchy — fully dynamic.
-
-                var dashItem = contextMenuSlot.AttachComponent<RootContextMenuItem>();
-                dashItem.Label.Value    = "Dashboard";
-                dashItem.IconPath.Value = "res://Icons/dashboard.png";
-                dashItem.IsToggle.Value = true;
-                dashItem.Priority.Value = 100;
-                dashItem.Pressed += _ =>
-                {
-                    dashboardPanel.IsVisible.Value = !dashboardPanel.IsVisible.Value;
-                    dashItem.IsToggled.Value = dashboardPanel.IsVisible.Value;
-                };
-
-                var closeItem = contextMenuSlot.AttachComponent<RootContextMenuItem>();
-                closeItem.Label.Value    = "Close Menu";
-                closeItem.IconPath.Value = "res://Icons/close.png";
-                closeItem.Priority.Value = -100; // always last
-
-                Logger.Log("Userspace: Context menu created");
+                // The radial context menu lives per-user in the game world
+                // (built by CommonAvatarBuilder, opened by HandTool). Items
+                // come from ContextMenuItemSource components at open time.
                 Logger.Log("Userspace: Userspace world initialized");
             });
 

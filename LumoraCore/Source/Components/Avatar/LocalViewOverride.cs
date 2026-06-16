@@ -39,6 +39,19 @@ public class LocalViewOverride : ImplementableComponent<IHook>
     public readonly Sync<bool>   HasScaleOverride = new();
     public readonly Sync<float3> ScaleOverride    = new();
 
+    private readonly UserRootRegistrationTracker _userRootReg;
+
+    public LocalViewOverride()
+    {
+        _userRootReg = new UserRootRegistrationTracker(this);
+    }
+
+    public override void OnAwake()
+    {
+        base.OnAwake();
+        _userRootReg.Attach();
+    }
+
     public override void OnInit()
     {
         base.OnInit();
@@ -49,5 +62,28 @@ public class LocalViewOverride : ImplementableComponent<IHook>
         RotationOverride.Value = floatQ.Identity;
         // HasScaleOverride = false (C# default, skip)
         ScaleOverride.Value    = float3.One;
+    }
+
+    // The hook also gates on the external-camera state (third-person/free-cam
+    // must show the full avatar); poke it when that flips since no sync field
+    // changes.
+    private bool _lastExternalCamera;
+
+    public override void OnUpdate(float delta)
+    {
+        base.OnUpdate(delta);
+
+        bool external = UserInputState.FocusedExternalCameraActive;
+        if (external != _lastExternalCamera)
+        {
+            _lastExternalCamera = external;
+            RunApplyChanges();
+        }
+    }
+
+    public override void OnDestroy()
+    {
+        _userRootReg.Detach();
+        base.OnDestroy();
     }
 }

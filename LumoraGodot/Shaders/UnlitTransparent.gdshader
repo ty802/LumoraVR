@@ -3,7 +3,7 @@
 // Godot Implementation
 
 shader_type spatial;
-render_mode unshaded, blend_mix, depth_draw_alpha_prepass, cull_disabled;
+render_mode unshaded, blend_mix, depth_prepass_alpha, cull_disabled;
 
 // Color Properties
 uniform vec4 albedo_color : source_color = vec4(1.0, 1.0, 1.0, 1.0);

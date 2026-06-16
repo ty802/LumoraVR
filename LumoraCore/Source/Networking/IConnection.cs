@@ -76,4 +76,11 @@ public interface IConnection : IDisposable
     /// Send data to this connection.
     /// </summary>
     void Send(byte[] data, int length, bool reliable, bool background);
+
+    /// <summary>
+    /// Drive the transport for this connection. May be a no-op for transports
+    /// whose manager polls connections centrally (e.g. Steam). Called from the
+    /// session manager's per-frame poll loop. - xlinka
+    /// </summary>
+    void Poll();
 }

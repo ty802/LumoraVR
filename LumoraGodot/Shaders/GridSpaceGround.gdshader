@@ -69,10 +69,17 @@ void fragment()
     // Surface lines
     float minor = grid_line(UV, minor_scale, line_width);
     float major = grid_line(UV, major_scale, major_line_width);
+    float minor_deriv = max(fwidth(UV.x / minor_scale), fwidth(UV.y / minor_scale));
+    float major_deriv = max(fwidth(UV.x / major_scale), fwidth(UV.y / major_scale));
+    float minor_stability = 1.0 - smoothstep(0.18, 0.45, minor_deriv);
+    float major_stability = 1.0 - smoothstep(0.35, 0.85, major_deriv);
+    minor *= minor_stability * (1.0 - horizon * 0.85);
+    major *= major_stability;
     float grid_mask = clamp(max(minor * 0.35, major), 0.0, 1.0);
 
     // Deep parallax line layer (the "inside wall" of the seam, visible at oblique angles)
     float deep_line = grid_line(parallax_uv, major_scale, major_line_width * 0.7);
+    deep_line *= major_stability * (1.0 - horizon * 0.7);
     float deep_shadow = seam_shadow(UV, major_scale, 5.0);
 
     vec3 panel_col = mix(base_near_color.rgb, base_far_color.rgb, clamp(radial * 0.40, 0.0, 1.0));

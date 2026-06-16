@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -21,7 +21,7 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
     /// <summary>
     /// The hook that implements this component in the engine.
     /// </summary>
-    public C Hook { get; private set; }
+    public C Hook { get; private set; } = null!;
 
     /// <summary>
     /// Explicit interface implementation for non-generic IImplementable.
@@ -55,7 +55,7 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
         if (World == null)
         {
             Logging.Logger.Warn($"ImplementableComponent.InstantiateHook: World is NULL for {GetType().Name}!");
-            return null;
+            return null!;
         }
 
         Type componentType = GetType();
@@ -64,30 +64,28 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
         if (hookType == null)
         {
             Logging.Logger.Warn($"ImplementableComponent.InstantiateHook: No hook registered for {componentType.FullName}!");
-            return null;
+            return null!;
         }
 
-        var hook = (C)Activator.CreateInstance(hookType);
-        return hook;
+        var hook = (C)Activator.CreateInstance(hookType)!;
+        return hook!;
     }
 
-    /// <summary>
-    /// Register this component for hook update.
-    /// </summary>
+    // Hook exists from OnAwake but only gets Initialize() at OnStart. A component
+    // attached mid-update (menu build, text renderer spawn) hits ProcessHookUpdates
+    // before its startup runs, so ApplyChanges must not fire until then. - xlinka
+    private bool _hookReady;
+
+    // Queue this component for hook ApplyChanges at the next ProcessHookUpdates
+    // drain (end of frame, post-decode). Sync field setters call into this via
+    // OnChanges, so we never fire Hook.ApplyChanges synchronously mid-decode.
+    // - xlinka
     internal void RunApplyChanges()
     {
-        if (Hook != null && World != null)
+        if (Hook != null && _hookReady && World != null)
         {
             World.UpdateManager?.RegisterHookUpdate(this);
         }
-    }
-
-    /// <summary>
-    /// Apply changes from this component to the hook.
-    /// </summary>
-    internal void UpdateHook()
-    {
-        Hook?.ApplyChanges();
     }
 
     /// <summary>
@@ -112,6 +110,9 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
             if (Hook != null)
             {
                 Hook.Initialize();
+                _hookReady = true;
+                // Flush any state written before startup into the hook.
+                World?.UpdateManager?.RegisterHookUpdate(this);
             }
             else
             {
@@ -125,13 +126,15 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
         }
     }
 
-    /// <summary>
-    /// When component changes, apply changes to the hook.
-    /// </summary>
+    // Sync field change handler. Queues the hook for ApplyChanges at the next
+    // drain instead of firing it synchronously. That way hooks never see
+    // partially-decoded sync state from a replication batch, and SlotHook /
+    // any hook that reads multiple fields together sees a consistent snapshot.
+    // - xlinka
     public override void OnChanges()
     {
         base.OnChanges();
-        UpdateHook();
+        RunApplyChanges();
     }
 
     /// <summary>
@@ -150,9 +153,10 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
     {
         if (Hook != null)
         {
+            _hookReady = false;
             Hook.Destroy(World?.IsDisposed ?? false);
             Hook.RemoveOwner();
-            Hook = null;
+            Hook = null!;
         }
     }
 }

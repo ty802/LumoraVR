@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using Lumora.CDN;
 using Lumora.Core.Components.Avatar;
+using Lumora.Source.Godot.Rendering;
 using Lumora.Source.Godot.UI;
 
 namespace Lumora.Godot.UI;
@@ -241,7 +242,7 @@ public partial class Settings : Control
         if (header == null || tabContainer == null || _tabVideo == null)
             return;
 
-        // ----- header button -----
+        // header button
         _tabInterface = new Button();
         _tabInterface.Name = "TabInterface";
         _tabInterface.Text = "Interface";
@@ -251,7 +252,7 @@ public partial class Settings : Control
         if (videoFontSize > 0) _tabInterface.AddThemeFontSizeOverride("font_size", videoFontSize);
         header.AddChild(_tabInterface);
 
-        // ----- tab content -----
+        // tab content
         var scroll = new ScrollContainer();
         scroll.Name = "InterfaceTab";
         scroll.HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled;
@@ -568,44 +569,14 @@ public partial class Settings : Control
 
     private void ApplyRenderScale(float scale)
     {
-        var viewport = GetViewport();
-        if (viewport == null) return;
-        viewport.Scaling3DMode = Viewport.Scaling3DModeEnum.Bilinear;
-        viewport.Scaling3DScale = scale;
+        foreach (var viewport in EnumerateQualityViewports())
+            ViewportQuality.ApplyRenderScale(viewport, scale);
     }
 
     private void ApplyAntiAliasing(int index)
     {
-        var viewport = GetViewport();
-        if (viewport == null) return;
-        switch (index)
-        {
-            case 0: // Off
-                viewport.ScreenSpaceAA = Viewport.ScreenSpaceAAEnum.Disabled;
-                viewport.Msaa3D = Viewport.Msaa.Disabled;
-                viewport.UseTaa = false;
-                break;
-            case 1: // FXAA
-                viewport.ScreenSpaceAA = Viewport.ScreenSpaceAAEnum.Fxaa;
-                viewport.Msaa3D = Viewport.Msaa.Disabled;
-                viewport.UseTaa = false;
-                break;
-            case 2: // MSAA 2x
-                viewport.ScreenSpaceAA = Viewport.ScreenSpaceAAEnum.Disabled;
-                viewport.Msaa3D = Viewport.Msaa.Msaa2X;
-                viewport.UseTaa = false;
-                break;
-            case 3: // MSAA 4x
-                viewport.ScreenSpaceAA = Viewport.ScreenSpaceAAEnum.Disabled;
-                viewport.Msaa3D = Viewport.Msaa.Msaa4X;
-                viewport.UseTaa = false;
-                break;
-            case 4: // TAA
-                viewport.ScreenSpaceAA = Viewport.ScreenSpaceAAEnum.Disabled;
-                viewport.Msaa3D = Viewport.Msaa.Disabled;
-                viewport.UseTaa = true;
-                break;
-        }
+        foreach (var viewport in EnumerateQualityViewports())
+            ViewportQuality.ApplyAntiAliasing(viewport, index);
     }
 
     private void ApplyShadowQuality(int index)
@@ -668,10 +639,20 @@ public partial class Settings : Control
 
     private void ConfigurePositionalShadowAtlas(int atlasSize)
     {
-        var viewport = GetViewport();
-        if (viewport == null) return;
+        foreach (var viewport in EnumerateQualityViewports())
+            RenderingServer.ViewportSetPositionalShadowAtlasSize(viewport.GetViewportRid(), atlasSize, false);
+    }
 
-        RenderingServer.ViewportSetPositionalShadowAtlasSize(viewport.GetViewportRid(), atlasSize, false);
+    private IEnumerable<Viewport> EnumerateQualityViewports()
+    {
+        var primary = GetViewport();
+        if (primary != null)
+            yield return primary;
+
+        var sceneRoot = GetTree()?.CurrentScene;
+        var xrViewport = sceneRoot?.GetNodeOrNull<Viewport>("%XRViewport");
+        if (xrViewport != null && GodotObject.IsInstanceValid(xrViewport) && xrViewport != primary)
+            yield return xrViewport;
     }
 
     private void DisableSceneShadows()

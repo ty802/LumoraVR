@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core.Logging;
@@ -20,13 +20,13 @@ public static class GizmoHelper
         if (targetSlot == null)
         {
             Logger.Warn("GizmoHelper.SpawnGizmoFor: Target slot is null");
-            return null;
+            return null!;
         }
 
         if (targetSlot.IsRootSlot)
         {
             Logger.Warn("GizmoHelper.SpawnGizmoFor: Cannot create gizmo for root slot");
-            return null;
+            return null!;
         }
 
         // Check if gizmo already exists
@@ -44,7 +44,7 @@ public static class GizmoHelper
         if (gizmoSlot == null)
         {
             Logger.Warn("GizmoHelper.SpawnGizmoFor: Failed to create gizmo slot");
-            return null;
+            return null!;
         }
 
         // Create the SlotGizmo component
@@ -91,7 +91,7 @@ public static class GizmoHelper
     /// </summary>
     public static SlotGizmo GetGizmo(Slot targetSlot)
     {
-        return GizmoRegistry.GetGizmoForSlot(targetSlot) as SlotGizmo;
+        return (GizmoRegistry.GetGizmoForSlot(targetSlot) as SlotGizmo) ?? null!;
     }
 
     /// <summary>
@@ -102,7 +102,7 @@ public static class GizmoHelper
         if (HasGizmo(targetSlot))
         {
             DestroyGizmo(targetSlot);
-            return null;
+            return null!;
         }
         return SpawnGizmoFor(targetSlot);
     }

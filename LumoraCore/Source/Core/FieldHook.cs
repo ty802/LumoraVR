@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -20,8 +20,8 @@ public delegate void HookFieldSetter<T>(SyncField<T> field, T value);
 /// <typeparam name="T">The type of value being hooked</typeparam>
 public class FieldHook<T> : ILinkRef
 {
-	private SyncField<T> _target;
-	private HookFieldSetter<T> _fieldHook;
+	private SyncField<T> _target = null!;
+	private HookFieldSetter<T> _fieldHook = null!;
 	private bool _isActive;
 	private World _world;
 
@@ -29,6 +29,8 @@ public class FieldHook<T> : ILinkRef
     /// The target being linked to.
     /// </summary>
     public ILinkable Target => _target;
+
+    public SyncField<T> TargetField => _target;
 
     /// <summary>
     /// Whether the link is currently valid and active.
@@ -135,7 +137,7 @@ public class FieldHook<T> : ILinkRef
             _target.ReleaseLink(this);
         }
 
-        _target = null;
+        _target = null!;
         _isActive = false;
     }
 

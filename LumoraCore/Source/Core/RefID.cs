@@ -397,7 +397,7 @@ public readonly struct RefID : IEquatable<RefID>, IComparable<RefID>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool Equals(RefID other) => _value == other._value;
 
-    public override bool Equals(object obj) => obj is RefID other && Equals(other);
+    public override bool Equals(object? obj) => obj is RefID other && Equals(other);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public override int GetHashCode() => _value.GetHashCode();

@@ -1,168 +1,153 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using Lumora.Core;
-using Lumora.Core.GodotUI;
-using Lumora.Godot.Hooks.GodotUI;
-using Lumora.Source.Input;
+using Lumora.Core.Components.UI;
+using Lumora.Godot.Hooks;
 using LumoraLogger = Lumora.Core.Logging.Logger;
-using RuntimeEngine = Lumora.Core.Engine;
-using GodotInput = Godot.Input;
 
 namespace Lumora.Source.UI;
 
-/// <summary>
-/// Handles input for toggling the userspace dashboard panel.
-/// - Desktop: Escape key
-/// - VR: Menu button (B/Y button on right controller)
-/// </summary>
 public partial class DashboardToggle : Node
 {
 	private static DashboardToggle? _instance;
+	private UserspaceDashboard _dashboard = null!;
+
 	public static DashboardToggle? Instance => _instance;
-
-	/// <summary>
-	/// Whether the dashboard is currently visible.
-	/// Used by InputManager to coordinate mouse capture.
-	/// </summary>
 	public static bool IsDashboardVisible { get; private set; }
-
-	// VR button state tracking for edge detection
-	private bool _previousMenuButton = false;
-
-	// Reference to the dashboard panel in userspace
-	private DashboardPanel? _dashboardPanel;
 
 	public override void _Ready()
 	{
 		base._Ready();
 		_instance = this;
-		LumoraLogger.Log("DashboardToggle: Initialized");
+		IsDashboardVisible = false;
+		AddChild(new SettingsApplier { Name = "SettingsApplier" });
+	}
+
+	public override void _Input(InputEvent @event)
+	{
+		if (@event is InputEventMouseButton mouseBtn && mouseBtn.Pressed)
+		{
+			if (TryGetDashboard(out var dashboard) && dashboard.IsOpen.Value)
+			{
+				float delta = 0f;
+				if (mouseBtn.ButtonIndex == MouseButton.WheelUp) delta = 1f;
+				else if (mouseBtn.ButtonIndex == MouseButton.WheelDown) delta = -1f;
+				if (delta != 0f)
+				{
+					if (dashboard.FeedAxis(new Lumora.Core.Math.float2(0f, delta)))
+						GetViewport()?.SetInputAsHandled();
+					return;
+				}
+			}
+		}
+
+		if (@event is not InputEventKey key || !key.Pressed)
+			return;
+
+		if (key.Keycode == Key.Escape)
+		{
+			if (TryGetDashboard(out var escDash) && escDash.IsOpen.Value && escDash.FeedEscape())
+			{
+				GetViewport()?.SetInputAsHandled();
+				return;
+			}
+			ToggleDashboard();
+			GetViewport()?.SetInputAsHandled();
+			return;
+		}
+
+		if (TryGetDashboard(out var dash) && dash.IsOpen.Value)
+		{
+			if (key.Keycode == Key.Backspace)
+			{
+				dash.FeedSearchBackspace();
+				GetViewport()?.SetInputAsHandled();
+				return;
+			}
+			if (key.Keycode == Key.Enter || key.Keycode == Key.KpEnter)
+			{
+				if (dash.FeedEnter())
+					GetViewport()?.SetInputAsHandled();
+				return;
+			}
+			long ch = key.Unicode;
+			if (ch >= 32 && ch < 0x10000)
+			{
+				dash.FeedSearchChar((char)ch);
+				GetViewport()?.SetInputAsHandled();
+			}
+		}
 	}
 
 	public override void _Process(double delta)
 	{
-		base._Process(delta);
-
-		// Find dashboard panel if not yet found
-		if (_dashboardPanel == null)
-		{
-			FindDashboardPanel();
-		}
-
-		if (_dashboardPanel == null) return;
-
-		bool shouldToggle = false;
-
-		// Desktop: Check Escape key
-		if (GodotInput.IsActionJustPressed("ui_cancel"))
-		{
-			LumoraLogger.Log("DashboardToggle: Escape key pressed");
-			shouldToggle = true;
-		}
-
-		// VR: Check menu button (B/Y button) - edge detection
-		if (IInputProvider.Instance?.IsVR == true)
-		{
-			bool menuButton = IInputProvider.RightSecondaryInput; // B/Y button
-			if (menuButton && !_previousMenuButton)
-			{
-				shouldToggle = true;
-			}
-			_previousMenuButton = menuButton;
-		}
-
-		if (shouldToggle)
-		{
-			ToggleDashboard();
-		}
-
-		// Keep static property in sync
-		IsDashboardVisible = _dashboardPanel.IsVisible.Value;
+		IsDashboardVisible = TryGetDashboard(out var dashboard) && dashboard.IsOpen.Value;
 	}
 
-	private void FindDashboardPanel()
-	{
-		// Get userspace world from engine
-		var engine = RuntimeEngine.Current;
-		if (engine == null)
-		{
-			LumoraLogger.Log("DashboardToggle: Engine.Current is null");
-			return;
-		}
-
-		var userspaceWorld = engine.WorldManager?.UserspaceWorld;
-		if (userspaceWorld == null)
-		{
-			LumoraLogger.Log("DashboardToggle: UserspaceWorld is null");
-			return;
-		}
-
-		// Find the dashboard slot - navigate step by step
-		var userspaceRoot = userspaceWorld.RootSlot.FindChild("UserspaceRoot");
-		if (userspaceRoot == null)
-		{
-			LumoraLogger.Log("DashboardToggle: UserspaceRoot slot not found");
-			return;
-		}
-
-		var dashboardSlot = userspaceRoot.FindChild("Dashboard");
-		if (dashboardSlot == null)
-		{
-			LumoraLogger.Log("DashboardToggle: Dashboard slot not found under UserspaceRoot");
-			return;
-		}
-
-		_dashboardPanel = dashboardSlot.GetComponent<DashboardPanel>();
-		if (_dashboardPanel != null)
-		{
-			LumoraLogger.Log("DashboardToggle: Found dashboard panel");
-		}
-		else
-		{
-			LumoraLogger.Log("DashboardToggle: DashboardPanel component not found on slot");
-		}
-	}
-
-	/// <summary>
-	/// Toggle the dashboard visibility.
-	/// </summary>
 	public void ToggleDashboard()
 	{
-		if (_dashboardPanel == null)
+		if (!TryGetDashboard(out var dashboard))
 		{
-			LumoraLogger.Warn("DashboardToggle: No dashboard panel found");
+			LumoraLogger.Warn("DashboardToggle: UserspaceDashboard not found.");
+			IsDashboardVisible = false;
 			return;
 		}
 
-		_dashboardPanel.Toggle();
-		IsDashboardVisible = _dashboardPanel.IsVisible.Value;
-		LumoraLogger.Log($"DashboardToggle: Dashboard visible = {IsDashboardVisible}");
+		if (dashboard.IsOpen.Value)
+			HideDashboard();
+		else
+			ShowDashboard();
 	}
 
-	/// <summary>
-	/// Show the dashboard.
-	/// </summary>
 	public void ShowDashboard()
 	{
-		_dashboardPanel?.Show();
-		IsDashboardVisible = _dashboardPanel?.IsVisible.Value ?? false;
+		if (!TryGetDashboard(out var dashboard))
+		{
+			LumoraLogger.Warn("DashboardToggle: Cannot show dashboard, UserspaceDashboard not found.");
+			IsDashboardVisible = false;
+			return;
+		}
+
+		dashboard.Open();
+		IsDashboardVisible = true;
+		// Mouse stays captured: it steers the hand laser over the world-space
+		// dash surface, not an OS cursor over a flat blit.
 	}
 
-	/// <summary>
-	/// Hide the dashboard.
-	/// </summary>
 	public void HideDashboard()
 	{
-		_dashboardPanel?.Hide();
+		if (TryGetDashboard(out var dashboard))
+		{
+			dashboard.Close();
+		}
+
 		IsDashboardVisible = false;
+		global::Godot.Input.MouseMode = global::Godot.Input.MouseModeEnum.Captured;
+	}
+
+	private bool TryGetDashboard(out UserspaceDashboard dashboard)
+	{
+		if (_dashboard != null && !_dashboard.IsDestroyed)
+		{
+			dashboard = _dashboard;
+			return true;
+		}
+
+		_dashboard = Lumora.Core.Engine.Current?.WorldManager?.UserspaceWorld?.RootSlot?.GetComponentInChildren<UserspaceDashboard>(true)!;
+		dashboard = _dashboard!;
+		return dashboard != null && !dashboard.IsDestroyed;
 	}
 
 	public override void _ExitTree()
 	{
 		if (_instance == this)
+		{
 			_instance = null;
+		}
+
+		IsDashboardVisible = false;
 		base._ExitTree();
 	}
 }

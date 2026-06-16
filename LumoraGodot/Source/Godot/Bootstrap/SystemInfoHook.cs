@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using Godot;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
@@ -19,19 +19,19 @@ namespace Lumora.Source.Godot.Bootstrap;
 /// </summary>
 public partial class SystemInfoHook : Node
 {
-    // ===== PERFORMANCE TRACKING =====
+    // PERFORMANCE TRACKING
     private double _lastFrameTime = 0;
     private double _deltaTimeAccumulator = 0;
     private int _frameCount = 0;
     private const int FPS_SAMPLE_FRAMES = 60;
 
-    // ===== PUBLIC STATS =====
+    // PUBLIC STATS
     public float CurrentFPS { get; private set; } = 0f;
     public float AverageFPS { get; private set; } = 0f;
     public float GPUTimeMs { get; private set; } = 0f;
     public string OutputDevice { get; private set; } = "Unknown";
 
-    // ===== SYSTEM INFO =====
+    // SYSTEM INFO
     public string GPUName { get; private set; } = "Unknown";
     public string CPUName { get; private set; } = "Unknown";
     public long TotalMemoryMB { get; private set; } = 0;
@@ -124,3 +124,4 @@ public partial class SystemInfoHook : Node
         return $"FPS: {CurrentFPS:F1} (Avg: {AverageFPS:F1}) | GPU: {GPUTimeMs:F2}ms | Device: {OutputDevice}";
     }
 }
+

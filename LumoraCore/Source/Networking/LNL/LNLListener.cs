@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Net;
 using LiteNetLib;
@@ -11,28 +11,41 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 namespace Lumora.Core.Networking.LNL;
 
 /// <summary>
-/// LiteNetLib server listener.
-/// Listens for incoming connections and creates LNLPeer instances.
+/// LiteNetLib server listener. Listens for incoming connections and creates
+/// LNLPeer instances.
 /// </summary>
-public class LNLListener : INetEventListener, IDisposable
+public class LNLListener : IListener, INetEventListener
 {
     private readonly NetManager _server;
     private readonly string _appId;
     private readonly ushort _port;
     private readonly IPAddress _bindIP;
     private readonly Dictionary<NetPeer, LNLPeer> _peers = new();
+    private readonly string _sessionId;
 
     public bool IsInitialized { get; private set; }
+    public bool IsActive => IsInitialized && _server != null && _server.IsRunning;
     public int PeerCount => _peers.Count;
 
-    public event Action<LNLPeer> PeerConnected;
-    public event Action<LNLPeer> PeerDisconnected;
+    public Uri LocalUri { get; }
+    public Uri GlobalUri { get; }
 
-    public LNLListener(string appId, ushort port, IPAddress bindIP)
+    public event Action<IConnection> PeerConnected = null!;
+    public event Action<IConnection> PeerDisconnected = null!;
+
+    public LNLListener(string appId, ushort port, IPAddress bindIP, string sessionId = null!)
     {
         _appId = appId;
         _port = port;
         _bindIP = bindIP;
+        _sessionId = sessionId ?? string.Empty;
+
+        // For UDP transports the local URI dials this exact bind address; the
+        // global URI uses the wildcard host so a directory listing can replace
+        // it with the host's externally-resolvable address at publish time. - xlinka
+        var bindHost = bindIP.Equals(IPAddress.Any) ? "0.0.0.0" : bindIP.ToString();
+        LocalUri = new Uri($"lnl://{bindHost}:{port}/{_sessionId}");
+        GlobalUri = new Uri($"lnl://0.0.0.0:{port}/{_sessionId}");
 
         _server = new NetManager(this);
         _server.UpdateTime = 15;
@@ -89,6 +102,8 @@ public class LNLListener : INetEventListener, IDisposable
             LumoraLogger.Log($"LNL Listener stopped on {_bindIP}:{_port}");
         }
     }
+
+    public void Close() => Stop();
 
     public void Dispose()
     {
@@ -163,3 +178,4 @@ public class LNLListener : INetEventListener, IDisposable
         }
     }
 }
+

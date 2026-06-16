@@ -12,7 +12,7 @@ namespace Lumora.Core.Assets;
 /// <typeparam name="A">The asset type to provide</typeparam>
 public abstract class DynamicAssetProvider<A> : AssetProvider<A> where A : Asset, new()
 {
-    private A _asset;
+    private A _asset = null!;
 
     /// <summary>
     /// Whether this asset should be processed with high priority.
@@ -65,7 +65,7 @@ public abstract class DynamicAssetProvider<A> : AssetProvider<A> where A : Asset
             OnAssetCreated(_asset);
             Lumora.Core.Logging.Logger.Debug($"DynamicAssetProvider.RunAssetUpdate: [{GetType().Name}] Created new asset");
         }
-        _asset.HighPriorityIntegration = HighPriorityIntegration.Value;
+        _asset!.HighPriorityIntegration = HighPriorityIntegration.Value;
         Lumora.Core.Logging.Logger.Debug($"DynamicAssetProvider.RunAssetUpdate: [{GetType().Name}] Calling UpdateAsset(_asset)");
         UpdateAsset(_asset);
 
@@ -78,7 +78,7 @@ public abstract class DynamicAssetProvider<A> : AssetProvider<A> where A : Asset
         if (_asset != null)
         {
             _asset.Unload();
-            _asset = null;
+            _asset = null!;
             OnAssetCleared();
             AssetRemoved();
         }
@@ -101,9 +101,9 @@ public abstract class DynamicAssetProvider<A> : AssetProvider<A> where A : Asset
 
     /// <summary>
     /// Mark the asset as needing an update.
-    /// Safe to call from any thread — defers the actual Godot work to the main thread.
+    /// Safe to call from any thread - defers the actual Godot work to the main thread.
     /// </summary>
-    protected void MarkChangeDirty()
+    protected new void MarkChangeDirty()
     {
         if (AssetReferenceCount > 0)
         {

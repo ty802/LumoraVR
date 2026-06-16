@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -18,15 +18,15 @@ public abstract class Stream : IStream, IWorker, IWorldElement
 
     private bool _groupAssigned;
     private ushort? _oldGroup;
-    private string _groupName;
+    private string _groupName = null!;
     private bool _isInitialized;
     private RefID _referenceID;
-    private World _world;
+    private World _world = null!;
 
     /// <summary>
     /// The user that owns this stream.
     /// </summary>
-    public User Owner { get; private set; }
+    public User Owner { get; private set; } = null!;
 
     /// <summary>
     /// Whether this stream belongs to the local user.
@@ -103,7 +103,7 @@ public abstract class Stream : IStream, IWorker, IWorldElement
     /// <summary>
     /// Full type name of this worker (IWorker implementation).
     /// </summary>
-    public string WorkerTypeName => WorkerType.FullName;
+    public string WorkerTypeName => WorkerType.FullName!;
 
     /// <summary>
     /// Try to get a field by name (IWorker implementation).
@@ -114,7 +114,7 @@ public abstract class Stream : IStream, IWorker, IWorldElement
         {
             "Active" or "_active" => _active as IField,
             "Group" or "_group" => _group as IField,
-            _ => null
+            _ => null!
         };
     }
 
@@ -123,7 +123,7 @@ public abstract class Stream : IStream, IWorker, IWorldElement
     /// </summary>
     public IField<T> TryGetField<T>(string name)
     {
-        return TryGetField(name) as IField<T>;
+        return (TryGetField(name) as IField<T>) ?? null!;
     }
 
     /// <summary>
@@ -304,7 +304,7 @@ public abstract class Stream : IStream, IWorker, IWorldElement
         _group.Changed -= OnGroupChanged;
         _world?.ReferenceController?.UnregisterObject(this);
         IsDestroyed = true;
-        _world = null;
-        Owner = null;
+        _world = null!;
+        Owner = null!;
     }
 }

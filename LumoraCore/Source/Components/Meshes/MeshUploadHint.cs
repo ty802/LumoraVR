@@ -51,7 +51,7 @@ public struct MeshUploadHint
 
     private Flag flags;
 
-    // ===== Indexer =====
+    // Indexer
 
     /// <summary>
     /// Get or set whether a specific flag is enabled.
@@ -68,7 +68,7 @@ public struct MeshUploadHint
         }
     }
 
-    // ===== Methods =====
+    // Methods
 
     /// <summary>
     /// Set all flags.

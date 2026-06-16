@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using Lumora.Core;
@@ -17,12 +17,13 @@ namespace Lumora.Core.Assets;
 public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : Asset, new()
 {
     private HashSet<IAssetRef> references = new HashSet<IAssetRef>();
-    private HashSet<IAssetRef> updatedListeners;
-    private Action _sendAssetCreatedDelegate;
-    private Action _sendAssetUpdatedDelegate;
-    private Action _sendAssetRemovedDelegate;
+    private HashSet<IAssetRef> updatedListeners = null!;
+    private Action _sendAssetCreatedDelegate = null!;
+    private Action _sendAssetUpdatedDelegate = null!;
+    private Action _sendAssetRemovedDelegate = null!;
+    private bool _refreshing;
 
-    // ===== PROPERTIES =====
+    // PROPERTIES
 
     public int AssetReferenceCount => references.Count;
     public abstract A Asset { get; }
@@ -30,7 +31,7 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
     public abstract bool IsAssetAvailable { get; }
     public IEnumerable<IAssetRef> References => references;
 
-    // ===== REFERENCE MANAGEMENT =====
+    // REFERENCE MANAGEMENT
 
     public void ReferenceSet(IAssetRef reference)
     {
@@ -74,7 +75,7 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
         updatedListeners?.Remove(reference);
     }
 
-    // ===== LIFECYCLE =====
+    // LIFECYCLE
 
     public override void OnDestroy()
     {
@@ -92,24 +93,35 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
         RefreshAssetState();
     }
 
-    // ===== ASSET STATE MANAGEMENT =====
+    // ASSET STATE MANAGEMENT
 
     private void RefreshAssetState()
     {
-        if (AssetReferenceCount == 0 && IsAssetAvailable)
+        // Guards against ApplyChanges re-entering OnChanges via a Sync write-back, which
+        // would otherwise spin: OnChanges -> Update -> ApplyChanges -> OnChanges. - xlinka
+        if (_refreshing) return;
+        _refreshing = true;
+        try
         {
-            FreeAsset();
+            if (AssetReferenceCount == 0 && IsAssetAvailable)
+            {
+                FreeAsset();
+            }
+            else if (AssetReferenceCount > 0)
+            {
+                UpdateAsset();
+            }
         }
-        else if (AssetReferenceCount > 0)
+        finally
         {
-            UpdateAsset();
+            _refreshing = false;
         }
     }
 
     protected abstract void FreeAsset();
     protected abstract void UpdateAsset();
 
-    // ===== ASSET EVENTS =====
+    // ASSET EVENTS
 
     protected void AssetCreated()
     {
@@ -170,7 +182,7 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
         LumoraLogger.Debug($"AssetProvider.SendAssetCreated: [{GetType().Name}] IsDestroyed={IsDestroyed}, refCount={references?.Count ?? 0}");
         if (IsDestroyed) return;
 
-        foreach (IAssetRef reference in references)
+        foreach (IAssetRef reference in references!)
         {
             LumoraLogger.Debug($"AssetProvider.SendAssetCreated: [{GetType().Name}] Notifying reference {reference.GetType().Name}");
             reference.AssetUpdated();
@@ -219,7 +231,7 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
         if (IsDestroyed)
         {
             references.Clear();
-            references = null;
+            references = null!;
         }
     }
 
@@ -228,7 +240,7 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
         if (assetURL == null)
         {
             LumoraLogger.Debug("AssetProvider.ProcessURL: URL is null");
-            return null;
+            return null!;
         }
 
         LumoraLogger.Debug($"AssetProvider.ProcessURL: Processing {assetURL} (scheme: {assetURL.Scheme})");
@@ -239,7 +251,7 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
             if (string.IsNullOrEmpty(filename))
             {
                 LumoraLogger.Warn($"AssetProvider: Invalid lumdb URI: {assetURL}");
-                return null;
+                return null!;
             }
             assetURL = new Uri($"lumora:///{filename}");
         }
@@ -260,18 +272,17 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
             if (string.IsNullOrWhiteSpace(resourceRoot))
             {
                 LumoraLogger.Warn($"AssetProvider: Resource root not set; cannot resolve {assetURL}");
-                return null;
+                return null!;
             }
 
             var relativePath = GetUriRelativePath(assetURL);
             if (string.IsNullOrEmpty(relativePath))
             {
                 LumoraLogger.Warn($"AssetProvider: Invalid resource URI: {assetURL}");
-                return null;
+                return null!;
             }
 
-            relativePath = relativePath.Replace('/', Path.DirectorySeparatorChar);
-            var filePath = Path.Combine(resourceRoot, relativePath);
+            var filePath = ResolveResourcePath(resourceRoot, relativePath);
             if (!File.Exists(filePath))
             {
                 LumoraLogger.Warn($"AssetProvider: Resource not found at '{filePath}' for {assetURL}");
@@ -296,10 +307,131 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
                 }
             }
             LumoraLogger.Warn($"AssetProvider: Could not resolve local URI: {assetURL}");
-            return null;
+            return null!;
+        }
+
+        if (assetURL.IsFile && !File.Exists(assetURL.LocalPath))
+        {
+            if (TryResolveStaleProjectFileUri(assetURL, out var resolvedUri))
+            {
+                LumoraLogger.Warn($"AssetProvider: Remapped stale file URI '{assetURL}' to '{resolvedUri.LocalPath}'");
+                return resolvedUri;
+            }
         }
 
         return assetURL;
+    }
+
+    private static string ResolveResourcePath(string resourceRoot, string relativePath)
+    {
+        relativePath = relativePath.Replace('/', Path.DirectorySeparatorChar);
+        var filePath = Path.Combine(resourceRoot, relativePath);
+        return ResolveExistingPathCaseInsensitive(filePath) ?? filePath;
+    }
+
+    private static bool TryResolveStaleProjectFileUri(Uri uri, out Uri resolvedUri)
+    {
+        resolvedUri = null!;
+
+        var resourceRoot = Engine.Current?.ResourceRoot;
+        if (string.IsNullOrWhiteSpace(resourceRoot))
+        {
+            return false;
+        }
+
+        var candidates = new[]
+        {
+            uri.LocalPath,
+            Uri.UnescapeDataString(uri.AbsolutePath)
+        };
+
+        foreach (var candidate in candidates)
+        {
+            var relativePath = TryGetPathAfterProjectRoot(candidate);
+            if (string.IsNullOrWhiteSpace(relativePath))
+            {
+                continue;
+            }
+
+            var filePath = ResolveResourcePath(resourceRoot, relativePath);
+            if (File.Exists(filePath))
+            {
+                resolvedUri = new Uri(filePath);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string TryGetPathAfterProjectRoot(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null!;
+        }
+
+        var normalized = path.Replace('\\', '/');
+        const string marker = "/LumoraGodot/";
+        var index = normalized.LastIndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (index < 0)
+        {
+            return null!;
+        }
+
+        return normalized.Substring(index + marker.Length);
+    }
+
+    private static string ResolveExistingPathCaseInsensitive(string path)
+    {
+        if (File.Exists(path))
+        {
+            return path;
+        }
+
+        var root = Path.GetPathRoot(path);
+        if (string.IsNullOrEmpty(root) || !Directory.Exists(root))
+        {
+            return null!;
+        }
+
+        var current = root;
+        var remainder = path.Substring(root.Length);
+        var segments = remainder.Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries);
+
+        foreach (var segment in segments)
+        {
+            var direct = Path.Combine(current, segment);
+            if (Directory.Exists(direct) || File.Exists(direct))
+            {
+                current = direct;
+                continue;
+            }
+
+            if (!Directory.Exists(current))
+            {
+                return null!;
+            }
+
+            string match = null!;
+            foreach (var entry in Directory.EnumerateFileSystemEntries(current))
+            {
+                if (string.Equals(Path.GetFileName(entry), segment, StringComparison.OrdinalIgnoreCase))
+                {
+                    match = entry;
+                    break;
+                }
+            }
+
+            if (match == null)
+            {
+                return null!;
+            }
+
+            current = match;
+        }
+
+        return File.Exists(current) ? current : null!;
     }
 
     private static string GetUriRelativePath(Uri uri)
@@ -318,3 +450,4 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
         return $"{uri.Host}/{path}";
     }
 }
+

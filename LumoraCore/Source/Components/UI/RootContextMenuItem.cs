@@ -27,7 +27,7 @@ namespace Lumora.Core.Components.UI;
 [ComponentCategory("UI/Context Menu")]
 public class RootContextMenuItem : Component
 {
-    // ── Synced settings ────────────────────────────────────────────────────────
+    // Synced settings
 
     public readonly Sync<string> Label     = new();
     public readonly Sync<string> IconPath  = new();
@@ -38,7 +38,7 @@ public class RootContextMenuItem : Component
     /// <summary>Sort priority. Items with higher Priority appear earlier in the menu.</summary>
     public readonly Sync<int>    Priority  = new();
 
-    // ── Runtime-only ──────────────────────────────────────────────────────────
+    // Runtime-only
 
     /// <summary>
     /// Optional sub-page. If set, pressing this item navigates into SubPage
@@ -49,7 +49,7 @@ public class RootContextMenuItem : Component
     /// <summary>Fired when the item is pressed (and SubPage is null).</summary>
     public event Action<ContextMenuItem>? Pressed;
 
-    // ── Lifecycle ─────────────────────────────────────────────────────────────
+    // Lifecycle
 
     public override void OnInit()
     {
@@ -63,7 +63,7 @@ public class RootContextMenuItem : Component
         // Priority  = 0 (C# default, skip)
     }
 
-    // ── Conversion ────────────────────────────────────────────────────────────
+    // Conversion
 
     /// <summary>
     /// Build a ContextMenuItem from this component's current state.

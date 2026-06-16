@@ -12,7 +12,7 @@ public static class WorldTemplates
     private const string EmptyTemplateName = "Empty";
     private const string LocalHomeTemplateName = "LocalHome";
     private const string GridTemplateName = "Grid";
-    private const string SocialSpaceTemplateName = "SocialSpace";
+    private const string ShaderTestTemplateName = "ShaderTest";
 
     private static readonly IReadOnlyDictionary<string, WorldTemplateDefinition> s_templates =
         new Dictionary<string, WorldTemplateDefinition>(StringComparer.OrdinalIgnoreCase)
@@ -20,8 +20,17 @@ public static class WorldTemplates
             { EmptyTemplateName, new EmptyWorldTemplate() },
             { LocalHomeTemplateName, new LocalHomeWorldTemplate() },
             { GridTemplateName, new GridSpaceWorldTemplate() },
-            { SocialSpaceTemplateName, new SocialSpaceWorldTemplate() }
+            { ShaderTestTemplateName, new ShaderTestWorldTemplate() }
         };
+
+    /// <summary>Template names available to pick when creating a world, in display order.</summary>
+    public static IReadOnlyList<string> AvailableTemplates { get; } = new[]
+    {
+        LocalHomeTemplateName,
+        GridTemplateName,
+        ShaderTestTemplateName,
+        EmptyTemplateName,
+    };
 
     public static Action<World> GetTemplate(string name)
     {

@@ -1,8 +1,9 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
 using System.Runtime.CompilerServices;
+using Lumora.Core.Persistence;
 
 namespace Lumora.Core;
 
@@ -56,7 +57,7 @@ public class SyncRef<T> : SyncField<RefID>, ISyncRef, IWorldElementReceiver
 
     private const int PreassignedFlag = 16;
 
-    private T _target;
+    private T _target = null!;
     private ReferenceState _state;
 
     private bool IsPreassigned
@@ -90,7 +91,7 @@ public class SyncRef<T> : SyncField<RefID>, ISyncRef, IWorldElementReceiver
         {
             if (_target == null || _target.IsDestroyed)
             {
-                return null;
+                return null!;
             }
             return _target;
         }
@@ -164,6 +165,13 @@ public class SyncRef<T> : SyncField<RefID>, ISyncRef, IWorldElementReceiver
 
     public Type TargetType => typeof(T);
 
+    // A reference saves as the stable GUID of its target (not a raw RefID) so it survives
+    // the round-trip; on load it resolves to the target's freshly-allocated RefID, deferring
+    // until that target loads if needed.
+    public override DataTreeNode Save(SaveControl control) => control.SaveReference(Value);
+
+    public override void Load(DataTreeNode node, LoadControl control) => control.RequestReference(node, this);
+
     IWorldElement ISyncRef.Target
     {
         get => Target;
@@ -171,7 +179,7 @@ public class SyncRef<T> : SyncField<RefID>, ISyncRef, IWorldElementReceiver
         {
             if (value == null)
             {
-                Target = null;
+                Target = null!;
                 return;
             }
 
@@ -186,18 +194,18 @@ public class SyncRef<T> : SyncField<RefID>, ISyncRef, IWorldElementReceiver
         }
     }
 
-    public event ReferenceEvent<T> OnReferenceChange;
-    public event ReferenceEvent<T> OnObjectAvailable;
-    public event ReferenceEvent<T> OnTargetChange;
+    public event ReferenceEvent<T> OnReferenceChange = null!;
+    public event ReferenceEvent<T> OnObjectAvailable = null!;
+    public event ReferenceEvent<T> OnTargetChange = null!;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static implicit operator T(SyncRef<T> reference) => reference?.Target;
+    public static implicit operator T(SyncRef<T> reference) => (reference?.Target) ?? null!;
 
     public bool TrySet(IWorldElement target)
     {
         if (target == null)
         {
-            Target = null;
+            Target = null!;
             return true;
         }
 
@@ -218,7 +226,7 @@ public class SyncRef<T> : SyncField<RefID>, ISyncRef, IWorldElementReceiver
     protected override void ValueChanged()
     {
         T prevTarget = _target;
-        _target = null;
+        _target = null!;
 
         base.ValueChanged();
         RunReferenceChanged();
@@ -257,7 +265,7 @@ public class SyncRef<T> : SyncField<RefID>, ISyncRef, IWorldElementReceiver
 
     private void SetTarget(IWorldElement element)
     {
-        _target = element as T;
+        _target = (element as T)!;
 
         if (_target == null)
         {
@@ -278,7 +286,7 @@ public class SyncRef<T> : SyncField<RefID>, ISyncRef, IWorldElementReceiver
 
     protected void InvalidateTarget()
     {
-        _target = null;
+        _target = null!;
         State = ReferenceState.Invalid;
     }
 
@@ -304,10 +312,10 @@ public class SyncRef<T> : SyncField<RefID>, ISyncRef, IWorldElementReceiver
 
     public override void Dispose()
     {
-        _target = null;
-        OnReferenceChange = null;
-        OnObjectAvailable = null;
-        OnTargetChange = null;
+        _target = null!;
+        OnReferenceChange = null!;
+        OnObjectAvailable = null!;
+        OnTargetChange = null!;
         base.Dispose();
     }
 

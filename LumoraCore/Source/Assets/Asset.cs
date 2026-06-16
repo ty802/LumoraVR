@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -37,21 +37,26 @@ public abstract class Asset : IAsset
     // Locking state
     private SpinLock lockRequestLock = new SpinLock(enableThreadOwnerTracking: false);
     private List<object> readLocks = new List<object>();
-    private object writeLock;
+    private object writeLock = null!;
     private Queue<LockRequest> lockRequests = new Queue<LockRequest>();
-
-    // Consumer notifications
-    private readonly List<IAssetConsumer> _consumers = new List<IAssetConsumer>();
-    private readonly object _consumersLock = new object();
 
     // Asset properties
     public bool HighPriorityIntegration { get; set; }
     internal int UnloadKey { get; set; }
     public int Version { get; protected set; }
-    public object Owner { get; protected set; }
+    public object Owner { get; protected set; } = null!;
     public AssetType AssetType { get; protected set; }
     public AssetLoadState LoadState { get; protected set; }
-    public Uri AssetURL { get; private set; }
+    public Uri AssetURL { get; private set; } = null!;
+
+    /// <summary>
+    /// The manager that owns this asset, assigned at initialization. Assets reach engine
+    /// services through this rather than the global <c>Engine.Current</c>.
+    /// </summary>
+    public AssetManager AssetManager { get; protected set; } = null!;
+
+    /// <summary>The engine this asset belongs to.</summary>
+    public Engine Engine => AssetManager?.Engine!;
 
     /// <summary>
     /// Number of active requests for this asset.
@@ -63,25 +68,29 @@ public abstract class Asset : IAsset
     /// </summary>
     public virtual float UnloadDelay => 5.0f; // Default 5 seconds
 
-    // ===== INITIALIZATION =====
+    // INITIALIZATION
 
     /// <summary>
-    /// Initialize a static asset with a URL.
+    /// Initialize a static asset with a URL. The owning manager defaults to the current
+    /// engine's manager; callers may pass one explicitly once they thread it through.
     /// </summary>
-    public virtual void InitializeStatic(Uri assetUrl)
+    public virtual void InitializeStatic(Uri assetUrl, AssetManager? manager = null)
     {
         AssetURL = assetUrl;
         AssetType = AssetType.Static;
         LoadState = AssetLoadState.Created;
+        AssetManager = manager ?? Lumora.Core.Engine.Current?.AssetManager!;
     }
 
     /// <summary>
-    /// Initialize a dynamic (procedural) asset.
+    /// Initialize a dynamic (procedural) asset. The owning manager defaults to the current
+    /// engine's manager; callers may pass one explicitly once they thread it through.
     /// </summary>
-    public virtual void InitializeDynamic()
+    public virtual void InitializeDynamic(AssetManager? manager = null)
     {
         AssetType = AssetType.Dynamic;
         LoadState = AssetLoadState.FullyLoaded; // Dynamic assets are immediately "loaded"
+        AssetManager = manager ?? Lumora.Core.Engine.Current?.AssetManager!;
     }
 
     /// <summary>
@@ -109,78 +118,7 @@ public abstract class Asset : IAsset
         AssetURL = assetUrl;
     }
 
-    // ===== CONSUMER MANAGEMENT =====
-
-    /// <summary>
-    /// Register a consumer to receive asset state change notifications.
-    /// </summary>
-    public void RegisterConsumer(IAssetConsumer consumer)
-    {
-        if (consumer == null) return;
-        lock (_consumersLock)
-        {
-            if (!_consumers.Contains(consumer))
-            {
-                _consumers.Add(consumer);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Unregister a consumer from receiving notifications.
-    /// </summary>
-    public void UnregisterConsumer(IAssetConsumer consumer)
-    {
-        if (consumer == null) return;
-        lock (_consumersLock)
-        {
-            _consumers.Remove(consumer);
-        }
-    }
-
-    /// <summary>
-    /// Notify all registered consumers of a state change.
-    /// </summary>
-    private void NotifyConsumers()
-    {
-        IAssetConsumer[] consumersSnapshot;
-        lock (_consumersLock)
-        {
-            if (_consumers.Count == 0) return;
-            consumersSnapshot = _consumers.ToArray();
-        }
-
-        foreach (var consumer in consumersSnapshot)
-        {
-            try
-            {
-                consumer.OnAssetStateChanged(this);
-            }
-            catch (Exception ex)
-            {
-                LumoraLogger.Log($"Error notifying consumer: {ex.Message}");
-            }
-        }
-    }
-
-    /// <summary>
-    /// Notify all registered consumers that this asset was assigned.
-    /// Call this after assigning the asset to a consumer.
-    /// </summary>
-    public void NotifyAssigned(IAssetConsumer consumer)
-    {
-        if (consumer == null) return;
-        try
-        {
-            consumer.OnAssetAssigned(this);
-        }
-        catch (Exception ex)
-        {
-            LumoraLogger.Log($"Error in OnAssetAssigned: {ex.Message}");
-        }
-    }
-
-    // ===== LOAD STATE MANAGEMENT =====
+    // LOAD STATE MANAGEMENT
 
     protected void CheckStatic()
     {
@@ -220,17 +158,16 @@ public abstract class Asset : IAsset
 
     protected virtual void OnLoadStateChanged()
     {
-        NotifyConsumers();
     }
 
-    // ===== ABSTRACT METHODS =====
+    // ABSTRACT METHODS
 
     /// <summary>
     /// Queue this asset for unloading.
     /// </summary>
     public abstract void Unload();
 
-    // ===== LOCKING SYSTEM =====
+    // LOCKING SYSTEM
 
     public void RequestWrite(Action<IAsset> callback)
     {
@@ -319,7 +256,7 @@ public abstract class Asset : IAsset
             {
                 throw new InvalidOperationException($"Current writeLock and passed lockObject do not match! writeLock: {writeLock?.GetHashCode()}, lockObject: {lockObject?.GetHashCode()}");
             }
-            writeLock = null;
+            writeLock = null!;
         }
         finally
         {
@@ -382,7 +319,7 @@ public abstract class Asset : IAsset
     private void ProcessLockRequestQueue()
     {
         bool lockTaken = false;
-        List<Action<IAsset>> list = null;
+        List<Action<IAsset>> list = null!;
         try
         {
             lockRequestLock.Enter(ref lockTaken);
@@ -430,3 +367,4 @@ public abstract class Asset : IAsset
         }
     }
 }
+

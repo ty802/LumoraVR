@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.CompilerServices;
 using Lumora.Core.Networking.Sync;
+using Lumora.Core.Persistence;
 
 namespace Lumora.Core;
 
@@ -33,7 +34,7 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
 
     object IField.BoxedValue
     {
-        get => Value;
+        get => Value!;
         set => Value = (T)value;
     }
 
@@ -59,7 +60,7 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
         set
         {
             // If hooked, NOT modification allowed, and not in special state, call hook
-            if (IsHooked && !ActiveLink.IsModificationAllowed &&
+            if (IsHooked && !ActiveLink!.IsModificationAllowed &&
                 (_flags & HOOK_CHECK_FLAGS) == 0 &&
                 ActiveLink is FieldHook<T> fieldHook && fieldHook.ValueSetHook != null)
             {
@@ -268,7 +269,7 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
     /// <summary>
     /// Notify parent and fire Changed event.
     /// </summary>
-    protected void SyncElementChanged(IChangeable member = null)
+    protected void SyncElementChanged(IChangeable member = null!)
     {
         member = member ?? this;
         try
@@ -317,6 +318,22 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
         {
             InvalidateSyncElement();
         }
+
+        ValueChanged();
+    }
+
+    /// <summary>
+    /// Set a driven value without generating sync data. For drives whose
+    /// source state replicates on its own and whose computation runs on every
+    /// peer (avatar pose driving) - broadcasting the result would duplicate
+    /// the source traffic and fight the remote peer's own computation.
+    /// </summary>
+    internal void SetDrivenValueLocal(T value)
+    {
+        if (SyncCoder.Equals(_value, value)) return;
+
+        _value = value;
+        WasChanged = true;
 
         ValueChanged();
     }
@@ -405,6 +422,20 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
     public override string ToString() => _value?.ToString() ?? "<null>";
 
     public override object? GetValueAsObject() => _value;
+
+    public override DataTreeNode Save(SaveControl control)
+    {
+        if (!DataTreeCoder.IsSupported(typeof(T)))
+            throw new NotSupportedException($"SyncField<{typeof(T).Name}> has no persistence coder.");
+        return DataTreeCoder.Encode(Value);
+    }
+
+    public override void Load(DataTreeNode node, LoadControl control)
+    {
+        var value = DataTreeCoder.Decode<T>(node);
+        // Pure load: don't generate network sync data or fire change events.
+        InternalSetValue(in value, sync: false, change: false);
+    }
 
     /// <summary>
     /// Provide better hierarchy info for debugging.

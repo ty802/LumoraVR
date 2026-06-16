@@ -12,7 +12,7 @@ namespace Lumora.Core;
 
 /// <summary>
 /// Compact synchronized unordered collection.
-/// Stores values in a List&lt;T&gt; backing — allows duplicates, no ordering guarantees.
+/// Stores values in a List&lt;T&gt; backing - allows duplicates, no ordering guarantees.
 /// Supports full and op-log delta network encoding via SyncCoder.
 /// Use this instead of SyncFieldList&lt;T&gt; for unordered bag semantics.
 /// </summary>
@@ -31,12 +31,21 @@ public class SyncBag<T> : ConflictingSyncElement, IEnumerable<T>
     private readonly List<T> _items = new();
     private List<BagOp>? _pendingOps;
 
-    public int Count => _items.Count;
+    public int Count
+    {
+        get
+        {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Bag);
+            return _items.Count;
+        }
+    }
 
     public event Action<SyncBag<T>>? OnChanged;
 
     public void Add(T item)
     {
+        if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionAdd, DataModelPermissionSurface.Bag, key: item))
+            return;
         if (!BeginModification()) return;
         _items.Add(item);
         (_pendingOps ??= new List<BagOp>()).Add(new BagOp { Type = OpAdd, Value = item });
@@ -51,6 +60,8 @@ public class SyncBag<T> : ConflictingSyncElement, IEnumerable<T>
     {
         int idx = _items.IndexOf(item);
         if (idx < 0) return false;
+        if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionRemove, DataModelPermissionSurface.Bag, index: idx, key: item))
+            return false;
         if (!BeginModification()) return false;
         _items.RemoveAt(idx);
         (_pendingOps ??= new List<BagOp>()).Add(new BagOp { Type = OpRemove, Value = item });
@@ -62,11 +73,17 @@ public class SyncBag<T> : ConflictingSyncElement, IEnumerable<T>
         return true;
     }
 
-    public bool Contains(T item) => _items.Contains(item);
+    public bool Contains(T item)
+    {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Bag, key: item);
+        return _items.Contains(item);
+    }
 
     public void Clear()
     {
         if (_items.Count == 0) return;
+        if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionClear, DataModelPermissionSurface.Bag))
+            return;
         if (!BeginModification()) return;
         _items.Clear();
         _pendingOps?.Clear();
@@ -152,6 +169,103 @@ public class SyncBag<T> : ConflictingSyncElement, IEnumerable<T>
         }
     }
 
+    public override MessageValidity Validate(BinaryMessageBatch syncMessage, BinaryReader reader, List<ValidationGroup.Rule> rules)
+    {
+        var validity = base.Validate(syncMessage, reader, rules);
+        if (validity != MessageValidity.Valid || World?.IsAuthority != true)
+        {
+            return validity;
+        }
+
+        long position = reader.BaseStream.CanSeek ? reader.BaseStream.Position : -1;
+        try
+        {
+            bool isFull = reader.ReadBoolean();
+            if (isFull)
+            {
+                int count = (int)reader.Read7BitEncoded();
+                for (int i = 0; i < count; i++)
+                {
+                    var value = SyncCoder.Decode<T>(reader);
+                    if (!AuthorizeDataModelMutation(
+                            DataModelPermissionAction.Write | DataModelPermissionAction.CollectionSet | DataModelPermissionAction.Replicate,
+                            DataModelPermissionSurface.Bag,
+                            syncMessage.SenderUser,
+                            isNetwork: true,
+                            key: value,
+                            throwOnError: false))
+                    {
+                        return MessageValidity.Conflict;
+                    }
+                }
+                return MessageValidity.Valid;
+            }
+
+            int opCount = (int)reader.Read7BitEncoded();
+            for (int i = 0; i < opCount; i++)
+            {
+                byte type = reader.ReadByte();
+                if (type == OpAdd)
+                {
+                    var value = SyncCoder.Decode<T>(reader);
+                    if (!AuthorizeDataModelMutation(
+                            DataModelPermissionAction.Write | DataModelPermissionAction.CollectionAdd | DataModelPermissionAction.Replicate,
+                            DataModelPermissionSurface.Bag,
+                            syncMessage.SenderUser,
+                            isNetwork: true,
+                            key: value,
+                            throwOnError: false))
+                    {
+                        return MessageValidity.Conflict;
+                    }
+                }
+                else if (type == OpRemove)
+                {
+                    var value = SyncCoder.Decode<T>(reader);
+                    if (!AuthorizeDataModelMutation(
+                            DataModelPermissionAction.Write | DataModelPermissionAction.CollectionRemove | DataModelPermissionAction.Replicate,
+                            DataModelPermissionSurface.Bag,
+                            syncMessage.SenderUser,
+                            isNetwork: true,
+                            key: value,
+                            throwOnError: false))
+                    {
+                        return MessageValidity.Conflict;
+                    }
+                }
+                else if (type == OpClear)
+                {
+                    if (!AuthorizeDataModelMutation(
+                            DataModelPermissionAction.Write | DataModelPermissionAction.CollectionClear | DataModelPermissionAction.Replicate,
+                            DataModelPermissionSurface.Bag,
+                            syncMessage.SenderUser,
+                            isNetwork: true,
+                            throwOnError: false))
+                    {
+                        return MessageValidity.Conflict;
+                    }
+                }
+                else
+                {
+                    return MessageValidity.Conflict;
+                }
+            }
+
+            return MessageValidity.Valid;
+        }
+        catch
+        {
+            return MessageValidity.Conflict;
+        }
+        finally
+        {
+            if (position >= 0)
+            {
+                reader.BaseStream.Position = position;
+            }
+        }
+    }
+
     protected override void InternalClearDirty()
     {
         _pendingOps?.Clear();
@@ -159,8 +273,13 @@ public class SyncBag<T> : ConflictingSyncElement, IEnumerable<T>
 
     public override object? GetValueAsObject() => null;
 
-    public IEnumerator<T> GetEnumerator() => _items.GetEnumerator();
-    IEnumerator IEnumerable.GetEnumerator() => _items.GetEnumerator();
+    public IEnumerator<T> GetEnumerator()
+    {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Bag);
+        return _items.GetEnumerator();
+    }
+
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
     public override void Dispose()
     {

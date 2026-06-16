@@ -7,14 +7,15 @@ using System.Collections.Generic;
 using System.IO;
 using Lumora.Core.Networking;
 using Lumora.Core.Networking.Sync;
+using Lumora.Core.Persistence;
 
 namespace Lumora.Core;
 
 /// <summary>
 /// Compact synchronized array for value types and primitives.
-/// Stores values in a flat T[] buffer — no per-element heap allocation.
+/// Stores values in a flat T[] buffer - no per-element heap allocation.
 /// Supports full and sparse-delta network encoding via SyncCoder.
-/// Use this instead of SyncFieldList&lt;T&gt; for primitives: 25× less memory.
+/// Use this instead of SyncFieldList&lt;T&gt; for primitives: 25x less memory.
 /// </summary>
 public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
 {
@@ -30,7 +31,14 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
     private bool _structureChanged;
     private HashSet<int>? _dirtyIndices;
 
-    public int Count => _count;
+    public int Count
+    {
+        get
+        {
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Array);
+            return _count;
+        }
+    }
 
     public event Action<SyncArray<T>, int, int>? ElementsAdded;
     public event Action<SyncArray<T>, int, int>? ElementsRemoved;
@@ -47,11 +55,14 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
         get
         {
             if ((uint)index >= (uint)_count) throw new ArgumentOutOfRangeException(nameof(index));
+            AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.Array, index: index);
             return _items[index];
         }
         set
         {
             if ((uint)index >= (uint)_count) throw new ArgumentOutOfRangeException(nameof(index));
+            if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionSet, DataModelPermissionSurface.Array, index: index))
+                return;
             if (!BeginModification()) return;
             _items[index] = value;
             if (!_structureChanged)
@@ -63,6 +74,8 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
 
     public void Add(T item)
     {
+        if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionAdd | DataModelPermissionAction.CollectionResize, DataModelPermissionSurface.Array, index: _count))
+            return;
         if (!BeginModification()) return;
         EnsureCapacity(_count + 1);
         int idx = _count;
@@ -85,6 +98,8 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
 
     public void AddRange(IEnumerable<T> items)
     {
+        if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionAdd | DataModelPermissionAction.CollectionResize, DataModelPermissionSurface.Array, index: _count))
+            return;
         if (!BeginModification()) return;
         int startIdx = _count;
         foreach (var item in items)
@@ -108,6 +123,8 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
     public void Insert(int index, T item)
     {
         if ((uint)index > (uint)_count) throw new ArgumentOutOfRangeException(nameof(index));
+        if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionInsert | DataModelPermissionAction.CollectionResize, DataModelPermissionSurface.Array, index: index))
+            return;
         if (!BeginModification()) return;
         EnsureCapacity(_count + 1);
         if (index < _count)
@@ -126,6 +143,8 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
     public void RemoveAt(int index)
     {
         if ((uint)index >= (uint)_count) throw new ArgumentOutOfRangeException(nameof(index));
+        if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionRemove | DataModelPermissionAction.CollectionResize, DataModelPermissionSurface.Array, index: index))
+            return;
         if (!BeginModification()) return;
         _count--;
         if (index < _count)
@@ -148,9 +167,29 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
         return true;
     }
 
+    // PERSISTENCE — a DataTreeList of the element values (value types via the coder).
+    public override DataTreeNode Save(SaveControl control)
+    {
+        var list = new DataTreeList();
+        foreach (var item in this)
+            list.Add(DataTreeCoder.Encode(item));
+        return list;
+    }
+
+    public override void Load(DataTreeNode node, LoadControl control)
+    {
+        if (node is not DataTreeList list)
+            return;
+        Clear();
+        foreach (var child in list.Children)
+            Add(DataTreeCoder.Decode<T>(child));
+    }
+
     public void Clear()
     {
         if (_count == 0) return;
+        if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionClear | DataModelPermissionAction.CollectionResize, DataModelPermissionSurface.Array))
+            return;
         if (!BeginModification()) return;
         int old = _count;
         Array.Clear(_items, 0, _count);
@@ -166,6 +205,7 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
 
     public int IndexOf(T item)
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Array, key: item);
         var comparer = EqualityComparer<T>.Default;
         for (int i = 0; i < _count; i++)
         {
@@ -257,6 +297,64 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
         }
     }
 
+    public override MessageValidity Validate(BinaryMessageBatch syncMessage, BinaryReader reader, List<ValidationGroup.Rule> rules)
+    {
+        var validity = base.Validate(syncMessage, reader, rules);
+        if (validity != MessageValidity.Valid || World?.IsAuthority != true)
+        {
+            return validity;
+        }
+
+        long position = reader.BaseStream.CanSeek ? reader.BaseStream.Position : -1;
+        try
+        {
+            byte mode = reader.ReadByte();
+            if (mode == ModeFullSnapshot)
+            {
+                if (!AuthorizeDataModelMutation(
+                        DataModelPermissionAction.Write | DataModelPermissionAction.CollectionSet | DataModelPermissionAction.CollectionResize | DataModelPermissionAction.Replicate,
+                        DataModelPermissionSurface.Array,
+                        syncMessage.SenderUser,
+                        isNetwork: true,
+                        throwOnError: false))
+                {
+                    return MessageValidity.Conflict;
+                }
+                return MessageValidity.Valid;
+            }
+
+            int changedCount = (int)reader.Read7BitEncoded();
+            for (int i = 0; i < changedCount; i++)
+            {
+                int idx = (int)reader.Read7BitEncoded();
+                _ = SyncCoder.Decode<T>(reader);
+                if (!AuthorizeDataModelMutation(
+                        DataModelPermissionAction.Write | DataModelPermissionAction.CollectionSet | DataModelPermissionAction.Replicate,
+                        DataModelPermissionSurface.Array,
+                        syncMessage.SenderUser,
+                        isNetwork: true,
+                        index: idx,
+                        throwOnError: false))
+                {
+                    return MessageValidity.Conflict;
+                }
+            }
+
+            return MessageValidity.Valid;
+        }
+        catch
+        {
+            return MessageValidity.Conflict;
+        }
+        finally
+        {
+            if (position >= 0)
+            {
+                reader.BaseStream.Position = position;
+            }
+        }
+    }
+
     protected override void InternalClearDirty()
     {
         _structureChanged = false;
@@ -267,6 +365,7 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
 
     public IEnumerator<T> GetEnumerator()
     {
+        AuthorizeDataModelAccess(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, DataModelPermissionSurface.Array);
         for (int i = 0; i < _count; i++)
             yield return _items[i];
     }

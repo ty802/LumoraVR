@@ -1,7 +1,7 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using System;
+using System;
 using System.Net;
 using LiteNetLib;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -18,16 +18,25 @@ public class LNLPeer : IConnection
     internal readonly NetPeer Peer;
 
     public bool IsOpen { get; private set; }
-    public string FailReason { get; private set; }
-    public IPAddress IP => Peer?.Address;
+    public string FailReason { get; private set; } = null!;
+    public IPAddress IP => (Peer?.Address) ?? null!;
     public Uri Address { get; private set; }
     public string Identifier { get; private set; }
     public ulong ReceivedBytes { get; private set; }
 
-    public event Action<IConnection> Closed;
-    public event Action<IConnection> Connected;
-    public event Action<IConnection> ConnectionFailed;
-    public event Action<byte[], int> DataReceived;
+    public event Action<IConnection> Closed = null!;
+    public event Action<IConnection> Connected
+    {
+        add { }
+        remove { }
+    }
+
+    public event Action<IConnection> ConnectionFailed
+    {
+        add { }
+        remove { }
+    }
+    public event Action<byte[], int> DataReceived = null!;
 
     public LNLPeer(NetManager server, NetPeer peer)
     {
@@ -77,6 +86,12 @@ public class LNLPeer : IConnection
         Peer.Send(data, 0, length, channel, method);
     }
 
+    /// <summary>
+    /// No-op. LNLPeer shares the listener's NetManager; the listener polls
+    /// for both. - xlinka
+    /// </summary>
+    public void Poll() { }
+
     internal void InformOfNewData(byte[] data, int length)
     {
         ReceivedBytes += (ulong)length;
@@ -98,3 +113,4 @@ public class LNLPeer : IConnection
         Close();
     }
 }
+

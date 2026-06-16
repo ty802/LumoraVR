@@ -17,7 +17,7 @@ public abstract class ProceduralMesh : ImplementableComponent
 
     private bool _isDirty = false;
 
-    // ===== Public Properties (for hook access) =====
+    // Public Properties (for hook access)
 
     /// <summary>Get the PhosMesh data (for hook to upload)</summary>
     public PhosMesh? PhosMesh => phosMesh;
@@ -28,7 +28,7 @@ public abstract class ProceduralMesh : ImplementableComponent
     /// <summary>Check if mesh needs to be uploaded</summary>
     public bool IsDirty => _isDirty;
 
-    // ===== Sync Fields =====
+    // Sync Fields
 
     /// <summary>Override the bounding box with a custom value</summary>
     public readonly Sync<bool> OverrideBoundingBox;
@@ -36,7 +36,7 @@ public abstract class ProceduralMesh : ImplementableComponent
     /// <summary>Custom bounding box (if OverrideBoundingBox is true)</summary>
     public readonly Sync<BoundingBox> OverridenBoundingBox;
 
-    // ===== Constructor =====
+    // Constructor
 
     protected ProceduralMesh()
     {
@@ -44,7 +44,7 @@ public abstract class ProceduralMesh : ImplementableComponent
         OverridenBoundingBox = new Sync<BoundingBox>(this, new BoundingBox());
     }
 
-    // ===== Lifecycle Hooks =====
+    // Lifecycle Hooks
 
     public override void OnAwake()
     {
@@ -58,7 +58,7 @@ public abstract class ProceduralMesh : ImplementableComponent
         RegenerateMesh();
     }
 
-    // ===== Abstract Methods =====
+    // Abstract Methods
 
     /// <summary>
     /// Prepare data for mesh update.
@@ -77,7 +77,7 @@ public abstract class ProceduralMesh : ImplementableComponent
     /// </summary>
     protected abstract void ClearMeshData();
 
-    // ===== Mesh Generation =====
+    // Mesh Generation
 
     /// <summary>
     /// Prepare for mesh update.
@@ -156,7 +156,7 @@ public abstract class ProceduralMesh : ImplementableComponent
         return new BoundingBox();
     }
 
-    // ===== Cleanup =====
+    // Cleanup
 
     public override void OnDestroy()
     {
@@ -166,7 +166,7 @@ public abstract class ProceduralMesh : ImplementableComponent
         base.OnDestroy();
     }
 
-    // ===== Helper: Subscribe to Property Changes =====
+    // Helper: Subscribe to Property Changes
 
 	/// <summary>
 	/// Subscribe a Sync field to trigger mesh regeneration on change.

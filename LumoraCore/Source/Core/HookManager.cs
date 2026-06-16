@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -20,7 +20,7 @@ public class HookManager : IDisposable
     }
 
     private readonly object _lockObj = new object();
-    private Thread _lockingThread;
+    private Thread _lockingThread = null!;
 
     public World Owner { get; private set; }
     public LockOwner Lock { get; private set; }
@@ -86,7 +86,7 @@ public class HookManager : IDisposable
         {
             return; // Silently ignore if not locked by DataModel
         }
-        _lockingThread = null;
+        _lockingThread = null!;
         Lock = LockOwner.None;
         Monitor.Exit(_lockObj);
     }
@@ -111,15 +111,15 @@ public class HookManager : IDisposable
         {
             return; // Silently ignore if not locked by Implementer
         }
-        _lockingThread = null;
+        _lockingThread = null!;
         Lock = LockOwner.None;
         Monitor.Exit(_lockObj);
     }
 
     public void Dispose()
     {
-        Owner = null;
+        Owner = null!;
         Lock = LockOwner.None;
-        _lockingThread = null;
+        _lockingThread = null!;
     }
 }

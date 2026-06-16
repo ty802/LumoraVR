@@ -12,31 +12,31 @@ namespace Lumora.Core.Assets;
 [ComponentCategory("Assets/Materials")]
 public class PBS_Specular : MaterialProvider, ICommonMaterial
 {
-    // ===== TEXTURE TRANSFORM =====
+    // TEXTURE TRANSFORM
     public readonly Sync<float2> TextureScale;
     public readonly Sync<float2> TextureOffset;
 
-    // ===== ALBEDO =====
+    // ALBEDO
     public readonly Sync<colorHDR> AlbedoColor;
     public readonly AssetRef<TextureAsset> AlbedoTexture;
 
-    // ===== SPECULAR =====
+    // SPECULAR
     public readonly Sync<colorHDR> SpecularColor;
     public readonly Sync<float> Smoothness;
     public readonly AssetRef<TextureAsset> SpecularMap;
 
-    // ===== NORMAL MAP =====
+    // NORMAL MAP
     public readonly AssetRef<TextureAsset> NormalMap;
     public readonly Sync<float> NormalScale;
 
-    // ===== EMISSION =====
+    // EMISSION
     public readonly Sync<colorHDR> EmissiveColor;
     public readonly AssetRef<TextureAsset> EmissiveMap;
 
-    // ===== OCCLUSION =====
+    // OCCLUSION
     public readonly AssetRef<TextureAsset> OcclusionMap;
 
-    // ===== BLEND SETTINGS =====
+    // BLEND SETTINGS
     public readonly Sync<BlendMode> BlendMode;
     public readonly Sync<float> AlphaCutoff;
     public readonly Sync<Culling> Culling;
@@ -44,7 +44,7 @@ public class PBS_Specular : MaterialProvider, ICommonMaterial
 
     protected override MaterialType MaterialType => MaterialType.PBS_Metallic; // reuse same Godot type
 
-    // ===== ICommonMaterial =====
+    // ICommonMaterial
     public colorHDR Color
     {
         get => AlbedoColor.Value;

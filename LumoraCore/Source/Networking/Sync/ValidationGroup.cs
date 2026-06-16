@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -14,7 +14,7 @@ namespace Lumora.Core.Networking.Sync;
 public class ValidationGroup
 {
     public int RequestingRecordIndex { get; private set; }
-    public SyncElement RequestingSyncElement { get; private set; }
+    public SyncElement RequestingSyncElement { get; private set; } = null!;
     public List<Rule> ValidationRules { get; private set; }
 
     public ValidationGroup()
@@ -35,7 +35,7 @@ public class ValidationGroup
         public bool MustExist;
         public Func<BinaryReader, bool> CustomValidation;
 
-        public Rule(RefID otherMessage, bool mustExist = false, Func<BinaryReader, bool> customValidation = null)
+        public Rule(RefID otherMessage, bool mustExist = false, Func<BinaryReader, bool> customValidation = null!)
         {
             OtherMessage = otherMessage;
             MustExist = mustExist;

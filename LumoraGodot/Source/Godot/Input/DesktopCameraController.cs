@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using Lumora.Godot.Hooks;
 using Lumora.Source.UI;
 using Lumora.Source.Godot.UI;
@@ -12,8 +12,8 @@ namespace Lumora.Source.Godot.Input;
 
 /// <summary>
 /// Desktop camera modes:
-///   F5 — third-person orbit (mouse orbits camera around character; press again for first-person)
-///   F6 — free-cam fly      (WASD+mouse, character frozen; press again for first-person)
+///   F5 - third-person orbit (mouse orbits camera around character; press again for first-person)
+///   F6 - free-cam fly      (WASD+mouse, character frozen; press again for first-person)
 ///
 /// Creates its own Camera3D child and sets Current=true to take over rendering,
 /// which automatically demotes the CameraHook head-slot camera.
@@ -22,7 +22,7 @@ public partial class DesktopCameraController : Node
 {
     public enum CameraMode { FirstPerson, ThirdPerson, FreeCam }
 
-    // ===== THIRD-PERSON SETTINGS =====
+    // THIRD-PERSON SETTINGS
     private const float TpDefaultDistance = 3.5f;
     private const float TpMinDistance     = 1.0f;
     private const float TpMaxDistance     = 12.0f;
@@ -32,7 +32,7 @@ public partial class DesktopCameraController : Node
     private const float TpMinPitch        = -0.35f; // slightly below horizon
     private const float TpMaxPitch        =  1.40f; // nearly top-down
 
-    // ===== FREE-CAM SETTINGS =====
+    // FREE-CAM SETTINGS
     private const float FreeCamBaseSpeed   = 5f;
     private const float FreeCamFastMult    = 4f;
     private const float LookReferenceHeight = 1080f;
@@ -40,13 +40,13 @@ public partial class DesktopCameraController : Node
 
     private static float LookSensitivity => (Mathf.Pi / LookReferenceHeight) * InterfaceSettings.MouseSensitivity;
 
-    // ===== REFERENCES =====
-    private Lumora.Core.Engine _engine;
-    private Camera3D  _overrideCamera;
-    private Node3D    _freeCamIndicator;
-    private Label3D   _freeCamLabel;
+    // REFERENCES
+    private Lumora.Core.Engine _engine = null!;
+    private Camera3D  _overrideCamera = null!;
+    private Node3D    _freeCamIndicator = null!;
+    private Label3D   _freeCamLabel = null!;
 
-    // ===== STATE =====
+    // STATE
     public static CameraMode ActiveMode { get; private set; } = CameraMode.FirstPerson;
 
     private CameraMode _mode      = CameraMode.FirstPerson;
@@ -65,7 +65,7 @@ public partial class DesktopCameraController : Node
     private float   _freeCamPitch;
     private Vector2 _pendingFreeCamMouse;
 
-    // ===== INIT =====
+    // INIT
 
     public void Initialize(Lumora.Core.Engine engine)
     {
@@ -99,53 +99,63 @@ public partial class DesktopCameraController : Node
     {
         if (_overrideCamera != null && GodotObject.IsInstanceValid(_overrideCamera))
             _overrideCamera.QueueFree();
-        _overrideCamera = null;
+        _overrideCamera = null!;
 
         if (_freeCamIndicator != null && GodotObject.IsInstanceValid(_freeCamIndicator))
             _freeCamIndicator.QueueFree();
-        _freeCamIndicator = null;
-        _freeCamLabel = null;
+        _freeCamIndicator = null!;
+        _freeCamLabel = null!;
 
         base._ExitTree();
     }
 
     private void CreateFreeCamIndicator()
     {
-        _freeCamIndicator = new Node3D { Name = "FreeCamIndicator" };
-        _freeCamIndicator.Visible = false;
-
-        // Glowing sphere
-        var mesh = new MeshInstance3D();
-        mesh.Layers = FreeCamIndicatorLayer;
-        mesh.Mesh = new SphereMesh { Radius = 0.18f, Height = 0.36f };
-        var mat = new StandardMaterial3D
+        try
         {
-            AlbedoColor     = new Color(0.55f, 0.55f, 1.0f),
-            EmissionEnabled = true,
-            Emission        = new Color(0.25f, 0.25f, 0.75f),
-        };
-        mesh.MaterialOverride = mat;
-        _freeCamIndicator.AddChild(mesh);
+            _freeCamIndicator = new Node3D { Name = "FreeCamIndicator" };
+            _freeCamIndicator.Visible = false;
 
-        // Billboard username label above the sphere
-        _freeCamLabel = new Label3D
+            // Glowing sphere
+            var mesh = new MeshInstance3D();
+            mesh.Layers = FreeCamIndicatorLayer;
+            mesh.Mesh = new SphereMesh { Radius = 0.18f, Height = 0.36f };
+            var mat = new StandardMaterial3D
+            {
+                AlbedoColor     = new Color(0.55f, 0.55f, 1.0f),
+                EmissionEnabled = true,
+                Emission        = new Color(0.25f, 0.25f, 0.75f),
+            };
+            mesh.MaterialOverride = mat;
+            _freeCamIndicator.AddChild(mesh);
+
+            // Billboard username label above the sphere
+            _freeCamLabel = new Label3D
+            {
+                Name        = "UsernameLabel",
+                Text        = "freecam",
+                Billboard   = BaseMaterial3D.BillboardModeEnum.Enabled,
+                NoDepthTest = true,
+                PixelSize   = 0.004f,
+                FontSize    = 28,
+                Layers      = FreeCamIndicatorLayer,
+                Position    = new Vector3(0f, 0.38f, 0f),
+            };
+            _freeCamIndicator.AddChild(_freeCamLabel);
+
+            // Add directly to the scene-tree root so it has a world-space transform
+            GetTree().Root.CallDeferred(Node.MethodName.AddChild, _freeCamIndicator);
+        }
+        catch (System.Exception ex)
         {
-            Name        = "UsernameLabel",
-            Text        = "freecam",
-            Billboard   = BaseMaterial3D.BillboardModeEnum.Enabled,
-            NoDepthTest = true,
-            PixelSize   = 0.004f,
-            FontSize    = 28,
-            Layers      = FreeCamIndicatorLayer,
-            Position    = new Vector3(0f, 0.38f, 0f),
-        };
-        _freeCamIndicator.AddChild(_freeCamLabel);
-
-        // Add directly to the scene-tree root so it has a world-space transform
-        GetTree().Root.CallDeferred(Node.MethodName.AddChild, _freeCamIndicator);
+            LumoraLogger.Warn($"DesktopCameraController: FreeCam indicator disabled ({ex.Message})");
+            _freeCamIndicator?.QueueFree();
+            _freeCamIndicator = null!;
+            _freeCamLabel = null!;
+        }
     }
 
-    // ===== GODOT CALLBACKS =====
+    // GODOT CALLBACKS
 
     public override void _Process(double delta)
     {
@@ -171,6 +181,12 @@ public partial class DesktopCameraController : Node
     public override void _Input(InputEvent @event)
     {
         if (DashboardToggle.IsDashboardVisible) return;
+        if (UserInputState.FocusedDesktopInputSuppressed)
+        {
+            _pendingTpMouse = Vector2.Zero;
+            _pendingFreeCamMouse = Vector2.Zero;
+            return;
+        }
 
         // Third-person: mouse orbits the camera around the character
         if (_mode == CameraMode.ThirdPerson && @event is InputEventMouseMotion tpMotion)
@@ -190,7 +206,7 @@ public partial class DesktopCameraController : Node
         }
     }
 
-    // ===== MODE SWITCHING =====
+    // MODE SWITCHING
 
     private void SwitchMode(CameraMode newMode)
     {
@@ -198,20 +214,26 @@ public partial class DesktopCameraController : Node
         _mode      = newMode;
         ActiveMode = newMode;
 
-        // --- Tear down previous ---
+        var state = UserInputState.ForFocusedLocalUser;
+
+        // Tear down previous
         if (prev == CameraMode.FreeCam)
         {
-            LocomotionController.SetFreeCamActive(false);
+            state?.SetFreeCamActive(false);
             _pendingFreeCamMouse = Vector2.Zero;
             if (_freeCamIndicator != null) _freeCamIndicator.Visible = false;
         }
         if (prev == CameraMode.ThirdPerson)
         {
-            LocomotionController.SetMouseLookSuppressed(false);
+            state?.SetMouseLookSuppressed(false);
             _pendingTpMouse = Vector2.Zero;
         }
 
-        // --- Set up new ---
+        // First-person-only visual overrides (local head hiding) key off this:
+        // any external camera must show the full avatar.
+        state?.SetExternalCameraActive(newMode != CameraMode.FirstPerson);
+
+        // Set up new
         switch (newMode)
         {
             case CameraMode.FirstPerson:
@@ -220,11 +242,10 @@ public partial class DesktopCameraController : Node
                 break;
 
             case CameraMode.ThirdPerson:
-                // Seed orbit so camera starts directly behind the character
                 _tpOrbitYaw   = GetCharacterBodyYaw();
                 _tpOrbitPitch = TpDefaultPitch;
                 _pendingTpMouse = Vector2.Zero;
-                LocomotionController.SetMouseLookSuppressed(true);
+                state?.SetMouseLookSuppressed(true);
                 if (_overrideCamera != null) _overrideCamera.Current = true;
                 LumoraLogger.Log("[DesktopCameraController] Third-person (mouse=orbit, scroll=distance)");
                 break;
@@ -232,7 +253,7 @@ public partial class DesktopCameraController : Node
             case CameraMode.FreeCam:
                 SeedFreeCamFromActiveCamera();
                 RefreshFreeCamLabel();
-                LocomotionController.SetFreeCamActive(true);
+                state?.SetFreeCamActive(true);
                 if (_overrideCamera != null) _overrideCamera.Current = true;
                 if (_freeCamIndicator != null) _freeCamIndicator.Visible = true;
                 LumoraLogger.Log("[DesktopCameraController] Free-cam (WASD+mouse, Shift=fast, Space/Ctrl=vertical)");
@@ -240,11 +261,15 @@ public partial class DesktopCameraController : Node
         }
     }
 
-    // ===== THIRD-PERSON =====
+    // THIRD-PERSON
 
     private void UpdateThirdPerson()
     {
         if (_overrideCamera == null) return;
+        if (UserInputState.FocusedDesktopInputSuppressed)
+        {
+            _pendingTpMouse = Vector2.Zero;
+        }
 
         // Apply mouse orbit delta
         var mouse       = _pendingTpMouse;
@@ -288,7 +313,7 @@ public partial class DesktopCameraController : Node
         return new Quaternion(rot.x, rot.y, rot.z, rot.w).GetEuler().Y;
     }
 
-    // ===== FREE CAM =====
+    // FREE CAM
 
     private void SeedFreeCamFromActiveCamera()
     {
@@ -313,6 +338,11 @@ public partial class DesktopCameraController : Node
     {
         if (_overrideCamera == null) return;
         if (DashboardToggle.IsDashboardVisible) return;
+        if (UserInputState.FocusedDesktopInputSuppressed)
+        {
+            _pendingFreeCamMouse = Vector2.Zero;
+            return;
+        }
 
         var mouse            = _pendingFreeCamMouse;
         _pendingFreeCamMouse = Vector2.Zero;
@@ -348,3 +378,4 @@ public partial class DesktopCameraController : Node
             _freeCamIndicator.GlobalPosition = _freeCamPos;
     }
 }
+

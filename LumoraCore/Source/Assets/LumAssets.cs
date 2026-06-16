@@ -18,7 +18,6 @@ public static class LumAssets
         public static string LoadingScreen => "res://Scenes/LoadingScreen.tscn";
 
         // Inspectors
-        public static string Nameplate => "res://Scenes/UI/Inspectors/Nameplate.tscn";
         public static string UserInspector => "res://Scenes/UI/Inspectors/UserInspector.tscn";
         public static string MaterialOrbInspector => "res://Scenes/UI/Inspectors/MaterialOrbInspector.tscn";
         public static string MaterialColorPicker => "res://Scenes/UI/Inspectors/MaterialColorPicker.tscn";

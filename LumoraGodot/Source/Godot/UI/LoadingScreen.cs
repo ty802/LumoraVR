@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-﻿using Godot;
+using Godot;
 using System;
 using Lumora.Core;
 
@@ -13,21 +13,21 @@ namespace Lumora.Source.Godot.UI;
 /// </summary>
 public partial class LoadingScreen : Control
 {
-	// ===== UI NODE REFERENCES =====
-	private Label _statusLabel;
-	private Label _percentageLabel;
-	private ProgressBar _progressBar;
-	private AnimationPlayer _animationPlayer;
-	private Control _loadingSpinner;
-	private Label _versionLabel;
+	// UI NODE REFERENCES
+	private Label _statusLabel = null!;
+	private Label _percentageLabel = null!;
+	private ProgressBar _progressBar = null!;
+	private AnimationPlayer _animationPlayer = null!;
+	private Control _loadingSpinner = null!;
+	private Label _versionLabel = null!;
 
-	// ===== STATE =====
+	// STATE
 	private float _targetProgress = 0f;
 	private float _currentProgress = 0f;
 	private bool _isVisible = true;
 	private bool _fadeOutQueued = false;
 
-	// ===== CONFIGURATION =====
+	// CONFIGURATION
 	private const float PROGRESS_SMOOTH_SPEED = 2.0f; // How fast progress bar animates
 	private const float SPINNER_ROTATION_SPEED = 2.0f; // Radians per second
 
@@ -100,7 +100,7 @@ public partial class LoadingScreen : Control
 	/// <summary>
 	/// Hide the loading screen with fade-out animation.
 	/// </summary>
-	public void Hide()
+	public new void Hide()
 	{
 		if (!_isVisible)
 			return;
@@ -146,7 +146,7 @@ public partial class LoadingScreen : Control
 		// AnimationPlayer removed; keep handler to avoid errors if signal still exists
 	}
 
-	// ===== PHASE-SPECIFIC HELPER METHODS =====
+	// PHASE-SPECIFIC HELPER METHODS
 
 	/// <summary>
 	/// Predefined status messages for each initialization phase.
@@ -173,7 +173,7 @@ public partial class LoadingScreen : Control
 	/// <summary>
 	/// Shorthand method to update phase using enum index.
 	/// </summary>
-	public void UpdatePhase(int phaseIndex, string customMessage = null)
+	public void UpdatePhase(int phaseIndex, string customMessage = null!)
 	{
 		string[] defaultMessages = new[]
 		{

@@ -28,7 +28,7 @@ jobs:
         # a third-party service. mschilde abandoned their shit years ago, this one works.
         # signatures stored in main branch under .github/cla-signatures.json so they're
         # auditable and not hidden in some gist nobody can find
-        uses: contributor-assistant/github-action@v2.6.1
+        uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # GH_PAT needed to commit the signature file back to main

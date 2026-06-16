@@ -1,6 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System;
 using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Components.Avatar.IK;
@@ -23,7 +24,7 @@ namespace Lumora.Core.Components.Avatar;
 /// </summary>
 [ComponentCategory("Users/Common Avatar System")]
 [DefaultUpdateOrder(-5000)]
-public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceiver
+public class AvatarIK : Component, IAvatarObjectComponent, IInputUpdateReceiver
 {
     private readonly FullBodyIKSolver _solver = new();
     private struct ReferenceOffset
@@ -42,6 +43,22 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
     public readonly Sync<float> UserResizeThreshold = null!;
     public readonly Sync<bool> UseProceduralFeet = null!;
     public readonly Sync<bool> IKEnabled = null!;
+
+    // IK tunables - exposed so feel can be dialed in live in-world (no rebuild).
+    public readonly Sync<float> SpineStiffness = null!;
+    public readonly Sync<float> PelvisDamping = null!;
+    public readonly Sync<float> ShoulderReach = null!;
+    public readonly Sync<float> ArmStretch = null!;
+    public readonly Sync<float> BendGoalWeight = null!;
+    public readonly Sync<float> TwistRelax = null!;
+    public readonly Sync<float> HandIKWeight = null!;   // per-effector IK weight for both hands
+    public readonly Sync<float> FootIKWeight = null!;   // per-effector IK weight for both feet
+    public readonly Sync<float> FootStanceWidth = null!;
+    public readonly Sync<float> StepThreshold = null!;
+    public readonly Sync<float> StepDuration = null!;
+    public readonly Sync<float> StepHeight = null!;
+    public readonly Sync<float> StepPrediction = null!; // seconds of velocity lookahead per step
+    public readonly Sync<float> BodyBob = null!;        // vertical hip dip while a foot is airborne
 
     protected readonly SyncRef<Slot> _headProxy = null!;
     protected readonly SyncRef<Slot> _pelvisProxy = null!;
@@ -69,11 +86,35 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
 
     private bool _isInitialized;
     private bool _isRegistered;
+    private bool _suspendSolve;
     private ReferenceOffset _viewOffset;
     private ReferenceOffset _leftHandOffset;
     private ReferenceOffset _rightHandOffset;
     private ReferenceOffset _leftFootOffset;
     private ReferenceOffset _rightFootOffset;
+
+    // Procedural locomotion (stepping gait) state for untracked feet.
+    private struct FootGait
+    {
+        public bool Init;
+        public bool Stepping;
+        public float Progress;
+        public float3 Planted;
+        public float3 StepStart;
+    }
+    private FootGait _leftGait;
+    private FootGait _rightGait;
+    private long _lastGaitTick;
+    private const float GroundProbeUp = 0.5f;      // foot ground ray starts this far above the plane
+    private const float GroundProbeDown = 1.0f;    // ...and reaches this far below it
+    private readonly List<Slot> _footRayExclude = new(1);
+    private float3 _leftFootGroundNormal = float3.Up;
+    private float3 _rightFootGroundNormal = float3.Up;
+    private float3 _prevHeadXZ;          // for step-prediction velocity
+    private bool _hasPrevHead;
+    private float _leftStepLift;         // 0..1 current step arc height per foot
+    private float _rightStepLift;
+    private float3 _locomotionOffset;    // hips bob fed to the solver
 
     public bool IsEquipped => _headNode?.Target?.IsEquipped ?? false;
     public AvatarPoseNode? HeadNode => _headNode?.Target;
@@ -92,17 +133,30 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
 
     public void OnEquip(AvatarObjectSlot slot)
     {
-        LumoraLogger.Log($"VRIKAvatar: Equipped to {slot.Node.Value}");
+        // Equip reparents and rescales the avatar, so the solver's captured
+        // rest pose — world-space bone lengths and rest directions — is stale.
+        // Arms solved against pre-equip lengths can't reach the real targets
+        // (hands lag/never lift). Suspend solving, then re-capture once the
+        // transforms have settled.
+        _suspendSolve = true;
+        Slot.RunInUpdates(1, () =>
+        {
+            if (IsDestroyed) return;
+            EnsureSolver();
+            RecomputeReferenceOffsets();
+            _suspendSolve = false;
+        });
+        LumoraLogger.Log($"AvatarIK: Equipped to {slot.Node.Value}");
     }
 
     public void OnDequip(AvatarObjectSlot slot)
     {
-        LumoraLogger.Log($"VRIKAvatar: Dequipped from {slot.Node.Value}");
+        LumoraLogger.Log($"AvatarIK: Dequipped from {slot.Node.Value}");
     }
 
     private readonly UserRootRegistrationTracker _userRootReg;
 
-    public VRIKAvatar()
+    public AvatarIK()
     {
         _userRootReg = new UserRootRegistrationTracker(this);
     }
@@ -121,6 +175,21 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
         UserResizeThreshold.Value = 0.2f;
         UseProceduralFeet.Value = true;
         IKEnabled.Value = true;
+
+        SpineStiffness.Value = 0.2f;
+        PelvisDamping.Value = 0.65f;
+        ShoulderReach.Value = 0.45f;
+        ArmStretch.Value = 1.08f;
+        BendGoalWeight.Value = 0.5f;
+        TwistRelax.Value = 0.5f;
+        HandIKWeight.Value = 1f;
+        FootIKWeight.Value = 1f;
+        FootStanceWidth.Value = 0.12f;
+        StepThreshold.Value = 0.18f;
+        StepDuration.Value = 0.22f;
+        StepHeight.Value = 0.08f;
+        StepPrediction.Value = 0.08f;
+        BodyBob.Value = 0.02f;
     }
 
     public override void OnStart()
@@ -153,9 +222,9 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
         RecomputeReferenceOffsets();
 
         if (_isInitialized)
-            LumoraLogger.Log($"VRIKAvatar: Started on '{Slot.SlotName.Value}' with skeleton");
+            LumoraLogger.Log($"AvatarIK: Started on '{Slot.SlotName.Value}' with skeleton");
         else
-            LumoraLogger.Warn($"VRIKAvatar: No valid skeleton found on '{Slot.SlotName.Value}'");
+            LumoraLogger.Warn($"AvatarIK: No valid skeleton found on '{Slot.SlotName.Value}'");
     }
 
     public override void OnDestroy()
@@ -181,7 +250,7 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
             _isInitialized = true;
             EnsureSolver();
             RecomputeReferenceOffsets();
-            LumoraLogger.Log("VRIKAvatar: Late-start with skeleton");
+            LumoraLogger.Log("AvatarIK: Late-start with skeleton");
         }
     }
 
@@ -190,18 +259,14 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
         if (!IKEnabled.Value || !_isInitialized)
             return;
 
+        // Run every frame so the gait clock stays continuous; per-foot tracked checks live inside.
         if (UseProceduralFeet.Value)
-        {
-            bool leftTracked = _leftFootNode.Target?.IsEquippedAndActive ?? false;
-            bool rightTracked = _rightFootNode.Target?.IsEquippedAndActive ?? false;
-            if (!leftTracked || !rightTracked)
-                UpdateProceduralFeet();
-        }
+            UpdateProceduralFeet();
     }
 
     public void AfterInputUpdate()
     {
-        if (!IKEnabled.Value || !_isInitialized)
+        if (!IKEnabled.Value || !_isInitialized || _suspendSolve)
             return;
 
         SolveBody();
@@ -223,12 +288,71 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
                 return;
         }
 
-        _solver.Solve(
-            ProxyTarget(_headProxy.Target, _viewOffset),
-            ProxyTarget(_leftHandProxy.Target, _leftHandOffset),
-            ProxyTarget(_rightHandProxy.Target, _rightHandOffset),
-            ProxyTarget(_leftFootProxy.Target, _leftFootOffset),
-            ProxyTarget(_rightFootProxy.Target, _rightFootOffset));
+        // Push live tunables into the solver.
+        _solver.SpineStiffness = SpineStiffness.Value;
+        _solver.PelvisDamp = PelvisDamping.Value;
+        _solver.ShoulderWeight = ShoulderReach.Value;
+        _solver.MaxStretch = ArmStretch.Value;
+        _solver.BendGoalWeight = BendGoalWeight.Value;
+        _solver.TwistRelax = TwistRelax.Value;
+        _solver.LocomotionOffset = _locomotionOffset;
+
+        var head = ProxyTarget(_headProxy.Target, _viewOffset);
+
+        // Pelvis target only counts when a waist/hip tracker is actually equipped; otherwise the
+        // solver estimates the hips from the head (no calibration offset on the pelvis).
+        var pelvis = (_pelvisNode.Target?.IsEquippedAndActive ?? false)
+            ? ProxyTarget(_pelvisProxy.Target, default)
+            : default;
+
+        float handW = System.Math.Clamp(HandIKWeight.Value, 0f, 1f);
+        var leftHandT = ProxyTarget(_leftHandProxy.Target, _leftHandOffset);
+        var rightHandT = ProxyTarget(_rightHandProxy.Target, _rightHandOffset);
+        leftHandT.PositionWeight = leftHandT.RotationWeight = handW;
+        rightHandT.PositionWeight = rightHandT.RotationWeight = handW;
+        // Equipped elbow trackers steer the arm bend.
+        ApplyBendGoal(ref leftHandT, _leftElbowProxy, _leftElbowNode);
+        ApplyBendGoal(ref rightHandT, _rightElbowProxy, _rightElbowNode);
+
+        float footW = System.Math.Clamp(FootIKWeight.Value, 0f, 1f);
+        var leftFootT = ProxyTarget(_leftFootProxy.Target, _leftFootOffset);
+        var rightFootT = ProxyTarget(_rightFootProxy.Target, _rightFootOffset);
+        leftFootT.PositionWeight = leftFootT.RotationWeight = footW;
+        rightFootT.PositionWeight = rightFootT.RotationWeight = footW;
+        // Equipped knee trackers steer the leg bend.
+        ApplyBendGoal(ref leftFootT, _leftKneeProxy, _leftKneeNode);
+        ApplyBendGoal(ref rightFootT, _rightKneeProxy, _rightKneeNode);
+
+        // Untracked feet are ground-aligned (rest pose tilted to the surface normal the gait probed)
+        // and carry the step lift so the solver can curl the toe; tracked feet keep tracker rotation.
+        if (UseProceduralFeet.Value)
+        {
+            if (!(_leftFootNode.Target?.IsEquippedAndActive ?? false))
+            {
+                leftFootT.GroundAlign = true;
+                leftFootT.GroundNormal = _leftFootGroundNormal;
+                leftFootT.StepLift = _leftStepLift;
+            }
+            if (!(_rightFootNode.Target?.IsEquippedAndActive ?? false))
+            {
+                rightFootT.GroundAlign = true;
+                rightFootT.GroundNormal = _rightFootGroundNormal;
+                rightFootT.StepLift = _rightStepLift;
+            }
+        }
+
+        _solver.Solve(head, pelvis, leftHandT, rightHandT, leftFootT, rightFootT);
+    }
+
+    // If the bend-goal's pose node is tracked (e.g. an elbow/knee tracker), feed its proxy position
+    // to the solver so the limb bends toward it.
+    private static void ApplyBendGoal(ref FullBodyIKSolver.Target target, SyncRef<Slot> proxy, SyncRef<AvatarPoseNode> node)
+    {
+        if ((node.Target?.IsEquippedAndActive ?? false) && proxy.Target != null && !proxy.Target.IsDestroyed)
+        {
+            target.HasBendGoal = true;
+            target.BendGoal = proxy.Target.GlobalPosition;
+        }
     }
 
     // Calibration offsets are folded into the TARGET, never written back to
@@ -254,6 +378,8 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
             Valid = true,
             Position = position,
             Rotation = rotation,
+            PositionWeight = 1f,
+            RotationWeight = 1f,
         };
     }
 
@@ -271,7 +397,7 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
         RecomputeReferenceOffsets();
 
         _isInitialized = true;
-        LumoraLogger.Log($"VRIKAvatar: Setup complete ({rig?.Bones.Count ?? 0} bones)");
+        LumoraLogger.Log($"AvatarIK: Setup complete ({rig?.Bones.Count ?? 0} bones)");
     }
 
     /// <summary>
@@ -284,7 +410,7 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
         var rig = Rig.Target ?? Slot.GetComponent<BipedRig>() ?? Slot.GetComponentInChildren<BipedRig>();
         if (skeleton == null || rig == null)
         {
-            LumoraLogger.Warn("VRIKAvatar: Avatar tree has no skeleton or rig");
+            LumoraLogger.Warn("AvatarIK: Avatar tree has no skeleton or rig");
             return false;
         }
 
@@ -300,7 +426,7 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
     {
         if (userRoot == null)
         {
-            LumoraLogger.Warn("VRIKAvatar: Cannot setup tracking - null UserRoot");
+            LumoraLogger.Warn("AvatarIK: Cannot setup tracking - null UserRoot");
             return;
         }
 
@@ -315,7 +441,7 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
 
         EnsureSolver();
         RecomputeReferenceOffsets();
-        LumoraLogger.Log($"VRIKAvatar: Tracking connected for UserRoot '{userRoot.Slot.SlotName.Value}'");
+        LumoraLogger.Log($"AvatarIK: Tracking connected for UserRoot '{userRoot.Slot.SlotName.Value}'");
     }
 
     private void EnsurePoseNodes()
@@ -362,19 +488,19 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
 
         if (avatarSlot == null)
         {
-            LumoraLogger.Warn($"VRIKAvatar: No AvatarObjectSlot found for body slot '{bodySlot.SlotName.Value}'");
+            LumoraLogger.Warn($"AvatarIK: No AvatarObjectSlot found for body slot '{bodySlot.SlotName.Value}'");
             return;
         }
 
         var dequippedObjects = new HashSet<IAvatarObject>();
         if (!avatarSlot.PreEquip(poseNode, dequippedObjects))
         {
-            LumoraLogger.Warn($"VRIKAvatar: Failed to prepare {poseNode.Node.Value} for '{bodySlot.SlotName.Value}'");
+            LumoraLogger.Warn($"AvatarIK: Failed to prepare {poseNode.Node.Value} for '{bodySlot.SlotName.Value}'");
             return;
         }
 
         avatarSlot.Equip(poseNode);
-        LumoraLogger.Log($"VRIKAvatar: Equipped {poseNode.Node.Value} pose node -> '{bodySlot.SlotName.Value}'");
+        LumoraLogger.Log($"AvatarIK: Equipped {poseNode.Node.Value} pose node -> '{bodySlot.SlotName.Value}'");
     }
 
     // Calibration is read straight from AvatarReferencePoint components in
@@ -424,49 +550,132 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
         offset.Valid = true;
     }
 
+    // Procedural locomotion: an untracked foot stays PLANTED, then STEPS (lerp with a
+    // lift arc) to a new stance position when the body strays past a threshold - one foot at a time
+    // so it reads as alternating steps, not sliding or teleporting. Feet anchor to the user-root
+    // ground plane (crouch/head-bob must not lift them). Every peer derives this from the replicated
+    // head/root, so the writes are local - broadcasting would just be churn.
     private void UpdateProceduralFeet()
     {
         var headSlot = _headProxy.Target;
         if (headSlot == null)
             return;
 
+        long now = Environment.TickCount64;
+        float dt = _lastGaitTick == 0 ? 0f : (now - _lastGaitTick) / 1000f;
+        _lastGaitTick = now;
+        dt = MathF.Min(MathF.Max(dt, 0f), 0.1f);
+
         float3 headPos = headSlot.GlobalPosition;
         float3 forward = headSlot.GlobalRotation * float3.Backward;
         forward.y = 0f;
-        if (forward.LengthSquared < 0.001f)
-            forward = float3.Backward;
-        forward = forward.Normalized;
+        forward = forward.LengthSquared < 1e-4f ? float3.Backward : forward.Normalized;
 
-        floatQ bodyRot = floatQ.LookRotation(forward, float3.Up);
-        float3 right = bodyRot * float3.Right;
+        // Right via cross, not floatQ.LookRotation (which returns an inverse - see FaceLocalUser).
+        float3 right = float3.Cross(float3.Up, forward);
+        right = right.LengthSquared < 1e-6f ? float3.Right : right.Normalized;
 
-        const float footSeparation = 0.15f;
-
-        // Feet anchor to the user-root ground plane, not a fixed offset below
-        // the head - crouching or head bob must not lift the feet off the
-        // floor with you.
         float groundY = UserRoot.Target?.Slot != null
             ? UserRoot.Target.Slot.GlobalPosition.y
             : headPos.y - 1.6f;
+        float3 center = new float3(headPos.x, groundY, headPos.z);
 
-        SetProceduralFoot(
-            _leftFootProxy.Target,
-            _leftFootNode.Target,
-            new float3(headPos.x, groundY, headPos.z) - right * footSeparation);
+        // Step prediction: shift the stance toward where the body is heading so feet land ahead of
+        // movement instead of dragging behind it.
+        float3 headXZ = new float3(headPos.x, 0f, headPos.z);
+        float3 velocity = (_hasPrevHead && dt > 1e-4f) ? (headXZ - _prevHeadXZ) / dt : default;
+        _prevHeadXZ = headXZ;
+        _hasPrevHead = true;
+        float3 predict = velocity * MathF.Max(StepPrediction.Value, 0f);
 
-        SetProceduralFoot(
-            _rightFootProxy.Target,
-            _rightFootNode.Target,
-            new float3(headPos.x, groundY, headPos.z) + right * footSeparation);
+        // Refine each foot's plant height against the surface under it (terrain/stairs), probing past
+        // this avatar's own colliders. Falls back to the flat user-root plane on a miss.
+        float half = FootStanceWidth.Value;
+        float3 leftDesired = center - right * half + predict;
+        float3 rightDesired = center + right * half + predict;
+        leftDesired.y = GroundHeight(leftDesired.x, leftDesired.z, groundY, out _leftFootGroundNormal);
+        rightDesired.y = GroundHeight(rightDesired.x, rightDesired.z, groundY, out _rightFootGroundNormal);
+
+        bool leftTracked = _leftFootNode.Target?.IsEquippedAndActive ?? false;
+        bool rightTracked = _rightFootNode.Target?.IsEquippedAndActive ?? false;
+        _leftStepLift = leftTracked ? 0f : StepFoot(ref _leftGait, leftDesired, _rightGait.Stepping, dt, _leftFootProxy.Target);
+        _rightStepLift = rightTracked ? 0f : StepFoot(ref _rightGait, rightDesired, _leftGait.Stepping, dt, _rightFootProxy.Target);
+
+        // Weight-shift bob: dip the hips slightly while a foot is airborne.
+        float lift = MathF.Max(_leftStepLift, _rightStepLift);
+        _locomotionOffset = new float3(0f, -BodyBob.Value * lift, 0f);
     }
 
-    // Local write: every peer computes the same feet from the replicated
-    // head/root, broadcasting them would just be churn.
-    private static void SetProceduralFoot(Slot proxy, AvatarPoseNode node, float3 worldPos)
+    // Downward physics probe for the floor under a foot, ignoring this avatar's own colliders so the
+    // ray doesn't catch its capsule. Returns the surface height, or fallbackY on a miss (ledge / gap
+    // / no query hook).
+    private float GroundHeight(float x, float z, float fallbackY, out float3 normal)
     {
-        if (proxy == null || (node?.IsEquippedAndActive ?? false))
-            return;
+        normal = float3.Up;
+        var world = World;
+        var userSlot = UserRoot.Target?.Slot;
+        if (world == null || userSlot == null)
+            return fallbackY;
 
+        _footRayExclude.Clear();
+        _footRayExclude.Add(userSlot);
+
+        var origin = new float3(x, fallbackY + GroundProbeUp, z);
+        var hit = world.Physics.Raycast(origin, new float3(0f, -1f, 0f), _footRayExclude, GroundProbeUp + GroundProbeDown);
+        if (!hit.HasValue)
+            return fallbackY;
+
+        normal = hit.Value.Normal;
+        return hit.Value.Point.y;
+    }
+
+    // Advances one foot's gait and returns its current step lift (0 planted .. 1 peak swing).
+    private float StepFoot(ref FootGait gait, float3 desired, bool otherStepping, float dt, Slot proxy)
+    {
+        if (proxy == null)
+            return 0f;
+
+        if (!gait.Init)
+        {
+            gait.Planted = desired;
+            gait.Init = true;
+        }
+
+        float lift = 0f;
+        float3 pos;
+        if (gait.Stepping)
+        {
+            gait.Progress += dt / MathF.Max(StepDuration.Value, 0.01f);
+            if (gait.Progress >= 1f)
+            {
+                gait.Progress = 1f;
+                gait.Planted = desired;
+                gait.Stepping = false;
+            }
+            float t = gait.Progress;
+            float smooth = t * t * (3f - 2f * t);                 // ease in/out
+            pos = float3.Lerp(gait.StepStart, desired, smooth);
+            lift = MathF.Sin(t * MathF.PI);
+            pos.y += lift * StepHeight.Value;                     // lift arc
+        }
+        else
+        {
+            // Plant; only start a step once we've strayed too far AND the other foot is grounded.
+            if (!otherStepping && float3.Distance(gait.Planted, desired) > StepThreshold.Value)
+            {
+                gait.Stepping = true;
+                gait.Progress = 0f;
+                gait.StepStart = gait.Planted;
+            }
+            pos = gait.Planted;
+        }
+
+        WriteFoot(proxy, pos);
+        return lift;
+    }
+
+    private static void WriteFoot(Slot proxy, float3 worldPos)
+    {
         var parent = proxy.Parent;
         var local = parent != null ? parent.GlobalPointToLocal(worldPos) : worldPos;
         if ((proxy.LocalPosition.Value - local).LengthSquared > 1e-10f)
@@ -475,7 +684,7 @@ public class VRIKAvatar : Component, IAvatarObjectComponent, IInputUpdateReceive
 
     public void LogDiagnosticInfo()
     {
-        LumoraLogger.Log("VRIKAvatar Diagnostic:");
+        LumoraLogger.Log("AvatarIK Diagnostic:");
         LumoraLogger.Log($"  IsInitialized:       {_isInitialized}");
         LumoraLogger.Log($"  IsEquipped:          {IsEquipped}");
         LumoraLogger.Log($"  Skeleton:            {Skeleton.Target?.Slot.SlotName.Value ?? "null"}");

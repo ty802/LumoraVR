@@ -50,6 +50,28 @@ public static class LocomotionInputHelper
         return 0f;
     }
 
+    // Vertical fly axis for 3-axis modes (noclip): +1 up, -1 down. VR uses the
+    // right thumbstick Y (turn owns X, so Y is free); desktop uses Space/C.
+    public static float ReadVerticalAxis(InputInterface input, IKeyboardDriver keyboard)
+    {
+        if (input?.IsDashboardOpen == true)
+            return 0f;
+
+        float v = 0f;
+        if (input?.RightController is { } right && right.IsTracked)
+        {
+            float stickY = right.ThumbstickPosition.Y;
+            if (stickY < -0.2f || stickY > 0.2f)
+                v += stickY;
+        }
+        if (keyboard != null)
+        {
+            if (keyboard.GetKeyState(Key.Space)) v += 1f;
+            if (keyboard.GetKeyState(Key.C)) v -= 1f;
+        }
+        return v < -1f ? -1f : (v > 1f ? 1f : v);
+    }
+
     public static bool ReadJump(InputInterface input, IKeyboardDriver keyboard)
     {
         if (input?.IsDashboardOpen == true) return false;
@@ -60,8 +82,10 @@ public static class LocomotionInputHelper
 
     public static bool ReadCrouch(IKeyboardDriver keyboard)
     {
+        // C only: ctrl is the desktop scale modifier (ctrl + scroll), so it
+        // can't double as crouch anymore.
         if (keyboard == null) return false;
-        return keyboard.GetKeyState(Key.LeftControl) || keyboard.GetKeyState(Key.C);
+        return keyboard.GetKeyState(Key.C);
     }
 
     public static bool ReadSprint(IKeyboardDriver keyboard)

@@ -11,7 +11,7 @@ namespace Lumora.Core.Components.Avatar;
 
 /// <summary>
 /// Component that stores bone slot references for a biped humanoid rig.
-/// Used by VRIK and other avatar systems to drive skeleton bones.
+/// Used by the IK and other avatar systems to drive skeleton bones.
 /// </summary>
 [ComponentCategory("Rendering")]
 public class BipedRig : Component
@@ -198,88 +198,133 @@ public class BipedRig : Component
             return;
         }
 
-        // Map bone names to body nodes
-        var nameToNode = new Dictionary<string, BodyNode>(System.StringComparer.OrdinalIgnoreCase)
-        {
-			// Core
-			{ "Hips", BodyNode.Hips },
-            { "Spine", BodyNode.Spine },
-            { "Spine1", BodyNode.Chest },
-            { "Spine2", BodyNode.UpperChest },
-            { "Chest", BodyNode.Chest },
-            { "UpperChest", BodyNode.UpperChest },
-            { "Neck", BodyNode.Neck },
-            { "Head", BodyNode.Head },
-
-			// Left arm
-			{ "LeftShoulder", BodyNode.LeftShoulder },
-            { "LeftUpperArm", BodyNode.LeftUpperArm },
-            { "LeftArm", BodyNode.LeftUpperArm },
-            { "LeftLowerArm", BodyNode.LeftLowerArm },
-            { "LeftForeArm", BodyNode.LeftLowerArm },
-            { "LeftHand", BodyNode.LeftHand },
-
-			// Right arm
-			{ "RightShoulder", BodyNode.RightShoulder },
-            { "RightUpperArm", BodyNode.RightUpperArm },
-            { "RightArm", BodyNode.RightUpperArm },
-            { "RightLowerArm", BodyNode.RightLowerArm },
-            { "RightForeArm", BodyNode.RightLowerArm },
-            { "RightHand", BodyNode.RightHand },
-
-			// Left leg
-			{ "LeftUpperLeg", BodyNode.LeftUpperLeg },
-            { "LeftThigh", BodyNode.LeftUpperLeg },
-            { "LeftLeg", BodyNode.LeftUpperLeg },
-            { "LeftLowerLeg", BodyNode.LeftLowerLeg },
-            { "LeftShin", BodyNode.LeftLowerLeg },
-            { "LeftFoot", BodyNode.LeftFoot },
-            { "LeftToes", BodyNode.LeftToes },
-            { "LeftToeBase", BodyNode.LeftToes },
-
-			// Right leg
-			{ "RightUpperLeg", BodyNode.RightUpperLeg },
-            { "RightThigh", BodyNode.RightUpperLeg },
-            { "RightLeg", BodyNode.RightUpperLeg },
-            { "RightLowerLeg", BodyNode.RightLowerLeg },
-            { "RightShin", BodyNode.RightLowerLeg },
-            { "RightFoot", BodyNode.RightFoot },
-            { "RightToes", BodyNode.RightToes },
-            { "RightToeBase", BodyNode.RightToes },
-        };
-
-        // Iterate through skeleton bones and map them
         for (int i = 0; i < skeleton.BoneCount; i++)
         {
-            var boneName = skeleton.BoneNames[i];
             var boneSlot = skeleton.BoneSlots[i];
-
             if (boneSlot == null)
                 continue;
 
-            // Try direct name match
-            if (nameToNode.TryGetValue(boneName, out var node))
-            {
-                Bones.Add(node, boneSlot);
-                continue;
-            }
-
-            // Try partial name matching
-            var lowerName = boneName.ToLower();
-            foreach (var kvp in nameToNode)
-            {
-                if (lowerName.Contains(kvp.Key.ToLower()))
-                {
-                    if (!Bones.ContainsKey(kvp.Value))
-                    {
-                        Bones.Add(kvp.Value, boneSlot);
-                        break;
-                    }
-                }
-            }
+            var node = ClassifyBoneName(skeleton.BoneNames[i]);
+            if (node == BodyNode.NONE || Bones.ContainsKey(node))
+                continue;   // first match wins (skips e.g. Spine_02/03 clobbering Spine_01)
+            Bones.Add(node, boneSlot);
         }
 
         LumoraLogger.Log($"BipedRig: Populated {Bones.Count} bones from skeleton, IsBiped={IsBiped}");
+    }
+
+    /// <summary>
+    /// Map a bone name to its body node by heuristic, so real rigs work regardless of naming
+    /// convention. Side is detected from the name (Left/Right, _L/_R, L_/R_) and the base name picks
+    /// the node (UpperArm/Bicep, ForeArm/LowerArm/Elbow, Hand/Wrist, Thigh/UpLeg, Calf/Shin/Knee,
+    /// Foot, Toe, ...). Returns <see cref="BodyNode.NONE"/> for bones it can't place.
+    /// </summary>
+    public static BodyNode ClassifyBoneName(string name)
+    {
+        if (string.IsNullOrEmpty(name))
+            return BodyNode.NONE;
+
+        var names = SplitName(name);
+        if (names.Contains("twist"))
+            return BodyNode.NONE;   // twist/roll helper bones aren't body nodes
+
+        string t = name.ToLowerInvariant().Replace("armature", "");
+
+        // Center chain - no side needed.
+        if (t.Contains("hips") || t.Contains("pelvis"))
+            return BodyNode.Hips;
+        if (t.Contains("upperchest"))
+            return BodyNode.UpperChest;
+        if (t.Contains("chest") || t.Contains("ribcage"))
+            return BodyNode.Chest;
+        if (t.Contains("spine") || t.Contains("torso"))
+            return BodyNode.Spine;
+        if (t.Contains("neck") && !t.Contains("necklace"))
+            return BodyNode.Neck;
+        if (t.Contains("head"))
+            return BodyNode.Head;
+
+        var chirality = DetectChirality(names);
+
+        // Eyes (need a side, exclude brows/lids/blink shapes).
+        bool eyeish = t.Contains("eye") || names.Contains("eye");
+        if (eyeish && !t.Contains("eyebrow") && !t.Contains("eyelid")
+            && !names.Contains("brow") && !names.Contains("lid") && !names.Contains("blink"))
+        {
+            return chirality == Chirality.Right ? BodyNode.RightEye
+                : chirality == Chirality.Left ? BodyNode.LeftEye
+                : BodyNode.NONE;
+        }
+
+        if (chirality == null)
+            return BodyNode.NONE;   // limbs need a side
+        bool right = chirality == Chirality.Right;
+
+        if (t.Contains("shoulder") || t.Contains("clavicle") || t.Contains("collar"))
+            return right ? BodyNode.RightShoulder : BodyNode.LeftShoulder;
+        if (t.Contains("upperarm") || t.Contains("uparm") || t.Contains("uarm") || t.Contains("bicep"))
+            return right ? BodyNode.RightUpperArm : BodyNode.LeftUpperArm;
+        if (t.Contains("forearm") || t.Contains("lowerarm") || t.Contains("lowarm") || t.Contains("elbow"))
+            return right ? BodyNode.RightLowerArm : BodyNode.LeftLowerArm;
+        if (t.Contains("hand") || t.Contains("wrist") || t.Contains("palm"))
+            return right ? BodyNode.RightHand : BodyNode.LeftHand;
+        if (t.Contains("thigh") || t.Contains("upleg") || t.Contains("uleg") || t.Contains("upperleg")
+            || (t.Contains("hip") && !t.Contains("hips")))
+            return right ? BodyNode.RightUpperLeg : BodyNode.LeftUpperLeg;
+        if (t.Contains("calf") || t.Contains("lowerleg") || t.Contains("lowleg") || t.Contains("knee") || t.Contains("shin"))
+            return right ? BodyNode.RightLowerLeg : BodyNode.LeftLowerLeg;
+        if (t.Contains("foot") || t.Contains("ankle") || names.Contains("feet"))
+            return right ? BodyNode.RightFoot : BodyNode.LeftFoot;
+        if (t.Contains("toe") || (t.Contains("ball") && !eyeish))
+            return right ? BodyNode.RightToes : BodyNode.LeftToes;
+
+        // Ambiguous bare "arm"/"leg" - assume the upper segment.
+        if (t.Contains("arm"))
+            return right ? BodyNode.RightUpperArm : BodyNode.LeftUpperArm;
+        if (t.Contains("leg"))
+            return right ? BodyNode.RightUpperLeg : BodyNode.LeftUpperLeg;
+
+        return BodyNode.NONE;
+    }
+
+    // Split a bone name into lowercase word segments, breaking on non-letters and camelCase boundaries
+    // ("UpperArm_L" -> upper, arm, l). Used for side detection and keyword matching.
+    private static List<string> SplitName(string name)
+    {
+        var segments = new List<string>();
+        var current = new System.Text.StringBuilder();
+        char prev = '\0';
+        foreach (var c in name)
+        {
+            bool boundary = !char.IsLetter(c) || (char.IsUpper(c) && char.IsLower(prev));
+            if (boundary)
+                Flush(segments, current);
+            if (char.IsLetter(c))
+                current.Append(c);
+            prev = c;
+        }
+        Flush(segments, current);
+        return segments;
+    }
+
+    private static void Flush(List<string> segments, System.Text.StringBuilder current)
+    {
+        if (current.Length == 0)
+            return;
+        var segment = current.ToString().ToLowerInvariant();
+        if (!segments.Contains(segment))
+            segments.Add(segment);
+        current.Clear();
+    }
+
+    // Left/Right from explicit words or isolated L/R segments (covers Left/Right, _L/_R, L_/R_).
+    private static Chirality? DetectChirality(List<string> names)
+    {
+        bool left = names.Contains("left") || names.Contains("l");
+        bool right = names.Contains("right") || names.Contains("r");
+        if (left ^ right)
+            return left ? Chirality.Left : Chirality.Right;
+        return null;
     }
 
     /// <summary>

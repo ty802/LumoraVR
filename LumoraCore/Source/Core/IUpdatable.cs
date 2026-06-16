@@ -33,7 +33,7 @@ public interface IUpdatable : IWorldElement
     /// Update order for this component. Lower values run first.
     /// Standard values:
     ///   -1000000 = TrackedDevicePositioner (runs first for tracking input)
-    ///   -5000 = VRIK (runs early for IK solving)
+    ///   -5000 = avatar IK (runs early for IK solving)
     ///   0 = Default
     ///   1000000 = Late update components
     /// </summary>

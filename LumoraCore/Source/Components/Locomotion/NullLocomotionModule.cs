@@ -7,7 +7,6 @@ namespace Lumora.Core.Components;
 // the user manually cycles through to "no locomotion". - xlinka
 public class NullLocomotionModule : LocomotionModule
 {
-    public override int Priority => 0;
     public override string DisplayName => "None";
     public override void OnModuleUpdate(float delta) { }
 }

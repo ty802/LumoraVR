@@ -164,12 +164,16 @@ public sealed class DevToolItem : ToolItem
 
         _visualSlot = Slot.FindChild("Visual", recursive: false) ?? Slot.AddSlot("Visual");
         _visualSlot.LocalPosition.Value = float3.Backward * 0.05f;
+        // The cone's apex points along +Y; rotate so it points down the tool's tip direction
+        // (Backward), so the dev tip reads as a forward-facing pointer.
+        _visualSlot.LocalRotation.Value = floatQ.AxisAngle(float3.Right, -90f);
         _visualSlot.LocalScale.Value = float3.One;
 
-        var sphere = _visualSlot.GetComponent<SphereMesh>() ?? _visualSlot.AttachComponent<SphereMesh>();
-        sphere.Radius.Value = 0.015f;
-        sphere.Segments.Value = 16;
-        sphere.Rings.Value = 8;
+        var cone = _visualSlot.GetComponent<ConeMesh>() ?? _visualSlot.AttachComponent<ConeMesh>();
+        cone.RadiusBase.Value = 0.012f;
+        cone.RadiusTop.Value = 0f;
+        cone.Height.Value = 0.045f;
+        cone.Segments.Value = 16;
 
         _visualMaterial = _visualSlot.GetComponent<UnlitMaterial>() ?? _visualSlot.AttachComponent<UnlitMaterial>();
         _visualMaterial.TintColor.Value = new colorHDR(0.2f, 1f, 0.45f, 1f);
@@ -177,7 +181,7 @@ public sealed class DevToolItem : ToolItem
         _visualMaterial.Culling.Value = Culling.None;
 
         var renderer = _visualSlot.GetComponent<MeshRenderer>() ?? _visualSlot.AttachComponent<MeshRenderer>();
-        renderer.Mesh.Target = sphere;
+        renderer.Mesh.Target = cone;
         renderer.Material.Target = _visualMaterial;
         renderer.ShadowCastMode.Value = ShadowCastMode.Off;
     }

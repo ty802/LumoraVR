@@ -7,6 +7,7 @@ namespace Lumora.Core.Assets;
 
 public class RenderTexture : TextureAsset
 {
+    public bool RenderEnabled { get; private set; } = true;
     public int RenderWidth { get; private set; } = 1024;
     public int RenderHeight { get; private set; } = 1024;
     public int CullMask { get; private set; }
@@ -36,5 +37,16 @@ public class RenderTexture : TextureAsset
         (Hook as IRenderTextureAssetHook)?.Configure(
             RenderWidth, RenderHeight, CullMask, ClearColor,
             CameraPosition, CameraRotation, OrthographicSize);
+    }
+
+    /// <summary>
+    /// Pause or resume the offscreen render. The viewport and its texture stay
+    /// alive so consumers keep a valid (stale) image while paused.
+    /// </summary>
+    public void SetRenderEnabled(bool enabled)
+    {
+        if (RenderEnabled == enabled) return;
+        RenderEnabled = enabled;
+        (Hook as IRenderTextureAssetHook)?.SetRenderEnabled(enabled);
     }
 }

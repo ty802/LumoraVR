@@ -25,6 +25,28 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
         ScrollSensitivity = new Sync<float2>(this, float2.One);
     }
 
+    public override void OnChanges()
+    {
+        base.OnChanges();
+        // The scroll offset is applied during the canvas rebuild (Canvas.ApplyScrollRects).
+        // Changing Scroll alone touches no RectTransform, so nothing would signal the canvas
+        // dirty and the rebuild - and thus the scroll - would never happen. This is a layout
+        // change (content repositions), so the rects must be recomputed and every nested chunk
+        // re-rendered at its scrolled position.
+        FindCanvas()?.MarkLayoutDirty();
+    }
+
+    private Canvas? FindCanvas()
+    {
+        for (var slot = Slot; slot != null; slot = slot.Parent)
+        {
+            var canvas = slot.GetComponent<Canvas>();
+            if (canvas != null)
+                return canvas;
+        }
+        return null;
+    }
+
     protected override void OnPress(in UIInteractionContext context)
     {
         _pressPoint = context.LocalPoint;
@@ -109,6 +131,10 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
 
         Scroll.Value = value;
         ScrollChanged?.Invoke(this, value);
+        // Setting Scroll doesn't touch a RectTransform, and OnChanges isn't reliably raised for
+        // it, so dirty the canvas directly - otherwise the rebuild that applies the scroll (and
+        // thus the scroll itself) never runs. This is what makes the wheel and drag actually move.
+        FindCanvas()?.MarkLayoutDirty();
         return true;
     }
 }

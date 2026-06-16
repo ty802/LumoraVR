@@ -1,64 +1,42 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-using System;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace Lumora.Core.Assets;
 
 /// <summary>
-/// Asset containing shader source text.
+/// Asset containing shader source text, gathered and decoded from its URL.
 /// </summary>
-public sealed class ShaderSourceAsset : Asset
+public sealed class ShaderSourceAsset : LoadableAsset
 {
-    private int _activeRequestCount;
     private byte[]? _rawBytes;
     private string? _source;
 
-    /// <summary>
-    /// Raw shader source bytes.
-    /// </summary>
+    /// <summary>Raw shader source bytes.</summary>
     public byte[]? RawBytes => _rawBytes;
 
-    /// <summary>
-    /// Shader source text.
-    /// </summary>
+    /// <summary>Shader source text (UTF-8 decoded).</summary>
     public string? Source => _source;
 
-    public override int ActiveRequestCount => _activeRequestCount;
-
-    /// <summary>
-    /// Assign shader source bytes and decode as UTF8.
-    /// </summary>
-    public void SetSource(byte[] bytes)
+    protected override async Task LoadSelf()
     {
-        if (bytes == null) throw new ArgumentNullException(nameof(bytes));
+        var bytes = await AssetManager.RequestGather(AssetURL).ConfigureAwait(false);
+        if (bytes == null || bytes.Length == 0)
+        {
+            FailLoad($"No shader source data gathered for {AssetURL}");
+            return;
+        }
 
         _rawBytes = bytes;
         _source = Encoding.UTF8.GetString(bytes);
         Version++;
     }
 
-    /// <summary>
-    /// Add an active request for this shader.
-    /// </summary>
-    public void AddRequest()
-    {
-        _activeRequestCount++;
-    }
-
-    /// <summary>
-    /// Remove an active request for this shader.
-    /// </summary>
-    public void RemoveRequest()
-    {
-        _activeRequestCount = System.Math.Max(0, _activeRequestCount - 1);
-    }
-
     public override void Unload()
     {
         _rawBytes = null;
         _source = null;
-        _activeRequestCount = 0;
     }
 }

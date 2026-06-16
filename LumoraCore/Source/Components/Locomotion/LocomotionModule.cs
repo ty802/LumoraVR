@@ -4,9 +4,9 @@
 namespace Lumora.Core.Components;
 
 // Abstract base for locomotion modes. Each concrete module is a Component
-// attached to the user's root slot, picked by LocomotionController based on
-// priority and CanActivate at runtime. Override Priority + CanActivate to
-// gate when the module is eligible (VR module checks tracking, etc).
+// attached to the user's root slot. The controller keeps them in registration
+// order and the active one is a sticky choice (menu / persisted), not picked
+// by priority. Override CanActivate to gate eligibility (permission, VR-only).
 // Movement logic lives in OnModuleUpdate, which the controller only calls
 // while this module is active. - xlinka
 [ComponentCategory("Users/Locomotion")]
@@ -16,10 +16,8 @@ public abstract class LocomotionModule : Component
 
     public bool IsActive => Owner != null && Owner.ActiveModule == this;
 
-    // Higher wins when controller picks the default module. VR=100, Desktop=50, Null=0.
-    public virtual int Priority => 0;
-
-    // True when this module is eligible right now (e.g. VR-only when VR is live).
+    // True when this module is eligible right now (e.g. VR-only when VR is live,
+    // or permission-gated). The controller skips modules that return false.
     public virtual bool CanActivate() => true;
 
     public virtual string DisplayName => GetType().Name;

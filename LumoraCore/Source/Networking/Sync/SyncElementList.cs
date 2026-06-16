@@ -8,6 +8,7 @@ using System.IO;
 using Lumora.Core;
 using Lumora.Core.Logging;
 using Lumora.Core.Networking;
+using Lumora.Core.Persistence;
 
 namespace Lumora.Core.Networking.Sync;
 
@@ -305,6 +306,31 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
     public void Clear()
     {
         InternalClear();
+    }
+
+    // PERSISTENCE — a list saves as a DataTreeList of its elements (each an ISyncMember that
+    // serializes itself); on load it rebuilds element-by-element. Covers SyncList/SyncFieldList/
+    // SyncAssetList/SyncIntList via this base.
+
+    public override DataTreeNode Save(SaveControl control)
+    {
+        var list = new DataTreeList();
+        foreach (var element in Elements)
+            list.Add(element.Save(control));
+        return list;
+    }
+
+    public override void Load(DataTreeNode node, LoadControl control)
+    {
+        if (node is not DataTreeList list)
+            return;
+
+        Clear();
+        foreach (var child in list.Children)
+        {
+            var element = Add();
+            element.Load(child, control);
+        }
     }
 
     public void EnsureMinimumCount(int count)

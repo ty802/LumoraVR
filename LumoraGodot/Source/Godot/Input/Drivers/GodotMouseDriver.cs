@@ -104,12 +104,12 @@ public class GodotMouseDriver : IMouseDriver, IInputDriver
             motion = motion.Normalized() * MaxReasonableMotionPerFrame;
         }
 
-        float sensitivity = InterfaceSettings.MouseSensitivity;
+        float sensitivity = Lumora.Core.EngineSettings.MouseSensitivity;
         float2 normalizedDelta = new float2(
             motion.X / LookReferenceHeight,
             motion.Y / LookReferenceHeight) * sensitivity;
 
-        float smoothFactor = InterfaceSettings.MouseSmoothing;
+        float smoothFactor = Lumora.Core.EngineSettings.MouseSmoothing;
         if (smoothFactor > 0f)
         {
             _smoothedDelta = float2.Lerp(_smoothedDelta, normalizedDelta, 1f - smoothFactor);

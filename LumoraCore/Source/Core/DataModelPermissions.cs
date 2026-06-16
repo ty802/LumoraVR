@@ -57,6 +57,17 @@ public enum DataModelPermissionResult
     Deny
 }
 
+/// <summary>
+/// How a user relates to the world when they join — used to pick a default role.
+/// </summary>
+public enum DataModelAccessClass
+{
+    Anonymous,
+    Visitor,
+    Contact,
+    Host
+}
+
 public readonly struct DataModelPermissionRequest
 {
     public readonly World? World;
@@ -164,9 +175,18 @@ public sealed class DataModelPermissionController
     private readonly List<IDataModelPermissionRule> _rules = new();
     private readonly Dictionary<RefID, DataModelPermissionRole> _userRoles = new();
 
-    public DataModelPermissionRole HostRole { get; } = new("Host", DataModelPermissionAction.All, DataModelPermissionAction.All);
-    public DataModelPermissionRole UserRole { get; } = new("User", DataModelPermissionAction.All, DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate);
-    public DataModelPermissionRole GuestRole { get; } = new("Guest", DataModelPermissionAction.All, DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate);
+    // Owner of the world — full power, not assignable (you can't demote the host).
+    public DataModelPermissionRole HostRole { get; }
+    // Assignable roles, in descending power. Each has preset capabilities over OTHER users' objects
+    // (own objects are always fully editable). The host assigns these per access-class or per-user.
+    public DataModelPermissionRole AdminRole { get; }
+    public DataModelPermissionRole BuilderRole { get; }
+    public DataModelPermissionRole ModeratorRole { get; }
+    public DataModelPermissionRole GuestRole { get; }
+    public DataModelPermissionRole SpectatorRole { get; }
+    public IReadOnlyList<DataModelPermissionRole> AssignableRoles { get; }
+
+    private readonly Dictionary<DataModelAccessClass, DataModelPermissionRole> _defaultRoles = new();
 
     public bool Enabled { get; set; } = true;
     public bool LogDeniedMutations { get; set; } = true;
@@ -174,7 +194,43 @@ public sealed class DataModelPermissionController
     public DataModelPermissionController(World world)
     {
         _world = world ?? throw new ArgumentNullException(nameof(world));
+
+        var all = DataModelPermissionAction.All;
+        var view = DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate;
+        var build = view | DataModelPermissionAction.Create | DataModelPermissionAction.Write
+            | DataModelPermissionAction.ReferenceWrite | DataModelPermissionAction.CollectionAdd
+            | DataModelPermissionAction.CollectionInsert | DataModelPermissionAction.CollectionSet;
+        var moderate = view | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionRemove
+            | DataModelPermissionAction.CollectionClear;
+
+        HostRole = new DataModelPermissionRole("Host", all, all);
+        AdminRole = new DataModelPermissionRole("Admin", all, all);
+        BuilderRole = new DataModelPermissionRole("Builder", all, build);
+        ModeratorRole = new DataModelPermissionRole("Moderator", all, moderate);
+        GuestRole = new DataModelPermissionRole("Guest", all, view);
+        SpectatorRole = new DataModelPermissionRole("Spectator", view, view);
+        AssignableRoles = new[] { AdminRole, BuilderRole, ModeratorRole, GuestRole, SpectatorRole };
+
+        _defaultRoles[DataModelAccessClass.Anonymous] = SpectatorRole;
+        _defaultRoles[DataModelAccessClass.Visitor] = GuestRole;
+        _defaultRoles[DataModelAccessClass.Contact] = BuilderRole;
+        _defaultRoles[DataModelAccessClass.Host] = AdminRole;
     }
+
+    /// <summary>Role a freshly-joined user of the given access class gets (unless overridden).</summary>
+    public DataModelPermissionRole GetDefaultRole(DataModelAccessClass accessClass)
+        => _defaultRoles.TryGetValue(accessClass, out var role) ? role : GuestRole;
+
+    public void SetDefaultRole(DataModelAccessClass accessClass, DataModelPermissionRole role)
+    {
+        if (role != null)
+            _defaultRoles[accessClass] = role;
+    }
+
+    /// <summary>Number of users with an explicit per-user role override.</summary>
+    public int UserOverrideCount => _userRoles.Count;
+
+    public void ClearUserOverrides() => _userRoles.Clear();
 
     public IDisposable EnterActor(User? actor) => new Scope(actor, systemBypass: false);
 
@@ -220,7 +276,7 @@ public sealed class DataModelPermissionController
     {
         if (user == null)
         {
-            return GuestRole;
+            return GetDefaultRole(DataModelAccessClass.Anonymous);
         }
 
         if (IsHostUser(user))
@@ -228,7 +284,23 @@ public sealed class DataModelPermissionController
             return HostRole;
         }
 
-        return _userRoles.TryGetValue(user.ReferenceID, out var role) ? role : UserRole;
+        // An explicit per-user override wins; otherwise fall back to the default for their class.
+        return _userRoles.TryGetValue(user.ReferenceID, out var role)
+            ? role
+            : GetDefaultRole(GetAccessClass(user));
+    }
+
+    /// <summary>
+    /// Classify a user for default-role purposes. Host is detected; Contact/Anonymous require the
+    /// social/account layer (not present yet), so everyone else is treated as a Visitor.
+    /// </summary>
+    public DataModelAccessClass GetAccessClass(User? user)
+    {
+        if (user != null && IsHostUser(user))
+        {
+            return DataModelAccessClass.Host;
+        }
+        return DataModelAccessClass.Visitor;
     }
 
     public bool Authorize(in DataModelPermissionRequest request, out string? reason)

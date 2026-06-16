@@ -130,9 +130,9 @@ public abstract class DynamicImplementableAsset<C> : DynamicAsset where C : clas
         return AssetHookRegistry.GetHookType(GetType());
     }
 
-    public override void InitializeDynamic()
+    public override void InitializeDynamic(AssetManager? manager = null)
     {
-        base.InitializeDynamic();
+        base.InitializeDynamic(manager);
         InitializeHook();
     }
 

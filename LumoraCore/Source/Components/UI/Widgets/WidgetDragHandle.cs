@@ -39,6 +39,15 @@ public class WidgetDragHandle : InteractionElement
         var spacing = grid.Spacing.Value;
         var padding = grid.Padding.Value;
 
+        // Pull a widget clearly below the grid to pop it off into userspace as a
+        // standalone, grabbable panel (the dash is a thin top bar, so "drag down
+        // off the bar" is the pop-out gesture).
+        if (context.LocalPoint.y < gridRect.Value.yMin - cell.y)
+        {
+            grid.PopOut(widget);
+            return;
+        }
+
         float gx = context.LocalPoint.x - gridRect.Value.xMin - padding.x;
         float gy = gridRect.Value.yMax - context.LocalPoint.y - padding.y;
 

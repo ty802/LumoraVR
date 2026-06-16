@@ -16,6 +16,9 @@ public class UpdateManager
     private readonly Queue<IImplementable> _pendingHookUpdates = new Queue<IImplementable>();
     private readonly HashSet<IImplementable> _queuedHookUpdates = new HashSet<IImplementable>();
     private readonly object _hookUpdatesLock = new object();
+
+    private readonly HashSet<Slot> _pendingMovedSlots = new HashSet<Slot>();
+    private readonly object _movedSlotsLock = new object();
     private float _currentDeltaTime = 0f;
 
     // Bucketed update system for ordered execution
@@ -305,7 +308,18 @@ public class UpdateManager
                 continue;
             }
 
-            implementable.Hook.ApplyChanges();
+            // Contain hook failures like every other phase. A throwing hook used to
+            // abort the whole world update mid-frame, which left queued startups,
+            // changed-element processing and destructions undrained - destroyed UI
+            // kept getting hover writes and the same hook re-threw every frame. - xlinka
+            try
+            {
+                implementable.Hook.ApplyChanges();
+            }
+            catch (Exception ex)
+            {
+                Logging.Logger.Error($"UpdateManager: Error in hook update for {implementable}: {ex}");
+            }
 
             processed++;
             if (processed >= maxUpdates)
@@ -317,6 +331,55 @@ public class UpdateManager
     }
 
     /// <summary>
+    /// Register a slot whose world transform changed this frame. Deduplicated; the queued slots
+    /// fire their WorldTransformChanged event once, in <see cref="ProcessMovedSlots"/>.
+    /// </summary>
+    public void RegisterMovedSlot(Slot slot)
+    {
+        if (slot == null || slot.IsDestroyed)
+            return;
+        lock (_movedSlotsLock)
+        {
+            _pendingMovedSlots.Add(slot);
+        }
+    }
+
+    /// <summary>
+    /// Fire deferred WorldTransformChanged events for slots that moved this frame, parents before
+    /// children. Runs before hook updates so a handler that re-drives a transform reaches the
+    /// engine the same frame. Returns the number fired.
+    /// </summary>
+    public int ProcessMovedSlots()
+    {
+        List<Slot> batch;
+        lock (_movedSlotsLock)
+        {
+            if (_pendingMovedSlots.Count == 0)
+                return 0;
+            batch = new List<Slot>(_pendingMovedSlots);
+            _pendingMovedSlots.Clear();
+        }
+
+        // Parents before children, so a child handler reading parent state sees it updated.
+        batch.Sort((a, b) => a.Depth.CompareTo(b.Depth));
+
+        foreach (var slot in batch)
+        {
+            if (slot == null || slot.IsDestroyed)
+                continue;
+            try
+            {
+                slot.FireWorldTransformChanged();
+            }
+            catch (Exception ex)
+            {
+                Logging.Logger.Error($"UpdateManager: Error in moved event for {slot}: {ex}");
+            }
+        }
+        return batch.Count;
+    }
+
+    /// <summary>
     /// Clear all pending updates.
     /// </summary>
     public void Clear()
@@ -325,6 +388,10 @@ public class UpdateManager
         {
             _pendingHookUpdates.Clear();
             _queuedHookUpdates.Clear();
+        }
+        lock (_movedSlotsLock)
+        {
+            _pendingMovedSlots.Clear();
         }
         _updateBuckets.Clear();
         _startupQueue.Clear();

@@ -157,7 +157,16 @@ public static class AssetFetcher
                 return File.ReadAllBytes(u.LocalPath);
 
             if (u.Scheme == Uri.UriSchemeHttp || u.Scheme == Uri.UriSchemeHttps)
+            {
+                // Route remote downloads through the shared content cache (concurrent-request
+                // dedup, disk LRU, persistence). Only fall back to a direct, uncached download
+                // if the cache isn't up yet (early init / tests).
+                var cache = Engine.Current?.ContentCache;
+                if (cache != null)
+                    return cache.Get(u).GetAwaiter().GetResult()!;
+
                 return Http.GetByteArrayAsync(u).GetAwaiter().GetResult();
+            }
 
             LumoraLogger.Warn($"AssetFetcher: unsupported URI scheme '{u.Scheme}' in '{uri}'");
             return null!;

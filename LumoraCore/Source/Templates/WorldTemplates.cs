@@ -23,6 +23,15 @@ public static class WorldTemplates
             { ShaderTestTemplateName, new ShaderTestWorldTemplate() }
         };
 
+    /// <summary>Template names available to pick when creating a world, in display order.</summary>
+    public static IReadOnlyList<string> AvailableTemplates { get; } = new[]
+    {
+        LocalHomeTemplateName,
+        GridTemplateName,
+        ShaderTestTemplateName,
+        EmptyTemplateName,
+    };
+
     public static Action<World> GetTemplate(string name)
     {
         return GetDefinition(name).Apply;

@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Helio.UI.Layout;
 using Helio.UI;
 using Lumora.Core;
@@ -43,7 +44,7 @@ public class Dashboard : UIComponent
     private Slot? _headerSlot;
     private Slot? _navSlot;
     private Slot? _screenHostSlot;
-    private WidgetGrid? _facetGrid;
+    private WidgetGrid? _widgetGrid;
     private Text? _title;
     private DashboardScreen? _currentScreen;
 
@@ -59,10 +60,12 @@ public class Dashboard : UIComponent
         Size = new Sync<float2>(this, new float2(1180f, 720f));
         HeaderHeight = new Sync<float>(this, 60f);
         StatusHeight = new Sync<float>(this, 60f);
-        BackgroundColor = new Sync<color>(this, new color(0.05f, 0.04f, 0.10f, 0.40f));
-        HeaderColor = new Sync<color>(this, new color(0.13f, 0.11f, 0.20f, 0.55f));
-        StatusColor = new Sync<color>(this, new color(0.12f, 0.10f, 0.19f, 0.55f));
-        ContentColor = new Sync<color>(this, new color(0.09f, 0.08f, 0.14f, 0.35f));
+        // Opaque: the dash draws as an overlay above the world, and any
+        // translucency makes its UI illegible against bright scenes.
+        BackgroundColor = new Sync<color>(this, new color(0.06f, 0.05f, 0.11f, 1f));
+        HeaderColor = new Sync<color>(this, new color(0.13f, 0.11f, 0.20f, 1f));
+        StatusColor = new Sync<color>(this, new color(0.12f, 0.10f, 0.19f, 1f));
+        ContentColor = new Sync<color>(this, new color(0.10f, 0.09f, 0.15f, 0.98f));
         Title = new Sync<string>(this, "Lumora");
         Version = new Sync<string>(this, "Lumora v2026.05.29");
         Font = new AssetRef<FontSet>(this);
@@ -127,10 +130,22 @@ public class Dashboard : UIComponent
         ScreenChanged?.Invoke(_currentScreen);
     }
 
-    public void ToggleFacetEdit()
+    public void ToggleWidgetEdit()
     {
-        if (_facetGrid != null)
-            _facetGrid.EditMode.Value = !_facetGrid.EditMode.Value;
+        if (_widgetGrid != null)
+            _widgetGrid.EditMode.Value = !_widgetGrid.EditMode.Value;
+    }
+
+    /// <summary>
+    /// Re-render the current screen's content. Used when the dashboard becomes visible: our canvas
+    /// only renders on a dirty, and reactivating the (parked) render rig doesn't dirty it on its own,
+    /// so a freshly-opened dash would otherwise stay blank until you switch tabs (which forces a
+    /// rebuild). This does what a tab switch does, on open.
+    /// </summary>
+    public void ForceRebuild()
+    {
+        _currentScreen?.ShowScreen();
+        Slot.GetComponent<Canvas>()?.MarkLayoutDirty();
     }
 
     private void EnsureBuilt()
@@ -166,7 +181,7 @@ public class Dashboard : UIComponent
 
         BuildTitleBox(_headerSlot);
 
-        BuildFacets();
+        BuildWidgets();
     }
 
     private void BuildTitleBox(Slot headerSlot)
@@ -201,27 +216,66 @@ public class Dashboard : UIComponent
         titleRect.OffsetMax.Value = new float2(-10f, 0f);
     }
 
-    private void BuildFacets()
+    private void BuildWidgets()
     {
-        var facetsSlot = _headerSlot!.AddSlot("Facets");
-        var rect = facetsSlot.AttachComponent<RectTransform>();
+        var widgetsSlot = _headerSlot!.AddSlot("Widgets");
+        var rect = widgetsSlot.AttachComponent<RectTransform>();
         rect.AnchorMin.Value = new float2(1f, 0f);
         rect.AnchorMax.Value = new float2(1f, 1f);
         rect.OffsetMin.Value = new float2(-296f, 10f);
         rect.OffsetMax.Value = new float2(-14f, -10f);
 
-        _facetGrid = facetsSlot.AttachComponent<WidgetGrid>();
-        _facetGrid.CellSize.Value = new float2(132f, 38f);
-        _facetGrid.Spacing.Value = new float2(8f, 4f);
-        _facetGrid.Padding.Value = new float2(0f, 1f);
+        _widgetGrid = widgetsSlot.AttachComponent<WidgetGrid>();
+        _widgetGrid.CellSize.Value = new float2(132f, 38f);
+        _widgetGrid.Spacing.Value = new float2(8f, 4f);
+        _widgetGrid.Padding.Value = new float2(0f, 1f);
 
-        AddFacet<FpsWidgetPreset>(facetsSlot, "FpsFacet", 0, new color(0.30f, 0.85f, 0.50f, 1f));
-        AddFacet<ClockWidgetPreset>(facetsSlot, "ClockFacet", 1, new color(0.85f, 0.86f, 0.92f, 1f));
+        AddWidget<FpsWidgetPreset>(widgetsSlot, "FpsWidget", 0, new color(0.30f, 0.85f, 0.50f, 1f));
+        AddWidget<ClockWidgetPreset>(widgetsSlot, "ClockWidget", 1, new color(0.85f, 0.86f, 0.92f, 1f));
     }
 
-    private void AddFacet<T>(Slot grid, string name, int gridX, color textColor) where T : TextWidgetPreset, new()
+    /// <summary>
+    /// Dock a widget back onto the top bar by preset type - used when a standalone
+    /// userspace panel is released over the dash. Appends after the existing
+    /// widgets and styles it like the built-in bar widgets.
+    /// </summary>
+    public bool TryDockWidget(Type presetType)
+    {
+        if (_widgetGrid == null || _widgetGrid.IsDestroyed || presetType == null)
+            return false;
+
+        var gridSlot = _widgetGrid.Slot;
+        int gridX = gridSlot.GetComponentsInChildren<Widget>(false).Count();
+
+        var slot = gridSlot.AddSlot(presetType.Name);
+        slot.AttachComponent<GraphicChunkRoot>();
+        if (slot.AttachComponent(presetType) is not WidgetPreset preset)
+        {
+            slot.Destroy();
+            return false;
+        }
+
+        preset.GridX.Value = gridX;
+        preset.Background.Value = WidgetFill;
+        preset.BorderColor.Value = BorderColor;
+        preset.BackgroundSprite.Target = _rounded!;
+        preset.CornerRadius.Value = 12f;
+        if (preset is TextWidgetPreset text)
+        {
+            text.Font.Target = Font.Target;
+            text.TextColor.Value = new color(0.85f, 0.86f, 0.92f, 1f);
+        }
+        return true;
+    }
+
+    private void AddWidget<T>(Slot grid, string name, int gridX, color textColor) where T : TextWidgetPreset, new()
     {
         var slot = grid.AddSlot(name);
+        // Live widgets (FPS counter, clock) re-render constantly. Their own chunk
+        // root keeps those updates from rebuilding the whole dash canvas - without
+        // it every tick re-meshes whatever screen is loaded (the file browser
+        // makes that very expensive).
+        slot.AttachComponent<GraphicChunkRoot>();
         var preset = slot.AttachComponent<T>();
         preset.Font.Target = Font.Target;
         preset.GridX.Value = gridX;
@@ -337,7 +391,7 @@ public class Dashboard : UIComponent
 
         var builder = new UIBuilder(slot);
         builder.Font(Font.Target).FontSize(12f);
-        var text = builder.Text(screen.Label.Value, 12f, new color(0.92f, 0.92f, 0.96f, 1f));
+        var text = builder.Text(screen.Label.Value, 12f, screen.NavLabelColor);
         text.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
         text.VerticalAlignment.Value = TextVerticalAlignment.Middle;
         if (text.RectTransform != null)

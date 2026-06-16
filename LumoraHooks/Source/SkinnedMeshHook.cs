@@ -91,6 +91,25 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         {
             ApplyMaterial();
         }
+
+        // Cheap path: blendshape weights changed (blink/viseme/expression) - reapply, no rebuild.
+        if (Owner.BlendWeightsChanged)
+        {
+            ApplyBlendShapeWeights();
+            Owner.BlendWeightsChanged = false;
+        }
+    }
+
+    /// <summary>Push the component's blendshape weights onto the Godot mesh instance (cheap).</summary>
+    private void ApplyBlendShapeWeights()
+    {
+        if (_meshInstance == null || !GodotObject.IsInstanceValid(_meshInstance) || _arrayMesh == null)
+            return;
+        int n = _arrayMesh.GetBlendShapeCount();
+        if (n == 0)
+            return;
+        for (int i = 0; i < n; i++)
+            _meshInstance.SetBlendShapeValue(i, Owner.GetEffectiveBlendShapeWeight(i));
     }
 
     /// <summary>
@@ -385,9 +404,22 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
 
         // Indices
         var indices = new int[Owner.Indices.Count];
+        int minIndex = int.MaxValue;
+        int maxIndex = -1;
         for (int i = 0; i < Owner.Indices.Count; i++)
         {
-            indices[i] = Owner.Indices[i];
+            int index = Owner.Indices[i];
+            if (index > maxIndex) maxIndex = index;
+            if (index < minIndex) minIndex = index;
+            indices[i] = index;
+        }
+
+        // An index outside the vertex buffer is an out-of-bounds read at draw time -
+        // that's a Vulkan device-lost, not a visual glitch. Same guard as MeshHook. - xlinka
+        if (Owner.Indices.Count > 0 && (maxIndex >= Owner.Vertices.Count || minIndex < 0))
+        {
+            LumoraLogger.Error($"SkinnedMeshHook: Index range [{minIndex}, {maxIndex}] invalid for vertex count {Owner.Vertices.Count} on slot '{Owner.Slot?.SlotName?.Value}' - surface skipped");
+            return;
         }
         arrays[(int)Mesh.ArrayType.Index] = indices;
 
@@ -437,11 +469,46 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
             LumoraLogger.Warn($"SkinnedMeshHook: Missing bone data - indices:{Owner.BoneIndices.Count} weights:{Owner.BoneWeights.Count} verts:{Owner.Vertices.Count}");
         }
 
+        // Blendshapes: declare them on the mesh first, then hand the per-shape vertex arrays to the
+        // surface. Stored exactly as the source reported them, with the source's BlendShapeMode, so
+        // the morph round-trips correctly. (Only vertex deltas are carried; normals aren't morphed.)
+        int vertexCount = Owner.Vertices.Count;
+        int shapeCount = Owner.BlendShapeNames.Count;
+        bool hasBlendShapes = shapeCount > 0 && Owner.BlendShapeVertices.Count == shapeCount * vertexCount;
+        global::Godot.Collections.Array<global::Godot.Collections.Array> blendShapes = null!;
+        if (hasBlendShapes)
+        {
+            _arrayMesh.ClearBlendShapes();
+            _arrayMesh.BlendShapeMode = (Mesh.BlendShapeMode)Owner.BlendShapeMode.Value;
+            for (int s = 0; s < shapeCount; s++)
+                _arrayMesh.AddBlendShape(Owner.BlendShapeNames[s]);
+
+            blendShapes = new global::Godot.Collections.Array<global::Godot.Collections.Array>();
+            for (int s = 0; s < shapeCount; s++)
+            {
+                var shapeArrays = new global::Godot.Collections.Array();
+                shapeArrays.Resize((int)Mesh.ArrayType.Max);
+                var sv = new Vector3[vertexCount];
+                int baseIdx = s * vertexCount;
+                for (int i = 0; i < vertexCount; i++)
+                {
+                    var v = Owner.BlendShapeVertices[baseIdx + i];
+                    sv[i] = new Vector3(v.x, v.y, v.z);
+                }
+                shapeArrays[(int)Mesh.ArrayType.Vertex] = sv;
+                blendShapes.Add(shapeArrays);
+            }
+        }
+
         // Add surface to mesh
-        _arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+        if (hasBlendShapes)
+            _arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays, blendShapes);
+        else
+            _arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
 
         // Set mesh on instance
         _meshInstance.Mesh = _arrayMesh;
+        ApplyBlendShapeWeights();
 
         // Apply material - use component's material if set, otherwise use default
         var materialAsset = Owner.Material.Asset;

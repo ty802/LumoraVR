@@ -33,6 +33,11 @@ public class UserspaceDashboard : UIComponent
     public readonly Sync<float> VerticalOffset;
     public readonly Sync<float> DisplayHeight;
     public readonly Sync<bool> FollowViewWhileOpen;
+    // Freeform: in VR, stop snapping the panel in front of the view every frame.
+    // Instead it stays where it was last placed (snapped in front once when you
+    // open it or flip freeform on) and a grab handle lets you reposition it.
+    // Desktop is always window-projected, so freeform only affects VR.
+    public readonly Sync<bool> Freeform;
     public readonly AssetRef<FontSet> Font;
 
     private Slot? _renderRig;
@@ -41,14 +46,23 @@ public class UserspaceDashboard : UIComponent
     private Dashboard? _dashboard;
     private RenderTextureProvider? _renderTexture;
     private CurvedPlaneMesh? _displayMesh;
-    private UnlitMaterial? _displayMaterial;
+    private UIUnlitMaterial? _displayMaterial;
     private FontProvider? _fontProvider;
+    private Grabbable? _grabHandle;
+    private bool _lastFreeform;
+    private bool _wasOpen;
     private bool _built;
     private bool _defaultScreensBuilt;
 
     public Dashboard? Dashboard => _dashboard;
 
     public RenderTextureProvider? RenderTextureSource => _renderTexture;
+
+    /// <summary>The display surface slot; lasers are restricted to it while the dash is open on desktop.</summary>
+    public Slot? SurfaceSlot => _surfaceSlot != null && !_surfaceSlot.IsDestroyed ? _surfaceSlot : null;
+
+    /// <summary>The local user's dashboard, if built.</summary>
+    public static UserspaceDashboard? LocalInstance { get; private set; }
 
     public UserspaceDashboard()
     {
@@ -57,14 +71,46 @@ public class UserspaceDashboard : UIComponent
         VerticalOffset = new Sync<float>(this, 0f);
         DisplayHeight = new Sync<float>(this, 0.85f);
         FollowViewWhileOpen = new Sync<bool>(this, true);
+        Freeform = new Sync<bool>(this, false);
         Font = new AssetRef<FontSet>(this);
     }
 
     public override void OnStart()
     {
         base.OnStart();
+        LocalInstance = this;
         EnsureBuilt();
         ApplyOpenState();
+        ScheduleRigParkAfterWarmup();
+    }
+
+    // Parking the rig before the canvas has ever built means the first open shows
+    // the UI assembling piece by piece (layout, then glyphs as the atlas rasterizes).
+    // Let it warm up once at startup, then park while closed.
+    private bool _rigWarmed;
+
+    private void ScheduleRigParkAfterWarmup()
+    {
+        void Check()
+        {
+            if (IsDestroyed) return;
+            var canvas = _canvasSlot?.GetComponent<Canvas>();
+            if (canvas?.RootChunk != null)
+            {
+                // One more breath so glyph-atlas re-renders land before parking.
+                World?.RunInUpdates(120, () =>
+                {
+                    if (IsDestroyed) return;
+                    _rigWarmed = true;
+                    ApplyOpenState();
+                });
+            }
+            else
+            {
+                World?.RunInUpdates(30, Check);
+            }
+        }
+        World?.RunInUpdates(30, Check);
     }
 
     public override void OnCommonUpdate()
@@ -77,18 +123,110 @@ public class UserspaceDashboard : UIComponent
         if (input != null)
             input.IsDashboardOpen = IsOpen.Value;
 
+        // One dash surface for both modes: curved world-space panel in VR,
+        // flattened and projection-fitted to the window on desktop. The free
+        // cursor steers the laser over it, so the laser dot is the one pointer.
+        bool open = IsOpen.Value;
         bool vr = input?.VR_Active ?? false;
         if (_surfaceSlot != null)
-            _surfaceSlot.ActiveSelf.Value = vr;
+            _surfaceSlot.ActiveSelf.Value = open;
 
-        if (vr && IsOpen.Value && FollowViewWhileOpen.Value)
+        if (_displayMesh != null)
+            _displayMesh.Curvature.Value = vr ? 0.5f : 0f;
+
+        // First frame the dash becomes visible, force the current screen to re-render. Reactivating
+        // the parked render rig doesn't dirty the canvas on its own, so without this the dash shows
+        // blank until you switch tabs (which forces a rebuild). Does what a tab switch does, on open.
+        if (open && !_wasOpen)
+            _dashboard?.ForceRebuild();
+        _wasOpen = open;
+
+        // The whole-surface grab is disabled: boosting it above the canvas to move
+        // the dash also stole the laser in edit mode (you'd grab the whole dash
+        // instead of dragging a widget) and blocked clicks. Freeform place-and-stay
+        // (below) doesn't need it; repositioning should use a dedicated grab handle
+        // (future), not the entire surface.
+        bool freeform = Freeform.Value;
+        if (_grabHandle != null)
         {
-            PositionInFrontOfFocusedView();
+            _grabHandle.AllowGrab.Value = false;
+            _grabHandle.InteractionPriority.Value = -1;
         }
+
+        if (!open)
+        {
+            _lastFreeform = freeform;
+            return;
+        }
+
+        if (vr)
+        {
+            // Locked: pin the panel in front of the view every frame.
+            // Freeform: leave it where it was placed; snap it back in front once
+            // at the moment freeform is switched on so it stays within reach.
+            if (!freeform)
+            {
+                if (FollowViewWhileOpen.Value)
+                    PositionInFrontOfFocusedView();
+            }
+            else if (!_lastFreeform)
+            {
+                PositionInFrontOfFocusedView();
+            }
+        }
+        else
+        {
+            PositionDesktopProjection(input);
+        }
+
+        _lastFreeform = freeform;
+    }
+
+    // Fit the flat surface to the window: place it ahead of the camera and scale
+    // so it fills the viewport height (clamped by width), like a screen overlay.
+    // Positions from the platform-pushed camera pose - the camera looks along
+    // its local -Z, and the surface yaws 180 so its readable face points back
+    // at the viewer with the same relative geometry as the VR placement.
+    private void PositionDesktopProjection(InputInterface? input)
+    {
+        if (input == null || _displayMesh == null || !input.DesktopCameraPoseValid)
+            return;
+
+        var camRot = input.DesktopCameraRotation;
+        var forward = camRot * new float3(0f, 0f, -1f);
+        float distance = MathF.Max(Distance.Value, 0.2f);
+
+        // Readable face of UI content is the surface's +Z side; with the camera
+        // looking down -Z, camRot already points that face at the viewer.
+        Slot.GlobalPosition = input.DesktopCameraPosition + forward * distance;
+        Slot.GlobalRotation = camRot;
+
+        float viewportHeight = 2f * distance * MathF.Tan(input.DesktopCameraFovY * (MathF.PI / 180f) * 0.5f);
+
+        // Shape the display mesh to the EXACT window aspect (the capture
+        // resolution stays quantized for perf - the texture just samples across
+        // this quad). With the mesh aspect matching the window, a uniform
+        // height-fit fills the screen edge-to-edge with no letterbox bars.
+        float exactWidth = DisplayHeight.Value * input.DesktopViewportAspect;
+        if (MathF.Abs(_displayMesh.Size.Value.x - exactWidth) > 0.0005f)
+            _displayMesh.Size.Value = new float2(exactWidth, DisplayHeight.Value);
+
+        var meshSize = _displayMesh.Size.Value;
+        if (meshSize.y <= 0.001f)
+            return;
+
+        Slot.LocalScale.Value = float3.One * (viewportHeight / meshSize.y);
+
+        // Keep the capture aspect in sync with the window so content isn't
+        // letterboxed inside the surface.
+        SetAspect(input.DesktopViewportAspect);
     }
 
     public override void OnDestroy()
     {
+        if (ReferenceEquals(LocalInstance, this))
+            LocalInstance = null;
+
         var input = Engine.Current?.InputInterface;
         if (input != null)
             input.IsDashboardOpen = false;
@@ -130,10 +268,17 @@ public class UserspaceDashboard : UIComponent
         else Open();
     }
 
+    /// <summary>Freeform places the panel and leaves it; locked keeps it pinned in front of the view (VR only).</summary>
+    public void SetFreeform(bool value) => Freeform.Value = value;
+
+    public void ToggleFreeform() => Freeform.Value = !Freeform.Value;
+
     public void SetAspect(float aspect)
     {
         if (aspect <= 0.1f) return;
-        int w = (int)System.MathF.Round(CaptureHeight * aspect);
+        // Quantize so near-16:9 windows resolve to the default 1280 and small
+        // window-size jitter can't trigger full canvas rebuilds.
+        int w = (int)System.MathF.Round(CaptureHeight * aspect / 64f) * 64;
         if (w < 640) w = 640;
         if (w > 2560) w = 2560;
         if (w == _captureWidth) return;
@@ -143,25 +288,6 @@ public class UserspaceDashboard : UIComponent
         if (_renderTexture != null) _renderTexture.Width.Value = w * SupersampleScale;
         if (_displayMesh != null)
             _displayMesh.Size.Value = new float2(DisplayHeight.Value * ((float)w / CaptureHeight), DisplayHeight.Value);
-    }
-
-    public void UpdatePointer(float2 normalized, bool pressed)
-    {
-        if (_canvasSlot == null) return;
-        var canvas = _canvasSlot.GetComponent<Canvas>();
-        if (canvas == null) return;
-
-        float lx = (normalized.x - 0.5f) * _captureWidth;
-        float ly = (0.5f - normalized.y) * CaptureHeight;
-        var worldPoint = _canvasSlot.LocalPointToGlobal(new float3(lx, ly, 0f));
-        var forward = _canvasSlot.Forward;
-        canvas.UpdatePointer(UIInteractionSource.Desktop, 0, worldPoint + forward * 0.5f, -forward, pressed, World?.LocalUser);
-    }
-
-    public void ClearPointer()
-    {
-        var canvas = _canvasSlot?.GetComponent<Canvas>();
-        canvas?.ClearPointer(UIInteractionSource.Desktop, 0, World?.LocalUser);
     }
 
     public bool FeedAxis(float2 axis)
@@ -245,6 +371,22 @@ public class UserspaceDashboard : UIComponent
         BuildRenderRig();
         BuildDisplaySurface();
         BuildDefaultScreens();
+        EnsureGrabHandle();
+    }
+
+    // Freeform grab handle on the dash root: grabbing reparents this slot to the
+    // hand (surface + portal ride along) and restores it on release, leaving the
+    // panel where you let go. OnCommonUpdate gates AllowGrab to open+VR+freeform.
+    private void EnsureGrabHandle()
+    {
+        if (_grabHandle != null && !_grabHandle.IsDestroyed)
+            return;
+        _grabHandle = Slot.GetComponent<Grabbable>() ?? Slot.AttachComponent<Grabbable>();
+        _grabHandle.AllowGrab.Value = false;
+        _grabHandle.Scalable.Value = false;
+        _grabHandle.FollowRotation.Value = true;
+        _grabHandle.Receivable.Value = false;
+        _grabHandle.InteractionPriority.Value = -1;
     }
 
     private static readonly Uri DefaultFontUri = new("res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf");
@@ -294,6 +436,10 @@ public class UserspaceDashboard : UIComponent
         _renderTexture = _renderRig.AttachComponent<RenderTextureProvider>();
         _renderTexture.Width.Value = _captureWidth * SupersampleScale;
         _renderTexture.Height.Value = CaptureHeight * SupersampleScale;
+        // Opaque capture: alpha-blended UI doesn't accumulate usable alpha in a
+        // transparent viewport, which made the whole dash ghostly. The slight
+        // see-through look comes from the surface material tint instead.
+        _renderTexture.ClearColor.Value = new color(0.06f, 0.05f, 0.11f, 1f);
         _renderTexture.CullMask.Value = RenderLayerOverride.HiddenLayer;
         _renderTexture.OrthographicSize.Value = CaptureHeight * CanvasScale;
         _renderTexture.CameraPosition.Value = RigWorldPosition + new float3(0f, 0f, CaptureDistance);
@@ -317,10 +463,20 @@ public class UserspaceDashboard : UIComponent
         _displayMesh.Curvature.Value = 0.5f;
         _displayMesh.Segments.Value = 24;
 
-        _displayMaterial = _surfaceSlot.AttachComponent<UnlitMaterial>();
-        _displayMaterial.BlendMode.Value = BlendMode.Alpha;
+        // Overlay material: the dash always draws above world geometry, in both
+        // modes. Queue sits below the laser cursor (4005) so the pointer stays
+        // on top of the dash.
+        // UI overlay material: alpha-blended and depth-test-disabled, so the dash
+        // can actually occlude the world (the additive overlay shader can only
+        // brighten - it can never be opaque). Queue sits below the laser cursor
+        // (4005) so the pointer stays on top of the dash.
+        _displayMaterial = _surfaceSlot.AttachComponent<UIUnlitMaterial>();
         _displayMaterial.Culling.Value = Culling.None;
-        _displayMaterial.TintColor.Value = colorHDR.White;
+        _displayMaterial.UseVertexColor.Value = false;
+        // Barely translucent: the capture itself is opaque, this is the only
+        // see-through factor.
+        _displayMaterial.TintColor.Value = new colorHDR(1f, 1f, 1f, 0.97f);
+        _displayMaterial.RenderQueue.Value = 4002;
         _displayMaterial.Texture.Target = _renderTexture;
 
         var renderer = _surfaceSlot.AttachComponent<MeshRenderer>();
@@ -335,19 +491,20 @@ public class UserspaceDashboard : UIComponent
         if (_defaultScreensBuilt || _dashboard == null) return;
         _defaultScreensBuilt = true;
 
-        AddInfoScreen("Home", new color(0.94f, 0.81f, 0f, 1f),
-            "Your home space and quick actions.");
-        AddInfoScreen("Worlds", new color(0.20f, 0.80f, 1f, 1f),
-            "Browse, open and manage worlds.");
-        AddInfoScreen("Session", new color(0.25f, 0.55f, 1f, 1f),
-            "Session controls and the users in this session.");
-        AddInfoScreen("Settings", new color(1f, 0.22f, 0.28f, 1f),
-            "Interface, input, audio and locomotion settings.");
+        // Tab order: Home (with the Create New World widget), Worlds (the world/session
+        // browser), then the social cluster (Friends/Groups/Inventory), Session, Settings,
+        // with the file browser last.
+        _dashboard?.AddScreen<HomeScreen>("Home", new color(0.94f, 0.81f, 0f, 1f));
+        _dashboard?.AddScreen<WorldsScreen>("Worlds", new color(0.20f, 0.80f, 1f, 1f));
         AddInfoScreen("Friends", new color(0.30f, 1f, 0.80f, 1f),
             "Friends, requests and messages.");
-        AddInfoScreen("Inventory", new color(0.85f, 0.60f, 0.22f, 1f),
-            "Your saved items and avatars.");
+        AddInfoScreen("Groups", new color(0.55f, 0.45f, 0.95f, 1f),
+            "Groups you're a member of and group spaces.");
+        _dashboard?.AddScreen<InventoryScreen>("Inventory", new color(0.85f, 0.60f, 0.22f, 1f));
+        _dashboard?.AddScreen<SessionScreen>("Session", new color(0.25f, 0.55f, 1f, 1f));
+        _dashboard?.AddScreen<SettingsScreen>("Settings", new color(1f, 0.22f, 0.28f, 1f));
         _dashboard?.AddScreen<FileBrowserScreen>("Files", new color(0.70f, 0.66f, 0.32f, 1f));
+        _dashboard?.AddScreen<ExitScreen>("Exit", new color(1f, 0.30f, 0.32f, 1f));
     }
 
     private void AddInfoScreen(string label, color accent, string body)
@@ -373,7 +530,18 @@ public class UserspaceDashboard : UIComponent
 
     private void ApplyOpenState()
     {
-        Slot.ActiveSelf.Value = IsOpen.Value;
+        bool open = IsOpen.Value;
+        Slot.ActiveSelf.Value = open;
+
+        // The render rig lives beside this slot, not under it, so closing the dash
+        // doesn't park it for free. Deactivate it (stops canvas rebuilds, widget
+        // drivers, mesh uploads) and pause the offscreen viewport render, otherwise
+        // a closed dash keeps re-rendering at full supersampled resolution forever.
+        // While warming up at startup the rig stays on regardless of open state.
+        bool runRig = open || !_rigWarmed;
+        if (_renderRig != null && !_renderRig.IsDestroyed)
+            _renderRig.ActiveSelf.Value = runRig;
+        _renderTexture?.Asset?.SetRenderEnabled(runRig);
     }
 
     private void PositionInFrontOfFocusedView()

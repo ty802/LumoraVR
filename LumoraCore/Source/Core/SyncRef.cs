@@ -3,6 +3,7 @@
 
 using System;
 using System.Runtime.CompilerServices;
+using Lumora.Core.Persistence;
 
 namespace Lumora.Core;
 
@@ -163,6 +164,13 @@ public class SyncRef<T> : SyncField<RefID>, ISyncRef, IWorldElementReceiver
     public bool IsTargetRemoved => _target != null && _target.IsDestroyed;
 
     public Type TargetType => typeof(T);
+
+    // A reference saves as the stable GUID of its target (not a raw RefID) so it survives
+    // the round-trip; on load it resolves to the target's freshly-allocated RefID, deferring
+    // until that target loads if needed.
+    public override DataTreeNode Save(SaveControl control) => control.SaveReference(Value);
+
+    public override void Load(DataTreeNode node, LoadControl control) => control.RequestReference(node, this);
 
     IWorldElement ISyncRef.Target
     {

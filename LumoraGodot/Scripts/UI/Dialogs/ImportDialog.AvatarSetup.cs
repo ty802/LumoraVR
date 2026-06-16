@@ -19,30 +19,16 @@ public partial class ImportDialog
         if (_btnAvatarSetup == null)
             return;
 
-        if (_activeAvatarCreatorSession != null && !_activeAvatarCreatorSession.IsActive)
-            _activeAvatarCreatorSession = null;
-
         var avatarSlot = ResolveImportedAvatarSlot();
-        var hasAvatar = avatarSlot != null;
+        bool hasRig = avatarSlot != null
+            && avatarSlot.GetComponentInChildren<SkeletonBuilder>() != null
+            && avatarSlot.GetComponentInChildren<BipedRig>() != null;
 
-        _btnAvatarSetup.Visible = hasAvatar;
-        _btnAvatarSetup.Disabled = _isImporting || !hasAvatar;
+        _btnAvatarSetup.Visible = avatarSlot != null;
+        _btnAvatarSetup.Disabled = _isImporting || !hasRig;
 
-        if (!hasAvatar)
-        {
-            _btnAvatarSetup.Text = "Avatar Creator";
-            return;
-        }
-
-        if (_activeAvatarCreatorSession != null && _activeAvatarCreatorSession.Matches(avatarSlot!))
-        {
-            _btnAvatarSetup.Text = "Create Avatar";
-            return;
-        }
-
-        _btnAvatarSetup.Text = IsAvatarFinalized(avatarSlot!)
-            ? "Equip Avatar"
-            : "Open Creator";
+        bool creatorOpen = avatarSlot?.World?.RootSlot?.GetComponentInChildren<AvatarCreator>() != null;
+        _btnAvatarSetup.Text = creatorOpen ? "Creator Open" : "Avatar Creator";
     }
 
     private void OnAvatarSetupPressed()
@@ -60,64 +46,34 @@ public partial class ImportDialog
 
         try
         {
-            if (_activeAvatarCreatorSession != null && !_activeAvatarCreatorSession.IsActive)
-                _activeAvatarCreatorSession = null;
-
-            if (_activeAvatarCreatorSession != null && _activeAvatarCreatorSession.Matches(avatarSlot))
+            if (avatarSlot.GetComponentInChildren<SkeletonBuilder>() == null ||
+                avatarSlot.GetComponentInChildren<BipedRig>() == null)
             {
-                if (_activeAvatarCreatorSession.Finalize(out var finalizeMessage))
-                {
-                    _activeAvatarCreatorSession = null;
-                    SetSubtitle("Avatar created");
-                    SetCompletedStatus(finalizeMessage);
-                }
-                else
-                {
-                    SetCompletedStatus(finalizeMessage, success: false);
-                }
-
+                SetCompletedStatus("Avatar rig is not ready yet.", success: false);
                 UpdateAvatarSetupButton();
                 return;
             }
 
-            if (IsAvatarFinalized(avatarSlot))
+            // Spawn the in-world creator on its own slot (it stands a figure of grabbable markers in
+            // front of you). Line the markers up over the imported avatar and aim at Create; Create
+            // finds the rig by overlap and makes the avatar click-to-equip.
+            var world = avatarSlot.World;
+            if (world?.RootSlot == null)
             {
-                if (TryEquipAvatar(avatarSlot, out var equipMessage))
-                {
-                    SetSubtitle("Avatar equipped");
-                    SetCompletedStatus(equipMessage);
-                }
-                else
-                {
-                    SetCompletedStatus(equipMessage, success: false);
-                }
-
+                SetCompletedStatus("Avatar world is not available.", success: false);
+                UpdateAvatarSetupButton();
+                return;
+            }
+            if (world.RootSlot.GetComponentInChildren<AvatarCreator>() != null)
+            {
+                SetCompletedStatus("Creator is already open - line the markers up over your avatar and aim at the green Create button.");
                 UpdateAvatarSetupButton();
                 return;
             }
 
-            ResetAvatarCreatorState();
-
-            var setupParent = _targetSlot ?? avatarSlot.Parent ?? avatarSlot.World?.RootSlot;
-            if (setupParent == null)
-            {
-                SetCompletedStatus("Could not open the avatar creator.", success: false);
-                UpdateAvatarSetupButton();
-                return;
-            }
-
-            var session = new AvatarCreatorSession(avatarSlot, setupParent);
-            if (!session.Open(out var openMessage))
-            {
-                session.Dispose();
-                SetCompletedStatus(openMessage, success: false);
-                UpdateAvatarSetupButton();
-                return;
-            }
-
-            _activeAvatarCreatorSession = session;
+            world.RootSlot.AddSlot("Avatar Creator").AttachComponent<AvatarCreator>();
             SetSubtitle("Avatar creator open");
-            SetCompletedStatus(openMessage);
+            SetCompletedStatus("In-world creator spawned. Scale and slide the markers over your avatar, then aim at the green Create button.");
             UpdateAvatarSetupButton();
         }
         catch (Exception ex)
@@ -139,47 +95,4 @@ public partial class ImportDialog
         return _lastImportedAvatarSlot;
     }
 
-    // An avatar is ready when its component tree carries a built skeleton and
-    // rig - there is no separate finalize state.
-    private static bool IsAvatarFinalized(Slot avatarSlot)
-    {
-        if (avatarSlot == null || avatarSlot.IsDestroyed)
-            return false;
-
-        return avatarSlot.GetComponentInChildren<SkeletonBuilder>() != null
-            && avatarSlot.GetComponentInChildren<BipedRig>() != null;
-    }
-
-    private bool TryEquipAvatar(Slot avatarSlot, out string message)
-    {
-        message = string.Empty;
-
-        var localUserRoot = avatarSlot.World?.LocalUser?.Root ?? _targetSlot?.World?.LocalUser?.Root;
-        if (localUserRoot == null)
-        {
-            message = "Local user root is not available.";
-            return false;
-        }
-
-        var manager = localUserRoot.Slot.GetComponent<AvatarManager>() ?? localUserRoot.Slot.AttachComponent<AvatarManager>();
-        manager.UserRoot.Target ??= localUserRoot;
-
-        if (manager.CurrentAvatar.Target == avatarSlot)
-        {
-            message = "Avatar is already equipped.";
-            return true;
-        }
-
-        if (!manager.EquipAvatar(avatarSlot))
-        {
-            message = "Avatar could not be equipped.";
-            return false;
-        }
-
-        var avatarName = avatarSlot.SlotName?.Value;
-        message = string.IsNullOrWhiteSpace(avatarName)
-            ? "Avatar equipped."
-            : $"Equipped {avatarName}.";
-        return true;
-    }
 }

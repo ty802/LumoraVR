@@ -30,7 +30,7 @@ public class InteractionElement : UIComponent, IUIInteractable
         IsPressed = new Sync<bool>(this, false);
     }
 
-    public bool CanInteract => Enabled.Value && Interactable.Value && Slot != null && Slot.IsActive;
+    public bool CanInteract => !IsDestroyed && Enabled.Value && Interactable.Value && Slot != null && Slot.IsActive;
     public InteractionState CurrentInteractionState
     {
         get
@@ -73,6 +73,9 @@ public class InteractionElement : UIComponent, IUIInteractable
 
     public void NotifyHoverExit(in UIInteractionContext context)
     {
+        // Canvas pointer state can outlive the element (menu rebuild/close while
+        // destructions are still queued) - nothing to clear on a dead element. - xlinka
+        if (IsDestroyed) return;
         using var actorScope = EnterInteractionActor(in context);
         IsHovering.Value = false;
         ApplyColorDrivers();
@@ -100,6 +103,7 @@ public class InteractionElement : UIComponent, IUIInteractable
 
     public void NotifyRelease(in UIInteractionContext context)
     {
+        if (IsDestroyed) return;
         using var actorScope = EnterInteractionActor(in context);
         IsPressed.Value = false;
         ApplyColorDrivers();

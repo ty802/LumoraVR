@@ -70,8 +70,10 @@ public abstract class Collider : ImplementableComponent
         Mass.OnChanged += _ => RunApplyChanges();
         CharacterCollider.OnChanged += _ => RunApplyChanges();
         IgnoreRaycasts.OnChanged += _ => RunApplyChanges();
-        Slot.LocalPosition.OnChanged += _ => RunApplyChanges();
-        Slot.LocalRotation.OnChanged += _ => RunApplyChanges();
+        // Re-sync whenever this slot's WORLD transform changes - its own local move, an ancestor
+        // moving, or a scale change - coalesced to once per frame. (The old per-field local hooks
+        // only caught this slot's own position/rotation; ancestor moves and scale were missed.)
+        Slot.WorldTransformChanged += OnSlotTransformChanged;
 
         // Lumora Pattern: If this is a CharacterController collider,
         // notify CharacterController components in the SAME slot (not parent slots)
@@ -138,6 +140,8 @@ public abstract class Collider : ImplementableComponent
 
     }
 
+    private void OnSlotTransformChanged(Slot _) => RunApplyChanges();
+
     // ABSTRACT METHODS
 
     /// <summary>
@@ -155,6 +159,9 @@ public abstract class Collider : ImplementableComponent
 
     public override void OnDestroy()
     {
+        if (Slot != null)
+            Slot.WorldTransformChanged -= OnSlotTransformChanged;
+
         _owner?.OnColliderRemoved(this);
         _owner = null!;
 

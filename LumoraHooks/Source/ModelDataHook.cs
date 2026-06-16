@@ -28,6 +28,7 @@ using Lumora.Core.Components;
 /// Loads GLB/GLTF/VRM through Godot's scene loader and Assimp-backed formats
 /// through a direct runtime import path, then mirrors the model into Lumora slots.
 /// </summary>
+[ImplementableHook(typeof(ModelData))]
 public sealed class ModelDataHook : ComponentHook<ModelData>
 {
     private Node3D? _modelRoot;
@@ -207,9 +208,16 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
     {
         var extension = Path.GetExtension(sourcePath).ToLowerInvariant();
 
-        var packedScene = ResourceLoader.Load<PackedScene>(sourcePath);
-        if (packedScene != null)
-            return packedScene.Instantiate();
+        // ResourceLoader only loads IMPORTED resources under res://. An external file the user
+        // dropped (e.g. F:\model.glb) has no import metadata, so ResourceLoader.Load just fails with
+        // "No loader found" and spams the log - external models must go through GltfDocument at
+        // runtime instead. Only try the PackedScene path for res:// resources.
+        if (sourcePath.StartsWith("res://", StringComparison.OrdinalIgnoreCase))
+        {
+            var packedScene = ResourceLoader.Load<PackedScene>(sourcePath);
+            if (packedScene != null)
+                return packedScene.Instantiate();
+        }
 
         if (extension is ".glb" or ".gltf" or ".vrm")
         {
@@ -857,12 +865,15 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
         _builtSkeleton = skelBuilder;
         LumoraLogger.Log($"ModelDataHook: Built SkeletonBuilder with {skelBuilder.BoneCount} bones");
 
-        bool isAvatar = Owner.IsAvatar.Value || (Owner.ImportSettings?.IsAvatarImport ?? false);
-        if (isAvatar)
+        // Any rigged model becomes a grabbable, poseable skeleton - not gated behind an "avatar" flag.
+        // The IsAvatar flag still drives avatar-only rescale elsewhere.
+        if (skelBuilder.BoneCount > 0)
         {
-            var rig = skelBuilder.Slot.AttachComponent<BipedRig>();
-            rig.PopulateFromSkeleton(skelBuilder);
-            LumoraLogger.Log($"ModelDataHook: Created BipedRig, IsBiped={rig.IsBiped}");
+            var rig = skelBuilder.Slot.GetComponent<BipedRig>() ?? skelBuilder.Slot.AttachComponent<BipedRig>();
+            if (rig.Bones.Count == 0)
+                rig.PopulateFromSkeleton(skelBuilder);
+            int handles = AvatarRigSetup.SetupPoseHandles(rig);
+            LumoraLogger.Log($"ModelDataHook: BipedRig IsBiped={rig.IsBiped}, {rig.Bones.Count} bones, {handles} pose handles");
         }
     }
 
@@ -1018,6 +1029,11 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
                 out var boneIdx, out var boneWgt))
             {
                 smr.SetMeshData(verts, normals, uvs, indices, boneIdx, boneWgt, boneNamesArray);
+
+                // Facial expression / viseme / blink morph targets (drives lip-sync + eyes later).
+                ExtractBlendShapes(mesh, surfIdx, verts.Length, out var bsNames, out var bsVerts, out var bsMode);
+                if (bsNames != null && bsVerts != null)
+                    smr.SetBlendShapes(bsNames, bsVerts, bsMode);
             }
 
             if (skelBuilder != null)
@@ -1039,6 +1055,48 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
 
     // Mesh data extraction
 
+
+    // Pull a surface's blendshape morph targets (mesh-level names, per-surface vertex arrays). The
+    // arrays line up 1:1 with SurfaceGetArrays, so they index the same vertices as the base surface.
+    private static void ExtractBlendShapes(global::Godot.Mesh mesh, int surfIdx, int vertexCount,
+        out string[]? names, out float3[]? vertices, out int mode)
+    {
+        names = null;
+        vertices = null;
+        mode = 0;
+
+        // Blendshape count/name/mode live on ArrayMesh (runtime GLTF meshes are ArrayMesh).
+        if (mesh is not ArrayMesh arrayMesh)
+            return;
+
+        mode = (int)arrayMesh.BlendShapeMode;
+        int shapeCount = arrayMesh.GetBlendShapeCount();
+        if (shapeCount == 0 || vertexCount == 0)
+            return;
+
+        var shapeArrays = arrayMesh.SurfaceGetBlendShapeArrays(surfIdx);
+        if (shapeArrays == null || shapeArrays.Count < shapeCount)
+            return;
+
+        var resolvedNames = new string[shapeCount];
+        for (int i = 0; i < shapeCount; i++)
+            resolvedNames[i] = arrayMesh.GetBlendShapeName(i).ToString();
+
+        var flat = new float3[shapeCount * vertexCount];
+        for (int s = 0; s < shapeCount; s++)
+        {
+            var inner = shapeArrays[s];
+            var vArr = inner[(int)Mesh.ArrayType.Vertex].As<Vector3[]>();
+            if (vArr == null || vArr.Length != vertexCount)
+                return; // misaligned -> skip blendshapes for this surface rather than corrupt the morph
+            int baseIdx = s * vertexCount;
+            for (int i = 0; i < vertexCount; i++)
+                flat[baseIdx + i] = new float3(vArr[i].X, vArr[i].Y, vArr[i].Z);
+        }
+
+        names = resolvedNames;
+        vertices = flat;
+    }
 
     private static bool ExtractSurfaceMeshData(global::Godot.Mesh mesh, int surfIdx,
         out float3[] vertices, out float3[] normals, out float2[] uvs, out int[] indices,

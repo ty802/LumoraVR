@@ -81,13 +81,39 @@ public sealed class HandTool : Tool
         }
 
         SampleInput(_laser);
-        _laser.SetToolState(_primaryHeld && !IsHoldingObjectsWithLaser, IsHoldingObjectsWithLaser);
+        // In VR the laser stays visible while this hand's menu is open so the
+        // user can see what they're aiming at. On desktop the menu owns a
+        // mouse-driven pointer instead, so the laser goes fully inactive to
+        // keep its frozen center aim from pressing menu items.
+        var inputInterface = Engine.Current?.InputInterface;
+        bool vrActive = inputInterface?.IsVRActive == true;
+        bool menuVisible = IsContextMenuOpenByThisHand();
+        bool desktopMenuOpen = menuVisible && !vrActive;
+        // While the desktop menu is open the camera is frozen and the mouse
+        // deflects the laser instead - the laser cursor IS the pointer. Press
+        // state stays the real primary. (The dash uses the free-cursor ray the
+        // platform pushes, not this deflection.)
+        UpdateDesktopMenuAim(desktopMenuOpen);
+        // Modal pointer targets: while our menu is open it is the only thing
+        // this laser can touch; while the desktop dash is open, the dash surface
+        // is - no click-through into the world behind it. Primary presses must
+        // reach the target even mid-grab (otherwise the held-object actions
+        // could never be clicked - holding normally suppresses canvas presses).
+        Slot? exclusiveRoot = null;
+        if (menuVisible)
+            exclusiveRoot = _contextMenu?.VisualRoot;
+        else if (!vrActive && inputInterface?.IsDashboardOpen == true)
+            exclusiveRoot = UI.UserspaceDashboard.LocalInstance?.SurfaceSlot;
+        _laser.SetExclusiveRoot(exclusiveRoot);
+        bool uiPress = _primaryHeld && (menuVisible || !IsHoldingObjectsWithLaser);
+        _laser.SetToolState(uiPress, IsHoldingObjectsWithLaser && !menuVisible);
         _laser.RefreshNow(delta);
         ProcessPrimary(_laser);
         ProcessSecondary(_laser);
+        ProcessMenuKey(_laser);
         ProcessGrip(_laser);
 
-        if (IsHoldingObjectsWithLaser)
+        if (IsHoldingObjectsWithLaser && !menuVisible)
         {
             ProcessLaserHold(_laser, delta);
         }
@@ -100,9 +126,13 @@ public sealed class HandTool : Tool
     public override void OnDestroy()
     {
         ResetInteraction(releaseHeld: true);
+        // Don't pop the item into the world mid-teardown; let it go down with the rig.
+        _suppressHolderRelease = true;
         EquipToolItem(null);
         base.OnDestroy();
     }
+
+    private bool _suppressHolderRelease;
 
     private void EnsureRig()
     {
@@ -155,6 +185,7 @@ public sealed class HandTool : Tool
         {
             previous.OnDequipped();
             previous.SetActiveTool(null);
+            ReleaseFromHolder(previous);
         }
 
         ActiveToolItem.Target = item!;
@@ -162,6 +193,32 @@ public sealed class HandTool : Tool
         {
             item.SetActiveTool(this);
             item.OnEquipped();
+        }
+    }
+
+    // Dequip must physically remove the item from the Tool Holder, otherwise
+    // EnsureRig's auto-equip finds it there next update and snaps it right back.
+    // Drop it into the world just off the hand.
+    private void ReleaseFromHolder(ToolItem item)
+    {
+        if (_suppressHolderRelease)
+            return;
+        var itemSlot = item?.Slot;
+        if (itemSlot == null || itemSlot.IsDestroyed || _toolHolderSlot == null)
+            return;
+        if (itemSlot != _toolHolderSlot && !itemSlot.IsDescendantOf(_toolHolderSlot))
+            return;
+
+        var userRootSlot = Slot?.ActiveUserRoot?.Slot;
+        var newParent = userRootSlot?.Parent ?? World?.RootSlot;
+        if (newParent == null || newParent.IsDestroyed)
+            return;
+
+        itemSlot.SetParent(newParent, preserveGlobalTransform: true);
+        // Pop it off the hand a little so it isn't left intersecting the grip.
+        if (Slot != null)
+        {
+            itemSlot.GlobalPosition += Slot.Forward * 0.05f;
         }
     }
 
@@ -234,14 +291,26 @@ public sealed class HandTool : Tool
     {
         if (_secondaryHeld && !_prevSecondaryHeld)
         {
-            var toolItem = GetUsableToolItem();
-            if (toolItem != null && toolItem.UsesSecondary && toolItem.OnSecondaryPress())
+            // While our menu is open, the button closes it before any tool
+            // gets a say — otherwise an equipped tool would eat the press and
+            // the menu could never be dismissed.
+            if (IsContextMenuOpenByThisHand())
             {
-                _activeSecondaryToolItem = toolItem;
+                FindContextMenu()?.Close();
             }
-            else if (!IsHoldingObjects)
+            else
             {
-                ToggleContextMenu(laser);
+                var toolItem = GetUsableToolItem();
+                if (toolItem != null && toolItem.UsesSecondary && toolItem.OnSecondaryPress())
+                {
+                    _activeSecondaryToolItem = toolItem;
+                }
+                else if (!IsHoldingObjects && Engine.Current?.InputInterface?.IsVRActive == true)
+                {
+                    // VR fallback: free secondary opens the menu. Desktop uses
+                    // the dedicated T binding instead.
+                    ToggleContextMenu(laser);
+                }
             }
         }
         else if (_secondaryHeld && _activeSecondaryToolItem != null)
@@ -262,8 +331,7 @@ public sealed class HandTool : Tool
     // sources can add contextual actions (equip avatar, etc.).
     private void ToggleContextMenu(InteractionLaser laser)
     {
-        var userRootSlot = Slot?.ActiveUserRoot?.Slot;
-        var menu = userRootSlot?.GetComponentInChildren<UI.ContextMenuSystem>();
+        var menu = FindContextMenu();
         if (menu == null)
             return;
 
@@ -271,11 +339,91 @@ public sealed class HandTool : Tool
         {
             Pointer = _laserSlot ?? Slot,
             Target = laser?.CurrentHitSlot,
+            Side = Side.Value,
         });
+    }
+
+    // Accumulated mouse deflection (yaw, pitch radians) steering the laser while
+    // the desktop context menu has the camera frozen. Same sign convention as
+    // the camera: mouse right = look right, mouse up = look up.
+    private float2 _menuAim;
+    private const float MenuAimRadiansPerScreen = 1.5f;
+    private const float MenuAimMaxRadians = 0.85f;
+
+    private void UpdateDesktopMenuAim(bool active)
+    {
+        if (_laser == null)
+            return;
+
+        if (!active)
+        {
+            if (_menuAim != float2.Zero)
+            {
+                _menuAim = float2.Zero;
+                _laser.SetDesktopAimOffset(float2.Zero);
+            }
+            return;
+        }
+
+        var mouse = Engine.Current?.InputInterface?.Mouse;
+        if (mouse == null)
+            return;
+
+        var d = mouse.DirectDelta.Value;
+        _menuAim = new float2(
+            System.Math.Clamp(_menuAim.x - d.x * MenuAimRadiansPerScreen, -MenuAimMaxRadians, MenuAimMaxRadians),
+            System.Math.Clamp(_menuAim.y - d.y * MenuAimRadiansPerScreen, -MenuAimMaxRadians, MenuAimMaxRadians));
+        _laser.SetDesktopAimOffset(_menuAim);
+    }
+
+    private bool _menuKeyWasDown;
+
+    // Desktop context menu binding: middle mouse click toggles open/close
+    // (tool secondary owns R, primary owns left click). Only the right hand
+    // listens so both hands don't double-toggle.
+    private void ProcessMenuKey(InteractionLaser laser)
+    {
+        var input = Engine.Current?.InputInterface;
+        if (input == null || input.IsVRActive || Side.Value != Chirality.Right)
+        {
+            _menuKeyWasDown = false;
+            return;
+        }
+
+        bool down = input.Mouse?.MiddleButton.Held == true;
+        if (down && !_menuKeyWasDown)
+        {
+            ToggleContextMenu(laser);
+        }
+        _menuKeyWasDown = down;
+    }
+
+    private UI.ContextMenuSystem? _contextMenu;
+
+    private UI.ContextMenuSystem? FindContextMenu()
+    {
+        if (_contextMenu == null || _contextMenu.IsDestroyed)
+            _contextMenu = Slot?.ActiveUserRoot?.Slot?.GetComponentInChildren<UI.ContextMenuSystem>();
+        return _contextMenu;
+    }
+
+    private bool IsContextMenuOpenByThisHand()
+    {
+        var menu = _contextMenu;
+        if (menu == null || menu.IsDestroyed || !menu.IsOpen.Value)
+            return false;
+        return menu.CurrentContext?.Side == Side.Value;
     }
 
     private void ProcessGrip(InteractionLaser laser)
     {
+        // Grab state freezes while this hand's menu is open: letting go of grip
+        // to work the menu must not drop the held object, or Destroy/Duplicate
+        // would always act on an empty hand. The release edge is processed
+        // after the menu closes.
+        if (IsContextMenuOpenByThisHand())
+            return;
+
         if (_gripHeld && !_prevGripHeld)
         {
             TryGrabCurrentTarget(laser);
@@ -967,9 +1115,11 @@ public sealed class HandTool : Tool
             return true;
         }
 
+        // Desktop tool secondary is R (middle mouse is free; the context menu
+        // gets its own T binding so nothing conflicts).
         return !input.IsVRActive &&
                laser.ControllerSide.Value == Chirality.Right &&
-               input.Mouse?.MiddleButton.Held == true;
+               input.Keyboard?.IsKeyPressed(Key.R) == true;
     }
 
     private static bool IsShiftHeld(InputInterface input)

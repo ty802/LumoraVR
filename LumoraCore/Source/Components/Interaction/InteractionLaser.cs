@@ -147,6 +147,26 @@ public sealed class InteractionLaser : Component
         _toolBlocksPointerActions = blockPointerActions;
     }
 
+    // Desktop aim steering: while the context menu owns the mouse the camera is
+    // frozen, so the mouse instead deflects the laser ray off head-forward
+    // (yaw, pitch in radians). The laser cursor stays the one and only cursor. - xlinka
+    private float2 _desktopAimOffset;
+
+    public void SetDesktopAimOffset(in float2 yawPitch)
+    {
+        _desktopAimOffset = yawPitch;
+    }
+
+    // While set, only hits under this slot are interactable and world colliders
+    // don't block the ray. Used while the context menu is open: the menu is the
+    // only thing the summoning laser can touch. - xlinka
+    private Slot? _exclusiveRoot;
+
+    public void SetExclusiveRoot(Slot? root)
+    {
+        _exclusiveRoot = root;
+    }
+
     public void RefreshNow(float delta)
     {
         long frame = Engine.Current?.FrameCount ?? -1;
@@ -268,8 +288,10 @@ public sealed class InteractionLaser : Component
         _rayOrigin = origin;
         _rayDirection = direction;
 
+        bool exclusive = _exclusiveRoot != null && !_exclusiveRoot.IsDestroyed;
+
         float blockingDistance = maxDist;
-        if (TryFindNearestColliderHitDistance(origin, direction, maxDist, out float colliderHitDistance))
+        if (!exclusive && TryFindNearestColliderHitDistance(origin, direction, maxDist, out float colliderHitDistance))
         {
             blockingDistance = colliderHitDistance;
         }
@@ -283,6 +305,18 @@ public sealed class InteractionLaser : Component
             var userspace = engine.WorldManager?.UserspaceWorld;
             if (userspace != null && userspace != World && userspace.RootSlot != null)
                 CollectInteractionHits(userspace.RootSlot, origin, direction, maxDist, blockingDistance);
+        }
+
+        if (exclusive)
+        {
+            for (int i = _hitBuffer.Count - 1; i >= 0; i--)
+            {
+                var hitSlot = _hitBuffer[i].Slot;
+                if (hitSlot == null || (hitSlot != _exclusiveRoot && !hitSlot.IsDescendantOf(_exclusiveRoot!)))
+                {
+                    _hitBuffer.RemoveAt(i);
+                }
+            }
         }
 
         IInteractionTarget? hoveredTarget = null;
@@ -326,7 +360,7 @@ public sealed class InteractionLaser : Component
             hoveredDistance = selected.Distance;
             hoveredHitPoint = selected.HitPoint;
         }
-        else if (TryKeepStickyTarget(origin, direction, maxDist, blockingDistance,
+        else if (!exclusive && TryKeepStickyTarget(origin, direction, maxDist, blockingDistance,
             out var stickyTarget, out var stickySlot, out float stickyDistance, out float3 stickyPoint))
         {
             hoveredTarget = stickyTarget;
@@ -436,7 +470,10 @@ public sealed class InteractionLaser : Component
     {
         var input = Engine.Current?.InputInterface;
         bool isVr = input?.IsVRActive == true;
-        bool shouldShow = hasTarget || isVr;
+        // Desktop has no screen-space reticle - this in-world cursor is the only
+        // pointer, so it stays visible even with nothing hovered.
+        bool isDesktop = input != null && !isVr;
+        bool shouldShow = hasTarget || isVr || isDesktop;
         float visualStep = MathF.Max(delta, 0f) * 6f;
         _laserVisibleLerp = Progress01(_laserVisibleLerp, visualStep, shouldShow);
 
@@ -518,20 +555,30 @@ public sealed class InteractionLaser : Component
             return;
         }
 
-        var head = FindHeadSlot();
-        float3 viewPosition = head?.GlobalPosition ?? (_rayOrigin - _rayDirection);
-        float3 viewUp = head?.Up ?? float3.Up;
-        float3 toView = viewPosition - _pointSlot.GlobalPosition;
-        if (toView.Length <= 0.0001f)
+        var input = Engine.Current?.InputInterface;
+        if (input != null && !input.IsVRActive && input.DesktopCameraPoseValid)
         {
-            toView = -_rayDirection;
+            // Desktop: screen-aligned, like an OS cursor. A look-at billboard
+            // would visibly yaw and roll as the cursor sweeps across the view.
+            _cursorSlot.GlobalRotation = input.DesktopCameraRotation;
         }
-        if (viewUp.Length <= 0.0001f)
+        else
         {
-            viewUp = float3.Up;
-        }
+            var head = FindHeadSlot();
+            float3 viewPosition = head?.GlobalPosition ?? (_rayOrigin - _rayDirection);
+            float3 viewUp = head?.Up ?? float3.Up;
+            float3 toView = viewPosition - _pointSlot.GlobalPosition;
+            if (toView.Length <= 0.0001f)
+            {
+                toView = -_rayDirection;
+            }
+            if (viewUp.Length <= 0.0001f)
+            {
+                viewUp = float3.Up;
+            }
 
-        _cursorSlot.GlobalRotation = SafeLookRotation(toView, viewUp);
+            _cursorSlot.GlobalRotation = SafeLookRotation(toView, viewUp);
+        }
         float cursorScale = MathF.Max(0.35f, pointDistance) * 0.6f;
         _cursorSlot.LocalScale.Value = float3.One * cursorScale;
 
@@ -826,9 +873,29 @@ public sealed class InteractionLaser : Component
         // desktop: aim from the head/camera so the ray passes through the reticle. - xlinka
         if (input != null && !input.IsVRActive)
         {
+            // Free-cursor mode (dash open): the platform-supplied ray through the
+            // unlocked OS cursor IS the laser ray, so the in-world cursor follows
+            // the mouse over the projected dash.
+            if (input.IsDashboardOpen && input.DesktopCursorRayValid)
+            {
+                direction = input.DesktopCursorRayDirection;
+                float cursorLen = direction.Length;
+                direction = cursorLen > 0.0001f ? direction / cursorLen : float3.Backward;
+                origin = input.DesktopCursorRayOrigin + direction * startOffset;
+                return;
+            }
+
             var headSlot = FindHeadSlot();
             floatQ headRot = headSlot != null ? headSlot.GlobalRotation : floatQ.Identity;
             float3 headPos = headSlot != null ? headSlot.GlobalPosition : Slot.GlobalPosition;
+
+            // Mouse-steered deflection while the camera is frozen (context menu open).
+            if (_desktopAimOffset != float2.Zero)
+            {
+                headRot = headRot
+                    * floatQ.AxisAngle(float3.Up, _desktopAimOffset.x)
+                    * floatQ.AxisAngle(new float3(1f, 0f, 0f), _desktopAimOffset.y);
+            }
 
             direction = headRot * new float3(0f, 0f, -1f);
             float dLen = direction.Length;

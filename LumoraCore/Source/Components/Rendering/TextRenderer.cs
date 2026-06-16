@@ -45,6 +45,18 @@ public class TextRenderer : ProceduralMesh
     public readonly Sync<TextVerticalAlignment> VerticalAlign;
     public readonly Sync<float> LineSpacing;
 
+    /// <summary>Glyph outline color (forwarded to the text material). Transparent = no outline.</summary>
+    public readonly Sync<colorHDR> OutlineColor;
+
+    /// <summary>Glyph outline thickness in atlas texels (0 = none). Used for readable floating text.</summary>
+    public readonly Sync<float> OutlineThickness;
+
+    /// <summary>
+    /// Local-space size (width, height) of the laid-out text in meters, computed during meshing.
+    /// Zero when there's no text/font. Useful for fitting a background panel to the text.
+    /// </summary>
+    public float2 RenderedSize { get; private set; }
+
     private readonly TextShaper _shaper = new();
 
     // Shaped state captured on the engine thread for mesh emission.
@@ -75,6 +87,8 @@ public class TextRenderer : ProceduralMesh
         HorizontalAlign = new Sync<TextHorizontalAlignment>(this, TextHorizontalAlignment.Center);
         VerticalAlign = new Sync<TextVerticalAlignment>(this, TextVerticalAlignment.Middle);
         LineSpacing = new Sync<float>(this, 1f);
+        OutlineColor = new Sync<colorHDR>(this, new colorHDR(0f, 0f, 0f, 0f));
+        OutlineThickness = new Sync<float>(this, 0f);
     }
 
     public override void OnAwake()
@@ -86,6 +100,17 @@ public class TextRenderer : ProceduralMesh
         SubscribeToChanges(HorizontalAlign);
         SubscribeToChanges(VerticalAlign);
         SubscribeToChanges(LineSpacing);
+        // Outline is a material parameter, not geometry - forward to the material, don't re-mesh.
+        OutlineColor.OnChanged += _ => ApplyOutline();
+        OutlineThickness.OnChanged += _ => ApplyOutline();
+    }
+
+    private void ApplyOutline()
+    {
+        if (_material == null || _material.IsDestroyed)
+            return;
+        _material.OutlineColor.Value = OutlineColor.Value;
+        _material.OutlineThickness.Value = OutlineThickness.Value;
     }
 
     public override void OnStart()
@@ -121,6 +146,7 @@ public class TextRenderer : ProceduralMesh
         _renderer = _rendererSlot.AttachComponent<MeshRenderer>();
         _renderer.Mesh.Target = this;
         _renderer.Material.Target = _material;
+        ApplyOutline();
     }
 
     protected override void PrepareAssetUpdateData()
@@ -147,6 +173,7 @@ public class TextRenderer : ProceduralMesh
         var font = _fontSet;
         if (font == null || !font.IsValid || string.IsNullOrEmpty(_text))
         {
+            RenderedSize = float2.Zero;
             UpdateAtlasBinding(null!);
             return;
         }
@@ -156,6 +183,7 @@ public class TextRenderer : ProceduralMesh
         var lines = _shaper.Lines;
         if (lines.Count == 0)
         {
+            RenderedSize = float2.Zero;
             UpdateAtlasBinding(null!);
             return;
         }
@@ -165,6 +193,12 @@ public class TextRenderer : ProceduralMesh
         if (lineHeight <= 0f) lineHeight = _size;
 
         float blockHeight = lineHeight * lines.Count;
+
+        float maxLineWidth = 0f;
+        for (int i = 0; i < lines.Count; i++)
+            if (lines[i].Width > maxLineWidth)
+                maxLineWidth = lines[i].Width;
+        RenderedSize = new float2(maxLineWidth, blockHeight);
         float blockTop = _vAlign switch
         {
             TextVerticalAlignment.Middle => blockHeight * 0.5f,

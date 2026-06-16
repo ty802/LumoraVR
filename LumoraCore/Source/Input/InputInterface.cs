@@ -62,6 +62,42 @@ public class InputInterface : IDisposable
 
     public bool IsDashboardOpen { get; set; }
 
+    // Desktop free-cursor ray, pushed by the platform layer each frame while the
+    // OS cursor is unlocked (dash open). World space. The interaction laser uses
+    // it as its cast ray so the in-world laser cursor and the mouse are one
+    // pointer. Only the local platform layer may write it.
+    public bool DesktopCursorRayValid { get; private set; }
+    public float3 DesktopCursorRayOrigin { get; private set; }
+    public float3 DesktopCursorRayDirection { get; private set; }
+
+    public void SetDesktopCursorRay(bool valid, float3 origin, float3 direction)
+    {
+        DesktopCursorRayValid = valid;
+        DesktopCursorRayOrigin = origin;
+        DesktopCursorRayDirection = direction;
+    }
+
+    // Desktop camera projection info (vertical FOV in degrees, viewport aspect,
+    // world-space camera pose), pushed alongside the cursor ray. The dash uses
+    // it to fit its projected surface to the window. The camera looks along its
+    // local -Z.
+    public float DesktopCameraFovY { get; private set; } = 70f;
+    public float DesktopViewportAspect { get; private set; } = 16f / 9f;
+    public float3 DesktopCameraPosition { get; private set; }
+    public floatQ DesktopCameraRotation { get; private set; } = floatQ.Identity;
+    public bool DesktopCameraPoseValid { get; private set; }
+
+    public void SetDesktopViewInfo(float fovYDegrees, float aspect, float3 cameraPosition, floatQ cameraRotation)
+    {
+        if (fovYDegrees > 1f)
+            DesktopCameraFovY = fovYDegrees;
+        if (aspect > 0.1f)
+            DesktopViewportAspect = aspect;
+        DesktopCameraPosition = cameraPosition;
+        DesktopCameraRotation = cameraRotation;
+        DesktopCameraPoseValid = true;
+    }
+
     // Global tracking offset
     public float3 GlobalTrackingOffset { get; set; } = float3.Zero;
     public float3 CustomTrackingOffset { get; set; } = float3.Zero;

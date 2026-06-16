@@ -783,6 +783,7 @@ public partial class LumoraEngineRunner : Node
 				AutoConnectLocalHome = this.AutoConnectLocalHome
 			};
 			_engine.ResourceRoot = ProjectSettings.GlobalizePath("res://");
+			_engine.QuitRequested += OnQuitRequested;
 			if (VerboseInit)
 			{
 				LumoraLogger.Debug("PhaseEngineCoreInit: Engine instance created");
@@ -1096,6 +1097,16 @@ public partial class LumoraEngineRunner : Node
 	{
 		LumoraLogger.Log("Engine shutdown requested");
 		_shutdownRequested = true;
+	}
+
+	/// <summary>
+	/// Core requested an application quit (e.g. the dashboard Exit screen). Defer the tree quit
+	/// so it runs at a safe point rather than mid engine-update.
+	/// </summary>
+	private void OnQuitRequested()
+	{
+		LumoraLogger.Log("LumoraEngineRunner: Quit requested; closing application");
+		Callable.From(() => GetTree().Quit()).CallDeferred();
 	}
 
 

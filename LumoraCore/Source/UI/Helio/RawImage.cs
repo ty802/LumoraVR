@@ -22,7 +22,6 @@ public sealed class RawImage : Graphic
     private color _tint;
     private Rect _uvRect;
     private bool _preserveAspect;
-    private MainTexturePropertyBlock? _textureBlock;
 
     public RawImage()
     {
@@ -37,7 +36,7 @@ public sealed class RawImage : Graphic
 
     protected override void FlagChanges(RectTransform rect)
     {
-        rect.MarkChangeDirty();
+        rect.MarkGraphicDirty();
     }
 
     public override void PrepareCompute()
@@ -70,8 +69,8 @@ public sealed class RawImage : Graphic
             return;
         }
 
-        var textureBlock = EnsureTextureBlock();
-        var submesh = renderData.GetSubmesh(_material, textureBlock, MapMaterial);
+        // Key by texture identity; the shared image block is created at submit (main).
+        var submesh = renderData.GetSubmesh(_material, _textureProvider, GraphicsChunk.RenderData.ImageTexture);
         GenerateImage(submesh.Mesh, submesh, rect, _uvRect, _texture, _preserveAspect, in _tint, clipRect);
     }
 
@@ -119,23 +118,6 @@ public sealed class RawImage : Graphic
 
         submesh.AddQuadAsTriangles(first, first + 1, first + 2, first + 3);
         return first;
-    }
-
-    private MainTexturePropertyBlock? EnsureTextureBlock()
-    {
-        if (_textureProvider == null)
-        {
-            return null;
-        }
-
-        _textureBlock ??= Slot.GetComponent<MainTexturePropertyBlock>() ?? Slot.AttachComponent<MainTexturePropertyBlock>();
-        _textureBlock.Texture.Target = _textureProvider;
-        return _textureBlock;
-    }
-
-    private static MaterialMap MapMaterial(GraphicsChunk.RenderData renderData, IAssetProvider<MaterialAsset>? baseMaterial, object? key, bool usingDefaultMaterial)
-    {
-        return new MaterialMap(baseMaterial, key as IAssetProvider<MaterialPropertyBlockAsset>);
     }
 
     private static Rect FitRect(Rect rect, in Rect uvRect, TextureAsset? texture, bool preserveAspect)

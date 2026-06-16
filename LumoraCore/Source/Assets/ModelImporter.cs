@@ -81,7 +81,6 @@ public static class ModelImporter
         ".obj",
         ".dae",
         ".3ds",
-        ".blend",
         ".stl",
         ".ply",
         ".x",

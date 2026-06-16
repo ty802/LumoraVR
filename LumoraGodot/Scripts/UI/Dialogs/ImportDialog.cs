@@ -55,7 +55,6 @@ public partial class ImportDialog : Control
     private bool _hasImportSpawnPosition;
     private float3 _importSpawnPosition;
     private Slot _lastImportedAvatarSlot = null!;
-    private AvatarCreatorSession? _activeAvatarCreatorSession;
     private Control _infoTooltip = null!;
 
     public event Action<ImportType, string> ImportRequested = null!;
@@ -256,7 +255,7 @@ public partial class ImportDialog : Control
 
         AddTooltipLabel(vbox, "Supported formats", header: true);
         AddTooltipLabel(vbox, "Images: PNG, JPG, JPEG, WebP, BMP, TGA", header: false);
-        AddTooltipLabel(vbox, "3D: GLB, GLTF, FBX, OBJ, DAE, 3DS, BLEND, STL, PLY, X, ASE", header: false);
+        AddTooltipLabel(vbox, "3D: GLB, GLTF, FBX, OBJ, DAE, 3DS, STL, PLY, X, ASE", header: false);
         AddTooltipLabel(vbox, "Avatars: VRM, GLB, GLTF, FBX, DAE", header: false);
 
         AddChild(panel);
@@ -357,9 +356,9 @@ public partial class ImportDialog : Control
         };
     }
 
+    // Avatar setup is now an in-world AvatarCreator component attached to the avatar, so there is no
+    // dialog-side session state to reset. Kept as a no-op so the import lifecycle call sites stay put.
     private void ResetAvatarCreatorState()
     {
-        _activeAvatarCreatorSession?.Dispose();
-        _activeAvatarCreatorSession = null;
     }
 }

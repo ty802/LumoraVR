@@ -24,6 +24,16 @@ public class LocomotionController : Component
     public float MouseSensitivity { get; set; } = MathF.PI;
     public float MaxPitch { get; set; } = 89.0f;
 
+    // Whether the user allows being scaled (grab-scale gestures, world zoom).
+    // The context menu exposes it as a toggle while at default scale.
+    public readonly Sync<bool> ScalingEnabled = new();
+
+    public override void OnInit()
+    {
+        base.OnInit();
+        ScalingEnabled.Value = true;
+    }
+
     // STATE
 
     private CharacterController _characterController = null!;
@@ -34,8 +44,6 @@ public class LocomotionController : Component
     private InputInterface _inputInterface = null!;
     private readonly System.Collections.Generic.List<LocomotionModule> _modules = new();
     private LocomotionModule _activeModule = null!;
-    private bool _nextModuleHeld;
-    private bool _prevModuleHeld;
     private readonly LocomotionPermissions _permissions = new LocomotionPermissions();
 
     private float _pitch = 0.0f;
@@ -50,12 +58,13 @@ public class LocomotionController : Component
     public LocomotionModule ActiveModule => _activeModule;
     public System.Collections.Generic.IReadOnlyList<LocomotionModule> Modules => _modules;
 
+    // Modules are kept in registration order (Walk, Noclip, ...); switching is
+    // by list position, not priority (an ordered module list + active index).
     public void RegisterModule(LocomotionModule module)
     {
         if (module == null || _modules.Contains(module))
             return;
         _modules.Add(module);
-        SortModules();
     }
 
     public void UnregisterModule(LocomotionModule module)
@@ -67,11 +76,6 @@ public class LocomotionController : Component
             _activeModule = null!;
         }
         _modules.Remove(module);
-    }
-
-    private void SortModules()
-    {
-        _modules.Sort((a, b) => b.Priority.CompareTo(a.Priority));
     }
 
     // INITIALIZATION
@@ -111,7 +115,6 @@ public class LocomotionController : Component
             return;
 
         EnsurePlatformModule();
-        HandleModuleSwitching();
 
         // Always handle mouse look (updates head rotation)
         HandleMouseLook(delta);
@@ -119,7 +122,34 @@ public class LocomotionController : Component
         // Apply head/body rotation before movement so basis uses latest look
         UpdateHead();
 
+        HandleDesktopScaling();
+
         _activeModule?.OnModuleUpdate(delta);
+    }
+
+    // Desktop user scaling: ctrl + scroll wheel. Crouch lives on C so ctrl
+    // is free as the scale modifier.
+    private const float MinUserScale = 0.05f;
+    private const float MaxUserScale = 20f;
+
+    private void HandleDesktopScaling()
+    {
+        if (_inputInterface == null || _inputInterface.IsVRActive)
+            return;
+        if (_inputInterface.IsDashboardOpen)
+            return;
+        if (!ScalingEnabled.Value)
+            return;
+        if (_keyboardDriver == null
+            || (!_keyboardDriver.GetKeyState(EngineKey.LeftControl) && !_keyboardDriver.GetKeyState(EngineKey.RightControl)))
+            return;
+
+        float scroll = _mouse?.ScrollWheelDelta.Value ?? 0f;
+        if (scroll == 0f)
+            return;
+
+        float factor = MathF.Pow(1.12f, scroll);
+        _userRoot.GlobalScale = System.Math.Clamp(_userRoot.GlobalScale * factor, MinUserScale, MaxUserScale);
     }
 
     private bool TryInitializeLocalUser()
@@ -172,7 +202,7 @@ public class LocomotionController : Component
         }
 
         EnsureDefaultModules();
-        ActivateBestModule();
+        ActivateDefaultModule();
 
         if (!IsVRActive())
             _inputState.SetMouseCaptureRequested(true);
@@ -189,86 +219,48 @@ public class LocomotionController : Component
     private void EnsureDefaultModules()
     {
         Slot.GetOrAttachComponent<PhysicalLocomotion>();
+        Slot.GetOrAttachComponent<NoclipLocomotion>();
         Slot.GetOrAttachComponent<NullLocomotionModule>();
 
         _modules.Clear();
         foreach (var m in Slot.GetComponents<LocomotionModule>())
             _modules.Add(m);
-        SortModules();
     }
 
-    private LocomotionModule PickBestEligibleModule()
+    // First module in list order whose CanActivate passes (permission/eligibility).
+    private LocomotionModule? FirstUsableModule()
     {
         for (int i = 0; i < _modules.Count; i++)
         {
             if (_modules[i].CanActivate())
                 return _modules[i];
         }
-        return null!;
+        return null;
     }
 
-    private void ActivateBestModule()
+    // Spawn in the default (first usable) module. Locomotion mode is session state,
+    // not a persisted setting - the user opts into noclip/fly per session.
+    private void ActivateDefaultModule()
     {
-        var pick = PickBestEligibleModule();
+        var pick = FirstUsableModule();
         if (pick != null && pick != _activeModule)
             ActivateModule(pick);
     }
 
-    private void HandleModuleSwitching()
-    {
-        if (_keyboardDriver == null || _modules.Count <= 1)
-            return;
-        if ((_inputState?.DesktopInputSuppressed ?? false) || _mouse?.RightButton.Held == true)
-        {
-            _nextModuleHeld = _keyboardDriver.GetKeyState(EngineKey.E);
-            _prevModuleHeld = _keyboardDriver.GetKeyState(EngineKey.Q);
-            return;
-        }
-
-        bool nextDown = _keyboardDriver.GetKeyState(EngineKey.E);
-        bool prevDown = _keyboardDriver.GetKeyState(EngineKey.Q);
-
-        if (nextDown && !_nextModuleHeld) CycleModule(+1);
-        if (prevDown && !_prevModuleHeld) CycleModule(-1);
-
-        _nextModuleHeld = nextDown;
-        _prevModuleHeld = prevDown;
-    }
-
-    // Walk through modules from the current position, skipping anything whose
-    // CanActivate returns false. If nothing else is eligible, stay put.
-    private void CycleModule(int direction)
-    {
-        if (_modules.Count == 0) return;
-
-        int currentIdx = _activeModule != null ? _modules.IndexOf(_activeModule) : -1;
-        for (int step = 1; step <= _modules.Count; step++)
-        {
-            int idx = currentIdx + direction * step;
-            if (idx < 0) idx += _modules.Count * ((-idx / _modules.Count) + 1);
-            idx %= _modules.Count;
-            var candidate = _modules[idx];
-            if (candidate != _activeModule && candidate.CanActivate())
-            {
-                ActivateModule(candidate);
-                return;
-            }
-        }
-    }
-
-    // Re-evaluates eligibility each tick: if VR powered up or dropped out
-    // mid-session, we re-pick the best module. Cheap, three modules.
+    // Keeps a usable module active: the selection is sticky, but if the current
+    // module becomes ineligible (permission revoked, VR dropped) fall back to
+    // the first usable one. Does not override an eligible user choice.
     private void EnsurePlatformModule()
     {
+        // The active module is a sticky choice (menu selection / persisted),
+        // never recomputed by priority. Only re-pick when the current module
+        // becomes unusable (e.g. permission revoked), advancing to the first
+        // usable one.
         if (_activeModule == null || !_activeModule.CanActivate())
         {
-            ActivateBestModule();
-        }
-        else
-        {
-            var best = PickBestEligibleModule();
-            if (best != null && best.Priority > _activeModule.Priority)
-                ActivateModule(best);
+            var pick = FirstUsableModule();
+            if (pick != null && pick != _activeModule)
+                ActivateModule(pick);
         }
 
         if (!IsVRActive() && !_mouseCaptured)
@@ -346,17 +338,63 @@ public class LocomotionController : Component
         if (1.0f - (headDot < 0 ? -headDot : headDot) > ROT_THRESHOLD)
             _userRoot.HeadSlot.LocalRotation.Value = newHeadRot;
 
-        // Drive hand aim: right hand tilts up when looking up, left stays at rest.
-        // Rest pitch = -pi/2 (fingers down). Add camera pitch so hand aims forward when looking level.
+        // Drive hand aim on the CONTROLLER slots (hands are grip-offset
+        // children of controllers — writing the hand child would bypass the
+        // tool/laser). Right hand pitches with the camera; while the context
+        // menu is open it raises into view pointing at the menu.
         float restPitch = -MathF.PI / 2f;
-        var rightHandSlot = _userRoot.RightHandSlot;
-        if (rightHandSlot != null)
+        bool menuOpen = IsLocalContextMenuOpen();
+
+        var rightController = ResolveControllerSlot(ref _rightControllerSlot, Input.BodyNode.RightController);
+        if (rightController != null)
         {
             float aimPitch = MathF.Min(MathF.Max(restPitch + _pitch, -MathF.PI / 2f), 0f);
-            rightHandSlot.LocalRotation.Value = floatQ.Euler(-MathF.PI / 2f, aimPitch, 0f);
+            var targetRot = floatQ.Euler(-MathF.PI / 2f, aimPitch, 0f);
+            var targetPos = menuOpen
+                ? new float3(0.16f, headHeight - 0.28f, -0.28f)
+                : new float3(0.25f, 1.0f, 0f);
+
+            SetIfChanged(rightController.LocalPosition, targetPos);
+            SetIfChanged(rightController.LocalRotation, targetRot);
         }
-        if (_userRoot.LeftHandSlot is { } leftHandSlot)
-            leftHandSlot.LocalRotation.Value = floatQ.Euler(MathF.PI / 2f, restPitch, 0f);
+
+        var leftController = ResolveControllerSlot(ref _leftControllerSlot, Input.BodyNode.LeftController);
+        if (leftController != null)
+        {
+            SetIfChanged(leftController.LocalPosition, new float3(-0.25f, 1.0f, 0f));
+            SetIfChanged(leftController.LocalRotation, floatQ.Euler(MathF.PI / 2f, restPitch, 0f));
+        }
+    }
+
+    private Slot? _leftControllerSlot;
+    private Slot? _rightControllerSlot;
+    private UI.ContextMenuSystem? _contextMenuCache;
+
+    private Slot? ResolveControllerSlot(ref Slot? cache, Input.BodyNode node)
+    {
+        if (cache == null || cache.IsDestroyed)
+            cache = _userRoot?.GetRegisteredComponent<TrackedDevicePositioner>(p => p.AutoBodyNode.Value == node)?.Slot;
+        return cache;
+    }
+
+    private bool IsLocalContextMenuOpen()
+    {
+        if (_contextMenuCache == null || _contextMenuCache.IsDestroyed)
+            _contextMenuCache = _userRoot?.Slot?.GetComponentInChildren<UI.ContextMenuSystem>();
+        return _contextMenuCache?.IsOpen.Value == true;
+    }
+
+    private static void SetIfChanged(Sync<float3> field, in float3 value)
+    {
+        if ((field.Value - value).LengthSquared > POS_THRESHOLD_SQ)
+            field.Value = value;
+    }
+
+    private static void SetIfChanged(Sync<floatQ> field, in floatQ value)
+    {
+        float dot = floatQ.Dot(field.Value, value);
+        if (1.0f - (dot < 0 ? -dot : dot) > ROT_THRESHOLD)
+            field.Value = value;
     }
 
     /// <summary>
@@ -409,9 +447,11 @@ public class LocomotionController : Component
         right = right.Normalized;
     }
 
-    private void ActivateModule(LocomotionModule module)
+    public void ActivateModule(LocomotionModule module)
     {
         if (module == null || !_permissions.CanUseLocomotion(module))
+            return;
+        if (ReferenceEquals(module, _activeModule))
             return;
 
         _activeModule?.DeactivateInternal();
@@ -423,6 +463,12 @@ public class LocomotionController : Component
     /// Expose CharacterController for modules.
     /// </summary>
     public CharacterController CharacterController => _characterController;
+
+    /// <summary>
+    /// Expose the controlled UserRoot for modules that move the rig directly
+    /// (e.g. noclip flight bypasses the character controller).
+    /// </summary>
+    public UserRoot UserRoot => _userRoot;
 
     // CLEANUP
 

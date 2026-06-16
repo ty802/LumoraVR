@@ -43,7 +43,7 @@ public sealed class Image : Graphic
 
     protected override void FlagChanges(RectTransform rect)
     {
-        rect.MarkChangeDirty();
+        rect.MarkGraphicDirty();
     }
 
     public override void PrepareCompute()
@@ -80,8 +80,8 @@ public sealed class Image : Graphic
             return;
         }
 
-        var textureBlock = _texture != null ? renderData.GetSharedImageBlock(_texture) : null;
-        var submesh = renderData.GetSubmesh(_material, textureBlock, MapMaterial);
+        // Key by texture identity; the shared image block is created at submit (main).
+        var submesh = renderData.GetSubmesh(_material, _texture, GraphicsChunk.RenderData.ImageTexture);
 
         if (_nineSlice)
         {
@@ -120,11 +120,6 @@ public sealed class Image : Graphic
     public override bool IsPointInside(in float2 point)
     {
         return RectTransform?.LocalComputeRect.Contains(point) ?? false;
-    }
-
-    private static MaterialMap MapMaterial(GraphicsChunk.RenderData renderData, IAssetProvider<MaterialAsset>? baseMaterial, object? key, bool usingDefaultMaterial)
-    {
-        return new MaterialMap(baseMaterial, key as IAssetProvider<MaterialPropertyBlockAsset>);
     }
 
     private void WriteNineSlice(PhosTriangleSubmesh submesh, in Rect rect, Rect? clipRect)

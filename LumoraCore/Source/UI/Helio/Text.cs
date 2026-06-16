@@ -152,19 +152,6 @@ public class Text : Graphic, ILayoutElement
     {
     }
 
-    private IAssetProvider<MaterialAsset>? GetMaterialForFont(GraphicsChunk.RenderData renderData, FontAsset font)
-    {
-        if (_material != null)
-        {
-            return _material;
-        }
-
-        // Shared per-atlas material (owned by the chunk) so all text batches into one submesh
-        // instead of one surface per Text component. - xlinka
-        var atlas = font.AtlasTexture;
-        return atlas != null ? renderData.GetSharedTextMaterial(atlas) : null;
-    }
-
     private void LayoutAndEmit(FontSet font, GraphicsChunk.RenderData renderData, PhosMesh mesh)
     {
         var rect = RectTransform!.LocalComputeRect;
@@ -193,10 +180,18 @@ public class Text : Graphic, ILayoutElement
             for (int i = 0; i < line.Glyphs.Count; i++)
             {
                 var glyph = line.Glyphs[i];
-                var material = GetMaterialForFont(renderData, glyph.Font);
-                if (material == null) continue;
-
-                var submesh = renderData.GetSubmesh(material);
+                PhosTriangleSubmesh submesh;
+                if (_material != null)
+                {
+                    submesh = renderData.GetSubmesh(_material);
+                }
+                else
+                {
+                    // Key by atlas identity; the shared text material is created at submit (main).
+                    var atlas = glyph.Font.AtlasTexture;
+                    if (atlas == null) continue;
+                    submesh = renderData.GetSubmesh(null, atlas, GraphicsChunk.RenderData.TextAtlas);
+                }
                 EmitGlyph(submesh, mesh, penX + glyph.X, penY, glyph.Metrics, glyph.UV, renderData.ClipRect);
             }
         }

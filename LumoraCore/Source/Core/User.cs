@@ -243,6 +243,47 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
     }
 
     /// <summary>
+    /// Kick this user from the world. Host-authoritative; cannot kick the host.
+    /// </summary>
+    public void Kick()
+    {
+        if (World == null || !World.IsAuthority)
+        {
+            LumoraLogger.Warn("Kick requires host authority");
+            return;
+        }
+        if (IsHost)
+        {
+            LumoraLogger.Warn("Cannot kick the host");
+            return;
+        }
+        LumoraLogger.Log($"Kicking user '{UserName.Value}'");
+        World.RemoveUser(this);
+    }
+
+    /// <summary>
+    /// Ban this user: record a temp + persistent ban (keyed by user/machine id, scoped to this world)
+    /// so they can't rejoin, then kick. Host-authoritative; cannot ban the host.
+    /// </summary>
+    public void Ban()
+    {
+        if (World == null || !World.IsAuthority)
+        {
+            LumoraLogger.Warn("Ban requires host authority");
+            return;
+        }
+        if (IsHost)
+        {
+            LumoraLogger.Warn("Cannot ban the host");
+            return;
+        }
+        LumoraLogger.Log($"Banning user '{UserName.Value}'");
+        Security.BanManager.TempBan(UserID.Value, MachineID.Value);
+        Security.BanManager.AddBan(UserName.Value, UserID.Value, MachineID.Value, World.WorldName.Value);
+        World.RemoveUser(this);
+    }
+
+    /// <summary>
     /// Get all dirty sync members that need to be sent over network.
     /// </summary>
     public List<ISyncMember> GetDirtySyncMembers()

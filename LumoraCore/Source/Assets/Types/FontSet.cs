@@ -33,6 +33,15 @@ public sealed class FontSet : DynamicAsset
         }
     }
 
+    /// <summary>
+    /// Replace the member fonts. Used by the provider to rebuild the set as shared fonts load.
+    /// </summary>
+    internal void SetFonts(IReadOnlyList<FontAsset> fonts)
+    {
+        _fonts.Clear();
+        _fonts.AddRange(fonts);
+    }
+
     public void RequestGlyph(int codepoint, float size)
     {
         foreach (var font in _fonts)
@@ -78,10 +87,8 @@ public sealed class FontSet : DynamicAsset
 
     public override void Unload()
     {
-        foreach (var font in _fonts)
-        {
-            font.Unload();
-        }
+        // The member fonts are shared and owned by the AssetManager (released via the provider's
+        // ReleaseAsset); this aggregate only references them, so don't unload them here.
         _fonts.Clear();
         base.Unload();
     }

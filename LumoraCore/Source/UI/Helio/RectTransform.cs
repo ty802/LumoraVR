@@ -9,8 +9,8 @@ using Lumora.Core.Math;
 
 namespace Helio.UI;
 
-// one per slot in a UI tree. anchored offsets relative to parent rect. - xlinka
-// TODO - xlinka: layout algorithm not implemented yet, this is just the data carrier
+// one per slot in a UI tree. anchored offsets relative to parent rect; the actual rects are
+// computed by the Canvas (ComputeRects/ApplyLayout) each rebuild, and cached in LocalComputeRect.
 [SingleInstancePerSlot]
 public class RectTransform : Component
 {
@@ -53,29 +53,32 @@ public class RectTransform : Component
     public IReadOnlyList<RectTransform> RectChildren => _rectChildren;
     public int ChildrenCount => _rectChildren.Count;
 
+    // A position/size change (anchor/offset/pivot). Scoped: only this rect's chunk subtree needs
+    // re-laying-out (e.g. a slider handle moving), not the whole canvas.
     public new void MarkChangeDirty()
     {
         _dataModelFlags |= DataModelFlag.RectChanged | DataModelFlag.LayoutChanged;
-        SignalCanvasDirty();
+        SignalLayoutDirty(scoped: true);
     }
 
     public void MarkInvalidateHorizontalLayout()
     {
         _dataModelFlags |= DataModelFlag.LayoutChanged;
-        SignalCanvasDirty();
+        SignalLayoutDirty(scoped: true);
     }
 
     public void MarkInvalidateVerticalLayout()
     {
         _dataModelFlags |= DataModelFlag.LayoutChanged;
-        SignalCanvasDirty();
+        SignalLayoutDirty(scoped: true);
     }
 
     // called by UIComputeComponents on this slot when enable/disable/attach/destroy happens - xlinka
+    // Structure changes can resize this rect and reflow its parent, so recompute layout fully.
     public void NotifyComponentsChanged()
     {
         _dataModelFlags |= DataModelFlag.ComponentsChanged;
-        SignalCanvasDirty();
+        SignalLayoutDirty(scoped: false);
     }
 
     public override void OnChanges()
@@ -84,24 +87,66 @@ public class RectTransform : Component
         MarkChangeDirty();
     }
 
-    private void SignalCanvasDirty()
+    public override void OnAwake()
+    {
+        base.OnAwake();
+        // Showing/hiding a slot must re-render the canvas, so we dirty on active-state changes and
+        // subscribe in OnAwake - NOT OnStart, which can run after the content is first shown and miss
+        // it, leaving it blank until a tab swap. Slot.ActiveChanged
+        // is EFFECTIVE - it fires both on this slot's own ActiveSelf and (via Slot's descendant
+        // propagation) when an ANCESTOR flips, so content shown by reactivating any ancestor (a
+        // screen, a menu, the dashboard's render rig) re-renders.
+        if (Slot != null)
+            Slot.ActiveChanged += OnSlotActiveChanged;
+    }
+
+    public override void OnDestroy()
+    {
+        if (Slot != null)
+            Slot.ActiveChanged -= OnSlotActiveChanged;
+        base.OnDestroy();
+    }
+
+    private void OnSlotActiveChanged(Slot slot)
+    {
+        _dataModelFlags |= DataModelFlag.StructureChanged;
+        // Visibility change, not a content change: re-enable persisted chunks instead of forcing a
+        // full re-tessellate. New/changed content still re-meshes (it's unbuilt/dirty).
+        ResolveCanvas()?.MarkVisibilityDirty();
+    }
+
+    // A purely visual change to a graphic on this slot (tint/texture/etc.): re-mesh its chunk,
+    // but no layout recompute is needed. Keeps hover/press tints off the layout path.
+    public void MarkGraphicDirty()
+    {
+        _dataModelFlags |= DataModelFlag.RectChanged;
+        ResolveCanvas()?.MarkDirty(this);
+    }
+
+    // scoped: re-lay-out only this rect's nearest built chunk subtree (cheap, for self-contained
+    // changes like a slider handle); false: recompute the whole canvas layout (structure changes).
+    private void SignalLayoutDirty(bool scoped)
+    {
+        var canvas = ResolveCanvas();
+        if (canvas == null)
+            return;
+        if (scoped)
+            canvas.MarkLayoutDirty(this);
+        else
+            canvas.MarkLayoutDirty();
+    }
+
+    private Canvas? ResolveCanvas()
     {
         if (_registeredCanvas != null)
-        {
-            _registeredCanvas.MarkDirty(this);
-            return;
-        }
-        var s = Slot;
-        while (s != null)
+            return _registeredCanvas;
+        for (var s = Slot; s != null; s = s.Parent)
         {
             var canvas = s.GetComponent<Canvas>();
             if (canvas != null)
-            {
-                canvas.MarkDirty(this);
-                return;
-            }
-            s = s.Parent;
+                return canvas;
         }
+        return null;
     }
 
     internal void SetLocalComputeRect(in Rect rect) => _localComputeRect = rect;

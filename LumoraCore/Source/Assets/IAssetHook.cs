@@ -52,6 +52,11 @@ public interface IRenderTextureAssetHook : ITextureAssetHook
         Math.float3 cameraPosition,
         Math.floatQ cameraRotation,
         float orthographicSize);
+
+    /// <summary>
+    /// Pause or resume offscreen rendering without tearing the viewport down.
+    /// </summary>
+    void SetRenderEnabled(bool enabled);
 }
 
 /// <summary>

@@ -229,6 +229,10 @@ public partial class DesktopCameraController : Node
             _pendingTpMouse = Vector2.Zero;
         }
 
+        // First-person-only visual overrides (local head hiding) key off this:
+        // any external camera must show the full avatar.
+        state?.SetExternalCameraActive(newMode != CameraMode.FirstPerson);
+
         // Set up new
         switch (newMode)
         {

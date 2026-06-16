@@ -31,6 +31,8 @@ public class MeshHook : ComponentHook<ProceduralMesh>
     private Node3D? parentNode;
     private bool _loggedNoIndexWarning;
     private bool _loggedNoVertexWarning;
+    private bool _loggedBadIndexError;
+    private bool _loggedNaNVertexError;
 
     /// <summary>
     /// Factory method for creating mesh hooks.
@@ -132,23 +134,17 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         parentNode = null;
         _loggedNoIndexWarning = false;
         _loggedNoVertexWarning = false;
+        _loggedBadIndexError = false;
+        _loggedNaNVertexError = false;
     }
 
     /// <summary>
     /// Upload PhosMesh to Godot ArrayMesh.
     /// Only uploads channels marked dirty in the upload hint.
     /// </summary>
-    // TEMP perf instrumentation: aggregate time spent re-uploading meshes to Godot. - xlinka
-    private static double _uploadMsAccum;
-    private static int _uploadCount;
-    private static long _uploadVerts;
-    private static long _uploadLastLogMs;
-
     private void UploadMesh(PhosMesh phosMesh, MeshUploadHint uploadHint)
     {
         if (godotMesh == null) return;
-
-        long startTicks = System.Diagnostics.Stopwatch.GetTimestamp();
 
         godotMesh.ClearSurfaces();
 
@@ -160,30 +156,7 @@ public class MeshHook : ComponentHook<ProceduralMesh>
             }
         }
 
-        _uploadMsAccum += (System.Diagnostics.Stopwatch.GetTimestamp() - startTicks) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
-        _uploadCount++;
-        _uploadVerts += phosMesh.VertexCount;
-        long nowMs = System.Environment.TickCount64;
-        if (nowMs - _uploadLastLogMs >= 1000)
-        {
-            Lumora.Core.Logging.Logger.Log(
-                $"[MeshUploadPerf] {_uploadCount} uploads/s | {_uploadMsAccum:0.0} ms/s | {_uploadVerts} verts/s");
-            _uploadMsAccum = 0;
-            _uploadCount = 0;
-            _uploadVerts = 0;
-            _uploadLastLogMs = nowMs;
-        }
-
-        if (_uiDiagLogged < 3 && Owner.Slot?.Parent?.SlotName?.Value == "HelioTestPanel")
-        {
-            _uiDiagLogged++;
-            Lumora.Core.Logging.Logger.Log(
-                $"MeshHook.UploadMesh[diag]: slot={Owner.Slot?.SlotName.Value} verts={phosMesh.VertexCount} " +
-                $"submeshes(phos)={phosMesh.Submeshes.Count} surfaces(godot)={godotMesh.GetSurfaceCount()}");
-        }
     }
-
-    private int _uiDiagLogged;
 
     /// <summary>
     /// Upload a triangle submesh to Godot.
@@ -200,10 +173,24 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         if (phosMesh.VertexCount > 0 && phosMesh.RawPositions != null)
         {
             var positions = new Vector3[phosMesh.VertexCount];
+            bool hadBadPosition = false;
             for (int i = 0; i < phosMesh.VertexCount; i++)
             {
                 var pos = phosMesh.RawPositions[i];
+                // Non-finite positions poison the surface AABB and can fault the GPU
+                // (device lost). Zero them and log instead of submitting garbage. - xlinka
+                if (!float.IsFinite(pos.x) || !float.IsFinite(pos.y) || !float.IsFinite(pos.z))
+                {
+                    hadBadPosition = true;
+                    positions[i] = Vector3.Zero;
+                    continue;
+                }
                 positions[i] = new Vector3(pos.x, pos.y, pos.z);
+            }
+            if (hadBadPosition && !_loggedNaNVertexError)
+            {
+                _loggedNaNVertexError = true;
+                Lumora.Core.Logging.Logger.Error($"MeshHook.UploadTriangleSubmesh: Non-finite vertex positions in mesh on slot '{Owner.Slot?.SlotName?.Value}' - zeroed before upload");
             }
             arrays[(int)Mesh.ArrayType.Vertex] = positions;
         }
@@ -273,10 +260,36 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         if (hasIndices)
         {
             var indices = new int[submesh.IndexCount];
+            int maxIndex = -1;
+            int minIndex = int.MaxValue;
             for (int i = 0; i < submesh.IndexCount; i++)
             {
-                indices[i] = submesh.RawIndices![i];
+                int index = submesh.RawIndices![i];
+                if (index > maxIndex)
+                {
+                    maxIndex = index;
+                }
+                if (index < minIndex)
+                {
+                    minIndex = index;
+                }
+                indices[i] = index;
             }
+
+            // An index past the vertex buffer is an out-of-bounds read at draw time -
+            // that's a Vulkan device-lost, not a visual glitch. Negative indices wrap
+            // to ~4 billion as unsigned on the GPU, same failure. Drop the surface and
+            // log so the broken generator is findable. - xlinka
+            if (maxIndex >= phosMesh.VertexCount || minIndex < 0)
+            {
+                if (!_loggedBadIndexError)
+                {
+                    _loggedBadIndexError = true;
+                    Lumora.Core.Logging.Logger.Error($"MeshHook.UploadTriangleSubmesh: Index range [{minIndex}, {maxIndex}] invalid for vertex count {phosMesh.VertexCount} on slot '{Owner.Slot?.SlotName?.Value}' - surface skipped");
+                }
+                return;
+            }
+
             arrays[(int)Mesh.ArrayType.Index] = indices;
         }
 

@@ -105,7 +105,12 @@ public class CommonAvatarBuilder : Component, IAvatarBuilder, IEmptyAvatarSlotHa
         var menuSlot = userSlot.AddSlot("Context Menu");
         menuSlot.AttachComponent<UI.ContextMenuSystem>();
         menuSlot.AttachComponent<AvatarContextActions>();
-        menuSlot.AttachComponent<UI.DashboardContextAction>();
+        menuSlot.AttachComponent<LocomotionContextActions>();
+        menuSlot.AttachComponent<Interaction.ToolContextActions>();
+        menuSlot.AttachComponent<Interaction.GrabbedObjectContextActions>();
+        menuSlot.AttachComponent<UserScaleContextActions>();
+        menuSlot.AttachComponent<UndoManager>();
+        menuSlot.AttachComponent<UndoContextActions>();
 
         var avatarSlot = userSlot.AddSlot("Avatar");
         var avatarManager = avatarSlot.AttachComponent<AvatarManager>();

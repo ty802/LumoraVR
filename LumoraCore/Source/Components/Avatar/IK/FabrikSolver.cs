@@ -17,6 +17,9 @@ namespace Lumora.Core.Components.Avatar.IK;
 public static class FabrikSolver
 {
     private const float Epsilon = 1e-5f;
+    // Never let a two-bone limb fully straighten - a hair of bend avoids the pop/lock and the
+    // unstable bend axis you get exactly at full extension.
+    private const float MaxReachFraction = 0.999f;
 
     // Solve an N-joint chain. joints[0] is the anchored root, joints[^1] is
     // the end effector pulled toward target. lengths[i] is the rest distance
@@ -94,10 +97,11 @@ public static class FabrikSolver
     {
         float3 toTarget = target - root;
         float reach = upperLength + lowerLength;
+        float maxReach = reach * MaxReachFraction;
         float dist = toTarget.Length;
 
-        // Clamp so the law of cosines stays valid (no fully-straight / inside-out).
-        float clampedDist = MathF.Max(Epsilon, MathF.Min(dist, reach - Epsilon));
+        // Clamp so the law of cosines stays valid and the limb keeps a slight bend (no lock).
+        float clampedDist = MathF.Max(Epsilon, MathF.Min(dist, maxReach));
         float3 dir = dist > Epsilon ? toTarget / dist : float3.Backward;
 
         // Angle at the root between the upper bone and the root->target line.
@@ -122,8 +126,8 @@ public static class FabrikSolver
         mid = root + upperDir * upperLength;
 
         // End sits at clamped reach along root->target so the limb never
-        // over-extends past the target.
-        end = root + dir * MathF.Min(dist, reach);
+        // over-extends past the target (and keeps a hair of bend).
+        end = root + dir * MathF.Min(dist, maxReach);
 
         // Re-anchor the lower bone exactly: keep mid, push end to lowerLength
         // from mid along (target - mid).

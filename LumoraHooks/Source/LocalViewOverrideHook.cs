@@ -33,9 +33,12 @@ public class LocalViewOverrideHook : ComponentHook<LocalViewOverride>
 
     public override void ApplyChanges()
     {
+        // UserView hiding only applies while the first-person view renders:
+        // third-person/free-cam must show the full avatar.
         bool shouldApply = Owner.Enabled
             && Owner.Context.Value == RenderingContext.UserView
-            && IsLocalUser();
+            && IsLocalUser()
+            && !UserInputState.FocusedExternalCameraActive;
 
         if (shouldApply)
         {

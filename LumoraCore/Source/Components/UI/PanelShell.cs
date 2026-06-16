@@ -7,6 +7,7 @@ using Helio.UI;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Math;
+using Lumora.Core.Persistence;
 
 namespace Lumora.Core.Components.UI;
 
@@ -106,6 +107,15 @@ public class PanelShell : UIComponent
         UpdateVisualState();
     }
 
+    public override void Load(DataTreeNode node, LoadControl control)
+    {
+        base.Load(node, control);
+        // The structure is serialized as our children, but the cached part references and _built
+        // flag are not. Reconnect to the loaded children once the whole subtree is in place
+        // (deferred), so title/colour updates take effect again instead of no-op'ing on _built.
+        control.OnLoaded(EnsureBuilt);
+    }
+
     public UIBuilder CreateContentBuilder()
     {
         EnsureBuilt();
@@ -131,31 +141,40 @@ public class PanelShell : UIComponent
         Slot.Destroy();
     }
 
+    // Bound to the close button as a duplicable action (not a closure) so a
+    // cloned panel's close button destroys the clone, not the original.
+    public void OnClosePressed(Button button, UIInteractionContext context)
+    {
+        Close();
+    }
+
     private void EnsureBuilt()
     {
         if (_built) return;
         _built = true;
 
-        _rootRect = RectTransform ?? Slot.GetComponent<RectTransform>() ?? Slot.AttachComponent<RectTransform>();
-        _ = Slot.GetComponent<Canvas>() ?? Slot.AttachComponent<Canvas>();
-        _grabbable = Slot.GetComponent<Grabbable>() ?? Slot.AttachComponent<Grabbable>();
-        _backgroundImage = Slot.GetComponent<Image>() ?? Slot.AttachComponent<Image>();
+        // find-or-create: a fresh panel builds the structure; after a load these reconnect to the
+        // already-deserialized children/components instead of duplicating them.
+        _rootRect = RectTransform ?? Slot.GetOrAttachComponent<RectTransform>();
+        _ = Slot.GetOrAttachComponent<Canvas>();
+        _grabbable = Slot.GetOrAttachComponent<Grabbable>();
+        _backgroundImage = Slot.GetOrAttachComponent<Image>();
 
-        _headerSlot = Slot.AddSlot("Header");
-        _headerRect = _headerSlot.AttachComponent<RectTransform>();
-        _headerImage = _headerSlot.AttachComponent<Image>();
-        _headerGrabSurface = _headerSlot.AttachComponent<InteractionElement>();
+        _headerSlot = Slot.FindChildOrAdd("Header");
+        _headerRect = _headerSlot.GetOrAttachComponent<RectTransform>();
+        _headerImage = _headerSlot.GetOrAttachComponent<Image>();
+        _headerGrabSurface = _headerSlot.GetOrAttachComponent<InteractionElement>();
 
-        var titleSlot = _headerSlot.AddSlot("Title");
-        _titleRect = titleSlot.AttachComponent<RectTransform>();
-        _titleText = titleSlot.AttachComponent<Text>();
+        var titleSlot = _headerSlot.FindChildOrAdd("Title");
+        _titleRect = titleSlot.GetOrAttachComponent<RectTransform>();
+        _titleText = titleSlot.GetOrAttachComponent<Text>();
 
-        _separatorSlot = _headerSlot.AddSlot("Separator");
-        _separatorRect = _separatorSlot.AttachComponent<RectTransform>();
-        _separatorImage = _separatorSlot.AttachComponent<Image>();
+        _separatorSlot = _headerSlot.FindChildOrAdd("Separator");
+        _separatorRect = _separatorSlot.GetOrAttachComponent<RectTransform>();
+        _separatorImage = _separatorSlot.GetOrAttachComponent<Image>();
 
-        _contentSlot = Slot.AddSlot("Content");
-        _contentRect = _contentSlot.AttachComponent<RectTransform>();
+        _contentSlot = Slot.FindChildOrAdd("Content");
+        _contentRect = _contentSlot.GetOrAttachComponent<RectTransform>();
 
         UpdateVisualState();
     }
@@ -268,17 +287,17 @@ public class PanelShell : UIComponent
             return;
         }
 
-        _closeSlot = _headerSlot.AddSlot("Close");
-        _closeRect = _closeSlot.AttachComponent<RectTransform>();
-        _closeImage = _closeSlot.AttachComponent<Image>();
-        _closeButton = _closeSlot.AttachComponent<Button>();
-        _closeButton.Clicked += (_, _) => Close();
-        _closeColorDriver = _closeButton.SetupBackgroundColor(_closeImage.Tint);
+        _closeSlot = _headerSlot.FindChildOrAdd("Close");
+        _closeRect = _closeSlot.GetOrAttachComponent<RectTransform>();
+        _closeImage = _closeSlot.GetOrAttachComponent<Image>();
+        _closeButton = _closeSlot.GetOrAttachComponent<Button>();
+        _closeButton.SetAction(OnClosePressed);
+        _closeColorDriver = _closeSlot.GetComponent<ColorDriver>() ?? _closeButton.SetupBackgroundColor(_closeImage.Tint);
 
-        var closeLabel = _closeSlot.AddSlot("Label");
-        var closeLabelRect = closeLabel.AttachComponent<RectTransform>();
+        var closeLabel = _closeSlot.FindChildOrAdd("Label");
+        var closeLabelRect = closeLabel.GetOrAttachComponent<RectTransform>();
         Fill(closeLabelRect);
-        _closeText = closeLabel.AttachComponent<Text>();
+        _closeText = closeLabel.GetOrAttachComponent<Text>();
     }
 
     private void UpdateCloseButton()

@@ -26,7 +26,45 @@ public class WidgetGrid : UIComponent
     public override void OnCommonUpdate()
     {
         base.OnCommonUpdate();
+        // One global UI-edit flag drives every grid (and popped-out panels). Turning
+        // it on reveals the grid lines and makes widgets draggable.
+        if (EditMode.Value != WidgetPanel.EditMode)
+            EditMode.Value = WidgetPanel.EditMode;
         ArrangeWidgets();
+    }
+
+    /// <summary>
+    /// Pull a widget off the grid: re-host its preset as a standalone, grabbable
+    /// panel in userspace (in front of the user) and remove it from the grid. The
+    /// grid only knows the preset's runtime type, so the panel rebuilds the preset
+    /// rather than moving the canvas subtree (fine for stateless readout widgets).
+    /// </summary>
+    public void PopOut(Widget widget)
+    {
+        if (widget == null || widget.IsDestroyed)
+            return;
+
+        var preset = widget.Slot.GetComponent<WidgetPreset>();
+        var presetType = preset?.GetType();
+        if (presetType == null)
+            return;
+
+        float3 position;
+        floatQ rotation;
+        var userRoot = Engine.Current?.WorldManager?.FocusedWorld?.LocalUser?.Root;
+        if (userRoot?.HeadSlot != null)
+        {
+            position = userRoot.HeadPosition + userRoot.HeadRotation * (float3.Forward * 0.7f) + float3.Down * 0.1f;
+            rotation = userRoot.HeadRotation;
+        }
+        else
+        {
+            position = new float3(0f, 1.4f, -0.7f);
+            rotation = floatQ.Identity;
+        }
+
+        WidgetPanel.Spawn(presetType, position, rotation);
+        widget.Slot.Destroy();
     }
 
     public void ArrangeWidgets()

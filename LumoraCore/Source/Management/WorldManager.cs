@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Lumora.Core;
+using Lumora.Core.Helpers;
 using Lumora.Core.Networking.Session;
 using Lumora.Core.Templates;
 using World = Lumora.Core.World;
@@ -196,6 +197,19 @@ public class WorldManager : IDisposable
             LumoraLogger.Error($"WorldManager: Failed to start session '{name}': {ex}");
             return null!;
         }
+    }
+
+    /// <summary>
+    /// Create and host a new world from a template and focus it. Picks a free local UDP port and
+    /// hosts under the machine name. Returns the new world, or null on failure.
+    /// </summary>
+    public World HostNewWorld(string templateName, string worldName, SessionVisibility visibility, int maxUsers)
+    {
+        ushort port = (ushort)(SimpleIpHelpers.GetAvailablePortUdp(10) ?? 6000);
+        var world = StartSession(worldName, port, Environment.MachineName, templateName, visibility, System.Math.Max(1, maxUsers), null!);
+        if (world != null)
+            SwitchToWorld(world);
+        return world!;
     }
 
     /// <summary>

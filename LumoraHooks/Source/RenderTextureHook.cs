@@ -14,6 +14,7 @@ public class RenderTextureHook : AssetHook, IRenderTextureAssetHook, IGodotTextu
     private SubViewport _viewport = null!;
     private Camera3D _camera = null!;
 
+    private bool _renderEnabled = true;
     private int _width = 1024;
     private int _height = 1024;
     private uint _cullMask;
@@ -63,7 +64,7 @@ public class RenderTextureHook : AssetHook, IRenderTextureAssetHook, IGodotTextu
             _viewport = new SubViewport
             {
                 Name = "RenderTexture",
-                RenderTargetUpdateMode = SubViewport.UpdateMode.Always,
+                RenderTargetUpdateMode = _renderEnabled ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled,
                 RenderTargetClearMode = SubViewport.ClearMode.Always,
                 OwnWorld3D = false,
                 HandleInputLocally = false,
@@ -96,6 +97,20 @@ public class RenderTextureHook : AssetHook, IRenderTextureAssetHook, IGodotTextu
         _camera.Position = _cameraPosition;
         _camera.Quaternion = _cameraRotation;
         _camera.Current = true;
+    }
+
+    public void SetRenderEnabled(bool enabled)
+    {
+        _renderEnabled = enabled;
+        Callable.From(ApplyRenderEnabled).CallDeferred();
+    }
+
+    private void ApplyRenderEnabled()
+    {
+        if (_viewport == null || !GodotObject.IsInstanceValid(_viewport)) return;
+        _viewport.RenderTargetUpdateMode = _renderEnabled
+            ? SubViewport.UpdateMode.Always
+            : SubViewport.UpdateMode.Disabled;
     }
 
     public void UploadData(byte[] pixels, int width, int height, bool hasMipmaps) { }

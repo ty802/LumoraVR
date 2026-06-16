@@ -18,6 +18,13 @@ uniform vec2 uv_offset = vec2(0.0);
 uniform float pixel_range = 4.0;
 uniform float coverage_gamma : hint_range(0.5, 2.0) = 0.9;
 
+// Optional glyph outline for floating text (nameplates). This atlas stores coverage, not a
+// signed distance, so we approximate an outline by dilating the coverage (max of 8 offset
+// taps) and tinting the surrounding ring. thickness is in texels; 0 disables, so
+// non-nameplate text is unchanged. - xlinka
+uniform vec4 outline_color : source_color = vec4(0.0);
+uniform float outline_thickness = 0.0;
+
 // Crisp text at any distance/angle: smoothstep across the half-coverage
 // threshold using fwidth so the edge stays ~1px wide in screen space. - xlinka
 uniform float alpha_cutoff : hint_range(0.0, 1.0) = 0.5;
@@ -69,6 +76,26 @@ void fragment() {
 	if (alpha_clip) {
 		float alpha_width = max(fwidth(out_color.a), 0.001);
 		out_color.a *= smoothstep(alpha_cutoff - alpha_width, alpha_cutoff + alpha_width, out_color.a);
+	}
+
+	// Outline post-step: leaves the glyph face untouched (face_a dominates where the glyph is
+	// solid) and fills the dilated ring around it with outline_color. Gated on thickness.
+	if (outline_thickness > 0.0 && use_albedo_texture) {
+		vec2 ts = outline_thickness / vec2(textureSize(albedo_texture, 0));
+		float dil = 0.0;
+		dil = max(dil, texture(albedo_texture, UV + vec2(ts.x, 0.0)).a);
+		dil = max(dil, texture(albedo_texture, UV + vec2(-ts.x, 0.0)).a);
+		dil = max(dil, texture(albedo_texture, UV + vec2(0.0, ts.y)).a);
+		dil = max(dil, texture(albedo_texture, UV + vec2(0.0, -ts.y)).a);
+		dil = max(dil, texture(albedo_texture, UV + ts).a);
+		dil = max(dil, texture(albedo_texture, UV - ts).a);
+		dil = max(dil, texture(albedo_texture, UV + vec2(ts.x, -ts.y)).a);
+		dil = max(dil, texture(albedo_texture, UV + vec2(-ts.x, ts.y)).a);
+		float out_a = pow(clamp(dil, 0.0, 1.0), coverage_gamma) * outline_color.a;
+		float face_a = out_color.a;
+		float comb_a = max(face_a, out_a);
+		vec3 comb_rgb = mix(outline_color.rgb, out_color.rgb, face_a / max(comb_a, 0.0001));
+		out_color = vec4(comb_rgb, comb_a);
 	}
 
 	out_color.a *= clip_alpha;

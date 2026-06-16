@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -188,6 +188,7 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
             Lumora.Core.Logging.Logger.Warn($"LocalHome: Helio validation panel skipped: {ex}");
         }
 
+
         // Catch-all under the world. Bigger than ground so a user yeeted off-edge
         // still triggers respawn instead of falling forever. - xlinka
         var respawnSlot = world.RootSlot.AddSlot("RespawnPlane");
@@ -248,24 +249,17 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
             Fill(status.RectTransform!);
             SetLayoutHeight(status.RectTransform!, 34f, 40f);
 
-            int shellClickCount = 0;
-            var shellButton = ui.Button("Shell color update", (_, _) =>
-            {
-                shellClickCount++;
-                bool alternate = shellClickCount % 2 == 1;
-                panel.Title.Value = alternate ? $"Helio Validation {shellClickCount}" : "Helio Validation";
-                panel.HeaderColor.Value = alternate
-                    ? new color(0.17f, 0.11f, 0.22f, 0.98f)
-                    : new color(0.105f, 0.130f, 0.165f, 0.98f);
-                status.Content.Value = "PanelShell title/header updated live";
-            }, new color(0.18f, 0.34f, 0.48f, 0.96f));
+            // Handlers live on a component (not closures) so the panel's controls
+            // survive duplication - a cloned panel drives its own labels.
+            var actions = panel.Slot.GetComponent<HelioTestActions>() ?? panel.Slot.AttachComponent<HelioTestActions>();
+            actions.Panel.Target = panel;
+            actions.Status.Target = status;
+
+            var shellButton = ui.Button("Shell color update", actions.OnShellPressed, new color(0.18f, 0.34f, 0.48f, 0.96f));
             Fill(shellButton.RectTransform!);
             SetLayoutHeight(shellButton.RectTransform!, 34f, 36f);
 
-            var button = ui.Button("Laser click test", (_, _) =>
-            {
-                status.Content.Value = $"Clicked {DateTime.Now:HH:mm:ss}";
-            }, new color(0.16f, 0.30f, 0.44f, 0.96f));
+            var button = ui.Button("Laser click test", actions.OnLaserPressed, new color(0.16f, 0.30f, 0.44f, 0.96f));
             Fill(button.RectTransform!);
             SetLayoutHeight(button.RectTransform!, 34f, 36f);
 
@@ -280,10 +274,7 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
             Fill(checkboxLabel.RectTransform!);
             ui.NestOut();
             ui.NestInto(checkboxSplits[2]);
-            var checkbox = ui.Checkbox(false, (_, value) =>
-            {
-                status.Content.Value = value ? "Checkbox on" : "Checkbox off";
-            }, new color(0.78f, 0.82f, 0.88f, 1f));
+            var checkbox = ui.Checkbox(false, actions.OnCheckboxChanged, new color(0.78f, 0.82f, 0.88f, 1f));
             FixedRect(checkbox.RectTransform!, new float2(0.5f, 0.5f), new float2(24f, 24f));
             ui.NestOut();
             ui.NestOut();
@@ -299,10 +290,7 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
             Fill(sliderLabel.RectTransform!);
             ui.NestOut();
             ui.NestInto(sliderSplits[2]);
-            var slider = ui.Slider(0.35f, 0f, 1f, (_, value) =>
-            {
-                status.Content.Value = $"Slider {value:0.00}";
-            }, new color(0.18f, 0.24f, 0.30f, 0.96f));
+            var slider = ui.Slider(0.35f, 0f, 1f, actions.OnSliderChanged, new color(0.18f, 0.24f, 0.30f, 0.96f));
             Fill(slider.RectTransform!);
             ui.NestOut();
             ui.NestOut();

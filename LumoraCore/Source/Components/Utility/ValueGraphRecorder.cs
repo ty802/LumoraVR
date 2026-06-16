@@ -17,6 +17,11 @@ public class ValueGraphRecorder : Component
     public readonly Sync<float> MaxRangeAdjustMultiplier;
     public readonly Sync<float> RangeMin;
     public readonly Sync<float> RangeMax;
+    // When set, RangeMin/Max continuously fit the visible sample window (with
+    // padding) so the line fills the graph's middle band at any value - the
+    // one-directional AdjustRange leaves a high-but-flat signal (e.g. 400 FPS)
+    // pinned to the top edge.
+    public readonly Sync<bool> AutoRange;
 
     private float[]? _buffer;
     private int _startIndex;
@@ -40,6 +45,7 @@ public class ValueGraphRecorder : Component
         MaxRangeAdjustMultiplier = new Sync<float>(this, 1f);
         RangeMin = new Sync<float>(this, 0f);
         RangeMax = new Sync<float>(this, 60f);
+        AutoRange = new Sync<bool>(this, false);
     }
 
     public float GetSample(int index)
@@ -65,8 +71,36 @@ public class ValueGraphRecorder : Component
 
         float value = source.Value;
         Push(value);
-        AdjustRange(value);
+        if (AutoRange.Value)
+            FitRange();
+        else
+            AdjustRange(value);
         _version++;
+    }
+
+    // Fit the range to the current sample window with padding, so the plotted
+    // line sits in the middle ~70% of the graph regardless of absolute value.
+    private void FitRange()
+    {
+        if (_buffer == null || _count == 0)
+            return;
+
+        float lo = float.MaxValue;
+        float hi = float.MinValue;
+        for (int i = 0; i < _count; i++)
+        {
+            float v = _buffer[(_startIndex + i) % _buffer.Length];
+            if (v < lo) lo = v;
+            if (v > hi) hi = v;
+        }
+
+        // Generous padding (data occupies the middle ~45% of the graph) keeps
+        // the line in the central band, clear of the top/bottom edges - so it
+        // never rides a rounded container's corners.
+        float pad = (hi - lo) * 0.6f;
+        if (pad < 1f) pad = 1f;
+        RangeMin.Value = lo - pad;
+        RangeMax.Value = hi + pad;
     }
 
     private void EnsureBuffer()

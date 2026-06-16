@@ -36,15 +36,6 @@ public class AvatarContextActions : ContextMenuItemSource
             });
         }
 
-        if (manager.CurrentAvatar.Target != null)
-        {
-            page.AddItem(new ContextMenuItem
-            {
-                Label = "Dequip Avatar",
-                FillColor = new[] { 0.32f, 0.16f, 0.14f, 0.92f },
-                OnPressed = _ => manager.EquipDefaultAvatar(),
-            });
-        }
     }
 
     // The laser usually hits a mesh deep inside the avatar; walk up for the

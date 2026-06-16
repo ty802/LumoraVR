@@ -53,6 +53,17 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
     }
 
     /// <summary>
+    /// Serialize this member into the persistence data tree. Overridden by the concrete member
+    /// types (fields, references, lists); the base throws so an unhandled type is caught at save.
+    /// </summary>
+    public virtual Persistence.DataTreeNode Save(Persistence.SaveControl control)
+        => throw new NotSupportedException($"{GetType().Name} does not support persistence.");
+
+    /// <summary>Restore this member's value from the persistence data tree.</summary>
+    public virtual void Load(Persistence.DataTreeNode node, Persistence.LoadControl control)
+        => throw new NotSupportedException($"{GetType().Name} does not support persistence.");
+
+    /// <summary>
     /// Initialize this sync element with the world and parent.
     /// Allocates RefID and registers with ReferenceController.
     /// </summary>

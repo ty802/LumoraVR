@@ -2,20 +2,22 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.IO;
+using System.Threading.Tasks;
 using Lumora.Core.Math;
 using Lumora.Core.Phos;
 
 namespace Lumora.Core.Assets;
 
 /// <summary>
-/// Asset containing mesh geometry data.
-/// Supports both static (loaded) and dynamic (procedural) meshes.
+/// Asset containing mesh geometry data. URL instances gather and decode their file in
+/// <see cref="LoadSelf"/>; procedural instances are created via <c>InitializeDynamic</c> and fed
+/// geometry through <see cref="SetMeshData"/>.
 /// </summary>
-public class MeshDataAsset : DynamicImplementableAsset<IMeshAssetHook>
+public class MeshDataAsset : ImplementableAsset<IMeshAssetHook>
 {
     private PhosMesh _meshData = null!;
     private BoundingBox _bounds;
-    private int _activeRequestCount;
     private bool _keepReadable;
 
     /// <summary>
@@ -59,7 +61,37 @@ public class MeshDataAsset : DynamicImplementableAsset<IMeshAssetHook>
         set => _keepReadable = value;
     }
 
-    public override int ActiveRequestCount => _activeRequestCount;
+    /// <summary>
+    /// Gather and decode this mesh from its URL. Only runs for URL (static) instances;
+    /// procedural instances set their data directly via <see cref="SetMeshData"/>.
+    /// </summary>
+    protected override async Task LoadSelf()
+    {
+        var bytes = await AssetManager.RequestGather(AssetURL).ConfigureAwait(false);
+        if (bytes == null || bytes.Length == 0)
+        {
+            FailLoad($"No mesh data gathered for {AssetURL}");
+            return;
+        }
+
+        var descriptor = TargetVariant as MeshVariantDescriptor ?? MeshVariantDescriptor.Default;
+        string ext = Path.GetExtension(AssetURL.IsFile ? AssetURL.LocalPath : AssetURL.AbsolutePath) ?? "";
+
+        var mesh = MeshDecoder.Decode(bytes, ext);
+        if (mesh == null)
+        {
+            FailLoad($"Failed to decode mesh {AssetURL}");
+            return;
+        }
+
+        if (System.Math.Abs(descriptor.ImportScale - 1.0f) > 0.0001f)
+        {
+            MeshDecoder.ScaleMesh(mesh, descriptor.ImportScale);
+        }
+
+        _keepReadable = descriptor.KeepReadable;
+        SetMeshData(mesh);
+    }
 
     /// <summary>
     /// Set the mesh data.
@@ -108,22 +140,6 @@ public class MeshDataAsset : DynamicImplementableAsset<IMeshAssetHook>
         return asset;
     }
 
-    /// <summary>
-    /// Add an active request for this mesh.
-    /// </summary>
-    public void AddRequest()
-    {
-        _activeRequestCount++;
-    }
-
-    /// <summary>
-    /// Remove an active request for this mesh.
-    /// </summary>
-    public void RemoveRequest()
-    {
-        _activeRequestCount = System.Math.Max(0, _activeRequestCount - 1);
-    }
-
     public override void Unload()
     {
         if (!_keepReadable)
@@ -132,7 +148,6 @@ public class MeshDataAsset : DynamicImplementableAsset<IMeshAssetHook>
         }
         _meshData = null!;
         _bounds = new BoundingBox();
-        _activeRequestCount = 0;
         base.Unload();
     }
 }

@@ -4,6 +4,7 @@
 using System;
 using System.IO;
 using Lumora.Core;
+using Lumora.Core.Persistence;
 
 namespace Lumora.Core.Networking.Sync;
 
@@ -75,4 +76,14 @@ public interface ISyncMember : IDisposable
     /// Get the current value as object.
     /// </summary>
     object? GetValueAsObject();
+
+    /// <summary>
+    /// Serialize this member into a persistence data tree (separate from the binary network path).
+    /// </summary>
+    DataTreeNode Save(SaveControl control);
+
+    /// <summary>
+    /// Restore this member's value from a persistence data tree.
+    /// </summary>
+    void Load(DataTreeNode node, LoadControl control);
 }

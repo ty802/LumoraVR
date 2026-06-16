@@ -13,6 +13,8 @@ using Lumora.Core.Helpers;
 using Lumora.Core.Assets;
 using Lumora.Core.Coroutines;
 using Lumora.Core.Physics;
+using Lumora.Core.Persistence;
+using Lumora.Core.Templates;
 using Lumora.CDN;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
@@ -164,7 +166,6 @@ public class Engine : IDisposable
     public Input.InputInterface InputInterface { get; private set; } = null!;
     public AssetManager AssetManager { get; private set; } = null!;
     public GlobalCoroutineManager CoroutineManager { get; private set; } = null!;
-    public PhysicsManager PhysicsManager { get; private set; } = null!;
     public RemoteAudioManager AudioManager { get; private set; } = null!;
 
     // CDN / Content delivery
@@ -394,7 +395,7 @@ public class Engine : IDisposable
 
             await InitializeSubsystem("AssetManager", async () =>
             {
-                AssetManager = new AssetManager();
+                AssetManager = new AssetManager(this);
                 await AssetManager.InitializeAsync();
             }, cancellationToken);
 
@@ -419,14 +420,8 @@ public class Engine : IDisposable
             }
 
 
-            // Phase 3: Physics
-            LumoraLogger.Log("Phase 3: Initializing Physics...");
-
-            await InitializeSubsystem("PhysicsManager", async () =>
-            {
-                PhysicsManager = new PhysicsManager();
-                await PhysicsManager.InitializeAsync();
-            }, cancellationToken);
+            // Physics is per-world and delegated to the platform engine (Godot/Jolt), accessed
+            // through World.Physics — there is no engine-level physics subsystem to initialize.
 
             // Phase 4: World Management
             LumoraLogger.Log("Phase 4: Initializing World Management...");
@@ -515,6 +510,11 @@ public class Engine : IDisposable
 
     #region Local Home Management
 
+    /// <summary>On-disk location of the persisted local home world.</summary>
+    public static string LocalHomeSavePath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "Lumora", "home.lworld");
+
     private void StartLocalHome()
     {
         if (_hostingLocalHome)
@@ -528,7 +528,23 @@ public class Engine : IDisposable
             _localHomePort = SimpleIpHelpers.GetAvailablePortUdp(10) ?? 6000;
         }
 
-        var world = WorldManager?.StartSession("LocalHome", (ushort)_localHomePort.Value, GetHostUserName(), "LocalHome");
+        // Load the saved home if one exists (build it into an Empty world so the template's default
+        // content isn't duplicated); otherwise build the default from the LocalHome template.
+        var savePath = LocalHomeSavePath;
+        bool hasSave = File.Exists(savePath);
+        string template = hasSave ? "Empty" : "LocalHome";
+        Action<World>? init = hasSave
+            ? w =>
+            {
+                if (!WorldStorage.LoadFromFile(w, savePath))
+                {
+                    LumoraLogger.Warn("Engine: LocalHome save failed to load; falling back to template.");
+                    WorldTemplates.ApplyTemplate(w, "LocalHome");
+                }
+            }
+            : null!;
+
+        var world = WorldManager?.StartSession("LocalHome", (ushort)_localHomePort.Value, GetHostUserName(), template, init!);
         if (world == null)
         {
             LumoraLogger.Error("Engine: Failed to start LocalHome session.");
@@ -663,9 +679,7 @@ public class Engine : IDisposable
 
     private void FixedUpdateInternal(double fixedDelta)
     {
-        PhysicsManager?.PreWorldUpdate((float)fixedDelta);
         WorldManager?.FixedUpdate(fixedDelta);
-        PhysicsManager?.PostWorldUpdate((float)fixedDelta);
     }
 
     /// <summary>
@@ -708,6 +722,18 @@ public class Engine : IDisposable
     }
 
     /// <summary>
+    /// Raised by <see cref="RequestQuit"/>. The platform layer subscribes to close the app
+    /// (which tears the engine down through the normal exit path).
+    /// </summary>
+    public event Action? QuitRequested;
+
+    /// <summary>
+    /// Request the application quit. Fires <see cref="QuitRequested"/> rather than disposing
+    /// inline, so it's safe to call from UI during a world update.
+    /// </summary>
+    public void RequestQuit() => QuitRequested?.Invoke();
+
+    /// <summary>
     /// Dispose the engine and all subsystems.
     /// </summary>
     public void Dispose()
@@ -723,7 +749,6 @@ public class Engine : IDisposable
 
         // Dispose in reverse initialization order
         DisposeSubsystem("WorldManager", () => { WorldManager?.Dispose(); WorldManager = null!; });
-        DisposeSubsystem("PhysicsManager", () => { PhysicsManager?.Dispose(); PhysicsManager = null!; });
         DisposeSubsystem("AudioManager", () => { AudioManager = null!; });
         DisposeSubsystem("ContentCache", () => { ContentCache?.Dispose(); ContentCache = null; CDNClient?.Dispose(); CDNClient = null; });
         DisposeSubsystem("AssetManager", () => { AssetManager?.Dispose(); AssetManager = null!; });

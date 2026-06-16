@@ -44,6 +44,16 @@ public class UserInputState : Component
         MouseLookSuppressed = value;
     }
 
+    // True while a non-first-person camera (third-person orbit, free-cam) is
+    // rendering. First-person-only visual overrides (head hiding) read this
+    // so the avatar is fully visible from external views.
+    public bool ExternalCameraActive { get; private set; }
+
+    public void SetExternalCameraActive(bool value)
+    {
+        ExternalCameraActive = value;
+    }
+
     // Multi-requester suppression. Tools, dialogs, etc add themselves while
     // they need exclusive mouse/keyboard control and remove themselves when
     // done. As long as the set is non-empty, desktop look/movement is gated.
@@ -81,6 +91,7 @@ public class UserInputState : Component
         MouseCaptureRequested = false;
         FreeCamActive = false;
         MouseLookSuppressed = false;
+        ExternalCameraActive = false;
 
         base.OnDestroy();
     }
@@ -100,4 +111,5 @@ public class UserInputState : Component
     public static bool FocusedFreeCamActive => ForFocusedLocalUser?.FreeCamActive ?? false;
     public static bool FocusedMouseLookSuppressed => ForFocusedLocalUser?.MouseLookSuppressed ?? false;
     public static bool FocusedDesktopInputSuppressed => ForFocusedLocalUser?.DesktopInputSuppressed ?? false;
+    public static bool FocusedExternalCameraActive => ForFocusedLocalUser?.ExternalCameraActive ?? false;
 }

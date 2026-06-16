@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Lumora.Core.Networking.Session;
 using Lumora.Core.Networking.Sync;
 using Lumora.Core.Components;
+using Lumora.Core.Persistence;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
@@ -148,6 +149,25 @@ public class World
 	}
 
 	/// <summary>
+	/// Who is allowed to join a world, from most to least restrictive.
+	/// </summary>
+	public enum WorldAccessLevel
+	{
+		Private,
+		LAN,
+		Contacts,
+		ContactsPlus,
+		/// <summary>Only members of the group hosting this world.</summary>
+		GroupMembers,
+		/// <summary>Group members plus guests they bring.</summary>
+		GroupPlus,
+		/// <summary>Anyone, but listed/hosted under the group.</summary>
+		GroupPublic,
+		RegisteredUsers,
+		Anyone,
+	}
+
+	/// <summary>
 	/// World configuration settings.
 	/// </summary>
 	public class WorldConfiguration
@@ -160,6 +180,30 @@ public class World
 
 		/// <summary>Whether the world is publicly visible.</summary>
 		public bool IsPublic { get; set; } = false;
+
+		/// <summary>Who is allowed to join this world.</summary>
+		public WorldAccessLevel AccessLevel { get; set; } = WorldAccessLevel.Private;
+
+		/// <summary>Hint that the world is built to run well on mobile/standalone headsets.</summary>
+		public bool MobileFriendly { get; set; } = false;
+
+		/// <summary>When true, the world is in edit mode (relaxes some runtime gates for the host).</summary>
+		public bool EditMode { get; set; } = false;
+
+		/// <summary>Hide this session from public session listings.</summary>
+		public bool HideFromSessionLists { get; set; } = false;
+
+		/// <summary>Automatically kick users that have been AFK for too long.</summary>
+		public bool AutoKickAFK { get; set; } = false;
+
+		/// <summary>Minutes of inactivity before an AFK user is kicked (when enabled).</summary>
+		public int MaxAFKMinutes { get; set; } = 30;
+
+		/// <summary>Periodically release assets no longer referenced by the world.</summary>
+		public bool CleanupUnusedAssets { get; set; } = true;
+
+		/// <summary>Seconds between unused-asset cleanup passes.</summary>
+		public float AssetCleanupInterval { get; set; } = 300f;
 
 		/// <summary>World description.</summary>
 		public string Description { get; set; } = "";
@@ -175,6 +219,48 @@ public class World
 
 		/// <summary>Maximum world size in MB.</summary>
 		public int MaxWorldSizeMB { get; set; } = 512;
+
+		/// <summary>Serialize these settings so they persist with the world save.</summary>
+		public Persistence.DataTreeDictionary Save()
+		{
+			var data = new Persistence.DataTreeDictionary();
+			data.Add("MaxUsers", MaxUsers);
+			data.Add("AllowJoin", AllowJoin);
+			data.Add("IsPublic", IsPublic);
+			data.Add("AccessLevel", (int)AccessLevel);
+			data.Add("MobileFriendly", MobileFriendly);
+			data.Add("EditMode", EditMode);
+			data.Add("HideFromSessionLists", HideFromSessionLists);
+			data.Add("AutoKickAFK", AutoKickAFK);
+			data.Add("MaxAFKMinutes", MaxAFKMinutes);
+			data.Add("CleanupUnusedAssets", CleanupUnusedAssets);
+			data.Add("AssetCleanupInterval", AssetCleanupInterval);
+			data.Add("AutoSaveInterval", AutoSaveInterval);
+			data.Add("MaxWorldSizeMB", MaxWorldSizeMB);
+			data.Add("EnablePersistence", EnablePersistence);
+			data.Add("Description", Description ?? "");
+			return data;
+		}
+
+		/// <summary>Restore settings from a previously-saved world.</summary>
+		public void Load(Persistence.DataTreeDictionary data)
+		{
+			MaxUsers = data.ExtractOrDefault("MaxUsers", MaxUsers);
+			AllowJoin = data.ExtractOrDefault("AllowJoin", AllowJoin);
+			IsPublic = data.ExtractOrDefault("IsPublic", IsPublic);
+			AccessLevel = (WorldAccessLevel)data.ExtractOrDefault("AccessLevel", (int)AccessLevel);
+			MobileFriendly = data.ExtractOrDefault("MobileFriendly", MobileFriendly);
+			EditMode = data.ExtractOrDefault("EditMode", EditMode);
+			HideFromSessionLists = data.ExtractOrDefault("HideFromSessionLists", HideFromSessionLists);
+			AutoKickAFK = data.ExtractOrDefault("AutoKickAFK", AutoKickAFK);
+			MaxAFKMinutes = data.ExtractOrDefault("MaxAFKMinutes", MaxAFKMinutes);
+			CleanupUnusedAssets = data.ExtractOrDefault("CleanupUnusedAssets", CleanupUnusedAssets);
+			AssetCleanupInterval = data.ExtractOrDefault("AssetCleanupInterval", AssetCleanupInterval);
+			AutoSaveInterval = data.ExtractOrDefault("AutoSaveInterval", AutoSaveInterval);
+			MaxWorldSizeMB = data.ExtractOrDefault("MaxWorldSizeMB", MaxWorldSizeMB);
+			EnablePersistence = data.ExtractOrDefault("EnablePersistence", EnablePersistence);
+			Description = data.ExtractOrDefault("Description", Description ?? "");
+		}
 	}
 
 	private readonly HashSet<IWorldElement> _dirtyElements = new();
@@ -211,6 +297,14 @@ public class World
 
 	// Godot scene access - set by WorldHook
 	public object GodotSceneRoot { get; set; } = null!;
+
+	private Physics.WorldPhysics _physics = null!;
+
+	/// <summary>
+	/// Component-facing physics service for this world: collision queries (routed to the platform
+	/// physics engine via the world hook) and physics settings. The platform owns the simulation.
+	/// </summary>
+	public Physics.WorldPhysics Physics => _physics ??= new Physics.WorldPhysics(this);
 
 	// Reference to the WorldManager that owns this World
 	public Management.WorldManager WorldManager { get; internal set; } = null!;
@@ -423,6 +517,64 @@ public class World
 	/// Hard permission gate for datamodel fields, collections, and replication.
 	/// </summary>
 	public DataModelPermissionController DataModelPermissions => _dataModelPermissions;
+
+	// PERSISTENCE
+	// Serialize/restore the whole world (its slot tree) to/from a data tree. Permissions are NOT
+	// serialized: they're a hard runtime policy derived from ownership/authority, applied live.
+	// The local home is hosted by the local user (authority), so save/load pass the permission gate.
+
+	private const int WorldFormatVersion = 1;
+
+	/// <summary>Serialize this world's data (name + slot tree) into a data tree.</summary>
+	public DataTreeDictionary SaveWorld()
+	{
+		var translator = new ReferenceTranslator();
+		var control = new SaveControl(RootSlot, translator);
+
+		// Save the tree first so type versions are collected before they're stored.
+		var rootNode = RootSlot.Save(control);
+
+		var dictionary = new DataTreeDictionary();
+		dictionary.Add("FormatVersion", WorldFormatVersion);
+		dictionary.Add("Name", WorldName.Value);
+
+		var typeVersions = new DataTreeDictionary();
+		control.StoreTypeVersions(typeVersions);
+		dictionary.Add("TypeVersions", typeVersions);
+
+		dictionary.Add("Config", _configuration.Save());
+		dictionary.Add("Root", rootNode);
+		return dictionary;
+	}
+
+	/// <summary>Restore this world's contents from a data tree into the (already-created) root slot.</summary>
+	public void LoadWorld(DataTreeDictionary dictionary)
+	{
+		var translator = new ReferenceTranslator();
+		var control = new LoadControl(this, translator);
+
+		try
+		{
+			if (dictionary.TryGetDictionary("TypeVersions") is { } typeVersions)
+				control.LoadTypeVersions(typeVersions);
+
+			if (dictionary.ContainsKey("Name"))
+				WorldName.Value = dictionary.ExtractOrDefault("Name", WorldName.Value);
+
+			if (dictionary.TryGetDictionary("Config") is { } config)
+				_configuration.Load(config);
+
+			if (dictionary.TryGetNode("Root") is { } rootNode)
+				RootSlot.Load(rootNode, control);
+		}
+		finally
+		{
+			// Always resolve deferred refs + report leftovers, even if a sub-load threw, so a
+			// partial load doesn't leave dangling waiters. A thrown load still propagates to the
+			// caller (WorldStorage.LoadFromFile) so it can fall back to the template.
+			control.FinishLoad();
+		}
+	}
 
 	/// <summary>
 	/// Get a diagnostic summary of this world.
@@ -937,6 +1089,14 @@ public class World
 	public void AddUser(User user)
 	{
 		if (user == null) return;
+
+		// Reject banned users (host-authoritative). Never ban-check our own/host user.
+		if (IsAuthority && LocalUser != null && user != LocalUser
+			&& Security.BanManager.IsBanned(user.UserID?.Value, user.MachineID?.Value, WorldName?.Value))
+		{
+			LumoraLogger.Warn($"Rejecting banned user '{user.UserName.Value}'");
+			return;
+		}
 
 		lock (_users)
 		{
@@ -1481,6 +1641,10 @@ public class World
 
 			// Stage 5.5: Apply component changes (from sync field updates)
 			_updateManager?.RunChangeApplications();
+
+			// Stage 5.6: Fire deferred WorldTransformChanged events. Before hooks, so a handler
+			// that re-drives a transform gets pushed to the engine this same frame.
+			_updateManager?.ProcessMovedSlots();
 
 			_updateManager?.ProcessHookUpdates((float)scaledDelta);
 

@@ -28,10 +28,13 @@ public class FaceLocalUser : Component
         if (toViewer.LengthSquared < 1e-6f)
             return;
 
-        // Point the AWAY direction at LookRotation so the glyph front face
-        // (readable side) is what the viewer sees - facing the look axis
-        // itself presents the mirrored back of the double-sided quads.
-        var global = floatQ.LookRotation((-toViewer).Normalized, float3.Up);
+        // Build the yaw directly: the readable front of quad/canvas content
+        // is its +Z side, so point local +Z at the viewer. floatQ.LookRotation
+        // builds its matrix from basis ROWS (returns the inverse rotation) so
+        // headings come out negated and planes go edge-on at oblique angles -
+        // avoid it for facing math.
+        float yaw = System.MathF.Atan2(toViewer.x, toViewer.z);
+        var global = floatQ.AxisAngle(float3.Up, yaw);
         var local = parent.GlobalRotationToLocal(global);
 
         float dot = floatQ.Dot(local, Slot.LocalRotation.Value);

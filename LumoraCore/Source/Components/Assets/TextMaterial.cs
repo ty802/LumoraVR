@@ -17,6 +17,11 @@ public class TextMaterial : MaterialProvider, ICommonMaterial
     public readonly Sync<colorHDR> TintColor;
     public readonly Sync<bool> UseVertexColor;
     public readonly Sync<float> PixelRange;
+
+    // Optional glyph outline (readability for floating text). Thickness is in atlas texels;
+    // 0 = no outline (unchanged glyph). Maps to outline_color / outline_thickness in the shader.
+    public readonly Sync<colorHDR> OutlineColor;
+    public readonly Sync<float> OutlineThickness;
     public readonly Sync<bool> AlphaClip;
     public readonly Sync<float> AlphaCutoff;
     public readonly Sync<BlendMode> BlendMode;
@@ -51,6 +56,8 @@ public class TextMaterial : MaterialProvider, ICommonMaterial
         TintColor = new Sync<colorHDR>(this, colorHDR.White);
         UseVertexColor = new Sync<bool>(this, true);
         PixelRange = new Sync<float>(this, 8f);
+        OutlineColor = new Sync<colorHDR>(this, new colorHDR(0f, 0f, 0f, 0f));
+        OutlineThickness = new Sync<float>(this, 0f);
         AlphaClip = new Sync<bool>(this, true);
         AlphaCutoff = new Sync<float>(this, 0.5f);
         BlendMode = new Sync<BlendMode>(this, Assets.BlendMode.Alpha);
@@ -70,6 +77,8 @@ public class TextMaterial : MaterialProvider, ICommonMaterial
         asset.SetColor("TintColor", TintColor.Value);
         asset.SetBool("UseVertexColor", UseVertexColor.Value);
         asset.SetFloat("PixelRange", PixelRange.Value);
+        asset.SetColor("OutlineColor", OutlineColor.Value);
+        asset.SetFloat("OutlineThickness", OutlineThickness.Value);
         asset.SetBool("AlphaClip", AlphaClip.Value);
         asset.SetFloat("AlphaCutoff", AlphaCutoff.Value);
         asset.SetInt("ZWrite", (int)ZWrite.Value);

@@ -21,6 +21,9 @@ public struct UIStyle
     public float FlexibleWidth;
     public float FlexibleHeight;
     public bool UseZeroMetrics;
+    // Optional rounded-rect sprite; controls (slider track, checkbox box) render
+    // as rounded pills/cards when set.
+    public IAssetProvider<TextureAsset>? RoundedSprite;
 
     public static UIStyle Default => new UIStyle
     {

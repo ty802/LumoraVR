@@ -34,7 +34,6 @@ public sealed class TiledRawImage : Graphic
     private float2 _tileSize;
     private float2 _tileOffset;
     private bool _interactionTarget;
-    private MainTexturePropertyBlock? _textureBlock;
 
     public TiledRawImage()
     {
@@ -51,7 +50,7 @@ public sealed class TiledRawImage : Graphic
 
     protected override void FlagChanges(RectTransform rect)
     {
-        rect.MarkChangeDirty();
+        rect.MarkGraphicDirty();
     }
 
     public override void PrepareCompute()
@@ -92,8 +91,8 @@ public sealed class TiledRawImage : Graphic
             return;
         }
 
-        var textureBlock = EnsureTextureBlock();
-        var submesh = renderData.GetSubmesh(_material, textureBlock, MapMaterial);
+        // Key by texture identity; the shared image block is created at submit (main).
+        var submesh = renderData.GetSubmesh(_material, _textureProvider, GraphicsChunk.RenderData.ImageTexture);
         GenerateTiles(submesh.Mesh, submesh, rect, tileSize, _tileOffset, _texture, in _tint, clipRect);
     }
 
@@ -163,23 +162,6 @@ public sealed class TiledRawImage : Graphic
             TileSizeBasis.RectHeight => _tileSize * rect.height,
             _ => _tileSize
         };
-    }
-
-    private MainTexturePropertyBlock? EnsureTextureBlock()
-    {
-        if (_textureProvider == null)
-        {
-            return null;
-        }
-
-        _textureBlock ??= Slot.GetComponent<MainTexturePropertyBlock>() ?? Slot.AttachComponent<MainTexturePropertyBlock>();
-        _textureBlock.Texture.Target = _textureProvider;
-        return _textureBlock;
-    }
-
-    private static MaterialMap MapMaterial(GraphicsChunk.RenderData renderData, IAssetProvider<MaterialAsset>? baseMaterial, object? key, bool usingDefaultMaterial)
-    {
-        return new MaterialMap(baseMaterial, key as IAssetProvider<MaterialPropertyBlockAsset>);
     }
 
     private static float PositiveModulo(float value, float modulus)

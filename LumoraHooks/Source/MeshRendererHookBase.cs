@@ -65,8 +65,31 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
     {
     }
 
+    // RenderLayerOverrideHook only walks nodes that exist when it applies, so mesh
+    // instances created later (canvas chunks built after a parked dash reactivates)
+    // would stay on the default layer - invisible to layer-masked capture cameras.
+    // Inherit the override at creation instead.
+    private void ApplyInheritedRenderLayer(VisualInstance3D visual)
+    {
+        for (var slot = Owner.Slot; slot != null; slot = slot.Parent)
+        {
+            var layerOverride = slot.GetComponent<RenderLayerOverride>();
+            if (layerOverride != null && layerOverride.Enabled && layerOverride.Layer.Value != 0)
+            {
+                visual.Layers = (uint)layerOverride.Layer.Value;
+                return;
+            }
+        }
+    }
+
     public override void ApplyChanges()
     {
+        // Not initialized yet (or already torn down) - nothing to attach under.
+        if (attachedNode == null)
+        {
+            return;
+        }
+
         if (Owner.Mesh.Target != null && IsMeshAssetAvailable())
         {
             if (MeshRenderer == null)
@@ -78,6 +101,7 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
                 if (UseMeshInstance)
                 {
                     meshInstance = new MeshInstance3D();
+                    ApplyInheritedRenderLayer(meshInstance);
                     gameObject.AddChild(meshInstance);
                 }
 

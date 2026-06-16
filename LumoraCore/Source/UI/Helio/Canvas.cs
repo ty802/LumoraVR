@@ -4,6 +4,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using Helio.UI.Layout;
 using Lumora.Core;
 using Lumora.Core.Components.Interaction;
@@ -28,25 +29,90 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     private GraphicChunkRoot? _chunkRoot;
     private GraphicsChunk? _rootChunk;
 
+    // Canvas-wide sorting boost fed into every chunk renderer's SortingOffset.
+    // High values make the whole canvas draw in front of other transparent
+    // geometry - overlay UI like the context menu uses this to render on top
+    // of everything.
+    public readonly Sync<int> SortingOrder = new();
+
     // Per-chunk rendering: each GraphicChunkRoot below the canvas owns an independent mesh, so a
     // subtree that animates (e.g. the FPS sparkline) re-uploads only its own small mesh instead of
     // the whole canvas. The root chunk is everything not under a nested GraphicChunkRoot. - xlinka
     private readonly Dictionary<GraphicChunkRoot, GraphicsChunk> _chunkMap = new();
     private readonly Dictionary<GraphicChunkRoot, bool> _chunkBuilt = new();
     private readonly HashSet<GraphicChunkRoot> _dirtyChunks = new();
+    // Chunks whose subtree layout (not just mesh) needs recomputing - scoped layout for
+    // self-contained changes (e.g. a slider handle) so we don't re-lay-out the whole canvas.
+    private readonly HashSet<GraphicChunkRoot> _layoutDirtyChunks = new();
     private readonly HashSet<GraphicChunkRoot> _seenChunkRoots = new();
     private readonly List<GraphicChunkRoot> _chunkScratch = new();
+    // Nested chunks tessellated this rebuild, submitted after the compute pass. Split
+    // so the compute (mesh build) can move to a worker while submit/upload stays on
+    // the main thread (Godot mesh/material ops are main-thread only).
+    private readonly List<GraphicChunkRoot> _computedChunks = new();
     private bool _rootDirty = true;
     private bool _fullDirty = true;
+    private bool _layoutDirty = true;
+    // Guards the async rebuild cycle: prepare (main) -> emit (worker) -> submit (main). Only one
+    // cycle at a time; a change mid-cycle leaves its dirty flag set so the next OnCommonUpdate
+    // re-runs. Touched only on the main thread (OnCommonUpdate + the RunSynchronously submit
+    // callback), so no locking is needed.
+    private bool _updateRunning;
+    private bool _cycleRenderRoot;
 
-    // Full refresh: rebuild the root chunk and every nested chunk. - xlinka
-    public void MarkDirty() => _fullDirty = true;
+    // Full refresh: recompute layout and rebuild the root chunk and every nested chunk. - xlinka
+    public void MarkDirty()
+    {
+        _fullDirty = true;
+        _layoutDirty = true;
+    }
 
-    // Route a change to the chunk that owns it, so only that chunk re-renders/uploads. - xlinka
+    // A layout-affecting change happened (rect/anchor/offset, layout component, structure,
+    // scroll). Recompute rects and re-render everything, since moved chunks aren't individually
+    // tracked. Pure visual changes go through MarkDirty(rect) instead, which re-meshes only the
+    // touched chunk and reuses cached rects - that's what keeps hover/press off the layout path.
+    public void MarkLayoutDirty()
+    {
+        _layoutDirty = true;
+        _fullDirty = true;
+    }
+
+    // A slot's active state changed (content shown/hidden) - NOT a content change. Runs the chunk
+    // reconcile (re-enable newly-visible persisted chunks, disable hidden ones) + a layout pass,
+    // but deliberately does NOT set _fullDirty: built chunks just toggle back on (instant, no
+    // re-tessellate, no worker hop), and only genuinely new/changed content re-meshes. This is what
+    // makes re-showing content appear immediately instead of popping in a frame late.
+    public void MarkVisibilityDirty()
+    {
+        _rootDirty = true;
+        _layoutDirty = true;
+    }
+
+    // Scoped layout: a self-contained change (e.g. a slider handle anchor) inside a built chunk.
+    // Re-lay-out only that chunk's subtree and re-mesh that chunk - no whole-canvas layout. Falls
+    // back to a full layout if the rect isn't inside a built chunk (the change may affect siblings).
+    public void MarkLayoutDirty(RectTransform rect)
+    {
+        var root = FindChunkRoot(rect.Slot);
+        if (root == null || !_chunkMap.ContainsKey(root) || !(_chunkBuilt.TryGetValue(root, out var built) && built))
+        {
+            _layoutDirty = true;
+            _fullDirty = true;
+            return;
+        }
+        _layoutDirtyChunks.Add(root);
+        _dirtyChunks.Add(root);
+    }
+
+    // Route a change to the chunk that owns it, so only that chunk re-renders/uploads.
+    // A chunk that hasn't been built yet (not in _chunkMap) can't be re-rendered by
+    // the per-chunk path - it's only discovered/built during a root pass. So escalate
+    // to a root rebuild, otherwise its content stays invisible until some unrelated
+    // root-dirty event (e.g. a hover) finally builds it. - xlinka
     public void MarkDirty(RectTransform rect)
     {
         var root = FindChunkRoot(rect.Slot);
-        if (root == null)
+        if (root == null || !_chunkMap.ContainsKey(root))
             _rootDirty = true;
         else
             _dirtyChunks.Add(root);
@@ -276,8 +342,14 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     public override void OnCommonUpdate()
     {
         base.OnCommonUpdate();
-        if (!_rootDirty && !_fullDirty && _dirtyChunks.Count == 0) return;
-        RebuildGraphics();
+        bool dirty = _rootDirty || _fullDirty || _layoutDirty || _dirtyChunks.Count > 0 || _layoutDirtyChunks.Count > 0;
+        if (!dirty)
+            return;
+        // One rebuild cycle at a time. A change arriving mid-cycle leaves its dirty flag set (we
+        // don't clear it here), so the next OnCommonUpdate after the cycle finishes re-triggers.
+        if (_updateRunning)
+            return;
+        StartRebuildCycle();
     }
 
     public override void OnDestroy()
@@ -292,13 +364,9 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         base.OnDestroy();
     }
 
-    // TEMP perf instrumentation: throttled phase timing to find the rebuild bottleneck. - xlinka
-    private double _perfCompute, _perfDraw;
-    private int _perfRebuilds;
-    private long _perfLastLogMs;
-    private long _chunkDiagLastMs;
-
-    private void RebuildGraphics()
+    // MAIN: layout + prepare each dirty chunk (snapshot graphics, rasterize glyphs, queue geometry,
+    // discover nested chunks), then hand the geometry build to a worker and submit back on main.
+    private void StartRebuildCycle()
     {
         EnsureRoot();
         if (_rootRect == null || _rootChunk == null)
@@ -306,23 +374,40 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             return;
         }
 
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-
-        // Layout stays global and runs every rebuild - it's cheap (a few ms) and keeps rects
-        // correct across chunk boundaries without any cross-chunk coupling. - xlinka
-        ComputeRects(Slot, null);
-        ApplyScrollRects(Slot);
-        _perfCompute += sw.Elapsed.TotalMilliseconds; sw.Restart();
+        // Only recompute the full layout when something layout-affecting actually changed.
+        // Pure visual changes (hover/press tints, etc.) come in via MarkDirty(rect) without
+        // setting _layoutDirty, so they re-mesh just their chunk and reuse the cached rects -
+        // this is what stops every hover from re-laying-out the whole canvas. - xlinka
+        if (_layoutDirty)
+        {
+            ComputeRects(Slot, null);
+            ApplyScrollRects(Slot);
+            _layoutDirty = false;
+            _layoutDirtyChunks.Clear();
+        }
+        else if (_layoutDirtyChunks.Count > 0)
+        {
+            // Scoped: only the touched chunks' subtrees moved (e.g. a slider handle). Re-lay-out
+            // those subtrees against their unchanged chunk-root rect; their chunk is already in
+            // _dirtyChunks so the mesh re-renders too. No whole-canvas layout pass.
+            foreach (var root in _layoutDirtyChunks)
+                RelayoutChunkSubtree(root);
+            _layoutDirtyChunks.Clear();
+        }
 
         bool renderRoot = _fullDirty || _rootDirty;
+        _cycleRenderRoot = renderRoot;
+
+        // PREPARE PASS (main): clear meshes + queue graphics (snapshot + glyph raster on main),
+        // discover nested chunks. The geometry build (ComputeGraphic) is queued, not run here.
+        _computedChunks.Clear();
         if (renderRoot)
         {
             _seenChunkRoots.Clear();
             _rootChunk.PrepareCompute();
             RenderPartition(_rootChunk.ContentRenderData, Slot, null, null);
-            _rootChunk.SubmitChanges(0);
 
-            // Render every nested chunk that's dirty/unbuilt. RenderChunk can discover deeper
+            // Prepare every nested chunk that's dirty/unbuilt. ComputeChunk can discover deeper
             // nested roots, so drain a worklist until stable. - xlinka
             _chunkScratch.Clear();
             _chunkScratch.AddRange(_seenChunkRoots);
@@ -330,71 +415,121 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             {
                 var root = _chunkScratch[i];
                 bool built = _chunkBuilt.TryGetValue(root, out var b) && b;
-                if (_fullDirty || _dirtyChunks.Contains(root) || !built)
-                    RenderChunk(root);
+                if ((_fullDirty || _dirtyChunks.Contains(root) || !built) && ComputeChunk(root))
+                    _computedChunks.Add(root);
                 foreach (var r in _seenChunkRoots)
                     if (!_chunkScratch.Contains(r)) _chunkScratch.Add(r);
             }
 
-            CleanupChunks();
+            // Re-enable every chunk visible this cycle. Persisted chunks that weren't recomputed
+            // (built + unchanged) just toggle their slot back on here - instant, no re-tessellate;
+            // recomputed ones get their fresh mesh at submit. This is what makes re-showing content
+            // appear immediately instead of rebuilding from scratch.
+            foreach (var seen in _seenChunkRoots)
+                if (_chunkMap.TryGetValue(seen, out var chunk))
+                    chunk.SetActive(true);
         }
         else
         {
-            // Only nested chunks changed (e.g. the sparkline): re-render just those, leaving the
-            // root chunk's mesh (the whole file browser) resident and un-uploaded. - xlinka
+            // Only nested chunks changed (e.g. the sparkline): re-mesh just those.
             foreach (var root in _dirtyChunks)
             {
-                if (_chunkMap.ContainsKey(root))
-                    RenderChunk(root);
+                if (_chunkMap.ContainsKey(root) && ComputeChunk(root))
+                    _computedChunks.Add(root);
             }
         }
 
+        // Dirty handled this cycle; a change arriving during the worker/submit sets its own flag again.
         _rootDirty = false;
         _fullDirty = false;
         _dirtyChunks.Clear();
-        _perfDraw += sw.Elapsed.TotalMilliseconds;
 
-        _perfRebuilds++;
-        long nowMs = System.Environment.TickCount64;
-        if (nowMs - _perfLastLogMs >= 1000)
+        _updateRunning = true;
+
+        // ISOLATION (2026-06-15): the worker path is temporarily disabled while diagnosing a
+        // blank-content regression. Emit + submit run inline on the main thread here, so this is
+        // functionally the synchronous Step-1/2 build (datamodel-pure compute, deferred materials),
+        // just without the Task.Run hop. Flip USE_WORKER back on once content renders correctly.
+        if (UseWorker)
         {
-            int n = _perfRebuilds;
-            Lumora.Core.Logging.Logger.Log(
-                $"[CanvasPerf '{Slot?.SlotName.Value}'] {n} rebuilds/s | " +
-                $"layout={_perfCompute:0.0} draw={_perfDraw:0.0} ms/s chunks={_chunkMap.Count} " +
-                $"(avg/rebuild: {(_perfCompute + _perfDraw) / System.Math.Max(1, n):0.0}ms)");
-            _perfCompute = _perfDraw = 0;
-            _perfRebuilds = 0;
-            _perfLastLogMs = nowMs;
+            Task.Run(() =>
+            {
+                try
+                {
+                    EmitCycle();
+                }
+                catch (Exception ex)
+                {
+                    Lumora.Core.Logging.Logger.Error($"Canvas graphics worker failed: {ex}");
+                }
+                finally
+                {
+                    World?.RunSynchronously(FinishRebuildCycle);
+                }
+            });
+        }
+        else
+        {
+            EmitCycle();
+            FinishRebuildCycle();
         }
     }
 
-    private void RenderChunk(GraphicChunkRoot root)
+    // Master switch for the off-main-thread emit. static readonly (not const) so both branches
+    // compile without an unreachable warning when toggled.
+    private static readonly bool UseWorker = true;
+
+    // WORKER: drain each dirty chunk's emit queue into its (already-cleared) mesh. Reads only
+    // snapshotted graphic state + stable LocalComputeRect; writes only managed PhosMesh data.
+    private void EmitCycle()
+    {
+        if (IsDestroyed)
+            return;
+        if (_cycleRenderRoot)
+            _rootChunk?.ContentRenderData.EmitQueued();
+        foreach (var root in _computedChunks)
+            if (_chunkMap.TryGetValue(root, out var chunk))
+                chunk.ContentRenderData.EmitQueued();
+    }
+
+    // MAIN: push the worker-built meshes + their materials to the renderers, then release the guard.
+    private void FinishRebuildCycle()
+    {
+        if (!IsDestroyed)
+            SubmitCycle();
+        // A change that arrived during the cycle left its dirty flag set, so the next
+        // OnCommonUpdate starts a fresh cycle.
+        _updateRunning = false;
+    }
+
+    private void SubmitCycle()
+    {
+        if (_rootChunk == null)
+            return;
+        if (_cycleRenderRoot)
+            _rootChunk.SubmitChanges(SortingOrder.Value);
+        foreach (var root in _computedChunks)
+        {
+            if (_chunkMap.TryGetValue(root, out var chunk))
+            {
+                chunk.SubmitChanges(SortingOrder.Value + 1);
+                _chunkBuilt[root] = true;
+            }
+        }
+        if (_cycleRenderRoot)
+            CleanupChunks();
+    }
+
+    // Tessellate a nested chunk's mesh without submitting it. Returns true if computed.
+    private bool ComputeChunk(GraphicChunkRoot root)
     {
         if (!_chunkMap.TryGetValue(root, out var chunk))
-            return;
+            return false;
 
         var clip = ComputeInheritedClip(root.Slot);
         chunk.PrepareCompute();
         RenderPartition(chunk.ContentRenderData, root.Slot, clip, root);
-        chunk.SubmitChanges(1);
-        _chunkBuilt[root] = true;
-
-        // TEMP: is the chunk producing geometry, and is its renderer alive / on top? - xlinka
-        long nowMs = System.Environment.TickCount64;
-        if (nowMs - _chunkDiagLastMs >= 1000)
-        {
-            _chunkDiagLastMs = nowMs;
-            var mr = chunk.MeshRenderer;
-            int matCount = mr?.Materials.Count ?? -1;
-            int p0 = mr != null && matCount > 0 ? mr.GetSurfaceRenderPriority(0) : -999;
-            int pLast = mr != null && matCount > 0 ? mr.GetSurfaceRenderPriority(matCount - 1) : -999;
-            Lumora.Core.Logging.Logger.Log(
-                $"[ChunkDiag '{root.Slot.SlotName.Value}'] verts={chunk.ContentRenderData.Mesh.VertexCount} " +
-                $"onTop={chunk.RenderOnTop} mr={(mr != null ? mr.Enabled.Value.ToString() : "null")} " +
-                $"chunkSlot={(chunk.ChunkSlot != null ? chunk.ChunkSlot.SlotName.Value : "null")} " +
-                $"mats={matCount} prio[0]={p0} prio[last]={pLast}");
-        }
+        return true;
     }
 
     private void EnsureChunk(GraphicChunkRoot root)
@@ -410,6 +545,9 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         _chunkBuilt[root] = false;
     }
 
+    // Reconcile chunks not seen this cycle. A chunk whose root slot is gone is truly removed -> dispose.
+    // A chunk that's just hidden (subtree inactive) is DISABLED but kept, so re-showing it is an
+    // instant re-enable, not a dispose + rebuild. - xlinka
     private void CleanupChunks()
     {
         _chunkScratch.Clear();
@@ -420,9 +558,18 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         }
         foreach (var root in _chunkScratch)
         {
-            _chunkMap[root].Dispose();
-            _chunkMap.Remove(root);
-            _chunkBuilt.Remove(root);
+            var chunk = _chunkMap[root];
+            bool removed = root.IsDestroyed || root.Slot == null || root.Slot.IsDestroyed;
+            if (removed)
+            {
+                chunk.Dispose();
+                _chunkMap.Remove(root);
+                _chunkBuilt.Remove(root);
+            }
+            else
+            {
+                chunk.SetActive(false);
+            }
         }
     }
 
@@ -545,6 +692,26 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             foreach (var c in slot.Children) ReanchorAndDescend(c, parent);
             foreach (var c in slot.LocalChildren) ReanchorAndDescend(c, parent);
         }
+    }
+
+    // Re-lay-out the subtree under a chunk root, keeping the chunk root's own rect (its parent
+    // didn't change, so its rect is unchanged). Mirrors ComputeRects for the children only, so the
+    // parent's child list is untouched - used for scoped layout of self-contained changes.
+    private void RelayoutChunkSubtree(GraphicChunkRoot root)
+    {
+        var slot = root.Slot;
+        if (slot != Slot && !slot.ActiveSelf.Value)
+            return;
+        var rect = slot.GetComponent<RectTransform>();
+        if (rect == null)
+            return;
+
+        rect.ClearRectChildren();
+        foreach (var child in slot.Children)
+            ComputeRects(child, rect);
+        foreach (var child in slot.LocalChildren)
+            ComputeRects(child, rect);
+        ApplyLayout(slot, rect);
     }
 
     private void ApplyScrollRects(Slot slot)
@@ -798,6 +965,8 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
                     continue;
                 }
 
+                // MAIN: snapshot + glyph rasterization stay here (Godot-touching). The geometry
+                // build (ComputeGraphic) is deferred to the worker via the chunk's emit queue.
                 graphic.PrepareCompute();
                 if (graphic.RequiresPreGraphicsCompute)
                 {
@@ -808,9 +977,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
                     }
                 }
 
-                rd.BeginGraphic();
-                rd.SetClipRect(clipRect);
-                graphic.ComputeGraphic(rd);
+                rd.QueueGraphic(graphic, clipRect);
             }
         }
 

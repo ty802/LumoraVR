@@ -67,6 +67,111 @@ public class SkinnedMeshRenderer : ImplementableComponent
     /// </summary>
     public SyncFieldList<float4> BoneWeights { get; private set; } = null!;
 
+    // BLENDSHAPES (morph targets, e.g. facial expressions / visemes / blink)
+
+    /// <summary>Blendshape names, one per shape (mesh-level, shared across surfaces of a mesh).</summary>
+    public SyncFieldList<string> BlendShapeNames { get; private set; } = null!;
+
+    /// <summary>
+    /// Per-shape vertex positions, flattened: shape k occupies [k*VertexCount, (k+1)*VertexCount).
+    /// Stored exactly as the source mesh reported them so the round-trip honors <see cref="BlendShapeMode"/>.
+    /// </summary>
+    public SyncFieldList<float3> BlendShapeVertices { get; private set; } = null!;
+
+    /// <summary>Current weight (0..1) for each blendshape, driven by expression/viseme/blink drivers.</summary>
+    public SyncFieldList<float> BlendShapeWeights { get; private set; } = null!;
+
+    /// <summary>Source blendshape mode: 0 = Normalized, 1 = Relative (Godot Mesh.BlendShapeMode).</summary>
+    public readonly Sync<int> BlendShapeMode = new();
+
+    /// <summary>Set true when only weights changed - the hook reapplies weights without a mesh rebuild.</summary>
+    public bool BlendWeightsChanged { get; set; }
+
+    public int BlendShapeCount => BlendShapeNames.Count;
+
+    public string BlendShapeName(int index)
+        => (index >= 0 && index < BlendShapeNames.Count) ? BlendShapeNames[index] : null!;
+
+    public int GetBlendShapeIndex(string name)
+    {
+        for (int i = 0; i < BlendShapeNames.Count; i++)
+        {
+            if (string.Equals(BlendShapeNames[i], name, System.StringComparison.Ordinal))
+                return i;
+        }
+        return -1;
+    }
+
+    public float GetBlendShapeWeight(int index)
+        => (index >= 0 && index < BlendShapeWeights.Count) ? BlendShapeWeights[index] : 0f;
+
+    public void SetBlendShapeWeight(int index, float weight)
+    {
+        if (index < 0 || index >= BlendShapeWeights.Count)
+            return;
+        if (BlendShapeWeights[index] == weight)
+            return;
+        BlendShapeWeights[index] = weight;
+        BlendWeightsChanged = true;
+        RunApplyChanges();
+    }
+
+    public void SetBlendShapeWeight(string name, float weight)
+        => SetBlendShapeWeight(GetBlendShapeIndex(name), weight);
+
+    // Local (non-replicated) per-frame override buffer, written by blink/viseme/expression drivers.
+    // Every peer runs those drivers from replicated inputs (voice, timers), so broadcasting per-frame
+    // weights would just be churn - same reasoning as the IK bone writes.
+    private float[]? _runtimeWeights;
+
+    /// <summary>Drive a blendshape weight LOCALLY (no network broadcast). For per-frame animation.</summary>
+    public void DriveBlendShapeWeight(int index, float weight)
+    {
+        if (index < 0 || index >= BlendShapeNames.Count)
+            return;
+        if (_runtimeWeights == null || _runtimeWeights.Length != BlendShapeNames.Count)
+            System.Array.Resize(ref _runtimeWeights, BlendShapeNames.Count);
+        if (_runtimeWeights[index] == weight)
+            return;
+        _runtimeWeights[index] = weight;
+        BlendWeightsChanged = true;
+        RunApplyChanges();
+    }
+
+    public void DriveBlendShapeWeight(string name, float weight)
+        => DriveBlendShapeWeight(GetBlendShapeIndex(name), weight);
+
+    /// <summary>Weight the hook should apply: the local driver override if set, else the synced value.</summary>
+    public float GetEffectiveBlendShapeWeight(int index)
+    {
+        if (_runtimeWeights != null && index >= 0 && index < _runtimeWeights.Length)
+            return _runtimeWeights[index];
+        return (index >= 0 && index < BlendShapeWeights.Count) ? BlendShapeWeights[index] : 0f;
+    }
+
+    /// <summary>Populate blendshapes (called at import). names.Length shapes, each with VertexCount verts.</summary>
+    public void SetBlendShapes(string[]? names, float3[]? flattenedVertices, int mode)
+    {
+        BlendShapeNames.Clear();
+        BlendShapeVertices.Clear();
+        BlendShapeWeights.Clear();
+
+        if (names == null || names.Length == 0 || flattenedVertices == null)
+            return;
+
+        BlendShapeMode.Value = mode;
+        foreach (var n in names)
+        {
+            BlendShapeNames.Add(n);
+            BlendShapeWeights.Add(0f);
+        }
+        foreach (var v in flattenedVertices)
+            BlendShapeVertices.Add(v);
+
+        MeshDataChanged = true;
+        LumoraLogger.Log($"SkinnedMeshRenderer: Set {names.Length} blendshapes");
+    }
+
     // SETTINGS
 
     /// <summary>
@@ -126,6 +231,10 @@ public class SkinnedMeshRenderer : ImplementableComponent
         Indices = new SyncFieldList<int>(this);
         BoneIndices = new SyncFieldList<int4>(this);
         BoneWeights = new SyncFieldList<float4>(this);
+        // Blendshapes
+        BlendShapeNames = new SyncFieldList<string>(this);
+        BlendShapeVertices = new SyncFieldList<float3>(this);
+        BlendShapeWeights = new SyncFieldList<float>(this);
 
         // Initialize settings
         Material = new AssetRef<MaterialAsset>(this);

@@ -311,7 +311,7 @@ public class UserRoot : Component
     }
 
     // Typed component cache. Every UserRootComponent in the user's slot
-    // hierarchy registers here. Lookups like "find the VRIKAvatar attached
+    // hierarchy registers here. Lookups like "find the AvatarIK attached
     // anywhere under this user" are O(1) by type instead of walking the
     // slot tree + GetComponents per slot. - xlinka
     private readonly HashSet<Component> _registeredComponents = new();

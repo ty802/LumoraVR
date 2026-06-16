@@ -25,7 +25,7 @@ public sealed class Mask : UIComputeComponent
 
     protected override void FlagChanges(RectTransform rect)
     {
-        rect.MarkChangeDirty();
+        rect.MarkGraphicDirty();
     }
 
     public override void PrepareCompute()

@@ -13,7 +13,6 @@ namespace Lumora.Core.Components;
 // - xlinka
 public class PhysicalLocomotion : SmoothLocomotionBase
 {
-    public override int Priority => 100;
     public override string DisplayName => "Walk";
     public override bool CanActivate() => true;
 
@@ -29,6 +28,10 @@ public class PhysicalLocomotion : SmoothLocomotionBase
         _wasJumpPressed = false;
         _isCrouching = false;
         _isSprinting = false;
+
+        // Resume gravity/collision in case a non-physical module (noclip) left
+        // it suspended.
+        _characterController?.SetSimulationEnabled(true);
 
         // Desktop look needs mouse capture; in VR the headset drives view.
         if (!IsVRActive())

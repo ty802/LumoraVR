@@ -111,12 +111,54 @@ public partial class DesktopInput : Node3D
     {
         UpdateCamera();
         UpdateCursorPosition();
+        UpdateCursorRay();
 
         if (!DashboardToggle.IsDashboardVisible)
         {
             UpdateInteractionRay();
             UpdateHandSimulation((float)delta);
         }
+    }
+
+    // Push the free-cursor ray and camera projection info to the engine while
+    // the OS cursor is unlocked (dash open). The interaction laser casts along
+    // this ray so the in-world cursor follows the mouse exactly.
+    private void UpdateCursorRay()
+    {
+        var input = Lumora.Core.Engine.Current?.InputInterface;
+        if (input == null)
+            return;
+
+        var viewport = GetViewport();
+        if (_camera != null && viewport != null)
+        {
+            var size = viewport.GetVisibleRect().Size;
+            if (size.Y > 0f)
+            {
+                var camPos = _camera.GlobalPosition;
+                var camRot = _camera.GlobalTransform.Basis.GetRotationQuaternion();
+                input.SetDesktopViewInfo(
+                    _camera.Fov,
+                    size.X / size.Y,
+                    new Lumora.Core.Math.float3(camPos.X, camPos.Y, camPos.Z),
+                    new Lumora.Core.Math.floatQ(camRot.X, camRot.Y, camRot.Z, camRot.W));
+            }
+        }
+
+        var camera = _camera;
+        if (!DashboardToggle.IsDashboardVisible || input.IsVRActive || camera == null || viewport == null)
+        {
+            input.SetDesktopCursorRay(false, default, default);
+            return;
+        }
+
+        var mousePos = viewport.GetMousePosition();
+        var origin = camera.ProjectRayOrigin(mousePos);
+        var direction = camera.ProjectRayNormal(mousePos);
+        input.SetDesktopCursorRay(
+            true,
+            new Lumora.Core.Math.float3(origin.X, origin.Y, origin.Z),
+            new Lumora.Core.Math.float3(direction.X, direction.Y, direction.Z));
     }
 
     private void UpdateCamera()
@@ -138,28 +180,10 @@ public partial class DesktopInput : Node3D
         if (_cursorDot == null)
             return;
 
-        _cursorDot.Visible = InterfaceSettings.Style != InterfaceSettings.ReticleStyle.Off;
-        if (!_cursorDot.Visible)
-            return;
-
-        var viewportSize = GetViewport()?.GetVisibleRect().Size ?? new Vector2(1920, 1080);
-
-        if (DashboardToggle.IsDashboardVisible)
-        {
-            var mousePos = GetViewport()?.GetMousePosition() ?? viewportSize / 2f;
-            _cursorDot.Position = mousePos - _cursorDot.CustomMinimumSize / 2f;
-            _cursorDot.CursorColor = InterfaceSettings.ReticleColor;
-        }
-        else
-        {
-            var centerPos = viewportSize / 2f - _cursorDot.CustomMinimumSize / 2f;
-            _cursorDot.Position = centerPos;
-            _cursorDot.CursorColor = _isHoveringUI
-                ? InterfaceSettings.ReticleHoverColor
-                : InterfaceSettings.ReticleColor;
-        }
-
-        _cursorDot.QueueRedraw();
+        // No screen-space reticle anywhere: in the world the laser's in-world
+        // cursor is the pointer, and over the dash overlay the OS mouse cursor
+        // is already visible.
+        _cursorDot.Visible = false;
     }
 
     private void UpdateInteractionRay()

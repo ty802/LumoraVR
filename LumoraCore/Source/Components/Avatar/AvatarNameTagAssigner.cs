@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core;
+using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Avatar;
 
@@ -46,6 +47,8 @@ public class AvatarNameTagAssigner : Component, IAvatarObjectComponent
 
             target.Text.Value = manager.NameTagText.Value ?? string.Empty;
             target.Color.Value = manager.NameTagColor.Value;
+            var o = manager.NameTagOutline.Value;
+            target.OutlineColor.Value = new colorHDR(o.r, o.g, o.b, o.a);
         }
     }
 }

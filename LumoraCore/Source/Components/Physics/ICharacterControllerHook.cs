@@ -19,6 +19,9 @@ public interface ICharacterControllerHook : IHook
     void SetMovementDirection(float3 direction);
     void RequestJump();
     void SetCrouching(bool crouching);
+    // Suspend gravity + collision stepping while a non-physical locomotion mode
+    // (e.g. noclip) is moving the rig directly. Zeroes velocity when disabled.
+    void SetSimulationEnabled(bool enabled);
     void Teleport(float3 position);
     bool IsOnFloor();
 }

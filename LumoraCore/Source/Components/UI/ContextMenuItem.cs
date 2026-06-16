@@ -26,8 +26,8 @@ public class ContextMenuItem
     /// <summary>Arc fill color (RGBA 0-1).</summary>
     public float[] FillColor { get; set; } = { 0.12f, 0.12f, 0.12f, 0.9f };
 
-    /// <summary>Arc border/outline color.</summary>
-    public float[] OutlineColor { get; set; } = { 0.45f, 0.45f, 0.45f, 1f };
+    /// <summary>Arc border/outline color. Subtle and dark so segments read as one ring.</summary>
+    public float[] OutlineColor { get; set; } = { 0.10f, 0.11f, 0.14f, 0.9f };
 
     /// <summary>Label text color.</summary>
     public float[] LabelColor { get; set; } = { 1f, 1f, 1f, 1f };
@@ -91,7 +91,7 @@ public class ContextMenuPage
     public List<ContextMenuItem> Items { get; } = new();
 
     /// <summary>Gap in degrees between adjacent items (default 5 degrees).</summary>
-    public float SeparationAngle { get; set; } = 5f;
+    public float SeparationAngle { get; set; } = 2f;
 
     public ContextMenuPage(string title = "") => Title = title;
 

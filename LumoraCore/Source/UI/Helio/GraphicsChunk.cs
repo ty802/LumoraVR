@@ -21,6 +21,10 @@ public sealed class GraphicsChunk
 
         private readonly Dictionary<MaterialKey, List<PhosTriangleSubmesh>> _requestedMaterials = new();
         private readonly Dictionary<MaterialKey, AssignedMaterial> _assignedMaterials = new();
+        // Captured on the main thread (prepare walk), drained on the worker (EmitQueued). The worker
+        // never traverses the live slot tree - it only iterates this queue and calls ComputeGraphic,
+        // which reads each graphic's already-snapshotted state + stable LocalComputeRect. - xlinka
+        private readonly List<(Graphic Graphic, Rect? Clip)> _emitQueue = new();
         private readonly GraphicsChunk _chunk;
         private int _minimumSubmeshIndex;
         private Rect? _clipRect;
@@ -45,6 +49,7 @@ public sealed class GraphicsChunk
         {
             Mesh.Clear();
             _requestedMaterials.Clear();
+            _emitQueue.Clear();
             _minimumSubmeshIndex = 0;
             PrepareMesh();
         }
@@ -52,6 +57,26 @@ public sealed class GraphicsChunk
         public void BeginGraphic()
         {
             _minimumSubmeshIndex = Mesh.Submeshes.Count;
+        }
+
+        // MAIN: queue a prepared graphic (with its computed clip) for the worker emit pass.
+        public void QueueGraphic(Graphic graphic, Rect? clip)
+        {
+            _emitQueue.Add((graphic, clip));
+        }
+
+        // WORKER: build the geometry for every queued graphic. No slot/datamodel access (materials
+        // were keyed by identity and are resolved at submit), no tree traversal - just each graphic's
+        // ComputeGraphic reading its snapshot + stable LocalComputeRect into this chunk's mesh.
+        public void EmitQueued()
+        {
+            for (int i = 0; i < _emitQueue.Count; i++)
+            {
+                var (graphic, clip) = _emitQueue[i];
+                BeginGraphic();
+                SetClipRect(clip);
+                graphic.ComputeGraphic(this);
+            }
         }
 
         public PhosTriangleSubmesh GetSubmesh(IAssetProvider<MaterialAsset>? material)
@@ -90,6 +115,19 @@ public sealed class GraphicsChunk
             _chunk.SetupComponents();
             return _chunk.ChunkSlot.AddLocalSlot("PropertyBlock").AttachComponent<T>();
         }
+
+        // Deferred material resolution. The compute/emit pass keys submeshes by texture/atlas
+        // IDENTITY (no slot creation), and these run at SUBMIT time on the main thread to create
+        // the shared material + property-block slots. Keeping slot creation out of the emit pass
+        // is what lets that pass run off the main thread. Static (no capture) so the delegate
+        // reference is stable and submeshes with the same texture/atlas still batch together.
+        public static readonly MaterialMapper ImageTexture =
+            (rd, baseMaterial, key, usingDefault) =>
+                new MaterialMap(baseMaterial, key is IAssetProvider<TextureAsset> texture ? rd.GetSharedImageBlock(texture) : null);
+
+        public static readonly MaterialMapper TextAtlas =
+            (rd, baseMaterial, key, usingDefault) =>
+                key is TextureAsset atlas ? new MaterialMap(rd.GetSharedTextMaterial(atlas)) : new MaterialMap(baseMaterial);
 
         public UITextMaterial GetSharedTextMaterial(TextureAsset atlas) => _chunk.GetSharedTextMaterial(atlas);
 
@@ -543,6 +581,15 @@ public sealed class GraphicsChunk
     {
         ContentRenderData.SubmitChanges(sortingOrder);
         _materialCloneCache?.EndFrame();
+    }
+
+    // Show/hide a built chunk without rebuilding it. Hiding content disables the chunk slot
+    // (its mesh persists); re-showing re-enables it instantly, vs disposing + re-tessellating
+    // which is what made re-shown content pop in a frame late.
+    public void SetActive(bool active)
+    {
+        if (ChunkSlot != null && !ChunkSlot.IsDestroyed)
+            ChunkSlot.ActiveSelf.Value = active;
     }
 
     // Tear down a nested chunk whose GraphicChunkRoot was removed from the tree. - xlinka

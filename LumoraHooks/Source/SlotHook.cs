@@ -164,7 +164,7 @@ public class SlotHook : Hook<Slot>, ISlotHook
 	private void GenerateNode3D()
 	{
 		GeneratedNode3D = new Node3D();
-		GeneratedNode3D.Name = Owner.SlotName.Value;
+		GeneratedNode3D.Name = SafeNodeName(Owner.SlotName.Value);
 
 		// Register this node for slot lookup
 		_nodeToSlot[GeneratedNode3D] = Owner;
@@ -172,6 +172,11 @@ public class SlotHook : Hook<Slot>, ISlotHook
 		UpdateParent();
 		SetData();
 	}
+
+	// Godot forbids empty node names (some engines allow them). During load a child slot is created
+	// before its name member decodes, so fall back to a non-empty default instead of erroring.
+	private static string SafeNodeName(string? name)
+		=> string.IsNullOrWhiteSpace(name) ? "Slot" : name;
 
 	/// <summary>
 	/// Update the parent hierarchy.
@@ -335,10 +340,6 @@ public class SlotHook : Hook<Slot>, ISlotHook
 			GeneratedNode3D.Visible = Owner.ActiveSelf.Value;
 		}
 
-		// Check dirty flag BEFORE clearing
-		bool positionDirty = Owner.LocalPosition.IsDirty;
-		bool rotationDirty = Owner.LocalRotation.IsDirty;
-
 		if (Owner.LocalPosition.GetWasChangedAndClear())
 		{
 			var newPos = ToGodotVector3(Owner.LocalPosition.Value);
@@ -355,12 +356,12 @@ public class SlotHook : Hook<Slot>, ISlotHook
 			GeneratedNode3D.Scale = ToGodotVector3(Owner.LocalScale.Value);
 		}
 
-		var slotName = Owner.SlotName.Value ?? string.Empty;
+		var slotName = SafeNodeName(Owner.SlotName.Value);
 		if (Owner.SlotName.GetWasChangedAndClear())
 		{
 			GeneratedNode3D.Name = slotName;
 		}
-		else if (!string.IsNullOrEmpty(slotName) && GeneratedNode3D.Name != slotName)
+		else if (GeneratedNode3D.Name != slotName)
 		{
 			GeneratedNode3D.Name = slotName;
 		}

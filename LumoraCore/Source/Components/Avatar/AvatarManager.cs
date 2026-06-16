@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using Helio.UI;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Input;
@@ -57,9 +58,11 @@ public class AvatarManager : UserRootComponent
         AvailableAvatars = new SyncRefList<Slot>(this);
         NameTagColor.Value = color.White;
         NameTagOutline.Value = color.Black;
+        NameTagBackground.Value = new color(0f, 0f, 0f, 0.6f);
         AutoAddNameBadge.Value = true;
         NameTagText.OnChanged += _ => UpdateNameTags();
         NameTagColor.OnChanged += _ => UpdateNameTags();
+        NameTagOutline.OnChanged += _ => UpdateNameTags();
         Logger.Log($"AvatarManager: Awake on slot '{Slot.SlotName.Value}'");
     }
 
@@ -121,9 +124,18 @@ public class AvatarManager : UserRootComponent
         var text = badge.AttachComponent<TextRenderer>();
         text.Size.Value = 0.07f;
         text.Font.Target = fontProvider;
+        // Center on the above-head origin (PositionAtUser anchors here); default is Left/Top,
+        // which pushes the name down-right of the head instead of sitting centered above it.
+        text.HorizontalAlign.Value = TextHorizontalAlignment.Center;
+        text.VerticalAlign.Value = TextVerticalAlignment.Middle;
 
         var assignerNew = badge.AttachComponent<AvatarNameTagAssigner>();
         assignerNew.LabelTargets.Add(text);
+
+        // Readable outline around the name (a dilated coverage ring on our text atlas). The
+        // outline COLOR comes from NameTagOutline via the assigner on UpdateNameTags; thickness
+        // is a fixed visual in atlas texels.
+        text.OutlineThickness.Value = 2.5f;
 
         badge.AttachComponent<PositionAtUser>();
         badge.AttachComponent<FaceLocalUser>();
@@ -492,8 +504,8 @@ public class AvatarManager : UserRootComponent
         var rig = avatarSlot.GetComponentInChildren<BipedRig>();
         if (skeleton != null && rig != null)
         {
-            var vrikAvatar = avatarSlot.GetComponent<VRIKAvatar>() ?? avatarSlot.AttachComponent<VRIKAvatar>();
-            if (!vrikAvatar.SetupFromAvatar(UserRoot.Target))
+            var avatarIk = avatarSlot.GetComponent<AvatarIK>() ?? avatarSlot.AttachComponent<AvatarIK>();
+            if (!avatarIk.SetupFromAvatar(UserRoot.Target))
             {
                 Logger.Warn("AvatarManager: Avatar IK setup failed");
                 return false;

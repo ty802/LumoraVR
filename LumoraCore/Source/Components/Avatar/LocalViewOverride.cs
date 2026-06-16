@@ -64,6 +64,23 @@ public class LocalViewOverride : ImplementableComponent<IHook>
         ScaleOverride.Value    = float3.One;
     }
 
+    // The hook also gates on the external-camera state (third-person/free-cam
+    // must show the full avatar); poke it when that flips since no sync field
+    // changes.
+    private bool _lastExternalCamera;
+
+    public override void OnUpdate(float delta)
+    {
+        base.OnUpdate(delta);
+
+        bool external = UserInputState.FocusedExternalCameraActive;
+        if (external != _lastExternalCamera)
+        {
+            _lastExternalCamera = external;
+            RunApplyChanges();
+        }
+    }
+
     public override void OnDestroy()
     {
         _userRootReg.Detach();

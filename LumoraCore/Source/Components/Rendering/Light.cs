@@ -3,6 +3,7 @@
 
 using System;
 using Lumora.Core;
+using Lumora.Core.Assets;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Components;
@@ -64,9 +65,9 @@ public class Light : ImplementableComponent
     public readonly Sync<float> ShadowNearPlane = new();
 
     /// <summary>
-    /// Cookie texture for light masking (TODO: Replace with platform-agnostic texture type)
+    /// Cookie texture that masks/projects this light; null = no cookie.
     /// </summary>
-    public readonly Sync<object> Cookie = new();
+    public readonly AssetRef<TextureAsset> Cookie = new();
 
     /// <summary>
     /// Cookie size for directional lights

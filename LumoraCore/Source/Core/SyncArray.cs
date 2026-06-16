@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.IO;
 using Lumora.Core.Networking;
 using Lumora.Core.Networking.Sync;
+using Lumora.Core.Persistence;
 
 namespace Lumora.Core;
 
@@ -164,6 +165,24 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
         if (idx < 0) return false;
         RemoveAt(idx);
         return true;
+    }
+
+    // PERSISTENCE — a DataTreeList of the element values (value types via the coder).
+    public override DataTreeNode Save(SaveControl control)
+    {
+        var list = new DataTreeList();
+        foreach (var item in this)
+            list.Add(DataTreeCoder.Encode(item));
+        return list;
+    }
+
+    public override void Load(DataTreeNode node, LoadControl control)
+    {
+        if (node is not DataTreeList list)
+            return;
+        Clear();
+        foreach (var child in list.Children)
+            Add(DataTreeCoder.Decode<T>(child));
     }
 
     public void Clear()

@@ -3,6 +3,7 @@
 
 using System;
 using Lumora.Core;
+using Lumora.Core.Assets;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Components;
@@ -49,9 +50,9 @@ public class Camera : ImplementableComponent
     public readonly Sync<color> BackgroundColor = new();
 
     /// <summary>
-    /// Render target texture (TODO: Replace with platform-agnostic texture type)
+    /// Render target this camera draws into; null = render to screen.
     /// </summary>
-    public readonly Sync<object> TargetTexture = new();
+    public readonly AssetRef<RenderTexture> TargetTexture = new();
 
     /// <summary>
     /// Camera depth (rendering order)
@@ -152,7 +153,7 @@ public class Camera : ImplementableComponent
     /// </summary>
     public bool IsRenderTexture
     {
-        get { return TargetTexture.Value != null; }
+        get { return TargetTexture.Target != null; }
     }
 }
 

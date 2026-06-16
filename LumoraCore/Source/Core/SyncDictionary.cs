@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.IO;
 using Lumora.Core.Networking;
 using Lumora.Core.Networking.Sync;
+using Lumora.Core.Persistence;
 
 namespace Lumora.Core;
 
@@ -124,6 +125,35 @@ public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<
     {
         AuthorizeDataModelAccess(DataModelPermissionAction.Read, DataModelPermissionSurface.Dictionary, key: key);
         return _dict.TryGetValue(key, out var v) ? v : defaultValue;
+    }
+
+    // PERSISTENCE — a DataTreeList of { Key, Value } entries (value types via the coder).
+    public override DataTreeNode Save(SaveControl control)
+    {
+        var list = new DataTreeList();
+        foreach (var pair in this)
+        {
+            var entry = new DataTreeDictionary();
+            entry.Add("Key", DataTreeCoder.Encode(pair.Key));
+            entry.Add("Value", DataTreeCoder.Encode(pair.Value));
+            list.Add(entry);
+        }
+        return list;
+    }
+
+    public override void Load(DataTreeNode node, LoadControl control)
+    {
+        if (node is not DataTreeList list)
+            return;
+        Clear();
+        foreach (var child in list.Children)
+        {
+            if (child is not DataTreeDictionary entry)
+                continue;
+            var key = DataTreeCoder.Decode<TKey>(entry["Key"]);
+            var value = DataTreeCoder.Decode<TValue>(entry["Value"]);
+            Add(key, value);
+        }
     }
 
     public void Clear()

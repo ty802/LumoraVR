@@ -183,6 +183,13 @@ public class CharacterController : ImplementableComponent, IColliderOwner
         CharacterHook?.SetMovementDirection(direction);
     }
 
+    // Suspend gravity/collision stepping so a module like noclip can move the
+    // rig directly without the controller fighting it back down.
+    public void SetSimulationEnabled(bool enabled)
+    {
+        CharacterHook?.SetSimulationEnabled(enabled);
+    }
+
     public void RequestJump()
     {
         CharacterHook?.RequestJump();

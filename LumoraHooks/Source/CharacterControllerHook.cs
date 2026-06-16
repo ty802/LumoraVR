@@ -31,6 +31,7 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
     private Vector3 _velocity;
     private Vector3 _moveDirection;
     private bool _jumpRequested;
+    private bool _simulationEnabled = true;
     private bool _isLocalUser;
     private bool _isCrouching;
     private float _currentHeight;
@@ -87,12 +88,26 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         // Runtime movement is stepped from CharacterController.OnUpdate.
     }
 
+    public void SetSimulationEnabled(bool enabled)
+    {
+        if (_simulationEnabled == enabled)
+            return;
+        _simulationEnabled = enabled;
+        if (!enabled)
+            _velocity = Vector3.Zero;
+    }
+
     public void Simulate(float delta)
     {
         if (_characterBody == null || !_characterBody.IsInsideTree())
             return;
 
         if (Owner?.Slot == null)
+            return;
+
+        // A non-physical module (noclip) owns rig movement; gravity/collision
+        // stepping must not run or it would fight that motion back down.
+        if (!_simulationEnabled)
             return;
 
         // Skip physics processing if the world is not focused (background worlds have ProcessMode.Disabled)

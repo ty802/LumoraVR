@@ -12,6 +12,9 @@ public class DashboardScreen : UIComponent
     public readonly Sync<string> Label;
     public readonly Sync<color> ActiveColor;
 
+    /// <summary>Color of this screen's nav-row label text. Override to make a tab stand out.</summary>
+    public virtual color NavLabelColor => new color(0.92f, 0.92f, 0.96f, 1f);
+
     private bool _built;
     private Slot? _contentSlot;
 
@@ -40,6 +43,11 @@ public class DashboardScreen : UIComponent
     {
         Slot.ActiveSelf.Value = true;
         OnShow();
+        // Activating the slot doesn't dirty the canvas on its own, so a freshly
+        // shown screen's chunks stay unbuilt until something else forces a full
+        // dirty (hover, or switching screens) - that's the "flick screens to make
+        // it render". Force a full layout+render here so it shows immediately.
+        Slot.GetComponentInParents<Canvas>()?.MarkLayoutDirty();
     }
 
     public void HideScreen()

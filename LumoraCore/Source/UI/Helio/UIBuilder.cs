@@ -188,6 +188,14 @@ public class UIBuilder
         return this;
     }
 
+    public UIBuilder RoundedSprite(IAssetProvider<TextureAsset>? value)
+    {
+        var style = CurrentStyle;
+        style.RoundedSprite = value;
+        CurrentStyle = style;
+        return this;
+    }
+
     public UIBuilder UseZeroMetrics(bool value)
     {
         var style = CurrentStyle;
@@ -437,10 +445,7 @@ public class UIBuilder
         var image = Current.AttachComponent<Image>();
         image.Tint.Value = background ?? CurrentStyle.BackgroundColor;
         var button = Current.AttachComponent<Button>();
-        if (clicked != null)
-        {
-            button.Clicked += clicked;
-        }
+        button.SetAction(clicked);
 
         Nest();
         var text = Text(label, null, CurrentStyle.TextColor);
@@ -464,25 +469,43 @@ public class UIBuilder
         boxRect.AnchorMax.Value = new float2(0f, 0.5f);
         boxRect.OffsetMin.Value = new float2(0f, -12f);
         boxRect.OffsetMax.Value = new float2(24f, 12f);
-        var boxImage = boxSlot.AttachComponent<Image>();
-        boxImage.Tint.Value = background ?? CurrentStyle.BackgroundColor;
-        checkbox.AddColorDriver(boxImage.Tint, boxImage.Tint.Value);
+        var boxColor = background ?? CurrentStyle.BackgroundColor;
+        IField<color> boxTint;
+        if (CurrentStyle.RoundedSprite != null)
+        {
+            var boxImage = boxSlot.AttachComponent<BorderedImage>();
+            boxImage.Tint.Value = boxColor;
+            boxImage.BorderTint.Value = color.Transparent;
+            boxImage.Texture.Target = CurrentStyle.RoundedSprite;
+            boxImage.NineSlice.Value = true;
+            boxImage.Borders.Value = new float4(6f, 6f, 6f, 6f);
+            boxTint = boxImage.Tint;
+        }
+        else
+        {
+            var boxImage = boxSlot.AttachComponent<Image>();
+            boxImage.Tint.Value = boxColor;
+            boxTint = boxImage.Tint;
+        }
+        checkbox.AddColorDriver(boxTint, boxColor);
 
         var checkSlot = boxSlot.AddSlot("Check");
         var checkRect = checkSlot.AttachComponent<RectTransform>();
-        checkRect.AnchorMin.Value = new float2(0.25f, 0.25f);
-        checkRect.AnchorMax.Value = new float2(0.75f, 0.75f);
+        checkRect.AnchorMin.Value = float2.Zero;
+        checkRect.AnchorMax.Value = float2.One;
         checkRect.OffsetMin.Value = float2.Zero;
         checkRect.OffsetMax.Value = float2.Zero;
-        var checkImage = checkSlot.AttachComponent<Image>();
-        checkImage.Tint.Value = CurrentStyle.ForegroundColor;
+        var checkText = checkSlot.AttachComponent<Text>();
+        checkText.Content.Value = "✓";
+        checkText.Font.Target = CurrentStyle.Font!;
+        checkText.Size.Value = 20f;
+        checkText.Color.Value = CurrentStyle.ForegroundColor;
+        checkText.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
+        checkText.VerticalAlignment.Value = TextVerticalAlignment.Middle;
         checkSlot.ActiveSelf.Value = isChecked;
         checkbox.SetCheckVisual(checkSlot.ActiveSelf);
 
-        if (changed != null)
-        {
-            checkbox.ValueChanged += changed;
-        }
+        checkbox.SetAction(changed);
 
         return checkbox;
     }
@@ -533,33 +556,65 @@ public class UIBuilder
         slider.Value.Value = value;
         SetElementSize(Current, 96f, 24f);
 
+        float initialT = max > min ? (value - min) / (max - min) : 0f;
+        const float handleRadius = 9f;
+
+        // One solid full-width track bar - a clear, defined line (no fill, no
+        // soft nine-slice fade). Inset by the handle radius so the handle's
+        // travel range and the track ends line up.
         var trackSlot = Current.AddSlot("Track");
         var trackRect = trackSlot.AttachComponent<RectTransform>();
         trackRect.AnchorMin.Value = new float2(0f, 0.5f);
         trackRect.AnchorMax.Value = new float2(1f, 0.5f);
-        trackRect.OffsetMin.Value = new float2(10f, -2f);
-        trackRect.OffsetMax.Value = new float2(-10f, 2f);
+        trackRect.OffsetMin.Value = new float2(handleRadius, -3f);
+        trackRect.OffsetMax.Value = new float2(-handleRadius, 3f);
         var trackImage = trackSlot.AttachComponent<Image>();
-        trackImage.Tint.Value = background ?? new color(0.30f, 0.32f, 0.38f, 0.95f);
+        trackImage.Tint.Value = background ?? new color(0.34f, 0.36f, 0.45f, 1f);
 
-        var handleSlot = Current.AddSlot("Handle");
+        // Filled portion (left to the handle) in the accent color. Spans 0..t of
+        // the track, which lines up with the handle since both are inset by the
+        // handle radius. Driven live as the value changes.
+        var fillSlot = trackSlot.AddSlot("Fill");
+        var fillRect = fillSlot.AttachComponent<RectTransform>();
+        fillRect.AnchorMin.Value = float2.Zero;
+        fillRect.AnchorMax.Value = new float2(initialT, 1f);
+        fillRect.OffsetMin.Value = float2.Zero;
+        fillRect.OffsetMax.Value = float2.Zero;
+        var fillImage = fillSlot.AttachComponent<Image>();
+        fillImage.Tint.Value = CurrentStyle.ForegroundColor;
+        slider.FillAnchorMaxDrive?.DriveTarget(fillRect.AnchorMax);
+
+        // Handle travel area inset by the handle radius so the dot's center
+        // ranges over [radius, width-radius] - the dot stays fully on the track
+        // at both ends instead of overshooting past them.
+        var handleArea = Current.AddSlot("HandleArea");
+        var handleAreaRect = handleArea.AttachComponent<RectTransform>();
+        handleAreaRect.AnchorMin.Value = float2.Zero;
+        handleAreaRect.AnchorMax.Value = float2.One;
+        handleAreaRect.OffsetMin.Value = new float2(handleRadius, 0f);
+        handleAreaRect.OffsetMax.Value = new float2(-handleRadius, 0f);
+
+        // Round handle, positioned within the travel area.
+        var handleSlot = handleArea.AddSlot("Handle");
         var handleRect = handleSlot.AttachComponent<RectTransform>();
-        float initialT = max > min ? (value - min) / (max - min) : 0f;
         handleRect.AnchorMin.Value = new float2(initialT, 0.5f);
         handleRect.AnchorMax.Value = new float2(initialT, 0.5f);
-        handleRect.OffsetMin.Value = new float2(-7f, -9f);
-        handleRect.OffsetMax.Value = new float2(7f, 9f);
-        var handleImage = handleSlot.AttachComponent<Image>();
-        handleImage.Tint.Value = CurrentStyle.ForegroundColor;
-        slider.AddColorDriver(handleImage.Tint, handleImage.Tint.Value);
+        handleRect.OffsetMin.Value = new float2(-handleRadius, -handleRadius);
+        handleRect.OffsetMax.Value = new float2(handleRadius, handleRadius);
+        var handleDot = handleSlot.AttachComponent<ArcSegment>();
+        handleDot.AngleStart.Value = 0f;
+        handleDot.ArcLength.Value = 360f;
+        handleDot.InnerRadius.Value = 0f;
+        handleDot.OuterRadius.Value = 9f;
+        handleDot.Tint.Value = CurrentStyle.ForegroundColor;
+        handleDot.OutlineColor.Value = new color(0.10f, 0.10f, 0.14f, 0.9f);
+        handleDot.OutlineThickness.Value = 1.5f;
+        slider.AddColorDriver(handleDot.Tint, handleDot.Tint.Value);
         slider.HandleAnchorMinDrive?.DriveTarget(handleRect.AnchorMin);
         slider.HandleAnchorMaxDrive?.DriveTarget(handleRect.AnchorMax);
         slider.UpdateHandleDrives();
 
-        if (changed != null)
-        {
-            slider.ValueChanged += changed;
-        }
+        slider.SetAction(changed);
 
         return slider;
     }

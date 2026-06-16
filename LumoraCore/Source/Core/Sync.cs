@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.CompilerServices;
 using Lumora.Core.Networking.Sync;
+using Lumora.Core.Persistence;
 
 namespace Lumora.Core;
 
@@ -421,6 +422,20 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
     public override string ToString() => _value?.ToString() ?? "<null>";
 
     public override object? GetValueAsObject() => _value;
+
+    public override DataTreeNode Save(SaveControl control)
+    {
+        if (!DataTreeCoder.IsSupported(typeof(T)))
+            throw new NotSupportedException($"SyncField<{typeof(T).Name}> has no persistence coder.");
+        return DataTreeCoder.Encode(Value);
+    }
+
+    public override void Load(DataTreeNode node, LoadControl control)
+    {
+        var value = DataTreeCoder.Decode<T>(node);
+        // Pure load: don't generate network sync data or fire change events.
+        InternalSetValue(in value, sync: false, change: false);
+    }
 
     /// <summary>
     /// Provide better hierarchy info for debugging.

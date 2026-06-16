@@ -28,8 +28,8 @@ namespace Lumora.Core.Templates
                 // Create root structure
                 var userspaceRoot = w.RootSlot.AddSlot("UserspaceRoot");
 
-                // Ref-style userspace dashboard root. UserspaceDashboard owns the
-                // open state and positions the Helio dash surface in front of the
+                // Userspace dashboard root. UserspaceDashboard owns the open
+                // state and positions the Helio dash surface in front of the
                 // focused user's view when shown.
                 var dashboardSlot = userspaceRoot.AddSlot("UserspaceDashboard");
                 var dashboard = dashboardSlot.AttachComponent<UserspaceDashboard>();

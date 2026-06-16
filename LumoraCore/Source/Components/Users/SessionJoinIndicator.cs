@@ -232,20 +232,21 @@ public class SessionJoinIndicator : Component
             var forward = headRot * float3.Forward;
             var targetPosition = headPos + forward * 1.5f + float3.Down * 0.3f;
 
-            // Face the user: LookRotation receives the AWAY direction so the
-            // readable front of the text quads is toward the viewer (same
-            // convention as FaceLocalUser).
-            var lookDir = targetPosition - headPos;
-            lookDir.y = 0; // Keep level
-            if (lookDir.LengthSquared > 0.001f)
+            // Face the user: build the yaw directly so the readable +Z front
+            // of the text quads points at the viewer (floatQ.LookRotation
+            // returns inverse rotations - see FaceLocalUser).
+            var toUser = headPos - targetPosition;
+            toUser.y = 0; // Keep level
+            floatQ targetRotation;
+            if (toUser.LengthSquared > 0.001f)
             {
-                lookDir = lookDir.Normalized;
+                float yaw = MathF.Atan2(toUser.x, toUser.z);
+                targetRotation = floatQ.AxisAngle(float3.Up, yaw);
             }
             else
             {
-                lookDir = float3.Backward;
+                targetRotation = floatQ.Identity;
             }
-            var targetRotation = floatQ.LookRotation(lookDir, float3.Up);
 
             if (delta > 0f)
             {

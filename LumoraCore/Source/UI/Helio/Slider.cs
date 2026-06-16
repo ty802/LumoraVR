@@ -16,6 +16,11 @@ public sealed class Slider : InteractionElement
     public readonly Sync<float2> AnchorOffset;
     public FieldDrive<float2>? HandleAnchorMinDrive { get; private set; }
     public FieldDrive<float2>? HandleAnchorMaxDrive { get; private set; }
+    // Drives the filled-track portion's AnchorMax so the track shows progress.
+    public FieldDrive<float2>? FillAnchorMaxDrive { get; private set; }
+
+    // Duplicable change action - see Button.Pressed.
+    public readonly SyncDelegate<Action<Slider, float>> ChangeAction;
 
     public event Action<Slider, float>? ValueChanged;
 
@@ -26,6 +31,17 @@ public sealed class Slider : InteractionElement
         Max = new Sync<float>(this, 1f);
         Power = new Sync<float>(this, 1f);
         AnchorOffset = new Sync<float2>(this, new float2(0f, 0.5f));
+        ChangeAction = new SyncDelegate<Action<Slider, float>>(this);
+    }
+
+    public void SetAction(Action<Slider, float>? action)
+    {
+        if (action == null)
+            return;
+        if (action.Target is IWorldElement)
+            ChangeAction.Target = action;
+        else
+            ValueChanged += action;
     }
 
     public override void OnAwake()
@@ -33,6 +49,13 @@ public sealed class Slider : InteractionElement
         base.OnAwake();
         HandleAnchorMinDrive = new FieldDrive<float2>(World);
         HandleAnchorMaxDrive = new FieldDrive<float2>(World);
+        FillAnchorMaxDrive = new FieldDrive<float2>(World);
+    }
+
+    public override void OnStart()
+    {
+        base.OnStart();
+        RebindVisuals();
     }
 
     public override void OnChanges()
@@ -41,12 +64,38 @@ public sealed class Slider : InteractionElement
         UpdateHandleDrives();
     }
 
+    // Re-establish the handle/fill drives from the built child structure. The
+    // UIBuilder wires these at build time, but a duplicated slider doesn't re-run
+    // the builder and FieldDrive targets aren't sync members, so the clone would
+    // have dead drives. OnStart runs for clones too, so rebinding here from the
+    // named child slots restores a working handle/fill. Idempotent for originals.
+    private void RebindVisuals()
+    {
+        if (Slot == null)
+            return;
+
+        var handle = Slot.FindChild("HandleArea", recursive: false)?.FindChild("Handle", recursive: false)?.GetComponent<RectTransform>();
+        if (handle != null)
+        {
+            HandleAnchorMinDrive?.DriveTarget(handle.AnchorMin);
+            HandleAnchorMaxDrive?.DriveTarget(handle.AnchorMax);
+        }
+
+        var fill = Slot.FindChild("Track", recursive: false)?.FindChild("Fill", recursive: false)?.GetComponent<RectTransform>();
+        if (fill != null)
+            FillAnchorMaxDrive?.DriveTarget(fill.AnchorMax);
+
+        UpdateHandleDrives();
+    }
+
     public override void OnDestroy()
     {
         HandleAnchorMinDrive?.Release();
         HandleAnchorMaxDrive?.Release();
+        FillAnchorMaxDrive?.Release();
         HandleAnchorMinDrive = null;
         HandleAnchorMaxDrive = null;
+        FillAnchorMaxDrive = null;
         base.OnDestroy();
     }
 
@@ -81,6 +130,7 @@ public sealed class Slider : InteractionElement
         Value.Value = value;
         UpdateHandleDrives();
         ValueChanged?.Invoke(this, value);
+        ChangeAction.Target?.Invoke(this, value);
     }
 
     public void UpdateHandleDrives()
@@ -93,6 +143,10 @@ public sealed class Slider : InteractionElement
         if (HandleAnchorMaxDrive?.IsLinkValid == true)
         {
             HandleAnchorMaxDrive.SetValue(anchor);
+        }
+        if (FillAnchorMaxDrive?.IsLinkValid == true)
+        {
+            FillAnchorMaxDrive.SetValue(new float2(anchor.x - AnchorOffset.Value.x, 1f));
         }
     }
 

@@ -95,6 +95,7 @@ public partial class LumoraEngineRunner : Node
 	private Camera3D _mainCamera = null!;
 	private SubViewport _xrViewport = null!;
 	private bool _vrInitializedAtBoot;
+	private double _discordPresenceTimer;
 
 	/// <summary>
 	/// Initialization phases for engine bootstrap.
@@ -996,6 +997,19 @@ public partial class LumoraEngineRunner : Node
 
 		_engineInitialized = true;
 
+		// Discord rich presence (fails soft if no app ID / Discord not running). _Process refreshes it.
+		DiscordManager.Initialize();
+		// Route Discord "Join"/Ask-to-Join (fires on the main thread via DiscordManager.Poll) to the
+		// session join path. Pass the FULL secret URI so its scheme (lnl:// / steam:// / ...) picks the
+		// transport - don't assume LNL.
+		DiscordManager.JoinRequested = uri =>
+		{
+			var manager = _engine?.WorldManager;
+			if (manager == null || !uri.IsAbsoluteUri)
+				return;
+			manager.JoinSession(uri.Host, uri);
+		};
+
 		// Set up clipboard importer with engine reference for dynamic slot lookup
 		if (_clipboardImporter != null)
 		{
@@ -1053,6 +1067,16 @@ public partial class LumoraEngineRunner : Node
 
 		if (ShouldUseSteam())
 			SteamManager.RunCallbacks();
+
+		// Discord rich presence: pump callbacks every frame, refresh the presence a few times a
+		// second (the update itself de-dups, so this only sends when the world/state changes).
+		DiscordManager.Poll();
+		_discordPresenceTimer += delta;
+		if (_discordPresenceTimer >= 3.0)
+		{
+			_discordPresenceTimer = 0.0;
+			DiscordManager.UpdatePresence(_engine?.WorldManager?.FocusedWorld);
+		}
 
 		// Pump every registered network manager (LNL + Steam if present). Status-
 		// changed callbacks fire during SteamManager.RunCallbacks() above, so
@@ -1433,6 +1457,7 @@ public partial class LumoraEngineRunner : Node
 		// Stop transports before the SteamAPI shuts down - the Steam manager
 		// frees its sockets/poll groups via SteamNetworkingSockets calls that
 		// need the API still up. - xlinka
+		DiscordManager.Shutdown();
 		NetworkManagerRegistry.StopAll();
 		_engine?.Dispose();
 		_headOutput?.Dispose();

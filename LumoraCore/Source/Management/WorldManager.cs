@@ -249,23 +249,28 @@ public class WorldManager : IDisposable
     /// <returns>Created world</returns>
     public World JoinSession(string name, string address, ushort port)
     {
+        // Plain host+port -> assume LNL (the only scheme that's addressed this way).
+        return JoinSession(name, new UriBuilder("lnl", address, port).Uri);
+    }
+
+    /// <summary>
+    /// Join a remote session by its FULL URI, scheme preserved (e.g. lnl:// or steam://). The connect
+    /// path resolves the transport from the scheme (NetworkManagerRegistry.FindForUri), so this works
+    /// for any registered manager - which is why Discord Ask-to-Join hands us the whole URI.
+    /// </summary>
+    public World JoinSession(string name, Uri uri)
+    {
         try
         {
-            LumoraLogger.Log($"WorldManager: Joining session at {address}:{port}");
-
-            // Use World static factory for session joining
-            var uri = new UriBuilder("lnl", address, port).Uri;
+            LumoraLogger.Log($"WorldManager: Joining session {uri}");
             var world = World.JoinSession(_engine, name, uri);
-
-            // Add to managed worlds
             AddWorld(world);
-
-            LumoraLogger.Log($"WorldManager: Successfully joined session at {address}:{port}");
+            LumoraLogger.Log($"WorldManager: Successfully joined session {uri}");
             return world;
         }
         catch (Exception ex)
         {
-            LumoraLogger.Error($"WorldManager: Failed to join session at {address}:{port}: {ex.Message}");
+            LumoraLogger.Error($"WorldManager: Failed to join session {uri}: {ex.Message}");
             return null!;
         }
     }

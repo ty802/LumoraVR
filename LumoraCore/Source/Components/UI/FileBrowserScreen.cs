@@ -481,7 +481,9 @@ public sealed class FileBrowserScreen : DashboardScreen
         var head = World?.LocalUser?.Root?.HeadSlot;
         if (head != null)
         {
-            var fwd = head.GlobalRotation * float3.Forward;
+            // View direction is the head's -Z (float3.Backward). Using +Z put the dialog BEHIND the
+            // user, so they'd turn around and see its back ("wrong way round"). - xlinka
+            var fwd = head.GlobalRotation * float3.Backward;
             return (head.GlobalPosition + fwd * 0.75f, head.GlobalRotation);
         }
         var basePos = Slot?.GlobalPosition ?? float3.Zero;

@@ -37,6 +37,17 @@ public static class NetworkManagerRegistry
         lock (_lock)
         {
             if (_managers.Contains(manager)) return;
+            // Dedup by TYPE, not just instance: registration creates a fresh manager each call, so a
+            // second call would otherwise add a duplicate transport (a second listener on the same
+            // scheme). One transport per type. - xlinka
+            foreach (var existing in _managers)
+            {
+                if (existing.GetType() == manager.GetType())
+                {
+                    LumoraLogger.Warn($"NetworkManagerRegistry: {manager.GetType().Name} already registered - ignoring duplicate");
+                    return;
+                }
+            }
             _managers.Add(manager);
             _managers.Sort((a, b) => b.Priority.CompareTo(a.Priority));
         }

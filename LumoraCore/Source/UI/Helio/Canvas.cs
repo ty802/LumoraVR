@@ -446,10 +446,12 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
 
         _updateRunning = true;
 
-        // ISOLATION (2026-06-15): the worker path is temporarily disabled while diagnosing a
-        // blank-content regression. Emit + submit run inline on the main thread here, so this is
-        // functionally the synchronous Step-1/2 build (datamodel-pure compute, deferred materials),
-        // just without the Task.Run hop. Flip USE_WORKER back on once content renders correctly.
+        // Emit (geometry build) runs on a background worker. Everything
+        // ComputeGraphic touches is snapshotted on the main thread in the prepare pass above
+        // (PrepareCompute/PreGraphicsCompute) - graphic values, shaped glyph lines, font metrics,
+        // cached texture sizes - so the worker only writes managed mesh data and never calls into
+        // Godot. (The earlier "random disappear" was Text reading the Godot font server off-main;
+        // those reads now happen on main.) A change arriving mid-cycle is gated by _updateRunning.
         if (UseWorker)
         {
             Task.Run(() =>
@@ -541,6 +543,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             return;
         var chunk = new GraphicsChunk(this, rect);
         chunk.RenderOnTop = true;
+        chunk.OverlayLevel = root.OverlayLevel;
         _chunkMap[root] = chunk;
         _chunkBuilt[root] = false;
     }

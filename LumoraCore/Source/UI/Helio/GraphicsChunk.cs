@@ -17,7 +17,6 @@ public sealed class GraphicsChunk
         private const int DefaultLogicalRenderQueue = 3000;
         private const int GodotRenderPriorityMin = -128;
         private const int GodotRenderPriorityMax = 127;
-        private const int GodotRenderPriorityCount = GodotRenderPriorityMax - GodotRenderPriorityMin + 1;
 
         private readonly Dictionary<MaterialKey, List<PhosTriangleSubmesh>> _requestedMaterials = new();
         private readonly Dictionary<MaterialKey, AssignedMaterial> _assignedMaterials = new();
@@ -167,7 +166,7 @@ public sealed class GraphicsChunk
             // their priorities would collapse to whichever value was written last.
             // Coplanar UI quads then fall back to Godot's distance sort, which
             // flips with camera angle and produces the "wash" artifact. - xlinka
-            var perSurfacePriorities = BuildPerSurfacePriorities(materialCount, _chunk.RenderOnTop);
+            var perSurfacePriorities = BuildPerSurfacePriorities(materialCount, _chunk.RenderOnTop, _chunk.OverlayLevel);
             var activeMaterials = new HashSet<MaterialKey>();
             foreach (var request in requests)
             {
@@ -202,49 +201,48 @@ public sealed class GraphicsChunk
             RemoveUnusedMaterials(activeMaterials);
         }
 
-        // Distribute [0..materialCount-1] surface indexes across Godot's
-        // [-128..127] render_priority range. With <= 256 surfaces each surface
-        // gets a unique slot; beyond that, slots collapse (rare for a single UI
-        // chunk). - xlinka
-        private static int[] BuildPerSurfacePriorities(int materialCount, bool packHigh)
+        // Godot caps per-surface render_priority at [-128..127] and sorts transparent surfaces by it
+        // first, so coplanar UI quads need DISTINCT priorities or they fall back to distance sort (the
+        // angle "wash"). We partition the range into bands so chunks layer deterministically even when
+        // they overlap:
+        //   root chunk        -> [-128 .. -1]   (below everything)
+        //   normal nested     -> [   0 ..  63]   (above root; chunks don't overlap each other)
+        //   overlay level 1   -> [  64 ..  71]   (e.g. a modal's dim/blur backdrop)
+        //   overlay level 2   -> [  72 ..  87]   (e.g. the modal panel background)
+        //   overlay level >=3 -> [  88 .. 127]   (modal content/rows, on top)
+        // Within a band, surfaces pack high in submission order (later = drawn on top). - xlinka
+        private static int[] BuildPerSurfacePriorities(int materialCount, bool renderOnTop, int overlayLevel)
         {
             var result = new int[materialCount];
             if (materialCount == 0) return result;
 
-            // Overlay chunks (nested GraphicChunkRoots) must render above everything in the root
-            // chunk. Godot sorts transparent surfaces by render_priority first, so pack this chunk's
-            // surfaces into the top of the range while keeping them ordered. - xlinka
-            if (packHigh)
+            int lo, hi;
+            if (!renderOnTop)
             {
-                int start = GodotRenderPriorityMax - materialCount + 1;
-                if (start < GodotRenderPriorityMin) start = GodotRenderPriorityMin;
-                for (int i = 0; i < materialCount; i++)
-                {
-                    result[i] = System.Math.Min(GodotRenderPriorityMax, start + i);
-                }
-                return result;
+                lo = GodotRenderPriorityMin; hi = -1;          // root chunk
+            }
+            else if (overlayLevel <= 0)
+            {
+                lo = 0; hi = 63;                                // normal nested chunk
+            }
+            else if (overlayLevel == 1)
+            {
+                lo = 64; hi = 71;                               // overlay backdrop
+            }
+            else if (overlayLevel == 2)
+            {
+                lo = 72; hi = 87;                               // overlay panel
+            }
+            else
+            {
+                lo = 88; hi = GodotRenderPriorityMax;           // overlay content
             }
 
-            if (materialCount == 1)
-            {
-                result[0] = 0;
-                return result;
-            }
-
-            if (materialCount <= GodotRenderPriorityCount)
-            {
-                int start = GodotRenderPriorityMin + (GodotRenderPriorityCount - materialCount) / 2;
-                for (int i = 0; i < materialCount; i++)
-                {
-                    result[i] = start + i;
-                }
-                return result;
-            }
-
+            int start = hi - materialCount + 1;
+            if (start < lo) start = lo;
             for (int i = 0; i < materialCount; i++)
             {
-                double t = i / (double)(materialCount - 1);
-                result[i] = GodotRenderPriorityMin + (int)System.Math.Round(t * (GodotRenderPriorityCount - 1));
+                result[i] = System.Math.Min(hi, start + i);
             }
             return result;
         }
@@ -509,6 +507,10 @@ public sealed class GraphicsChunk
 
     // Nested chunks render above the root chunk: their surfaces pack into the top render_priority band. - xlinka
     public bool RenderOnTop { get; set; }
+
+    // 0 = normal nested chunk. > 0 = overlay layer: reserves a render-priority band above all
+    // normal chunks so a modal draws on top of everything (see BuildPerSurfacePriorities). - xlinka
+    public int OverlayLevel { get; set; }
 
     private UIUnlitMaterial? _defaultMaterial;
     private MaterialCloneCache? _materialCloneCache;

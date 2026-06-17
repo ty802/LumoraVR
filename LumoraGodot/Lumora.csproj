@@ -37,8 +37,9 @@
     <Copy SourceFiles="$(OutputPath)LumoraMath.pdb" DestinationFolder="$(ProjectDir)addons\lumora\bin" Condition="Exists('$(OutputPath)LumoraMath.pdb')" />
   </Target>
 
-  <!-- Copy steam_api64.dll to output after build -->
+  <!-- Copy the Steam native redistributables to output after build (Windows x64 + Linux x64). -->
   <Target Name="CopySteamAPI" AfterTargets="Build">
     <Copy SourceFiles="$(ProjectDir)steam_api64.dll" DestinationFolder="$(OutputPath)" Condition="Exists('$(ProjectDir)steam_api64.dll')" />
+    <Copy SourceFiles="$(ProjectDir)libsteam_api.so" DestinationFolder="$(OutputPath)" Condition="Exists('$(ProjectDir)libsteam_api.so')" />
   </Target>
 </Project>

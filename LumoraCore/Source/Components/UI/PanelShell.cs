@@ -33,6 +33,9 @@ public class PanelShell : UIComponent
     public readonly Sync<color> CloseButtonDisabledColor;
     public readonly Sync<color> CloseIconColor;
     public readonly AssetRef<FontSet> Font;
+    /// <summary>Rounded-rect sprite for the panel/header corners (e.g. a RoundedRectTextureProvider). Null = square.</summary>
+    public readonly AssetRef<TextureAsset> RoundedSprite;
+    public readonly Sync<float> CornerRadius;
 
     private bool _built;
     private Grabbable? _grabbable;
@@ -98,6 +101,8 @@ public class PanelShell : UIComponent
         CloseButtonDisabledColor = new Sync<color>(this, new color(0.25f, 0.25f, 0.28f, 0.7f));
         CloseIconColor = new Sync<color>(this, color.Black);
         Font = new AssetRef<FontSet>(this);
+        RoundedSprite = new AssetRef<TextureAsset>(this);
+        CornerRadius = new Sync<float>(this, 12f);
     }
 
     // Build lazily so callers can set fields immediately after AttachComponent. - xlinka
@@ -201,6 +206,7 @@ public class PanelShell : UIComponent
         if (_backgroundImage != null && !_backgroundImage.IsDestroyed)
         {
             Set(_backgroundImage.Tint, BackgroundColor.Value);
+            ApplyRounded(_backgroundImage);
         }
 
         if (_headerSlot != null && !_headerSlot.IsDestroyed)
@@ -224,6 +230,7 @@ public class PanelShell : UIComponent
         if (_headerImage != null && !_headerImage.IsDestroyed)
         {
             Set(_headerImage.Tint, HeaderColor.Value);
+            ApplyRounded(_headerImage, topOnly: true);
         }
 
         if (_separatorRect != null && !_separatorRect.IsDestroyed)
@@ -330,6 +337,11 @@ public class PanelShell : UIComponent
             Set(_closeImage.Tint, CloseButtonColor.Value);
         }
 
+        if (_closeImage != null && !_closeImage.IsDestroyed)
+        {
+            ApplyRounded(_closeImage);
+        }
+
         if (_closeText != null && !_closeText.IsDestroyed)
         {
             Set(_closeText.Content, "X");
@@ -368,6 +380,22 @@ public class PanelShell : UIComponent
         foreach (var child in localChildren)
         {
             child.Destroy();
+        }
+    }
+
+    // Give an image rounded corners via the shared rounded sprite + nine-slice (matches the dashboard
+    // panels). No sprite = a plain tinted rect. topOnly rounds just the top two corners (bottom border
+    // 0) - used by the header so it doesn't round into the middle of the panel. Borders = (left, bottom,
+    // right, top). - xlinka
+    private void ApplyRounded(Image image, bool topOnly = false)
+    {
+        var sprite = RoundedSprite.Target;
+        SetTarget(image.Texture, sprite);
+        Set(image.NineSlice, sprite != null);
+        if (sprite != null)
+        {
+            float r = CornerRadius.Value;
+            Set(image.Borders, new float4(r, topOnly ? 0f : r, r, r));
         }
     }
 

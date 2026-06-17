@@ -25,6 +25,9 @@ public static class RenderHelper
     public const int TEMP_LAYER = 1 << 2;
     public const int HIDDEN_LAYER = 1 << 3;
     public const int OVERLAY_LAYER = 1 << 4;
+    // Free-cam position marker (sphere + label). Rendered for spectators/others but culled from the
+    // local view so you don't see your own marker sitting on the camera. - xlinka
+    public const int FREECAM_INDICATOR_LAYER = 1 << 19;
 
     public const int PUBLIC_RENDER_MASK = ~(PRIVATE_LAYER | TEMP_LAYER | HIDDEN_LAYER | OVERLAY_LAYER);
     public const int PRIVATE_RENDER_MASK = ~(TEMP_LAYER | HIDDEN_LAYER | OVERLAY_LAYER);

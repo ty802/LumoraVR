@@ -231,7 +231,8 @@ public class ClipboardImporter : Component
                     var headSlot = userRoot.HeadSlot;
                     if (headSlot != null)
                     {
-                        var forward = headSlot.GlobalRotation * float3.Forward;
+                        // -Z (Backward) is the view direction; +Z spawns behind the user.
+                        var forward = headSlot.GlobalRotation * float3.Backward;
                         var spawnPosition = headSlot.GlobalPosition + forward * SpawnDistance.Value;
 
                         slot.GlobalPosition = spawnPosition;

@@ -127,6 +127,11 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
                     LumoraLogger.Warn($"MaterialAssetHook: LocalHomeRising shader not found at {localHomeRisingShaderPath}");
                 break;
 
+            case MaterialType.Blur:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/Blur.gdshader", MaterialType.Blur);
+                break;
+
             default:
                 _usesShaderMaterial = false;
                 _standardMaterial = new StandardMaterial3D();

@@ -93,7 +93,7 @@ public sealed class InventoryScreen : WidgetScreen
         // A meter in front of the local user's head, or a sensible default if there's no head yet.
         var userRoot = world.LocalUser?.Root;
         float3 position = userRoot?.HeadSlot != null
-            ? userRoot.HeadPosition + userRoot.HeadRotation * (float3.Forward * 1.0f)
+            ? userRoot.HeadPosition + userRoot.HeadRotation * (float3.Backward * 1.0f)
             : new float3(0f, 1f, 0f);
 
         Inventory.SpawnItem(world, path, position);

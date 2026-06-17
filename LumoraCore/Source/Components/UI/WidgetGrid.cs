@@ -54,7 +54,8 @@ public class WidgetGrid : UIComponent
         var userRoot = Engine.Current?.WorldManager?.FocusedWorld?.LocalUser?.Root;
         if (userRoot?.HeadSlot != null)
         {
-            position = userRoot.HeadPosition + userRoot.HeadRotation * (float3.Forward * 0.7f) + float3.Down * 0.1f;
+            // -Z (Backward) is the view direction; +Z spawns it behind the user.
+            position = userRoot.HeadPosition + userRoot.HeadRotation * (float3.Backward * 0.7f) + float3.Down * 0.1f;
             rotation = userRoot.HeadRotation;
         }
         else

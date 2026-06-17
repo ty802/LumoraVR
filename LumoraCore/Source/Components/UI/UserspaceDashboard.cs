@@ -473,9 +473,10 @@ public class UserspaceDashboard : UIComponent
         _displayMaterial = _surfaceSlot.AttachComponent<UIUnlitMaterial>();
         _displayMaterial.Culling.Value = Culling.None;
         _displayMaterial.UseVertexColor.Value = false;
-        // Barely translucent: the capture itself is opaque, this is the only
-        // see-through factor.
-        _displayMaterial.TintColor.Value = new colorHDR(1f, 1f, 1f, 0.97f);
+        // Fully opaque: the capture (its own SubViewport, opaque dark clear, no skybox) is the dash's
+        // isolation - it renders to its own pass, not into the session world. Any surface translucency just lets
+        // the session skybox/sun bleed through the dash, which is what we're avoiding. - xlinka
+        _displayMaterial.TintColor.Value = new colorHDR(1f, 1f, 1f, 1f);
         _displayMaterial.RenderQueue.Value = 4002;
         _displayMaterial.Texture.Target = _renderTexture;
 

@@ -11,6 +11,7 @@ using Lumora.Core.Components.Assets;
 using Lumora.Core.Components.Avatar.IK;
 using Lumora.Core.Components.Import;
 using Lumora.Core.Components.Interaction;
+using Lumora.Core.Components.UI;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
 using LumoraMeshes = Lumora.Core.Components.Meshes;
@@ -41,6 +42,9 @@ public sealed class AvatarCreator : Component
     /// <summary>Attach blink + eye-look drivers when the avatar has eye bones.</summary>
     public readonly Sync<bool> SetupEyes = new();
 
+    /// <summary>Show per-marker direction arrows (local X=red/right, Y=green/up, Z=blue/forward).</summary>
+    public readonly Sync<bool> ShowDirections = new();
+
     // How far each marker reaches to find the model's colliders.
     private const float HeadDetectionRadius = 0.2f;
     private const float LimbDetectionRadius = 0.15f;
@@ -55,14 +59,8 @@ public sealed class AvatarCreator : Component
     private static readonly colorHDR RightFill = new(1f, 0.3f, 0.3f, 0.15f);
     private static readonly colorHDR PelvisFill = new(0.7f, 0.4f, 1f, 0.12f);
 
-    private static readonly color PanelBg = new(0.10f, 0.10f, 0.16f, 0.96f);
-    private static readonly color TextPrimary = new(0.93f, 0.93f, 0.97f, 1f);
-    private static readonly color TextDim = new(0.72f, 0.72f, 0.80f, 1f);
-    private static readonly color Accent = new(0.62f, 0.55f, 0.95f, 1f);
-    private static readonly color ControlFill = new(0.30f, 0.29f, 0.42f, 1f);
-    private static readonly color CreateFill = new(0.28f, 0.62f, 0.40f, 1f);
-    private static readonly color CancelFill = new(0.60f, 0.28f, 0.30f, 1f);
-    private static readonly color AlignFill = new(0.30f, 0.45f, 0.70f, 1f);
+    // Checkbox box fill - bright enough to read against the dark panel (the check mark is lighter still).
+    private static readonly color ControlFill = new(0.50f, 0.45f, 0.70f, 1f);
 
     private readonly SyncRef<Slot> _headProxy = new();
     private readonly SyncRef<Slot> _leftHandProxy = new();
@@ -92,7 +90,9 @@ public sealed class AvatarCreator : Component
 
         CalibrateFeet.OnChanged += _ => RefreshOptionalMarkers();
         CalibratePelvis.OnChanged += _ => RefreshOptionalMarkers();
+        ShowDirections.OnChanged += _ => RefreshDirectionArrows();
         RefreshOptionalMarkers();
+        RefreshDirectionArrows();
     }
 
     // Stand the figure on the floor in front of the local user, facing them, so the markers overlay an
@@ -103,9 +103,11 @@ public sealed class AvatarCreator : Component
         if (user == null)
             return;
 
-        var forward = user.HeadRotation * float3.Forward;
+        // View direction is the head's LOCAL -Z (Godot camera convention) = float3.Backward; float3.Forward
+        // (+Z) points behind the user, which is why the creator used to spawn behind them. - xlinka
+        var forward = user.HeadRotation * float3.Backward;
         forward.y = 0f;
-        forward = forward.LengthSquared > 1e-5f ? forward.Normalized : float3.Forward;
+        forward = forward.LengthSquared > 1e-5f ? forward.Normalized : float3.Backward;
 
         Slot.GlobalPosition = user.FeetPosition + forward * 1.2f;
         // Face the user: the figure's local forward points back toward them (so left/right read as the
@@ -168,7 +170,56 @@ public sealed class AvatarCreator : Component
         haloMaterial.BlendMode.Value = BlendMode.Transparent;
         haloRenderer.Material.Target = haloMaterial;
 
+        BuildAxisGizmo(slot);
         return slot;
+    }
+
+    // Three thin bars on the marker's local axes (X=red/right, Y=green/up, Z=blue/forward) so you can
+    // see which way a marker is oriented before aligning. Toggled by ShowDirections. - xlinka
+    private static void BuildAxisGizmo(Slot marker)
+    {
+        var axes = marker.AddSlot("Axes");
+        axes.ActiveSelf.Value = false;
+        AddAxisBar(axes, "X", float3.Right, new colorHDR(1f, 0.25f, 0.25f, 1f));
+        AddAxisBar(axes, "Y", float3.Up, new colorHDR(0.3f, 1f, 0.35f, 1f));
+        AddAxisBar(axes, "Z", float3.Backward, new colorHDR(0.35f, 0.55f, 1f, 1f)); // -Z is our view/forward
+    }
+
+    private static void AddAxisBar(Slot parent, string name, float3 dir, colorHDR color)
+    {
+        const float length = 0.18f;
+        const float thickness = 0.012f;
+        var bar = parent.AddSlot(name);
+        bar.LocalPosition.Value = dir * (length * 0.5f);
+        bar.LocalRotation.Value = FabrikSolver.FromToRotation(float3.Up, dir);
+
+        var mesh = bar.AttachComponent<LumoraMeshes.BoxMesh>();
+        mesh.Size.Value = new float3(thickness, length, thickness);
+        var renderer = bar.AttachComponent<MeshRenderer>();
+        renderer.Mesh.Target = mesh;
+        var material = bar.AttachComponent<UnlitMaterial>();
+        material.Color = color;
+        renderer.Material.Target = material;
+    }
+
+    private void RefreshDirectionArrows()
+    {
+        foreach (var proxy in EnumerateMarkers())
+        {
+            var axes = proxy?.FindChild("Axes");
+            if (axes != null && !axes.IsDestroyed)
+                axes.ActiveSelf.Value = ShowDirections.Value;
+        }
+    }
+
+    private IEnumerable<Slot> EnumerateMarkers()
+    {
+        yield return _headProxy.Target;
+        yield return _leftHandProxy.Target;
+        yield return _rightHandProxy.Target;
+        yield return _leftFootProxy.Target;
+        yield return _rightFootProxy.Target;
+        yield return _pelvisProxy.Target;
     }
 
     private void RefreshOptionalMarkers()
@@ -225,110 +276,126 @@ public sealed class AvatarCreator : Component
 
     private void BuildControlPanel()
     {
+        // Proper themed Helio panel (PanelShell): rounded, purple, with a header + close button -
+        // not a bare canvas with a mesh bar. UITheme carries the dashboard palette + rounded sprite.
         var panelSlot = Slot.AddSlot("Controls");
         panelSlot.LocalPosition.Value = new float3(0.7f, 1.15f, 0f);
+        panelSlot.LocalScale.Value = float3.One * CanvasScale;
 
-        var body = panelSlot.AddSlot("Body");
-        body.LocalScale.Value = float3.One * CanvasScale;
+        var theme = panelSlot.AttachComponent<UITheme>();
 
-        var size = new float2(360f, 470f);
-        var rect = body.AttachComponent<RectTransform>();
-        rect.AnchorMin.Value = new float2(0.5f, 0.5f);
-        rect.AnchorMax.Value = new float2(0.5f, 0.5f);
-        rect.OffsetMin.Value = new float2(-size.x * 0.5f, -size.y * 0.5f);
-        rect.OffsetMax.Value = new float2(size.x * 0.5f, size.y * 0.5f);
-        body.AttachComponent<Canvas>();
+        var panel = panelSlot.AttachComponent<PanelShell>();
+        panel.Title.Value = "Avatar Creator";
+        // Tall enough for the info line + 5 action buttons + 4 toggles without compressing or overflowing.
+        panel.Size.Value = new float2(380f, 610f);
+        panel.TitleTextSize.Value = 20f;
+        panel.HeaderHeight.Value = 50f;
+        // The whole-tool root grab (SetupWholeToolGrab) moves the panel; no separate panel-only grab.
+        panel.AllowGrab.Value = false;
+        panel.Scalable.Value = false;
+        theme.ApplyTo(panel);
+        panel.CloseRequested += _ => Slot.Destroy();
 
-        var background = body.AttachComponent<Image>();
-        background.Tint.Value = PanelBg;
+        var content = panel.ContentSlot!;
+        var b = new UIBuilder(content);
+        b.Font(theme.ThemeFont)
+            .TextColor(theme.TextPrimary.Value)
+            .ForegroundColor(theme.Accent.Value)
+            .BackgroundColor(theme.ButtonFill.Value)
+            .RoundedSprite(theme.RoundedSprite);   // rounded button corners, matching the panel
 
-        var font = EnsureFont(panelSlot);
-
-        var b = new UIBuilder(body);
-        b.Font(font)
-            .TextColor(TextPrimary)
-            .ForegroundColor(Accent)
-            .BackgroundColor(ControlFill);
-
-        var layout = b.VerticalLayout(10f, 18f);
+        var layout = b.VerticalLayout(8f, 4f);
         layout.ForceExpandWidth.Value = true;
         layout.ForceExpandHeight.Value = false;
+        layout.PaddingTop.Value = 16f;             // breathing room under the header
         FillToParent(b.Current);
 
-        SetRowHeight(b, 42f);
-        var title = b.Text("Avatar Creator", 28f);
-        title.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
-
-        SetRowHeight(b, 58f);
-        var info = b.Text("Put the head marker on the avatar's head,\nthen Auto Align - or place each marker by hand.", 15f, TextDim);
+        SetRowHeight(b, 44f);
+        var info = b.Text("Place the head marker on the model,\nthen align and Create.", 14f, theme.TextDim.Value);
         info.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
         info.VerticalAlignment.Value = TextVerticalAlignment.Middle;
 
-        SetRowHeight(b, 46f);
-        b.Button("Auto Align", (_, _) => AlignMarkersToRig(), AlignFill);
+        // Per-part align: place a marker on the model, then snap it to the matching bone.
+        SetRowHeight(b, 42f);
+        b.Button("Center Head", (_, _) => AlignHead(), theme.ButtonFill.Value);
 
-        SetRowHeight(b, 46f);
-        b.Button("Create", (_, _) => RunCreate(), CreateFill);
+        SetRowHeight(b, 42f);
+        b.Button("Align Hands", (_, _) => AlignHands(), theme.ButtonFill.Value);
+
+        SetRowHeight(b, 42f);
+        b.Button("Align Body", (_, _) => AlignBody(), theme.ButtonFill.Value);
+
+        SetRowHeight(b, 42f);
+        b.Button("Align All", (_, _) => AlignMarkersToRig(), theme.Accent.Value);
+
+        SetRowHeight(b, 48f);
+        b.Button("Create", (_, _) => RunCreate(), theme.PositiveFill.Value);
 
         AddToggleRow(b, "Calibrate Feet", CalibrateFeet);
         AddToggleRow(b, "Calibrate Pelvis", CalibratePelvis);
         AddToggleRow(b, "Setup Eyes", SetupEyes);
-
-        SetRowHeight(b, 46f);
-        b.Button("Cancel", (_, _) => Slot.Destroy(), CancelFill);
-
-        AddTitleBarHandle(panelSlot);
+        AddToggleRow(b, "Show Directions", ShowDirections);
     }
 
-    // A draggable title bar above the panel. It only needs to register a laser hit; the grab promotes
-    // up the parent chain to the root Grabbable (SetupWholeToolGrab), so dragging it moves everything.
-    private void AddTitleBarHandle(Slot panelSlot)
-    {
-        var handle = panelSlot.AddSlot("TitleBar");
-        handle.LocalPosition.Value = new float3(0f, 0.3f, 0f);
-
-        var box = handle.AttachComponent<LumoraMeshes.BoxMesh>();
-        box.Size.Value = new float3(0.42f, 0.05f, 0.02f);
-        var renderer = handle.AttachComponent<MeshRenderer>();
-        renderer.Mesh.Target = box;
-        var material = handle.AttachComponent<UnlitMaterial>();
-        material.Color = new colorHDR(Accent.r, Accent.g, Accent.b, 0.9f);
-        renderer.Material.Target = material;
-
-        var grab = handle.AttachComponent<Grabbable>();
-        grab.GrabPriority.Value = 1;          // below the root grab, so the whole tool moves
-        grab.InteractionPriority.Value = 1;
-    }
-
-    // "Put the head on, align the rest": snap every marker onto its matching bone of the rig the markers
-    // are over, turning on feet/pelvis when the rig has those bones.
+    // "Align All": snap every marker onto its matching bone in one click (each step finds the rig).
     private void AlignMarkersToRig()
+    {
+        AlignHead();
+        AlignHands();
+        AlignBody();
+    }
+
+    // Snap the head marker onto the model's head bone (position + orientation) - the "Center Head"
+    // action. Find the rig fresh each click so you can place the marker then align. - xlinka
+    private void AlignHead()
+    {
+        var rig = RequireRig();
+        if (rig == null) return;
+        AlignMarker(_headProxy.Target, rig.TryGetBone(BodyNode.Head), copyRotation: true);
+    }
+
+    // Snap both hand markers onto the hand bones WITH orientation, so the IK wrists line up with the
+    // model's hands (position-only left the palms rolled wrong - "get the hands right"). - xlinka
+    private void AlignHands()
+    {
+        var rig = RequireRig();
+        if (rig == null) return;
+        AlignMarker(_leftHandProxy.Target, rig.TryGetBone(BodyNode.LeftHand), copyRotation: true);
+        AlignMarker(_rightHandProxy.Target, rig.TryGetBone(BodyNode.RightHand), copyRotation: true);
+    }
+
+    // Snap pelvis + feet markers, turning on those calibration options when the rig has the bones.
+    private void AlignBody()
+    {
+        var rig = RequireRig();
+        if (rig == null) return;
+        if (rig.TryGetBone(BodyNode.LeftFoot) != null && rig.TryGetBone(BodyNode.RightFoot) != null)
+            CalibrateFeet.Value = true;
+        if (rig.TryGetBone(BodyNode.Hips) != null)
+            CalibratePelvis.Value = true;
+        AlignMarker(_pelvisProxy.Target, rig.TryGetBone(BodyNode.Hips), copyRotation: true);
+        AlignMarker(_leftFootProxy.Target, rig.TryGetBone(BodyNode.LeftFoot));
+        AlignMarker(_rightFootProxy.Target, rig.TryGetBone(BodyNode.RightFoot));
+    }
+
+    private BipedRig RequireRig()
     {
         var rig = FindRig();
         if (rig == null || rig.IsDestroyed)
         {
             LumoraLogger.Warn("AvatarCreator: nothing to align to - put the head marker over the avatar's head first");
-            return;
+            return null!;
         }
-
-        if (rig.TryGetBone(BodyNode.LeftFoot) != null && rig.TryGetBone(BodyNode.RightFoot) != null)
-            CalibrateFeet.Value = true;
-        if (rig.TryGetBone(BodyNode.Hips) != null)
-            CalibratePelvis.Value = true;
-
-        AlignMarker(_headProxy.Target, rig.TryGetBone(BodyNode.Head));
-        AlignMarker(_leftHandProxy.Target, rig.TryGetBone(BodyNode.LeftHand));
-        AlignMarker(_rightHandProxy.Target, rig.TryGetBone(BodyNode.RightHand));
-        AlignMarker(_leftFootProxy.Target, rig.TryGetBone(BodyNode.LeftFoot));
-        AlignMarker(_rightFootProxy.Target, rig.TryGetBone(BodyNode.RightFoot));
-        AlignMarker(_pelvisProxy.Target, rig.TryGetBone(BodyNode.Hips));
+        return rig;
     }
 
-    private static void AlignMarker(Slot marker, Slot bone)
+    private static void AlignMarker(Slot marker, Slot bone, bool copyRotation = false)
     {
         if (marker == null || marker.IsDestroyed || bone == null || bone.IsDestroyed)
             return;
         marker.GlobalPosition = bone.GlobalPosition;
+        if (copyRotation)
+            marker.GlobalRotation = bone.GlobalRotation;
     }
 
     private void AddToggleRow(UIBuilder b, string label, Sync<bool> state)
@@ -350,18 +417,6 @@ public sealed class AvatarCreator : Component
         rect.AnchorMax.Value = float2.One;
         rect.OffsetMin.Value = float2.Zero;
         rect.OffsetMax.Value = float2.Zero;
-    }
-
-    private static FontProvider EnsureFont(Slot panelSlot)
-    {
-        var fontSlot = panelSlot.AddSlot("Font");
-        var provider = fontSlot.AttachComponent<FontProvider>();
-        if (ImportDialog.DefaultFontUrl != null)
-        {
-            provider.URL.Value = ImportDialog.DefaultFontUrl;
-            provider.FallbackURLs.Add(ImportDialog.DefaultFontUrl);
-        }
-        return provider;
     }
 
     // CREATE

@@ -581,7 +581,7 @@ public partial class XRModeManager : Node
         _desktopCamera = new DesktopCameraController();
         _desktopCamera.Name = "DesktopCameraController";
         AddChild(_desktopCamera);
-        _desktopCamera.Initialize(_engine);
+        _desktopCamera.Initialize(_engine, _headOutput);
 
         LumoraLogger.Log("XRModeManager: Desktop input providers ready (F5=third-person, F6=free-cam)");
     }

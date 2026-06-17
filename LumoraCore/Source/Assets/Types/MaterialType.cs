@@ -54,7 +54,12 @@ public enum MaterialType
     /// <summary>
     /// LocalHome-specific rising orb volume material. Not a generic shader.
     /// </summary>
-    LocalHomeRising
+    LocalHomeRising,
+
+    /// <summary>
+    /// Frosted-glass backdrop for modal overlays: samples + blurs/pixelates the screen behind it.
+    /// </summary>
+    Blur
 }
 
 /// <summary>

@@ -30,6 +30,7 @@ public sealed class HomeScreen : WidgetScreen
     private int _maxUsers = 16;
     private Text? _status;
     private Slot? _createOverlay;
+    private Slot? _createBackdrop;
     private bool _createOpen;
 
     protected override void BuildContent(UIBuilder builder)
@@ -80,7 +81,8 @@ public sealed class HomeScreen : WidgetScreen
         var userRoot = world.LocalUser?.Root;
         if (userRoot?.HeadSlot != null)
         {
-            position = userRoot.HeadPosition + userRoot.HeadRotation * (float3.Forward * 1.25f);
+            // -Z (Backward) is the view direction in our head convention; +Z is behind the user.
+            position = userRoot.HeadPosition + userRoot.HeadRotation * (float3.Backward * 1.25f);
             rotation = userRoot.HeadRotation;
         }
         else
@@ -146,64 +148,165 @@ public sealed class HomeScreen : WidgetScreen
 
     private void BuildCreateOverlay(Slot root)
     {
-        _createOverlay = root.AddSlot("CreateOverlay");
+        // Host the modal on the CANVAS ROOT (the dashboard slot), not this screen's content slot.
+        // The backdrop must cover the whole screen and the dialog must draw above the nav bar / chrome,
+        // and those live above this screen in the tree - a modal parented inside one tab can only ever
+        // stack within that tab (which is why it sat behind the nav bar and didn't dim everything).
+        var host = _dashboard?.Slot ?? root;
+
+        // Dim backdrop plane: fills the whole canvas, clicking it dismisses. Added last (and high
+        // OrderOffset) so it draws over every screen + the nav bar. (A true frosted blur needs a blur
+        // shader we don't have yet; this is the dim pass.)
+        _createBackdrop = host.AddSlot("CreateBackdrop");
+        var backRect = _createBackdrop.AttachComponent<RectTransform>();
+        backRect.AnchorMin.Value = float2.Zero;
+        backRect.AnchorMax.Value = float2.One;
+        backRect.OffsetMin.Value = float2.Zero;
+        backRect.OffsetMax.Value = float2.Zero;
+        _createBackdrop.OrderOffset.Value = 9000L;
+        // OverlayLevel 1: reserves a render band above all normal UI so the backdrop covers the
+        // whole dashboard (nav bar, header, chrome) instead of fighting for order with them.
+        _createBackdrop.AttachComponent<GraphicChunkRoot>().OverlayLevel = 1;
+        // Plain translucent dim. It dims the dashboard CONTENT behind the dialog (this is inside the
+        // dash's own render texture). A screen-read blur would sample the session world (sky/sun), not
+        // the transparent dash UI, so it just pulled the world in - a dim is the right modal scrim.
+        var backImage = _createBackdrop.AttachComponent<Image>();
+        backImage.Tint.Value = new color(0.02f, 0.02f, 0.05f, 0.62f);
+        _createBackdrop.AttachComponent<Button>().Clicked += (_, ctx) =>
+        {
+            // Dismiss only when the click lands OUTSIDE the dialog panel, so clicks on the panel or
+            // its rows never close it even if the full-screen backdrop catches the hit.
+            var panelRect = _createOverlay?.GetComponent<RectTransform>()?.LocalComputeRect;
+            bool inside = panelRect.HasValue && panelRect.Value.Contains(ctx.LocalPoint);
+            // DIAGNOSTIC (remove once the click-dismiss is confirmed): logs why the backdrop fired and
+            // whether the panel rect actually contains the click point. - xlinka
+            var pr = panelRect ?? default;
+            Lumora.Core.Logging.Logger.Log(
+                $"[CreateMenu] backdrop click pt=({ctx.LocalPoint.x:F1},{ctx.LocalPoint.y:F1}) " +
+                $"panel=({pr.xMin:F1},{pr.yMin:F1},{pr.width:F1}x{pr.height:F1}) inside={inside} -> {(inside ? "keep" : "DISMISS")}");
+            if (inside)
+                return;
+            CloseCreateMenu();
+        };
+        _createBackdrop.ActiveSelf.Value = false;
+
+        // Centered dialog. Wider than tall; sized to fit inside the 720px-tall canvas with margin so
+        // the two-column body never spills past the panel.
+        _createOverlay = host.AddSlot("CreateOverlay");
         var rect = _createOverlay.AttachComponent<RectTransform>();
         rect.AnchorMin.Value = new float2(0.5f, 0.5f);
         rect.AnchorMax.Value = new float2(0.5f, 0.5f);
-        rect.OffsetMin.Value = new float2(-220f, -240f);
-        rect.OffsetMax.Value = new float2(220f, 240f);
-        _createOverlay.OrderOffset.Value = 10000L; // draw above the grid
-        _createOverlay.AttachComponent<GraphicChunkRoot>();
+        rect.OffsetMin.Value = new float2(-400f, -290f);
+        rect.OffsetMax.Value = new float2(400f, 290f);
+        _createOverlay.OrderOffset.Value = 10000L; // draw above the backdrop
+        // OverlayLevel 2: the panel background band, above the backdrop (1) and all normal UI.
+        _createOverlay.AttachComponent<GraphicChunkRoot>().OverlayLevel = 2;
         ApplyRoundedPanel(_createOverlay, OverlayFill, RowBorder);
+        // Absorb clicks on the panel background so they don't fall through to the backdrop (dismiss).
+        _createOverlay.AttachComponent<Button>();
 
         var col = _createOverlay.AttachComponent<VerticalLayout>();
-        col.Spacing.Value = 6f;
-        col.PaddingLeft.Value = 16f;
-        col.PaddingRight.Value = 16f;
-        col.PaddingTop.Value = 16f;
-        col.PaddingBottom.Value = 16f;
+        col.Spacing.Value = 8f;
+        col.PaddingLeft.Value = 20f;
+        col.PaddingRight.Value = 20f;
+        col.PaddingTop.Value = 18f;
+        col.PaddingBottom.Value = 18f;
         col.ForceExpandWidth.Value = true;
         col.ForceExpandHeight.Value = false;
 
         Header(_createOverlay, "New World");
 
-        Header(_createOverlay, "Template");
+        // Two-column body so the (otherwise tall) options fit without scrolling, and the dialog reads
+        // wider. The body fills the space between the title and the action row; columns top-align.
+        var body = _createOverlay.AddSlot("Body");
+        body.AttachComponent<RectTransform>();
+        var bodyElement = body.AttachComponent<LayoutElement>();
+        bodyElement.FlexibleWidth.Value = 1f;
+        bodyElement.FlexibleHeight.Value = 1f;
+        var bodyLayout = body.AttachComponent<HorizontalLayout>();
+        bodyLayout.Spacing.Value = 16f;
+        bodyLayout.ForceExpandWidth.Value = true;
+        bodyLayout.ForceExpandHeight.Value = true;
+
+        var left = AddColumn(body);
+        var right = AddColumn(body);
+
+        Header(left, "Template");
         foreach (var template in WorldTemplates.AvailableTemplates)
         {
             var captured = template;
-            RadioRow(_createOverlay, "home-template", PrettyTemplate(template), template == _template,
+            RadioRow(left, "home-template", PrettyTemplate(template), template == _template,
                 () => _template = captured);
         }
 
-        Header(_createOverlay, "Session");
-        SliderRow(_createOverlay, "Max Users", 1f, 64f, _maxUsers,
-            v => { _maxUsers = (int)MathF.Round(v); return _maxUsers.ToString(); });
-        foreach (SessionVisibility visibility in Enum.GetValues<SessionVisibility>())
-        {
-            var captured = visibility;
-            RadioRow(_createOverlay, "home-access", PrettyVisibility(visibility), visibility == _visibility,
-                () => _visibility = captured);
-        }
-
-        Header(_createOverlay, "Mode");
+        Header(left, "Mode");
         foreach (WorldMode mode in Enum.GetValues<WorldMode>())
         {
             var captured = mode;
-            RadioRow(_createOverlay, "home-mode", PrettyMode(mode), mode == _mode, () => _mode = captured);
+            RadioRow(left, "home-mode", PrettyMode(mode), mode == _mode, () => _mode = captured);
+        }
+
+        Header(right, "Session");
+        SliderRow(right, "Max Users", 1f, 64f, _maxUsers,
+            v => { _maxUsers = (int)MathF.Round(v); return _maxUsers.ToString(); });
+
+        Header(right, "Who Can Join");
+        foreach (SessionVisibility visibility in Enum.GetValues<SessionVisibility>())
+        {
+            var captured = visibility;
+            RadioRow(right, "home-access", PrettyVisibility(visibility), visibility == _visibility,
+                () => _visibility = captured);
         }
 
         ButtonRow(_createOverlay, "Create & Host", CreateFill, OnCreate);
         AddInfoRow(_createOverlay, "Pick a template, then create & host.", TextDim, out var statusText);
         _status = statusText;
 
+        // The row helpers each add their own GraphicChunkRoot (per-row re-mesh). Promote them to
+        // OverlayLevel 3 so the rows/content draw above the panel background (level 2) and backdrop.
+        foreach (var rowChunk in _createOverlay.GetComponentsInChildren<GraphicChunkRoot>(false))
+            rowChunk.OverlayLevel = 3;
+
         _createOverlay.ActiveSelf.Value = false;
     }
 
-    private void ToggleCreateMenu()
+    // A flexible-width column for the two-column dialog body; rows stack top-down.
+    private static Slot AddColumn(Slot body)
     {
-        _createOpen = !_createOpen;
+        var column = body.AddSlot("Column");
+        column.AttachComponent<RectTransform>();
+        var element = column.AttachComponent<LayoutElement>();
+        element.FlexibleWidth.Value = 1f;
+        element.FlexibleHeight.Value = 1f;
+        var layout = column.AttachComponent<VerticalLayout>();
+        layout.Spacing.Value = 6f;
+        layout.ForceExpandWidth.Value = true;
+        layout.ForceExpandHeight.Value = false;
+        return column;
+    }
+
+    public override void OnDestroy()
+    {
+        // The modal lives on the canvas root now, not this screen's content slot, so it isn't torn
+        // down with the screen - destroy it explicitly to avoid orphaned overlay slots.
+        if (_createBackdrop != null && !_createBackdrop.IsDestroyed)
+            _createBackdrop.Destroy();
         if (_createOverlay != null && !_createOverlay.IsDestroyed)
-            _createOverlay.ActiveSelf.Value = _createOpen;
+            _createOverlay.Destroy();
+        base.OnDestroy();
+    }
+
+    private void ToggleCreateMenu() => SetCreateMenuOpen(!_createOpen);
+
+    private void CloseCreateMenu() => SetCreateMenuOpen(false);
+
+    private void SetCreateMenuOpen(bool open)
+    {
+        _createOpen = open;
+        if (_createOverlay != null && !_createOverlay.IsDestroyed)
+            _createOverlay.ActiveSelf.Value = open;
+        if (_createBackdrop != null && !_createBackdrop.IsDestroyed)
+            _createBackdrop.ActiveSelf.Value = open;
         MarkDirty();
     }
 
@@ -227,11 +330,8 @@ public sealed class HomeScreen : WidgetScreen
         var world = manager.HostNewWorld(_template, name, _visibility, _maxUsers, mode);
         SetStatus(world != null ? $"Now hosting '{name}' ({PrettyMode(mode)})." : "Failed to host world.");
 
-        // Click Host -> the menu closes (you drop into the new world).
-        _createOpen = false;
-        if (_createOverlay != null && !_createOverlay.IsDestroyed)
-            _createOverlay.ActiveSelf.Value = false;
-        MarkDirty();
+        // Click Host -> the dialog + backdrop close (you drop into the new world).
+        CloseCreateMenu();
     }
 
     private void SetStatus(string text)

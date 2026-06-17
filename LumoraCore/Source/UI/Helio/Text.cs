@@ -35,6 +35,10 @@ public class Text : Graphic, ILayoutElement
     private bool _wrap;
     private float _layoutPreferredWidth;
     private float _layoutPreferredHeight;
+    // Font metrics snapshotted on the main thread (PreGraphicsCompute). The worker positions
+    // glyphs from these instead of calling the font hook, which hits Godot's font server. - xlinka
+    private float _ascent;
+    private float _lineHeight;
 
     // Shared shaping engine with built-in result caching (see TextShaper).
     private readonly TextShaper _shaper = new();
@@ -84,10 +88,29 @@ public class Text : Graphic, ILayoutElement
 
     public override ValueTask PreGraphicsCompute()
     {
-        // request rasterization for every codepoint we're about to draw - xlinka
         var fontSet = _font?.Asset;
-        if (fontSet != null)
-            TextShaper.RequestGlyphs(fontSet, _content, _size);
+        if (fontSet == null || !fontSet.IsValid)
+        {
+            _ascent = _size * 0.8f;
+            _lineHeight = _size;
+            return default;
+        }
+
+        // request rasterization for every codepoint we're about to draw - xlinka
+        TextShaper.RequestGlyphs(fontSet, _content, _size);
+
+        // Shape and read font metrics HERE, on the main thread. ComputeGraphic runs on the canvas
+        // worker, and the font hook (GetAscent/GetLineHeight/GetKerning) calls Godot's font server,
+        // which is not safe off-main - doing it there returned garbage metrics and made text
+        // collapse/vanish intermittently. The worker only positions the shaped glyphs. - xlinka
+        var rect = RectTransform?.LocalComputeRect ?? default;
+        float wrapWidth = _wrap && rect.width > 0f ? rect.width : 0f;
+        _shaper.Shape(fontSet, _content, _size, _wrap, wrapWidth);
+
+        _ascent = fontSet.GetAscent(_size);
+        _lineHeight = fontSet.GetLineHeight(_size) * _lineSpacing;
+        if (_lineHeight <= 0f)
+            _lineHeight = _size;
 
         return default;
     }
@@ -103,7 +126,7 @@ public class Text : Graphic, ILayoutElement
         var mesh = renderData.Mesh;
 
         PrepareMesh(mesh);
-        LayoutAndEmit(fontSet, renderData, mesh);
+        LayoutAndEmit(renderData, mesh);
     }
 
     public override bool IsPointInside(in float2 point)
@@ -152,15 +175,16 @@ public class Text : Graphic, ILayoutElement
     {
     }
 
-    private void LayoutAndEmit(FontSet font, GraphicsChunk.RenderData renderData, PhosMesh mesh)
+    private void LayoutAndEmit(GraphicsChunk.RenderData renderData, PhosMesh mesh)
     {
         var rect = RectTransform!.LocalComputeRect;
-        _shaper.Shape(font, _content, _size, _wrap, _wrap && rect.width > 0f ? rect.width : 0f);
+        // Shaping + metrics were done on the main thread in PreGraphicsCompute; the worker only
+        // positions the already-shaped glyphs (no font-server calls off-main). - xlinka
         var lines = _shaper.Lines;
         if (lines.Count == 0) return;
 
-        float ascent = font.GetAscent(_size);
-        float lineHeight = font.GetLineHeight(_size) * _lineSpacing;
+        float ascent = _ascent;
+        float lineHeight = _lineHeight;
         if (lineHeight <= 0f) lineHeight = _size;
 
         float blockHeight = lineHeight * lines.Count;

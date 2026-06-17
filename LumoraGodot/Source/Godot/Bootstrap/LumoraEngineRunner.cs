@@ -729,8 +729,11 @@ public partial class LumoraEngineRunner : Node
 		// The main view must not draw the hidden capture layer (the dash renders
 		// its UI there for an offscreen render-texture grab) or the overlay
 		// layer. Render-texture cameras opt those layers back in. - xlinka
+		// Also cull the free-cam indicator: third-person/free-cam now drive THIS camera, so its marker
+		// would otherwise sit right on the lens. It stays on its own layer for spectator/other views.
 		uint hiddenAndOverlay = (uint)(Lumora.Godot.Helpers.RenderHelper.HIDDEN_LAYER
-			| Lumora.Godot.Helpers.RenderHelper.OVERLAY_LAYER);
+			| Lumora.Godot.Helpers.RenderHelper.OVERLAY_LAYER
+			| Lumora.Godot.Helpers.RenderHelper.FREECAM_INDICATOR_LAYER);
 		_mainCamera.CullMask &= ~hiddenAndOverlay;
 		var xrCamera = GetNodeOrNull<Camera3D>("%XRCamera3D");
 		if (xrCamera != null)
@@ -806,6 +809,11 @@ public partial class LumoraEngineRunner : Node
 			{
 				LumoraLogger.Debug("PhaseEngineCoreInit: Hooks registered");
 			}
+
+			// Register network transports BEFORE InitializeAsync: it auto-hosts the local home, which
+			// opens a listener - if no manager is registered yet that fails ("no network manager
+			// registered"). Steam is already initialized by now (early in _Ready). - xlinka
+			RegisterNetworkManagers();
 
 			// Initialize engine asynchronously
 			LumoraLogger.Log("LumoraEngineRunner: Calling Engine.InitializeAsync()...");
@@ -987,8 +995,6 @@ public partial class LumoraEngineRunner : Node
 		_loadingScreen?.UpdatePhase(6); // Phase index 6 = Ready
 
 		_engineInitialized = true;
-
-		RegisterNetworkManagers();
 
 		// Set up clipboard importer with engine reference for dynamic slot lookup
 		if (_clipboardImporter != null)

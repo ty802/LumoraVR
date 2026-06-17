@@ -15,8 +15,10 @@ namespace Lumora.Source.Godot.Input;
 ///   F5 - third-person orbit (mouse orbits camera around character; press again for first-person)
 ///   F6 - free-cam fly      (WASD+mouse, character frozen; press again for first-person)
 ///
-/// Creates its own Camera3D child and sets Current=true to take over rendering,
-/// which automatically demotes the CameraHook head-slot camera.
+/// There is ONE rendering camera (the HeadOutput screen camera). Each mode just feeds it a pose
+/// via HeadOutput's position/rotation override - it never spawns its own camera. That keeps a single
+/// source of truth for "the active camera", so the dashboard, cursor ray and laser (which all track
+/// the HeadOutput camera) follow the view in every mode. First-person = clear the override.
 /// </summary>
 public partial class DesktopCameraController : Node
 {
@@ -36,13 +38,13 @@ public partial class DesktopCameraController : Node
     private const float FreeCamBaseSpeed   = 5f;
     private const float FreeCamFastMult    = 4f;
     private const float LookReferenceHeight = 1080f;
-    private const uint FreeCamIndicatorLayer = 1u << 19;
+    private const uint FreeCamIndicatorLayer = (uint)Lumora.Godot.Helpers.RenderHelper.FREECAM_INDICATOR_LAYER;
 
     private static float LookSensitivity => (Mathf.Pi / LookReferenceHeight) * InterfaceSettings.MouseSensitivity;
 
     // REFERENCES
     private Lumora.Core.Engine _engine = null!;
-    private Camera3D  _overrideCamera = null!;
+    private Lumora.Source.Godot.Bootstrap.HeadOutput _headOutput = null!;
     private Node3D    _freeCamIndicator = null!;
     private Label3D   _freeCamLabel = null!;
 
@@ -67,20 +69,12 @@ public partial class DesktopCameraController : Node
 
     // INIT
 
-    public void Initialize(Lumora.Core.Engine engine)
+    public void Initialize(Lumora.Core.Engine engine, Lumora.Source.Godot.Bootstrap.HeadOutput headOutput)
     {
         _engine = engine;
-
-        _overrideCamera = new Camera3D
-        {
-            Name = "OverrideCamera",
-            Fov  = 90f,
-            Near = 0.05f,
-            Far  = 1000f,
-            PhysicsInterpolationMode = Node.PhysicsInterpolationModeEnum.Off,
-        };
-        _overrideCamera.CullMask &= ~FreeCamIndicatorLayer;
-        AddChild(_overrideCamera);
+        _headOutput = headOutput;
+        // No camera is created here: third-person/free-cam drive the single HeadOutput screen camera
+        // through its pose override (see SwitchMode/UpdateThirdPerson/UpdateFreeCam).
     }
 
     public override void _Ready()
@@ -89,17 +83,14 @@ public partial class DesktopCameraController : Node
     }
 
     /// <summary>
-    /// Clean up nodes that we parented OUTSIDE this controller (the override
-    /// camera lives in the desktop SubViewport, the freecam indicator lives
-    /// under the scene root). Without this, every F8 cycle leaks one of each
-    /// into the scene tree.
-    /// - xlinka
+    /// Clear any active camera override and clean up the freecam indicator (parented under the scene
+    /// root). Without this, the camera could stay stuck in an override pose and every F8 cycle would
+    /// leak an indicator into the scene tree. - xlinka
     /// </summary>
     public override void _ExitTree()
     {
-        if (_overrideCamera != null && GodotObject.IsInstanceValid(_overrideCamera))
-            _overrideCamera.QueueFree();
-        _overrideCamera = null!;
+        _headOutput?.ClearPositionOverride();
+        _headOutput?.ClearRotationOverride();
 
         if (_freeCamIndicator != null && GodotObject.IsInstanceValid(_freeCamIndicator))
             _freeCamIndicator.QueueFree();
@@ -237,7 +228,9 @@ public partial class DesktopCameraController : Node
         switch (newMode)
         {
             case CameraMode.FirstPerson:
-                if (_overrideCamera != null) _overrideCamera.Current = false;
+                // Hand the screen camera back to first-person head-follow.
+                _headOutput?.ClearPositionOverride();
+                _headOutput?.ClearRotationOverride();
                 LumoraLogger.Log("[DesktopCameraController] First-person");
                 break;
 
@@ -246,7 +239,6 @@ public partial class DesktopCameraController : Node
                 _tpOrbitPitch = TpDefaultPitch;
                 _pendingTpMouse = Vector2.Zero;
                 state?.SetMouseLookSuppressed(true);
-                if (_overrideCamera != null) _overrideCamera.Current = true;
                 LumoraLogger.Log("[DesktopCameraController] Third-person (mouse=orbit, scroll=distance)");
                 break;
 
@@ -254,7 +246,6 @@ public partial class DesktopCameraController : Node
                 SeedFreeCamFromActiveCamera();
                 RefreshFreeCamLabel();
                 state?.SetFreeCamActive(true);
-                if (_overrideCamera != null) _overrideCamera.Current = true;
                 if (_freeCamIndicator != null) _freeCamIndicator.Visible = true;
                 LumoraLogger.Log("[DesktopCameraController] Free-cam (WASD+mouse, Shift=fast, Space/Ctrl=vertical)");
                 break;
@@ -265,7 +256,7 @@ public partial class DesktopCameraController : Node
 
     private void UpdateThirdPerson()
     {
-        if (_overrideCamera == null) return;
+        if (_headOutput == null) return;
         if (UserInputState.FocusedDesktopInputSuppressed)
         {
             _pendingTpMouse = Vector2.Zero;
@@ -286,7 +277,7 @@ public partial class DesktopCameraController : Node
         if (charBody != null && GodotObject.IsInstanceValid(charBody))
             charPos = charBody.GlobalPosition;
         else
-            charPos = _overrideCamera.GlobalPosition;
+            charPos = Lumora.Source.Godot.Bootstrap.XRModeManager.Instance?.CurrentCamera?.GlobalPosition ?? Vector3.Zero;
 
         Vector3 pivot = charPos + Vector3.Up * (TpPivotHeight + TpHeightOffset);
 
@@ -302,7 +293,8 @@ public partial class DesktopCameraController : Node
             ? Basis.LookingAt(lookDir, Vector3.Up).GetRotationQuaternion()
             : Quaternion.Identity;
 
-        _overrideCamera.GlobalTransform = new Transform3D(new Basis(camRot), camPos);
+        _headOutput.SetPositionOverride(camPos);
+        _headOutput.SetRotationOverride(camRot);
     }
 
     private float GetCharacterBodyYaw()
@@ -318,7 +310,7 @@ public partial class DesktopCameraController : Node
     private void SeedFreeCamFromActiveCamera()
     {
         var active = Lumora.Source.Godot.Bootstrap.XRModeManager.Instance?.CurrentCamera;
-        if (active != null && active != _overrideCamera)
+        if (active != null)
         {
             _freeCamPos   = active.GlobalPosition;
             var euler     = active.GlobalTransform.Basis.GetEuler();
@@ -336,7 +328,7 @@ public partial class DesktopCameraController : Node
 
     private void UpdateFreeCam(float delta)
     {
-        if (_overrideCamera == null) return;
+        if (_headOutput == null) return;
         if (DashboardToggle.IsDashboardVisible) return;
         if (UserInputState.FocusedDesktopInputSuppressed)
         {
@@ -371,7 +363,8 @@ public partial class DesktopCameraController : Node
         if (move.LengthSquared() > 0.001f)
             _freeCamPos += (camRot * move.Normalized()) * speed * delta;
 
-        _overrideCamera.GlobalTransform = new Transform3D(new Basis(camRot), _freeCamPos);
+        _headOutput.SetPositionOverride(_freeCamPos);
+        _headOutput.SetRotationOverride(camRot);
 
         // Move the visual indicator to the freecam position
         if (_freeCamIndicator != null && _freeCamIndicator.IsInsideTree())

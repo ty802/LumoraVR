@@ -163,9 +163,9 @@ public partial class DesktopInput : Node3D
 
     private void UpdateCamera()
     {
-        if (UserInputState.FocusedFreeCamActive)
-            return;
-
+        // Track the single rendering camera in every mode. Third-person/free-cam now move THIS camera
+        // (via HeadOutput's pose override) instead of swapping in a separate camera, so the dashboard,
+        // cursor ray and laser - which all key off this pose - follow the view in all modes. - xlinka
         _camera = Lumora.Source.Godot.Bootstrap.XRModeManager.Instance?.CurrentCamera ?? _camera;
 
         if (_camera != null)

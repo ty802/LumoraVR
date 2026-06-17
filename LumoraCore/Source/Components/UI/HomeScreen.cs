@@ -26,6 +26,7 @@ public sealed class HomeScreen : WidgetScreen
 
     private string _template = "Empty";
     private SessionVisibility _visibility = SessionVisibility.Private;
+    private WorldMode _mode = WorldMode.Builder;
     private int _maxUsers = 16;
     private Text? _status;
     private Slot? _createOverlay;
@@ -184,6 +185,13 @@ public sealed class HomeScreen : WidgetScreen
                 () => _visibility = captured);
         }
 
+        Header(_createOverlay, "Mode");
+        foreach (WorldMode mode in Enum.GetValues<WorldMode>())
+        {
+            var captured = mode;
+            RadioRow(_createOverlay, "home-mode", PrettyMode(mode), mode == _mode, () => _mode = captured);
+        }
+
         ButtonRow(_createOverlay, "Create & Host", CreateFill, OnCreate);
         AddInfoRow(_createOverlay, "Pick a template, then create & host.", TextDim, out var statusText);
         _status = statusText;
@@ -209,9 +217,15 @@ public sealed class HomeScreen : WidgetScreen
         }
 
         var name = PrettyTemplate(_template);
+        // Clamp to the modes this world allows (a published world may be e.g. social-only).
+        var mode = WorldTemplates.DefaultMode(_template);
+        foreach (var allowed in WorldTemplates.AllowedModes(_template))
+        {
+            if (allowed == _mode) { mode = _mode; break; }
+        }
         SetStatus($"Hosting '{name}'…");
-        var world = manager.HostNewWorld(_template, name, _visibility, _maxUsers);
-        SetStatus(world != null ? $"Now hosting '{name}'." : "Failed to host world.");
+        var world = manager.HostNewWorld(_template, name, _visibility, _maxUsers, mode);
+        SetStatus(world != null ? $"Now hosting '{name}' ({PrettyMode(mode)})." : "Failed to host world.");
 
         // Click Host -> the menu closes (you drop into the new world).
         _createOpen = false;
@@ -240,6 +254,14 @@ public sealed class HomeScreen : WidgetScreen
         SessionVisibility.Contacts => "Contacts",
         SessionVisibility.Public => "Anyone",
         _ => visibility.ToString(),
+    };
+
+    private static string PrettyMode(WorldMode mode) => mode switch
+    {
+        WorldMode.Builder => "Builder (full editing)",
+        WorldMode.Social => "Social (no editing)",
+        WorldMode.Event => "Event (view only)",
+        _ => mode.ToString(),
     };
 
     // ROW COMPOSITES (used inside the overlay; build on the shared WidgetScreen helpers)

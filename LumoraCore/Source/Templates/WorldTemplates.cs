@@ -42,6 +42,12 @@ public static class WorldTemplates
         GetTemplate(templateName)?.Invoke(world);
     }
 
+    /// <summary>Modes the given template may be hosted in (e.g. to constrain a host-time picker).</summary>
+    public static IReadOnlyList<WorldMode> AllowedModes(string templateName) => GetDefinition(templateName).AllowedModes;
+
+    /// <summary>Default mode for the given template.</summary>
+    public static WorldMode DefaultMode(string templateName) => GetDefinition(templateName).DefaultMode;
+
     private static WorldTemplateDefinition GetDefinition(string name)
     {
         name ??= string.Empty;

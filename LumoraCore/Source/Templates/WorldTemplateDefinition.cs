@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Logging;
 
@@ -21,6 +22,21 @@ public abstract class WorldTemplateDefinition
     {
         TemplateName = templateName ?? throw new ArgumentNullException(nameof(templateName));
     }
+
+    /// <summary>
+    /// Modes this template may be hosted in. Default is all of them, so a built-in space (e.g. a grid)
+    /// can be opened as Builder, Social, or Event at the host's choice. A purpose-built / published
+    /// world can override this to lock itself to e.g. Social only.
+    /// </summary>
+    public virtual IReadOnlyList<WorldMode> AllowedModes { get; } = new[]
+    {
+        WorldMode.Builder,
+        WorldMode.Social,
+        WorldMode.Event
+    };
+
+    /// <summary>Mode used when the host doesn't pick one explicitly.</summary>
+    public virtual WorldMode DefaultMode => WorldMode.Builder;
 
     /// <summary>
     /// Apply the template to the provided world instance.

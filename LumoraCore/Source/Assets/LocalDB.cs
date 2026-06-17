@@ -9,6 +9,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Lumora.Core.Logging;
+using Lumora.Core.Persistence;
 
 namespace Lumora.Core.Assets;
 
@@ -283,7 +284,9 @@ public class LocalDB : IDisposable
 
         try
         {
-            var json = await File.ReadAllTextAsync(recordsPath);
+            // Transparently handle both the encrypted store and a plain/legacy records.json.
+            var raw = await File.ReadAllBytesAsync(recordsPath);
+            var json = Encoding.UTF8.GetString(LocalEncryption.Decrypt(raw));
             var records = JsonSerializer.Deserialize<List<LocalAssetRecord>>(json);
             if (records == null) return;
 
@@ -314,7 +317,9 @@ public class LocalDB : IDisposable
                 snapshot = new List<LocalAssetRecord>(_assetRecords.Values);
 
             var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
-            await File.WriteAllTextAsync(recordsPath, json);
+            // The records store (asset list, original paths, per-asset keys) is encrypted at rest.
+            var bytes = LocalEncryption.Encrypt(Encoding.UTF8.GetBytes(json));
+            await File.WriteAllBytesAsync(recordsPath, bytes);
         }
         catch (Exception ex)
         {
@@ -341,5 +346,13 @@ public class LocalAssetRecord
     public string OriginalFileName { get; set; } = null!;
     public DateTime ImportedAt { get; set; }
     public long FileSize { get; set; }
+
+    /// <summary>
+    /// Per-asset AES key when the cache file is encrypted at rest (null = plain). Held in the encrypted
+    /// records store - the keystore for cache-file encryption (per-asset key held in the records DB).
+    /// Cache-file encryption itself is pending the asset read path going through a decrypt step.
+    /// </summary>
+    public byte[]? EncryptionKey { get; set; }
+
     public Dictionary<string, string> Metadata { get; set; } = new();
 }

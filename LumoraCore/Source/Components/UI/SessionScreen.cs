@@ -216,6 +216,11 @@ public sealed class SessionScreen : WidgetScreen
         }
 
         var config = world.Configuration;
+        if (config == null)
+        {
+            AddRow(page, "World settings are still syncing…");
+            return;
+        }
 
         // Make it unmistakable WHICH world these settings belong to (they are per-world).
         var titleRow = page.AddSlot("WorldTitle");
@@ -268,12 +273,12 @@ public sealed class SessionScreen : WidgetScreen
         // LEFT: identity, basics, world save options.
         var worldBody = AddSection(_leftColumn, "World");
         AddRow(worldBody, $"World Name: {world.WorldName?.Value ?? world.Name}");
-        SliderRow(worldBody, "Max Users", 1f, 64f, config.MaxUsers,
-            v => { config.MaxUsers = (int)MathF.Round(v); return config.MaxUsers.ToString(); });
-        ToggleRow(worldBody, "Mobile Friendly", config.MobileFriendly, v => config.MobileFriendly = v);
-        ToggleRow(worldBody, "Allow Joining", config.AllowJoin, v => config.AllowJoin = v);
-        ToggleRow(worldBody, "Public", config.IsPublic, v => config.IsPublic = v);
-        AddRow(worldBody, $"Description: {(string.IsNullOrEmpty(config.Description) ? "(none)" : config.Description)}");
+        SliderRow(worldBody, "Max Users", 1f, 64f, config.MaxUsers.Value,
+            v => { config.MaxUsers.Value = (int)MathF.Round(v); return config.MaxUsers.Value.ToString(); });
+        ToggleRow(worldBody, "Mobile Friendly", config.MobileFriendly.Value, v => config.MobileFriendly.Value = v);
+        ToggleRow(worldBody, "Allow Joining", config.AllowJoin.Value, v => config.AllowJoin.Value = v);
+        ToggleRow(worldBody, "Public", config.IsPublic.Value, v => config.IsPublic.Value = v);
+        AddRow(worldBody, $"Description: {(string.IsNullOrEmpty(config.Description.Value) ? "(none)" : config.Description.Value)}");
 
         var saveBody = AddSection(_leftColumn, "World Save Options");
         SaveButtonRow(saveBody, "Save Changes", SaveFill, () => SaveFocusedWorld(world));
@@ -285,25 +290,25 @@ public sealed class SessionScreen : WidgetScreen
         foreach (var level in Enum.GetValues<World.WorldAccessLevel>())
         {
             var captured = level;
-            RadioRow(accessBody, "join-access", PrettyAccess(level), config.AccessLevel == level,
-                () => config.AccessLevel = captured);
+            RadioRow(accessBody, "join-access", PrettyAccess(level), config.AccessLevel.Value == level,
+                () => config.AccessLevel.Value = captured);
         }
 
         var sessionBody = AddSection(_rightColumn, "Session");
-        ToggleRow(sessionBody, "Edit Mode", config.EditMode, v => config.EditMode = v);
-        ToggleRow(sessionBody, "Auto-Kick AFK", config.AutoKickAFK, v => config.AutoKickAFK = v);
-        SliderRow(sessionBody, "Max AFK (min)", 1f, 120f, config.MaxAFKMinutes,
-            v => { config.MaxAFKMinutes = (int)MathF.Round(v); return $"{config.MaxAFKMinutes} min"; });
-        ToggleRow(sessionBody, "Hide From Lists", config.HideFromSessionLists, v => config.HideFromSessionLists = v);
-        SliderRow(sessionBody, "Autosave (sec)", 0f, 600f, config.AutoSaveInterval,
+        ToggleRow(sessionBody, "Edit Mode", config.EditMode.Value, v => config.EditMode.Value = v);
+        ToggleRow(sessionBody, "Auto-Kick AFK", config.AutoKickAFK.Value, v => config.AutoKickAFK.Value = v);
+        SliderRow(sessionBody, "Max AFK (min)", 1f, 120f, config.MaxAFKMinutes.Value,
+            v => { config.MaxAFKMinutes.Value = (int)MathF.Round(v); return $"{config.MaxAFKMinutes.Value} min"; });
+        ToggleRow(sessionBody, "Hide From Lists", config.HideFromSessionLists.Value, v => config.HideFromSessionLists.Value = v);
+        SliderRow(sessionBody, "Autosave (sec)", 0f, 600f, config.AutoSaveInterval.Value,
             v =>
             {
-                config.AutoSaveInterval = MathF.Round(v / 30f) * 30f;
-                return config.AutoSaveInterval <= 0f ? "Off" : $"{config.AutoSaveInterval:0}s";
+                config.AutoSaveInterval.Value = MathF.Round(v / 30f) * 30f;
+                return config.AutoSaveInterval.Value <= 0f ? "Off" : $"{config.AutoSaveInterval.Value:0}s";
             });
-        ToggleRow(sessionBody, "Cleanup Assets", config.CleanupUnusedAssets, v => config.CleanupUnusedAssets = v);
-        SliderRow(sessionBody, "Cleanup Every (s)", 30f, 1800f, config.AssetCleanupInterval,
-            v => { config.AssetCleanupInterval = MathF.Round(v / 30f) * 30f; return $"{config.AssetCleanupInterval:0}s"; });
+        ToggleRow(sessionBody, "Cleanup Assets", config.CleanupUnusedAssets.Value, v => config.CleanupUnusedAssets.Value = v);
+        SliderRow(sessionBody, "Cleanup Every (s)", 30f, 1800f, config.AssetCleanupInterval.Value,
+            v => { config.AssetCleanupInterval.Value = MathF.Round(v / 30f) * 30f; return $"{config.AssetCleanupInterval.Value:0}s"; });
 
         RecomputeContentHeight();
         // Size/position the scrollbar once layout has computed the rects.
@@ -565,7 +570,8 @@ public sealed class SessionScreen : WidgetScreen
             return;
         var directory = System.IO.Path.GetDirectoryName(Lumora.Core.Engine.LocalHomeSavePath) ?? ".";
         var name = $"home_{DateTime.Now:yyyyMMdd_HHmmss}.lworld";
-        WorldStorage.SaveToFile(world, System.IO.Path.Combine(directory, name));
+        // Saved worlds (unlike the local home) are encrypted at rest.
+        WorldStorage.SaveToFile(world, System.IO.Path.Combine(directory, name), encrypt: true);
     }
 
     // USERS PAGE — live list of session users; the host (authority) can change roles and kick.
@@ -635,7 +641,7 @@ public sealed class SessionScreen : WidgetScreen
         {
             AddInlineButton(row, role.Name, TabFill, () =>
             {
-                permissions.SetUserRole(user, NextAssignableRole(permissions, role));
+                permissions.SetUserRole(user, NextAssignableRole(WorldModePermissions.AssignableRoles(permissions, world.Mode), role));
                 RebuildUsersList();
             });
             AddInlineButton(row, user.IsMuted.Value ? "Muted" : "Mute", user.IsMuted.Value ? AccentColor : TabFill, () =>
@@ -670,9 +676,8 @@ public sealed class SessionScreen : WidgetScreen
         }
     }
 
-    private static DataModelPermissionRole NextAssignableRole(DataModelPermissionController permissions, DataModelPermissionRole current)
+    private static DataModelPermissionRole NextAssignableRole(System.Collections.Generic.IReadOnlyList<DataModelPermissionRole> roles, DataModelPermissionRole current)
     {
-        var roles = permissions.AssignableRoles;
         int index = -1;
         for (int i = 0; i < roles.Count; i++)
         {
@@ -731,6 +736,11 @@ public sealed class SessionScreen : WidgetScreen
             ? $"{WorldDisplayName(world)} — default role per user class (host-authoritative, denied at source)."
             : $"{WorldDisplayName(world)} — permissions are controlled by the host.");
 
+        // In Social/Event worlds the authored world is frozen for everyone (incl. host); only the
+        // Moderator / User / Spectator roles apply, and editing the world is locked regardless of role.
+        if (world.Mode != WorldMode.Builder)
+            AddRow(page, $"This is a {world.Mode} world — world editing is locked; roles cover moderation + your own items only.");
+
         foreach (DataModelAccessClass accessClass in Enum.GetValues<DataModelAccessClass>())
             DefaultRoleRow(page, world, permissions, accessClass);
 
@@ -759,7 +769,7 @@ public sealed class SessionScreen : WidgetScreen
         AddRowLabel(b, $"Default {accessClass}", 15f, TextPrimary, TextHorizontalAlignment.Left);
 
         var current = permissions.GetDefaultRole(accessClass);
-        foreach (var role in permissions.AssignableRoles)
+        foreach (var role in WorldModePermissions.AssignableRoles(permissions, world.Mode))
         {
             var captured = role;
             AddRoleButton(row, role.Name, role == current, world.IsAuthority, () =>

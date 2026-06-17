@@ -301,7 +301,7 @@ public class SessionConnectionManager : IDisposable
         if (!World.IsAuthority)
             return "Only the authority can approve joins";
 
-        if (!World.Configuration.AllowJoin)
+        if (!(World.Configuration?.AllowJoin.Value ?? true))
             return "This world is not accepting joins";
 
         var maxUsers = GetEffectiveMaxUsers();
@@ -332,7 +332,7 @@ public class SessionConnectionManager : IDisposable
     private int GetEffectiveMaxUsers()
     {
         var metadataMax = Session?.Metadata?.MaxUsers ?? 0;
-        var configMax = World?.Configuration?.MaxUsers ?? 0;
+        var configMax = World?.Configuration?.MaxUsers.Value ?? 0;
         var allocatorMax = World?.RefIDAllocator?.MaxUserCount ?? 1;
         var requestedMax = metadataMax > 0 ? metadataMax : configMax;
         return global::System.Math.Clamp(requestedMax > 0 ? requestedMax : allocatorMax, 1, allocatorMax);

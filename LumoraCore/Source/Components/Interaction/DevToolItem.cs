@@ -41,11 +41,23 @@ public sealed class DevToolItem : ToolItem
     public override void OnStart()
     {
         base.OnStart();
+        // Tag as a developer/editing tool so it's identifiable and excluded from social spaces.
+        if (Slot != null && string.IsNullOrEmpty(Slot.Tag.Value))
+            Slot.Tag.Value = "Developer";
         EnsureVisual();
     }
 
+    // Editing is disabled in Social/Event worlds. This is the UX gate (don't place dead gizmos); the
+    // hard lock is the host-authoritative permission floor, which denies the edits regardless.
+    private bool EditingDisabled => World != null && !World.AllowsWorldEditing;
+
     public override bool OnPrimaryPress()
     {
+        if (EditingDisabled)
+        {
+            return false;
+        }
+
         var laser = ActiveTool?.Laser;
         var hitSlot = laser?.CurrentHitSlot;
         if (laser == null || hitSlot == null)
@@ -93,6 +105,11 @@ public sealed class DevToolItem : ToolItem
 
     public override bool OnSecondaryPress()
     {
+        if (EditingDisabled)
+        {
+            return false;
+        }
+
         var laser = ActiveTool?.Laser;
         var target = ResolveSelectableSlot(laser?.CurrentHitSlot);
         if (target == null)

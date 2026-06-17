@@ -191,6 +191,14 @@ public sealed class DataModelPermissionController
     public bool Enabled { get; set; } = true;
     public bool LogDeniedMutations { get; set; } = true;
 
+    /// <summary>
+    /// Social/Event lockdown. When set, the authored world is frozen for EVERYONE (including the host
+    /// and admins): only a user's OWN runtime objects (avatar, spawned items) may be mutated. World
+    /// content is created under the authority RefID, so no user "owns" it and all editing of it is
+    /// denied - there's no role that escapes this and no live toggle. Set by <see cref="WorldModePermissions"/>.
+    /// </summary>
+    public bool SocialLock { get; set; }
+
     public DataModelPermissionController(World world)
     {
         _world = world ?? throw new ArgumentNullException(nameof(world));
@@ -207,7 +215,9 @@ public sealed class DataModelPermissionController
         AdminRole = new DataModelPermissionRole("Admin", all, all);
         BuilderRole = new DataModelPermissionRole("Builder", all, build);
         ModeratorRole = new DataModelPermissionRole("Moderator", all, moderate);
-        GuestRole = new DataModelPermissionRole("Guest", all, view);
+        // "User": full control of your OWN objects, view-only on others'. Shown as the normal-member
+        // role (the social/event role set is Moderator / User / Spectator).
+        GuestRole = new DataModelPermissionRole("User", all, view);
         SpectatorRole = new DataModelPermissionRole("Spectator", view, view);
         AssignableRoles = new[] { AdminRole, BuilderRole, ModeratorRole, GuestRole, SpectatorRole };
 
@@ -353,6 +363,15 @@ public sealed class DataModelPermissionController
         var role = GetRole(actor);
         bool ownsTarget = OwnsTarget(actor, request.Target) ||
                           OwnsTarget(actor, request.Parent);
+
+        // Social/Event floor: the authored world is frozen for EVERYONE incl. the host. Only a user's
+        // own runtime objects may be mutated; world content (authority-owned) is foreign to all and
+        // denied regardless of role. This is the unbypassable lock - no role escapes it, no live toggle.
+        if (SocialLock && !ownsTarget && (request.Action & DataModelPermissionAction.Mutation) != 0)
+        {
+            reason = "editing is disabled in this world (social)";
+            return Deny(request, reason);
+        }
 
         if (role.Allows(request.Action, ownsTarget))
         {

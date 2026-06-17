@@ -8,8 +8,10 @@ using Lumora.Core.Math;
 
 namespace Helio.UI.Layout;
 
-// fixed-column grid. cell size derived from layout rect / column count.
-// TODO - xlinka: explicit CellSize + auto-column-count + per-child priority once metrics solver lands
+// Grid layout. Two modes:
+//  - Fixed column count (default): cell size = layout rect / column count (cells stretch to fill width).
+//  - Fixed cell size (set CellSize.x > 0): cells are a fixed size and the column count is derived from
+//    the available width, wrapping top-left - the right choice for card grids that shouldn't stretch.
 public class GridLayout : LayoutController
 {
     public readonly Sync<int> Columns;
@@ -19,12 +21,16 @@ public class GridLayout : LayoutController
     public readonly Sync<float> PaddingTop;
     public readonly Sync<float> PaddingBottom;
 
+    /// <summary>Fixed cell size in canvas units. x &gt; 0 switches to fixed-cell mode (y &lt;= 0 = square).</summary>
+    public readonly Sync<float2> CellSize;
+
     private int _columns;
     private float _spacing;
     private float _padLeft;
     private float _padRight;
     private float _padTop;
     private float _padBottom;
+    private float2 _cellSize;
 
     public GridLayout()
     {
@@ -34,6 +40,7 @@ public class GridLayout : LayoutController
         PaddingRight = new Sync<float>(this, 0f);
         PaddingTop = new Sync<float>(this, 0f);
         PaddingBottom = new Sync<float>(this, 0f);
+        CellSize = new Sync<float2>(this, float2.Zero);
     }
 
     protected override void FlagChanges(RectTransform rect)
@@ -49,6 +56,7 @@ public class GridLayout : LayoutController
         _padRight = PaddingRight.Value;
         _padTop = PaddingTop.Value;
         _padBottom = PaddingBottom.Value;
+        _cellSize = CellSize.Value;
     }
 
     public override void ArrangeChildren(IReadOnlyList<RectTransform> children)
@@ -56,28 +64,49 @@ public class GridLayout : LayoutController
         if (RectTransform == null || children.Count == 0) return;
 
         var rect = RectTransform.LocalComputeRect;
-        int cols = _columns;
-        int rows = (children.Count + cols - 1) / cols;
+        float xStart = rect.xMin + _padLeft;
+        float yTop = rect.yMax - _padTop;
 
-        float innerWidth = rect.width - _padLeft - _padRight - _spacing * (cols - 1);
+        // Fixed-cell mode: cells keep their size and wrap based on available width (card grid).
+        if (_cellSize.x > 0f)
+        {
+            float cellW = _cellSize.x;
+            float cellH = _cellSize.y > 0f ? _cellSize.y : cellW;
+            float available = rect.width - _padLeft - _padRight;
+            int cols = Math.Max(1, (int)((available + _spacing) / (cellW + _spacing)));
+
+            for (int i = 0; i < children.Count; i++)
+            {
+                if (LayoutSizing.IsIgnored(children[i])) continue;
+                int col = i % cols;
+                int row = i / cols;
+                float x = xStart + col * (cellW + _spacing);
+                float yBottom = yTop - row * (cellH + _spacing) - cellH;
+                children[i].SetLocalComputeRect(new Rect(x, yBottom, cellW, cellH));
+            }
+            return;
+        }
+
+        // Fixed-column mode: cells divide the rect evenly.
+        int columns = _columns;
+        int rows = (children.Count + columns - 1) / columns;
+
+        float innerWidth = rect.width - _padLeft - _padRight - _spacing * (columns - 1);
         float innerHeight = rect.height - _padTop - _padBottom - _spacing * (rows - 1);
         if (innerWidth < 0f) innerWidth = 0f;
         if (innerHeight < 0f) innerHeight = 0f;
 
-        float cellW = innerWidth / cols;
-        float cellH = innerHeight / rows;
-
-        float xStart = rect.xMin + _padLeft;
-        float yTop = rect.yMax - _padTop;
+        float colW = innerWidth / columns;
+        float rowH = innerHeight / rows;
 
         for (int i = 0; i < children.Count; i++)
         {
             if (LayoutSizing.IsIgnored(children[i])) continue;
-            int col = i % cols;
-            int row = i / cols;
-            float x = xStart + col * (cellW + _spacing);
-            float yBottom = yTop - row * (cellH + _spacing) - cellH;
-            children[i].SetLocalComputeRect(new Rect(x, yBottom, cellW, cellH));
+            int col = i % columns;
+            int row = i / columns;
+            float x = xStart + col * (colW + _spacing);
+            float yBottom = yTop - row * (rowH + _spacing) - rowH;
+            children[i].SetLocalComputeRect(new Rect(x, yBottom, colW, rowH));
         }
     }
 }

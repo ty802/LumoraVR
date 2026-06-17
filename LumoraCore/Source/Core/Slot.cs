@@ -2309,18 +2309,24 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>Save this slot's subtree to a file in the binary data-tree format.</summary>
+    /// <summary>
+    /// Save this slot's subtree to a file in the binary data-tree format. Set <paramref name="encrypt"/>
+    /// to store it AES-GCM encrypted at rest (inventory items / saved objects).
+    /// </summary>
     public void SaveObjectToFile(string path, DependencyHandling dependencyHandling = DependencyHandling.CollectAssets,
-                                 bool saveNonPersistent = false)
+                                 bool saveNonPersistent = false, bool encrypt = false)
     {
         var graph = SaveObject(dependencyHandling, saveNonPersistent);
-        File.WriteAllBytes(path, graph.SaveToBytes());
+        var bytes = graph.SaveToBytes();
+        if (encrypt)
+            bytes = LocalEncryption.Encrypt(bytes);
+        File.WriteAllBytes(path, bytes);
     }
 
-    /// <summary>Load a graph from a file into this slot.</summary>
+    /// <summary>Load a graph from a file into this slot. Transparently handles encrypted + plain files.</summary>
     public void LoadObjectFromFile(string path, Slot? assetsRoot = null, ReferenceTranslator? refTranslator = null)
     {
-        if (DataTreeConverter.LoadFromBytes(File.ReadAllBytes(path)) is DataTreeDictionary dictionary)
+        if (DataTreeConverter.LoadFromBytes(LocalEncryption.Decrypt(File.ReadAllBytes(path))) is DataTreeDictionary dictionary)
             LoadObject(dictionary, assetsRoot, refTranslator);
         else
             throw new InvalidDataException("File does not contain a saved object graph.");
@@ -2333,7 +2339,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     public async Task LoadObjectAsync(string path, Slot? assetsRoot = null, ReferenceTranslator? refTranslator = null)
     {
         var bytes = await File.ReadAllBytesAsync(path).ConfigureAwait(false);
-        var node = DataTreeConverter.LoadFromBytes(bytes);
+        var node = DataTreeConverter.LoadFromBytes(LocalEncryption.Decrypt(bytes));
         var completion = new TaskCompletionSource();
         RunSynchronously(() =>
         {

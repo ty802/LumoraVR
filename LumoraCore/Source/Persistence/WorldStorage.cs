@@ -19,8 +19,12 @@ public static class WorldStorage
     public static void Deserialize(World world, byte[] bytes)
         => world.LoadWorld((DataTreeDictionary)DataTreeConverter.LoadFromBytes(bytes));
 
-    /// <summary>Write the world to <paramref name="path"/>, creating directories as needed.</summary>
-    public static bool SaveToFile(World world, string path)
+    /// <summary>
+    /// Write the world to <paramref name="path"/>, creating directories as needed. When
+    /// <paramref name="encrypt"/> is set the blob is AES-GCM encrypted at rest (saved worlds /
+    /// inventory). The local home is left plain so it loads at startup before anything else.
+    /// </summary>
+    public static bool SaveToFile(World world, string path, bool encrypt = false)
     {
         try
         {
@@ -28,9 +32,13 @@ public static class WorldStorage
             if (!string.IsNullOrEmpty(directory))
                 Directory.CreateDirectory(directory);
 
+            var bytes = Serialize(world);
+            if (encrypt)
+                bytes = LocalEncryption.Encrypt(bytes);
+
             // Write to a temp sibling and move, so a crash mid-write can't corrupt the save.
             var temp = path + ".tmp";
-            File.WriteAllBytes(temp, Serialize(world));
+            File.WriteAllBytes(temp, bytes);
             File.Move(temp, path, overwrite: true);
             return true;
         }
@@ -48,7 +56,8 @@ public static class WorldStorage
         {
             if (!File.Exists(path))
                 return false;
-            Deserialize(world, File.ReadAllBytes(path));
+            // Transparently handle both encrypted and plain (local-home / legacy) saves.
+            Deserialize(world, LocalEncryption.Decrypt(File.ReadAllBytes(path)));
             return true;
         }
         catch (Exception ex)

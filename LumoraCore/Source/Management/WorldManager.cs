@@ -173,17 +173,25 @@ public class WorldManager : IDisposable
         string templateName,
         SessionVisibility visibility,
         int maxUsers,
-        Action<World> init = null!)
+        Action<World> init = null!,
+        WorldMode mode = WorldMode.Builder)
     {
         try
         {
-            LumoraLogger.Log($"WorldManager: Starting session '{name}' on port {port} with template '{templateName}', visibility {visibility}, max {maxUsers}");
+            LumoraLogger.Log($"WorldManager: Starting session '{name}' on port {port} with template '{templateName}', visibility {visibility}, max {maxUsers}, mode {mode}");
 
             // Use World static factory with template application
             var world = World.StartSession(_engine, name, port, hostUserName, visibility, maxUsers, (w) =>
             {
                 WorldTemplates.ApplyTemplate(w, templateName);
                 init?.Invoke(w);
+                // A NEW world gets the host-picked mode; a world LOADED by init (e.g. a saved world)
+                // already has its WorldSettings (with its own mode) - don't create a second one or
+                // clobber the saved mode. Set before StartRunning so the permission preset applies.
+                if (w.RootSlot?.GetComponent<WorldSettings>() == null)
+                    w.Mode = mode;
+                // Advertise the world's mode in the session listing so the browser can tag it.
+                WorldModePermissions.StampModeTag(w.Session?.Metadata?.Tags, w.Mode);
             });
 
             // Add to managed worlds
@@ -203,10 +211,29 @@ public class WorldManager : IDisposable
     /// Create and host a new world from a template and focus it. Picks a free local UDP port and
     /// hosts under the machine name. Returns the new world, or null on failure.
     /// </summary>
-    public World HostNewWorld(string templateName, string worldName, SessionVisibility visibility, int maxUsers)
+    public World HostNewWorld(string templateName, string worldName, SessionVisibility visibility, int maxUsers, WorldMode mode = WorldMode.Builder)
     {
         ushort port = (ushort)(SimpleIpHelpers.GetAvailablePortUdp(10) ?? 6000);
-        var world = StartSession(worldName, port, Environment.MachineName, templateName, visibility, System.Math.Max(1, maxUsers), null!);
+        var world = StartSession(worldName, port, Environment.MachineName, templateName, visibility, System.Math.Max(1, maxUsers), null!, mode);
+        if (world != null)
+            SwitchToWorld(world);
+        return world!;
+    }
+
+    /// <summary>
+    /// Host a previously-saved world file and focus it. Builds it into an Empty world (so a template's
+    /// default content isn't duplicated) and loads the save; the world's mode comes from the file.
+    /// Returns the new world, or null on failure.
+    /// </summary>
+    public World OpenSavedWorld(string path, string worldName = null!)
+    {
+        if (string.IsNullOrEmpty(path) || !System.IO.File.Exists(path))
+            return null!;
+
+        var name = string.IsNullOrEmpty(worldName) ? System.IO.Path.GetFileNameWithoutExtension(path) : worldName;
+        ushort port = (ushort)(SimpleIpHelpers.GetAvailablePortUdp(10) ?? 6000);
+        var world = StartSession(name, port, Environment.MachineName, "Empty", SessionVisibility.Private,
+            16, w => Persistence.WorldStorage.LoadFromFile(w, path));
         if (world != null)
             SwitchToWorld(world);
         return world!;

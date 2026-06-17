@@ -776,6 +776,11 @@ public partial class LumoraEngineRunner : Node
 				LumoraLogger.Debug("PhaseEngineCoreInit: Creating Engine instance...");
 			}
 
+			// Seal the local-encryption master key with the OS keystore (DPAPI on Windows; derived
+			// fallback on Linux/Android until their native keystores are wired). Must be set before
+			// anything touches the vault (engine init loads the local home / asset DB).
+			Lumora.Core.Persistence.LocalEncryption.Sealer = new PlatformSecretSealer();
+
 			// Create Engine with configuration
 			_engine = new Lumora.Core.Engine
 			{

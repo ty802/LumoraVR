@@ -41,7 +41,8 @@ public static class Inventory
         var path = Path.Combine(Folder, $"{label}_{DateTime.Now:yyyyMMdd_HHmmss}.litem");
         try
         {
-            slot.SaveObjectToFile(path, Persistence.DependencyHandling.CollectAssets);
+            // Inventory items are encrypted at rest (worlds/items shouldn't sit in plaintext on disk).
+            slot.SaveObjectToFile(path, Persistence.DependencyHandling.CollectAssets, encrypt: true);
             return path;
         }
         catch (Exception ex)

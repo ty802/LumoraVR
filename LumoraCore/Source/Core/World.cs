@@ -167,101 +167,6 @@ public class World
 		Anyone,
 	}
 
-	/// <summary>
-	/// World configuration settings.
-	/// </summary>
-	public class WorldConfiguration
-	{
-		/// <summary>Maximum users allowed in this world.</summary>
-		public int MaxUsers { get; set; } = 32;
-
-		/// <summary>Whether to allow new users to join.</summary>
-		public bool AllowJoin { get; set; } = true;
-
-		/// <summary>Whether the world is publicly visible.</summary>
-		public bool IsPublic { get; set; } = false;
-
-		/// <summary>Who is allowed to join this world.</summary>
-		public WorldAccessLevel AccessLevel { get; set; } = WorldAccessLevel.Private;
-
-		/// <summary>Hint that the world is built to run well on mobile/standalone headsets.</summary>
-		public bool MobileFriendly { get; set; } = false;
-
-		/// <summary>When true, the world is in edit mode (relaxes some runtime gates for the host).</summary>
-		public bool EditMode { get; set; } = false;
-
-		/// <summary>Hide this session from public session listings.</summary>
-		public bool HideFromSessionLists { get; set; } = false;
-
-		/// <summary>Automatically kick users that have been AFK for too long.</summary>
-		public bool AutoKickAFK { get; set; } = false;
-
-		/// <summary>Minutes of inactivity before an AFK user is kicked (when enabled).</summary>
-		public int MaxAFKMinutes { get; set; } = 30;
-
-		/// <summary>Periodically release assets no longer referenced by the world.</summary>
-		public bool CleanupUnusedAssets { get; set; } = true;
-
-		/// <summary>Seconds between unused-asset cleanup passes.</summary>
-		public float AssetCleanupInterval { get; set; } = 300f;
-
-		/// <summary>World description.</summary>
-		public string Description { get; set; } = "";
-
-		/// <summary>World tags for discovery.</summary>
-		public List<string> Tags { get; } = new List<string>();
-
-		/// <summary>Whether to persist world state.</summary>
-		public bool EnablePersistence { get; set; } = false;
-
-		/// <summary>Auto-save interval in seconds (0 = disabled).</summary>
-		public float AutoSaveInterval { get; set; } = 0;
-
-		/// <summary>Maximum world size in MB.</summary>
-		public int MaxWorldSizeMB { get; set; } = 512;
-
-		/// <summary>Serialize these settings so they persist with the world save.</summary>
-		public Persistence.DataTreeDictionary Save()
-		{
-			var data = new Persistence.DataTreeDictionary();
-			data.Add("MaxUsers", MaxUsers);
-			data.Add("AllowJoin", AllowJoin);
-			data.Add("IsPublic", IsPublic);
-			data.Add("AccessLevel", (int)AccessLevel);
-			data.Add("MobileFriendly", MobileFriendly);
-			data.Add("EditMode", EditMode);
-			data.Add("HideFromSessionLists", HideFromSessionLists);
-			data.Add("AutoKickAFK", AutoKickAFK);
-			data.Add("MaxAFKMinutes", MaxAFKMinutes);
-			data.Add("CleanupUnusedAssets", CleanupUnusedAssets);
-			data.Add("AssetCleanupInterval", AssetCleanupInterval);
-			data.Add("AutoSaveInterval", AutoSaveInterval);
-			data.Add("MaxWorldSizeMB", MaxWorldSizeMB);
-			data.Add("EnablePersistence", EnablePersistence);
-			data.Add("Description", Description ?? "");
-			return data;
-		}
-
-		/// <summary>Restore settings from a previously-saved world.</summary>
-		public void Load(Persistence.DataTreeDictionary data)
-		{
-			MaxUsers = data.ExtractOrDefault("MaxUsers", MaxUsers);
-			AllowJoin = data.ExtractOrDefault("AllowJoin", AllowJoin);
-			IsPublic = data.ExtractOrDefault("IsPublic", IsPublic);
-			AccessLevel = (WorldAccessLevel)data.ExtractOrDefault("AccessLevel", (int)AccessLevel);
-			MobileFriendly = data.ExtractOrDefault("MobileFriendly", MobileFriendly);
-			EditMode = data.ExtractOrDefault("EditMode", EditMode);
-			HideFromSessionLists = data.ExtractOrDefault("HideFromSessionLists", HideFromSessionLists);
-			AutoKickAFK = data.ExtractOrDefault("AutoKickAFK", AutoKickAFK);
-			MaxAFKMinutes = data.ExtractOrDefault("MaxAFKMinutes", MaxAFKMinutes);
-			CleanupUnusedAssets = data.ExtractOrDefault("CleanupUnusedAssets", CleanupUnusedAssets);
-			AssetCleanupInterval = data.ExtractOrDefault("AssetCleanupInterval", AssetCleanupInterval);
-			AutoSaveInterval = data.ExtractOrDefault("AutoSaveInterval", AutoSaveInterval);
-			MaxWorldSizeMB = data.ExtractOrDefault("MaxWorldSizeMB", MaxWorldSizeMB);
-			EnablePersistence = data.ExtractOrDefault("EnablePersistence", EnablePersistence);
-			Description = data.ExtractOrDefault("Description", Description ?? "");
-		}
-	}
 
 	private readonly HashSet<IWorldElement> _dirtyElements = new();
 	private readonly Dictionary<string, List<Slot>> _slotsByTag = new();
@@ -286,7 +191,6 @@ public class World
 	private Queue<Action> _synchronousActions = new Queue<Action>();
 	private object _syncLock = new object();
 	private readonly WorldMetrics _metrics = new WorldMetrics();
-	private readonly WorldConfiguration _configuration = new WorldConfiguration();
 	private readonly DataModelPermissionController _dataModelPermissions;
 
 	// Static global hook type registry (shared across all worlds)
@@ -325,6 +229,40 @@ public class World
 	/// Current state of the World.
 	/// </summary>
 	public WorldState State => _state;
+
+	/// <summary>
+	/// Edit mode of this world (Builder / Social / Event). Set at host time from the world's allowed
+	/// modes and applied to the permission gate when the world starts running. Not a live toggle - the
+	/// Social/Event lock is enforced host-authoritatively and cannot be turned off in-session.
+	/// </summary>
+	public WorldMode Mode
+	{
+		get => Configuration?.Mode?.Value ?? WorldMode.Builder;
+		set
+		{
+			// Baked at host time, not a live toggle. Once the world is running the mode is fixed for
+			// the session - re-host (or load a differently-moded world) to change it.
+			if (_state == WorldState.Running)
+			{
+				if (value != Mode)
+					LumoraLogger.Warn($"World.Mode is baked for the session and can't change live (ignored {value}).");
+				return;
+			}
+			var c = Configuration;
+			if (c != null)
+				c.Mode.Value = value;
+		}
+	}
+
+	/// <summary>
+	/// Whether the authored world can be edited here (build tools, dev tools, inspectors, gizmos).
+	/// False in Social/Event worlds. This is a UX/availability hint - the actual lock is the
+	/// host-authoritative <see cref="DataModelPermissionController.SocialLock"/> gate.
+	/// </summary>
+	public bool AllowsWorldEditing => Mode == WorldMode.Builder;
+
+	/// <summary>Whether users may spawn their own items here (true except in Event worlds).</summary>
+	public bool AllowsItemSpawning => Mode != WorldMode.Event;
 
 	/// <summary>
 	/// Detailed initialization state for the World.
@@ -509,9 +447,23 @@ public class World
 	public WorldMetrics Metrics => _metrics;
 
 	/// <summary>
-	/// World configuration settings.
+	/// World configuration settings, as a synced component on the root slot (replicates to clients +
+	/// persists with the world tree). On the authority it's created on first access; on a client it's
+	/// null until state-synced - callers that may run client-side should null-check.
 	/// </summary>
-	public WorldConfiguration Configuration => _configuration;
+	public WorldSettings Configuration
+	{
+		get
+		{
+			var root = RootSlot;
+			if (root == null)
+				return null!;
+			var settings = root.GetComponent<WorldSettings>();
+			if (settings == null && IsAuthority)
+				settings = root.AttachComponent<WorldSettings>();
+			return settings!;
+		}
+	}
 
 	/// <summary>
 	/// Hard permission gate for datamodel fields, collections, and replication.
@@ -542,7 +494,8 @@ public class World
 		control.StoreTypeVersions(typeVersions);
 		dictionary.Add("TypeVersions", typeVersions);
 
-		dictionary.Add("Config", _configuration.Save());
+		// World settings persist as the WorldSettings component on the root slot (part of rootNode),
+		// so there's no separate "Config" blob.
 		dictionary.Add("Root", rootNode);
 		return dictionary;
 	}
@@ -561,11 +514,14 @@ public class World
 			if (dictionary.ContainsKey("Name"))
 				WorldName.Value = dictionary.ExtractOrDefault("Name", WorldName.Value);
 
-			if (dictionary.TryGetDictionary("Config") is { } config)
-				_configuration.Load(config);
-
 			if (dictionary.TryGetNode("Root") is { } rootNode)
 				RootSlot.Load(rootNode, control);
+
+			// The WorldSettings component (with the persisted Mode) is now loaded under the root. If
+			// we loaded into an already-running authority world, re-apply the mode's permission preset
+			// (otherwise StartRunning applies it).
+			if (_state == WorldState.Running && IsAuthority)
+				WorldModePermissions.Apply(this, Mode);
 		}
 		finally
 		{
@@ -692,9 +648,9 @@ public class World
 		// Initialize world
 		world.Initialize();
 
-		world._configuration.MaxUsers = global::System.Math.Max(1, maxUsers);
-		world._configuration.AllowJoin = true;
-		world._configuration.IsPublic = visibility == SessionVisibility.Public;
+		world.Configuration.MaxUsers.Value = global::System.Math.Max(1, maxUsers);
+		world.Configuration.AllowJoin.Value = true;
+		world.Configuration.IsPublic.Value = visibility == SessionVisibility.Public;
 
 		// Build session metadata
 		var metadata = new SessionMetadata
@@ -703,7 +659,7 @@ public class World
 			HostUsername = hostUserName ?? Environment.MachineName,
 			HostMachineId = Environment.MachineName,
 			Visibility = visibility,
-			MaxUsers = world._configuration.MaxUsers
+			MaxUsers = world.Configuration.MaxUsers.Value
 		};
 
 		// Start session network (creates LNL listener) but don't create user yet
@@ -1465,6 +1421,12 @@ public class World
 		_initState = InitializationState.Finished;
 		_state = WorldState.Running;
 		LumoraLogger.Log("World is now running");
+
+		// Configure the permission gate for this world's mode. Authority-only: the lock is enforced on
+		// the authority (it rejects unauthorized client deltas), and a client never escapes it because
+		// the host is the one that accepts/rebroadcasts changes.
+		if (IsAuthority)
+			WorldModePermissions.Apply(this, Mode);
 
 		// For clients: configure local user's tracking streams now that all sync members are decoded.
 		// This was deferred from SetLocalUser because streams weren't decoded yet during FullBatch processing.

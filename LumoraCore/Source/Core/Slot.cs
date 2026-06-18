@@ -1251,7 +1251,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         ((ISyncMember)LocalRotation).Name = "Rotation";
         ((ISyncMember)LocalScale).Name = "Scale";
         ((ISyncMember)OrderOffset).Name = "OrderOffset";
-        ((ISyncMember)componentBag).Name = "Components";
+        ((ISyncMember)componentCollection).Name = "Components";
 
         Persistent.MarkNonPersistent();
 
@@ -1463,7 +1463,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
     /// <summary>
     /// Initialize this Slot from network replication with a pre-assigned RefID.
-    /// Used by SlotBag when creating slots from network data.
+    /// Used by SlotCollection when creating slots from network data.
     /// NOTE: This runs on the sync thread - no Godot operations allowed here!
     /// Hook initialization is deferred to the main thread.
     /// </summary>
@@ -1512,7 +1512,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
                 return;
 
             // NOTE: Do NOT call RegisterExistingComponents() here!
-            // Network-created slots get their components through WorkerBag network sync,
+            // Network-created slots get their components through WorkerCollection network sync,
             // not through pre-attached components. RegisterExistingComponents() is only
             // for locally-created slots that had components attached before Initialize().
             InitializeHook();
@@ -1586,7 +1586,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
                 continue;
 
             var key = refController.PeekID();
-            componentBag.Add(key, component, isNewlyCreated: true, skipSync: true);
+            componentCollection.Add(key, component, isNewlyCreated: true, skipSync: true);
         }
 
         if (startedLocalBlock)
@@ -1999,9 +1999,9 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     #region Persistence
 
     // Components and child slots are polymorphic/recursive, so they're serialized explicitly here
-    // rather than through the generic member loop; the "Components" member bag is excluded from it.
+    // rather than through the generic member loop; the "Components" member collection is excluded from it.
     protected override bool ShouldSerializeMember(ISyncMember member)
-        => !ReferenceEquals(member, componentBag);
+        => !ReferenceEquals(member, componentCollection);
 
     public override DataTreeNode Save(SaveControl control)
     {

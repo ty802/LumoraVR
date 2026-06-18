@@ -6,7 +6,7 @@ using Lumora.Core;
 
 namespace Lumora.Core.Networking.Sync;
 
-public abstract class SyncRefIDBagBase<T> : SyncBagBase<RefID, T> where T : class, IWorldElement
+public abstract class ReplicatedObjectCollection<T> : ReplicatedDictionary<RefID, T> where T : class, IWorldElement
 {
     protected override void EncodeKey(BinaryWriter writer, RefID key)
     {

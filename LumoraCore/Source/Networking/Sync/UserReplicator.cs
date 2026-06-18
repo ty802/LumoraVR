@@ -8,12 +8,12 @@ using Lumora.Core;
 namespace Lumora.Core.Networking.Sync;
 
 /// <summary>
-/// Network bag for Users.
+/// Network collection for Users.
 /// When a FullBatch is received, this creates User objects that don't exist yet.
 /// </summary>
-public class UserBag : SyncRefIDBagBase<User>
+public class ReplicatedUserCollection : ReplicatedObjectCollection<User>
 {
-    public UserBag()
+    public ReplicatedUserCollection()
     {
         // Hook into element added to register users with world
         OnElementAdded += HandleUserAdded;
@@ -36,7 +36,7 @@ public class UserBag : SyncRefIDBagBase<User>
     protected override User DecodeElement(BinaryReader reader)
     {
         // This shouldn't be called - we override CreateElementWithKey
-        throw new InvalidOperationException("UserBag requires CreateElementWithKey - DecodeElement should not be called");
+        throw new InvalidOperationException("UserCollection requires CreateElementWithKey - DecodeElement should not be called");
     }
 
     /// <summary>
@@ -57,7 +57,7 @@ public class UserBag : SyncRefIDBagBase<User>
 
         if (user.World == null)
         {
-            user.InitializeFromBag(World, key);
+            user.InitializeFromCollection(World, key);
         }
 
         // Initialize first to set LocalUser before registration

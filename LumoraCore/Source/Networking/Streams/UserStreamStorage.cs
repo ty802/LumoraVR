@@ -8,23 +8,23 @@ using Lumora.Core.Networking.Sync;
 namespace Lumora.Core.Networking.Streams;
 
 /// <summary>
-/// Synchronized bag of streams for a user.
+/// Synchronized Dictionary of streams for a user.
 /// Streams are synced over the network so clients receive streams with matching RefIDs.
 /// User handles initialization via OnElementAdded event.
 /// </summary>
-public class SyncStreamBag : SyncRefIDBagBase<Stream>
+public class UserStreamStorage : ReplicatedObjectCollection<Stream>
 {
     /// <summary>
-    /// The user that owns this bag.
+    /// The user that owns the streams contained here.
     /// </summary>
     public User Owner { get; private set; } = null!;
 
-    public SyncStreamBag()
+    public UserStreamStorage()
     {
     }
 
     /// <summary>
-    /// Initialize the bag with its owning user.
+    /// Initialize the storage for a given user
     /// </summary>
     public void Initialize(User user)
     {
@@ -33,7 +33,7 @@ public class SyncStreamBag : SyncRefIDBagBase<Stream>
     }
 
     /// <summary>
-    /// All streams in the bag.
+    /// All streams stored here.
     /// </summary>
     public System.Collections.Generic.IEnumerable<Stream> Streams => Values;
 
@@ -59,7 +59,7 @@ public class SyncStreamBag : SyncRefIDBagBase<Stream>
 
     protected override Stream DecodeElement(BinaryReader reader)
     {
-        throw new InvalidOperationException("SyncStreamBag requires CreateElementWithKey");
+        throw new InvalidOperationException("UserStreamStorage requires CreateElementWithKey");
     }
 
     protected override void SkipElement(BinaryReader reader)

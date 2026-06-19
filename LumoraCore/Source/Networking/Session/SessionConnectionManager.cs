@@ -728,21 +728,30 @@ public class SessionConnectionManager : IDisposable
         // spectator-only, but there's no spectator mode yet, so we silence + flag the gap. -xlinka
         bool forceSilenced = false;
         var userInfo = await cdn.GetPlatformUserAsync(accountUserId);
-        if (userInfo.Success && userInfo.Data != null)
+
+        // Fail CLOSED. If we can't reach the moderation backend (offline / timeout / non-2xx), we cannot
+        // confirm this account isn't banned, so we refuse the join. The old code only checked bans when the
+        // fetch SUCCEEDED, which meant a platform-banned account sailed in during any backend outage - and an
+        // attacker who can drop the host's egress to the backend induces exactly that. The machine signature
+        // is already verified by this point; this gate is purely about ban status. -xlinka
+        if (!userInfo.Success || userInfo.Data == null)
         {
-            var info = userInfo.Data;
-            if (info.IsPublicBanned || info.IsAccountBanned)
-            {
-                LumoraLogger.Warn($"VerifyAccount: {accountUserId} is platform-banned; rejecting.");
-                return null;
-            }
-            if (info.IsMuteBanned)
-                forceSilenced = true;
-            if (info.IsSpectatorBanned)
-            {
-                forceSilenced = true;
-                LumoraLogger.Warn($"VerifyAccount: {accountUserId} is spectator-banned, but there's no spectator mode yet, so silencing as a partial measure. -xlinka");
-            }
+            LumoraLogger.Warn($"VerifyAccount: could not fetch platform status for {accountUserId} (backend unreachable?); failing closed and rejecting.");
+            return null;
+        }
+
+        var info = userInfo.Data;
+        if (info.IsPublicBanned || info.IsAccountBanned)
+        {
+            LumoraLogger.Warn($"VerifyAccount: {accountUserId} is platform-banned; rejecting.");
+            return null;
+        }
+        if (info.IsMuteBanned)
+            forceSilenced = true;
+        if (info.IsSpectatorBanned)
+        {
+            forceSilenced = true;
+            LumoraLogger.Warn($"VerifyAccount: {accountUserId} is spectator-banned, but there's no spectator mode yet, so silencing as a partial measure. -xlinka");
         }
 
         return (accountUserId, forceSilenced);

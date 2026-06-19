@@ -83,7 +83,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
     public readonly Sync<float> UploadSpeed = new();
     public readonly Sync<ulong> DownloadedBytes = new();
     public readonly Sync<ulong> UploadedBytes = new();
-    public readonly SyncStreamBag streamBag = new();
+    public readonly UserStreamStorage userStreams = new();
     public readonly Sync<uint> streamConfiguration = new();
 
     // Network statistics (non-synced)
@@ -115,9 +115,9 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
 
     public Lumora.Core.Networking.Sync.UserStreamBag LegacyStreamBag { get; private set; } = new();
 
-    public IEnumerable<Stream> Streams => streamBag.Streams;
+    public IEnumerable<Stream> Streams => userStreams.Streams;
 
-    public int StreamCount => streamBag.Count;
+    public int StreamCount => userStreams.Count;
 
     public StreamGroupManager StreamGroupManager { get; private set; } = null!;
 
@@ -160,7 +160,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
     {
     }
 
-    internal void InitializeFromBag(World world, RefID refID)
+    internal void InitializeFromCollection(World world, RefID refID)
     {
         if (world == null)
             throw new ArgumentNullException(nameof(world));
@@ -184,9 +184,9 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
             }
 
             StreamGroupManager = new StreamGroupManager(this);
-            streamBag.Initialize(this);
-            streamBag.OnElementAdded += OnStreamAdded;
-            streamBag.OnElementRemoved += OnStreamRemoved;
+            userStreams.Initialize(this);
+            userStreams.OnElementAdded += OnStreamAdded;
+            userStreams.OnElementRemoved += OnStreamRemoved;
 
             // Bind UserRootRef changes to keep UserRoot.ActiveUser in sync
             UserRootRef.OnTargetChange += OnUserRootRefChanged;
@@ -314,20 +314,20 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
 
     public IStream GetStream(RefID id)
     {
-        return (streamBag.TryGetValue(id, out var stream) ? stream : null) ?? null!;
+        return (userStreams.TryGetValue(id, out var stream) ? stream : null) ?? null!;
     }
 
     public S AddStream<S>() where S : Networking.Streams.Stream, new()
     {
         var stream = new S();
         RefID key = World.ReferenceController.PeekID();
-        streamBag.Add(key, stream, isNewlyCreated: true);
+        userStreams.Add(key, stream, isNewlyCreated: true);
         return stream;
     }
 
     public void RemoveStream(Networking.Streams.Stream stream)
     {
-        streamBag.Remove(stream.ReferenceID);
+        userStreams.Remove(stream.ReferenceID);
     }
 
     public void StreamConfigurationChanged()
@@ -345,10 +345,10 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
 
     public void UpdateStreams()
     {
-        streamBag.Update();
+        userStreams.Update();
     }
 
-    private void OnStreamAdded(ReplicatedDictionary<RefID, Stream> bag, RefID key, Stream stream, bool isNew)
+    private void OnStreamAdded(ReplicatedDictionary<RefID, Stream> collection, RefID key, Stream stream, bool isNew)
     {
         World.ReferenceController.AllocationBlockBegin(key);
         stream.Initialize(this);
@@ -365,7 +365,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
         }
     }
 
-    private void OnStreamRemoved(ReplicatedDictionary<RefID, Stream> bag, RefID key, Stream stream)
+    private void OnStreamRemoved(ReplicatedDictionary<RefID, Stream> collection, RefID key, Stream stream)
     {
         _justAddedStreams.Remove(stream);
         stream.Dispose();
@@ -452,7 +452,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
     {
         var stream = new T();
         RefID key = World.ReferenceController.PeekID();
-        streamBag.Add(key, stream, isNewlyCreated: true);
+        userStreams.Add(key, stream, isNewlyCreated: true);
 
         stream.InitializeDefaults(active: true, groupName: TrackingGroupName);
 
@@ -475,10 +475,10 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
         IsDisposed = true;
 
         UserRootRef.OnTargetChange -= OnUserRootRefChanged;
-        streamBag.OnElementAdded -= OnStreamAdded;
-        streamBag.OnElementRemoved -= OnStreamRemoved;
+        userStreams.OnElementAdded -= OnStreamAdded;
+        userStreams.OnElementRemoved -= OnStreamRemoved;
 
-        streamBag.Clear();
+        userStreams.Clear();
         StreamGroupManager?.Clear();
         _trackingStreams.Clear();
         _justAddedStreams.Clear();

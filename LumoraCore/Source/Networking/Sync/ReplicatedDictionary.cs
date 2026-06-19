@@ -118,7 +118,7 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
 
     /// <summary>
     /// Encode an element to the binary stream.
-    /// For SlotBag, this is typically empty since slot data is encoded separately.
+    /// For SlotCollection, this is typically empty since slot data is encoded separately.
     /// </summary>
     protected abstract void EncodeElement(BinaryWriter writer, TValue element);
 

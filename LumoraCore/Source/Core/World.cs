@@ -176,8 +176,8 @@ public class World
 	private readonly List<User> _leftUsers = new();
 
 	// Network replicators for world structure synchronization
-	private Networking.Sync.SlotBag? _slotBag;
-	private Networking.Sync.UserBag? _userBag;
+	private Networking.Sync.ReplicatedSlotCollection? _slotCollection;
+	private Networking.Sync.ReplicatedUserCollection? _userCollection;
 	private readonly List<IWorldEventReceiver>[] _worldEventReceivers;
 	private WorldState _state = WorldState.Created;
 	private InitializationState _initState = InitializationState.Created;
@@ -759,11 +759,11 @@ public class World
 
 		// Always create network replicators with consistent RefIDs
 		// This ensures both client and host use the same RefIDs for replicators
-		_slotBag = new Networking.Sync.SlotBag();
-		_slotBag.Initialize(this, null);
-		_userBag = new Networking.Sync.UserBag();
-		_userBag.Initialize(this, null);
-		LumoraLogger.Log($"Network bags initialized: SlotBag={_slotBag.ReferenceID}, UserBag={_userBag.ReferenceID}");
+		_slotCollection = new Networking.Sync.ReplicatedSlotCollection();
+		_slotCollection.Initialize(this, null);
+		_userCollection = new Networking.Sync.ReplicatedUserCollection();
+		_userCollection.Initialize(this, null);
+		LumoraLogger.Log($"Network Collection initialized: SlotCollection={_slotCollection.ReferenceID}, UserCollection={_userCollection.ReferenceID}");
 
 		// Clients must create shared world structures (RootSlot) in authority RefID space
 		// so incoming ParentSlotRef and other references resolve correctly.
@@ -788,13 +788,13 @@ public class World
 		// DON'T transition to Running here for clients!
 		// Clients need to wait for full state download.
 		// Only local/authority worlds can go to Running immediately.
-		if (_slotBag != null && _slotBag.IsInInitPhase)
+		if (_slotCollection != null && _slotCollection.IsInInitPhase)
 		{
-			_slotBag.EndInitPhase();
+			_slotCollection.EndInitPhase();
 		}
-		if (_userBag != null && _userBag.IsInInitPhase)
+		if (_userCollection != null && _userCollection.IsInInitPhase)
 		{
-			_userBag.EndInitPhase();
+			_userCollection.EndInitPhase();
 		}
 		LumoraLogger.Log($"World '{WorldName.Value}' initialized successfully - state={_state}, initState={_initState}");
 	}
@@ -838,9 +838,9 @@ public class World
 		Metrics.SlotCount++;
 
 		// Add to slot replicator for network sync (skip local-only slots)
-		if (!slot.IsLocalElement && _slotBag != null && !_slotBag.ContainsKey(slot.ReferenceID))
+		if (!slot.IsLocalElement && _slotCollection != null && !_slotCollection.ContainsKey(slot.ReferenceID))
 		{
-			_slotBag.Add(slot.ReferenceID, slot, isNewlyCreated: true, skipSync: false);
+			_slotCollection.Add(slot.ReferenceID, slot, isNewlyCreated: true, skipSync: false);
 		}
 
 		if (!string.IsNullOrEmpty(slot.Tag.Value))
@@ -874,7 +874,7 @@ public class World
 		// Remove from slot replicator for network sync
 		if (!slot.IsLocalElement)
 		{
-			_slotBag?.Remove(slot.ReferenceID);
+			_slotCollection?.Remove(slot.ReferenceID);
 		}
 
 		if (!string.IsNullOrEmpty(slot.Tag.Value))
@@ -1066,9 +1066,9 @@ public class World
 				}
 
 				// Add to user replicator for network sync (only if not already present)
-				if (_userBag != null && !_userBag.ContainsKey(user.ReferenceID))
+				if (_userCollection != null && !_userCollection.ContainsKey(user.ReferenceID))
 				{
-					_userBag.Add(user.ReferenceID, user, isNewlyCreated: true, skipSync: false);
+					_userCollection.Add(user.ReferenceID, user, isNewlyCreated: true, skipSync: false);
 				}
 
 				LumoraLogger.Log($"User added to world: {user.UserName.Value}");
@@ -1088,16 +1088,16 @@ public class World
 		}
 	}
 
-	internal void AddUserToBag(User user, RefID id, bool isNewlyCreated)
+	internal void AddUserToCollection(User user, RefID id, bool isNewlyCreated)
 	{
-		if (user == null || _userBag == null)
+		if (user == null || _userCollection == null)
 		{
 			return;
 		}
 
-		if (!_userBag.ContainsKey(id))
+		if (!_userCollection.ContainsKey(id))
 		{
-			_userBag.Add(id, user, isNewlyCreated, skipSync: false);
+			_userCollection.Add(id, user, isNewlyCreated, skipSync: false);
 		}
 	}
 
@@ -1114,7 +1114,7 @@ public class World
 			ReferenceController?.UnregisterObject(user.ReferenceID);
 
 			// Remove from user replicator for network sync
-			_userBag?.Remove(user.ReferenceID);
+			_userCollection?.Remove(user.ReferenceID);
 
 			LumoraLogger.Log($"User removed from world: {user.UserName.Value}");
 
@@ -1131,13 +1131,13 @@ public class World
 	}
 
 	/// <summary>
-	/// Register a user with the world (called by UserBag).
+	/// Register a user with the world (called by UserCollection).
 	/// Alias for AddUser.
 	/// </summary>
 	internal void RegisterUser(User user) => AddUser(user);
 
 	/// <summary>
-	/// Unregister a user from the world (called by UserBag).
+	/// Unregister a user from the world (called by UserCollection).
 	/// Alias for RemoveUser.
 	/// </summary>
 	internal void UnregisterUser(User user) => RemoveUser(user);
@@ -1252,7 +1252,7 @@ public class World
 		hostUser.UserPlatform.Value = GetCurrentPlatform();
 
 		LocalUser = hostUser;
-		AddUserToBag(hostUser, userRefId, isNewlyCreated: true);
+		AddUserToCollection(hostUser, userRefId, isNewlyCreated: true);
 		hostUser.ConfigureLocalTrackingStreams();
 		LumoraLogger.Log($"Created host user '{resolvedName}' with RefID {userRefId}");
 		return hostUser;

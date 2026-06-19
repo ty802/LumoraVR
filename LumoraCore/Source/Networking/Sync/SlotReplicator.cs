@@ -8,12 +8,12 @@ using Lumora.Core;
 namespace Lumora.Core.Networking.Sync;
 
 /// <summary>
-/// Network bag for Slots.
+/// Network collection for Slots.
 /// When a FullBatch is received, this creates the Slot objects that don't exist yet.
 /// </summary>
-public class SlotBag : SyncRefIDBagBase<Slot>
+public class ReplicatedSlotCollection : ReplicatedObjectCollection<Slot>
 {
-    public SlotBag()
+    public ReplicatedSlotCollection()
     {
         // Hook into element added to initialize slots
         OnElementAdded += HandleSlotAdded;
@@ -50,7 +50,7 @@ public class SlotBag : SyncRefIDBagBase<Slot>
         // Only initialize if this slot doesn't already have a world
         if (slot.World == null)
         {
-            Lumora.Core.Logging.Logger.Log($"SlotBag.HandleSlotAdded: Creating slot RefID={key}, isNew={isNew}");
+            Lumora.Core.Logging.Logger.Log($"SlotCollection.HandleSlotAdded: Creating slot RefID={key}, isNew={isNew}");
 
             // Initialize with the world using the network-assigned RefID
             slot.InitializeFromReplicator(World, key);
@@ -66,7 +66,7 @@ public class SlotBag : SyncRefIDBagBase<Slot>
                 }
             }
 
-            Lumora.Core.Logging.Logger.Log($"SlotBag.HandleSlotAdded: Slot initialized - Name='{slot.Name?.Value}', NameRefID={slot.Name?.ReferenceID}");
+            Lumora.Core.Logging.Logger.Log($"SlotCollection.HandleSlotAdded: Slot initialized - Name='{slot.Name?.Value}', NameRefID={slot.Name?.ReferenceID}");
 
             // Register with the world's slot tracking
             World.RegisterSlot(slot);

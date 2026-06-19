@@ -11,12 +11,12 @@ public abstract class ContainerWorker<C> : Worker where C : ComponentBase<C>
 {
     [NameOverride("Components")]
     [HideInInspector]
-    protected readonly WorkerBag<C> componentBag = new();
+    protected readonly ReplicatedComponentCollection<C> componentCollection = new();
 
     protected readonly List<IInitializable> childInitializables = new();
 
-    public IEnumerable<C> Components => componentBag.Values;
-    public int ComponentCount => componentBag.Count;
+    public IEnumerable<C> Components => componentCollection.Values;
+    public int ComponentCount => componentCollection.Count;
 
     public bool IsInInitPhase { get; protected set; }
 
@@ -29,15 +29,15 @@ public abstract class ContainerWorker<C> : Worker where C : ComponentBase<C>
             throw new ArgumentNullException(nameof(parent));
 
         InitializeWorker(parent);
-        componentBag.OnElementAdded += OnComponentAdded;
-        componentBag.OnElementRemoved += OnComponentRemoved;
+        componentCollection.OnElementAdded += OnComponentAdded;
+        componentCollection.OnElementRemoved += OnComponentRemoved;
     }
 
     internal virtual void Initialize(World world, IWorldElement? parent = null)
     {
         InitializeWorker(world, parent);
-        componentBag.OnElementAdded += OnComponentAdded;
-        componentBag.OnElementRemoved += OnComponentRemoved;
+        componentCollection.OnElementAdded += OnComponentAdded;
+        componentCollection.OnElementRemoved += OnComponentRemoved;
     }
 
     public T AttachComponent<T>(bool runOnAttachBehavior = true, Action<T>? beforeAttach = null) where T : C, new()
@@ -61,17 +61,17 @@ public abstract class ContainerWorker<C> : Worker where C : ComponentBase<C>
         if (component == null)
             return false;
 
-        return componentBag.Remove(component.ReferenceID);
+        return componentCollection.Remove(component.ReferenceID);
     }
 
     public bool RemoveComponent(RefID id)
     {
-        return componentBag.Remove(id);
+        return componentCollection.Remove(id);
     }
 
     public C GetComponent(Predicate<C> predicate)
     {
-        foreach (var kvp in componentBag)
+        foreach (var kvp in componentCollection)
         {
             if (predicate(kvp.Value))
             {
@@ -107,7 +107,7 @@ public abstract class ContainerWorker<C> : Worker where C : ComponentBase<C>
         }
 
         var key = World.ReferenceController.PeekID();
-        componentBag.Add(key, component, isNewlyCreated: true);
+        componentCollection.Add(key, component, isNewlyCreated: true);
 
         if (IsLocalElement)
         {
@@ -121,7 +121,7 @@ public abstract class ContainerWorker<C> : Worker where C : ComponentBase<C>
         }
     }
 
-    private void OnComponentAdded(ReplicatedDictionary<RefID, C> bag, RefID idStart, C component, bool isNew)
+    private void OnComponentAdded(ReplicatedDictionary<RefID, C> collection, RefID idStart, C component, bool isNew)
     {
         World.ReferenceController.AllocationBlockBegin(idStart);
         bool wasInInitPhase = IsInInitPhase;
@@ -163,7 +163,7 @@ public abstract class ContainerWorker<C> : Worker where C : ComponentBase<C>
         }
     }
 
-    private void OnComponentRemoved(ReplicatedDictionary<RefID, C> bag, RefID key, C component)
+    private void OnComponentRemoved(ReplicatedDictionary<RefID, C> collection, RefID key, C component)
     {
         component?.RunOnDetach();
         component?.PrepareDestruction();
@@ -188,7 +188,7 @@ public abstract class ContainerWorker<C> : Worker where C : ComponentBase<C>
         }
 
         IsDestroyed = true;
-        foreach (var kvp in componentBag)
+        foreach (var kvp in componentCollection)
         {
             kvp.Value.PrepareDestruction();
         }

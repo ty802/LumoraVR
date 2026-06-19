@@ -398,7 +398,7 @@ public class SessionConnectionManager : IDisposable
 
         LumoraLogger.Log($"Sent JoinGrant to {connection.Identifier} - UserID: {userID}, UserName: '{userName}'");
 
-        // Create user instance, populate fields, then add to the user bag for initialization
+        // Create user instance, populate fields, then add to the user collection for initialization
         var user = new User();
         user.UserID.Value = userID.ToString();
         user.UserName.Value = !string.IsNullOrEmpty(userName) ? userName : $"Guest {userRefID.GetUserByte()}";
@@ -416,7 +416,7 @@ public class SessionConnectionManager : IDisposable
         }
         LumoraLogger.Log($"SendJoinGrant: Added connection-user mapping for '{userName}'");
 
-        World.AddUserToBag(user, userRefID, isNewlyCreated: true);
+        World.AddUserToCollection(user, userRefID, isNewlyCreated: true);
         LumoraLogger.Log($"SendJoinGrant: User '{userName}' added to world");
 
         if (Session.Sync != null)

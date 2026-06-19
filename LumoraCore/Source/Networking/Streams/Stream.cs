@@ -170,11 +170,11 @@ public abstract class Stream : IStream, IWorker, IWorldElement
     }
 
     /// <summary>
-    /// Initialize this stream from a sync bag with an assigned RefID.
+    /// Initialize this stream from a sync collection with an assigned RefID.
     /// Used when receiving streams from network.
     /// Must be called within AllocationBlockBegin/End for proper RefID allocation.
     /// </summary>
-    internal void InitializeFromBag(User user, RefID assignedId)
+    internal void InitializeFromCollection(User user, RefID assignedId)
     {
         Owner = user;
         _world = user.World;

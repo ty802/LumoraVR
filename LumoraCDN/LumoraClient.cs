@@ -440,6 +440,76 @@ public sealed class LumoraClient : IDisposable
 
     #endregion
 
+    #region Groups
+
+    /// <summary>Browse discoverable groups (biggest first). Optional name search.</summary>
+    public Task<ApiResponse<List<GroupInfo>>> GetGroups(string? query = null, int skip = 0, int take = 25)
+    {
+        var url = $"{ServiceConfig.Current.ApiBase}/api/groups?skip={skip}&take={take}";
+        if (!string.IsNullOrWhiteSpace(query))
+            url += $"&query={Uri.EscapeDataString(query)}";
+        return GetAsync<List<GroupInfo>>(url);
+    }
+
+    /// <summary>Groups the signed-in user belongs to.</summary>
+    public Task<ApiResponse<List<GroupInfo>>> GetMyGroups()
+        => GetAsync<List<GroupInfo>>($"{ServiceConfig.Current.ApiBase}/api/groups/mine");
+
+    /// <summary>A single group's page (MyRole is the caller's role, or null if not a member).</summary>
+    public Task<ApiResponse<GroupInfo>> GetGroup(string groupId)
+        => GetAsync<GroupInfo>($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}");
+
+    /// <summary>Create a group. visibility is "Public" | "Private" | "Hidden". Needs a free group allocation.</summary>
+    public async Task<ApiResponse<GroupInfo>> CreateGroup(string name, string description = "", string visibility = "Public")
+    {
+        if (!IsAuthenticated)
+            return ApiResponse<GroupInfo>.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+        var payload = new { Name = name, Description = description, Visibility = visibility };
+        return await PostAsync<GroupInfo>($"{ServiceConfig.Current.ApiBase}/api/groups", payload);
+    }
+
+    /// <summary>Join a public group, or file a request to join a private one.</summary>
+    public Task<ApiResponse> JoinGroup(string groupId)
+        => PostAsync($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/join", null);
+
+    /// <summary>Leave a group (owners must transfer or delete instead).</summary>
+    public Task<ApiResponse> LeaveGroup(string groupId)
+        => DeleteAsync($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/membership");
+
+    /// <summary>List a group's members and their roles.</summary>
+    public Task<ApiResponse<List<GroupMemberInfo>>> GetGroupMembers(string groupId)
+        => GetAsync<List<GroupMemberInfo>>($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/members");
+
+    /// <summary>Set a member's role (owner/admin only). role: "Moderator" | "Builder" | "EventHost" | "Member".</summary>
+    public Task<ApiResponse> SetGroupRole(string groupId, string userId, string role)
+        => PostAsync($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/members/{userId}/role", new { Role = role });
+
+    /// <summary>Kick a member (moderator+).</summary>
+    public Task<ApiResponse> KickGroupMember(string groupId, string userId)
+        => DeleteAsync($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/members/{userId}");
+
+    /// <summary>Pending join requests for a private group (moderator+); raw JSON in RawBody.</summary>
+    public Task<ApiResponse> GetGroupRequests(string groupId)
+        => GetAsync($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/requests");
+
+    /// <summary>Approve a pending join request (moderator+).</summary>
+    public Task<ApiResponse> ApproveGroupRequest(string groupId, string userId)
+        => PostAsync($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/requests/{userId}/approve", null);
+
+    /// <summary>Deny a pending join request (moderator+).</summary>
+    public Task<ApiResponse> DenyGroupRequest(string groupId, string userId)
+        => PostAsync($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/requests/{userId}/deny", null);
+
+    /// <summary>Transfer ownership to another member (owner only).</summary>
+    public Task<ApiResponse> TransferGroup(string groupId, string newOwnerUserId)
+        => PostAsync($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/transfer/{newOwnerUserId}", null);
+
+    /// <summary>Delete a group (owner only).</summary>
+    public Task<ApiResponse> DeleteGroup(string groupId)
+        => DeleteAsync($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}");
+
+    #endregion
+
     #region Content
 
     public Task<ApiResponse<ContentInfo>> GetContentInfo(string hash)

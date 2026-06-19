@@ -129,6 +129,29 @@ public record SessionKeyInfo
     [JsonPropertyName("expiresAt")] public DateTime ExpiresAt { get; init; }
 }
 
+// a group as returned by the groups API. Visibility/MyRole come back as strings ("Public", "Owner"). -xlinka
+public record GroupInfo
+{
+    [JsonPropertyName("id")] public string Id { get; init; } = "";
+    [JsonPropertyName("name")] public string Name { get; init; } = "";
+    [JsonPropertyName("description")] public string Description { get; init; } = "";
+    [JsonPropertyName("ownerId")] public string OwnerId { get; init; } = "";
+    [JsonPropertyName("visibility")] public string Visibility { get; init; } = "Public";
+    [JsonPropertyName("iconHash")] public string? IconHash { get; init; }
+    [JsonPropertyName("storageQuotaBytes")] public long StorageQuotaBytes { get; init; }
+    [JsonPropertyName("usedStorageBytes")] public long UsedStorageBytes { get; init; }
+    [JsonPropertyName("memberCount")] public int MemberCount { get; init; }
+    [JsonPropertyName("createdAt")] public DateTime CreatedAt { get; init; }
+    [JsonPropertyName("myRole")] public string? MyRole { get; init; } // caller's role, null if not a member
+}
+
+public record GroupMemberInfo
+{
+    [JsonPropertyName("userId")] public string UserId { get; init; } = "";
+    [JsonPropertyName("role")] public string Role { get; init; } = "Member";
+    [JsonPropertyName("joinedAt")] public DateTime JoinedAt { get; init; }
+}
+
 // public view of a user incl. PLATFORM moderation ban status (from GET /api/user/{id}). NOT world bans. -xlinka
 public record PublicUserInfo
 {

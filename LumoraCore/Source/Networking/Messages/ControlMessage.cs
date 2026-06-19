@@ -122,6 +122,12 @@ public struct JoinRequestData
     public string AccountUserId;
     public string AccountSessionId;
 
+    /// <summary>
+    /// A random nonce the joiner generates so the HOST can prove ITS identity back: the host signs this in
+    /// JoinChallenge and the joiner verifies it before trusting the host. That's the anti-MITM half. -xlinka
+    /// </summary>
+    public byte[] HostVerificationToken;
+
     public byte[] Encode()
     {
         using var ms = new MemoryStream();
@@ -136,6 +142,9 @@ public struct JoinRequestData
             writer.Write(MachinePublicKey);
         writer.Write(AccountUserId ?? "");
         writer.Write(AccountSessionId ?? "");
+        writer.Write(HostVerificationToken?.Length ?? 0);
+        if (HostVerificationToken != null && HostVerificationToken.Length > 0)
+            writer.Write(HostVerificationToken);
 
         return ms.ToArray();
     }
@@ -153,12 +162,12 @@ public struct JoinRequestData
             HeadDevice = reader.ReadByte(),
             MachinePublicKey = Array.Empty<byte>(),
             AccountUserId = "",
-            AccountSessionId = ""
+            AccountSessionId = "",
+            HostVerificationToken = Array.Empty<byte>()
         };
 
         // Everything past HeadDevice is appended and read tolerantly so a short/legacy payload still
-        // decodes. The key length is bounded so a hostile peer can't make us allocate off a declared size.
-        // -xlinka
+        // decodes. Lengths are bounded so a hostile peer can't make us allocate off a declared size. -xlinka
         if (ms.Position < ms.Length)
         {
             int keyLen = reader.ReadInt32();
@@ -169,6 +178,12 @@ public struct JoinRequestData
             result.AccountUserId = reader.ReadString();
         if (ms.Position < ms.Length)
             result.AccountSessionId = reader.ReadString();
+        if (ms.Position < ms.Length)
+        {
+            int tokLen = reader.ReadInt32();
+            if (tokLen > 0 && tokLen <= 1024)
+                result.HostVerificationToken = reader.ReadBytes(tokLen);
+        }
 
         return result;
     }
@@ -256,6 +271,13 @@ public struct JoinChallengeData
 {
     public byte[] Nonce;
 
+    // Host's own identity, so the joiner can verify the host before answering (anti-MITM). HostMachineId
+    // must hash to HostMachinePublicKey, and HostMachineSignature is the host signing the joiner's
+    // HostVerificationToken with its machine key. -xlinka
+    public string HostMachineId;
+    public byte[] HostMachinePublicKey;
+    public byte[] HostMachineSignature;
+
     public byte[] Encode()
     {
         using var ms = new MemoryStream();
@@ -264,6 +286,13 @@ public struct JoinChallengeData
         writer.Write(Nonce?.Length ?? 0);
         if (Nonce != null && Nonce.Length > 0)
             writer.Write(Nonce);
+        writer.Write(HostMachineId ?? "");
+        writer.Write(HostMachinePublicKey?.Length ?? 0);
+        if (HostMachinePublicKey != null && HostMachinePublicKey.Length > 0)
+            writer.Write(HostMachinePublicKey);
+        writer.Write(HostMachineSignature?.Length ?? 0);
+        if (HostMachineSignature != null && HostMachineSignature.Length > 0)
+            writer.Write(HostMachineSignature);
 
         return ms.ToArray();
     }
@@ -273,10 +302,31 @@ public struct JoinChallengeData
         using var ms = new MemoryStream(data);
         using var reader = new BinaryReader(ms);
 
-        var result = new JoinChallengeData { Nonce = Array.Empty<byte>() };
+        var result = new JoinChallengeData
+        {
+            Nonce = Array.Empty<byte>(),
+            HostMachineId = "",
+            HostMachinePublicKey = Array.Empty<byte>(),
+            HostMachineSignature = Array.Empty<byte>()
+        };
         int len = reader.ReadInt32();
         if (len > 0 && len <= 1024)
             result.Nonce = reader.ReadBytes(len);
+        // Host identity fields are appended; tolerate their absence for a short/legacy payload. -xlinka
+        if (ms.Position < ms.Length)
+            result.HostMachineId = reader.ReadString();
+        if (ms.Position < ms.Length)
+        {
+            int keyLen = reader.ReadInt32();
+            if (keyLen > 0 && keyLen <= 8192)
+                result.HostMachinePublicKey = reader.ReadBytes(keyLen);
+        }
+        if (ms.Position < ms.Length)
+        {
+            int sigLen = reader.ReadInt32();
+            if (sigLen > 0 && sigLen <= 4096)
+                result.HostMachineSignature = reader.ReadBytes(sigLen);
+        }
         return result;
     }
 }

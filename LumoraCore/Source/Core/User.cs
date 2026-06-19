@@ -191,6 +191,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
             AllocationID.MarkHostOnly();
             AllocationIDStart.MarkHostOnly();
             AllocationIDEnd.MarkHostOnly();
+            IsSilenced.MarkHostOnly(); // host/platform-imposed silence, a guest can't lift it off themselves. -xlinka
 
             EndInitializationStageForMembers();
 

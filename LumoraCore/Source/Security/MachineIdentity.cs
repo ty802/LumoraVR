@@ -41,9 +41,25 @@ public sealed class MachineIdentity
         MachineId = ComputeMachineId(PublicKey);
     }
 
-    /// <summary>Sign a challenge nonce with our private machine key (RSA SHA256 PKCS1).</summary>
-    public byte[] SignChallenge(byte[] nonce)
-        => _rsa.SignData(nonce, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+    /// <summary>Sign a challenge payload with our private machine key (RSA SHA256 PKCS1).</summary>
+    public byte[] SignChallenge(byte[] payload)
+        => _rsa.SignData(payload, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+
+    /// <summary>
+    /// Build the byte payload that actually gets signed/verified for one step of the join handshake.
+    /// Prefixing the nonce with a context label is domain separation: a signature made to prove one thing
+    /// (say, that you're the host) can't be lifted and replayed to prove another (that you're a joiner),
+    /// even if the nonces ever lined up. Both sides build this the same way. -xlinka
+    /// </summary>
+    public static byte[] BuildJoinPayload(byte[] nonce, string context)
+    {
+        var prefix = System.Text.Encoding.UTF8.GetBytes(context + ":");
+        var payload = new byte[prefix.Length + (nonce?.Length ?? 0)];
+        Buffer.BlockCopy(prefix, 0, payload, 0, prefix.Length);
+        if (nonce != null && nonce.Length > 0)
+            Buffer.BlockCopy(nonce, 0, payload, prefix.Length, nonce.Length);
+        return payload;
+    }
 
     /// <summary>Compute the self-certifying machine id for a DER SPKI public key.</summary>
     public static string ComputeMachineId(byte[] publicKeySpki)

@@ -41,6 +41,16 @@ public class SessionConnectionManager : IDisposable
         public byte[] Nonce = null!;
     }
 
+    // Domain-separation labels so a signature made for one step of the handshake can't be replayed as
+    // another (host-proving vs joiner-proving vs account-proving). Both sides build payloads with these. -xlinka
+    private const string JoinContextHost = "lumora-join-host";
+    private const string JoinContextUserMachine = "lumora-join-user-machine";
+    private const string JoinContextUserAccount = "lumora-join-user-account";
+
+    // Client side: the nonce we sent in our JoinRequest for the host to sign, so we can verify the host is
+    // who it claims before we hand over our own signature. -xlinka
+    private byte[]? _hostVerificationToken;
+
     public Session Session { get; private set; }
     public World World => (Session?.World) ?? null!;
 
@@ -184,6 +194,12 @@ public class SessionConnectionManager : IDisposable
         var identity = Lumora.Core.Security.MachineIdentity.Local;
         var cdn = Engine.Current?.CDNClient;
         bool hasAccount = cdn != null && cdn.HasAccountIdentity;
+
+        // Our challenge to the host: it must sign this so we know we're talking to the real host and not a
+        // man in the middle. We hold onto it to check the host's signature in HandleJoinChallenge. -xlinka
+        var hostVerificationToken = RandomNumberGenerator.GetBytes(32);
+        _hostVerificationToken = hostVerificationToken;
+
         var requestData = new LegacyJoinRequestData
         {
             UserName = Environment.MachineName,
@@ -196,7 +212,8 @@ public class SessionConnectionManager : IDisposable
             // If we're signed into an account, name it + the login session so the host can fetch our
             // cloud-published key and verify we own it. Empty = guest (machine key only). -xlinka
             AccountUserId = hasAccount ? cdn!.AccountUserId! : "",
-            AccountSessionId = hasAccount ? cdn!.AccountSessionId! : ""
+            AccountSessionId = hasAccount ? cdn!.AccountSessionId! : "",
+            HostVerificationToken = hostVerificationToken
         };
 
         var controlMessage = new ControlMessage(ControlMessage.Message.JoinRequest)
@@ -322,7 +339,7 @@ public class SessionConnectionManager : IDisposable
         {
             _pendingAuth[connection] = new PendingJoin { Request = requestData, Nonce = nonce };
         }
-        SendJoinChallenge(connection, nonce);
+        SendJoinChallenge(connection, nonce, requestData.HostVerificationToken);
     }
 
     private string? ValidateJoinRequest(IConnection connection, LegacyJoinRequestData requestData)
@@ -415,7 +432,7 @@ public class SessionConnectionManager : IDisposable
         });
     }
 
-    private void SendJoinGrant(IConnection connection, string userName, string machineId, string accountId = "")
+    private void SendJoinGrant(IConnection connection, string userName, string machineId, string accountId = "", bool forceSilenced = false)
     {
         if (!World.IsAuthority)
         {
@@ -456,6 +473,7 @@ public class SessionConnectionManager : IDisposable
         user.UserName.Value = !string.IsNullOrEmpty(userName) ? userName : $"Guest {userRefID.GetUserByte()}";
         user.MachineID.Value = machineId ?? "";
         user.AccountId.Value = accountId ?? ""; // verified platform account id, empty for guests. -xlinka
+        user.IsSilenced.Value = forceSilenced; // platform mute/spectator ban forces silence on entry. -xlinka
         user.AllocationIDStart.Value = (ulong)allocStart;
         user.AllocationIDEnd.Value = (ulong)allocEnd;
         user.AllocationID.Value = userRefID.GetUserByte();
@@ -486,9 +504,30 @@ public class SessionConnectionManager : IDisposable
     /// <summary>
     /// Host -> joiner: send the random nonce the joiner must sign with its machine key to prove identity.
     /// </summary>
-    private void SendJoinChallenge(IConnection connection, byte[] nonce)
+    private void SendJoinChallenge(IConnection connection, byte[] nonce, byte[] hostVerificationToken)
     {
-        var challenge = new LegacyJoinChallengeData { Nonce = nonce };
+        var hostIdentity = Lumora.Core.Security.MachineIdentity.Local;
+
+        // Prove WE are the real host by signing the joiner's token with our machine key. The joiner checks
+        // this before handing over its own signature, so a man in the middle can't pose as the host. -xlinka
+        byte[] hostSignature = Array.Empty<byte>();
+        if (hostVerificationToken != null && hostVerificationToken.Length > 0)
+        {
+            try
+            {
+                hostSignature = hostIdentity.SignChallenge(
+                    Lumora.Core.Security.MachineIdentity.BuildJoinPayload(hostVerificationToken, JoinContextHost));
+            }
+            catch (Exception ex) { LumoraLogger.Warn($"SendJoinChallenge: host self-sign failed ({ex.Message})"); }
+        }
+
+        var challenge = new LegacyJoinChallengeData
+        {
+            Nonce = nonce,
+            HostMachineId = hostIdentity.MachineId,
+            HostMachinePublicKey = hostIdentity.PublicKey,
+            HostMachineSignature = hostSignature
+        };
         var controlMessage = new ControlMessage(ControlMessage.Message.JoinChallenge)
         {
             Payload = challenge.Encode()
@@ -510,10 +549,31 @@ public class SessionConnectionManager : IDisposable
             return;
         }
 
+        // Verify the HOST first: its MachineId has to hash to the key it sent, and it has to have signed
+        // the token we put in our JoinRequest. If that doesn't check out we're talking to an impostor or a
+        // man in the middle, so bail without ever handing over our own signature. -xlinka
+        var token = _hostVerificationToken;
+        bool hostOk =
+            token != null && token.Length > 0
+            && Lumora.Core.Security.MachineIdentity.IsMachineIdForKey(challenge.HostMachineId, challenge.HostMachinePublicKey)
+            && Lumora.Core.Security.MachineIdentity.VerifyRsaSignature(
+                challenge.HostMachinePublicKey,
+                Lumora.Core.Security.MachineIdentity.BuildJoinPayload(token, JoinContextHost),
+                challenge.HostMachineSignature);
+
+        if (!hostOk)
+        {
+            LumoraLogger.Error("HandleJoinChallenge: host identity verification FAILED - aborting join (possible MITM)");
+            (connection ?? HostConnection)?.Close();
+            _hostVerificationToken = null;
+            return;
+        }
+
         byte[] signature;
         try
         {
-            signature = Lumora.Core.Security.MachineIdentity.Local.SignChallenge(challenge.Nonce);
+            signature = Lumora.Core.Security.MachineIdentity.Local.SignChallenge(
+                Lumora.Core.Security.MachineIdentity.BuildJoinPayload(challenge.Nonce, JoinContextUserMachine));
         }
         catch (Exception ex)
         {
@@ -521,13 +581,17 @@ public class SessionConnectionManager : IDisposable
             return;
         }
 
-        // If signed into an account, also sign the nonce with our account key so the host can verify our
-        // account against the key we published to the cloud. Best-effort, guests skip it. -xlinka
+        // If signed into an account, also sign the nonce (account context) with our account key so the host
+        // can verify our account against the key we published to the cloud. Best-effort, guests skip. -xlinka
         byte[] accountSignature = Array.Empty<byte>();
         var cdn = Engine.Current?.CDNClient;
         if (cdn != null && cdn.HasAccountIdentity)
         {
-            try { accountSignature = cdn.SignWithAccountKey(challenge.Nonce) ?? Array.Empty<byte>(); }
+            try
+            {
+                accountSignature = cdn.SignWithAccountKey(
+                    Lumora.Core.Security.MachineIdentity.BuildJoinPayload(challenge.Nonce, JoinContextUserAccount)) ?? Array.Empty<byte>();
+            }
             catch (Exception ex) { LumoraLogger.Warn($"HandleJoinChallenge: account sign failed ({ex.Message})"); }
         }
 
@@ -540,6 +604,7 @@ public class SessionConnectionManager : IDisposable
         byte[] encoded = controlMessage.Encode();
         var target = connection ?? HostConnection;
         target.Send(encoded, encoded.Length, reliable: true, background: false);
+        _hostVerificationToken = null; // one-shot; done with this join's host challenge. -xlinka
         LumoraLogger.Log("Sent JoinAuthenticate to host");
     }
 
@@ -571,7 +636,9 @@ public class SessionConnectionManager : IDisposable
         {
             // 1. The machine key is always required: prove ownership of the claimed MachineID.
             if (!Lumora.Core.Security.MachineIdentity.VerifyChallenge(
-                    pending.Request.MachineID, pending.Request.MachinePublicKey, pending.Nonce, auth.Signature))
+                    pending.Request.MachineID, pending.Request.MachinePublicKey,
+                    Lumora.Core.Security.MachineIdentity.BuildJoinPayload(pending.Nonce, JoinContextUserMachine),
+                    auth.Signature))
             {
                 LumoraLogger.Warn($"HandleJoinAuthenticate: machine signature FAILED for {connection.Identifier} - rejecting");
                 SendJoinReject(connection, "Machine authentication failed");
@@ -584,15 +651,17 @@ public class SessionConnectionManager : IDisposable
             var claimedAccount = pending.Request.AccountUserId;
             if (!string.IsNullOrEmpty(claimedAccount))
             {
-                var verifiedAccountId = await VerifyAccountAsync(
-                    claimedAccount, pending.Request.AccountSessionId, pending.Nonce, auth.AccountSignature) ?? "";
+                var verified = await VerifyAccountAsync(
+                    claimedAccount, pending.Request.AccountSessionId, pending.Nonce, auth.AccountSignature);
 
-                if (string.IsNullOrEmpty(verifiedAccountId))
+                if (verified == null)
                 {
                     LumoraLogger.Warn($"HandleJoinAuthenticate: account verification FAILED for {connection.Identifier} (claimed '{claimedAccount}') - rejecting");
                     SendJoinReject(connection, "Account verification failed");
                     return;
                 }
+
+                var (verifiedAccountId, forceSilenced) = verified.Value;
 
                 // We're on a threadpool continuation after the HTTP await, so marshal the grant (which
                 // mutates world state: creates + registers the User) back onto the world's sync thread.
@@ -605,8 +674,8 @@ public class SessionConnectionManager : IDisposable
                 }
                 var conn = connection;
                 var req = pending.Request;
-                LumoraLogger.Log($"HandleJoinAuthenticate: {connection.Identifier} authenticated (account='{verifiedAccountId}') - granting");
-                world.RunSynchronously(() => SendJoinGrant(conn, req.UserName, req.MachineID, verifiedAccountId));
+                LumoraLogger.Log($"HandleJoinAuthenticate: {connection.Identifier} authenticated (account='{verifiedAccountId}', silenced={forceSilenced}) - granting");
+                world.RunSynchronously(() => SendJoinGrant(conn, req.UserName, req.MachineID, verifiedAccountId, forceSilenced));
                 return;
             }
 
@@ -627,7 +696,7 @@ public class SessionConnectionManager : IDisposable
     /// joiner can't present a key of their choosing), then check platform moderation ban status. Returns
     /// the verified account id, or null if anything fails. World bans are a separate, host-side check. -xlinka
     /// </summary>
-    private async Task<string?> VerifyAccountAsync(string accountUserId, string accountSessionId, byte[] nonce, byte[] accountSignature)
+    private async Task<(string accountId, bool forceSilenced)?> VerifyAccountAsync(string accountUserId, string accountSessionId, byte[] nonce, byte[] accountSignature)
     {
         var cdn = Engine.Current?.CDNClient;
         if (cdn == null)
@@ -645,22 +714,38 @@ public class SessionConnectionManager : IDisposable
             return null;
         }
 
-        if (!Lumora.Core.Security.MachineIdentity.VerifyRsaSignature(publishedKey, nonce, accountSignature))
+        if (!Lumora.Core.Security.MachineIdentity.VerifyRsaSignature(
+                publishedKey,
+                Lumora.Core.Security.MachineIdentity.BuildJoinPayload(nonce, JoinContextUserAccount),
+                accountSignature))
         {
             LumoraLogger.Warn($"VerifyAccount: account signature did not verify for {accountUserId}.");
             return null;
         }
 
-        // Platform moderation ban (account/public ban blocks joining anywhere). Spectator/mute are softer
-        // and don't block entry, so we don't reject on those here. -xlinka
+        // Platform moderation bans. Public/account ban blocks the join outright. Mute/spectator are softer:
+        // they restrict rather than block. We force-silence a mute-banned user; spectator-ban should force
+        // spectator-only, but there's no spectator mode yet, so we silence + flag the gap. -xlinka
+        bool forceSilenced = false;
         var userInfo = await cdn.GetPlatformUserAsync(accountUserId);
-        if (userInfo.Success && userInfo.Data != null && (userInfo.Data.IsPublicBanned || userInfo.Data.IsAccountBanned))
+        if (userInfo.Success && userInfo.Data != null)
         {
-            LumoraLogger.Warn($"VerifyAccount: {accountUserId} is platform-banned; rejecting.");
-            return null;
+            var info = userInfo.Data;
+            if (info.IsPublicBanned || info.IsAccountBanned)
+            {
+                LumoraLogger.Warn($"VerifyAccount: {accountUserId} is platform-banned; rejecting.");
+                return null;
+            }
+            if (info.IsMuteBanned)
+                forceSilenced = true;
+            if (info.IsSpectatorBanned)
+            {
+                forceSilenced = true;
+                LumoraLogger.Warn($"VerifyAccount: {accountUserId} is spectator-banned, but there's no spectator mode yet, so silencing as a partial measure. -xlinka");
+            }
         }
 
-        return accountUserId;
+        return (accountUserId, forceSilenced);
     }
 
     private void RemoveUser(User user)

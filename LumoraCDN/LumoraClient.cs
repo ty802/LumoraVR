@@ -243,6 +243,20 @@ public sealed class LumoraClient : IDisposable
     public Task<ApiResponse<UserProfile>> GetCurrentUser()
         => GetAsync<UserProfile>($"{ServiceConfig.Current.ApiBase}/api/user/me");
 
+    /// <summary>Fetch another user's public profile (bio, status, badges, ban status) by id. -xlinka</summary>
+    public Task<ApiResponse<PublicUserInfo>> GetPublicUser(string userId)
+        => GetAsync<PublicUserInfo>($"{ServiceConfig.Current.ApiBase}/api/user/{userId}");
+
+    /// <summary>Update our own profile screen text (bio + short status line).</summary>
+    public async Task<ApiResponse> UpdateProfile(string bio, string status)
+    {
+        if (!IsAuthenticated)
+            return ApiResponse.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+
+        var payload = new { Bio = bio, Status = status };
+        return await PutAsync($"{ServiceConfig.Current.ApiBase}/api/user/profile", payload);
+    }
+
     public async Task<ApiResponse> ChangePassword(string currentPassword, string newPassword)
     {
         if (!IsAuthenticated)

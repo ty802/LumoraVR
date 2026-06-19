@@ -135,6 +135,10 @@ public record PublicUserInfo
     [JsonPropertyName("id")] public string Id { get; init; } = "";
     [JsonPropertyName("username")] public string Username { get; init; } = "";
     [JsonPropertyName("isVerified")] public bool IsVerified { get; init; }
+    [JsonPropertyName("bio")] public string Bio { get; init; } = "";
+    [JsonPropertyName("status")] public string Status { get; init; } = "";
+    [JsonPropertyName("tags")] public List<string> Tags { get; init; } = new(); // all tags = profile badges. -xlinka
+    [JsonPropertyName("nameplateBadges")] public List<string> NameplateBadges { get; init; } = new(); // subset shown on the nameplate.
     [JsonPropertyName("isAccountBanned")] public bool IsAccountBanned { get; init; }
     [JsonPropertyName("isPublicBanned")] public bool IsPublicBanned { get; init; }
     [JsonPropertyName("isSpectatorBanned")] public bool IsSpectatorBanned { get; init; }
@@ -176,6 +180,13 @@ public record UserProfile
     public PatreonInfo? PatreonData { get; init; }
     [JsonPropertyName("storageQuota")]
     public StorageQuota? StorageQuota { get; init; }
+    // Roles + badges (admin/moderator/staff, supporter, patreon, tier:<name>). -xlinka
+    [JsonPropertyName("tags")]
+    public List<string> Tags { get; init; } = new();
+    [JsonPropertyName("bio")]
+    public string Bio { get; init; } = "";
+    [JsonPropertyName("status")]
+    public string Status { get; init; } = "";
 }
 
 public record PatreonInfo

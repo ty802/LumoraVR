@@ -143,6 +143,9 @@ public record GroupInfo
     [JsonPropertyName("memberCount")] public int MemberCount { get; init; }
     [JsonPropertyName("createdAt")] public DateTime CreatedAt { get; init; }
     [JsonPropertyName("myRole")] public string? MyRole { get; init; } // caller's role, null if not a member
+    // Storage state from the owner's billing: "Active" | "Grace" | "Locked", or null on list rows. -xlinka
+    [JsonPropertyName("storageStatus")] public string? StorageStatus { get; init; }
+    [JsonPropertyName("storageLockAt")] public DateTime? StorageLockAt { get; init; }
 }
 
 public record GroupMemberInfo
@@ -150,6 +153,13 @@ public record GroupMemberInfo
     [JsonPropertyName("userId")] public string UserId { get; init; } = "";
     [JsonPropertyName("role")] public string Role { get; init; } = "Member";
     [JsonPropertyName("joinedAt")] public DateTime JoinedAt { get; init; }
+}
+
+// a pending join request on a private group (from GET /api/groups/{id}/requests). -xlinka
+public record GroupJoinRequestInfo
+{
+    [JsonPropertyName("userId")] public string UserId { get; init; } = "";
+    [JsonPropertyName("requestedAt")] public DateTime RequestedAt { get; init; }
 }
 
 // public view of a user incl. PLATFORM moderation ban status (from GET /api/user/{id}). NOT world bans. -xlinka

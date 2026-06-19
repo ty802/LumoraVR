@@ -475,9 +475,9 @@ public sealed class LumoraClient : IDisposable
     public Task<ApiResponse> KickGroupMember(string groupId, string userId)
         => DeleteAsync($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/members/{userId}");
 
-    /// <summary>Pending join requests for a private group (moderator+); raw JSON in RawBody.</summary>
-    public Task<ApiResponse> GetGroupRequests(string groupId)
-        => GetAsync($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/requests");
+    /// <summary>Pending join requests for a private group (moderator+).</summary>
+    public Task<ApiResponse<List<GroupJoinRequestInfo>>> GetGroupRequests(string groupId)
+        => GetAsync<List<GroupJoinRequestInfo>>($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/requests");
 
     /// <summary>Approve a pending join request (moderator+).</summary>
     public Task<ApiResponse> ApproveGroupRequest(string groupId, string userId)

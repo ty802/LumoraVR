@@ -13,7 +13,7 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.UI;
 
-public sealed class FileBrowserScreen : DashboardScreen
+public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
 {
     private const int GridColumns = 8;
     private const float CardHeight = 64f;

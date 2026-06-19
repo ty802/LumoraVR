@@ -301,7 +301,9 @@ public class UserspaceDashboard : UIComponent
 
     public void FeedSearchChar(char c)
     {
-        if (_dashboard?.CurrentScreen is FileBrowserScreen fb && fb.ConsumeChar(c))
+        // Let the current screen grab the keystroke first (inline name fields etc.); only fall through to the
+        // file-browser search buffer if nothing consumed it. -xlinka
+        if (_dashboard?.CurrentScreen is IDashboardKeyInput k && k.ConsumeChar(c))
             return;
         _searchBuffer += c;
         ApplySearch();
@@ -309,7 +311,7 @@ public class UserspaceDashboard : UIComponent
 
     public void FeedSearchBackspace()
     {
-        if (_dashboard?.CurrentScreen is FileBrowserScreen fb && fb.ConsumeBackspace())
+        if (_dashboard?.CurrentScreen is IDashboardKeyInput k && k.ConsumeBackspace())
             return;
         if (_searchBuffer.Length == 0) return;
         _searchBuffer = _searchBuffer.Substring(0, _searchBuffer.Length - 1);
@@ -318,12 +320,12 @@ public class UserspaceDashboard : UIComponent
 
     public bool FeedEnter()
     {
-        return _dashboard?.CurrentScreen is FileBrowserScreen fb && fb.ConsumeEnter();
+        return _dashboard?.CurrentScreen is IDashboardKeyInput k && k.ConsumeEnter();
     }
 
     public bool FeedEscape()
     {
-        return _dashboard?.CurrentScreen is FileBrowserScreen fb && fb.ConsumeEscape();
+        return _dashboard?.CurrentScreen is IDashboardKeyInput k && k.ConsumeEscape();
     }
 
     public void ClearSearch()
@@ -499,8 +501,7 @@ public class UserspaceDashboard : UIComponent
         _dashboard?.AddScreen<WorldsScreen>("Worlds", new color(0.20f, 0.80f, 1f, 1f));
         AddInfoScreen("Friends", new color(0.30f, 1f, 0.80f, 1f),
             "Friends, requests and messages.");
-        AddInfoScreen("Groups", new color(0.55f, 0.45f, 0.95f, 1f),
-            "Groups you're a member of and group spaces.");
+        _dashboard?.AddScreen<GroupsScreen>("Groups", new color(0.55f, 0.45f, 0.95f, 1f));
         _dashboard?.AddScreen<InventoryScreen>("Inventory", new color(0.85f, 0.60f, 0.22f, 1f));
         _dashboard?.AddScreen<SessionScreen>("Session", new color(0.25f, 0.55f, 1f, 1f));
         _dashboard?.AddScreen<SettingsScreen>("Settings", new color(1f, 0.22f, 0.28f, 1f));

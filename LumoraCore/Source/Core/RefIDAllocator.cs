@@ -24,6 +24,10 @@ public class RefIDAllocator
     // Track which user bytes are allocated and to whom
     private readonly Dictionary<byte, User> _userByteToUser = new Dictionary<byte, User>();
 
+    // Bytes from users who left, ready to be handed out again so a long session with lots of
+    // join/leave churn doesn't burn through the 253 slots and faceplant. Lowest free byte first. -xlinka
+    private readonly SortedSet<byte> _freedUserBytes = new SortedSet<byte>();
+
     // Statistics
     private long _totalAllocations;
     private long _authorityAllocations;
@@ -48,13 +52,25 @@ public class RefIDAllocator
     {
         lock (_lock)
         {
-            if (_nextUserByte > RefIDConstants.MAX_USER_BYTE)
+            byte userByte;
+            if (_freedUserBytes.Count > 0)
             {
-                throw new InvalidOperationException(
-                    $"Ran out of user allocation bytes! Maximum {RefIDConstants.MAX_USER_BYTE} users supported.");
+                // Reuse a byte from someone who left. Child-object IDs keep counting up from the byte's
+                // high-water mark (see _latestUserPosition), so recycled IDs never collide with old ones. -xlinka
+                userByte = _freedUserBytes.Min;
+                _freedUserBytes.Remove(userByte);
+            }
+            else
+            {
+                if (_nextUserByte > RefIDConstants.MAX_USER_BYTE)
+                {
+                    throw new InvalidOperationException(
+                        $"Ran out of user allocation bytes! Maximum {RefIDConstants.MAX_USER_BYTE} users supported.");
+                }
+
+                userByte = _nextUserByte++;
             }
 
-            byte userByte = _nextUserByte++;
             var range = RefIDRange.ForUserByte(userByte);
 
             if (user != null)
@@ -94,14 +110,22 @@ public class RefIDAllocator
     }
 
     /// <summary>
-    /// Release a user's allocation when they leave.
-    /// Note: IDs are not actually reclaimed, but tracking is updated.
+    /// Release a user's allocation when they leave. The byte goes back into the free pool so a future
+    /// joiner can reuse it; the per-byte position counter is deliberately left alone so reused bytes
+    /// keep minting fresh IDs instead of replaying old ones.
     /// </summary>
     public void ReleaseUserAllocation(byte userByte)
     {
         lock (_lock)
         {
             _userByteToUser.Remove(userByte);
+
+            // Only recycle bytes we actually handed out, and don't double-add the same one. -xlinka
+            if (RefIDConstants.IsValidUserByte(userByte) && userByte < _nextUserByte)
+            {
+                _freedUserBytes.Add(userByte);
+            }
+
             LumoraLogger.Log($"Released allocation for user byte {userByte}");
         }
     }
@@ -183,7 +207,8 @@ public class RefIDAllocator
         {
             lock (_lock)
             {
-                return _nextUserByte - RefIDConstants.FIRST_USER_BYTE;
+                // High-water mark minus the bytes sitting in the free pool is who is actually live. -xlinka
+                return (_nextUserByte - RefIDConstants.FIRST_USER_BYTE) - _freedUserBytes.Count;
             }
         }
     }
@@ -328,6 +353,7 @@ public class RefIDAllocator
         {
             _nextUserByte = RefIDConstants.FIRST_USER_BYTE;
             _userByteToUser.Clear();
+            _freedUserBytes.Clear();
             _totalAllocations = 0;
             _authorityAllocations = 0;
             _localAllocations = 0;

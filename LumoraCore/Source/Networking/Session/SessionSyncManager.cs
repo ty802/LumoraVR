@@ -11,6 +11,8 @@ using Lumora.Core.Networking.Sync;
 using LegacyJoinGrantData = Lumora.Core.Networking.Messages.JoinGrantData;
 using LegacyJoinRequestData = Lumora.Core.Networking.Messages.JoinRequestData;
 using LegacyJoinRejectData = Lumora.Core.Networking.Messages.JoinRejectData;
+using LegacyJoinChallengeData = Lumora.Core.Networking.Messages.JoinChallengeData;
+using LegacyJoinAuthenticateData = Lumora.Core.Networking.Messages.JoinAuthenticateData;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Session;
@@ -1397,6 +1399,34 @@ public class SessionSyncManager : IDisposable
                     var requestData = LegacyJoinRequestData.Decode(message.Payload);
                     LumoraLogger.Log($"ProcessControlMessage: JoinRequest from '{requestData.UserName}'");
                     Session.Connections.HandleJoinRequest(message.Sender, requestData);
+                }
+                break;
+
+            case ControlMessage.Message.JoinChallenge:
+                // Client side only: the host wants us to sign a nonce to prove our machine identity.
+                if (!World.IsAuthority)
+                {
+                    if (message.Payload == null || message.Payload.Length == 0)
+                    {
+                        LumoraLogger.Warn("ProcessControlMessage: JoinChallenge missing payload");
+                        return;
+                    }
+                    var challengeData = LegacyJoinChallengeData.Decode(message.Payload);
+                    Session.Connections.HandleJoinChallenge(message.Sender, challengeData);
+                }
+                break;
+
+            case ControlMessage.Message.JoinAuthenticate:
+                // Host side only: the joiner answered our challenge; verify it before granting.
+                if (World.IsAuthority)
+                {
+                    if (message.Payload == null || message.Payload.Length == 0)
+                    {
+                        LumoraLogger.Warn("ProcessControlMessage: JoinAuthenticate missing payload");
+                        return;
+                    }
+                    var authData = LegacyJoinAuthenticateData.Decode(message.Payload);
+                    Session.Connections.HandleJoinAuthenticate(message.Sender, authData);
                 }
                 break;
 

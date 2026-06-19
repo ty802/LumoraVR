@@ -175,6 +175,18 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
         {
             base.Initialize(world, parent: null);
 
+            // Identity and namespace fields are the host's to author, full stop. Without this a guest
+            // can overwrite its own UserID/MachineID (which is how bans are keyed, so that's a ban-dodge)
+            // or rewrite its AllocationID to claim another user's RefID namespace and then author their
+            // objects. MarkHostOnly makes Validate reject any guest write to these on the authority; the
+            // host still authors them locally just fine. -xlinka
+            UserName.MarkHostOnly();
+            UserID.MarkHostOnly();
+            MachineID.MarkHostOnly();
+            AllocationID.MarkHostOnly();
+            AllocationIDStart.MarkHostOnly();
+            AllocationIDEnd.MarkHostOnly();
+
             EndInitializationStageForMembers();
 
             _syncMembers = new List<ISyncMember>(SyncMemberCount);
@@ -219,7 +231,9 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
         {
             var session = World.Session;
             var syncManager = session?.Sync;
-            if (syncManager != null && ReferenceID == syncManager.LocalUserRefIDToInit)
+            // Guard against a null/default target matching a user whose RefID also defaulted to 0, so a
+            // malformed JoinGrant can't trick a client into adopting the wrong user as local. -xlinka
+            if (syncManager != null && !syncManager.LocalUserRefIDToInit.IsNull && ReferenceID == syncManager.LocalUserRefIDToInit)
             {
                 World.SetLocalUser(this);
                 LumoraLogger.Log($"User.Initialize: Set local user '{UserName.Value}' (RefID: {ReferenceID})");

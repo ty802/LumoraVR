@@ -1,6 +1,7 @@
 ﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System;
 using System.IO;
 using Lumora.Core.Networking;
 
@@ -104,6 +105,13 @@ public struct JoinRequestData
     public string UserID;
     public byte HeadDevice;
 
+    /// <summary>
+    /// DER SubjectPublicKeyInfo for this client's machine key. MachineID must be the hash of this, and
+    /// the joiner has to sign the host's challenge nonce with the matching private key to get in. This
+    /// is what makes MachineID actually mean something instead of being free text. -xlinka
+    /// </summary>
+    public byte[] MachinePublicKey;
+
     public byte[] Encode()
     {
         using var ms = new MemoryStream();
@@ -113,6 +121,9 @@ public struct JoinRequestData
         writer.Write(MachineID ?? "");
         writer.Write(UserID ?? "");
         writer.Write(HeadDevice);
+        writer.Write(MachinePublicKey?.Length ?? 0);
+        if (MachinePublicKey != null && MachinePublicKey.Length > 0)
+            writer.Write(MachinePublicKey);
 
         return ms.ToArray();
     }
@@ -122,13 +133,25 @@ public struct JoinRequestData
         using var ms = new MemoryStream(data);
         using var reader = new BinaryReader(ms);
 
-        return new JoinRequestData
+        var result = new JoinRequestData
         {
             UserName = reader.ReadString(),
             MachineID = reader.ReadString(),
             UserID = reader.ReadString(),
-            HeadDevice = reader.ReadByte()
+            HeadDevice = reader.ReadByte(),
+            MachinePublicKey = Array.Empty<byte>()
         };
+
+        // Public key is appended after the original fields. Tolerate a short/legacy payload, and bound
+        // the length so a hostile peer can't make us allocate a huge buffer off a declared size. -xlinka
+        if (ms.Position < ms.Length)
+        {
+            int keyLen = reader.ReadInt32();
+            if (keyLen > 0 && keyLen <= 8192)
+                result.MachinePublicKey = reader.ReadBytes(keyLen);
+        }
+
+        return result;
     }
 }
 
@@ -202,5 +225,72 @@ public struct JoinRejectData
         {
             Reason = reader.ReadString()
         };
+    }
+}
+
+/// <summary>
+/// Host -> joiner: a random nonce the joiner must sign with its machine private key to prove it holds
+/// the key behind the MachineID it claimed. Fresh per join, so a captured signature can't be replayed
+/// to another join (different nonce). -xlinka
+/// </summary>
+public struct JoinChallengeData
+{
+    public byte[] Nonce;
+
+    public byte[] Encode()
+    {
+        using var ms = new MemoryStream();
+        using var writer = new BinaryWriter(ms);
+
+        writer.Write(Nonce?.Length ?? 0);
+        if (Nonce != null && Nonce.Length > 0)
+            writer.Write(Nonce);
+
+        return ms.ToArray();
+    }
+
+    public static JoinChallengeData Decode(byte[] data)
+    {
+        using var ms = new MemoryStream(data);
+        using var reader = new BinaryReader(ms);
+
+        var result = new JoinChallengeData { Nonce = Array.Empty<byte>() };
+        int len = reader.ReadInt32();
+        if (len > 0 && len <= 1024)
+            result.Nonce = reader.ReadBytes(len);
+        return result;
+    }
+}
+
+/// <summary>
+/// Joiner -> host: the joiner's signature over the challenge nonce, made with its machine private key.
+/// The host verifies it against the public key from the JoinRequest. -xlinka
+/// </summary>
+public struct JoinAuthenticateData
+{
+    public byte[] Signature;
+
+    public byte[] Encode()
+    {
+        using var ms = new MemoryStream();
+        using var writer = new BinaryWriter(ms);
+
+        writer.Write(Signature?.Length ?? 0);
+        if (Signature != null && Signature.Length > 0)
+            writer.Write(Signature);
+
+        return ms.ToArray();
+    }
+
+    public static JoinAuthenticateData Decode(byte[] data)
+    {
+        using var ms = new MemoryStream(data);
+        using var reader = new BinaryReader(ms);
+
+        var result = new JoinAuthenticateData { Signature = Array.Empty<byte>() };
+        int len = reader.ReadInt32();
+        if (len > 0 && len <= 4096)
+            result.Signature = reader.ReadBytes(len);
+        return result;
     }
 }

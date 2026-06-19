@@ -1122,6 +1122,10 @@ public class World
 			// Same reason as OnUserJoined - host handles user lifecycle events.
 			if (IsAuthority)
 			{
+				// Hand this user's byte back to the allocator so a long session with join/leave churn
+				// doesn't run the 253 user-byte space dry. Authority owns allocation, so only it reclaims. -xlinka
+				_refIDAllocator?.ReleaseUserAllocation(user.AllocationID.Value);
+
 				TriggerUserLeftEvent(user);
 			}
 

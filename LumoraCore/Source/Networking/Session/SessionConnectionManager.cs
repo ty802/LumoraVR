@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Threading.Tasks;
 using Lumora.Core;
 using Lumora.Core.Networking;
@@ -11,6 +12,8 @@ using Lumora.Core.Networking.Sync;
 using LegacyJoinGrantData = Lumora.Core.Networking.Messages.JoinGrantData;
 using LegacyJoinRequestData = Lumora.Core.Networking.Messages.JoinRequestData;
 using LegacyJoinRejectData = Lumora.Core.Networking.Messages.JoinRejectData;
+using LegacyJoinChallengeData = Lumora.Core.Networking.Messages.JoinChallengeData;
+using LegacyJoinAuthenticateData = Lumora.Core.Networking.Messages.JoinAuthenticateData;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Session;
@@ -26,6 +29,17 @@ public class SessionConnectionManager : IDisposable
     private readonly Dictionary<User, IConnection> _userToConnection = new();
     private readonly HashSet<IConnection> _pendingConnections = new(); // Connections waiting for JoinRequest
     private readonly Dictionary<string, int> _pendingByIp = new();     // IP -> count of pending connections
+
+    // Connections that sent a valid JoinRequest and got a challenge, now waiting on the signed answer.
+    // Holds the original request + the nonce we asked them to sign. Cleaned on grant, reject, or
+    // disconnect, and counted against the pending cap so it can't be used to dodge the DoS limit. -xlinka
+    private readonly Dictionary<IConnection, PendingJoin> _pendingAuth = new();
+
+    private sealed class PendingJoin
+    {
+        public LegacyJoinRequestData Request;
+        public byte[] Nonce = null!;
+    }
 
     public Session Session { get; private set; }
     public World World => (Session?.World) ?? null!;
@@ -167,10 +181,14 @@ public class SessionConnectionManager : IDisposable
             return;
         }
 
+        var identity = Lumora.Core.Security.MachineIdentity.Local;
         var requestData = new LegacyJoinRequestData
         {
             UserName = Environment.MachineName,
-            MachineID = Environment.MachineName,
+            // MachineID is now the self-certifying hash of our public key, not a free-text string. We
+            // prove we hold the matching private key when the host challenges us. -xlinka
+            MachineID = identity.MachineId,
+            MachinePublicKey = identity.PublicKey,
             UserID = "",
             HeadDevice = (byte)(Engine.Current?.InputInterface?.CurrentHeadOutputDevice ?? HeadOutputDevice.Screen)
         };
@@ -196,7 +214,9 @@ public class SessionConnectionManager : IDisposable
         bool admit;
         lock (_lock)
         {
-            if (_pendingConnections.Count >= NetworkLimits.MaxPendingConnections)
+            // Count connections still mid-handshake (waiting to authenticate) too, otherwise an attacker
+            // could send a JoinRequest, sit in _pendingAuth, free the pending slot, and repeat. -xlinka
+            if (_pendingConnections.Count + _pendingAuth.Count >= NetworkLimits.MaxPendingConnections)
             {
                 admit = false;
             }
@@ -233,6 +253,7 @@ public class SessionConnectionManager : IDisposable
         lock (_lock)
         {
             RemovePendingLocked(peer);
+            _pendingAuth.Remove(peer); // drop any half-finished handshake so it can't leak. -xlinka
             if (_connectionToUser.TryGetValue(peer, out var user))
             {
                 _connectionToUser.Remove(peer);
@@ -287,7 +308,15 @@ public class SessionConnectionManager : IDisposable
             return;
         }
 
-        SendJoinGrant(connection, requestData.UserName, requestData.MachineID);
+        // The request checks out (machine id matches its key, not banned, room to join). Don't grant yet:
+        // make them prove they actually hold the private key by signing a fresh random nonce. Only after
+        // that signature verifies do we mint a User. This is what stops someone just claiming an id. -xlinka
+        var nonce = RandomNumberGenerator.GetBytes(32);
+        lock (_lock)
+        {
+            _pendingAuth[connection] = new PendingJoin { Request = requestData, Nonce = nonce };
+        }
+        SendJoinChallenge(connection, nonce);
     }
 
     private string? ValidateJoinRequest(IConnection connection, LegacyJoinRequestData requestData)
@@ -316,6 +345,23 @@ public class SessionConnectionManager : IDisposable
 
         if (!string.IsNullOrWhiteSpace(requestData.MachineID) && requestData.MachineID.Length > 128)
             return "Machine identifier is too long";
+
+        // The MachineID has to be the self-certifying hash of the public key the client sent. Ownership
+        // of the matching PRIVATE key is proven a step later via the signed challenge; this just rejects a
+        // mismatched/forged id up front, so the ban check below keys on something that can't be faked. -xlinka
+        if (requestData.MachinePublicKey == null || requestData.MachinePublicKey.Length == 0)
+            return "Missing machine public key";
+        if (!Lumora.Core.Security.MachineIdentity.IsMachineIdForKey(requestData.MachineID, requestData.MachinePublicKey))
+            return "Machine identity does not match its key";
+
+        // Bounce banned identities HERE, before we mint a User or sync anything. The ban check used to
+        // only fire later in AddUser, by which point the user was already in the collection and synced,
+        // so a banned user ended up half-joined with the connection still open. This is the gate, so the
+        // ban belongs at the gate. Caveat: it's only as strong as what it keys on, and right now MachineID
+        // is client-supplied and the account UserID isn't verified, so a determined evader can still spoof
+        // past it until we have real join verification. Still beats leaving the door open. -xlinka
+        if (Lumora.Core.Security.BanManager.IsBanned(requestData.UserID, requestData.MachineID, World.WorldName?.Value))
+            return "You are banned from this world";
 
         if (!string.IsNullOrWhiteSpace(requestData.UserID))
         {
@@ -428,6 +474,94 @@ public class SessionConnectionManager : IDisposable
         {
             LumoraLogger.Error("SendJoinGrant: Session.Sync is NULL - cannot queue user for initialization!");
         }
+    }
+
+    /// <summary>
+    /// Host -> joiner: send the random nonce the joiner must sign with its machine key to prove identity.
+    /// </summary>
+    private void SendJoinChallenge(IConnection connection, byte[] nonce)
+    {
+        var challenge = new LegacyJoinChallengeData { Nonce = nonce };
+        var controlMessage = new ControlMessage(ControlMessage.Message.JoinChallenge)
+        {
+            Payload = challenge.Encode()
+        };
+
+        byte[] encoded = controlMessage.Encode();
+        connection.Send(encoded, encoded.Length, reliable: true, background: false);
+        LumoraLogger.Log($"Sent JoinChallenge to {connection.Identifier}");
+    }
+
+    /// <summary>
+    /// Client side: the host challenged us, so sign the nonce with our machine key and send it back.
+    /// </summary>
+    public void HandleJoinChallenge(IConnection connection, LegacyJoinChallengeData challenge)
+    {
+        if (challenge.Nonce == null || challenge.Nonce.Length == 0)
+        {
+            LumoraLogger.Warn("HandleJoinChallenge: empty nonce, ignoring");
+            return;
+        }
+
+        byte[] signature;
+        try
+        {
+            signature = Lumora.Core.Security.MachineIdentity.Local.SignChallenge(challenge.Nonce);
+        }
+        catch (Exception ex)
+        {
+            LumoraLogger.Error($"HandleJoinChallenge: failed to sign challenge ({ex.Message})");
+            return;
+        }
+
+        var auth = new LegacyJoinAuthenticateData { Signature = signature };
+        var controlMessage = new ControlMessage(ControlMessage.Message.JoinAuthenticate)
+        {
+            Payload = auth.Encode()
+        };
+
+        byte[] encoded = controlMessage.Encode();
+        var target = connection ?? HostConnection;
+        target.Send(encoded, encoded.Length, reliable: true, background: false);
+        LumoraLogger.Log("Sent JoinAuthenticate to host");
+    }
+
+    /// <summary>
+    /// Host side: verify the joiner's signed challenge. Only if the signature proves they hold the
+    /// private key behind their claimed MachineID do we actually grant the join. Otherwise reject. -xlinka
+    /// </summary>
+    public void HandleJoinAuthenticate(IConnection connection, LegacyJoinAuthenticateData auth)
+    {
+        if (connection == null || !World.IsAuthority)
+            return;
+
+        PendingJoin? pending = null;
+        lock (_lock)
+        {
+            _pendingAuth.TryGetValue(connection, out pending);
+            if (pending != null)
+                _pendingAuth.Remove(connection);
+        }
+
+        if (pending == null)
+        {
+            LumoraLogger.Warn($"HandleJoinAuthenticate: no pending auth for {connection.Identifier} - ignoring");
+            SendJoinReject(connection, "No pending authentication");
+            return;
+        }
+
+        bool ok = Lumora.Core.Security.MachineIdentity.VerifyChallenge(
+            pending.Request.MachineID, pending.Request.MachinePublicKey, pending.Nonce, auth.Signature);
+
+        if (!ok)
+        {
+            LumoraLogger.Warn($"HandleJoinAuthenticate: signature check FAILED for {connection.Identifier} - rejecting");
+            SendJoinReject(connection, "Machine authentication failed");
+            return;
+        }
+
+        LumoraLogger.Log($"HandleJoinAuthenticate: {connection.Identifier} proved its machine identity - granting");
+        SendJoinGrant(connection, pending.Request.UserName, pending.Request.MachineID);
     }
 
     private void RemoveUser(User user)

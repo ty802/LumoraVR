@@ -32,6 +32,11 @@ public class ControlMessage : SyncMessage
         AssetNextChunkRequest,
         /// <summary>Sender cannot provide the requested asset.</summary>
         AssetNotAvailable,
+
+        /// <summary>Host -> joiner: a nonce the joiner must sign with its machine key to prove identity.</summary>
+        JoinChallenge,
+        /// <summary>Joiner -> host: the signed challenge nonce, proving it holds the claimed machine key.</summary>
+        JoinAuthenticate,
     }
 
     public override MessageType MessageType => MessageType.Control;

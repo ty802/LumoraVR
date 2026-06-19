@@ -23,7 +23,7 @@ public class ReplicatedComponentCollection<C> : ReplicatedObjectCollection<C> wh
 
     protected override C DecodeElement(BinaryReader reader)
     {
-        throw new InvalidOperationException("WorkerBag requires CreateElementWithKey.");
+        throw new InvalidOperationException("ReplicatedComponentCollection requires CreateElementWithKey.");
     }
 
     protected override void SkipElement(BinaryReader reader)

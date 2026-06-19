@@ -1426,7 +1426,9 @@ public class SessionSyncManager : IDisposable
                         return;
                     }
                     var authData = LegacyJoinAuthenticateData.Decode(message.Payload);
-                    Session.Connections.HandleJoinAuthenticate(message.Sender, authData);
+                    // Fire-and-forget: account verification may hit the backend (async), and the handler
+                    // grants or rejects internally, so we don't block the control-message loop on it. -xlinka
+                    _ = Session.Connections.HandleJoinAuthenticate(message.Sender, authData);
                 }
                 break;
 

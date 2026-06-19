@@ -108,11 +108,37 @@ public enum TransferState
     Error
 }
 
-// auth session - API only returns token, user info comes from /api/user/me
+// auth session - API returns token + a per-login session id; user info comes from /api/user/me
 public record Session
 {
     [JsonPropertyName("token")]
     public string Token { get; init; } = "";
+
+    // per-login session id (the JWT jti). We publish our session public key under this so a game host
+    // can fetch the matching key and verify our account when we join. -xlinka
+    [JsonPropertyName("sessionId")]
+    public string SessionId { get; init; } = "";
+}
+
+// a user's published session public key (from GET /api/user/{id}/rsa/{sessionId})
+public record SessionKeyInfo
+{
+    [JsonPropertyName("userId")] public string UserId { get; init; } = "";
+    [JsonPropertyName("sessionId")] public string SessionId { get; init; } = "";
+    [JsonPropertyName("publicKey")] public string PublicKey { get; init; } = ""; // base64 DER SPKI
+    [JsonPropertyName("expiresAt")] public DateTime ExpiresAt { get; init; }
+}
+
+// public view of a user incl. PLATFORM moderation ban status (from GET /api/user/{id}). NOT world bans. -xlinka
+public record PublicUserInfo
+{
+    [JsonPropertyName("id")] public string Id { get; init; } = "";
+    [JsonPropertyName("username")] public string Username { get; init; } = "";
+    [JsonPropertyName("isVerified")] public bool IsVerified { get; init; }
+    [JsonPropertyName("isAccountBanned")] public bool IsAccountBanned { get; init; }
+    [JsonPropertyName("isPublicBanned")] public bool IsPublicBanned { get; init; }
+    [JsonPropertyName("isSpectatorBanned")] public bool IsSpectatorBanned { get; init; }
+    [JsonPropertyName("isMuteBanned")] public bool IsMuteBanned { get; init; }
 }
 
 // upload handle from server

@@ -112,6 +112,16 @@ public struct JoinRequestData
     /// </summary>
     public byte[] MachinePublicKey;
 
+    /// <summary>
+    /// Optional account identity. When the joiner is signed into an account, these name the
+    /// account and the login session whose public key it published to the backend. The host fetches that
+    /// key from the cloud and verifies the account signature (in JoinAuthenticate). Empty = guest, machine
+    /// key only. We do NOT send the account public key itself, the host gets the trusted one from the
+    /// cloud so a joiner can't present a key of their choosing. -xlinka
+    /// </summary>
+    public string AccountUserId;
+    public string AccountSessionId;
+
     public byte[] Encode()
     {
         using var ms = new MemoryStream();
@@ -124,6 +134,8 @@ public struct JoinRequestData
         writer.Write(MachinePublicKey?.Length ?? 0);
         if (MachinePublicKey != null && MachinePublicKey.Length > 0)
             writer.Write(MachinePublicKey);
+        writer.Write(AccountUserId ?? "");
+        writer.Write(AccountSessionId ?? "");
 
         return ms.ToArray();
     }
@@ -139,17 +151,24 @@ public struct JoinRequestData
             MachineID = reader.ReadString(),
             UserID = reader.ReadString(),
             HeadDevice = reader.ReadByte(),
-            MachinePublicKey = Array.Empty<byte>()
+            MachinePublicKey = Array.Empty<byte>(),
+            AccountUserId = "",
+            AccountSessionId = ""
         };
 
-        // Public key is appended after the original fields. Tolerate a short/legacy payload, and bound
-        // the length so a hostile peer can't make us allocate a huge buffer off a declared size. -xlinka
+        // Everything past HeadDevice is appended and read tolerantly so a short/legacy payload still
+        // decodes. The key length is bounded so a hostile peer can't make us allocate off a declared size.
+        // -xlinka
         if (ms.Position < ms.Length)
         {
             int keyLen = reader.ReadInt32();
             if (keyLen > 0 && keyLen <= 8192)
                 result.MachinePublicKey = reader.ReadBytes(keyLen);
         }
+        if (ms.Position < ms.Length)
+            result.AccountUserId = reader.ReadString();
+        if (ms.Position < ms.Length)
+            result.AccountSessionId = reader.ReadString();
 
         return result;
     }
@@ -268,7 +287,8 @@ public struct JoinChallengeData
 /// </summary>
 public struct JoinAuthenticateData
 {
-    public byte[] Signature;
+    public byte[] Signature;          // machine-key signature over the challenge nonce
+    public byte[] AccountSignature;   // optional account-key signature over the same nonce, when signed in
 
     public byte[] Encode()
     {
@@ -278,6 +298,9 @@ public struct JoinAuthenticateData
         writer.Write(Signature?.Length ?? 0);
         if (Signature != null && Signature.Length > 0)
             writer.Write(Signature);
+        writer.Write(AccountSignature?.Length ?? 0);
+        if (AccountSignature != null && AccountSignature.Length > 0)
+            writer.Write(AccountSignature);
 
         return ms.ToArray();
     }
@@ -287,10 +310,21 @@ public struct JoinAuthenticateData
         using var ms = new MemoryStream(data);
         using var reader = new BinaryReader(ms);
 
-        var result = new JoinAuthenticateData { Signature = Array.Empty<byte>() };
+        var result = new JoinAuthenticateData
+        {
+            Signature = Array.Empty<byte>(),
+            AccountSignature = Array.Empty<byte>()
+        };
         int len = reader.ReadInt32();
         if (len > 0 && len <= 4096)
             result.Signature = reader.ReadBytes(len);
+        // Account signature is appended; tolerate its absence (guest / legacy). -xlinka
+        if (ms.Position < ms.Length)
+        {
+            int accLen = reader.ReadInt32();
+            if (accLen > 0 && accLen <= 4096)
+                result.AccountSignature = reader.ReadBytes(accLen);
+        }
         return result;
     }
 }

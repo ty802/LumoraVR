@@ -11,6 +11,7 @@ using System.IO.Compression;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -26,6 +27,13 @@ public sealed class LumoraClient : IDisposable
     private readonly string _deviceId;
     private Session? _session;
 
+    // Per-login ACCOUNT keypair for join verification. Generated fresh each sign-in, private half
+    // stays in memory here, public half is published to the backend so a game host can fetch it and verify
+    // we are who we claim. Cleared on sign-out. -xlinka
+    private RSA? _accountKey;
+    private string? _accountUserId;
+    private string? _accountSessionId;
+
     public const int DefaultChunkSize = 4 * 1024 * 1024; // 4MB chunks
     public const int MaxParallelChunks = 4; // dont go too crazy here
 
@@ -36,6 +44,19 @@ public sealed class LumoraClient : IDisposable
     public string DeviceId => _deviceId;
     public Session? CurrentSession => _session;
     public bool IsAuthenticated => _session != null && !string.IsNullOrEmpty(_session.Token);
+
+    /// <summary>Our account's per-login session id (JWT jti) once signed in, else null.</summary>
+    public string? AccountSessionId => _accountSessionId;
+    /// <summary>Our account user id once signed in and resolved, else null.</summary>
+    public string? AccountUserId => _accountUserId;
+    /// <summary>Our account public key (DER SubjectPublicKeyInfo) for this login, else null.</summary>
+    public byte[]? AccountPublicKey => _accountKey?.ExportSubjectPublicKeyInfo();
+    /// <summary>True when we have a usable account identity to present at join (signed in, key + ids ready).</summary>
+    public bool HasAccountIdentity => _accountKey != null && !string.IsNullOrEmpty(_accountUserId) && !string.IsNullOrEmpty(_accountSessionId);
+
+    /// <summary>Sign a game host's challenge nonce with our account private key (RSA SHA256 PKCS1).</summary>
+    public byte[]? SignWithAccountKey(byte[] nonce)
+        => _accountKey?.SignData(nonce, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
 
     public event Action<Session>? Authenticated;
     public event Action? SignedOut;
@@ -73,6 +94,7 @@ public sealed class LumoraClient : IDisposable
 
     public void Dispose()
     {
+        _accountKey?.Dispose();
         _api.Dispose();
         _content.Dispose();
     }
@@ -91,7 +113,10 @@ public sealed class LumoraClient : IDisposable
         var result = await PostAsync<Session>($"{ServiceConfig.Current.ApiBase}/api/user/login", payload);
 
         if (result.Success && result.Data != null)
+        {
             ApplySession(result.Data);
+            await EstablishAccountIdentityAsync(result.Data);
+        }
 
         return result;
     }
@@ -105,7 +130,10 @@ public sealed class LumoraClient : IDisposable
         var result = await PostAsync<Session>($"{ServiceConfig.Current.ApiBase}/api/user/token", payload);
 
         if (result.Success && result.Data != null)
+        {
             ApplySession(result.Data);
+            await EstablishAccountIdentityAsync(result.Data);
+        }
 
         return result;
     }
@@ -138,9 +166,75 @@ public sealed class LumoraClient : IDisposable
     private void ClearSession()
     {
         _session = null;
+        _accountKey?.Dispose();
+        _accountKey = null;
+        _accountUserId = null;
+        _accountSessionId = null;
         _api.DefaultRequestHeaders.Authorization = null;
         SignedOut?.Invoke();
     }
+
+    // Generate this login's account keypair and publish the public half so a game host can fetch it and
+    // verify our account when we join. Best-effort: if it can't complete (no session id, offline, etc.) we
+    // just have no account identity and join falls back to machine-key only (guest). -xlinka
+    private async Task EstablishAccountIdentityAsync(Session session)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(session.SessionId))
+                return; // backend didn't hand us a session id, can't bind a key to it
+
+            var me = await GetCurrentUser();
+            if (me.Failed || me.Data == null || string.IsNullOrEmpty(me.Data.Id))
+                return;
+
+            _accountKey?.Dispose();
+            _accountKey = RSA.Create(2048);
+            _accountUserId = me.Data.Id;
+            _accountSessionId = session.SessionId;
+
+            var publicKey = Convert.ToBase64String(_accountKey.ExportSubjectPublicKeyInfo());
+            var publish = await PutAsync(
+                $"{ServiceConfig.Current.ApiBase}/api/user/{_accountUserId}/rsa/{_accountSessionId}",
+                new { PublicKey = publicKey });
+
+            if (publish.Failed)
+            {
+                // couldn't publish, so the key is useless to a host. Drop it so HasAccountIdentity is honest.
+                _accountKey?.Dispose();
+                _accountKey = null;
+                _accountUserId = null;
+                _accountSessionId = null;
+            }
+        }
+        catch
+        {
+            _accountKey?.Dispose();
+            _accountKey = null;
+            _accountUserId = null;
+            _accountSessionId = null;
+        }
+    }
+
+    /// <summary>
+    /// Fetch a user's published session public key (DER SubjectPublicKeyInfo bytes) so a game host can
+    /// verify that user's account signature at join. Returns null if there's no key or the call fails.
+    /// </summary>
+    public async Task<byte[]?> GetSessionPublicKeyAsync(string userId, string sessionId)
+    {
+        var result = await GetAsync<SessionKeyInfo>($"{ServiceConfig.Current.ApiBase}/api/user/{userId}/rsa/{sessionId}");
+        if (result.Failed || result.Data == null || string.IsNullOrEmpty(result.Data.PublicKey))
+            return null;
+        try { return Convert.FromBase64String(result.Data.PublicKey); }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Fetch a user's public record, including PLATFORM moderation ban status, so a game host can gate a
+    /// join. (World bans are separate and live host-side in BanManager.) Null if the call fails. -xlinka
+    /// </summary>
+    public Task<ApiResponse<PublicUserInfo>> GetPlatformUserAsync(string userId)
+        => GetAsync<PublicUserInfo>($"{ServiceConfig.Current.ApiBase}/api/user/{userId}");
 
     #endregion
 

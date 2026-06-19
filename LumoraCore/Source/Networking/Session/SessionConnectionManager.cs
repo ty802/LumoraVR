@@ -182,6 +182,8 @@ public class SessionConnectionManager : IDisposable
         }
 
         var identity = Lumora.Core.Security.MachineIdentity.Local;
+        var cdn = Engine.Current?.CDNClient;
+        bool hasAccount = cdn != null && cdn.HasAccountIdentity;
         var requestData = new LegacyJoinRequestData
         {
             UserName = Environment.MachineName,
@@ -190,7 +192,11 @@ public class SessionConnectionManager : IDisposable
             MachineID = identity.MachineId,
             MachinePublicKey = identity.PublicKey,
             UserID = "",
-            HeadDevice = (byte)(Engine.Current?.InputInterface?.CurrentHeadOutputDevice ?? HeadOutputDevice.Screen)
+            HeadDevice = (byte)(Engine.Current?.InputInterface?.CurrentHeadOutputDevice ?? HeadOutputDevice.Screen),
+            // If we're signed into an account, name it + the login session so the host can fetch our
+            // cloud-published key and verify we own it. Empty = guest (machine key only). -xlinka
+            AccountUserId = hasAccount ? cdn!.AccountUserId! : "",
+            AccountSessionId = hasAccount ? cdn!.AccountSessionId! : ""
         };
 
         var controlMessage = new ControlMessage(ControlMessage.Message.JoinRequest)
@@ -409,7 +415,7 @@ public class SessionConnectionManager : IDisposable
         });
     }
 
-    private void SendJoinGrant(IConnection connection, string userName, string machineId)
+    private void SendJoinGrant(IConnection connection, string userName, string machineId, string accountId = "")
     {
         if (!World.IsAuthority)
         {
@@ -449,6 +455,7 @@ public class SessionConnectionManager : IDisposable
         user.UserID.Value = userID.ToString();
         user.UserName.Value = !string.IsNullOrEmpty(userName) ? userName : $"Guest {userRefID.GetUserByte()}";
         user.MachineID.Value = machineId ?? "";
+        user.AccountId.Value = accountId ?? ""; // verified platform account id, empty for guests. -xlinka
         user.AllocationIDStart.Value = (ulong)allocStart;
         user.AllocationIDEnd.Value = (ulong)allocEnd;
         user.AllocationID.Value = userRefID.GetUserByte();
@@ -514,7 +521,17 @@ public class SessionConnectionManager : IDisposable
             return;
         }
 
-        var auth = new LegacyJoinAuthenticateData { Signature = signature };
+        // If signed into an account, also sign the nonce with our account key so the host can verify our
+        // account against the key we published to the cloud. Best-effort, guests skip it. -xlinka
+        byte[] accountSignature = Array.Empty<byte>();
+        var cdn = Engine.Current?.CDNClient;
+        if (cdn != null && cdn.HasAccountIdentity)
+        {
+            try { accountSignature = cdn.SignWithAccountKey(challenge.Nonce) ?? Array.Empty<byte>(); }
+            catch (Exception ex) { LumoraLogger.Warn($"HandleJoinChallenge: account sign failed ({ex.Message})"); }
+        }
+
+        var auth = new LegacyJoinAuthenticateData { Signature = signature, AccountSignature = accountSignature };
         var controlMessage = new ControlMessage(ControlMessage.Message.JoinAuthenticate)
         {
             Payload = auth.Encode()
@@ -530,7 +547,7 @@ public class SessionConnectionManager : IDisposable
     /// Host side: verify the joiner's signed challenge. Only if the signature proves they hold the
     /// private key behind their claimed MachineID do we actually grant the join. Otherwise reject. -xlinka
     /// </summary>
-    public void HandleJoinAuthenticate(IConnection connection, LegacyJoinAuthenticateData auth)
+    public async Task HandleJoinAuthenticate(IConnection connection, LegacyJoinAuthenticateData auth)
     {
         if (connection == null || !World.IsAuthority)
             return;
@@ -550,18 +567,100 @@ public class SessionConnectionManager : IDisposable
             return;
         }
 
-        bool ok = Lumora.Core.Security.MachineIdentity.VerifyChallenge(
-            pending.Request.MachineID, pending.Request.MachinePublicKey, pending.Nonce, auth.Signature);
-
-        if (!ok)
+        try
         {
-            LumoraLogger.Warn($"HandleJoinAuthenticate: signature check FAILED for {connection.Identifier} - rejecting");
-            SendJoinReject(connection, "Machine authentication failed");
-            return;
+            // 1. The machine key is always required: prove ownership of the claimed MachineID.
+            if (!Lumora.Core.Security.MachineIdentity.VerifyChallenge(
+                    pending.Request.MachineID, pending.Request.MachinePublicKey, pending.Nonce, auth.Signature))
+            {
+                LumoraLogger.Warn($"HandleJoinAuthenticate: machine signature FAILED for {connection.Identifier} - rejecting");
+                SendJoinReject(connection, "Machine authentication failed");
+                return;
+            }
+
+            // 2. The account check only runs when the joiner CLAIMS an account. We fail closed: if
+            // they claim one and we can't verify it (no key published, bad signature, platform-banned, or
+            // the backend is unreachable), reject. A guest just doesn't claim an account. -xlinka
+            var claimedAccount = pending.Request.AccountUserId;
+            if (!string.IsNullOrEmpty(claimedAccount))
+            {
+                var verifiedAccountId = await VerifyAccountAsync(
+                    claimedAccount, pending.Request.AccountSessionId, pending.Nonce, auth.AccountSignature) ?? "";
+
+                if (string.IsNullOrEmpty(verifiedAccountId))
+                {
+                    LumoraLogger.Warn($"HandleJoinAuthenticate: account verification FAILED for {connection.Identifier} (claimed '{claimedAccount}') - rejecting");
+                    SendJoinReject(connection, "Account verification failed");
+                    return;
+                }
+
+                // We're on a threadpool continuation after the HTTP await, so marshal the grant (which
+                // mutates world state: creates + registers the User) back onto the world's sync thread.
+                // The guest path below skips this because it never awaited and is still on-thread. -xlinka
+                var world = World;
+                if (world == null)
+                {
+                    SendJoinReject(connection, "World no longer available");
+                    return;
+                }
+                var conn = connection;
+                var req = pending.Request;
+                LumoraLogger.Log($"HandleJoinAuthenticate: {connection.Identifier} authenticated (account='{verifiedAccountId}') - granting");
+                world.RunSynchronously(() => SendJoinGrant(conn, req.UserName, req.MachineID, verifiedAccountId));
+                return;
+            }
+
+            // Guest path: no await happened, so we're still on the sync/message thread, grant inline. -xlinka
+            LumoraLogger.Log($"HandleJoinAuthenticate: {connection.Identifier} authenticated (guest) - granting");
+            SendJoinGrant(connection, pending.Request.UserName, pending.Request.MachineID, "");
+        }
+        catch (Exception ex)
+        {
+            LumoraLogger.Error($"HandleJoinAuthenticate: unexpected error for {connection.Identifier} ({ex.Message}) - rejecting");
+            SendJoinReject(connection, "Authentication error");
+        }
+    }
+
+    /// <summary>
+    /// Verify a joiner's CLAIMED account: fetch the public key that account published to the cloud for the
+    /// given login session, verify the account signature over the challenge nonce against THAT key (so the
+    /// joiner can't present a key of their choosing), then check platform moderation ban status. Returns
+    /// the verified account id, or null if anything fails. World bans are a separate, host-side check. -xlinka
+    /// </summary>
+    private async Task<string?> VerifyAccountAsync(string accountUserId, string accountSessionId, byte[] nonce, byte[] accountSignature)
+    {
+        var cdn = Engine.Current?.CDNClient;
+        if (cdn == null)
+        {
+            LumoraLogger.Warn("VerifyAccount: no CDN client available; cannot verify a claimed account.");
+            return null;
+        }
+        if (string.IsNullOrEmpty(accountSessionId) || accountSignature == null || accountSignature.Length == 0)
+            return null;
+
+        var publishedKey = await cdn.GetSessionPublicKeyAsync(accountUserId, accountSessionId);
+        if (publishedKey == null)
+        {
+            LumoraLogger.Warn($"VerifyAccount: no published key for {accountUserId}/{accountSessionId}.");
+            return null;
         }
 
-        LumoraLogger.Log($"HandleJoinAuthenticate: {connection.Identifier} proved its machine identity - granting");
-        SendJoinGrant(connection, pending.Request.UserName, pending.Request.MachineID);
+        if (!Lumora.Core.Security.MachineIdentity.VerifyRsaSignature(publishedKey, nonce, accountSignature))
+        {
+            LumoraLogger.Warn($"VerifyAccount: account signature did not verify for {accountUserId}.");
+            return null;
+        }
+
+        // Platform moderation ban (account/public ban blocks joining anywhere). Spectator/mute are softer
+        // and don't block entry, so we don't reject on those here. -xlinka
+        var userInfo = await cdn.GetPlatformUserAsync(accountUserId);
+        if (userInfo.Success && userInfo.Data != null && (userInfo.Data.IsPublicBanned || userInfo.Data.IsAccountBanned))
+        {
+            LumoraLogger.Warn($"VerifyAccount: {accountUserId} is platform-banned; rejecting.");
+            return null;
+        }
+
+        return accountUserId;
     }
 
     private void RemoveUser(User user)

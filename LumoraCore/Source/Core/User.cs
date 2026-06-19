@@ -65,6 +65,10 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
     public readonly Sync<string> UserName = new();
     public readonly Sync<string> UserID = new();
     public readonly Sync<string> MachineID = new();
+    // The verified platform account id, set by the host only after the joiner proves account
+    // ownership via a signed challenge. Empty for guests. This is the STABLE id to key things like bans
+    // and friends on, unlike UserID which is the per-session allocator id. -xlinka
+    public readonly Sync<string> AccountId = new();
     public readonly Sync<ulong> AllocationIDStart = new();
     public readonly Sync<ulong> AllocationIDEnd = new();
     public readonly Sync<byte> AllocationID = new();
@@ -183,6 +187,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
             UserName.MarkHostOnly();
             UserID.MarkHostOnly();
             MachineID.MarkHostOnly();
+            AccountId.MarkHostOnly();
             AllocationID.MarkHostOnly();
             AllocationIDStart.MarkHostOnly();
             AllocationIDEnd.MarkHostOnly();

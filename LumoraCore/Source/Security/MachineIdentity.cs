@@ -70,19 +70,30 @@ public sealed class MachineIdentity
     {
         if (!IsMachineIdForKey(claimedMachineId, publicKeySpki))
             return false;
-        if (nonce == null || nonce.Length == 0 || signature == null || signature.Length == 0)
+        return VerifyRsaSignature(publicKeySpki, nonce, signature);
+    }
+
+    /// <summary>
+    /// Verify an RSA SHA256/PKCS1 signature over <paramref name="data"/> with a DER SubjectPublicKeyInfo
+    /// key. Used for the ACCOUNT signature at join, where the host verifies against the key it fetched
+    /// from the cloud for the joiner's account. Returns false (never throws) on any bad input. -xlinka
+    /// </summary>
+    public static bool VerifyRsaSignature(byte[]? publicKeySpki, byte[]? data, byte[]? signature)
+    {
+        if (publicKeySpki == null || publicKeySpki.Length == 0 || data == null || data.Length == 0
+            || signature == null || signature.Length == 0)
             return false;
 
         try
         {
             using var rsa = RSA.Create();
             rsa.ImportSubjectPublicKeyInfo(publicKeySpki, out _);
-            return rsa.VerifyData(nonce, signature, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            return rsa.VerifyData(data, signature, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         }
         catch (Exception ex)
         {
             // Garbage key/signature should read as "nope", not blow up the join handler. -xlinka
-            LumoraLogger.Warn($"MachineIdentity: challenge verify threw ({ex.Message}); treating as failed.");
+            LumoraLogger.Warn($"MachineIdentity: RSA verify threw ({ex.Message}); treating as failed.");
             return false;
         }
     }

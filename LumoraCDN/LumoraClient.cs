@@ -296,26 +296,40 @@ public sealed class LumoraClient : IDisposable
 
     #region Inventory
 
-    public async Task<ApiResponse<InventoryResponse>> GetInventory()
+    // Resolve our own user id for the inventory/asset calls. We learn it once at sign-in (cached as
+    // _accountUserId), so normally this is free; only if that didn't run do we fall back to a single
+    // /api/user/me round-trip and cache the result - instead of paying for that round-trip on EVERY call
+    // like the old per-method copy-paste did. -xlinka
+    private async Task<ApiResponse<string>> ResolveUserIdAsync()
     {
         if (!IsAuthenticated)
-            return ApiResponse<InventoryResponse>.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+            return ApiResponse<string>.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
 
-        var user = await GetCurrentUser();
-        if (user.Failed || user.Data == null)
-            return ApiResponse<InventoryResponse>.Fail(user.Status, user.Message);
+        if (!string.IsNullOrEmpty(_accountUserId))
+            return ApiResponse<string>.Ok(_accountUserId!);
 
-        return await GetAsync<InventoryResponse>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{user.Data.Id}");
+        var me = await GetCurrentUser();
+        if (me.Failed || me.Data == null || string.IsNullOrEmpty(me.Data.Id))
+            return ApiResponse<string>.Fail(me.Status, me.Message);
+
+        _accountUserId = me.Data.Id;
+        return ApiResponse<string>.Ok(_accountUserId!);
+    }
+
+    public async Task<ApiResponse<InventoryResponse>> GetInventory()
+    {
+        var id = await ResolveUserIdAsync();
+        if (id.Failed || id.Data == null)
+            return ApiResponse<InventoryResponse>.Fail(id.Status, id.Message);
+
+        return await GetAsync<InventoryResponse>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{id.Data}");
     }
 
     public async Task<ApiResponse<List<AssetRef>>> GetInventoryByType(AssetType type)
     {
-        if (!IsAuthenticated)
-            return ApiResponse<List<AssetRef>>.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
-
-        var user = await GetCurrentUser();
-        if (user.Failed || user.Data == null)
-            return ApiResponse<List<AssetRef>>.Fail(user.Status, user.Message);
+        var id = await ResolveUserIdAsync();
+        if (id.Failed || id.Data == null)
+            return ApiResponse<List<AssetRef>>.Fail(id.Status, id.Message);
 
         var typePath = type switch
         {
@@ -325,117 +339,90 @@ public sealed class LumoraClient : IDisposable
             _ => "props"
         };
 
-        return await GetAsync<List<AssetRef>>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{user.Data.Id}/{typePath}");
+        return await GetAsync<List<AssetRef>>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{id.Data}/{typePath}");
     }
 
     public async Task<ApiResponse<List<UserFolder>>> GetFolders()
     {
-        if (!IsAuthenticated)
-            return ApiResponse<List<UserFolder>>.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+        var id = await ResolveUserIdAsync();
+        if (id.Failed || id.Data == null)
+            return ApiResponse<List<UserFolder>>.Fail(id.Status, id.Message);
 
-        var user = await GetCurrentUser();
-        if (user.Failed || user.Data == null)
-            return ApiResponse<List<UserFolder>>.Fail(user.Status, user.Message);
-
-        return await GetAsync<List<UserFolder>>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{user.Data.Id}/folders");
+        return await GetAsync<List<UserFolder>>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{id.Data}/folders");
     }
 
     public async Task<ApiResponse<UserFolder>> GetFolder(string folderId)
     {
-        if (!IsAuthenticated)
-            return ApiResponse<UserFolder>.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+        var id = await ResolveUserIdAsync();
+        if (id.Failed || id.Data == null)
+            return ApiResponse<UserFolder>.Fail(id.Status, id.Message);
 
-        var user = await GetCurrentUser();
-        if (user.Failed || user.Data == null)
-            return ApiResponse<UserFolder>.Fail(user.Status, user.Message);
-
-        return await GetAsync<UserFolder>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{user.Data.Id}/folders/{folderId}");
+        return await GetAsync<UserFolder>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{id.Data}/folders/{folderId}");
     }
 
     public async Task<ApiResponse<List<AssetInfo>>> GetUserAssets()
     {
-        if (!IsAuthenticated)
-            return ApiResponse<List<AssetInfo>>.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+        var id = await ResolveUserIdAsync();
+        if (id.Failed || id.Data == null)
+            return ApiResponse<List<AssetInfo>>.Fail(id.Status, id.Message);
 
-        var user = await GetCurrentUser();
-        if (user.Failed || user.Data == null)
-            return ApiResponse<List<AssetInfo>>.Fail(user.Status, user.Message);
-
-        return await GetAsync<List<AssetInfo>>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{user.Data.Id}/assets");
+        return await GetAsync<List<AssetInfo>>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{id.Data}/assets");
     }
 
     public async Task<ApiResponse<UserQuotaResponse>> GetQuota()
     {
-        if (!IsAuthenticated)
-            return ApiResponse<UserQuotaResponse>.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+        var id = await ResolveUserIdAsync();
+        if (id.Failed || id.Data == null)
+            return ApiResponse<UserQuotaResponse>.Fail(id.Status, id.Message);
 
-        var user = await GetCurrentUser();
-        if (user.Failed || user.Data == null)
-            return ApiResponse<UserQuotaResponse>.Fail(user.Status, user.Message);
-
-        return await GetAsync<UserQuotaResponse>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{user.Data.Id}/quota");
+        return await GetAsync<UserQuotaResponse>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{id.Data}/quota");
     }
 
     public async Task<ApiResponse<UserFolder>> CreateFolder(string name, string? parentFolderId = null)
     {
-        if (!IsAuthenticated)
-            return ApiResponse<UserFolder>.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
-
-        var user = await GetCurrentUser();
-        if (user.Failed || user.Data == null)
-            return ApiResponse<UserFolder>.Fail(user.Status, user.Message);
+        var id = await ResolveUserIdAsync();
+        if (id.Failed || id.Data == null)
+            return ApiResponse<UserFolder>.Fail(id.Status, id.Message);
 
         var payload = new { Name = name, ParentFolderId = parentFolderId };
-        return await PostAsync<UserFolder>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{user.Data.Id}/folders", payload);
+        return await PostAsync<UserFolder>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{id.Data}/folders", payload);
     }
 
     public async Task<ApiResponse> AddAsset(string assetId)
     {
-        if (!IsAuthenticated)
-            return ApiResponse.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+        var id = await ResolveUserIdAsync();
+        if (id.Failed || id.Data == null)
+            return ApiResponse.Fail(id.Status, id.Message);
 
-        var user = await GetCurrentUser();
-        if (user.Failed || user.Data == null)
-            return ApiResponse.Fail(user.Status, user.Message);
-
-        return await PostAsync($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{user.Data.Id}/assets/{assetId}", null);
+        return await PostAsync($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{id.Data}/assets/{assetId}", null);
     }
 
     public async Task<ApiResponse> MoveAsset(string assetId, string? sourceFolderId, string targetFolderId)
     {
-        if (!IsAuthenticated)
-            return ApiResponse.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
-
-        var user = await GetCurrentUser();
-        if (user.Failed || user.Data == null)
-            return ApiResponse.Fail(user.Status, user.Message);
+        var id = await ResolveUserIdAsync();
+        if (id.Failed || id.Data == null)
+            return ApiResponse.Fail(id.Status, id.Message);
 
         var payload = new { SourceFolderId = sourceFolderId, TargetFolderId = targetFolderId };
-        return await PostAsync($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{user.Data.Id}/assets/{assetId}/move", payload);
+        return await PostAsync($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{id.Data}/assets/{assetId}/move", payload);
     }
 
     public async Task<ApiResponse> UpdateAsset(string assetId, AssetRef assetRef)
     {
-        if (!IsAuthenticated)
-            return ApiResponse.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+        var id = await ResolveUserIdAsync();
+        if (id.Failed || id.Data == null)
+            return ApiResponse.Fail(id.Status, id.Message);
 
-        var user = await GetCurrentUser();
-        if (user.Failed || user.Data == null)
-            return ApiResponse.Fail(user.Status, user.Message);
-
-        return await PutAsync($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{user.Data.Id}/assets/{assetId}", assetRef);
+        return await PutAsync($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{id.Data}/assets/{assetId}", assetRef);
     }
 
     public async Task<ApiResponse> RemoveAsset(string assetId)
     {
-        if (!IsAuthenticated)
-            return ApiResponse.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+        var id = await ResolveUserIdAsync();
+        if (id.Failed || id.Data == null)
+            return ApiResponse.Fail(id.Status, id.Message);
 
-        var user = await GetCurrentUser();
-        if (user.Failed || user.Data == null)
-            return ApiResponse.Fail(user.Status, user.Message);
-
-        return await DeleteAsync($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{user.Data.Id}/assets/{assetId}");
+        return await DeleteAsync($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{id.Data}/assets/{assetId}");
     }
 
     #endregion

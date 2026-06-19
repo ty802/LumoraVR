@@ -39,6 +39,9 @@ public class SessionConnectionManager : IDisposable
     {
         public LegacyJoinRequestData Request;
         public byte[] Nonce = null!;
+        // When we sent the challenge. If they never sign it, we reap the entry after a TTL so it can't sit
+        // forever holding a pending slot. -xlinka
+        public DateTime CreatedAt = DateTime.UtcNow;
     }
 
     // Domain-separation labels so a signature made for one step of the handshake can't be replayed as
@@ -235,8 +238,13 @@ public class SessionConnectionManager : IDisposable
         // this, a single attacker can open thousands of LNL connections that sit
         // forever before sending JoinRequest and exhaust host memory/sockets.
         bool admit;
+        List<IConnection>? reclaimed;
         lock (_lock)
         {
+            // First reclaim any join challenges that timed out, so a flood of unanswered ones can't be what's
+            // holding the cap against a legit peer trying to connect right now. -xlinka
+            reclaimed = ReclaimStalePendingAuthLocked();
+
             // Count connections still mid-handshake (waiting to authenticate) too, otherwise an attacker
             // could send a JoinRequest, sit in _pendingAuth, free the pending slot, and repeat. -xlinka
             if (_pendingConnections.Count + _pendingAuth.Count >= NetworkLimits.MaxPendingConnections)
@@ -254,6 +262,8 @@ public class SessionConnectionManager : IDisposable
                 _pendingByIp[ip] = _pendingByIp.TryGetValue(ip, out var n) ? n + 1 : 1;
             }
         }
+
+        RejectStalePendingAuth(reclaimed);
 
         if (!admit)
         {
@@ -299,6 +309,44 @@ public class SessionConnectionManager : IDisposable
             else _pendingByIp[ip] = n - 1;
         }
         return true;
+    }
+
+    // How long a joiner has to answer the signed challenge before we give up on them. -xlinka
+    private static readonly TimeSpan PendingAuthTtl = TimeSpan.FromSeconds(20);
+
+    /// <summary>
+    /// Caller must hold _lock. Pulls out any pending-auth entries that have sat past the challenge TTL without
+    /// answering. Those slots count against MaxPendingConnections (and the joiner already freed its per-IP slot
+    /// when it left _pendingConnections), so without this a single source can open valid join requests, never
+    /// sign the challenge, and park every pending slot - locking real players out. Returns the dropped
+    /// connections so the caller can reject + close them AFTER releasing the lock. -xlinka
+    /// </summary>
+    private List<IConnection>? ReclaimStalePendingAuthLocked()
+    {
+        var cutoff = DateTime.UtcNow - PendingAuthTtl;
+        List<IConnection>? stale = null;
+        foreach (var kvp in _pendingAuth)
+        {
+            if (kvp.Value.CreatedAt < cutoff)
+                (stale ??= new List<IConnection>()).Add(kvp.Key);
+        }
+        if (stale != null)
+        {
+            foreach (var c in stale)
+                _pendingAuth.Remove(c);
+        }
+        return stale;
+    }
+
+    private void RejectStalePendingAuth(List<IConnection>? stale)
+    {
+        if (stale == null)
+            return;
+        foreach (var c in stale)
+        {
+            LumoraLogger.Warn($"PendingAuth: dropping {c.Identifier} - never answered the join challenge in time");
+            SendJoinReject(c, "Join challenge timed out");
+        }
     }
 
     private static string GetIpKey(IConnection connection)
@@ -674,6 +722,18 @@ public class SessionConnectionManager : IDisposable
                 }
                 var conn = connection;
                 var req = pending.Request;
+
+                // Now that the account is actually verified, re-check world bans keyed on the ACCOUNT id. The
+                // gate in ValidateJoinRequest only had the (client-supplied) machine id to go on - the account
+                // wasn't proven yet - so a host's account-scoped ban would otherwise slip straight through to a
+                // grant. This is the point where we finally know who they really are. -xlinka
+                if (Lumora.Core.Security.BanManager.IsBanned(verifiedAccountId, req.MachineID, world.WorldName?.Value))
+                {
+                    LumoraLogger.Warn($"HandleJoinAuthenticate: {connection.Identifier} (account '{verifiedAccountId}') is banned from this world - rejecting");
+                    SendJoinReject(connection, "You are banned from this world");
+                    return;
+                }
+
                 LumoraLogger.Log($"HandleJoinAuthenticate: {connection.Identifier} authenticated (account='{verifiedAccountId}', silenced={forceSilenced}) - granting");
                 world.RunSynchronously(() => SendJoinGrant(conn, req.UserName, req.MachineID, verifiedAccountId, forceSilenced));
                 return;
@@ -841,6 +901,15 @@ public class SessionConnectionManager : IDisposable
     /// </summary>
     public void Poll()
     {
+        // Periodic reap of join challenges nobody answered (host side; no-op for a client). The contention
+        // path in OnPeerConnected reclaims too, so this still works even if Poll runs irregularly. -xlinka
+        List<IConnection>? reclaimed;
+        lock (_lock)
+        {
+            reclaimed = ReclaimStalePendingAuthLocked();
+        }
+        RejectStalePendingAuth(reclaimed);
+
         // Per-session poll. Most transports also have a global poll driven by
         // NetworkManagerRegistry.UpdateAll() from the engine update loop, which
         // covers any listeners/connections created outside the session. - xlinka

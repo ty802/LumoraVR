@@ -93,6 +93,21 @@ public partial class DebugWindow : Control
     private RichTextLabel? _componentDetails;
     private MemoryHistoryGraph? _memoryGraph;
 
+    // UI - Render / GPU tab
+    private Label? _drawCallsValue;
+    private Label? _primitivesValue;
+    private Label? _renderObjectsValue;
+    private Label? _textureMemValue;
+    private Label? _bufferMemValue;
+    private Label? _renderVideoMemValue;
+
+    // UI - Profiler tab
+    private ProfilerGraph? _profilerGraph;
+    private Tree? _profComponentTree;
+    private Tree? _profSlotTree;
+    private Label? _profStatusLabel;
+    private long _profilePacketCount;
+
     private struct LogEntry
     {
         public LogLevel Level;
@@ -130,6 +145,7 @@ public partial class DebugWindow : Control
         ConfigureWindow();
         CacheNodeReferences();
         ConfigureMemoryProfilerTree();
+        ConfigureProfilerTrees();
         WireEvents();
         StartUdpListener();
 
@@ -246,6 +262,18 @@ public partial class DebugWindow : Control
         _componentTree = GetNodeOrNull<Tree>("%ComponentTree");
         _componentDetails = GetNodeOrNull<RichTextLabel>("%ComponentDetails");
         _memoryGraph = GetNodeOrNull<MemoryHistoryGraph>("%MemoryGraph");
+
+        _drawCallsValue = GetNodeOrNull<Label>("%DrawCallsValue");
+        _primitivesValue = GetNodeOrNull<Label>("%PrimitivesValue");
+        _renderObjectsValue = GetNodeOrNull<Label>("%RenderObjectsValue");
+        _textureMemValue = GetNodeOrNull<Label>("%TextureMemValue");
+        _bufferMemValue = GetNodeOrNull<Label>("%BufferMemValue");
+        _renderVideoMemValue = GetNodeOrNull<Label>("%RenderVideoMemValue");
+
+        _profilerGraph = GetNodeOrNull<ProfilerGraph>("%ProfilerGraph");
+        _profComponentTree = GetNodeOrNull<Tree>("%ProfComponentTree");
+        _profSlotTree = GetNodeOrNull<Tree>("%ProfSlotTree");
+        _profStatusLabel = GetNodeOrNull<Label>("%ProfStatusLabel");
     }
 
     private void ConfigureMemoryProfilerTree()
@@ -269,6 +297,32 @@ public partial class DebugWindow : Control
         _componentTree.SetColumnCustomMinimumWidth(1, 70);
         _componentTree.SetColumnCustomMinimumWidth(2, 110);
         _componentTree.SetColumnCustomMinimumWidth(3, 60);
+    }
+
+    private void ConfigureProfilerTrees()
+    {
+        ConfigureProfilerTree(_profComponentTree, "Component");
+        ConfigureProfilerTree(_profSlotTree, "Slot");
+    }
+
+    private static void ConfigureProfilerTree(Tree? tree, string firstColumnTitle)
+    {
+        if (tree == null)
+        {
+            return;
+        }
+
+        tree.Columns = 3;
+        tree.HideRoot = true;
+        tree.ColumnTitlesVisible = true;
+        tree.SetColumnTitle(0, firstColumnTitle);
+        tree.SetColumnTitle(1, "Time");
+        tree.SetColumnTitle(2, "Count");
+        tree.SetColumnExpand(0, true);
+        tree.SetColumnExpand(1, false);
+        tree.SetColumnExpand(2, false);
+        tree.SetColumnCustomMinimumWidth(1, 90);
+        tree.SetColumnCustomMinimumWidth(2, 60);
     }
 
     private void WireEvents()
@@ -468,6 +522,12 @@ public partial class DebugWindow : Control
             case "MEM":
                 HandleMemoryPacket(segments);
                 break;
+            case "RNDR":
+                HandleRenderPacket(segments);
+                break;
+            case "PROF":
+                HandleProfilePacket(segments);
+                break;
         }
     }
 
@@ -531,6 +591,101 @@ public partial class DebugWindow : Control
         SetLabel(_videoMemLabel, FormatBytes(videoMemBytes));
         SetLabel(_objectsLabel, $"{godotObjects:N0}");
         SetLabel(_nodesLabel, $"{godotNodes:N0}");
+
+        _profilerGraph?.AddFrame(frameTime);
+    }
+
+    private void HandleRenderPacket(string[] parts)
+    {
+        // RNDR|drawCalls|primitives|objects|textureMem|bufferMem|videoMem
+        if (parts.Length < 7) return;
+        if (!TryLong(parts[1], out var drawCalls)) return;
+        if (!TryLong(parts[2], out var primitives)) return;
+        if (!TryLong(parts[3], out var objects)) return;
+        if (!TryLong(parts[4], out var textureMem)) return;
+        if (!TryLong(parts[5], out var bufferMem)) return;
+        if (!TryLong(parts[6], out var videoMem)) return;
+
+        SetLabel(_drawCallsValue, $"{drawCalls:N0}",
+            drawCalls > 2000 ? new Color(1f, 0.5f, 0.4f) :
+            drawCalls > 800 ? new Color(1f, 0.85f, 0.3f) :
+            new Color(0.8f, 0.85f, 0.9f));
+        SetLabel(_primitivesValue, $"{primitives:N0}");
+        SetLabel(_renderObjectsValue, $"{objects:N0}");
+        SetLabel(_textureMemValue, FormatBytes(textureMem));
+        SetLabel(_bufferMemValue, FormatBytes(bufferMem));
+        SetLabel(_renderVideoMemValue, FormatBytes(videoMem));
+    }
+
+    private void HandleProfilePacket(string[] parts)
+    {
+        // PROF|components|slots   (each segment: name:ms:count,name:ms:count,...)
+        if (parts.Length < 3) return;
+        _profilePacketCount++;
+
+        var components = ParseProfileEntries(parts[1]);
+        var slots = ParseProfileEntries(parts[2]);
+
+        RebuildProfileTree(_profComponentTree, components);
+        RebuildProfileTree(_profSlotTree, slots);
+
+        SetLabel(_profStatusLabel,
+            $"Live | Packets: {_profilePacketCount:N0} | Components: {components.Count} | Slots: {slots.Count} | latest frame");
+    }
+
+    private static List<(string name, float ms, int count)> ParseProfileEntries(string raw)
+    {
+        var list = new List<(string name, float ms, int count)>();
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return list;
+        }
+
+        foreach (var entry in raw.Split(',', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var p = entry.Split(':', 3);
+            if (p.Length != 3) continue;
+            if (!TryFloat(p[1], out var ms)) continue;
+            if (!TryInt(p[2], out var count)) continue;
+            list.Add((p[0].Trim(), ms, count));
+        }
+
+        list.Sort((a, b) => b.ms.CompareTo(a.ms));
+        return list;
+    }
+
+    private static void RebuildProfileTree(Tree? tree, List<(string name, float ms, int count)> entries)
+    {
+        if (tree == null)
+        {
+            return;
+        }
+
+        tree.Clear();
+        var root = tree.CreateItem();
+
+        float maxMs = 0.0001f;
+        foreach (var e in entries)
+        {
+            if (e.ms > maxMs) maxMs = e.ms;
+        }
+
+        foreach (var e in entries)
+        {
+            var row = tree.CreateItem(root);
+            row.SetText(0, e.name);
+            row.SetText(1, $"{e.ms:F3} ms");
+            row.SetText(2, $"{e.count:N0}");
+
+            // Hotter (more time) rows shade toward red, so the expensive component types / slots pop. -xlinka
+            var intensity = Mathf.Clamp(e.ms / maxMs, 0f, 1f);
+            var color = new Color(
+                Mathf.Lerp(0.7f, 1f, intensity),
+                Mathf.Lerp(0.85f, 0.45f, intensity),
+                Mathf.Lerp(0.55f, 0.35f, intensity),
+                1f);
+            row.SetCustomColor(1, color);
+        }
     }
 
     private void HandleMemoryPacket(string[] parts)

@@ -77,6 +77,9 @@ public partial class LumoraEngineRunner : Node
 	private bool _missingInputInterfaceWarned = false;
 	private double _debugPerfTimer;
 	private double _debugMemoryTimer;
+	private double _debugRenderProfileTimer;
+	private readonly List<Lumora.Core.UpdateManager.ProfileEntry> _profByTypeBuffer = new();
+	private readonly List<Lumora.Core.UpdateManager.ProfileEntry> _profBySlotBuffer = new();
 	private InitializationPhase _currentPhase = InitializationPhase.EnvironmentSetup;
 	// Auto: try to detect a headset on every launch; falls back to Desktop gracefully.
 	private XrLaunchMode _xrLaunchMode = XrLaunchMode.Auto;
@@ -154,6 +157,9 @@ public partial class LumoraEngineRunner : Node
 		if (HasCommandLineFlag(DebugFlag))
 		{
 			_debugUdpSender = new DebugUdpSender();
+			// Per-slot/per-component update profiling carries a small per-frame cost, so only turn it on when the
+			// debug console is actually attached (--lumora-debug). Normal runs pay nothing. -xlinka
+			Lumora.Core.UpdateManager.ProfilingEnabled = true;
 			LaunchDebugConsoleProcess();
 		}
 
@@ -1102,6 +1108,7 @@ public partial class LumoraEngineRunner : Node
 		UpdateGodotMetrics(delta);
 		SendDebugPerf(delta);
 		SendDebugMemory(delta);
+		SendDebugRenderProfile(delta);
 
 		// Update HeadOutput camera positioning
 		_headOutput?.UpdatePositioning(_engine);
@@ -1284,6 +1291,50 @@ public partial class LumoraEngineRunner : Node
 			metrics.GodotObjectCount,
 			metrics.GodotNodeCount,
 			topComponents);
+	}
+
+	private void SendDebugRenderProfile(double delta)
+	{
+		if (_debugUdpSender == null || _engine?.WorldManager?.FocusedWorld == null)
+		{
+			return;
+		}
+
+		_debugRenderProfileTimer += delta;
+		if (_debugRenderProfileTimer < DebugPerfSendIntervalSec)
+		{
+			return;
+		}
+		_debugRenderProfileTimer = 0;
+
+		// GPU / render-pipeline stats straight from the renderer - this is the "Render / GPU" debug tab.
+		_debugUdpSender.SendRenderStats(
+			(long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.TotalDrawCallsInFrame),
+			(long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.TotalPrimitivesInFrame),
+			(long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.TotalObjectsInFrame),
+			(long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.TextureMemUsed),
+			(long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.BufferMemUsed),
+			(long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.VideoMemUsed));
+
+		// Latest-frame update profile, by component type AND by slot, top entries by cost.
+		var updateManager = _engine.WorldManager.FocusedWorld.UpdateManager;
+		if (updateManager != null)
+		{
+			_profByTypeBuffer.Clear();
+			_profBySlotBuffer.Clear();
+			updateManager.CollectProfile(_profByTypeBuffer, _profBySlotBuffer);
+
+			var topComponents = _profByTypeBuffer
+				.OrderByDescending(e => e.Ms)
+				.Take(40)
+				.Select(e => (e.Name, e.Ms, e.Count));
+			var topSlots = _profBySlotBuffer
+				.OrderByDescending(e => e.Ms)
+				.Take(40)
+				.Select(e => (e.Name, e.Ms, e.Count));
+
+			_debugUdpSender.SendProfile(topComponents, topSlots);
+		}
 	}
 
 	private static List<(string name, int count, long bytes)> BuildComponentMemoryBreakdown(Slot rootSlot)

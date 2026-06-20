@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
@@ -85,6 +86,32 @@ public class DebugUdpSender : IDisposable
         Send(
             $"MEM|{committedBytes}|{gcBytes}|{gen0}|{gen1}|{gen2}|{estimatedBytes}" +
             $"|{workingSetBytes}|{privateBytes}|{videoBytes}|{godotObjects}|{godotNodes}|{components}");
+    }
+
+    /// <summary>
+    /// Send GPU/render-pipeline stats to the debug console (the "Render / GPU" tab).
+    /// Format: RNDR|drawCalls|primitives|objectsInFrame|textureMemBytes|bufferMemBytes|videoMemBytes
+    /// </summary>
+    public void SendRenderStats(
+        long drawCalls, long primitives, long objectsInFrame,
+        long textureMemBytes, long bufferMemBytes, long videoMemBytes)
+    {
+        Send($"RNDR|{drawCalls}|{primitives}|{objectsInFrame}|{textureMemBytes}|{bufferMemBytes}|{videoMemBytes}");
+    }
+
+    /// <summary>
+    /// Send the latest-frame update profile, both by component type and by slot, for the profiler tab.
+    /// Format: PROF|name:ms:count,name:ms:count,...|name:ms:count,... (components segment | slots segment)
+    /// </summary>
+    public void SendProfile(
+        IEnumerable<(string name, double ms, int count)> byComponent,
+        IEnumerable<(string name, double ms, int count)> bySlot)
+    {
+        string comps = string.Join(",", byComponent.Select(c =>
+            $"{SanitizeField(c.name)}:{c.ms.ToString("F4", CultureInfo.InvariantCulture)}:{c.count}"));
+        string slots = string.Join(",", bySlot.Select(c =>
+            $"{SanitizeField(c.name)}:{c.ms.ToString("F4", CultureInfo.InvariantCulture)}:{c.count}"));
+        Send($"PROF|{comps}|{slots}");
     }
 
     private static string SanitizeField(string value)

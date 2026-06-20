@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 
 namespace Lumora.Core;
 
@@ -31,6 +32,25 @@ public class UpdateManager
 
     // Currently updating component (for debugging)
     public IUpdatable CurrentlyUpdating { get; private set; } = null!;
+
+    // PER-FRAME UPDATE PROFILER. Opt-in (zero overhead when off) - the host turns it on only while the debug
+    // console is attached. When on, each updatable's OnUpdate is timed and the cost is aggregated BOTH by
+    // component type AND by the slot it lives on, so the profiler can show "which slots are expensive", not just
+    // which component types. Holds the LATEST frame only (cleared at the start of each RunUpdates), so a reader
+    // gets an instantaneous sample. Engine update + telemetry read are both on the main loop, so no lock. -xlinka
+    public static bool ProfilingEnabled;
+    private sealed class ProfBucket { public string Name = string.Empty; public long Ticks; public int Count; }
+    private readonly Dictionary<string, ProfBucket> _profByType = new(StringComparer.Ordinal);
+    private readonly Dictionary<Slot, ProfBucket> _profBySlot = new();
+
+    /// <summary>One profiler row: a name (component type or slot), its measured CPU time, and instance count.</summary>
+    public readonly struct ProfileEntry
+    {
+        public readonly string Name;
+        public readonly double Ms;
+        public readonly int Count;
+        public ProfileEntry(string name, double ms, int count) { Name = name; Ms = ms; Count = count; }
+    }
 
     public UpdateManager(World world)
     {
@@ -193,6 +213,13 @@ public class UpdateManager
     {
         _currentDeltaTime = deltaTime;
 
+        bool prof = ProfilingEnabled;
+        if (prof)
+        {
+            _profByType.Clear();
+            _profBySlot.Clear();
+        }
+
         foreach (var kvp in _updateBuckets)
         {
             var bucket = kvp.Value;
@@ -204,7 +231,16 @@ public class UpdateManager
                     try
                     {
                         CurrentlyUpdating = updatable;
-                        updatable.InternalRunUpdate();
+                        if (prof)
+                        {
+                            long start = Stopwatch.GetTimestamp();
+                            updatable.InternalRunUpdate();
+                            RecordProfile(updatable, Stopwatch.GetTimestamp() - start);
+                        }
+                        else
+                        {
+                            updatable.InternalRunUpdate();
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -216,6 +252,52 @@ public class UpdateManager
                     }
                 }
             }
+        }
+    }
+
+    private void RecordProfile(IUpdatable updatable, long ticks)
+    {
+        if (updatable is not Component comp)
+        {
+            return;
+        }
+
+        var typeName = comp.GetType().Name;
+        if (!_profByType.TryGetValue(typeName, out var tb))
+        {
+            tb = new ProfBucket { Name = typeName };
+            _profByType[typeName] = tb;
+        }
+        tb.Ticks += ticks;
+        tb.Count++;
+
+        var slot = comp.Slot;
+        if (slot != null)
+        {
+            if (!_profBySlot.TryGetValue(slot, out var sb))
+            {
+                sb = new ProfBucket { Name = string.IsNullOrEmpty(slot.SlotName.Value) ? "<unnamed slot>" : slot.SlotName.Value };
+                _profBySlot[slot] = sb;
+            }
+            sb.Ticks += ticks;
+            sb.Count++;
+        }
+    }
+
+    /// <summary>
+    /// Copy the latest frame's update profile into the caller's lists (by component type, and by slot), converted
+    /// to milliseconds. Cheap and allocation-light; the host reads this for the debug console's profiler. -xlinka
+    /// </summary>
+    public void CollectProfile(List<ProfileEntry> byType, List<ProfileEntry> bySlot)
+    {
+        double tickToMs = 1000.0 / Stopwatch.Frequency;
+        foreach (var kv in _profByType)
+        {
+            byType.Add(new ProfileEntry(kv.Value.Name, kv.Value.Ticks * tickToMs, kv.Value.Count));
+        }
+        foreach (var kv in _profBySlot)
+        {
+            bySlot.Add(new ProfileEntry(kv.Value.Name, kv.Value.Ticks * tickToMs, kv.Value.Count));
         }
     }
 

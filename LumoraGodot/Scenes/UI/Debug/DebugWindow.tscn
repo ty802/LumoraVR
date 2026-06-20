@@ -1,8 +1,9 @@
-[gd_scene load_steps=13 format=3 uid="uid://debug_window_scene"]
+[gd_scene load_steps=14 format=3 uid="uid://debug_window_scene"]
 
 [ext_resource type="FontFile" uid="uid://dne06dcdmx5hj" path="res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf" id="1_font"]
 [ext_resource type="Script" path="res://Source/Godot/Debug/DebugWindow.cs" id="2_script"]
 [ext_resource type="Script" path="res://Source/Godot/Debug/MemoryHistoryGraph.cs" id="3_mem_graph"]
+[ext_resource type="Script" path="res://Source/Godot/Debug/ProfilerGraph.cs" id="4_prof_graph"]
 
 [sub_resource type="StyleBoxFlat" id="bg_panel"]
 bg_color = Color(0.08, 0.08, 0.1, 1)
@@ -906,3 +907,255 @@ bbcode_enabled = true
 fit_content = true
 selection_enabled = true
 scroll_active = false
+
+; ==================== RENDER / GPU TAB ====================
+[node name="Render" type="ScrollContainer" parent="Background/RootMargin/RootVBox/Tabs"]
+unique_name_in_owner = true
+layout_mode = 2
+horizontal_scroll_mode = 0
+
+[node name="RenderVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Render"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 10
+
+[node name="GpuSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox"]
+layout_mode = 2
+theme_override_styles/panel = SubResource("section_bg")
+
+[node name="GpuVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection"]
+layout_mode = 2
+theme_override_constants/separation = 2
+
+[node name="GpuHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.5, 0.85, 1, 1)
+theme_override_font_sizes/font_size = 14
+text = "RENDER / GPU"
+
+[node name="GpuSep" type="HSeparator" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox"]
+layout_mode = 2
+
+[node name="DrawCallsRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox"]
+layout_mode = 2
+theme_override_styles/panel = SubResource("stat_row_bg")
+
+[node name="DrawCallsHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/DrawCallsRow"]
+layout_mode = 2
+
+[node name="DrawCallsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/DrawCallsRow/DrawCallsHBox"]
+custom_minimum_size = Vector2(190, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
+theme_override_font_sizes/font_size = 13
+text = "Draw Calls / Frame"
+
+[node name="DrawCallsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/DrawCallsRow/DrawCallsHBox"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
+theme_override_font_sizes/font_size = 13
+text = "-"
+
+[node name="PrimitivesRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox"]
+layout_mode = 2
+theme_override_styles/panel = SubResource("stat_row_alt_bg")
+
+[node name="PrimitivesHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/PrimitivesRow"]
+layout_mode = 2
+
+[node name="PrimitivesKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/PrimitivesRow/PrimitivesHBox"]
+custom_minimum_size = Vector2(190, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
+theme_override_font_sizes/font_size = 13
+text = "Primitives / Frame"
+
+[node name="PrimitivesValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/PrimitivesRow/PrimitivesHBox"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
+theme_override_font_sizes/font_size = 13
+text = "-"
+
+[node name="RenderObjectsRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox"]
+layout_mode = 2
+theme_override_styles/panel = SubResource("stat_row_bg")
+
+[node name="RenderObjectsHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/RenderObjectsRow"]
+layout_mode = 2
+
+[node name="RenderObjectsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/RenderObjectsRow/RenderObjectsHBox"]
+custom_minimum_size = Vector2(190, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
+theme_override_font_sizes/font_size = 13
+text = "Objects Drawn / Frame"
+
+[node name="RenderObjectsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/RenderObjectsRow/RenderObjectsHBox"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
+theme_override_font_sizes/font_size = 13
+text = "-"
+
+[node name="TextureMemRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox"]
+layout_mode = 2
+theme_override_styles/panel = SubResource("stat_row_alt_bg")
+
+[node name="TextureMemHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/TextureMemRow"]
+layout_mode = 2
+
+[node name="TextureMemKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/TextureMemRow/TextureMemHBox"]
+custom_minimum_size = Vector2(190, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
+theme_override_font_sizes/font_size = 13
+text = "Texture Memory"
+
+[node name="TextureMemValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/TextureMemRow/TextureMemHBox"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
+theme_override_font_sizes/font_size = 13
+text = "-"
+
+[node name="BufferMemRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox"]
+layout_mode = 2
+theme_override_styles/panel = SubResource("stat_row_bg")
+
+[node name="BufferMemHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/BufferMemRow"]
+layout_mode = 2
+
+[node name="BufferMemKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/BufferMemRow/BufferMemHBox"]
+custom_minimum_size = Vector2(190, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
+theme_override_font_sizes/font_size = 13
+text = "Buffer Memory"
+
+[node name="BufferMemValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/BufferMemRow/BufferMemHBox"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
+theme_override_font_sizes/font_size = 13
+text = "-"
+
+[node name="RenderVideoMemRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox"]
+layout_mode = 2
+theme_override_styles/panel = SubResource("stat_row_alt_bg")
+
+[node name="RenderVideoMemHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/RenderVideoMemRow"]
+layout_mode = 2
+
+[node name="RenderVideoMemKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/RenderVideoMemRow/RenderVideoMemHBox"]
+custom_minimum_size = Vector2(190, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
+theme_override_font_sizes/font_size = 13
+text = "Total Video Memory"
+
+[node name="RenderVideoMemValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/RenderVideoMemRow/RenderVideoMemHBox"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
+theme_override_font_sizes/font_size = 13
+text = "-"
+
+[node name="RenderHint" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.45, 0.45, 0.52, 1)
+theme_override_font_sizes/font_size = 10
+text = "Live GPU pipeline stats for the focused world. High draw calls usually means too many materials / un-batched UI."
+
+; ==================== PROFILER TAB ====================
+[node name="Profiler" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="ProfHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Profiler"]
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 0.7, 0.3, 1)
+theme_override_font_sizes/font_size = 14
+text = "FRAME TIME"
+
+[node name="ProfilerGraph" type="Control" parent="Background/RootMargin/RootVBox/Tabs/Profiler"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 150)
+layout_mode = 2
+script = ExtResource("4_prof_graph")
+
+[node name="ProfLegend" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Profiler"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.45, 0.45, 0.52, 1)
+theme_override_font_sizes/font_size = 10
+text = "Bars: per-frame time. Green <=16.6ms (60fps)   Amber <=33ms (30fps)   Red slower   Blue line: 60fps budget"
+
+[node name="ProfStatusLabel" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Profiler"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 11
+text = "Waiting for profile packets..."
+
+[node name="ProfSplit" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Profiler"]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 8
+
+[node name="ProfComponentPanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+theme_override_styles/panel = SubResource("section_bg")
+
+[node name="ProfComponentVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit/ProfComponentPanel"]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 4
+
+[node name="ProfComponentTitle" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit/ProfComponentPanel/ProfComponentVBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.75, 0.78, 1, 1)
+theme_override_font_sizes/font_size = 13
+text = "By Component Type"
+
+[node name="ProfComponentTree" type="Tree" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit/ProfComponentPanel/ProfComponentVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_font_sizes/font_size = 11
+columns = 3
+hide_root = true
+
+[node name="ProfSlotPanel" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+theme_override_styles/panel = SubResource("section_bg")
+
+[node name="ProfSlotVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit/ProfSlotPanel"]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 4
+
+[node name="ProfSlotTitle" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit/ProfSlotPanel/ProfSlotVBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.75, 0.78, 1, 1)
+theme_override_font_sizes/font_size = 13
+text = "By Slot"
+
+[node name="ProfSlotTree" type="Tree" parent="Background/RootMargin/RootVBox/Tabs/Profiler/ProfSplit/ProfSlotPanel/ProfSlotVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_font_sizes/font_size = 11
+columns = 3
+hide_root = true

@@ -15,7 +15,12 @@
     <ProjectReference Include="..\LumoraCore\LumoraCore.csproj" />
     <ProjectReference Include="..\LumoraHooks\LumoraHooks.csproj" />
   </ItemGroup>
-
+  <!-- for steam rt 4 builds -->
+  <!-- run with env vars UseAppLocalIcu=true IcuVersion="72.1.0.3" replace with current version -->
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Linux')) And '$(UseAppLocalIcu)' == 'true'">
+    <PackageReference Include="Microsoft.ICU.ICU4C.Runtime" Version="$(IcuVersion)" />
+    <RuntimeHostConfigurationOption Include="System.Globalization.AppLocalIcu" Value="$(IcuVersion)" />
+  </ItemGroup>
   <!-- Copy LumoraCore.dll to addons folder after build -->
   <Target Name="CopyLumoraCoreToAddons" AfterTargets="Build">
     <MakeDir Directories="$(ProjectDir)addons\lumora\bin" />

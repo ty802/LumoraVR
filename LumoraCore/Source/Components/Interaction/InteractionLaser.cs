@@ -31,6 +31,11 @@ public sealed class InteractionLaser : Component
     public readonly Sync<bool> ShowDirectCursor = new();
 
     private readonly List<TargetHit> _hitBuffer = new(64);
+    // Reused each raycast so the per-frame whole-world collider walk doesn't allocate a fresh list (plus an
+    // iterator at every slot) every frame, per laser. -xlinka
+    private readonly List<Collider> _colliderBuffer = new(64);
+    // Same idea for interaction targets: pulled flat from the world's registry instead of recursing the tree. -xlinka
+    private readonly List<IInteractionTarget> _interactionTargetBuffer = new(64);
     private Slot? _beamSlot;
     private Slot? _pointSlot;
     private Slot? _cursorSlot;
@@ -297,14 +302,14 @@ public sealed class InteractionLaser : Component
         }
 
         _hitBuffer.Clear();
-        CollectInteractionHits(World.RootSlot, origin, direction, maxDist, blockingDistance);
+        CollectInteractionHits(World, origin, direction, maxDist, blockingDistance);
 
         var engine = Lumora.Core.Engine.Current;
         if (engine?.InputInterface?.IsDashboardOpen == true)
         {
             var userspace = engine.WorldManager?.UserspaceWorld;
             if (userspace != null && userspace != World && userspace.RootSlot != null)
-                CollectInteractionHits(userspace.RootSlot, origin, direction, maxDist, blockingDistance);
+                CollectInteractionHits(userspace, origin, direction, maxDist, blockingDistance);
         }
 
         if (exclusive)
@@ -814,13 +819,26 @@ public sealed class InteractionLaser : Component
         return _smoothedHitPoint;
     }
 
-    private void CollectInteractionHits(Slot slot, float3 origin, float3 direction, float maxDist, float blockingDistance)
+    // Pull every interaction target in this world straight from its registry instead of recursing the whole
+    // slot tree per frame, per laser. Each candidate is fully filtered below (enabled/active/hierarchy), so a
+    // momentarily stale registry entry can't produce a wrong hit - same guarantee as the collider raycast.
+    // The old subtree skip (!slot.IsActive -> return) becomes a per-target slot.IsActive check, which is the
+    // hierarchical active state, so an inactive ancestor still excludes its targets. -xlinka
+    private void CollectInteractionHits(World? world, float3 origin, float3 direction, float maxDist, float blockingDistance)
     {
-        if (!slot.IsActive) return;
+        if (world == null) return;
 
-        foreach (var target in slot.GetComponentsImplementing<IInteractionTarget>())
+        world.CopyInteractionTargetsTo(_interactionTargetBuffer);
+        for (int ti = 0; ti < _interactionTargetBuffer.Count; ti++)
         {
-            if (target is Component comp && (!comp.Enabled.Value || comp.IsDestroyed)) continue;
+            var target = _interactionTargetBuffer[ti];
+
+            // Registry only holds Components (registration is in ComponentBase), so the slot is the component's
+            // own slot - the same slot the old recursion was visiting it on.
+            if (target is not Component comp) continue;
+            if (!comp.Enabled.Value || comp.IsDestroyed) continue;
+            var slot = comp.Slot;
+            if (slot == null || !slot.IsActive) continue;
 
             if (target is ILaserPointerTarget pointerTarget)
             {
@@ -847,15 +865,6 @@ public sealed class InteractionLaser : Component
             if (!TryApplyLaserModifiers(slot, direction, hitPoint, out hitPoint)) continue;
 
             _hitBuffer.Add(new TargetHit(target, slot, distance, hitPoint));
-        }
-
-        foreach (var child in slot.Children)
-        {
-            CollectInteractionHits(child, origin, direction, maxDist, blockingDistance);
-        }
-        foreach (var child in slot.LocalChildren)
-        {
-            CollectInteractionHits(child, origin, direction, maxDist, blockingDistance);
         }
     }
 
@@ -955,7 +964,10 @@ public sealed class InteractionLaser : Component
         hitDistance = maxDistance;
         bool hasHit = false;
 
-        foreach (var collider in World.RootSlot.GetComponentsInChildren<Collider>())
+        // Pull from the world's collider registry instead of walking the whole slot tree every frame. Each
+        // candidate is still filtered below, so a stale entry can't cause a wrong hit. -xlinka
+        World.CopyCollidersTo(_colliderBuffer);
+        foreach (var collider in _colliderBuffer)
         {
             if (!IsColliderRaycastCandidate(collider)) continue;
             if (!TryIntersectCollider(collider, origin, direction, maxDistance, out float candidateDistance)) continue;

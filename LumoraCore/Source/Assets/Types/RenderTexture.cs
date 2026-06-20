@@ -49,4 +49,14 @@ public class RenderTexture : TextureAsset
         RenderEnabled = enabled;
         (Hook as IRenderTextureAssetHook)?.SetRenderEnabled(enabled);
     }
+
+    /// <summary>
+    /// Ask the offscreen viewport to render a single frame now (used when the captured UI actually changed).
+    /// No-op while paused. This is what lets the UI render only on change instead of every frame. -xlinka
+    /// </summary>
+    public void RequestRender()
+    {
+        if (!RenderEnabled) return;
+        (Hook as IRenderTextureAssetHook)?.RequestRender();
+    }
 }

@@ -27,6 +27,9 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
 
     private readonly Dictionary<int, GlyphEntry> _glyphs = new();
     private FontFile? _font;
+    // True only when WE created the FontFile (raw LoadDynamicFont). When the font came from ResourceLoader it's
+    // a shared imported resource we must NOT dispose. -xlinka
+    private bool _ownsFont;
     private TextureAsset? _atlasTexture;
     private byte[]? _atlasPixels;
     private int _penX;
@@ -41,11 +44,40 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
 
     public void LoadFromFile(string path)
     {
-        _font?.Dispose();
-        _font = new FontFile();
+        if (_ownsFont) _font?.Dispose();
+        _font = null;
+        _ownsFont = false;
         _glyphs.Clear();
         ResetAtlas();
 
+        // Godot strips the RAW source of imported files from exports (our font has a .ttf.import) and keeps only
+        // the imported resource inside the .pck. But the engine resolved res:// to an OS DISK path
+        // (ResourceRoot = GlobalizePath("res://")), which only has real files in the EDITOR - in an export that
+        // dir is the exe folder and the font isn't there, so the raw read failed and text vanished. Recover the
+        // res:// path by stripping ResourceRoot (the exact value that built this path - reliable in editor AND
+        // export, unlike a GlobalizePath/LocalizePath round-trip) and load the IMPORTED FontFile from the .pck
+        // via ResourceLoader. Genuine external files (a user-imported font outside ResourceRoot) still raw-load.
+        // -xlinka
+        string? resPath = TryGetResPath(path);
+        bool resExists = resPath != null && ResourceLoader.Exists(resPath);
+        // DIAG (export-debug): shows the resolved path + whether the imported resource was found. Remove once
+        // text is confirmed in the Linux/exported build. -xlinka
+        GD.Print($"FontAssetHook.LoadFromFile: root='{Lumora.Core.Engine.Current?.ResourceRoot}' path='{path}' " +
+                 $"resPath='{resPath}' resExists={resExists} rawExists={System.IO.File.Exists(path)}");
+        if (resExists)
+        {
+            _font = ResourceLoader.Load<FontFile>(resPath);
+            if (_font != null)
+            {
+                _ownsFont = false; // shared imported resource - do not dispose it
+                GD.Print($"FontAssetHook: loaded imported FontFile from '{resPath}'");
+                return;
+            }
+            GD.PrintErr($"FontAssetHook: ResourceLoader.Load returned null for '{resPath}'");
+        }
+
+        _font = new FontFile();
+        _ownsFont = true;
         var error = _font.LoadDynamicFont(path);
         if (error != Error.Ok)
         {
@@ -56,8 +88,29 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
         {
             _font.Dispose();
             _font = null;
+            _ownsFont = false;
             GD.PrintErr($"FontAssetHook: Failed to load font '{path}' ({error})");
         }
+    }
+
+    // Map an engine resource disk path back to its res:// VFS path. The engine builds resource paths as
+    // ResourceRoot + relative (ResourceRoot == GlobalizePath("res://")), so stripping ResourceRoot recovers the
+    // relative part regardless of whether the file exists on disk - which is exactly the case in a .pck export.
+    // Returns null for paths NOT under ResourceRoot (genuine external files), which keep the raw-load path. -xlinka
+    private static string? TryGetResPath(string path)
+    {
+        var root = Lumora.Core.Engine.Current?.ResourceRoot;
+        if (string.IsNullOrEmpty(root) || string.IsNullOrEmpty(path))
+            return null;
+
+        static string Norm(string p) => p.Replace('\\', '/').TrimEnd('/');
+        var np = Norm(path);
+        var nr = Norm(root);
+        if (np.Length <= nr.Length || !np.StartsWith(nr, StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        var rel = np.Substring(nr.Length).TrimStart('/');
+        return rel.Length == 0 ? null : "res://" + rel;
     }
 
     public bool TryGetGlyph(int codepoint, float displaySize, out GlyphMetrics metrics, out MathRect uvRect)
@@ -207,8 +260,9 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
 
     public override void Unload()
     {
-        _font?.Dispose();
+        if (_ownsFont) _font?.Dispose();
         _font = null;
+        _ownsFont = false;
         _atlasTexture?.Unload();
         _atlasTexture = null;
         _atlasPixels = null;

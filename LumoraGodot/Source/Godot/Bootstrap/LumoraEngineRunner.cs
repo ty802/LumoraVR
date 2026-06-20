@@ -791,7 +791,16 @@ public partial class LumoraEngineRunner : Node
 				AutoHostLocalHome = this.AutoHostLocalHome,
 				AutoConnectLocalHome = this.AutoConnectLocalHome
 			};
-			_engine.ResourceRoot = ProjectSettings.GlobalizePath("res://");
+			// In an EXPORT res:// has no real on-disk directory, so GlobalizePath("res://") returns empty - which
+			// left every res:// asset (notably fonts -> no text) unresolvable. Fall back to the executable's folder
+			// as a stable, non-empty root; the actual bytes still load from the .pck via the VFS (ResourceLoader)
+			// in the asset hooks, so the root only needs to be a consistent prefix the hook can strip. -xlinka
+			var resourceRoot = ProjectSettings.GlobalizePath("res://");
+			if (string.IsNullOrWhiteSpace(resourceRoot))
+			{
+				resourceRoot = System.IO.Path.GetDirectoryName(OS.GetExecutablePath()) ?? string.Empty;
+			}
+			_engine.ResourceRoot = resourceRoot;
 			_engine.QuitRequested += OnQuitRequested;
 			if (VerboseInit)
 			{

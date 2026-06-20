@@ -34,6 +34,11 @@ public class RectTransform : Component
 
     private Rect _localComputeRect;
     private DataModelFlag _dataModelFlags;
+    // Cached-layout tracking. _layoutSelfDirty = this rect's own layout inputs changed; _descendantLayoutDirty
+    // = something below changed (bubbled up). Both start true so the first pass computes everything; the
+    // layout pass then skips any clean subtree (neither set) whose recomputed rect matches the cached one. -xlinka
+    private bool _layoutSelfDirty = true;
+    private bool _descendantLayoutDirty = true;
     private RectTransform? _rectParent;
     private readonly List<RectTransform> _rectChildren = new();
     private Canvas? _registeredCanvas;
@@ -110,9 +115,30 @@ public class RectTransform : Component
     private void OnSlotActiveChanged(Slot slot)
     {
         _dataModelFlags |= DataModelFlag.StructureChanged;
-        // Visibility change, not a content change: re-enable persisted chunks instead of forcing a
-        // full re-tessellate. New/changed content still re-meshes (it's unbuilt/dirty).
-        ResolveCanvas()?.MarkVisibilityDirty();
+        MarkLayoutSelfDirty();
+        var canvas = ResolveCanvas();
+        if (canvas == null)
+            return;
+
+        // Showing/hiding a slot only reflows its SIBLINGS when a parent arranges it via a LayoutController.
+        // A free-anchored leaf (a checkbox/radio dot, a hover overlay) reflows nothing, so it just needs its
+        // own chunk re-meshed - not a full-canvas relayout + root rebuild (which churns, and used to drop,
+        // the whole panel). Layout-participating slots take the safe full path. -xlinka
+        if (ParticipatesInParentLayout())
+            canvas.MarkVisibilityDirty();
+        else
+            canvas.MarkVisibilityDirty(this);
+    }
+
+    // True when a parent LayoutController arranges this slot, so showing/hiding it can move its siblings and
+    // a layout pass is required. False for free-anchored slots, which can't reflow anything. -xlinka
+    private bool ParticipatesInParentLayout()
+    {
+        var parent = Slot?.Parent;
+        if (parent == null)
+            return false;
+        var layout = parent.GetComponent<LayoutController>();
+        return layout != null && layout.Enabled.Value;
     }
 
     // A purely visual change to a graphic on this slot (tint/texture/etc.): re-mesh its chunk,
@@ -127,6 +153,7 @@ public class RectTransform : Component
     // changes like a slider handle); false: recompute the whole canvas layout (structure changes).
     private void SignalLayoutDirty(bool scoped)
     {
+        MarkLayoutSelfDirty();
         var canvas = ResolveCanvas();
         if (canvas == null)
             return;
@@ -147,6 +174,33 @@ public class RectTransform : Component
                 return canvas;
         }
         return null;
+    }
+
+    /// <summary>True if this rect or any descendant has a pending layout change (so the cached-layout pass
+    /// must not skip it).</summary>
+    public bool LayoutSubtreeDirty => _layoutSelfDirty || _descendantLayoutDirty;
+
+    internal void ClearLayoutDirty()
+    {
+        _layoutSelfDirty = false;
+        _descendantLayoutDirty = false;
+    }
+
+    // Mark this rect's own layout dirty and bubble a "descendant changed" flag up the slot tree, so the
+    // cached-layout pass won't skip any ancestor that contains us. Stops at the first ancestor already
+    // flagged (keeps it amortized cheap). -xlinka
+    private void MarkLayoutSelfDirty()
+    {
+        _layoutSelfDirty = true;
+        for (var s = Slot?.Parent; s != null; s = s.Parent)
+        {
+            var rt = s.GetComponent<RectTransform>();
+            if (rt == null)
+                continue;
+            if (rt._descendantLayoutDirty)
+                break;
+            rt._descendantLayoutDirty = true;
+        }
     }
 
     internal void SetLocalComputeRect(in Rect rect) => _localComputeRect = rect;

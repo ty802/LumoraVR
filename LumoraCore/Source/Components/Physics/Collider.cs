@@ -64,6 +64,9 @@ public abstract class Collider : ImplementableComponent
     {
         base.OnAwake();
 
+        // Join this world's collider registry so raycasts don't have to walk the whole tree to find us. -xlinka
+        World?.RegisterCollider(this);
+
         // Keep hook in sync when collider properties change
         Offset.OnChanged += _ => RunApplyChanges();
         Type.OnChanged += _ => RunApplyChanges();
@@ -159,6 +162,8 @@ public abstract class Collider : ImplementableComponent
 
     public override void OnDestroy()
     {
+        World?.UnregisterCollider(this);
+
         if (Slot != null)
             Slot.WorldTransformChanged -= OnSlotTransformChanged;
 

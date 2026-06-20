@@ -51,6 +51,9 @@ public class UserspaceDashboard : UIComponent
     private Grabbable? _grabHandle;
     private bool _lastFreeform;
     private bool _wasOpen;
+    // Last seen shared-font atlas generation. New glyphs rasterize on demand and bump this; we re-render the
+    // viewport when it changes so freshly-seen text isn't left blank under render-on-dirty. -xlinka
+    private int _lastFontGeneration = -1;
     private bool _built;
     private bool _defaultScreensBuilt;
 
@@ -140,6 +143,30 @@ public class UserspaceDashboard : UIComponent
         if (open && !_wasOpen)
             _dashboard?.ForceRebuild();
         _wasOpen = open;
+
+        // Render the offscreen UI only when it actually changed. The canvas flags a render after each mesh
+        // submit; we pulse the viewport once for it. A static dash keeps showing its last frame at zero GPU
+        // cost instead of re-rendering the full-res 2x-supersampled capture every single frame. -xlinka
+        if (open)
+        {
+            var canvas = _canvasSlot?.GetComponent<Canvas>();
+            if (canvas != null && canvas.ConsumeRenderRequested())
+                _renderTexture?.Asset?.RequestRender();
+
+            // New glyphs rasterize into the shared font atlas on demand; the atlas GPU upload is deferred and
+            // the glyph meshes already have correct UVs, so we just need ONE more viewport render after the
+            // atlas texture has the new pixels - otherwise newly-seen text stays blank until an unrelated
+            // re-dirty (the "text loads late / disappears" bug). The generation bumps at rasterize time and we
+            // observe it a frame later, by which point the deferred upload has landed. It's the standard
+            // atlas-update -> re-render pattern, minus any async pin/await (our rasterizer is synchronous, so the
+            // UVs are already right and a re-render is enough - no re-mesh). -xlinka
+            int fontGeneration = Font.Target?.Asset?.CacheGeneration ?? 0;
+            if (fontGeneration != _lastFontGeneration)
+            {
+                _lastFontGeneration = fontGeneration;
+                _renderTexture?.Asset?.RequestRender();
+            }
+        }
 
         // The whole-surface grab is disabled: boosting it above the canvas to move
         // the dash also stole the laser in edit mode (you'd grab the whole dash

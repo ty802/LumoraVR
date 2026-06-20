@@ -68,7 +68,6 @@ public sealed class Image : Graphic
 
         var rect = rectTransform.LocalComputeRect;
         var clipRect = renderData.ClipRect;
-        DumpButtonDiagnosticsOnce(rect, clipRect);
 
         if (rect.IsEmpty)
         {
@@ -90,31 +89,6 @@ public sealed class Image : Graphic
         }
 
         RawImage.GenerateImage(submesh.Mesh, submesh, rect, _uvRect, _texture?.Asset, _preserveAspect, in _tint, clipRect);
-    }
-
-    private bool _diagnosticsLogged;
-
-    // One-shot dump for diagnosing why nav buttons render inconsistently. Prints
-    // each Image's parent button name + own slot name + rect + tint + texture status.
-    // Remove once the cause is found. - xlinka
-    private void DumpButtonDiagnosticsOnce(in Rect rect, Rect? clipRect)
-    {
-        if (_diagnosticsLogged) return;
-        var parent = Slot?.Parent;
-        if (parent == null) return;
-        var parentName = parent.SlotName.Value;
-        if (parentName != "Home" && parentName != "Worlds" && parentName != "Session"
-            && parentName != "Settings" && parentName != "Friends" && parentName != "Inventory"
-            && parentName != "Files")
-        {
-            return;
-        }
-        _diagnosticsLogged = true;
-        Lumora.Core.Logging.Logger.Log(
-            $"[ButtonDiag] {parentName}/{Slot!.SlotName.Value} rect=({rect.xMin:F1},{rect.yMin:F1},{rect.width:F1}x{rect.height:F1}) " +
-            $"empty={rect.IsEmpty} clip={(clipRect.HasValue ? $"({clipRect.Value.xMin:F1},{clipRect.Value.yMin:F1},{clipRect.Value.width:F1}x{clipRect.Value.height:F1})" : "none")} " +
-            $"tint=({_tint.r:F2},{_tint.g:F2},{_tint.b:F2},{_tint.a:F2}) tex={(_texture?.Asset != null ? "yes" : "no")} " +
-            $"nineSlice={_nineSlice} borders=({_borders.x:F1},{_borders.y:F1},{_borders.z:F1},{_borders.w:F1})");
     }
 
     public override bool IsPointInside(in float2 point)

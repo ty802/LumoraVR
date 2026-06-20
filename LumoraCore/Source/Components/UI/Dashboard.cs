@@ -328,6 +328,8 @@ public class Dashboard : UIComponent
     {
         var slot = statusSlot.AddSlot("Connection");
         var rect = slot.AttachComponent<RectTransform>();
+        // Own chunk so the live connection status updating doesn't re-mesh the whole root. -xlinka
+        slot.AttachComponent<GraphicChunkRoot>();
         rect.AnchorMin.Value = new float2(0f, 0.5f);
         rect.AnchorMax.Value = new float2(0f, 0.5f);
         rect.OffsetMin.Value = new float2(14f, -17f);
@@ -374,6 +376,9 @@ public class Dashboard : UIComponent
 
         var slot = _navSlot.AddSlot(screen.Label.Value);
         slot.AttachComponent<RectTransform>();
+        // Its own chunk so hovering a nav tab (it drives a tint) re-meshes just this button, not the whole
+        // dashboard root chunk. -xlinka
+        slot.AttachComponent<GraphicChunkRoot>();
         var layout = slot.AttachComponent<LayoutElement>();
         layout.MinWidth.Value = 84f;
         layout.PreferredWidth.Value = 96f;

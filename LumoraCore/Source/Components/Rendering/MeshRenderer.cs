@@ -95,6 +95,14 @@ public class MeshRenderer : ImplementableComponent
     /// </summary>
     public readonly Sync<int> SortingOrder;
 
+    /// <summary>
+    /// When true, the hook renders each mesh surface as its OWN MeshInstance3D ordered purely by a distinct
+    /// per-surface SortingOffset (= SortingOrder * a stride + surface index), with uniform render_priority. This
+    /// bypasses Godot's 256-level render_priority cap to give unbounded positional order for UI. Set by Helio's
+    /// GraphicsChunk when the unbounded-ordering mode is enabled; off for all normal (world) meshes. -xlinka
+    /// </summary>
+    public bool PerSurfaceOrdering { get; set; }
+
     public bool MaterialsChanged { get; set; }
     public bool MaterialPropertyBlocksChanged { get; set; }
     public bool SurfaceRenderPrioritiesChanged { get; set; }

@@ -26,6 +26,14 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     private readonly List<Slot> _children = new();
     private readonly List<Slot> _localChildren = new();
     private readonly List<Component> _components = new();
+
+    // Cached read-only views. List.AsReadOnly() returns a LIVE wrapper, so one cached instance per list stays
+    // correct as the list changes - and we avoid allocating a fresh wrapper on every access. The UI hit-test
+    // and the laser raycast both read Components/Children/LocalChildren per slot, recursively, every frame, so
+    // these allocations were a major source of per-frame GC churn (and the resulting stutter). -xlinka
+    private IReadOnlyList<Component>? _componentsReadOnly;
+    private IReadOnlyList<Slot>? _childrenReadOnly;
+    private IReadOnlyList<Slot>? _localChildrenReadOnly;
     private Slot _parent = null!;
     private bool _isRemoved;
 
@@ -339,12 +347,12 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// <summary>
     /// Read-only list of child Slots.
     /// </summary>
-    public IReadOnlyList<Slot> Children => _children.AsReadOnly();
+    public IReadOnlyList<Slot> Children => _childrenReadOnly ??= _children.AsReadOnly();
 
     /// <summary>
     /// Read-only list of local-only child Slots.
     /// </summary>
-    public IReadOnlyList<Slot> LocalChildren => _localChildren.AsReadOnly();
+    public IReadOnlyList<Slot> LocalChildren => _localChildrenReadOnly ??= _localChildren.AsReadOnly();
 
     /// <summary>
     /// Number of child Slots.
@@ -359,7 +367,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// <summary>
     /// Read-only list of Components attached to this Slot.
     /// </summary>
-    public new IReadOnlyList<Component> Components => _components.AsReadOnly();
+    public new IReadOnlyList<Component> Components => _componentsReadOnly ??= _components.AsReadOnly();
 
     /// <summary>
     /// Number of Components attached to this Slot.
@@ -1711,7 +1719,15 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// </summary>
     public T GetComponent<T>() where T : Component
     {
-        return _components.OfType<T>().FirstOrDefault()!;
+        // Hot path: the UI hit-test calls this per slot, twice per laser, every frame. A plain loop avoids
+        // the iterator allocation LINQ's OfType<T>().FirstOrDefault() makes on EVERY call - that allocation,
+        // multiplied across the whole UI tree each frame, was a big chunk of the UI's per-frame GC churn. -xlinka
+        for (int i = 0; i < _components.Count; i++)
+        {
+            if (_components[i] is T match)
+                return match;
+        }
+        return null!;
     }
 
     /// <summary>
@@ -1719,7 +1735,12 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// </summary>
     public Component GetComponent(Type type)
     {
-        return _components.FirstOrDefault(c => type.IsInstanceOfType(c))!;
+        for (int i = 0; i < _components.Count; i++)
+        {
+            if (type.IsInstanceOfType(_components[i]))
+                return _components[i];
+        }
+        return null!;
     }
 
     /// <summary>
@@ -1761,7 +1782,12 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// </summary>
     public T GetComponent<T>(Func<T, bool> predicate) where T : Component
     {
-        return _components.OfType<T>().FirstOrDefault(predicate)!;
+        for (int i = 0; i < _components.Count; i++)
+        {
+            if (_components[i] is T match && predicate(match))
+                return match;
+        }
+        return null!;
     }
 
     /// <summary>
@@ -1820,6 +1846,24 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             foreach (var comp in child.GetComponentsInChildren<T>(true))
                 yield return comp;
         }
+    }
+
+    /// <summary>
+    /// Allocation-free variant of <see cref="GetComponentsInChildren{T}(bool)"/>: fills a caller-provided
+    /// (ideally reused) list instead of allocating an iterator state machine + an OfType wrapper at EVERY
+    /// slot. The per-frame laser raycast walks the whole world with this, so those allocations were real. -xlinka
+    /// </summary>
+    public void GetComponentsInChildren<T>(List<T> results, bool includeSelf = true) where T : Component
+    {
+        if (includeSelf)
+        {
+            for (int i = 0; i < _components.Count; i++)
+                if (_components[i] is T match) results.Add(match);
+        }
+        for (int i = 0; i < _children.Count; i++)
+            _children[i].GetComponentsInChildren(results, true);
+        for (int i = 0; i < _localChildren.Count; i++)
+            _localChildren[i].GetComponentsInChildren(results, true);
     }
 
     /// <summary>

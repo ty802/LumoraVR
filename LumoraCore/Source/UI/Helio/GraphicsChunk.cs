@@ -139,6 +139,9 @@ public sealed class GraphicsChunk
             AssignMaterials();
 
             _chunk.MeshRenderer!.SortingOrder.Value = sortingOrder;
+            // Opt-in unbounded ordering: tell the hook to split this chunk's surfaces into per-surface
+            // instances ordered by SortingOffset instead of the render_priority bands. Default false. -xlinka
+            _chunk.MeshRenderer.PerSurfaceOrdering = Canvas.UnboundedRenderOrder;
             _chunk.MeshRenderer.Enabled.Value = Mesh.VertexCount > 0;
             _chunk.MeshProvider!.SetMesh(Mesh);
 
@@ -512,6 +515,13 @@ public sealed class GraphicsChunk
     // normal chunks so a modal draws on top of everything (see BuildPerSurfacePriorities). - xlinka
     public int OverlayLevel { get; set; }
 
+    // Tree-order sort index, assigned by the Canvas in hierarchy order on each render-root cycle. Drives the
+    // mesh renderer's SortingOrder (Godot sorting_offset), which is the INNER transparent-sort key under
+    // render_priority. So this gives later-in-tree chunks a higher offset -> they tie-break ON TOP of earlier
+    // ones that share a render_priority value (previously all nested chunks shared one offset, leaving
+    // same-band overlap undefined). Stored on the chunk so a scoped re-mesh keeps its place. -xlinka
+    public int OrderIndex { get; set; }
+
     private UIUnlitMaterial? _defaultMaterial;
     private MaterialCloneCache? _materialCloneCache;
 
@@ -581,8 +591,18 @@ public sealed class GraphicsChunk
 
     public void SubmitChanges(int sortingOrder = 0)
     {
+        OrderIndex = sortingOrder;
         ContentRenderData.SubmitChanges(sortingOrder);
         _materialCloneCache?.EndFrame();
+    }
+
+    // Push this chunk's tree-order index to its renderer WITHOUT re-meshing. Used on a render-root cycle for
+    // chunks that were seen but not recomputed (their mesh is unchanged, but their place in tree order may have
+    // shifted because a sibling chunk was added/removed). Cheap - just sets the SortingOrder sync. -xlinka
+    public void ApplyOrderToRenderer()
+    {
+        if (MeshRenderer != null && !MeshRenderer.IsDestroyed)
+            MeshRenderer.SortingOrder.Value = OrderIndex;
     }
 
     // Show/hide a built chunk without rebuilding it. Hiding content disables the chunk slot

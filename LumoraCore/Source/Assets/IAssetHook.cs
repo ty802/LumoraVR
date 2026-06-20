@@ -57,6 +57,12 @@ public interface IRenderTextureAssetHook : ITextureAssetHook
     /// Pause or resume offscreen rendering without tearing the viewport down.
     /// </summary>
     void SetRenderEnabled(bool enabled);
+
+    /// <summary>
+    /// Render exactly one frame now, then go idle again (keeping the last frame). Used for render-on-change:
+    /// the UI viewport only re-renders when its captured content actually changed, instead of every frame.
+    /// </summary>
+    void RequestRender();
 }
 
 /// <summary>

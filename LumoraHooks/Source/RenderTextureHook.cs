@@ -64,7 +64,11 @@ public class RenderTextureHook : AssetHook, IRenderTextureAssetHook, IGodotTextu
             _viewport = new SubViewport
             {
                 Name = "RenderTexture",
-                RenderTargetUpdateMode = _renderEnabled ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled,
+                // Render ON DEMAND (one frame per change via RequestRender) instead of every frame. The
+                // captured scene is just the UI canvas, which only changes when its mesh is rebuilt, so
+                // re-rendering this full-res supersampled viewport every frame was pure waste. Disabled keeps
+                // the last rendered frame on the texture. -xlinka
+                RenderTargetUpdateMode = _renderEnabled ? SubViewport.UpdateMode.Once : SubViewport.UpdateMode.Disabled,
                 RenderTargetClearMode = SubViewport.ClearMode.Always,
                 OwnWorld3D = false,
                 HandleInputLocally = false,
@@ -108,9 +112,24 @@ public class RenderTextureHook : AssetHook, IRenderTextureAssetHook, IGodotTextu
     private void ApplyRenderEnabled()
     {
         if (_viewport == null || !GodotObject.IsInstanceValid(_viewport)) return;
+        // Enabling draws one frame now; subsequent frames come from RequestRender on actual UI changes. -xlinka
         _viewport.RenderTargetUpdateMode = _renderEnabled
-            ? SubViewport.UpdateMode.Always
+            ? SubViewport.UpdateMode.Once
             : SubViewport.UpdateMode.Disabled;
+    }
+
+    public void RequestRender()
+    {
+        if (!_renderEnabled) return;
+        Callable.From(ApplyRequestRender).CallDeferred();
+    }
+
+    private void ApplyRequestRender()
+    {
+        if (!_renderEnabled || _viewport == null || !GodotObject.IsInstanceValid(_viewport)) return;
+        // UpdateMode.Once renders a single frame then reverts to no-updates on its own, keeping that frame on
+        // the texture until the next request. -xlinka
+        _viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Once;
     }
 
     public void UploadData(byte[] pixels, int width, int height, bool hasMipmaps) { }

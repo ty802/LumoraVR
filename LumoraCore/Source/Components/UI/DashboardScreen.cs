@@ -17,6 +17,11 @@ public class DashboardScreen : UIComponent
 
     private bool _built;
     private Slot? _contentSlot;
+    // Overlays this screen parents OUTSIDE its own content slot - e.g. a modal + dim backdrop hosted on the
+    // canvas root so they can cover the nav chrome. Those do NOT hide when this screen's content slot goes
+    // inactive, so HideScreen deactivates them here. Structural safety net: a screen can't leave an on-top
+    // overlay drawing over the next screen even if it forgets a custom OnHide. Register at build time. -xlinka
+    private System.Collections.Generic.List<Slot>? _offRootOverlays;
 
     public Slot? ContentSlot
     {
@@ -54,6 +59,31 @@ public class DashboardScreen : UIComponent
     {
         Slot.ActiveSelf.Value = false;
         OnHide();
+        // Safety net for off-root overlays (canvas-root modals/backdrops). A screen with a stateful menu still
+        // overrides OnHide for a clean reset; this just guarantees nothing it parented above its own content
+        // survives the switch and draws over the next screen. -xlinka
+        if (_offRootOverlays != null)
+        {
+            for (int i = 0; i < _offRootOverlays.Count; i++)
+            {
+                var overlay = _offRootOverlays[i];
+                if (overlay != null && !overlay.IsDestroyed)
+                    overlay.ActiveSelf.Value = false;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Register a slot this screen parents OUTSIDE its own content slot (a modal/backdrop on the canvas root).
+    /// HideScreen deactivates every registered overlay so it can't draw over the next screen. -xlinka
+    /// </summary>
+    protected void RegisterOverlay(Slot overlay)
+    {
+        if (overlay == null)
+            return;
+        _offRootOverlays ??= new System.Collections.Generic.List<Slot>();
+        if (!_offRootOverlays.Contains(overlay))
+            _offRootOverlays.Add(overlay);
     }
 
     protected virtual void OnShow()

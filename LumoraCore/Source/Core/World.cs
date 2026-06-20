@@ -280,6 +280,64 @@ public class World
 	public Slot RootSlot { get; private set; } = null!;
 
 	/// <summary>
+	/// Live collider registry for this world, maintained by Collider on attach/destroy. Lets raycasts
+	/// iterate a flat list instead of walking the entire slot tree every frame, per laser. Holds ALL
+	/// colliders (active or not); raycast callers filter by their own candidacy checks, so a momentarily
+	/// stale entry (e.g. a just-destroyed collider) can't produce a wrong hit. -xlinka
+	/// </summary>
+	private readonly HashSet<Components.Collider> _colliders = new();
+
+	public void RegisterCollider(Components.Collider collider)
+	{
+		if (collider != null)
+			_colliders.Add(collider);
+	}
+
+	public void UnregisterCollider(Components.Collider collider)
+	{
+		if (collider != null)
+			_colliders.Remove(collider);
+	}
+
+	/// <summary>Copy the live colliders into a caller-provided (reusable) buffer - allocation-free. -xlinka</summary>
+	public void CopyCollidersTo(List<Components.Collider> buffer)
+	{
+		buffer.Clear();
+		foreach (var c in _colliders)
+			buffer.Add(c);
+	}
+
+	/// <summary>
+	/// Live interaction-target registry for this world, maintained centrally by ComponentBase on init/destroy
+	/// (so EVERY IInteractionTarget component is in here, no per-implementer opt-in to forget). Lets the laser
+	/// iterate a flat list instead of walking the entire slot tree every frame, per laser. Holds ALL targets
+	/// (active, disabled, even momentarily stale); the laser filters each candidate by enabled/active/hierarchy
+	/// at use-site, so a stale entry can't produce a wrong hit. A target moved across worlds re-registers via
+	/// its re-init (same caveat as the collider registry). -xlinka
+	/// </summary>
+	private readonly HashSet<Components.Interaction.IInteractionTarget> _interactionTargets = new();
+
+	public void RegisterInteractionTarget(Components.Interaction.IInteractionTarget target)
+	{
+		if (target != null)
+			_interactionTargets.Add(target);
+	}
+
+	public void UnregisterInteractionTarget(Components.Interaction.IInteractionTarget target)
+	{
+		if (target != null)
+			_interactionTargets.Remove(target);
+	}
+
+	/// <summary>Copy the live interaction targets into a caller-provided (reusable) buffer - allocation-free. -xlinka</summary>
+	public void CopyInteractionTargetsTo(List<Components.Interaction.IInteractionTarget> buffer)
+	{
+		buffer.Clear();
+		foreach (var t in _interactionTargets)
+			buffer.Add(t);
+	}
+
+	/// <summary>
 	/// Display name of this World.
 	/// </summary>
 	public Sync<string> WorldName { get; private set; }

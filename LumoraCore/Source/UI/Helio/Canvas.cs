@@ -45,6 +45,9 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     // self-contained changes (e.g. a slider handle) so we don't re-lay-out the whole canvas.
     private readonly HashSet<GraphicChunkRoot> _layoutDirtyChunks = new();
     private readonly HashSet<GraphicChunkRoot> _seenChunkRoots = new();
+    // Same chunks as _seenChunkRoots but kept in DISCOVERY (tree) order, so we can hand each chunk a
+    // monotonically increasing SortingOrder in hierarchy order -> later-in-tree chunks tie-break on top. -xlinka
+    private readonly List<GraphicChunkRoot> _chunkOrder = new();
     private readonly List<GraphicChunkRoot> _chunkScratch = new();
     // Nested chunks tessellated this rebuild, submitted after the compute pass. Split
     // so the compute (mesh build) can move to a worker while submit/upload stays on
@@ -53,6 +56,10 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     private bool _rootDirty = true;
     private bool _fullDirty = true;
     private bool _layoutDirty = true;
+    // Set after each mesh submit: the captured UI changed, so the offscreen viewport should render ONE frame
+    // for it. Consumed by the host (dashboard). This is what lets the UI render on change instead of every
+    // single frame. -xlinka
+    private bool _renderRequested;
     // Guards the async rebuild cycle: prepare (main) -> emit (worker) -> submit (main). Only one
     // cycle at a time; a change mid-cycle leaves its dirty flag set so the next OnCommonUpdate
     // re-runs. Touched only on the main thread (OnCommonUpdate + the RunSynchronously submit
@@ -88,6 +95,49 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         _layoutDirty = true;
     }
 
+    // Scoped visibility change: a free-anchored leaf (e.g. a checkbox dot, a hover overlay) inside a BUILT
+    // chunk toggled active. Re-mesh just that chunk - it re-walks its subtree and picks up the new active
+    // state - with NO full-canvas relayout, no root rebuild, and no chunk reconcile (which is what used to
+    // disable a panel's nested row chunks and make the content vanish). Falls back to the safe full path if
+    // the rect isn't inside a built chunk. Only the caller's layout-participation check decides which to use.
+    // -xlinka
+    public void MarkVisibilityDirty(RectTransform rect)
+    {
+        var root = FindChunkRoot(rect.Slot);
+        // The scoped path re-meshes ONE built chunk and skips the render-root reconcile (CleanupChunks). That's
+        // only safe when the toggled subtree lives entirely inside that one chunk. If it CONTAINS (or IS) a
+        // nested chunk root - e.g. a whole dashboard screen whose rows are each their own chunk - those nested
+        // chunks are independent and only the render-root path enables/disables them. Take the scoped path only
+        // for pure leaf toggles (checkbox dot, hover overlay); otherwise a hidden screen's row chunks stay on
+        // screen and overlap the new one. -xlinka
+        if (root == null || !_chunkMap.ContainsKey(root) || !(_chunkBuilt.TryGetValue(root, out var built) && built)
+            || SubtreeHasChunkRoot(rect.Slot))
+        {
+            _rootDirty = true;
+            _layoutDirty = true;
+            return;
+        }
+        _dirtyChunks.Add(root);
+    }
+
+    // True if this slot or anything in its subtree is a GraphicChunkRoot. Early-outs at the first hit, so it's
+    // cheap for the leaf toggles that actually want the scoped path (a checkbox dot's subtree is a slot or two);
+    // a screen returns true almost immediately off its own/first row's chunk root. -xlinka
+    private bool SubtreeHasChunkRoot(Slot slot)
+    {
+        if (slot.GetComponent<GraphicChunkRoot>() != null)
+            return true;
+        var children = slot.Children;
+        for (int i = 0; i < children.Count; i++)
+            if (SubtreeHasChunkRoot(children[i]))
+                return true;
+        var localChildren = slot.LocalChildren;
+        for (int i = 0; i < localChildren.Count; i++)
+            if (SubtreeHasChunkRoot(localChildren[i]))
+                return true;
+        return false;
+    }
+
     // Scoped layout: a self-contained change (e.g. a slider handle anchor) inside a built chunk.
     // Re-lay-out only that chunk's subtree and re-mesh that chunk - no whole-canvas layout. Falls
     // back to a full layout if the rect isn't inside a built chunk (the change may affect siblings).
@@ -116,6 +166,18 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             _rootDirty = true;
         else
             _dirtyChunks.Add(root);
+    }
+
+    /// <summary>
+    /// True once after each rebuild/mesh submit. The host (dashboard) polls this each frame to render exactly
+    /// ONE offscreen frame per change, instead of re-rendering the full-res capture every frame. -xlinka
+    /// </summary>
+    public bool ConsumeRenderRequested()
+    {
+        if (!_renderRequested)
+            return false;
+        _renderRequested = false;
+        return true;
     }
 
     public RectTransform? RootRectTransform => _rootRect;
@@ -404,6 +466,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         if (renderRoot)
         {
             _seenChunkRoots.Clear();
+            _chunkOrder.Clear();
             _rootChunk.PrepareCompute();
             RenderPartition(_rootChunk.ContentRenderData, Slot, null, null);
 
@@ -417,6 +480,12 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
                 bool built = _chunkBuilt.TryGetValue(root, out var b) && b;
                 if ((_fullDirty || _dirtyChunks.Contains(root) || !built) && ComputeChunk(root))
                     _computedChunks.Add(root);
+                else
+                    // Built + unchanged: we skip re-meshing it, but it may CONTAIN nested chunks (a panel chunk
+                    // with its own per-row chunks). ComputeChunk would have discovered+registered those; since
+                    // we skipped it, register them ourselves so they stay "seen" - otherwise CleanupChunks
+                    // disables them and the panel's nested content vanishes when you toggle a control. -xlinka
+                    RegisterNestedChunkRoots(root.Slot);
                 foreach (var r in _seenChunkRoots)
                     if (!_chunkScratch.Contains(r)) _chunkScratch.Add(r);
             }
@@ -481,6 +550,14 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     // compile without an unreachable warning when toggled.
     private static readonly bool UseWorker = true;
 
+    // Default behaviour: UNBOUNDED positional UI draw order. Each chunk renders
+    // every mesh surface as its own MeshInstance3D ordered by a distinct full-range SortingOffset
+    // (= chunk tree index * stride + surface index), with uniform render_priority - so later-in-tree always draws
+    // on top with no 256-level cap, instead of packing into Godot's render_priority bands. Verified working
+    // in-engine. Set false to fall back to the banded path (cheaper: one instance per chunk, no per-surface
+    // material duplicate) if a perf issue ever shows up. -xlinka
+    public static bool UnboundedRenderOrder = true;
+
     // WORKER: drain each dirty chunk's emit queue into its (already-cleared) mesh. Reads only
     // snapshotted graphic state + stable LocalComputeRect; writes only managed PhosMesh data.
     private void EmitCycle()
@@ -502,22 +579,47 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         // A change that arrived during the cycle left its dirty flag set, so the next
         // OnCommonUpdate starts a fresh cycle.
         _updateRunning = false;
+        // The captured mesh just changed on the main thread - ask the host for one offscreen render. -xlinka
+        _renderRequested = true;
     }
 
     private void SubmitCycle()
     {
         if (_rootChunk == null)
             return;
+
+        int baseOrder = SortingOrder.Value;
+
+        // On a render-root cycle the chunk set / tree order can change, so (re)assign every seen chunk a
+        // tree-order SortingOrder: root lowest, then nested chunks in discovery (hierarchy) order. SortingOrder
+        // is the INNER transparent-sort key (Godot sorting_offset) under render_priority, so later-in-tree
+        // chunks tie-break ON TOP of earlier same-band ones. Push it straight to each renderer here so unchanged
+        // chunks reorder WITHOUT a re-mesh; recomputed/new chunks pick the same value up via SubmitChanges.
+        // On a scoped cycle we don't rebuild _chunkOrder - each chunk keeps the OrderIndex it was last given,
+        // which is still correct because the tree didn't change structurally. -xlinka
         if (_cycleRenderRoot)
-            _rootChunk.SubmitChanges(SortingOrder.Value);
+        {
+            _rootChunk.OrderIndex = baseOrder;
+            for (int i = 0; i < _chunkOrder.Count; i++)
+            {
+                if (_chunkMap.TryGetValue(_chunkOrder[i], out var ch))
+                {
+                    ch.OrderIndex = baseOrder + 1 + i;
+                    ch.ApplyOrderToRenderer();
+                }
+            }
+            _rootChunk.SubmitChanges(_rootChunk.OrderIndex);
+        }
+
         foreach (var root in _computedChunks)
         {
             if (_chunkMap.TryGetValue(root, out var chunk))
             {
-                chunk.SubmitChanges(SortingOrder.Value + 1);
+                chunk.SubmitChanges(chunk.OrderIndex);
                 _chunkBuilt[root] = true;
             }
         }
+
         if (_cycleRenderRoot)
             CleanupChunks();
     }
@@ -532,6 +634,40 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         chunk.PrepareCompute();
         RenderPartition(chunk.ContentRenderData, root.Slot, clip, root);
         return true;
+    }
+
+    // Walk a chunk's subtree and register the FIRST GraphicChunkRoot on each branch into _seenChunkRoots,
+    // WITHOUT re-meshing anything. Used when a render-root cycle skips recomputing a built+unchanged chunk:
+    // its nested chunks still have to count as "seen" this cycle or CleanupChunks disables them. Mirrors
+    // RenderPartition's active-self skipping; stops at each chunk boundary (the prepare loop then picks those
+    // up and registers THEIR nested chunks in turn). -xlinka
+    private void RegisterNestedChunkRoots(Slot slot)
+    {
+        var children = slot.Children;
+        for (int i = 0; i < children.Count; i++)
+            RegisterNestedChunkRootsRecursive(children[i]);
+        var localChildren = slot.LocalChildren;
+        for (int i = 0; i < localChildren.Count; i++)
+            RegisterNestedChunkRootsRecursive(localChildren[i]);
+    }
+
+    private void RegisterNestedChunkRootsRecursive(Slot slot)
+    {
+        if (!slot.ActiveSelf.Value)
+            return;
+        var cr = slot.GetComponent<GraphicChunkRoot>();
+        if (cr != null)
+        {
+            EnsureChunk(cr);
+            if (_seenChunkRoots.Add(cr)) _chunkOrder.Add(cr);
+            return; // chunk boundary
+        }
+        var children = slot.Children;
+        for (int i = 0; i < children.Count; i++)
+            RegisterNestedChunkRootsRecursive(children[i]);
+        var localChildren = slot.LocalChildren;
+        for (int i = 0; i < localChildren.Count; i++)
+            RegisterNestedChunkRootsRecursive(localChildren[i]);
     }
 
     private void EnsureChunk(GraphicChunkRoot root)
@@ -624,14 +760,28 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         {
             rect.SetRegisteredCanvas(this);
             rect.SetRectParent(parent);
-            rect.ClearRectChildren();
-
             if (parent != null)
             {
                 parent.AddRectChild(rect);
             }
 
-            rect.SetLocalComputeRect(ComputeRect(rect, parent));
+            var computed = ComputeRect(rect, parent);
+
+            // CACHED LAYOUT: skip a clean subtree whose rect didn't change. Safe ONLY under a non-layout
+            // parent - a LayoutController parent can reposition this rect from a sibling's change, so those
+            // always recompute. A free-anchored rect's position depends solely on its anchors + the parent
+            // rect, so if it's clean (nothing changed in it or below) and its recomputed rect matches the
+            // cached one, the entire subtree is unchanged and its cached rects stay valid. This is what stops
+            // a localized change (or a tab switch) from re-laying-out the whole canvas. -xlinka
+            bool parentRunsLayout = parent != null && SlotRunsLayout(parent.Slot);
+            if (!parentRunsLayout && !rect.LayoutSubtreeDirty && RectUnchanged(computed, rect.LocalComputeRect))
+            {
+                return;
+            }
+
+            rect.ClearRectChildren();
+            rect.SetLocalComputeRect(computed);
+            rect.ClearLayoutDirty();
             nextParent = rect;
         }
 
@@ -649,6 +799,15 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             ApplyLayout(slot, rect);
         }
     }
+
+    private static bool SlotRunsLayout(Slot? slot)
+    {
+        var layout = slot?.GetComponent<LayoutController>();
+        return layout != null && layout.Enabled.Value;
+    }
+
+    private static bool RectUnchanged(in Rect a, in Rect b)
+        => a.Min.x == b.Min.x && a.Min.y == b.Min.y && a.Size.x == b.Size.x && a.Size.y == b.Size.y;
 
     // run this slot's layout (if any) and reflow each child's subtree against the new rects. - xlinka
     private void ApplyLayout(Slot slot, RectTransform rect)
@@ -828,9 +987,12 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             return;
         }
 
-        foreach (var component in slot.Components)
+        // Index iteration (not foreach) so this per-frame, per-slot scan doesn't allocate an enumerator on
+        // the IReadOnlyList each call. -xlinka
+        var comps = slot.Components;
+        for (int ci = 0; ci < comps.Count; ci++)
         {
-            switch (component)
+            switch (comps[ci])
             {
                 case InteractionBlock block when block.BlocksPoint(context.LocalPoint):
                     candidate = HitCandidate.Blocked;
@@ -855,13 +1017,15 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             }
         }
 
-        foreach (var child in slot.Children)
+        var children = slot.Children;
+        for (int i = 0; i < children.Count; i++)
         {
-            ScanHitSlot(child, in context, ref candidate, nextClip);
+            ScanHitSlot(children[i], in context, ref candidate, nextClip);
         }
-        foreach (var child in slot.LocalChildren)
+        var localChildren = slot.LocalChildren;
+        for (int i = 0; i < localChildren.Count; i++)
         {
-            ScanHitSlot(child, in context, ref candidate, nextClip);
+            ScanHitSlot(localChildren[i], in context, ref candidate, nextClip);
         }
     }
 
@@ -1013,7 +1177,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         {
             // chunk boundary: register it and skip - it renders into its own mesh
             EnsureChunk(childRoot);
-            _seenChunkRoots.Add(childRoot);
+            if (_seenChunkRoots.Add(childRoot)) _chunkOrder.Add(childRoot);
             return;
         }
         RenderPartition(rd, child, clip, ownRoot);

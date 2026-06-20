@@ -275,7 +275,11 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
                 return null!;
             }
 
-            var relativePath = GetUriRelativePath(assetURL);
+            // CASE-SAFE: System.Uri lowercases the authority, so new Uri("res://Assets/...").Host == "assets" and
+            // GetUriRelativePath would yield "assets/..." - which resolves wrong on a case-sensitive filesystem
+            // (the Linux export couldn't find the font). Pull the path straight from the original string so the
+            // case is preserved exactly as written. -xlinka
+            var relativePath = GetResRelativePathPreservingCase(assetURL);
             if (string.IsNullOrEmpty(relativePath))
             {
                 LumoraLogger.Warn($"AssetProvider: Invalid resource URI: {assetURL}");
@@ -285,7 +289,9 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
             var filePath = ResolveResourcePath(resourceRoot, relativePath);
             if (!File.Exists(filePath))
             {
-                LumoraLogger.Warn($"AssetProvider: Resource not found at '{filePath}' for {assetURL}");
+                // Expected in a .pck export - the bytes live in the VFS, not on disk; the asset hook loads the
+                // imported resource via ResourceLoader. Debug, not Warn, so it isn't alarming noise. -xlinka
+                LumoraLogger.Debug($"AssetProvider: Resource not on disk at '{filePath}' for {assetURL} (loads from pack)");
             }
             return new Uri(filePath);
         }
@@ -448,6 +454,20 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
         }
 
         return $"{uri.Host}/{path}";
+    }
+
+    // Relative path of a res://lumres:// URI with ORIGINAL CASE intact. Uri normalizes the authority to lower
+    // case, which silently breaks case-sensitive filesystems (Linux exports), so read the original string. -xlinka
+    private static string GetResRelativePathPreservingCase(Uri uri)
+    {
+        var original = uri.OriginalString;
+        if (!string.IsNullOrEmpty(original))
+        {
+            int schemeIdx = original.IndexOf("://", StringComparison.Ordinal);
+            if (schemeIdx >= 0)
+                return original.Substring(schemeIdx + 3).TrimStart('/');
+        }
+        return GetUriRelativePath(uri);
     }
 }
 

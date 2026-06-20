@@ -82,6 +82,14 @@ public sealed class GroupsScreen : WidgetScreen, IDashboardKeyInput
 
     private void Rebuild()
     {
+        // An async load (LoadList/LoadDetail/RunAction) can land here AFTER the user switched away or the
+        // screen was torn down. The content lives inside this screen's slot so a stale rebuild wouldn't
+        // visibly leak, but it would churn a hidden tree + dirty the canvas for nothing. Skip it - OnShow
+        // re-loads when the screen is shown again, so we never lose content. (SessionScreen guards the same.)
+        // -xlinka
+        if (IsDestroyed || Slot == null || !Slot.ActiveSelf.Value)
+            return;
+
         var root = _root;
         if (root == null)
             return;

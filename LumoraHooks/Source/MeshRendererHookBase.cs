@@ -27,6 +27,11 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
     private MeshInstance3D meshInstance = null!;
     private int _lastSurfaceOverrideCount;
 
+    // Unbounded UI ordering (Owner.PerSurfaceOrdering): one MeshInstance3D per mesh surface, each ordered by a
+    // distinct SortingOffset so draw order isn't capped by Godot's 256-level render_priority. -xlinka
+    private readonly System.Collections.Generic.List<MeshInstance3D> _perSurfaceInstances = new();
+    private const float PerSurfaceSortStride = 1024f;
+
     protected abstract bool UseMeshInstance { get; }
 
     protected bool meshWasChanged { get; private set; }
@@ -177,10 +182,82 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
                 ApplyMaterials();
                 ApplyRenderQueue();
             }
+
+            SyncPerSurfaceInstances();
         }
         else
         {
             CleanupRenderer(destroyingWorld: false);
+        }
+    }
+
+    // Unbounded UI ordering. When Owner.PerSurfaceOrdering is set (Helio's opt-in mode), render each surface of
+    // the chunk mesh as its OWN MeshInstance3D with a distinct SortingOffset (= SortingOrder * stride + surface
+    // index) and a uniform render_priority. Godot then orders them by SortingOffset (full range) instead of the
+    // 256-level render_priority cap, so UI layers without bound. The combined instance is hidden while this is
+    // active; turning the mode off frees the per-surface instances and restores it. Cost: a single-surface mesh
+    // + a material duplicate per surface per update, so it's a deliberate opt-in. -xlinka
+    private void SyncPerSurfaceInstances()
+    {
+        if (!Owner.PerSurfaceOrdering)
+        {
+            if (_perSurfaceInstances.Count > 0)
+            {
+                foreach (var inst in _perSurfaceInstances)
+                    if (GodotObject.IsInstanceValid(inst)) inst.QueueFree();
+                _perSurfaceInstances.Clear();
+                if (meshInstance != null) meshInstance.Visible = Owner.Enabled;
+            }
+            return;
+        }
+
+        if (meshInstance == null || meshInstance.Mesh is not ArrayMesh combined) return;
+
+        int surfaceCount = combined.GetSurfaceCount();
+        meshInstance.Visible = false; // the per-surface instances render in its place
+
+        var parent = meshInstance.GetParent();
+        float baseKey = Owner.SortingOrder.Value * PerSurfaceSortStride;
+        bool enabled = Owner.Enabled;
+
+        for (int i = 0; i < surfaceCount; i++)
+        {
+            MeshInstance3D inst;
+            if (i < _perSurfaceInstances.Count)
+            {
+                inst = _perSurfaceInstances[i];
+            }
+            else
+            {
+                inst = new MeshInstance3D();
+                ApplyInheritedRenderLayer(inst);
+                parent?.AddChild(inst);
+                _perSurfaceInstances.Add(inst);
+            }
+
+            var single = new ArrayMesh();
+            single.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, combined.SurfaceGetArrays(i));
+            inst.Mesh = single;
+
+            // Duplicate so forcing a uniform render_priority doesn't mutate the chunk's shared/cloned material -
+            // order is carried entirely by SortingOffset now.
+            var srcMat = GetSurfaceMaterial(i);
+            if (srcMat != null)
+            {
+                var mat = (Material)srcMat.Duplicate();
+                mat.RenderPriority = 0;
+                inst.SetSurfaceOverrideMaterial(0, mat);
+            }
+
+            inst.SortingOffset = baseKey + i;
+            inst.Visible = enabled;
+        }
+
+        for (int i = _perSurfaceInstances.Count - 1; i >= surfaceCount; i--)
+        {
+            if (GodotObject.IsInstanceValid(_perSurfaceInstances[i]))
+                _perSurfaceInstances[i].QueueFree();
+            _perSurfaceInstances.RemoveAt(i);
         }
     }
 
@@ -304,6 +381,9 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
 
     private void CleanupRenderer(bool destroyingWorld)
     {
+        // Per-surface instances are children of the MeshRenderer node, so freeing it frees them too - just drop
+        // our stale references so a fresh renderer rebuilds them. -xlinka
+        _perSurfaceInstances.Clear();
         if (!destroyingWorld && MeshRenderer != null && GodotObject.IsInstanceValid(MeshRenderer))
         {
             ((Node)MeshRenderer).QueueFree();

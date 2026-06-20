@@ -268,6 +268,11 @@ public sealed class HomeScreen : WidgetScreen
             rowChunk.OverlayLevel = 3;
 
         _createOverlay.ActiveSelf.Value = false;
+
+        // Both live on the canvas root, not this screen's content - register them so the base HideScreen
+        // force-hides them on any screen switch, belt-and-suspenders with our OnHide reset below. -xlinka
+        RegisterOverlay(_createBackdrop);
+        RegisterOverlay(_createOverlay);
     }
 
     // A flexible-width column for the two-column dialog body; rows stack top-down.
@@ -294,6 +299,16 @@ public sealed class HomeScreen : WidgetScreen
         if (_createOverlay != null && !_createOverlay.IsDestroyed)
             _createOverlay.Destroy();
         base.OnDestroy();
+    }
+
+    // The create modal + backdrop live on the canvas ROOT (so the backdrop can cover the whole dash and the
+    // dialog can draw above the nav chrome), which means hiding THIS screen's content slot does NOT hide them -
+    // left open, they keep drawing over whatever screen you switch to (the "two screens at once" overlap). So
+    // close the menu explicitly whenever we leave Home. -xlinka
+    protected override void OnHide()
+    {
+        base.OnHide();
+        CloseCreateMenu();
     }
 
     private void ToggleCreateMenu() => SetCreateMenuOpen(!_createOpen);

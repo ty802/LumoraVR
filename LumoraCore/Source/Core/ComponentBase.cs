@@ -89,6 +89,13 @@ public abstract class ComponentBase<C> : Worker, IUpdatable, IChangeable, IIniti
             World?.ReferenceController?.BlockAllocationsEnd();
         }
 
+        // Central, complete registration: every component that wants laser interaction goes through here,
+        // so the laser never has to walk the whole slot tree to find targets and can't miss one. -xlinka
+        if (this is Components.Interaction.IInteractionTarget interactionTarget)
+        {
+            World?.RegisterInteractionTarget(interactionTarget);
+        }
+
         if (isNew)
         {
             OnInit();
@@ -348,6 +355,12 @@ public abstract class ComponentBase<C> : Worker, IUpdatable, IChangeable, IIniti
         if (InitInfo.ReceivesAnyWorldEvent)
         {
             World?.UnregisterEventReceiver(this);
+        }
+
+        // Pair of the central registration in Initialize - drop us from the laser's target registry. -xlinka
+        if (this is Components.Interaction.IInteractionTarget interactionTarget)
+        {
+            World?.UnregisterInteractionTarget(interactionTarget);
         }
 
         Dispose();

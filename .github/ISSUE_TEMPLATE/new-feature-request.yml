@@ -28,7 +28,7 @@ body:
     id: solution
     attributes:
       label: Proposed Solution
-      description: Describe the solution you'd like to see implemented.
+      description: Describe the solution you'd like to see implemented. Include any links to libraries or resources that might help implement this feature.
     validations:
       required: true
   - type: textarea
@@ -38,13 +38,6 @@ body:
       description: Detail any alternative solutions or approaches you've considered.
     validations:
       required: true
-  - type: textarea
-    id: library-suggestions
-    attributes:
-      label: Links or Library Suggestions
-      description: Include any links to libraries or resources that might help implement this feature. All suggestions must be cross-platform compatible.
-    validations:
-      required: false
   - type: textarea
     id: additional-context
     attributes:

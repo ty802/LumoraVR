@@ -27,7 +27,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: LamoraVR Version
+      label: LumoraVR Version
       placeholder: e.g., 1.2.3
     validations:
       required: true

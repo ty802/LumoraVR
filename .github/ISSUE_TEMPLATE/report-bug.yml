@@ -42,7 +42,7 @@ body:
         - "Android / Quest"
     validations:
       required: true
-  - type: textarea
+  - type: file
     id: log-files
     attributes:
       label: Log Files

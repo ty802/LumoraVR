@@ -51,11 +51,24 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
 
     public CharacterBody3D GodotCharacterBody => _characterBody;
 
+    private static volatile CharacterBody3D _localPlayerBody = null!;
+
     /// <summary>
-    /// The local player's Godot CharacterBody3D - set when the local user's hook is initialised,
-    /// cleared on destroy. Read by DesktopCameraController for third-person orbit.
+    /// The local player's Godot CharacterBody3D - set when the local user's hook is initialised, cleared on
+    /// destroy. Read (on the main thread) by DesktopCameraController for third-person orbit. The getter VALIDATES
+    /// the node is still alive and returns null otherwise, so a caller can never act on a stale/freed reference
+    /// (e.g. across a rapid world reload) - the validation lives here, not at each call site, so a future reader
+    /// can't forget it. The backing field is volatile and only ever assigned an atomic reference, so reading it
+    /// across threads is safe. No public mutable static remains. -xlinka
     /// </summary>
-    public static CharacterBody3D LocalPlayerBody { get; private set; } = null!;
+    public static CharacterBody3D LocalPlayerBody
+    {
+        get
+        {
+            var body = _localPlayerBody; // atomic reference read
+            return (body != null && GodotObject.IsInstanceValid(body)) ? body : null!;
+        }
+    }
 
     public override void Initialize()
     {
@@ -92,7 +105,7 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
 
         // Expose body for DesktopCameraController third-person mode
         if (_isLocalUser)
-            LocalPlayerBody = _characterBody;
+            _localPlayerBody = _characterBody;
     }
 
     public override void ApplyChanges()
@@ -369,8 +382,9 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
 
     public override void Destroy(bool destroyingWorld)
     {
-        if (_isLocalUser && LocalPlayerBody == _characterBody)
-            LocalPlayerBody = null!;
+        // Compare/clear the raw field (not the validated getter) so teardown clears OUR slot even mid-free. -xlinka
+        if (_isLocalUser && _localPlayerBody == _characterBody)
+            _localPlayerBody = null!;
 
         if (!destroyingWorld && _characterBody != null && GodotObject.IsInstanceValid(_characterBody))
         {

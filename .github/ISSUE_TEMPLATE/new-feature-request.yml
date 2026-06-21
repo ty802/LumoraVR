@@ -41,5 +41,5 @@ body:
   - type: textarea
     id: requesters
     attributes:
-      label: Requesters
+      label: Requester Credits
       description: List usernames of anyone who has requested this feature (including yourself) for credit in release notes.

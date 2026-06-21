@@ -1,7 +1,7 @@
 name: Bug Report
 description: When a feature is not behaving as expected.
-labels: [bug]
-assignees: xlinka
+issue_type: Bug
+
 body:
   - type: textarea
     id: Describe
@@ -27,8 +27,22 @@ body:
   - type: input
     id: version
     attributes:
-      label: LamoraVR Version
+      label: LumoraVR Version
       placeholder: e.g., 1.2.3
+    validations:
+      required: true
+  - type: select
+    id: application-type
+    attributes:
+      label: Application Type
+      description: Select the context this bug appears on.
+      options:
+        - value: main-application
+          label: Main Application
+        - value: debug-window
+          label: Debug Window
+        - value: other
+          label: Other
     validations:
       required: true
   - type: dropdown
@@ -42,13 +56,13 @@ body:
         - "Android / Quest"
     validations:
       required: true
-  - type: textarea
+  - type: file
     id: log-files
     attributes:
       label: Log Files
       description: Attach logs replicating the issue.
     validations:
-      required: true
+      required: false
   - type: textarea
     id: additional-context
     attributes:
@@ -59,5 +73,5 @@ body:
   - type: textarea
     id: reporters
     attributes:
-      label: Reporters
-      description: your username for credit for discovering the bug 
+      label: Reporter Credits
+      description: List usernames of anyone who discovered the bug (including yourself) for credit in release notes.

@@ -1,8 +1,22 @@
 name: Feature Request
 description: Recommend a feature for consideration.
-labels: ["New Feature"]
-assignees: xlinka
+issue_type: Feature
+
 body:
+  - type: select
+    id: application-type
+    attributes:
+      label: Application Type
+      description: Select the context this feature belongs to.
+      options:
+        - value: main-application
+          label: Main Application
+        - value: debug-window
+          label: Debug Window
+        - value: other
+          label: Other
+    validations:
+      required: true
   - type: textarea
     id: problem
     attributes:
@@ -14,7 +28,7 @@ body:
     id: solution
     attributes:
       label: Proposed Solution
-      description: Describe the solution you'd like to see implemented.
+      description: Describe the solution you'd like to see implemented. Include any links to libraries or resources that might help implement this feature.
     validations:
       required: true
   - type: textarea
@@ -25,13 +39,6 @@ body:
     validations:
       required: true
   - type: textarea
-    id: library-suggestions
-    attributes:
-      label: Links or Library Suggestions
-      description: Include any links to libraries or resources that might help implement this feature. All suggestions must be cross-platform compatible.
-    validations:
-      required: false
-  - type: textarea
     id: additional-context
     attributes:
       label: Additional Context
@@ -41,5 +48,5 @@ body:
   - type: textarea
     id: requesters
     attributes:
-      label: Requesters
+      label: Requester Credits
       description: List usernames of anyone who has requested this feature (including yourself) for credit in release notes.

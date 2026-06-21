@@ -1,20 +1,17 @@
 name: Feature Request
 description: Recommend a feature for consideration.
-issue_type: Feature
+type: Feature
 
 body:
-  - type: select
+  - type: dropdown
     id: application-type
     attributes:
       label: Application Type
-      description: Select the context this feature belongs to.
+      description: Select the context this bug appears on.
       options:
-        - value: main-application
-          label: Main Application
-        - value: debug-window
-          label: Debug Window
-        - value: other
-          label: Other
+        - "Main Application"
+        - "Debug Window"
+        - "Other"
     validations:
       required: true
   - type: textarea

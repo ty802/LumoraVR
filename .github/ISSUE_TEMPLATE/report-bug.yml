@@ -1,7 +1,7 @@
 name: Bug Report
 description: When a feature is not behaving as expected.
 issue_type: Bug
-assignees: xlinka
+
 body:
   - type: textarea
     id: Describe

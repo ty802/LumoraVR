@@ -1,7 +1,7 @@
 name: Feature Request
 description: Recommend a feature for consideration.
 issue_type: Feature
-assignees: xlinka
+
 body:
   - type: textarea
     id: problem

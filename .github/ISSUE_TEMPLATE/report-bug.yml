@@ -1,6 +1,6 @@
 name: Bug Report
 description: When a feature is not behaving as expected.
-issue_type: Bug
+type: Bug
 
 body:
   - type: textarea
@@ -31,18 +31,15 @@ body:
       placeholder: e.g., 1.2.3
     validations:
       required: true
-  - type: select
+  - type: dropdown
     id: application-type
     attributes:
       label: Application Type
       description: Select the context this bug appears on.
       options:
-        - value: main-application
-          label: Main Application
-        - value: debug-window
-          label: Debug Window
-        - value: other
-          label: Other
+        - "Main Application"
+        - "Debug Window"
+        - "Other"
     validations:
       required: true
   - type: dropdown

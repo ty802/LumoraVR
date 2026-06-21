@@ -3,6 +3,20 @@ description: Recommend a feature for consideration.
 issue_type: Feature
 
 body:
+  - type: select
+    id: application-type
+    attributes:
+      label: Application Type
+      description: Select the context this feature belongs to.
+      options:
+        - value: main-application
+          label: Main Application
+        - value: debug-window
+          label: Debug Window
+        - value: other
+          label: Other
+    validations:
+      required: true
   - type: textarea
     id: problem
     attributes:

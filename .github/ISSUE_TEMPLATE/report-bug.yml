@@ -31,6 +31,20 @@ body:
       placeholder: e.g., 1.2.3
     validations:
       required: true
+  - type: select
+    id: application-type
+    attributes:
+      label: Application Type
+      description: Select the context this feature belongs to.
+      options:
+        - value: main-application
+          label: Main Application
+        - value: debug-window
+          label: Debug Window
+        - value: other
+          label: Other
+    validations:
+      required: true
   - type: dropdown
     id: platforms
     attributes:

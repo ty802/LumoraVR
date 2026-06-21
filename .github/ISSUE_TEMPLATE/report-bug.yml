@@ -62,7 +62,7 @@ body:
       label: Log Files
       description: Attach logs replicating the issue.
     validations:
-      required: true
+      required: false
   - type: textarea
     id: additional-context
     attributes:

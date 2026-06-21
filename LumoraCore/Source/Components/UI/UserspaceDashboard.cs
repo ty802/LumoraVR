@@ -201,12 +201,27 @@ public class UserspaceDashboard : UIComponent
                 PositionInFrontOfFocusedView();
             }
         }
-        else
-        {
-            PositionDesktopProjection(input);
-        }
+        // Desktop positioning is intentionally NOT done here. OnCommonUpdate runs the userspace world BEFORE the
+        // session world each frame, so the head pose would be a frame stale here. It's done in OnLateUpdate
+        // (after all worlds' updates, incl. the session locomotion/physics) so it reads the fresh head pose. -xlinka
 
         _lastFreeform = freeform;
+    }
+
+    public override void OnLateUpdate(float delta)
+    {
+        base.OnLateUpdate(delta);
+
+        // Position the DESKTOP dashboard here, in late update, so it runs AFTER the session world's
+        // locomotion/physics has moved the head this frame - the panel then reads the exact pose the camera
+        // renders with and stays screen-locked instead of bobbing when you walk/jump. (VR positioning stays in
+        // OnCommonUpdate; its head is HMD-driven, not physics-bounced.) -xlinka
+        if (!IsOpen.Value)
+            return;
+
+        var input = Engine.Current?.InputInterface;
+        if (input != null && !input.VR_Active)
+            PositionDesktopProjection(input);
     }
 
     // Fit the flat surface to the window: place it ahead of the camera and scale
@@ -219,13 +234,32 @@ public class UserspaceDashboard : UIComponent
         if (input == null || _displayMesh == null || !input.DesktopCameraPoseValid)
             return;
 
-        var camRot = input.DesktopCameraRotation;
+        // Anchor to the LIVE head pose this frame when the desktop camera is in plain first-person (the camera
+        // follows the head, so this is EXACTLY the pose the view renders with). This is called from OnLateUpdate,
+        // after the session world's locomotion/physics has moved the head, so it's the same post-move pose the
+        // camera uses - zero lag, so walking/jumping no longer makes the panel bob. The old path read the
+        // separately-sampled DesktopCameraPosition, which trails the view by a frame; during non-constant
+        // locomotion that trailing offset changes every frame -> visible jitter. When a camera OVERRIDE is active
+        // (3rd-person / free-cam) the view is NOT the head, so fall back to the sampled camera pose. -xlinka
+        float3 camPos;
+        floatQ camRot;
+        if (!input.DesktopCameraHasOverride && TryGetFocusedViewPose(out var headPos, out var headRot))
+        {
+            camPos = headPos;
+            camRot = headRot;
+        }
+        else
+        {
+            camPos = input.DesktopCameraPosition;
+            camRot = input.DesktopCameraRotation;
+        }
+
         var forward = camRot * new float3(0f, 0f, -1f);
         float distance = MathF.Max(Distance.Value, 0.2f);
 
         // Readable face of UI content is the surface's +Z side; with the camera
         // looking down -Z, camRot already points that face at the viewer.
-        Slot.GlobalPosition = input.DesktopCameraPosition + forward * distance;
+        Slot.GlobalPosition = camPos + forward * distance;
         Slot.GlobalRotation = camRot;
 
         float viewportHeight = 2f * distance * MathF.Tan(input.DesktopCameraFovY * (MathF.PI / 180f) * 0.5f);

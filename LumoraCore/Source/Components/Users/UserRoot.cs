@@ -526,13 +526,17 @@ public class UserRoot : Component
     {
         base.OnUpdate(delta);
 
-        // Validate scale to prevent invalid transforms
+        // Validate scale to prevent invalid transforms. These corrective writes run on EVERY peer (incl. an
+        // observer holding a REMOTE user's root), and use the THROWING .Value/Scale setters - so a foreign-write
+        // denial would throw per frame. It's engine sanitization of a body transform, not a user edit, so bypass
+        // the gate. Only entered when a correction is actually needed (rare). -xlinka
         var scale = Slot.Scale;
         if (scale.x <= 0 || scale.y <= 0 || scale.z <= 0 ||
             float.IsNaN(scale.x) || float.IsNaN(scale.y) || float.IsNaN(scale.z) ||
             float.IsInfinity(scale.x) || float.IsInfinity(scale.y) || float.IsInfinity(scale.z))
         {
             LumoraLogger.Warn($"UserRoot: Invalid scale detected ({scale}), resetting to (1,1,1)");
+            using var bypass = World?.DataModelPermissions?.EnterSystemBypass();
             Slot.LocalScale.Value = float3.One;
         }
 
@@ -540,6 +544,7 @@ public class UserRoot : Component
         if (System.Math.Abs(scale.x - scale.y) > 0.0001f || System.Math.Abs(scale.y - scale.z) > 0.0001f)
         {
             var avgScale = (scale.x + scale.y + scale.z) / 3f;
+            using var bypass = World?.DataModelPermissions?.EnterSystemBypass();
             Slot.Scale = float3.One * avgScale;
         }
     }

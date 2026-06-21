@@ -743,6 +743,66 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     }
 
     /// <summary>
+    /// Set GlobalPosition WITHOUT generating a field sync (delta). Use when a stream on this slot is the transport
+    /// for the position, so it isn't also replicated over the delta channel (mirrors how TrackedDevicePositioner
+    /// writes stream-shared body nodes). Still fires change events for rendering / transform-dirty / stream
+    /// sampling - it only skips the sync element going dirty. -xlinka
+    /// </summary>
+    public void SetGlobalPositionSilently(float3 value)
+    {
+        if (_parent == null)
+        {
+            LocalPosition.SetValueSilently(value, change: true);
+            _cachedGlobalPosition = value;
+            _transformDirty &= ~DIRTY_GLOBAL_POSITION;
+            return;
+        }
+
+        var parentScale = _parent.GlobalScale;
+        var invParentRot = _parent.GlobalRotation.Inverse;
+        var delta = value - _parent.GlobalPosition;
+        var unrotated = invParentRot * delta;
+
+        float3 safeScale = new float3(
+            parentScale.x == 0 ? 1 : parentScale.x,
+            parentScale.y == 0 ? 1 : parentScale.y,
+            parentScale.z == 0 ? 1 : parentScale.z
+        );
+
+        LocalPosition.SetValueSilently(new float3(
+            unrotated.x / safeScale.x,
+            unrotated.y / safeScale.y,
+            unrotated.z / safeScale.z
+        ), change: true);
+
+        if ((_parent._transformDirty & DIRTY_ALL_GLOBAL) == 0)
+        {
+            _cachedGlobalPosition = value;
+            _transformDirty &= ~DIRTY_GLOBAL_POSITION;
+        }
+    }
+
+    /// <summary>
+    /// Set GlobalRotation WITHOUT generating a field sync (delta). See <see cref="SetGlobalPositionSilently"/>. -xlinka
+    /// </summary>
+    public void SetGlobalRotationSilently(floatQ value)
+    {
+        if (_parent == null)
+        {
+            LocalRotation.SetValueSilently(value, change: true);
+            _cachedGlobalRotation = value;
+            _transformDirty &= ~DIRTY_GLOBAL_ROTATION;
+            return;
+        }
+        LocalRotation.SetValueSilently(_parent.GlobalRotation.Inverse * value, change: true);
+        if ((_parent._transformDirty & DIRTY_GLOBAL_ROTATION) == 0)
+        {
+            _cachedGlobalRotation = value;
+            _transformDirty &= ~DIRTY_GLOBAL_ROTATION;
+        }
+    }
+
+    /// <summary>
     /// Scale in global/world space.
     /// </summary>
     public float3 GlobalScale

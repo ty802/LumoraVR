@@ -4,6 +4,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Threading.Tasks;
 using Lumora.Core;
@@ -57,7 +60,12 @@ public class SessionConnectionManager : IDisposable
     public Session Session { get; private set; }
     public World World => (Session?.World) ?? null!;
 
-    public IListener Listener { get; private set; } = null!;
+    // A host listens on EVERY available transport at once (LNL for LAN/direct, Steam for friends, ...), so a world
+    // is reachable over all of them and advertises a URL per transport. All listeners are polled + disposed
+    // together. 'Listener' stays as a back-compat shim returning the first. -xlinka
+    private readonly List<IListener> _listeners = new();
+    public IListener Listener => _listeners.Count > 0 ? _listeners[0] : null!;
+    public IReadOnlyList<IListener> StartedListeners => _listeners;
     public IConnection HostConnection { get; private set; } = null!;
 
     /// <summary>
@@ -78,34 +86,62 @@ public class SessionConnectionManager : IDisposable
     /// </summary>
     public bool StartListener(ushort port, string preferredScheme = null!)
     {
-        if (Listener != null)
+        if (_listeners.Count > 0)
         {
-            throw new InvalidOperationException("Listener already started");
-        }
-
-        var manager = preferredScheme != null
-            ? NetworkManagerRegistry.FindForScheme(preferredScheme)
-            : NetworkManagerRegistry.Managers.FirstOrDefault();
-
-        if (manager == null)
-        {
-            LumoraLogger.Error($"StartListener: no network manager registered (scheme={preferredScheme ?? "any"})");
-            return false;
+            throw new InvalidOperationException("Listeners already started");
         }
 
         var sessionId = Session?.Metadata?.SessionId;
-        Listener = manager.CreateListener(port, sessionId!);
 
-        if (Listener == null || !Listener.IsActive)
+        // Open a listener on EVERY registered transport (LNL for LAN/direct, Steam for friends, ...) so the world
+        // is reachable over all of them and can advertise a URL for each (Session.NewSession aggregates them).
+        // This replaced a "pick the highest-priority manager" selection, which made a Steam-enabled host listen
+        // ONLY on Steam while still advertising an lnl:// LAN URL - so LAN joiners hit a dead port. A transport
+        // that can't start (e.g. Steam not initialized) is skipped, never fatal: LAN keeps working regardless.
+        // preferredScheme, when given, restricts to that single transport. -xlinka
+        IEnumerable<INetworkManager> managers;
+        if (preferredScheme != null)
         {
-            LumoraLogger.Error($"Failed to start {manager.GetType().Name} listener on port {port}");
+            var only = NetworkManagerRegistry.FindForScheme(preferredScheme);
+            managers = only != null ? new[] { only } : System.Array.Empty<INetworkManager>();
+        }
+        else
+        {
+            managers = NetworkManagerRegistry.Managers;
+        }
+
+        foreach (var manager in managers)
+        {
+            IListener listener;
+            try
+            {
+                listener = manager.CreateListener(port, sessionId!);
+            }
+            catch (Exception ex)
+            {
+                LumoraLogger.Warn($"[lnl] StartListener: {manager.GetType().Name} could not start a listener - skipping ({ex.Message})");
+                continue;
+            }
+
+            if (listener == null || !listener.IsActive)
+            {
+                LumoraLogger.Warn($"[lnl] StartListener: {manager.GetType().Name} listener not active on port {port} - skipping");
+                continue;
+            }
+
+            listener.PeerConnected += OnPeerConnected;
+            listener.PeerDisconnected += OnPeerDisconnected;
+            _listeners.Add(listener);
+
+            LumoraLogger.Log($"[lnl] Listener started ({manager.GetType().Name}, port {port}, sessionId={sessionId ?? "(none)"})");
+        }
+
+        if (_listeners.Count == 0)
+        {
+            LumoraLogger.Error($"[lnl] StartListener: no transport could open a listener on port {port}");
             return false;
         }
 
-        Listener.PeerConnected += OnPeerConnected;
-        Listener.PeerDisconnected += OnPeerDisconnected;
-
-        LumoraLogger.Log($"Listener started ({manager.GetType().Name}, port {port}, sessionId={sessionId ?? "(none)"})");
         return true;
     }
 
@@ -117,38 +153,56 @@ public class SessionConnectionManager : IDisposable
         var uri = addresses.FirstOrDefault();
         if (uri == null)
         {
-            LumoraLogger.Error("No addresses provided");
+            LumoraLogger.Error("[lnl] No addresses provided");
             return false;
         }
 
-        LumoraLogger.Log($"Connecting to {uri}");
+        // Same-machine join ("two clients on one PC"): if the host address is one of THIS machine's own IPs,
+        // dial it over loopback (127.0.0.1) instead. Connecting to the host's LAN IP egresses the OS
+        // default-route interface, which on a dev box is often a Hyper-V/WSL/VPN virtual adapter - so the packet
+        // leaves the box and never reaches the host process running on the same machine (the "it just won't
+        // connect" case). 127.0.0.1 is always delivered locally, and the host listens on 0.0.0.0 so it accepts
+        // it. Untouched for real two-machine joins (the target isn't a local IP there). -xlinka
+        if (IsLocalAddress(uri.Host))
+        {
+            var loopback = new UriBuilder(uri) { Host = "127.0.0.1" }.Uri;
+            LumoraLogger.Log($"[lnl] ConnectToAsync: '{uri.Host}' is this machine - dialing same-PC host over loopback {loopback}");
+            uri = loopback;
+        }
+
+        LumoraLogger.Log($"[lnl] Connecting to {uri}");
 
         var manager = NetworkManagerRegistry.FindForUri(uri);
         if (manager == null)
         {
-            LumoraLogger.Error($"ConnectToAsync: no registered network manager handles scheme '{uri.Scheme}'");
+            LumoraLogger.Error($"[lnl] ConnectToAsync: no registered network manager handles scheme '{uri.Scheme}'");
             return false;
         }
 
         var connection = manager.CreateConnection(uri);
 
-        var taskCompletionSource = new TaskCompletionSource<bool>();
+        // RunContinuationsAsynchronously: the Connected/Failed/Closed callbacks fire from inside PollEvents on the
+        // MAIN thread (network is polled from the engine update loop). Without this, everything awaiting this TCS -
+        // the rest of the join handshake AND Sync.Start()'s blocking init wait - runs INLINE on the main thread,
+        // right inside the poll, which freezes the joining client. This pushes the post-connect continuation onto
+        // the thread pool so the main thread stays free to keep pumping the network. -xlinka
+        var taskCompletionSource = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         connection.Connected += (c) =>
         {
-            LumoraLogger.Log($"Connected to {c.Address}");
+            LumoraLogger.Log($"[lnl] Connected to {c.Address}");
             taskCompletionSource.TrySetResult(true);
         };
 
         connection.ConnectionFailed += (c) =>
         {
-            LumoraLogger.Error($"Connection failed: {c.FailReason}");
+            LumoraLogger.Error($"[lnl] Connection failed: {c.FailReason}");
             taskCompletionSource.TrySetResult(false);
         };
 
         connection.Closed += (c) =>
         {
-            LumoraLogger.Warn($"Connection closed: {c.FailReason}");
+            LumoraLogger.Warn($"[lnl] Connection closed: {c.FailReason}");
             taskCompletionSource.TrySetResult(false);
             
             // Trigger host disconnected event if this was the host connection
@@ -176,10 +230,43 @@ public class SessionConnectionManager : IDisposable
 
         if (completedTask == timeoutTask)
         {
-            LumoraLogger.Warn($"Connection timed out: {uri}");
+            LumoraLogger.Warn($"[lnl] Connection timed out: {uri}");
         }
 
         connection.Close();
+        return false;
+    }
+
+    /// <summary>
+    /// True if the given host string is an IPv4 address that belongs to THIS machine (loopback or any of its
+    /// own interface addresses) - i.e. the join target is a session hosted on the same PC. -xlinka
+    /// </summary>
+    private static bool IsLocalAddress(string host)
+    {
+        if (string.IsNullOrEmpty(host) || !IPAddress.TryParse(host, out var target))
+            return false;
+
+        if (IPAddress.IsLoopback(target))
+            return true;
+
+        try
+        {
+            foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (ni.OperationalStatus != OperationalStatus.Up)
+                    continue;
+                foreach (var ua in ni.GetIPProperties().UnicastAddresses)
+                {
+                    if (ua.Address.AddressFamily == AddressFamily.InterNetwork && ua.Address.Equals(target))
+                        return true;
+                }
+            }
+        }
+        catch
+        {
+            // Interface enumeration failing just means we don't redirect - the normal LAN-IP dial still runs.
+        }
+
         return false;
     }
 
@@ -190,7 +277,7 @@ public class SessionConnectionManager : IDisposable
     {
         if (HostConnection == null)
         {
-            LumoraLogger.Error("SendJoinRequest: No host connection");
+            LumoraLogger.Error("[lnl] SendJoinRequest: No host connection");
             return;
         }
 
@@ -227,7 +314,7 @@ public class SessionConnectionManager : IDisposable
         byte[] encoded = controlMessage.Encode();
         HostConnection.Send(encoded, encoded.Length, reliable: true, background: false);
 
-        LumoraLogger.Log($"Sent JoinRequest to host - UserName='{requestData.UserName}'");
+        LumoraLogger.Log($"[lnl] Sent JoinRequest to host - UserName='{requestData.UserName}'");
     }
 
     private void OnPeerConnected(IConnection peer)
@@ -267,19 +354,19 @@ public class SessionConnectionManager : IDisposable
 
         if (!admit)
         {
-            LumoraLogger.Warn($"Peer {peer.Identifier} from {ip} rejected: pending-connection limit reached.");
+            LumoraLogger.Warn($"[lnl] Peer {peer.Identifier} from {ip} rejected: pending-connection limit reached.");
             peer.Close();
             return;
         }
 
-        LumoraLogger.Log($"Peer connected: {peer.Identifier}");
+        LumoraLogger.Log($"[lnl] Peer connected: {peer.Identifier}");
         peer.DataReceived += (data, length) => OnConnectionDataReceived(peer, data, length);
-        LumoraLogger.Log($"Peer {peer.Identifier} added to pending - waiting for JoinRequest");
+        LumoraLogger.Log($"[lnl] Peer {peer.Identifier} added to pending - waiting for JoinRequest");
     }
 
     private void OnPeerDisconnected(IConnection peer)
     {
-        LumoraLogger.Log($"Peer disconnected: {peer.Identifier}");
+        LumoraLogger.Log($"[lnl] Peer disconnected: {peer.Identifier}");
 
         Session.AssetTransferer?.ConnectionClosed(peer);
 
@@ -344,7 +431,7 @@ public class SessionConnectionManager : IDisposable
             return;
         foreach (var c in stale)
         {
-            LumoraLogger.Warn($"PendingAuth: dropping {c.Identifier} - never answered the join challenge in time");
+            LumoraLogger.Warn($"[lnl] PendingAuth: dropping {c.Identifier} - never answered the join challenge in time");
             SendJoinReject(c, "Join challenge timed out");
         }
     }
@@ -365,16 +452,16 @@ public class SessionConnectionManager : IDisposable
 
         if (!isPending)
         {
-            LumoraLogger.Warn($"HandleJoinRequest: Connection {connection.Identifier} was not pending");
+            LumoraLogger.Warn($"[lnl] HandleJoinRequest: Connection {connection.Identifier} was not pending");
             SendJoinReject(connection, "Duplicate or stale join request");
             return;
         }
 
-        LumoraLogger.Log($"HandleJoinRequest: Received from {connection.Identifier} - UserName='{requestData.UserName}'");
+        LumoraLogger.Log($"[lnl] HandleJoinRequest: Received from {connection.Identifier} - UserName='{requestData.UserName}'");
         var rejectReason = ValidateJoinRequest(connection, requestData);
         if (rejectReason != null)
         {
-            LumoraLogger.Warn($"HandleJoinRequest: Rejected {connection.Identifier} - {rejectReason}");
+            LumoraLogger.Warn($"[lnl] HandleJoinRequest: Rejected {connection.Identifier} - {rejectReason}");
             SendJoinReject(connection, rejectReason);
             return;
         }
@@ -484,12 +571,19 @@ public class SessionConnectionManager : IDisposable
     {
         if (!World.IsAuthority)
         {
-            LumoraLogger.Error("Only authority can send JoinGrant");
+            LumoraLogger.Error("[lnl] Only authority can send JoinGrant");
             return;
         }
 
         // Allocate ID range using RefIDAllocator
         var (allocStart, allocEnd) = World.RefIDAllocator.AllocateUserIDRange();
+
+        // Defensively clear any stale objects still sitting on this byte BEFORE we build the new user on it.
+        // A recycled byte SHOULD already be clean (RemoveUser purges on leave), but if a disconnect was missed
+        // or raced a fast leave->rejoin, leftovers here would collide during user init and the join would be
+        // rejected ("fails to authenticate"). Purging first makes rejoin bulletproof - a genuinely fresh byte
+        // has nothing to purge. -xlinka
+        World.ReferenceController?.PurgeUserByte(allocStart.GetUserByte());
 
         // Use the start of the range as the user's RefID
         RefID userRefID = allocStart;
@@ -513,9 +607,13 @@ public class SessionConnectionManager : IDisposable
         byte[] encoded = controlMessage.Encode();
         connection.Send(encoded, encoded.Length, reliable: true, background: false);
 
-        LumoraLogger.Log($"Sent JoinGrant to {connection.Identifier} - UserID: {userID}, UserName: '{userName}'");
+        LumoraLogger.Log($"[lnl] Sent JoinGrant to {connection.Identifier} - UserID: {userID}, UserName: '{userName}'");
 
-        // Create user instance, populate fields, then add to the user collection for initialization
+        // Create user instance, populate fields, then add to the user collection for initialization.
+        // Wrapped: if initializing the user worker throws (e.g. a RefID collision), tear the half-built user
+        // back down so its byte recycles CLEAN (RemoveUser now purges the whole byte + hands it back), then
+        // rethrow so the caller rejects. Without this, every failed attempt left this byte's objects
+        // registered and the next attempt collided ("RefID collision! User[NNN]:... already registered"). -xlinka
         var user = new User();
         user.UserID.Value = userID.ToString();
         user.UserName.Value = !string.IsNullOrEmpty(userName) ? userName : $"Guest {userRefID.GetUserByte()}";
@@ -533,19 +631,37 @@ public class SessionConnectionManager : IDisposable
             _connectionToUser[connection] = user;
             _userToConnection[user] = connection;
         }
-        LumoraLogger.Log($"SendJoinGrant: Added connection-user mapping for '{userName}'");
+        LumoraLogger.Log($"[lnl] SendJoinGrant: Added connection-user mapping for '{userName}'");
 
-        World.AddUserToCollection(user, userRefID, isNewlyCreated: true);
-        LumoraLogger.Log($"SendJoinGrant: User '{userName}' added to world");
+        try
+        {
+            World.AddUserToCollection(user, userRefID, isNewlyCreated: true);
+        }
+        catch (Exception ex)
+        {
+            LumoraLogger.Error($"[lnl] SendJoinGrant: failed to initialize user '{userName}' on byte {userRefID.GetUserByte()} - cleaning up and rejecting ({ex.Message})");
+            lock (_lock)
+            {
+                _connectionToUser.Remove(connection);
+                _userToConnection.Remove(user);
+            }
+            try { World.RemoveUser(user); } catch { /* best-effort teardown */ }
+            // Belt and suspenders: purge + release directly too, in case the user never reached the lists
+            // RemoveUser cleans. Both are idempotent. -xlinka
+            World.ReferenceController?.PurgeUserByte(userRefID.GetUserByte());
+            World.RefIDAllocator?.ReleaseUserAllocation(userRefID.GetUserByte());
+            throw;
+        }
+        LumoraLogger.Log($"[lnl] SendJoinGrant: User '{userName}' added to world");
 
         if (Session.Sync != null)
         {
-            LumoraLogger.Log($"SendJoinGrant: Calling QueueUserForInitialization for '{userName}'");
+            LumoraLogger.Log($"[lnl] SendJoinGrant: Calling QueueUserForInitialization for '{userName}'");
             Session.Sync.QueueUserForInitialization(user);
         }
         else
         {
-            LumoraLogger.Error("SendJoinGrant: Session.Sync is NULL - cannot queue user for initialization!");
+            LumoraLogger.Error("[lnl] SendJoinGrant: Session.Sync is NULL - cannot queue user for initialization!");
         }
     }
 
@@ -566,7 +682,7 @@ public class SessionConnectionManager : IDisposable
                 hostSignature = hostIdentity.SignChallenge(
                     Lumora.Core.Security.MachineIdentity.BuildJoinPayload(hostVerificationToken, JoinContextHost));
             }
-            catch (Exception ex) { LumoraLogger.Warn($"SendJoinChallenge: host self-sign failed ({ex.Message})"); }
+            catch (Exception ex) { LumoraLogger.Warn($"[lnl] SendJoinChallenge: host self-sign failed ({ex.Message})"); }
         }
 
         var challenge = new LegacyJoinChallengeData
@@ -583,7 +699,7 @@ public class SessionConnectionManager : IDisposable
 
         byte[] encoded = controlMessage.Encode();
         connection.Send(encoded, encoded.Length, reliable: true, background: false);
-        LumoraLogger.Log($"Sent JoinChallenge to {connection.Identifier}");
+        LumoraLogger.Log($"[lnl] Sent JoinChallenge to {connection.Identifier}");
     }
 
     /// <summary>
@@ -593,7 +709,7 @@ public class SessionConnectionManager : IDisposable
     {
         if (challenge.Nonce == null || challenge.Nonce.Length == 0)
         {
-            LumoraLogger.Warn("HandleJoinChallenge: empty nonce, ignoring");
+            LumoraLogger.Warn("[lnl] HandleJoinChallenge: empty nonce, ignoring");
             return;
         }
 
@@ -611,7 +727,7 @@ public class SessionConnectionManager : IDisposable
 
         if (!hostOk)
         {
-            LumoraLogger.Error("HandleJoinChallenge: host identity verification FAILED - aborting join (possible MITM)");
+            LumoraLogger.Error("[lnl] HandleJoinChallenge: host identity verification FAILED - aborting join (possible MITM)");
             (connection ?? HostConnection)?.Close();
             _hostVerificationToken = null;
             return;
@@ -625,7 +741,7 @@ public class SessionConnectionManager : IDisposable
         }
         catch (Exception ex)
         {
-            LumoraLogger.Error($"HandleJoinChallenge: failed to sign challenge ({ex.Message})");
+            LumoraLogger.Error($"[lnl] HandleJoinChallenge: failed to sign challenge ({ex.Message})");
             return;
         }
 
@@ -640,7 +756,7 @@ public class SessionConnectionManager : IDisposable
                 accountSignature = cdn.SignWithAccountKey(
                     Lumora.Core.Security.MachineIdentity.BuildJoinPayload(challenge.Nonce, JoinContextUserAccount)) ?? Array.Empty<byte>();
             }
-            catch (Exception ex) { LumoraLogger.Warn($"HandleJoinChallenge: account sign failed ({ex.Message})"); }
+            catch (Exception ex) { LumoraLogger.Warn($"[lnl] HandleJoinChallenge: account sign failed ({ex.Message})"); }
         }
 
         var auth = new LegacyJoinAuthenticateData { Signature = signature, AccountSignature = accountSignature };
@@ -653,7 +769,7 @@ public class SessionConnectionManager : IDisposable
         var target = connection ?? HostConnection;
         target.Send(encoded, encoded.Length, reliable: true, background: false);
         _hostVerificationToken = null; // one-shot; done with this join's host challenge. -xlinka
-        LumoraLogger.Log("Sent JoinAuthenticate to host");
+        LumoraLogger.Log("[lnl] Sent JoinAuthenticate to host");
     }
 
     /// <summary>
@@ -675,7 +791,7 @@ public class SessionConnectionManager : IDisposable
 
         if (pending == null)
         {
-            LumoraLogger.Warn($"HandleJoinAuthenticate: no pending auth for {connection.Identifier} - ignoring");
+            LumoraLogger.Warn($"[lnl] HandleJoinAuthenticate: no pending auth for {connection.Identifier} - ignoring");
             SendJoinReject(connection, "No pending authentication");
             return;
         }
@@ -688,7 +804,7 @@ public class SessionConnectionManager : IDisposable
                     Lumora.Core.Security.MachineIdentity.BuildJoinPayload(pending.Nonce, JoinContextUserMachine),
                     auth.Signature))
             {
-                LumoraLogger.Warn($"HandleJoinAuthenticate: machine signature FAILED for {connection.Identifier} - rejecting");
+                LumoraLogger.Warn($"[lnl] HandleJoinAuthenticate: machine signature FAILED for {connection.Identifier} - rejecting");
                 SendJoinReject(connection, "Machine authentication failed");
                 return;
             }
@@ -704,7 +820,7 @@ public class SessionConnectionManager : IDisposable
 
                 if (verified == null)
                 {
-                    LumoraLogger.Warn($"HandleJoinAuthenticate: account verification FAILED for {connection.Identifier} (claimed '{claimedAccount}') - rejecting");
+                    LumoraLogger.Warn($"[lnl] HandleJoinAuthenticate: account verification FAILED for {connection.Identifier} (claimed '{claimedAccount}') - rejecting");
                     SendJoinReject(connection, "Account verification failed");
                     return;
                 }
@@ -729,23 +845,25 @@ public class SessionConnectionManager : IDisposable
                 // grant. This is the point where we finally know who they really are. -xlinka
                 if (Lumora.Core.Security.BanManager.IsBanned(verifiedAccountId, req.MachineID, world.WorldName?.Value))
                 {
-                    LumoraLogger.Warn($"HandleJoinAuthenticate: {connection.Identifier} (account '{verifiedAccountId}') is banned from this world - rejecting");
+                    LumoraLogger.Warn($"[lnl] HandleJoinAuthenticate: {connection.Identifier} (account '{verifiedAccountId}') is banned from this world - rejecting");
                     SendJoinReject(connection, "You are banned from this world");
                     return;
                 }
 
-                LumoraLogger.Log($"HandleJoinAuthenticate: {connection.Identifier} authenticated (account='{verifiedAccountId}', silenced={forceSilenced}) - granting");
+                LumoraLogger.Log($"[lnl] HandleJoinAuthenticate: {connection.Identifier} authenticated (account='{verifiedAccountId}', silenced={forceSilenced}) - granting");
                 world.RunSynchronously(() => SendJoinGrant(conn, req.UserName, req.MachineID, verifiedAccountId, forceSilenced));
                 return;
             }
 
             // Guest path: no await happened, so we're still on the sync/message thread, grant inline. -xlinka
-            LumoraLogger.Log($"HandleJoinAuthenticate: {connection.Identifier} authenticated (guest) - granting");
+            LumoraLogger.Log($"[lnl] HandleJoinAuthenticate: {connection.Identifier} authenticated (guest) - granting");
             SendJoinGrant(connection, pending.Request.UserName, pending.Request.MachineID, "");
         }
         catch (Exception ex)
         {
-            LumoraLogger.Error($"HandleJoinAuthenticate: unexpected error for {connection.Identifier} ({ex.Message}) - rejecting");
+            // Log the ROOT cause, not just the outer wrapper - worker init rethrows as a generic "Exception
+            // during initializing Worker of type X" that hides the real reason (e.g. a RefID collision). -xlinka
+            LumoraLogger.Error($"[lnl] HandleJoinAuthenticate: unexpected error for {connection.Identifier} ({ex.GetBaseException().Message}) - rejecting");
             SendJoinReject(connection, "Authentication error");
         }
     }
@@ -761,7 +879,7 @@ public class SessionConnectionManager : IDisposable
         var cdn = Engine.Current?.CDNClient;
         if (cdn == null)
         {
-            LumoraLogger.Warn("VerifyAccount: no CDN client available; cannot verify a claimed account.");
+            LumoraLogger.Warn("[lnl] VerifyAccount: no CDN client available; cannot verify a claimed account.");
             return null;
         }
         if (string.IsNullOrEmpty(accountSessionId) || accountSignature == null || accountSignature.Length == 0)
@@ -770,7 +888,7 @@ public class SessionConnectionManager : IDisposable
         var publishedKey = await cdn.GetSessionPublicKeyAsync(accountUserId, accountSessionId);
         if (publishedKey == null)
         {
-            LumoraLogger.Warn($"VerifyAccount: no published key for {accountUserId}/{accountSessionId}.");
+            LumoraLogger.Warn($"[lnl] VerifyAccount: no published key for {accountUserId}/{accountSessionId}.");
             return null;
         }
 
@@ -779,7 +897,7 @@ public class SessionConnectionManager : IDisposable
                 Lumora.Core.Security.MachineIdentity.BuildJoinPayload(nonce, JoinContextUserAccount),
                 accountSignature))
         {
-            LumoraLogger.Warn($"VerifyAccount: account signature did not verify for {accountUserId}.");
+            LumoraLogger.Warn($"[lnl] VerifyAccount: account signature did not verify for {accountUserId}.");
             return null;
         }
 
@@ -796,14 +914,14 @@ public class SessionConnectionManager : IDisposable
         // is already verified by this point; this gate is purely about ban status. -xlinka
         if (!userInfo.Success || userInfo.Data == null)
         {
-            LumoraLogger.Warn($"VerifyAccount: could not fetch platform status for {accountUserId} (backend unreachable?); failing closed and rejecting.");
+            LumoraLogger.Warn($"[lnl] VerifyAccount: could not fetch platform status for {accountUserId} (backend unreachable?); failing closed and rejecting.");
             return null;
         }
 
         var info = userInfo.Data;
         if (info.IsPublicBanned || info.IsAccountBanned)
         {
-            LumoraLogger.Warn($"VerifyAccount: {accountUserId} is platform-banned; rejecting.");
+            LumoraLogger.Warn($"[lnl] VerifyAccount: {accountUserId} is platform-banned; rejecting.");
             return null;
         }
         if (info.IsMuteBanned)
@@ -811,7 +929,7 @@ public class SessionConnectionManager : IDisposable
         if (info.IsSpectatorBanned)
         {
             forceSilenced = true;
-            LumoraLogger.Warn($"VerifyAccount: {accountUserId} is spectator-banned, but there's no spectator mode yet, so silencing as a partial measure. -xlinka");
+            LumoraLogger.Warn($"[lnl] VerifyAccount: {accountUserId} is spectator-banned, but there's no spectator mode yet, so silencing as a partial measure. -xlinka");
         }
 
         return (accountUserId, forceSilenced);
@@ -913,14 +1031,32 @@ public class SessionConnectionManager : IDisposable
         // Per-session poll. Most transports also have a global poll driven by
         // NetworkManagerRegistry.UpdateAll() from the engine update loop, which
         // covers any listeners/connections created outside the session. - xlinka
-        if (Listener is LNL.LNLListener lnlListener) lnlListener.Poll();
+        foreach (var l in _listeners)
+        {
+            if (l is LNL.LNLListener lnlListener) lnlListener.Poll();
+        }
         HostConnection?.Poll();
     }
 
     public void Dispose()
     {
-        Listener?.Close();
-        Listener?.Dispose();
+        // Close + unsubscribe EVERY listener (LNL, Steam, ...). Unsubscribe before Close so a disposed listener's
+        // callback can't fire into the cleared maps, and so Steam channel sockets don't leak. -xlinka
+        foreach (var l in _listeners)
+        {
+            try
+            {
+                l.PeerConnected -= OnPeerConnected;
+                l.PeerDisconnected -= OnPeerDisconnected;
+                l.Close();
+                l.Dispose();
+            }
+            catch (Exception ex)
+            {
+                LumoraLogger.Warn($"[lnl] Dispose: error closing {l.GetType().Name} - {ex.Message}");
+            }
+        }
+        _listeners.Clear();
         HostConnection?.Close();
 
         lock (_lock)

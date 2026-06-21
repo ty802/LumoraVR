@@ -111,20 +111,36 @@ public class Session : IDisposable
         // Initialize metadata
         session.Metadata = metadata ?? new SessionMetadata();
         session.Metadata.SessionId = SessionIdentifier.Generate();
-        session.Metadata.SessionURLs = SessionUrlBuilder.GetLocalSessionUrls(port, session.Metadata.SessionId);
         session.Metadata.StartTime = DateTime.UtcNow;
         session.Metadata.LastUpdate = DateTime.UtcNow;
         session.Metadata.HostUsername ??= Environment.UserName;
         session.Metadata.ActiveUsers = 1;
 
-        LumoraLogger.Log($"Creating new session '{metadata!.Name}' on port {port}");
-        LumoraLogger.Log($"Session ID: {session.Metadata.SessionId}");
+        LumoraLogger.Log($"[lnl] Creating new session '{metadata!.Name}' on port {port}");
+        LumoraLogger.Log($"[lnl] Session ID: {session.Metadata.SessionId}");
 
         // Start listener
         if (!session.Connections.StartListener(port))
         {
             throw new Exception($"Failed to start listener on port {port}");
         }
+
+        // Advertise a URL per transport now that the listeners are up. The LAN/direct lnl:// URLs (one per local
+        // interface IP) come from the URL builder, because the LNL listener's own URI is a 0.0.0.0 wildcard; every
+        // OTHER transport (e.g. Steam) contributes its concrete dialable GlobalUri (steam://<id>/...). LAN URLs go
+        // first so same-subnet joiners use cheap UDP and discovery's source-IP match still finds an lnl URL. -xlinka
+        var urls = new List<Uri>(SessionUrlBuilder.GetLocalSessionUrls(port, session.Metadata.SessionId));
+        foreach (var listener in session.Connections.StartedListeners)
+        {
+            var globalUri = listener.GlobalUri;
+            if (globalUri == null)
+                continue;
+            // The concrete LAN IPs are already added above; skip the LNL wildcard (lnl://0.0.0.0:port).
+            if (string.Equals(globalUri.Scheme, "lnl", StringComparison.OrdinalIgnoreCase))
+                continue;
+            urls.Add(globalUri);
+        }
+        session.Metadata.SessionURLs = urls;
 
         // Create sync manager with dedicated thread
         session.Sync = new SessionSyncManager(session);
@@ -150,7 +166,7 @@ public class Session : IDisposable
             session.StartPublicServerRegistration();
         }
 
-        LumoraLogger.Log($"Session created as host with {session.Metadata.SessionURLs.Count} URLs");
+        LumoraLogger.Log($"[lnl] Session created as host with {session.Metadata.SessionURLs.Count} URLs");
         return session;
     }
 
@@ -175,36 +191,43 @@ public class Session : IDisposable
     {
         var session = new Session(world);
 
-        LumoraLogger.Log($"Joining session at {string.Join(", ", addresses)}");
+        LumoraLogger.Log($"[lnl] Joining session at {string.Join(", ", addresses)}");
 
-        bool connected;
-        try
+        // Run the ENTIRE join - socket connect, handshake, and starting the sync threads - on a background
+        // thread, never the main/update thread. Our network is polled from the engine update loop, so doing
+        // ANY of this on the main thread (even the synchronous connect call) risks freezing the client mid-join.
+        // ConfigureAwait(false) keeps every continuation off the main thread too. -xlinka
+        return await Task.Run(async () =>
         {
-            connected = await session.Connections.ConnectToAsync(addresses);
-        }
-        catch (Exception ex)
-        {
-            LumoraLogger.Error($"Failed to connect to session: {ex.Message}");
-            connected = false;
-        }
+            bool connected;
+            try
+            {
+                connected = await session.Connections.ConnectToAsync(addresses).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                LumoraLogger.Error($"[lnl] Failed to connect to session: {ex.Message}");
+                connected = false;
+            }
 
-        if (!connected)
-        {
-            session.Dispose();
-            return null;
-        }
+            if (!connected)
+            {
+                session.Dispose();
+                return (Session?)null;
+            }
 
-        // Create sync manager with dedicated thread
-        session.Sync = new SessionSyncManager(session);
-        session.Sync.Start();
+            // Create sync manager with dedicated thread
+            session.Sync = new SessionSyncManager(session);
+            session.Sync.Start();
 
-        // Create asset transferer and register it with the engine
-        session.AssetTransferer = new SessionAssetTransferer(session);
-        if (Engine.Current is { } e)
-            e.ActiveSessionTransferer = session.AssetTransferer;
+            // Create asset transferer and register it with the engine
+            session.AssetTransferer = new SessionAssetTransferer(session);
+            if (Engine.Current is { } e)
+                e.ActiveSessionTransferer = session.AssetTransferer;
 
-        LumoraLogger.Log("Session joined as client");
-        return session;
+            LumoraLogger.Log("[lnl] Session joined as client");
+            return (Session?)session;
+        }).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -248,18 +271,18 @@ public class Session : IDisposable
             if (connected)
             {
                 natRegistered = true;
-                LumoraLogger.Log($"Session registered with public server at {SessionServerAddress}:{SessionServerPort}");
+                LumoraLogger.Log($"[lnl] Session registered with public server at {SessionServerAddress}:{SessionServerPort}");
             }
             else
             {
-                LumoraLogger.Warn("Session: Failed to register with public server");
+                LumoraLogger.Warn("[lnl] Session: Failed to register with public server");
                 _serverClient?.Dispose();
                 _serverClient = null;
             }
         }
         catch (Exception ex)
         {
-            LumoraLogger.Warn($"Session: Public server registration failed - {ex.Message}");
+            LumoraLogger.Warn($"[lnl] Session: Public server registration failed - {ex.Message}");
             _serverClient?.Dispose();
             _serverClient = null;
         }
@@ -269,7 +292,7 @@ public class Session : IDisposable
             if (BackendAuthTokenProvider == null)
             {
                 if (!natRegistered)
-                    LumoraLogger.Warn("Session: No backend auth token provider available for public directory registration");
+                    LumoraLogger.Warn("[lnl] Session: No backend auth token provider available for public directory registration");
                 return;
             }
 
@@ -280,7 +303,7 @@ public class Session : IDisposable
             var registered = await _directoryClient.StartAsync(Metadata, GetUserList);
             if (registered)
             {
-                LumoraLogger.Log($"Session registered with backend directory at {BackendSessionDirectoryUrl}");
+                LumoraLogger.Log($"[lnl] Session registered with backend directory at {BackendSessionDirectoryUrl}");
             }
             else
             {
@@ -290,7 +313,7 @@ public class Session : IDisposable
         }
         catch (Exception ex)
         {
-            LumoraLogger.Warn($"Session: Backend directory registration failed - {ex.Message}");
+            LumoraLogger.Warn($"[lnl] Session: Backend directory registration failed - {ex.Message}");
             _directoryClient?.Dispose();
             _directoryClient = null;
         }
@@ -447,7 +470,7 @@ public class Session : IDisposable
         if (IsDisposed) return;
         IsDisposed = true;
 
-        LumoraLogger.Log("Disposing session");
+        LumoraLogger.Log("[lnl] Disposing session");
 
         // Stop LAN announcer
         StopLANAnnouncer();

@@ -1122,7 +1122,12 @@ public sealed class InteractionLaser : Component
         }
 
         float3 localActual = _beamSlot.GlobalPointToLocal(endPoint);
-        if (!_hasVisualActualPoint)
+        // The exponential smoothing here damps real hand jitter in VR. On DESKTOP the mouse is already pixel
+        // precise, so smoothing it just makes the cursor trail behind the pointer - the "sluggish / floaty"
+        // feel. Snap 1:1 on desktop; keep the smoothing only for VR. -xlinka
+        var rayInput = Engine.Current?.InputInterface;
+        bool isDesktopPointer = rayInput != null && !rayInput.IsVRActive;
+        if (!_hasVisualActualPoint || isDesktopPointer)
         {
             _visualActualPoint = localActual;
             _hasVisualActualPoint = true;

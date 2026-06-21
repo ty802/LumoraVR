@@ -36,6 +36,18 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
     private bool _isCrouching;
     private float _currentHeight;
     private float _targetHeight;
+    private TransformStreamDriver _rootStreamDriver = null!;
+
+    // When a TransformStreamDriver shares the root slot, the Root stream is the transport for the root position -
+    // so writes must be SILENT (no field sync) or the root would replicate over BOTH the stream and the delta
+    // channel. Mirrors TrackedDevicePositioner's handling of stream-shared body nodes. Re-checks until found
+    // (the driver is attached during avatar build), then caches. -xlinka
+    private bool RootIsStreamed()
+    {
+        if (_rootStreamDriver == null || _rootStreamDriver.IsDestroyed)
+            _rootStreamDriver = Owner?.Slot?.GetComponent<TransformStreamDriver>()!;
+        return _rootStreamDriver != null && !_rootStreamDriver.IsDestroyed;
+    }
 
     public CharacterBody3D GodotCharacterBody => _characterBody;
 
@@ -137,7 +149,18 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         var moved = new float3(bodyPos.X, bodyPos.Y, bodyPos.Z) - referencePos;
         if (moved.LengthSquared > 1e-12f)
         {
-            Owner.Slot.GlobalPosition += moved;
+            // The local user driving their own root via locomotion is engine movement, not a user edit. Bypass
+            // the data-model permission gate for this write: the root slot is host-allocated under the authority
+            // byte, so ownership rests on the User<->UserRoot link which lags during join - without this the
+            // joiner's own walking write is silently denied for a window and movement stutters/freezes. -xlinka
+            using (Owner.World?.DataModelPermissions?.EnterSystemBypass())
+            {
+                var newGlobal = Owner.Slot.GlobalPosition + moved;
+                if (RootIsStreamed())
+                    Owner.Slot.SetGlobalPositionSilently(newGlobal); // Root stream is the transport - don't also delta it.
+                else
+                    Owner.Slot.GlobalPosition = newGlobal;
+            }
             Owner.World?.UpdateManager?.RegisterHookUpdate(Owner.Slot);
         }
     }
@@ -244,7 +267,16 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
             _characterBody.GlobalPosition = new Vector3(position.x, position.y, position.z);
         if (Owner?.Slot != null)
         {
-            Owner.Slot.GlobalPosition = position;
+            // Same as Simulate: the local user moving their own root (here, a teleport) is engine movement, not a
+            // user edit. Bypass the permission gate so a teleport firing in the join ownership-lag window isn't
+            // silently denied. -xlinka
+            using (Owner.World?.DataModelPermissions?.EnterSystemBypass())
+            {
+                if (RootIsStreamed())
+                    Owner.Slot.SetGlobalPositionSilently(position); // Root stream is the transport - don't also delta it.
+                else
+                    Owner.Slot.GlobalPosition = position;
+            }
             Owner.World?.UpdateManager?.RegisterHookUpdate(Owner.Slot);
         }
     }

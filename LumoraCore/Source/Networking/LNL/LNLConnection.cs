@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -56,14 +56,14 @@ public class LNLConnection : IConnection, INetEventListener
             throw new Exception($"Failed to start LNL Connection for {address}");
         }
 
-        LumoraLogger.Log($"LNL Connection created for {address} on local port {_client.LocalPort}");
+        LumoraLogger.Log($"[lnl] LNL Connection created for {address} on local port {_client.LocalPort}");
     }
 
     public void Connect(Action<string> statusCallback)
     {
         statusCallback?.Invoke($"Connecting to {Address.Host}:{Address.Port}");
 
-        LumoraLogger.Log($"Establishing connection to {Address}");
+        LumoraLogger.Log($"[lnl] Establishing connection to {Address}");
         _peer = _client.Connect(Address.Host, Address.Port, _appId);
 
         if (_peer == null)
@@ -84,13 +84,24 @@ public class LNLConnection : IConnection, INetEventListener
         InformClosed();
     }
 
+    private bool _loggedNotConnected;
+
     public void Send(byte[] data, int length, bool reliable, bool background)
     {
         if (_peer == null || _peer.ConnectionState != ConnectionState.Connected)
         {
-            LumoraLogger.Warn("Cannot send - peer not connected");
+            // Expected while the peer is gone/disconnecting (e.g. a user left - LNL only times the peer out
+            // after DisconnectTimeout, ~30s, so callers keep trying to stream to it until then). Sending to a
+            // closing connection is a no-op, not an error worth a Warn every single frame. Note it ONCE per
+            // disconnect at Debug; the Closed event is the real disconnect signal. -xlinka
+            if (!_loggedNotConnected)
+            {
+                _loggedNotConnected = true;
+                LumoraLogger.Debug("[lnl] Send skipped - peer not connected (teardown/disconnect)");
+            }
             return;
         }
+        _loggedNotConnected = false;
 
         // Choose delivery method
         DeliveryMethod method = reliable
@@ -139,7 +150,7 @@ public class LNLConnection : IConnection, INetEventListener
 
     public void OnPeerConnected(NetPeer peer)
     {
-        LumoraLogger.Log($"Connected to {peer.Address}:{peer.Port}");
+        LumoraLogger.Log($"[lnl] Connected to {peer.Address}:{peer.Port}");
         _peer = peer;
         IsOpen = true;
         Connected?.Invoke(this);
@@ -147,14 +158,39 @@ public class LNLConnection : IConnection, INetEventListener
 
     public void OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo)
     {
-        LumoraLogger.Log($"Disconnected from {peer.Address}:{peer.Port} - {disconnectInfo.Reason}");
+        // Pull out everything LNL hands us, not just the bare reason. socketErrorCode explains OS-level failures,
+        // and AdditionalData carries any human-readable reason the host attached when it rejected us. -xlinka
+        var extra = "";
+        if (disconnectInfo.SocketErrorCode != System.Net.Sockets.SocketError.Success)
+            extra += $", socketError={disconnectInfo.SocketErrorCode}";
+        if (disconnectInfo.AdditionalData != null && disconnectInfo.AdditionalData.AvailableBytes > 0)
+        {
+            try { extra += $", hostReason='{disconnectInfo.AdditionalData.GetString()}'"; }
+            catch { extra += $", +{disconnectInfo.AdditionalData.AvailableBytes}B rejectData"; }
+        }
+
+        // Spell out what the LNL reason actually MEANS so the log explains itself instead of just "ConnectionFailed".
+        var hint = disconnectInfo.Reason switch
+        {
+            DisconnectReason.ConnectionFailed => "host never answered the connect request - wrong address/port, host not listening there, or a firewall is dropping the UDP. NOT a version mismatch (that would be ConnectionRejected/InvalidProtocol)",
+            DisconnectReason.ConnectionRejected => "host actively rejected the connect request - app-id mismatch (mismatched build/protocol versions) or the host declined",
+            DisconnectReason.InvalidProtocol => "LNL connect-key/protocol mismatch - almost always mismatched build versions",
+            DisconnectReason.Timeout => "connection went silent past the timeout - network dropped or the peer froze",
+            DisconnectReason.HostUnreachable => "OS reported host unreachable - routing/firewall",
+            DisconnectReason.NetworkUnreachable => "OS reported network unreachable - wrong subnet/interface",
+            DisconnectReason.RemoteConnectionClose => "the remote peer closed the connection deliberately (e.g. join rejected)",
+            DisconnectReason.DisconnectPeerCalled => "we closed this connection locally",
+            _ => "see LiteNetLib DisconnectReason"
+        };
+
+        LumoraLogger.Warn($"[lnl] Disconnected from {peer.Address}:{peer.Port} - {disconnectInfo.Reason}{extra} ({hint})");
         FailReason = disconnectInfo.Reason.ToString();
         InformClosed();
     }
 
     public void OnNetworkError(IPEndPoint endPoint, System.Net.Sockets.SocketError socketError)
     {
-        LumoraLogger.Error($"Network error: {socketError} at {endPoint}");
+        LumoraLogger.Error($"[lnl] Network error: {socketError} at {endPoint}");
         FailReason = socketError.ToString();
         ConnectionFailed?.Invoke(this);
     }

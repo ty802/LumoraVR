@@ -115,11 +115,11 @@ public class LANDiscovery : IDisposable
             Task.Run(() => ListenLoop(_cts.Token));
             Task.Run(() => CleanupLoop(_cts.Token));
 
-            LumoraLogger.Log("LAN discovery started");
+            LumoraLogger.Log("[lnl] LAN discovery started");
         }
         catch (Exception ex)
         {
-            LumoraLogger.Error($"Failed to start LAN discovery: {ex.Message}");
+            LumoraLogger.Error($"[lnl] Failed to start LAN discovery: {ex.Message}");
             _isRunning = false;
         }
     }
@@ -145,7 +145,7 @@ public class LANDiscovery : IDisposable
             {
                 if (_isRunning)
                 {
-                    LumoraLogger.Warn($"LAN discovery receive error: {ex.Message}");
+                    LumoraLogger.Warn($"[lnl] LAN discovery receive error: {ex.Message}");
                 }
             }
         }
@@ -196,7 +196,7 @@ public class LANDiscovery : IDisposable
 
             if (isNew)
             {
-                LumoraLogger.Log($"Discovered session: {session.Metadata.Name} at {source.Address}");
+                LumoraLogger.Log($"[lnl] Discovered session: {session.Metadata.Name} at {source.Address}");
                 SessionFound?.Invoke(session);
             }
             else
@@ -209,7 +209,7 @@ public class LANDiscovery : IDisposable
             var preview = data.Length > 8
                 ? BitConverter.ToString(data, 0, 8) + "..."
                 : BitConverter.ToString(data);
-            LumoraLogger.Warn($"Failed to process announcement from {source}: {ex.Message} (first bytes={preview}, len={data.Length})");
+            LumoraLogger.Warn($"[lnl] Failed to process announcement from {source}: {ex.Message} (first bytes={preview}, len={data.Length})");
         }
     }
 
@@ -266,7 +266,7 @@ public class LANDiscovery : IDisposable
 
             foreach (var key in expired)
             {
-                LumoraLogger.Log($"Session lost: {key}");
+                LumoraLogger.Log($"[lnl] Session lost: {key}");
                 SessionLost?.Invoke(key);
             }
         }
@@ -320,7 +320,7 @@ public class LANDiscovery : IDisposable
         _listener = null!;
         _cts = null!;
 
-        LumoraLogger.Log("LAN discovery stopped");
+        LumoraLogger.Log("[lnl] LAN discovery stopped");
     }
 
     /// <summary>

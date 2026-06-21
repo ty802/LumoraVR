@@ -550,13 +550,13 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     // compile without an unreachable warning when toggled.
     private static readonly bool UseWorker = true;
 
-    // Default behaviour: UNBOUNDED positional UI draw order. Each chunk renders
-    // every mesh surface as its own MeshInstance3D ordered by a distinct full-range SortingOffset
-    // (= chunk tree index * stride + surface index), with uniform render_priority - so later-in-tree always draws
-    // on top with no 256-level cap, instead of packing into Godot's render_priority bands. Verified working
-    // in-engine. Set false to fall back to the banded path (cheaper: one instance per chunk, no per-surface
-    // material duplicate) if a perf issue ever shows up. -xlinka
-    public static bool UnboundedRenderOrder = true;
+    // Per-surface unbounded ordering: each chunk renders every mesh surface as its own MeshInstance3D ordered by a
+    // distinct full-range SortingOffset (= chunk tree index * stride + surface index) with uniform render_priority,
+    // beating Godot's 256-level render_priority cap. DEFAULT OFF: it ghosts/double-renders during screen + modal
+    // transitions (per-surface instances not torn down cleanly when a chunk is disabled/re-meshed - needs the
+    // instance lifecycle tied to chunk visibility, debugged with the engine running). The banded path (off) is
+    // stable. Only flip true for a focused render-test session, not for normal use. -xlinka
+    public static bool UnboundedRenderOrder = false;
 
     // WORKER: drain each dirty chunk's emit queue into its (already-cleared) mesh. Reads only
     // snapshotted graphic state + stable LocalComputeRect; writes only managed PhosMesh data.
@@ -695,6 +695,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             if (!_seenChunkRoots.Contains(pair.Key))
                 _chunkScratch.Add(pair.Key);
         }
+        int disabled = 0, disposed = 0;
         foreach (var root in _chunkScratch)
         {
             var chunk = _chunkMap[root];
@@ -704,11 +705,23 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
                 chunk.Dispose();
                 _chunkMap.Remove(root);
                 _chunkBuilt.Remove(root);
+                disposed++;
             }
             else
             {
                 chunk.SetActive(false);
+                disabled++;
             }
+        }
+
+        // DIAG (remove once the overlap is fixed): shows whether a render-root reconcile actually turned chunks
+        // off. If you close the create overlap and this never logs disabled>0, the modal's chunks are staying
+        // "seen" (reconcile not reaching them); if it logs but they still draw, SetActive(false) isn't hiding the
+        // Godot mesh, or the offscreen texture isn't re-rendering. -xlinka
+        if (disabled > 0 || disposed > 0)
+        {
+            Lumora.Core.Logging.Logger.Log(
+                $"[ChunkDiag] CleanupChunks: seen={_seenChunkRoots.Count} remaining={_chunkMap.Count} disabled={disabled} disposed={disposed}");
         }
     }
 

@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -44,14 +44,14 @@ public static class NetworkManagerRegistry
             {
                 if (existing.GetType() == manager.GetType())
                 {
-                    LumoraLogger.Warn($"NetworkManagerRegistry: {manager.GetType().Name} already registered - ignoring duplicate");
+                    LumoraLogger.Warn($"[lnl] NetworkManagerRegistry: {manager.GetType().Name} already registered - ignoring duplicate");
                     return;
                 }
             }
             _managers.Add(manager);
             _managers.Sort((a, b) => b.Priority.CompareTo(a.Priority));
         }
-        LumoraLogger.Log($"NetworkManagerRegistry: registered {manager.GetType().Name} (priority {manager.Priority})");
+        LumoraLogger.Log($"[lnl] NetworkManagerRegistry: registered {manager.GetType().Name} (priority {manager.Priority})");
     }
 
     public static void Unregister(INetworkManager manager)
@@ -130,7 +130,7 @@ public static class NetworkManagerRegistry
             }
             catch (Exception ex)
             {
-                LumoraLogger.Error($"NetworkManagerRegistry: {snapshot[i].GetType().Name}.Update threw: {ex}");
+                LumoraLogger.Error($"[lnl] NetworkManagerRegistry: {snapshot[i].GetType().Name}.Update threw: {ex}");
             }
         }
     }
@@ -152,7 +152,7 @@ public static class NetworkManagerRegistry
             }
             catch (Exception ex)
             {
-                LumoraLogger.Error($"NetworkManagerRegistry: {manager.GetType().Name}.Stop threw: {ex}");
+                LumoraLogger.Error($"[lnl] NetworkManagerRegistry: {manager.GetType().Name}.Stop threw: {ex}");
             }
         }
     }

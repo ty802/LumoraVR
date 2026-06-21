@@ -308,6 +308,7 @@ public sealed class HomeScreen : WidgetScreen
     protected override void OnHide()
     {
         base.OnHide();
+        Lumora.Core.Logging.Logger.Log($"[CreateMenuDiag] HomeScreen.OnHide fired (createOpen was {_createOpen})");
         CloseCreateMenu();
     }
 
@@ -323,6 +324,14 @@ public sealed class HomeScreen : WidgetScreen
         if (_createBackdrop != null && !_createBackdrop.IsDestroyed)
             _createBackdrop.ActiveSelf.Value = open;
         MarkDirty();
+        // DIAG (remove once the overlap is fixed): confirms the close path runs AND the overlay slot actually
+        // deactivates. If this logs overlay activeSelf=False/isActive=False but it still draws, the bug is the
+        // canvas chunk reconcile or the offscreen re-render, not the lifecycle. -xlinka
+        Lumora.Core.Logging.Logger.Log(
+            $"[CreateMenuDiag] SetCreateMenuOpen({open}): overlay null={_createOverlay == null} " +
+            $"destroyed={_createOverlay?.IsDestroyed} activeSelf={_createOverlay?.ActiveSelf.Value} " +
+            $"isActive={_createOverlay?.IsActive} | backdrop activeSelf={_createBackdrop?.ActiveSelf.Value} " +
+            $"isActive={_createBackdrop?.IsActive}");
     }
 
     private void OnCreate()

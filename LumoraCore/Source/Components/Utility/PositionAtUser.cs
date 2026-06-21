@@ -36,6 +36,13 @@ public class PositionAtUser : Component
         var local = parent.GlobalPointToLocal(target);
 
         if ((Slot!.LocalPosition.Value - local).LengthSquared > 1e-10f)
+        {
+            // This anchor lives under the (possibly REMOTE) user's root, so on an observer the write's actor is
+            // the observer's own user, who doesn't own it -> the permission gate denies it and the badge stops
+            // tracking the head. It's a purely-local visual follow of already-replicated head data (no sync
+            // generated), so bypass the gate - same treatment as the remote-body stream apply. -xlinka
+            using var bypass = World?.DataModelPermissions?.EnterSystemBypass();
             Slot.LocalPosition.SetValueSilently(local, change: true);
+        }
     }
 }

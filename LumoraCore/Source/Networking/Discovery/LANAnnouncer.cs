@@ -1,10 +1,12 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
@@ -30,7 +32,9 @@ public class LANAnnouncer : IDisposable
     /// </summary>
     public const int BroadcastIntervalMs = 5000;
 
-    private UdpClient _udpClient = null!;
+    // One broadcast socket BOUND to each local interface IP (so a 255.255.255.255 broadcast egresses that
+    // interface, not just the default route) + one unbound catch-all. -xlinka
+    private readonly List<UdpClient> _announcers = new();
     private CancellationTokenSource _cts = null!;
     private SessionMetadata _metadata = null!;
     private Guid _announcerId;
@@ -63,31 +67,100 @@ public class LANAnnouncer : IDisposable
 
         try
         {
-            _udpClient = new UdpClient();
-            _udpClient.EnableBroadcast = true;
+            RebuildAnnouncers();
             _isRunning = true;
 
             Task.Run(() => BroadcastLoop(_cts.Token));
 
-            LumoraLogger.Log($"LAN announcer started for session: {metadata.Name}");
+            LumoraLogger.Log($"[lnl] LAN announcer started for session: {metadata.Name} ({_announcers.Count} broadcast sockets)");
         }
         catch (Exception ex)
         {
-            LumoraLogger.Error($"Failed to start LAN announcer: {ex.Message}");
+            LumoraLogger.Error($"[lnl] Failed to start LAN announcer: {ex.Message}");
             _isRunning = false;
         }
     }
 
+    // (Re)create one broadcast socket bound to each up, non-loopback IPv4 interface, plus an unbound catch-all.
+    // Rebuilt periodically so connecting Wi-Fi / unplugging Ethernet mid-session is handled. -xlinka
+    private void RebuildAnnouncers()
+    {
+        foreach (var a in _announcers)
+        {
+            try { a.Close(); a.Dispose(); } catch { }
+        }
+        _announcers.Clear();
+
+        try
+        {
+            foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (ni.OperationalStatus != OperationalStatus.Up) continue;
+                if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+
+                foreach (var ua in ni.GetIPProperties().UnicastAddresses)
+                {
+                    if (ua.Address.AddressFamily != AddressFamily.InterNetwork) continue;
+                    try
+                    {
+                        _announcers.Add(new UdpClient(new IPEndPoint(ua.Address, 0)) { EnableBroadcast = true });
+                    }
+                    catch (Exception ex)
+                    {
+                        LumoraLogger.Debug($"[lnl] LAN announcer bind to {ua.Address} failed: {ex.Message}");
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LumoraLogger.Debug($"[lnl] LAN announcer interface enumeration failed: {ex.Message}");
+        }
+
+        // Catch-all unbound socket (default route) for the case enumeration found nothing usable.
+        try { _announcers.Add(new UdpClient { EnableBroadcast = true }); }
+        catch (Exception ex) { LumoraLogger.Warn($"[lnl] LAN announcer fallback socket failed: {ex.Message}"); }
+    }
+
     private async Task BroadcastLoop(CancellationToken token)
     {
-        var endpoint = new IPEndPoint(IPAddress.Broadcast, BroadcastPort);
-
+        int ticks = 0;
         while (!token.IsCancellationRequested && _isRunning)
         {
             try
             {
+                // Refresh the socket set every ~30s so a network change (Wi-Fi connects, Ethernet unplugged) is
+                // picked up without restarting the session. Cheap - a handful of sockets.
+                if (_announcers.Count == 0 || (++ticks % 6) == 0)
+                {
+                    RebuildAnnouncers();
+                }
+
                 var packet = CreateAnnouncementPacket();
-                await _udpClient.SendAsync(packet, packet.Length, endpoint);
+                var targets = GetBroadcastEndpoints();
+
+                // Send the announcement from EVERY interface-bound socket to the limited broadcast AND each
+                // subnet's directed broadcast. A plain unbound socket only egresses ONE interface (the default
+                // route), which on a typical machine is a Hyper-V / WSL / VPN virtual adapter - so the packet
+                // never reaches the real LAN and nobody discovers the host. This blankets every attached subnet.
+                // -xlinka
+                foreach (var socket in _announcers)
+                {
+                    foreach (var endpoint in targets)
+                    {
+                        try
+                        {
+                            await socket.SendAsync(packet, packet.Length, endpoint);
+                        }
+                        catch (OperationCanceledException) { throw; }
+                        catch (ObjectDisposedException) { throw; }
+                        catch (Exception sendEx)
+                        {
+                            // One bad socket/interface shouldn't stop the others.
+                            LumoraLogger.Debug($"[lnl] LAN broadcast to {endpoint} failed: {sendEx.Message}");
+                        }
+                    }
+                }
             }
             catch (OperationCanceledException)
             {
@@ -99,7 +172,7 @@ public class LANAnnouncer : IDisposable
             }
             catch (Exception ex)
             {
-                LumoraLogger.Warn($"LAN broadcast error: {ex.Message}");
+                LumoraLogger.Warn($"[lnl] LAN broadcast error: {ex.Message}");
             }
 
             try
@@ -111,6 +184,75 @@ public class LANAnnouncer : IDisposable
                 break;
             }
         }
+    }
+
+    // Build the set of broadcast targets: the limited broadcast (255.255.255.255) PLUS each up, non-loopback
+    // IPv4 interface's directed subnet broadcast. Deduped. This is what makes discovery reach every LAN the host
+    // is actually on, regardless of which interface owns the default route. -xlinka
+    private static List<IPEndPoint> GetBroadcastEndpoints()
+    {
+        var seen = new HashSet<string>();
+        var endpoints = new List<IPEndPoint>();
+
+        void Add(IPAddress address)
+        {
+            if (address == null) return;
+            var key = address.ToString();
+            if (seen.Add(key))
+                endpoints.Add(new IPEndPoint(address, BroadcastPort));
+        }
+
+        Add(IPAddress.Broadcast);
+
+        // Also target loopback so a SECOND process on the SAME machine reliably receives the announcement. A
+        // broadcast egresses the NIC and isn't guaranteed to loop back to another local process's socket on
+        // Windows; 127.0.0.1 always is delivered locally. Only the unbound catch-all socket can actually reach
+        // loopback (the interface-bound sockets' loopback sends just fail+log harmlessly), which is enough. This
+        // makes the standard "two clients, one PC" local test discoverable. -xlinka
+        Add(IPAddress.Loopback);
+
+        try
+        {
+            foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (ni.OperationalStatus != OperationalStatus.Up) continue;
+                if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+
+                foreach (var ua in ni.GetIPProperties().UnicastAddresses)
+                {
+                    if (ua.Address.AddressFamily != AddressFamily.InterNetwork) continue;
+                    var directed = ComputeDirectedBroadcast(ua.Address, ua.IPv4Mask);
+                    if (directed != null) Add(directed);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // Fall back to just the limited broadcast we already added.
+            LumoraLogger.Debug($"[lnl] LAN broadcast: interface enumeration failed: {ex.Message}");
+        }
+
+        return endpoints;
+    }
+
+    // Directed broadcast address for a subnet = host IP OR'd with the inverted mask (e.g. 192.168.1.42 /
+    // 255.255.255.0 -> 192.168.1.255). Returns null for unusable inputs (no/empty mask). -xlinka
+    private static IPAddress? ComputeDirectedBroadcast(IPAddress address, IPAddress mask)
+    {
+        if (mask == null) return null;
+        var ipBytes = address.GetAddressBytes();
+        var maskBytes = mask.GetAddressBytes();
+        if (ipBytes.Length != 4 || maskBytes.Length != 4) return null;
+
+        bool maskUsable = false;
+        var broadcast = new byte[4];
+        for (int i = 0; i < 4; i++)
+        {
+            broadcast[i] = (byte)(ipBytes[i] | (~maskBytes[i] & 0xFF));
+            if (maskBytes[i] != 0) maskUsable = true;
+        }
+
+        return maskUsable ? new IPAddress(broadcast) : null;
     }
 
     private byte[] CreateAnnouncementPacket()
@@ -165,17 +307,15 @@ public class LANAnnouncer : IDisposable
         }
         catch { }
 
-        try
+        foreach (var a in _announcers)
         {
-            _udpClient?.Close();
-            _udpClient?.Dispose();
+            try { a.Close(); a.Dispose(); } catch { }
         }
-        catch { }
+        _announcers.Clear();
 
-        _udpClient = null!;
         _cts = null!;
 
-        LumoraLogger.Log("LAN announcer stopped");
+        LumoraLogger.Log("[lnl] LAN announcer stopped");
     }
 
     /// <summary>

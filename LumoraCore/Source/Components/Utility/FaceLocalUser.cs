@@ -39,6 +39,12 @@ public class FaceLocalUser : Component
 
         float dot = floatQ.Dot(local, Slot.LocalRotation.Value);
         if (1f - (dot < 0 ? -dot : dot) > 1e-6f)
+        {
+            // Per-viewer local billboard of a (possibly REMOTE) user's nameplate. On an observer the write's actor
+            // is the observer's own user, who doesn't own the remote plate -> denied, and the badge stops facing
+            // you. Local-only visual, no sync generated, so bypass the gate. -xlinka
+            using var bypass = World?.DataModelPermissions?.EnterSystemBypass();
             Slot.LocalRotation.SetValueSilently(local, change: true);
+        }
     }
 }

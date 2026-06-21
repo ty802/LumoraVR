@@ -263,6 +263,10 @@ public partial class HeadOutput : Node
     /// </summary>
     private void UpdateScreenPositioning(World world)
     {
+        // Publish whether the camera is overridden (3rd-person / free-cam) so the userspace dashboard knows it
+        // can't simply lock to the local head pose this frame. -xlinka
+        Lumora.Core.Engine.Current?.InputInterface?.SetDesktopCameraOverride(_hasPositionOverride || _hasRotationOverride);
+
         // Check for position/rotation overrides
         if (_hasPositionOverride)
         {

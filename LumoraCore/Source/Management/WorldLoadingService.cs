@@ -154,9 +154,6 @@ public class WorldLoadingService
         {
             LumoraLogger.Log($"WorldLoadingService: Starting load for '{operation.WorldName}' at {operation.Address}");
 
-            // Create 3D indicator in userspace world
-            CreateSessionJoinIndicator(operation);
-
             // Phase 1: Connecting (0-20%)
             UpdateProgress(operation, WorldLoadingPhase.Connecting, 0.05f, "Connecting to server...");
 
@@ -171,6 +168,11 @@ public class WorldLoadingService
             // Initialize world as client
             world.Initialize(isAuthority: false);
             UpdateProgress(operation, WorldLoadingPhase.Connecting, 0.15f, "Initializing world...");
+
+            // Create the 3D loading indicator NOW that the target world exists, so it's handed a non-null
+            // TargetWorld at creation time. Creating it earlier raced: the deferred attach hadn't run yet when
+            // we set the target, so the indicator woke with a null TargetWorld and instantly self-destructed. -xlinka
+            CreateSessionJoinIndicator(operation);
 
             // Subscribe to state changes for progress tracking
             world.OnStateChanged += (oldState, newState) => OnWorldStateChanged(operation, oldState, newState);
@@ -352,7 +354,14 @@ public class WorldLoadingService
             try
             {
                 var indicatorSlot = userspaceWorld.AddSlot("SessionJoinIndicator");
-                _currentIndicator = indicatorSlot.AttachComponent<SessionJoinIndicator>();
+                var indicator = indicatorSlot.AttachComponent<SessionJoinIndicator>();
+
+                // Wire the target IN THE SAME callback, before the indicator's first update tick, so it never
+                // sees a null TargetWorld and destroys itself. SessionSync is null until the connection is up;
+                // the indicator picks it up lazily from TargetWorld.Session. -xlinka
+                indicator.TargetWorld = operation.World!;
+                indicator.SessionSync = operation.World?.Session?.Sync!;
+                _currentIndicator = indicator;
 
                 LumoraLogger.Log($"WorldLoadingService: Created 3D loading indicator in userspace for '{operation.WorldName}'");
             }

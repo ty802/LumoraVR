@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -44,11 +44,11 @@ public sealed class LNLNetworkManager : INetworkManager
         if (listener.IsInitialized)
         {
             _listeners.Add(listener);
-            LumoraLogger.Log($"LNLNetworkManager: listener up on 0.0.0.0:{port}");
+            LumoraLogger.Log($"[lnl] LNLNetworkManager: listener up on 0.0.0.0:{port}");
         }
         else
         {
-            LumoraLogger.Error($"LNLNetworkManager: failed to start listener on port {port}");
+            LumoraLogger.Error($"[lnl] LNLNetworkManager: failed to start listener on port {port}");
         }
         return listener;
     }

@@ -153,10 +153,15 @@ public class SessionSyncManager : IDisposable
         _encodeThread.Start();
         _syncThread.Start();
 
-        // Wait for sync thread to initialize
-        _syncThreadInitEvent.WaitOne();
+        // Wait for sync thread to initialize - BOUNDED so a stuck/failed sync thread can never permanently block
+        // the caller (the join handshake). The sync thread sets this almost immediately at the top of SyncLoop;
+        // 10s is purely a safety net. -xlinka
+        if (!_syncThreadInitEvent.WaitOne(10000))
+        {
+            LumoraLogger.Error("[lnl] SessionSyncManager: sync thread did not initialize within 10s - join may fail");
+        }
 
-        LumoraLogger.Log("SessionSyncManager: All threads started");
+        LumoraLogger.Log("[lnl] SessionSyncManager: All threads started");
     }
 
     /// <summary>
@@ -220,11 +225,11 @@ public class SessionSyncManager : IDisposable
     /// </summary>
     public void QueueUserForInitialization(User user)
     {
-        LumoraLogger.Log($"QueueUserForInitialization: Queuing user '{user.UserName.Value}' (RefID: {user.ReferenceID})");
+        LumoraLogger.Log($"[lnl] QueueUserForInitialization: Queuing user '{user.UserName.Value}' (RefID: {user.ReferenceID})");
         lock (_newUsersLock)
         {
             _newUsersToInitialize.Add(user);
-            LumoraLogger.Log($"QueueUserForInitialization: Queue now has {_newUsersToInitialize.Count} users");
+            LumoraLogger.Log($"[lnl] QueueUserForInitialization: Queue now has {_newUsersToInitialize.Count} users");
         }
     }
 
@@ -232,7 +237,7 @@ public class SessionSyncManager : IDisposable
 
     private void DecodeLoop()
     {
-        LumoraLogger.Log("DecodeLoop started");
+        LumoraLogger.Log("[lnl] DecodeLoop started");
 
         while (_running && !_isDisposed)
         {
@@ -259,19 +264,19 @@ public class SessionSyncManager : IDisposable
                 }
                 catch (Exception ex)
                 {
-                    LumoraLogger.Error($"DecodeLoop: Exception decoding message: {ex.Message}");
+                    LumoraLogger.Error($"[lnl] DecodeLoop: Exception decoding message: {ex.Message}");
                 }
             }
         }
 
-        LumoraLogger.Log("DecodeLoop stopped");
+        LumoraLogger.Log("[lnl] DecodeLoop stopped");
     }
 
     // ENCODE THREAD
 
     private void EncodeLoop()
     {
-        LumoraLogger.Log("EncodeLoop started");
+        LumoraLogger.Log("[lnl] EncodeLoop started");
 
         while (_running && !_isDisposed)
         {
@@ -304,7 +309,7 @@ public class SessionSyncManager : IDisposable
                 }
                 catch (Exception ex)
                 {
-                    LumoraLogger.Error($"EncodeLoop: Exception encoding message: {ex.Message}");
+                    LumoraLogger.Error($"[lnl] EncodeLoop: Exception encoding message: {ex.Message}");
                 }
                 finally
                 {
@@ -313,14 +318,14 @@ public class SessionSyncManager : IDisposable
             }
         }
 
-        LumoraLogger.Log("EncodeLoop stopped");
+        LumoraLogger.Log("[lnl] EncodeLoop stopped");
     }
 
     // SYNC THREAD
 
     private void SyncLoop()
     {
-        LumoraLogger.Log("SyncLoop started");
+        LumoraLogger.Log("[lnl] SyncLoop started");
 
         var controlMessagesToProcess = new List<ControlMessage>();
         ulong lastDeltaSyncTime = 0;
@@ -377,7 +382,7 @@ public class SessionSyncManager : IDisposable
                 {
                     if (_newUsersToInitialize.Count > 0)
                     {
-                        LumoraLogger.Warn("SyncLoop: Timeout waiting for world refresh, continuing anyway");
+                        LumoraLogger.Warn("[lnl] SyncLoop: Timeout waiting for world refresh, continuing anyway");
                     }
                 }
 
@@ -493,7 +498,7 @@ public class SessionSyncManager : IDisposable
                     // Log stream transmission summary periodically (every 60 ticks = ~1 sec at 60 fps)
                     if (streams.Count > 0 && World.SyncTick % 60 == 0)
                     {
-                        LumoraLogger.Log($"[Stream] Gathered {streams.Count} messages, sent {sentCount} (LocalUser streams: {World.LocalUser?.StreamCount ?? 0})");
+                        LumoraLogger.Log($"[lnl] [Stream] Gathered {streams.Count} messages, sent {sentCount} (LocalUser streams: {World.LocalUser?.StreamCount ?? 0})");
                     }
                 }
 
@@ -529,24 +534,24 @@ public class SessionSyncManager : IDisposable
 
                     if (usersToInit != null && usersToInit.Count > 0)
                     {
-                        LumoraLogger.Log($"Stage 8: Encoding FullBatch for {usersToInit.Count} new users");
+                        LumoraLogger.Log($"[lnl] Stage 8: Encoding FullBatch for {usersToInit.Count} new users");
                         var fullBatch = World.SyncController.EncodeFullBatch();
-                        LumoraLogger.Log($"Stage 8: FullBatch has {fullBatch.DataRecordCount} records");
+                        LumoraLogger.Log($"[lnl] Stage 8: FullBatch has {fullBatch.DataRecordCount} records");
 
                         foreach (var user in usersToInit)
                         {
                             if (Session.Connections.TryGetConnection(user, out var connection))
                             {
-                                LumoraLogger.Log($"Stage 8: Adding target connection for user '{user.UserName.Value}'");
+                                LumoraLogger.Log($"[lnl] Stage 8: Adding target connection for user '{user.UserName.Value}'");
                                 fullBatch.Targets.Add(connection);
                             }
                             else
                             {
-                                LumoraLogger.Warn($"Stage 8: No connection found for user '{user.UserName.Value}'");
+                                LumoraLogger.Warn($"[lnl] Stage 8: No connection found for user '{user.UserName.Value}'");
                             }
                         }
 
-                        LumoraLogger.Log($"Stage 8: Enqueueing FullBatch with {fullBatch.Targets.Count} targets");
+                        LumoraLogger.Log($"[lnl] Stage 8: Enqueueing FullBatch with {fullBatch.Targets.Count} targets");
                         EnqueueForTransmission(fullBatch);
 
                         var startDeltaMessage = new ControlMessage(ControlMessage.Message.JoinStartDelta);
@@ -557,7 +562,7 @@ public class SessionSyncManager : IDisposable
                                 startDeltaMessage.Targets.Add(connection);
                             }
                         }
-                        LumoraLogger.Log($"Stage 8: Enqueueing JoinStartDelta with {startDeltaMessage.Targets.Count} targets");
+                        LumoraLogger.Log($"[lnl] Stage 8: Enqueueing JoinStartDelta with {startDeltaMessage.Targets.Count} targets");
                         EnqueueForTransmission(startDeltaMessage);
                     }
                 }
@@ -566,7 +571,7 @@ public class SessionSyncManager : IDisposable
             }
             catch (Exception ex)
             {
-                LumoraLogger.Error($"SyncLoop: Exception: {ex.Message}\n{ex.StackTrace}");
+                LumoraLogger.Error($"[lnl] SyncLoop: Exception: {ex.Message}\n{ex.StackTrace}");
                 if (World.HookManager?.Lock == HookManager.LockOwner.DataModel)
                 {
                     World.HookManager?.DataModelUnlock();
@@ -581,7 +586,7 @@ public class SessionSyncManager : IDisposable
             }
         }
 
-        LumoraLogger.Log("SyncLoop stopped");
+        LumoraLogger.Log("[lnl] SyncLoop stopped");
     }
 
     private bool ProcessMessage(SyncMessage msg, ulong lastDeltaSyncTime, List<ControlMessage> controlMessagesToProcess)
@@ -659,7 +664,7 @@ public class SessionSyncManager : IDisposable
                     }
                     else
                     {
-                        LumoraLogger.Debug($"Confirmation received for unknown tick {confirmation.ConfirmTime}");
+                        LumoraLogger.Debug($"[lnl] Confirmation received for unknown tick {confirmation.ConfirmTime}");
                     }
 
                     if (!World.IsAuthority)
@@ -737,7 +742,7 @@ public class SessionSyncManager : IDisposable
                     break;
 
                 default:
-                    LumoraLogger.Warn($"Unknown message type: {msg.GetType()}");
+                    LumoraLogger.Warn($"[lnl] Unknown message type: {msg.GetType()}");
                     msg.Dispose();
                     break;
             }
@@ -746,7 +751,7 @@ public class SessionSyncManager : IDisposable
         }
         catch (Exception ex)
         {
-            LumoraLogger.Error($"ProcessMessage: Exception: {ex.Message}");
+            LumoraLogger.Error($"[lnl] ProcessMessage: Exception: {ex.Message}");
             throw;
         }
     }
@@ -755,12 +760,12 @@ public class SessionSyncManager : IDisposable
     {
         if (_pendingDeltaBatches.Count >= MaxPendingDeltaBatches)
         {
-            LumoraLogger.Warn($"ProcessMessage: Dropping delta batch - pending limit reached ({MaxPendingDeltaBatches})");
+            LumoraLogger.Warn($"[lnl] ProcessMessage: Dropping delta batch - pending limit reached ({MaxPendingDeltaBatches})");
             batch.Dispose();
             return;
         }
 
-        LumoraLogger.Debug($"ProcessMessage: Queueing delta batch ({reason})");
+        LumoraLogger.Debug($"[lnl] ProcessMessage: Queueing delta batch ({reason})");
         _pendingDeltaBatches.Enqueue(batch);
     }
 
@@ -768,12 +773,12 @@ public class SessionSyncManager : IDisposable
     {
         if (_pendingStreamMessages.Count >= MaxPendingStreamMessages)
         {
-            LumoraLogger.Warn($"ProcessMessage: Dropping stream message - pending limit reached ({MaxPendingStreamMessages})");
+            LumoraLogger.Warn($"[lnl] ProcessMessage: Dropping stream message - pending limit reached ({MaxPendingStreamMessages})");
             streamMessage.Dispose();
             return;
         }
 
-        LumoraLogger.Debug($"ProcessMessage: Queueing stream message ({reason})");
+        LumoraLogger.Debug($"[lnl] ProcessMessage: Queueing stream message ({reason})");
         _pendingStreamMessages.Enqueue(streamMessage);
     }
 
@@ -928,7 +933,7 @@ public class SessionSyncManager : IDisposable
         var userElement = World.ReferenceController?.GetObjectOrNull(new RefID(rawFrame.UserID));
         if (userElement is not User sender)
         {
-            LumoraLogger.Warn($"RawFrame: user {rawFrame.UserID} not found; dropping.");
+            LumoraLogger.Warn($"[lnl] RawFrame: user {rawFrame.UserID} not found; dropping.");
             return;
         }
 
@@ -945,19 +950,19 @@ public class SessionSyncManager : IDisposable
     {
         if (sender == null)
         {
-            LumoraLogger.Warn($"{typeName} with no Sender; dropping.");
+            LumoraLogger.Warn($"[lnl] {typeName} with no Sender; dropping.");
             return false;
         }
 
         if (!Session.Connections.TryGetUser(sender, out var senderUser) || senderUser == null)
         {
-            LumoraLogger.Warn($"{typeName} from {sender.Identifier}: no user mapping; dropping.");
+            LumoraLogger.Warn($"[lnl] {typeName} from {sender.Identifier}: no user mapping; dropping.");
             return false;
         }
 
         if ((ulong)senderUser.ReferenceID != claimedUserID)
         {
-            LumoraLogger.Warn($"{typeName} spoof: connection {sender.Identifier} is user {senderUser.UserName?.Value} ({(ulong)senderUser.ReferenceID}) but claimed UserID {claimedUserID}; dropping.");
+            LumoraLogger.Warn($"[lnl] {typeName} spoof: connection {sender.Identifier} is user {senderUser.UserName?.Value} ({(ulong)senderUser.ReferenceID}) but claimed UserID {claimedUserID}; dropping.");
             return false;
         }
 
@@ -1060,7 +1065,7 @@ public class SessionSyncManager : IDisposable
         int remaining = batch.DataRecordCount;
         int passes = 0;
 
-        // LumoraLogger.Log($"ApplyDataRecords: Starting with {batch.DataRecordCount} records, isFull={batch is FullBatch}");
+        // LumoraLogger.Log($"[lnl] ApplyDataRecords: Starting with {batch.DataRecordCount} records, isFull={batch is FullBatch}");
 
         while (remaining > 0)
         {
@@ -1093,11 +1098,11 @@ public class SessionSyncManager : IDisposable
                 {
                     // Log but don't retry immediately - might succeed in next pass
                     var dataRecord = batch.GetDataRecord(i);
-                    LumoraLogger.Debug($"ApplyDataRecords: Decode failed for {dataRecord.TargetID}: {ex.Message}");
+                    LumoraLogger.Debug($"[lnl] ApplyDataRecords: Decode failed for {dataRecord.TargetID}: {ex.Message}");
                 }
             }
 
-            // LumoraLogger.Log($"ApplyDataRecords: Pass {passes} decoded {decodedThisPass} records, {remaining} remaining");
+            // LumoraLogger.Log($"[lnl] ApplyDataRecords: Pass {passes} decoded {decodedThisPass} records, {remaining} remaining");
 
             // If no progress in this pass, we're done
             if (remaining == startRemaining)
@@ -1111,7 +1116,7 @@ public class SessionSyncManager : IDisposable
         // Log any remaining failures with details
         if (remaining > 0)
         {
-            LumoraLogger.Debug($"ApplyDataRecords: {remaining} records could not be decoded after {passes} passes");
+            LumoraLogger.Debug($"[lnl] ApplyDataRecords: {remaining} records could not be decoded after {passes} passes");
             // Log which RefIDs failed
             for (int i = 0; i < batch.DataRecordCount; i++)
             {
@@ -1119,7 +1124,7 @@ public class SessionSyncManager : IDisposable
                 {
                     var record = batch.GetDataRecord(i);
                     var obj = World.ReferenceController?.GetObjectOrNull(record.TargetID);
-                    LumoraLogger.Warn($"  FAILED RefID={record.TargetID} Type={obj?.GetType().Name ?? "NOT_FOUND"}");
+                    LumoraLogger.Warn($"[lnl]   FAILED RefID={record.TargetID} Type={obj?.GetType().Name ?? "NOT_FOUND"}");
                     QueuePendingRecord(batch, i);
                 }
             }
@@ -1264,7 +1269,7 @@ public class SessionSyncManager : IDisposable
         catch (InvalidOperationException ex)
         {
             // Common case: delta applied to a locally dirty element. Keep pending for later.
-            LumoraLogger.Debug($"TryDecodePendingRecord: Deferred {record.TargetID} ({(isFull ? "full" : "delta")}) - {ex.Message}");
+            LumoraLogger.Debug($"[lnl] TryDecodePendingRecord: Deferred {record.TargetID} ({(isFull ? "full" : "delta")}) - {ex.Message}");
             return false;
         }
         finally
@@ -1292,7 +1297,7 @@ public class SessionSyncManager : IDisposable
             var map = isFull ? _pendingFullRecords : _pendingDeltaRecords;
             if (map.Remove(targetId) && !string.IsNullOrEmpty(reason))
             {
-                LumoraLogger.Warn($"Pending record dropped for {targetId}: {reason}");
+                LumoraLogger.Warn($"[lnl] Pending record dropped for {targetId}: {reason}");
             }
         }
     }
@@ -1318,7 +1323,7 @@ public class SessionSyncManager : IDisposable
             {
                 _initialFullBatchReceived = true;
                 _expectedComponents = fullBatch.DataRecordCount;
-                LumoraLogger.Log($"TrackFullBatchProgress: Expecting {_expectedComponents} components from initial FullBatch");
+                LumoraLogger.Log($"[lnl] TrackFullBatchProgress: Expecting {_expectedComponents} components from initial FullBatch");
             }
 
             // Count successfully received components
@@ -1332,7 +1337,7 @@ public class SessionSyncManager : IDisposable
                 }
             }
 
-            LumoraLogger.Log($"TrackFullBatchProgress: Received {_receivedComponents}/{_expectedComponents} components ({(_receivedComponents * 100.0f / _expectedComponents):F1}%)");
+            LumoraLogger.Log($"[lnl] TrackFullBatchProgress: Received {_receivedComponents}/{_expectedComponents} components ({(_receivedComponents * 100.0f / _expectedComponents):F1}%)");
         }
     }
 
@@ -1392,12 +1397,12 @@ public class SessionSyncManager : IDisposable
                 {
                     if (message.Payload == null || message.Payload.Length == 0)
                     {
-                        LumoraLogger.Warn("ProcessControlMessage: JoinRequest missing payload");
+                        LumoraLogger.Warn("[lnl] ProcessControlMessage: JoinRequest missing payload");
                         return;
                     }
 
                     var requestData = LegacyJoinRequestData.Decode(message.Payload);
-                    LumoraLogger.Log($"ProcessControlMessage: JoinRequest from '{requestData.UserName}'");
+                    LumoraLogger.Log($"[lnl] ProcessControlMessage: JoinRequest from '{requestData.UserName}'");
                     Session.Connections.HandleJoinRequest(message.Sender, requestData);
                 }
                 break;
@@ -1408,7 +1413,7 @@ public class SessionSyncManager : IDisposable
                 {
                     if (message.Payload == null || message.Payload.Length == 0)
                     {
-                        LumoraLogger.Warn("ProcessControlMessage: JoinChallenge missing payload");
+                        LumoraLogger.Warn("[lnl] ProcessControlMessage: JoinChallenge missing payload");
                         return;
                     }
                     var challengeData = LegacyJoinChallengeData.Decode(message.Payload);
@@ -1422,7 +1427,7 @@ public class SessionSyncManager : IDisposable
                 {
                     if (message.Payload == null || message.Payload.Length == 0)
                     {
-                        LumoraLogger.Warn("ProcessControlMessage: JoinAuthenticate missing payload");
+                        LumoraLogger.Warn("[lnl] ProcessControlMessage: JoinAuthenticate missing payload");
                         return;
                     }
                     var authData = LegacyJoinAuthenticateData.Decode(message.Payload);
@@ -1435,12 +1440,12 @@ public class SessionSyncManager : IDisposable
             case ControlMessage.Message.JoinGrant:
                 if (message.Payload == null || message.Payload.Length == 0)
                 {
-                    LumoraLogger.Warn("ProcessControlMessage: JoinGrant missing payload");
+                    LumoraLogger.Warn("[lnl] ProcessControlMessage: JoinGrant missing payload");
                     return;
                 }
 
                 var grantData = LegacyJoinGrantData.Decode(message.Payload);
-                LumoraLogger.Log($"ProcessControlMessage: JoinGrant UserID={grantData.AssignedUserID}");
+                LumoraLogger.Log($"[lnl] ProcessControlMessage: JoinGrant UserID={grantData.AssignedUserID}");
 
                 var assignedRefID = new RefID(grantData.AssignedUserID);
 
@@ -1451,7 +1456,7 @@ public class SessionSyncManager : IDisposable
                 _pendingAllocationStart = grantData.AllocationIDStart;
                 _pendingAllocationEnd = grantData.AllocationIDEnd;
 
-                LumoraLogger.Log($"ProcessControlMessage: Stored pending local user RefID {assignedRefID} - waiting for User to sync from host");
+                LumoraLogger.Log($"[lnl] ProcessControlMessage: Stored pending local user RefID {assignedRefID} - waiting for User to sync from host");
 
                 Session.World.SetStateVersion(grantData.StateVersion);
 
@@ -1459,7 +1464,7 @@ public class SessionSyncManager : IDisposable
                 var userByte = assignedRefID.GetUserByte();
                 var startPos = grantData.AllocationIDStart > 0 ? grantData.AllocationIDStart : 1UL;
                 World.ReferenceController.SetAllocationContext(userByte, startPos);
-                LumoraLogger.Log($"Switched allocation to user namespace: byte={userByte}, startPos={startPos}");
+                LumoraLogger.Log($"[lnl] Switched allocation to user namespace: byte={userByte}, startPos={startPos}");
 
                 Session.World.OnJoinGrantReceived();
                 break;
@@ -1469,7 +1474,7 @@ public class SessionSyncManager : IDisposable
                     ? LegacyJoinRejectData.Decode(message.Payload)
                     : new LegacyJoinRejectData { Reason = "Join rejected" };
                 var reason = string.IsNullOrWhiteSpace(rejectData.Reason) ? "Join rejected" : rejectData.Reason;
-                LumoraLogger.Warn($"ProcessControlMessage: Join rejected - {reason}");
+                LumoraLogger.Warn($"[lnl] ProcessControlMessage: Join rejected - {reason}");
 
                 if (!World.IsAuthority)
                 {
@@ -1479,22 +1484,22 @@ public class SessionSyncManager : IDisposable
                 break;
 
             case ControlMessage.Message.JoinStartDelta:
-                LumoraLogger.Log("ProcessControlMessage: JoinStartDelta received - can now accept delta updates");
+                LumoraLogger.Log("[lnl] ProcessControlMessage: JoinStartDelta received - can now accept delta updates");
                 _acceptDeltas = true;
                 if (!World.IsAuthority && World.InitState == World.InitializationState.InitializingDataModel)
                 {
-                    LumoraLogger.Log("JoinStartDelta: transitioning client world to Running");
+                    LumoraLogger.Log("[lnl] JoinStartDelta: transitioning client world to Running");
                     World.OnFullStateReceived();
                 }
                 FlushPendingMessages();
                 break;
 
             case ControlMessage.Message.RequestFullState:
-                LumoraLogger.Log("ProcessControlMessage: RequestFullState received from client");
+                LumoraLogger.Log("[lnl] ProcessControlMessage: RequestFullState received from client");
                 
                 if (World.IsAuthority && Session.Connections.TryGetUser(message.Sender, out var requestingUser))
                 {
-                    LumoraLogger.Log($"ProcessControlMessage: Sending full world state to user {requestingUser.UserName.Value}");
+                    LumoraLogger.Log($"[lnl] ProcessControlMessage: Sending full world state to user {requestingUser.UserName.Value}");
                     var fullBatch = World.SyncController.EncodeFullBatch();
                     fullBatch.Targets.Add(message.Sender);
                     EnqueueForTransmission(fullBatch);
@@ -1506,7 +1511,7 @@ public class SessionSyncManager : IDisposable
                 }
                 else if (!World.IsAuthority)
                 {
-                    LumoraLogger.Warn("ProcessControlMessage: Non-authority received RequestFullState - ignoring");
+                    LumoraLogger.Warn("[lnl] ProcessControlMessage: Non-authority received RequestFullState - ignoring");
                 }
                 break;
 
@@ -1519,7 +1524,7 @@ public class SessionSyncManager : IDisposable
                 break;
 
             default:
-                LumoraLogger.Log($"ProcessControlMessage: {message.ControlMessageType}");
+                LumoraLogger.Log($"[lnl] ProcessControlMessage: {message.ControlMessageType}");
                 break;
         }
     }
@@ -1563,7 +1568,7 @@ public class SessionSyncManager : IDisposable
             _pendingStreamMessages.Dequeue().Dispose();
         }
 
-        LumoraLogger.Log("SessionSyncManager disposed");
+        LumoraLogger.Log("[lnl] SessionSyncManager disposed");
     }
 }
 

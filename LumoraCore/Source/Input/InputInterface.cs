@@ -98,6 +98,13 @@ public class InputInterface : IDisposable
         DesktopCameraPoseValid = true;
     }
 
+    // True when the desktop camera is driven by an OVERRIDE (3rd-person / free-cam) instead of following the
+    // local user's head. The dashboard uses this to decide whether it may lock to the live head pose (no
+    // override -> exact, zero-lag screen lock) or must fall back to the sampled camera pose. -xlinka
+    public bool DesktopCameraHasOverride { get; private set; }
+
+    public void SetDesktopCameraOverride(bool hasOverride) => DesktopCameraHasOverride = hasOverride;
+
     // Global tracking offset
     public float3 GlobalTrackingOffset { get; set; } = float3.Zero;
     public float3 CustomTrackingOffset { get; set; } = float3.Zero;
@@ -565,6 +572,14 @@ public class InputInterface : IDisposable
     {
         void InvokeNow()
         {
+            // The engine sampling local hardware to pose the LOCAL user's OWN avatar/body is engine maintenance,
+            // not a permission-gated edit - a user always controls their own body. On a freshly-joined client the
+            // user's allocation + UserRoot ownership isn't wired the instant the body is built during state
+            // replay, so without this the own-body writes (Head/hand transforms, body-node slots) get denied
+            // every single frame and flood the log. Bypass perms for the duration of the local input callback;
+            // remote users' bodies arrive over the network and are validated separately on the host. -xlinka
+            var permissions = (receiver as IWorldElement)?.World?.DataModelPermissions;
+            using var bypass = permissions?.EnterSystemBypass();
             try
             {
                 if (before)

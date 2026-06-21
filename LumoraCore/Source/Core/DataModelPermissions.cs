@@ -175,6 +175,9 @@ public sealed class DataModelPermissionController
     private readonly List<IDataModelPermissionRule> _rules = new();
     private readonly Dictionary<RefID, DataModelPermissionRole> _userRoles = new();
 
+    // Distinct denials already logged, so a per-frame denial doesn't spam thousands of identical lines. -xlinka
+    private readonly HashSet<string> _loggedDenials = new();
+
     // Owner of the world — full power, not assignable (you can't demote the host).
     public DataModelPermissionRole HostRole { get; }
     // Assignable roles, in descending power. Each has preset capabilities over OTHER users' objects
@@ -399,7 +402,20 @@ public sealed class DataModelPermissionController
                 : request.Actor ?? s_currentActor.Value ?? request.World?.LocalUser;
             var actorName = actor?.UserName?.Value ?? actor?.ReferenceID.ToString() ?? "none";
             var target = request.Target?.ParentHierarchyToString() ?? request.Parent?.ParentHierarchyToString() ?? "(unknown)";
-            LumoraLogger.Warn($"Datamodel permission denied: actor={actorName}, action={request.Action}, surface={request.Surface}, target={target}, reason={reason}");
+
+            // Log each DISTINCT denial once, not every frame. A driven/own-body write that keeps getting denied
+            // would otherwise spam thousands of identical lines and bury everything else in the console. -xlinka
+            var key = $"{actorName}|{request.Action}|{request.Surface}|{target}|{reason}";
+            bool firstTime;
+            lock (_loggedDenials)
+            {
+                firstTime = _loggedDenials.Add(key);
+                if (_loggedDenials.Count > 512)
+                    _loggedDenials.Clear();
+            }
+
+            if (firstTime)
+                LumoraLogger.Warn($"Datamodel permission denied: actor={actorName}, action={request.Action}, surface={request.Surface}, target={target}, reason={reason}");
         }
 
         return false;
@@ -444,12 +460,13 @@ public sealed class DataModelPermissionController
 
         if (target is Slot slot)
         {
-            return ReferenceEquals(slot.ActiveUser, actor);
+            return ReferenceEquals(slot.ActiveUser, actor) || IsUnderUsersRoot(actor, slot);
         }
 
         if (target is Component component)
         {
-            return ReferenceEquals(component.Slot?.ActiveUser, actor);
+            var compSlot = component.Slot;
+            return (compSlot != null && ReferenceEquals(compSlot.ActiveUser, actor)) || IsUnderUsersRoot(actor, compSlot);
         }
 
         if (target is SyncElement syncElement)
@@ -463,6 +480,24 @@ public sealed class DataModelPermissionController
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// A user owns everything parented under their own UserRoot - avatar, body nodes, tools, nameplate. This is
+    /// the STRUCTURAL ownership signal, and the reliable one: a user's allocation byte reads as 0 on their own
+    /// client until the host-authored AllocationID syncs across, and the cached ActiveUserRoot lags a beat behind
+    /// the body being built - both of which otherwise (wrongly) deny a user the right to drive their own
+    /// head/hands/nameplate. The User -> UserRoot link (UserRootRef) is replicated and set on both ends. -xlinka
+    /// </summary>
+    private static bool IsUnderUsersRoot(User actor, IWorldElement? slot)
+    {
+        var rootSlot = actor?.Root?.Slot;
+        if (rootSlot == null || slot is not Slot s)
+        {
+            return false;
+        }
+
+        return ReferenceEquals(s, rootSlot) || s.IsDescendantOf(rootSlot);
     }
 
     private static bool OwnsRefID(User actor, RefID id)

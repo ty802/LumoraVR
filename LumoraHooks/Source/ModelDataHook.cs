@@ -1031,9 +1031,9 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
                 smr.SetMeshData(verts, normals, uvs, indices, boneIdx, boneWgt, boneNamesArray);
 
                 // Facial expression / viseme / blink morph targets (drives lip-sync + eyes later).
-                ExtractBlendShapes(mesh, surfIdx, verts.Length, out var bsNames, out var bsVerts, out var bsMode);
+                ExtractBlendShapes(mesh, surfIdx, verts.Length, out var bsNames, out var bsVerts, out var bsNormals, out var bsMode);
                 if (bsNames != null && bsVerts != null)
-                    smr.SetBlendShapes(bsNames, bsVerts, bsMode);
+                    smr.SetBlendShapes(bsNames, bsVerts, bsNormals, bsMode);
             }
 
             if (skelBuilder != null)
@@ -1059,10 +1059,11 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
     // Pull a surface's blendshape morph targets (mesh-level names, per-surface vertex arrays). The
     // arrays line up 1:1 with SurfaceGetArrays, so they index the same vertices as the base surface.
     private static void ExtractBlendShapes(global::Godot.Mesh mesh, int surfIdx, int vertexCount,
-        out string[]? names, out float3[]? vertices, out int mode)
+        out string[]? names, out float3[]? vertices, out float3[]? normals, out int mode)
     {
         names = null;
         vertices = null;
+        normals = null;
         mode = 0;
 
         // Blendshape count/name/mode live on ArrayMesh (runtime GLTF meshes are ArrayMesh).
@@ -1083,6 +1084,8 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
             resolvedNames[i] = arrayMesh.GetBlendShapeName(i).ToString();
 
         var flat = new float3[shapeCount * vertexCount];
+        float3[]? flatNormals = null;
+        bool normalsValid = true;
         for (int s = 0; s < shapeCount; s++)
         {
             var inner = shapeArrays[s];
@@ -1092,10 +1095,30 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
             int baseIdx = s * vertexCount;
             for (int i = 0; i < vertexCount; i++)
                 flat[baseIdx + i] = new float3(vArr[i].X, vArr[i].Y, vArr[i].Z);
+
+            // Carry the NORMAL morph deltas too (same per-shape layout) so normals morph with the expression like
+            // the reference does. If ANY shape lacks them, drop normals for the whole mesh so the hook falls back
+            // to "no normal morph" consistently rather than half-applying. -xlinka
+            if (normalsValid)
+            {
+                var nArr = inner[(int)Mesh.ArrayType.Normal].As<Vector3[]>();
+                if (nArr != null && nArr.Length == vertexCount)
+                {
+                    flatNormals ??= new float3[shapeCount * vertexCount];
+                    for (int i = 0; i < vertexCount; i++)
+                        flatNormals[baseIdx + i] = new float3(nArr[i].X, nArr[i].Y, nArr[i].Z);
+                }
+                else
+                {
+                    normalsValid = false;
+                    flatNormals = null;
+                }
+            }
         }
 
         names = resolvedNames;
         vertices = flat;
+        normals = normalsValid ? flatNormals : null;
     }
 
     private static bool ExtractSurfaceMeshData(global::Godot.Mesh mesh, int surfIdx,

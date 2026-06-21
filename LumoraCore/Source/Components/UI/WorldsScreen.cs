@@ -374,6 +374,20 @@ public sealed class WorldsScreen : WidgetScreen
         var url = entry.JoinUrl;
         if (url == null)
             return;
+
+        // Load + connect in the BACKGROUND and only focus once the world is actually Running. The sync
+        // WorldManager.JoinSession would AddWorld + focus a half-initialized world instantly - that's what
+        // dumped the user into a black loading world (mouse/dash dead), and it even reported "success" when
+        // the connect failed. The loading service keeps the user in their current world until the join is
+        // ready (3D indicator while it loads), and cleanly bails on failure. -xlinka
+        var loader = Lumora.Core.Engine.Current?.WorldLoadingService;
+        if (loader != null)
+        {
+            loader.JoinSessionAsync(entry.Name ?? url.Host, url, focusWhenReady: true);
+            return;
+        }
+
+        // Fallback if the loading service somehow isn't up yet.
         ushort port = url.Port > 0 ? (ushort)url.Port : (ushort)0;
         var world = manager.JoinSession(entry.Name ?? url.Host, url.Host, port);
         if (world != null)

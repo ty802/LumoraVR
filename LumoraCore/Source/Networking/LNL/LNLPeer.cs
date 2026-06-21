@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -46,7 +46,7 @@ public class LNLPeer : IConnection
         Address = new Uri($"lnl://{peer.Address}:{peer.Port}");
         Identifier = $"LNL:{peer.Address}:{peer.Port}";
 
-        LumoraLogger.Log($"LNL Peer created: {Identifier}");
+        LumoraLogger.Log($"[lnl] LNL Peer created: {Identifier}");
     }
 
     public void Connect(Action<string> statusCallback)
@@ -63,13 +63,22 @@ public class LNLPeer : IConnection
         }
     }
 
+    private bool _loggedNotConnected;
+
     public void Send(byte[] data, int length, bool reliable, bool background)
     {
         if (Peer == null || Peer.ConnectionState != ConnectionState.Connected)
         {
-            LumoraLogger.Warn($"Cannot send to {Identifier} - peer not connected");
+            // Expected while a peer is leaving - the host keeps trying to stream to it until LNL times the peer
+            // out (~30s). Don't Warn every frame; note it once at Debug. The Closed event is the real signal. -xlinka
+            if (!_loggedNotConnected)
+            {
+                _loggedNotConnected = true;
+                LumoraLogger.Debug($"[lnl] Send to {Identifier} skipped - peer not connected (leaving/timeout)");
+            }
             return;
         }
+        _loggedNotConnected = false;
 
         DeliveryMethod method = reliable
             ? DeliveryMethod.ReliableOrdered
@@ -103,7 +112,7 @@ public class LNLPeer : IConnection
         if (IsOpen)
         {
             IsOpen = false;
-            LumoraLogger.Log($"LNL Peer closed: {Identifier}");
+            LumoraLogger.Log($"[lnl] LNL Peer closed: {Identifier}");
             Closed?.Invoke(this);
         }
     }

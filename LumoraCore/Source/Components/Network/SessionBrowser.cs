@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -17,8 +17,20 @@ namespace Lumora.Core.Components.Network;
 public class SessionBrowser : Component
 {
     private LANDiscovery _discovery = null!;
-    private readonly List<SessionListEntry> _sessions = new();
+
+    // Single aggregate of every session we know about, keyed by SessionId (lowercased). LAN discovery and our
+    // own hosted session both funnel through ONE upsert path (Upsert) into this one SessionId-keyed collection -
+    // so the same session can never list twice and an entry seen from two angles just merges. -xlinka
+    private readonly Dictionary<string, SessionListEntry> _sessions = new();
     private readonly object _sessionsLock = new();
+
+    // Tracks the key of our own hosted session so we can keep it fresh and drop it when we stop hosting.
+    private string? _ownSessionKey;
+
+    // Re-publish our own session into the list on a light timer (the host re-announces continuously; we mirror
+    // that by re-reading live metadata instead of relying on our own filtered-out broadcast). -xlinka
+    private float _ownRefreshTimer;
+    private const float OwnRefreshInterval = 1f; // seconds
 
     /// <summary>
     /// Whether the browser is currently scanning for sessions.
@@ -70,6 +82,23 @@ public class SessionBrowser : Component
         base.OnDestroy();
     }
 
+    public override void OnUpdate(float delta)
+    {
+        base.OnUpdate(delta);
+
+        if (!IsScanning.Value)
+            return;
+
+        // Keep our own hosted session live in the list (user count, name changes, and removing it the moment we
+        // stop hosting). This is the local-update equivalent of the host re-announcing every tick. -xlinka
+        _ownRefreshTimer += delta;
+        if (_ownRefreshTimer >= OwnRefreshInterval)
+        {
+            _ownRefreshTimer = 0f;
+            RefreshOwnHostedSession();
+        }
+    }
+
     /// <summary>
     /// Start scanning for sessions on the local network.
     /// </summary>
@@ -83,7 +112,8 @@ public class SessionBrowser : Component
         _discovery.SessionLost += OnDiscoveryLost;
         _discovery.SessionUpdated += OnDiscoveryUpdated;
 
-        // If we're hosting, ignore our own announcer to avoid seeing our own session
+        // If we're hosting, ignore our own announcer so the discovery side doesn't surface our broadcast copy.
+        // We list our own session directly from live metadata instead (RefreshOwnHostedSession). -xlinka
         Guid? ignoreId = null;
         if (World?.Session != null)
         {
@@ -97,6 +127,10 @@ public class SessionBrowser : Component
 
         _discovery.StartDiscovery(ignoreId);
         IsScanning.Value = true;
+
+        // Show our own hosted session immediately, then OnUpdate keeps it fresh.
+        _ownRefreshTimer = 0f;
+        RefreshOwnHostedSession();
 
         LumoraLogger.Log("SessionBrowser: Started scanning for sessions");
     }
@@ -130,6 +164,7 @@ public class SessionBrowser : Component
         {
             _sessions.Clear();
         }
+        _ownSessionKey = null;
         _discovery?.ClearSessions();
     }
 
@@ -140,7 +175,7 @@ public class SessionBrowser : Component
     {
         lock (_sessionsLock)
         {
-            return new List<SessionListEntry>(_sessions);
+            return _sessions.Values.ToList();
         }
     }
 
@@ -149,36 +184,57 @@ public class SessionBrowser : Component
     /// </summary>
     public SessionListEntry GetSession(string sessionId)
     {
+        if (string.IsNullOrEmpty(sessionId))
+            return null!;
+
         lock (_sessionsLock)
         {
-            return _sessions.FirstOrDefault(s => s.SessionId == sessionId)!;
+            return _sessions.TryGetValue(sessionId.ToLowerInvariant(), out var entry) ? entry : null!;
         }
     }
 
-    private void OnDiscoveryFound(DiscoveredSession discovered)
-    {
-        var entry = CreateEntry(discovered);
+    // --- Single choke point every source funnels through -------------------------------------------------
 
+    /// <summary>
+    /// Insert or update a session in the aggregate, keyed by SessionId. Fires OnSessionFound for a brand-new
+    /// session and OnSessionUpdated for one we already had, so the same session never lists twice no matter how
+    /// many sources report it. -xlinka
+    /// </summary>
+    private void Upsert(SessionListEntry entry)
+    {
+        if (entry == null || string.IsNullOrEmpty(entry.SessionId))
+            return;
+
+        string key = entry.SessionId.ToLowerInvariant();
+        bool isNew;
         lock (_sessionsLock)
         {
-            _sessions.Add(entry);
+            isNew = !_sessions.ContainsKey(key);
+            _sessions[key] = entry;
         }
 
-        LumoraLogger.Log($"SessionBrowser: Found session '{entry.Name}' ({entry.ActiveUsers}/{entry.MaxUsers} users)");
-        OnSessionFound?.Invoke(entry);
+        if (isNew)
+        {
+            LumoraLogger.Log($"SessionBrowser: Found session '{entry.Name}' ({entry.ActiveUsers}/{entry.MaxUsers} users)");
+            OnSessionFound?.Invoke(entry);
+        }
+        else
+        {
+            OnSessionUpdated?.Invoke(entry);
+        }
     }
 
-    private void OnDiscoveryLost(string sessionId)
+    private void Remove(string sessionId)
     {
-        SessionListEntry removed = null!;
+        if (string.IsNullOrEmpty(sessionId))
+            return;
 
+        string key = sessionId.ToLowerInvariant();
+        SessionListEntry? removed = null;
         lock (_sessionsLock)
         {
-            removed = _sessions.FirstOrDefault(s => s.SessionId == sessionId)!;
-            if (removed != null)
-            {
-                _sessions.Remove(removed);
-            }
+            if (_sessions.TryGetValue(key, out removed))
+                _sessions.Remove(key);
         }
 
         if (removed != null)
@@ -188,37 +244,61 @@ public class SessionBrowser : Component
         }
     }
 
-    private void OnDiscoveryUpdated(DiscoveredSession discovered)
-    {
-        var entry = CreateEntry(discovered);
+    // --- LAN discovery feed ------------------------------------------------------------------------------
 
-        lock (_sessionsLock)
+    private void OnDiscoveryFound(DiscoveredSession discovered) => Upsert(CreateEntry(discovered));
+
+    private void OnDiscoveryUpdated(DiscoveredSession discovered) => Upsert(CreateEntry(discovered));
+
+    private void OnDiscoveryLost(string sessionId) => Remove(sessionId);
+
+    // --- Own hosted session feed -------------------------------------------------------------------------
+
+    private void RefreshOwnHostedSession()
+    {
+        var session = World?.Session;
+        var m = session?.Metadata;
+
+        // Not hosting (or metadata not ready) - drop our own entry if we had one listed.
+        if (session == null || session.LANAnnouncerId == Guid.Empty || m == null || string.IsNullOrEmpty(m.SessionId))
         {
-            var existing = _sessions.FindIndex(s => s.SessionId == entry.SessionId);
-            if (existing >= 0)
+            if (_ownSessionKey != null)
             {
-                _sessions[existing] = entry;
+                Remove(_ownSessionKey);
+                _ownSessionKey = null;
             }
+            return;
         }
 
-        OnSessionUpdated?.Invoke(entry);
+        var entry = BuildEntry(m);
+        _ownSessionKey = entry.SessionId.ToLowerInvariant();
+        Upsert(entry);
     }
+
+    // --- Entry builders ----------------------------------------------------------------------------------
 
     private static SessionListEntry CreateEntry(DiscoveredSession discovered)
     {
+        var entry = BuildEntry(discovered.Metadata);
+        entry.JoinUrl = discovered.GetConnectionUrl();
+        return entry;
+    }
+
+    private static SessionListEntry BuildEntry(SessionMetadata m)
+    {
         return new SessionListEntry
         {
-            SessionId = discovered.Metadata.SessionId,
-            Name = discovered.Metadata.Name,
-            Description = discovered.Metadata.Description,
-            HostUsername = discovered.Metadata.HostUsername,
-            ActiveUsers = discovered.Metadata.ActiveUsers,
-            MaxUsers = discovered.Metadata.MaxUsers,
-            Visibility = discovered.Metadata.Visibility,
-            JoinUrl = discovered.GetConnectionUrl(),
-            ThumbnailUrl = discovered.Metadata.ThumbnailUrl,
-            ThumbnailBase64 = discovered.Metadata.ThumbnailBase64,
-            Tags = discovered.Metadata.Tags != null ? new List<string>(discovered.Metadata.Tags) : new List<string>()
+            SessionId = m.SessionId,
+            Name = m.Name,
+            Description = m.Description,
+            HostUsername = m.HostUsername,
+            ActiveUsers = m.ActiveUsers,
+            MaxUsers = m.MaxUsers,
+            Visibility = m.Visibility,
+            JoinUrl = (m.SessionURLs != null && m.SessionURLs.Count > 0) ? m.SessionURLs[0] : null!,
+            ThumbnailUrl = m.ThumbnailUrl,
+            ThumbnailBase64 = m.ThumbnailBase64,
+            Tags = m.Tags != null ? new List<string>(m.Tags) : new List<string>()
         };
     }
 }
@@ -293,4 +373,3 @@ public class SessionListEntry
         return $"{Name} ({ActiveUsers}/{MaxUsers}) - {HostUsername}";
     }
 }
-

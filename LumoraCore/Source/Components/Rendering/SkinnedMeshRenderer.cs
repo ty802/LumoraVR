@@ -78,6 +78,16 @@ public class SkinnedMeshRenderer : ImplementableComponent
     /// </summary>
     public SyncFieldList<float3> BlendShapeVertices { get; private set; } = null!;
 
+    /// <summary>
+    /// Per-shape vertex NORMAL deltas, flattened like <see cref="BlendShapeVertices"/>. Optional - empty when the
+    /// source carried no normal morph data; when present the hook morphs normals too, so lighting follows the
+    /// expression (matches how the morph was authored, with per-frame normal deltas). -xlinka
+    /// </summary>
+    public SyncFieldList<float3> BlendShapeNormals { get; private set; } = null!;
+
+    /// <summary>True when normal morph deltas are present for every shape vertex (so the hook morphs normals).</summary>
+    public bool HasBlendShapeNormals => BlendShapeVertices.Count > 0 && BlendShapeNormals.Count == BlendShapeVertices.Count;
+
     /// <summary>Current weight (0..1) for each blendshape, driven by expression/viseme/blink drivers.</summary>
     public SyncFieldList<float> BlendShapeWeights { get; private set; } = null!;
 
@@ -151,9 +161,18 @@ public class SkinnedMeshRenderer : ImplementableComponent
 
     /// <summary>Populate blendshapes (called at import). names.Length shapes, each with VertexCount verts.</summary>
     public void SetBlendShapes(string[]? names, float3[]? flattenedVertices, int mode)
+        => SetBlendShapes(names, flattenedVertices, null, mode);
+
+    /// <summary>
+    /// Populate blendshapes with optional NORMAL morph deltas (carried when the source provided them, so normals
+    /// morph with the expression instead of staying frozen at the base). flattenedNormals must line up 1:1 with
+    /// flattenedVertices or it's ignored. -xlinka
+    /// </summary>
+    public void SetBlendShapes(string[]? names, float3[]? flattenedVertices, float3[]? flattenedNormals, int mode)
     {
         BlendShapeNames.Clear();
         BlendShapeVertices.Clear();
+        BlendShapeNormals.Clear();
         BlendShapeWeights.Clear();
 
         if (names == null || names.Length == 0 || flattenedVertices == null)
@@ -168,8 +187,14 @@ public class SkinnedMeshRenderer : ImplementableComponent
         foreach (var v in flattenedVertices)
             BlendShapeVertices.Add(v);
 
+        if (flattenedNormals != null && flattenedNormals.Length == flattenedVertices.Length)
+        {
+            foreach (var n in flattenedNormals)
+                BlendShapeNormals.Add(n);
+        }
+
         MeshDataChanged = true;
-        LumoraLogger.Log($"SkinnedMeshRenderer: Set {names.Length} blendshapes");
+        LumoraLogger.Log($"SkinnedMeshRenderer: Set {names.Length} blendshapes (normals: {(BlendShapeNormals.Count > 0 ? "yes" : "no")})");
     }
 
     // SETTINGS
@@ -234,6 +259,7 @@ public class SkinnedMeshRenderer : ImplementableComponent
         // Blendshapes
         BlendShapeNames = new SyncFieldList<string>(this);
         BlendShapeVertices = new SyncFieldList<float3>(this);
+        BlendShapeNormals = new SyncFieldList<float3>(this);
         BlendShapeWeights = new SyncFieldList<float>(this);
 
         // Initialize settings

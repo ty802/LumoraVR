@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -63,16 +63,16 @@ public class LNLListener : IListener, INetEventListener
 
             if (IsInitialized)
             {
-                LumoraLogger.Log($"LNL Listener started on {bindIP}:{port}");
+                LumoraLogger.Log($"[lnl] LNL Listener started on {bindIP}:{port}");
             }
             else
             {
-                LumoraLogger.Error($"Failed to start LNL Listener on {bindIP}:{port}");
+                LumoraLogger.Error($"[lnl] Failed to start LNL Listener on {bindIP}:{port}");
             }
         }
         catch (Exception ex)
         {
-            LumoraLogger.Error($"Exception starting LNL Listener: {ex.Message}");
+            LumoraLogger.Error($"[lnl] Exception starting LNL Listener: {ex.Message}");
             IsInitialized = false;
         }
     }
@@ -99,7 +99,7 @@ public class LNLListener : IListener, INetEventListener
             _peers.Clear();
 
             _server.Stop();
-            LumoraLogger.Log($"LNL Listener stopped on {_bindIP}:{_port}");
+            LumoraLogger.Log($"[lnl] LNL Listener stopped on {_bindIP}:{_port}");
         }
     }
 
@@ -114,7 +114,7 @@ public class LNLListener : IListener, INetEventListener
 
     public void OnPeerConnected(NetPeer peer)
     {
-        LumoraLogger.Log($"Peer connected: {peer.Address}:{peer.Port}");
+        LumoraLogger.Log($"[lnl] Peer connected: {peer.Address}:{peer.Port}");
 
         var lnlPeer = new LNLPeer(_server, peer);
         _peers[peer] = lnlPeer;
@@ -124,7 +124,7 @@ public class LNLListener : IListener, INetEventListener
 
     public void OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo)
     {
-        LumoraLogger.Log($"Peer disconnected: {peer.Address}:{peer.Port} - {disconnectInfo.Reason}");
+        LumoraLogger.Log($"[lnl] Peer disconnected: {peer.Address}:{peer.Port} - {disconnectInfo.Reason}");
 
         if (_peers.TryGetValue(peer, out var lnlPeer))
         {
@@ -136,7 +136,7 @@ public class LNLListener : IListener, INetEventListener
 
     public void OnNetworkError(IPEndPoint endPoint, System.Net.Sockets.SocketError socketError)
     {
-        LumoraLogger.Error($"Network error: {socketError} at {endPoint}");
+        LumoraLogger.Error($"[lnl] Network error: {socketError} at {endPoint}");
     }
 
     public void OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channel, DeliveryMethod deliveryMethod)
@@ -165,16 +165,24 @@ public class LNLListener : IListener, INetEventListener
 
     public void OnConnectionRequest(ConnectionRequest request)
     {
+        // Read the key once (GetString consumes the reader). If this log never appears for a client that's
+        // reporting ConnectionFailed, the host never even received their connect packet -> it's reachability
+        // (wrong address/port, firewall, AP isolation), not an app-id problem. -xlinka
+        string received;
+        try { received = request.Data.GetString(); }
+        catch { received = "<unreadable>"; }
+
         // Accept connection if app ID matches
-        if (request.Data.GetString() == _appId)
+        if (received == _appId)
         {
             request.Accept();
-            LumoraLogger.Log($"Accepted connection request from {request.RemoteEndPoint}");
+            LumoraLogger.Log($"[lnl] Accepted connection request from {request.RemoteEndPoint}");
         }
         else
         {
             request.Reject();
-            LumoraLogger.Warn($"Rejected connection request from {request.RemoteEndPoint} - invalid app ID");
+            // Log BOTH sides so an app-id/version mismatch (different builds) is unmistakable. -xlinka
+            LumoraLogger.Warn($"[lnl] Rejected connection request from {request.RemoteEndPoint} - app ID mismatch (got '{received}', expected '{_appId}')");
         }
     }
 }

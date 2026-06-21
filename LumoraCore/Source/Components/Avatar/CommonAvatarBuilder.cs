@@ -81,6 +81,18 @@ public class CommonAvatarBuilder : Component, IAvatarBuilder, IEmptyAvatarSlotHa
         BuildControllerNode(bodyNodes, user, Chirality.Left);
         BuildControllerNode(bodyNodes, user, Chirality.Right);
 
+        // Stream the user-root transform (the walking/locomotion translation) exactly like the body nodes.
+        // Without this, root movement can only ride the permission-gated delta channel and a joined user stays
+        // frozen in place for everyone. Local user: locomotion drives the root slot, this driver pushes it to
+        // the (permission-free) Root stream. Remote observers: this driver pulls the stream back onto the slot. -xlinka
+        if (user != null)
+        {
+            var rootStreamDriver = userSlot.AttachComponent<TransformStreamDriver>();
+            user.GetTrackingStreams(BodyNode.Root, out var rootPosStream, out var rootRotStream);
+            rootStreamDriver.PositionStream.Target = rootPosStream;
+            rootStreamDriver.RotationStream.Target = rootRotStream;
+        }
+
         if (SetupCollider.Value)
         {
             var collider = userSlot.AttachComponent<CapsuleCollider>();

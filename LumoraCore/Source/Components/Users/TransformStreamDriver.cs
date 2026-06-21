@@ -89,16 +89,21 @@ public class TransformStreamDriver : Component
         var positionStream = PositionStream?.Target;
         var rotationStream = RotationStream?.Target;
 
-        // Apply position from stream
+        // Applying a REMOTE user's authoritative streamed pose to their OWN body/root slots is engine playback of
+        // already-validated replicated data, not a user edit. Without this bypass, the write's actor resolves to
+        // the OBSERVER's own user (it's a non-network local write), who doesn't own the remote user's slots, so on
+        // a client observer GuestRole denies the foreign write and the remote avatar freezes. The host already
+        // validated the stream upstream; bypass the per-actor gate here. -xlinka
+        using var bypass = World?.DataModelPermissions?.EnterSystemBypass();
+
+        // Apply position from stream. Skip ONLY the position this frame if it's non-finite - don't 'return',
+        // which would also skip the rotation apply below and stall the remote avatar's facing on a glitched
+        // position sample. -xlinka
         if (positionStream != null && positionStream.HasValidData)
         {
             var position = positionStream.Value;
-
-            // Skip invalid values
-            if (!float.IsFinite(position.x) || !float.IsFinite(position.y) || !float.IsFinite(position.z))
-                return;
-
-            Slot.LocalPosition.SetValueSilently(position, change: true);
+            if (float.IsFinite(position.x) && float.IsFinite(position.y) && float.IsFinite(position.z))
+                Slot.LocalPosition.SetValueSilently(position, change: true);
         }
 
         // Apply rotation from stream

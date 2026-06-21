@@ -114,6 +114,13 @@ public class LocomotionController : Component
         if (_characterController == null || !(_userRoot?.IsLocalUserRoot ?? false))
             return;
 
+        // Everything below drives the LOCAL user's OWN avatar/root - head look, body turn, scale, and the
+        // locomotion modules. That's engine movement of your own body, not a user edit, so bypass the data-model
+        // permission gate: the root slot is host-allocated under the authority byte and ownership rests on the
+        // User<->UserRoot link, which lags during join - without this the local writes are silently denied for a
+        // window and you can't move/turn right after joining. -xlinka
+        using var permBypass = World?.DataModelPermissions?.EnterSystemBypass();
+
         EnsurePlatformModule();
 
         // Always handle mouse look (updates head rotation)
@@ -309,6 +316,26 @@ public class LocomotionController : Component
     private const float POS_THRESHOLD_SQ = 0.0001f * 0.0001f;
     private const float ROT_THRESHOLD = 0.0001f;
 
+    private TransformStreamDriver _rootStreamDriver = null!;
+
+    // When a TransformStreamDriver shares the root slot, the Root stream is the transport for the root rotation,
+    // so turn writes must be SILENT or the root would replicate over BOTH the stream and the delta channel.
+    // Re-checks until found (the driver is attached during avatar build), then caches. -xlinka
+    private bool RootIsStreamed()
+    {
+        if (_rootStreamDriver == null || _rootStreamDriver.IsDestroyed)
+            _rootStreamDriver = Slot?.GetComponent<TransformStreamDriver>()!;
+        return _rootStreamDriver != null && !_rootStreamDriver.IsDestroyed;
+    }
+
+    private void SetRootRotation(floatQ rotation)
+    {
+        if (RootIsStreamed())
+            Slot.SetGlobalRotationSilently(rotation); // Root stream is the transport - don't also delta it.
+        else
+            Slot.GlobalRotation = rotation;
+    }
+
     private void UpdateHead()
     {
         if (_userRoot?.HeadSlot == null)
@@ -330,7 +357,7 @@ public class LocomotionController : Component
         var currentBodyRot = Slot.GlobalRotation;
         float bodyDot = floatQ.Dot(newBodyRot, currentBodyRot);
         if (1.0f - (bodyDot < 0 ? -bodyDot : bodyDot) > ROT_THRESHOLD)
-            Slot.GlobalRotation = newBodyRot;
+            SetRootRotation(newBodyRot);
 
         var newHeadRot = floatQ.FromEuler(new float3(_pitch, 0, 0));
         var currentHeadRot = _userRoot.HeadSlot.LocalRotation.Value;
@@ -410,7 +437,7 @@ public class LocomotionController : Component
             return;
         }
 
-        Slot.GlobalRotation = (floatQ.AxisAngle(float3.Up, deltaYaw) * Slot.GlobalRotation).Normalized;
+        SetRootRotation((floatQ.AxisAngle(float3.Up, deltaYaw) * Slot.GlobalRotation).Normalized);
     }
 
     /// <summary>

@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -31,7 +31,7 @@ public class LNLManager
         var connection = new LNLConnection(APP_ID, uri, dontRoute, bindIP);
         _connections.Add(connection);
 
-        LumoraLogger.Log($"Created LNL connection to {uri}");
+        LumoraLogger.Log($"[lnl] Created LNL connection to {uri}");
         return connection;
     }
 
@@ -48,7 +48,7 @@ public class LNLManager
         {
             _listeners.Add(globalListener);
             listeners.Add(globalListener);
-            LumoraLogger.Log($"Created LNL listener on 0.0.0.0:{port}");
+            LumoraLogger.Log($"[lnl] Created LNL listener on 0.0.0.0:{port}");
         }
 
         return listeners;
@@ -102,7 +102,7 @@ public class LNLManager
         }
         _listeners.Clear();
 
-        LumoraLogger.Log("LNL Manager shut down");
+        LumoraLogger.Log("[lnl] LNL Manager shut down");
     }
 }
 

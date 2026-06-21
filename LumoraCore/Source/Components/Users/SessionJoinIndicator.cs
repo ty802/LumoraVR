@@ -54,10 +54,14 @@ public class SessionJoinIndicator : Component
         ProgressText = new SyncRef<TextRenderer>(this);
     }
 
-    public override void OnAwake()
+    public override void OnInit()
     {
-        base.OnAwake();
+        base.OnInit();
 
+        // Build the visual hierarchy in OnInit, NOT OnAwake. OnAwake runs inside the reference controller's
+        // allocation soft-block, so creating slots/components/text there logs a "RefID allocation during OnAwake"
+        // warning for EVERY allocation (the text setup alone floods dozens of lines). OnInit runs after that block
+        // is released - it's the correct place to spawn child objects. -xlinka
         // Create visual hierarchy
         Visual.Target = Slot.AddSlot("SessionJoinVisual");
 
@@ -137,6 +141,11 @@ public class SessionJoinIndicator : Component
     /// </summary>
     private void UpdateProgress()
     {
+        // The session connects a moment after we're created, so pick up the sync manager lazily from the target
+        // world once it exists, rather than relying solely on an external setter that can race our creation. -xlinka
+        if (SessionSync == null)
+            SessionSync = TargetWorld?.Session?.Sync!;
+
         if (SessionSync == null)
             return;
 

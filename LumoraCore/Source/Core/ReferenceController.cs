@@ -194,6 +194,35 @@ public class ReferenceController : IDisposable
     {
         _objects.Remove(id);
     }
+
+    /// <summary>
+    /// Remove every registered object that lives in a user's RefID byte. Called when a user leaves or a
+    /// half-finished join is torn down, so the byte can be recycled to a future joiner without that joiner
+    /// colliding with the previous occupant's leftovers (streams, body slots, etc.). Without this, a leave
+    /// or a failed join leaves the streams registered and the next user on this byte throws
+    /// "RefID collision! User[NNN]:... already registered". -xlinka
+    /// </summary>
+    public int PurgeUserByte(byte userByte)
+    {
+        if (!RefIDConstants.IsValidUserByte(userByte))
+            return 0;
+
+        List<RefID> toRemove = null!;
+        foreach (var key in _objects.Keys)
+        {
+            if (key.GetUserByte() == userByte)
+                (toRemove ??= new List<RefID>()).Add(key);
+        }
+
+        if (toRemove == null)
+            return 0;
+
+        foreach (var key in toRemove)
+            _objects.Remove(key);
+
+        LumoraLogger.Log($"ReferenceController: purged {toRemove.Count} leftover objects for user byte {userByte}");
+        return toRemove.Count;
+    }
     
     #endregion
     

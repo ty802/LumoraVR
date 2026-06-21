@@ -45,6 +45,10 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
     private const string TrackingGroupName = "Tracking";
     private static readonly BodyNode[] TrackingNodes =
     {
+        // Root carries the whole-body translation (walking/locomotion). It MUST be streamed like the body
+        // nodes - otherwise the user-root position can only replicate over the permission-gated delta channel
+        // and a joined user stays frozen in place for everyone else. -xlinka
+        BodyNode.Root,
         BodyNode.Head,
         BodyNode.LeftController,
         BodyNode.RightController

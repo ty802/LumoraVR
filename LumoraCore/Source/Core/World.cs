@@ -1180,9 +1180,18 @@ public class World
 			// Same reason as OnUserJoined - host handles user lifecycle events.
 			if (IsAuthority)
 			{
+				var userByte = user.AllocationID.Value;
+				if (!RefIDConstants.IsValidUserByte(userByte))
+					userByte = user.ReferenceID.GetUserByte();
+
+				// Purge ALL of this user's objects (streams, body slots, etc.) from the RefID registry, not
+				// just the User object above. Otherwise the leftovers stay registered and the next joiner who
+				// recycles this byte collides ("RefID collision! User[NNN]:... already registered"). -xlinka
+				ReferenceController?.PurgeUserByte(userByte);
+
 				// Hand this user's byte back to the allocator so a long session with join/leave churn
 				// doesn't run the 253 user-byte space dry. Authority owns allocation, so only it reclaims. -xlinka
-				_refIDAllocator?.ReleaseUserAllocation(user.AllocationID.Value);
+				_refIDAllocator?.ReleaseUserAllocation(userByte);
 
 				TriggerUserLeftEvent(user);
 			}

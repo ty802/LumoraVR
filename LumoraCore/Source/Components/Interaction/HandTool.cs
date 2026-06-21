@@ -377,25 +377,32 @@ public sealed class HandTool : Tool
     }
 
     private bool _menuKeyWasDown;
+    private bool _menuTKeyWasDown;
 
-    // Desktop context menu binding: middle mouse click toggles open/close
+    // Desktop context menu binding: middle mouse click OR the T key toggles open/close
     // (tool secondary owns R, primary owns left click). Only the right hand
-    // listens so both hands don't double-toggle.
+    // listens so both hands don't double-toggle. T is tracked on its own edge so it
+    // and the mouse each toggle independently. -xlinka
     private void ProcessMenuKey(InteractionLaser laser)
     {
         var input = Engine.Current?.InputInterface;
         if (input == null || input.IsVRActive || Side.Value != Chirality.Right)
         {
             _menuKeyWasDown = false;
+            _menuTKeyWasDown = false;
             return;
         }
 
-        bool down = input.Mouse?.MiddleButton.Held == true;
-        if (down && !_menuKeyWasDown)
+        bool mouseDown = input.Mouse?.MiddleButton.Held == true;
+        bool tDown = input.Keyboard?.IsKeyPressed(Key.T) == true;
+
+        if ((mouseDown && !_menuKeyWasDown) || (tDown && !_menuTKeyWasDown))
         {
             ToggleContextMenu(laser);
         }
-        _menuKeyWasDown = down;
+
+        _menuKeyWasDown = mouseDown;
+        _menuTKeyWasDown = tDown;
     }
 
     private UI.ContextMenuSystem? _contextMenu;

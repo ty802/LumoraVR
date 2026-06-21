@@ -105,11 +105,20 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
     {
         if (_meshInstance == null || !GodotObject.IsInstanceValid(_meshInstance) || _arrayMesh == null)
             return;
-        int n = _arrayMesh.GetBlendShapeCount();
-        if (n == 0)
+
+        // Bound by the count the RENDERING SERVER actually allocated for this mesh (mesh_get_blend_shape_count on
+        // the RID) - which is exactly what the mesh instance's blend_weights is sized to - NOT the resource-level
+        // GetBlendShapeCount(). They disagree when a surface registered blend-shape NAMES but failed to attach the
+        // blend-shape DATA: the resource reports 33, the instance has 0. Writing a weight past the real count
+        // spams "Index out of bounds" errors, each capturing a managed backtrace - and since animated weights
+        // (blink/visemes) re-apply every frame, that flood froze GLB avatar imports for ~10s. -xlinka
+        int n = (int)RenderingServer.MeshGetBlendShapeCount(_arrayMesh.GetRid());
+        if (n <= 0)
             return;
+
+        int weights = Owner.BlendShapeNames.Count;
         for (int i = 0; i < n; i++)
-            _meshInstance.SetBlendShapeValue(i, Owner.GetEffectiveBlendShapeWeight(i));
+            _meshInstance.SetBlendShapeValue(i, i < weights ? Owner.GetEffectiveBlendShapeWeight(i) : 0f);
     }
 
     /// <summary>
@@ -483,6 +492,18 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
             for (int s = 0; s < shapeCount; s++)
                 _arrayMesh.AddBlendShape(Owner.BlendShapeNames[s]);
 
+            // Godot 4 requires every blend shape to carry the SAME morphable attributes as the base surface for
+            // VERTEX/NORMAL/TANGENT. The base here has NORMAL, so each shape must include a NORMAL array too or
+            // the whole surface is rejected (the mesh vanishes). We don't morph normals, so feed values that mean
+            // "no change": a zero delta in Relative mode (glTF morph targets are deltas), or the base normal in
+            // Normalized mode. -xlinka
+            bool baseHasNormals = Owner.Normals.Count == vertexCount;
+            bool relativeMode = (Mesh.BlendShapeMode)Owner.BlendShapeMode.Value == Mesh.BlendShapeMode.Relative;
+            // Use the source's real NORMAL morph deltas when the import carried them (so lighting follows the
+            // expression); otherwise fall back to "no normal morph" values just to satisfy Godot's format
+            // requirement. -xlinka
+            bool hasMorphNormals = Owner.HasBlendShapeNormals;
+
             blendShapes = new global::Godot.Collections.Array<global::Godot.Collections.Array>();
             for (int s = 0; s < shapeCount; s++)
             {
@@ -496,15 +517,54 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
                     sv[i] = new Vector3(v.x, v.y, v.z);
                 }
                 shapeArrays[(int)Mesh.ArrayType.Vertex] = sv;
+
+                if (baseHasNormals)
+                {
+                    var sn = new Vector3[vertexCount];
+                    for (int i = 0; i < vertexCount; i++)
+                    {
+                        if (hasMorphNormals)
+                        {
+                            var nd = Owner.BlendShapeNormals[baseIdx + i];
+                            sn[i] = new Vector3(nd.x, nd.y, nd.z);
+                        }
+                        else if (relativeMode)
+                        {
+                            sn[i] = Vector3.Zero;
+                        }
+                        else
+                        {
+                            var nrm = Owner.Normals[i];
+                            sn[i] = new Vector3(nrm.x, nrm.y, nrm.z);
+                        }
+                    }
+                    shapeArrays[(int)Mesh.ArrayType.Normal] = sn;
+                }
+
                 blendShapes.Add(shapeArrays);
             }
         }
 
-        // Add surface to mesh
+        // Add surface to mesh. CRITICAL: if the blend-shape surface add is rejected (Godot 4 wants each blend
+        // shape's arrays to match the base surface's VERTEX/NORMAL/TANGENT set, but we only carry vertex deltas),
+        // it adds NO surface at all - the whole mesh vanishes (the "main mesh missing" import bug). So detect the
+        // drop via the surface count and fall back to a plain surface, so the body always renders even if the
+        // morphs can't be attached. -xlinka
         if (hasBlendShapes)
+        {
+            int beforeSurfaces = _arrayMesh.GetSurfaceCount();
             _arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays, blendShapes);
+            if (_arrayMesh.GetSurfaceCount() == beforeSurfaces)
+            {
+                LumoraLogger.Warn($"SkinnedMeshHook: blend-shape surface rejected on slot '{Owner.Slot?.SlotName?.Value}' ({shapeCount} shapes) - rendering without morphs so the mesh still shows.");
+                _arrayMesh.ClearBlendShapes();
+                _arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+            }
+        }
         else
+        {
             _arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+        }
 
         // Set mesh on instance
         _meshInstance.Mesh = _arrayMesh;

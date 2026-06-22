@@ -12,7 +12,11 @@ public class InteractionElement : UIComponent, IUIInteractable
 {
     public readonly Sync<bool> Interactable;
     public readonly Sync<color> BaseColor;
+    // Transient interaction state - don't persist it, or a saved item can come back stuck on a hover/
+    // press tint that nothing clears (the pointer that set it is long gone). -xlinka
+    [NonPersistent]
     public readonly Sync<bool> IsHovering;
+    [NonPersistent]
     public readonly Sync<bool> IsPressed;
 
     public event Action<UIInteractionContext>? HoverEntered;

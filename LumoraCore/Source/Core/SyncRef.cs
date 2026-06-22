@@ -30,7 +30,7 @@ public sealed class SyncRef : SyncRef<IWorldElement>
 /// Handles async resolution, network synchronization, and proper state tracking.
 /// </summary>
 /// <typeparam name="T"></typeparam>
-public class SyncRef<T> : SyncField<RefID>, ISyncRef, IWorldElementReceiver
+public class SyncRef<T> : SyncField<RefID>, ISyncRef<T>, ISyncRef, IWorldElementReceiver
     where T : class, IWorldElement
 {
     public SyncRef()
@@ -83,6 +83,13 @@ public class SyncRef<T> : SyncField<RefID>, ISyncRef, IWorldElementReceiver
     }
 
     public T RawTarget => _target;
+
+    // The interface hands back the raw field unfiltered, so callers can inspect a target that's already
+    // been removed instead of getting null'd out like the Target getter. -xlinka
+    IWorldElement ISyncRef.RawTarget => RawTarget;
+
+    /// <summary>Clear this reference (equivalent to setting Target to null).</summary>
+    public void Clear() => Target = null!;
 
     public virtual T Target
     {
@@ -228,7 +235,6 @@ public class SyncRef<T> : SyncField<RefID>, ISyncRef, IWorldElementReceiver
         T prevTarget = _target;
         _target = null!;
 
-        base.ValueChanged();
         RunReferenceChanged();
 
         if (Value.IsNull)
@@ -250,6 +256,10 @@ public class SyncRef<T> : SyncField<RefID>, ISyncRef, IWorldElementReceiver
                 World?.ReferenceController?.RequestObject(in refId, this);
             }
         }
+
+        // Fire the base field events LAST, after State/Target are resolved, so a Changed/OnValueChange
+        // observer reading State or Target sees the settled reference, not the mid-update null. -xlinka
+        base.ValueChanged();
     }
 
     void IWorldElementReceiver.OnWorldElementAvailable(IWorldElement element)
@@ -332,7 +342,19 @@ public interface ISyncRef
 {
     RefID Value { get; set; }
     IWorldElement Target { get; set; }
+    // Unfiltered view of the target - won't get null'd out when the target's been removed, unlike
+    // Target. Lets you still inspect a Removed reference. -xlinka
+    IWorldElement RawTarget { get; }
     Type TargetType { get; }
     ReferenceState State { get; }
+    void Clear();
     bool TrySet(IWorldElement target);
+}
+
+/// <summary>
+/// Typed interface for a SyncRef, exposing a strongly-typed Target.
+/// </summary>
+public interface ISyncRef<T> : ISyncRef where T : class, IWorldElement
+{
+    new T Target { get; set; }
 }

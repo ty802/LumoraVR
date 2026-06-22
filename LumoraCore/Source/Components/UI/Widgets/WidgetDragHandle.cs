@@ -22,8 +22,20 @@ public class WidgetDragHandle : InteractionElement
     {
         base.OnStart();
         Dragged += OnDragged;
+        Released += OnReleased;
     }
 
+    // Is the cursor pulled clearly below the grid? (the "drag down off the bar" pop-out gesture).
+    private static bool IsPopOutGesture(WidgetGrid grid, UIInteractionContext context)
+    {
+        var gridRect = grid.RectTransform?.LocalComputeRect;
+        if (gridRect == null)
+            return false;
+        return context.LocalPoint.y < gridRect.Value.yMin - grid.EffectiveCellSize.y;
+    }
+
+    // During the drag, PREVIEW the destination (a green/red cell highlight) instead of moving
+    // the widget. The actual move/pop-out commits on release. -xlinka
     private void OnDragged(UIInteractionContext context)
     {
         var grid = Grid.Target;
@@ -31,30 +43,32 @@ public class WidgetDragHandle : InteractionElement
         if (grid == null || widget == null || !grid.EditMode.Value)
             return;
 
-        var gridRect = grid.RectTransform?.LocalComputeRect;
-        if (gridRect == null)
+        if (IsPopOutGesture(grid, context))
+        {
+            grid.ClearDragPreview(); // no cell preview while popping out
+            return;
+        }
+
+        var (col, row) = grid.CellAt(context.LocalPoint);
+        grid.PreviewPlacement(widget, col, row);
+    }
+
+    private void OnReleased(UIInteractionContext context)
+    {
+        var grid = Grid.Target;
+        var widget = TargetWidget.Target;
+        grid?.ClearDragPreview();
+        if (grid == null || widget == null || !grid.EditMode.Value)
             return;
 
-        var cell = grid.CellSize.Value;
-        var spacing = grid.Spacing.Value;
-        var padding = grid.Padding.Value;
-
-        // Pull a widget clearly below the grid to pop it off into userspace as a
-        // standalone, grabbable panel (the dash is a thin top bar, so "drag down
-        // off the bar" is the pop-out gesture).
-        if (context.LocalPoint.y < gridRect.Value.yMin - cell.y)
+        if (IsPopOutGesture(grid, context))
         {
             grid.PopOut(widget);
             return;
         }
 
-        float gx = context.LocalPoint.x - gridRect.Value.xMin - padding.x;
-        float gy = gridRect.Value.yMax - context.LocalPoint.y - padding.y;
-
-        int cellX = (int)MathF.Floor(gx / (cell.x + spacing.x));
-        int cellY = (int)MathF.Floor(gy / (cell.y + spacing.y));
-
-        widget.GridX.Value = cellX < 0 ? 0 : cellX;
-        widget.GridY.Value = cellY < 0 ? 0 : cellY;
+        // Collision-aware: snaps to the cell under the cursor, dodging/shrinking to avoid overlap.
+        var (col, row) = grid.CellAt(context.LocalPoint);
+        grid.TryPlace(widget, col, row);
     }
 }

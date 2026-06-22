@@ -218,20 +218,24 @@ public class Dashboard : UIComponent
 
     private void BuildWidgets()
     {
+        // Full-width top-strip grid (after the title box) - a single 32x1 row - so the edit overlay
+        // spans the whole top bar instead of a small right-hand island. FixedColumns/FixedRows pin a fixed
+        // NxM grid whose cells stretch to fill; the status widgets sit at the rightmost columns. -xlinka
         var widgetsSlot = _headerSlot!.AddSlot("Widgets");
         var rect = widgetsSlot.AttachComponent<RectTransform>();
-        rect.AnchorMin.Value = new float2(1f, 0f);
+        rect.AnchorMin.Value = new float2(0f, 0f);
         rect.AnchorMax.Value = new float2(1f, 1f);
-        rect.OffsetMin.Value = new float2(-296f, 10f);
+        rect.OffsetMin.Value = new float2(192f, 10f); // start just past the title box (it ends at x=186)
         rect.OffsetMax.Value = new float2(-14f, -10f);
 
         _widgetGrid = widgetsSlot.AttachComponent<WidgetGrid>();
-        _widgetGrid.CellSize.Value = new float2(132f, 38f);
-        _widgetGrid.Spacing.Value = new float2(8f, 4f);
+        _widgetGrid.FixedColumns.Value = 22;
+        _widgetGrid.FixedRows.Value = 1;
+        _widgetGrid.Spacing.Value = new float2(4f, 4f);
         _widgetGrid.Padding.Value = new float2(0f, 1f);
 
-        AddWidget<FpsWidgetPreset>(widgetsSlot, "FpsWidget", 0, new color(0.30f, 0.85f, 0.50f, 1f));
-        AddWidget<ClockWidgetPreset>(widgetsSlot, "ClockWidget", 1, new color(0.85f, 0.86f, 0.92f, 1f));
+        AddWidget<FpsWidgetPreset>(widgetsSlot, "FpsWidget", 18, new color(0.30f, 0.85f, 0.50f, 1f));
+        AddWidget<ClockWidgetPreset>(widgetsSlot, "ClockWidget", 20, new color(0.85f, 0.86f, 0.92f, 1f));
     }
 
     /// <summary>
@@ -279,6 +283,8 @@ public class Dashboard : UIComponent
         var preset = slot.AttachComponent<T>();
         preset.Font.Target = Font.Target;
         preset.GridX.Value = gridX;
+        preset.GridWidth.Value = 2;  // 2 cells wide so the status text fits in the dense top grid
+        preset.GridHeight.Value = 1;
         preset.TextColor.Value = textColor;
         preset.Background.Value = WidgetFill;
         preset.BorderColor.Value = BorderColor;

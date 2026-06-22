@@ -35,7 +35,7 @@ public class SyncController
 			var memberName = ((ISyncMember)sf).Name;
 			if (memberName == "Name")
 			{
-				LumoraLogger.Log($"SyncController.RegisterSyncElement: Slot.Name RefID={element.ReferenceID}, Value='{sf.Value}', ParentSlot={parentSlot.ReferenceID}");
+				LumoraLogger.Debug($"SyncController.RegisterSyncElement: Slot.Name RefID={element.ReferenceID}, Value='{sf.Value}', ParentSlot={parentSlot.ReferenceID}");
 			}
 		}
 	}
@@ -87,8 +87,21 @@ public class SyncController
 			}
 
 			BinaryWriter writer = deltaBatch.BeginNewDataRecord(dirtySyncElement.ReferenceID);
-			dirtySyncElement.EncodeDelta(writer, deltaBatch);
-			deltaBatch.FinishDataRecord(dirtySyncElement.ReferenceID);
+			try
+			{
+				dirtySyncElement.EncodeDelta(writer, deltaBatch);
+				deltaBatch.FinishDataRecord(dirtySyncElement.ReferenceID);
+			}
+			catch (Exception ex)
+			{
+				// One element that can't be serialized - e.g. a guest whose local change touched a slot
+				// collection it isn't allowed to replicate - must NOT throw out of here and take the whole
+				// delta batch (every other user's pending changes) down with it / stall the sync loop. Drop
+				// just this record and keep going. The permission layer already logged the reason (deduped),
+				// so this stays at Debug. -xlinka
+				deltaBatch.CancelDataRecord();
+				LumoraLogger.Debug($"SyncController.CollectDeltaMessages: skipped {dirtySyncElement.GetType().Name} RefID={dirtySyncElement.ReferenceID} - {ex.Message}");
+			}
 		}
 
 		return deltaBatch;
@@ -105,11 +118,21 @@ public class SyncController
 		var list = new List<SyncElement>(elements);
 		list.Sort((SyncElement a, SyncElement b) => a.ReferenceID.CompareTo(b.ReferenceID));
 
-		LumoraLogger.Log($"SyncController.EncodeFullBatch: Encoding {list.Count} sync elements");
+		LumoraLogger.Debug($"SyncController.EncodeFullBatch: Encoding {list.Count} sync elements");
 		int slotFieldCount = 0, componentFieldCount = 0, otherCount = 0;
 
 		foreach (SyncElement element in list)
 		{
+			// Local elements (LOCAL_BYTE RefIDs) live on one machine only and never replicate. They
+			// must NOT go into a full batch: a joining peer has no way to resolve a Local RefID from
+			// our machine, so it logs NOT_FOUND and, worse, the half-written record knocks the rest of
+			// the stream out of alignment and the whole world fails to decode. The delta path already
+			// skips them (InvalidateSyncElement), but this full-state path never did. A slot subtree
+			// built with AddLocalSlot (e.g. a per-viewer pointer cursor) is exactly the kind of thing
+			// that used to slip through here. -xlinka
+			if (element.IsLocalElement)
+				continue;
+
 			// Count by parent type for summary
 			if (element.Parent is Slot parentSlot)
 			{
@@ -120,7 +143,7 @@ public class SyncController
 					var memberName = ((ISyncMember)sf).Name;
 					if (memberName == "Name")
 					{
-						LumoraLogger.Log($"  Encoding Slot.Name: RefID={element.ReferenceID}, Value='{sf.Value}', ParentSlot={parentSlot.ReferenceID}");
+						LumoraLogger.Debug($"  Encoding Slot.Name: RefID={element.ReferenceID}, Value='{sf.Value}', ParentSlot={parentSlot.ReferenceID}");
 					}
 				}
 			}
@@ -128,11 +151,21 @@ public class SyncController
 			else otherCount++;
 
 			BinaryWriter writer = fullBatch.BeginNewDataRecord(element.ReferenceID);
-			element.EncodeFull(writer, fullBatch, forFullBatch: true);
-			fullBatch.FinishDataRecord(element.ReferenceID);
+			try
+			{
+				element.EncodeFull(writer, fullBatch, forFullBatch: true);
+				fullBatch.FinishDataRecord(element.ReferenceID);
+			}
+			catch (Exception ex)
+			{
+				// One element that throws while encoding must not abort the entire world's full state
+				// for every joiner. Drop just this record (rewinds the stream) and keep going. -xlinka
+				fullBatch.CancelDataRecord();
+				LumoraLogger.Error($"SyncController.EncodeFullBatch: skipped {element.GetType().Name} RefID={element.ReferenceID} - encode threw: {ex.Message}");
+			}
 		}
 
-		LumoraLogger.Log($"SyncController.EncodeFullBatch: Summary - SlotFields={slotFieldCount}, ComponentFields={componentFieldCount}, Other={otherCount}");
+		LumoraLogger.Debug($"SyncController.EncodeFullBatch: Summary - SlotFields={slotFieldCount}, ComponentFields={componentFieldCount}, Other={otherCount}");
 
 		return fullBatch;
 	}
@@ -276,14 +309,14 @@ public class SyncController
 					var memberName = ((ISyncMember)sf).Name;
 					if (memberName == "Name")
 					{
-						LumoraLogger.Log($"SyncController.DecodeFullMessage: Decoded Slot.Name RefID={value.ReferenceID}, Value='{sf.Value}', ParentSlot={parentSlot.ReferenceID}");
+						LumoraLogger.Debug($"SyncController.DecodeFullMessage: Decoded Slot.Name RefID={value.ReferenceID}, Value='{sf.Value}', ParentSlot={parentSlot.ReferenceID}");
 					}
 				}
 			}
 			return true;
 		}
 
-		LumoraLogger.Warn($"SyncController.DecodeBinaryMessage: Element not found for RefID={dataRecord.TargetID}");
+		LumoraLogger.Debug($"SyncController.DecodeBinaryMessage: Element not found for RefID={dataRecord.TargetID}");
 		return false;
 	}
 

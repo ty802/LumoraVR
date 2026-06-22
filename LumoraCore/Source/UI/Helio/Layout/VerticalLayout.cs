@@ -17,6 +17,8 @@ public class VerticalLayout : LayoutController
     public readonly Sync<float> PaddingBottom;
     public readonly Sync<bool> ForceExpandWidth;
     public readonly Sync<bool> ForceExpandHeight;
+    // Where children sit on the cross (horizontal) axis when not force-expanded. Default Center = prior behavior.
+    public readonly Sync<LayoutAlignment> CrossAlignment;
 
     private float _spacing;
     private float _padLeft;
@@ -25,6 +27,7 @@ public class VerticalLayout : LayoutController
     private float _padBottom;
     private bool _forceExpandWidth;
     private bool _forceExpandHeight;
+    private LayoutAlignment _crossAlignment;
     private readonly List<LayoutMetrics> _metrics = new();
     private readonly List<LayoutSizing.Element> _elements = new();
 
@@ -37,11 +40,15 @@ public class VerticalLayout : LayoutController
         PaddingBottom = new Sync<float>(this, 0f);
         ForceExpandWidth = new Sync<bool>(this, true);
         ForceExpandHeight = new Sync<bool>(this, true);
+        CrossAlignment = new Sync<LayoutAlignment>(this, LayoutAlignment.Center);
     }
 
     protected override void FlagChanges(RectTransform rect)
     {
+        // A VerticalLayout also sizes children on the cross (horizontal) axis (PaddingLeft/Right,
+        // ForceExpandWidth, CrossAlignment), so a change invalidates BOTH axes' metrics. -xlinka
         rect.MarkInvalidateVerticalLayout();
+        rect.MarkInvalidateHorizontalLayout();
     }
 
     public override void PrepareCompute()
@@ -53,6 +60,7 @@ public class VerticalLayout : LayoutController
         _padBottom = PaddingBottom.Value;
         _forceExpandWidth = ForceExpandWidth.Value;
         _forceExpandHeight = ForceExpandHeight.Value;
+        _crossAlignment = CrossAlignment.Value;
     }
 
     public override void ArrangeChildren(IReadOnlyList<RectTransform> children)
@@ -73,7 +81,7 @@ public class VerticalLayout : LayoutController
         {
             _metrics.Add(LayoutSizing.IsIgnored(children[i])
                 ? default
-                : LayoutSizing.GetMetrics(children[i], LayoutDirection.Vertical));
+                : LayoutSizing.Measured(children[i], LayoutDirection.Vertical));
         }
 
         LayoutSizing.Distribute(innerHeight, _spacing, _padTop, _metrics, _elements, _forceExpandHeight);
@@ -87,9 +95,11 @@ public class VerticalLayout : LayoutController
 
             if (!_forceExpandWidth)
             {
-                var horizontal = LayoutSizing.GetMetrics(children[i], LayoutDirection.Horizontal);
+                var horizontal = LayoutSizing.Measured(children[i], LayoutDirection.Horizontal);
                 childWidth = Clamp(horizontal.Flexible > 0f ? availableWidth : Max(horizontal.Min, Min(horizontal.Preferred, availableWidth)), 0f, availableWidth);
-                childX = xMin + (availableWidth - childWidth) * 0.5f;
+                // Cross-axis (horizontal): Start=left, End=right, Center=middle.
+                float align = _crossAlignment switch { LayoutAlignment.Start => 0f, LayoutAlignment.End => 1f, _ => 0.5f };
+                childX = xMin + (availableWidth - childWidth) * align;
             }
 
             float yBottom = rect.yMax - element.Offset - element.Size;
@@ -109,7 +119,7 @@ public class VerticalLayout : LayoutController
         for (int i = 0; i < count; i++)
         {
             if (LayoutSizing.IsIgnored(RectTransform.RectChildren[i])) continue;
-            var metrics = LayoutSizing.GetMetrics(RectTransform.RectChildren[i], direction);
+            var metrics = LayoutSizing.Measured(RectTransform.RectChildren[i], direction);
             if (direction == LayoutDirection.Vertical)
             {
                 min += metrics.Min;
@@ -137,7 +147,10 @@ public class VerticalLayout : LayoutController
         {
             _minWidth = min + padding;
             _preferredWidth = preferred + padding;
-            _flexibleWidth = count > 0 ? flexible / count : 0f;
+            // Cross-axis flexibility is the SUM of children's (Largest min/preferred + Sum flexible). The
+            // old flexible/count divisor silently eroded a nested flexible child's pull to ~0, collapsing
+            // it under a ForceExpand=false parent. -xlinka
+            _flexibleWidth = flexible;
         }
     }
 

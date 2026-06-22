@@ -371,6 +371,19 @@ public class UIBuilder
         return layout;
     }
 
+    // Make the CURRENT slot shrink-wrap to its content (e.g. a VerticalLayout panel grows to fit its
+    // rows). Attach AFTER the layout component on the same slot. Both axes fit to preferred by default. -xlinka
+    public ContentSizeFitter FitContent()
+        => FitContent(SizeFit.PreferredSize, SizeFit.PreferredSize);
+
+    public ContentSizeFitter FitContent(SizeFit horizontal, SizeFit vertical)
+    {
+        var fitter = Current.AttachComponent<ContentSizeFitter>();
+        fitter.HorizontalFit.Value = horizontal;
+        fitter.VerticalFit.Value = vertical;
+        return fitter;
+    }
+
     // leaf elements
 
     public Image Image(IAssetProvider<TextureAsset>? texture = null, color? tint = null)

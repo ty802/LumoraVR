@@ -172,6 +172,38 @@ public sealed class InteractionLaser : Component
         _exclusiveRoot = root;
     }
 
+    // When true the beam mesh never shows, only the cursor. The userspace dash pointer
+    // uses this: you want the little cursor on the panel, not a laser line stabbing out
+    // of nothing (the userspace pointer has no visible hand to anchor a beam to). -xlinka
+    private bool _suppressBeam;
+
+    public void SetBeamSuppressed(bool suppressed)
+    {
+        _suppressBeam = suppressed;
+    }
+
+    // Dormant pointer: skips the cast and pulls all visuals offscreen this frame. The userspace
+    // dash pointer flips this with the dash open state, so when the dash is closed there's no
+    // stray cursor floating in the overlay world and no wasted raycasts. -xlinka
+    private bool _dormant;
+
+    public void SetDormant(bool dormant)
+    {
+        _dormant = dormant;
+    }
+
+    private void HideVisuals()
+    {
+        _laserVisibleLerp = 0f;
+        if (_beamSlot != null) SetIfChanged(_beamSlot.ActiveSelf, false);
+        if (_cursorSlot != null) SetIfChanged(_cursorSlot.ActiveSelf, false);
+        if (_directCursorSlot != null) SetIfChanged(_directCursorSlot.ActiveSelf, false);
+        if (_directLineSlot != null) SetIfChanged(_directLineSlot.ActiveSelf, false);
+        if (_beamRenderer != null) SetIfChanged(_beamRenderer.Enabled, false);
+        if (_cursorRenderer != null) SetIfChanged(_cursorRenderer.Enabled, false);
+        if (_directCursorRenderer != null) SetIfChanged(_directCursorRenderer.Enabled, false);
+    }
+
     public void RefreshNow(float delta)
     {
         long frame = Engine.Current?.FrameCount ?? -1;
@@ -217,7 +249,13 @@ public sealed class InteractionLaser : Component
         _pointSlot = _beamSlot.AddSlot("Point");
         _pointSlot.LocalPosition.Value = float3.Backward * MaxDistance.Value;
 
-        _cursorSlot = _pointSlot.AddSlot("Cursor");
+        // LOCAL slot: the desktop pointer cursor is a per-viewer visual (like an OS mouse cursor), NOT something
+        // other users should see. AddLocalSlot mints a LOCAL_BYTE RefID that the world never replicates, so the
+        // whole cursor subtree (Image quad, mesh, material - all created under it) stays on this machine only.
+        // The beam itself stays replicated above, so a remote user's LASER is still visible during interaction,
+        // just not their cursor. Hit-testing/dash clicks use the ray pose, never this slot, so they're unaffected.
+        // -xlinka
+        _cursorSlot = _pointSlot.AddLocalSlot("Cursor");
         _cursorMaterial = _cursorSlot.AttachComponent<OverlayUnlitMaterial>();
         _cursorMaterial.BlendMode.Value = BlendMode.Additive;
         _cursorMaterial.FrontTintColor.Value = colorHDR.White;
@@ -237,7 +275,8 @@ public sealed class InteractionLaser : Component
         _cursorRenderer.ShadowCastMode.Value = ShadowCastMode.Off;
         _cursorRenderer.SortingOrder.Value = 105;
 
-        _directCursorSlot = _beamSlot.AddSlot("DirectCursor");
+        // LOCAL: direct-touch cursor visual, per-viewer only (see the Cursor note above). -xlinka
+        _directCursorSlot = _beamSlot.AddLocalSlot("DirectCursor");
         _directCursorMaterial = _directCursorSlot.AttachComponent<OverlayUnlitMaterial>();
         _directCursorMaterial.BlendMode.Value = BlendMode.Additive;
         _directCursorMaterial.FrontTintColor.Value = new colorHDR(1f, 1f, 1f, 0.25f);
@@ -256,7 +295,8 @@ public sealed class InteractionLaser : Component
         _directCursorRenderer.ShadowCastMode.Value = ShadowCastMode.Off;
         _directCursorRenderer.SortingOrder.Value = 100;
 
-        _directLineSlot = _beamSlot.AddSlot("DirectLine");
+        // LOCAL: direct-touch line visual, per-viewer only (see the Cursor note above). -xlinka
+        _directLineSlot = _beamSlot.AddLocalSlot("DirectLine");
         _directLineMesh = _directLineSlot.AttachComponent<SegmentMesh>();
         _directLineMesh.Radius.Value = BeamRadius.Value * 0.75f;
         _directLineMesh.Sides.Value = 6;
@@ -288,6 +328,17 @@ public sealed class InteractionLaser : Component
     {
         if (_beamSlot == null || World?.RootSlot == null) return;
 
+        if (_dormant)
+        {
+            // Pointer is parked (e.g. userspace dash pointer while the dash is closed). Drop the
+            // hover target so nothing stays "pressed", hide everything, and skip the cast. -xlinka
+            if (_currentTarget != null) UpdatePointerTarget(null, _rayOrigin, _rayDirection, false);
+            _currentTarget = null;
+            _currentHitSlot = null;
+            HideVisuals();
+            return;
+        }
+
         float maxDist = MathF.Max(MaxDistance.Value, 0.01f);
         ResolveRayPose(out float3 origin, out float3 direction);
         _rayOrigin = origin;
@@ -304,13 +355,11 @@ public sealed class InteractionLaser : Component
         _hitBuffer.Clear();
         CollectInteractionHits(World, origin, direction, maxDist, blockingDistance);
 
-        var engine = Lumora.Core.Engine.Current;
-        if (engine?.InputInterface?.IsDashboardOpen == true)
-        {
-            var userspace = engine.WorldManager?.UserspaceWorld;
-            if (userspace != null && userspace != World && userspace.RootSlot != null)
-                CollectInteractionHits(userspace, origin, direction, maxDist, blockingDistance);
-        }
+        // The dashboard lives in the userspace overlay world and is pointed at by a rig that also
+        // lives there (the userspace pointer rig, see UserspacePointer) in BOTH desktop and VR. So
+        // this in-world laser only ever touches its OWN world - no cross-world cast. That's what
+        // lets the dash keep a working cursor even after you delete the world you were standing in:
+        // the pointer was never tied to this avatar to begin with. -xlinka
 
         if (exclusive)
         {
@@ -483,7 +532,7 @@ public sealed class InteractionLaser : Component
         _laserVisibleLerp = Progress01(_laserVisibleLerp, visualStep, shouldShow);
 
         bool rootVisible = _laserVisibleLerp > 0.001f;
-        bool beamVisible = rootVisible && (isVr || ShowDesktopBeam.Value);
+        bool beamVisible = rootVisible && (isVr || ShowDesktopBeam.Value) && !_suppressBeam;
         bool cursorVisible = rootVisible;
         bool directVisible = rootVisible && ShowDirectCursor.Value && isVr;
 

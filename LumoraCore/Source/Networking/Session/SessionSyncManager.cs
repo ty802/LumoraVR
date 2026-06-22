@@ -56,8 +56,15 @@ public class SessionSyncManager : IDisposable
     private readonly ConcurrentQueue<SyncMessage> _messagesToProcess = new();
     private readonly ConcurrentQueue<SyncMessage> _messagesToTransmit = new();
     private readonly Queue<DeltaBatch> _pendingDeltaBatches = new();
+
+    // Reused every sync cycle for the released-drive corrections and stream gathering so we don't
+    // allocate a fresh list per tick. SYNC-THREAD ONLY: safe only while the sync cycle runs serially on
+    // one thread - if encode is ever parallelized, re-audit these for aliasing. -xlinka
+    private readonly List<SyncElement> _releasedDrivesScratch = new();
+    private readonly List<StreamMessage> _streamsScratch = new();
     private readonly Queue<StreamMessage> _pendingStreamMessages = new();
     private const int MaxPendingDeltaBatches = 256;
+    private const int MaxJoinPendingDeltaBatches = 16384;   // never drop reliable deltas while joining
     private const int MaxPendingStreamMessages = 512;
 
     // State
@@ -72,6 +79,24 @@ public class SessionSyncManager : IDisposable
     private readonly HashSet<RefID> _receivedComponentIds = new();
     private readonly object _progressLock = new();
     private bool _initialFullBatchReceived = false;
+
+    // Initial-state completeness gate: the client only enters the world
+    // (State -> Running) once the initial full batch has FULLY decoded - instead of flipping the
+    // moment the JoinStartDelta control message lands and silently dropping whatever hadn't decoded
+    // yet. We remember that JoinStartDelta arrived, keep retrying pending records, and transition the
+    // instant nothing is left unapplied. If it genuinely gets stuck (an orphaned field record whose
+    // owning slot/component never materialized) we log EXACTLY what's missing and enter anyway, so a
+    // join can't silently brick - it either lands a complete world or tells you precisely what it
+    // couldn't decode. -xlinka
+    private bool _joinStartDeltaSeen = false;
+    private int _lastInitialPendingCount = -1;
+    private ulong _lastInitialProgressTick = 0;
+    private bool _loggedInitialIncomplete = false;
+    private int _fullStateRequestBudget = 1;            // re-request the full state this many times if stuck
+    private const int InitialStateMaxAgeTicks = 2000;   // retry far longer than the live delta path
+    private const int InitialStateStuckTicks = 120;     // no progress this long -> recover, then enter anyway
+                                                        // (kept short so a stuck join becomes usable in
+                                                        // a couple seconds instead of stalling for ~30)
 
     // Client-side change confirmations (sync tick -> RefIDs)
     private readonly Dictionary<ulong, HashSet<RefID>> _changesToConfirm = new();
@@ -226,6 +251,9 @@ public class SessionSyncManager : IDisposable
     public void QueueUserForInitialization(User user)
     {
         LumoraLogger.Log($"[lnl] QueueUserForInitialization: Queuing user '{user.UserName.Value}' (RefID: {user.ReferenceID})");
+        // Hold off all live fan-out to this user until its full state is on the wire (Stage 8 flips this
+        // back on). The flag already defaults false, but a re-init of an existing user needs the reset. -xlinka
+        user.StopTransmittingStreamData();
         lock (_newUsersLock)
         {
             _newUsersToInitialize.Add(user);
@@ -303,8 +331,14 @@ public class SessionSyncManager : IDisposable
                         case RawFrameMessage: TotalSentRawFrames++; break;
                     }
 
-                    // Encode and transmit
+                    // Encode and transmit. Compress the encoded frame when the message opts
+                    // in (Delta/Full/Stream) and it's actually big enough to be worth it - the
+                    // codec returns the frame unchanged if it wouldn't shrink, and the receiver
+                    // unwraps transparently. - xlinka
                     var encoded = message.Encode();
+                    int threshold = message.CompressionThreshold;
+                    if (threshold > 0 && encoded.Length >= threshold)
+                        encoded = SyncFrameCodec.WrapCompressed(encoded);
                     Session.Connections.Broadcast(encoded, message.Targets, message.Reliable);
                 }
                 catch (Exception ex)
@@ -351,21 +385,44 @@ public class SessionSyncManager : IDisposable
 
                 DEBUG_SyncLoopStage = SyncLoopStage.RunningMessageProcessing;
 
-                while (_messagesToProcess.TryDequeue(out var message))
+                // Peek-then-conditional-dequeue: we only remove a message from the queue once it's been
+                // accepted. ProcessMessage returns false to DEFER (currently only the authority
+                // delta-staleness guard does this) - we leave that message at the front and stop draining
+                // this cycle, so it gets reprocessed next cycle after our StateVersion has advanced.
+                // Dequeuing only on success is what makes that requeue free. -xlinka
+                while (_messagesToProcess.TryPeek(out var message))
                 {
                     ProcessingSyncMessage = message;
 
-                    if (ProcessMessage(message, lastDeltaSyncTime, controlMessagesToProcess))
+                    if (!ProcessMessage(message, lastDeltaSyncTime, controlMessagesToProcess))
                     {
-                        TotalProcessedMessages++;
+                        // Deferred - leave it at the front, stop draining. (If anyone adds another
+                        // `return false` to ProcessMessage, it stalls the drain here: false means defer.)
+                        ProcessingSyncMessage = null!;
+                        break;
                     }
 
                     ProcessingSyncMessage = null!;
+                    TotalProcessedMessages++;
+
+                    _messagesToProcess.TryDequeue(out var dequeued);
+                    if (!ReferenceEquals(message, dequeued))
+                    {
+                        // Only this thread dequeues from the front; a changed front means something else
+                        // is racing the queue and our peek/process pairing is unsound - fail loud. -xlinka
+                        throw new InvalidOperationException("Sync message queue front was modified outside the sync loop");
+                    }
                 }
 
                 DEBUG_SyncLoopStage = SyncLoopStage.ExitedMessageProcessing;
 
                 ProcessPendingRecords();
+
+                // Drive the join completeness gate every tick (not only when records are pending), so a
+                // client awaiting initial state always advances toward Running and can never hang -
+                // ProcessPendingRecords early-returns when nothing is pending. Self-guards on state.
+                // -xlinka
+                TryEnterRunningWhenComplete();
 
                 if (World.IsAuthority)
                 {
@@ -405,31 +462,7 @@ public class SessionSyncManager : IDisposable
                 {
                     if (World.IsAuthority)
                     {
-                        var connections = Session.Connections.GetAllConnections();
-                        var initializingUsers = new HashSet<User>();
-
-                        lock (_newUsersLock)
-                        {
-                            foreach (var user in _newUsersToInitialize)
-                            {
-                                initializingUsers.Add(user);
-                            }
-                        }
-
-                        foreach (var connection in connections)
-                        {
-                            if (Session.Connections.TryGetUser(connection, out var user))
-                            {
-                                if (!initializingUsers.Contains(user))
-                                {
-                                    deltaBatch.Targets.Add(connection);
-                                }
-                            }
-                            else
-                            {
-                                deltaBatch.Targets.Add(connection);
-                            }
-                        }
+                        AddAuthorityFanoutTargets(deltaBatch);
                     }
                     else
                     {
@@ -471,13 +504,40 @@ public class SessionSyncManager : IDisposable
 
                 DEBUG_SyncLoopStage = SyncLoopStage.GeneratingCorrections;
 
-                // TODO: Handle released drives and corrections
+                // A field that was being driven suppresses its deltas while the drive is active, so once
+                // the drive is released peers are stuck on the last value the drive pushed. The authority
+                // collects those just-freed fields here and re-sends their real current value as a small
+                // full-state batch so everyone snaps back to the truth. -xlinka
+                if (World.IsAuthority)
+                {
+                    var released = _releasedDrivesScratch;
+                    released.Clear();
+                    World.LinkManager?.GetReleasedDrives(released);
+
+                    if (released.Count > 0)
+                    {
+                        var corrections = World.SyncController.EncodeFullBatch(released);
+
+                        AddAuthorityFanoutTargets(corrections);
+
+                        if (corrections.Targets.Count > 0)
+                        {
+                            TotalCorrections += released.Count;
+                            EnqueueForTransmission(corrections);
+                        }
+                        else
+                        {
+                            corrections.Dispose();
+                        }
+                    }
+                }
 
                 DEBUG_SyncLoopStage = SyncLoopStage.EncodingStreams;
 
                 if (World.State == World.WorldState.Running)
                 {
-                    var streams = new List<StreamMessage>();
+                    var streams = _streamsScratch;
+                    streams.Clear();
                     World.SyncController.GatherStreams(streams);
 
                     int sentCount = 0;
@@ -560,6 +620,11 @@ public class SessionSyncManager : IDisposable
                             if (Session.Connections.TryGetConnection(user, out var connection))
                             {
                                 startDeltaMessage.Targets.Add(connection);
+                                // Full state + the "deltas may flow now" signal are on the wire for this
+                                // user, so open its gate. The very next sync tick's fan-out will start
+                                // including it. Order matters: full batch enqueued, then JoinStartDelta,
+                                // then gate open - so live traffic only ever trails full state. -xlinka
+                                user.StartTransmittingStreamData();
                             }
                         }
                         LumoraLogger.Log($"[lnl] Stage 8: Enqueueing JoinStartDelta with {startDeltaMessage.Targets.Count} targets");
@@ -616,6 +681,16 @@ public class SessionSyncManager : IDisposable
                     {
                         EnqueuePendingDelta(deltaBatch, $"world state {World.State}");
                         break;
+                    }
+
+                    // Authority defers a delta whose sender is at-or-ahead of where our state was at the
+                    // last sync-cycle boundary. Returning false (NOT disposing) leaves it at the queue
+                    // front; next cycle our StateVersion has advanced and lastDeltaSyncTime is re-captured,
+                    // so validate/retransmit runs against strictly-newer authority state. This is the ONLY
+                    // place ProcessMessage returns false - the drain treats false as "defer". -xlinka
+                    if (World.IsAuthority && deltaBatch.SenderStateVersion >= lastDeltaSyncTime)
+                    {
+                        return false;
                     }
 
                     if (!World.IsAuthority && !_acceptDeltas)
@@ -703,7 +778,13 @@ public class SessionSyncManager : IDisposable
                     }
                     if (World.State != World.WorldState.Running)
                     {
-                        EnqueuePendingStream(streamMessage, $"world state {World.State}");
+                        // Streams are latest-value avatar poses. While we're still loading the world
+                        // there's nothing to apply them to yet, and the very next stream after we go
+                        // Running carries the current pose - so a queued backlog is useless and just
+                        // floods the log when the load takes a moment (a joiner shouldn't be sent
+                        // streams until it's ready). Drop them quietly until we're live.
+                        // -xlinka
+                        streamMessage.Dispose();
                         break;
                     }
                     ApplyStreamMessage(streamMessage);
@@ -758,9 +839,16 @@ public class SessionSyncManager : IDisposable
 
     private void EnqueuePendingDelta(DeltaBatch batch, string reason)
     {
-        if (_pendingDeltaBatches.Count >= MaxPendingDeltaBatches)
+        // Deltas are reliable + ordered: dropping one permanently diverges the joiner's state. While
+        // we're still joining (host starts targeting us with deltas the moment it has sent our snapshot,
+        // a few ticks before we reach Running) the backlog is bounded by how long the join takes and is
+        // replayed in order once we're live - so we must NOT drop at the small live cap here. The live
+        // cap is real backpressure and only applies once we're Running. -xlinka
+        bool joining = !World.IsAuthority && World.State != World.WorldState.Running;
+        int cap = joining ? MaxJoinPendingDeltaBatches : MaxPendingDeltaBatches;
+        if (_pendingDeltaBatches.Count >= cap)
         {
-            LumoraLogger.Warn($"[lnl] ProcessMessage: Dropping delta batch - pending limit reached ({MaxPendingDeltaBatches})");
+            LumoraLogger.Warn($"[lnl] ProcessMessage: Dropping delta batch - pending limit reached ({cap})");
             batch.Dispose();
             return;
         }
@@ -839,29 +927,9 @@ public class SessionSyncManager : IDisposable
             {
                 var forward = CopyDeltaBatch(batch);
 
-                var connections = Session.Connections.GetAllConnections();
-                var initializingUsers = new HashSet<User>();
-                lock (_newUsersLock)
-                {
-                    foreach (var user in _newUsersToInitialize)
-                    {
-                        initializingUsers.Add(user);
-                    }
-                }
-
-                foreach (var connection in connections)
-                {
-                    if (connection == batch.Sender)
-                        continue;
-
-                    if (Session.Connections.TryGetUser(connection, out var user) &&
-                        initializingUsers.Contains(user))
-                    {
-                        continue;
-                    }
-
-                    forward.Targets.Add(connection);
-                }
+                // Relay this peer's delta to everyone else who's live, but never echo it back to the
+                // sender that produced it. -xlinka
+                AddAuthorityFanoutTargets(forward, batch.Sender);
 
                 if (forward.Targets.Count > 0)
                 {
@@ -873,13 +941,23 @@ public class SessionSyncManager : IDisposable
                 }
             }
 
-            if (conflicting.Count > 0 && batch.Sender != null)
+            if (batch.Sender != null)
             {
-                TotalCorrections += conflicting.Count;
+                // Always confirm an accepted delta back to the client that sent it - even with ZERO
+                // conflicts. The client keys its own outgoing changes by this tick and only advances
+                // their confirmed state (and clears its pending-confirm set) when it hears back. An empty
+                // confirmation is exactly how a clean, non-conflicting change gets acknowledged; without
+                // it the client's _changesToConfirm for clean ticks leaks forever and those changes never
+                // register as confirmed. When there ARE conflicts we also carry the authoritative current
+                // values so the client corrects. -xlinka
                 var confirmation = new ConfirmationMessage(batch.SenderSyncTick, World.StateVersion, World.SyncTick);
-                foreach (var id in conflicting)
+                if (conflicting.Count > 0)
                 {
-                    World.SyncController.EncodeFull(id, confirmation);
+                    TotalCorrections += conflicting.Count;
+                    foreach (var id in conflicting)
+                    {
+                        World.SyncController.EncodeFull(id, confirmation);
+                    }
                 }
                 confirmation.Targets.Add(batch.Sender);
                 EnqueueForTransmission(confirmation);
@@ -976,37 +1054,46 @@ public class SessionSyncManager : IDisposable
     /// on a client, just the host. Used for both <see cref="StreamMessage"/> and
     /// <see cref="RawFrameMessage"/>.
     /// </summary>
+    /// <summary>
+    /// Adds every connection that should receive an authority-side replicated batch (delta, correction,
+    /// or stream) as a target on <paramref name="message"/>. A user becomes eligible only once it has
+    /// been handed full world state - its <see cref="User.ReceiveStreams"/> flips true at the JoinStartDelta
+    /// point - so until then we leave it out and let its initial full batch carry the state instead;
+    /// sending it live traffic earlier would just race the join. A connection with no mapped user yet
+    /// (mid-handshake) is always included so nothing is silently dropped. Pass the original sender as
+    /// <paramref name="excludeConnection"/> to avoid echoing a relayed message back where it came from.
+    ///
+    /// This is the single fan-out walk shared by the delta batch, released-drive corrections, the stream
+    /// loop, and relayed-delta retransmit. It replaced four separate per-tick `new HashSet&lt;User&gt;()`
+    /// snapshots of the init queue - the ReceiveStreams flag already carries that "still initializing"
+    /// state, so the per-message allocation and lock round-trip were pure waste. -xlinka
+    /// </summary>
+    private void AddAuthorityFanoutTargets(SyncMessage message, IConnection? excludeConnection = null)
+    {
+        var connections = Session.Connections.GetAllConnections();
+        foreach (var connection in connections)
+        {
+            if (excludeConnection != null && connection == excludeConnection)
+            {
+                continue;
+            }
+
+            // A mapped user that hasn't been handed full state yet (or opted out) is skipped. An unmapped
+            // connection still gets included to match the prior behavior. -xlinka
+            if (Session.Connections.TryGetUser(connection, out var user) && user != null && !user.ReceiveStreams)
+            {
+                continue;
+            }
+
+            message.Targets.Add(connection);
+        }
+    }
+
     private void AddStreamTargets(SyncMessage message, bool excludeSender)
     {
         if (World.IsAuthority)
         {
-            var connections = Session.Connections.GetAllConnections();
-            HashSet<User> initializingUsers = null!;
-
-            lock (_newUsersLock)
-            {
-                if (_newUsersToInitialize.Count > 0)
-                {
-                    initializingUsers = new HashSet<User>(_newUsersToInitialize);
-                }
-            }
-
-            foreach (var connection in connections)
-            {
-                if (excludeSender && connection == message.Sender)
-                {
-                    continue;
-                }
-
-                if (initializingUsers != null &&
-                    Session.Connections.TryGetUser(connection, out var user) &&
-                    initializingUsers.Contains(user))
-                {
-                    continue;
-                }
-
-                message.Targets.Add(connection);
-            }
+            AddAuthorityFanoutTargets(message, excludeSender ? message.Sender : null);
         }
         else
         {
@@ -1092,6 +1179,12 @@ public class SessionSyncManager : IDisposable
                         batch.MarkDataRecordAsProcessed(i);
                         remaining--;
                         decodedThisPass++;
+                        // Count records that actually MATERIALIZED, so the loading bar reflects real
+                        // progress (this counter used to be declared but never incremented). -xlinka
+                        if (batch is FullBatch && !World.IsAuthority)
+                        {
+                            lock (_progressLock) { _initializedComponents++; }
+                        }
                     }
                 }
                 catch (Exception ex)
@@ -1124,7 +1217,7 @@ public class SessionSyncManager : IDisposable
                 {
                     var record = batch.GetDataRecord(i);
                     var obj = World.ReferenceController?.GetObjectOrNull(record.TargetID);
-                    LumoraLogger.Warn($"[lnl]   FAILED RefID={record.TargetID} Type={obj?.GetType().Name ?? "NOT_FOUND"}");
+                    LumoraLogger.Debug($"[lnl]   FAILED RefID={record.TargetID} Type={obj?.GetType().Name ?? "NOT_FOUND"}");
                     QueuePendingRecord(batch, i);
                 }
             }
@@ -1194,6 +1287,10 @@ public class SessionSyncManager : IDisposable
             ProcessPendingRecord(record, isFull: true);
         }
 
+        // Initial-state records just got a retry pass; see if the snapshot is now complete enough to
+        // enter the world (or stuck long enough that we should enter anyway and say what's missing).
+        TryEnterRunningWhenComplete();
+
         if (World.State == World.WorldState.Running && (_acceptDeltas || World.IsAuthority))
         {
             foreach (var record in deltaRecords)
@@ -1203,15 +1300,111 @@ public class SessionSyncManager : IDisposable
         }
     }
 
+    // Flip the joined world to Running only after every record of the initial full state has been
+    // applied: hold until the pending-full-record set drains to empty, then transition. If progress stalls for a long stretch (an orphaned record whose owner
+    // never decoded - e.g. a component whose type couldn't resolve), we log exactly what's stuck and
+    // enter anyway, so a join surfaces the problem loudly instead of either bricking or silently
+    // showing a half-world. -xlinka
+    private void TryEnterRunningWhenComplete()
+    {
+        if (World == null || World.IsAuthority) return;
+        if (!_joinStartDeltaSeen) return;
+        if (World.InitState != World.InitializationState.InitializingDataModel) return;
+
+        int pending;
+        lock (_pendingLock)
+        {
+            pending = _pendingFullRecords.Count;
+        }
+
+        // Clean case: the batch was tracked and everything applied - enter right away.
+        if (pending == 0 && _initialFullBatchReceived)
+        {
+            LumoraLogger.Log("[lnl] Initial full state fully applied - entering world (Running)");
+            World.OnFullStateReceived();
+            return;
+        }
+
+        // Otherwise fall through to the stall detector below, which always force-enters after a short
+        // window. Crucially we do NOT hard-require _initialFullBatchReceived here: if that flag never
+        // got set the join must still become usable rather than hang forever. -xlinka
+
+        // Still applying. Track progress so we can tell "slowly resolving" from "genuinely stuck".
+        if (pending != _lastInitialPendingCount)
+        {
+            _lastInitialPendingCount = pending;
+            _lastInitialProgressTick = World.SyncTick;
+            return;
+        }
+
+        if (World.SyncTick - _lastInitialProgressTick < (ulong)InitialStateStuckTicks)
+            return;
+
+        // Stuck. Before giving up, ask the host to resend the full
+        // state - missing records often just need another delivery. A deterministic failure (a type
+        // that won't resolve) won't recover, so we cap the retries and then enter with diagnostics
+        // rather than loop forever. -xlinka
+        if (_fullStateRequestBudget > 0)
+        {
+            _fullStateRequestBudget--;
+            LumoraLogger.Warn($"[lnl] Initial state stuck with {pending} record(s) - re-requesting full state from host ({_fullStateRequestBudget} retries left)");
+            var request = new ControlMessage(ControlMessage.Message.RequestFullState);
+            var host = Session.Connections.HostConnection;
+            if (host != null)
+            {
+                request.Targets.Add(host);
+                EnqueueForTransmission(request);
+            }
+            // Reset the stall detector so we wait for the resent batch instead of re-firing every tick.
+            _lastInitialProgressTick = World.SyncTick;
+            _lastInitialPendingCount = -1;
+            return;
+        }
+
+        if (!_loggedInitialIncomplete)
+        {
+            _loggedInitialIncomplete = true;
+            LumoraLogger.Error($"[lnl] Initial full state STUCK with {pending} record(s) that never resolved their owner - entering world INCOMPLETE. Unresolved:");
+            lock (_pendingLock)
+            {
+                foreach (var kvp in _pendingFullRecords)
+                {
+                    var obj = World.ReferenceController?.GetObjectOrNull(kvp.Key);
+                    LumoraLogger.Error($"[lnl]   unresolved RefID={kvp.Key} owner={(obj?.GetType().Name ?? "NEVER CREATED")}");
+                }
+            }
+        }
+
+        LumoraLogger.Warn("[lnl] Entering world despite incomplete initial state (see unresolved records above)");
+        World.OnFullStateReceived();
+    }
+
     private void ProcessPendingRecord(PendingRecord record, bool isFull)
     {
         if (World == null || World.ReferenceController == null || World.SyncController == null)
             return;
 
-        var isExpired = World.SyncTick - record.FirstSeenTick > PendingRecordMaxAgeTicks;
+        // During the initial join we keep retrying instead of giving
+        // up after a few frames - a record is usually only pending because its owner hasn't decoded
+        // yet, and dropping it is permanent lost world content. We use a much longer ceiling here and,
+        // if we ever do drop, we say loudly that it cost world content. -xlinka
+        bool initialState = isFull && !World.IsAuthority
+            && World.InitState == World.InitializationState.InitializingDataModel;
+        ulong maxAge = (ulong)(initialState ? InitialStateMaxAgeTicks : PendingRecordMaxAgeTicks);
+
+        var isExpired = World.SyncTick - record.FirstSeenTick > maxAge;
         if (isExpired)
         {
-            DropPendingRecord(record.TargetID, isFull, "expired");
+            if (initialState)
+            {
+                var owner = World.ReferenceController.GetObjectOrNull(record.TargetID);
+                DropPendingRecord(record.TargetID, isFull,
+                    $"expired during initial state - MISSING WORLD CONTENT (owner={owner?.GetType().Name ?? "never created"})");
+            }
+            else
+            {
+                DropPendingRecord(record.TargetID, isFull, "expired");
+            }
             return;
         }
 
@@ -1233,12 +1426,19 @@ public class SessionSyncManager : IDisposable
         var decoded = TryDecodePendingRecord(record, isFull);
         if (decoded)
         {
+            if (isFull && !World.IsAuthority)
+            {
+                lock (_progressLock) { _initializedComponents++; }
+            }
             DropPendingRecord(record.TargetID, isFull, null!);
             return;
         }
 
         record.Attempts++;
-        if (record.Attempts >= PendingRecordMaxAttempts)
+        // No per-attempt drop during initial state - the age ceiling above is the only give-up there,
+        // so a record whose owner is still on its way isn't discarded early. -xlinka
+        int maxAttempts = initialState ? int.MaxValue : PendingRecordMaxAttempts;
+        if (record.Attempts >= maxAttempts)
         {
             DropPendingRecord(record.TargetID, isFull, "attempts exceeded");
             return;
@@ -1297,7 +1497,10 @@ public class SessionSyncManager : IDisposable
             var map = isFull ? _pendingFullRecords : _pendingDeltaRecords;
             if (map.Remove(targetId) && !string.IsNullOrEmpty(reason))
             {
-                LumoraLogger.Warn($"[lnl] Pending record dropped for {targetId}: {reason}");
+                // Per-record, at Debug: a joiner can pend+drop dozens of records (e.g. its own avatar
+                // echoed back before its local copy exists), and a Warn-per-record buries the console.
+                // The real avatar-on-join sync gap is tracked separately. -xlinka
+                LumoraLogger.Debug($"[lnl] Pending record dropped for {targetId}: {reason}");
             }
         }
     }
@@ -1486,8 +1689,21 @@ public class SessionSyncManager : IDisposable
             case ControlMessage.Message.JoinStartDelta:
                 LumoraLogger.Log("[lnl] ProcessControlMessage: JoinStartDelta received - can now accept delta updates");
                 _acceptDeltas = true;
+                _joinStartDeltaSeen = true;
                 if (!World.IsAuthority && World.InitState == World.InitializationState.InitializingDataModel)
                 {
+                    // Enter the world now. The host considers us initialized once it has sent the full
+                    // batch, so it starts pushing deltas immediately - if we DON'T go Running here those
+                    // reliable deltas pile up at the pending cap and get dropped (= permanently lost
+                    // state). Records that didn't decode yet keep retrying in the background; if any
+                    // never resolve the WorkerManager/decoder logs say exactly which type/element. We
+                    // surface that here instead of blocking the whole join on it. -xlinka
+                    int stillPending;
+                    lock (_pendingLock) { stillPending = _pendingFullRecords.Count; }
+                    if (stillPending > 0)
+                    {
+                        LumoraLogger.Warn($"[lnl] Entering world with {stillPending} initial record(s) still pending - they'll keep retrying. If content is missing, look above for 'UNRESOLVED TYPE' / 'Unknown component type'.");
+                    }
                     LumoraLogger.Log("[lnl] JoinStartDelta: transitioning client world to Running");
                     World.OnFullStateReceived();
                 }
@@ -1503,11 +1719,17 @@ public class SessionSyncManager : IDisposable
                     var fullBatch = World.SyncController.EncodeFullBatch();
                     fullBatch.Targets.Add(message.Sender);
                     EnqueueForTransmission(fullBatch);
-                    
+
                     // Send JoinStartDelta to indicate they can now receive delta updates
                     var startDeltaMessage = new ControlMessage(ControlMessage.Message.JoinStartDelta);
                     startDeltaMessage.Targets.Add(message.Sender);
                     EnqueueForTransmission(startDeltaMessage);
+
+                    // This join path does NOT go through the Stage-8 init queue, so it's the only place
+                    // this user's fan-out gate gets opened. Miss it and the user receives zero deltas or
+                    // streams forever - full state arrived but then nothing ever moves. Full batch is
+                    // enqueued before this, so live traffic still trails the state. -xlinka
+                    requestingUser.StartTransmittingStreamData();
                 }
                 else if (!World.IsAuthority)
                 {

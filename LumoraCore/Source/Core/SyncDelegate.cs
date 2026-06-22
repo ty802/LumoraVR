@@ -171,6 +171,9 @@ public class SyncDelegate<T> : SyncField<WorldDelegate>, IWorldElementReceiver, 
         set => Value = new WorldDelegate(value?.ReferenceID ?? RefID.Null, Value.Method, Value.Type);
     }
 
+    // Raw (unfiltered) target element, same as ISyncRef.RawTarget on a plain ref. -xlinka
+    IWorldElement ISyncRef.RawTarget => _targetElement!;
+
     Type ISyncRef.TargetType => typeof(IWorldElement);
 
     bool ISyncRef.TrySet(IWorldElement target)

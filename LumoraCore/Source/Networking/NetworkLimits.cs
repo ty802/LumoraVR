@@ -44,4 +44,10 @@ public static class NetworkLimits
     /// <summary>Maximum size of a single RawFrameMessage payload, in bytes. Sized for
     /// codec frames (e.g. Opus 60 ms approx 960 B at 128 kbps); 4 KB leaves generous headroom.</summary>
     public const int MaxRawFrameBytes = 4 * 1024;
+
+    /// <summary>Maximum decompressed size of a single compressed sync frame, in bytes. A peer
+    /// declares the uncompressed length in the compression envelope; this caps the buffer we
+    /// allocate for it so a crafted frame can't force a huge allocation. Sized generously so a
+    /// large full-world-state batch in one frame is never falsely rejected.</summary>
+    public const int MaxDecompressedFrameBytes = 16 * 1024 * 1024; // 16 MB
 }

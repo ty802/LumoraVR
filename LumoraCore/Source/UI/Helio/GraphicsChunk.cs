@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Components;
+using Lumora.Core.Logging;
 using Lumora.Core.Math;
 using Lumora.Core.Phos;
 
@@ -23,10 +24,13 @@ public sealed class GraphicsChunk
         // Captured on the main thread (prepare walk), drained on the worker (EmitQueued). The worker
         // never traverses the live slot tree - it only iterates this queue and calls ComputeGraphic,
         // which reads each graphic's already-snapshotted state + stable LocalComputeRect. - xlinka
-        private readonly List<(Graphic Graphic, Rect? Clip)> _emitQueue = new();
+        private readonly List<(Graphic Graphic, Rect? Clip, StencilRole Stencil)> _emitQueue = new();
         private readonly GraphicsChunk _chunk;
         private int _minimumSubmeshIndex;
         private Rect? _clipRect;
+        private StencilRole _stencilRole;
+        // Latch so the render-priority band-exhaustion warning fires once per RenderData, not every submit. -xlinka
+        private bool _loggedBandExhaustion;
 
         public PhosMesh Mesh { get; } = new();
         public Rect? ClipRect => _clipRect;
@@ -58,10 +62,10 @@ public sealed class GraphicsChunk
             _minimumSubmeshIndex = Mesh.Submeshes.Count;
         }
 
-        // MAIN: queue a prepared graphic (with its computed clip) for the worker emit pass.
-        public void QueueGraphic(Graphic graphic, Rect? clip)
+        // MAIN: queue a prepared graphic (with its computed clip + stencil role) for the worker emit pass.
+        public void QueueGraphic(Graphic graphic, Rect? clip, StencilRole stencil = StencilRole.None)
         {
-            _emitQueue.Add((graphic, clip));
+            _emitQueue.Add((graphic, clip, stencil));
         }
 
         // WORKER: build the geometry for every queued graphic. No slot/datamodel access (materials
@@ -71,21 +75,22 @@ public sealed class GraphicsChunk
         {
             for (int i = 0; i < _emitQueue.Count; i++)
             {
-                var (graphic, clip) = _emitQueue[i];
+                var (graphic, clip, stencil) = _emitQueue[i];
                 BeginGraphic();
                 SetClipRect(clip);
+                _stencilRole = stencil;
                 graphic.ComputeGraphic(this);
             }
         }
 
         public PhosTriangleSubmesh GetSubmesh(IAssetProvider<MaterialAsset>? material)
-            => GetSubmesh(new MaterialKey(material, null, null, _clipRect));
+            => GetSubmesh(new MaterialKey(material, null, null, _clipRect, _stencilRole));
 
         public PhosTriangleSubmesh GetSubmesh(IAssetProvider<MaterialAsset>? material, MaterialMapper mapper)
-            => GetSubmesh(new MaterialKey(material, null, mapper, _clipRect));
+            => GetSubmesh(new MaterialKey(material, null, mapper, _clipRect, _stencilRole));
 
         public PhosTriangleSubmesh GetSubmesh(IAssetProvider<MaterialAsset>? material, object? key, MaterialMapper? mapper)
-            => GetSubmesh(new MaterialKey(material, key, mapper, _clipRect));
+            => GetSubmesh(new MaterialKey(material, key, mapper, _clipRect, _stencilRole));
 
         public PhosTriangleSubmesh GetSubmesh(in MaterialKey key)
         {
@@ -214,7 +219,7 @@ public sealed class GraphicsChunk
         //   overlay level 2   -> [  72 ..  87]   (e.g. the modal panel background)
         //   overlay level >=3 -> [  88 .. 127]   (modal content/rows, on top)
         // Within a band, surfaces pack high in submission order (later = drawn on top). - xlinka
-        private static int[] BuildPerSurfacePriorities(int materialCount, bool renderOnTop, int overlayLevel)
+        private int[] BuildPerSurfacePriorities(int materialCount, bool renderOnTop, int overlayLevel)
         {
             var result = new int[materialCount];
             if (materialCount == 0) return result;
@@ -239,6 +244,28 @@ public sealed class GraphicsChunk
             else
             {
                 lo = 88; hi = GodotRenderPriorityMax;           // overlay content
+            }
+
+            // When a chunk has more surfaces than its band is wide, the fill loop below saturates the
+            // overflow at hi - those coplanar quads collapse onto one render_priority and Godot falls back to
+            // distance sort (the angle "wash"). Surface that latent z-order bug in dev instead of shipping it
+            // as a mystery visual glitch. Warn once per RenderData; near-exhaustion is debug-only. -xlinka
+            int bandWidth = hi - lo + 1;
+            if (materialCount > bandWidth)
+            {
+                if (!_loggedBandExhaustion)
+                {
+                    _loggedBandExhaustion = true;
+                    Logger.Warn($"[Helio] Render-priority band exhausted on chunk #{_chunk.OrderIndex} " +
+                        $"(renderOnTop={renderOnTop}, overlayLevel={overlayLevel}): {materialCount} surfaces > band width " +
+                        $"{bandWidth} [{lo}..{hi}]. {materialCount - bandWidth} surface(s) saturate at {hi}, so coplanar " +
+                        $"z-order goes ambiguous. Reduce overlay nesting / material count, or move this canvas to unbounded render order.");
+                }
+            }
+            else if (materialCount > bandWidth - 2 && Logger.EnableDebug)
+            {
+                Logger.Debug($"[Helio] Render-priority band near exhaustion on chunk #{_chunk.OrderIndex}: " +
+                    $"{materialCount}/{bandWidth} in [{lo}..{hi}].");
             }
 
             int start = hi - materialCount + 1;
@@ -277,7 +304,25 @@ public sealed class GraphicsChunk
 
         private void SortSubmeshesByRenderQueue(Dictionary<PhosTriangleSubmesh, int> submeshQueues)
         {
-            if (submeshQueues.Count < 2)
+            // Stencil-WRITE submeshes must draw before any stencil-tested content (which compares against the
+            // stencil they stamp), regardless of logical render queue. Without this, content with a custom low
+            // RenderQueue could sort ahead of the mask writer and then be discarded by compare_equal. -xlinka
+            HashSet<PhosTriangleSubmesh>? writeSubmeshes = null;
+            foreach (var pair in _requestedMaterials)
+            {
+                if (pair.Key.Stencil != StencilRole.Write)
+                {
+                    continue;
+                }
+
+                writeSubmeshes ??= new HashSet<PhosTriangleSubmesh>();
+                foreach (var submesh in pair.Value)
+                {
+                    writeSubmeshes.Add(submesh);
+                }
+            }
+
+            if (Mesh.Submeshes.Count < 2 || (submeshQueues.Count < 2 && writeSubmeshes == null))
             {
                 return;
             }
@@ -290,6 +335,14 @@ public sealed class GraphicsChunk
 
             Mesh.Submeshes.Sort((left, right) =>
             {
+                // Writers first, always.
+                bool leftWrite = writeSubmeshes != null && left is PhosTriangleSubmesh lw && writeSubmeshes.Contains(lw);
+                bool rightWrite = writeSubmeshes != null && right is PhosTriangleSubmesh rw && writeSubmeshes.Contains(rw);
+                if (leftWrite != rightWrite)
+                {
+                    return leftWrite ? -1 : 1;
+                }
+
                 int leftQueue = left is PhosTriangleSubmesh leftTriangle
                     && submeshQueues.TryGetValue(leftTriangle, out int lq)
                         ? lq
@@ -466,6 +519,15 @@ public sealed class GraphicsChunk
                 map = new MaterialMap(baseMaterial);
             }
 
+            if (key.Stencil != StencilRole.None)
+            {
+                // Mask shape (Write) or stencil-tested content (Test): a shader-variant clone, with the
+                // inherited rect clip folded in as an orthogonal AABB bound alongside the stencil shape.
+                return new MaterialMap(
+                    _chunk.GetStencilMaterial(map.FilteredMaterial, key.Stencil, key.ClipRect),
+                    map.FilteredPropertyBlock);
+            }
+
             if (!key.ClipRect.HasValue)
             {
                 return map;
@@ -632,6 +694,20 @@ public sealed class GraphicsChunk
         SetupComponents();
         _materialCloneCache ??= new MaterialCloneCache(ChunkSlot);
         return _materialCloneCache.GetClippedMaterial(source, clipRect);
+    }
+
+    // Clone of a UI material that swaps to the stencil-write or stencil-test shader variant (and folds in the
+    // inherited rect clip). Used for shaped GPU masking; the rect-clip path above is untouched. -xlinka
+    private IAssetProvider<MaterialAsset>? GetStencilMaterial(IAssetProvider<MaterialAsset>? source, StencilRole role, Rect? clipRect)
+    {
+        if (source == null)
+        {
+            return null;
+        }
+
+        SetupComponents();
+        _materialCloneCache ??= new MaterialCloneCache(ChunkSlot);
+        return _materialCloneCache.GetStencilMaterial(source, role, clipRect);
     }
 
     // Per-surface render priority requires its own cloned material because the

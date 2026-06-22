@@ -44,19 +44,21 @@ public sealed class HomeScreen : WidgetScreen
 
         // The home screen IS a widget grid (each item below is a widget placed by
         // cell). The edit overlay + drag handles come from WidgetGrid itself.
+        // Dense ~64px cells; widgets span several cells. Tight 4px
+        // spacing so the grid reads as fine lines, not big blocks. -xlinka
         var grid = root.AttachComponent<WidgetGrid>();
-        grid.CellSize.Value = new float2(150f, 56f);
-        grid.Spacing.Value = new float2(10f, 10f);
-        grid.Padding.Value = new float2(16f, 16f);
+        grid.CellSize.Value = new float2(64f, 64f);
+        grid.Spacing.Value = new float2(4f, 4f);
+        grid.Padding.Value = new float2(8f, 8f);
 
-        AddButtonWidget(root, "+ Create New World", CreateFill, 0, 0, 2, 1, ToggleCreateMenu);
-        AddToggleWidget(root, "Freeform Dash", 0, 1, 2, 1,
+        AddButtonWidget(root, "+ Create New World", CreateFill, 0, 0, 6, 1, ToggleCreateMenu);
+        AddToggleWidget(root, "Freeform Dash", 0, 1, 6, 1,
             () => UserspaceDashboard.LocalInstance?.Freeform.Value ?? false,
             v => UserspaceDashboard.LocalInstance?.SetFreeform(v));
-        AddToggleWidget(root, "Edit Widgets", 0, 2, 2, 1,
+        AddToggleWidget(root, "Edit Widgets", 0, 2, 6, 1,
             () => WidgetPanel.EditMode,
             v => WidgetPanel.EditMode = v);
-        AddButtonWidget(root, "Avatar Creator", AvatarFill, 0, 3, 2, 1, OpenAvatarCreator);
+        AddButtonWidget(root, "Avatar Creator", AvatarFill, 0, 3, 6, 1, OpenAvatarCreator);
 
         BuildCreateOverlay(root);
     }
@@ -178,12 +180,6 @@ public sealed class HomeScreen : WidgetScreen
             // its rows never close it even if the full-screen backdrop catches the hit.
             var panelRect = _createOverlay?.GetComponent<RectTransform>()?.LocalComputeRect;
             bool inside = panelRect.HasValue && panelRect.Value.Contains(ctx.LocalPoint);
-            // DIAGNOSTIC (remove once the click-dismiss is confirmed): logs why the backdrop fired and
-            // whether the panel rect actually contains the click point. - xlinka
-            var pr = panelRect ?? default;
-            Lumora.Core.Logging.Logger.Log(
-                $"[CreateMenu] backdrop click pt=({ctx.LocalPoint.x:F1},{ctx.LocalPoint.y:F1}) " +
-                $"panel=({pr.xMin:F1},{pr.yMin:F1},{pr.width:F1}x{pr.height:F1}) inside={inside} -> {(inside ? "keep" : "DISMISS")}");
             if (inside)
                 return;
             CloseCreateMenu();
@@ -308,7 +304,6 @@ public sealed class HomeScreen : WidgetScreen
     protected override void OnHide()
     {
         base.OnHide();
-        Lumora.Core.Logging.Logger.Log($"[CreateMenuDiag] HomeScreen.OnHide fired (createOpen was {_createOpen})");
         CloseCreateMenu();
     }
 
@@ -324,14 +319,6 @@ public sealed class HomeScreen : WidgetScreen
         if (_createBackdrop != null && !_createBackdrop.IsDestroyed)
             _createBackdrop.ActiveSelf.Value = open;
         MarkDirty();
-        // DIAG (remove once the overlap is fixed): confirms the close path runs AND the overlay slot actually
-        // deactivates. If this logs overlay activeSelf=False/isActive=False but it still draws, the bug is the
-        // canvas chunk reconcile or the offscreen re-render, not the lifecycle. -xlinka
-        Lumora.Core.Logging.Logger.Log(
-            $"[CreateMenuDiag] SetCreateMenuOpen({open}): overlay null={_createOverlay == null} " +
-            $"destroyed={_createOverlay?.IsDestroyed} activeSelf={_createOverlay?.ActiveSelf.Value} " +
-            $"isActive={_createOverlay?.IsActive} | backdrop activeSelf={_createBackdrop?.ActiveSelf.Value} " +
-            $"isActive={_createBackdrop?.IsActive}");
     }
 
     private void OnCreate()

@@ -16,6 +16,9 @@ public interface IGrabbable : IInteractionTarget
     int GrabPriority { get; }
     Grabber? Grabber { get; }
 
+    // Whether this can be taken out of another user's hands. - xlinka
+    bool CanBeStolen { get; }
+
     event Action<IGrabbable>? OnLocalGrabbed;
     event Action<IGrabbable>? OnLocalReleased;
 

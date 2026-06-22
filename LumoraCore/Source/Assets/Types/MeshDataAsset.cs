@@ -35,6 +35,31 @@ public class MeshDataAsset : ImplementableAsset<IMeshAssetHook>
     /// </summary>
     public int VertexCount => _meshData?.VertexCount ?? 0;
 
+    // Skinning surface - lets a skinned renderer rebind off the asset's own bone table + blendshape
+    // names instead of carrying that data as per-element synced lists. Returns empties until the decoder
+    // populates them (the bake/glTF-skinning producer is the next step). -xlinka
+
+    /// <summary>Number of bones in the mesh's skeleton table.</summary>
+    public int BoneCount => _meshData?.BoneCount ?? 0;
+
+    /// <summary>Bone name at the given index, or null if out of range.</summary>
+    public string? GetBoneName(int index) =>
+        (_meshData != null && index >= 0 && index < _meshData.BoneCount) ? _meshData.GetBoneName(index) : null;
+
+    /// <summary>Bone bind pose at the given index (identity if out of range).</summary>
+    public Lumora.Core.Math.float4x4 GetBoneBindPose(int index) =>
+        (_meshData != null && index >= 0 && index < _meshData.BoneCount) ? _meshData.GetBoneBindPose(index) : Lumora.Core.Math.float4x4.Identity;
+
+    /// <summary>Number of blend shapes on the mesh.</summary>
+    public int BlendShapeCount => _meshData?.BlendShapeCount ?? 0;
+
+    /// <summary>Blend shape name at the given index, or null if out of range.</summary>
+    public string? GetBlendShapeName(int index) =>
+        (_meshData != null && index >= 0 && index < _meshData.BlendShapeCount) ? _meshData.BlendShapes[index].Name : null;
+
+    /// <summary>Index of the named blend shape, or -1 if absent.</summary>
+    public int BlendShapeIndex(string name) => _meshData?.BlendShapeIndex(name) ?? -1;
+
     /// <summary>
     /// Number of triangles in the mesh.
     /// </summary>

@@ -31,6 +31,12 @@ internal static class LayoutSizing
         return rect.Slot.GetComponent<IgnoreLayout>() != null;
     }
 
+    // Prefer the bottom-up measured cache (populated by the canvas measure pass before arrange); fall
+    // back to a live compute for any rect not yet measured (e.g. added mid-arrange) so we never read a
+    // stale zero. This is what layouts read during arrange/aggregation. -xlinka
+    public static LayoutMetrics Measured(RectTransform rect, LayoutDirection direction)
+        => rect.MetricsValid ? rect.GetMeasuredMetrics(direction) : GetMetrics(rect, direction);
+
     public static LayoutMetrics GetMetrics(RectTransform rect, LayoutDirection direction)
     {
         var result = default(LayoutMetrics);

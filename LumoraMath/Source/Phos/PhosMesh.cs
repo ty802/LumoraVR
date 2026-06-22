@@ -23,6 +23,7 @@ public class PhosMesh
     internal color[] colors = Array.Empty<color>();
     internal PhosUVArray[] uvChannels = new PhosUVArray[4];  // Support up to 4 UV channels
     internal PhosBoneBinding[] boneBindings = Array.Empty<PhosBoneBinding>();
+    internal List<PhosBone> bones = new List<PhosBone>();
     internal BitArray flags = new BitArray(0);
 
     // Vertex Tracking
@@ -87,6 +88,9 @@ public class PhosMesh
 
     /// <summary>Raw array of UV channel 3 - direct access</summary>
     public float2[] RawUV3s => uvChannels[3].uv2D ?? Array.Empty<float2>();
+
+    /// <summary>Raw array of per-vertex bone bindings - direct access</summary>
+    public PhosBoneBinding[] RawBoneBindings => boneBindings;
 
     // Submeshes
     /// <summary>List of submeshes (different topology groups)</summary>
@@ -275,6 +279,7 @@ public class PhosMesh
 
         Submeshes.Clear();
         BlendShapes.Clear();
+        bones.Clear();
     }
 
     // UV Channel Management
@@ -399,6 +404,38 @@ public class PhosMesh
         return Submeshes.IndexOf(submesh);
     }
 
+    // Bone Management
+
+    /// <summary>Number of bones in this mesh's skeleton table.</summary>
+    public int BoneCount => bones.Count;
+
+    /// <summary>Get a bone by index.</summary>
+    public PhosBone GetBone(int index) => bones[index];
+
+    /// <summary>Index of a bone in the table, or -1 if not present.</summary>
+    public int IndexOfBone(PhosBone bone) => bones.IndexOf(bone);
+
+    /// <summary>Bone name at the given index.</summary>
+    public string GetBoneName(int index) => bones[index].Name;
+
+    /// <summary>Bone bind pose at the given index.</summary>
+    public float4x4 GetBoneBindPose(int index) => bones[index].BindPose;
+
+    /// <summary>Append a new bone (BindPose defaults to identity) and return it.</summary>
+    public PhosBone AddBone(string name = "Bone")
+    {
+        var bone = new PhosBone(name);
+        bones.Add(bone);
+        return bone;
+    }
+
+    /// <summary>
+    /// Ensure the per-vertex bone-binding array exists, sized to VertexCount. Thin public wrapper over
+    /// the internal CheckBoneBindings so the asset path can request bindings without reaching into
+    /// internals. - xlinka
+    /// </summary>
+    public void EnsureBoneBindings() => CheckBoneBindings();
+
     // Blend Shape Management
 
     /// <summary>
@@ -415,6 +452,15 @@ public class PhosMesh
         BlendShapes.Add(newShape);
         return newShape;
     }
+
+    /// <summary>Number of blend shapes on this mesh.</summary>
+    public int BlendShapeCount => BlendShapes.Count;
+
+    /// <summary>Index of the named blend shape, or -1 if absent.</summary>
+    public int BlendShapeIndex(string name) => BlendShapes.FindIndex(bs => bs.Name == name);
+
+    /// <summary>Whether a blend shape with this name exists.</summary>
+    public bool HasBlendShape(string name) => BlendShapeIndex(name) >= 0;
 
     // Utility Methods
 

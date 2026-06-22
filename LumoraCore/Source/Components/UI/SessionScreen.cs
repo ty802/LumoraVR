@@ -35,6 +35,13 @@ public sealed class SessionScreen : WidgetScreen
     private Slot? _rightColumn;
     private float _handlePressY;
     private float _handlePressScroll;
+    private int _scrollHandleRetries;
+
+    // A freshly-built viewport sits at the RectTransform default (100x100) until the canvas runs a
+    // layout pass. Sizing the scrollbar off that 100px makes maxScroll = content - 100 (huge) with a
+    // tiny thumb, so the short form scrolls out of view into empty space. This sentinel rejects the
+    // un-laid-out rect; the real viewport is ~424, so legitimate sizes are never refused. -xlinka
+    private const float LaidOutViewportFloor = 100f;
     private readonly List<SettingsSection> _sections = new();
     private Slot? _settingsPage;
     private Slot? _usersPage;
@@ -207,6 +214,7 @@ public sealed class SessionScreen : WidgetScreen
             return;
         page.DestroyChildren();
         _sections.Clear();
+        _scrollHandleRetries = 0; // fresh build: restart the wait-for-layout retry budget
 
         var world = FocusedWorld;
         if (world == null)
@@ -255,6 +263,11 @@ public sealed class SessionScreen : WidgetScreen
 
         var content = viewport.AddSlot("Content");
         _contentRect = content.AttachComponent<RectTransform>();
+        // Top-pinned, full-width content strip; its HEIGHT is set explicitly by RecomputeContentHeight.
+        // (The ContentSizeFitter approach was reverted: it resized this rect mid-layout-pass and, combined
+        // with ScrollRect mutating the same rect, never let the canvas settle - it re-dirtied every frame and
+        // froze the deep Session form. The proper fix resolves self-size inside the single compute pass + scrolls
+        // by a render offset; until we do that migration, pin the height explicitly like before.) -xlinka
         _contentRect.AnchorMin.Value = new float2(0f, 1f);
         _contentRect.AnchorMax.Value = new float2(1f, 1f);
         _contentRect.OffsetMin.Value = new float2(0f, -100f);
@@ -422,6 +435,10 @@ public sealed class SessionScreen : WidgetScreen
             return;
         float viewportHeight = _viewportRect.LocalComputeRect.height;
         float contentHeight = _contentRect.LocalComputeRect.height;
+        // Ignore drags before the viewport is laid out - the 100px default would compute a bogus,
+        // huge scroll range and fling the form off-screen. -xlinka
+        if (viewportHeight <= LaidOutViewportFloor || contentHeight <= 0f)
+            return;
         float maxScroll = MathF.Max(0f, contentHeight - viewportHeight);
         if (maxScroll <= 0f)
             return;
@@ -443,16 +460,39 @@ public sealed class SessionScreen : WidgetScreen
             || _viewportRect == null || _contentRect == null)
             return;
         float viewportHeight = _viewportRect.LocalComputeRect.height;
+        if (viewportHeight <= LaidOutViewportFloor)
+        {
+            // Layout hasn't produced the real viewport rect yet (still the 100px default). Retrying
+            // next frame, bounded so a genuinely tiny/broken panel can't churn forever.
+            if (_scrollHandleRetries++ < 30)
+                World?.RunInUpdates(1, UpdateScrollHandle);
+            return;
+        }
+        _scrollHandleRetries = 0;
+
+        // The ContentSizeFitter owns the content height, and ScrollRect.ApplyScroll clamps the scroll to
+        // that same rect - so reading it here keeps the handle, the scroll clamp, and the real content in
+        // perfect agreement (one source of truth, no racing pin). -xlinka
         float contentHeight = _contentRect.LocalComputeRect.height;
-        if (viewportHeight <= 0f || contentHeight <= 0f)
-            return; // layout not computed yet
+        if (contentHeight <= 0f)
+        {
+            if (_scrollHandleRetries++ < 30)
+                World?.RunInUpdates(1, UpdateScrollHandle);
+            return;
+        }
+
         float maxScroll = MathF.Max(0f, contentHeight - viewportHeight);
         if (maxScroll <= 0.5f)
         {
             _scrollTrack.ActiveSelf.Value = false; // everything fits; no scrollbar
+            if (_scroll.Scroll.Value.y != 0f)
+                _scroll.Scroll.Value = float2.Zero; // drop any stale scroll so the form sits at the top
             return;
         }
         _scrollTrack.ActiveSelf.Value = true;
+        // Clamp any existing scroll to the (possibly reduced) real range so it can't rest past the bottom.
+        if (_scroll.Scroll.Value.y > maxScroll)
+            _scroll.Scroll.Value = new float2(0f, maxScroll);
         float handleHeight = MathF.Max(30f, viewportHeight * (viewportHeight / contentHeight));
         float fraction = Clamp(_scroll.Scroll.Value.y / maxScroll, 0f, 1f);
         float offset = fraction * (viewportHeight - handleHeight);
@@ -474,6 +514,8 @@ public sealed class SessionScreen : WidgetScreen
             bodyElement.PreferredHeight.Value = height;
         }
 
+        // Pin the content height to the taller column's measured stack so ScrollRect knows the range.
+        // (Explicit pin instead of a ContentSizeFitter - the fitter froze the canvas; see RebuildSettings.)
         float total = MathF.Max(MeasureStack(_leftColumn), MeasureStack(_rightColumn)) + 6f;
         if (_contentRect != null)
         {

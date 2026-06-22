@@ -33,6 +33,7 @@ public static class MeshDecoder
         {
             return ext switch
             {
+                ".lmesh" => PhosMeshSerializer.Deserialize(fileData),
                 ".glb" or ".gltf" => DecodeGltf(fileData),
                 ".obj" => DecodeObj(fileData),
                 ".fbx" or ".dae" or ".3ds" or ".blend" or ".stl" or ".ply" or ".x" or ".ase" => DecodeAssimp(fileData, ext),

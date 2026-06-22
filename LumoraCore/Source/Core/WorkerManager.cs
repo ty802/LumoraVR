@@ -135,7 +135,21 @@ public class WorkerManager
 
         if (index > 0)
         {
-            return types[index];
+            Type resolved = types[index];
+            if (resolved == null)
+            {
+                // This index resolved to null when the type table first synced - almost always because
+                // the owning assembly wasn't loaded yet. Don't trust that forever: try again now (cheap,
+                // GetType caches hits) and heal the slot if it resolves. Without this, ONE early miss
+                // permanently nulls every component of that type for the world's whole lifetime, which
+                // silently drops the component and orphans its child slots. A still-null result just
+                // means a host type we genuinely don't have. -xlinka
+                string name = indexTable[index];
+                resolved = GetType(name);
+                if (resolved != null)
+                    types[index] = resolved;
+            }
+            return resolved!;
         }
 
         // Index 0 means type name follows
@@ -174,25 +188,46 @@ public class WorkerManager
         }
     }
 
+    // Resolved types are cached across all worlds (a type name maps to the same Type process-wide).
+    // We only cache hits - a miss may resolve later once its assembly is loaded, so we never cache
+    // null. -xlinka
+    private static readonly Dictionary<string, Type> _typeCache = new();
+
     public static Type GetType(string typename)
     {
-        Type type = Type.GetType(typename)!;
-        if (type != null)
+        if (string.IsNullOrEmpty(typename))
+            return null!;
+
+        lock (_typeCache)
         {
-            return type;
+            if (_typeCache.TryGetValue(typename, out var cached))
+                return cached;
         }
-        
-        Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
-        for (int i = 0; i < assemblies.Length; i++)
+
+        Type type = Type.GetType(typename)!;
+        if (type == null)
         {
-            type = assemblies[i].GetType(typename)!;
-            if (type != null)
+            Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
+            for (int i = 0; i < assemblies.Length; i++)
             {
-                return type;
+                type = assemblies[i].GetType(typename)!;
+                if (type != null)
+                    break;
             }
         }
-        
-        LumoraLogger.Error("Unable to find type: " + typename);
+
+        if (type != null)
+        {
+            lock (_typeCache)
+            {
+                _typeCache[typename] = type;
+            }
+            return type;
+        }
+
+        // A type the host used can't be resolved here. The component will be skipped on this client
+        // and its whole subtree will go missing - this is the loud signal for that. -xlinka
+        LumoraLogger.Error($"WorkerManager.GetType: UNRESOLVED TYPE '{typename}' - a host component of this type will be SKIPPED on this client (assembly not loaded or name mismatch). Joined world will be incomplete.");
         return null!;
     }
 }

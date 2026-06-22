@@ -13,6 +13,7 @@ public sealed class MaterialCloneCache
     private readonly Slot _root;
     private readonly Dictionary<ClipMaterialKey, Entry> _clipMaterials = new();
     private readonly Dictionary<PriorityMaterialKey, Entry> _priorityMaterials = new();
+    private readonly Dictionary<StencilMaterialKey, Entry> _stencilMaterials = new();
     private int _frame;
 
     public MaterialCloneCache(Slot owner)
@@ -32,6 +33,10 @@ public sealed class MaterialCloneCache
                 entry.LastUsedFrame = 0;
             }
             foreach (var entry in _priorityMaterials.Values)
+            {
+                entry.LastUsedFrame = 0;
+            }
+            foreach (var entry in _stencilMaterials.Values)
             {
                 entry.LastUsedFrame = 0;
             }
@@ -68,6 +73,65 @@ public sealed class MaterialCloneCache
         };
     }
 
+    // Clone of a UI material that swaps to the stencil-write or stencil-test shader variant. Write = a mask
+    // shape stamping the stencil; Test = content clipped to where the stencil matches. The inherited rect
+    // clip is folded in as an orthogonal AABB bound. Only UIUnlitMaterial sources (Image graphics, incl. the
+    // mask shape) get a variant; text falls back to rect-clip so it stays within the mask's AABB. -xlinka
+    public IAssetProvider<MaterialAsset>? GetStencilMaterial(IAssetProvider<MaterialAsset>? source, StencilRole role, Rect? clipRect)
+    {
+        if (source == null || source.IsDestroyed || role == StencilRole.None)
+        {
+            return source;
+        }
+
+        if (source is UIUnlitMaterial unlit)
+        {
+            return GetStencilUIUnlit(unlit, role, clipRect);
+        }
+
+        // Text content under a stencil mask: shape-clip it too (Test only; masks are Image shapes, never text).
+        if (source is UITextMaterial text && role == StencilRole.Test)
+        {
+            return GetStencilUIText(text, clipRect);
+        }
+
+        return clipRect.HasValue ? GetClippedMaterial(source, clipRect.Value) : source;
+    }
+
+    private UITextMaterial GetStencilUIText(UITextMaterial source, Rect? clipRect)
+    {
+        var key = new StencilMaterialKey(source, StencilRole.Test, clipRect);
+        if (!_stencilMaterials.TryGetValue(key, out var entry) || entry.Material is not UITextMaterial clone || clone.IsDestroyed)
+        {
+            var slot = _root.AddLocalSlot("StencilTestTextMaterial");
+            clone = slot.AttachComponent<UIStencilTestTextMaterial>();
+            entry = new Entry(slot, clone);
+            _stencilMaterials[key] = entry;
+        }
+
+        entry.LastUsedFrame = _frame;
+        CopyUIText(source, clone, clipRect, null);
+        return clone;
+    }
+
+    private UIUnlitMaterial GetStencilUIUnlit(UIUnlitMaterial source, StencilRole role, Rect? clipRect)
+    {
+        var key = new StencilMaterialKey(source, role, clipRect);
+        if (!_stencilMaterials.TryGetValue(key, out var entry) || entry.Material is not UIUnlitMaterial clone || clone.IsDestroyed)
+        {
+            var slot = _root.AddLocalSlot(role == StencilRole.Write ? "StencilWriteMaterial" : "StencilTestMaterial");
+            clone = role == StencilRole.Write
+                ? slot.AttachComponent<UIStencilWriteMaterial>()
+                : slot.AttachComponent<UIStencilTestMaterial>();
+            entry = new Entry(slot, clone);
+            _stencilMaterials[key] = entry;
+        }
+
+        entry.LastUsedFrame = _frame;
+        CopyUIUnlit(source, clone, clipRect, null);
+        return clone;
+    }
+
     public void EndFrame()
     {
         List<ClipMaterialKey>? remove = null;
@@ -85,6 +149,7 @@ public sealed class MaterialCloneCache
         if (remove == null)
         {
             RemoveUnusedPriorityMaterials();
+            RemoveUnusedStencilMaterials();
             return;
         }
 
@@ -96,6 +161,7 @@ public sealed class MaterialCloneCache
         }
 
         RemoveUnusedPriorityMaterials();
+        RemoveUnusedStencilMaterials();
     }
 
     public void Destroy()
@@ -103,6 +169,7 @@ public sealed class MaterialCloneCache
         _root.Destroy();
         _clipMaterials.Clear();
         _priorityMaterials.Clear();
+        _stencilMaterials.Clear();
     }
 
     private UIUnlitMaterial GetClippedUIUnlit(UIUnlitMaterial source, in Rect clipRect)
@@ -143,14 +210,44 @@ public sealed class MaterialCloneCache
         if (!_priorityMaterials.TryGetValue(key, out var entry) || entry.Material is not UIUnlitMaterial clone || clone.IsDestroyed)
         {
             var slot = _root.AddLocalSlot("RenderPriorityMaterial");
-            clone = slot.AttachComponent<UIUnlitMaterial>();
+            // Preserve the concrete material TYPE. The stencil variants (UIStencilWriteMaterial /
+            // UIStencilTestMaterial) pick their shader via a per-subclass MaterialType, so cloning into a
+            // plain UIUnlitMaterial here would silently strip the stencil shader - the per-surface priority
+            // re-clone runs on EVERY material (AssignMaterials), so this is what made stencil masking inert
+            // in the default banded path. -xlinka
+            clone = AttachUIUnlitLike(slot, source);
             entry = new Entry(slot, clone);
             _priorityMaterials[key] = entry;
         }
 
         entry.LastUsedFrame = _frame;
         CopyUIUnlit(source, clone, null, RenderQueueForGodotPriority(renderPriority));
+        // CopyUIUnlit copies base Sync fields only; carry the write variant's mask-visibility too.
+        if (source is UIStencilWriteMaterial sourceWrite && clone is UIStencilWriteMaterial cloneWrite)
+        {
+            cloneWrite.ShowMaskGraphic.Value = sourceWrite.ShowMaskGraphic.Value;
+        }
         return clone;
+    }
+
+    // Attach a UI material matching the source's concrete type so clones keep the stencil shader variant. -xlinka
+    private static UIUnlitMaterial AttachUIUnlitLike(Slot slot, UIUnlitMaterial source)
+    {
+        return source switch
+        {
+            UIStencilWriteMaterial => slot.AttachComponent<UIStencilWriteMaterial>(),
+            UIStencilTestMaterial => slot.AttachComponent<UIStencilTestMaterial>(),
+            _ => slot.AttachComponent<UIUnlitMaterial>(),
+        };
+    }
+
+    private static UITextMaterial AttachUITextLike(Slot slot, UITextMaterial source)
+    {
+        return source switch
+        {
+            UIStencilTestTextMaterial => slot.AttachComponent<UIStencilTestTextMaterial>(),
+            _ => slot.AttachComponent<UITextMaterial>(),
+        };
     }
 
     private UITextMaterial GetPriorityUIText(UITextMaterial source, int renderPriority)
@@ -159,7 +256,8 @@ public sealed class MaterialCloneCache
         if (!_priorityMaterials.TryGetValue(key, out var entry) || entry.Material is not UITextMaterial clone || clone.IsDestroyed)
         {
             var slot = _root.AddLocalSlot("RenderPriorityTextMaterial");
-            clone = slot.AttachComponent<UITextMaterial>();
+            // Preserve the concrete type so a stencil-test text clone keeps the UI_TextStencil shader. -xlinka
+            clone = AttachUITextLike(slot, source);
             entry = new Entry(slot, clone);
             _priorityMaterials[key] = entry;
         }
@@ -262,6 +360,33 @@ public sealed class MaterialCloneCache
             var entry = _priorityMaterials[key];
             entry.Slot.Destroy();
             _priorityMaterials.Remove(key);
+        }
+    }
+
+    private void RemoveUnusedStencilMaterials()
+    {
+        List<StencilMaterialKey>? remove = null;
+        foreach (var pair in _stencilMaterials)
+        {
+            if (pair.Value.LastUsedFrame == _frame)
+            {
+                continue;
+            }
+
+            remove ??= new List<StencilMaterialKey>();
+            remove.Add(pair.Key);
+        }
+
+        if (remove == null)
+        {
+            return;
+        }
+
+        foreach (var key in remove)
+        {
+            var entry = _stencilMaterials[key];
+            entry.Slot.Destroy();
+            _stencilMaterials.Remove(key);
         }
     }
 
@@ -372,6 +497,36 @@ public sealed class MaterialCloneCache
         public override int GetHashCode()
         {
             return System.HashCode.Combine(_material, _renderPriority);
+        }
+    }
+
+    private readonly struct StencilMaterialKey
+    {
+        private readonly IAssetProvider<MaterialAsset> _material;
+        private readonly StencilRole _role;
+        private readonly bool _hasClip;
+        private readonly Rect _clipRect;
+
+        public StencilMaterialKey(IAssetProvider<MaterialAsset> material, StencilRole role, Rect? clipRect)
+        {
+            _material = material;
+            _role = role;
+            _hasClip = clipRect.HasValue;
+            _clipRect = clipRect ?? default;
+        }
+
+        public override bool Equals(object? obj)
+        {
+            return obj is StencilMaterialKey other
+                && ReferenceEquals(_material, other._material)
+                && _role == other._role
+                && _hasClip == other._hasClip
+                && _clipRect == other._clipRect;
+        }
+
+        public override int GetHashCode()
+        {
+            return System.HashCode.Combine(_material, _role, _hasClip, _clipRect);
         }
     }
 }

@@ -114,7 +114,15 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
                 OnAttachRenderer();
             }
 
-            meshWasChanged = Owner.Mesh.GetWasChangedAndClear();
+            // On a joiner this hook often drains BEFORE its mesh provider has uploaded geometry, so the
+            // very first apply latches a 0-surface (or null) mesh. A plain SyncRef<Component> never
+            // re-fires when the provider's mesh DATA later appears, so without re-pulling we'd stay
+            // invisible forever. Re-pull whenever the ref changed OR we're still holding an empty mesh -
+            // so the provider's post-upload FlagSurfacesDirty re-drive (and any later regenerate) actually
+            // re-reads the now-populated ArrayMesh. Once we hold a real surface-bearing mesh this stops. -xlinka
+            bool meshRefChanged = Owner.Mesh.GetWasChangedAndClear();
+            bool haveRealMesh = meshInstance?.Mesh is ArrayMesh curMesh && curMesh.GetSurfaceCount() > 0;
+            meshWasChanged = meshRefChanged || !haveRealMesh;
             if (meshWasChanged)
             {
                 // Hide the source mesh's MeshInstance3D when mesh changes

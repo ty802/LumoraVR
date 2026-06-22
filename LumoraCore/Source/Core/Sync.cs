@@ -219,6 +219,13 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
 
         if (changedLink.WasLinkGranted && changedLink.IsDriving)
         {
+            // The drive that was controlling this field is going away. Register it so the sync loop
+            // re-broadcasts our real current value to peers - while driven we suppressed deltas, so
+            // they're holding the last driven value and won't otherwise hear that it's free again.
+            // Register first (while we can still confirm the link was granted+driving), then invalidate.
+            // ReleaseLink/ReleaseInheritedLink already null the link before we get here, so IsDriven is
+            // false by now, which is exactly what the drain wants to confirm. -xlinka
+            World?.LinkManager?.DriveReleased(this);
             Invalidate();
         }
 

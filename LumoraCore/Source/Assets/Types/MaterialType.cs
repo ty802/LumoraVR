@@ -26,9 +26,27 @@ public enum MaterialType
     UI_Unlit,
 
     /// <summary>
+    /// UI mask WRITER: stamps the stencil reference where its (usually invisible) geometry rasterizes,
+    /// so stencil-tested content is clipped to the mask's exact SHAPE. Godot 4.5+ stencil_mode shader.
+    /// </summary>
+    UI_StencilWrite,
+
+    /// <summary>
+    /// Stencil-TESTED UI content: like UI_Unlit but only draws where the stencil equals the mask reference
+    /// (written first by UI_StencilWrite). Drawn after the writer via render-priority ordering.
+    /// </summary>
+    UI_StencilTest,
+
+    /// <summary>
     /// Dedicated UI text material - rasterized coverage atlas + fwidth-based AA.
     /// </summary>
     UI_Text,
+
+    /// <summary>
+    /// Stencil-tested UI text: like UI_Text but only draws where the stencil equals the mask reference, so
+    /// text inside a shaped (circle/rounded) mask is clipped to the shape, not the AABB.
+    /// </summary>
+    UI_TextStencil,
 
     /// <summary>
     /// World-space text material (nameplates, labels) - same glyph coverage

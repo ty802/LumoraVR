@@ -10,6 +10,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using Lumora.Core.Logging;
 using Lumora.Core.Persistence;
+using Lumora.Core.Phos;
 
 namespace Lumora.Core.Assets;
 
@@ -148,6 +149,74 @@ public class LocalDB : IDisposable
     }
 
     /// <summary>
+    /// Save an in-memory byte buffer as a content-addressed local:// asset and return its URI. The hash
+    /// of the bytes IS the address, so saving identical content twice is a no-op that returns the same
+    /// URI (true content addressing). Used by the mesh-as-asset path (SaveMeshAsync) but format-agnostic.
+    /// </summary>
+    public async Task<string> SaveAssetAsync(byte[] data, string extension = ".lmesh")
+    {
+        if (data == null)
+        {
+            Logger.Error("LocalDB: SaveAssetAsync called with null data");
+            return null!;
+        }
+
+        if (!string.IsNullOrEmpty(extension) && !extension.StartsWith("."))
+            extension = "." + extension;
+
+        var hash = ComputeBytesHash(data);
+        var localUri = $"local://{_machineId}/{hash}";
+
+        lock (_lock)
+        {
+            if (_assetRecords.TryGetValue(hash, out _))
+            {
+                Logger.Log($"LocalDB: Asset already saved: {localUri}");
+                return localUri;
+            }
+        }
+
+        var targetPath = Path.Combine(GetAssetCachePath(), hash + extension);
+        try
+        {
+            await File.WriteAllBytesAsync(targetPath, data);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"LocalDB: Failed to save asset {localUri}: {ex.Message}");
+            return null!;
+        }
+
+        var record = new LocalAssetRecord
+        {
+            Hash = hash,
+            LocalUri = localUri,
+            FilePath = targetPath,
+            OriginalPath = localUri,
+            OriginalFileName = hash + extension,
+            ImportedAt = DateTime.UtcNow,
+            FileSize = data.LongLength
+        };
+
+        lock (_lock)
+        {
+            _assetRecords[hash] = record;
+        }
+
+        await SaveAssetRecordsAsync();
+        Logger.Log($"LocalDB: Saved {data.Length}-byte asset -> {localUri}");
+        return localUri;
+    }
+
+    /// <summary>Serialize a PhosMesh to .lmesh bytes and save it as a content-addressed local:// asset.</summary>
+    public Task<string> SaveMeshAsync(PhosMesh mesh)
+    {
+        if (mesh == null)
+            return Task.FromResult<string>(null!);
+        return SaveAssetAsync(PhosMeshSerializer.Serialize(mesh), ".lmesh");
+    }
+
+    /// <summary>
     /// Get the local file path for a local:// URI.
     /// </summary>
     public string GetFilePath(string localUri)
@@ -273,6 +342,13 @@ public class LocalDB : IDisposable
         using var sha256 = SHA256.Create();
         await using var stream = File.OpenRead(filePath);
         var hashBytes = await Task.Run(() => sha256.ComputeHash(stream));
+        return Convert.ToHexString(hashBytes).ToLower();
+    }
+
+    private static string ComputeBytesHash(byte[] data)
+    {
+        using var sha256 = SHA256.Create();
+        var hashBytes = sha256.ComputeHash(data);
         return Convert.ToHexString(hashBytes).ToLower();
     }
 

@@ -13,6 +13,13 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
     public readonly Sync<float2> Scroll;
     public readonly Sync<float2> ScrollSensitivity;
 
+    // A RectTransform sits at its 100x100 default until the canvas runs a layout pass. Evaluating the scroll
+    // against that default gives maxScroll = content - 100 (bogus) and can shove the content out of the
+    // also-stale clip rect, making the whole view vanish. Reject a viewport at/under this floor and wait for
+    // a real laid-out rect (the next cycle re-runs ApplyScroll). Real scroll viewports are far larger. The
+    // structural fix is normalized 0..1 scroll clamped against live sizes; this is the cheap interim. -xlinka
+    private const float UnlaidViewportFloor = 100f;
+
     private float2 _pressPoint;
     private float2 _pressScroll;
 
@@ -88,6 +95,12 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
         var viewportRect = viewport.LocalComputeRect;
         var contentRect = content.LocalComputeRect;
         if (viewportRect.IsEmpty || contentRect.IsEmpty)
+        {
+            return false;
+        }
+
+        // Don't apply scroll against an un-laid-out viewport (still the 100x100 default) - see field doc.
+        if (viewportRect.width <= UnlaidViewportFloor || viewportRect.height <= UnlaidViewportFloor)
         {
             return false;
         }

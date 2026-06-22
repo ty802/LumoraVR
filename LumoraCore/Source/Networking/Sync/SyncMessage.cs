@@ -26,6 +26,14 @@ public abstract class SyncMessage : IDisposable
     public virtual bool Reliable => true;
     public virtual bool Background => false;
 
+    /// <summary>
+    /// Minimum encoded size (bytes) at/above which this message's frame is worth compressing,
+    /// or 0 to never compress. Small/latency-critical messages (Confirmation, Control, Ping,
+    /// RawFrame) leave this at 0; batched and stream payloads override it. The encoder gates
+    /// on the actual encoded length, so a message under its threshold always ships raw. -xlinka
+    /// </summary>
+    public virtual int CompressionThreshold => 0;
+
     protected SyncMessage(ulong stateVersion, ulong syncTick, IConnection sender = null!)
     {
         SenderStateVersion = stateVersion;
@@ -47,18 +55,24 @@ public abstract class SyncMessage : IDisposable
 
     public static SyncMessage Decode(RawInMessage raw)
     {
-        using var ms = new MemoryStream(raw.Data, raw.Offset, raw.Length);
+        // Transparently unwrap a compressed frame before anything reads it. For an
+        // uncompressed full-array frame this returns raw.Data unchanged (no copy), so the
+        // common path is identical to before; it also normalizes the frame to start at
+        // index 0, keeping the reader and the batch decoder consistent. - xlinka
+        var frame = SyncFrameCodec.UnwrapIfCompressed(raw.Data, raw.Offset, raw.Length);
+
+        using var ms = new MemoryStream(frame);
         using var reader = new BinaryReader(ms);
 
-        var messageType = (MessageType)reader.ReadByte();
+        var messageType = (MessageType)(reader.ReadByte() & ~SyncFrameCodec.CompressedFlag);
         var stateVersion = reader.Read7BitEncoded();
         var syncTick = reader.Read7BitEncoded();
 
         SyncMessage message = (messageType switch
         {
-            MessageType.Delta => BinaryMessageBatch.Decode(raw.Data) as DeltaBatch,
-            MessageType.Full => BinaryMessageBatch.Decode(raw.Data) as FullBatch,
-            MessageType.Confirmation => BinaryMessageBatch.Decode(raw.Data) as ConfirmationMessage,
+            MessageType.Delta => BinaryMessageBatch.Decode(frame) as DeltaBatch,
+            MessageType.Full => BinaryMessageBatch.Decode(frame) as FullBatch,
+            MessageType.Confirmation => BinaryMessageBatch.Decode(frame) as ConfirmationMessage,
             MessageType.Control => ControlMessage.Decode(reader),
             MessageType.Stream => StreamMessage.Decode(reader),
             MessageType.RawFrame => RawFrameMessage.Decode(reader),

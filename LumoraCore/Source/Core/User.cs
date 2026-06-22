@@ -119,10 +119,32 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
         Dispose();
     }
 
-    public bool ReceiveStreams { get; set; } = true;
+    // A user does NOT receive replicated traffic (deltas, corrections, streams) until it has been told
+    // its full world state is on the wire. Until then it would just be racing its own join, so the
+    // authority's fan-out skips it. The flag flips true once we enqueue the JoinStartDelta for that user
+    // (see StartTransmittingStreamData call sites), which mirrors "full state first, then live updates".
+    // Read on the sync thread, written from the control/connection path - volatile is enough for the
+    // visibility guarantee without a lock. -xlinka
+    private volatile bool _receivingStreams = false;
 
-    public Lumora.Core.Networking.Sync.UserStreamBag LegacyStreamBag { get; private set; } = new();
+    /// <summary>
+    /// Whether the authority should fan out deltas/corrections/streams to this user yet. False while the
+    /// user is still being initialized; true once it has been handed full state.
+    /// </summary>
+    public bool ReceiveStreams => _receivingStreams;
 
+    /// <summary>
+    /// Mark this user as ready to receive live replicated traffic. Called right after its full state +
+    /// JoinStartDelta have been enqueued.
+    /// </summary>
+    internal void StartTransmittingStreamData() => _receivingStreams = true;
+
+    /// <summary>
+    /// Stop fanning out live traffic to this user (re-initialization, opt-out, teardown).
+    /// </summary>
+    internal void StopTransmittingStreamData() => _receivingStreams = false;
+
+    // one stream container per user (userStreams); the old parallel bag was dead state and is gone -xlinka
     public IEnumerable<Stream> Streams => userStreams.Streams;
 
     public int StreamCount => userStreams.Count;

@@ -9,9 +9,15 @@ public sealed class Mask : UIComputeComponent
 {
     public readonly Sync<bool> ShowMaskGraphic;
 
+    // Opt into TRUE GPU stencil masking: the mask's SHAPE is stamped into the stencil buffer and content is
+    // clipped to that exact shape (circle / rounded / any geometry), not just the axis-aligned rect. Default
+    // false keeps the cheap rectangular clip. Honored only when Canvas.StencilMaskingEnabled is also on. -xlinka
+    public readonly Sync<bool> StencilMasking;
+
     public Mask()
     {
         ShowMaskGraphic = new Sync<bool>(this, false);
+        StencilMasking = new Sync<bool>(this, false);
     }
 
     public override void OnAttach()

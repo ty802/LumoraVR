@@ -340,6 +340,18 @@ public sealed class DataModelPermissionController
             return true;
         }
 
+        // Pure reads/enumeration never mutate the data model, so they need neither an actor nor a role -
+        // ANYTHING may read, including engine-side render hooks that read synced lists (e.g. a renderer
+        // reading its Materials list) on a thread with no actor context. Without this a guest's render
+        // hook throws "no actor for datamodel mutation" every frame. Scoped tightly to Read/Enumerate so
+        // Replicate/Serialize (network send) and real mutations still go through ownership. -xlinka
+        const DataModelPermissionAction readOnlyActions =
+            DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate;
+        if ((request.Action & ~readOnlyActions) == 0)
+        {
+            return true;
+        }
+
         var actor = request.IsNetwork
             ? request.Actor
             : request.Actor ?? s_currentActor.Value ?? world.LocalUser;

@@ -55,8 +55,15 @@ public class RefIDAllocator
             byte userByte;
             if (_freedUserBytes.Count > 0)
             {
-                // Reuse a byte from someone who left. Child-object IDs keep counting up from the byte's
-                // high-water mark (see _latestUserPosition), so recycled IDs never collide with old ones. -xlinka
+                // Reuse a byte from someone who left. NOTE: recycled bytes currently restart at
+                // position 1 (NOT above the prior owner's high-water mark). Seeding from
+                // _latestUserPosition was tried and reverted: the joiner mishandles the grant's
+                // AllocationIDStart as a position when it's actually a PACKED RefID (see the join
+                // handshake), so a meaningful (high) seed gets re-packed and compounds ~256x per
+                // recycle -> 56-bit position overflow after a few reuses of the same byte. The
+                // recycle collision this would guard against is already covered by PurgeUserByte on
+                // leave. Wire the high-water seed only AFTER fixing AllocationIDStart packed-vs-position
+                // on the joiner. See [[user-byte-recycle-collision]] / the parity roadmap. -xlinka
                 userByte = _freedUserBytes.Min;
                 _freedUserBytes.Remove(userByte);
             }

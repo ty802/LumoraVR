@@ -35,6 +35,12 @@ public abstract class BinaryMessageBatch : SyncMessage
     public override bool Reliable => true;
     public override bool Background => false;
 
+    // Batched state (Delta/Full, and large Confirmations) compresses well and isn't on the
+    // tightest latency path; 150 bytes is the floor below which the codec rarely pays off and
+    // a single-field delta would just expand. Small confirmations stay under this and ship
+    // raw. - xlinka
+    public override int CompressionThreshold => 150;
+
     public BinaryMessageBatch(ulong stateVersion, ulong syncTick, IConnection sender = null!)
         : base(stateVersion, syncTick, sender)
     {
@@ -240,7 +246,9 @@ public abstract class BinaryMessageBatch : SyncMessage
         using var input = new MemoryStream(data);
         using var reader = new BinaryReader(input);
 
-        var messageType = (MessageType)reader.ReadByte();
+        // Mask the compression flag defensively; callers hand us an already-unwrapped frame
+        // (high bit cleared), but never let a stray 0x80 corrupt the enum value. - xlinka
+        var messageType = (MessageType)(reader.ReadByte() & 0x7F);
         var stateVersion = reader.Read7BitEncoded();
         var syncTick = reader.Read7BitEncoded();
         var senderTime = reader.ReadDouble();

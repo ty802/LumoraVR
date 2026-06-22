@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using Helio.UI.Layout;
 using Lumora.Core;
+using Lumora.Core.Components;
 using Lumora.Core.Components.Interaction;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
@@ -28,12 +29,23 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     private RectTransform? _rootRect;
     private GraphicChunkRoot? _chunkRoot;
     private GraphicsChunk? _rootChunk;
+    // Optional physical collider sized to the aggregated UI bounds (grab/physics raycast against the canvas
+    // surface). Attached only when SizeCollider is on; default off = purely additive. -xlinka
+    private BoxCollider? _uiCollider;
 
     // Canvas-wide sorting boost fed into every chunk renderer's SortingOffset.
     // High values make the whole canvas draw in front of other transparent
     // geometry - overlay UI like the context menu uses this to render on top
     // of everything.
     public readonly Sync<int> SortingOrder = new();
+
+    // Opt-in: size a BoxCollider on the canvas slot to the aggregated UI bounds, for physical/grab
+    // interaction against the surface. Off by default - leaves hit-testing on the existing raycast path. -xlinka
+    public readonly Sync<bool> SizeCollider = new();
+
+    // Global kill-switch for GPU stencil masking (per-Mask opt-in via Mask.StencilMasking). On by default;
+    // set false to force every mask back to the rectangular clip path. -xlinka
+    public static bool StencilMaskingEnabled = true;
 
     // Per-chunk rendering: each GraphicChunkRoot below the canvas owns an independent mesh, so a
     // subtree that animates (e.g. the FPS sparkline) re-uploads only its own small mesh instead of
@@ -399,6 +411,8 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             _rootChunk.PrepareCompute();
             _rootChunk.SubmitChanges();
         }
+        if (SizeCollider.Value)
+            _uiCollider ??= Slot.GetComponent<BoxCollider>() ?? Slot.AttachComponent<BoxCollider>();
     }
 
     public override void OnCommonUpdate()
@@ -442,8 +456,12 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         // this is what stops every hover from re-laying-out the whole canvas. - xlinka
         if (_layoutDirty)
         {
+            // MEASURE (bottom-up) before ARRANGE (top-down): cache each rect's metrics so a parent's
+            // arrange sees its children's fully-propagated min/preferred/flexible. -xlinka
+            MeasureRects(Slot);
             ComputeRects(Slot, null);
             ApplyScrollRects(Slot);
+            UpdateCanvasBounds();
             _layoutDirty = false;
             _layoutDirtyChunks.Clear();
         }
@@ -631,8 +649,9 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             return false;
 
         var clip = ComputeInheritedClip(root.Slot);
+        var stencil = ComputeInheritedStencil(root.Slot);
         chunk.PrepareCompute();
-        RenderPartition(chunk.ContentRenderData, root.Slot, clip, root);
+        RenderPartition(chunk.ContentRenderData, root.Slot, clip, root, stencil);
         return true;
     }
 
@@ -695,7 +714,6 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             if (!_seenChunkRoots.Contains(pair.Key))
                 _chunkScratch.Add(pair.Key);
         }
-        int disabled = 0, disposed = 0;
         foreach (var root in _chunkScratch)
         {
             var chunk = _chunkMap[root];
@@ -705,23 +723,11 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
                 chunk.Dispose();
                 _chunkMap.Remove(root);
                 _chunkBuilt.Remove(root);
-                disposed++;
             }
             else
             {
                 chunk.SetActive(false);
-                disabled++;
             }
-        }
-
-        // DIAG (remove once the overlap is fixed): shows whether a render-root reconcile actually turned chunks
-        // off. If you close the create overlap and this never logs disabled>0, the modal's chunks are staying
-        // "seen" (reconcile not reaching them); if it logs but they still draw, SetActive(false) isn't hiding the
-        // Godot mesh, or the offscreen texture isn't re-rendering. -xlinka
-        if (disabled > 0 || disposed > 0)
-        {
-            Lumora.Core.Logging.Logger.Log(
-                $"[ChunkDiag] CleanupChunks: seen={_seenChunkRoots.Count} remaining={_chunkMap.Count} disabled={disabled} disposed={disposed}");
         }
     }
 
@@ -757,8 +763,73 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         return clip;
     }
 
+    // Stencil role a nested chunk inherits from a stencil-enabled Mask on its ancestors (above the chunk
+    // root). Mirror of ComputeInheritedClip - without this, a shaped mask over a separately-chunked subtree
+    // (e.g. a scroll region or any GraphicChunkRoot) would silently fall back to the rect-AABB clip instead
+    // of the stencil shape. Single-depth, so any ancestor stencil mask => Test (the writer lives in an
+    // ancestor chunk, which draws first via the root/tree-order priority, so the stencil is set in time). -xlinka
+    private StencilRole ComputeInheritedStencil(Slot start)
+    {
+        if (!StencilMaskingEnabled)
+            return StencilRole.None;
+        for (var s = start.Parent; s != null; s = s.Parent)
+        {
+            var mask = s.GetComponent<Mask>();
+            if (mask != null && mask.Enabled.Value && mask.StencilMasking.Value && s.GetComponent<RectTransform>() != null)
+            {
+                return StencilRole.Test;
+            }
+            if (ReferenceEquals(s, Slot))
+                break;
+        }
+        return StencilRole.None;
+    }
+
     // bottom-up: anchor-rect every descendant, then apply this layout, which propagates
     // overrides into descendant subtrees via ReflowAfterParentChanged. - xlinka
+    // MEASURE pass (bottom-up, post-order): cache each rect's LayoutMetrics so the top-down arrange sees a
+    // child's fully-propagated min/preferred/flexible - flexibility now survives nested containers instead
+    // of collapsing to 0. Gated by the same LayoutSubtreeDirty skip as ComputeRects, so clean subtrees keep
+    // their cached metrics. Runs BEFORE ComputeRects, which is what clears LayoutSubtreeDirty. -xlinka
+    private void MeasureRects(Slot slot)
+    {
+        if (slot != Slot && !slot.ActiveSelf.Value)
+        {
+            return;
+        }
+
+        var rect = slot.GetComponent<RectTransform>();
+        // A clean, already-measured subtree keeps its cache (mirrors ComputeRects' cached-layout skip).
+        if (rect != null && rect.MetricsValid && !rect.LayoutSubtreeDirty)
+        {
+            return;
+        }
+
+        // Children first, so a container measures over already-cached descendants.
+        foreach (var child in slot.Children)
+        {
+            MeasureRects(child);
+        }
+        foreach (var child in slot.LocalChildren)
+        {
+            MeasureRects(child);
+        }
+
+        if (rect != null)
+        {
+            // GetMetrics runs each ILayoutElement's EnsureValidMetrics, which now reads the children's
+            // cached measured metrics (available post-order) - no live recursion, no flexible decay.
+            // PER-AXIS: re-measure only the axis whose cached metric is stale; reuse the clean one. A change
+            // that couldn't be narrowed to one axis sets BOTH dirty bits (the common case), so both re-measure
+            // and the output is identical to before. The win is a provably single-axis change skipping the
+            // other axis's GetMetrics. -xlinka
+            if (rect.MetricsDirty(LayoutDirection.Horizontal))
+                rect.SetMeasuredMetrics(LayoutDirection.Horizontal, LayoutSizing.GetMetrics(rect, LayoutDirection.Horizontal));
+            if (rect.MetricsDirty(LayoutDirection.Vertical))
+                rect.SetMeasuredMetrics(LayoutDirection.Vertical, LayoutSizing.GetMetrics(rect, LayoutDirection.Vertical));
+        }
+    }
+
     private void ComputeRects(Slot slot, RectTransform? parent)
     {
         if (slot != Slot && !slot.ActiveSelf.Value)
@@ -809,8 +880,53 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
 
         if (rect != null)
         {
+            ApplyContentSizeFit(slot, rect);
             ApplyLayout(slot, rect);
         }
+    }
+
+    // ContentSizeFitter / self-size: now that this container's children are registered, resize the
+    // container's own rect to its content metric (about its pivot), then re-anchor the children against
+    // the new size so a shrink-wrap panel/list/button fits its content instead of its anchor box. This
+    // is the bottom-up sizing the layout system was missing - it only fires when a ContentSizeFitter is
+    // present + enabled, so fixed-anchor layouts are unaffected. -xlinka
+    private void ApplyContentSizeFit(Slot slot, RectTransform rect)
+    {
+        var fitter = slot.GetComponent<Helio.UI.Layout.ContentSizeFitter>();
+        if (fitter == null || !fitter.Enabled.Value)
+            return;
+
+        var hFit = fitter.HorizontalFit.Value;
+        var vFit = fitter.VerticalFit.Value;
+        if (hFit == SizeFit.Disabled && vFit == SizeFit.Disabled)
+            return;
+
+        var r = rect.LocalComputeRect;
+        var pivot = rect.Pivot.Value;
+        float w = r.width;
+        float h = r.height;
+
+        if (hFit != SizeFit.Disabled)
+        {
+            var m = LayoutSizing.Measured(rect, LayoutDirection.Horizontal);
+            w = hFit == SizeFit.MinSize ? m.Min : m.Preferred;
+        }
+        if (vFit != SizeFit.Disabled)
+        {
+            var m = LayoutSizing.Measured(rect, LayoutDirection.Vertical);
+            h = vFit == SizeFit.MinSize ? m.Min : m.Preferred;
+        }
+
+        if (w == r.width && h == r.height)
+            return;
+
+        // Keep the pivot point fixed while the size changes.
+        float pivotX = r.xMin + pivot.x * r.width;
+        float pivotY = r.yMin + pivot.y * r.height;
+        rect.SetLocalComputeRect(new Rect(pivotX - pivot.x * w, pivotY - pivot.y * h, w, h));
+
+        foreach (var c in slot.Children) ReanchorAndDescend(c, rect);
+        foreach (var c in slot.LocalChildren) ReanchorAndDescend(c, rect);
     }
 
     private static bool SlotRunsLayout(Slot? slot)
@@ -841,9 +957,19 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         var rect = slot.GetComponent<RectTransform>();
         if (rect != null)
         {
-            foreach (var c in slot.Children) ReanchorAndDescend(c, rect);
-            foreach (var c in slot.LocalChildren) ReanchorAndDescend(c, rect);
-            ApplyLayout(slot, rect);
+            // Descend the subtree EXACTLY ONCE. If this slot runs a layout, ApplyLayout arranges its children
+            // and reflows them - re-anchoring them first would just be overwritten. Only when there's no
+            // layout do the children keep anchor-relative positions and need re-anchoring here. The old code
+            // did BOTH at every level -> O(2^depth) relayout, which froze deep trees like the Session form. -xlinka
+            if (SlotRunsLayout(slot))
+            {
+                ApplyLayout(slot, rect);
+            }
+            else
+            {
+                foreach (var c in slot.Children) ReanchorAndDescend(c, rect);
+                foreach (var c in slot.LocalChildren) ReanchorAndDescend(c, rect);
+            }
         }
         else
         {
@@ -858,9 +984,17 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         if (rect != null)
         {
             rect.SetLocalComputeRect(ComputeRect(rect, parent));
-            foreach (var c in slot.Children) ReanchorAndDescend(c, rect);
-            foreach (var c in slot.LocalChildren) ReanchorAndDescend(c, rect);
-            ApplyLayout(slot, rect);
+            // Descend once: a layout slot arranges + reflows its own children (ApplyLayout); a non-layout
+            // slot re-anchors them. Doing both was the O(2^depth) blowup (see ReflowAfterParentChanged). -xlinka
+            if (SlotRunsLayout(slot))
+            {
+                ApplyLayout(slot, rect);
+            }
+            else
+            {
+                foreach (var c in slot.Children) ReanchorAndDescend(c, rect);
+                foreach (var c in slot.LocalChildren) ReanchorAndDescend(c, rect);
+            }
         }
         else
         {
@@ -881,11 +1015,15 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         if (rect == null)
             return;
 
+        // Re-measure this subtree's metrics before re-arranging it (scoped path mirror of the full pump).
+        MeasureRects(slot);
+
         rect.ClearRectChildren();
         foreach (var child in slot.Children)
             ComputeRects(child, rect);
         foreach (var child in slot.LocalChildren)
             ComputeRects(child, rect);
+        ApplyContentSizeFit(slot, rect);
         ApplyLayout(slot, rect);
     }
 
@@ -917,6 +1055,25 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         {
             ApplyScrollRects(child);
         }
+    }
+
+    // Aggregate the active UI bounds (post-layout) and, when enabled, size the canvas collider to fit.
+    // Runs once per layout-dirty cycle (after ComputeRects/ApplyScrollRects so the rects are final), NOT on
+    // the hover/visual path. With SizeCollider off it only computes the root BoundingRect (available for a
+    // cheap hit-test reject); it never touches scroll/layout output, so the scroll fix is unaffected. -xlinka
+    private void UpdateCanvasBounds()
+    {
+        // Only walk the tree when something actually consumes the bounds (the collider). Bounds has no other
+        // default consumer (the optional hit-test reject isn't wired), so running the full recursive walk on
+        // every dashboard rebuild was pure cost - and it touches clean/cached subtrees the layout pass skips,
+        // which is a place a stale child reference can bite. Gate it behind its consumer. -xlinka
+        if (_rootRect == null || !SizeCollider.Value || _uiCollider == null) return;
+        _rootRect.UpdateBounds();
+        var b = _rootRect.BoundingRect;
+        if (b.IsEmpty) return;
+        // Flat slab in canvas-local space; tiny z keeps the Godot box shape from being degenerate.
+        _uiCollider.Size.Value = new float3(b.width, b.height, 0.001f);
+        _uiCollider.Offset.Value = new float3(b.Center.x, b.Center.y, 0f);
     }
 
     private static Rect ComputeRect(RectTransform rect, RectTransform? parent)
@@ -1117,7 +1274,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
 
     // Render a slot subtree into one chunk's mesh, stopping at any nested GraphicChunkRoot (those
     // render into their own chunk). ownRoot is the chunk root we're rendering for (null = root). - xlinka
-    private void RenderPartition(GraphicsChunk.RenderData rd, Slot slot, Rect? clipRect, GraphicChunkRoot? ownRoot)
+    private void RenderPartition(GraphicsChunk.RenderData rd, Slot slot, Rect? clipRect, GraphicChunkRoot? ownRoot, StencilRole stencil = StencilRole.None)
     {
         if (slot != Slot && !slot.ActiveSelf.Value)
         {
@@ -1132,33 +1289,21 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         var mask = slot.GetComponent<Mask>();
         var rect = slot.GetComponent<RectTransform>();
         bool isMask = mask != null && mask.Enabled.Value && rect != null;
+        bool stencilMask = isMask && mask!.StencilMasking.Value && StencilMaskingEnabled;
         bool showOwnGraphics = !isMask || mask!.ShowMaskGraphic.Value;
 
         mask?.PrepareCompute();
 
-        if (showOwnGraphics)
+        if (stencilMask)
         {
-            foreach (var graphic in new List<Graphic>(slot.GetComponents<Graphic>()))
-            {
-                if (!graphic.Enabled.Value)
-                {
-                    continue;
-                }
-
-                // MAIN: snapshot + glyph rasterization stay here (Godot-touching). The geometry
-                // build (ComputeGraphic) is deferred to the worker via the chunk's emit queue.
-                graphic.PrepareCompute();
-                if (graphic.RequiresPreGraphicsCompute)
-                {
-                    var preGraphics = graphic.PreGraphicsCompute();
-                    if (!preGraphics.IsCompletedSuccessfully)
-                    {
-                        preGraphics.AsTask().GetAwaiter().GetResult();
-                    }
-                }
-
-                rd.QueueGraphic(graphic, clipRect);
-            }
+            // A stencil mask stamps its SHAPE into the stencil buffer (Write pass). Queued BEFORE the
+            // children recurse, and render_priority follows submission order, so the writer draws first and
+            // the tested content draws after - even though the mask itself is invisible. -xlinka
+            EmitGraphics(rd, slot, clipRect, StencilRole.Write);
+        }
+        else if (showOwnGraphics)
+        {
+            EmitGraphics(rd, slot, clipRect, stencil);
         }
 
         var nextClip = clipRect;
@@ -1173,18 +1318,76 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             }
         }
 
+        // Content under a stencil mask is stencil-TESTED; otherwise it inherits our role.
+        var nextStencil = stencilMask ? StencilRole.Test : stencil;
+
         foreach (var child in slot.Children)
         {
-            RenderChildPartition(rd, child, nextClip, ownRoot);
+            RenderChildPartition(rd, child, nextClip, ownRoot, nextStencil);
         }
         foreach (var child in slot.LocalChildren)
         {
-            RenderChildPartition(rd, child, nextClip, ownRoot);
+            RenderChildPartition(rd, child, nextClip, ownRoot, nextStencil);
         }
     }
 
-    private void RenderChildPartition(GraphicsChunk.RenderData rd, Slot child, Rect? clip, GraphicChunkRoot? ownRoot)
+    // Queue a slot's own enabled graphics for the worker emit pass, tagging each with its stencil role. -xlinka
+    private void EmitGraphics(GraphicsChunk.RenderData rd, Slot slot, Rect? clipRect, StencilRole stencil)
     {
+        foreach (var graphic in new List<Graphic>(slot.GetComponents<Graphic>()))
+        {
+            if (!graphic.Enabled.Value)
+            {
+                continue;
+            }
+
+            // MAIN: snapshot + glyph rasterization stay here (Godot-touching). The geometry
+            // build (ComputeGraphic) is deferred to the worker via the chunk's emit queue.
+            graphic.PrepareCompute();
+            if (graphic.RequiresPreGraphicsCompute)
+            {
+                var preGraphics = graphic.PreGraphicsCompute();
+                if (!preGraphics.IsCompletedSuccessfully)
+                {
+                    preGraphics.AsTask().GetAwaiter().GetResult();
+                }
+            }
+
+            // Clip elision: if the inherited clip fully encloses this graphic's bounds it discards nothing,
+            // so drop it - the graphic then batches into the shared unclipped submesh instead of spawning a
+            // per-clip material clone + an extra Godot surface. Only sound for quad graphics bounded by their
+            // rect (Image family), never text (glyphs can overflow the rect), never a stencil graphic (its
+            // key must keep the shape). Common win: scroll items fully in view, content well inside a panel
+            // mask. -xlinka
+            var effectiveClip = clipRect;
+            if (effectiveClip.HasValue && stencil == StencilRole.None && IsRectBoundedGraphic(graphic))
+            {
+                var grect = slot.GetComponent<RectTransform>();
+                if (grect != null && effectiveClip.Value.Encloses(grect.LocalComputeRect))
+                {
+                    effectiveClip = null;
+                }
+            }
+
+            rd.QueueGraphic(graphic, effectiveClip, stencil);
+        }
+    }
+
+    // Graphics whose geometry never exceeds their RectTransform rect, so an enclosing clip is a no-op for
+    // them. Text is excluded - glyph ascenders/descenders can overflow the layout rect. -xlinka
+    private static bool IsRectBoundedGraphic(Graphic graphic)
+        => graphic is Image or RawImage or TiledRawImage or BorderedImage;
+
+    private void RenderChildPartition(GraphicsChunk.RenderData rd, Slot child, Rect? clip, GraphicChunkRoot? ownRoot, StencilRole stencil = StencilRole.None)
+    {
+        // An inactive child renders nothing - and, critically, must NOT register its chunk root as "seen"
+        // this cycle. If it did, CleanupChunks wouldn't disable that chunk, and a hidden overlay/screen
+        // (a canvas-root modal like the create-world dialog) keeps drawing on top of the next screen -
+        // the "two screens at once" overlap. RenderPartition and RegisterNestedChunkRoots already skip
+        // inactive slots before touching their chunk roots; this discovery path was the one that didn't. -xlinka
+        if (!child.ActiveSelf.Value)
+            return;
+
         var childRoot = child.GetComponent<GraphicChunkRoot>();
         if (childRoot != null && !ReferenceEquals(childRoot, ownRoot) && child.GetComponent<RectTransform>() != null)
         {
@@ -1193,7 +1396,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             if (_seenChunkRoots.Add(childRoot)) _chunkOrder.Add(childRoot);
             return;
         }
-        RenderPartition(rd, child, clip, ownRoot);
+        RenderPartition(rd, child, clip, ownRoot, stencil);
     }
 
     private static UIInteractionSource GetInteractionSource(InteractionLaser laser)

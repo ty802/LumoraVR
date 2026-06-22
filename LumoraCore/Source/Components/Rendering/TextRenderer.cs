@@ -1,6 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System.Collections.Generic;
 using Lumora.Core.Assets;
 using Lumora.Core.Components.Meshes;
 using Lumora.Core.Math;
@@ -75,8 +76,18 @@ public class TextRenderer : ProceduralMesh
     private Slot _rendererSlot = null!;
     private MeshRenderer _renderer = null!;
     private TextMaterial _material = null!;
-    private TextureAsset _assignedAtlas = null!;
-    private PhosTriangleSubmesh? _submesh;
+
+    // Multi-atlas glyph routing. Text that mixes scripts (Latin + CJK + emoji) pulls
+    // glyphs from several font atlases, and a material binds exactly one atlas, so each
+    // atlas needs its own submesh + material. _materialPool lives on the renderer slot
+    // and grows to the high-water-mark of distinct atlases ever seen - it's reused every
+    // regen so typing doesn't leak a component per keystroke. _atlasToSubmesh + the
+    // ordered _regenAtlases are rebuilt each UpdateMeshData; submesh index i lines up
+    // with _materialPool[i] and Materials[i]. _material stays pool[0]/Materials[0], so
+    // ordinary single-atlas text is byte-identical to before. - xlinka
+    private readonly List<TextMaterial> _materialPool = new();
+    private readonly Dictionary<TextureAsset, PhosTriangleSubmesh> _atlasToSubmesh = new();
+    private readonly List<TextureAsset> _regenAtlases = new();
 
     public TextRenderer()
     {
@@ -105,12 +116,19 @@ public class TextRenderer : ProceduralMesh
         OutlineThickness.OnChanged += _ => ApplyOutline();
     }
 
+    // Outline is a material parameter shared by every atlas material, so push it to the
+    // whole pool (not just _material) when it changes. Safe when the pool is empty (the
+    // renderer isn't built yet) - the loop just no-ops. - xlinka
     private void ApplyOutline()
     {
-        if (_material == null || _material.IsDestroyed)
-            return;
-        _material.OutlineColor.Value = OutlineColor.Value;
-        _material.OutlineThickness.Value = OutlineThickness.Value;
+        for (int i = 0; i < _materialPool.Count; i++)
+        {
+            var m = _materialPool[i];
+            if (m == null || m.IsDestroyed)
+                continue;
+            m.OutlineColor.Value = OutlineColor.Value;
+            m.OutlineThickness.Value = OutlineThickness.Value;
+        }
     }
 
     public override void OnStart()
@@ -145,7 +163,12 @@ public class TextRenderer : ProceduralMesh
         _material = _rendererSlot.AttachComponent<TextMaterial>();
         _renderer = _rendererSlot.AttachComponent<MeshRenderer>();
         _renderer.Mesh.Target = this;
-        _renderer.Material.Target = _material;
+        _renderer.Material.Target = _material; // Materials[0] = _material (the first atlas)
+
+        // Seed the pool with the primary material so pool index 0 == Materials[0]; any
+        // extra atlases attach more materials lazily during meshing. - xlinka
+        _materialPool.Clear();
+        _materialPool.Add(_material);
         ApplyOutline();
     }
 
@@ -164,18 +187,17 @@ public class TextRenderer : ProceduralMesh
     {
         uploadHint.SetAll();
 
-        mesh.Clear();
+        mesh.Clear(); // also empties Submeshes; per-atlas submeshes are created lazily below
         mesh.HasColors = true;
         mesh.SetHasUV(0, true);
-        _submesh = new PhosTriangleSubmesh(mesh);
-        mesh.Submeshes.Add(_submesh);
+        _atlasToSubmesh.Clear();
+        _regenAtlases.Clear();
 
         var font = _fontSet;
         if (font == null || !font.IsValid || string.IsNullOrEmpty(_text))
         {
             RenderedSize = float2.Zero;
-            UpdateAtlasBinding(null!);
-            return;
+            return; // empty mesh (Clear left 0 submeshes); nothing renders
         }
 
         TextShaper.RequestGlyphs(font, _text, _size);
@@ -184,8 +206,7 @@ public class TextRenderer : ProceduralMesh
         if (lines.Count == 0)
         {
             RenderedSize = float2.Zero;
-            UpdateAtlasBinding(null!);
-            return;
+            return; // empty mesh; nothing renders
         }
 
         float ascent = font.GetAscent(_size);
@@ -206,11 +227,9 @@ public class TextRenderer : ProceduralMesh
             _ => 0f,
         };
 
-        // One material per renderer: emit glyphs from the primary atlas only.
-        // Fallback-chain glyphs from other atlases are skipped until per-atlas
-        // submesh/material support is needed. - xlinka
-        FontAsset? primaryFont = null;
-
+        // Route every glyph to the submesh for its own atlas, so glyphs from the font
+        // fallback chain (CJK, emoji, symbols) render instead of being dropped. Each
+        // distinct atlas gets a submesh + a material bound to it. - xlinka
         for (int lineIndex = 0; lineIndex < lines.Count; lineIndex++)
         {
             var line = lines[lineIndex];
@@ -225,18 +244,19 @@ public class TextRenderer : ProceduralMesh
             for (int i = 0; i < line.Glyphs.Count; i++)
             {
                 var glyph = line.Glyphs[i];
-                primaryFont ??= glyph.Font;
-                if (!ReferenceEquals(glyph.Font, primaryFont))
-                    continue;
+                var atlas = glyph.Font?.AtlasTexture;
+                if (atlas == null)
+                    continue; // atlas not built yet; a CacheGeneration bump re-drives this
 
-                EmitGlyph(mesh, penX + glyph.X, penY, glyph.Metrics, glyph.UV);
+                var submesh = GetOrCreateSubmesh(mesh, atlas);
+                EmitGlyph(mesh, submesh, penX + glyph.X, penY, glyph.Metrics, glyph.UV);
             }
         }
 
-        UpdateAtlasBinding(primaryFont?.AtlasTexture!);
+        BindAtlasMaterials();
     }
 
-    private void EmitGlyph(PhosMesh mesh, float penX, float penY, in GlyphMetrics metrics, in Rect uv)
+    private void EmitGlyph(PhosMesh mesh, PhosTriangleSubmesh submesh, float penX, float penY, in GlyphMetrics metrics, in Rect uv)
     {
         float xMin = penX + metrics.Offset.x;
         float yMin = penY + metrics.Offset.y;
@@ -263,25 +283,71 @@ public class TextRenderer : ProceduralMesh
         mesh.SetUV(0, v0 + 2, new float2(uv.xMax, uv.yMax));
         mesh.SetUV(0, v0 + 3, new float2(uv.xMin, uv.yMax));
 
-        _submesh!.AddQuadAsTriangles(v0, v0 + 1, v0 + 2, v0 + 3);
+        submesh.AddQuadAsTriangles(v0, v0 + 1, v0 + 2, v0 + 3);
     }
 
-    private void UpdateAtlasBinding(TextureAsset atlas)
+    // Return the submesh batching glyphs for `atlas`, creating it on first use this
+    // regen. Submeshes are added in first-seen order and recorded in _regenAtlases, so
+    // submesh index i == _regenAtlases[i] == the material it binds. - xlinka
+    private PhosTriangleSubmesh GetOrCreateSubmesh(PhosMesh mesh, TextureAsset atlas)
     {
-        if (_material == null || _material.IsDestroyed)
+        if (_atlasToSubmesh.TryGetValue(atlas, out var existing))
+            return existing;
+
+        var submesh = new PhosTriangleSubmesh(mesh);
+        mesh.Submeshes.Add(submesh);
+        _atlasToSubmesh[atlas] = submesh;
+        _regenAtlases.Add(atlas);
+        return submesh;
+    }
+
+    // Bind one material per atlas submesh, index-aligned: surface i renders with
+    // Materials[i], whose DirectTexture is _regenAtlases[i]. The pool only grows, so
+    // Materials may hold more entries than we used this regen - those trailing ones map
+    // to no surface (the mesh has none past _regenAtlases.Count, and the hook clamps
+    // surface->material), so they're harmless and we never have to trim the list. - xlinka
+    private void BindAtlasMaterials()
+    {
+        // A join/decode can fire RegenerateMesh (via a Sync change during Decode) BEFORE
+        // OnStart/EnsureLocalRenderer runs, so the renderer slot + pool don't exist yet.
+        // Skip binding then - the geometry still builds, and the first post-start update
+        // re-drives and binds. Mirrors the old UpdateAtlasBinding null-material guard, and
+        // avoids mutating the data model (AttachComponent) mid-decode. - xlinka
+        if (_rendererSlot == null || _rendererSlot.IsDestroyed || _materialPool.Count == 0)
             return;
 
-        if (ReferenceEquals(_assignedAtlas, atlas))
-            return;
+        for (int i = 0; i < _regenAtlases.Count; i++)
+        {
+            var material = AcquireMaterial(i);
+            if (material == null || material.IsDestroyed)
+                continue;
 
-        _assignedAtlas = atlas;
-        _material.DirectTexture = atlas;
-        _material.ForceUpdate();
+            material.DirectTexture = _regenAtlases[i];
+            material.OutlineColor.Value = OutlineColor.Value;
+            material.OutlineThickness.Value = OutlineThickness.Value;
+            material.ForceUpdate();
+        }
+    }
+
+    // Pooled material for submesh index `i`. Reuses an existing one (zero allocation on
+    // the common keystroke path); otherwise attaches a new TextMaterial to the renderer
+    // slot and appends a matching Materials entry, keeping pool[i] == Materials[i]. - xlinka
+    private TextMaterial AcquireMaterial(int index)
+    {
+        if (index < _materialPool.Count)
+            return _materialPool[index];
+
+        var material = _rendererSlot.AttachComponent<TextMaterial>();
+        _materialPool.Add(material);
+        _renderer.Materials.Add().Target = material;
+        return material;
     }
 
     protected override void ClearMeshData()
     {
-        _submesh = null;
+        // Drop per-regen routing, but keep the material pool (reused next regen). - xlinka
+        _atlasToSubmesh.Clear();
+        _regenAtlases.Clear();
     }
 
     /// <summary>

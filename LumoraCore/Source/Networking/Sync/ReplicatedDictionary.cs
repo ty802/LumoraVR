@@ -330,7 +330,7 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
     {
         uint count = (uint)reader.Read7BitEncoded();
 
-        Lumora.Core.Logging.Logger.Log($"ReplicatedDictionary<{typeof(TKey).Name},{typeof(TValue).Name}>.DecodeFull: count={count}");
+        Lumora.Core.Logging.Logger.Debug($"ReplicatedDictionary<{typeof(TKey).Name},{typeof(TValue).Name}>.DecodeFull: count={count}");
 
         // Signal batch decode start - prevents premature parent fallbacks and init
         var refController = World?.ReferenceController;

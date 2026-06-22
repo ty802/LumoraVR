@@ -77,6 +77,38 @@ public class InputInterface : IDisposable
         DesktopCursorRayDirection = direction;
     }
 
+    // Userspace-laser arbitration, per controller side. The userspace dash pointer lives in
+    // the overlay world and pushes its state here every frame. A game-world hand tool reads it
+    // and stands down on that side while the userspace laser is live, so you never get two
+    // cursors fighting over the dash and clicks never bleed through into the world behind it.
+    // Indexed by (int)Chirality (None=0, Left=1, Right=2). -xlinka
+    private readonly bool[] _userspaceLaserActive = new bool[3];
+    private readonly bool[] _userspaceLaserHasTarget = new bool[3];
+
+    public void SetUserspaceLaserActive(Chirality side, bool active, bool hasTarget)
+    {
+        int i = (int)side;
+        if (i < 0 || i >= _userspaceLaserActive.Length) return;
+        _userspaceLaserActive[i] = active;
+        _userspaceLaserHasTarget[i] = hasTarget;
+    }
+
+    public bool IsUserspaceLaserActive(Chirality side)
+    {
+        int i = (int)side;
+        return i >= 0 && i < _userspaceLaserActive.Length && _userspaceLaserActive[i];
+    }
+
+    public bool UserspaceLaserHasTarget(Chirality side)
+    {
+        int i = (int)side;
+        return i >= 0 && i < _userspaceLaserHasTarget.Length && _userspaceLaserHasTarget[i];
+    }
+
+    // True when the dash owns the pointer on EITHER side. On desktop the single mouse cursor
+    // drives the dash, so any game-world hand tool should stand down regardless of side. -xlinka
+    public bool IsAnyUserspaceLaserActive => _userspaceLaserActive[1] || _userspaceLaserActive[2];
+
     // Desktop camera projection info (vertical FOV in degrees, viewport aspect,
     // world-space camera pose), pushed alongside the cursor ray. The dash uses
     // it to fit its projected surface to the window. The camera looks along its

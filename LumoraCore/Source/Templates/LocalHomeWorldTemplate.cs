@@ -335,6 +335,37 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
             ui.NestOut();
             ui.NestOut();
 
+            // STENCIL MASK VALIDATION: a Mask with StencilMasking on, shaped by a fully-rounded texture, over a
+            // checker fill. If the checker renders with ROUNDED ends (not a hard square), GPU stencil masking
+            // works end-to-end in the dashboard SubViewport. A square rect-clip cannot produce this. -xlinka
+            var stencilNote = ui.Text("Stencil mask: the checker below should clip to a ROUNDED shape (not a square).", 13f, new color(0.82f, 0.96f, 0.88f, 1f));
+            stencilNote.WordWrap.Value = true;
+            stencilNote.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+            Fill(stencilNote.RectTransform!);
+            SetLayoutHeight(stencilNote.RectTransform!, 30f, 36f);
+
+            var shapeSlot = panelSlot.AddSlot("StencilMaskShape");
+            var shapeTex = shapeSlot.AttachComponent<RoundedRectTextureProvider>();
+            shapeTex.Size.Value = 96;
+            shapeTex.Radius.Value = 48; // radius = size/2 -> fully rounded
+
+            var stencilPanel = ui.Panel(new color(0.045f, 0.052f, 0.066f, 0.92f));
+            Fill(stencilPanel.RectTransform!);
+            SetLayoutHeight(stencilPanel.RectTransform!, 96f, 104f);
+            ui.Nest();
+            var maskHost = ui.HorizontalLayout(8f, 8f);
+            Fill(maskHost.RectTransform!);
+            var stencilMask = ui.Mask(color.White, showMaskGraphic: false);
+            stencilMask.StencilMasking.Value = true;
+            var maskShapeImage = stencilMask.Slot.GetComponent<Image>();
+            if (maskShapeImage != null) maskShapeImage.Texture.Target = shapeTex; // the SHAPE stamped into the stencil
+            Fill(stencilMask.RectTransform!);
+            ui.Nest();
+            var maskedFill = ui.RawImage(checker, color.White, Rect.UnitRect, false); // checker, clipped to the rounded shape
+            Fill(maskedFill.RectTransform!);
+            ui.NestOut(); // out of mask
+            ui.NestOut(); // out of stencilPanel
+
             var fallback = ui.Text("FontSet fallback path: ASCII + symbols <> [] {} + missing glyph fallback", 14f, new color(0.88f, 0.82f, 0.96f, 1f));
             fallback.WordWrap.Value = true;
             fallback.VerticalAlignment.Value = TextVerticalAlignment.Middle;

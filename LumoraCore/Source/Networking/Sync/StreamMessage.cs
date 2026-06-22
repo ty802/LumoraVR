@@ -19,6 +19,11 @@ public class StreamMessage : SyncMessage
     public override MessageType MessageType => IsAsynchronous ? MessageType.AsyncStream : MessageType.Stream;
     public override bool Reliable => false;
 
+    // Streams (voice/tracking) are unreliable and latency-sensitive, so only compress the
+    // larger ones where the ratio outweighs the per-frame CPU; tiny tracking frames ship
+    // raw. - xlinka
+    public override int CompressionThreshold => 200;
+
     public bool IsAsynchronous { get; set; }
     public ulong UserID { get; set; }
     public uint StreamStateVersion { get; set; }

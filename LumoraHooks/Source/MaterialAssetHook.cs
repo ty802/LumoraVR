@@ -81,9 +81,24 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
                 _shaderMaterial = CreateShaderMaterial("res://Shaders/UI_Unlit.gdshader", MaterialType.UI_Unlit);
                 break;
 
+            case MaterialType.UI_StencilWrite:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/UI_StencilWrite.gdshader", MaterialType.UI_StencilWrite);
+                break;
+
+            case MaterialType.UI_StencilTest:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/UI_UnlitStencil.gdshader", MaterialType.UI_StencilTest);
+                break;
+
             case MaterialType.UI_Text:
                 _usesShaderMaterial = true;
                 _shaderMaterial = CreateShaderMaterial("res://Shaders/UI_Text.gdshader", MaterialType.UI_Text);
+                break;
+
+            case MaterialType.UI_TextStencil:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/UI_TextStencil.gdshader", MaterialType.UI_TextStencil);
                 break;
 
             case MaterialType.Text:

@@ -170,7 +170,18 @@ public class MeshRenderer : ImplementableComponent
         Materials.OnChanged += OnMaterialsChanged;
         MaterialPropertyBlocks.OnChanged += OnMaterialPropertyBlocksChanged;
         SurfaceRenderPriorities.OnChanged += OnSurfaceRenderPrioritiesChanged;
+        // The Mesh ref is a plain SyncRef<Component>, which (unlike AssetRef) does NOT re-fire us when its
+        // target resolves. On a joiner the mesh provider can decode AFTER us, so our first apply has no
+        // geometry to read. Re-pull when the provider resolves or the ref retargets, so we don't stay
+        // invisible. (The provider also pokes us via FlagSurfacesDirty once it uploads geometry.) -xlinka
+        Mesh.OnObjectAvailable += OnMeshRefResolved;
+        Mesh.OnTargetChange += OnMeshRefResolved;
         LumoraLogger.Log($"MeshRenderer: Awake on slot '{Slot.SlotName.Value}'");
+    }
+
+    private void OnMeshRefResolved(SyncRef<Component> reference)
+    {
+        FlagSurfacesDirty();
     }
 
     private void OnMaterialsChanged(SyncAssetList<MaterialAsset> list)

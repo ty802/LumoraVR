@@ -157,7 +157,7 @@ public class ReferenceController : IDisposable
         }
         
         _objects[id] = element;
-        
+
         // Process any pending requests for this ID
         if (_pendingRequests.TryGetValue(id, out var receivers))
         {

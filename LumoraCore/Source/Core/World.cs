@@ -190,6 +190,10 @@ public class World
 	private UpdateManager _updateManager;
 	private Queue<Action> _synchronousActions = new Queue<Action>();
 	private object _syncLock = new object();
+	// Guards the WhenRunning/WhenDestroyed deferred-or-immediate accessors so a late subscriber can't
+	// slip between the state flip and the fan-out. Separate from _syncLock on purpose - _syncLock is held
+	// while running queued user actions and must not be entangled with this. -xlinka
+	private readonly object _stateLock = new object();
 	private readonly WorldMetrics _metrics = new WorldMetrics();
 	private readonly DataModelPermissionController _dataModelPermissions;
 
@@ -224,6 +228,74 @@ public class World
 	/// Event fired when world state changes.
 	/// </summary>
 	public event Action<WorldState, WorldState>? OnStateChanged;
+
+	private Action<World>? _whenRunning;
+
+	/// <summary>
+	/// Fires once the world is Running. If it's ALREADY running when you subscribe, your handler runs
+	/// immediately (inline, on the calling thread); otherwise it's queued and fires at the transition.
+	/// Either way a late subscriber never misses the running edge. Unsubscribe with -=. -xlinka
+	/// </summary>
+	public event Action<World> WhenRunning
+	{
+		add
+		{
+			// Fast path: already running, run it now without holding the lock.
+			if (_state == WorldState.Running)
+			{
+				value(this);
+				return;
+			}
+			lock (_stateLock)
+			{
+				// Re-check under the lock: the transition may have landed between the check above and here.
+				if (_state == WorldState.Running)
+					value(this);
+				else
+					_whenRunning += value;
+			}
+		}
+		remove
+		{
+			lock (_stateLock)
+			{
+				_whenRunning -= value;
+			}
+		}
+	}
+
+	private Action<World>? _whenDestroyed;
+
+	/// <summary>
+	/// Fires once the world is destroyed. If it's ALREADY destroyed when you subscribe, your handler runs
+	/// immediately; otherwise it's queued and fires at teardown. A late subscriber never misses the
+	/// destroyed edge - handy for cleanup that may register after the world is already gone. -xlinka
+	/// </summary>
+	public event Action<World> WhenDestroyed
+	{
+		add
+		{
+			if (_state == WorldState.Destroyed)
+			{
+				value(this);
+				return;
+			}
+			lock (_stateLock)
+			{
+				if (_state == WorldState.Destroyed)
+					value(this);
+				else
+					_whenDestroyed += value;
+			}
+		}
+		remove
+		{
+			lock (_stateLock)
+			{
+				_whenDestroyed -= value;
+			}
+		}
+	}
 
 	/// <summary>
 	/// Current state of the World.
@@ -378,6 +450,12 @@ public class World
 	/// Synchronization controller for this world.
 	/// </summary>
 	public SyncController SyncController { get; private set; } = null!;
+
+	/// <summary>
+	/// Tracks fields that just lost their driving link so the sync loop can re-broadcast their
+	/// real current value to peers (authority only).
+	/// </summary>
+	public LinkManager LinkManager { get; private set; } = null!;
 
 	/// <summary>
 	/// Reference controller for object lookup and async resolution.
@@ -810,6 +888,10 @@ public class World
 		// Create sync controller first (doesn't need RefID)
 		SyncController = new SyncController(this);
 		LumoraLogger.Log("SyncController initialized");
+
+		// Released-drive tracker rides alongside the sync controller. -xlinka
+		LinkManager = new LinkManager(this);
+		LumoraLogger.Log("LinkManager initialized");
 
 		// Create worker manager for type encoding/decoding during sync
 		// Needs SyncController available so the type index table registers for replication.
@@ -1490,7 +1572,14 @@ public class World
 
 		var oldState = _state;
 		_initState = InitializationState.Finished;
-		_state = WorldState.Running;
+		lock (_stateLock)
+		{
+			_state = WorldState.Running;
+			// Fan out to anyone who subscribed before we flipped. Snapshot-and-null so it can't re-fire. -xlinka
+			var running = _whenRunning;
+			_whenRunning = null;
+			running?.Invoke(this);
+		}
 		LumoraLogger.Log("World is now running");
 
 		// Configure the permission gate for this world's mode. Authority-only: the lock is enforced on
@@ -1609,19 +1698,36 @@ public class World
 	}
 
 	/// <summary>
-	/// Increment the state version counter.
-	/// Called whenever the authority makes a state change.
+	/// Increment the state version counter. Only the authority owns the state version, and only by
+	/// incrementing it - a non-authority calling this is a bug.
 	/// </summary>
 	public void IncrementStateVersion()
 	{
+		if (!IsAuthority)
+		{
+			throw new InvalidOperationException("Only the host can increment the state version");
+		}
 		StateVersion++;
 	}
 
 	/// <summary>
-	/// Set the state version (used when receiving authority updates).
+	/// Adopt an authority state version (clients only, applying host updates). The host never adopts a
+	/// foreign version (it only increments), and the version can only move forward - a stale/reordered
+	/// or malicious lower version is rejected so a peer can't roll our view of authority state backward.
+	/// We log-and-ignore rather than throw, so a stale batch doesn't abort the rest of the sync drain.
 	/// </summary>
 	public void SetStateVersion(ulong version)
 	{
+		if (IsAuthority)
+		{
+			LumoraLogger.Warn("SetStateVersion called on the host - the host increments its own version, it does not adopt one. Ignoring.");
+			return;
+		}
+		if (version < StateVersion)
+		{
+			LumoraLogger.Warn($"Rejecting a backward state version: have {StateVersion}, asked to set {version}. Ignoring (anti-rewind).");
+			return;
+		}
 		StateVersion = version;
 	}
 
@@ -2068,6 +2174,21 @@ public class World
 		IsDestroyed = true;
 		IsDisposed = true;
 
+		// Fire the destroyed edge for late-or-early subscribers. This is the real teardown path (the
+		// WorldManager drains its destroy queue into Dispose), so it's the load-bearing fire site.
+		// Snapshot-and-null under the lock means it fires exactly once even if something flipped the
+		// state earlier. -xlinka
+		Action<World>? destroyed;
+		lock (_stateLock)
+		{
+			if (_state != WorldState.Destroyed)
+				_state = WorldState.Destroyed;
+			destroyed = _whenDestroyed;
+			_whenDestroyed = null;
+		}
+		try { destroyed?.Invoke(this); }
+		catch (Exception ex) { LumoraLogger.Error($"World: Error in WhenDestroyed handler during dispose: {ex}"); }
+
 		// 3. Process remaining synchronous actions
 		lock (_syncLock)
 		{
@@ -2100,6 +2221,8 @@ public class World
 		{
 			SyncController?.Dispose();
 			SyncController = null!;
+			LinkManager?.Dispose();
+			LinkManager = null!;
 		}
 		catch (Exception ex)
 		{

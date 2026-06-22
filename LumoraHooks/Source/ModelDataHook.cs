@@ -1096,8 +1096,8 @@ public sealed class ModelDataHook : ComponentHook<ModelData>
             for (int i = 0; i < vertexCount; i++)
                 flat[baseIdx + i] = new float3(vArr[i].X, vArr[i].Y, vArr[i].Z);
 
-            // Carry the NORMAL morph deltas too (same per-shape layout) so normals morph with the expression like
-            // the reference does. If ANY shape lacks them, drop normals for the whole mesh so the hook falls back
+            // Carry the NORMAL morph deltas too (same per-shape layout) so normals morph with the expression.
+            // If ANY shape lacks them, drop normals for the whole mesh so the hook falls back
             // to "no normal morph" consistently rather than half-applying. -xlinka
             if (normalsValid)
             {

@@ -22,7 +22,7 @@ public sealed class GridCellTextureProvider : DynamicAssetProvider<TextureAsset>
     public GridCellTextureProvider()
     {
         Size = new Sync<int>(this, 64);
-        LineThickness = new Sync<int>(this, 2);
+        LineThickness = new Sync<int>(this, 1); // 1-texel hairline; at ~1:1 cell:texel it stays crisp
     }
 
     protected override void OnAssetCreated(TextureAsset asset) { }

@@ -80,6 +80,22 @@ public sealed class HandTool : Tool
             return;
         }
 
+        // While the userspace dash pointer owns the cursor (dash open, desktop or VR), this in-world
+        // tool stands down completely: no second cursor floating in the world behind the dash, and
+        // no presses bleeding through the panel into whatever is behind it. The userspace pointer
+        // rig raises this flag while it is live (it is the thing actually pointing at the dash, on a
+        // controller-tracked hand in VR or the free cursor on desktop), so we just back off. -xlinka
+        var dashOwner = Engine.Current?.InputInterface;
+        if (dashOwner != null && dashOwner.IsAnyUserspaceLaserActive)
+        {
+            _laser.SetToolState(false, false);
+            _laser.SetExclusiveRoot(null);
+            _laser.SetDormant(true);
+            SetDesktopInputSuppression(false);
+            return;
+        }
+        _laser.SetDormant(false);
+
         SampleInput(_laser);
         // In VR the laser stays visible while this hand's menu is open so the
         // user can see what they're aiming at. On desktop the menu owns a

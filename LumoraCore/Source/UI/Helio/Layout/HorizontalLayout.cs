@@ -18,6 +18,8 @@ public class HorizontalLayout : LayoutController
     public readonly Sync<bool> ForceExpandWidth;
     public readonly Sync<bool> ForceExpandHeight;
     public readonly Sync<bool> CenterChildren;
+    // Where children sit on the cross (vertical) axis when not force-expanded. Default Center = prior behavior.
+    public readonly Sync<LayoutAlignment> CrossAlignment;
 
     private float _spacing;
     private float _padLeft;
@@ -27,6 +29,7 @@ public class HorizontalLayout : LayoutController
     private bool _forceExpandWidth;
     private bool _forceExpandHeight;
     private bool _centerChildren;
+    private LayoutAlignment _crossAlignment;
     private readonly List<LayoutMetrics> _metrics = new();
     private readonly List<LayoutSizing.Element> _elements = new();
 
@@ -40,11 +43,15 @@ public class HorizontalLayout : LayoutController
         ForceExpandWidth = new Sync<bool>(this, true);
         ForceExpandHeight = new Sync<bool>(this, true);
         CenterChildren = new Sync<bool>(this, false);
+        CrossAlignment = new Sync<LayoutAlignment>(this, LayoutAlignment.Center);
     }
 
     protected override void FlagChanges(RectTransform rect)
     {
+        // A HorizontalLayout also sizes children on the cross (vertical) axis (PaddingTop/Bottom,
+        // ForceExpandHeight, CrossAlignment), so a change invalidates BOTH axes' metrics. -xlinka
         rect.MarkInvalidateHorizontalLayout();
+        rect.MarkInvalidateVerticalLayout();
     }
 
     public override void PrepareCompute()
@@ -57,6 +64,7 @@ public class HorizontalLayout : LayoutController
         _forceExpandWidth = ForceExpandWidth.Value;
         _forceExpandHeight = ForceExpandHeight.Value;
         _centerChildren = CenterChildren.Value;
+        _crossAlignment = CrossAlignment.Value;
     }
 
     public override void ArrangeChildren(IReadOnlyList<RectTransform> children)
@@ -77,7 +85,7 @@ public class HorizontalLayout : LayoutController
         {
             _metrics.Add(LayoutSizing.IsIgnored(children[i])
                 ? default
-                : LayoutSizing.GetMetrics(children[i], LayoutDirection.Horizontal));
+                : LayoutSizing.Measured(children[i], LayoutDirection.Horizontal));
         }
 
         LayoutSizing.Distribute(innerWidth, _spacing, _padLeft, _metrics, _elements, _forceExpandWidth);
@@ -108,9 +116,11 @@ public class HorizontalLayout : LayoutController
 
             if (!_forceExpandHeight)
             {
-                var vertical = LayoutSizing.GetMetrics(children[i], LayoutDirection.Vertical);
+                var vertical = LayoutSizing.Measured(children[i], LayoutDirection.Vertical);
                 childHeight = Clamp(vertical.Flexible > 0f ? availableHeight : Max(vertical.Min, Min(vertical.Preferred, availableHeight)), 0f, availableHeight);
-                childY = yMin + (availableHeight - childHeight) * 0.5f;
+                // Cross-axis (vertical, y-up): Start=top, End=bottom, Center=middle.
+                float align = _crossAlignment switch { LayoutAlignment.Start => 1f, LayoutAlignment.End => 0f, _ => 0.5f };
+                childY = yMin + (availableHeight - childHeight) * align;
             }
 
             children[i].SetLocalComputeRect(new Rect(rect.xMin + element.Offset, childY, element.Size, childHeight));
@@ -129,7 +139,7 @@ public class HorizontalLayout : LayoutController
         for (int i = 0; i < count; i++)
         {
             if (LayoutSizing.IsIgnored(RectTransform.RectChildren[i])) continue;
-            var metrics = LayoutSizing.GetMetrics(RectTransform.RectChildren[i], direction);
+            var metrics = LayoutSizing.Measured(RectTransform.RectChildren[i], direction);
             if (direction == LayoutDirection.Horizontal)
             {
                 min += metrics.Min;
@@ -157,7 +167,9 @@ public class HorizontalLayout : LayoutController
         {
             _minHeight = min + padding;
             _preferredHeight = preferred + padding;
-            _flexibleHeight = count > 0 ? flexible / count : 0f;
+            // Cross-axis flexibility is the SUM of children's, not flexible/count (the divisor eroded a
+            // nested flexible child's pull to ~0 and collapsed it under a ForceExpand=false parent). -xlinka
+            _flexibleHeight = flexible;
         }
     }
 

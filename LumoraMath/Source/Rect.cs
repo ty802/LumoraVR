@@ -90,6 +90,16 @@ public struct Rect : IEquatable<Rect>
             && yMin < other.yMax && yMax > other.yMin;
     }
 
+    /// <summary>
+    /// True if this rect fully contains <paramref name="other"/> (every edge of other is at or inside this).
+    /// A clip rect that encloses a graphic's bounds discards nothing, so the clip can be skipped for it.
+    /// </summary>
+    public bool Encloses(in Rect other)
+    {
+        return xMin <= other.xMin && yMin <= other.yMin
+            && xMax >= other.xMax && yMax >= other.yMax;
+    }
+
     public Rect Intersection(in Rect other)
     {
         float ix = MathF.Max(xMin, other.xMin);
@@ -102,6 +112,21 @@ public struct Rect : IEquatable<Rect>
 
     public static Rect FromMinMax(in float2 min, in float2 max)
         => new Rect(min.x, min.y, max.x - min.x, max.y - min.y);
+
+    /// <summary>
+    /// Returns the smallest rect containing both this rect and <paramref name="other"/>. An empty/degenerate
+    /// rect counts as "nothing" so it doesn't drag the union toward the origin (e.g. a collapsed UI element).
+    /// </summary>
+    public Rect Encapsulate(in Rect other)
+    {
+        if (IsEmpty) return other;
+        if (other.IsEmpty) return this;
+        float minX = MathF.Min(xMin, other.xMin);
+        float minY = MathF.Min(yMin, other.yMin);
+        float maxX = MathF.Max(xMax, other.xMax);
+        float maxY = MathF.Max(yMax, other.yMax);
+        return new Rect(minX, minY, maxX - minX, maxY - minY);
+    }
 
     public bool Equals(Rect other)
         => x == other.x && y == other.y && width == other.width && height == other.height;

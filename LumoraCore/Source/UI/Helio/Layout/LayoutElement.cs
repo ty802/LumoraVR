@@ -50,6 +50,25 @@ public sealed class LayoutElement : UIComputeComponent, ILayoutElement
 
     public LayoutMetric ChangedMetrics { get; private set; }
 
+    public override void OnAwake()
+    {
+        base.OnAwake();
+        // PER-AXIS routing: a leaf element's width metrics are independent of its height metrics, so a width
+        // change invalidates only the HORIZONTAL axis and a height change only the VERTICAL - the measure pass
+        // then reuses the unaffected axis's cached metric. Area/Priority/UseZeroMetrics can affect either, so
+        // they invalidate both. These per-Sync handlers replace the catch-all FlagChanges (a no-op below);
+        // routing through FlagChanges would collapse every change back to both axes and defeat the skip. -xlinka
+        MinWidth.OnChanged += _ => RectTransform?.MarkInvalidateHorizontalLayout();
+        PreferredWidth.OnChanged += _ => RectTransform?.MarkInvalidateHorizontalLayout();
+        FlexibleWidth.OnChanged += _ => RectTransform?.MarkInvalidateHorizontalLayout();
+        MinHeight.OnChanged += _ => RectTransform?.MarkInvalidateVerticalLayout();
+        PreferredHeight.OnChanged += _ => RectTransform?.MarkInvalidateVerticalLayout();
+        FlexibleHeight.OnChanged += _ => RectTransform?.MarkInvalidateVerticalLayout();
+        Area.OnChanged += _ => RectTransform?.MarkChangeDirty();
+        PriorityValue.OnChanged += _ => RectTransform?.MarkChangeDirty();
+        UseZeroMetrics.OnChanged += _ => RectTransform?.MarkChangeDirty();
+    }
+
     public override void PrepareCompute()
     {
         PrepareValue(ref _minWidth, MinWidth.Value, LayoutMetric.MinWidth);
@@ -79,7 +98,10 @@ public sealed class LayoutElement : UIComputeComponent, ILayoutElement
 
     protected override void FlagChanges(RectTransform rect)
     {
-        rect.MarkChangeDirty();
+        // Per-axis routing is handled by the per-Sync OnChanged handlers wired in OnAwake (width->H,
+        // height->V, Area/Priority/UseZeroMetrics->both). Keeping this a no-op stops the catch-all from
+        // collapsing every metric change back to both axes, which is what enables the per-axis measure skip.
+        // Structural enable/disable/attach still routes through NotifyComponentsChanged (both axes). -xlinka
     }
 
     private LayoutMetric OverriddenMetrics

@@ -81,24 +81,3 @@ public struct TransformStreamData
     }
 }
 
-/// <summary>
-/// User stream bag - holds all stream data for a user.
-/// 
-/// </summary>
-public class UserStreamBag
-{
-    public TransformStreamData? HeadTransform { get; set; }
-    public TransformStreamData? LeftHandTransform { get; set; }
-    public TransformStreamData? RightHandTransform { get; set; }
-
-    public bool HasData => HeadTransform.HasValue ||
-                          LeftHandTransform.HasValue ||
-                          RightHandTransform.HasValue;
-
-    public void Clear()
-    {
-        HeadTransform = null;
-        LeftHandTransform = null;
-        RightHandTransform = null;
-    }
-}

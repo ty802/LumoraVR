@@ -33,6 +33,10 @@ public class RectTransform : Component
     public readonly Sync<float2> Pivot;
 
     private Rect _localComputeRect;
+    // Aggregated bounds: the union of this rect with every active descendant's bounds, computed bottom-up by
+    // the canvas AFTER the layout pass (see UpdateBounds). Used to size an optional canvas collider and to
+    // cheaply reject rays that miss all content. -xlinka
+    private Rect _boundingRect;
     private DataModelFlag _dataModelFlags;
     // Cached-layout tracking. _layoutSelfDirty = this rect's own layout inputs changed; _descendantLayoutDirty
     // = something below changed (bubbled up). Both start true so the first pass computes everything; the
@@ -42,6 +46,18 @@ public class RectTransform : Component
     private RectTransform? _rectParent;
     private readonly List<RectTransform> _rectChildren = new();
     private Canvas? _registeredCanvas;
+    // Bottom-up measured metrics (min/preferred/flexible per axis), populated by the canvas MEASURE pass
+    // before the top-down arrange so flexible/preferred sizing propagates through nested containers
+    // (without this, a flexible child inside a plain container collapses to 0). -xlinka
+    private LayoutMetrics _measuredHorizontal;
+    private LayoutMetrics _measuredVertical;
+    private bool _metricsValid;
+    // PER-AXIS measure track, PARALLEL to the combined _layoutSelfDirty/_descendantLayoutDirty above (which
+    // is left untouched - it still gates the whole-rect skip + arrange). These say which axis's cached metric
+    // is stale, so the measure pass can re-measure just the changed axis and reuse the clean one. Init true so
+    // the first pass measures both. A change sets BOTH unless it provably touches one axis. -xlinka
+    private bool _metricsDirtyH = true;
+    private bool _metricsDirtyV = true;
 
     public RectTransform()
     {
@@ -53,10 +69,28 @@ public class RectTransform : Component
     }
 
     public Rect LocalComputeRect => _localComputeRect;
+    public Rect BoundingRect => _boundingRect;
     public Canvas? Canvas => _registeredCanvas;
     public RectTransform? RectParent => _rectParent;
     public IReadOnlyList<RectTransform> RectChildren => _rectChildren;
     public int ChildrenCount => _rectChildren.Count;
+
+    // Bottom-up bounds aggregation: union of this rect with every active child's already-aggregated bounds.
+    // Called by the canvas AFTER ComputeRects so LocalComputeRect + RectChildren are final for every rect
+    // (calling it earlier would aggregate the 100x100 pre-layout default). Helio renders nested chunks in
+    // place (no per-chunk render-translate), so there's no offset to fold in. -xlinka
+    internal void UpdateBounds()
+    {
+        var bounds = _localComputeRect;
+        for (int i = 0; i < _rectChildren.Count; i++)
+        {
+            var child = _rectChildren[i];
+            if (!child.Slot.ActiveSelf.Value) continue;
+            child.UpdateBounds();
+            bounds = bounds.Encapsulate(child._boundingRect);
+        }
+        _boundingRect = bounds;
+    }
 
     // A position/size change (anchor/offset/pivot). Scoped: only this rect's chunk subtree needs
     // re-laying-out (e.g. a slider handle moving), not the whole canvas.
@@ -64,18 +98,22 @@ public class RectTransform : Component
     {
         _dataModelFlags |= DataModelFlag.RectChanged | DataModelFlag.LayoutChanged;
         SignalLayoutDirty(scoped: true);
+        // FAIL-SAFE: an anchor/offset/pivot move can resize EITHER axis, so both metrics are stale.
+        BubbleMetricsDirty(true, true);
     }
 
     public void MarkInvalidateHorizontalLayout()
     {
         _dataModelFlags |= DataModelFlag.LayoutChanged;
         SignalLayoutDirty(scoped: true);
+        BubbleMetricsDirty(true, false);
     }
 
     public void MarkInvalidateVerticalLayout()
     {
         _dataModelFlags |= DataModelFlag.LayoutChanged;
         SignalLayoutDirty(scoped: true);
+        BubbleMetricsDirty(false, true);
     }
 
     // called by UIComputeComponents on this slot when enable/disable/attach/destroy happens - xlinka
@@ -84,6 +122,7 @@ public class RectTransform : Component
     {
         _dataModelFlags |= DataModelFlag.ComponentsChanged;
         SignalLayoutDirty(scoped: false);
+        BubbleMetricsDirty(true, true);
     }
 
     public override void OnChanges()
@@ -116,6 +155,7 @@ public class RectTransform : Component
     {
         _dataModelFlags |= DataModelFlag.StructureChanged;
         MarkLayoutSelfDirty();
+        BubbleMetricsDirty(true, true);
         var canvas = ResolveCanvas();
         if (canvas == null)
             return;
@@ -201,6 +241,54 @@ public class RectTransform : Component
                 break;
             rt._descendantLayoutDirty = true;
         }
+    }
+
+    // Mark this rect's measured metric(s) stale for the given axes and bubble that up the slot tree (a
+    // parent's metric aggregates its children's, so a child change invalidates the parent's metric for that
+    // axis). Separate from MarkLayoutSelfDirty so the combined dirty/reflow path is untouched. Early-stops at
+    // an ancestor that already covers the requested axes. -xlinka
+    private void BubbleMetricsDirty(bool h, bool v)
+    {
+        if (h) _metricsDirtyH = true;
+        if (v) _metricsDirtyV = true;
+        for (var s = Slot?.Parent; s != null; s = s.Parent)
+        {
+            var rt = s.GetComponent<RectTransform>();
+            if (rt == null)
+                continue;
+            bool needH = h && !rt._metricsDirtyH;
+            bool needV = v && !rt._metricsDirtyV;
+            if (!needH && !needV)
+                break;
+            if (needH) rt._metricsDirtyH = true;
+            if (needV) rt._metricsDirtyV = true;
+        }
+    }
+
+    /// <summary>True if this rect's cached measured metric for the axis is stale and must be re-measured.</summary>
+    public bool MetricsDirty(LayoutDirection direction)
+        => direction == LayoutDirection.Horizontal ? _metricsDirtyH : _metricsDirtyV;
+
+    /// <summary>True once the canvas measure pass has cached this rect's metrics.</summary>
+    public bool MetricsValid => _metricsValid;
+
+    /// <summary>The bottom-up measured metrics for an axis (valid only after the measure pass; see MetricsValid).</summary>
+    public LayoutMetrics GetMeasuredMetrics(LayoutDirection direction)
+        => direction == LayoutDirection.Horizontal ? _measuredHorizontal : _measuredVertical;
+
+    internal void SetMeasuredMetrics(LayoutDirection direction, in LayoutMetrics metrics)
+    {
+        if (direction == LayoutDirection.Horizontal)
+        {
+            _measuredHorizontal = metrics;
+            _metricsDirtyH = false;
+        }
+        else
+        {
+            _measuredVertical = metrics;
+            _metricsDirtyV = false;
+        }
+        _metricsValid = true;
     }
 
     internal void SetLocalComputeRect(in Rect rect) => _localComputeRect = rect;

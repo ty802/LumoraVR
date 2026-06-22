@@ -85,7 +85,15 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         if (Owner.PhosMesh != null)
         {
             UploadMesh(Owner.PhosMesh, Owner.UploadHint);
+            NotifyRenderer();
         }
+    }
+
+    // Tell the MeshRenderer on our slot to re-apply now that our ArrayMesh actually has surfaces - the
+    // surface count going 0->N is invisible to its SyncRef change path, so it needs an explicit poke. -xlinka
+    private void NotifyRenderer()
+    {
+        Owner.Slot?.GetComponent<Lumora.Core.Components.MeshRenderer>()?.FlagSurfacesDirty();
     }
 
     public override void ApplyChanges()
@@ -95,6 +103,12 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         {
             UploadMesh(Owner.PhosMesh, Owner.UploadHint);
             Owner.ClearDirty();
+
+            // Our ArrayMesh just went from empty -> populated. SurfaceCount changing 0->N is invisible to
+            // the renderer's SyncRef change path, so on a joiner (where the MeshRenderer hook may have
+            // drained before us) it would otherwise hold our empty mesh forever. Re-drive the co-located
+            // renderer so it re-reads the now-populated ArrayMesh and re-applies materials. -xlinka
+            NotifyRenderer();
         }
 
         // Hide our MeshInstance3D if a MeshRenderer is handling rendering

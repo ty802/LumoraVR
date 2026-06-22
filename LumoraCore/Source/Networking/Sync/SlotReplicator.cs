@@ -50,7 +50,7 @@ public class ReplicatedSlotCollection : ReplicatedObjectCollection<Slot>
         // Only initialize if this slot doesn't already have a world
         if (slot.World == null)
         {
-            Lumora.Core.Logging.Logger.Log($"SlotCollection.HandleSlotAdded: Creating slot RefID={key}, isNew={isNew}");
+            Lumora.Core.Logging.Logger.Debug($"SlotCollection.HandleSlotAdded: Creating slot RefID={key}, isNew={isNew}");
 
             // Initialize with the world using the network-assigned RefID
             slot.InitializeFromReplicator(World, key);
@@ -66,7 +66,7 @@ public class ReplicatedSlotCollection : ReplicatedObjectCollection<Slot>
                 }
             }
 
-            Lumora.Core.Logging.Logger.Log($"SlotCollection.HandleSlotAdded: Slot initialized - Name='{slot.Name?.Value}', NameRefID={slot.Name?.ReferenceID}");
+            Lumora.Core.Logging.Logger.Debug($"SlotCollection.HandleSlotAdded: Slot initialized - Name='{slot.Name?.Value}', NameRefID={slot.Name?.ReferenceID}");
 
             // Register with the world's slot tracking
             World.RegisterSlot(slot);

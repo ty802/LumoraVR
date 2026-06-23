@@ -263,6 +263,10 @@ public sealed class SessionScreen : WidgetScreen
 
         var content = viewport.AddSlot("Content");
         _contentRect = content.AttachComponent<RectTransform>();
+        // Render-offset scrolling (off by default): give the content its own chunk so it slides as a unit
+        // while the viewport mask/background stay fixed. -xlinka
+        if (Canvas.ScrollRenderOffset)
+            content.AttachComponent<GraphicChunkRoot>();
         // Top-pinned, full-width content strip; its HEIGHT is set explicitly by RecomputeContentHeight.
         // (The ContentSizeFitter approach was reverted: it resized this rect mid-layout-pass and, combined
         // with ScrollRect mutating the same rect, never let the canvas settle - it re-dirtied every frame and
@@ -388,7 +392,7 @@ public sealed class SessionScreen : WidgetScreen
         section.Chevron.Content.Value = section.Expanded ? "▼" : "▶";
         RecomputeContentHeight();
         if (_scroll != null)
-            _scroll.Scroll.Value = float2.Zero;
+            _scroll.NormalizedPosition = float2.Zero;
         // The rects only update on the next rebuild, so size the handle a frame later.
         World.RunInUpdates(1, UpdateScrollHandle);
         _dashboard?.Slot.GetComponent<Canvas>()?.MarkDirty();
@@ -426,7 +430,7 @@ public sealed class SessionScreen : WidgetScreen
     private void OnHandlePress(UIInteractionContext context)
     {
         _handlePressY = context.LocalPoint.y;
-        _handlePressScroll = _scroll?.Scroll.Value.y ?? 0f;
+        _handlePressScroll = _scroll?.AbsolutePosition.y ?? 0f;
     }
 
     private void OnHandleDrag(UIInteractionContext context)
@@ -449,7 +453,7 @@ public sealed class SessionScreen : WidgetScreen
         // Dragging the handle down (local Y decreases) scrolls the content down.
         float deltaY = context.LocalPoint.y - _handlePressY;
         float scrolled = _handlePressScroll - deltaY * (maxScroll / travel);
-        _scroll.Scroll.Value = new float2(0f, Clamp(scrolled, 0f, maxScroll));
+        _scroll.AbsolutePosition = new float2(0f, Clamp(scrolled, 0f, maxScroll));
         UpdateScrollHandle();
         _dashboard?.Slot.GetComponent<Canvas>()?.MarkDirty();
     }
@@ -485,16 +489,16 @@ public sealed class SessionScreen : WidgetScreen
         if (maxScroll <= 0.5f)
         {
             _scrollTrack.ActiveSelf.Value = false; // everything fits; no scrollbar
-            if (_scroll.Scroll.Value.y != 0f)
-                _scroll.Scroll.Value = float2.Zero; // drop any stale scroll so the form sits at the top
+            if (_scroll.NormalizedPosition.y != 0f)
+                _scroll.NormalizedPosition = float2.Zero; // drop any stale scroll so the form sits at the top
             return;
         }
         _scrollTrack.ActiveSelf.Value = true;
         // Clamp any existing scroll to the (possibly reduced) real range so it can't rest past the bottom.
-        if (_scroll.Scroll.Value.y > maxScroll)
-            _scroll.Scroll.Value = new float2(0f, maxScroll);
+        if (_scroll.AbsolutePosition.y > maxScroll)
+            _scroll.AbsolutePosition = new float2(0f, maxScroll);
         float handleHeight = MathF.Max(30f, viewportHeight * (viewportHeight / contentHeight));
-        float fraction = Clamp(_scroll.Scroll.Value.y / maxScroll, 0f, 1f);
+        float fraction = Clamp(_scroll.AbsolutePosition.y / maxScroll, 0f, 1f);
         float offset = fraction * (viewportHeight - handleHeight);
         _scrollHandle.OffsetMax.Value = new float2(-2f, -offset);
         _scrollHandle.OffsetMin.Value = new float2(2f, -(offset + handleHeight));

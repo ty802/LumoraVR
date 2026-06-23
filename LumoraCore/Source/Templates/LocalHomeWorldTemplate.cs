@@ -300,7 +300,7 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
             SetLayoutHeight(scroll.RectTransform!, 150f, 190f, 1f);
             const float scrollContentHeight = 260f;
             ConfigureScrollContent(scrollContent, scrollContentHeight);
-            scroll.Scroll.Value = new float2(0f, 30f);
+            scroll.NormalizedPosition = new float2(0f, 0.2f); // start ~20% scrolled to show the clip
             scroll.ScrollChanged += (_, value) =>
             {
                 status.Content.Value = $"Scroll clip y={value.y:0}";

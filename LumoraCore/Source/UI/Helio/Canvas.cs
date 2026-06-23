@@ -47,6 +47,15 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     // set false to force every mask back to the rectangular clip path. -xlinka
     public static bool StencilMaskingEnabled = true;
 
+    // Scroll by translating the content chunk + counter-translating its clip, instead of mutating the content
+    // rect every tick. Side-steps the rect-mutation never-settle freeze class entirely (it never touches the
+    // rect). A ScrollRect's content gets its own GraphicChunkRoot and scrolls via GraphicChunkRoot.RenderOffset
+    // (see ComputeChunk + ScrollRect.ApplyScroll). PARKED OFF: in-engine the content didn't visually move with
+    // the flag on - the C# offset math and the ChunkSlot->Node3D->mesh transform chain both check out on
+    // inspection, so it's a runtime propagation issue still under diagnosis. Falls back to the proven
+    // rect-mutation scroll when off. -xlinka
+    public static bool ScrollRenderOffset = false;
+
     // Per-chunk rendering: each GraphicChunkRoot below the canvas owns an independent mesh, so a
     // subtree that animates (e.g. the FPS sparkline) re-uploads only its own small mesh instead of
     // the whole canvas. The root chunk is everything not under a nested GraphicChunkRoot. - xlinka
@@ -650,6 +659,17 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
 
         var clip = ComputeInheritedClip(root.Slot);
         var stencil = ComputeInheritedStencil(root.Slot);
+
+        // Render-offset scrolling: translate the whole chunk by RenderOffset and counter-translate its clip
+        // by the same amount, so the clip window stays put (fixed viewport) while the content slides under it.
+        // Zero when the feature is off or this chunk isn't a scroll target -> identity, current behavior. -xlinka
+        var offset = ScrollRenderOffset ? root.RenderOffset : float2.Zero;
+        chunk.SetComputeOffset(offset);
+        if (offset != float2.Zero && clip.HasValue)
+        {
+            clip = new Rect(clip.Value.x - offset.x, clip.Value.y - offset.y, clip.Value.width, clip.Value.height);
+        }
+
         chunk.PrepareCompute();
         RenderPartition(chunk.ContentRenderData, root.Slot, clip, root, stencil);
         return true;

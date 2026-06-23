@@ -646,6 +646,10 @@ public class UIBuilder
         content = contentSlot.AttachComponent<RectTransform>();
         scroll.Content.Target = content;
         Fill(content);
+        // Render-offset scrolling needs the content in its own chunk so it can slide independently of the
+        // fixed viewport background/mask (which stay in the parent chunk). Off by default. -xlinka
+        if (Canvas.ScrollRenderOffset)
+            contentSlot.AttachComponent<GraphicChunkRoot>();
         return scroll;
     }
 

@@ -84,7 +84,7 @@ public class LocomotionController : Component
     {
         base.OnAwake();
 
-        // Don't run TryInitializeLocalUser() here: OnAwake executes inside the reference controller's
+        // Don't run TryInitializeLocalUser() here: OnAwake executes inside the ReferenceController's
         // allocation soft-block, and the attaches it does (UserInputState + the locomotion modules) each
         // log a "RefID allocation during OnAwake" warning - dozens of lines per avatar. The first OnUpdate
         // calls it anyway (outside the block), one frame later, with no functional difference. Matches how

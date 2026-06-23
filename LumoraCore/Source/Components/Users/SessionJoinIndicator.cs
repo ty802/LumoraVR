@@ -58,7 +58,7 @@ public class SessionJoinIndicator : Component
     {
         base.OnInit();
 
-        // Build the visual hierarchy in OnInit, NOT OnAwake. OnAwake runs inside the reference controller's
+        // Build the visual hierarchy in OnInit, NOT OnAwake. OnAwake runs inside the ReferenceController's
         // allocation soft-block, so creating slots/components/text there logs a "RefID allocation during OnAwake"
         // warning for EVERY allocation (the text setup alone floods dozens of lines). OnInit runs after that block
         // is released - it's the correct place to spawn child objects. -xlinka

@@ -573,6 +573,21 @@ public sealed class GraphicsChunk
     // Nested chunks render above the root chunk: their surfaces pack into the top render_priority band. - xlinka
     public bool RenderOnTop { get; set; }
 
+    // Render-space translation of this chunk's whole mesh, applied on the chunk slot. ScrollRect uses it to
+    // slide scrolled content without touching its rect; the canvas counter-translates the clip to keep the
+    // viewport window fixed. Canvas pixels, in the chunk's (canvas-local) frame. -xlinka
+    public float2 ComputeOffset { get; private set; }
+
+    public void SetComputeOffset(float2 offset)
+    {
+        if (ComputeOffset == offset && ChunkSlot != null && !ChunkSlot.IsDestroyed)
+            return;
+        ComputeOffset = offset;
+        SetupComponents();
+        if (ChunkSlot != null && !ChunkSlot.IsDestroyed)
+            ChunkSlot.LocalPosition.Value = new float3(offset.x, offset.y, 0f);
+    }
+
     // 0 = normal nested chunk. > 0 = overlay layer: reserves a render-priority band above all
     // normal chunks so a modal draws on top of everything (see BuildPerSurfacePriorities). - xlinka
     public int OverlayLevel { get; set; }

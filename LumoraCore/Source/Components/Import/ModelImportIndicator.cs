@@ -12,8 +12,8 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 namespace Lumora.Core.Components;
 
 /// <summary>
-/// In-world 3D model-import progress indicator. The reference engine shows import/load progress IN the world
-/// (a floating readout), not as a flat screen overlay - this is the equivalent: a title + status/percent text and
+/// In-world 3D model-import progress indicator. Import/load progress is shown IN the world (a floating readout),
+/// not as a flat screen overlay: a title + status/percent text and
 /// a determinate progress bar that float in front of the user and follow their view, driven by the importer's
 /// progress callback, and self-destructing a beat after the import finishes.
 ///

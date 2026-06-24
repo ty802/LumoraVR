@@ -523,7 +523,7 @@ public partial class ClipboardImporter : Node
     {
         GD.Print($"ClipboardImporter: Populating model slot as {(isAvatar ? "avatar" : "3D model")}: {filePath}");
 
-        // Show an IN-WORLD progress indicator (3D, in front of the user) like the reference - not a flat screen
+        // Show an IN-WORLD progress indicator (3D, in front of the user), not a flat screen
         // overlay. It's non-modal: the game stays interactive while it loads (freeze fix) and the user sees a
         // floating title + percent + progress bar in the world. Driven straight off the importer's progress. -xlinka
         var importWorld = slot.World;

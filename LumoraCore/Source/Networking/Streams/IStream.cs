@@ -23,6 +23,11 @@ public interface IStream : IWorker, IWorldElement
     bool HasValidData { get; }
 
     /// <summary>
+    /// Name of this stream, used for name-based lookup (e.g. a per-user "Voice" stream).
+    /// </summary>
+    string Name { get; set; }
+
+    /// <summary>
     /// Name of the stream group this stream belongs to.
     /// </summary>
     string Group { get; set; }

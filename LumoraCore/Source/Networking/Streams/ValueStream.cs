@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using Lumora.Core.Math;
 using Lumora.Core.Networking.Sync;
 
 namespace Lumora.Core.Networking.Streams;
@@ -21,7 +22,12 @@ public enum ValueEncoding
     /// <summary>
     /// Quantized encoding with bit-packing.
     /// </summary>
-    Quantized
+    Quantized,
+
+    /// <summary>
+    /// Quantized full keyframes with bit-packed deltas in between - lower bandwidth for slowly-changing values.
+    /// </summary>
+    Delta
 }
 
 /// <summary>
@@ -49,6 +55,20 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
     protected readonly Sync<bool> _isInterpolated = new();
     protected readonly Sync<float> _interpolationOffset = new();
     protected readonly Sync<ValueEncoding> _encoding = new();
+    protected readonly Sync<int> _fullFrameBits = new();
+    protected readonly Sync<T> _fullFrameMin = new();
+    protected readonly Sync<T> _fullFrameMax = new();
+    protected readonly Sync<int> _deltaFrameBits = new();
+    protected readonly Sync<T> _deltaFrameMin = new();
+    protected readonly Sync<T> _deltaFrameMax = new();
+
+    // Delta-frame state: a periodic full keyframe then bit-packed deltas; bounds drift if a frame is lost.
+    private const int KeyframeInterval = 30;
+    private T _lastEncodedValue = default!;
+    private bool _hasLastEncoded;
+    private int _keyframeCounter;
+    private T _lastDecodedValue = default!;
+    private bool _hasLastDecoded;
 
     // Interpolation state
     private List<DataPoint> _dataPoints = new();
@@ -67,11 +87,50 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
         set
         {
             CheckOwnership();
-            // Only full encoding supported currently
-            if (value != ValueEncoding.Full)
-                throw new NotSupportedException("Only Full encoding is currently supported");
             _encoding.Value = value;
         }
+    }
+
+    /// <summary>Bit depth per component when <see cref="Encoding"/> is Quantized.</summary>
+    public int FullFrameBits
+    {
+        get => _fullFrameBits.Value;
+        set { CheckOwnership(); _fullFrameBits.Value = value; }
+    }
+
+    /// <summary>Lower bound of the quantization range (per component) for Quantized encoding.</summary>
+    public T FullFrameMin
+    {
+        get => _fullFrameMin.Value;
+        set { CheckOwnership(); _fullFrameMin.Value = value; }
+    }
+
+    /// <summary>Upper bound of the quantization range (per component) for Quantized encoding.</summary>
+    public T FullFrameMax
+    {
+        get => _fullFrameMax.Value;
+        set { CheckOwnership(); _fullFrameMax.Value = value; }
+    }
+
+    /// <summary>Bit depth per component for the delta frames in Delta encoding.</summary>
+    public int DeltaFrameBits
+    {
+        get => _deltaFrameBits.Value;
+        set { CheckOwnership(); _deltaFrameBits.Value = value; }
+    }
+
+    /// <summary>Lower bound of the per-component delta range (Delta encoding).</summary>
+    public T DeltaFrameMin
+    {
+        get => _deltaFrameMin.Value;
+        set { CheckOwnership(); _deltaFrameMin.Value = value; }
+    }
+
+    /// <summary>Upper bound of the per-component delta range (Delta encoding).</summary>
+    public T DeltaFrameMax
+    {
+        get => _deltaFrameMax.Value;
+        set { CheckOwnership(); _deltaFrameMax.Value = value; }
     }
 
     /// <summary>
@@ -137,18 +196,11 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
     {
         base.OnInit();
 
-        // Initialize sync members
-        _isInterpolated.Initialize(World, this);
-        _interpolationOffset.Initialize(World, this);
-        _encoding.Initialize(World, this);
-
-        _isInterpolated.EndInitPhase();
-        _interpolationOffset.EndInitPhase();
-        _encoding.EndInitPhase();
-
-        // Set defaults
+        // Members wire via the worker pipeline now; OnInit just seeds config defaults (in the init phase, no deltas). -xlinka
         _interpolationOffset.Value = 0.05f;
         _encoding.Value = ValueEncoding.Full;
+        _fullFrameBits.Value = 16;
+        _deltaFrameBits.Value = 8;
     }
 
     /// <summary>
@@ -211,7 +263,25 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
     /// </summary>
     public override void Decode(BinaryReader reader, StreamMessage message)
     {
-        T value = SyncCoder.Decode<T>(reader);
+        var enc = _encoding.Value;
+        bool quantizable = StreamCoder.SupportsQuantization(typeof(T));
+        T value;
+
+        if (enc == ValueEncoding.Quantized && quantizable)
+        {
+            var br = new BitReader(reader.ReadBytes(StreamCoder.QuantizedByteCount<T>(_fullFrameBits.Value)));
+            value = StreamCoder.DecodeQuantized(br, _fullFrameMin.Value, _fullFrameMax.Value, _fullFrameBits.Value);
+        }
+        else if (enc == ValueEncoding.Delta && quantizable)
+        {
+            if (!TryDecodeDeltaFrame(reader, out value))
+                return; // a delta arrived before any keyframe - skip it, keep the current value
+        }
+        else
+        {
+            value = SyncCoder.Decode<T>(reader);
+        }
+
         WriteDataPoint(value, DateTime.FromBinary((long)(message.StreamTime * TimeSpan.TicksPerSecond)));
         _receivedFirstData = true;
     }
@@ -221,7 +291,77 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
     /// </summary>
     public override void Encode(BinaryWriter writer)
     {
-        SyncCoder.Encode(writer, _value);
+        var enc = _encoding.Value;
+        bool quantizable = StreamCoder.SupportsQuantization(typeof(T));
+
+        // Quantized when requested AND the type has a quantized coder; otherwise full precision. Both sides
+        // know FullFrameBits (synced), so the quantized byte count is implied - no length prefix. -xlinka
+        if (enc == ValueEncoding.Quantized && quantizable)
+        {
+            var bw = new BitWriter();
+            StreamCoder.EncodeQuantized(bw, _value, _fullFrameMin.Value, _fullFrameMax.Value, _fullFrameBits.Value);
+            writer.Write(bw.ToArray());
+        }
+        else if (enc == ValueEncoding.Delta && quantizable)
+        {
+            EncodeDeltaFrame(writer);
+        }
+        else
+        {
+            SyncCoder.Encode(writer, _value);
+        }
+    }
+
+    // Delta frame: a 1-bit full/delta flag then the bit-packed value (full = quantized absolute, delta =
+    // quantized change from the last value). Length-prefixed because full and delta frames differ in size.
+    // A full keyframe goes out every KeyframeInterval frames (and on the first), so a lost delta's drift is
+    // bounded and recovers at the next keyframe. -xlinka
+    private void EncodeDeltaFrame(BinaryWriter writer)
+    {
+        bool full = !_hasLastEncoded || (_keyframeCounter % KeyframeInterval) == 0;
+
+        var bw = new BitWriter();
+        bw.WriteBits(full ? 1u : 0u, 1);
+        if (full)
+            StreamCoder.EncodeQuantized(bw, _value, _fullFrameMin.Value, _fullFrameMax.Value, _fullFrameBits.Value);
+        else
+            StreamCoder.EncodeDelta(bw, _value, _lastEncodedValue, _deltaFrameMin.Value, _deltaFrameMax.Value, _deltaFrameBits.Value);
+
+        var bytes = bw.ToArray();
+        writer.Write7BitEncodedInt(bytes.Length);
+        writer.Write(bytes);
+
+        _lastEncodedValue = _value;
+        _hasLastEncoded = true;
+        _keyframeCounter++;
+    }
+
+    private bool TryDecodeDeltaFrame(BinaryReader reader, out T value)
+    {
+        value = default!;
+
+        int length = reader.Read7BitEncodedInt();
+        if (length <= 0)
+            return false;
+
+        var br = new BitReader(reader.ReadBytes(length));
+        bool full = br.ReadBits(1) == 1u;
+
+        if (full)
+        {
+            value = StreamCoder.DecodeQuantized(br, _fullFrameMin.Value, _fullFrameMax.Value, _fullFrameBits.Value);
+        }
+        else
+        {
+            if (!_hasLastDecoded)
+                return false; // can't apply a delta without a base value yet
+
+            value = StreamCoder.DecodeDelta(br, _lastDecodedValue, _deltaFrameMin.Value, _deltaFrameMax.Value, _deltaFrameBits.Value);
+        }
+
+        _lastDecodedValue = value;
+        _hasLastDecoded = true;
+        return true;
     }
 
     /// <summary>
@@ -326,6 +466,7 @@ public class Float3ValueStream : ValueStream<Lumora.Core.Math.float3>
             a.z + (b.z - a.z) * lerp
         );
     }
+
 }
 
 /// <summary>
@@ -356,12 +497,7 @@ public class FloatQValueStream : ValueStream<Lumora.Core.Math.floatQ>
         Lumora.Core.Math.floatQ b,
         float lerp)
     {
-        // Simple linear interpolation (slerp would be better but requires more math)
-        return new Lumora.Core.Math.floatQ(
-            a.x + (b.x - a.x) * lerp,
-            a.y + (b.y - a.y) * lerp,
-            a.z + (b.z - a.z) * lerp,
-            a.w + (b.w - a.w) * lerp
-        ).Normalized;
+        // Proper spherical interpolation - constant angular velocity, no normalize-induced speed-up. -xlinka
+        return Lumora.Core.Math.floatQ.Slerp(a, b, lerp);
     }
 }

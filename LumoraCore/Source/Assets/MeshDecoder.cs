@@ -35,7 +35,7 @@ public static class MeshDecoder
             return ext switch
             {
                 ".lmesh" => PhosMeshSerializer.Deserialize(fileData),
-                // Everything non-native goes through Assimp now (one parser, like the reference). VRM is GLB, so
+                // Everything non-native goes through Assimp now (one parser). VRM is GLB, so
                 // hint Assimp with .glb. Native .obj keeps its lightweight reader. -xlinka
                 ".glb" or ".gltf" => DecodeAssimp(fileData, ext, meshIndex),
                 ".vrm" => DecodeAssimp(fileData, ".glb", meshIndex),
@@ -210,7 +210,7 @@ public static class MeshDecoder
         var allNormals = new List<float3>();
         var allUVs = new List<float2>();
         // Extra UV channels (1-3). Avatars rarely use them but lightmap/detail meshes do - keep them so the data
-        // round-trips like the reference's all-channels import instead of dropping everything past UV0. -xlinka
+        // round-trips all UV channels instead of dropping everything past UV0. -xlinka
         var allUVs1 = new List<float2>();
         var allUVs2 = new List<float2>();
         var allUVs3 = new List<float2>();
@@ -364,7 +364,7 @@ public static class MeshDecoder
             }
 
             // Bones -> the mesh bone table (name + inverse-bind = OffsetMatrix) + per-vertex (index, weight),
-            // accumulated into up to 4 influences per vertex. Mirrors the reference's ImportMesh bone pass.
+            // accumulated into up to 4 influences per vertex.
             if (mesh.HasBones)
             {
                 anySkin = true;
@@ -562,8 +562,8 @@ public static class MeshDecoder
             // (top-left origin), so Assimp's UVs already line up with our atlases - and it's the ONLY V transform in
             // the whole engine (every other textured path writes UVs verbatim). FlipUVs (v->1-v) was a spurious
             // extra mirror: it mapped faces to the wrong atlas row (cream paws sampled the orange-fur band). glTF
-            // UVs are top-origin too, so omitting it is correct across formats; the reference importer also omits
-            // FlipUVs. If a bottom-origin source ever needs it, make it a per-import toggle, not always-on. -xlinka
+            // UVs are top-origin too, so omitting it is correct across formats. If a bottom-origin source ever
+            // needs it, make it a per-import toggle, not always-on. -xlinka
 
         // Per-mesh (skinned) import keeps the node hierarchy (no PreTransformVertices) and caps influences to 4.
         // The legacy whole-file path pre-transforms so a standalone static mesh lands at its world position.

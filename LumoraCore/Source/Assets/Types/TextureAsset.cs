@@ -84,8 +84,7 @@ public class TextureAsset : ImplementableAsset<ITextureAssetHook>
         // Hook.UploadData only QUEUES a deferred main-thread build; if we reported loaded now, the asset's single
         // load-complete notification would fire while Hook.IsValid is still false, the consuming material would bind
         // a null albedo, and nothing re-binds it (white body). Awaiting the upload makes that notification fire when
-        // the texture is genuinely usable - mirrors the reference, which awaits texture GPU integration before
-        // marking the asset loaded. -xlinka
+        // the texture is genuinely usable: the asset isn't marked loaded until the GPU upload completes. -xlinka
         if (Hook != null)
             await Hook.WaitForUploadAsync().ConfigureAwait(false);
     }

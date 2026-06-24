@@ -69,16 +69,46 @@ public class UserStreamStorage : ReplicatedObjectCollection<Stream>
 
     protected override Stream CreateElementWithKey(RefID key, BinaryReader reader)
     {
-        var typeName = reader.ReadString();
+        return InstantiateStream(reader.ReadString());
+    }
 
-        Stream stream = typeName switch
+    // Reconstruct a received stream from its type name. Resolved by reflection so any stream subtype
+    // replicates, but guarded: the resolved type must be a concrete Stream subclass with a public
+    // parameterless ctor, else we reject it - the network can't make us instantiate arbitrary types. -xlinka
+    private static Stream InstantiateStream(string typeName)
+    {
+        var type = ResolveStreamType(typeName);
+        if (type == null)
+            throw new InvalidOperationException($"Rejected unknown or invalid stream type: '{typeName}'");
+
+        return (Stream)Activator.CreateInstance(type)!;
+    }
+
+    private static Type? ResolveStreamType(string typeName)
+    {
+        if (string.IsNullOrEmpty(typeName))
+            return null;
+
+        // Calling assembly + corelib first (covers the built-in streams), then loaded assemblies.
+        var type = Type.GetType(typeName) ?? typeof(Stream).Assembly.GetType(typeName);
+        if (type == null)
         {
-            "Lumora.Core.Networking.Streams.Float3ValueStream" => new Float3ValueStream(),
-            "Lumora.Core.Networking.Streams.FloatQValueStream" => new FloatQValueStream(),
-            _ => throw new InvalidOperationException($"Unknown stream type: {typeName}")
-        };
+            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                type = asm.GetType(typeName);
+                if (type != null)
+                    break;
+            }
+        }
 
-        return stream;
+        if (type == null || type.IsAbstract
+            || !typeof(Stream).IsAssignableFrom(type)
+            || type.GetConstructor(Type.EmptyTypes) == null)
+        {
+            return null;
+        }
+
+        return type;
     }
 
     public override void Dispose()

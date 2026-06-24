@@ -59,14 +59,5 @@ public abstract class ImplicitStream : Stream
         _phase.Value = phase;
     }
 
-    protected override void OnInit()
-    {
-        base.OnInit();
-
-        // Initialize period/phase sync members
-        _period.Initialize(World, this);
-        _phase.Initialize(World, this);
-        _period.EndInitPhase();
-        _phase.EndInitPhase();
-    }
+    // _period/_phase wire via the worker pipeline now - no OnInit override needed. -xlinka
 }

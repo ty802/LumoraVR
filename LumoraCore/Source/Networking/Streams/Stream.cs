@@ -1,27 +1,28 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Threading.Tasks;
 using Lumora.Core.Networking.Sync;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Streams;
 
 /// <summary>
-/// Base class for all network streams.
-/// Streams provide high-frequency, unreliable data synchronization.
+/// Base class for all network streams. Streams provide high-frequency, unreliable data synchronization.
+/// Derives from Worker, so sync members wire automatically; the payload itself rides Encode/Decode. -xlinka
 /// </summary>
-public abstract class Stream : IStream, IWorker, IWorldElement
+public abstract class Stream : Worker, IStream
 {
     protected readonly Sync<bool> _active = new();
     protected readonly Sync<ushort> _group = new();
+    protected readonly Sync<string> _name = new();
 
     private bool _groupAssigned;
     private ushort? _oldGroup;
     private string _groupName = null!;
-    private bool _isInitialized;
-    private RefID _referenceID;
-    private World _world = null!;
 
     /// <summary>
     /// The user that owns this stream.
@@ -36,12 +37,7 @@ public abstract class Stream : IStream, IWorker, IWorldElement
     /// <summary>
     /// Streams are not persistent (not saved).
     /// </summary>
-    public bool IsPersistent => false;
-
-    /// <summary>
-    /// Whether this stream has been initialized.
-    /// </summary>
-    public bool IsInitialized => _isInitialized;
+    public override bool IsPersistent => false;
 
     /// <summary>
     /// Whether this stream has valid data to read.
@@ -81,6 +77,20 @@ public abstract class Stream : IStream, IWorker, IWorldElement
     }
 
     /// <summary>
+    /// Name of this stream. Replicates, so every peer agrees - this is what name-based lookup
+    /// (User.GetStreamOrAdd) keys on, e.g. a per-user "Voice" stream. -xlinka
+    /// </summary>
+    public string Name
+    {
+        get => _name.Value;
+        set
+        {
+            CheckOwnership(allowJustAdded: false);
+            _name.Value = value;
+        }
+    }
+
+    /// <summary>
     /// Whether this stream uses implicit (periodic) updates.
     /// </summary>
     public bool IsImplicit => Period != 0;
@@ -96,121 +106,20 @@ public abstract class Stream : IStream, IWorker, IWorldElement
     public abstract uint Phase { get; }
 
     /// <summary>
-    /// The type of this worker.
-    /// </summary>
-    public Type WorkerType => GetType();
-
-    /// <summary>
-    /// Full type name of this worker (IWorker implementation).
-    /// </summary>
-    public string WorkerTypeName => WorkerType.FullName!;
-
-    /// <summary>
-    /// Try to get a field by name (IWorker implementation).
-    /// </summary>
-    public IField TryGetField(string name)
-    {
-        return name switch
-        {
-            "Active" or "_active" => _active as IField,
-            "Group" or "_group" => _group as IField,
-            _ => null!
-        };
-    }
-
-    /// <summary>
-    /// Try to get a typed field by name (IWorker implementation).
-    /// </summary>
-    public IField<T> TryGetField<T>(string name)
-    {
-        return (TryGetField(name) as IField<T>) ?? null!;
-    }
-
-    /// <summary>
-    /// Get all referenced objects from this stream (IWorker implementation).
-    /// </summary>
-    public System.Collections.Generic.IEnumerable<IWorldElement> GetReferencedObjects(bool assetRefOnly, bool persistentOnly = true)
-    {
-        // Streams don't persist, so return nothing if persistentOnly
-        yield break;
-    }
-
-    /// <summary>
-    /// The world this stream belongs to.
-    /// </summary>
-    public World World => _world;
-
-    /// <summary>
-    /// Reference ID for this stream.
-    /// </summary>
-    public RefID ReferenceID => _referenceID;
-
-    /// <summary>
-    /// Whether this stream has been destroyed.
-    /// </summary>
-    public bool IsDestroyed { get; private set; }
-
-    /// <summary>
-    /// Whether this stream is a local-only element.
-    /// </summary>
-    public bool IsLocalElement => false;
-
-    /// <summary>
-    /// Initialize this stream with its owning user.
-    /// Allocates a new RefID for the stream.
+    /// Initialize this stream with its owning user via the standard worker pipeline (which wires every
+    /// sync member), then OnInit, then ends the init phase. Called inside User.OnStreamAdded's allocation block. -xlinka
     /// </summary>
     internal void Initialize(User user)
     {
         Owner = user;
-        _world = user.World;
-        _referenceID = _world.ReferenceController.AllocateID();
-        _world.ReferenceController.RegisterObject(this);
-
-        InitializeInternal();
-    }
-
-    /// <summary>
-    /// Initialize this stream from a sync collection with an assigned RefID.
-    /// Used when receiving streams from network.
-    /// Must be called within AllocationBlockBegin/End for proper RefID allocation.
-    /// </summary>
-    internal void InitializeFromCollection(User user, RefID assignedId)
-    {
-        Owner = user;
-        _world = user.World;
-
-        // Use AllocateID() to properly increment the allocation counter
-        // AllocationBlockBegin(assignedId) was called before this, so AllocateID() returns assignedId
-        // and subsequent calls (for sync members) get sequential RefIDs
-        _referenceID = _world.ReferenceController.AllocateID();
-        _world.ReferenceController.RegisterObject(this);
-
-        InitializeInternal();
-    }
-
-    private void InitializeInternal()
-    {
-        // Initialize sync members
-        _active.Initialize(_world, this);
-        _group.Initialize(_world, this);
-
-        // Note: Type registration handled by WorkerManager if needed
-
+        InitializeWorker(user.World, user);
         OnInit();
-
-        // End init phase for sync members
-        _active.EndInitPhase();
-        _group.EndInitPhase();
-
-        _isInitialized = true;
-
-        // Subscribe to group changes
-        _group.Changed += OnGroupChanged;
+        EndInitializationStageForMembers();
     }
 
     /// <summary>
-    /// Initialize stream defaults without ownership checks.
-    /// Intended for setup during user initialization.
+    /// Initialize stream defaults without ownership checks. Intended for setup during user initialization.
+    /// Runs after <see cref="Initialize"/>, so the members are already wired.
     /// </summary>
     internal void InitializeDefaults(bool active, string groupName)
     {
@@ -226,8 +135,14 @@ public abstract class Stream : IStream, IWorker, IWorldElement
         }
     }
 
-    private void OnGroupChanged(IChangeable member)
+    // Group reassignment rides the worker's member-change hook now, not a manual _group.Changed sub. -xlinka
+    protected override void SyncMemberChanged(IChangeable member)
     {
+        if (member != _group)
+        {
+            return;
+        }
+
         if (Owner?.StreamGroupManager != null)
         {
             Owner.StreamGroupManager.AssignToGroup(this, _oldGroup);
@@ -235,7 +150,7 @@ public abstract class Stream : IStream, IWorker, IWorldElement
             _oldGroup = GroupIndex;
         }
 
-        if (_world?.State == World.WorldState.Running && _isInitialized && _groupAssigned)
+        if (World?.State == Lumora.Core.World.WorldState.Running && IsInitialized && _groupAssigned)
         {
             Owner?.StreamGroupManager?.StreamModified(this);
         }
@@ -261,7 +176,7 @@ public abstract class Stream : IStream, IWorker, IWorldElement
     /// </summary>
     protected void CheckOwnership(bool allowJustAdded = true)
     {
-        if (_world?.LocalUser != Owner && (Active || !Owner.WasStreamJustAdded(this) || !allowJustAdded))
+        if (World?.LocalUser != Owner && (Active || !Owner.WasStreamJustAdded(this) || !allowJustAdded))
         {
             throw new InvalidOperationException("Only User owning the stream can modify it, unless it was just added!");
         }
@@ -285,26 +200,119 @@ public abstract class Stream : IStream, IWorker, IWorldElement
     }
 
     /// <summary>
-    /// Called when the stream is initialized.
+    /// Called when the stream is initialized (after its members are wired, before their init phase ends).
     /// </summary>
     protected virtual void OnInit()
     {
     }
 
+    // ---- ASYNC CODEC INFRA ----
+    // Streams with an expensive codec (voice) run their Encode/Decode off the world thread so the heavy
+    // work doesn't stall it. The background dispatch + decode sequencing live here. The codec itself, and
+    // the hook into the send/receive path, are not built.
+    // TODO(techy): implement InternalAsyncEncode/InternalAsyncDecode (the codec), and call RunAsyncEncode /
+    // QueueAsyncDecode from the SyncController stream path (SyncController.cs ~ stream.Encode) for streams
+    // where SupportsAsyncCodec is true. -xlinka
+
+    /// <summary>True on streams whose Encode/Decode is heavy enough to run off the world thread.</summary>
+    public virtual bool SupportsAsyncCodec => false;
+
+    /// <summary>When true, queued async decodes run one at a time in arrival order.</summary>
+    protected virtual bool SequenceAsyncDecodes => true;
+
+    private readonly object _asyncDecodeLock = new();
+    private readonly Queue<(byte[] data, StreamMessage message)> _asyncDecodeQueue = new();
+    private bool _asyncDecodeRunning;
+
+    /// <summary>
+    /// Run the (heavy) encode on a background task; the encoded bytes arrive via <paramref name="onEncoded"/>.
+    /// </summary>
+    protected void RunAsyncEncode(Action<byte[]> onEncoded)
+    {
+        Task.Run(() =>
+        {
+            try
+            {
+                using var ms = new MemoryStream();
+                var writer = new BinaryWriter(ms);
+                InternalAsyncEncode(writer);
+                writer.Flush();
+                onEncoded(ms.ToArray());
+            }
+            catch (Exception ex)
+            {
+                LumoraLogger.Error($"Stream async encode failed ({GetType().Name}): {ex.Message}");
+            }
+        });
+    }
+
+    /// <summary>
+    /// Queue an incoming frame for background decode (sequenced when <see cref="SequenceAsyncDecodes"/>).
+    /// </summary>
+    protected void QueueAsyncDecode(byte[] data, StreamMessage message)
+    {
+        lock (_asyncDecodeLock)
+        {
+            _asyncDecodeQueue.Enqueue((data, message));
+            if (_asyncDecodeRunning && SequenceAsyncDecodes)
+                return;
+            _asyncDecodeRunning = true;
+        }
+        Task.Run(DrainAsyncDecodeQueue);
+    }
+
+    private void DrainAsyncDecodeQueue()
+    {
+        while (true)
+        {
+            byte[] data;
+            StreamMessage message;
+            lock (_asyncDecodeLock)
+            {
+                if (_asyncDecodeQueue.Count == 0)
+                {
+                    _asyncDecodeRunning = false;
+                    return;
+                }
+                (data, message) = _asyncDecodeQueue.Dequeue();
+            }
+
+            try
+            {
+                using var ms = new MemoryStream(data);
+                using var reader = new BinaryReader(ms);
+                InternalAsyncDecode(reader, message);
+            }
+            catch (Exception ex)
+            {
+                LumoraLogger.Error($"Stream async decode failed ({GetType().Name}): {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>Background-thread encode hook. Override with the codec. TODO(techy): implement.</summary>
+    protected virtual void InternalAsyncEncode(BinaryWriter writer)
+    {
+        // TODO(techy): codec encode (e.g. Opus frame) on the background thread.
+    }
+
+    /// <summary>Background-thread decode hook. Override with the codec. TODO(techy): implement.</summary>
+    protected virtual void InternalAsyncDecode(BinaryReader reader, StreamMessage message)
+    {
+        // TODO(techy): codec decode (e.g. Opus frame) on the background thread.
+    }
+
     /// <summary>
     /// Get hierarchy path for debugging.
     /// </summary>
-    public string ParentHierarchyToString() => $"Stream:{GetType().Name}@{Owner?.UserName?.Value ?? "?"}";
+    public override string ParentHierarchyToString() => $"Stream:{GetType().Name}@{Owner?.UserName?.Value ?? "?"}";
 
     /// <summary>
     /// Dispose of this stream.
     /// </summary>
-    public virtual void Dispose()
+    public override void Dispose()
     {
-        _group.Changed -= OnGroupChanged;
-        _world?.ReferenceController?.UnregisterObject(this);
-        IsDestroyed = true;
-        _world = null!;
         Owner = null!;
+        base.Dispose();
     }
 }

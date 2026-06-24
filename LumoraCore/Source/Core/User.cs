@@ -371,6 +371,35 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
         return stream;
     }
 
+    /// <summary>
+    /// Find the first stream of type S matching the predicate, or null. -xlinka
+    /// </summary>
+    public S? GetStream<S>(Func<S, bool> predicate) where S : Networking.Streams.Stream
+    {
+        foreach (var stream in Streams)
+        {
+            if (stream is S typed && predicate(typed))
+                return typed;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Find this user's stream of type S with the given name, or add and name one. The per-user
+    /// named-stream pattern (e.g. a "Voice" stream); the name replicates so peers agree. -xlinka
+    /// </summary>
+    public S GetStreamOrAdd<S>(string name, Action<S>? init = null) where S : Networking.Streams.Stream, new()
+    {
+        var existing = GetStream<S>(s => s.Name == name);
+        if (existing != null)
+            return existing;
+
+        var stream = AddStream<S>();
+        stream.Name = name;
+        init?.Invoke(stream);
+        return stream;
+    }
+
     public void RemoveStream(Networking.Streams.Stream stream)
     {
         userStreams.Remove(stream.ReferenceID);

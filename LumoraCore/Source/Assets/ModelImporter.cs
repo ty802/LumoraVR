@@ -160,12 +160,12 @@ public static class ModelImporter
         return await ImportModelAsync(filePath, targetSlot, settings, localDB, progress);
     }
 
-    // The single Assimp + Phos import path (the reference's one-importer design): parse the file once with
+    // The single Assimp + Phos import path (one importer for everything): parse the file once with
     // Assimp, build a Slot per node with its local transform, build a SkeletonBuilder from the meshes' bone
     // names (bones are just named Slots), and per mesh attach a MeshProvider (decoding only that mesh via
     // MeshIndex) + a SkinnedMeshRenderer bound to the skeleton by name. No Godot GltfDocument, no SharpGLTF, no
     // ModelData/ModelDataHook. Assimp/glTF/Godot are all right-handed Y-up, so no coordinate mirror is needed
-    // (unlike the left-handed reference engine, whose PreprocessScene mirror we deliberately skip). -xlinka
+    // (we deliberately skip the left-handed-import mirror step). -xlinka
     private static async Task<ModelImportResult> ImportModelPhosAsync(
         string filePath, Slot targetSlot, ModelImportSettings settings, LocalDB? localDB,
         IProgress<(float progress, string status)>? progress)
@@ -283,8 +283,8 @@ public static class ModelImporter
                             mr.Mesh.Target = provider;
                             if (material != null) mr.Material.Target = material;
 
-                            // Optional collision geometry off the same mesh provider (skinned meshes are skipped,
-                            // like the reference - their geometry deforms, so a static collider wouldn't track it).
+                            // Optional collision geometry off the same mesh provider (skinned meshes are skipped:
+                            // their geometry deforms, so a static collider wouldn't track it).
                             if (settings.GenerateColliders)
                                 meshSlot.AttachComponent<MeshCollider>().Mesh.Target = provider;
                         }
@@ -317,7 +317,7 @@ public static class ModelImporter
     // crash we hit when the build ran on the parse's worker thread.
     // The TCS resumes the caller ASYNCHRONOUSLY (off-thread), so the NEXT awaited chunk is queued from off-thread
     // and lands on the FOLLOWING frame instead of draining inline this frame - that's what spreads the build across
-    // frames so the world keeps rendering between chunks (load-in-pieces, like the reference). -xlinka
+    // frames so the world keeps rendering between chunks (load-in-pieces). -xlinka
     private static System.Threading.Tasks.Task OnWorldAsync(World world, Action action)
     {
         var tcs = new System.Threading.Tasks.TaskCompletionSource<bool>(

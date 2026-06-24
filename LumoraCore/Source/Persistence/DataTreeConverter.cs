@@ -9,7 +9,7 @@ namespace Lumora.Core.Persistence;
 
 /// <summary>
 /// Encodes a <see cref="DataTreeNode"/> tree to bytes and back. A typed binary format is used
-/// (rather than JSON) so exact value types survive the round-trip — JSON would coerce numbers and
+/// (rather than JSON) so exact value types survive the round-trip - JSON would coerce numbers and
 /// re-trigger the '@' URL-escaping on strings. Compression can be layered on later.
 /// </summary>
 public static class DataTreeConverter

@@ -127,7 +127,7 @@ public class SyncDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<
         return _dict.TryGetValue(key, out var v) ? v : defaultValue;
     }
 
-    // PERSISTENCE — a DataTreeList of { Key, Value } entries (value types via the coder).
+    // PERSISTENCE - a DataTreeList of { Key, Value } entries (value types via the coder).
     public override DataTreeNode Save(SaveControl control)
     {
         var list = new DataTreeList();

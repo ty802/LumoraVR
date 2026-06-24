@@ -40,6 +40,13 @@ public interface ITextureAssetHook : IAssetHook
     /// Whether the texture is valid and can be used.
     /// </summary>
     bool IsValid { get; }
+
+    /// <summary>
+    /// Completes once the most recent <see cref="UploadData"/> has actually built the GPU texture - UploadData
+    /// itself only QUEUES a deferred (main-thread) build. The asset awaits this before reporting FullyLoaded so a
+    /// consuming material never binds the texture while <see cref="IsValid"/> is still false (the white-body race).
+    /// </summary>
+    System.Threading.Tasks.Task WaitForUploadAsync();
 }
 
 public interface IRenderTextureAssetHook : ITextureAssetHook

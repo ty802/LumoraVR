@@ -5,7 +5,7 @@ using Lumora.Core.Components.UI;
 
 namespace Lumora.Core.Components;
 
-// Contributes the locomotion module picker to the context menu — one toggle
+// Contributes the locomotion module picker to the context menu - one toggle
 // item per registered module, current one highlighted. Runs on the peer
 // opening the menu; activation goes through the controller's permission
 // check. - xlinka

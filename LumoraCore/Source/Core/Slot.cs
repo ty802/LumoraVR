@@ -127,7 +127,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     public event Action<Slot> OnPrepareDestroy = null!;
 
     /// <summary>
-    /// Fired once per frame (deferred) when this slot's world transform changed — either its own
+    /// Fired once per frame (deferred) when this slot's world transform changed - either its own
     /// local transform or that of an ancestor. Handlers run before hook/connector updates, so a
     /// handler that re-drives a transform takes effect the same frame. Subscribe to react to
     /// movement without polling every frame in OnUpdate.
@@ -2169,7 +2169,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    // GRAPH SAVE / LOAD — serialize this slot's subtree as a self-contained graph (optionally with
+    // GRAPH SAVE / LOAD - serialize this slot's subtree as a self-contained graph (optionally with
     // its asset dependencies). Lets an object be written to a file/record and loaded into ANY
     // world (spawning, inventory, copy-paste).
 

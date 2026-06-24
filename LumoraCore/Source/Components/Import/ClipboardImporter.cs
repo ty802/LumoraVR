@@ -231,12 +231,19 @@ public class ClipboardImporter : Component
                     var headSlot = userRoot.HeadSlot;
                     if (headSlot != null)
                     {
-                        // -Z (Backward) is the view direction; +Z spawns behind the user.
-                        var forward = headSlot.GlobalRotation * float3.Backward;
-                        var spawnPosition = headSlot.GlobalPosition + forward * SpawnDistance.Value;
+                        // The head's look direction is its +Z (HeadDevice.Forward = Transform(UnitZ, Rotation); the
+                        // data model is +Z-forward), NOT -Z - using Backward here spawned content BEHIND the user.
+                        // Flatten to horizontal so it stands upright, then face the user with a pure yaw below. -xlinka
+                        var f = headSlot.GlobalRotation * float3.Forward; // head look direction (+Z)
+                        var fwd = new float3(f.x, 0f, f.z);
+                        fwd = fwd.LengthSquared < 1e-6f ? new float3(0f, 0f, 1f) : fwd.Normalized;
 
-                        slot.GlobalPosition = spawnPosition;
-                        slot.LookAt(headSlot.GlobalPosition, float3.Up);
+                        slot.GlobalPosition = headSlot.GlobalPosition + fwd * SpawnDistance.Value;
+                        // Pure yaw to face the user (point +Z back at them). floatQ.LookRotation is broken for facing
+                        // (returns the inverse rotation + sends content edge-on = the sideways pose); FaceLocalUser
+                        // uses atan2 instead, so match it. -xlinka
+                        var toUser = new float3(-fwd.x, 0f, -fwd.z);
+                        slot.GlobalRotation = floatQ.AxisAngle(float3.Up, System.MathF.Atan2(toUser.x, toUser.z));
                         return;
                     }
                 }

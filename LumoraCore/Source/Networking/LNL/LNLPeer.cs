@@ -16,6 +16,7 @@ public class LNLPeer : IConnection
 {
     internal readonly NetManager Server;
     internal readonly NetPeer Peer;
+    private readonly LNLCryptoSession _crypto = new(isClient: false);
 
     public bool IsOpen { get; private set; }
     public string FailReason { get; private set; } = null!;
@@ -37,6 +38,10 @@ public class LNLPeer : IConnection
         remove { }
     }
     public event Action<byte[], int> DataReceived = null!;
+    internal event Action<LNLPeer> CryptoEstablished = null!;
+
+    internal DateTime CreatedUtc { get; } = DateTime.UtcNow;
+    internal bool IsCryptoEstablished => _crypto.IsEstablished;
 
     public LNLPeer(NetManager server, NetPeer peer)
     {
@@ -80,6 +85,22 @@ public class LNLPeer : IConnection
         }
         _loggedNotConnected = false;
 
+        byte[] encrypted;
+        try
+        {
+            encrypted = _crypto.Encrypt(data, length);
+        }
+        catch (Exception ex)
+        {
+            LumoraLogger.Warn($"[lnl] Send to {Identifier} failed before LNL crypto was ready ({ex.Message})");
+            return;
+        }
+
+        SendRaw(encrypted, encrypted.Length, reliable, background);
+    }
+
+    private void SendRaw(byte[] data, int length, bool reliable, bool background)
+    {
         DeliveryMethod method = reliable
             ? DeliveryMethod.ReliableOrdered
             : DeliveryMethod.Sequenced;
@@ -104,7 +125,26 @@ public class LNLPeer : IConnection
     internal void InformOfNewData(byte[] data, int length)
     {
         ReceivedBytes += (ulong)length;
-        DataReceived?.Invoke(data, length);
+        bool wasEstablished = _crypto.IsEstablished;
+        if (!_crypto.TryHandleIncoming(data, length, out var plaintext, out var response))
+        {
+            FailReason = "LNL crypto handshake failed";
+            LumoraLogger.Warn($"[lnl] Closing {Identifier}: {FailReason}");
+            Close();
+            return;
+        }
+
+        if (response != null)
+            SendRaw(response, response.Length, reliable: true, background: false);
+
+        if (!wasEstablished && _crypto.IsEstablished)
+        {
+            LumoraLogger.Log($"[lnl] Crypto established with {Identifier}");
+            CryptoEstablished?.Invoke(this);
+        }
+
+        if (plaintext != null)
+            DataReceived?.Invoke(plaintext, plaintext.Length);
     }
 
     internal void InformClosed()
@@ -120,6 +160,6 @@ public class LNLPeer : IConnection
     public void Dispose()
     {
         Close();
+        _crypto.Dispose();
     }
 }
-

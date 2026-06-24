@@ -1012,6 +1012,10 @@ public partial class LumoraEngineRunner : Node
 
 		_engineInitialized = true;
 
+		// Instantiate the shared loading indicator now the scene tree exists. EnsureCreated was defined but never
+		// called, so neither the world-join overlay nor the new import progress ever showed. Idempotent. -xlinka
+		Lumora.Source.Godot.UI.WorldLoadingIndicator.EnsureCreated();
+
 		// Discord rich presence (fails soft if no app ID / Discord not running). _Process refreshes it.
 		DiscordManager.Initialize();
 		// Route Discord "Join"/Ask-to-Join (fires on the main thread via DiscordManager.Poll) to the

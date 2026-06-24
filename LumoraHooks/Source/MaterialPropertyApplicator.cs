@@ -155,16 +155,28 @@ internal static class MaterialPropertyApplicator
                 material.AlbedoTexture = value as Texture2D;
                 break;
             case "Metallic":
-                if (value is float metallic) material.Metallic = metallic;
+                // The scalar multiplies the metallic texture's channel - so when a metallic MAP is present we let
+                // the map fully drive it (see MetallicMap) and ignore the scalar; a 0 scalar would otherwise zero
+                // the whole map out. Only apply the scalar when there's no map. -xlinka
+                if (value is float metallic && material.MetallicTexture == null) material.Metallic = metallic;
                 break;
             case "Smoothness":
-                if (value is float smoothness) material.Roughness = 1.0f - smoothness;
+                if (value is float smoothness && material.RoughnessTexture == null) material.Roughness = 1.0f - smoothness;
                 break;
             case "MetallicMap":
                 material.MetallicTexture = value as Texture2D;
                 if (material.MetallicTexture != null)
                 {
-                    material.MetallicTextureChannel = BaseMaterial3D.TextureChannel.Red;
+                    // glTF packs the metallic-roughness map as Occlusion(R)/Roughness(G)/Metallic(B): metallic is in
+                    // BLUE (reading Red picks up occlusion ~1.0 and drives the surface fully metallic -> dark), and
+                    // roughness is in GREEN. Drive BOTH off this one map and set the scalar factors to 1 so the map
+                    // fully applies (Godot does scalar*channel). Blue is also right for a plain grayscale metalness
+                    // map (R=G=B); a standalone metalness map without packed roughness is rare for avatars. -xlinka
+                    material.MetallicTextureChannel = BaseMaterial3D.TextureChannel.Blue;
+                    material.Metallic = 1.0f;
+                    material.RoughnessTexture = material.MetallicTexture;
+                    material.RoughnessTextureChannel = BaseMaterial3D.TextureChannel.Green;
+                    material.Roughness = 1.0f;
                 }
                 break;
             case "NormalMap":
@@ -181,8 +193,19 @@ internal static class MaterialPropertyApplicator
                     material.EmissionEnabled = hasEmission;
                     if (hasEmission)
                     {
-                        material.Emission = emission;
-                        material.EmissionEnergyMultiplier = 1.0f;
+                        // EmissiveColor is HDR - intensity above 1 must live in the energy multiplier, not be
+                        // clamped into the LDR Emission color, or glowing/neon emissives lose their punch. -xlinka
+                        float maxc = System.Math.Max(emission.R, System.Math.Max(emission.G, emission.B));
+                        if (maxc > 1.0f)
+                        {
+                            material.Emission = new Color(emission.R / maxc, emission.G / maxc, emission.B / maxc);
+                            material.EmissionEnergyMultiplier = maxc;
+                        }
+                        else
+                        {
+                            material.Emission = emission;
+                            material.EmissionEnergyMultiplier = 1.0f;
+                        }
                     }
                 }
                 break;

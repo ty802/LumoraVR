@@ -22,7 +22,14 @@ public class PhosBlendShape
     public PhosBlendShape(string name, int frameCount = 1)
     {
         Name = name;
+        // PhosBlendShapeFrame is a CLASS, so `new PhosBlendShapeFrame[frameCount]` leaves every slot NULL.
+        // Callers (PhosMesh.GetBlendShape, PhosVertex blendshape access) write straight into
+        // Frames[i].positions/normals/tangents without null-checking, so instantiate each frame here or they NRE.
+        // This was the "MeshDecoder: Failed to decode mesh - Object reference not set" crash on any model with
+        // morphs/blendshapes (e.g. a facial-expression avatar). -xlinka
         Frames = new PhosBlendShapeFrame[frameCount];
+        for (int i = 0; i < frameCount; i++)
+            Frames[i] = new PhosBlendShapeFrame();
     }
 }
 

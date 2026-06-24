@@ -190,7 +190,7 @@ public class ContextMenuSystem : Component
     // the normal laser-canvas path.
     private bool _restoreMouseLook;
 
-    // Close when the pointer wanders past the ring edge — moving the aim
+    // Close when the pointer wanders past the ring edge - moving the aim
     // well off the menu dismisses it without a button press.
     private const float EdgeCloseRadius = 320f;
     private float _openTime;
@@ -365,7 +365,7 @@ public class ContextMenuSystem : Component
         var head = Slot.ActiveUserRoot?.HeadSlot;
         bool vrActive = Engine.Current?.InputInterface?.VR_Active == true;
 
-        // View/laser facing is -Z (rotation * Backward) — Slot.Forward (+Z)
+        // View/laser facing is -Z (rotation * Backward) - Slot.Forward (+Z)
         // points behind the camera and was putting the menu out of view.
         //
         // Desktop/first-person: directly in front of the camera at half a

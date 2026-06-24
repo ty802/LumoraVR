@@ -164,4 +164,36 @@ public static class FabrikSolver
         float angle = MathF.Acos(MathF.Max(-1f, MathF.Min(1f, d)));
         return floatQ.AxisAngle(c.Normalized, angle);
     }
+
+    // FromToRotation with an explicit fallback axis for the antiparallel (180-degree) case. Behaves IDENTICALLY to
+    // the 2-arg version except when `from` and `to` are near-opposite, where the plain version would pick an
+    // arbitrary perpendicular and flip the result discontinuously. Passing a stable per-limb bend axis here keeps a
+    // knee/elbow from snapping to the wrong side when the reach direction reverses (hyperextend / reach behind). - xlinka
+    public static floatQ FromToRotation(float3 from, float3 to, float3 fallbackAxis)
+    {
+        float3 f = from.Normalized;
+        float3 t = to.Normalized;
+        float d = float3.Dot(f, t);
+
+        if (d >= 1f - Epsilon)
+            return floatQ.Identity;
+
+        if (d <= -1f + Epsilon)
+        {
+            float3 axis = fallbackAxis;
+            if (axis.LengthSquared < Epsilon)
+            {
+                axis = float3.Cross(float3.Up, f);
+                if (axis.LengthSquared < Epsilon)
+                    axis = float3.Cross(float3.Right, f);
+            }
+            return floatQ.AxisAngle(axis.Normalized, MathF.PI);
+        }
+
+        float3 c = float3.Cross(f, t);
+        if (c.LengthSquared < Epsilon)
+            return floatQ.Identity;
+        float angle = MathF.Acos(MathF.Max(-1f, MathF.Min(1f, d)));
+        return floatQ.AxisAngle(c.Normalized, angle);
+    }
 }

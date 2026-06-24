@@ -620,7 +620,7 @@ public sealed class SessionScreen : WidgetScreen
         WorldStorage.SaveToFile(world, System.IO.Path.Combine(directory, name), encrypt: true);
     }
 
-    // USERS PAGE — live list of session users; the host (authority) can change roles and kick.
+    // USERS PAGE - live list of session users; the host (authority) can change roles and kick.
 
     private void BuildUsersPage(Slot page)
     {
@@ -754,7 +754,7 @@ public sealed class SessionScreen : WidgetScreen
     private void AddInlineButton(Slot row, string label, color fill, Action onClick)
         => AddInlineButton(row, label, fill, 70f, onClick);
 
-    // PERMISSIONS PAGE — default role per access class (a defaults grid) plus
+    // PERMISSIONS PAGE - default role per access class (a defaults grid) plus
     // per-user overrides. Roles are presets over the HARD gate; host-authoritative, deny-at-source.
 
     private void BuildPermissionsPage(Slot page)

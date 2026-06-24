@@ -132,9 +132,10 @@ public class PBS_Metallic : MaterialProvider, ICommonMaterial
         AlbedoColor = new Sync<colorHDR>(this, colorHDR.White);
         AlbedoTexture = new AssetRef<TextureAsset>(this);
 
-        // Metallic/Roughness
+        // Metallic/Roughness. Smoothness default 0.25 (roughness 0.75) to match the reference baseline - 0.5 made
+        // untextured imports noticeably glossier than intended. -xlinka
         Metallic = new Sync<float>(this, 0.0f);
-        Smoothness = new Sync<float>(this, 0.5f);
+        Smoothness = new Sync<float>(this, 0.25f);
         MetallicMap = new AssetRef<TextureAsset>(this);
 
         // Normal

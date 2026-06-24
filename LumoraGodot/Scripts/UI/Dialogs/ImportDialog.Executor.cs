@@ -148,6 +148,19 @@ public partial class ImportDialog
 
 		PositionImportedSlot(result.RootSlot);
 
+		// Make the import grabbable so you can pick it up, reposition, and scale it - matches the ref (which makes
+		// every import grabbable) and our own image/shader imports. Without this the model just sits there with
+		// nothing to grab. Attached to the root so a grab moves the whole model. -xlinka
+		if (result.RootSlot != null && !result.RootSlot.IsDestroyed)
+		{
+			var grab = result.RootSlot.AttachComponent<Grabbable>();
+			grab.AllowGrab.Value = true;
+			grab.Scalable.Value = true;
+		}
+
+		// Register an undo point so a freshly imported model is one Ctrl-Z away, like the ref (CreateSpawnUndoPoint).
+		RecordImportUndo(result.RootSlot, isAvatar ? "Import Avatar" : "Import Model");
+
 		if (isAvatar)
 		{
 			ResetAvatarCreatorState();
@@ -176,8 +189,46 @@ public partial class ImportDialog
 			return;
 		}
 
+		// Spawn in front of the local user's view, facing them - the ref imports under LocalUserSpace positioned
+		// in front of the user; we'd otherwise dump it at the world origin (which is why it appeared off to the
+		// side instead of ahead). Flatten the look direction to horizontal so the model stands upright. -xlinka
+		var head = _targetSlot?.World?.LocalUser?.Root?.HeadSlot;
+		if (head != null && !head.IsDestroyed)
+		{
+			var hp = head.GlobalPosition;
+			var f = head.Forward;
+			var fwd = new float3(f.x, 0f, f.z);
+			fwd = fwd.LengthSquared < 1e-6f ? new float3(0f, 0f, 1f) : fwd.Normalized;
+			// ~1.5 m ahead, dropped ~1 m below eye height so a standing avatar sits centered in view.
+			importedSlot.GlobalPosition = new float3(hp.x + fwd.x * 1.5f, hp.y - 1.0f, hp.z + fwd.z * 1.5f);
+			// Face the user with a PURE YAW (point +Z back at them). floatQ.LookRotation is broken for facing - it
+			// returns the inverse rotation and sends content edge-on (that's the sideways/horizontal pose); the
+			// working FaceLocalUser uses atan2 instead, so we do the same. -xlinka
+			var toUser = new float3(-fwd.x, 0f, -fwd.z); // spawn is ahead of the user, so back-toward-user is -fwd
+			importedSlot.GlobalRotation = floatQ.AxisAngle(float3.Up, System.MathF.Atan2(toUser.x, toUser.z));
+			return;
+		}
+
 		if (_targetSlot != null && !_targetSlot.IsDestroyed && !_targetSlot.IsRootSlot)
 			importedSlot.GlobalPosition = _targetSlot.GlobalPosition;
+	}
+
+	// Register a freshly imported root with the local user's undo history so it's one Ctrl-Z away (the ref's
+	// CreateSpawnUndoPoint). No-op if no UndoManager is reachable - harmless, just no undo entry. -xlinka
+	private void RecordImportUndo(Slot root, string description)
+	{
+		if (root == null || root.IsDestroyed)
+			return;
+
+		var world = root.World;
+		var undo = root.ActiveUserRoot?.Slot?.GetComponentInChildren<UndoManager>()
+		           ?? world?.LocalUser?.Root?.Slot?.GetComponentInChildren<UndoManager>();
+		if (undo == null)
+			return;
+
+		var batch = SlotExistenceUndoBatch.Created(world, new[] { root }, description);
+		if (batch != null)
+			undo.Record(batch);
 	}
 
 	private async Task ImportRawFile(string filePath)

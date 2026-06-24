@@ -14,6 +14,7 @@ using Lumora.Core.Components;
 using Lumora.Core.Components.Assets;
 using Lumora.Core.Components.Import;
 using Lumora.Core.Math;
+using Lumora.Source.Godot.UI;
 using LumoraMeshes = Lumora.Core.Components.Meshes;
 
 namespace Lumora.Godot.Input;
@@ -100,12 +101,16 @@ public partial class ClipboardImporter : Node
         if (_camera != null)
         {
             var camPos = _camera.GlobalPosition;
-            var camFwd = -_camera.GlobalTransform.Basis.Z;
-            var spawn = camPos + camFwd * 1.0f;
-            return (
-                new float3(spawn.X, spawn.Y, spawn.Z),
-                floatQ.LookRotation(new float3(camFwd.X, camFwd.Y, camFwd.Z), float3.Up)
-            );
+            var camFwd = -_camera.GlobalTransform.Basis.Z; // Godot camera looks down -Z
+            // FLATTEN to horizontal so an up/down gaze can't tilt the model or shove it above/below eye-line (that's
+            // the "spawns above me / lying back" bug), spawn ~1.5 m ahead + a touch low, and face the user with a
+            // PURE YAW (+Z back toward the camera). floatQ.LookRotation is broken for facing (inverse-row builder ->
+            // edge-on/sideways pose), so use AxisAngle like the working FaceLocalUser / ImportDialog.Executor. -xlinka
+            var flat = new float3(camFwd.X, 0f, camFwd.Z);
+            flat = flat.LengthSquared < 1e-6f ? new float3(0f, 0f, 1f) : flat.Normalized;
+            var spawn = new float3(camPos.X + flat.x * 1.5f, camPos.Y - 0.5f, camPos.Z + flat.z * 1.5f);
+            var rot = floatQ.AxisAngle(float3.Up, System.MathF.Atan2(-flat.x, -flat.z));
+            return (spawn, rot);
         }
         return (float3.Zero, floatQ.Identity);
     }
@@ -517,22 +522,37 @@ public partial class ClipboardImporter : Node
     public async Task PopulateModelSlotAsync(Slot slot, string filePath, bool isAvatar)
     {
         GD.Print($"ClipboardImporter: Populating model slot as {(isAvatar ? "avatar" : "3D model")}: {filePath}");
-        ModelImportResult result;
-        if (isAvatar)
+
+        // Show an IN-WORLD progress indicator (3D, in front of the user) like the reference - not a flat screen
+        // overlay. It's non-modal: the game stays interactive while it loads (freeze fix) and the user sees a
+        // floating title + percent + progress bar in the world. Driven straight off the importer's progress. -xlinka
+        var importWorld = slot.World;
+        ModelImportIndicator.Show(importWorld, slot, isAvatar ? "Importing Avatar" : "Importing Model");
+        var progress = new Progress<(float progress, string status)>(
+            u => ModelImportIndicator.Report(u.progress, u.status));
+        try
         {
-            result = await ModelImporter.ImportAvatarAsync(filePath, slot, _localDB);
+            ModelImportResult result;
+            if (isAvatar)
+            {
+                result = await ModelImporter.ImportAvatarAsync(filePath, slot, _localDB, progress);
+            }
+            else
+            {
+                result = await ModelImporter.ImportModelAsync(filePath, slot, null!, _localDB, progress);
+            }
+            if (result.Success)
+            {
+                OnAssetImported?.Invoke(filePath, result.RootSlot);
+            }
+            else
+            {
+                GD.PrintErr($"ClipboardImporter: Model import failed: {result.ErrorMessage}");
+            }
         }
-        else
+        finally
         {
-            result = await ModelImporter.ImportModelAsync(filePath, slot, null!, _localDB);
-        }
-        if (result.Success)
-        {
-            OnAssetImported?.Invoke(filePath, result.RootSlot);
-        }
-        else
-        {
-            GD.PrintErr($"ClipboardImporter: Model import failed: {result.ErrorMessage}");
+            ModelImportIndicator.Hide();
         }
     }
 
@@ -779,16 +799,17 @@ public partial class ClipboardImporter : Node
 
         if (_camera != null)
         {
-            var spawnPosition = _camera.GlobalPosition + (-_camera.GlobalTransform.Basis.Z * distance);
-            slot.GlobalPosition = new float3(spawnPosition.X, spawnPosition.Y, spawnPosition.Z);
+            var camPos = _camera.GlobalPosition;
+            var camFwd = -_camera.GlobalTransform.Basis.Z; // Godot camera looks down -Z
+            var flat = new float3(camFwd.X, 0f, camFwd.Z);
+            flat = flat.LengthSquared < 1e-6f ? new float3(0f, 0f, 1f) : flat.Normalized;
+            slot.GlobalPosition = new float3(camPos.X + flat.x * distance, camPos.Y, camPos.Z + flat.z * distance);
 
-            // Face the camera with the quad's front side (local backward) toward the viewer
-            var cameraPos = _camera.GlobalPosition;
-            var toCamera = new float3(cameraPos.X - spawnPosition.X, cameraPos.Y - spawnPosition.Y, cameraPos.Z - spawnPosition.Z);
-            if (toCamera.LengthSquared > 0.0001f)
-            {
-                slot.GlobalRotation = floatQ.LookRotation(-toCamera, float3.Up);
-            }
+            // Face the user via a pure yaw, pointing the content's +Z back at the camera. Our content front is +Z
+            // (FaceLocalUser/Slot.Forward), and floatQ.LookRotation is broken for facing (inverse-row builder ->
+            // edge-on), so use AxisAngle - not LookRotation, and not the old "-Z front" assumption. -xlinka
+            var toUser = new float3(-flat.x, 0f, -flat.z);
+            slot.GlobalRotation = floatQ.AxisAngle(float3.Up, System.MathF.Atan2(toUser.x, toUser.z));
             return;
         }
 

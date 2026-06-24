@@ -7,7 +7,7 @@ using System.Collections.Generic;
 namespace Lumora.Core.Persistence;
 
 /// <summary>
-/// A keyed map of child nodes — the workhorse of the format. A component serializes its members
+/// A keyed map of child nodes - the workhorse of the format. A component serializes its members
 /// into one of these (member name -> value/sub-tree); a world serializes its sections likewise.
 /// </summary>
 public sealed class DataTreeDictionary : DataTreeNode
@@ -74,7 +74,7 @@ public sealed class DataTreeDictionary : DataTreeNode
     private static DataTreeNode MakeValue<T>(T value) => value switch
     {
         null => new DataTreeValue((IConvertible?)null),
-        // Already a tree node (e.g. SaveReference's DataTreeValue, or a sub-list/dict) — store as-is.
+        // Already a tree node (e.g. SaveReference's DataTreeValue, or a sub-list/dict) - store as-is.
         DataTreeNode node => node,
         Uri uri => new DataTreeValue(uri),
         string str => new DataTreeValue(str),

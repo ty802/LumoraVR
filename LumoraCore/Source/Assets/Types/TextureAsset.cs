@@ -79,6 +79,15 @@ public class TextureAsset : ImplementableAsset<ITextureAssetHook>
 
         SetImageData(rgba, width, height, descriptor.GenerateMipmaps);
         Hook?.SetWrapMode(descriptor.WrapU, descriptor.WrapV);
+
+        // Don't let LoadSelf return (-> FullyLoaded) until the GPU texture is actually built. SetImageData ->
+        // Hook.UploadData only QUEUES a deferred main-thread build; if we reported loaded now, the asset's single
+        // load-complete notification would fire while Hook.IsValid is still false, the consuming material would bind
+        // a null albedo, and nothing re-binds it (white body). Awaiting the upload makes that notification fire when
+        // the texture is genuinely usable - mirrors the reference, which awaits texture GPU integration before
+        // marking the asset loaded. -xlinka
+        if (Hook != null)
+            await Hook.WaitForUploadAsync().ConfigureAwait(false);
     }
 
     /// <summary>

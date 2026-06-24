@@ -94,8 +94,33 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
         // Build parent hierarchy map
         var parentMap = BuildParentMap();
 
-        // Add bones to skeleton in order
+        // Godot requires a bone's parent to have a LOWER index, and SetBoneParent silently NO-OPS if the parent
+        // hasn't been added yet. Assimp's bone list is NOT hierarchically ordered, so adding in raw order orphaned
+        // any bone whose parent came later (e.g. Ear2/Ear3) to the skeleton ROOT - its global rest then lost the
+        // ancestor translation (originErr ~2.57, basis fine) and its verts flew off as shards. Add bones in
+        // TOPOLOGICAL order (every bone AFTER its parent bone) so parenting always resolves. -xlinka
+        var slotToBoneIdx = new Dictionary<Lumora.Core.Slot, int>();
         for (int i = 0; i < Owner.BoneCount; i++)
+        {
+            var s = Owner.BoneSlots[i];
+            if (s != null) slotToBoneIdx[s] = i;
+        }
+        var addOrder = new List<int>(Owner.BoneCount);
+        var ordered = new HashSet<int>();
+        void AddParentFirst(int i)
+        {
+            if (i < 0 || !ordered.Add(i)) return;
+            var s = Owner.BoneSlots[i];
+            if (s != null && parentMap.TryGetValue(s, out var ps) && slotToBoneIdx.TryGetValue(ps, out int pIdx))
+                AddParentFirst(pIdx); // ensure the parent bone is added before this one
+            addOrder.Add(i);
+        }
+        for (int i = 0; i < Owner.BoneCount; i++)
+            AddParentFirst(i);
+
+        // Add bones to the Godot skeleton in topological (parent-first) order.
+        Lumora.Core.Slot rootBoneSlot = null!;
+        foreach (int i in addOrder)
         {
             string boneName = Owner.BoneNames[i];
             var boneSlot = Owner.BoneSlots[i];
@@ -110,15 +135,25 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
             int boneIndex = _skeleton.AddBone(boneName);
             _boneNameToIndex[boneName] = boneIndex;
 
-            // Set parent bone
+            // Set parent bone (parent is guaranteed added already by the topological order above)
+            bool parentedToBone = false;
             if (parentMap.TryGetValue(boneSlot, out var parentSlot))
             {
                 string parentName = parentSlot.SlotName.Value;
                 if (_boneNameToIndex.TryGetValue(parentName, out int parentIndex))
                 {
                     _skeleton.SetBoneParent(boneIndex, parentIndex);
+                    parentedToBone = true;
+                }
+                else
+                {
+                    LumoraLogger.Warn($"SkeletonHook: bone '{boneName}' parent '{parentName}' not added yet - topological order failed.");
                 }
             }
+            // First skeleton-root bone (no PARENT BONE): remember its slot so we can re-introduce the transform of
+            // any non-bone nodes between the model root and it (the orientation offset below).
+            if (!parentedToBone)
+                rootBoneSlot ??= boneSlot;
 
             // Set rest pose
             Transform3D restPose;
@@ -134,11 +169,22 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
 
             _skeleton.SetBoneRest(boneIndex, restPose);
             _boneRestPoses[boneIndex] = restPose;
-
-            LumoraLogger.Log($"SkeletonHook: Added bone {boneIndex} '{boneName}' with parent {(_skeleton.GetBoneParent(boneIndex) >= 0 ? _skeleton.GetBoneParent(boneIndex).ToString() : "root")}");
         }
-
-        LumoraLogger.Log($"SkeletonHook: Skeleton rebuilt with {_skeleton.GetBoneCount()} bones");
+        // Re-introduce dropped non-bone-node transforms (model-orientation fix). Bone rests are stored slot-local,
+        // so any NON-bone node between the model root and the first bone - e.g. an FBX "Armature"/"RootNode" that
+        // carries the up-axis (Z-up -> Y-up) rotation - is dropped from the skeleton, leaving the whole rig
+        // mis-oriented (it imported lying on its side). The bone SLOTS still carry that transform (so IK + bone
+        // visuals stay correct); only the Skeleton3D lost it. Offset the Skeleton3D node by the root bone's
+        // slot-parent transform relative to the model root, reapplying the dropped prefix ONCE for the whole
+        // skeleton - without touching any bone rest or bind pose (skinning math unchanged). -xlinka
+        _skeleton.Transform = Transform3D.Identity;
+        if (rootBoneSlot?.Parent != null && Owner.Slot != null && rootBoneSlot.Parent != Owner.Slot)
+        {
+            var offset = SlotGlobalTransform3D(Owner.Slot).AffineInverse() * SlotGlobalTransform3D(rootBoneSlot.Parent);
+            _skeleton.Transform = offset;
+            LumoraLogger.Log($"SkeletonHook: orientation offset from '{rootBoneSlot.Parent.SlotName.Value}' origin={offset.Origin} det={offset.Basis.Determinant():F2}");
+        }
+        LumoraLogger.Log($"SkeletonHook: rebuilt with {_skeleton.GetBoneCount()} bones");
     }
 
     /// <summary>
@@ -300,6 +346,19 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
         transform.Origin = godotPosition;
 
         return transform;
+    }
+
+    /// <summary>
+    /// A slot's global transform as a Godot Transform3D (position + rotation + scale). Used to compute the
+    /// skeleton's orientation offset relative to the model root. -xlinka
+    /// </summary>
+    private static Transform3D SlotGlobalTransform3D(Lumora.Core.Slot slot)
+    {
+        var p = slot.GlobalPosition;
+        var r = slot.GlobalRotation;
+        var s = slot.GlobalScale;
+        var basis = new Basis(new Quaternion(r.x, r.y, r.z, r.w)).Scaled(new Vector3(s.x, s.y, s.z));
+        return new Transform3D(basis, new Vector3(p.x, p.y, p.z));
     }
 
     /// <summary>

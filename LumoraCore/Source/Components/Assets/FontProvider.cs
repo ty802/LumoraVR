@@ -11,7 +11,7 @@ namespace Lumora.Core.Components.Assets;
 /// <summary>
 /// Provides a <see cref="FontSet"/> assembled from a primary font plus fallbacks. Each font file
 /// is requested from the <see cref="AssetManager"/> as a shared, dedup'd <see cref="FontAsset"/>;
-/// this component aggregates the loaded fonts into the set it exposes — handling both per-font
+/// this component aggregates the loaded fonts into the set it exposes - handling both per-font
 /// loading and the primary/fallback chain in one component.
 /// </summary>
 [ComponentCategory("Assets")]

@@ -370,7 +370,7 @@ public class LocomotionController : Component
             _userRoot.HeadSlot.LocalRotation.Value = newHeadRot;
 
         // Drive hand aim on the CONTROLLER slots (hands are grip-offset
-        // children of controllers — writing the hand child would bypass the
+        // children of controllers - writing the hand child would bypass the
         // tool/laser). Right hand pitches with the camera; while the context
         // menu is open it raises into view pointing at the menu.
         float restPitch = -MathF.PI / 2f;

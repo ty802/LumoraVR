@@ -421,7 +421,7 @@ public class Engine : IDisposable
 
 
             // Physics is per-world and delegated to the platform engine (Godot/Jolt), accessed
-            // through World.Physics — there is no engine-level physics subsystem to initialize.
+            // through World.Physics - there is no engine-level physics subsystem to initialize.
 
             // Phase 4: World Management
             LumoraLogger.Log("Phase 4: Initializing World Management...");

@@ -9,7 +9,7 @@ namespace Lumora.Core.Assets;
 /// <summary>
 /// A font loaded from a URL. Self-loads its file (via the hook) on request and is shared across
 /// every requester for the same font file. Glyph rasterization and the shared atlas live in the
-/// hook. Always a URL (static) asset — fonts are not created procedurally.
+/// hook. Always a URL (static) asset - fonts are not created procedurally.
 /// </summary>
 public class FontAsset : ImplementableAsset<IFontAssetHook>
 {

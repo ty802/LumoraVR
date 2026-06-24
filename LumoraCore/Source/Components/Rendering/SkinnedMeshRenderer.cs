@@ -34,6 +34,18 @@ public class SkinnedMeshRenderer : ImplementableComponent
     /// </summary>
     public readonly SyncRef<SkeletonBuilder> Skeleton = null!;
 
+    /// <summary>
+    /// Phos mesh asset source (the universal pipeline). When set, the hook sources geometry, bone bindings AND
+    /// bind poses from this content-hashed asset and drives skinning through an explicit Skin - instead of the
+    /// inline Vertices/BoneIndices/BoneWeights lists below (which exist for the legacy Godot-glTF import path).
+    /// This is what lets a skinned avatar travel as one asset instead of thousands of synced elements.
+    /// MUST be an AssetRef, not a plain SyncRef: an AssetRef reference-counts the MeshProvider (so its underlying
+    /// MeshDataAsset is actually requested + decoded - a StaticAssetProvider only loads while AssetReferenceCount
+    /// > 0) AND re-fires ApplyChanges when the async decode finishes (AssetRef.AssetUpdated). A bare SyncRef did
+    /// NEITHER, so the provider never loaded and a Phos-imported avatar rendered as nothing. -xlinka
+    /// </summary>
+    public readonly AssetRef<MeshDataAsset> MeshAsset = null!;
+
     // MESH DATA
 
     /// <summary>
@@ -267,6 +279,7 @@ public class SkinnedMeshRenderer : ImplementableComponent
 
         // Subscribe to changes
         Skeleton.OnChanged += (field) => { SkeletonChanged = true; RunApplyChanges(); };
+        MeshAsset.OnChanged += (field) => { MeshDataChanged = true; RunApplyChanges(); };
         Bones.OnChanged += (list) => { SkeletonChanged = true; RunApplyChanges(); };
         Vertices.OnChanged += (list) => { MeshDataChanged = true; RunApplyChanges(); };
         Normals.OnChanged += (list) => { MeshDataChanged = true; RunApplyChanges(); };
@@ -290,9 +303,12 @@ public class SkinnedMeshRenderer : ImplementableComponent
     {
         base.OnUpdate(delta);
 
-        // Keep requesting updates until hook has successfully bound to skeleton
-        // This handles the case where skeleton is built after mesh is initialized
-        if (BonesReady && !HookBindingComplete)
+        // Keep re-driving the hook until it has actually applied the mesh (HookBindingComplete, set by the hook
+        // once a real surface is built). Covers BOTH paths: the inline/legacy path waits for bones (BonesReady),
+        // and the Phos asset path waits for the MeshProvider's async MeshDataAsset decode AND a ready skeleton.
+        // The Phos path populates NO Bones, so the old BonesReady-only gate never fired - the asset would finish
+        // decoding a few frames later with nothing to re-drive the build, and the mesh stayed invisible. -xlinka
+        if (!HookBindingComplete && (BonesReady || MeshAsset.Target != null))
         {
             RunApplyChanges();
         }

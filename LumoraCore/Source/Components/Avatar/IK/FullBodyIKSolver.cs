@@ -101,6 +101,11 @@ public sealed class FullBodyIKSolver
     private LimbRest _lArmRest, _rArmRest, _lLegRest, _rLegRest;
     private floatQ _lToeRel = floatQ.Identity, _rToeRel = floatQ.Identity;
 
+    // Per-limb bend-plane normal captured at rest, so the dynamic pole's antiparallel case (reaching behind /
+    // hyperextending) can't flip the elbow/knee to an arbitrary side. -xlinka
+    private float3 _lArmBendAxis = float3.Right, _rArmBendAxis = float3.Right;
+    private float3 _lLegBendAxis = float3.Right, _rLegBendAxis = float3.Right;
+
     // Rest bone directions (bone -> child) in world space at capture time, used to derive swings.
     private readonly Dictionary<Slot, float3> _restDir = new();
     private readonly Dictionary<Slot, floatQ> _restRot = new();
@@ -196,6 +201,11 @@ public sealed class FullBodyIKSolver
         _lLegRest = CaptureLimbRest(_lHip, _lKnee, _lFoot);
         _rLegRest = CaptureLimbRest(_rHip, _rKnee, _rFoot);
 
+        _lArmBendAxis = LimbBendAxis(in _lArmRest);
+        _rArmBendAxis = LimbBendAxis(in _rArmRest);
+        _lLegBendAxis = LimbBendAxis(in _lLegRest);
+        _rLegBendAxis = LimbBendAxis(in _rLegRest);
+
         CaptureRest(_spine);
         CaptureRestChain(_lShoulder, _lUpper, _lLower, _lHand);
         CaptureRestChain(_rShoulder, _rUpper, _rLower, _rHand);
@@ -238,6 +248,16 @@ public sealed class FullBodyIKSolver
             Mid = mid.GlobalPosition,
             End = end.GlobalPosition,
         };
+    }
+
+    // The rest bend-plane normal (perpendicular to the limb's bend). Falls back to body-right when the rest limb is
+    // dead-straight (cross of colinear segments is ~0), which is enough to keep the antiparallel case stable.
+    private static float3 LimbBendAxis(in LimbRest r)
+    {
+        if (!r.Valid)
+            return float3.Right;
+        float3 axis = float3.Cross(r.Mid - r.Root, r.End - r.Mid);
+        return axis.LengthSquared > 1e-8f ? axis.Normalized : float3.Right;
     }
 
     private static floatQ ToeRel(Slot foot, Slot toe)
@@ -300,11 +320,11 @@ public sealed class FullBodyIKSolver
         Slot chest = _spine.Count >= 2 ? _spine[_spine.Count - 2] : _spine[0];
         Slot hips = _spine[0];
 
-        SolveArm(chest, _lShoulder, _lUpper, _lLower, _lHand, _lUpperArmLen, _lLowerArmLen, _lShoulderLen, in leftHand, in _lArmRest);
-        SolveArm(chest, _rShoulder, _rUpper, _rLower, _rHand, _rUpperArmLen, _rLowerArmLen, _rShoulderLen, in rightHand, in _rArmRest);
+        SolveArm(chest, _lShoulder, _lUpper, _lLower, _lHand, _lUpperArmLen, _lLowerArmLen, _lShoulderLen, in leftHand, in _lArmRest, _bodyTurn * _lArmBendAxis);
+        SolveArm(chest, _rShoulder, _rUpper, _rLower, _rHand, _rUpperArmLen, _rLowerArmLen, _rShoulderLen, in rightHand, in _rArmRest, _bodyTurn * _rArmBendAxis);
 
-        SolveLeg(hips, _lHip, _lKnee, _lFoot, _lToe, _lToeRel, _lUpperLegLen, _lLowerLegLen, in leftFoot, in _lLegRest);
-        SolveLeg(hips, _rHip, _rKnee, _rFoot, _rToe, _rToeRel, _rUpperLegLen, _rLowerLegLen, in rightFoot, in _rLegRest);
+        SolveLeg(hips, _lHip, _lKnee, _lFoot, _lToe, _lToeRel, _lUpperLegLen, _lLowerLegLen, in leftFoot, in _lLegRest, _bodyTurn * _lLegBendAxis);
+        SolveLeg(hips, _rHip, _rKnee, _rFoot, _rToe, _rToeRel, _rUpperLegLen, _rLowerLegLen, in rightFoot, in _rLegRest, _bodyTurn * _rLegBendAxis);
     }
 
     private void SolveSpine(in Target headTarget, in Target pelvisTarget)
@@ -377,7 +397,7 @@ public sealed class FullBodyIKSolver
     }
 
     private void SolveArm(Slot chest, Slot shoulder, Slot upper, Slot lower, Slot hand,
-        float upperLen, float lowerLen, float shoulderLen, in Target target, in LimbRest rest)
+        float upperLen, float lowerLen, float shoulderLen, in Target target, in LimbRest rest, float3 bendAxis)
     {
         if (upper == null || lower == null || hand == null || !target.Valid)
             return;
@@ -409,7 +429,7 @@ public sealed class FullBodyIKSolver
 
         float3 chestForward = chest != null ? chest.GlobalRotation * float3.Backward : float3.Backward;
         float3 fallback = root + chestForward * 0.4f + new float3(0f, -0.4f, 0f);
-        float3 pole = ComputePole(root, goalPos, in rest, fallback, target.HasBendGoal, target.BendGoal);
+        float3 pole = ComputePole(root, goalPos, in rest, fallback, target.HasBendGoal, target.BendGoal, bendAxis);
 
         Stretch(root, goalPos, ref upperLen, ref lowerLen);
         FabrikSolver.SolveTwoBone(root, pole, goalPos, upperLen, lowerLen, out var mid, out var end);
@@ -431,7 +451,7 @@ public sealed class FullBodyIKSolver
     }
 
     private void SolveLeg(Slot hips, Slot hip, Slot knee, Slot foot, Slot toe, floatQ toeRel,
-        float upperLen, float lowerLen, in Target target, in LimbRest rest)
+        float upperLen, float lowerLen, in Target target, in LimbRest rest, float3 bendAxis)
     {
         if (hip == null || knee == null || foot == null || !target.Valid)
             return;
@@ -445,7 +465,7 @@ public sealed class FullBodyIKSolver
         // Dynamic bend pole: knees bend forward following the rest pose; fallback in front of the hip.
         float3 hipsForward = hips != null ? hips.GlobalRotation * float3.Backward : float3.Backward;
         float3 fallback = root - hipsForward * 0.5f + new float3(0f, -0.2f, 0f);
-        float3 pole = ComputePole(root, goalPos, in rest, fallback, target.HasBendGoal, target.BendGoal);
+        float3 pole = ComputePole(root, goalPos, in rest, fallback, target.HasBendGoal, target.BendGoal, bendAxis);
 
         Stretch(root, goalPos, ref upperLen, ref lowerLen);
         FabrikSolver.SolveTwoBone(root, pole, goalPos, upperLen, lowerLen, out var mid, out var end);
@@ -496,7 +516,7 @@ public sealed class FullBodyIKSolver
     // follow the current root->target direction so the elbow/knee bends naturally; an optional bend
     // goal then pulls the pole toward a steer point.
     private float3 ComputePole(float3 root, float3 targetPos, in LimbRest rest, float3 fallback,
-        bool hasBendGoal, float3 bendGoal)
+        bool hasBendGoal, float3 bendGoal, float3 bendAxis)
     {
         float3 pole;
         if (rest.Valid)
@@ -507,7 +527,8 @@ public sealed class FullBodyIKSolver
                 pole = fallback;
             else
             {
-                var swing = FabrikSolver.FromToRotation(restDir, curDir);
+                // Stable bend axis on the antiparallel case so the elbow/knee can't flip sides when reaching behind.
+                var swing = FabrikSolver.FromToRotation(restDir, curDir, bendAxis);
                 pole = root + swing * (rest.Mid - rest.Root);
             }
         }
@@ -529,9 +550,18 @@ public sealed class FullBodyIKSolver
         if (reach < 1e-5f)
             return;
         float dist = float3.Distance(root, targetPos);
-        if (dist <= reach)
+        float ratio = dist / reach;
+
+        // Ease the stretch IN smoothly starting before full reach, instead of doing nothing until dist>reach and
+        // then jumping to a linear scale (that hard derivative jump at exactly arm's length is a visible elbow/knee
+        // pop). smoothstep over [kStart, MaxStretch] gives a C1-continuous "give" - the limb lengthens a hair as it
+        // approaches full extension so it eases out rather than snapping straight. -xlinka
+        const float kStart = 0.9f;
+        if (ratio <= kStart)
             return;
-        float scale = MathF.Min(dist / reach, MaxStretch);
+        float t = System.Math.Clamp((ratio - kStart) / (MaxStretch - kStart), 0f, 1f);
+        float ease = t * t * (3f - 2f * t);
+        float scale = 1f + (MaxStretch - 1f) * ease;
         upperLen *= scale;
         lowerLen *= scale;
     }

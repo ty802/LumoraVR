@@ -19,6 +19,10 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook, IGodotTexture
     private TextureWrapMode _wrapU = TextureWrapMode.Repeat;
     private TextureWrapMode _wrapV = TextureWrapMode.Repeat;
 
+    // Completed at the END of the deferred BuildTexture (when _godotTexture actually exists). TextureAsset.LoadSelf
+    // awaits this before reporting the asset loaded, so a material can't bind this texture while it's still null. -xlinka
+    private System.Threading.Tasks.TaskCompletionSource<bool> _uploadTcs = null!;
+
     /// <summary>
     /// Get the Godot ImageTexture.
     /// </summary>
@@ -38,6 +42,27 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook, IGodotTexture
     /// Upload pixel data to the Godot texture.
     /// </summary>
     public void UploadData(byte[] pixels, int width, int height, bool hasMipmaps)
+    {
+        // Godot RenderingServer resource creation must run on the main thread, but this is invoked INLINE from the
+        // off-main asset-load thread (TextureAsset.SetImageData). Touching the renderer off-thread is an intermittent
+        // stall/corruption bug; defer the actual build to the main thread (same pattern as RenderTextureHook). The
+        // TCS completes when that deferred build has run, so LoadSelf can wait for the GPU texture to truly exist
+        // before reporting the asset loaded (else a material binds a null albedo in the gap = white body). -xlinka
+        var tcs = new System.Threading.Tasks.TaskCompletionSource<bool>(
+            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+        _uploadTcs = tcs;
+        global::Godot.Callable.From(() =>
+        {
+            try { BuildTexture(pixels, width, height, hasMipmaps); }
+            finally { tcs.TrySetResult(true); }
+        }).CallDeferred();
+    }
+
+    /// <summary>Completes once the deferred BuildTexture has run (the GPU texture exists). -xlinka</summary>
+    public System.Threading.Tasks.Task WaitForUploadAsync()
+        => _uploadTcs?.Task ?? System.Threading.Tasks.Task.CompletedTask;
+
+    private void BuildTexture(byte[] pixels, int width, int height, bool hasMipmaps)
     {
         // Check if this is raw RGBA data or encoded image data
         int expectedRgbaSize = width * height * 4;

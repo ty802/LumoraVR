@@ -58,7 +58,7 @@ public enum DataModelPermissionResult
 }
 
 /// <summary>
-/// How a user relates to the world when they join — used to pick a default role.
+/// How a user relates to the world when they join - used to pick a default role.
 /// </summary>
 public enum DataModelAccessClass
 {
@@ -178,7 +178,7 @@ public sealed class DataModelPermissionController
     // Distinct denials already logged, so a per-frame denial doesn't spam thousands of identical lines. -xlinka
     private readonly HashSet<string> _loggedDenials = new();
 
-    // Owner of the world — full power, not assignable (you can't demote the host).
+    // Owner of the world - full power, not assignable (you can't demote the host).
     public DataModelPermissionRole HostRole { get; }
     // Assignable roles, in descending power. Each has preset capabilities over OTHER users' objects
     // (own objects are always fully editable). The host assigns these per access-class or per-user.

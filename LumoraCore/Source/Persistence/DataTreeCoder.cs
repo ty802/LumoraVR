@@ -11,7 +11,7 @@ namespace Lumora.Core.Persistence;
 /// Converts individual values to and from <see cref="DataTreeNode"/>s. Primitives become a single
 /// <see cref="DataTreeValue"/>; math types decompose into a <see cref="DataTreeList"/> of components;
 /// enums save as their name. This is the per-value layer that member serialization builds on.
-/// <see cref="RefID"/>s code as their raw value here — remapping is the save/load control's job.
+/// <see cref="RefID"/>s code as their raw value here - remapping is the save/load control's job.
 /// </summary>
 public static class DataTreeCoder
 {

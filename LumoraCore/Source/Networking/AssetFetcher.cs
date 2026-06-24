@@ -29,6 +29,14 @@ public static class AssetFetcher
     // In-flight tasks keyed by URI string: (task, pending callbacks)
     private static readonly Dictionary<string, (Task<byte[]> task, List<Action<byte[]>> callbacks)> _active = new();
 
+    // _active is written from WORKER threads (FetchAsset/FetchLocalAsset run inside each asset's LoadSelf Task.Run)
+    // and read+removed from the WORLD thread (ProcessQueue). A plain Dictionary mutated from multiple threads
+    // silently corrupts/drops entries - which intermittently dropped one of two model textures (white body), and
+    // got worse once more concurrent loads (the import indicator's font/text textures) were in flight. Serialize
+    // every access through this lock; callbacks are invoked OUTSIDE the lock (a TCS continuation can run inline and
+    // re-enter FetchAsset). -xlinka
+    private static readonly object _lock = new();
+
     /// <summary>
     /// Asynchronously fetch an asset. Calls <paramref name="callback"/> with the
     /// raw bytes on the calling thread once the fetch task completes (via ProcessQueue).
@@ -43,15 +51,18 @@ public static class AssetFetcher
             return;
         }
 
-        // Coalesce duplicate in-flight requests
-        if (_active.TryGetValue(uri, out var existing))
+        lock (_lock)
         {
-            existing.callbacks.Add(callback);
-            return;
-        }
+            // Coalesce duplicate in-flight requests
+            if (_active.TryGetValue(uri, out var existing))
+            {
+                existing.callbacks.Add(callback);
+                return;
+            }
 
-        var task = Task.Run(() => FetchSync(uri));
-        _active[uri] = (task, [callback]);
+            var task = Task.Run(() => FetchSync(uri));
+            _active[uri] = (task, [callback]);
+        }
     }
 
     /// <summary>
@@ -63,23 +74,38 @@ public static class AssetFetcher
         if (_active.Count == 0)
             return;
 
-        var done = new List<string>();
-        foreach (var (uri, (task, callbacks)) in _active)
+        // Collect completed fetches + remove them UNDER the lock, then fire callbacks OUTSIDE it (a callback is a
+        // TCS completion whose continuation can run inline and re-enter FetchAsset -> deadlock if held). -xlinka
+        List<(Action<byte[]> cb, byte[] result, string uri)> ready = null!;
+        lock (_lock)
         {
-            if (!task.IsCompleted)
-                continue;
+            if (_active.Count == 0)
+                return;
 
-            byte[] result = task.IsCompletedSuccessfully ? task.Result : null!;
-            foreach (var cb in callbacks)
+            List<string> done = null!;
+            foreach (var (uri, (task, callbacks)) in _active)
+            {
+                if (!task.IsCompleted)
+                    continue;
+
+                byte[] result = task.IsCompletedSuccessfully ? task.Result : null!;
+                ready ??= new List<(Action<byte[]>, byte[], string)>();
+                foreach (var cb in callbacks)
+                    ready.Add((cb, result, uri));
+                (done ??= new List<string>()).Add(uri);
+            }
+
+            if (done != null)
+                foreach (var uri in done)
+                    _active.Remove(uri);
+        }
+
+        if (ready != null)
+            foreach (var (cb, result, uri) in ready)
             {
                 try { cb(result); }
                 catch (Exception ex) { LumoraLogger.Error($"AssetFetcher: callback exception for '{uri}': {ex.Message}"); }
             }
-            done.Add(uri);
-        }
-
-        foreach (var uri in done)
-            _active.Remove(uri);
     }
 
     // local://
@@ -95,9 +121,18 @@ public static class AssetFetcher
             var filePath = localDB.GetFilePath(uri);
             if (filePath != null && File.Exists(filePath))
             {
-                // Read async so we don't block the main thread
-                var task = Task.Run(() => File.ReadAllBytes(filePath));
-                _active[uri] = (task, [callback]);
+                lock (_lock)
+                {
+                    // Coalesce: a blind overwrite here would drop a prior requester's callback for the same URI.
+                    if (_active.TryGetValue(uri, out var existing))
+                    {
+                        existing.callbacks.Add(callback);
+                        return;
+                    }
+                    // Read async so we don't block the main thread
+                    var task = Task.Run(() => File.ReadAllBytes(filePath));
+                    _active[uri] = (task, [callback]);
+                }
                 return;
             }
         }

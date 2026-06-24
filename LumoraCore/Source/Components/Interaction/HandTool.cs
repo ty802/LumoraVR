@@ -308,7 +308,7 @@ public sealed class HandTool : Tool
         if (_secondaryHeld && !_prevSecondaryHeld)
         {
             // While our menu is open, the button closes it before any tool
-            // gets a say — otherwise an equipped tool would eat the press and
+            // gets a say - otherwise an equipped tool would eat the press and
             // the menu could never be dismissed.
             if (IsContextMenuOpenByThisHand())
             {

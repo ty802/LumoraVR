@@ -31,6 +31,14 @@ public class MeshAssetHook : AssetHook, IMeshAssetHook
     public void UploadMesh(PhosMesh mesh)
     {
         if (mesh == null || mesh.VertexCount == 0) return;
+        // Defer the Godot mesh build to the main thread - this is called inline from the off-main asset-load thread
+        // and AddSurfaceFromArrays touches the RenderingServer. -xlinka
+        global::Godot.Callable.From(() => BuildMesh(mesh)).CallDeferred();
+    }
+
+    private void BuildMesh(PhosMesh mesh)
+    {
+        if (mesh == null || mesh.VertexCount == 0) return;
 
         // Create new mesh if needed
         if (_godotMesh == null)
@@ -157,6 +165,33 @@ public class MeshAssetHook : AssetHook, IMeshAssetHook
                 colors[i] = new Color(c.r, c.g, c.b, c.a);
             }
             arrays[(int)Mesh.ArrayType.Color] = colors;
+        }
+
+        // Bone indices + weights (skinning). Godot wants 4 influences per vertex: a PackedInt32 bones array
+        // and a PackedFloat32 weights array, both sized vertexCount*4. The skeleton + Skin (bind poses) that
+        // make these meaningful are built on the renderer side from the asset's bone table. -xlinka
+        if (mesh.HasBoneBindings)
+        {
+            var bindings = mesh.RawBoneBindings;
+            if (bindings != null && bindings.Length >= vertexCount)
+            {
+                var bones = new int[vertexCount * 4];
+                var weights = new float[vertexCount * 4];
+                for (int i = 0; i < vertexCount; i++)
+                {
+                    var b = bindings[i];
+                    bones[i * 4 + 0] = (int)b.boneIndices.x;
+                    bones[i * 4 + 1] = (int)b.boneIndices.y;
+                    bones[i * 4 + 2] = (int)b.boneIndices.z;
+                    bones[i * 4 + 3] = (int)b.boneIndices.w;
+                    weights[i * 4 + 0] = b.boneWeights.x;
+                    weights[i * 4 + 1] = b.boneWeights.y;
+                    weights[i * 4 + 2] = b.boneWeights.z;
+                    weights[i * 4 + 3] = b.boneWeights.w;
+                }
+                arrays[(int)Mesh.ArrayType.Bones] = bones;
+                arrays[(int)Mesh.ArrayType.Weights] = weights;
+            }
         }
 
         // Indices from submesh

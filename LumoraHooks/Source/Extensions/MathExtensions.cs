@@ -66,14 +66,18 @@ public static class MathExtensions
 
     public static float4x4 ToLumora(this Transform3D t)
     {
+        // Exact inverse of ToGodot. float4x4's 16-arg ctor is COLUMN-major (first 4 args = c0), and Godot's
+        // Basis.X/Y/Z are its COLUMNS - so each Godot column maps straight to one of our columns, and the origin
+        // is our translation column c3. (The previous version laid the args out as rows and stuffed the origin
+        // into c0.w/c1.w/c2.w - a transpose + misplaced translation. It had no callers, but it was a trap.) -xlinka
         var b = t.Basis;
         var o = t.Origin;
 
         return new float4x4(
-            b.X.X, b.Y.X, b.Z.X, o.X,  // Row 0
-            b.X.Y, b.Y.Y, b.Z.Y, o.Y,  // Row 1
-            b.X.Z, b.Y.Z, b.Z.Z, o.Z,  // Row 2
-            0f, 0f, 0f, 1f             // Row 3
+            b.X.X, b.X.Y, b.X.Z, 0f,   // c0 = Godot column 0
+            b.Y.X, b.Y.Y, b.Y.Z, 0f,   // c1 = Godot column 1
+            b.Z.X, b.Z.Y, b.Z.Z, 0f,   // c2 = Godot column 2
+            o.X,   o.Y,   o.Z,   1f    // c3 = translation
         );
     }
 

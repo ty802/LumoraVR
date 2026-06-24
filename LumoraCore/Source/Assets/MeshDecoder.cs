@@ -7,7 +7,6 @@ using System.IO;
 using Assimp;
 using Lumora.Core.Phos;
 using Lumora.Core.Math;
-using SharpGLTF.Schema2;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Assets;
@@ -18,8 +17,10 @@ namespace Lumora.Core.Assets;
 /// </summary>
 public static class MeshDecoder
 {
-    /// <summary>Decode mesh bytes of the given file extension (e.g. ".glb"). Returns null on failure.</summary>
-    public static PhosMesh? Decode(byte[] fileData, string extension)
+    /// <summary>Decode mesh bytes of the given file extension (e.g. ".glb"). <paramref name="meshIndex"/> -1
+    /// decodes the whole file concatenated; &gt;= 0 decodes only that glTF mesh (one Phos asset per mesh).
+    /// Returns null on failure.</summary>
+    public static PhosMesh? Decode(byte[] fileData, string extension, int meshIndex = -1)
     {
         if (fileData == null || fileData.Length == 0)
         {
@@ -34,15 +35,20 @@ public static class MeshDecoder
             return ext switch
             {
                 ".lmesh" => PhosMeshSerializer.Deserialize(fileData),
-                ".glb" or ".gltf" => DecodeGltf(fileData),
+                // Everything non-native goes through Assimp now (one parser, like the reference). VRM is GLB, so
+                // hint Assimp with .glb. Native .obj keeps its lightweight reader. -xlinka
+                ".glb" or ".gltf" => DecodeAssimp(fileData, ext, meshIndex),
+                ".vrm" => DecodeAssimp(fileData, ".glb", meshIndex),
                 ".obj" => DecodeObj(fileData),
-                ".fbx" or ".dae" or ".3ds" or ".blend" or ".stl" or ".ply" or ".x" or ".ase" => DecodeAssimp(fileData, ext),
+                ".fbx" or ".dae" or ".3ds" or ".blend" or ".stl" or ".ply" or ".x" or ".ase" => DecodeAssimp(fileData, ext, meshIndex),
                 _ => throw new NotSupportedException($"Unsupported mesh format: {ext}")
             };
         }
         catch (Exception ex)
         {
-            LumoraLogger.Error($"MeshDecoder: Failed to decode mesh - {ex.Message}");
+            // Full exception (type + message + stack), not just .Message - a bare "Object reference not set"
+            // with no stack cost a debugging round-trip. -xlinka
+            LumoraLogger.Error($"MeshDecoder: Failed to decode mesh ({ext}, index {meshIndex}) - {ex}");
             return null;
         }
     }
@@ -59,113 +65,33 @@ public static class MeshDecoder
         }
     }
 
-    private static PhosMesh DecodeGltf(byte[] fileData)
+    // AssimpNetter copies the native ROW-MAJOR aiMatrix4x4 into System.Numerics.Matrix4x4 BY FIELD NAME, so the
+    // translation ends up in M14/M24/M34 (4th column by name) and the basis is stored as ROWS - this is NOT the
+    // System.Numerics row-vector layout (translation in M41..M43) that Matrix4x4.Decompose/.Translation assume.
+    // Our float4x4 is column-major column-vector (c0..c2 = basis columns, c3 = translation), exactly what
+    // float4x4.ToGodot() reads. So TRANSPOSE first: that moves the by-name translation into M41..M43 and the basis
+    // into columns, and the straight field map below then lands translation in c3 with a column-vector basis.
+    // WITHOUT the transpose every bind pose loses its translation (c3 = 0) and the skinned mesh explodes into
+    // shards. ModelImporter.WalkAssimpNode's Decompose of node.Transform MUST transpose identically (same bug,
+    // same matrix source) so the skeleton rest and the bind poses live in one space. -xlinka
+    private static float4x4 ToFloat4x4(System.Numerics.Matrix4x4 m)
     {
-        using var stream = new MemoryStream(fileData);
-        var model = ModelRoot.ReadGLB(stream);
+        m = System.Numerics.Matrix4x4.Transpose(m);
+        return new float4x4(
+            m.M11, m.M12, m.M13, m.M14,
+            m.M21, m.M22, m.M23, m.M24,
+            m.M31, m.M32, m.M33, m.M34,
+            m.M41, m.M42, m.M43, m.M44);
+    }
 
-        var phosMesh = new PhosMesh();
-        phosMesh.HasNormals = true;
-        phosMesh.HasUV0s = true;
-
-        var allPositions = new List<float3>();
-        var allNormals = new List<float3>();
-        var allUVs = new List<float2>();
-        var allIndices = new List<int>();
-        int vertexOffset = 0;
-
-        foreach (var mesh in model.LogicalMeshes)
-        {
-            foreach (var primitive in mesh.Primitives)
-            {
-                var posAccessor = primitive.GetVertexAccessor("POSITION");
-                var normAccessor = primitive.GetVertexAccessor("NORMAL");
-                var uvAccessor = primitive.GetVertexAccessor("TEXCOORD_0");
-                var indexAccessor = primitive.IndexAccessor;
-
-                if (posAccessor == null) continue;
-
-                var positions = posAccessor.AsVector3Array();
-                var normals = normAccessor?.AsVector3Array();
-                var uvs = uvAccessor?.AsVector2Array();
-
-                foreach (var pos in positions)
-                {
-                    allPositions.Add(new float3(pos.X, pos.Y, pos.Z));
-                }
-
-                if (normals != null)
-                {
-                    foreach (var norm in normals)
-                    {
-                        allNormals.Add(new float3(norm.X, norm.Y, norm.Z));
-                    }
-                }
-                else
-                {
-                    for (int i = 0; i < positions.Count; i++)
-                        allNormals.Add(float3.Up);
-                }
-
-                if (uvs != null)
-                {
-                    foreach (var uv in uvs)
-                    {
-                        allUVs.Add(new float2(uv.X, uv.Y));
-                    }
-                }
-                else
-                {
-                    for (int i = 0; i < positions.Count; i++)
-                        allUVs.Add(float2.Zero);
-                }
-
-                if (indexAccessor != null)
-                {
-                    var indices = indexAccessor.AsIndicesArray();
-                    foreach (var idx in indices)
-                    {
-                        allIndices.Add((int)idx + vertexOffset);
-                    }
-                }
-
-                vertexOffset += positions.Count;
-            }
-        }
-
-        if (allPositions.Count == 0)
-        {
-            LumoraLogger.Warn("MeshDecoder: GLTF has no vertex data");
-            return phosMesh;
-        }
-
-        phosMesh.IncreaseVertexCount(allPositions.Count);
-
-        for (int i = 0; i < allPositions.Count; i++)
-        {
-            phosMesh.RawPositions[i] = allPositions[i];
-            phosMesh.RawNormals[i] = allNormals[i];
-        }
-
-        phosMesh.SetHasUV(0, true);
-        for (int i = 0; i < allUVs.Count; i++)
-        {
-            phosMesh.SetUV(0, i, allUVs[i]);
-        }
-
-        var submesh = new PhosTriangleSubmesh(phosMesh);
-        phosMesh.Submeshes.Add(submesh);
-
-        for (int i = 0; i < allIndices.Count; i += 3)
-        {
-            if (i + 2 < allIndices.Count)
-            {
-                submesh.AddTriangle(allIndices[i], allIndices[i + 1], allIndices[i + 2]);
-            }
-        }
-
-        LumoraLogger.Debug($"MeshDecoder: Decoded GLTF with {allPositions.Count} vertices, {allIndices.Count / 3} triangles");
-        return phosMesh;
+    // Weights should sum to 1 but exporters drift; renormalize so the GPU skin doesn't shrink/expand verts.
+    private static float4 NormalizeWeights(float4 w)
+    {
+        float sum = w.x + w.y + w.z + w.w;
+        if (sum <= 1e-6f)
+            return new float4(1f, 0f, 0f, 0f);
+        float inv = 1f / sum;
+        return new float4(w.x * inv, w.y * inv, w.z * inv, w.w * inv);
     }
 
     private static PhosMesh DecodeObj(byte[] fileData)
@@ -263,12 +189,16 @@ public static class MeshDecoder
         return phosMesh;
     }
 
-    private static PhosMesh DecodeAssimp(byte[] fileData, string extension)
+    private static PhosMesh DecodeAssimp(byte[] fileData, string extension, int meshIndex = -1)
     {
         using var stream = new MemoryStream(fileData, writable: false);
         using var context = new AssimpContext();
 
-        var scene = context.ImportFileFromStream(stream, GetAssimpPostProcessSteps(), extension);
+        // meshIndex >= 0 = a single mesh for a skinned/per-mesh import: DON'T pre-transform (that flattens the
+        // node hierarchy + bakes world transforms into verts, which breaks skinning). meshIndex -1 = legacy
+        // whole-file concatenation, keep pre-transform so a standalone static mesh still lands in place. -xlinka
+        bool perMesh = meshIndex >= 0;
+        var scene = context.ImportFileFromStream(stream, GetAssimpPostProcessSteps(perMesh), extension);
         if (scene == null || !scene.HasMeshes || scene.MeshCount == 0)
             throw new InvalidOperationException($"Assimp could not decode mesh data for '{extension}'");
 
@@ -279,15 +209,67 @@ public static class MeshDecoder
         var allPositions = new List<float3>();
         var allNormals = new List<float3>();
         var allUVs = new List<float2>();
+        // Extra UV channels (1-3). Avatars rarely use them but lightmap/detail meshes do - keep them so the data
+        // round-trips like the reference's all-channels import instead of dropping everything past UV0. -xlinka
+        var allUVs1 = new List<float2>();
+        var allUVs2 = new List<float2>();
+        var allUVs3 = new List<float2>();
+        bool hasUV1 = false, hasUV2 = false, hasUV3 = false;
         var allIndices = new List<int>();
-        int vertexOffset = 0;
 
-        foreach (var mesh in scene.Meshes)
+        // Skinning accumulators (parallel to allPositions). Bone table is deduped by name across decoded meshes.
+        var allBoneIndices = new List<float4>();
+        var allBoneWeights = new List<float4>();
+        var boneSlotsUsed = new List<int>();
+        bool anySkin = false;
+        var boneIndexByName = new Dictionary<string, int>();
+
+        // Morph-target (blendshape) accumulators, kept parallel to allPositions. Assimp attachment vertices are
+        // ABSOLUTE morphed positions, so the stored delta is attachment - base. -xlinka
+        var morphNames = new List<string>();
+        var morphPos = new List<List<float3>>();
+        var morphNorm = new List<List<float3>>();
+        var morphTang = new List<List<float3>>();
+        bool anyMorphNorm = false;
+        bool anyMorphTang = false;
+
+        // Tangents (xyz + handedness sign in w, for normal maps) and vertex colors, parallel to allPositions.
+        var allTangents = new List<float4>();
+        var allColors = new List<color>();
+        bool anyTangents = false;
+        bool anyColors = false;
+
+        for (int mi = 0; mi < scene.MeshCount; mi++)
         {
+            if (meshIndex >= 0 && mi != meshIndex)
+                continue;
+            var mesh = scene.Meshes[mi];
             if (mesh == null || !mesh.HasVertices || mesh.VertexCount == 0)
                 continue;
 
-            for (int i = 0; i < mesh.VertexCount; i++)
+            int baseVert = allPositions.Count;
+            int vcount = mesh.VertexCount;
+
+            // Establish the global morph set from the first mesh that has attachments, back-filling zero deltas
+            // for any vertices already added so the per-morph arrays stay aligned to allPositions. -xlinka
+            var attachments = mesh.MeshAnimationAttachments;
+            if (mesh.HasMeshAnimationAttachments && attachments.Count > 0 && morphNames.Count == 0)
+            {
+                int already = allPositions.Count;
+                for (int a = 0; a < attachments.Count; a++)
+                {
+                    morphNames.Add(string.IsNullOrEmpty(attachments[a].Name) ? $"Morph{a}" : attachments[a].Name);
+                    var pl = new List<float3>();
+                    var nl = new List<float3>();
+                    var tl = new List<float3>();
+                    for (int k = 0; k < already; k++) { pl.Add(float3.Zero); nl.Add(float3.Zero); tl.Add(float3.Zero); }
+                    morphPos.Add(pl);
+                    morphNorm.Add(nl);
+                    morphTang.Add(tl);
+                }
+            }
+
+            for (int i = 0; i < vcount; i++)
             {
                 var position = mesh.Vertices[i];
                 allPositions.Add(new float3(position.X, position.Y, position.Z));
@@ -313,6 +295,118 @@ public static class MeshDecoder
                 {
                     allUVs.Add(float2.Zero);
                 }
+
+                // Extra UV channels (1-3), mirroring channel 0. Zero-filled when this mesh lacks the channel so
+                // every channel array stays aligned to allPositions.
+                ReadExtraUV(mesh, 1, i, allUVs1, ref hasUV1);
+                ReadExtraUV(mesh, 2, i, allUVs2, ref hasUV2);
+                ReadExtraUV(mesh, 3, i, allUVs3, ref hasUV3);
+
+                // Tangent (xyz) + handedness sign (w = sign of dot(cross(N,T), B)) for correct normal mapping.
+                if (mesh.HasTangentBasis && i < mesh.Tangents.Count && i < mesh.BiTangents.Count)
+                {
+                    var t = mesh.Tangents[i];
+                    var b = mesh.BiTangents[i];
+                    var n = (mesh.HasNormals && i < mesh.Normals.Count) ? mesh.Normals[i] : new System.Numerics.Vector3(0, 1, 0);
+                    float cx = n.Y * t.Z - n.Z * t.Y, cy = n.Z * t.X - n.X * t.Z, cz = n.X * t.Y - n.Y * t.X;
+                    float sign = (cx * b.X + cy * b.Y + cz * b.Z) < 0f ? -1f : 1f;
+                    allTangents.Add(new float4(t.X, t.Y, t.Z, sign));
+                    anyTangents = true;
+                }
+                else allTangents.Add(new float4(1f, 0f, 0f, 1f));
+
+                if (mesh.HasVertexColors(0) && mesh.VertexColorChannels[0] != null && i < mesh.VertexColorChannels[0].Count)
+                {
+                    var vc = mesh.VertexColorChannels[0][i];
+                    allColors.Add(new color(vc.X, vc.Y, vc.Z, vc.W));
+                    anyColors = true;
+                }
+                else allColors.Add(color.White);
+
+                allBoneIndices.Add(new float4(0f, 0f, 0f, 0f));
+                allBoneWeights.Add(new float4(0f, 0f, 0f, 0f));
+                boneSlotsUsed.Add(0);
+
+                // Morph deltas for this vertex (delta = attachment absolute - base). Zero for a morph this mesh
+                // doesn't carry, so the arrays stay aligned. -xlinka
+                for (int m = 0; m < morphNames.Count; m++)
+                {
+                    var att = (mesh.HasMeshAnimationAttachments && m < attachments.Count) ? attachments[m] : null;
+                    if (att != null && att.HasVertices && i < att.Vertices.Count)
+                    {
+                        var ap = att.Vertices[i];
+                        morphPos[m].Add(new float3(ap.X - position.X, ap.Y - position.Y, ap.Z - position.Z));
+                    }
+                    else morphPos[m].Add(float3.Zero);
+
+                    if (att != null && att.HasNormals && i < att.Normals.Count && mesh.HasNormals && i < mesh.Normals.Count)
+                    {
+                        var an = att.Normals[i];
+                        var bn = mesh.Normals[i];
+                        morphNorm[m].Add(new float3(an.X - bn.X, an.Y - bn.Y, an.Z - bn.Z));
+                        anyMorphNorm = true;
+                    }
+                    else morphNorm[m].Add(float3.Zero);
+
+                    // Tangent delta = normalized morph tangent - normalized base tangent (xyz). Keeps normal-mapped
+                    // morphs from shifting the tangent basis. Base tangent is the float4 we just added for this vertex.
+                    if (att != null && att.HasTangentBasis && i < att.Tangents.Count)
+                    {
+                        var at = att.Tangents[i];
+                        var baseT = allTangents[allTangents.Count - 1];
+                        var atn = Normalize3(at.X, at.Y, at.Z);
+                        var btn = Normalize3(baseT.x, baseT.y, baseT.z);
+                        morphTang[m].Add(new float3(atn.x - btn.x, atn.y - btn.y, atn.z - btn.z));
+                        anyMorphTang = true;
+                    }
+                    else morphTang[m].Add(float3.Zero);
+                }
+            }
+
+            // Bones -> the mesh bone table (name + inverse-bind = OffsetMatrix) + per-vertex (index, weight),
+            // accumulated into up to 4 influences per vertex. Mirrors the reference's ImportMesh bone pass.
+            if (mesh.HasBones)
+            {
+                anySkin = true;
+                foreach (var bone in mesh.Bones)
+                {
+                    if (bone == null) continue;
+                    string bname = string.IsNullOrEmpty(bone.Name) ? $"Bone{phosMesh.BoneCount}" : bone.Name;
+                    if (!boneIndexByName.TryGetValue(bname, out int bIdx))
+                    {
+                        var pb = phosMesh.AddBone(bname);
+                        pb.BindPose = ToFloat4x4(bone.OffsetMatrix);
+                        bIdx = phosMesh.BoneCount - 1;
+                        boneIndexByName[bname] = bIdx;
+                    }
+                    if (!bone.HasVertexWeights) continue;
+                    foreach (var vw in bone.VertexWeights)
+                    {
+                        int gv = baseVert + vw.VertexID;
+                        if (gv < 0 || gv >= allBoneWeights.Count) continue;
+                        int slot = boneSlotsUsed[gv];
+                        if (slot < 4)
+                        {
+                            allBoneIndices[gv] = WithComponent(allBoneIndices[gv], slot, bIdx);
+                            allBoneWeights[gv] = WithComponent(allBoneWeights[gv], slot, vw.Weight);
+                            boneSlotsUsed[gv] = slot + 1;
+                        }
+                        else
+                        {
+                            // Already 4 influences: keep the strongest 4 - replace the lowest if this is bigger.
+                            var w = allBoneWeights[gv];
+                            int minSlot = 0; float minW = w.x;
+                            if (w.y < minW) { minW = w.y; minSlot = 1; }
+                            if (w.z < minW) { minW = w.z; minSlot = 2; }
+                            if (w.w < minW) { minW = w.w; minSlot = 3; }
+                            if (vw.Weight > minW)
+                            {
+                                allBoneIndices[gv] = WithComponent(allBoneIndices[gv], minSlot, bIdx);
+                                allBoneWeights[gv] = WithComponent(allBoneWeights[gv], minSlot, vw.Weight);
+                            }
+                        }
+                    }
+                }
             }
 
             foreach (var face in mesh.Faces)
@@ -322,13 +416,11 @@ public static class MeshDecoder
 
                 for (int i = 0; i + 2 < face.Indices.Count; i += 3)
                 {
-                    allIndices.Add(vertexOffset + face.Indices[i]);
-                    allIndices.Add(vertexOffset + face.Indices[i + 2]);
-                    allIndices.Add(vertexOffset + face.Indices[i + 1]);
+                    allIndices.Add(baseVert + face.Indices[i]);
+                    allIndices.Add(baseVert + face.Indices[i + 2]);
+                    allIndices.Add(baseVert + face.Indices[i + 1]);
                 }
             }
-
-            vertexOffset += mesh.VertexCount;
         }
 
         if (allPositions.Count == 0)
@@ -337,6 +429,9 @@ public static class MeshDecoder
             return phosMesh;
         }
 
+        // Flag tangents/colors BEFORE IncreaseVertexCount so it allocates those arrays.
+        phosMesh.HasTangents = anyTangents && allTangents.Count == allPositions.Count;
+        phosMesh.HasColors = anyColors && allColors.Count == allPositions.Count;
         phosMesh.IncreaseVertexCount(allPositions.Count);
         phosMesh.SetHasUV(0, true);
 
@@ -347,6 +442,40 @@ public static class MeshDecoder
             phosMesh.SetUV(0, i, allUVs[i]);
         }
 
+        WriteExtraUV(phosMesh, 1, hasUV1, allUVs1);
+        WriteExtraUV(phosMesh, 2, hasUV2, allUVs2);
+        WriteExtraUV(phosMesh, 3, hasUV3, allUVs3);
+
+        if (phosMesh.HasTangents)
+            for (int i = 0; i < allPositions.Count; i++)
+                phosMesh.RawTangents[i] = allTangents[i];
+        if (phosMesh.HasColors)
+            for (int i = 0; i < allPositions.Count; i++)
+                phosMesh.RawColors[i] = allColors[i];
+
+        if (anySkin && allBoneWeights.Count == allPositions.Count)
+        {
+            phosMesh.EnsureBoneBindings();
+            phosMesh.HasBoneBindings = true;
+            var bindings = phosMesh.RawBoneBindings;
+            for (int i = 0; i < allPositions.Count; i++)
+                bindings[i] = new PhosBoneBinding(allBoneIndices[i], NormalizeWeights(allBoneWeights[i]));
+        }
+
+        // Morph targets -> PhosMesh blendshapes (position deltas, plus normal deltas when present so lighting
+        // follows the expression). The render path (SkinnedMeshHook.ApplyMeshFromAsset) already consumes these.
+        for (int m = 0; m < morphNames.Count; m++)
+        {
+            if (morphPos[m].Count != phosMesh.VertexCount)
+                continue;
+            var bs = phosMesh.GetBlendShape(morphNames[m]);
+            bs.Frames[0].positions = morphPos[m].ToArray();
+            if (anyMorphNorm)
+                bs.Frames[0].normals = morphNorm[m].ToArray();
+            if (anyMorphTang && morphTang[m].Count == phosMesh.VertexCount)
+                bs.Frames[0].tangents = morphTang[m].ToArray();
+        }
+
         var submesh = new PhosTriangleSubmesh(phosMesh);
         phosMesh.Submeshes.Add(submesh);
         for (int i = 0; i + 2 < allIndices.Count; i += 3)
@@ -354,8 +483,49 @@ public static class MeshDecoder
             submesh.AddTriangle(allIndices[i], allIndices[i + 1], allIndices[i + 2]);
         }
 
-        LumoraLogger.Debug($"MeshDecoder: Decoded {extension} with {allPositions.Count} vertices, {allIndices.Count / 3} triangles");
+        LumoraLogger.Debug($"MeshDecoder: Decoded {extension} (mesh {meshIndex}) - {allPositions.Count} verts, {allIndices.Count / 3} tris, {phosMesh.BoneCount} bones, skinned={phosMesh.HasBoneBindings}");
         return phosMesh;
+    }
+
+    // Return a copy of v with component i (0..3) set to val.
+    private static float4 WithComponent(float4 v, int i, float val) => i switch
+    {
+        0 => new float4(val, v.y, v.z, v.w),
+        1 => new float4(v.x, val, v.z, v.w),
+        2 => new float4(v.x, v.y, val, v.w),
+        _ => new float4(v.x, v.y, v.z, val),
+    };
+
+    // Append one vertex's UV for an extra channel (zero when the mesh lacks the channel), tracking whether the
+    // channel carried any real data so we only flag/write it when present.
+    private static void ReadExtraUV(Assimp.Mesh mesh, int channel, int i, List<float2> dst, ref bool has)
+    {
+        if (mesh.TextureCoordinateChannelCount > channel &&
+            mesh.TextureCoordinateChannels[channel] != null &&
+            i < mesh.TextureCoordinateChannels[channel].Count)
+        {
+            var uv = mesh.TextureCoordinateChannels[channel][i];
+            dst.Add(new float2(uv.X, uv.Y));
+            has = true;
+        }
+        else dst.Add(float2.Zero);
+    }
+
+    // Flag + fill an extra UV channel on the mesh when it carried data and the count lines up.
+    private static void WriteExtraUV(PhosMesh mesh, int channel, bool has, List<float2> uvs)
+    {
+        if (!has || uvs.Count != mesh.VertexCount) return;
+        mesh.SetHasUV(channel, true);
+        for (int i = 0; i < uvs.Count; i++)
+            mesh.SetUV(channel, i, uvs[i]);
+    }
+
+    // Normalize an (x,y,z); returns zero for a degenerate vector.
+    private static float3 Normalize3(float x, float y, float z)
+    {
+        float len = (float)System.Math.Sqrt(x * x + y * y + z * z);
+        if (len < 1e-8f) return float3.Zero;
+        return new float3(x / len, y / len, z / len);
     }
 
     private static (int v, int vt, int vn) ParseObjFaceVertex(string vertex)
@@ -373,16 +543,34 @@ public static class MeshDecoder
         return (v, vt, vn);
     }
 
-    private static PostProcessSteps GetAssimpPostProcessSteps()
+    // Internal so the model importer parses with the EXACT same steps as the per-mesh decode - otherwise the
+    // two Assimp passes could order/split meshes differently and the MeshIndex wouldn't line up. -xlinka
+    internal static PostProcessSteps GetAssimpPostProcessSteps(bool perMesh = false)
     {
-        return PostProcessSteps.Triangulate
+        var steps = PostProcessSteps.Triangulate
             | PostProcessSteps.JoinIdenticalVertices
             | PostProcessSteps.GenerateSmoothNormals
+            // Generate a tangent basis when the source omits one (no-ops where tangents already exist). Without
+            // this, a normal-mapped mesh shipping without tangents gets a constant (1,0,0,1) per vertex and its
+            // normal mapping renders wrong. Needs UVs + normals, which the steps above provide. -xlinka
+            | PostProcessSteps.CalculateTangentSpace
             | PostProcessSteps.SortByPrimitiveType
             | PostProcessSteps.ImproveCacheLocality
             | PostProcessSteps.FindInvalidData
-            | PostProcessSteps.ValidateDataStructure
-            | PostProcessSteps.PreTransformVertices
-            | PostProcessSteps.FlipUVs;
+            | PostProcessSteps.ValidateDataStructure;
+            // NO FlipUVs. We upload textures unflipped (PNG row 0 -> Godot V=0) and Godot samples mesh UVs V-down
+            // (top-left origin), so Assimp's UVs already line up with our atlases - and it's the ONLY V transform in
+            // the whole engine (every other textured path writes UVs verbatim). FlipUVs (v->1-v) was a spurious
+            // extra mirror: it mapped faces to the wrong atlas row (cream paws sampled the orange-fur band). glTF
+            // UVs are top-origin too, so omitting it is correct across formats; the reference importer also omits
+            // FlipUVs. If a bottom-origin source ever needs it, make it a per-import toggle, not always-on. -xlinka
+
+        // Per-mesh (skinned) import keeps the node hierarchy (no PreTransformVertices) and caps influences to 4.
+        // The legacy whole-file path pre-transforms so a standalone static mesh lands at its world position.
+        if (perMesh)
+            steps |= PostProcessSteps.LimitBoneWeights;
+        else
+            steps |= PostProcessSteps.PreTransformVertices;
+        return steps;
     }
 }

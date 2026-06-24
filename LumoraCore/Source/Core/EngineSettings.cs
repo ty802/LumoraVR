@@ -82,7 +82,7 @@ public static class EngineSettings
         set => SetValue(ref _renderScale, System.Math.Clamp(value, 0.5f, 2f));
     }
 
-    // PERSISTENCE — values live-apply for preview; they are written to the shared binary config
+    // PERSISTENCE - values live-apply for preview; they are written to the shared binary config
     // store (Settings -> config.dat) only on Commit, which the exit screen's "Exit and Save" calls.
 
     private const string KeyMouseSensitivity = "Engine.Input.MouseSensitivity";

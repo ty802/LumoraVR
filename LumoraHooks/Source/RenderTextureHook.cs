@@ -134,6 +134,9 @@ public class RenderTextureHook : AssetHook, IRenderTextureAssetHook, IGodotTextu
 
     public void UploadData(byte[] pixels, int width, int height, bool hasMipmaps) { }
 
+    // Render textures build their viewport synchronously in Configure; nothing to wait on. -xlinka
+    public System.Threading.Tasks.Task WaitForUploadAsync() => System.Threading.Tasks.Task.CompletedTask;
+
     public void SetWrapMode(TextureWrapMode wrapU, TextureWrapMode wrapV) { }
 
     public override void Unload()

@@ -8,7 +8,7 @@ namespace Lumora.Core.Persistence;
 /// </summary>
 public enum DependencyHandling
 {
-    /// <summary>Null out every external reference — the subtree is saved entirely on its own.</summary>
+    /// <summary>Null out every external reference - the subtree is saved entirely on its own.</summary>
     BreakExternal,
 
     /// <summary>
@@ -18,7 +18,7 @@ public enum DependencyHandling
     CollectAssets,
 
     /// <summary>
-    /// Collect every slot the subtree references (recursively) — a full, deep, cross-world copy.
+    /// Collect every slot the subtree references (recursively) - a full, deep, cross-world copy.
     /// </summary>
     CollectAll,
 }

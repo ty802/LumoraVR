@@ -134,7 +134,7 @@ public class AvatarIK : Component, IAvatarObjectComponent, IInputUpdateReceiver
     public void OnEquip(AvatarObjectSlot slot)
     {
         // Equip reparents and rescales the avatar, so the solver's captured
-        // rest pose — world-space bone lengths and rest directions — is stale.
+        // rest pose - world-space bone lengths and rest directions - is stale.
         // Arms solved against pre-equip lengths can't reach the real targets
         // (hands lag/never lift). Suspend solving, then re-capture once the
         // transforms have settled.
@@ -442,6 +442,99 @@ public class AvatarIK : Component, IAvatarObjectComponent, IInputUpdateReceiver
         EnsureSolver();
         RecomputeReferenceOffsets();
         LumoraLogger.Log($"AvatarIK: Tracking connected for UserRoot '{userRoot.Slot.SlotName.Value}'");
+    }
+
+    /// <summary>
+    /// Build coarse body colliders for a worn avatar: a sphere on the head and a capsule along each limb segment
+    /// + the torso, so grab/interaction raycasts have something to hit. Idempotent-ish - skips a segment if a
+    /// "BodyCollider" child already exists on the proximal bone. Each capsule lives on a child slot oriented so
+    /// its local Y runs down the bone (the capsule shape is Y-aligned). -xlinka
+    /// </summary>
+    public void GenerateBodyColliders()
+    {
+        var rig = Rig.Target;
+        if (rig == null)
+            return;
+
+        // Head sphere, sized from the neck-to-head length when available.
+        var head = rig.TryGetBone(BodyNode.Head);
+        if (head != null && head.GetComponentInChildren<SphereCollider>() == null)
+        {
+            float r = 0.1f;
+            var neck = rig.TryGetBone(BodyNode.Neck) ?? rig.TryGetBone(BodyNode.Chest);
+            if (neck != null)
+            {
+                var d = head.GlobalPosition - neck.GlobalPosition;
+                float len = (float)System.Math.Sqrt(d.LengthSquared);
+                if (len > 1e-4f) r = System.Math.Clamp(len * 0.6f, 0.05f, 0.2f);
+            }
+            var s = head.AddSlot("BodyCollider");
+            s.AttachComponent<SphereCollider>().Radius.Value = r;
+        }
+
+        // Limb capsules (ratio = radius / segment length).
+        AddLimbCapsule(rig, BodyNode.LeftUpperArm, BodyNode.LeftLowerArm, 0.12f);
+        AddLimbCapsule(rig, BodyNode.LeftLowerArm, BodyNode.LeftHand, 0.10f);
+        AddLimbCapsule(rig, BodyNode.RightUpperArm, BodyNode.RightLowerArm, 0.12f);
+        AddLimbCapsule(rig, BodyNode.RightLowerArm, BodyNode.RightHand, 0.10f);
+        AddLimbCapsule(rig, BodyNode.LeftUpperLeg, BodyNode.LeftLowerLeg, 0.14f);
+        AddLimbCapsule(rig, BodyNode.LeftLowerLeg, BodyNode.LeftFoot, 0.12f);
+        AddLimbCapsule(rig, BodyNode.RightUpperLeg, BodyNode.RightLowerLeg, 0.14f);
+        AddLimbCapsule(rig, BodyNode.RightLowerLeg, BodyNode.RightFoot, 0.12f);
+
+        // Torso capsule from the hips up to the highest available spine/neck bone.
+        var torsoTop = rig.TryGetBone(BodyNode.Neck) ?? rig.TryGetBone(BodyNode.UpperChest)
+            ?? rig.TryGetBone(BodyNode.Chest) ?? rig.TryGetBone(BodyNode.Spine);
+        var hips = rig.TryGetBone(BodyNode.Hips);
+        if (hips != null && torsoTop != null)
+            AddCapsuleBetween(hips, torsoTop, 0.16f);
+
+        LumoraLogger.Log("AvatarIK: Generated body colliders.");
+    }
+
+    private static void AddLimbCapsule(BipedRig rig, BodyNode proximal, BodyNode distal, float radiusRatio)
+    {
+        var p = rig.TryGetBone(proximal);
+        var c = rig.TryGetBone(distal);
+        if (p != null && c != null)
+            AddCapsuleBetween(p, c, radiusRatio);
+    }
+
+    // Attach a Y-aligned capsule spanning two bone slots, on a child of the proximal slot rotated so its local Y
+    // runs from proximal to distal. Skips if a "BodyCollider" child already sits on the proximal bone.
+    private static void AddCapsuleBetween(Slot proximal, Slot distal, float radiusRatio)
+    {
+        foreach (var existing in proximal.Children)
+            if (existing.SlotName.Value == "BodyCollider")
+                return;
+
+        var pg = proximal.GlobalPosition;
+        var cg = distal.GlobalPosition;
+        var dir = cg - pg;
+        float len = (float)System.Math.Sqrt(dir.LengthSquared);
+        if (len < 1e-4f)
+            return;
+
+        var mid = new float3((pg.x + cg.x) * 0.5f, (pg.y + cg.y) * 0.5f, (pg.z + cg.z) * 0.5f);
+        var s = proximal.AddSlot("BodyCollider");
+        s.GlobalPosition = mid;
+        s.GlobalRotation = RotateUpTo(dir.Normalized);
+
+        var cap = s.AttachComponent<CapsuleCollider>();
+        cap.Radius.Value = System.Math.Clamp(len * radiusRatio, 0.02f, 0.5f);
+        cap.Height.Value = len;
+    }
+
+    // Rotation taking the capsule's default up (+Y) onto a target unit direction.
+    private static floatQ RotateUpTo(float3 to)
+    {
+        float3 from = float3.Up;
+        float d = float3.Dot(from, to);
+        if (d >= 0.99999f) return floatQ.Identity;
+        if (d <= -0.99999f) return floatQ.AxisAngle(float3.Right, MathF.PI); // AxisAngle is RADIANS, not degrees
+        float3 axis = float3.Cross(from, to).Normalized;
+        float ang = (float)System.Math.Acos(System.Math.Clamp(d, -1f, 1f));
+        return floatQ.AxisAngleRad(axis, ang);
     }
 
     private void EnsurePoseNodes()

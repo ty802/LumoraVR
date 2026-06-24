@@ -167,7 +167,7 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
         return true;
     }
 
-    // PERSISTENCE — a DataTreeList of the element values (value types via the coder).
+    // PERSISTENCE - a DataTreeList of the element values (value types via the coder).
     public override DataTreeNode Save(SaveControl control)
     {
         var list = new DataTreeList();

@@ -4,6 +4,7 @@
 using System;
 using System.IO;
 using System.Threading.Tasks;
+using Lumora.Core;
 using Lumora.Core.Math;
 using Lumora.Core.Phos;
 
@@ -100,9 +101,9 @@ public class MeshDataAsset : ImplementableAsset<IMeshAssetHook>
         }
 
         var descriptor = TargetVariant as MeshVariantDescriptor ?? MeshVariantDescriptor.Default;
-        string ext = Path.GetExtension(AssetURL.IsFile ? AssetURL.LocalPath : AssetURL.AbsolutePath) ?? "";
+        string ext = ResolveExtension(AssetURL);
 
-        var mesh = MeshDecoder.Decode(bytes, ext);
+        var mesh = MeshDecoder.Decode(bytes, ext, descriptor.MeshIndex);
         if (mesh == null)
         {
             FailLoad($"Failed to decode mesh {AssetURL}");
@@ -116,6 +117,21 @@ public class MeshDataAsset : ImplementableAsset<IMeshAssetHook>
 
         _keepReadable = descriptor.KeepReadable;
         SetMeshData(mesh);
+    }
+
+    // local:// URIs are content-hashed and carry no extension in their path, so the decoder can't tell the
+    // format from the URL alone. Resolve the cached file (which keeps its original extension) via LocalDB,
+    // the same way AssetProvider.ProcessURL does, and read the extension off that. Falls back to the URL's
+    // own extension for file://, cdn://, etc. -xlinka
+    private static string ResolveExtension(Uri url)
+    {
+        if (url.Scheme == "local")
+        {
+            var path = Engine.Current?.LocalDB?.GetFilePath(url.ToString());
+            if (!string.IsNullOrEmpty(path))
+                return Path.GetExtension(path) ?? "";
+        }
+        return Path.GetExtension(url.IsFile ? url.LocalPath : url.AbsolutePath) ?? "";
     }
 
     /// <summary>

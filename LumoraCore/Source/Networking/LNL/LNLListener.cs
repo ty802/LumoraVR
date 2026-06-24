@@ -22,6 +22,7 @@ public class LNLListener : IListener, INetEventListener
     private readonly IPAddress _bindIP;
     private readonly Dictionary<NetPeer, LNLPeer> _peers = new();
     private readonly string _sessionId;
+    private static readonly TimeSpan CryptoHandshakeTimeout = TimeSpan.FromSeconds(10);
 
     public bool IsInitialized { get; private set; }
     public bool IsActive => IsInitialized && _server != null && _server.IsRunning;
@@ -83,6 +84,7 @@ public class LNLListener : IListener, INetEventListener
     public void Poll()
     {
         _server?.PollEvents();
+        ReapCryptoHandshakeTimeouts();
     }
 
     /// <summary>
@@ -117,9 +119,8 @@ public class LNLListener : IListener, INetEventListener
         LumoraLogger.Log($"[lnl] Peer connected: {peer.Address}:{peer.Port}");
 
         var lnlPeer = new LNLPeer(_server, peer);
+        lnlPeer.CryptoEstablished += OnPeerCryptoEstablished;
         _peers[peer] = lnlPeer;
-
-        PeerConnected?.Invoke(lnlPeer);
     }
 
     public void OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo)
@@ -129,6 +130,7 @@ public class LNLListener : IListener, INetEventListener
         if (_peers.TryGetValue(peer, out var lnlPeer))
         {
             _peers.Remove(peer);
+            lnlPeer.CryptoEstablished -= OnPeerCryptoEstablished;
             lnlPeer.InformClosed();
             PeerDisconnected?.Invoke(lnlPeer);
         }
@@ -185,5 +187,31 @@ public class LNLListener : IListener, INetEventListener
             LumoraLogger.Warn($"[lnl] Rejected connection request from {request.RemoteEndPoint} - app ID mismatch (got '{received}', expected '{_appId}')");
         }
     }
-}
 
+    private void OnPeerCryptoEstablished(LNLPeer peer)
+    {
+        peer.CryptoEstablished -= OnPeerCryptoEstablished;
+        PeerConnected?.Invoke(peer);
+    }
+
+    private void ReapCryptoHandshakeTimeouts()
+    {
+        List<LNLPeer>? expired = null;
+        var now = DateTime.UtcNow;
+        foreach (var peer in _peers.Values)
+        {
+            if (!peer.IsCryptoEstablished && now - peer.CreatedUtc > CryptoHandshakeTimeout)
+            {
+                expired ??= new List<LNLPeer>();
+                expired.Add(peer);
+            }
+        }
+
+        if (expired == null) return;
+        foreach (var peer in expired)
+        {
+            LumoraLogger.Warn($"[lnl] Closing {peer.Identifier}: LNL crypto handshake timed out");
+            peer.Close();
+        }
+    }
+}

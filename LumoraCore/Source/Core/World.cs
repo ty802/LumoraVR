@@ -1748,11 +1748,18 @@ public class World
 			TotalTime += scaledDelta;
 			LastDelta = (float)scaledDelta;
 
+			// Per-stage timing so a lock-up frame logs WHICH stage ate it (instead of guessing). GetTimestamp is
+			// allocation-free; only logs on a genuinely slow frame so it's not spam. -xlinka
+			long _ts = System.Diagnostics.Stopwatch.GetTimestamp();
+			double _mspt = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+			double Lap() { long n = System.Diagnostics.Stopwatch.GetTimestamp(); double ms = (n - _ts) * _mspt; _ts = n; return ms; }
+
 			// Stage 0: Poll network transport so packets are dispatched before any world logic runs
 			_session?.Poll();
 
 			// Stage 1: Process synchronous actions (immediate state changes)
 			ProcessSynchronousActions();
+			double msSync = Lap();
 
 			// Stage 1.5: Process completed asset fetch tasks
 			Networking.AssetFetcher.ProcessQueue();
@@ -1774,18 +1781,22 @@ public class World
 
 			// Stage 4: Update coroutines
 			UpdateCoroutines((float)scaledDelta);
+			double msPre = Lap();
 
 			// Stage 5: Update components (main update)
 			UpdateComponents((float)scaledDelta);
+			double msComp = Lap();
 
 			// Stage 5.5: Apply component changes (from sync field updates)
 			_updateManager?.RunChangeApplications();
+			double msChange = Lap();
 
 			// Stage 5.6: Fire deferred WorldTransformChanged events. Before hooks, so a handler
 			// that re-drives a transform gets pushed to the engine this same frame.
 			_updateManager?.ProcessMovedSlots();
 
 			_updateManager?.ProcessHookUpdates((float)scaledDelta);
+			double msHooks = Lap();
 
 			// Stage 6: Process changed elements
 			ProcessChangedElements();
@@ -1795,6 +1806,11 @@ public class World
 
 			// Stage 9: Clean up trash bin
 			_trashBin?.Update();
+			double msEnd = Lap();
+
+			double msTotal = msSync + msPre + msComp + msChange + msHooks + msEnd;
+			if (msTotal > 25.0)
+				LumoraLogger.Warn($"World.Update SLOW {msTotal:F0}ms: sync={msSync:F0} pre={msPre:F0} comp={msComp:F0} change={msChange:F0} hooks={msHooks:F0} end={msEnd:F0}");
 
 			// Stage 10: Signal sync manager that world refresh is complete
 			// Sync thread waits for this before new-user initialization

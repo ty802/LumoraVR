@@ -168,13 +168,55 @@ public partial class WorldLoadingIndicator : CanvasLayer
     {
         _titleLabel.Text = $"Joining: {worldName}";
         _statusLabel.Text = "Connecting...";
+        _statusLabel.RemoveThemeColorOverride("font_color"); // clear any prior error tint
         _progressBar.Value = 0;
         _percentLabel.Text = "0%";
         _cancelButton.Text = "Cancel";
         _cancelButton.Disabled = false;
+        // A join is modal: dim the world + offer cancel (these get toggled off by the non-modal import path below).
+        _backgroundOverlay.Visible = true;
+        _cancelButton.Visible = true;
         Visible = true;
 
         LumoraLogger.Log($"WorldLoadingIndicator: Showing for '{worldName}'");
+    }
+
+    // --- Generic progress (e.g. model import) ---
+    // Reuses the same panel but NON-MODAL: no full-screen dim and no cancel button, so a paste/drag import shows a
+    // small "Importing..." panel without blacking out the world or stealing input - the game keeps running (the
+    // freeze fix means the main thread stays free to actually animate this). Static + Callable.From so it's safe to
+    // call from any thread / any assembly that references the hooks. -xlinka
+    public static void ShowProgress(string title)
+    {
+        var inst = _instance;
+        if (inst != null)
+            Callable.From(() => inst.ShowGenericProgress(title)).CallDeferred();
+    }
+
+    public static void ReportProgress(float progress, string status)
+    {
+        var inst = _instance;
+        if (inst != null)
+            Callable.From(() => inst.UpdateProgress(progress, status)).CallDeferred();
+    }
+
+    public static void HideProgress()
+    {
+        var inst = _instance;
+        if (inst != null)
+            Callable.From(() => inst.HideIndicator()).CallDeferred();
+    }
+
+    private void ShowGenericProgress(string title)
+    {
+        _titleLabel.Text = title;
+        _statusLabel.Text = "Preparing...";
+        _statusLabel.RemoveThemeColorOverride("font_color");
+        _progressBar.Value = 0;
+        _percentLabel.Text = "0%";
+        _backgroundOverlay.Visible = false; // non-modal: keep the world visible + interactive
+        _cancelButton.Visible = false;
+        Visible = true;
     }
 
     private void UpdateProgress(float progress, string status)

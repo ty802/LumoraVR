@@ -369,6 +369,16 @@ public class UpdateManager
         const int maxUpdates = 100000;
         int processed = 0;
 
+        // Per-frame wall-clock budget so a burst of hook work spreads across frames instead of freezing the one.
+        // Without it, an import that dirties N skinned renderers at once builds all N Godot meshes (ArrayMesh +
+        // per-blendshape arrays + Skin) back-to-back in a single frame - a multi-second stall. A single hook can't
+        // be split, so one heavy mesh still costs its frame, but N meshes now spread over N frames and the main
+        // thread (which also renders + paints the loading bar) stays responsive. Normal frames drain a tiny queue
+        // far under budget, so this is a no-op except during bursts. GetTimestamp is allocation-free. -xlinka
+        const double budgetMs = 6.0;
+        long startTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+        double ticksToMs = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+
         while (true)
         {
             IImplementable implementable;
@@ -407,6 +417,13 @@ public class UpdateManager
             if (processed >= maxUpdates)
             {
                 Logging.Logger.Warn("UpdateManager: Hook update queue hit safety limit.");
+                return;
+            }
+
+            // Out of frame budget: leave the rest of the queue for next frame so rendering isn't stalled. The
+            // undrained items stay in _pendingHookUpdates/_queuedHookUpdates and get picked up next tick.
+            if ((System.Diagnostics.Stopwatch.GetTimestamp() - startTicks) * ticksToMs >= budgetMs)
+            {
                 return;
             }
         }

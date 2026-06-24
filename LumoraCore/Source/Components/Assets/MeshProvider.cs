@@ -19,12 +19,17 @@ public class MeshProvider : StaticAssetProvider<MeshDataAsset>
     /// <summary>Scale factor applied when loading the mesh.</summary>
     public readonly Sync<float> ImportScale;
 
+    /// <summary>Which glTF mesh to decode: -1 = the whole file concatenated; >= 0 = only that mesh (so a
+    /// multi-mesh model can be one Phos asset per mesh, each with its own material).</summary>
+    public readonly Sync<int> MeshIndex;
+
     public MeshProvider()
     {
         KeepReadable = new Sync<bool>(this, false);
         ImportScale = new Sync<float>(this, 1.0f);
+        MeshIndex = new Sync<int>(this, -1);
     }
 
     protected override IAssetVariantDescriptor? GetVariantDescriptor() =>
-        new MeshVariantDescriptor(ImportScale.Value, KeepReadable.Value);
+        new MeshVariantDescriptor(ImportScale.Value, KeepReadable.Value, MeshIndex.Value);
 }

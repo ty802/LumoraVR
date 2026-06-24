@@ -8,7 +8,7 @@ namespace Lumora.Core.Security;
 
 /// <summary>
 /// Tracks banned users. In-memory <b>temp bans</b> (this process only)
-/// plus durable bans persisted through the shared <see cref="Settings"/> config store — keyed by user
+/// plus durable bans persisted through the shared <see cref="Settings"/> config store - keyed by user
 /// id and/or machine id, scoped either globally or to one world. The authority consults
 /// <see cref="IsBanned"/> when a user tries to join.
 /// </summary>
@@ -35,7 +35,7 @@ public static class BanManager
     private static readonly HashSet<string> _tempUserIds = new(StringComparer.Ordinal);
     private static readonly HashSet<string> _tempMachineIds = new(StringComparer.Ordinal);
 
-    // TEMP BANS (this process only) — "keep them out until restart" without persisting.
+    // TEMP BANS (this process only) - "keep them out until restart" without persisting.
 
     public static void TempBan(string? userId, string? machineId)
     {

@@ -308,7 +308,7 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
         InternalClear();
     }
 
-    // PERSISTENCE — a list saves as a DataTreeList of its elements (each an ISyncMember that
+    // PERSISTENCE - a list saves as a DataTreeList of its elements (each an ISyncMember that
     // serializes itself); on load it rebuilds element-by-element. Covers SyncList/SyncFieldList/
     // SyncAssetList/SyncIntList via this base.
 

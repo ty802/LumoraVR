@@ -9,7 +9,7 @@ namespace Lumora.Core.Physics;
 /// <summary>
 /// Platform contract for collision queries against a world's physics space. Implemented by the
 /// per-world hook (which owns the platform physics scene, e.g. Godot/Jolt) and consumed through
-/// <see cref="WorldPhysics"/>. The engine doesn't simulate — it asks the platform.
+/// <see cref="WorldPhysics"/>. The engine doesn't simulate - it asks the platform.
 ///
 /// A focused subset of the full sweep/overlap surface: a ray cast, a sphere sweep, and a sphere
 /// overlap, each with a <c>hitTriggers</c> toggle (whether sensor/trigger colliders count). Box /

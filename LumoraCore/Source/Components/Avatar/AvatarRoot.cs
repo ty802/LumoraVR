@@ -22,9 +22,6 @@ public class AvatarRoot : Component, IAvatarObject
 
     public readonly Sync<float3> Scale = new();
 
-    // Captured on equip so we can restore (or at least know where this came from).
-    private readonly SyncRef<Slot> _originalParent = new();
-
     public BodyNode Node => BodyNode.Root;
     public int EquipOrderPriority => int.MaxValue;
     public bool IsEquipped => EquippingSlot != null;
@@ -65,7 +62,6 @@ public class AvatarRoot : Component, IAvatarObject
     {
         if (slot == null || slot.Slot == null) return;
 
-        _originalParent.Target = Slot.Parent;
         Slot.SetParent(slot.Slot);
         Slot.LocalPosition.Value = float3.Zero;
         Slot.LocalRotation.Value = floatQ.Identity;

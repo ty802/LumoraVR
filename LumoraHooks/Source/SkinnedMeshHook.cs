@@ -5,6 +5,8 @@ using Godot;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Components;
+using Lumora.Core.Phos;
+using Lumora.Godot.Extensions;
 using System.Collections.Generic;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
@@ -25,6 +27,15 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
     private Skeleton3D _skeleton = null!;
     private bool _meshApplied;
     private bool _skeletonBound;
+    // True once the real (component) material asset has been put on the surface. Stays false while we're showing
+    // the neutral fallback, so the update loop keeps retrying until the PBS asset finishes loading. -xlinka
+    private bool _realMaterialApplied;
+
+    // Async mesh-build state: a worker-thread build is in flight (don't double-dispatch), plus the asset + vertex
+    // count we last successfully applied so a lingering dirty flag can't trigger an endless rebuild loop. -xlinka
+    private bool _meshBuildInFlight;
+    private MeshDataAsset _appliedAsset = null!;
+    private int _appliedMeshVcount = -1;
 
     // Maps mesh bone index -> Godot skeleton bone index
     private Dictionary<int, int> _boneIndexMap = new Dictionary<int, int>();
@@ -44,8 +55,8 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         // Try to bind to skeleton immediately
         TryBindToSkeleton();
 
-        // Apply mesh if data is available
-        if (Owner.Vertices.Count > 0)
+        // Apply mesh if data is available (inline lists or a Phos asset).
+        if (Owner.Vertices.Count > 0 || Owner.MeshAsset.Target != null)
         {
             ApplyMesh();
         }
@@ -64,11 +75,10 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
             TryBindToSkeleton();
         }
 
-        // Rebuild mesh if data changed or not yet applied
+        // Rebuild mesh if data changed or not yet applied (from inline lists or a Phos asset).
         bool shouldApplyMesh = Owner.MeshDataChanged || !_meshApplied;
-        if (shouldApplyMesh && Owner.Vertices.Count > 0)
+        if (shouldApplyMesh && (Owner.Vertices.Count > 0 || Owner.MeshAsset.Target != null))
         {
-            LumoraLogger.Log($"SkinnedMeshHook.ApplyChanges: Applying mesh (changed={Owner.MeshDataChanged}, applied={_meshApplied}, verts={Owner.Vertices.Count})");
             ApplyMesh();
         }
 
@@ -86,8 +96,14 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
             _meshInstance.Visible = Owner.Enabled;
         }
 
-        // Update material if changed
+        // Update material if changed (target reassigned), or keep retrying while the real asset is still loading
+        // so the neutral fallback gets replaced the moment the PBS material is valid (MAT-3 race fix). -xlinka
         if (Owner.Material.GetWasChangedAndClear())
+        {
+            _realMaterialApplied = false;
+            ApplyMaterial();
+        }
+        else if (_meshApplied && !_realMaterialApplied)
         {
             ApplyMaterial();
         }
@@ -132,11 +148,23 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         if (materialAsset != null && materialAsset.GodotMaterial is Material godotMaterial)
         {
             _meshInstance.SetSurfaceOverrideMaterial(0, godotMaterial);
+            _realMaterialApplied = true;
         }
-        else if (_material != null)
+        else
         {
-            // Use default material
+            // Real material asset isn't loaded yet (it's created lazily once referenced + decoded). Show a neutral
+            // fallback but DON'T latch it - leave _realMaterialApplied false so the update loop keeps retrying and
+            // swaps in the real material the moment it's valid. Otherwise a textured avatar gets stuck flat-tan. -xlinka
+            if (_material == null)
+            {
+                _material = new StandardMaterial3D();
+                _material.AlbedoColor = new Color(0.8f, 0.7f, 0.6f); // Skin-like color
+                _material.Roughness = 0.8f;
+                _material.Metallic = 0.0f;
+                _material.CullMode = BaseMaterial3D.CullModeEnum.Back;
+            }
             _meshInstance.SetSurfaceOverrideMaterial(0, _material);
+            _realMaterialApplied = false;
         }
     }
 
@@ -226,10 +254,10 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         _skeletonBound = true;
         LumoraLogger.Log($"SkinnedMeshHook: Bound to skeleton '{_skeleton.Name}' with {_skeleton.GetBoneCount()} bones, mapped {_boneIndexMap.Count} mesh bones");
 
-        // Re-apply mesh now that we have skeleton with proper bone mapping
-        if (Owner.Vertices.Count > 0)
+        // Re-apply mesh now that we have skeleton with proper bone mapping / Skin
+        if (Owner.Vertices.Count > 0 || Owner.MeshAsset.Target != null)
         {
-            _meshApplied = false; // Force re-apply with correct bone indices
+            _meshApplied = false;
             ApplyMesh();
         }
 
@@ -360,6 +388,18 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
     {
         if (_meshInstance == null)
             return;
+
+        // Phos asset path (the universal pipeline): geometry + bone bindings + bind poses come from a
+        // content-hashed MeshDataAsset, and skinning is driven by an explicit Skin. Takes precedence over the
+        // inline lists (which serve the legacy Godot-glTF import path). -xlinka
+        // AssetRef.Asset returns the provider's loaded MeshDataAsset (null until the async decode lands). The
+        // AssetRef is what reference-counts the provider so this load actually happens at all. -xlinka
+        var phosAsset = Owner.MeshAsset.Asset;
+        if (phosAsset?.MeshData is { VertexCount: > 0 } phosMesh)
+        {
+            ApplyMeshFromAsset(phosMesh, phosAsset);
+            return;
+        }
 
         // Check if we have valid mesh data
         if (Owner.Vertices.Count == 0 || Owner.Indices.Count == 0)
@@ -570,28 +610,346 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         _meshInstance.Mesh = _arrayMesh;
         ApplyBlendShapeWeights();
 
-        // Apply material - use component's material if set, otherwise use default
-        var materialAsset = Owner.Material.Asset;
-        if (materialAsset != null && materialAsset.GodotMaterial is Material godotMaterial)
-        {
-            _meshInstance.SetSurfaceOverrideMaterial(0, godotMaterial);
-        }
-        else
-        {
-            // Create/apply default material
-            if (_material == null)
-            {
-                _material = new StandardMaterial3D();
-                _material.AlbedoColor = new Color(0.8f, 0.7f, 0.6f); // Skin-like color
-                _material.Roughness = 0.8f;
-                _material.Metallic = 0.0f;
-                _material.CullMode = BaseMaterial3D.CullModeEnum.Back;
-            }
-            _meshInstance.SetSurfaceOverrideMaterial(0, _material);
-        }
+        // Apply material (real asset if loaded, else a non-latching fallback the update loop will replace).
+        ApplyMaterial();
 
         _meshApplied = true;
         LumoraLogger.Log($"SkinnedMeshHook: Applied mesh with {Owner.Vertices.Count} vertices, {Owner.Indices.Count / 3} triangles");
+    }
+
+    // Build the Godot skinned mesh straight from the Phos asset: positions/normals/uvs/indices + the raw
+    // per-vertex bone indices (kept in MESH-bone space) + weights, then an explicit Skin that maps each mesh
+    // bone to its skeleton bone with the asset's bind pose. The Skin is why the mesh holds its shape when the
+    // rig poses - without it Godot skins from rest poses and the mesh collapses. Needs the skeleton built first;
+    // returns quietly (leaving _meshApplied false) until then so the update loop re-enters. -xlinka
+    private void ApplyMeshFromAsset(PhosMesh mesh, MeshDataAsset asset)
+    {
+        if (_skeleton == null || _skeleton.GetBoneCount() == 0)
+        {
+            _meshApplied = false;
+            return;
+        }
+        if (mesh.Submeshes.Count == 0 || mesh.Submeshes[0].IndexCount == 0)
+        {
+            _meshApplied = false;
+            return;
+        }
+        if (_meshBuildInFlight)
+            return; // a worker build is already running for this hook
+        if (_meshApplied && ReferenceEquals(_appliedAsset, asset) && _appliedMeshVcount == mesh.VertexCount)
+            return; // already built this exact mesh - don't rebuild on a lingering dirty flag
+
+        // Build the heavy Godot ArrayMesh (geometry + per-blendshape arrays + AddSurfaceFromArrays) on a WORKER
+        // thread so a dense blendshape mesh doesn't freeze the render thread. Godot 4's RenderingServer is
+        // thread-safe, so mesh-resource creation off the main thread is supported; only the scene-tree assignment
+        // and the Skin (which needs the Skeleton3D node) run back on the main thread via CallDeferred. We stay a
+        // single process - this is just a worker thread - so it's fine on Quest/Pico. -xlinka
+        _meshBuildInFlight = true;
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            ArrayMesh built = null!;
+            int sc = 0;
+            try
+            {
+                built = BuildArrayMeshCore(mesh, out sc);
+            }
+            catch (System.Exception ex)
+            {
+                LumoraLogger.Error($"SkinnedMeshHook: off-thread mesh build failed ({ex.Message}); falling back to main thread.");
+                built = null!;
+            }
+            int shapes = sc;
+            global::Godot.Callable.From(() => FinalizeMeshFromAsset(built, shapes, mesh, asset)).CallDeferred();
+        });
+    }
+
+    // PURE mesh-resource build - no scene tree, no Owner/data-model writes - so it is safe on a worker thread.
+    // Produces the Godot ArrayMesh from the Phos asset. shapeCount returns the blendshape count actually applied
+    // (0 if Godot rejected the morph surface). -xlinka
+    private ArrayMesh BuildArrayMeshCore(PhosMesh mesh, out int shapeCount)
+    {
+        var submesh = mesh.Submeshes[0];
+        int vcount = mesh.VertexCount;
+
+        var arrayMesh = new ArrayMesh();
+
+        var arrays = new global::Godot.Collections.Array();
+        arrays.Resize((int)Mesh.ArrayType.Max);
+
+        var rp = mesh.RawPositions;
+        var positions = new Vector3[vcount];
+        for (int i = 0; i < vcount; i++)
+            positions[i] = new Vector3(rp[i].x, rp[i].y, rp[i].z);
+        arrays[(int)Mesh.ArrayType.Vertex] = positions;
+
+        var rn = mesh.RawNormals;
+        if (rn != null && rn.Length >= vcount)
+        {
+            var normals = new Vector3[vcount];
+            for (int i = 0; i < vcount; i++)
+                normals[i] = new Vector3(rn[i].x, rn[i].y, rn[i].z);
+            arrays[(int)Mesh.ArrayType.Normal] = normals;
+        }
+
+        var ruv = mesh.RawUV0s;
+        if (ruv != null && ruv.Length >= vcount)
+        {
+            var uvs = new Vector2[vcount];
+            for (int i = 0; i < vcount; i++)
+                uvs[i] = new Vector2(ruv[i].x, ruv[i].y);
+            arrays[(int)Mesh.ArrayType.TexUV] = uvs;
+        }
+
+        // UV1 (lightmap/detail second channel) so it survives the skinned path, not just the static one. -xlinka
+        var ruv1 = mesh.RawUV1s;
+        if (ruv1 != null && ruv1.Length >= vcount)
+        {
+            var uvs2 = new Vector2[vcount];
+            for (int i = 0; i < vcount; i++)
+                uvs2[i] = new Vector2(ruv1[i].x, ruv1[i].y);
+            arrays[(int)Mesh.ArrayType.TexUV2] = uvs2;
+        }
+
+        // Tangents (4 floats/vertex: xyz + handedness w) for normal maps, and vertex colors. -xlinka
+        var rtan = mesh.RawTangents;
+        if (mesh.HasTangents && rtan != null && rtan.Length >= vcount)
+        {
+            var tangents = new float[vcount * 4];
+            for (int i = 0; i < vcount; i++)
+            {
+                var t = rtan[i];
+                tangents[i * 4 + 0] = t.x;
+                tangents[i * 4 + 1] = t.y;
+                tangents[i * 4 + 2] = t.z;
+                tangents[i * 4 + 3] = t.w;
+            }
+            arrays[(int)Mesh.ArrayType.Tangent] = tangents;
+        }
+
+        var rcol = mesh.RawColors;
+        if (mesh.HasColors && rcol != null && rcol.Length >= vcount)
+        {
+            var colors = new Color[vcount];
+            for (int i = 0; i < vcount; i++)
+            {
+                var c = rcol[i];
+                colors[i] = new Color(c.r, c.g, c.b, c.a);
+            }
+            arrays[(int)Mesh.ArrayType.Color] = colors;
+        }
+
+        if (mesh.HasBoneBindings)
+        {
+            var bind = mesh.RawBoneBindings;
+            var bones = new int[vcount * 4];
+            var weights = new float[vcount * 4];
+            for (int i = 0; i < vcount; i++)
+            {
+                var b = bind[i];
+                bones[i * 4 + 0] = (int)b.boneIndices.x;
+                bones[i * 4 + 1] = (int)b.boneIndices.y;
+                bones[i * 4 + 2] = (int)b.boneIndices.z;
+                bones[i * 4 + 3] = (int)b.boneIndices.w;
+                weights[i * 4 + 0] = b.boneWeights.x;
+                weights[i * 4 + 1] = b.boneWeights.y;
+                weights[i * 4 + 2] = b.boneWeights.z;
+                weights[i * 4 + 3] = b.boneWeights.w;
+            }
+            arrays[(int)Mesh.ArrayType.Bones] = bones;
+            arrays[(int)Mesh.ArrayType.Weights] = weights;
+        }
+
+        var ri = submesh.RawIndices;
+        var indices = new int[submesh.IndexCount];
+        System.Array.Copy(ri, indices, submesh.IndexCount);
+        arrays[(int)Mesh.ArrayType.Index] = indices;
+
+        // Blendshapes (morph targets) from the asset: declare them, then hand per-shape delta arrays to the
+        // surface. glTF morphs are deltas -> Relative mode; Godot rejects the surface unless each shape carries
+        // the SAME morphable attrs as the base (which has NORMAL), so feed zero normal deltas when absent. -xlinka
+        shapeCount = mesh.BlendShapeCount;
+        global::Godot.Collections.Array<global::Godot.Collections.Array> blendShapes = null!;
+        if (shapeCount > 0)
+        {
+            arrayMesh.ClearBlendShapes();
+            arrayMesh.BlendShapeMode = Mesh.BlendShapeMode.Relative;
+            for (int s = 0; s < shapeCount; s++)
+                arrayMesh.AddBlendShape(mesh.BlendShapes[s].Name);
+
+            blendShapes = new global::Godot.Collections.Array<global::Godot.Collections.Array>();
+            for (int s = 0; s < shapeCount; s++)
+            {
+                var frame = mesh.BlendShapes[s].Frames.Length > 0 ? mesh.BlendShapes[s].Frames[0] : null;
+                var shapeArrays = new global::Godot.Collections.Array();
+                shapeArrays.Resize((int)Mesh.ArrayType.Max);
+
+                var sv = new Vector3[vcount];
+                var sp = frame?.positions;
+                for (int i = 0; i < vcount; i++)
+                    sv[i] = (sp != null && i < sp.Length) ? new Vector3(sp[i].x, sp[i].y, sp[i].z) : Vector3.Zero;
+                shapeArrays[(int)Mesh.ArrayType.Vertex] = sv;
+
+                var sn = new Vector3[vcount];
+                var snd = frame?.normals;
+                for (int i = 0; i < vcount; i++)
+                    sn[i] = (snd != null && i < snd.Length) ? new Vector3(snd[i].x, snd[i].y, snd[i].z) : Vector3.Zero;
+                shapeArrays[(int)Mesh.ArrayType.Normal] = sn;
+
+                // When the base surface carries tangents, Godot requires EVERY blend shape to carry a matching
+                // tangent array (4 floats/vert: xyz delta + w) or it rejects the whole morph surface. Feed the
+                // morph's tangent deltas (w delta stays 0 - handedness doesn't morph), zero when absent. -xlinka
+                if (mesh.HasTangents)
+                {
+                    var st = new float[vcount * 4];
+                    var std = frame?.tangents;
+                    for (int i = 0; i < vcount; i++)
+                    {
+                        if (std != null && i < std.Length)
+                        {
+                            st[i * 4 + 0] = std[i].x;
+                            st[i * 4 + 1] = std[i].y;
+                            st[i * 4 + 2] = std[i].z;
+                        }
+                    }
+                    shapeArrays[(int)Mesh.ArrayType.Tangent] = st;
+                }
+
+                blendShapes.Add(shapeArrays);
+            }
+        }
+
+        if (shapeCount > 0)
+        {
+            int before = arrayMesh.GetSurfaceCount();
+            arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays, blendShapes);
+            if (arrayMesh.GetSurfaceCount() == before)
+            {
+                LumoraLogger.Warn($"SkinnedMeshHook: Phos blend-shape surface rejected ({shapeCount} shapes) - rendering without morphs so the mesh still shows.");
+                arrayMesh.ClearBlendShapes();
+                arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+                shapeCount = 0;
+            }
+        }
+        else
+        {
+            arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+        }
+
+        return arrayMesh;
+    }
+
+    // Main-thread finalize: assign the built mesh to the scene node, build the Skin (needs the Skeleton3D), mirror
+    // blendshape names, apply material. Falls back to a synchronous on-main build if the worker build threw. -xlinka
+    private void FinalizeMeshFromAsset(ArrayMesh built, int shapeCount, PhosMesh mesh, MeshDataAsset asset)
+    {
+        _meshBuildInFlight = false;
+
+        if (_meshInstance == null || !GodotObject.IsInstanceValid(_meshInstance))
+            return; // hook/instance was torn down while the worker built
+
+        // Diagnostic: did the WORKER build succeed, or are we rebuilding on the main thread (= the freeze)? -xlinka
+        bool offThreadOk = built != null;
+        long _finalizeStart = System.Diagnostics.Stopwatch.GetTimestamp();
+
+        if (built == null)
+        {
+            try
+            {
+                built = BuildArrayMeshCore(mesh, out shapeCount);
+            }
+            catch (System.Exception ex)
+            {
+                LumoraLogger.Error($"SkinnedMeshHook: main-thread fallback mesh build failed: {ex.Message}");
+                return;
+            }
+        }
+
+        var old = _arrayMesh;
+        _arrayMesh = built;
+        _meshInstance.Mesh = _arrayMesh;
+        old?.Dispose();
+
+        // Mirror the asset's blendshape names onto the component (names only - the deltas stay in the asset) so
+        // expression/viseme/blink drivers can find + weight them. One-time. -xlinka
+        if (shapeCount > 0 && Owner.BlendShapeNames.Count != shapeCount)
+        {
+            Owner.BlendShapeNames.Clear();
+            Owner.BlendShapeWeights.Clear();
+            for (int s = 0; s < shapeCount; s++)
+            {
+                Owner.BlendShapeNames.Add(mesh.BlendShapes[s].Name);
+                Owner.BlendShapeWeights.Add(0f);
+            }
+        }
+
+        BuildAndAssignSkinFromAsset(asset);
+        ApplyBlendShapeWeights();
+
+        // Material: real asset if loaded, else a non-latching fallback the update loop will replace once the PBS
+        // asset finishes loading.
+        ApplyMaterial();
+
+        _appliedAsset = asset;
+        _appliedMeshVcount = mesh.VertexCount;
+        _meshApplied = true;
+        Owner.HookBindingComplete = true;
+        double _finalizeMs = (System.Diagnostics.Stopwatch.GetTimestamp() - _finalizeStart) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+        LumoraLogger.Log($"SkinnedMeshHook: Applied skinned mesh - {mesh.VertexCount} verts, {mesh.BlendShapeCount} shapes, {asset.BoneCount} bones | offThreadBuild={offThreadOk}, mainThreadFinalize={_finalizeMs:F0}ms");
+    }
+
+    // Map every mesh bone (in the asset's bone table) to its skeleton bone BY NAME and stamp the asset's bind
+    // pose, so the surface's mesh-space bone indices resolve to the right skeleton bone on the GPU. -xlinka
+    private void BuildAndAssignSkinFromAsset(MeshDataAsset asset)
+    {
+        if (_skeleton == null || asset.BoneCount == 0)
+            return;
+
+        var skin = new Skin();
+        skin.SetBindCount(asset.BoneCount);
+        int unresolved = 0;
+        for (int i = 0; i < asset.BoneCount; i++)
+        {
+            string boneName = asset.GetBoneName(i) ?? string.Empty;
+            int skelBone = _skeleton.FindBone(boneName);
+            if (skelBone < 0)
+            {
+                // Bone name not in the Godot skeleton -> collapsing to bone 0 yanks its verts to the root (spikes).
+                // Usually an FBX pivot ("_$AssimpFbx$") or suffixed-name mismatch. Log instead of failing silently. -xlinka
+                unresolved++;
+                if (unresolved <= 8)
+                    LumoraLogger.Warn($"SkinnedMeshHook: bind bone '{boneName}' not in skeleton - collapsing to bone 0 (will deform wrong).");
+                skelBone = 0;
+            }
+            skin.SetBindBone(i, skelBone);
+            skin.SetBindPose(i, asset.GetBoneBindPose(i).ToGodot());
+        }
+        if (unresolved > 0)
+            LumoraLogger.Warn($"SkinnedMeshHook: {unresolved}/{asset.BoneCount} bind bones unresolved against skeleton '{_skeleton.Name}' ({_skeleton.GetBoneCount()} bones).");
+
+        // Skinning canary (one-time per build): at rest, GlobalBoneRest * BindPose must be ~identity (origin ~0,
+        // basis det ~1) or that bone's verts deform. Scan ALL bones and flag the bad ones BY NAME - this catches a
+        // SUBSET deforming (e.g. ears) while the body is fine, which a first-3-bones spot-check would miss. -xlinka
+        int badBones = 0;
+        for (int i = 0; i < asset.BoneCount; i++)
+        {
+            int skelBone = _skeleton.FindBone(asset.GetBoneName(i) ?? string.Empty);
+            if (skelBone < 0) continue;
+            var check = _skeleton.GetBoneGlobalRest(skelBone) * asset.GetBoneBindPose(i).ToGodot();
+            float originErr = check.Origin.Length();
+            float detErr = System.Math.Abs(check.Basis.Determinant() - 1f);
+            if (originErr > 0.02f || detErr > 0.05f)
+            {
+                badBones++;
+                if (badBones <= 16)
+                    LumoraLogger.Warn($"SkinnedMeshHook[skin-check]: BONE '{asset.GetBoneName(i)}' rest*bind NOT identity - originErr={originErr:F3} detErr={detErr:F3} (its verts deform).");
+            }
+        }
+        if (badBones > 0)
+            LumoraLogger.Warn($"SkinnedMeshHook[skin-check]: {badBones}/{asset.BoneCount} bones FAIL rest*bind==identity on mesh '{Owner.Slot?.SlotName.Value}'.");
+        else
+            LumoraLogger.Log($"SkinnedMeshHook[skin-check]: all {asset.BoneCount} bones OK at rest on mesh '{Owner.Slot?.SlotName.Value}'.");
+
+        _meshInstance.Skin = skin;
     }
 
     public override void Destroy(bool destroyingWorld)

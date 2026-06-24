@@ -214,6 +214,62 @@ public class BipedRig : Component
     }
 
     /// <summary>
+    /// Force the rig into a canonical T-pose: arms straight out to the sides, legs straight down. Rotates each
+    /// limb bone so the direction to its child matches the target, processing root-to-tip so a parent's rotation
+    /// carries into its children before they're adjusted. Run this before IK captures the rest pose so calibration
+    /// starts from a known pose no matter how the model was authored (A-pose, relaxed, etc.). -xlinka
+    /// </summary>
+    public void MakeTPose()
+    {
+        var left = new float3(-1f, 0f, 0f);
+        var right = new float3(1f, 0f, 0f);
+        var down = new float3(0f, -1f, 0f);
+
+        AlignBone(BodyNode.LeftUpperArm, BodyNode.LeftLowerArm, left);
+        AlignBone(BodyNode.LeftLowerArm, BodyNode.LeftHand, left);
+        AlignBone(BodyNode.RightUpperArm, BodyNode.RightLowerArm, right);
+        AlignBone(BodyNode.RightLowerArm, BodyNode.RightHand, right);
+        AlignBone(BodyNode.LeftUpperLeg, BodyNode.LeftLowerLeg, down);
+        AlignBone(BodyNode.LeftLowerLeg, BodyNode.LeftFoot, down);
+        AlignBone(BodyNode.RightUpperLeg, BodyNode.RightLowerLeg, down);
+        AlignBone(BodyNode.RightLowerLeg, BodyNode.RightFoot, down);
+
+        LumoraLogger.Log("BipedRig: Applied T-pose normalization.");
+    }
+
+    // Rotate the `parent` bone so the direction to its `child` points along targetWorldDir (world space). No-op
+    // when either bone is missing or the segment is degenerate. Mutating the parent's global rotation also moves
+    // the child slot, so callers process root-to-tip.
+    private void AlignBone(BodyNode parent, BodyNode child, float3 targetWorldDir)
+    {
+        var p = TryGetBone(parent);
+        var c = TryGetBone(child);
+        if (p == null || c == null) return;
+
+        float3 current = c.GlobalPosition - p.GlobalPosition;
+        if (current.LengthSquared < 1e-8f) return;
+        var delta = FromTo(current.Normalized, targetWorldDir.Normalized);
+        p.GlobalRotation = delta * p.GlobalRotation;
+    }
+
+    // Shortest-arc rotation taking unit vector `from` onto unit vector `to`.
+    private static floatQ FromTo(float3 from, float3 to)
+    {
+        float d = float3.Dot(from, to);
+        if (d >= 0.99999f) return floatQ.Identity;
+        if (d <= -0.99999f)
+        {
+            // Antiparallel: rotate 180 degrees about any perpendicular axis.
+            float3 axis = float3.Cross(float3.Up, from);
+            if (axis.LengthSquared < 1e-6f) axis = float3.Cross(float3.Right, from);
+            return floatQ.AxisAngle(axis.Normalized, System.MathF.PI); // AxisAngle is RADIANS, not degrees
+        }
+        float3 c = float3.Cross(from, to).Normalized;
+        float angleRad = (float)System.Math.Acos(System.Math.Clamp(d, -1f, 1f));
+        return floatQ.AxisAngleRad(c, angleRad);
+    }
+
+    /// <summary>
     /// Map a bone name to its body node by heuristic, so real rigs work regardless of naming
     /// convention. Side is detected from the name (Left/Right, _L/_R, L_/R_) and the base name picks
     /// the node (UpperArm/Bicep, ForeArm/LowerArm/Elbow, Hand/Wrist, Thigh/UpLeg, Calf/Shin/Knee,
@@ -259,6 +315,14 @@ public class BipedRig : Component
         if (chirality == null)
             return BodyNode.NONE;   // limbs need a side
         bool right = chirality == Chirality.Right;
+
+        // Fingers (need a side). Checked BEFORE the hand branch - finger bones are commonly named like
+        // "LeftHandThumb1", which contains "hand" and would otherwise register as the wrist. Match a finger
+        // keyword + a segment (named: proximal/intermediate/distal/metacarpal/tip, or numbered: 1/2/3/4).
+        // ComposeFinger normalizes the thumb (which has no intermediate segment). -xlinka
+        var fingerType = DetectFingerType(t);
+        if (fingerType.HasValue)
+            return fingerType.Value.ComposeFinger(DetectFingerSegment(t, names, fingerType.Value), chirality.Value);
 
         if (t.Contains("shoulder") || t.Contains("clavicle") || t.Contains("collar"))
             return right ? BodyNode.RightShoulder : BodyNode.LeftShoulder;
@@ -325,6 +389,60 @@ public class BipedRig : Component
         if (left ^ right)
             return left ? Chirality.Left : Chirality.Right;
         return null;
+    }
+
+    // Map a finger keyword in the lowercased name to a finger type, or null when none is present.
+    private static FingerType? DetectFingerType(string t)
+    {
+        if (t.Contains("thumb")) return FingerType.Thumb;
+        if (t.Contains("index") || t.Contains("point")) return FingerType.Index;
+        if (t.Contains("middle")) return FingerType.Middle;
+        if (t.Contains("ring")) return FingerType.Ring;
+        if (t.Contains("pinky") || t.Contains("pinkie") || t.Contains("little")) return FingerType.Pinky;
+        return null;
+    }
+
+    // Map a finger segment from a named keyword, else from a trailing number. The number convention differs by
+    // finger: the thumb's first joint is its metacarpal, where other fingers start at the proximal. Defaults to
+    // Proximal so a bare "Thumb"/"Index" still lands on a real segment.
+    private static FingerSegmentType DetectFingerSegment(string t, List<string> names, FingerType finger)
+    {
+        if (t.Contains("metacarpal") || t.Contains("meta")) return FingerSegmentType.Metacarpal;
+        if (t.Contains("proximal")) return FingerSegmentType.Proximal;
+        if (t.Contains("intermediate")) return FingerSegmentType.Intermediate;
+        if (t.Contains("distal")) return FingerSegmentType.Distal;
+        if (t.Contains("tip") || names.Contains("end")) return FingerSegmentType.Tip;
+
+        int num = LastNumber(t);
+        if (finger == FingerType.Thumb)
+            return num switch
+            {
+                1 => FingerSegmentType.Metacarpal,
+                2 => FingerSegmentType.Proximal,
+                3 => FingerSegmentType.Distal,
+                >= 4 => FingerSegmentType.Tip,
+                _ => FingerSegmentType.Proximal,
+            };
+        return num switch
+        {
+            1 => FingerSegmentType.Proximal,
+            2 => FingerSegmentType.Intermediate,
+            3 => FingerSegmentType.Distal,
+            >= 4 => FingerSegmentType.Tip,
+            _ => FingerSegmentType.Proximal,
+        };
+    }
+
+    // Last digit-run anywhere in the string (handles "Thumb1", "Thumb1_L", "thumb_01"). 0 when there's none.
+    private static int LastNumber(string t)
+    {
+        int end = -1;
+        for (int i = t.Length - 1; i >= 0; i--)
+            if (char.IsDigit(t[i])) { end = i; break; }
+        if (end < 0) return 0;
+        int start = end;
+        while (start - 1 >= 0 && char.IsDigit(t[start - 1])) start--;
+        return int.TryParse(t.Substring(start, end - start + 1), out var n) ? n : 0;
     }
 
     /// <summary>

@@ -18,6 +18,7 @@ public class LNLConnection : IConnection, INetEventListener
     private readonly NetManager _client;
     private NetPeer _peer = null!;
     private readonly string _appId;
+    private readonly LNLCryptoSession _crypto = new(isClient: true);
     private readonly object _lockObj = new();
     private bool _hasClosed;
 
@@ -103,6 +104,22 @@ public class LNLConnection : IConnection, INetEventListener
         }
         _loggedNotConnected = false;
 
+        byte[] encrypted;
+        try
+        {
+            encrypted = _crypto.Encrypt(data, length);
+        }
+        catch (Exception ex)
+        {
+            LumoraLogger.Warn($"[lnl] Send failed before LNL crypto was ready ({ex.Message})");
+            return;
+        }
+
+        SendRaw(encrypted, encrypted.Length, reliable, background);
+    }
+
+    private void SendRaw(byte[] data, int length, bool reliable, bool background)
+    {
         // Choose delivery method
         DeliveryMethod method = reliable
             ? DeliveryMethod.ReliableOrdered
@@ -144,16 +161,17 @@ public class LNLConnection : IConnection, INetEventListener
     public void Dispose()
     {
         Close();
+        _crypto.Dispose();
     }
 
     // INetEventListener implementation
 
     public void OnPeerConnected(NetPeer peer)
     {
-        LumoraLogger.Log($"[lnl] Connected to {peer.Address}:{peer.Port}");
+        LumoraLogger.Log($"[lnl] Transport connected to {peer.Address}:{peer.Port}; starting crypto handshake");
         _peer = peer;
-        IsOpen = true;
-        Connected?.Invoke(this);
+        var hello = _crypto.CreateClientHello();
+        SendRaw(hello, hello.Length, reliable: true, background: false);
     }
 
     public void OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo)
@@ -202,7 +220,28 @@ public class LNLConnection : IConnection, INetEventListener
         reader.GetBytes(data, length);
 
         ReceivedBytes += (ulong)length;
-        DataReceived?.Invoke(data, length);
+        bool wasEstablished = _crypto.IsEstablished;
+        if (!_crypto.TryHandleIncoming(data, length, out var plaintext, out var response))
+        {
+            FailReason = "LNL crypto handshake failed";
+            LumoraLogger.Warn($"[lnl] Closing {Identifier}: {FailReason}");
+            Close();
+            reader.Recycle();
+            return;
+        }
+
+        if (response != null)
+            SendRaw(response, response.Length, reliable: true, background: false);
+
+        if (!wasEstablished && _crypto.IsEstablished)
+        {
+            LumoraLogger.Log($"[lnl] Crypto established with {peer.Address}:{peer.Port}");
+            IsOpen = true;
+            Connected?.Invoke(this);
+        }
+
+        if (plaintext != null)
+            DataReceived?.Invoke(plaintext, plaintext.Length);
 
         reader.Recycle();
     }
@@ -222,4 +261,3 @@ public class LNLConnection : IConnection, INetEventListener
         // Not used for client connections
     }
 }
-

@@ -16,7 +16,7 @@ namespace Lumora.Core.Networking.LNL;
 public class LNLManager
 {
     public const int DEFAULT_PORT = 7777;
-    public const string APP_ID = "LumoraVR";
+    public const string APP_ID = "LumoraVR-LNL2";
 
     private List<LNLListener> _listeners = new();
     private List<LNLConnection> _connections = new();
@@ -105,4 +105,3 @@ public class LNLManager
         LumoraLogger.Log("[lnl] LNL Manager shut down");
     }
 }
-

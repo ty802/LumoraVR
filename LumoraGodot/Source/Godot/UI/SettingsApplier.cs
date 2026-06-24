@@ -36,6 +36,13 @@ public partial class SettingsApplier : Node
 	private bool? _appliedFullscreen;
 	private float? _appliedRenderScale;
 	private float? _appliedMasterVolume;
+	private int? _appliedBackgroundFps;
+
+	// When the window loses focus or is minimized the compositor stops blocking the swap, so vsync no longer throttles
+	// us and the loop free-runs (the FPS graph spikes way past the vsync rate, burning GPU for a window nobody sees).
+	// Engine.MaxFps is enforced regardless of focus or vsync, so while unfocused we clamp to the user's background-fps
+	// setting and restore their normal limit when focus returns. -xlinka
+	private bool _background;
 
 	private void Apply()
 	{
@@ -48,11 +55,12 @@ public partial class SettingsApplier : Node
 			Lumora.Core.Logging.Logger.Log($"Settings: vsync -> {(EngineSettings.VSync ? "on" : "off")}");
 		}
 
-		if (_appliedMaxFps != EngineSettings.MaxFps)
+		if (_appliedMaxFps != EngineSettings.MaxFps || _appliedBackgroundFps != EngineSettings.BackgroundFps)
 		{
 			_appliedMaxFps = EngineSettings.MaxFps;
-			global::Godot.Engine.MaxFps = EngineSettings.MaxFps;
-			Lumora.Core.Logging.Logger.Log($"Settings: fps limit -> {(EngineSettings.MaxFps == 0 ? "off" : EngineSettings.MaxFps.ToString())}");
+			_appliedBackgroundFps = EngineSettings.BackgroundFps;
+			ApplyEffectiveFps();
+			Lumora.Core.Logging.Logger.Log($"Settings: fps limit -> {(EngineSettings.MaxFps == 0 ? "off" : EngineSettings.MaxFps.ToString())} (background {(EngineSettings.BackgroundFps == 0 ? "off" : EngineSettings.BackgroundFps.ToString())})");
 		}
 
 		if (_appliedFullscreen != EngineSettings.Fullscreen)
@@ -84,4 +92,57 @@ public partial class SettingsApplier : Node
 			}
 		}
 	}
+
+	public override void _Notification(int what)
+	{
+		base._Notification(what);
+		switch (what)
+		{
+			// Both the application-level and per-window focus signals fire on desktop; the transition guard in
+			// SetBackground makes the duplicate harmless and covers platforms that only emit one of them. -xlinka
+			case (int)NotificationApplicationFocusOut:
+			case (int)NotificationWMWindowFocusOut:
+				SetBackground(true);
+				break;
+			case (int)NotificationApplicationFocusIn:
+			case (int)NotificationWMWindowFocusIn:
+				SetBackground(false);
+				break;
+		}
+	}
+
+	private void SetBackground(bool background)
+	{
+		if (_background == background)
+		{
+			return;
+		}
+
+		_background = background;
+		ApplyEffectiveFps();
+	}
+
+	// Resolves Engine.MaxFps from the user's cap and the current focus state. While unfocused (and not in VR, where the
+	// headset compositor owns frame timing) we clamp to the user's background-fps setting; a background setting of 0
+	// disables the throttle. We never raise the rate above the user's own cap - a cap of 0 means "unlimited
+	// (vsync-throttled)", which is exactly the case the background clamp rescues. -xlinka
+	private void ApplyEffectiveFps()
+	{
+		int userCap = EngineSettings.MaxFps;
+		int effective = userCap;
+
+		if (_background && !IsVrActive())
+		{
+			int backgroundCap = EngineSettings.BackgroundFps;
+			if (backgroundCap > 0)
+			{
+				effective = userCap == 0 ? backgroundCap : System.Math.Min(userCap, backgroundCap);
+			}
+		}
+
+		global::Godot.Engine.MaxFps = effective;
+	}
+
+	private static bool IsVrActive()
+		=> XRServer.FindInterface("OpenXR")?.IsInitialized() == true;
 }

@@ -80,7 +80,7 @@ public sealed class SettingsScreen : DashboardScreen
 
         BuildCategory(sidebar, contentHost, "Video", page =>
         {
-            var display = BeginSection(page, "Display", rowCount: 3);
+            var display = BeginSection(page, "Display", rowCount: 4);
             ToggleRow(display, "VSync", EngineSettings.VSync, v => EngineSettings.VSync = v);
             ToggleRow(display, "Fullscreen", EngineSettings.Fullscreen, v => EngineSettings.Fullscreen = v);
             SliderRow(display, "FPS Limit", 0f, 240f, EngineSettings.MaxFps,
@@ -89,6 +89,14 @@ public sealed class SettingsScreen : DashboardScreen
                     int fps = (int)MathF.Round(v / 10f) * 10;
                     EngineSettings.MaxFps = fps;
                     return EngineSettings.MaxFps == 0 ? "Off" : EngineSettings.MaxFps.ToString();
+                });
+            // Caps the loop while the window is unfocused or minimized (vsync stops throttling there); 0 = Off. -xlinka
+            SliderRow(display, "Background FPS", 0f, 120f, EngineSettings.BackgroundFps,
+                v =>
+                {
+                    int fps = (int)MathF.Round(v / 10f) * 10;
+                    EngineSettings.BackgroundFps = fps;
+                    return EngineSettings.BackgroundFps == 0 ? "Off" : EngineSettings.BackgroundFps.ToString();
                 });
 
             var quality = BeginSection(page, "Quality", rowCount: 1);

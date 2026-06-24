@@ -68,6 +68,18 @@ public static class EngineSettings
         set => SetValue(ref _maxFps, value <= 0 ? 0 : System.Math.Clamp(value, 30, 480));
     }
 
+    /// <summary>
+    /// Frame cap applied while the window is unfocused or minimized; 0 = no background throttle. Caps a
+    /// loop that would otherwise free-run when the compositor stops blocking the swap. Ignored in VR
+    /// (the headset compositor owns frame timing). Never raises the rate above <see cref="MaxFps"/>.
+    /// </summary>
+    private static int _backgroundFps = 30;
+    public static int BackgroundFps
+    {
+        get => _backgroundFps;
+        set => SetValue(ref _backgroundFps, value <= 0 ? 0 : System.Math.Clamp(value, 5, 240));
+    }
+
     private static bool _fullscreen;
     public static bool Fullscreen
     {
@@ -91,6 +103,7 @@ public static class EngineSettings
     private const string KeyMasterVolume = "Engine.Audio.MasterVolume";
     private const string KeyVSync = "Engine.Video.VSync";
     private const string KeyMaxFps = "Engine.Video.MaxFps";
+    private const string KeyBackgroundFps = "Engine.Video.BackgroundFps";
     private const string KeyFullscreen = "Engine.Video.Fullscreen";
     private const string KeyRenderScale = "Engine.Video.RenderScale";
 
@@ -109,6 +122,8 @@ public static class EngineSettings
             _vsync = Settings.ReadValue(KeyVSync, _vsync);
             int fps = Settings.ReadValue(KeyMaxFps, _maxFps);
             _maxFps = fps <= 0 ? 0 : System.Math.Clamp(fps, 30, 480);
+            int bgFps = Settings.ReadValue(KeyBackgroundFps, _backgroundFps);
+            _backgroundFps = bgFps <= 0 ? 0 : System.Math.Clamp(bgFps, 5, 240);
             _fullscreen = Settings.ReadValue(KeyFullscreen, _fullscreen);
             _renderScale = System.Math.Clamp(Settings.ReadValue(KeyRenderScale, _renderScale), 0.5f, 2f);
             Changed?.Invoke();
@@ -138,6 +153,7 @@ public static class EngineSettings
             Settings.WriteValue(KeyMasterVolume, _masterVolume);
             Settings.WriteValue(KeyVSync, _vsync);
             Settings.WriteValue(KeyMaxFps, _maxFps);
+            Settings.WriteValue(KeyBackgroundFps, _backgroundFps);
             Settings.WriteValue(KeyFullscreen, _fullscreen);
             Settings.WriteValue(KeyRenderScale, _renderScale);
         }

@@ -25,6 +25,8 @@ public partial class DebugWindow : Control
     private const float ConnectionTimeoutSec = 2.0f;
     private const int MaxMemorySnapshots = 120;
     private const double AutoSnapshotIntervalSec = 5.0;
+    // How close (in scrollbar units) to the very bottom still counts as "parked at the tail" for sticky autoscroll. -xlinka
+    private const float ScrollBottomEpsilon = 8.0f;
 
     private readonly List<LogEntry> _logEntries = new();
     private readonly object _logLock = new();
@@ -54,7 +56,6 @@ public partial class DebugWindow : Control
     private CheckButton? _filterError;
     private CheckButton? _filterDebug;
     private LineEdit? _searchBox;
-    private CheckButton? _autoScroll;
     private Button? _clearBtn;
     private Label? _statusLabel;
 
@@ -225,7 +226,6 @@ public partial class DebugWindow : Control
         _filterError = GetNodeOrNull<CheckButton>("%FilterError");
         _filterDebug = GetNodeOrNull<CheckButton>("%FilterDebug");
         _searchBox = GetNodeOrNull<LineEdit>("%SearchBox");
-        _autoScroll = GetNodeOrNull<CheckButton>("%AutoScroll");
         _clearBtn = GetNodeOrNull<Button>("%ClearBtn");
         _logDisplay = GetNodeOrNull<RichTextLabel>("%LogDisplay");
         _statusLabel = GetNodeOrNull<Label>("%StatusLabel");
@@ -761,6 +761,15 @@ public partial class DebugWindow : Control
         var search = _searchBox?.Text?.Trim() ?? string.Empty;
         var hasSearch = !string.IsNullOrEmpty(search);
 
+        // Sticky autoscroll: follow the tail only while the user is already parked at the bottom. The moment they
+        // scroll up to read, we hold their position; following resumes on its own once they scroll back down. There is
+        // no "Auto" toggle anymore - position is the source of truth. A full Clear()+rebuild resets the scrollbar, so
+        // we snapshot the intent (and the exact offset) up front and reapply it after the content is back. -xlinka
+        var scrollBar = _logDisplay.GetVScrollBar();
+        bool stickToBottom = scrollBar == null || scrollBar.MaxValue <= scrollBar.Page
+            || scrollBar.Value + scrollBar.Page >= scrollBar.MaxValue - ScrollBottomEpsilon;
+        double priorScroll = scrollBar?.Value ?? 0.0;
+
         _logDisplay.Clear();
 
         int total;
@@ -810,9 +819,21 @@ public partial class DebugWindow : Control
         _lastShownLogCount = shown;
         UpdateStatusLabel(total);
 
-        if ((_autoScroll?.ButtonPressed ?? true) && _logDisplay.GetLineCount() > 0)
+        if (stickToBottom)
         {
-            _logDisplay.ScrollToLine(_logDisplay.GetLineCount() - 1);
+            if (_logDisplay.GetLineCount() > 0)
+            {
+                _logDisplay.ScrollToLine(_logDisplay.GetLineCount() - 1);
+            }
+        }
+        else if (scrollBar != null)
+        {
+            // Reapply the held position deferred: right after a rebuild the scrollbar's MaxValue can still be stale, so
+            // setting Value inline would clamp and yank the view to the top. CallDeferred runs after the label
+            // re-lays-out, within this same frame (before draw), so there's no visible jump. -xlinka
+            var bar = scrollBar;
+            var target = priorScroll;
+            Callable.From(() => { if (GodotObject.IsInstanceValid(bar)) bar.Value = target; }).CallDeferred();
         }
     }
 

@@ -26,6 +26,11 @@ namespace Lumora.Godot.Hooks;
 [ImplementableHook(typeof(CharacterController))]
 public partial class CharacterControllerHook : ComponentHook<CharacterController>, ICharacterControllerHook
 {
+    // How fast airborne input can build velocity toward AirSpeed (m/s^2). Air control only ever ADDS
+    // toward the move direction and is capped per-frame by this, so it nudges steering without ever
+    // braking existing momentum. -xlinka
+    private const float AirControlAcceleration = 12f;
+
     private CharacterBody3D _characterBody = null!;
     private Dictionary<Collider, CollisionShape3D> _collisionShapes = new Dictionary<Collider, CollisionShape3D>();
     private Vector3 _velocity;
@@ -212,30 +217,44 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
             UpdateColliderHeights();
         }
 
-        // Apply movement (use crouch speed when crouching)
-        if (_moveDirection.LengthSquared() > 0.001f)
-        {
-            float speed;
-            if (!_characterBody.IsOnFloor())
-                speed = Owner.AirSpeed;
-            else if (_isCrouching)
-                speed = Owner.CrouchSpeed;
-            else
-                speed = Owner.Speed;
+        bool onFloor = _characterBody.IsOnFloor();
+        bool hasInput = _moveDirection.LengthSquared() > 0.001f;
 
-            if (_characterBody.IsOnFloor() && !_isCrouching && Owner.IsSprinting)
-            {
-                speed *= Owner.SprintMultiplier;
-            }
-            _velocity.X = _moveDirection.X * speed;
-            _velocity.Z = _moveDirection.Z * speed;
-        }
-        else
+        if (onFloor)
         {
-            // Decelerate to stop
-            _velocity.X = Mathf.MoveToward(_velocity.X, 0, Owner.Speed * delta * 10);
-            _velocity.Z = Mathf.MoveToward(_velocity.Z, 0, Owner.Speed * delta * 10);
+            // Grounded: drive horizontal velocity directly to the target speed (instant traction).
+            if (hasInput)
+            {
+                float speed = _isCrouching ? Owner.CrouchSpeed : Owner.Speed;
+                if (!_isCrouching && Owner.IsSprinting)
+                    speed *= Owner.SprintMultiplier;
+                _velocity.X = _moveDirection.X * speed;
+                _velocity.Z = _moveDirection.Z * speed;
+            }
+            else
+            {
+                // Decelerate to stop on the ground only.
+                _velocity.X = Mathf.MoveToward(_velocity.X, 0, Owner.Speed * delta * 10);
+                _velocity.Z = Mathf.MoveToward(_velocity.Z, 0, Owner.Speed * delta * 10);
+            }
         }
+        else if (hasInput)
+        {
+            // Airborne: never overwrite or brake horizontal velocity - that is what carries
+            // walk/sprint momentum through a jump. Input only ADDS toward the move direction, up to
+            // AirSpeed, and only while we're below AirSpeed along that direction (so high momentum from
+            // a sprint jump is left fully intact). -xlinka
+            var horiz = new Vector2(_velocity.X, _velocity.Z);
+            var dir = new Vector2(_moveDirection.X, _moveDirection.Z).Normalized();
+            float along = horiz.Dot(dir);
+            if (along < Owner.AirSpeed)
+            {
+                float add = Mathf.Min(AirControlAcceleration * delta, Owner.AirSpeed - along);
+                _velocity.X += dir.X * add;
+                _velocity.Z += dir.Y * add;
+            }
+        }
+        // Airborne with no input: leave horizontal velocity untouched so momentum is preserved.
 
         // Apply jump
         if (_jumpRequested && _characterBody.IsOnFloor())

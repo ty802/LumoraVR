@@ -157,6 +157,11 @@ public sealed class HandTool : Tool
             return;
         }
 
+        // Builds the tool rig (Grabber/Laser/Tool Holder slots + components) under the HandTool slot. This is
+        // idempotent: every slot is FindChild-or-add, so a non-owner peer adopts the rig that replicated from the
+        // owner instead of minting a duplicate. The owner's writes can be permission-denied for a beat during join
+        // (the User<->UserRoot link lags), but we run this from OnUpdate every frame as well as OnStart, so the next
+        // frame retries and lands once the link resolves - no bypass needed, just let it throw and re-drive. -xlinka
         _grabberSlot ??= Slot.FindChild("Grabber", recursive: false) ?? Slot.AddSlot("Grabber");
         if (_grabberSlot.GetComponent<SearchBlock>() == null)
         {

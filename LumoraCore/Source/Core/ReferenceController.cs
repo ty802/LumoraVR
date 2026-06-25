@@ -89,6 +89,11 @@ public class ReferenceController : IDisposable
     // Local allocation tracking
     private ulong _localAllocationPosition = 1;
     private int _localAllocationDepth;
+
+    // Per-user-byte high-water position for owned allocation blocks. Seeded from the join grant via
+    // SetOwnedStartPosition, carried forward across re-entry so an owned block always mints fresh IDs. -xlinka
+    private readonly ulong[] _ownedAllocationPosition = new ulong[256];
+    private ulong GetOwnedPosition(byte b) => _ownedAllocationPosition[b] == 0 ? 1UL : _ownedAllocationPosition[b];
     
     // Trash bin integration (for restore from trash)
     private readonly Dictionary<RefID, TrashEntry> _trashedObjects = new();
@@ -419,7 +424,66 @@ public class ReferenceController : IDisposable
 
         _currentAllocation = _allocationStack.Pop();
     }
-    
+
+    /// <summary>
+    /// Open an allocation block in a specific user's networked namespace (their allocation byte). Unlike
+    /// LocalAllocationBlockBegin (byte 254, never networked) this mints real user-byte RefIDs that replicate,
+    /// so anything built here is OWNED by that user and visible to everyone. Position carries forward via the
+    /// per-byte high-water mark so re-entry keeps minting fresh IDs. -xlinka
+    /// </summary>
+    public void OwnedAllocationBlockBegin(byte userByte)
+    {
+        CheckAllocation();
+        if (!RefIDConstants.IsValidUserByte(userByte))
+            throw new ArgumentOutOfRangeException(nameof(userByte), "Owned block requires a real user byte (1-253)");
+
+        if (_currentAllocation.UserByte == userByte)
+        {
+            _currentAllocation.NestedDepth++;
+            return;
+        }
+
+        _allocationStack.Push(_currentAllocation);
+        _currentAllocation = new AllocationContext
+        {
+            UserByte = userByte,
+            Position = GetOwnedPosition(userByte),
+            NestedDepth = 0
+        };
+    }
+
+    /// <summary>
+    /// End an owned allocation block and restore the previous context, saving the high-water position so a
+    /// later block in the same byte resumes above it. -xlinka
+    /// </summary>
+    public void OwnedAllocationBlockEnd(byte userByte)
+    {
+        if (_currentAllocation.UserByte != userByte)
+            throw new InvalidOperationException("Not in the matching owned allocation block!");
+
+        if (_currentAllocation.NestedDepth > 0)
+        {
+            _currentAllocation.NestedDepth--;
+            return;
+        }
+
+        _ownedAllocationPosition[userByte] = _currentAllocation.Position;
+        if (_allocationStack.Count == 0)
+            throw new InvalidOperationException("Allocation stack is empty!");
+        _currentAllocation = _allocationStack.Pop();
+    }
+
+    /// <summary>
+    /// Seed the start position for a user's owned namespace from the join grant. Callers pass a BARE position
+    /// (already GetPosition()-decoded), never a packed RefID - see the JoinGrant handler. -xlinka
+    /// </summary>
+    public void SetOwnedStartPosition(byte userByte, ulong position)
+    {
+        if (!RefIDConstants.IsValidUserByte(userByte))
+            return;
+        _ownedAllocationPosition[userByte] = position == 0 ? 1UL : position;
+    }
+
     /// <summary>
     /// Allocate the next RefID from current context.
     /// </summary>
@@ -549,6 +613,8 @@ public class ReferenceController : IDisposable
         _allocationStack.Clear();
         _localAllocationPosition = 1;
         _localAllocationDepth = 0;
+        for (int i = 0; i < _ownedAllocationPosition.Length; i++)
+            _ownedAllocationPosition[i] = 1;
         BlockAllocations = false;
         _allocationBlockCount = 0;
         IsDecodingBatch = false;

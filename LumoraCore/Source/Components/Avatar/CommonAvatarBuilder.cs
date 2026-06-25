@@ -65,11 +65,23 @@ public class CommonAvatarBuilder : Component, IAvatarBuilder, IEmptyAvatarSlotHa
 
     // IAvatarBuilder
 
+    // Convenience for the host's own avatar: scaffold + owner equipment in one pass (the host owns
+    // everything anyway). Per-peer, the authority calls BuildSharedScaffold and each owning client calls
+    // BuildOwnedEquipment separately. -xlinka
     public void BuildAvatar(UserRoot userRoot)
+    {
+        BuildSharedScaffold(userRoot);
+        BuildOwnedEquipment(userRoot);
+    }
+
+    // Host-built, replicated to everyone: body-node tracking, root transform stream, collider, locomotion,
+    // head output, avatar manager + nameplate. The hand tool rig + context menu are NOT here - those are
+    // built by the OWNING peer (see BuildOwnedEquipment) so a user owns its own equipment in its own byte. -xlinka
+    public void BuildSharedScaffold(UserRoot userRoot)
     {
         if (userRoot == null || userRoot.Slot == null)
         {
-            LumoraLogger.Error("CommonAvatarBuilder: BuildAvatar called with null user root");
+            LumoraLogger.Error("CommonAvatarBuilder: BuildSharedScaffold called with null user root");
             return;
         }
 
@@ -112,22 +124,10 @@ public class CommonAvatarBuilder : Component, IAvatarBuilder, IEmptyAvatarSlotHa
         if (SetupHeadOutput.Value)
             userSlot.AttachComponent<HeadOutput>();
 
-        // Per-user radial context menu + the avatar equip/dequip actions it
-        // offers when pointing at an avatar.
-        var menuSlot = userSlot.AddSlot("Context Menu");
-        menuSlot.AttachComponent<UI.ContextMenuSystem>();
-        menuSlot.AttachComponent<AvatarContextActions>();
-        menuSlot.AttachComponent<LocomotionContextActions>();
-        menuSlot.AttachComponent<Interaction.ToolContextActions>();
-        menuSlot.AttachComponent<Interaction.GrabbedObjectContextActions>();
-        menuSlot.AttachComponent<UserScaleContextActions>();
-        menuSlot.AttachComponent<UndoManager>();
-        menuSlot.AttachComponent<UndoContextActions>();
-
         var avatarSlot = userSlot.AddSlot("Avatar");
         var avatarManager = avatarSlot.AttachComponent<AvatarManager>();
         avatarManager.UserRoot.Target = userRoot;
-        // Name badge is composed by AvatarManager (mesh text + assigner)  - 
+        // Name badge is composed by AvatarManager (mesh text + assigner)  -
         // the manager just needs the display data and the toggle.
         avatarManager.AutoAddNameBadge.Value = SetupNameplate.Value;
         if (user != null)
@@ -139,7 +139,58 @@ public class CommonAvatarBuilder : Component, IAvatarBuilder, IEmptyAvatarSlotHa
         }
 
         OnAvatarSetupFinish?.Invoke(user!, avatarSlot!);
-        LumoraLogger.Log($"CommonAvatarBuilder: Built avatar for '{user?.UserName?.Value ?? "(null)"}'");
+        LumoraLogger.Log($"CommonAvatarBuilder: Built scaffold for '{user?.UserName?.Value ?? "(null)"}'");
+    }
+
+    // Built by the OWNING peer under its own (replicated) scaffold, minted in the owner's RefID byte so the
+    // owner owns the writes. Idempotent + safe to re-enter while the scaffold finishes syncing in or the
+    // join-window ownership link is still settling. Each peer builds only its OWN equipment - a remote user's
+    // tool rig + menu replicate in from that user. -xlinka
+    public void BuildOwnedEquipment(UserRoot userRoot)
+    {
+        if (userRoot == null || userRoot.Slot == null)
+            return;
+
+        var userSlot = userRoot.Slot;
+        var bodyNodes = userSlot.FindChild("Body Nodes", recursive: false);
+        if (bodyNodes == null)
+            return; // scaffold not present/synced yet - caller retries
+
+        if (SetupHandTools.Value)
+        {
+            EnsureHandTool(bodyNodes.FindChild("LeftController", recursive: false), Chirality.Left);
+            EnsureHandTool(bodyNodes.FindChild("RightController", recursive: false), Chirality.Right);
+        }
+
+        // Per-user radial context menu + the avatar equip/dequip actions it offers when pointing at an avatar.
+        if (userSlot.FindChild("Context Menu", recursive: false) == null)
+        {
+            var menuSlot = userSlot.AddSlot("Context Menu");
+            menuSlot.AttachComponent<UI.ContextMenuSystem>();
+            menuSlot.AttachComponent<AvatarContextActions>();
+            menuSlot.AttachComponent<LocomotionContextActions>();
+            menuSlot.AttachComponent<Interaction.ToolContextActions>();
+            menuSlot.AttachComponent<Interaction.GrabbedObjectContextActions>();
+            menuSlot.AttachComponent<UserScaleContextActions>();
+            menuSlot.AttachComponent<UndoManager>();
+            menuSlot.AttachComponent<UndoContextActions>();
+        }
+    }
+
+    // Attach a hand tool under the given controller body node, once. Skips if one is already there (a retry,
+    // or the replicated rig already synced). -xlinka
+    private void EnsureHandTool(Slot controller, Chirality side)
+    {
+        if (controller == null)
+            return;
+        if (controller.FindChild("HandTool", recursive: false) != null)
+            return;
+
+        var toolSlot = controller.AddSlot("HandTool");
+        var tool = toolSlot.AttachComponent<HandTool>();
+        tool.Side.Value = side;
+        if (side == Chirality.Right)
+            tool.EquipNewToolItem<DevToolItem>("DevTool");
     }
 
     private Slot BuildHeadNode(Slot bodyNodes, User user)
@@ -196,14 +247,8 @@ public class CommonAvatarBuilder : Component, IAvatarBuilder, IEmptyAvatarSlotHa
         var handObjectSlot = hand.AttachComponent<AvatarObjectSlot>();
         handObjectSlot.Node.Value = handNode;
 
-        if (SetupHandTools.Value)
-        {
-            var toolSlot = controller.AddSlot("HandTool");
-            var tool = toolSlot.AttachComponent<HandTool>();
-            tool.Side.Value = side;
-            if (!isLeft)
-                tool.EquipNewToolItem<DevToolItem>("DevTool");
-        }
+        // The HandTool rig is NOT built here anymore - it's owner-built in BuildOwnedEquipment so each user
+        // owns its own equipment in its own byte. -xlinka
     }
 
     // IEmptyAvatarSlotHandler

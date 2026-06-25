@@ -379,6 +379,27 @@ public sealed class DataModelPermissionController
         bool ownsTarget = OwnsTarget(actor, request.Target) ||
                           OwnsTarget(actor, request.Parent);
 
+        // Own-byte slot-REGISTRY adds: the flat world slot registry lives in the authority byte with a null
+        // parent, so neither Target (the registry) nor Parent reads as owned - that wrongly denies a guest
+        // REGISTERING its own slot (the per-peer hand tool / laser rig, or spawning its own content). The new
+        // slot's KEY is its RefID, minted in the creator's own byte, so an add keyed in the actor's byte INTO
+        // THE SLOT REGISTRY is an own-object create and must authorize (locally so the build doesn't throw, and
+        // on the host so it accepts the guest's replicated add).
+        // SCOPED TO THE REGISTRY ON PURPOSE: a per-slot collection (e.g. a slot's component list) has
+        // Parent = its owning slot, so OwnsTarget(Parent) above already answers correctly - attaching a
+        // component to a HOST slot is denied, and to the guest's OWN slot is allowed (the slot is in the guest's
+        // byte). We must NOT relax those here, or a guest could bolt live components onto host geometry. The
+        // registry is the only flat (null-parent) collection a guest legitimately writes; user streams go via
+        // Parent=own-user and users are host-managed. -xlinka
+        if (!ownsTarget &&
+            (request.Action & (DataModelPermissionAction.CollectionAdd | DataModelPermissionAction.CollectionInsert)) != 0 &&
+            request.Key is RefID keyId &&
+            OwnsRefID(actor, keyId) &&
+            ReferenceEquals(request.Target, world.SlotRegistryElement))
+        {
+            ownsTarget = true;
+        }
+
         // Social/Event floor: the authored world is frozen for EVERYONE incl. the host. Only a user's
         // own runtime objects may be mutated; world content (authority-owned) is foreign to all and
         // denied regardless of role. This is the unbypassable lock - no role escapes it, no live toggle.
@@ -386,6 +407,36 @@ public sealed class DataModelPermissionController
         {
             reason = "editing is disabled in this world (social)";
             return Deny(request, reason);
+        }
+
+        // Grab interactions: a grabbable object opts into being picked up + moved by ANY user - that's an
+        // interaction, not an ownership edit. Allow the grab-state refs (who holds it / its restore-parent)
+        // and the reparent+pose of an object the actor is CURRENTLY HOLDING. The host still owns the object
+        // and arbitrates the authoritative holder (conflicting grabs resolve there), and SocialLock above
+        // already froze this in event worlds. Ordinary edits to the object stay owner-gated by the role
+        // check below. -xlinka
+        if (IsGrabInteraction(in request, actor))
+        {
+            return true;
+        }
+
+        // Destroying / removing / clearing an object you only "own" because you are holding it is forbidden. A
+        // grab parents the object under the grabber and flips ActiveUser / IsUnderUsersRoot, which OwnsTarget
+        // reads as ownership - that would let a modified client destroy host content on the next batch.
+        // Destructive ops therefore require REAL per-byte ownership, not the structural signal. This only ever
+        // removes authority that came from the grab-flip: if the actor really owns it (own-byte equipment)
+        // strong ownership holds and this is a no-op; if they don't own it at all the role check below already
+        // denies. The grab interaction (move / reparent / pose / grab-state) was allowed above and never
+        // reaches here. Holding conveys no destroy authority. -xlinka
+        if ((request.Action & DestructiveActions) != 0 && ownsTarget)
+        {
+            bool ownsTargetStrong = OwnsRefIDStrong(actor, request.Target) ||
+                                    OwnsRefIDStrong(actor, request.Parent);
+            if (!ownsTargetStrong)
+            {
+                reason = "destroying a held object requires ownership, not just holding it";
+                return Deny(request, reason);
+            }
         }
 
         if (role.Allows(request.Action, ownsTarget))
@@ -451,6 +502,97 @@ public sealed class DataModelPermissionController
     private bool IsHostUser(User user)
     {
         return user.IsHost || (_world.IsAuthority && ReferenceEquals(_world.LocalUser, user));
+    }
+
+    // True when the request is a permitted GRAB interaction rather than an ownership edit: setting/clearing a
+    // grabbable's grab-state, or reparenting/posing an object the actor is currently holding. Lets a user
+    // grab a shared object it doesn't own; the host still arbitrates the authoritative holder. -xlinka
+    private static bool IsGrabInteraction(in DataModelPermissionRequest request, User? actor)
+    {
+        var member = request.Member;
+        if (member == null || actor == null)
+            return false;
+
+        // Grab / release: only the grab-state refs of a grabbable that allows grabbing.
+        if (request.Parent is Components.Grabbable grabbable)
+        {
+            if (!grabbable.AllowGrab.Value)
+                return false;
+            if (!ReferenceEquals(member, grabbable.GrabberRef) && !ReferenceEquals(member, grabbable.LastParentRef))
+                return false;
+
+            // No-steal enforcement, host-side. If the object is currently held by SOMEONE ELSE and stealing is
+            // off, refuse a holder-ref write from a different user - that's a force-steal from a modified client
+            // (the client-side steal check can be skipped). Releases (the current holder clearing the ref) are
+            // not steals and stay allowed. The host runs Validate per delta BEFORE decoding the batch, so
+            // GrabberRef.Target is still the PRE-batch holder here - exactly the holder we compare against. -xlinka
+            if (ReferenceEquals(member, grabbable.GrabberRef) && !grabbable.AllowSteal.Value)
+            {
+                var currentHoldingUser = grabbable.GrabberRef.Target?.OwningUser;
+                if (currentHoldingUser != null && !ReferenceEquals(currentHoldingUser, actor))
+                    return false; // held by another user, not stealable -> fall through to the role check, which denies
+            }
+            return true;
+        }
+
+        // Reparent / pose of a grabbable object: the write targets a slot's parent or local transform, and the
+        // slot carries a grabbable that allows grabbing. We do NOT require the actor to already be the recorded
+        // holder - the host runs Validate for every delta record BEFORE it decodes any, so the in-batch
+        // GrabberRef write isn't applied yet when the reparent is validated; a holder check would reject every
+        // real grab. Bounding it to AllowGrab grabbables is the safe line: the host still owns the object and
+        // arbitrates the authoritative holder, so this is transient interaction, moderated like any grab, not an
+        // edit of host content. -xlinka
+        if (request.Parent is Slot slot)
+        {
+            bool transformOrParent =
+                ReferenceEquals(member, slot.ParentSlotRef) ||
+                ReferenceEquals(member, slot.LocalPosition) ||
+                ReferenceEquals(member, slot.LocalRotation) ||
+                ReferenceEquals(member, slot.LocalScale);
+            if (!transformOrParent)
+                return false;
+
+            var g = slot.GetComponent<Components.Grabbable>();
+            return g != null && g.AllowGrab.Value;
+        }
+
+        return false;
+    }
+
+    // Actions that hand a user real control over an object's existence - destroying it, pulling it out of a
+    // collection, or clearing a collection. For a HELD foreign object these must require REAL ownership (the
+    // creator's allocation byte), not the structural "it's parked under my hand right now" signal a grab flips.
+    // Move / reparent / grab-state writes are NOT here - those are the grab interaction, allowed earlier.
+    // Holding an object confers no edit/destroy authority; that comes only from real per-byte ownership. -xlinka
+    private const DataModelPermissionAction DestructiveActions =
+        DataModelPermissionAction.Destroy |
+        DataModelPermissionAction.CollectionRemove |
+        DataModelPermissionAction.CollectionClear;
+
+    // STRONG ownership: only the real per-byte signal (and self), never the grab-flippable structural one. A
+    // grab reparents the object under the grabber's UserRoot, which flips ActiveUser / IsUnderUsersRoot to the
+    // grabber - so those CANNOT gate destroying a foreign object, or a modified client could destroy a host prop
+    // just by holding it. OwnsRefID is minted in the creator's byte and a grab never changes it, so a user's own
+    // per-peer-spawned equipment still passes here. -xlinka
+    private static bool OwnsRefIDStrong(User actor, IWorldElement? target)
+    {
+        if (target == null)
+            return false;
+        if (ReferenceEquals(actor, target))
+            return true;
+        if (OwnsRefID(actor, target.ReferenceID))
+            return true;
+
+        // Climb the same logical ownership chain OwnsTarget uses, but ONLY via the byte signal - never
+        // ActiveUser / IsUnderUsersRoot. A component's real owner is its slot's byte; a sync element's or
+        // worker's is its parent's.
+        return target switch
+        {
+            Component component => OwnsRefIDStrong(actor, component.Slot),
+            SyncElement syncElement => OwnsRefIDStrong(actor, syncElement.Parent),
+            Worker worker => OwnsRefIDStrong(actor, worker.Parent),
+            _ => false
+        };
     }
 
     private static bool OwnsTarget(User actor, IWorldElement? target)

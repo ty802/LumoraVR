@@ -27,6 +27,14 @@ public class UpdateManager
     private Queue<IUpdatable> _startupQueue = new Queue<IUpdatable>();
     private Queue<IUpdatable> _destructionQueue = new Queue<IUpdatable>();
     private SortedDictionary<int, Queue<IUpdatable>> _changeBuckets = new SortedDictionary<int, Queue<IUpdatable>>();
+
+    // Updatables whose startup threw - retried on later frames instead of dropped. A transient join-window
+    // permission denial or a not-yet-synced ref shouldn't kill the component for the session. Bounded so a
+    // genuinely broken OnStart doesn't spin forever. -xlinka
+    private sealed class FailedStartup { public IUpdatable Target = null!; public int Attempts; public int CooldownFrames; }
+    private readonly List<FailedStartup> _failedStartups = new();
+    private const int MaxStartupRetries = 120;  // ~2s of frames, comfortably covers the join ownership-lag window
+    private const int StartupRetryCooldown = 1; // next frame
     private int _changeUpdateIndex = 0;
     private Dictionary<IInitializable, List<IInitializable>> _initializableChildren = new Dictionary<IInitializable, List<IInitializable>>();
 
@@ -187,22 +195,68 @@ public class UpdateManager
         while (_startupQueue.Count > 0)
         {
             var updatable = _startupQueue.Dequeue();
-            if (!updatable.IsDestroyed)
+            if (updatable.IsDestroyed) continue;
+            TryStartup(updatable, isRetry: false);
+        }
+    }
+
+    /// <summary>
+    /// Re-attempt updatables whose startup previously threw. Drops one only when it finally starts, is
+    /// destroyed, or exhausts its retry budget (logged loudly then). Pumped each frame after RunStartups. -xlinka
+    /// </summary>
+    public void RunStartupRetries()
+    {
+        if (_failedStartups.Count == 0) return;
+
+        for (int i = _failedStartups.Count - 1; i >= 0; i--)
+        {
+            var f = _failedStartups[i];
+            if (f.Target.IsDestroyed || f.Target.IsStarted)
             {
-                try
-                {
-                    CurrentlyUpdating = updatable;
-                    updatable.InternalRunStartup();
-                }
-                catch (Exception ex)
-                {
-                    Logging.Logger.Error($"UpdateManager: Error in startup for {updatable}: {ex.Message}");
-                }
-                finally
-                {
-                    CurrentlyUpdating = null!;
-                }
+                _failedStartups.RemoveAt(i);
+                continue;
             }
+            if (--f.CooldownFrames > 0)
+                continue;
+
+            f.CooldownFrames = StartupRetryCooldown;
+            f.Attempts++;
+            if (TryStartup(f.Target, isRetry: true))
+            {
+                _failedStartups.RemoveAt(i);
+            }
+            else if (f.Attempts >= MaxStartupRetries)
+            {
+                Logging.Logger.Error($"UpdateManager: startup permanently failed for {f.Target} after {f.Attempts} retries.");
+                _failedStartups.RemoveAt(i);
+            }
+        }
+    }
+
+    // True if startup completed (IsStarted), false if it threw and was (re)queued for retry. -xlinka
+    private bool TryStartup(IUpdatable updatable, bool isRetry)
+    {
+        try
+        {
+            CurrentlyUpdating = updatable;
+            updatable.InternalRunStartup();
+            return updatable.IsStarted;
+        }
+        catch (Exception ex)
+        {
+            // Log only the first failure, not every retry - a join-window denial retried 30x would otherwise
+            // spam 30 identical lines. The final give-up (if any) is logged once by RunStartupRetries. -xlinka
+            if (!isRetry)
+            {
+                Logging.Logger.Error($"UpdateManager: error in startup for {updatable} (will retry): {ex.Message}");
+                if (!updatable.IsDestroyed)
+                    _failedStartups.Add(new FailedStartup { Target = updatable, Attempts = 0, CooldownFrames = StartupRetryCooldown });
+            }
+            return false;
+        }
+        finally
+        {
+            CurrentlyUpdating = null!;
         }
     }
 
@@ -494,6 +548,7 @@ public class UpdateManager
         }
         _updateBuckets.Clear();
         _startupQueue.Clear();
+        _failedStartups.Clear();
         _destructionQueue.Clear();
         _changeBuckets.Clear();
         _initializableChildren.Clear();

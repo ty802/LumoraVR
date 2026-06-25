@@ -114,6 +114,13 @@ public sealed class ControllerHandVisual : Component
         _bones  = new List<BoneEntry>();
         _jointWorldPositions   = new Dictionary<BodyNode, float3>(32);
         _restPoseLocalPositions = BuildRestPoseLocalPositions(HandSide.Value, HandScale.Value);
+        // The skeleton is a per-viewer visual: RefreshVisuals drives every joint/bone each frame from THIS
+        // machine's InputInterface (tracked node poses) or a controller-relative rest pose, so the geometry
+        // can't be coherently networked anyway - every peer would just overwrite it from its own local input.
+        // Building it under a local root (see BuildHandSkeleton) means each viewer mints its own copy hanging
+        // off the replicated controller slot, so remote users still see your hands (the controller slot is the
+        // networked, avatar-posed part). Local slots are never permission-gated, so no bypass is needed and a
+        // non-owner peer never tries to write under a slot it doesn't own. -xlinka
         BuildHandSkeleton();
         RefreshVisuals();
         LumoraLogger.Log($"ControllerHandVisual: Initialized for {HandSide.Value} hand on '{Slot.SlotName.Value}'");
@@ -139,7 +146,11 @@ public sealed class ControllerHandVisual : Component
 
     private void BuildHandSkeleton()
     {
-        _handSkeletonRoot = Slot.AddSlot("HandSkeleton");
+        // LOCAL root: mints a LOCAL_BYTE RefID the world never replicates. Every child AddSlot/AttachComponent
+        // below inherits local placement (a child of a local element is local), so the whole skeleton subtree
+        // stays on this machine - no permission gate, no duplicate networked slots when each peer builds its own.
+        // RefreshVisuals positions it from the replicated controller slot, so remote hands still render. -xlinka
+        _handSkeletonRoot = Slot.AddLocalSlot("HandSkeleton");
 
         // One shared material for all joint spheres and bone cylinders.
         var matSlot = _handSkeletonRoot.AddSlot("HandSkeletonMaterial");

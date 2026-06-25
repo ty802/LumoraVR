@@ -69,5 +69,29 @@ public sealed class WorldSettings : Component
             if (World != null && World.IsAuthority)
                 WorldModePermissions.Apply(World, Mode.Value);
         };
+
+        // Access level is host-authoritative LIVE state: when the host changes it at runtime, re-advertise
+        // the session and start/stop the LAN beacon to match. (The beacon was otherwise only chosen once at
+        // create time, which is why you used to have to "open as LAN" instead of switching to it.) Gated to
+        // the host AND to a Running world so the create-time seed in StartSession doesn't fire this before the
+        // session even exists (the initial beacon comes from the session metadata as before). A client just
+        // receives the synced value and never touches the beacon. -xlinka
+        AccessLevel.OnChanged += _ =>
+        {
+            if (World != null && World.IsAuthority && World.State == World.WorldState.Running)
+                World.Session?.SetVisibility(ToVisibility(AccessLevel.Value));
+        };
     }
+
+    // Map the user-facing access level to the network session visibility that drives the LAN beacon / public
+    // registration. Contacts tiers advertise to contacts, the open tiers advertise publicly. -xlinka
+    internal static Networking.Session.SessionVisibility ToVisibility(World.WorldAccessLevel level) => level switch
+    {
+        World.WorldAccessLevel.Private => Networking.Session.SessionVisibility.Private,
+        World.WorldAccessLevel.LAN => Networking.Session.SessionVisibility.LAN,
+        World.WorldAccessLevel.Contacts or World.WorldAccessLevel.ContactsPlus
+            or World.WorldAccessLevel.GroupMembers or World.WorldAccessLevel.GroupPlus
+            => Networking.Session.SessionVisibility.Contacts,
+        _ => Networking.Session.SessionVisibility.Public, // RegisteredUsers / Anyone / GroupPublic
+    };
 }

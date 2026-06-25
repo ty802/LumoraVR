@@ -578,6 +578,10 @@ public class SessionSyncManager : IDisposable
                 }
                 controlMessagesToProcess.Clear();
 
+                // Keep a deferred join advancing - OnFullStateReceived may have held Running back waiting for
+                // the local user, and every sync cycle is a chance to claim it. Cheap + idempotent. -xlinka
+                World.PumpJoinProgress();
+
                 DEBUG_SyncLoopStage = SyncLoopStage.InitializingNewUsers;
 
                 if (World.IsAuthority)
@@ -1663,11 +1667,18 @@ public class SessionSyncManager : IDisposable
 
                 Session.World.SetStateVersion(grantData.StateVersion);
 
-                // Switch allocation context to user's namespace for any local allocations
+                // Scope new client-side allocations (the local user's tracking streams + the rigs that
+                // InteractionLaser/HandTool/ControllerHandVisual/LocomotionController build at OnStart) into the
+                // joining user's OWN byte. Without this they allocate in authority byte 0 and collide with the
+                // host's objects there -> "Exception during initializing Worker of type Slot" and the laser/hands/
+                // locomotion never build. AllocationIDStart is the high start-of-range value the host reserved for
+                // us, so using it as the start position keeps us safely above the User object + its own synced
+                // members (which sit at low positions in this byte). Seed the owned-block high-water to match. -xlinka
                 var userByte = assignedRefID.GetUserByte();
                 var startPos = grantData.AllocationIDStart > 0 ? grantData.AllocationIDStart : 1UL;
                 World.ReferenceController.SetAllocationContext(userByte, startPos);
-                LumoraLogger.Log($"[lnl] Switched allocation to user namespace: byte={userByte}, startPos={startPos}");
+                World.ReferenceController.SetOwnedStartPosition(userByte, startPos);
+                LumoraLogger.Log($"[lnl] Scoped allocation to user namespace: byte={userByte}, startPos={startPos}");
 
                 Session.World.OnJoinGrantReceived();
                 break;

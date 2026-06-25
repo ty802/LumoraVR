@@ -448,8 +448,21 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
                 throw new InvalidOperationException("Cannot do a full encode on a dirty element!");
         }
 
+        // This is an outbound network encode. On a NON-AUTHORITY peer mark it as a network send so the
+        // non-authority escape in Authorize lets the peer serialize its own optimistic change out (e.g. a
+        // grab) - the HOST re-validates the change on receive (ConflictingSyncElement.Validate, sender as
+        // actor) and arbitrates, so a forged write is still rejected there. Without this, a joiner's own
+        // legitimate optimistic writes get encode-denied and silently dropped.
+        // On the AUTHORITY this must NOT be a network send: the authority's own outbound encode has no
+        // network actor, and the network-actor resolution skips the LocalUser fallback (DataModelPermissions
+        // actor resolution), so a network-flagged authority encode resolves to a null actor and gets denied -
+        // which would drop every host-originated delta AND every new-joiner full-state record. Authorize as
+        // the host (LocalUser -> HostRole) instead. -xlinka
+        bool nonAuthority = World == null || !World.IsAuthority;
         AuthorizeDataModelAccess(
             DataModelPermissionAction.Serialize | DataModelPermissionAction.Replicate,
+            actor: nonAuthority ? null : World?.LocalUser,
+            isNetwork: nonAuthority,
             isFullState: forFullBatch);
         InternalEncodeFull(writer, outboundMessage);
     }
@@ -478,7 +491,15 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
 
     public virtual void EncodeDelta(BinaryWriter writer, BinaryMessageBatch outboundMessage)
     {
-        AuthorizeDataModelAccess(DataModelPermissionAction.Serialize | DataModelPermissionAction.Replicate);
+        // Outbound network encode - see EncodeFull. A non-authority peer may serialize its own optimistic
+        // delta out (network escape); the host re-validates on receive and arbitrates. The AUTHORITY must
+        // authorize as the host (LocalUser) instead, NOT as a network send - a network-flagged authority
+        // encode resolves to a null actor and is denied, dropping every host-originated delta. -xlinka
+        bool nonAuthority = World == null || !World.IsAuthority;
+        AuthorizeDataModelAccess(
+            DataModelPermissionAction.Serialize | DataModelPermissionAction.Replicate,
+            actor: nonAuthority ? null : World?.LocalUser,
+            isNetwork: nonAuthority);
         InternalEncodeDelta(writer, outboundMessage);
         IsSyncDirty = false;
         InternalClearDirty();

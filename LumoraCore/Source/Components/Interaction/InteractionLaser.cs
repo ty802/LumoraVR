@@ -125,6 +125,12 @@ public sealed class InteractionLaser : Component
     public override void OnStart()
     {
         base.OnStart();
+        // Building the laser rig (AddSlot/AttachComponent) happens under the host-allocated HandTool slot. For the
+        // OWNER of a joining User the User<->UserRoot ownership link lags a beat, so the first write gets permission-
+        // denied and throws - we WANT that throw: the startup-retry re-runs OnStart until the link resolves and the
+        // write is authorized, no bypass needed. The networked beam build is idempotent (adopts the replicated visual
+        // if it's already there) so a non-owner peer reuses the owner's beam instead of trying to mint its own under a
+        // slot it doesn't own. -xlinka
         BuildBeamVisual();
         LumoraLogger.Log($"InteractionLaser: Started on '{Slot.SlotName.Value}' side={ControllerSide.Value}");
     }
@@ -218,6 +224,33 @@ public sealed class InteractionLaser : Component
 
     private void BuildBeamVisual()
     {
+        BuildNetworkedBeam();
+        BuildLocalCursorParts();
+    }
+
+    // The beam (slot + curved mesh + material + renderer + the Point anchor) is NETWORKED via AddSlot, so a remote
+    // user sees your laser. That means every peer runs this, but only the OWNER may mint it - the rest must REUSE the
+    // replicated one. So: if the visual is already here (we built it on a retry, or it arrived from the owner), adopt
+    // it by re-resolving the field refs and DON'T touch the values (we'd clobber whatever the owner set). Only a fresh
+    // build sets values. If the owner's write isn't authorized yet the AddSlot throws and the startup-retry heals it.
+    // -xlinka
+    private void BuildNetworkedBeam()
+    {
+        var existing = Slot.FindChild("InteractionLaserVisual");
+        if (existing != null)
+        {
+            _beamSlot = existing;
+            _beamMesh = existing.GetComponent<CurvedBeamMesh>();
+            _beamRenderer = existing.GetComponent<MeshRenderer>();
+            _beamMaterial = existing.FindChild("InteractionLaserMaterial")?.GetComponent<OverlayUnlitMaterial>();
+            _pointSlot = existing.FindChild("Point");
+            // Adopted - the owner already set every value, and the local cursor build below fills its own refs.
+            // Anything still null (a half-synced adopt) is tolerated: CastAndUpdate/PositionBeam null-guard _beamSlot
+            // and _beamMesh, and a later sync doesn't re-run OnStart, but the renderer/material drive themselves once
+            // their values land. -xlinka
+            return;
+        }
+
         _beamSlot = Slot.AddSlot("InteractionLaserVisual");
 
         _beamMesh = _beamSlot.AttachComponent<CurvedBeamMesh>();
@@ -249,79 +282,112 @@ public sealed class InteractionLaser : Component
         _pointSlot = _beamSlot.AddSlot("Point");
         _pointSlot.LocalPosition.Value = float3.Backward * MaxDistance.Value;
 
-        // LOCAL slot: the desktop pointer cursor is a per-viewer visual (like an OS mouse cursor), NOT something
-        // other users should see. AddLocalSlot mints a LOCAL_BYTE RefID that the world never replicates, so the
-        // whole cursor subtree (Image quad, mesh, material - all created under it) stays on this machine only.
-        // The beam itself stays replicated above, so a remote user's LASER is still visible during interaction,
-        // just not their cursor. Hit-testing/dash clicks use the ray pose, never this slot, so they're unaffected.
-        // -xlinka
-        _cursorSlot = _pointSlot.AddLocalSlot("Cursor");
-        _cursorMaterial = _cursorSlot.AttachComponent<OverlayUnlitMaterial>();
-        _cursorMaterial.BlendMode.Value = BlendMode.Additive;
-        _cursorMaterial.FrontTintColor.Value = colorHDR.White;
-        _cursorMaterial.BehindTintColor.Value = new colorHDR(1f, 1f, 1f, 0.35f);
-        _cursorMaterial.UseVertexColor.Value = true;
-        _cursorMaterial.RenderQueue.Value = 4005;
-
-        _cursorRootSlot = _cursorSlot.AddSlot("Image");
-        var cursorMesh = _cursorRootSlot.AttachComponent<QuadMesh>();
-        cursorMesh.Size.Value = float2.One * CursorSize.Value;
-        cursorMesh.DualSided.Value = true;
-        cursorMesh.Color = color.White;
-
-        _cursorRenderer = _cursorRootSlot.AttachComponent<MeshRenderer>();
-        _cursorRenderer.Mesh.Target = cursorMesh;
-        _cursorRenderer.Material.Target = _cursorMaterial;
-        _cursorRenderer.ShadowCastMode.Value = ShadowCastMode.Off;
-        _cursorRenderer.SortingOrder.Value = 105;
-
-        // LOCAL: direct-touch cursor visual, per-viewer only (see the Cursor note above). -xlinka
-        _directCursorSlot = _beamSlot.AddLocalSlot("DirectCursor");
-        _directCursorMaterial = _directCursorSlot.AttachComponent<OverlayUnlitMaterial>();
-        _directCursorMaterial.BlendMode.Value = BlendMode.Additive;
-        _directCursorMaterial.FrontTintColor.Value = new colorHDR(1f, 1f, 1f, 0.25f);
-        _directCursorMaterial.BehindTintColor.Value = new colorHDR(1f, 1f, 1f, 0.15f);
-        _directCursorMaterial.UseVertexColor.Value = true;
-        _directCursorMaterial.RenderQueue.Value = 4000;
-
-        var directCursorMesh = _directCursorSlot.AttachComponent<QuadMesh>();
-        directCursorMesh.Size.Value = float2.One * (CursorSize.Value * 0.75f);
-        directCursorMesh.DualSided.Value = true;
-        directCursorMesh.Color = new color(1f, 1f, 1f, 0.25f);
-
-        _directCursorRenderer = _directCursorSlot.AttachComponent<MeshRenderer>();
-        _directCursorRenderer.Mesh.Target = directCursorMesh;
-        _directCursorRenderer.Material.Target = _directCursorMaterial;
-        _directCursorRenderer.ShadowCastMode.Value = ShadowCastMode.Off;
-        _directCursorRenderer.SortingOrder.Value = 100;
-
-        // LOCAL: direct-touch line visual, per-viewer only (see the Cursor note above). -xlinka
-        _directLineSlot = _beamSlot.AddLocalSlot("DirectLine");
-        _directLineMesh = _directLineSlot.AttachComponent<SegmentMesh>();
-        _directLineMesh.Radius.Value = BeamRadius.Value * 0.75f;
-        _directLineMesh.Sides.Value = 6;
-        _directLineMesh.PointA.Value = float3.Backward * MaxDistance.Value;
-        _directLineMesh.PointB.Value = float3.Backward * MaxDistance.Value;
-        _directLineMesh.PointAColor.Value = new color(1f, 1f, 1f, 0.18f);
-        _directLineMesh.PointBColor.Value = new color(1f, 1f, 1f, 0.18f);
-
-        _directLineMaterial = _directLineSlot.AttachComponent<OverlayUnlitMaterial>();
-        _directLineMaterial.BlendMode.Value = BlendMode.Additive;
-        _directLineMaterial.FrontTintColor.Value = colorHDR.White;
-        _directLineMaterial.BehindTintColor.Value = new colorHDR(1f, 1f, 1f, 0.35f);
-        _directLineMaterial.UseVertexColor.Value = true;
-        _directLineMaterial.RenderQueue.Value = 4000;
-
-        _directLineRenderer = _directLineSlot.AttachComponent<MeshRenderer>();
-        _directLineRenderer.Mesh.Target = _directLineMesh;
-        _directLineRenderer.Material.Target = _directLineMaterial;
-        _directLineRenderer.ShadowCastMode.Value = ShadowCastMode.Off;
-        _directLineRenderer.SortingOrder.Value = 100;
-
         _beamSlot.ActiveSelf.Value = false;
-        _cursorSlot.ActiveSelf.Value = false;
-        _directCursorSlot.ActiveSelf.Value = false;
-        _directLineSlot.ActiveSelf.Value = false;
+    }
+
+    // The cursor / direct-cursor / direct-line are LOCAL (per-viewer, like an OS mouse cursor) - AddLocalSlot mints a
+    // LOCAL_BYTE RefID the world never replicates, so the whole cursor subtree stays on this machine only and other
+    // users never see your cursor (just your beam, built above). Because they're local, they DON'T arrive when a
+    // non-owner adopts the replicated beam, so every peer builds its own here. FindChild-first keeps it idempotent so
+    // a retry or re-entry adopts what's already there instead of double-adding. Hit-testing/dash clicks use the ray
+    // pose, never these slots, so they're unaffected. -xlinka
+    private void BuildLocalCursorParts()
+    {
+        if (_pointSlot == null || _beamSlot == null) return;
+
+        _cursorSlot = _pointSlot.FindChild("Cursor");
+        if (_cursorSlot == null)
+        {
+            _cursorSlot = _pointSlot.AddLocalSlot("Cursor");
+            _cursorMaterial = _cursorSlot.AttachComponent<OverlayUnlitMaterial>();
+            _cursorMaterial.BlendMode.Value = BlendMode.Additive;
+            _cursorMaterial.FrontTintColor.Value = colorHDR.White;
+            _cursorMaterial.BehindTintColor.Value = new colorHDR(1f, 1f, 1f, 0.35f);
+            _cursorMaterial.UseVertexColor.Value = true;
+            _cursorMaterial.RenderQueue.Value = 4005;
+
+            _cursorRootSlot = _cursorSlot.AddSlot("Image");
+            var cursorMesh = _cursorRootSlot.AttachComponent<QuadMesh>();
+            cursorMesh.Size.Value = float2.One * CursorSize.Value;
+            cursorMesh.DualSided.Value = true;
+            cursorMesh.Color = color.White;
+
+            _cursorRenderer = _cursorRootSlot.AttachComponent<MeshRenderer>();
+            _cursorRenderer.Mesh.Target = cursorMesh;
+            _cursorRenderer.Material.Target = _cursorMaterial;
+            _cursorRenderer.ShadowCastMode.Value = ShadowCastMode.Off;
+            _cursorRenderer.SortingOrder.Value = 105;
+        }
+        else
+        {
+            _cursorMaterial = _cursorSlot.GetComponent<OverlayUnlitMaterial>();
+            _cursorRootSlot = _cursorSlot.FindChild("Image");
+            _cursorRenderer = _cursorRootSlot?.GetComponent<MeshRenderer>();
+        }
+
+        _directCursorSlot = _beamSlot.FindChild("DirectCursor");
+        if (_directCursorSlot == null)
+        {
+            _directCursorSlot = _beamSlot.AddLocalSlot("DirectCursor");
+            _directCursorMaterial = _directCursorSlot.AttachComponent<OverlayUnlitMaterial>();
+            _directCursorMaterial.BlendMode.Value = BlendMode.Additive;
+            _directCursorMaterial.FrontTintColor.Value = new colorHDR(1f, 1f, 1f, 0.25f);
+            _directCursorMaterial.BehindTintColor.Value = new colorHDR(1f, 1f, 1f, 0.15f);
+            _directCursorMaterial.UseVertexColor.Value = true;
+            _directCursorMaterial.RenderQueue.Value = 4000;
+
+            var directCursorMesh = _directCursorSlot.AttachComponent<QuadMesh>();
+            directCursorMesh.Size.Value = float2.One * (CursorSize.Value * 0.75f);
+            directCursorMesh.DualSided.Value = true;
+            directCursorMesh.Color = new color(1f, 1f, 1f, 0.25f);
+
+            _directCursorRenderer = _directCursorSlot.AttachComponent<MeshRenderer>();
+            _directCursorRenderer.Mesh.Target = directCursorMesh;
+            _directCursorRenderer.Material.Target = _directCursorMaterial;
+            _directCursorRenderer.ShadowCastMode.Value = ShadowCastMode.Off;
+            _directCursorRenderer.SortingOrder.Value = 100;
+        }
+        else
+        {
+            _directCursorMaterial = _directCursorSlot.GetComponent<OverlayUnlitMaterial>();
+            _directCursorRenderer = _directCursorSlot.GetComponent<MeshRenderer>();
+        }
+
+        _directLineSlot = _beamSlot.FindChild("DirectLine");
+        if (_directLineSlot == null)
+        {
+            _directLineSlot = _beamSlot.AddLocalSlot("DirectLine");
+            _directLineMesh = _directLineSlot.AttachComponent<SegmentMesh>();
+            _directLineMesh.Radius.Value = BeamRadius.Value * 0.75f;
+            _directLineMesh.Sides.Value = 6;
+            _directLineMesh.PointA.Value = float3.Backward * MaxDistance.Value;
+            _directLineMesh.PointB.Value = float3.Backward * MaxDistance.Value;
+            _directLineMesh.PointAColor.Value = new color(1f, 1f, 1f, 0.18f);
+            _directLineMesh.PointBColor.Value = new color(1f, 1f, 1f, 0.18f);
+
+            _directLineMaterial = _directLineSlot.AttachComponent<OverlayUnlitMaterial>();
+            _directLineMaterial.BlendMode.Value = BlendMode.Additive;
+            _directLineMaterial.FrontTintColor.Value = colorHDR.White;
+            _directLineMaterial.BehindTintColor.Value = new colorHDR(1f, 1f, 1f, 0.35f);
+            _directLineMaterial.UseVertexColor.Value = true;
+            _directLineMaterial.RenderQueue.Value = 4000;
+
+            _directLineRenderer = _directLineSlot.AttachComponent<MeshRenderer>();
+            _directLineRenderer.Mesh.Target = _directLineMesh;
+            _directLineRenderer.Material.Target = _directLineMaterial;
+            _directLineRenderer.ShadowCastMode.Value = ShadowCastMode.Off;
+            _directLineRenderer.SortingOrder.Value = 100;
+        }
+        else
+        {
+            _directLineMesh = _directLineSlot.GetComponent<SegmentMesh>();
+            _directLineMaterial = _directLineSlot.GetComponent<OverlayUnlitMaterial>();
+            _directLineRenderer = _directLineSlot.GetComponent<MeshRenderer>();
+        }
+
+        SetIfChanged(_cursorSlot.ActiveSelf, false);
+        SetIfChanged(_directCursorSlot.ActiveSelf, false);
+        SetIfChanged(_directLineSlot.ActiveSelf, false);
     }
 
     private void CastAndUpdate(float delta)

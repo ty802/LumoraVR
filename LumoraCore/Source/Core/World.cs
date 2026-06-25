@@ -178,6 +178,12 @@ public class World
 	// Network replicators for world structure synchronization
 	private Networking.Sync.ReplicatedSlotCollection? _slotCollection;
 	private Networking.Sync.ReplicatedUserCollection? _userCollection;
+
+	// The flat world slot registry. Exposed so the permission gate can tell a guest's own-byte slot
+	// REGISTRATION (allowed - that's how a user spawns its own content) from an own-byte add onto a
+	// host-owned per-slot collection like a component list (denied - that would bolt components onto host
+	// geometry). See DataModelPermissions.Authorize. -xlinka
+	internal IWorldElement? SlotRegistryElement => _slotCollection;
 	private readonly List<IWorldEventReceiver>[] _worldEventReceivers;
 	private WorldState _state = WorldState.Created;
 	private InitializationState _initState = InitializationState.Created;
@@ -196,6 +202,27 @@ public class World
 	private readonly object _stateLock = new object();
 	private readonly WorldMetrics _metrics = new WorldMetrics();
 	private readonly DataModelPermissionController _dataModelPermissions;
+
+	// Owned-namespace build is armed once the local user's allocation byte is known. Gated so a per-peer
+	// spawn that runs a frame too early falls back to NOT building (and retries) instead of minting into
+	// authority byte 0 and resurrecting the permission-bypass problem. -xlinka
+	private bool _localAllocationReady;
+	// First valid local-user assignment wins for the session. Guards a stray second SetLocalUser from
+	// silently re-pointing the actor mid-session. -xlinka
+	private bool _localUserSet;
+	// When the client entered data-model init (join window opened). Diagnostics + bounded-wait logging. 0 = not joining. -xlinka
+	private double _dataModelInitStartTime;
+	// Bounded deferral of Running on a client while we wait for the local user to resolve. -xlinka
+	private int _awaitingLocalUserFrames;
+	private const int MaxAwaitLocalUserFrames = 120; // ~2s @60, generous for a slow initial decode
+	// Missing-root respawn watchdog state - re-fires spawn if a set LocalUser never gets a body. -xlinka
+	private int _missingRootFrames;
+	private int _respawnAttempts;
+	private const int MissingRootGraceFrames = 180; // ~3s
+	private const int MaxRespawnAttempts = 3;
+
+	/// <summary>Seconds since this client began data-model init, or 0 on the authority / before join. -xlinka</summary>
+	public double TimeSinceDataModelInit => _dataModelInitStartTime <= 0 ? 0 : TotalTime - _dataModelInitStartTime;
 
 	// Static global hook type registry (shared across all worlds)
 	private static HookTypeRegistry _staticHookTypes = new HookTypeRegistry();
@@ -787,6 +814,17 @@ public class World
 		world.Configuration.MaxUsers.Value = global::System.Math.Max(1, maxUsers);
 		world.Configuration.AllowJoin.Value = true;
 		world.Configuration.IsPublic.Value = visibility == SessionVisibility.Public;
+		// Seed the access level from the hosted visibility so the Settings radio shows the right selection and
+		// later live toggles have the correct baseline. This runs before the world is Running, so the
+		// AccessLevel.OnChanged beacon handler (Running-gated) won't fire here - the initial beacon still comes
+		// from the metadata visibility below. -xlinka
+		world.Configuration.AccessLevel.Value = visibility switch
+		{
+			SessionVisibility.LAN => WorldAccessLevel.LAN,
+			SessionVisibility.Contacts => WorldAccessLevel.Contacts,
+			SessionVisibility.Public => WorldAccessLevel.Anyone,
+			_ => WorldAccessLevel.Private,
+		};
 
 		// Build session metadata
 		var metadata = new SessionMetadata
@@ -1296,20 +1334,153 @@ public class World
 	internal void UnregisterUser(User user) => RemoveUser(user);
 
 	/// <summary>
-	/// Set the local user (client's own user).
+	/// Set the local user (client's own user). First valid assignment wins for the session.
 	/// </summary>
 	public void SetLocalUser(User user)
 	{
-		LocalUser = user;
-		// Only configure streams if world is already Running.
-		// For clients, streams are decoded AFTER SetLocalUser is called during FullBatch processing.
-		// ConfigureLocalTrackingStreams will be called in StartRunning() instead.
-		if (_state == WorldState.Running)
+		if (user == null)
 		{
-			user?.ConfigureLocalTrackingStreams();
+			LumoraLogger.Warn("SetLocalUser(null) ignored.");
+			return;
 		}
-		AddUser(user!);
-		LumoraLogger.Log($"Local user set: {user!.UserName.Value}");
+
+		// One-shot: first valid assignment wins. A redundant call with the SAME user is a quiet no-op (the
+		// grant-claim path and User.Initialize both race to set it), a DIFFERENT user is a bug (mismatched
+		// grant / wrong RefID) and is rejected loudly rather than silently re-pointing the actor. -xlinka
+		if (_localUserSet)
+		{
+			if (!ReferenceEquals(LocalUser, user))
+				LumoraLogger.Error($"SetLocalUser called again with a DIFFERENT user " +
+					$"(have '{LocalUser?.UserName.Value}' {LocalUser?.ReferenceID}, got '{user.UserName.Value}' {user.ReferenceID}). Ignoring.");
+			return;
+		}
+
+		_localUserSet = true;
+		LocalUser = user;
+
+		// Only configure streams if world is already Running. For clients, streams are decoded AFTER
+		// SetLocalUser during FullBatch processing, so StartRunning() configures them instead.
+		if (_state == WorldState.Running)
+			user.ConfigureLocalTrackingStreams();
+
+		AddUser(user);
+		LumoraLogger.Log($"Local user set: {user.UserName.Value}");
+
+		// Arm owned-namespace building now we have the local user. No-op until the allocation byte is
+		// resolvable, the spawn driver retries if AllocationID hasn't synced yet. -xlinka
+		InitializeAllocationForLocalUser();
+
+		// On a client this is the moment we definitively know our own user - fire the joined event so the
+		// per-peer spawn builds OUR equipment under the (replicated) scaffold. The host already fires it for
+		// every user via AddUser, so only do this on a client to avoid a double-fire. -xlinka
+		if (!IsAuthority)
+			TriggerUserJoinedEvent(user);
+	}
+
+	/// <summary>
+	/// Resolve which RefID byte the local user's own content should mint into. On the host the local user IS
+	/// the authority, so this returns the authority byte (host owns everything anyway). On a client it's the
+	/// local user's allocation byte once known, else the byte carried in the user's own RefID (set even
+	/// before AllocationID syncs), else authority as a last resort. -xlinka
+	/// </summary>
+	private byte ResolveOwnedAllocationByte()
+	{
+		var u = LocalUser;
+		if (u == null || IsAuthority)
+			return RefIDConstants.AUTHORITY_BYTE;
+
+		var b = u.AllocationID.Value;
+		if (RefIDConstants.IsValidUserByte(b))
+			return b;
+
+		b = u.ReferenceID.GetUserByte();
+		return RefIDConstants.IsValidUserByte(b) ? b : RefIDConstants.AUTHORITY_BYTE;
+	}
+
+	/// <summary>
+	/// Arm owned-namespace building for the local user. Idempotent. Must run AFTER LocalUser is set and its
+	/// allocation byte is resolvable, BEFORE any per-peer spawn builds the user's own equipment, so that
+	/// equipment lands in the owned namespace. Host short-circuits true (it authors in authority byte 0). -xlinka
+	/// </summary>
+	public bool InitializeAllocationForLocalUser()
+	{
+		if (IsAuthority)
+		{
+			_localAllocationReady = true;
+			return true;
+		}
+
+		var u = LocalUser;
+		if (u == null)
+			return false;
+
+		var b = ResolveOwnedAllocationByte();
+		if (!RefIDConstants.IsValidUserByte(b))
+		{
+			LumoraLogger.Warn($"InitializeAllocationForLocalUser: local user '{u.UserName.Value}' has no valid allocation byte yet");
+			return false;
+		}
+
+		_localAllocationReady = true;
+		return true;
+	}
+
+	/// <summary>True once owned-namespace building is armed for the local user (or we're the host). -xlinka</summary>
+	public bool IsLocalAllocationReady => _localAllocationReady || IsAuthority;
+
+	/// <summary>
+	/// Run an action with the allocation context scoped to the local user's own namespace, so everything
+	/// built inside - slots, components, sub-slots - is minted into and OWNED by the local user. The entry
+	/// point a per-peer spawn uses to build its own equipment. On the host this is the authority byte (a
+	/// no-op scope). -xlinka
+	/// </summary>
+	public IDisposable EnterLocalUserAllocation() => new OwnedAllocationScope(this, ResolveOwnedAllocationByte());
+
+	/// <summary>
+	/// Create a slot in the local user's own RefID namespace under the given parent. Networked (others see
+	/// it) but OWNED by the local user, so the permission gate lets them keep mutating it with no system
+	/// bypass. For a joining user's own equipment - NOT shared world content (that stays host-authoritative
+	/// via AddSlot). -xlinka
+	/// </summary>
+	public Slot AddLocalUserSlot(Slot parent, string name = "Slot")
+	{
+		if (parent == null) throw new ArgumentNullException(nameof(parent));
+		var b = ResolveOwnedAllocationByte();
+		if (b == RefIDConstants.AUTHORITY_BYTE)
+			return parent.AddSlot(name);
+
+		ReferenceController.OwnedAllocationBlockBegin(b);
+		try { return parent.AddSlot(name); }
+		finally { ReferenceController.OwnedAllocationBlockEnd(b); }
+	}
+
+	// Scoped owned-allocation block. Authority byte means no scope (host already owns everything), so we
+	// skip begin/end entirely and the dispose is a no-op. -xlinka
+	private sealed class OwnedAllocationScope : IDisposable
+	{
+		private readonly World _world;
+		private readonly byte _byte;
+		private bool _active;
+
+		public OwnedAllocationScope(World world, byte userByte)
+		{
+			_world = world;
+			_byte = userByte;
+			if (RefIDConstants.IsValidUserByte(userByte))
+			{
+				_world.ReferenceController.OwnedAllocationBlockBegin(userByte);
+				_active = true;
+			}
+		}
+
+		public void Dispose()
+		{
+			if (_active)
+			{
+				_active = false;
+				_world.ReferenceController.OwnedAllocationBlockEnd(_byte);
+			}
+		}
 	}
 
 	/// <summary>
@@ -1405,6 +1576,7 @@ public class World
 		hostUser.UserPlatform.Value = GetCurrentPlatform();
 
 		LocalUser = hostUser;
+		_localUserSet = true; // host's local user is final - keep SetLocalUser's one-shot guard consistent. -xlinka
 		AddUserToCollection(hostUser, userRefId, isNewlyCreated: true);
 		hostUser.ConfigureLocalTrackingStreams();
 		LumoraLogger.Log($"Created host user '{resolvedName}' with RefID {userRefId}");
@@ -1500,6 +1672,38 @@ public class World
 		{
 			StartDataModelInit();
 		}
+
+		// The full-state batch (data channel) can be applied BEFORE this JoinGrant (control channel) sets the
+		// local-user target. When that happens our own User was added to the collection while the target was
+		// still null, so User.Initialize() skipped the local-user match and nothing retried it - the client
+		// ends up with no LocalUser (no actor -> its avatar/hands/laser/movement get permission-denied). Now
+		// that the target RefID is known, claim an already-present user here. If it hasn't synced yet this is a
+		// no-op and User.Initialize() catches it on add. -xlinka
+		TryClaimPendingLocalUser();
+	}
+
+	/// <summary>
+	/// Assign LocalUser from an already-synced user matching the join grant's target RefID, if it arrived
+	/// before the grant. Order-independent companion to the per-user check in User.Initialize().
+	/// </summary>
+	private void TryClaimPendingLocalUser()
+	{
+		if (LocalUser != null)
+			return;
+
+		var target = _session?.Sync?.LocalUserRefIDToInit ?? RefID.Null;
+		if (target.IsNull)
+			return;
+
+		foreach (var user in GetAllUsers())
+		{
+			if (user != null && user.ReferenceID == target)
+			{
+				SetLocalUser(user);
+				LumoraLogger.Log($"OnJoinGrantReceived: claimed already-synced local user '{user.UserName.Value}' (RefID: {target})");
+				return;
+			}
+		}
 	}
 
 	/// <summary>
@@ -1508,10 +1712,92 @@ public class World
 	/// </summary>
 	public void OnFullStateReceived()
 	{
-		if (_state == WorldState.InitializingDataModel)
+		if (_state != WorldState.InitializingDataModel)
+			return;
+
+		// A client needs an actor before going Running, or the whole session is headless (no LocalUser ->
+		// no permission actor -> avatar/equipment denied). If the user isn't claimed yet, defer Running a
+		// bounded number of pumps and keep retrying. The host never reaches here. -xlinka
+		if (IsAuthority || TryReadyLocalUserForRunning())
 		{
 			StartRunning();
+			return;
 		}
+
+		_awaitingLocalUserFrames = 0;
+		LumoraLogger.Warn($"OnFullStateReceived: full state in but LocalUser not resolved yet " +
+			$"(target {_session?.Sync?.LocalUserRefIDToInit}). Deferring Running, retrying up to {MaxAwaitLocalUserFrames} pumps " +
+			$"(t+{TimeSinceDataModelInit:F1}s).");
+	}
+
+	private bool TryReadyLocalUserForRunning()
+	{
+		if (LocalUser != null)
+			return true;
+		TryClaimPendingLocalUser();
+		return LocalUser != null;
+	}
+
+	/// <summary>
+	/// Pumped from the session control-drain while we deferred Running waiting for the local user. Promotes
+	/// to Running the moment the user lands, after the bound it goes Running anyway but logs a LOUD error so
+	/// a genuinely-missing local user is a visible failure, never silent. -xlinka
+	/// </summary>
+	private void TickAwaitingLocalUser()
+	{
+		if (_state != WorldState.InitializingDataModel || IsAuthority)
+			return;
+
+		if (TryReadyLocalUserForRunning())
+		{
+			LumoraLogger.Log($"Local user resolved after {_awaitingLocalUserFrames} deferred pump(s), going Running.");
+			StartRunning();
+			return;
+		}
+
+		if (++_awaitingLocalUserFrames >= MaxAwaitLocalUserFrames)
+		{
+			LumoraLogger.Error($"JOIN: LocalUser never resolved after {_awaitingLocalUserFrames} pumps " +
+				$"(target {_session?.Sync?.LocalUserRefIDToInit}, t+{TimeSinceDataModelInit:F1}s). Entering world WITHOUT a local " +
+				$"actor - avatar/equipment will be permission-denied until it heals. This is a join ordering/decode failure.");
+			StartRunning();
+		}
+	}
+
+	/// <summary>Pumped each session control-drain so join progress advances while the world is still pre-Running. -xlinka</summary>
+	public void PumpJoinProgress()
+	{
+		if (_state == WorldState.InitializingDataModel)
+			TickAwaitingLocalUser();
+	}
+
+	// If LocalUser is set but never gets a Root (spawn never ran, or the body tree never decoded), re-fire
+	// spawn after a grace window so a one-frame race doesn't leave the user permanently bodyless. Bounded so
+	// a genuinely un-spawnable user doesn't loop forever. Healthy sessions reset every frame and never fire. -xlinka
+	private void TickMissingRootWatchdog()
+	{
+		var lu = LocalUser;
+		if (lu == null || lu.Root != null)
+		{
+			_missingRootFrames = 0;
+			return;
+		}
+
+		if (++_missingRootFrames < MissingRootGraceFrames)
+			return;
+		_missingRootFrames = 0;
+
+		if (_respawnAttempts >= MaxRespawnAttempts)
+		{
+			LumoraLogger.Error($"Missing-root watchdog gave up after {_respawnAttempts} attempts for local user " +
+				$"'{lu.UserName.Value}' ({lu.ReferenceID}); user remains bodyless.");
+			return;
+		}
+
+		_respawnAttempts++;
+		LumoraLogger.Warn($"Missing-root watchdog: local user '{lu.UserName.Value}' has no Root after grace - " +
+			$"re-firing spawn (attempt {_respawnAttempts}/{MaxRespawnAttempts}).");
+		TriggerUserJoinedEvent(lu);
 	}
 
 	/// <summary>
@@ -1558,6 +1844,7 @@ public class World
 		var oldState = _state;
 		_initState = InitializationState.InitializingDataModel;
 		_state = WorldState.InitializingDataModel;
+		_dataModelInitStartTime = TotalTime; // join window opened - clock for bounded local-user wait. -xlinka
 		LumoraLogger.Log("Starting data model initialization");
 		OnStateChanged?.Invoke(oldState, _state);
 	}
@@ -1569,6 +1856,9 @@ public class World
 	{
 		if (_state == WorldState.Destroyed)
 			return;
+
+		if (!IsAuthority && LocalUser == null)
+			LumoraLogger.Error("StartRunning: client going Running with no LocalUser - see prior JOIN error.");
 
 		var oldState = _state;
 		_initState = InitializationState.Finished;
@@ -1825,6 +2115,9 @@ public class World
 			{
 				LocalUser.FPS.Value = (float)(1.0 / delta);
 			}
+
+			// Stage 12: missing-root respawn watchdog - heals a bodyless local user. -xlinka
+			TickMissingRootWatchdog();
 		}
 		finally
 		{
@@ -1899,6 +2192,7 @@ public class World
 	private void UpdateComponents(float delta)
 	{
 		_updateManager?.RunStartups();
+		_updateManager?.RunStartupRetries(); // re-drive anything whose startup threw (transient join-window denials)
 		_updateManager?.RunUpdates(delta);
 	}
 

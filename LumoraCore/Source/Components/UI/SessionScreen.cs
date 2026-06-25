@@ -294,7 +294,7 @@ public sealed class SessionScreen : WidgetScreen
             v => { config.MaxUsers.Value = (int)MathF.Round(v); return config.MaxUsers.Value.ToString(); });
         ToggleRow(worldBody, "Mobile Friendly", config.MobileFriendly.Value, v => config.MobileFriendly.Value = v);
         ToggleRow(worldBody, "Allow Joining", config.AllowJoin.Value, v => config.AllowJoin.Value = v);
-        ToggleRow(worldBody, "Public", config.IsPublic.Value, v => config.IsPublic.Value = v);
+        // No "Public" toggle - public-ness is just the "Anyone" access level below, not a separate flag. -xlinka
         AddRow(worldBody, $"Description: {(string.IsNullOrEmpty(config.Description.Value) ? "(none)" : config.Description.Value)}");
 
         var saveBody = AddSection(_leftColumn, "World Save Options");
@@ -308,7 +308,14 @@ public sealed class SessionScreen : WidgetScreen
         {
             var captured = level;
             RadioRow(accessBody, "join-access", PrettyAccess(level), config.AccessLevel.Value == level,
-                () => config.AccessLevel.Value = captured);
+                () =>
+                {
+                    // Host-only: changing access re-advertises the session + starts/stops the LAN beacon live
+                    // (WorldSettings.AccessLevel handler). Re-render so the new selection actually shows. -xlinka
+                    if (!world.IsAuthority) return;
+                    config.AccessLevel.Value = captured;
+                    RebuildSettings();
+                });
         }
 
         var sessionBody = AddSection(_rightColumn, "Session");
@@ -593,7 +600,10 @@ public sealed class SessionScreen : WidgetScreen
     private static string PrettyAccess(World.WorldAccessLevel level) => level switch
     {
         World.WorldAccessLevel.Private => "Private (invite only)",
+        World.WorldAccessLevel.LAN => "LAN (local network)",
+        World.WorldAccessLevel.Contacts => "Contacts",
         World.WorldAccessLevel.ContactsPlus => "Contacts+",
+        World.WorldAccessLevel.Anyone => "Anyone (public)",
         World.WorldAccessLevel.GroupMembers => "Group Members",
         World.WorldAccessLevel.GroupPlus => "Group+",
         World.WorldAccessLevel.GroupPublic => "Group Public",

@@ -189,8 +189,6 @@ public class CommonAvatarBuilder : Component, IAvatarBuilder, IEmptyAvatarSlotHa
         var toolSlot = controller.AddSlot("HandTool");
         var tool = toolSlot.AttachComponent<HandTool>();
         tool.Side.Value = side;
-        if (side == Chirality.Right)
-            tool.EquipNewToolItem<DevToolItem>("DevTool");
     }
 
     private Slot BuildHeadNode(Slot bodyNodes, User user)

@@ -163,7 +163,13 @@ public class Session : IDisposable
 
         if (metadata.Visibility == SessionVisibility.Public)
         {
-            session.StartPublicServerRegistration();
+            // Detached on purpose - don't stall host creation on a public-server round-trip. The method
+            // logs its own failures; the continuation catches anything that escapes so it can't go silent.
+            _ = session.StartPublicServerRegistration().ContinueWith(t =>
+            {
+                if (t.IsFaulted)
+                    LumoraLogger.Warn($"[lnl] Session: Public server registration faulted - {t.Exception?.GetBaseException().Message}");
+            }, TaskScheduler.Default);
         }
 
         LumoraLogger.Log($"[lnl] Session created as host with {session.Metadata.SessionURLs.Count} URLs");
@@ -253,9 +259,10 @@ public class Session : IDisposable
     }
 
     /// <summary>
-    /// Register with public session server for global discovery.
+    /// Register with public session server for global discovery. Returns a Task so callers can
+    /// observe faults; it runs detached (callers must not block session setup on a network round-trip).
     /// </summary>
-    private async void StartPublicServerRegistration()
+    private async Task StartPublicServerRegistration()
     {
         if (_serverClient != null || _directoryClient != null)
             return;
@@ -457,7 +464,11 @@ public class Session : IDisposable
 
         if (shouldRegisterPublic && !wasRegisteredPublic)
         {
-            StartPublicServerRegistration();
+            _ = StartPublicServerRegistration().ContinueWith(t =>
+            {
+                if (t.IsFaulted)
+                    LumoraLogger.Warn($"[lnl] Session: Public server registration faulted - {t.Exception?.GetBaseException().Message}");
+            }, TaskScheduler.Default);
         }
         else if (!shouldRegisterPublic && wasRegisteredPublic)
         {

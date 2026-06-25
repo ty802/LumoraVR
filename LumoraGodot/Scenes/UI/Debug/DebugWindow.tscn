@@ -900,49 +900,39 @@ fit_content = true
 selection_enabled = true
 scroll_active = false
 
-; ==================== RENDER / GPU TAB ====================
-[node name="Render" type="ScrollContainer" parent="Background/RootMargin/RootVBox/Tabs"]
-unique_name_in_owner = true
-layout_mode = 2
-horizontal_scroll_mode = 0
-
-[node name="RenderVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Render"]
-layout_mode = 2
-size_flags_horizontal = 3
-theme_override_constants/separation = 10
-
-[node name="GpuSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox"]
+; -- Render / GPU Section (lives in the Performance tab) --
+[node name="GpuSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox"]
 layout_mode = 2
 theme_override_styles/panel = SubResource("section_bg")
 
-[node name="GpuVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection"]
+[node name="GpuVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection"]
 layout_mode = 2
 theme_override_constants/separation = 2
 
-[node name="GpuHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox"]
+[node name="GpuHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.5, 0.85, 1, 1)
 theme_override_font_sizes/font_size = 14
 text = "RENDER / GPU"
 
-[node name="GpuSep" type="HSeparator" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox"]
+[node name="GpuSep" type="HSeparator" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox"]
 layout_mode = 2
 
-[node name="DrawCallsRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox"]
+[node name="DrawCallsRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox"]
 layout_mode = 2
 theme_override_styles/panel = SubResource("stat_row_bg")
 
-[node name="DrawCallsHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/DrawCallsRow"]
+[node name="DrawCallsHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/DrawCallsRow"]
 layout_mode = 2
 
-[node name="DrawCallsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/DrawCallsRow/DrawCallsHBox"]
+[node name="DrawCallsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/DrawCallsRow/DrawCallsHBox"]
 custom_minimum_size = Vector2(190, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
 theme_override_font_sizes/font_size = 13
 text = "Draw Calls / Frame"
 
-[node name="DrawCallsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/DrawCallsRow/DrawCallsHBox"]
+[node name="DrawCallsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/DrawCallsRow/DrawCallsHBox"]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -950,21 +940,21 @@ theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
 theme_override_font_sizes/font_size = 13
 text = "-"
 
-[node name="PrimitivesRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox"]
+[node name="PrimitivesRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox"]
 layout_mode = 2
 theme_override_styles/panel = SubResource("stat_row_alt_bg")
 
-[node name="PrimitivesHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/PrimitivesRow"]
+[node name="PrimitivesHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/PrimitivesRow"]
 layout_mode = 2
 
-[node name="PrimitivesKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/PrimitivesRow/PrimitivesHBox"]
+[node name="PrimitivesKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/PrimitivesRow/PrimitivesHBox"]
 custom_minimum_size = Vector2(190, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
 theme_override_font_sizes/font_size = 13
 text = "Primitives / Frame"
 
-[node name="PrimitivesValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/PrimitivesRow/PrimitivesHBox"]
+[node name="PrimitivesValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/PrimitivesRow/PrimitivesHBox"]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -972,21 +962,21 @@ theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
 theme_override_font_sizes/font_size = 13
 text = "-"
 
-[node name="RenderObjectsRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox"]
+[node name="RenderObjectsRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox"]
 layout_mode = 2
 theme_override_styles/panel = SubResource("stat_row_bg")
 
-[node name="RenderObjectsHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/RenderObjectsRow"]
+[node name="RenderObjectsHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/RenderObjectsRow"]
 layout_mode = 2
 
-[node name="RenderObjectsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/RenderObjectsRow/RenderObjectsHBox"]
+[node name="RenderObjectsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/RenderObjectsRow/RenderObjectsHBox"]
 custom_minimum_size = Vector2(190, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
 theme_override_font_sizes/font_size = 13
 text = "Objects Drawn / Frame"
 
-[node name="RenderObjectsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/RenderObjectsRow/RenderObjectsHBox"]
+[node name="RenderObjectsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/RenderObjectsRow/RenderObjectsHBox"]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -994,21 +984,21 @@ theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
 theme_override_font_sizes/font_size = 13
 text = "-"
 
-[node name="TextureMemRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox"]
+[node name="TextureMemRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox"]
 layout_mode = 2
 theme_override_styles/panel = SubResource("stat_row_alt_bg")
 
-[node name="TextureMemHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/TextureMemRow"]
+[node name="TextureMemHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/TextureMemRow"]
 layout_mode = 2
 
-[node name="TextureMemKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/TextureMemRow/TextureMemHBox"]
+[node name="TextureMemKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/TextureMemRow/TextureMemHBox"]
 custom_minimum_size = Vector2(190, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
 theme_override_font_sizes/font_size = 13
 text = "Texture Memory"
 
-[node name="TextureMemValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/TextureMemRow/TextureMemHBox"]
+[node name="TextureMemValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/TextureMemRow/TextureMemHBox"]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1016,21 +1006,21 @@ theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
 theme_override_font_sizes/font_size = 13
 text = "-"
 
-[node name="BufferMemRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox"]
+[node name="BufferMemRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox"]
 layout_mode = 2
 theme_override_styles/panel = SubResource("stat_row_bg")
 
-[node name="BufferMemHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/BufferMemRow"]
+[node name="BufferMemHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/BufferMemRow"]
 layout_mode = 2
 
-[node name="BufferMemKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/BufferMemRow/BufferMemHBox"]
+[node name="BufferMemKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/BufferMemRow/BufferMemHBox"]
 custom_minimum_size = Vector2(190, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
 theme_override_font_sizes/font_size = 13
 text = "Buffer Memory"
 
-[node name="BufferMemValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/BufferMemRow/BufferMemHBox"]
+[node name="BufferMemValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/BufferMemRow/BufferMemHBox"]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1038,21 +1028,21 @@ theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
 theme_override_font_sizes/font_size = 13
 text = "-"
 
-[node name="RenderVideoMemRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox"]
+[node name="RenderVideoMemRow" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox"]
 layout_mode = 2
 theme_override_styles/panel = SubResource("stat_row_alt_bg")
 
-[node name="RenderVideoMemHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/RenderVideoMemRow"]
+[node name="RenderVideoMemHBox" type="HBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/RenderVideoMemRow"]
 layout_mode = 2
 
-[node name="RenderVideoMemKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/RenderVideoMemRow/RenderVideoMemHBox"]
+[node name="RenderVideoMemKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/RenderVideoMemRow/RenderVideoMemHBox"]
 custom_minimum_size = Vector2(190, 0)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
 theme_override_font_sizes/font_size = 13
 text = "Total Video Memory"
 
-[node name="RenderVideoMemValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox/GpuSection/GpuVBox/RenderVideoMemRow/RenderVideoMemHBox"]
+[node name="RenderVideoMemValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox/GpuSection/GpuVBox/RenderVideoMemRow/RenderVideoMemHBox"]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
@@ -1060,7 +1050,7 @@ theme_override_colors/font_color = Color(0.85, 0.85, 0.9, 1)
 theme_override_font_sizes/font_size = 13
 text = "-"
 
-[node name="RenderHint" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Render/RenderVBox"]
+[node name="RenderHint" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Performance/PerfVBox"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.45, 0.45, 0.52, 1)
 theme_override_font_sizes/font_size = 10

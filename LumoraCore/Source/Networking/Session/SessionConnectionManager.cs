@@ -560,10 +560,19 @@ public class SessionConnectionManager : IDisposable
         var encoded = controlMessage.Encode();
         connection.Send(encoded, encoded.Length, reliable: true, background: false);
 
+        // Give the reject message time to flush before we tear the connection down. Run detached, but
+        // log faults instead of letting them vanish - Close() can throw on an already-disposed peer. -xlinka
         _ = Task.Run(async () =>
         {
-            await Task.Delay(250);
-            connection.Close();
+            try
+            {
+                await Task.Delay(250);
+                connection.Close();
+            }
+            catch (Exception ex)
+            {
+                LumoraLogger.Warn($"[lnl] SendJoinReject: deferred close failed: {ex.Message}");
+            }
         });
     }
 

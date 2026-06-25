@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Lumora.Core.Logging;
 
 namespace Lumora.Core.Assets;
 
@@ -108,45 +109,55 @@ public abstract class LoadableAsset : Asset
 
     private async Task ProcessUpdate()
     {
+        // Runs detached via Task.Run, so an escaping exception would be an unobserved task fault with no
+        // log trace. The inner try guards the load itself; this outer one catches the state transitions
+        // (SetLoadState, Unload, OnAssetUnloaded) so nothing slips through silently. -xlinka
         try
         {
-            if (LoadState == AssetLoadState.Created)
+            try
             {
-                SetLoadState(AssetLoadState.LoadStarted);
-            }
-
-            if (!_unload)
-            {
-                try
+                if (LoadState == AssetLoadState.Created)
                 {
-                    await LoadSelf().ConfigureAwait(false);
-                    if (LoadState != AssetLoadState.FullyLoaded && LoadState != AssetLoadState.Failed)
+                    SetLoadState(AssetLoadState.LoadStarted);
+                }
+
+                if (!_unload)
+                {
+                    try
                     {
-                        SetLoadState(AssetLoadState.FullyLoaded);
+                        await LoadSelf().ConfigureAwait(false);
+                        if (LoadState != AssetLoadState.FullyLoaded && LoadState != AssetLoadState.Failed)
+                        {
+                            SetLoadState(AssetLoadState.FullyLoaded);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        FailLoad(ex.Message);
                     }
                 }
-                catch (Exception ex)
+            }
+            finally
+            {
+                lock (_stateLock)
                 {
-                    FailLoad(ex.Message);
+                    _runningUpdate = false;
                 }
             }
-        }
-        finally
-        {
-            lock (_stateLock)
-            {
-                _runningUpdate = false;
-            }
-        }
 
-        if (_unload)
-        {
-            Unload();
-            if (LoadState != AssetLoadState.Unloaded)
+            if (_unload)
             {
-                SetLoadState(AssetLoadState.Unloaded);
+                Unload();
+                if (LoadState != AssetLoadState.Unloaded)
+                {
+                    SetLoadState(AssetLoadState.Unloaded);
+                }
+                VariantManager?.OnAssetUnloaded(this);
             }
-            VariantManager?.OnAssetUnloaded(this);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"LoadableAsset: unhandled error processing update for {AssetURL}: {ex.Message}");
         }
     }
 

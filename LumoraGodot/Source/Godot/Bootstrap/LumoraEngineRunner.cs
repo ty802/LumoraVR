@@ -101,6 +101,19 @@ public partial class LumoraEngineRunner : Node
 	private bool _vrInitializedAtBoot;
 	private double _discordPresenceTimer;
 
+	private void LogCallback(LumoraLogger.LogLevel level,String message){
+		switch(level){
+			case LumoraLogger.LogLevel.ERROR:
+				GD.PushError(message);
+				break;
+			case LumoraLogger.LogLevel.WARN:
+				GD.PushWarning(message);
+				break;
+			default:
+				GD.Print(message);
+				break;
+		}
+	}
 	/// <summary>
 	/// Initialization phases for engine bootstrap.
 	/// </summary>
@@ -128,6 +141,7 @@ public partial class LumoraEngineRunner : Node
 
 	public override void _Ready()
 	{
+		LumoraLogger.LogToGameEngine += LogCallback;
 		// Godot object picking logs in stereo and is not part of engine-side interaction. - xlinka
 		GetViewport().PhysicsObjectPicking = false;
 

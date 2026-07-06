@@ -18,19 +18,8 @@ namespace Lumora.Core.Logging
         private static readonly ConcurrentQueue<string> _logQueue = new();
         private static readonly AutoResetEvent _logEvent = new(false);
         private static readonly CancellationTokenSource _cancellationTokenSource = new();
-        private static readonly Lazy<MethodInfo?> GodotPrintMethod = new(() =>
-        {
-            try
-            {
-                var godotType = Type.GetType("Godot.GD, GodotSharp");
-                return godotType?.GetMethod("Print", new[] { typeof(object[]) });
-            }
-            catch
-            {
-                return null;
-            }
-        });
-
+        public delegate void GameEngineLogProxy(LogLevel level,String messages);
+        public static event GameEngineLogProxy? LogToGameEngine;
         static Logger()
         {
             LogDirectory = ResolveLogDirectory();
@@ -42,8 +31,6 @@ namespace Lumora.Core.Logging
             Task.Run(() => ProcessLogQueue(_cancellationTokenSource.Token));
         }
 
-        public static event Action<string> OnFormattedLogMessageWritten = null!;
-        public static event Action<string> OnPrettyLogMessageWritten = null!;
         public static event Action<LogLevel, string, string> OnLogWritten = null!;
 
         // Flip to true when actively diagnosing - Debug calls are firehose and choke
@@ -63,48 +50,10 @@ namespace Lumora.Core.Logging
             {
                 Console.WriteLine(logEntry);
             }
-
-            // Mirror all levels to the Godot output panel so diagnostics from
-            // Lumora.Core.Logging.Logger are visible in-editor, not just in the
-            // file at %APPDATA%/Lumora/logs/. Filtering this to WARN/ERROR
-            // hid debugging info that callers expected to see.
-            // - xlinka
-            TryMirrorToGodotConsole(level, message);
-
-            OnFormattedLogMessageWritten?.Invoke(message);
+            LogToGameEngine?.Invoke(level,message);
             OnLogWritten?.Invoke(level, timestamp, message);
-            switch (level)
-            {
-                case LogLevel.LOG:
-                    OnPrettyLogMessageWritten?.Invoke($"  [{DateTime.Now:HH:mm:ss}] [{level}] {message}");
-                    break;
-                case LogLevel.WARN:
-                    OnPrettyLogMessageWritten?.Invoke($"  [{DateTime.Now:HH:mm:ss}] [{level}] {message}");
-                    break;
-                case LogLevel.ERROR:
-                    OnPrettyLogMessageWritten?.Invoke($"  [{DateTime.Now:HH:mm:ss}] [{level}] {message}");
-                    break;
-                case LogLevel.DEBUG:
-                    OnPrettyLogMessageWritten?.Invoke($"  [{DateTime.Now:HH:mm:ss}] [{level}] {message}");
-                    break;
-            }
         }
 
-        private static void TryMirrorToGodotConsole(LogLevel level, string message)
-        {
-            try
-            {
-                var printMethod = GodotPrintMethod.Value;
-                if (printMethod != null)
-                {
-                    printMethod.Invoke(null, new object[] { new object[] { $"[{level}] {message}" } });
-                }
-            }
-            catch
-            {
-                // Ignore if not running in Godot context.
-            }
-        }
 
         private static void ProcessLogQueue(CancellationToken cancellationToken)
         {

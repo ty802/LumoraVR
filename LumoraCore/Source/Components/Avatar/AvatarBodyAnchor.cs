@@ -13,26 +13,26 @@ namespace Lumora.Core.Components.Avatar;
 /// Other objects (accessories, hats, tools, held items) can equip themselves to an
 /// AvatarBodyAnchor to attach to the correct body part even after the avatar is swapped.
 /// </summary>
-[ComponentCategory("Users/Common Avatar System")]
-public class AvatarBodyAnchor : Component, IAvatarObject, IAvatarObjectComponent
+[ComponentCategory("Users/Avatar")]
+public class AvatarBodyAnchor : Component, IAvatarEquippable, IAvatarEquipReceiver
 {
     /// <summary>Which body node this slot represents in the avatar.</summary>
     public readonly Sync<BodyNode> Node = new();
 
-    /// <summary>If true, destroys this slot when dequipped from an AvatarObjectSlot.</summary>
+    /// <summary>If true, destroys this slot when dequipped from an AvatarSocket.</summary>
     public readonly Sync<bool> DestroyOnDequip = new();
 
-    // IAvatarObject state
-    private AvatarObjectSlot _equippingSlot = null!;
+    // IAvatarEquippable state
+    private AvatarSocket _equippingSlot = null!;
 
-    // IAvatarObject
+    // IAvatarEquippable
 
-    BodyNode IAvatarObject.Node => Node.Value;
+    BodyNode IAvatarEquippable.Node => Node.Value;
     public bool IsEquipped => _equippingSlot != null;
-    public int EquipOrderPriority => 0;
-    public AvatarObjectSlot EquippingSlot => _equippingSlot;
-    public IEnumerable<BodyNode> MutuallyExclusiveNodes => System.Array.Empty<BodyNode>();
-    public User ExplicitlyAllowedUser { get; private set; } = null!;
+    public int EquipPriority => 0;
+    public AvatarSocket CurrentSocket => _equippingSlot;
+    public IEnumerable<BodyNode> ConflictingNodes => System.Array.Empty<BodyNode>();
+    public User AllowedEquipUser { get; private set; } = null!;
 
     public override void OnInit()
     {
@@ -42,7 +42,7 @@ public class AvatarBodyAnchor : Component, IAvatarObject, IAvatarObjectComponent
         // DestroyOnDequip = false (C# default, skip)
     }
 
-    public void Equip(AvatarObjectSlot slot)
+    public void Equip(AvatarSocket slot)
     {
         _equippingSlot = slot;
         LumoraLogger.Log($"AvatarBodyAnchor: Equipped {Node.Value} to slot on '{slot.Slot.SlotName.Value}'");
@@ -56,17 +56,17 @@ public class AvatarBodyAnchor : Component, IAvatarObject, IAvatarObjectComponent
             Slot.Destroy();
     }
 
-    public void ExplicitlyAllowEquip(User user)
+    public void AllowEquip(User user)
     {
-        ExplicitlyAllowedUser = user;
+        AllowedEquipUser = user;
     }
 
-    // IAvatarObjectComponent
+    // IAvatarEquipReceiver
 
-    public void OnPreEquip(AvatarObjectSlot slot) { }
+    public void OnPreEquip(AvatarSocket slot) { }
 
-    public void OnEquip(AvatarObjectSlot slot) { }
+    public void OnEquip(AvatarSocket slot) { }
 
-    public void OnDequip(AvatarObjectSlot slot) { }
+    public void OnDequip(AvatarSocket slot) { }
 }
 

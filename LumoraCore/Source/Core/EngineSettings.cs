@@ -42,6 +42,17 @@ public static class EngineSettings
         set => SetValue(ref _noclipSpeed, System.Math.Clamp(value, 1f, 30f));
     }
 
+    // AVATAR
+
+    /// <summary>Calibrated standing/eye height in metres. Drives the avatar auto-rescale (AvatarIK reads
+    /// InputInterface.UserHeight, which is kept in sync with this). Default 1.75 m. -xlinka</summary>
+    private static float _userHeight = 1.75f;
+    public static float UserHeight
+    {
+        get => _userHeight;
+        set => SetValue(ref _userHeight, System.Math.Clamp(value, 0.5f, 2.5f));
+    }
+
     // AUDIO
 
     private static float _masterVolume = 1f;
@@ -94,18 +105,34 @@ public static class EngineSettings
         set => SetValue(ref _renderScale, System.Math.Clamp(value, 0.5f, 2f));
     }
 
+    // NETWORK
+
+    /// <summary>
+    /// Sync send/process rate in Hz - how fast the session sync thread generates deltas and drains its
+    /// queues. Higher is smoother replication at the cost of bandwidth/CPU. Applies live to the active
+    /// session (<see cref="Lumora.Core.Networking.Session.SessionSyncManager.SyncRate"/> reads this).
+    /// </summary>
+    private static int _networkTickRate = 70;
+    public static int NetworkTickRate
+    {
+        get => _networkTickRate;
+        set => SetValue(ref _networkTickRate, System.Math.Clamp(value, 10, 120));
+    }
+
     // PERSISTENCE - values live-apply for preview; they are written to the shared binary config
     // store (Settings -> config.dat) only on Commit, which the exit screen's "Exit and Save" calls.
 
     private const string KeyMouseSensitivity = "Engine.Input.MouseSensitivity";
     private const string KeyMouseSmoothing = "Engine.Input.MouseSmoothing";
     private const string KeyNoclipSpeed = "Engine.Input.NoclipSpeed";
+    private const string KeyUserHeight = "Engine.Avatar.UserHeight";
     private const string KeyMasterVolume = "Engine.Audio.MasterVolume";
     private const string KeyVSync = "Engine.Video.VSync";
     private const string KeyMaxFps = "Engine.Video.MaxFps";
     private const string KeyBackgroundFps = "Engine.Video.BackgroundFps";
     private const string KeyFullscreen = "Engine.Video.Fullscreen";
     private const string KeyRenderScale = "Engine.Video.RenderScale";
+    private const string KeyNetworkTickRate = "Engine.Network.TickRate";
 
     public static void Load()
     {
@@ -118,6 +145,7 @@ public static class EngineSettings
             _mouseSensitivity = System.Math.Clamp(Settings.ReadValue(KeyMouseSensitivity, _mouseSensitivity), 0.05f, 10f);
             _mouseSmoothing = System.Math.Clamp(Settings.ReadValue(KeyMouseSmoothing, _mouseSmoothing), 0f, 0.95f);
             _noclipSpeed = System.Math.Clamp(Settings.ReadValue(KeyNoclipSpeed, _noclipSpeed), 1f, 30f);
+            _userHeight = System.Math.Clamp(Settings.ReadValue(KeyUserHeight, _userHeight), 0.5f, 2.5f);
             _masterVolume = System.Math.Clamp(Settings.ReadValue(KeyMasterVolume, _masterVolume), 0f, 1f);
             _vsync = Settings.ReadValue(KeyVSync, _vsync);
             int fps = Settings.ReadValue(KeyMaxFps, _maxFps);
@@ -126,6 +154,7 @@ public static class EngineSettings
             _backgroundFps = bgFps <= 0 ? 0 : System.Math.Clamp(bgFps, 5, 240);
             _fullscreen = Settings.ReadValue(KeyFullscreen, _fullscreen);
             _renderScale = System.Math.Clamp(Settings.ReadValue(KeyRenderScale, _renderScale), 0.5f, 2f);
+            _networkTickRate = System.Math.Clamp(Settings.ReadValue(KeyNetworkTickRate, _networkTickRate), 10, 120);
             Changed?.Invoke();
         }
         catch (Exception ex)
@@ -150,12 +179,14 @@ public static class EngineSettings
             Settings.WriteValue(KeyMouseSensitivity, _mouseSensitivity);
             Settings.WriteValue(KeyMouseSmoothing, _mouseSmoothing);
             Settings.WriteValue(KeyNoclipSpeed, _noclipSpeed);
+            Settings.WriteValue(KeyUserHeight, _userHeight);
             Settings.WriteValue(KeyMasterVolume, _masterVolume);
             Settings.WriteValue(KeyVSync, _vsync);
             Settings.WriteValue(KeyMaxFps, _maxFps);
             Settings.WriteValue(KeyBackgroundFps, _backgroundFps);
             Settings.WriteValue(KeyFullscreen, _fullscreen);
             Settings.WriteValue(KeyRenderScale, _renderScale);
+            Settings.WriteValue(KeyNetworkTickRate, _networkTickRate);
         }
         catch (Exception ex)
         {

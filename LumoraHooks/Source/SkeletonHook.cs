@@ -21,6 +21,7 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
     private Skeleton3D _skeleton = null!;
     private Dictionary<string, int> _boneNameToIndex = new Dictionary<string, int>();
     private Dictionary<int, Transform3D> _boneRestPoses = new Dictionary<int, Transform3D>();
+    private Lumora.Core.Slot _rootBoneSlot = null!;
 
     public override void Initialize()
     {
@@ -175,38 +176,51 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
         // carries the up-axis (Z-up -> Y-up) rotation - is dropped from the skeleton, leaving the whole rig
         // mis-oriented (it imported lying on its side). The bone SLOTS still carry that transform (so IK + bone
         // visuals stay correct); only the Skeleton3D lost it. Offset the Skeleton3D node by the root bone's
-        // slot-parent transform relative to the model root, reapplying the dropped prefix ONCE for the whole
-        // skeleton - without touching any bone rest or bind pose (skinning math unchanged). -xlinka
-        _skeleton.Transform = Transform3D.Identity;
-        if (rootBoneSlot?.Parent != null && Owner.Slot != null && rootBoneSlot.Parent != Owner.Slot)
-        {
-            var offset = SlotGlobalTransform3D(Owner.Slot).AffineInverse() * SlotGlobalTransform3D(rootBoneSlot.Parent);
+        // slot-parent transform relative to the model root - without touching any bone rest or bind pose
+        // (skinning math unchanged). -xlinka
+        _rootBoneSlot = rootBoneSlot;
+        RefreshOrientationOffset();
+        LumoraLogger.Log($"SkeletonHook: rebuilt with {_skeleton.GetBoneCount()} bones, orientation offset origin={_skeleton.Transform.Origin} det={_skeleton.Transform.Basis.Determinant():F2}");
+    }
+
+    // The prefix nodes are LIVE transforms, not import-time constants: the forward normalization yaws the
+    // Armature after the skeleton is built, and the studio can insert a wrapper above the hips. A baked
+    // offset goes stale then and the skin renders somewhere the bones aren't (the engine-side bones,
+    // markers and IK all follow the slots). Re-derive it every ApplyChanges; the parent is re-read from
+    // the root bone each time so reparenting is picked up too. -xlinka
+    private void RefreshOrientationOffset()
+    {
+        if (_skeleton == null || !GodotObject.IsInstanceValid(_skeleton))
+            return;
+
+        var offset = Transform3D.Identity;
+        var source = _rootBoneSlot != null && !_rootBoneSlot.IsDestroyed ? _rootBoneSlot.Parent : null;
+        if (source != null && !source.IsDestroyed && Owner.Slot != null && source != Owner.Slot)
+            offset = SlotGlobalTransform3D(Owner.Slot).AffineInverse() * SlotGlobalTransform3D(source);
+
+        if (!_skeleton.Transform.IsEqualApprox(offset))
             _skeleton.Transform = offset;
-            LumoraLogger.Log($"SkeletonHook: orientation offset from '{rootBoneSlot.Parent.SlotName.Value}' origin={offset.Origin} det={offset.Basis.Determinant():F2}");
-        }
-        LumoraLogger.Log($"SkeletonHook: rebuilt with {_skeleton.GetBoneCount()} bones");
     }
 
     /// <summary>
-    /// Update bone transforms bidirectionally.
-    /// First sync FROM slots TO skeleton, then sync FROM skeleton BACK TO slots.
-    /// This ensures IK results are reflected in the slot hierarchy.
+    /// Push the bone SLOT transforms onto the Godot Skeleton3D so the skinned mesh deforms. One-way: the
+    /// engine owns the bones. Our own IK (AvatarIK / FullBodyIKSolver) and animation write the bone slots;
+    /// the Skeleton3D is purely a skinning target. We do NOT read poses back from Godot - Godot runs no IK
+    /// here, so a read-back would just round-trip our own values (adding drift and wasted work) and let the
+    /// platform fight engine authority. -xlinka
     /// </summary>
     private void UpdateBoneTransforms()
     {
         if (_skeleton == null || Owner.BoneCount == 0)
             return;
 
-        // STEP 1: Sync slot transforms TO skeleton (for non-IK bones)
+        RefreshOrientationOffset();
         SyncSlotsToSkeleton();
-
-        // STEP 2: Sync skeleton transforms BACK TO slots (for IK-driven bones)
-        SyncSkeletonToSlots();
     }
 
     /// <summary>
-    /// Sync slot local transforms to Skeleton3D bone poses.
-    /// Used for bones not driven by IK (manual animation).
+    /// Copy each bone slot's local transform onto its Skeleton3D bone pose, so the GPU skinning follows the
+    /// engine-driven bones (IK, animation, manual posing alike).
     /// </summary>
     private void SyncSlotsToSkeleton()
     {
@@ -228,47 +242,6 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
 
             // Set bone pose (relative to parent)
             _skeleton.SetBonePose(boneIndex, boneTransform);
-        }
-    }
-
-    /// <summary>
-    /// Sync Skeleton3D bone poses back to slot transforms.
-    /// This is crucial for IK systems - after IK solving, we need to update
-    /// the slot transforms so the visual representation matches.
-    /// </summary>
-    private void SyncSkeletonToSlots()
-    {
-        for (int i = 0; i < Owner.BoneCount; i++)
-        {
-            var boneSlot = Owner.BoneSlots[i];
-            if (boneSlot == null)
-                continue;
-
-            string boneName = Owner.BoneNames[i];
-            if (!_boneNameToIndex.TryGetValue(boneName, out int boneIndex))
-                continue;
-
-            // Get the current bone pose from Skeleton3D (after IK solving)
-            Transform3D currentBonePose = _skeleton.GetBonePose(boneIndex);
-
-            // Convert back to Lumora math types
-            var position = new float3(currentBonePose.Origin.X, currentBonePose.Origin.Y, currentBonePose.Origin.Z);
-            var rotation = new floatQ(
-                currentBonePose.Basis.GetRotationQuaternion().X,
-                currentBonePose.Basis.GetRotationQuaternion().Y,
-                currentBonePose.Basis.GetRotationQuaternion().Z,
-                currentBonePose.Basis.GetRotationQuaternion().W
-            );
-            var scale = new float3(
-                currentBonePose.Basis.Scale.X,
-                currentBonePose.Basis.Scale.Y,
-                currentBonePose.Basis.Scale.Z
-            );
-
-            // Update slot local transform (this makes the visual move!)
-            boneSlot.LocalPosition.Value = position;
-            boneSlot.LocalRotation.Value = rotation;
-            boneSlot.LocalScale.Value = scale;
         }
     }
 
@@ -388,6 +361,7 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
             _skeleton.QueueFree();
         }
 
+        _rootBoneSlot = null!;
         _skeleton = null!;
         _boneNameToIndex.Clear();
         _boneRestPoses.Clear();

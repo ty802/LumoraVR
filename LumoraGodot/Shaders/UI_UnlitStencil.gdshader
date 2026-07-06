@@ -3,7 +3,7 @@ shader_type spatial;
 // buffer equals the mask reference value (written first by UI_StencilWrite). That's what clips content to a
 // mask's exact SHAPE (circle/rounded/arbitrary geometry) instead of an axis-aligned rect. Drawn AFTER the
 // mask writer (the chunk's render_priority ordering guarantees this). Godot 4.5+ stencil_mode. -xlinka
-render_mode unshaded, blend_mix, depth_draw_never, depth_test_disabled, cull_disabled;
+render_mode unshaded, blend_mix, depth_draw_never, cull_front;
 stencil_mode read, compare_equal, 1;
 
 uniform vec4 albedo_color : source_color = vec4(1.0);

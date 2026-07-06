@@ -32,16 +32,20 @@ public class PhosCylinder : PhosShape
     /// <summary>Optional solid color</summary>
     public color? Color;
 
+    /// <summary>Whether the top/bottom caps exist. Fixed per instance (rebuild to change).</summary>
+    public readonly bool Caps;
+
     private int _segments;
     private int _totalVertices;
     private int _totalTriangles;
 
     // Constructors
 
-    public PhosCylinder(PhosTriangleSubmesh submesh, int segments = 32) : base(submesh.Mesh)
+    public PhosCylinder(PhosTriangleSubmesh submesh, int segments = 32, bool caps = true) : base(submesh.Mesh)
     {
         Segments = segments;
         _segments = segments;
+        Caps = caps;
         CalculateCounts();
 
         // Enable required vertex attributes
@@ -55,14 +59,11 @@ public class PhosCylinder : PhosShape
     private void CalculateCounts()
     {
         // Side vertices: (segments + 1) * 2 for top and bottom rings
-        // Top cap: segments + 2 (center + ring with seam duplicate)
-        // Bottom cap: segments + 2 (center + ring with seam duplicate)
-        _totalVertices = (_segments + 1) * 2 + (_segments + 2) * 2;
+        // Each cap (when present): segments + 2 (center + ring with seam duplicate)
+        _totalVertices = (_segments + 1) * 2 + (Caps ? (_segments + 2) * 2 : 0);
 
-        // Side triangles: segments * 2
-        // Top cap triangles: segments
-        // Bottom cap triangles: segments
-        _totalTriangles = _segments * 2 + _segments * 2;
+        // Side triangles: segments * 2; each cap: segments
+        _totalTriangles = _segments * 2 + (Caps ? _segments * 2 : 0);
     }
 
     public override void Remove()
@@ -118,6 +119,9 @@ public class PhosCylinder : PhosShape
             submesh.SetTriangle(triIndex++, bl, br, tr);
             submesh.SetTriangle(triIndex++, bl, tr, tl);
         }
+
+        if (!Caps)
+            return;
 
         // Top cap triangles (winding reversed for correct face direction)
         int topCenterIndex = firstVertex + (_segments + 1) * 2;
@@ -184,6 +188,9 @@ public class PhosCylinder : PhosShape
             if (Color.HasValue) Mesh.RawColors[index] = Color.Value;
             index++;
         }
+
+        if (!Caps)
+            return;
 
         float invDiameter = Radius > 0f ? 1f / (Radius * 2f) : 0f;
         float2 capScale = UVScale;

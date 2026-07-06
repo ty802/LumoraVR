@@ -12,9 +12,9 @@ using LumoraMeshes = Lumora.Core.Components.Meshes;
 namespace Lumora.Core.Components.Avatar;
 
 /// <summary>
-/// Turns a <see cref="BipedRig"/> into a grabbable, poseable skeleton: a collider + grab on each bone
+/// Turns a <see cref="HumanoidRig"/> into a grabbable, poseable skeleton: a collider + grab on each bone
 /// (grabbing a bone reparents it to the hand, so the limb follows) plus a see-through bone visual, so
-/// any rigged model can be posed before it's finalized into an avatar; the <see cref="AvatarCreator"/>
+/// any rigged model can be posed before it's finalized into an avatar; the <see cref="AvatarStudio"/>
 /// strips these handles on Create.
 /// </summary>
 public static class AvatarRigSetup
@@ -37,7 +37,7 @@ public static class AvatarRigSetup
     };
 
     /// <summary>Attach grab + visual handles to each minimal-biped bone. Idempotent. Returns the count added.</summary>
-    public static int SetupPoseHandles(BipedRig rig)
+    public static int SetupPoseHandles(HumanoidRig rig)
     {
         if (rig == null || rig.IsDestroyed)
             return 0;
@@ -47,7 +47,7 @@ public static class AvatarRigSetup
             childOf[segment.bone] = segment.child;
 
         int count = 0;
-        foreach (var node in BipedRig.MinimalBiped)
+        foreach (var node in HumanoidRig.RequiredBones)
         {
             var bone = rig.TryGetBone(node);
             if (bone == null || bone.IsDestroyed)
@@ -74,12 +74,12 @@ public static class AvatarRigSetup
     }
 
     /// <summary>Remove the grab + visual handles (called when finalizing the avatar).</summary>
-    public static void RemovePoseHandles(BipedRig rig)
+    public static void RemovePoseHandles(HumanoidRig rig)
     {
         if (rig == null || rig.IsDestroyed)
             return;
 
-        foreach (var node in BipedRig.MinimalBiped)
+        foreach (var node in HumanoidRig.RequiredBones)
         {
             var bone = rig.TryGetBone(node);
             if (bone == null || bone.IsDestroyed)
@@ -92,7 +92,7 @@ public static class AvatarRigSetup
 
     // A see-through bone: a ball at the joint (so the skeleton reads as connected - knees, elbows, etc.)
     // plus a shaft cylinder to the child joint. Overlay material, so it all shows through the skin.
-    private static void AddBoneVisual(BipedRig rig, Slot bone, BodyNode node, Dictionary<BodyNode, BodyNode> childOf)
+    private static void AddBoneVisual(HumanoidRig rig, Slot bone, BodyNode node, Dictionary<BodyNode, BodyNode> childOf)
     {
         var handle = bone.AddSlot(HandleName);   // sits at the bone origin = the joint
 

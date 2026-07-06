@@ -6,7 +6,7 @@ namespace Lumora.Core;
 /// <summary>
 /// How a world session behaves with respect to editing. Chosen at host time from the world's allowed
 /// modes and baked into the session - it is NOT a live toggle, and the lock is enforced
-/// host-authoritatively at the datamodel gate (so a modified client, or the host, cannot bypass it).
+/// host-authoritatively at the datamodel gate (so no client, and not the host, can bypass it).
 /// </summary>
 public enum WorldMode
 {

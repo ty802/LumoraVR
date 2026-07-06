@@ -1,7 +1,7 @@
 shader_type spatial;
-// depth_test_disabled: UI is a logical 2D layer, world geometry must never occlude it.
-// Ordering inside the UI tree is resolved by render_priority, not by depth. - xlinka
-render_mode unshaded, blend_mix, depth_draw_never, depth_test_disabled, cull_disabled;
+// Depth-TESTED against the world (walls occlude panels) but never depth-written; panel backings
+// (UI_UnlitZWrite) lay down the depth wall. UI-internal ordering stays render_priority. - xlinka
+render_mode unshaded, blend_mix, depth_draw_never, cull_front;
 
 uniform vec4 albedo_color : source_color = vec4(1.0);
 // Plain bilinear, NO mipmaps, NO aniso. UI textures at glancing viewing angles
@@ -21,6 +21,10 @@ uniform float alpha_cutoff : hint_range(0.0, 1.0) = 0.01;
 
 uniform bool rect_clip = false;
 uniform vec4 rect = vec4(0.0);
+// Added to the vertex position before the rect test. For scrolled content whose chunk is moved by a
+// transform (not re-tessellated), rect stays fixed in canvas space and this carries the scroll offset,
+// so the clip window stays pinned to the viewport while content slides under it. Zero for static UI. -xlinka
+uniform vec2 clip_offset = vec2(0.0);
 
 uniform int color_mask = 15;
 uniform int stencil_comparison = 8;
@@ -43,6 +47,9 @@ float rect_alpha(vec2 pos, vec4 clip_rect) {
 }
 
 void vertex() {
+	// Scroll offset: move the vertex AND clip against it from the SAME uniform, so a scrolled chunk's
+	// position and clip window can never desync (that caused content to leak past the viewport). -xlinka
+	VERTEX.xy += clip_offset;
 	local_pos = VERTEX.xy;
 	UV = UV * uv_scale + uv_offset;
 }

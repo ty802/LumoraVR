@@ -22,9 +22,17 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
     protected override void Build(World world)
     {
         var spawnSlot = world.RootSlot.AddSlot("SpawnArea");
-        spawnSlot.LocalPosition.Value = new float3(0f, 0f, 0f);
+        spawnSlot.LocalPosition.Value = new float3(0f, 0.01f, 0f);
         spawnSlot.Tag.Value = "spawn";
         spawnSlot.AttachComponent<SimpleUserSpawn>();
+        var spawnArea = spawnSlot.AttachComponent<CommonSpawnArea>();
+        var spawnPoints = spawnSlot.AttachComponent<CirclePointGenerator>();
+        spawnPoints.Radius.Value = 2f;
+        spawnArea.SpawnPointGenerator.Target = spawnPoints;
+        spawnSlot.AddSlot("Visual").AttachComponent<GlowCircle>()
+            .Setup(2f, 0.15f,
+                new colorHDR(0.85f, 0.83f, 0.78f, 0.3f), // faint white pool (alpha scales additive strength)
+                new colorHDR(1.0f, 0.72f, 0.28f, 1f));   // gold ring
 
         var lightSlot = world.RootSlot.AddSlot("DirectionalLight");
         lightSlot.LocalPosition.Value = new float3(0f, 10f, 0f);

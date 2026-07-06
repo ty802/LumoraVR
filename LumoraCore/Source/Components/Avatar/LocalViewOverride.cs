@@ -12,16 +12,16 @@ namespace Lumora.Core.Components.Avatar;
 /// doesn't see their own avatar head, while other users and floor shadows are unaffected.
 ///
 /// Usage:
-///   var lvo = headVisual.AttachComponent&lt;LocalViewOverride&gt;();
-///   lvo.Context.Value          = RenderingContext.UserView;
+///   var lvo = headVisual.AttachComponent<LocalViewOverride>();
+///   lvo.Context.Value          = ViewContext.UserView;
 ///   lvo.HasScaleOverride.Value = true;
 ///   lvo.ScaleOverride.Value    = float3.Zero;
 /// </summary>
-[ComponentCategory("Avatar")]
+[ComponentCategory("Users/Avatar")]
 public class LocalViewOverride : ImplementableComponent<IHook>
 {
     /// <summary>Which rendering context activates this override.</summary>
-    public readonly Sync<RenderingContext> Context = new();
+    public readonly Sync<ViewContext> Context = new();
 
     /// <summary>When true, PositionOverride replaces the slot's normal position.</summary>
     public readonly Sync<bool>   HasPositionOverride = new();
@@ -55,7 +55,7 @@ public class LocalViewOverride : ImplementableComponent<IHook>
     public override void OnInit()
     {
         base.OnInit();
-        Context.Value          = RenderingContext.UserView;
+        Context.Value          = ViewContext.UserView;
         // HasPositionOverride = false (C# default, skip)
         // PositionOverride = float3.Zero (C# default, skip)
         // HasRotationOverride = false (C# default, skip)

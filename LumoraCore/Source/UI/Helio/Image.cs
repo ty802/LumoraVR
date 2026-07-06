@@ -18,6 +18,8 @@ public sealed class Image : Graphic
     public readonly Sync<color> Tint;
     public readonly Sync<bool> NineSlice;
     public readonly Sync<bool> PreserveAspect;
+    public readonly Sync<bool> FlipHorizontal;
+    public readonly Sync<bool> FlipVertical;
 
     private IAssetProvider<TextureAsset>? _texture;
     private IAssetProvider<MaterialAsset>? _material;
@@ -26,6 +28,8 @@ public sealed class Image : Graphic
     private color _tint;
     private bool _nineSlice;
     private bool _preserveAspect;
+    private bool _flipH;
+    private bool _flipV;
 
     public Image()
     {
@@ -37,6 +41,8 @@ public sealed class Image : Graphic
         Tint = new Sync<color>(this, color.White);
         NineSlice = new Sync<bool>(this, false);
         PreserveAspect = new Sync<bool>(this, false);
+        FlipHorizontal = new Sync<bool>(this, false);
+        FlipVertical = new Sync<bool>(this, false);
     }
 
     public override bool RequiresPreGraphicsCompute => false;
@@ -56,6 +62,8 @@ public sealed class Image : Graphic
         _tint = Tint.Value;
         _nineSlice = NineSlice.Value && HasBorder(_borders);
         _preserveAspect = PreserveAspect.Value;
+        _flipH = FlipHorizontal.Value;
+        _flipV = FlipVertical.Value;
     }
 
     public override void ComputeGraphic(GraphicsChunk.RenderData renderData)
@@ -67,7 +75,9 @@ public sealed class Image : Graphic
         }
 
         var rect = rectTransform.LocalComputeRect;
-        var clipRect = renderData.ClipRect;
+        // GeometryClipRect (not ClipRect) so scroll content bakes full quads - the material still carries the
+        // real clip rect for the shader, but the geometry isn't culled/trimmed to the viewport. -xlinka
+        var clipRect = renderData.GeometryClipRect;
 
         if (rect.IsEmpty)
         {
@@ -88,7 +98,7 @@ public sealed class Image : Graphic
             return;
         }
 
-        RawImage.GenerateImage(submesh.Mesh, submesh, rect, _uvRect, _texture?.Asset, _preserveAspect, in _tint, clipRect);
+        RawImage.GenerateImage(submesh.Mesh, submesh, rect, _uvRect, _texture?.Asset, _preserveAspect, in _tint, clipRect, _flipH, _flipV);
     }
 
     public override bool IsPointInside(in float2 point)

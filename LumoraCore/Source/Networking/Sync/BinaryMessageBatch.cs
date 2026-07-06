@@ -301,7 +301,6 @@ public abstract class BinaryMessageBatch : SyncMessage
     /// </summary>
     protected virtual void ParseDataRecords(int expectedCount)
     {
-        // This method is no longer used with the new encoding approach
     }
 
     public override void Dispose()

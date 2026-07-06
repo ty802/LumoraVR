@@ -148,15 +148,11 @@ public abstract class Collider : ImplementableComponent
     // ABSTRACT METHODS
 
     /// <summary>
-    /// Create the Godot collision shape for this collider (returns Shape3D).
-    /// Called by platform hooks when building a physics body.
+    /// Shape-tight local bounding box for this collider, centered on <see cref="Offset"/>.
+    /// The platform hook builds the actual collision shape from the typed sync fields, so this
+    /// is purely the engine-side query used for culling, fitting, and overlap pre-tests.
     /// </summary>
-    public abstract object CreateGodotShape();
-
-    /// <summary>
-    /// Get the local bounding box for this collider (returns Aabb).
-    /// </summary>
-    public abstract object GetLocalBounds();
+    public abstract BoundingBox GetLocalBounds();
 
     // CLEANUP
 

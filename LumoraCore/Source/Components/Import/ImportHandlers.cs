@@ -14,7 +14,7 @@ public sealed class ModelImportRequest
 {
     public float Scale = 1f;
     public bool AutoScale;
-    public ModelMaterialType Material = ModelMaterialType.Unlit;
+    public ModelMaterialType Material = ModelMaterialType.Lit;
     public bool Colliders = true;
     public bool Grabbable = true;
     public bool Scalable = true;
@@ -50,6 +50,16 @@ public interface IRawFileImportHandler
     Task ImportAsync(Slot slot, string path);
 }
 
+// Reads the real OS clipboard and routes its contents (files / images / urls /
+// text) through the import pipeline. The core has no clipboard access, so the
+// platform layer (LumoraGodot) implements this and registers it; without it,
+// a paste is a no-op (no fake placeholder). - xlinka
+public interface IClipboardPasteHandler
+{
+    // Pull whatever's on the OS clipboard and import it into the focused world.
+    void Paste();
+}
+
 // Registry for pluggable import pipelines. LumoraCore defines the dialog flow;
 // platform/asset code (LumoraGodot) registers concrete handlers at engine startup.
 // Dialogs call the registered handler in RunImport; if none is registered, the
@@ -60,4 +70,7 @@ public static class ImportHandlers
     public static IModelImportHandler? Model { get; set; }
     public static IVideoImportHandler? Video { get; set; }
     public static IRawFileImportHandler? Raw { get; set; }
+
+    // Platform clipboard bridge. Null until the platform layer registers it. - xlinka
+    public static IClipboardPasteHandler? Clipboard { get; set; }
 }

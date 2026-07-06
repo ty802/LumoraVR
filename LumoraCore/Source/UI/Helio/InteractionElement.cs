@@ -65,6 +65,14 @@ public class InteractionElement : UIComponent, IUIInteractable
         return RectTransform?.LocalComputeRect.Contains(point) ?? false;
     }
 
+    // Drag arbitration. By default a pressed element keeps the drag for itself. Override to RELINQUISH it
+    // to a scrolling ancestor once the pointer has clearly started dragging - e.g. a button or list item
+    // inside a scroll view, so dragging across it scrolls the list instead of being swallowed. dragDelta is
+    // in canvas-local units measured from the press point. A plain click never moves far, so it never passes.
+    protected const float DragPassThreshold = 10f;
+
+    public virtual bool PassDragToParent(in float2 dragDelta) => false;
+
     public void NotifyHoverEnter(in UIInteractionContext context)
     {
         using var actorScope = EnterInteractionActor(in context);

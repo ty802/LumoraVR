@@ -34,6 +34,15 @@ public class MeshHook : ComponentHook<ProceduralMesh>
     private bool _loggedBadIndexError;
     private bool _loggedNaNVertexError;
 
+    // Reused surface-array scratch buffers. A deforming mesh (soft body) re-uploads every frame; allocating
+    // fresh managed arrays each time churns the GC and causes frame hitches. Reuse and only grow. -xlinka
+    private Vector3[]? _posBuf;
+    private Vector3[]? _normBuf;
+    private float[]? _tanBuf;
+    private Color[]? _colBuf;
+    private Vector2[]? _uvBuf;
+    private int[]? _idxBuf;
+
     /// <summary>
     /// Factory method for creating mesh hooks.
     /// </summary>
@@ -46,7 +55,6 @@ public class MeshHook : ComponentHook<ProceduralMesh>
     {
         Lumora.Core.Logging.Logger.Log($"MeshHook.Initialize: Starting for component on slot '{Owner?.Slot?.SlotName?.Value}'");
 
-        // Create the ArrayMesh to hold mesh data
         godotMesh = new ArrayMesh();
 
         // Create Godot mesh instance (will hide if MeshRenderer is present)
@@ -111,14 +119,16 @@ public class MeshHook : ComponentHook<ProceduralMesh>
             NotifyRenderer();
         }
 
-        // Hide our MeshInstance3D if a MeshRenderer is handling rendering
-        // MeshRenderer creates its own MeshInstance3D with its own material
+        // Hide our MeshInstance3D if something ELSE renders this mesh: a MeshRenderer (its own instance
+        // + material), or a SquishyBody (renders the deformed mesh on a child). Both coincide with our
+        // instance otherwise and z-fight. -xlinka
         if (meshInstance != null)
         {
-            bool hasMeshRenderer = Owner.Slot?.GetComponent<Lumora.Core.Components.MeshRenderer>() != null;
-            if (meshInstance.Visible != !hasMeshRenderer)
+            bool otherRenderer = Owner.Slot?.GetComponent<Lumora.Core.Components.MeshRenderer>() != null
+                || Owner.Slot?.GetComponent<Lumora.Core.Components.SquishyBody>() != null;
+            if (meshInstance.Visible != !otherRenderer)
             {
-                meshInstance.Visible = !hasMeshRenderer;
+                meshInstance.Visible = !otherRenderer;
             }
         }
     }
@@ -153,6 +163,14 @@ public class MeshHook : ComponentHook<ProceduralMesh>
     }
 
     /// <summary>
+    // Godot's surface arrays must be EXACTLY the vertex/index count, so reuse only when the size matches
+    // (constant for a deforming mesh) and reallocate when it changes. -xlinka
+    private static void EnsureExact<T>(ref T[]? buf, int n)
+    {
+        if (buf == null || buf.Length != n)
+            buf = new T[n];
+    }
+
     /// Upload PhosMesh to Godot ArrayMesh.
     /// Only uploads channels marked dirty in the upload hint.
     /// </summary>
@@ -186,7 +204,8 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         // Upload positions (ALWAYS required, regardless of hint)
         if (phosMesh.VertexCount > 0 && phosMesh.RawPositions != null)
         {
-            var positions = new Vector3[phosMesh.VertexCount];
+            EnsureExact(ref _posBuf, phosMesh.VertexCount);
+            var positions = _posBuf!;
             bool hadBadPosition = false;
             for (int i = 0; i < phosMesh.VertexCount; i++)
             {
@@ -212,7 +231,8 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         // Upload normals
         if (phosMesh.HasNormals && uploadHint[MeshUploadHint.Flag.Normals])
         {
-            var normals = new Vector3[phosMesh.VertexCount];
+            EnsureExact(ref _normBuf, phosMesh.VertexCount);
+            var normals = _normBuf!;
             for (int i = 0; i < phosMesh.VertexCount; i++)
             {
                 var n = phosMesh.RawNormals[i];
@@ -224,7 +244,8 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         // Upload tangents
         if (phosMesh.HasTangents && uploadHint[MeshUploadHint.Flag.Tangents])
         {
-            var tangents = new float[phosMesh.VertexCount * 4];
+            EnsureExact(ref _tanBuf, phosMesh.VertexCount * 4);
+            var tangents = _tanBuf!;
             for (int i = 0; i < phosMesh.VertexCount; i++)
             {
                 var t = phosMesh.RawTangents[i];
@@ -239,7 +260,8 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         // Upload colors
         if (phosMesh.HasColors && uploadHint[MeshUploadHint.Flag.Colors])
         {
-            var colors = new Color[phosMesh.VertexCount];
+            EnsureExact(ref _colBuf, phosMesh.VertexCount);
+            var colors = _colBuf!;
             var rawColors = phosMesh.RawColors;
             for (int i = 0; i < phosMesh.VertexCount; i++)
             {
@@ -260,7 +282,8 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         // Upload UV0
         if (phosMesh.HasUV0s && uploadHint[MeshUploadHint.Flag.UV0])
         {
-            var uvs = new Vector2[phosMesh.VertexCount];
+            EnsureExact(ref _uvBuf, phosMesh.VertexCount);
+            var uvs = _uvBuf!;
             for (int i = 0; i < phosMesh.VertexCount; i++)
             {
                 var uv = phosMesh.RawUV0s[i];
@@ -273,7 +296,8 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         bool hasIndices = submesh.IndexCount > 0 && submesh.RawIndices != null;
         if (hasIndices)
         {
-            var indices = new int[submesh.IndexCount];
+            EnsureExact(ref _idxBuf, submesh.IndexCount);
+            var indices = _idxBuf!;
             int maxIndex = -1;
             int minIndex = int.MaxValue;
             for (int i = 0; i < submesh.IndexCount; i++)

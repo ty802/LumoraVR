@@ -48,12 +48,18 @@ public class RigidBody : ImplementableComponent
     public readonly Sync<bool> FreezeRotationY;
     public readonly Sync<bool> FreezeRotationZ;
 
-    // RUNTIME STATE (set by hook)
+    // RUNTIME STATE
 
-    /// <summary>Is the body currently sleeping (not moving)</summary>
+    // These are LOCAL runtime state, not synced. Only the owner runs the simulation, so only the owner's
+    // values are meaningful; a non-owner doesn't simulate and leaves them at their defaults. They are not
+    // replicated - peers that need a body's sleep/collision state should drive off the synced velocity/pose
+    // the owner writes, not these. If a future need requires them network-wide, promote to Sync fields the
+    // owner writes. -xlinka
+
+    /// <summary>Whether the body is sleeping (not moving). Owner-local; only valid on the simulating peer.</summary>
     public bool IsSleeping { get; set; }
 
-    /// <summary>Is the body currently colliding with something</summary>
+    /// <summary>Whether the body is colliding with something. Owner-local; only valid on the simulating peer.</summary>
     public bool IsColliding { get; set; }
 
     // INITIALIZATION
@@ -79,7 +85,15 @@ public class RigidBody : ImplementableComponent
     {
         base.OnAwake();
         LumoraLogger.Log($"RigidBody: Initialized on '{Slot.SlotName.Value}' with Mass={Mass.Value}kg");
+    }
 
+    public override void OnInit()
+    {
+        base.OnInit();
+
+        // Attach RespawnData here, NOT OnAwake. OnAwake runs inside the ReferenceController's allocation
+        // soft-block, so creating a component (+ its sync members) there logs a "RefID allocation during
+        // OnAwake" warning per member - 8 lines per body. OnInit runs after the block is released. -xlinka
         var respawnData = Slot.GetComponent<RespawnData>();
         if (respawnData == null)
         {
@@ -88,35 +102,91 @@ public class RigidBody : ImplementableComponent
         }
     }
 
+    // AUTHORITY
+
+    /// <summary>
+    /// Whether THIS peer owns the simulation of this body. Exactly one peer integrates forces and replicates
+    /// the resulting pose/velocity; every other peer follows that replicated transform instead of running its
+    /// own divergent sim. Ownership is host-authoritative: a body parented under a user's root belongs to that
+    /// user's peer; everything else is world content owned by the world authority (host). A body under a REMOTE
+    /// user's root is owned by them, not us.
+    /// </summary>
+    public bool IsSimulationOwner
+    {
+        get
+        {
+            var world = World;
+            if (world == null)
+                return false;
+
+            // Under a user's root -> that user's peer simulates it. IsUnderLocalUser is the structural,
+            // reliable ownership signal (it tolerates the allocation-byte/ownership-link lag at join). -xlinka
+            var userRoot = Slot?.ActiveUserRoot;
+            if (userRoot != null)
+                return Slot!.IsUnderLocalUser;
+
+            // World content (no owning user): the world authority simulates it; clients follow.
+            return world.IsAuthority;
+        }
+    }
+
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
-        RunApplyChanges();
+
+        if (IsSimulationOwner)
+        {
+            // Owner drives the sim: queue the hook so it integrates forces and writes the synced pose/velocity. -xlinka
+            RunApplyChanges();
+        }
+        else
+        {
+            // Non-owner: never run a local sim that would fight the replicated transform. Drop any forces that
+            // got queued locally so they can't accumulate and fire if ownership later transfers to us. The body
+            // simply follows the Slot transform the owner replicates (SlotHook positions the visual from it). -xlinka
+            ClearPendingForces();
+        }
+    }
+
+    // Sync-change handler. The base queues the hook to ApplyChanges on every replicated field write; a non-owner
+    // must NOT be driven that way (an incoming velocity/pose write would otherwise kick off a local sim that
+    // diverges from the owner). Owners flush normally. The startup hook flush in ImplementableComponent.OnStart
+    // is separate, so the body is still created on every peer. -xlinka
+    public override void OnChanges()
+    {
+        if (IsSimulationOwner)
+            base.OnChanges();
     }
 
     // FORCE METHODS
 
     /// <summary>
-    /// Apply a force at the center of mass.
+    /// Apply a force at the center of mass. No-op on a non-owner (forces are integrated only by the simulating peer).
     /// </summary>
     public void AddForce(float3 force)
     {
+        if (!IsSimulationOwner)
+            return;
         PendingForce += force;
     }
 
     /// <summary>
-    /// Apply an impulse at the center of mass (instantaneous velocity change).
+    /// Apply an impulse at the center of mass (instantaneous velocity change). No-op on a non-owner.
     /// </summary>
     public void AddImpulse(float3 impulse)
     {
+        if (!IsSimulationOwner)
+            return;
         PendingImpulse += impulse;
     }
 
     /// <summary>
-    /// Apply torque to rotate the body.
+    /// Apply torque to rotate the body. No-op on a non-owner.
     /// </summary>
     public void AddTorque(float3 torque)
     {
+        if (!IsSimulationOwner)
+            return;
         PendingTorque += torque;
     }
 

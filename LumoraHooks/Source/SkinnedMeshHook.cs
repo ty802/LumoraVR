@@ -27,6 +27,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
     private Skeleton3D _skeleton = null!;
     private bool _meshApplied;
     private bool _skeletonBound;
+    private int _lastBindAttemptBoneCount = -1;
     // True once the real (component) material asset has been put on the surface. Stays false while we're showing
     // the neutral fallback, so the update loop keeps retrying until the PBS asset finishes loading. -xlinka
     private bool _realMaterialApplied;
@@ -44,18 +45,15 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
     {
         base.Initialize();
 
-        // Create MeshInstance3D for rendering
         _meshInstance = new MeshInstance3D();
         _meshInstance.Name = "SkinnedMeshInstance";
 
-        // Add to scene immediately - will reparent to skeleton later when ready
+        // Added under the slot node first; TryBindToSkeleton reparents it under the Skeleton3D once that exists.
         attachedNode.AddChild(_meshInstance);
         LumoraLogger.Log($"SkinnedMeshHook: Initialized and added mesh to '{Owner.Slot.SlotName.Value}'");
 
-        // Try to bind to skeleton immediately
         TryBindToSkeleton();
 
-        // Apply mesh if data is available (inline lists or a Phos asset).
         if (Owner.Vertices.Count > 0 || Owner.MeshAsset.Target != null)
         {
             ApplyMesh();
@@ -67,22 +65,23 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         if (_meshInstance == null)
             return;
 
-        // Try to bind to skeleton if not yet bound OR if we bound but have no bone mappings
-        // (skeleton may have been empty when we first tried)
-        bool needsBinding = !_skeletonBound || (_skeletonBound && _boneIndexMap.Count == 0 && Owner.BoneNames.Count > 0);
-        if (needsBinding)
+        // Zero-mapping rebind only retries when the bone list actually changed. Retrying every
+        // ApplyChanges made a renderer whose bones never map (face/eye mesh with foreign bone names)
+        // rebind and FULLY REBUILD its mesh on every blendshape weight change - every blink flashed
+        // the whole mesh. -xlinka
+        bool zeroMapRetry = _skeletonBound && _boneIndexMap.Count == 0 && Owner.BoneNames.Count > 0
+            && Owner.BoneNames.Count != _lastBindAttemptBoneCount;
+        if (!_skeletonBound || zeroMapRetry)
         {
             TryBindToSkeleton();
         }
 
-        // Rebuild mesh if data changed or not yet applied (from inline lists or a Phos asset).
         bool shouldApplyMesh = Owner.MeshDataChanged || !_meshApplied;
         if (shouldApplyMesh && (Owner.Vertices.Count > 0 || Owner.MeshAsset.Target != null))
         {
             ApplyMesh();
         }
 
-        // Update skeleton reference if changed
         if (Owner.SkeletonChanged)
         {
             _skeletonBound = false;
@@ -90,7 +89,6 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
             TryBindToSkeleton();
         }
 
-        // Update enabled state
         if (GodotObject.IsInstanceValid(_meshInstance))
         {
             _meshInstance.Visible = Owner.Enabled;
@@ -173,7 +171,6 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
     /// </summary>
     private void TryBindToSkeleton()
     {
-        // First try to get skeleton from SkeletonBuilder reference
         if (Owner.Skeleton.Target != null)
         {
             _skeletonHook = (Owner.Skeleton.Target.Hook as SkeletonHook)!;
@@ -183,10 +180,9 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
             }
         }
 
-        // If no skeleton yet, try to find one via Bones list
+        // No explicit skeleton reference: walk up from the first bone slot's node to find the Skeleton3D.
         if (_skeleton == null && Owner.Bones.Count > 0 && Owner.Bones[0] != null)
         {
-            // Find skeleton by looking for parent Skeleton3D in the scene
             var boneSlot = Owner.Bones[0]!;
             var slotHook = boneSlot.Hook as SlotHook;
             if (slotHook != null)
@@ -194,7 +190,6 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
                 var node = slotHook.GeneratedNode3D;
                 if (node != null)
                 {
-                    // Walk up to find Skeleton3D
                     var parent = node.GetParent();
                     while (parent != null)
                     {
@@ -229,16 +224,16 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
             return;
         }
 
-        // Build bone index mapping from mesh bones to skeleton bones
         BuildBoneIndexMap();
 
-        // Skeleton is ready! Reparent mesh under skeleton if needed
         if (_meshInstance.IsInsideTree())
         {
             if (_meshInstance.GetParent() != _skeleton)
             {
+                var global = _meshInstance.GlobalTransform;
                 _meshInstance.GetParent().RemoveChild(_meshInstance);
                 _skeleton.AddChild(_meshInstance);
+                _meshInstance.GlobalTransform = global;
                 LumoraLogger.Log("SkinnedMeshHook: Reparented mesh under skeleton");
             }
         }
@@ -248,30 +243,30 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
             LumoraLogger.Log("SkinnedMeshHook: Added mesh as child of skeleton");
         }
 
-        // Set the skeleton path - use ".." since mesh is child of skeleton
+        // ".." because the mesh was just parented under the skeleton.
         _meshInstance.Skeleton = new NodePath("..");
 
         _skeletonBound = true;
+        _lastBindAttemptBoneCount = Owner.BoneNames.Count;
         LumoraLogger.Log($"SkinnedMeshHook: Bound to skeleton '{_skeleton.Name}' with {_skeleton.GetBoneCount()} bones, mapped {_boneIndexMap.Count} mesh bones");
 
-        // Re-apply mesh now that we have skeleton with proper bone mapping / Skin
-        if (Owner.Vertices.Count > 0 || Owner.MeshAsset.Target != null)
+        // Re-apply mesh now that we have skeleton with proper bone mapping / Skin. Skip when nothing
+        // mapped (a rigid mesh renders fine without a Skin) - rebuilding then is churn for no gain.
+        if ((_boneIndexMap.Count > 0 || Owner.BoneNames.Count == 0)
+            && (Owner.Vertices.Count > 0 || Owner.MeshAsset.Target != null))
         {
             _meshApplied = false;
             ApplyMesh();
         }
 
-        // Notify component that binding is complete (stops update polling)
+        // Stops the component's update-loop re-drive polling.
         if (_boneIndexMap.Count > 0)
         {
             Owner.HookBindingComplete = true;
         }
     }
 
-    /// <summary>
-    /// Build mapping from mesh bone indices to Godot skeleton bone indices.
-    /// This is the key to making skinning work correctly.
-    /// </summary>
+    /// <summary>Map mesh bone indices to Godot skeleton bone indices.</summary>
     private void BuildBoneIndexMap()
     {
         _boneIndexMap.Clear();
@@ -279,7 +274,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         if (_skeleton == null)
             return;
 
-        // Method 1: Use BoneNames list if available
+        // Mapping priority: BoneNames, then Bones slot refs, then the SkeletonBuilder's order, else 1:1.
         if (Owner.BoneNames.Count > 0)
         {
             for (int meshBoneIdx = 0; meshBoneIdx < Owner.BoneNames.Count; meshBoneIdx++)
@@ -293,7 +288,6 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
                 }
                 else
                 {
-                    // Bone not found in skeleton - map to bone 0 as fallback
                     _boneIndexMap[meshBoneIdx] = 0;
                     LumoraLogger.Warn($"SkinnedMeshHook: Bone '{boneName}' not found in skeleton, mapping to bone 0");
                 }
@@ -302,7 +296,6 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
             return;
         }
 
-        // Method 2: Use Bones slot references if available
         if (Owner.Bones.Count > 0)
         {
             for (int meshBoneIdx = 0; meshBoneIdx < Owner.Bones.Count; meshBoneIdx++)
@@ -331,7 +324,6 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
             return;
         }
 
-        // Method 3: If SkeletonBuilder is available, use its bone order
         if (Owner.Skeleton.Target != null && Owner.Skeleton.Target.BoneNames.Count > 0)
         {
             var skelBuilder = Owner.Skeleton.Target;
@@ -349,7 +341,6 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
             return;
         }
 
-        // Fallback: Assume direct 1:1 mapping
         for (int i = 0; i < _skeleton.GetBoneCount(); i++)
         {
             _boneIndexMap[i] = i;
@@ -363,20 +354,17 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
     /// </summary>
     private int RemapBoneIndex(int meshBoneIndex)
     {
-        // Handle invalid/unused bone indices (like -1)
         if (meshBoneIndex < 0)
             return 0;
 
         if (_boneIndexMap.TryGetValue(meshBoneIndex, out int skelBoneIndex))
         {
-            // Ensure mapped index is valid for skeleton
             int boneCount = _skeleton?.GetBoneCount() ?? 0;
             if (skelBoneIndex < 0 || skelBoneIndex >= boneCount)
                 return 0;
             return skelBoneIndex;
         }
 
-        // Fallback: clamp to valid skeleton bone range
         int maxBone = (_skeleton?.GetBoneCount() ?? 1) - 1;
         return System.Math.Clamp(meshBoneIndex, 0, System.Math.Max(0, maxBone));
     }
@@ -401,7 +389,6 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
             return;
         }
 
-        // Check if we have valid mesh data
         if (Owner.Vertices.Count == 0 || Owner.Indices.Count == 0)
         {
             LumoraLogger.Log("SkinnedMeshHook: No mesh data");
@@ -410,11 +397,9 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
             return;
         }
 
-        // Create ArrayMesh
         _arrayMesh?.Dispose();
         _arrayMesh = new ArrayMesh();
 
-        // Build arrays for Godot
         var arrays = new global::Godot.Collections.Array();
         arrays.Resize((int)Mesh.ArrayType.Max);
 
@@ -428,27 +413,29 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         arrays[(int)Mesh.ArrayType.Vertex] = vertices;
 
         // Normals
+        Vector3[]? baseNormals = null;
         if (Owner.Normals.Count == Owner.Vertices.Count)
         {
-            var normals = new Vector3[Owner.Normals.Count];
+            baseNormals = new Vector3[Owner.Normals.Count];
             for (int i = 0; i < Owner.Normals.Count; i++)
             {
                 var n = Owner.Normals[i];
-                normals[i] = new Vector3(n.x, n.y, n.z);
+                baseNormals[i] = new Vector3(n.x, n.y, n.z);
             }
-            arrays[(int)Mesh.ArrayType.Normal] = normals;
+            arrays[(int)Mesh.ArrayType.Normal] = baseNormals;
         }
 
         // UVs
+        Vector2[]? baseUVs = null;
         if (Owner.UVs.Count == Owner.Vertices.Count)
         {
-            var uvs = new Vector2[Owner.UVs.Count];
+            baseUVs = new Vector2[Owner.UVs.Count];
             for (int i = 0; i < Owner.UVs.Count; i++)
             {
                 var uv = Owner.UVs[i];
-                uvs[i] = new Vector2(uv.x, uv.y);
+                baseUVs[i] = new Vector2(uv.x, uv.y);
             }
-            arrays[(int)Mesh.ArrayType.TexUV] = uvs;
+            arrays[(int)Mesh.ArrayType.TexUV] = baseUVs;
         }
 
         // Indices
@@ -472,22 +459,19 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         }
         arrays[(int)Mesh.ArrayType.Index] = indices;
 
-        // Bone weights and indices for skinning
-        // IMPORTANT: Only add bone data if we have valid bone mappings AND skeleton is ready
-        // Otherwise Godot will error with invalid bone indices
+        // Bone data only goes on the surface once the skeleton is ready with real mappings - Godot
+        // errors on bone indices that don't exist yet.
         bool hasBoneData = Owner.BoneIndices.Count == Owner.Vertices.Count &&
                            Owner.BoneWeights.Count == Owner.Vertices.Count;
         bool hasValidMappings = _boneIndexMap.Count > 0 && _skeleton != null && _skeleton.GetBoneCount() > 0;
 
         if (hasBoneData && hasValidMappings)
         {
-            // Godot expects bone indices as int array (4 per vertex)
-            // We need to remap mesh bone indices to Godot skeleton bone indices
+            // Godot wants 4 bone indices per vertex, in SKELETON bone space (hence the remap).
             var boneIndices = new int[Owner.Vertices.Count * 4];
             for (int i = 0; i < Owner.BoneIndices.Count; i++)
             {
                 var bi = Owner.BoneIndices[i];
-                // Remap each bone index to the Godot skeleton's bone index
                 boneIndices[i * 4 + 0] = RemapBoneIndex(bi.x);
                 boneIndices[i * 4 + 1] = RemapBoneIndex(bi.y);
                 boneIndices[i * 4 + 2] = RemapBoneIndex(bi.z);
@@ -495,7 +479,6 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
             }
             arrays[(int)Mesh.ArrayType.Bones] = boneIndices;
 
-            // Godot expects bone weights as float array (4 per vertex)
             var boneWeights = new float[Owner.Vertices.Count * 4];
             for (int i = 0; i < Owner.BoneWeights.Count; i++)
             {
@@ -606,7 +589,6 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
             _arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
         }
 
-        // Set mesh on instance
         _meshInstance.Mesh = _arrayMesh;
         ApplyBlendShapeWeights();
 
@@ -615,6 +597,59 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
 
         _meshApplied = true;
         LumoraLogger.Log($"SkinnedMeshHook: Applied mesh with {Owner.Vertices.Count} vertices, {Owner.Indices.Count / 3} triangles");
+    }
+
+    // Per-vertex tangents (xyz + handedness w) via the standard accumulate-per-triangle + Gram-Schmidt method.
+    // Needed because the synced skinned-mesh path doesn't carry tangents, so normal-mapped materials otherwise
+    // render with a garbage tangent basis (speckled artifacts on detailed areas). -xlinka
+    private static float[] ComputeTangents(Vector3[] positions, Vector3[] normals, Vector2[] uvs, int[] indices)
+    {
+        int n = positions.Length;
+        var tan = new Vector3[n];
+        var bitan = new Vector3[n];
+
+        for (int t = 0; t + 2 < indices.Length; t += 3)
+        {
+            int i0 = indices[t], i1 = indices[t + 1], i2 = indices[t + 2];
+            if (i0 < 0 || i1 < 0 || i2 < 0 || i0 >= n || i1 >= n || i2 >= n)
+                continue;
+
+            Vector3 e1 = positions[i1] - positions[i0];
+            Vector3 e2 = positions[i2] - positions[i0];
+            Vector2 d1 = uvs[i1] - uvs[i0];
+            Vector2 d2 = uvs[i2] - uvs[i0];
+
+            float denom = d1.X * d2.Y - d2.X * d1.Y;
+            float r = System.Math.Abs(denom) < 1e-12f ? 0f : 1f / denom;
+
+            Vector3 sdir = new Vector3(
+                (d2.Y * e1.X - d1.Y * e2.X) * r,
+                (d2.Y * e1.Y - d1.Y * e2.Y) * r,
+                (d2.Y * e1.Z - d1.Y * e2.Z) * r);
+            Vector3 tdir = new Vector3(
+                (d1.X * e2.X - d2.X * e1.X) * r,
+                (d1.X * e2.Y - d2.X * e1.Y) * r,
+                (d1.X * e2.Z - d2.X * e1.Z) * r);
+
+            tan[i0] += sdir; tan[i1] += sdir; tan[i2] += sdir;
+            bitan[i0] += tdir; bitan[i1] += tdir; bitan[i2] += tdir;
+        }
+
+        var result = new float[n * 4];
+        for (int i = 0; i < n; i++)
+        {
+            Vector3 nv = normals[i];
+            Vector3 tv = tan[i];
+            // Gram-Schmidt: make the tangent orthogonal to the normal.
+            Vector3 ortho = tv - nv * nv.Dot(tv);
+            ortho = ortho.LengthSquared() > 1e-12f ? ortho.Normalized() : new Vector3(1f, 0f, 0f);
+            float w = nv.Cross(tv).Dot(bitan[i]) < 0f ? -1f : 1f;
+            result[i * 4 + 0] = ortho.X;
+            result[i * 4 + 1] = ortho.Y;
+            result[i * 4 + 2] = ortho.Z;
+            result[i * 4 + 3] = w;
+        }
+        return result;
     }
 
     // Build the Godot skinned mesh straight from the Phos asset: positions/normals/uvs/indices + the raw
@@ -683,21 +718,23 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         arrays[(int)Mesh.ArrayType.Vertex] = positions;
 
         var rn = mesh.RawNormals;
+        Vector3[]? nrmArr = null;
         if (rn != null && rn.Length >= vcount)
         {
-            var normals = new Vector3[vcount];
+            nrmArr = new Vector3[vcount];
             for (int i = 0; i < vcount; i++)
-                normals[i] = new Vector3(rn[i].x, rn[i].y, rn[i].z);
-            arrays[(int)Mesh.ArrayType.Normal] = normals;
+                nrmArr[i] = new Vector3(rn[i].x, rn[i].y, rn[i].z);
+            arrays[(int)Mesh.ArrayType.Normal] = nrmArr;
         }
 
         var ruv = mesh.RawUV0s;
+        Vector2[]? uvArr = null;
         if (ruv != null && ruv.Length >= vcount)
         {
-            var uvs = new Vector2[vcount];
+            uvArr = new Vector2[vcount];
             for (int i = 0; i < vcount; i++)
-                uvs[i] = new Vector2(ruv[i].x, ruv[i].y);
-            arrays[(int)Mesh.ArrayType.TexUV] = uvs;
+                uvArr[i] = new Vector2(ruv[i].x, ruv[i].y);
+            arrays[(int)Mesh.ArrayType.TexUV] = uvArr;
         }
 
         // UV1 (lightmap/detail second channel) so it survives the skinned path, not just the static one. -xlinka
@@ -711,6 +748,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         }
 
         // Tangents (4 floats/vertex: xyz + handedness w) for normal maps, and vertex colors. -xlinka
+        bool baseHasTangents = false;
         var rtan = mesh.RawTangents;
         if (mesh.HasTangents && rtan != null && rtan.Length >= vcount)
         {
@@ -724,6 +762,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
                 tangents[i * 4 + 3] = t.w;
             }
             arrays[(int)Mesh.ArrayType.Tangent] = tangents;
+            baseHasTangents = true;
         }
 
         var rcol = mesh.RawColors;
@@ -764,6 +803,15 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         System.Array.Copy(ri, indices, submesh.IndexCount);
         arrays[(int)Mesh.ArrayType.Index] = indices;
 
+        // No source tangents but we have normals + UVs: GENERATE them. Without tangents a normal-mapped
+        // material renders with a garbage tangent basis - the speckled "white cracks" on detailed areas like a
+        // muzzle, and unstable/dark lighting when a blendshape (e.g. a blink) perturbs the mesh. -xlinka
+        if (!baseHasTangents && nrmArr != null && uvArr != null && indices.Length >= 3)
+        {
+            arrays[(int)Mesh.ArrayType.Tangent] = ComputeTangents(positions, nrmArr, uvArr, indices);
+            baseHasTangents = true;
+        }
+
         // Blendshapes (morph targets) from the asset: declare them, then hand per-shape delta arrays to the
         // surface. glTF morphs are deltas -> Relative mode; Godot rejects the surface unless each shape carries
         // the SAME morphable attrs as the base (which has NORMAL), so feed zero normal deltas when absent. -xlinka
@@ -789,30 +837,15 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
                     sv[i] = (sp != null && i < sp.Length) ? new Vector3(sp[i].x, sp[i].y, sp[i].z) : Vector3.Zero;
                 shapeArrays[(int)Mesh.ArrayType.Vertex] = sv;
 
-                var sn = new Vector3[vcount];
-                var snd = frame?.normals;
-                for (int i = 0; i < vcount; i++)
-                    sn[i] = (snd != null && i < snd.Length) ? new Vector3(snd[i].x, snd[i].y, snd[i].z) : Vector3.Zero;
-                shapeArrays[(int)Mesh.ArrayType.Normal] = sn;
-
-                // When the base surface carries tangents, Godot requires EVERY blend shape to carry a matching
-                // tangent array (4 floats/vert: xyz delta + w) or it rejects the whole morph surface. Feed the
-                // morph's tangent deltas (w delta stays 0 - handedness doesn't morph), zero when absent. -xlinka
-                if (mesh.HasTangents)
-                {
-                    var st = new float[vcount * 4];
-                    var std = frame?.tangents;
-                    for (int i = 0; i < vcount; i++)
-                    {
-                        if (std != null && i < std.Length)
-                        {
-                            st[i * 4 + 0] = std[i].x;
-                            st[i * 4 + 1] = std[i].y;
-                            st[i * 4 + 2] = std[i].z;
-                        }
-                    }
-                    shapeArrays[(int)Mesh.ArrayType.Tangent] = st;
-                }
+                // Feed ZERO normal/tangent deltas: a blendshape (blink/expression) moves GEOMETRY only, not the
+                // shading basis. Assimp's per-morph normals/tangents are frequently un-normalized/noisy across the
+                // whole mesh; applied as Relative deltas at full weight they skew the normals and the mesh reads
+                // DARK on blink. Letting the base normals/tangents stand is stable. Godot still requires each
+                // shape to carry matching Normal (and Tangent, when the base has one) arrays or it rejects the
+                // morph surface - zeros satisfy that without changing shading. - xlinka
+                shapeArrays[(int)Mesh.ArrayType.Normal] = new Vector3[vcount];
+                if (baseHasTangents)
+                    shapeArrays[(int)Mesh.ArrayType.Tangent] = new float[vcount * 4];
 
                 blendShapes.Add(shapeArrays);
             }
@@ -869,17 +902,46 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         _meshInstance.Mesh = _arrayMesh;
         old?.Dispose();
 
-        // Mirror the asset's blendshape names onto the component (names only - the deltas stay in the asset) so
-        // expression/viseme/blink drivers can find + weight them. One-time. -xlinka
+        // Skinned + blendshape meshes deform past the REST-pose AABB Godot computes for culling; a generous extra
+        // cull margin keeps the instance from being frustum-culled while animated. -xlinka
+        var restAabb = _arrayMesh.GetAabb();
+        _meshInstance.ExtraCullMargin = System.Math.Max(restAabb.Size.Length(), 4f);
+
+        // A skinned avatar is a DYNAMIC mesh, but Godot defaults a MeshInstance3D to GI_MODE_STATIC, which bakes the
+        // rest pose into global illumination. Once the avatar is equipped and posed/moving, that static GI no longer
+        // matches the geometry and the mesh lights incorrectly (typically darker). Disable GI contribution - the
+        // avatar still RECEIVES light, it just stops polluting/relying on static GI. -xlinka
+        _meshInstance.GIMode = GeometryInstance3D.GIModeEnum.Disabled;
+
+        // Mirror the asset's blendshape names onto the component so expression/viseme/blink drivers can find them.
+        // These are SyncFieldList (data-model) writes that MUST run under the world lock. This finalize runs via a
+        // Godot CallDeferred (off-lock), so writing them HERE trips HookManager.ThreadCheck and throws - which
+        // aborted the finalize before the Skin + material were applied, leaving the mesh unskinned (rest-pose, so it
+        // renders huge/distorted) and untextured (grey fallback). Queue the mirror onto the world's synchronous
+        // action pass (runs under the Implementer lock), with a system bypass so it still applies once the avatar is
+        // equipped/host-owned. -xlinka
         if (shapeCount > 0 && Owner.BlendShapeNames.Count != shapeCount)
         {
-            Owner.BlendShapeNames.Clear();
-            Owner.BlendShapeWeights.Clear();
+            var names = new string[shapeCount];
             for (int s = 0; s < shapeCount; s++)
+                names[s] = mesh.BlendShapes[s].Name;
+            var owner = Owner;
+            owner.World?.RunSynchronously(() =>
             {
-                Owner.BlendShapeNames.Add(mesh.BlendShapes[s].Name);
-                Owner.BlendShapeWeights.Add(0f);
-            }
+                if (owner == null || owner.IsDestroyed)
+                    return;
+                using (owner.World?.DataModelPermissions?.EnterSystemBypass())
+                {
+                    owner.BlendShapeNames.Clear();
+                    owner.BlendShapeWeights.Clear();
+                    for (int s = 0; s < names.Length; s++)
+                    {
+                        owner.BlendShapeNames.Add(names[s]);
+                        owner.BlendShapeWeights.Add(0f);
+                    }
+                }
+                ApplyBlendShapeWeights();
+            });
         }
 
         BuildAndAssignSkinFromAsset(asset);
@@ -972,4 +1034,3 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         base.Destroy(destroyingWorld);
     }
 }
-

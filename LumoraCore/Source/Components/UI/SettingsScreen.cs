@@ -78,6 +78,14 @@ public sealed class SettingsScreen : DashboardScreen
                 v => { EngineSettings.MasterVolume = v; return $"{EngineSettings.MasterVolume * 100f:0}%"; });
         });
 
+        BuildCategory(sidebar, contentHost, "Avatar", page =>
+        {
+            var section = BeginSection(page, "Calibration", rowCount: 1);
+            // Your standing/eye height. The avatar auto-rescales so its eyes sit at this height (live).
+            SliderRow(section, "Height", 0.5f, 2.5f, EngineSettings.UserHeight,
+                v => { EngineSettings.UserHeight = v; return $"{EngineSettings.UserHeight:0.00} m"; });
+        });
+
         BuildCategory(sidebar, contentHost, "Video", page =>
         {
             var display = BeginSection(page, "Display", rowCount: 4);
@@ -106,6 +114,20 @@ public sealed class SettingsScreen : DashboardScreen
                     // Snap to 5% steps so the viewport isn't re-allocated per pixel of drag.
                     EngineSettings.RenderScale = MathF.Round(v * 20f) / 20f;
                     return $"{EngineSettings.RenderScale * 100f:0}%";
+                });
+        });
+
+        BuildCategory(sidebar, contentHost, "Network", page =>
+        {
+            var sync = BeginSection(page, "Synchronization", rowCount: 1);
+            // Sync send/process rate. Applies live to the active session; higher = smoother replication
+            // at more bandwidth/CPU. Snapped to 5 Hz steps. -xlinka
+            SliderRow(sync, "Tick Rate", 10f, 120f, EngineSettings.NetworkTickRate,
+                v =>
+                {
+                    int hz = (int)MathF.Round(v / 5f) * 5;
+                    EngineSettings.NetworkTickRate = hz;
+                    return $"{EngineSettings.NetworkTickRate} Hz";
                 });
         });
 

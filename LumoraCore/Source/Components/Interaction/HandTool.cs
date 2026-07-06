@@ -454,7 +454,12 @@ public sealed class HandTool : Tool
 
         if (_gripHeld && !_prevGripHeld)
         {
-            TryGrabCurrentTarget(laser);
+            // Prefer a touch (physical) grab when something is within reach of the hand; fall back to the
+            // laser grab when nothing is. -xlinka
+            if (!TryTouchGrab())
+            {
+                TryGrabCurrentTarget(laser);
+            }
         }
         else if (!_gripHeld && _prevGripHeld)
         {
@@ -500,6 +505,79 @@ public sealed class HandTool : Tool
         }
 
         _isHoldingWithLaser = true;
+    }
+
+    // Hand reach for a touch grab, in metres at unit user scale. Roughly the grab-sphere of the hand.
+    private const float TouchGrabRadius = 0.1f;
+
+    // Touch (physical) grab: in VR, if a grabbable collider is physically within reach of the hand, grab it
+    // straight into the hand instead of using the laser. The held object rides the grabber slot via the
+    // holder (pinned to the hand), and an IGrabAlignable object snaps to its defined in-hand pose. Gated to
+    // VR: on desktop the hand isn't a tracked physical thing, so this no-ops and laser grab runs. Returns
+    // false when nothing is in reach. -xlinka
+    private bool TryTouchGrab()
+    {
+        var input = Engine.Current?.InputInterface;
+        if (input == null || !input.IsVRActive || _grabber == null)
+        {
+            return false;
+        }
+
+        var handSlot = _grabber.Slot;
+        var holder = _grabber.HolderSlot;
+        if (handSlot == null || holder == null)
+        {
+            return false;
+        }
+
+        // Pin the holder to the hand before grabbing so the object rides the controller directly - Grab
+        // keeps the object's world pose, capturing its offset from the hand. -xlinka
+        holder.LocalPosition.Value = float3.Zero;
+        holder.LocalRotation.Value = floatQ.Identity;
+        holder.LocalScale.Value = float3.One;
+
+        var scale = handSlot.GlobalScale;
+        float avgScale = (scale.x + scale.y + scale.z) / 3f;
+        float radius = TouchGrabRadius * (avgScale > 0.0001f ? avgScale : 1f);
+
+        if (!_grabber.TryGrabNearby(handSlot.GlobalPosition, radius, out var grabbed) || grabbed == null)
+        {
+            return false;
+        }
+
+        TryAlignGrabbed(grabbed);
+
+        // Touch-held objects follow the hand through the hierarchy, so the laser-hold path must not drive
+        // them. Leaving _isHoldingWithLaser false also keeps the laser cursor in its normal state. -xlinka
+        _isHoldingWithLaser = false;
+        return true;
+    }
+
+    // Snap a single touch-grabbed object to its IGrabAlignable pose (relative to the holder), if it
+    // declares one. Mirrors the laser-grab path leaving the grab offset alone when there's no alignment.
+    private void TryAlignGrabbed(IGrabbable grabbed)
+    {
+        if (_grabber == null || grabbed is not Component component)
+        {
+            return;
+        }
+
+        var slot = component.Slot;
+        if (slot == null || slot.IsRemoved)
+        {
+            return;
+        }
+
+        foreach (var alignable in slot.GetComponentsImplementing<IGrabAlignable>())
+        {
+            if (alignable.GetGrabAlignmentPose(_grabber, out var pos, out var rot, out var scale))
+            {
+                slot.LocalPosition.Value = pos;
+                slot.LocalRotation.Value = rot;
+                slot.LocalScale.Value = scale;
+                return;
+            }
+        }
     }
 
     private void ProcessLaserHold(InteractionLaser laser, float delta)
@@ -668,7 +746,7 @@ public sealed class HandTool : Tool
                 break;
         }
 
-        holder.GlobalRotation = _holderRotationOffset * floatQ.LookRotation(forward, rootUp);
+        holder.GlobalRotation = _holderRotationOffset * FacingRotation(forward, rootUp);
     }
 
     private float3 ComputeHolderForward(InteractionLaser laser, Slot holder, floatQ reference, Slot? root, Slot? head)
@@ -800,7 +878,9 @@ public sealed class HandTool : Tool
             upDirection = float3.Right;
         }
 
-        slot.GlobalRotation = floatQ.LookRotation(-faceDirection, upDirection.Normalized);
+        // Point the readable front (+Z) at the head. With the corrected facing this takes the toward-head
+        // direction directly; the old code negated it to compensate for LookRotation's inverse. -xlinka
+        slot.GlobalRotation = FacingRotation(faceDirection, upDirection.Normalized);
         return true;
     }
 
@@ -947,6 +1027,12 @@ public sealed class HandTool : Tool
 
     private Slot? FindUserRootSlot() => Slot?.ActiveUserRoot?.Slot;
 
+    // floatQ.LookRotation builds its basis from matrix ROWS, so it returns the INVERSE of the intended
+    // facing (see FaceLocalUser). Inverting it yields a usable facing whose local +Z points along
+    // 'forward'. Held-object orientation, twist (axis offset), and align all depend on this being correct -
+    // the raw LookRotation made objects face/rotate the wrong way. -xlinka
+    private static floatQ FacingRotation(float3 forward, float3 up) => floatQ.LookRotation(forward, up).Inverse;
+
     private static floatQ? GetHeadFacingRotation(InteractionLaser laser)
     {
         var head = laser.FindHeadSlot();
@@ -961,7 +1047,7 @@ public sealed class HandTool : Tool
         {
             forward = float3.Backward;
         }
-        return floatQ.LookRotation(forward.Normalized, float3.Up);
+        return FacingRotation(forward.Normalized, float3.Up);
     }
 
     private void ResolveFallbackRay(InteractionLaser laser, out float3 origin, out float3 direction)

@@ -13,7 +13,7 @@ namespace Lumora.Core.Components;
 /// Positions a slot based on VR tracking data from InputInterface body nodes.
 /// This component registers as an IInputUpdateReceiver to update slot transforms
 /// BEFORE other components read them, ensuring tracking data flows correctly.
-/// Creates an AvatarObjectSlot for avatar systems to equip to.
+/// Creates an AvatarSocket for avatar systems to equip to.
 /// </summary>
 [ComponentCategory("Users")]
 [DefaultUpdateOrder(-1000000)] // Runs very early - before IK and other components
@@ -50,9 +50,9 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
     public readonly SyncRef<Slot> BodyNodeRoot = null!;
 
     /// <summary>
-    /// Reference to the AvatarObjectSlot created for this body node.
+    /// Reference to the AvatarSocket created for this body node.
     /// </summary>
-    public readonly SyncRef<AvatarObjectSlot> ObjectSlot = null!;
+    public readonly SyncRef<AvatarSocket> ObjectSlot = null!;
 
     /// <summary>
     /// Whether this device is currently tracking.
@@ -65,7 +65,7 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
     public readonly Sync<bool> IsActive = null!;
 
     /// <summary>
-    /// Whether to create an AvatarObjectSlot for equipping.
+    /// Whether to create an AvatarSocket for equipping.
     /// </summary>
     public readonly Sync<bool> CreateAvatarObjectSlot = null!;
 
@@ -77,7 +77,9 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
     private bool _streamDriverChecked;
 
     /// <summary>
-    /// Get the tracked device from InputInterface.
+    /// Get the tracked device from InputInterface. Pure read - never writes synced fields,
+    /// so a property access (including remote/inspector reads) has no replication side effects.
+    /// The synced DeviceIndex/CorrespondingBodyNode are written only from the update path.
     /// </summary>
     public ITrackedDevice TrackedDevice
     {
@@ -95,11 +97,8 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
             {
                 var device = input.GetBodyNode(AutoBodyNode.Value.Value);
                 if (device != null && device.CorrespondingBodyNode == AutoBodyNode.Value.Value)
-                {
-                    DeviceIndex.Value = device is InputDevice inputDev ? inputDev.DeviceIndex : -1;
-                    CorrespondingBodyNode.Value = AutoBodyNode.Value.Value;
                     return device;
-                }
+
                 return null!;
             }
 
@@ -221,13 +220,13 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
     {
         if (ObjectSlot.Target != null && ObjectSlot.Target.HasEquipped)
         {
-            ObjectSlot.Target.Dequip(new System.Collections.Generic.HashSet<Avatar.IAvatarObject>());
+            ObjectSlot.Target.Dequip(new System.Collections.Generic.HashSet<Avatar.IAvatarEquippable>());
         }
         BodyNodeRoot.Target?.Destroy();
     }
 
     /// <summary>
-    /// Update or create the AvatarObjectSlot for this body node.
+    /// Update or create the AvatarSocket for this body node.
     /// </summary>
     private void UpdateObjectSlot()
     {
@@ -236,8 +235,8 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
             // Create body node root slot
             BodyNodeRoot.Target = Slot.AddSlot("BodyNode");
 
-            // Attach AvatarObjectSlot
-            var objectSlot = BodyNodeRoot.Target.AttachComponent<AvatarObjectSlot>();
+            // Attach AvatarSocket
+            var objectSlot = BodyNodeRoot.Target.AttachComponent<AvatarSocket>();
             ObjectSlot.Target = objectSlot;
 
             // Drive IsTracking and IsActive from this component
@@ -263,11 +262,19 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
 
         if (device != null && BodyNodeRoot.Target != null)
         {
-            // Only override authored pose when device is actually tracking; keeps desktop defaults intact.
+            // The parent Slot is the tracked/default body transform. BodyNodeRoot is only the
+            // equipment/body-node offset child. When tracking is absent the offset must be
+            // identity; otherwise a stale desktop write can stack another head height under
+            // Head and pull the avatar head/nameplate away from the camera.
             if (device.IsTracking)
             {
                 BodyNodeRoot.Target.LocalPosition.Value = device.BodyNodePositionOffset;
                 BodyNodeRoot.Target.LocalRotation.Value = device.BodyNodeRotationOffset;
+            }
+            else
+            {
+                BodyNodeRoot.Target.LocalPosition.Value = float3.Zero;
+                BodyNodeRoot.Target.LocalRotation.Value = floatQ.Identity;
             }
 
             if (ObjectSlot.Target != null)
@@ -332,6 +339,12 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
 
             node = device.CorrespondingBodyNode;
             CorrespondingBodyNode.Value = node;
+
+            // Mirror the resolved device index into the synced field here, in the update path,
+            // so the TrackedDevice getter stays read-only. Only meaningful when AutoBodyNode
+            // drove the lookup; otherwise DeviceIndex is the authored input.
+            if (AutoBodyNode.Value.HasValue)
+                DeviceIndex.Value = device is InputDevice inputDev ? inputDev.DeviceIndex : -1;
         }
         else
         {

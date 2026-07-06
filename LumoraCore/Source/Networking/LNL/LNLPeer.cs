@@ -24,6 +24,9 @@ public class LNLPeer : IConnection
     public Uri Address { get; private set; }
     public string Identifier { get; private set; }
     public ulong ReceivedBytes { get; private set; }
+    public int Ping => Peer?.Ping ?? -1;
+    public bool IsEncrypted => _crypto.IsEstablished;
+    public string TransportName => "LNL";
 
     public event Action<IConnection> Closed = null!;
     public event Action<IConnection> Connected

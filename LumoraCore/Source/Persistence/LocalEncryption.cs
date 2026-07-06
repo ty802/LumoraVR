@@ -139,7 +139,7 @@ public interface ISecretSealer
 /// <summary>
 /// Default sealer: wraps the secret with a key derived (PBKDF2-SHA256) from this machine + user account
 /// plus a per-install random salt. Anti-copy (a stolen vault.key won't open on another machine/user),
-/// but not anti-local-attacker - someone running this binary as this user can recompute it. For that,
+/// but not a hardened secret store - it can be recomputed by anything running as this user. For that,
 /// replace with an OS-keystore sealer.
 /// </summary>
 public sealed class DerivedKeySealer : ISecretSealer

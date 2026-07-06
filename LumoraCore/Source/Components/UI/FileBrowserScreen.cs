@@ -28,6 +28,9 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
     private static readonly color ToolFill = new color(0.22f, 0.20f, 0.34f, 0.55f);
     private static readonly color TextPrimary = new color(0.93f, 0.93f, 0.97f, 1f);
     private static readonly color TextDim = new color(0.70f, 0.70f, 0.78f, 1f);
+    private static readonly color ScrollHandleColor = new color(0.55f, 0.50f, 0.85f, 0.90f);
+
+    private const float LaidOutViewportFloor = 100f;
 
     private string _currentPath = string.Empty;
     private string? _selectedPath;
@@ -38,6 +41,14 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
     private Slot? _contentSlot;
     private RectTransform? _contentRect;
     private Dashboard? _dashboard;
+
+    private ScrollRect? _scroll;
+    private RectTransform? _viewportRect;
+    private Slot? _scrollTrack;
+    private RectTransform? _scrollHandle;
+    private float _handlePressY;
+    private float _handlePressScroll;
+    private int _scrollHandleRetries;
 
     private bool _newFolderActive;
     private string _newFolderName = string.Empty;
@@ -173,18 +184,32 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
 
     private void BuildViewport(Slot root, IAssetProvider<FontSet>? font, RoundedRectTextureProvider? rounded)
     {
-        var viewport = root.AddSlot("Viewport");
-        viewport.AttachComponent<RectTransform>();
+        // Viewport + scrollbar sit side by side. The scrollbar's handle-drag sets the scroll position
+        // directly (the file grid is a wall of card buttons, so grabbing empty space to drag-scroll or
+        // relying on the wheel alone is unreliable - every other scrolling dash screen has one). -xlinka
+        var area = root.AddSlot("ViewportArea");
+        area.AttachComponent<RectTransform>();
+        var areaLE = area.AttachComponent<LayoutElement>();
+        areaLE.FlexibleHeight.Value = 1f;
+        areaLE.MinHeight.Value = 200f;
+        var areaLayout = area.AttachComponent<HorizontalLayout>();
+        areaLayout.Spacing.Value = 6f;
+        areaLayout.ForceExpandWidth.Value = false;
+        areaLayout.ForceExpandHeight.Value = true;
+
+        var viewport = area.AddSlot("Viewport");
+        _viewportRect = viewport.AttachComponent<RectTransform>();
         var le = viewport.AttachComponent<LayoutElement>();
+        le.FlexibleWidth.Value = 1f;
         le.FlexibleHeight.Value = 1f;
-        le.MinHeight.Value = 200f;
 
         var viewportBg = viewport.AttachComponent<BorderedImage>();
         ApplyRounded(viewportBg, ViewportFill, RowBorder, rounded);
 
         viewport.AttachComponent<Mask>();
-        var scroll = viewport.AttachComponent<ScrollRect>();
-        scroll.ScrollSensitivity.Value = new float2(1f, 1f);
+        _scroll = viewport.AttachComponent<ScrollRect>();
+        _scroll.ScrollSensitivity.Value = new float2(1f, 1f);
+        _scroll.ScrollChanged += (_, _) => UpdateScrollHandle();
 
         _contentSlot = viewport.AddSlot("Content");
         _contentRect = _contentSlot.AttachComponent<RectTransform>();
@@ -201,9 +226,120 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         grid.PaddingTop.Value = ContentPad;
         grid.PaddingBottom.Value = ContentPad;
 
-        scroll.Content.Target = _contentRect;
+        _scroll.Content.Target = _contentRect;
+
+        BuildScrollbar(area, rounded);
 
         _ = font;
+    }
+
+    private void BuildScrollbar(Slot area, RoundedRectTextureProvider? rounded)
+    {
+        var track = area.AddSlot("Scrollbar");
+        _scrollTrack = track;
+        track.AttachComponent<RectTransform>();
+        // Own graphic chunk: the handle's position is rewritten every scroll frame (UpdateScrollHandle sets its
+        // RectTransform offsets). Without a chunk boundary here that layout change finds no owning chunk and
+        // escalates to a FULL canvas rebuild - re-tessellating the whole file grid every frame (the scroll
+        // flicker + fps drop). With its own chunk the move re-meshes just this tiny track+handle. -xlinka
+        track.AttachComponent<GraphicChunkRoot>();
+        var trackLE = track.AttachComponent<LayoutElement>();
+        trackLE.MinWidth.Value = 16f;
+        trackLE.PreferredWidth.Value = 16f;
+        trackLE.FlexibleWidth.Value = 0f;
+        trackLE.FlexibleHeight.Value = 1f;
+        var trackBg = track.AttachComponent<BorderedImage>();
+        ApplyRounded(trackBg, BarFill, RowBorder, rounded);
+
+        var handleSlot = track.AddSlot("Handle");
+        _scrollHandle = handleSlot.AttachComponent<RectTransform>();
+        _scrollHandle.AnchorMin.Value = new float2(0f, 1f);
+        _scrollHandle.AnchorMax.Value = new float2(1f, 1f);
+        _scrollHandle.OffsetMin.Value = new float2(2f, -60f);
+        _scrollHandle.OffsetMax.Value = new float2(-2f, 0f);
+        var handleBg = handleSlot.AttachComponent<BorderedImage>();
+        ApplyRounded(handleBg, ScrollHandleColor, new color(0f, 0f, 0f, 0f), rounded);
+
+        var interaction = handleSlot.AttachComponent<InteractionElement>();
+        interaction.Pressed += OnHandlePress;
+        interaction.Dragged += OnHandleDrag;
+    }
+
+    private void OnHandlePress(UIInteractionContext context)
+    {
+        _handlePressY = context.LocalPoint.y;
+        _handlePressScroll = _scroll?.AbsolutePosition.y ?? 0f;
+    }
+
+    private void OnHandleDrag(UIInteractionContext context)
+    {
+        if (_scroll == null || _viewportRect == null || _contentRect == null)
+            return;
+        float viewportHeight = _viewportRect.LocalComputeRect.height;
+        float contentHeight = _contentRect.LocalComputeRect.height;
+        if (viewportHeight <= LaidOutViewportFloor || contentHeight <= 0f)
+            return;
+        float maxScroll = MathF.Max(0f, contentHeight - viewportHeight);
+        if (maxScroll <= 0f)
+            return;
+        float handleHeight = MathF.Max(30f, viewportHeight * (viewportHeight / contentHeight));
+        float travel = viewportHeight - handleHeight;
+        if (travel <= 0f)
+            return;
+        // Dragging the handle down (local Y decreases) scrolls the content down.
+        float deltaY = context.LocalPoint.y - _handlePressY;
+        float scrolled = _handlePressScroll - deltaY * (maxScroll / travel);
+        // Setting AbsolutePosition routes through ScrollRect -> ApplyScrollOffset (moves the content chunk +
+        // requests a repaint) and fires ScrollChanged -> UpdateScrollHandle. No explicit canvas dirty: the old
+        // MarkDirty() here was the parameterless FULL-rebuild, which re-tessellated the whole grid on every drag
+        // frame (the drag flicker + fps drop). -xlinka
+        _scroll.AbsolutePosition = new float2(0f, System.Math.Clamp(scrolled, 0f, maxScroll));
+    }
+
+    private void UpdateScrollHandle()
+    {
+        if (_scroll == null || _scrollTrack == null || _scrollHandle == null
+            || _viewportRect == null || _contentRect == null)
+            return;
+        float viewportHeight = _viewportRect.LocalComputeRect.height;
+        if (viewportHeight <= LaidOutViewportFloor)
+        {
+            if (_scrollHandleRetries++ < 30)
+                World?.RunInUpdates(1, UpdateScrollHandle);
+            return;
+        }
+        _scrollHandleRetries = 0;
+
+        float contentHeight = _contentRect.LocalComputeRect.height;
+        if (contentHeight <= 0f)
+        {
+            if (_scrollHandleRetries++ < 30)
+                World?.RunInUpdates(1, UpdateScrollHandle);
+            return;
+        }
+
+        float maxScroll = MathF.Max(0f, contentHeight - viewportHeight);
+        // Gate the ActiveSelf writes: Sync.Value is NOT change-gated, so setting it to its current value still
+        // fires a change -> the track participates in a layout, so that's MarkVisibilityDirty() (root re-mesh +
+        // reconcile). UpdateScrollHandle runs every scroll frame, so an unconditional write here was a full-ish
+        // rebuild per frame (the scroll flicker + fps drop). Only write on an actual transition. -xlinka
+        if (maxScroll <= 0.5f)
+        {
+            if (_scrollTrack.ActiveSelf.Value)
+                _scrollTrack.ActiveSelf.Value = false; // everything fits; hide the bar
+            if (_scroll.NormalizedPosition.y != 0f)
+                _scroll.NormalizedPosition = float2.Zero;
+            return;
+        }
+        if (!_scrollTrack.ActiveSelf.Value)
+            _scrollTrack.ActiveSelf.Value = true;
+        if (_scroll.AbsolutePosition.y > maxScroll)
+            _scroll.AbsolutePosition = new float2(0f, maxScroll);
+        float handleHeight = MathF.Max(30f, viewportHeight * (viewportHeight / contentHeight));
+        float fraction = System.Math.Clamp(_scroll.AbsolutePosition.y / maxScroll, 0f, 1f);
+        float offset = fraction * (viewportHeight - handleHeight);
+        _scrollHandle.OffsetMax.Value = new float2(-2f, -offset);
+        _scrollHandle.OffsetMin.Value = new float2(2f, -(offset + handleHeight));
     }
 
     private void BuildStatusBar(Slot root, IAssetProvider<FontSet>? font, RoundedRectTextureProvider? rounded)
@@ -390,6 +526,11 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         int rows = (visible + GridColumns - 1) / GridColumns;
         if (rows < 1) rows = 1;
         SetContentHeight(rows * CardHeight + (rows - 1) * CardSpacing + ContentPad * 2f);
+
+        // Refresh the scrollbar now and again once the new content height has been laid out (the second
+        // pass also re-touches the scroll so ScrollRect recomputes its range against the fresh rects).
+        UpdateScrollHandle();
+        World?.RunInUpdates(2, UpdateScrollHandle);
     }
 
     private void SetContentHeight(float height)

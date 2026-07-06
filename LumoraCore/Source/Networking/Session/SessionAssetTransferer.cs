@@ -60,6 +60,9 @@ public class SessionAssetTransferer : IDisposable
         public bool IsDone => _offset >= _data.Length;
         public bool FirstChunk => _firstChunk;
 
+        public long TotalBytes => _data.Length;
+        public long SentBytes => _offset;
+
         private const int ChunkSize = 32 * 1024; // 32 KB
 
         public FileTransmitJob(string filePath, Uri assetUri, IConnection target, int id)
@@ -215,6 +218,45 @@ public class SessionAssetTransferer : IDisposable
 
     public Session Session { get; }
 
+    // Live transfer counts for diagnostics (the Network debug tab), guarded by the jobs' own lock.
+    public int UploadJobCount { get { lock (_lock) { return _transmitJobs.Count + _transmitJobsToInitialize.Count; } } }
+    public int DownloadJobCount { get { lock (_lock) { return _receiveJobs.Count; } } }
+    public int PendingAssetRequestCount { get { lock (_lock) { return _assetRequests.Count; } } }
+    public int PendingRelayCount { get { lock (_lock) { return _pendingRelays.Count; } } }
+
+    /// <summary>One in-flight asset transfer, for the Debug panel's transfer list.</summary>
+    public readonly struct AssetTransfer
+    {
+        public readonly Uri Uri;
+        public readonly bool IsUpload;
+        public readonly long Transferred;
+        public readonly long Total;
+
+        public AssetTransfer(Uri uri, bool isUpload, long transferred, long total)
+        {
+            Uri = uri;
+            IsUpload = isUpload;
+            Transferred = transferred;
+            Total = total;
+        }
+
+        public float Fraction => Total > 0 ? (float)Transferred / Total : 0f;
+    }
+
+    /// <summary>Snapshot of all active uploads and downloads. Safe to call from the render/UI thread.</summary>
+    public List<AssetTransfer> GetActiveTransfers()
+    {
+        var list = new List<AssetTransfer>();
+        lock (_lock)
+        {
+            foreach (var job in _transmitJobs.Values)
+                list.Add(new AssetTransfer(job.AssetUri, true, job.SentBytes, job.TotalBytes));
+            foreach (var job in _receiveJobs.Values)
+                list.Add(new AssetTransfer(job.AssetUri, false, job.ReceivedBytes, job.TotalBytes));
+        }
+        return list;
+    }
+
     public SessionAssetTransferer(Session session)
     {
         Session = session;
@@ -239,7 +281,7 @@ public class SessionAssetTransferer : IDisposable
             if (Session.World.IsAuthority)
             {
                 // Authority -> request from the machine that owns this local:// asset
-                var machineId = assetUri.Host;
+                var machineId = ExtractMachineId(assetUri);
                 var owner = Session.World.GetAllUsers()
                     ?.FirstOrDefault(u => u.MachineID?.Value == machineId);
                 if (owner == null || !Session.Connections.TryGetConnection(owner, out target))
@@ -399,10 +441,11 @@ public class SessionAssetTransferer : IDisposable
         // how an asset one user imported reaches another user who joined later, even when neither of
         // them is us. -xlinka
         var ourMachineId = localDB?.MachineId;
+        var assetMachineId = ExtractMachineId(assetUri);
         bool canRelay = Session.World.IsAuthority
             && assetUri.Scheme == "local"
-            && !string.IsNullOrEmpty(assetUri.Host)
-            && assetUri.Host != ourMachineId;
+            && !string.IsNullOrEmpty(assetMachineId)
+            && assetMachineId != ourMachineId;
 
         if (canRelay)
         {
@@ -433,9 +476,9 @@ public class SessionAssetTransferer : IDisposable
             return;
         }
 
-        // Resolve the peer that owns this local:// asset (its machine id is the URI host).
+        // Resolve the peer that owns this local:// asset (its machine id is in the URI).
         var owner = Session.World.GetAllUsers()
-            ?.FirstOrDefault(u => u.MachineID?.Value == assetUri.Host);
+            ?.FirstOrDefault(u => u.MachineID?.Value == ExtractMachineId(assetUri));
         if (owner == null || !Session.Connections.TryGetConnection(owner, out var ownerConn) || ownerConn == null)
         {
             LumoraLogger.Warn($"AssetTransferer: no connected peer owns {uriStr}, cannot relay");
@@ -598,6 +641,21 @@ public class SessionAssetTransferer : IDisposable
     }
 
     // Helpers
+
+    // Pull the owner machine id out of a local://{machineId}/{hash} URI. Read from the ORIGINAL string,
+    // not Uri.Host - Uri.Host lowercases the authority, which would mangle the case-sensitive id stamped on
+    // User.MachineID and break owner resolution. -xlinka
+    private static string ExtractMachineId(Uri assetUri)
+    {
+        var s = assetUri.OriginalString;
+        const string prefix = "local://";
+        if (!s.StartsWith(prefix, StringComparison.Ordinal))
+            return assetUri.Host;
+
+        int start = prefix.Length;
+        int slash = s.IndexOf('/', start);
+        return slash > start ? s.Substring(start, slash - start) : s.Substring(start);
+    }
 
     private void RefreshJobs()
     {

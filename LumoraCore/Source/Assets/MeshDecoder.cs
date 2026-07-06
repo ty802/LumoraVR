@@ -18,7 +18,7 @@ namespace Lumora.Core.Assets;
 public static class MeshDecoder
 {
     /// <summary>Decode mesh bytes of the given file extension (e.g. ".glb"). <paramref name="meshIndex"/> -1
-    /// decodes the whole file concatenated; &gt;= 0 decodes only that glTF mesh (one Phos asset per mesh).
+    /// decodes the whole file concatenated; >= 0 decodes only that glTF mesh (one Phos asset per mesh).
     /// Returns null on failure.</summary>
     public static PhosMesh? Decode(byte[] fileData, string extension, int meshIndex = -1)
     {

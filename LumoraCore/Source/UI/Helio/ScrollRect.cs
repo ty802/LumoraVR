@@ -37,6 +37,11 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
     // convert pixels <-> normalized at drag/wheel time without re-reading the rects. -xlinka
     private float2 _excess;
 
+    // The content's own graphic chunk. Render-offset scrolling moves THIS chunk (its mesh is baked once)
+    // instead of re-tessellating, so big lists scroll cheaply. -xlinka
+    private GraphicChunkRoot? _contentRoot;
+    private bool _scrollSetupDone;
+
     public event Action<ScrollRect, float2>? ScrollChanged;
 
     public ScrollRect()
@@ -66,9 +71,39 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
     public override void OnChanges()
     {
         base.OnChanges();
-        // The scroll offset is applied during the canvas rebuild (Canvas.ApplyScrollRects). Changing Scroll
-        // alone touches no RectTransform, so dirty the canvas so the rebuild (and thus the scroll) runs.
-        FindCanvas()?.MarkLayoutDirty();
+        ApplyScrollNow();
+    }
+
+    // Apply the current scroll position. Render-offset path: MOVE the content chunk's transform directly (no
+    // rebuild, no re-tessellation). Falls back to one full pass
+    // only when render-offset is off or the content chunk isn't built yet (first scroll). -xlinka
+    private void ApplyScrollNow()
+    {
+        var canvas = FindCanvas();
+        if (canvas == null)
+            return;
+        if (Canvas.ScrollRenderOffset)
+        {
+            EnsureScrollSetup();
+            // Content slides left/up as you scroll right/down (same sign as the rebuild path in ApplyScroll).
+            var absolute = AbsolutePosition;
+            if (_contentRoot != null && canvas.ApplyScrollOffset(_contentRoot, new float2(-absolute.x, absolute.y)))
+                return;
+        }
+        canvas.MarkLayoutDirty();
+    }
+
+    // One-time: give the content its own graphic chunk so render-offset scrolling can move it as a unit.
+    private void EnsureScrollSetup()
+    {
+        if (_scrollSetupDone)
+            return;
+        var contentSlot = Content.Target?.Slot;
+        if (contentSlot == null)
+            return;
+        _contentRoot = contentSlot.GetComponent<GraphicChunkRoot>() ?? contentSlot.AttachComponent<GraphicChunkRoot>();
+        _contentRoot.ScrollContent = true;
+        _scrollSetupDone = true;
     }
 
     private Canvas? FindCanvas()
@@ -149,12 +184,13 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
 
         if (Canvas.ScrollRenderOffset)
         {
-            // Render-offset path: slide the content's own chunk instead of mutating its rect. The chunk slot
-            // translates by this offset and the canvas counter-translates the clip so the viewport window stays
-            // fixed. Direction matches the rect-mutation below (content moves left/up as you scroll right/down).
-            // Returns false so the caller skips ApplyLayout - the rect is never touched, so there's nothing to
-            // re-lay-out, which is the whole point (no per-tick relayout, no fitter to fight). -xlinka
-            SetContentRenderOffset(content, new float2(-absolute.x, absolute.y));
+            // Render-offset path: the content is its own chunk baked once; scrolling MOVES that chunk (no rect
+            // mutation, no re-tessellation). Here (a structural rebuild) we just store the current offset so
+            // ComputeChunk positions the freshly-baked chunk; live scrolling moves it via ApplyScrollOffset. The
+            // rect is never touched, so return false and the caller skips ApplyLayout. -xlinka
+            EnsureScrollSetup();
+            if (_contentRoot != null)
+                _contentRoot.RenderOffset = new float2(-absolute.x, absolute.y);
             return false;
         }
 
@@ -187,18 +223,6 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
     private static bool SameRect(in Rect a, in Rect b)
         => a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height;
 
-    // Push the scroll offset onto the content's GraphicChunkRoot (added at build time when ScrollRenderOffset
-    // is on). No-op if the content isn't its own chunk - then the render-offset feature simply doesn't engage
-    // for this ScrollRect. -xlinka
-    private static void SetContentRenderOffset(RectTransform content, float2 offset)
-    {
-        var root = content.Slot.GetComponent<GraphicChunkRoot>();
-        if (root != null && root.RenderOffset != offset)
-        {
-            root.RenderOffset = offset;
-        }
-    }
-
     private static float Clamp01(float value)
     {
         if (value < 0f) return 0f;
@@ -212,8 +236,7 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
 
         Scroll.Value = normalized;
         ScrollChanged?.Invoke(this, AbsolutePosition);
-        // Setting Scroll doesn't touch a RectTransform, and OnChanges isn't reliably raised for it, so dirty
-        // the canvas directly - otherwise the rebuild that applies the scroll never runs.
-        FindCanvas()?.MarkLayoutDirty();
+        // Move the content chunk (render-offset) or dirty the canvas (rect-mutation fallback).
+        ApplyScrollNow();
     }
 }

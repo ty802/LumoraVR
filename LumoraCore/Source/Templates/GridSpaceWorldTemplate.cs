@@ -17,9 +17,18 @@ internal sealed class GridSpaceWorldTemplate : WorldTemplateDefinition
     protected override void Build(World world)
     {
         var spawnSlot = world.RootSlot.AddSlot("SpawnArea");
-        spawnSlot.LocalPosition.Value = new float3(0f, 0f, 0f);
+        // The ground box is 0.1 thick centered at y=0, so its TOP surface is +0.05 - sit just above it.
+        spawnSlot.LocalPosition.Value = new float3(0f, 0.06f, 0f);
         spawnSlot.Tag.Value = "spawn";
         spawnSlot.AttachComponent<SimpleUserSpawn>();
+        var spawnArea = spawnSlot.AttachComponent<CommonSpawnArea>();
+        var spawnPoints = spawnSlot.AttachComponent<CirclePointGenerator>();
+        spawnPoints.Radius.Value = 4f;
+        spawnArea.SpawnPointGenerator.Target = spawnPoints;
+        spawnSlot.AddSlot("Visual").AttachComponent<GlowCircle>()
+            .Setup(4f, 0.2f,
+                new colorHDR(0.85f, 0.83f, 0.78f, 0.3f), // faint white pool (alpha scales additive strength)
+                new colorHDR(1.0f, 0.72f, 0.28f, 1f));   // gold ring
 
         // Warm low-angle key light. Rotation derived so the slot's local -Z
         // (Godot DirectionalLight photon direction) is exactly opposite the

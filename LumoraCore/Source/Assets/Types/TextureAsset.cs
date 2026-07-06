@@ -47,6 +47,18 @@ public class TextureAsset : ImplementableAsset<ITextureAssetHook>
     public long MemorySize => _pixelData?.Length ?? 0;
 
     /// <summary>
+    /// True when this texture holds a multi-channel signed distance field (font atlas), so text materials
+    /// reconstruct the glyph from the RGB median instead of sampling coverage. Set by the font atlas builder.
+    /// </summary>
+    public bool IsMSDF { get; set; }
+
+    /// <summary>
+    /// The distance-field pixel range the MSDF was generated with (matches the font's msdf_pixel_range).
+    /// Only meaningful when <see cref="IsMSDF"/> is true.
+    /// </summary>
+    public int MsdfPixelRange { get; set; } = 8;
+
+    /// <summary>
     /// Gather and decode this texture from its URL. Only runs for URL (static) instances;
     /// procedural instances set their data directly via <see cref="SetImageData"/>.
     /// </summary>

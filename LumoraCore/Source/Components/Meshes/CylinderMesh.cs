@@ -26,6 +26,9 @@ public class CylinderMesh : ProceduralMesh
     /// <summary>UV scale for texture mapping</summary>
     public readonly Sync<float2> UVScale;
 
+    /// <summary>Whether the top/bottom caps are generated (off = open tube).</summary>
+    public readonly Sync<bool> Caps;
+
     // Private State
 
     private PhosCylinder? cylinder;
@@ -33,6 +36,7 @@ public class CylinderMesh : ProceduralMesh
     private float _height;
     private int _segments;
     private float2 _uvScale;
+    private bool _caps;
 
     // Constructor
 
@@ -42,6 +46,7 @@ public class CylinderMesh : ProceduralMesh
         Height = new Sync<float>(this, 1f);
         Segments = new Sync<int>(this, 32);
         UVScale = new Sync<float2>(this, new float2(1f, 1f));
+        Caps = new Sync<bool>(this, true);
     }
 
     // Lifecycle
@@ -55,6 +60,7 @@ public class CylinderMesh : ProceduralMesh
         SubscribeToChanges(Height);
         SubscribeToChanges(Segments);
         SubscribeToChanges(UVScale);
+        SubscribeToChanges(Caps);
     }
 
     // Mesh Generation
@@ -66,17 +72,17 @@ public class CylinderMesh : ProceduralMesh
         _height = Height.Value;
         _segments = Segments.Value;
         _uvScale = UVScale.Value;
+        _caps = Caps.Value;
     }
 
     protected override void UpdateMeshData(PhosMesh mesh)
     {
-        // Check if segment count changed - requires geometry rebuild
-        bool segmentsChanged = cylinder != null && cylinder.Segments != _segments;
+        // Segments and caps are baked into the geometry layout - changing either rebuilds
+        bool rebuild = cylinder != null && (cylinder.Segments != _segments || cylinder.Caps != _caps);
 
-        // Mark geometry as changed if this is the first update or segments changed
-        uploadHint[MeshUploadHint.Flag.Geometry] = cylinder == null || segmentsChanged;
+        uploadHint[MeshUploadHint.Flag.Geometry] = cylinder == null || rebuild;
 
-        if (cylinder == null || segmentsChanged)
+        if (cylinder == null || rebuild)
         {
             // Clear existing mesh data if rebuilding
             if (cylinder != null)
@@ -87,7 +93,7 @@ public class CylinderMesh : ProceduralMesh
             // Create submesh and cylinder
             var submesh = new PhosTriangleSubmesh(mesh);
             mesh.Submeshes.Add(submesh);
-            cylinder = new PhosCylinder(submesh, _segments);
+            cylinder = new PhosCylinder(submesh, _segments, _caps);
         }
 
         // Update cylinder properties

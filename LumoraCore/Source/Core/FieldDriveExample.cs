@@ -9,7 +9,7 @@ namespace Lumora.Examples;
 
 /// <summary>
 /// Example demonstrating how to use FieldDrive for IK bone driving.
-/// This is a reference implementation - not meant for production use.
+/// This is an illustrative example - not meant for production use.
 /// </summary>
 public class FieldDriveExample
 {

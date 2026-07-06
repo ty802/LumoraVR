@@ -17,7 +17,7 @@ namespace Lumora.Core.Networking.Session;
 /// </summary>
 public class SessionServerClient : IDisposable, INetEventListener, INatPunchListener
 {
-    // Protocol opcodes (matching natserver-main)
+    // Protocol opcodes.
     private const byte OP_HANDSHAKE = 0x01;
     private const byte OP_NAT_INTRO_NOTIFY = 0x02;
     private const byte OP_RELAY_REQUEST = 0x03;
@@ -26,7 +26,21 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
     private const byte OP_RELAY_RECEIVE = 0x06;
     private const byte OP_SESSION_UPDATE = 0x07;
 
-    // Default server settings
+    // Relay wire format (client side). Strings are length-prefixed (the writer's Put(string)); payload is
+    // raw bytes to the end of the packet (the writer's Put(byte[]) writes NO length prefix in this transport
+    // version, so it is drained with GetRemainingBytes). The relay server is expected to bridge these
+    // symmetrically; no such server exists in this repo yet (see RelayNetworkManager / Session host notes),
+    // so this client is the source of truth for the format.
+    //   client -> server  OP_RELAY_REQUEST : [byte op][string targetSessionId]
+    //   server -> client  OP_RELAY_CONFIRM : [byte op][string targetSessionId]
+    //   client -> server  OP_RELAY_PACKET  : [byte op][string targetSessionId][raw bytes... payload]
+    //   server -> client  OP_RELAY_RECEIVE : [byte op][string sourceSessionId][raw bytes... payload]
+    // sourceSessionId on OP_RELAY_RECEIVE mirrors targetSessionId on OP_RELAY_PACKET (same string type),
+    // so a server that echoes the peer id round-trips without a type mismatch. -xlinka
+
+    // Dev-only fallbacks, used only when a caller constructs without an explicit endpoint. Real callers
+    // pass Session.SessionServerAddress / SessionServerPort, which come from config (Network.SessionServer.*).
+    // These are NOT a production default. -xlinka
     public const string DEFAULT_SERVER = "127.0.0.1";
     public const int DEFAULT_PORT = 8000;
 
@@ -179,6 +193,68 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
     }
 
     /// <summary>
+    /// Connect to the session server as a plain relay client (no session registration).
+    /// Used by the joining peer so it can request a relay and exchange relay packets.
+    /// </summary>
+    public async Task<bool> ConnectForRelayAsync()
+    {
+        if (IsConnected)
+            return true;
+
+        try
+        {
+            _client = new NetManager(this)
+            {
+                NatPunchEnabled = true,
+                AutoRecycle = true
+            };
+            _client.NatPunchModule.Init(this);
+
+            if (!_client.Start())
+            {
+                LumoraLogger.Error("SessionServerClient: Failed to start NetManager for relay");
+                return false;
+            }
+
+            _cts = new CancellationTokenSource();
+            _pollTask = Task.Run(PollLoop);
+
+            // Connect as a relay client; no metadata is sent, so the OP_HANDSHAKE
+            // reply's SendSessionReady() no-ops (it requires pending metadata).
+            var writer = new NetDataWriter();
+            writer.Put("Relay");
+            _serverPeer = _client.Connect(_serverAddress, _serverPort, writer);
+
+            if (_serverPeer == null)
+            {
+                LumoraLogger.Error("SessionServerClient: Failed to initiate relay connection");
+                Disconnect();
+                return false;
+            }
+
+            var startTime = DateTime.UtcNow;
+            while (!IsConnected && (DateTime.UtcNow - startTime).TotalSeconds < 5)
+                await Task.Delay(50);
+
+            if (!IsConnected)
+            {
+                LumoraLogger.Warn("SessionServerClient: Relay connection timeout");
+                Disconnect();
+                return false;
+            }
+
+            LumoraLogger.Log($"SessionServerClient: Relay-connected to {_serverAddress}:{_serverPort}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LumoraLogger.Error($"SessionServerClient: Relay connection failed - {ex.Message}");
+            Disconnect();
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Send NAT punch request to join a session.
     /// </summary>
     private void SendNATPunchRequest(string targetSessionId, string? joinTicket)
@@ -275,7 +351,7 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
         var writer = new NetDataWriter();
         writer.Put(OP_RELAY_PACKET);
         writer.Put(targetSessionId);
-        writer.Put(data);
+        writer.Put(data); // raw bytes to end (no length prefix); drained with GetRemainingBytes on receive
         _serverPeer.Send(writer, DeliveryMethod.ReliableOrdered);
     }
 
@@ -391,7 +467,11 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
                     break;
 
                 case OP_RELAY_RECEIVE:
-                    var sourceId = reader.GetInt();
+                    // Source id is a length-prefixed string, mirroring the target id we write in
+                    // SendRelayPacket - NOT an int (the old GetInt() here desynced the reader and ate
+                    // the first 4 payload bytes). The payload follows as raw bytes-to-end, matching the
+                    // unprefixed Put(byte[]) on the send side, so GetRemainingBytes drains it. -xlinka
+                    _ = reader.GetString(); // sourceSessionId - consumed to advance the reader; not surfaced yet
                     var relayData = reader.GetRemainingBytes();
                     OnRelayDataReceived?.Invoke(relayData);
                     break;
@@ -431,7 +511,6 @@ public class SessionServerClient : IDisposable, INetEventListener, INatPunchList
 
     public void OnNatIntroductionRequest(IPEndPoint localEndPoint, IPEndPoint remoteEndPoint, string token)
     {
-        // This is called when someone is trying to connect to us
         LumoraLogger.Log($"SessionServerClient: NAT introduction request received - Local: {localEndPoint}, Remote: {remoteEndPoint}, Token: {token}");
     }
 

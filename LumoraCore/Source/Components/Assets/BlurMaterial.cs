@@ -28,7 +28,7 @@ public class BlurMaterial : MaterialProvider
     public readonly Sync<float> Radius;
     /// <summary>Dim/wash over the blurred result; alpha = how far to mix toward the color.</summary>
     public readonly Sync<colorHDR> TintColor;
-    /// <summary>Overall opacity. &lt; 1 lets the content behind show through (dimmed).</summary>
+    /// <summary>Overall opacity. < 1 lets the content behind show through (dimmed).</summary>
     public readonly Sync<float> Opacity;
     public readonly Sync<BlendMode> BlendMode;
     public readonly Sync<Culling> Culling;

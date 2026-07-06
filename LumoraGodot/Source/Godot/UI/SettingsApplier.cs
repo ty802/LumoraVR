@@ -36,6 +36,7 @@ public partial class SettingsApplier : Node
 	private bool? _appliedFullscreen;
 	private float? _appliedRenderScale;
 	private float? _appliedMasterVolume;
+	private float? _appliedUserHeight;
 	private int? _appliedBackgroundFps;
 
 	// When the window loses focus or is minimized the compositor stops blocking the swap, so vsync no longer throttles
@@ -90,6 +91,16 @@ public partial class SettingsApplier : Node
 				AudioServer.SetBusVolumeDb(masterBus, Mathf.LinearToDb(Mathf.Max(EngineSettings.MasterVolume, 0.0001f)));
 				AudioServer.SetBusMute(masterBus, EngineSettings.MasterVolume <= 0f);
 			}
+		}
+
+		if (_appliedUserHeight != EngineSettings.UserHeight)
+		{
+			_appliedUserHeight = EngineSettings.UserHeight;
+			// Feed the calibrated height to the input layer; AvatarIK.MaybeRescaleAvatar reads it and re-scales the
+			// avatar so its eye height matches (live). -xlinka
+			var input = Lumora.Core.Engine.Current?.InputInterface;
+			if (input != null)
+				input.UserHeight = EngineSettings.UserHeight;
 		}
 	}
 

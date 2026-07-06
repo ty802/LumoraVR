@@ -21,7 +21,7 @@ public class GridLayout : LayoutController
     public readonly Sync<float> PaddingTop;
     public readonly Sync<float> PaddingBottom;
 
-    /// <summary>Fixed cell size in canvas units. x &gt; 0 switches to fixed-cell mode (y &lt;= 0 = square).</summary>
+    /// <summary>Fixed cell size in canvas units. x > 0 switches to fixed-cell mode (y <= 0 = square).</summary>
     public readonly Sync<float2> CellSize;
 
     private int _columns;

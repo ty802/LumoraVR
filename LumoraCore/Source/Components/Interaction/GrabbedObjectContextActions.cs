@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.Collections.Generic;
+using Lumora.Core.Components.Avatar;
 using Lumora.Core.Components.UI;
 
 namespace Lumora.Core.Components.Interaction;
@@ -54,6 +55,32 @@ public class GrabbedObjectContextActions : ContextMenuItemSource
             FillColor = new[] { 0.12f, 0.18f, 0.30f, 0.92f },
             OnPressed = _ => SaveGrabbedToInventory(grabber),
         });
+
+        // Equip on avatar: if a held object is an (unworn) avatar, offer to wear it from the held-object menu.
+        // Releases the grab, then routes through the body-node dispatch. - xlinka
+        var manager = Slot?.ActiveUserRoot?.GetRegisteredComponent<AvatarEquipManager>();
+        if (manager != null)
+        {
+            foreach (var slot in CollectGrabbedSlots(grabber))
+            {
+                var avatarRoot = slot.GetComponent<AvatarForm>();
+                if (avatarRoot == null || avatarRoot.IsEquipped || slot == manager.CurrentAvatar.Target)
+                    continue;
+
+                var targetSlot = slot;
+                page.AddItem(new ContextMenuItem
+                {
+                    Label = "Equip Avatar",
+                    FillColor = new[] { 0.14f, 0.30f, 0.18f, 0.92f },
+                    OnPressed = _ =>
+                    {
+                        grabber.ReleaseAll();
+                        manager.EquipAvatar(targetSlot);
+                    },
+                });
+                break; // one equip item even if multiple avatars are held
+            }
+        }
     }
 
     private void SaveGrabbedToInventory(Grabber grabber)

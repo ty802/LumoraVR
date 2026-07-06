@@ -22,23 +22,28 @@ public sealed class TextShaper
         public readonly GlyphMetrics Metrics;
         public readonly Rect UV;
         public readonly float X;
+        // Index of this glyph's codepoint in the shaped string. Lets a consumer map a
+        // glyph back to per-source-character data (e.g. rich-text per-character color).
+        public readonly int SourceIndex;
 
-        public PositionedGlyph(FontAsset font, int codepoint, in GlyphMetrics metrics, in Rect uv, float x)
+        public PositionedGlyph(FontAsset font, int codepoint, in GlyphMetrics metrics, in Rect uv, float x, int sourceIndex)
         {
             Font = font;
             Codepoint = codepoint;
             Metrics = metrics;
             UV = uv;
             X = x;
+            SourceIndex = sourceIndex;
         }
 
-        public PositionedGlyph WithX(float x) => new(Font, Codepoint, Metrics, UV, x);
+        public PositionedGlyph WithX(float x) => new(Font, Codepoint, Metrics, UV, x, SourceIndex);
     }
 
     public sealed class Line
     {
         public readonly List<PositionedGlyph> Glyphs = new();
         public float Width;
+        public float MaxSizeScale = 1f;   // largest per-glyph size multiplier on this line
     }
 
     private readonly List<Line> _lines = new();
@@ -50,9 +55,11 @@ public sealed class TextShaper
     private bool _shapedWrap;
     private float _shapedMaxWidth;
     private int _shapedGeneration;
+    private IReadOnlyList<float>? _shapedScales;
 
     private float _size;
     private bool _wrap;
+    private IReadOnlyList<float>? _sizeScales;
 
     public IReadOnlyList<Line> Lines => _lines;
 
@@ -74,10 +81,14 @@ public sealed class TextShaper
     /// Shape content into positioned glyph lines. No-op when every shaping
     /// input matches the cached result. Returns true if a reshape happened.
     /// </summary>
-    public bool Shape(FontSet font, string content, float size, bool wrap, float maxWidth)
+    public bool Shape(FontSet font, string content, float size, bool wrap, float maxWidth, IReadOnlyList<float>? sizeScales = null)
     {
         int generation = font.CacheGeneration;
-        if (_valid
+        // Per-char size scales can change behind the same list reference, so never
+        // reuse the cache when they're in play (uniform text still caches).
+        if (sizeScales == null
+            && _valid
+            && _shapedScales == null
             && ReferenceEquals(_shapedFont, font)
             && _shapedContent == content
             && _shapedSize == size
@@ -90,6 +101,7 @@ public sealed class TextShaper
 
         _size = size;
         _wrap = wrap;
+        _sizeScales = sizeScales;
         BuildLines(font, content, maxWidth);
 
         _shapedFont = font;
@@ -98,6 +110,7 @@ public sealed class TextShaper
         _shapedWrap = wrap;
         _shapedMaxWidth = maxWidth;
         _shapedGeneration = generation;
+        _shapedScales = sizeScales;
         _valid = true;
         return true;
     }
@@ -139,6 +152,7 @@ public sealed class TextShaper
 
         for (int i = 0; i < content.Length; i++)
         {
+            int start = i;
             int cp = char.ConvertToUtf32(content, i);
             if (char.IsHighSurrogate(content[i])) i++;
             if (cp == '\r') continue;
@@ -167,7 +181,7 @@ public sealed class TextShaper
                 continue;
             }
 
-            AppendCodepoint(font, word, cp, ref prevWordCodepoint, ref prevWordFont);
+            AppendCodepoint(font, word, cp, start, ref prevWordCodepoint, ref prevWordFont);
         }
 
         FlushWord(ref line, ref word, ref pendingWhitespace, maxWidth);
@@ -206,26 +220,33 @@ public sealed class TextShaper
             : _size * 0.5f;
     }
 
-    private void AppendCodepoint(FontSet font, Line target, int codepoint, ref int prevCodepoint, ref FontAsset? prevFont)
+    private void AppendCodepoint(FontSet font, Line target, int codepoint, int sourceIndex, ref int prevCodepoint, ref FontAsset? prevFont)
     {
+        float scale = 1f;
+        if (_sizeScales != null && (uint)sourceIndex < (uint)_sizeScales.Count)
+            scale = _sizeScales[sourceIndex];
+        float gsize = _size * scale;
+        if (scale > target.MaxSizeScale)
+            target.MaxSizeScale = scale;
+
         float kerning = 0f;
         float advance;
 
-        if (font.TryGetGlyph(codepoint, _size, out var metrics, out var uv, out var glyphFont) && glyphFont != null)
+        if (font.TryGetGlyph(codepoint, gsize, out var metrics, out var uv, out var glyphFont) && glyphFont != null)
         {
             if (prevCodepoint != 0 && ReferenceEquals(prevFont, glyphFont))
             {
-                kerning = font.GetKerning(glyphFont, prevCodepoint, codepoint, _size);
+                kerning = font.GetKerning(glyphFont, prevCodepoint, codepoint, gsize);
             }
 
-            target.Glyphs.Add(new PositionedGlyph(glyphFont, codepoint, metrics, uv, target.Width + kerning));
+            target.Glyphs.Add(new PositionedGlyph(glyphFont, codepoint, metrics, uv, target.Width + kerning, sourceIndex));
             advance = metrics.Advance;
             prevCodepoint = codepoint;
             prevFont = glyphFont;
         }
         else
         {
-            advance = _size * 0.5f;
+            advance = gsize * 0.5f;
             prevCodepoint = 0;
             prevFont = null;
         }
@@ -242,5 +263,7 @@ public sealed class TextShaper
         }
 
         target.Width = startX + source.Width;
+        if (source.MaxSizeScale > target.MaxSizeScale)
+            target.MaxSizeScale = source.MaxSizeScale;
     }
 }

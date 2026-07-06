@@ -96,6 +96,14 @@ public class MaterialAsset : DynamicImplementableAsset<IMaterialAssetHook>
         Version++;
     }
 
+    // Set + flush one float2 to the live material immediately (per-frame scroll clip_offset). SetFloat2 only
+    // stages the value; the shader param isn't touched until a full ApplyChanges. -xlinka
+    public void ApplyFloat2Now(string property, float2 value)
+    {
+        Hook?.ApplyFloat2Now(property, value);
+        Version++;
+    }
+
     /// <summary>
     /// Set a float3 property.
     /// </summary>

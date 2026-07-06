@@ -150,13 +150,28 @@ public class SessionConnectionManager : IDisposable
     /// </summary>
     public async Task<bool> ConnectToAsync(IEnumerable<Uri> addresses)
     {
-        var uri = addresses.FirstOrDefault();
-        if (uri == null)
+        // Try every advertised address in order (LAN, public, relay, ...), falling through to the next on
+        // failure instead of giving up after the first. Returns on the first that connects. -xlinka
+        int attempts = 0;
+        foreach (var address in addresses)
         {
-            LumoraLogger.Error("[lnl] No addresses provided");
-            return false;
+            if (address == null)
+                continue;
+            attempts++;
+            LumoraLogger.Log($"[lnl] Connect attempt {attempts}: {address}");
+            if (await TryConnectAsync(address))
+                return true;
+            LumoraLogger.Warn($"[lnl] Address failed, trying next: {address}");
         }
 
+        LumoraLogger.Error(attempts == 0
+            ? "[lnl] No addresses provided"
+            : $"[lnl] All {attempts} address(es) failed to connect");
+        return false;
+    }
+
+    private async Task<bool> TryConnectAsync(Uri uri)
+    {
         // Same-machine join ("two clients on one PC"): if the host address is one of THIS machine's own IPs,
         // dial it over loopback (127.0.0.1) instead. Connecting to the host's LAN IP egresses the OS
         // default-route interface, which on a dev box is often a Hyper-V/WSL/VPN virtual adapter - so the packet
@@ -285,8 +300,8 @@ public class SessionConnectionManager : IDisposable
         var cdn = Engine.Current?.CDNClient;
         bool hasAccount = cdn != null && cdn.HasAccountIdentity;
 
-        // Our challenge to the host: it must sign this so we know we're talking to the real host and not a
-        // man in the middle. We hold onto it to check the host's signature in HandleJoinChallenge. -xlinka
+        // Our challenge to the host: it must sign this so we know we're talking to the real host. We hold
+        // onto it to check the host's signature in HandleJoinChallenge. -xlinka
         var hostVerificationToken = RandomNumberGenerator.GetBytes(32);
         _hostVerificationToken = hostVerificationToken;
 
@@ -321,9 +336,8 @@ public class SessionConnectionManager : IDisposable
     {
         var ip = GetIpKey(peer);
 
-        // Cap both total pending connections and pending per source IP. Without
-        // this, a single attacker can open thousands of LNL connections that sit
-        // forever before sending JoinRequest and exhaust host memory/sockets.
+        // Cap both total pending connections and pending per source IP, so a flood of
+        // connections that never send a JoinRequest can't exhaust host memory/sockets.
         bool admit;
         List<IConnection>? reclaimed;
         lock (_lock)
@@ -332,8 +346,8 @@ public class SessionConnectionManager : IDisposable
             // holding the cap against a legit peer trying to connect right now. -xlinka
             reclaimed = ReclaimStalePendingAuthLocked();
 
-            // Count connections still mid-handshake (waiting to authenticate) too, otherwise an attacker
-            // could send a JoinRequest, sit in _pendingAuth, free the pending slot, and repeat. -xlinka
+            // Count connections still mid-handshake (waiting to authenticate) too, so the pending slot
+            // can't be freed and reused to slip past the cap. -xlinka
             if (_pendingConnections.Count + _pendingAuth.Count >= NetworkLimits.MaxPendingConnections)
             {
                 admit = false;
@@ -516,8 +530,8 @@ public class SessionConnectionManager : IDisposable
         // only fire later in AddUser, by which point the user was already in the collection and synced,
         // so a banned user ended up half-joined with the connection still open. This is the gate, so the
         // ban belongs at the gate. Caveat: it's only as strong as what it keys on, and right now MachineID
-        // is client-supplied and the account UserID isn't verified, so a determined evader can still spoof
-        // past it until we have real join verification. Still beats leaving the door open. -xlinka
+        // is client-supplied and the account UserID isn't verified, so it can still be evaded until we have
+        // full join verification. Still beats leaving the door open. -xlinka
         if (Lumora.Core.Security.BanManager.IsBanned(requestData.UserID, requestData.MachineID, World.WorldName?.Value))
             return "You are banned from this world";
 
@@ -682,7 +696,7 @@ public class SessionConnectionManager : IDisposable
         var hostIdentity = Lumora.Core.Security.MachineIdentity.Local;
 
         // Prove WE are the real host by signing the joiner's token with our machine key. The joiner checks
-        // this before handing over its own signature, so a man in the middle can't pose as the host. -xlinka
+        // this before handing over its own signature, so nothing in between can pose as the host. -xlinka
         byte[] hostSignature = Array.Empty<byte>();
         if (hostVerificationToken != null && hostVerificationToken.Length > 0)
         {
@@ -723,8 +737,8 @@ public class SessionConnectionManager : IDisposable
         }
 
         // Verify the HOST first: its MachineId has to hash to the key it sent, and it has to have signed
-        // the token we put in our JoinRequest. If that doesn't check out we're talking to an impostor or a
-        // man in the middle, so bail without ever handing over our own signature. -xlinka
+        // the token we put in our JoinRequest. If that doesn't check out we're not talking to the real host,
+        // so bail without ever handing over our own signature. -xlinka
         var token = _hostVerificationToken;
         bool hostOk =
             token != null && token.Length > 0
@@ -736,7 +750,7 @@ public class SessionConnectionManager : IDisposable
 
         if (!hostOk)
         {
-            LumoraLogger.Error("[lnl] HandleJoinChallenge: host identity verification FAILED - aborting join (possible MITM)");
+            LumoraLogger.Error("[lnl] HandleJoinChallenge: host identity verification FAILED - aborting join");
             (connection ?? HostConnection)?.Close();
             _hostVerificationToken = null;
             return;
@@ -768,7 +782,25 @@ public class SessionConnectionManager : IDisposable
             catch (Exception ex) { LumoraLogger.Warn($"[lnl] HandleJoinChallenge: account sign failed ({ex.Message})"); }
         }
 
-        var auth = new LegacyJoinAuthenticateData { Signature = signature, AccountSignature = accountSignature };
+        // Hash our datamodel schema with the host's nonce so the host can confirm we run a compatible
+        // build before granting the join. -xlinka
+        byte[] compatHash;
+        try
+        {
+            compatHash = Lumora.Core.Networking.Sync.ProtocolCompatibility.ComputeChallengeResponse(challenge.Nonce);
+        }
+        catch (Exception ex)
+        {
+            LumoraLogger.Warn($"[lnl] HandleJoinChallenge: failed to compute compatibility hash ({ex.Message})");
+            compatHash = Array.Empty<byte>();
+        }
+
+        var auth = new LegacyJoinAuthenticateData
+        {
+            Signature = signature,
+            AccountSignature = accountSignature,
+            CompatHash = compatHash
+        };
         var controlMessage = new ControlMessage(ControlMessage.Message.JoinAuthenticate)
         {
             Payload = auth.Encode()
@@ -807,7 +839,7 @@ public class SessionConnectionManager : IDisposable
 
         try
         {
-            // 1. The machine key is always required: prove ownership of the claimed MachineID.
+            // The machine key is always required: prove ownership of the claimed MachineID.
             if (!Lumora.Core.Security.MachineIdentity.VerifyChallenge(
                     pending.Request.MachineID, pending.Request.MachinePublicKey,
                     Lumora.Core.Security.MachineIdentity.BuildJoinPayload(pending.Nonce, JoinContextUserMachine),
@@ -818,7 +850,17 @@ public class SessionConnectionManager : IDisposable
                 return;
             }
 
-            // 2. The account check only runs when the joiner CLAIMS an account. We fail closed: if
+            // Datamodel compatibility: the joiner must report the same synced-component schema we do (salted
+            // with this join's nonce). A mismatch means an incompatible build, so reject before attempting a
+            // doomed join. -xlinka
+            if (!Lumora.Core.Networking.Sync.ProtocolCompatibility.Verify(pending.Nonce, auth.CompatHash))
+            {
+                LumoraLogger.Warn($"[lnl] HandleJoinAuthenticate: datamodel schema mismatch for {connection.Identifier} - rejecting");
+                SendJoinReject(connection, "Incompatible client version");
+                return;
+            }
+
+            // The account check only runs when the joiner CLAIMS an account. We fail closed: if
             // they claim one and we can't verify it (no key published, bad signature, platform-banned, or
             // the backend is unreachable), reject. A guest just doesn't claim an account. -xlinka
             var claimedAccount = pending.Request.AccountUserId;
@@ -918,9 +960,8 @@ public class SessionConnectionManager : IDisposable
 
         // Fail CLOSED. If we can't reach the moderation backend (offline / timeout / non-2xx), we cannot
         // confirm this account isn't banned, so we refuse the join. The old code only checked bans when the
-        // fetch SUCCEEDED, which meant a platform-banned account sailed in during any backend outage - and an
-        // attacker who can drop the host's egress to the backend induces exactly that. The machine signature
-        // is already verified by this point; this gate is purely about ban status. -xlinka
+        // fetch SUCCEEDED, which meant a platform-banned account sailed in during any backend outage. The
+        // machine signature is already verified by this point; this gate is purely about ban status. -xlinka
         if (!userInfo.Success || userInfo.Data == null)
         {
             LumoraLogger.Warn($"[lnl] VerifyAccount: could not fetch platform status for {accountUserId} (backend unreachable?); failing closed and rejecting.");

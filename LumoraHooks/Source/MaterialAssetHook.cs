@@ -21,6 +21,8 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
     private StandardMaterial3D _standardMaterial = null!;
     private ShaderMaterial _shaderMaterial = null!;
     private MaterialType _materialType;
+    private bool _uiZWriteOn;
+    private bool _uiZTestOff;
     private bool _usesShaderMaterial;
     private string _customShaderPath = null!;
     private int _renderQueue = -1;
@@ -79,6 +81,11 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
             case MaterialType.UI_Unlit:
                 _usesShaderMaterial = true;
                 _shaderMaterial = CreateShaderMaterial("res://Shaders/UI_Unlit.gdshader", MaterialType.UI_Unlit);
+                break;
+
+            case MaterialType.UI_DualColor:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/UI_DualColor.gdshader", MaterialType.UI_DualColor);
                 break;
 
             case MaterialType.UI_StencilWrite:
@@ -264,6 +271,17 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         }
         else if (_shaderMaterial != null)
         {
+            // Blend mode is a compile-time render_mode in gdshader, NOT a uniform - the parameter
+            // below never did anything. For the plain unlit shader, additive swaps the shader.
+            if (_materialType == MaterialType.Unlit)
+            {
+                string shaderPath = mode == BlendMode.Additive
+                    ? "res://Shaders/Unlit_Additive.gdshader"
+                    : "res://Shaders/Unlit.gdshader";
+                var shader = ResourceLoader.Load<Shader>(shaderPath);
+                if (shader != null && _shaderMaterial.Shader != shader)
+                    _shaderMaterial.Shader = shader; // uniform values persist across the swap
+            }
             _shaderMaterial.SetShaderParameter("blend_mode", (int)mode);
         }
     }
@@ -311,6 +329,28 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
             _renderQueue = value;
         }
 
+        // Depth write/test are compile-time render_modes in gdshader, not uniforms - UI materials
+        // asking for ZWrite.On (panel backings) or ZTest Always/Disabled (userspace overlays like the
+        // dash surface and laser) swap between UI_Unlit shader variants. Uniform values persist.
+        if (_materialType == MaterialType.UI_Unlit && _shaderMaterial != null)
+        {
+            if (property == "ZWrite")
+                _uiZWriteOn = value == 2; // ZWrite.On
+            else if (property == "ZTest")
+                _uiZTestOff = value == 0 || value == 8; // Disabled / Always
+            if (property is "ZWrite" or "ZTest")
+            {
+                string shaderPath = _uiZTestOff
+                    ? "res://Shaders/UI_UnlitOverlay.gdshader"
+                    : _uiZWriteOn
+                        ? "res://Shaders/UI_UnlitZWrite.gdshader"
+                        : "res://Shaders/UI_Unlit.gdshader";
+                var shader = ResourceLoader.Load<Shader>(shaderPath);
+                if (shader != null && _shaderMaterial.Shader != shader)
+                    _shaderMaterial.Shader = shader;
+            }
+        }
+
         _pendingProperties[property] = value;
     }
 
@@ -336,6 +376,16 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
     public void SetFloat2(string property, float2 value)
     {
         _pendingProperties[property] = new Vector2(value.x, value.y);
+    }
+
+    // Record the property (so a later full ApplyChanges stays consistent) AND push just this one to the live
+    // material now. SetFloat2 alone only stages into _pendingProperties - the shader param isn't touched until
+    // ApplyChanges, which re-pushes ALL properties. This flushes one, for per-frame scroll clip_offset. -xlinka
+    public void ApplyFloat2Now(string property, float2 value)
+    {
+        var v = new Vector2(value.x, value.y);
+        _pendingProperties[property] = v;
+        ApplyProperty(property, v);
     }
 
     /// <summary>
@@ -522,7 +572,7 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         // shaders share the Unlit albedo_* uniform family but keep their own
         // alpha_cutoff (Unlit uses alpha_scissor_threshold).
         bool isUnlit = _materialType == MaterialType.Unlit;
-        bool isAlbedoShader = isUnlit || _materialType is MaterialType.UI_Unlit or MaterialType.UI_Text or MaterialType.Text;
+        bool isAlbedoShader = isUnlit || _materialType is MaterialType.UI_Unlit or MaterialType.UI_DualColor or MaterialType.UI_Text or MaterialType.Text;
         bool isMetaball = _materialType == MaterialType.Metaball;
         string mappedParam = property switch
         {

@@ -48,6 +48,11 @@ public class Button : InteractionElement
         return AddColorDriver(tint, tint.Value);
     }
 
+    // A button inside a scroll list relinquishes any real drag so the list scrolls; a click (no movement)
+    // stays with the button and still fires on release.
+    public override bool PassDragToParent(in float2 dragDelta)
+        => System.Math.Abs(dragDelta.x) > DragPassThreshold || System.Math.Abs(dragDelta.y) > DragPassThreshold;
+
     protected override void OnSubmit(in UIInteractionContext context)
     {
         Clicked?.Invoke(this, context);

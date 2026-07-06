@@ -11,6 +11,7 @@ public sealed class WorkerInitInfo
 {
     public FieldInfo[] SyncMemberFields = null!;
     public MethodInfo[] ListedMethods = null!;
+    public Dictionary<string, int> ListedMethodNameToIndex = null!;
     public bool[] SyncMemberNonpersistent = null!;
     public bool[] SyncMemberNondrivable = null!;
     public bool[] SyncMemberDontCopy = null!;

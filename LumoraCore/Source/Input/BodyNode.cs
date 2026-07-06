@@ -300,14 +300,16 @@ public static class BodyNodeExtensions
         // Add segment offset
         int segmentOffset = (int)segment;
 
-        // Thumb doesn't have intermediate
+        // Thumb has no intermediate, so its 4 segments pack contiguously: Metacarpal(0), Proximal(1),
+        // Distal(2), Tip(3). Collapse the gap left by the missing Intermediate (Distal 3 -> 2, Tip 4 -> 3).
         if (finger == FingerType.Thumb && segment >= FingerSegmentType.Intermediate)
         {
-            segmentOffset = segment == FingerSegmentType.Intermediate ? (int)FingerSegmentType.Distal :
-                            segment == FingerSegmentType.Distal ? (int)FingerSegmentType.Distal :
-                            (int)FingerSegmentType.Tip;
-            if (segment == FingerSegmentType.Tip)
-                segmentOffset = 3; // Thumb tip is at offset 3
+            segmentOffset = segment switch
+            {
+                FingerSegmentType.Intermediate => (int)FingerSegmentType.Distal - 1, // map to thumb Distal slot
+                FingerSegmentType.Distal => (int)FingerSegmentType.Distal - 1,        // 2
+                _ => (int)FingerSegmentType.Tip - 1,                                  // Tip -> 3
+            };
         }
 
         // Calculate final node

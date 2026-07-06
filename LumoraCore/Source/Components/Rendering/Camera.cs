@@ -86,7 +86,7 @@ public class Camera : ImplementableComponent
     public readonly Sync<bool> AllowMSAA = new();
 
     /// <summary>
-    /// Viewport rect (normalized 0-1) - TODO: Create platform-agnostic Rect2 type
+    /// Viewport rect within the screen, normalized 0-1 as (x, y, width, height).
     /// </summary>
     public readonly Sync<float4> ViewportRect = new();
 
@@ -100,8 +100,13 @@ public class Camera : ImplementableComponent
     /// </summary>
     public readonly Sync<bool> RenderPostProcessing = new();
 
-    // TODO: Post-processing effects list - needs proper implementation
-    // public SyncList<PostProcessingEffect> PostProcessingEffects { get; private set; }
+    /// <summary>
+    /// Aspect ratio (width / height) of the screen viewport this camera renders into.
+    /// Only the platform layer knows the real window size, so it feeds this each frame
+    /// while the camera renders to screen. Used as the fallback for <see cref="AspectRatio"/>
+    /// when no render target is set. Defaults to a 16:9 sentinel until the platform updates it.
+    /// </summary>
+    public float ScreenAspect { get; set; } = 16f / 9f;
 
     public override void OnInit()
     {
@@ -126,25 +131,20 @@ public class Camera : ImplementableComponent
         RenderPostProcessing.Value = true;
     }
 
-    public override void OnStart()
-    {
-        base.OnStart();
-    }
-
-    public override void OnUpdate(float delta)
-    {
-        base.OnUpdate(delta);
-    }
-
     /// <summary>
-    /// Get the aspect ratio of the camera
+    /// Aspect ratio (width / height) of the camera.
+    /// Derived from the render target when one is set (a real, reachable source);
+    /// otherwise the screen viewport aspect the platform feeds via <see cref="ScreenAspect"/>.
     /// </summary>
     public float AspectRatio
     {
         get
         {
-            // TODO: Get from render target or screen
-            return 16f / 9f;
+            var target = TargetTexture.Target?.Asset;
+            if (target != null && target.RenderHeight > 0)
+                return (float)target.RenderWidth / target.RenderHeight;
+
+            return ScreenAspect > 0f ? ScreenAspect : 16f / 9f;
         }
     }
 

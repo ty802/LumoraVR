@@ -191,7 +191,38 @@ public sealed class DataModelPermissionController
 
     private readonly Dictionary<DataModelAccessClass, DataModelPermissionRole> _defaultRoles = new();
 
-    public bool Enabled { get; set; } = true;
+    private bool _enabled = true;
+
+    /// <summary>
+    /// Master switch for permission enforcement. Disabling it makes every Authorize() pass, so it is
+    /// HOST-AUTHORITATIVE and FAIL-CLOSED: only the authority may turn enforcement off, and only while
+    /// the world context is known. A guest (or any non-authority code path) that tries to clear it is
+    /// ignored - enforcement can never be silently killed from a non-host path. Re-enabling is always
+    /// allowed (it only tightens). -xlinka
+    /// </summary>
+    public bool Enabled
+    {
+        get => _enabled;
+        set
+        {
+            // Re-enabling always allowed - it can only tighten enforcement.
+            if (value)
+            {
+                _enabled = true;
+                return;
+            }
+
+            // Disabling requires a known, authoritative context. Fail closed otherwise.
+            if (_world == null || _world.IsDisposed || !_world.IsAuthority)
+            {
+                LumoraLogger.Warn("Refused to disable datamodel permission enforcement: not host-authoritative.");
+                return;
+            }
+
+            _enabled = false;
+        }
+    }
+
     public bool LogDeniedMutations { get; set; } = true;
 
     /// <summary>
@@ -422,7 +453,7 @@ public sealed class DataModelPermissionController
 
         // Destroying / removing / clearing an object you only "own" because you are holding it is forbidden. A
         // grab parents the object under the grabber and flips ActiveUser / IsUnderUsersRoot, which OwnsTarget
-        // reads as ownership - that would let a modified client destroy host content on the next batch.
+        // reads as ownership - that would let a client destroy host content on the next batch.
         // Destructive ops therefore require REAL per-byte ownership, not the structural signal. This only ever
         // removes authority that came from the grab-flip: if the actor really owns it (own-byte equipment)
         // strong ownership holds and this is a no-op; if they don't own it at all the role check below already
@@ -522,8 +553,8 @@ public sealed class DataModelPermissionController
                 return false;
 
             // No-steal enforcement, host-side. If the object is currently held by SOMEONE ELSE and stealing is
-            // off, refuse a holder-ref write from a different user - that's a force-steal from a modified client
-            // (the client-side steal check can be skipped). Releases (the current holder clearing the ref) are
+            // off, refuse a holder-ref write from a different user - that's a force-steal the host doesn't allow
+            // (a client-side steal check could be skipped). Releases (the current holder clearing the ref) are
             // not steals and stay allowed. The host runs Validate per delta BEFORE decoding the batch, so
             // GrabberRef.Target is still the PRE-batch holder here - exactly the holder we compare against. -xlinka
             if (ReferenceEquals(member, grabbable.GrabberRef) && !grabbable.AllowSteal.Value)
@@ -571,7 +602,7 @@ public sealed class DataModelPermissionController
 
     // STRONG ownership: only the real per-byte signal (and self), never the grab-flippable structural one. A
     // grab reparents the object under the grabber's UserRoot, which flips ActiveUser / IsUnderUsersRoot to the
-    // grabber - so those CANNOT gate destroying a foreign object, or a modified client could destroy a host prop
+    // grabber - so those CANNOT gate destroying a foreign object, or a client could destroy a host prop
     // just by holding it. OwnsRefID is minted in the creator's byte and a grab never changes it, so a user's own
     // per-peer-spawned equipment still passes here. -xlinka
     private static bool OwnsRefIDStrong(User actor, IWorldElement? target)

@@ -52,7 +52,9 @@ public sealed class ParticleSystem : ImplementableComponent
         StartColor.Value = new colorHDR(0.90f, 1.00f, 0.94f, 0.95f);
         EndColor.Value = new colorHDR(1.00f, 0.56f, 0.88f, 0.0f);
         EmissionStrength.Value = 1.4f;
-        Seed.Value = 1771;
+        // Per-instance seed so two systems in the same world don't emit in lockstep.
+        // Non-zero (the hook treats 0 as a reseed sentinel); a template or save may still pin it.
+        Seed.Value = System.Random.Shared.Next(1, int.MaxValue);
         RenderQueue.Value = 60;
     }
 }

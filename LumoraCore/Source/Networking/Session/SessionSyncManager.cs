@@ -134,9 +134,19 @@ public class SessionSyncManager : IDisposable
     public int TotalCorrections { get; private set; }
     public int LastGeneratedDeltaChanges { get; private set; }
 
+    // Live queue depths for diagnostics (the Network debug tab). Reads of ConcurrentQueue.Count are safe
+    // from any thread; the plain Queue count is a benign racy read used for display only.
+    public int MessagesToProcessCount => _messagesToProcess.Count;
+    public int MessagesToTransmitCount => _messagesToTransmit.Count;
+    public int IncomingRawCount => _rawInMessages.Count;
+    public int PendingStreamCount => _pendingStreamMessages.Count;
+
     public Session Session { get; private set; }
     public World World => (Session?.World) ?? null!;
-    public int SyncRate { get; set; } = 20;
+
+    // Sync send/process rate in Hz, sourced live from user settings so changing the tick rate applies to
+    // the running session immediately (the sync loop reads this each idle wait). Clamped 10-120 there. -xlinka
+    public int SyncRate => EngineSettings.NetworkTickRate;
 
     public SessionSyncManager(Session session)
     {
@@ -251,8 +261,8 @@ public class SessionSyncManager : IDisposable
     public void QueueUserForInitialization(User user)
     {
         LumoraLogger.Log($"[lnl] QueueUserForInitialization: Queuing user '{user.UserName.Value}' (RefID: {user.ReferenceID})");
-        // Hold off all live fan-out to this user until its full state is on the wire (Stage 8 flips this
-        // back on). The flag already defaults false, but a re-init of an existing user needs the reset. -xlinka
+        // Hold off all live fan-out to this user until its full state is on the wire (re-enabled once
+        // initialization finishes). The flag already defaults false, but a re-init of an existing user needs the reset. -xlinka
         user.StopTransmittingStreamData();
         lock (_newUsersLock)
         {
@@ -761,8 +771,8 @@ public class SessionSyncManager : IDisposable
                         // can put any UserID in the StreamMessage, so we must reject the
                         // message - and refuse to relay it - when the claimed UserID does
                         // not belong to the connection it actually arrived on. Otherwise a
-                        // malicious peer can spoof another user's identity and we will
-                        // forward the spoofed stream data to everyone else in the session.
+                        // peer could claim another user's identity and we would relay that
+                        // stream data to everyone else in the session.
                         if (!ValidateUserSender(streamMessage.Sender, streamMessage.UserID, "StreamMessage"))
                         {
                             streamMessage.Dispose();
@@ -797,7 +807,7 @@ public class SessionSyncManager : IDisposable
                 case RawFrameMessage rawFrame:
                     if (World.IsAuthority)
                     {
-                        // Same spoof check as StreamMessage: a peer cannot claim
+                        // Same sender-identity check as StreamMessage: a peer cannot claim
                         // another user's UserID and have us relay it to everyone.
                         if (!ValidateUserSender(rawFrame.Sender, rawFrame.UserID, "RawFrameMessage"))
                         {
@@ -1044,7 +1054,7 @@ public class SessionSyncManager : IDisposable
 
         if ((ulong)senderUser.ReferenceID != claimedUserID)
         {
-            LumoraLogger.Warn($"[lnl] {typeName} spoof: connection {sender.Identifier} is user {senderUser.UserName?.Value} ({(ulong)senderUser.ReferenceID}) but claimed UserID {claimedUserID}; dropping.");
+            LumoraLogger.Warn($"[lnl] {typeName} sender mismatch: connection {sender.Identifier} is user {senderUser.UserName?.Value} ({(ulong)senderUser.ReferenceID}) but claimed UserID {claimedUserID}; dropping.");
             return false;
         }
 
@@ -1068,7 +1078,7 @@ public class SessionSyncManager : IDisposable
     /// <paramref name="excludeConnection"/> to avoid echoing a relayed message back where it came from.
     ///
     /// This is the single fan-out walk shared by the delta batch, released-drive corrections, the stream
-    /// loop, and relayed-delta retransmit. It replaced four separate per-tick `new HashSet&lt;User&gt;()`
+    /// loop, and relayed-delta retransmit. It replaced four separate per-tick `new HashSet<User>()`
     /// snapshots of the init queue - the ReceiveStreams flag already carries that "still initializing"
     /// state, so the per-message allocation and lock round-trip were pure waste. -xlinka
     /// </summary>

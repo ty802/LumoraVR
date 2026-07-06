@@ -24,7 +24,7 @@ public sealed class HomeScreen : WidgetScreen
     private static readonly color OverlayFill = new color(0.10f, 0.10f, 0.16f, 0.98f);
     private static readonly color AvatarFill = new color(0.45f, 0.34f, 0.62f, 0.95f);
 
-    private string _template = "Empty";
+    private string _template = "LocalHome";
     private SessionVisibility _visibility = SessionVisibility.Private;
     private WorldMode _mode = WorldMode.Builder;
     private int _maxUsers = 16;
@@ -58,12 +58,12 @@ public sealed class HomeScreen : WidgetScreen
         AddToggleWidget(root, "Edit Widgets", 0, 2, 6, 1,
             () => WidgetPanel.EditMode,
             v => WidgetPanel.EditMode = v);
-        AddButtonWidget(root, "Avatar Creator", AvatarFill, 0, 3, 6, 1, OpenAvatarCreator);
+        AddButtonWidget(root, "Avatar Studio", AvatarFill, 0, 3, 6, 1, OpenAvatarStudio);
 
         BuildCreateOverlay(root);
     }
 
-    private void OpenAvatarCreator()
+    private void OpenAvatarStudio()
     {
         // Spawn the in-world creator tool in front of you in the FOCUSED world, and toggle - remove it
         // if one's already up.
@@ -71,7 +71,7 @@ public sealed class HomeScreen : WidgetScreen
         if (world?.RootSlot == null)
             return;
 
-        var existing = world.RootSlot.GetComponentInChildren<Lumora.Core.Components.Avatar.AvatarCreator>();
+        var existing = world.RootSlot.GetComponentInChildren<Lumora.Core.Components.Avatar.AvatarStudio>();
         if (existing != null && !existing.IsDestroyed)
         {
             existing.Slot.Destroy();
@@ -93,10 +93,10 @@ public sealed class HomeScreen : WidgetScreen
             rotation = floatQ.Identity;
         }
 
-        var slot = world.RootSlot.AddSlot("Avatar Creator");
+        var slot = world.RootSlot.AddSlot("Avatar Studio");
         slot.GlobalPosition = position;
         slot.GlobalRotation = rotation;
-        slot.AttachComponent<Lumora.Core.Components.Avatar.AvatarCreator>();
+        slot.AttachComponent<Lumora.Core.Components.Avatar.AvatarStudio>();
     }
 
     // WIDGETS
@@ -355,7 +355,7 @@ public sealed class HomeScreen : WidgetScreen
     {
         "LocalHome" => "Home Space",
         "Grid" => "Grid Space",
-        "ShaderTest" => "Shader Test",
+        "Scratch" => "Scratch Space",
         _ => template,
     };
 

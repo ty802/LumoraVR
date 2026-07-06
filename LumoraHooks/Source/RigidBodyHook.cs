@@ -26,6 +26,9 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
     private bool _pendingWorldRootReparent;
     private readonly List<MeshInstance3D> _debugEdges = new();
     private const int DebugCircleSegments = 24;
+    // Speed caps so a released grab / contact spike can't fling a prop across the room. ~a hard throw.
+    private const float MaxLinearSpeed = 8f;    // m/s
+    private const float MaxAngularSpeed = 16f;  // rad/s
     private static bool _showDebugEdges = true;
     private static StandardMaterial3D _debugLineMaterial = null!;
 
@@ -38,9 +41,11 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         _rigidBody = new RigidBody3D();
         _rigidBody.Name = "RigidBody_" + Owner.Slot.SlotName.Value;
 
-        // Set collision layers BEFORE adding to tree
-        _rigidBody.CollisionLayer = 1u;
-        _rigidBody.CollisionMask = 1u;
+        // This world's collision bit (BEFORE adding to tree): rigid bodies only interact with their
+        // own world's geometry. Legacy bit kept in the mask so pre-bit bodies still collide.
+        uint worldBit = WorldHook.GetCollisionBitFor(Owner?.World);
+        _rigidBody.CollisionLayer = worldBit;
+        _rigidBody.CollisionMask = worldBit | 1u;
 
         if (Owner?.Slot != null)
         {
@@ -273,10 +278,12 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         _rigidBody.LinearDamp = Owner.LinearDamping.Value;
         _rigidBody.AngularDamp = Owner.AngularDamping.Value;
 
-        // Handle kinematic mode (only after initial delay)
+        // Handle kinematic mode (only after initial delay). A HELD body counts as kinematic: the
+        // grabber owns the transform - leaving physics live made it overwrite the slot every frame,
+        // so grabs snapped back instantly and rigid bodies read as "not grabbable".
         if (_framesSinceInit >= 3)
         {
-            if (Owner.IsKinematic.Value)
+            if (Owner.IsKinematic.Value || IsHeld)
             {
                 _rigidBody.Freeze = true;
                 _rigidBody.FreezeMode = RigidBody3D.FreezeModeEnum.Kinematic;
@@ -313,6 +320,20 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         }
 
         Owner.ClearPendingForces();
+
+        // Velocity clamp: a released grab (kinematic freeze-mode hands the body the velocity derived from
+        // the last teleport-to-hand) or a spawn/contact depenetration spike can fling a prop across the
+        // room. Cap the speed so nothing leaves faster than a hard throw - props settle instead of flying.
+        // Only in live dynamic mode (a held/kinematic body is driven by transform, not velocity). -xlinka
+        if (!Owner.IsKinematic.Value && !IsHeld && !_rigidBody.Freeze)
+        {
+            var lv = _rigidBody.LinearVelocity;
+            if (lv.LengthSquared() > MaxLinearSpeed * MaxLinearSpeed)
+                _rigidBody.LinearVelocity = lv.Normalized() * MaxLinearSpeed;
+            var av = _rigidBody.AngularVelocity;
+            if (av.LengthSquared() > MaxAngularSpeed * MaxAngularSpeed)
+                _rigidBody.AngularVelocity = av.Normalized() * MaxAngularSpeed;
+        }
 
         // Sync physics state back to component
         Owner.IsSleeping = _rigidBody.Sleeping;
@@ -356,14 +377,31 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         return true;
     }
 
+    // Cached lazily; a body without a Grabbable never allocates the lookup again.
+    private Grabbable? _grabbable;
+    private bool _grabbableChecked;
+
+    private bool IsHeld
+    {
+        get
+        {
+            if (!_grabbableChecked || (_grabbable != null && _grabbable.IsDestroyed))
+            {
+                _grabbable = Owner?.Slot?.GetComponent<Grabbable>();
+                _grabbableChecked = true;
+            }
+            return _grabbable != null && !_grabbable.IsDestroyed && _grabbable.IsGrabbed;
+        }
+    }
+
     private void SyncTransformToSlot()
     {
         if (_rigidBody == null || !_rigidBody.IsInsideTree())
             return;
 
-        if (Owner.IsKinematic.Value)
+        if (Owner.IsKinematic.Value || IsHeld)
         {
-            // Kinematic mode: sync Slot -> RigidBody (for grabbing)
+            // Kinematic or held: sync Slot -> RigidBody
             // The slot is being moved by the grabber, RigidBody needs to follow
             var slotPos = Owner.Slot.GlobalPosition;
             var slotRot = Owner.Slot.GlobalRotation;

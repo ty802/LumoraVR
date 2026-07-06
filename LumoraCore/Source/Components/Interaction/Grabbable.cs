@@ -30,6 +30,11 @@ public sealed class Grabbable : Component, IGrabbable
     // When this gets disabled while held, let go instead of staying stuck under the hand. - xlinka
     public readonly Sync<bool> DropOnDisable = new();
 
+    // Refuse grabbing once this is part of a worn avatar (parented under a live user root). An unworn
+    // avatar object can be picked up off the ground / passed around, but you can't yank someone's worn
+    // avatar: no grabbing into a live user hierarchy. - xlinka
+    public readonly Sync<bool> BlockWhenWorn = new();
+
     // The replicated holder. Null target == not held. All peers read who holds this from here. - xlinka
     public readonly SyncRef<Grabber> GrabberRef = new();
 
@@ -55,7 +60,8 @@ public sealed class Grabbable : Component, IGrabbable
     {
         // Only offer the grab cursor when we could actually grab it: grabbing is allowed AND it's
         // either free or stealable. A locked-in held object reads as disabled so you don't try. - xlinka
-        bool grabbable = AllowGrab.Value && (!IsGrabbed || AllowSteal.Value);
+        bool grabbable = AllowGrab.Value && (!IsGrabbed || AllowSteal.Value)
+            && !(BlockWhenWorn.Value && Slot?.ActiveUserRoot != null);
         return new InteractionDescription
         {
             Name = Slot?.SlotName.Value,
@@ -87,6 +93,7 @@ public sealed class Grabbable : Component, IGrabbable
         InteractionPriority.Value = 0;
         AllowSteal.Value = false;
         DropOnDisable.Value = true;
+        BlockWhenWorn.Value = false;
     }
 
     public override void OnDisabled()
@@ -104,6 +111,9 @@ public sealed class Grabbable : Component, IGrabbable
     public bool CanGrab(Grabber grabber)
     {
         if (IsDestroyed || !AllowGrab.Value) return false;
+
+        // Worn avatar/equipment: parented under a live user root - not grabbable.
+        if (BlockWhenWorn.Value && Slot?.ActiveUserRoot != null) return false;
 
         // A driven transform is owned by whatever drives it. Grabbing would just fight the driver every
         // frame - reparent, the driver overwrites the local pose, the object snaps back. So don't offer

@@ -120,4 +120,23 @@ public sealed class WorldPhysics
         results.Clear();
         return QueryHook?.OverlapBox(in origin, in size, in orientation, hitTriggers, results) ?? 0;
     }
+
+    // RESTING CONTACT
+
+    /// <summary>
+    /// Push a sphere out of any world collider it penetrates (resting contact). Returns true and sets
+    /// <paramref name="correctedCenter"/> + <paramref name="normal"/> on contact. Used by soft bodies to
+    /// drape/rest on arbitrary geometry - handles a stationary overlap, which a movement raycast cannot.
+    /// </summary>
+    public bool ResolveSphere(in float3 center, float radius, IReadOnlyList<Slot>? exclude, out float3 correctedCenter, out float3 normal)
+    {
+        var hook = QueryHook;
+        if (hook == null)
+        {
+            correctedCenter = center;
+            normal = new float3(0f, 1f, 0f);
+            return false;
+        }
+        return hook.ResolveSphere(in center, radius, exclude, out correctedCenter, out normal);
+    }
 }

@@ -99,6 +99,11 @@ public sealed class Slider : InteractionElement
         base.OnDestroy();
     }
 
+    // Horizontal slider: keep horizontal drags (that's the value), but hand a clearly-vertical drag to a
+    // scrolling ancestor so the slider doesn't trap a scroll gesture.
+    public override bool PassDragToParent(in float2 dragDelta)
+        => System.Math.Abs(dragDelta.y) > DragPassThreshold && System.Math.Abs(dragDelta.y) > System.Math.Abs(dragDelta.x);
+
     protected override void OnPress(in UIInteractionContext context)
     {
         SetValueFromPoint(in context);

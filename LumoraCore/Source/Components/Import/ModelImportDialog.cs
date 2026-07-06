@@ -36,7 +36,7 @@ public sealed class ModelImportDialog : ImportDialog
     {
         Scale = new Sync<float>(this, 1f);
         AutoScale = new Sync<bool>(this, false);
-        Material = new Sync<ModelMaterialType>(this, ModelMaterialType.Unlit);
+        Material = new Sync<ModelMaterialType>(this, ModelMaterialType.Lit);
         Colliders = new Sync<bool>(this, true);
         AllowGrabbable = new Sync<bool>(this, true);
         Scalable = new Sync<bool>(this, true);
@@ -54,7 +54,7 @@ public sealed class ModelImportDialog : ImportDialog
 
     private void DefaultPreset()
     {
-        Material.Value = ModelMaterialType.Unlit;
+        Material.Value = ModelMaterialType.Lit;
         Scale.Value = 1f;
         AutoScale.Value = false;
         Colliders.Value = true;

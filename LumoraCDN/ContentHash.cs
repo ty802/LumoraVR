@@ -52,7 +52,6 @@ public static class ContentHash
         return new Uri($"{Scheme}:///{filename}");
     }
 
-    // get the hash from a uri
     public static string ParseHash(Uri uri)
     {
         var path = uri.AbsolutePath.TrimStart('/');

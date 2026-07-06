@@ -11,7 +11,7 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 namespace Lumora.Core.Components;
 
 // Spawns users at this slot's position when they join the world. Creates the
-// user slot + UserRoot, then delegates the full setup to a CommonAvatarBuilder
+// user slot + UserRoot, then delegates the full setup to a AvatarAssembler
 // (found/created on this slot). Per-world build config lives on the builder.
 // - xlinka
 [ComponentCategory("Users")]
@@ -75,8 +75,22 @@ public class SimpleUserSpawn : Component, IWorldEventReceiver
 
             var userSlot = World.RootSlot.AddSlot($"User {userName}");
             userSlot.Persistent.Value = false;
-            userSlot.LocalPosition.Value = Slot.LocalPosition.Value;
-            userSlot.LocalRotation.Value = Slot.LocalRotation.Value;
+
+            // Spawn placement: a CommonSpawnArea (here or anywhere in the world) picks a point in its
+            // area, avoiding spots other users occupy; without one, users stack on this slot like before.
+            var area = Slot.GetComponent<CommonSpawnArea>() ?? World.RootSlot.GetComponentInChildren<CommonSpawnArea>();
+            if (area != null && area.CanSpawnUser())
+            {
+                userSlot.LocalPosition.Value = World.RootSlot.GlobalPointToLocal(area.PickSpawnPoint());
+                userSlot.LocalRotation.Value = area.OrientUser.Value
+                    ? World.RootSlot.GlobalRotationToLocal(area.SpawnRotation)
+                    : Slot.LocalRotation.Value;
+            }
+            else
+            {
+                userSlot.LocalPosition.Value = Slot.LocalPosition.Value;
+                userSlot.LocalRotation.Value = Slot.LocalRotation.Value;
+            }
             _userSlots[user] = userSlot;
 
             var userRoot = userSlot.AttachComponent<UserRoot>();
@@ -160,8 +174,8 @@ public class SimpleUserSpawn : Component, IWorldEventReceiver
     public override void OnFocusChanged(World.WorldFocus focus) { }
     public override void OnWorldDestroy() { }
 
-    private IAvatarBuilder GetBuilder()
+    private IAvatarAssembler GetBuilder()
     {
-        return Slot.GetComponent<CommonAvatarBuilder>() ?? Slot.AttachComponent<CommonAvatarBuilder>();
+        return Slot.GetComponent<AvatarAssembler>() ?? Slot.AttachComponent<AvatarAssembler>();
     }
 }

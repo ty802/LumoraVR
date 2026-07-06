@@ -63,7 +63,7 @@ public class RefIDAllocator
                 // recycle -> 56-bit position overflow after a few reuses of the same byte. The
                 // recycle collision this would guard against is already covered by PurgeUserByte on
                 // leave. Wire the high-water seed only AFTER fixing AllocationIDStart packed-vs-position
-                // on the joiner. See [[user-byte-recycle-collision]] / the parity roadmap. -xlinka
+                // on the joiner. -xlinka
                 userByte = _freedUserBytes.Min;
                 _freedUserBytes.Remove(userByte);
             }

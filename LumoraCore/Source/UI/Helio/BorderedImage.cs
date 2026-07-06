@@ -68,7 +68,8 @@ public sealed class BorderedImage : Graphic
         if (rectTransform == null) return;
         var rect = rectTransform.LocalComputeRect;
         if (rect.IsEmpty) return;
-        var clipRect = renderData.ClipRect;
+        // GeometryClipRect so scroll content bakes full quads (material still carries the real clip). -xlinka
+        var clipRect = renderData.GeometryClipRect;
         if (clipRect.HasValue && !rect.Overlaps(clipRect.Value)) return;
 
         // Key by texture identity; the shared image block is created at submit (main).

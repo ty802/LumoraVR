@@ -117,11 +117,19 @@ public class RectTransform : Component
     }
 
     // called by UIComputeComponents on this slot when enable/disable/attach/destroy happens - xlinka
-    // Structure changes can resize this rect and reflow its parent, so recompute layout fully.
+    // Structure changes can resize this rect and reflow siblings, so a full LAYOUT recompute is
+    // needed - but only the chunks that actually MOVE re-tessellate. MarkStructuralDirty marks the
+    // changed chunk + root and lets the canvas re-mesh moved siblings only, instead of _fullDirty
+    // re-meshing every chunk (which flashed the whole panel on any add/remove). -xlinka
     public void NotifyComponentsChanged()
     {
         _dataModelFlags |= DataModelFlag.ComponentsChanged;
-        SignalLayoutDirty(scoped: false);
+        MarkLayoutSelfDirty();
+        var canvas = ResolveCanvas();
+        if (canvas != null)
+            canvas.MarkStructuralDirty(this);
+        else
+            SignalLayoutDirty(scoped: false);
         BubbleMetricsDirty(true, true);
     }
 

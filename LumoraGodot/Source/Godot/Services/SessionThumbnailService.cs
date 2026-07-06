@@ -98,12 +98,10 @@ public partial class SessionThumbnailService : Node
     /// </summary>
     private string CaptureViewportToBase64()
     {
-        // Get the main viewport
         var viewport = GetViewport();
         if (viewport == null)
             return null!;
 
-        // Get the viewport texture
         var viewportTexture = viewport.GetTexture();
         if (viewportTexture == null)
             return null!;

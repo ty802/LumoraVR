@@ -17,13 +17,18 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
     private const int AtlasSize = 2048;
     private const int Padding = 4;
 
-    // One rasterization size for the entire atlas, scaled per Text on read. Godot's
-    // MultichannelSignedDistanceField flag silently no-ops for LoadDynamicFont (verified
-    // via diag: srcFormat=La8 with R=G=B=255, coverage in the alpha channel only). Treat
-    // the cache as plain coverage and let the shader do fwidth-based edge AA. Raised the
-    // raster to 96 so 10-24px text has detail to downsample from. - xlinka
-    private const int RasterSize = 96;
-    private const int PixelRangeHint = 4;
+    // One rasterization size for the whole atlas, scaled per Text on read. Coverage fonts raster at 96 so small
+    // text has detail to downsample from; MSDF fonts raster at their msdf_size (a distance field is
+    // resolution-independent, so the small base is enough and keeps the atlas tight). Set at load. -xlinka
+    private int _rasterSize = 96;
+    // Distance-field span the MSDF was generated with (the font's msdf_pixel_range); carried to the atlas + shader.
+    private int _msdfPixelRange = 8;
+    // MSDF was REQUESTED (imported with the flag, or a raw load asked for it) vs actually PRODUCED. The raw
+    // dynamic rasterizer can silently emit LA8 coverage instead, so we confirm per-glyph before trusting it;
+    // _isMsdf is what gates the distance-field path everywhere. -xlinka
+    private bool _msdfIntended;
+    private bool _msdfDetermined;
+    private bool _isMsdf;
 
     private readonly Dictionary<int, GlyphEntry> _glyphs = new();
     private FontFile? _font;
@@ -39,7 +44,7 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
 
     public bool IsValid => _font != null;
     public TextureAsset? AtlasTexture => _atlasTexture;
-    public int PixelRange => PixelRangeHint;
+    public int PixelRange => _msdfPixelRange;
     public int CacheGeneration => _cacheGeneration;
 
     public void LoadFromFile(string path)
@@ -71,6 +76,7 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
             {
                 _ownsFont = false; // shared imported resource - do not dispose it
                 GD.Print($"FontAssetHook: loaded imported FontFile from '{resPath}'");
+                ConfigureMsdf();
                 return;
             }
             GD.PrintErr($"FontAssetHook: ResourceLoader.Load returned null for '{resPath}'");
@@ -78,6 +84,12 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
 
         _font = new FontFile();
         _ownsFont = true;
+        // Ask the raw rasterizer for MSDF as well. It may honor it (crisp) or silently emit LA8 coverage; the
+        // per-glyph check in RequestGlyph downgrades _isMsdf when it falls back, so requesting it is always safe.
+        // Set BEFORE loading so the rasterizer picks it up. -xlinka
+        _font.MultichannelSignedDistanceField = true;
+        _font.MsdfPixelRange = _msdfPixelRange;
+        _font.MsdfSize = 48;
         var error = _font.LoadDynamicFont(path);
         if (error != Error.Ok)
         {
@@ -91,6 +103,8 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
             _ownsFont = false;
             GD.PrintErr($"FontAssetHook: Failed to load font '{path}' ({error})");
         }
+
+        ConfigureMsdf();
     }
 
     // Map an engine resource disk path back to its res:// VFS path. The engine builds resource paths as
@@ -113,6 +127,73 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
         return rel.Length == 0 ? null : "res://" + rel;
     }
 
+    // Read MSDF intent + raster size from the loaded font. Imported fonts carry the flag from their import
+    // settings; the raw path sets it above. Actual MSDF output is confirmed on the first real glyph. -xlinka
+    private void ConfigureMsdf()
+    {
+        _msdfDetermined = false;
+        _isMsdf = false;
+        if (_font == null)
+        {
+            _msdfIntended = false;
+            _rasterSize = 96;
+            return;
+        }
+
+        _msdfIntended = _font.MultichannelSignedDistanceField;
+        _msdfPixelRange = _font.MsdfPixelRange > 0 ? _font.MsdfPixelRange : 8;
+        int msdfSize = _font.MsdfSize > 0 ? _font.MsdfSize : 48;
+        // MSDF is resolution-independent, so raster at its native msdf_size; coverage needs a larger base to
+        // downsample from. -xlinka
+        _rasterSize = _msdfIntended ? msdfSize : 96;
+    }
+
+    // Confirm whether the font actually produced a distance field (varying RGB) vs coverage (flat white RGB with
+    // detail in alpha). The raw dynamic rasterizer can silently ignore the MSDF request, so we never run the
+    // distance reconstruction on coverage data. Runs once, on the first real glyph. -xlinka
+    private void DetermineMsdf(Image source, Rect2 sourceRect)
+    {
+        _msdfDetermined = true;
+        _isMsdf = _msdfIntended && HasVaryingRgb(source, sourceRect);
+
+        if (_atlasTexture != null)
+        {
+            _atlasTexture.IsMSDF = _isMsdf;
+            _atlasTexture.MsdfPixelRange = _msdfPixelRange;
+        }
+
+        GD.Print($"FontAssetHook: MSDF intended={_msdfIntended} produced={_isMsdf} rasterSize={_rasterSize} pixelRange={_msdfPixelRange}");
+    }
+
+    private static bool HasVaryingRgb(Image source, Rect2 sourceRect)
+    {
+        int x0 = (int)Math.Floor(sourceRect.Position.X);
+        int y0 = (int)Math.Floor(sourceRect.Position.Y);
+        int w = (int)Math.Ceiling(sourceRect.Size.X);
+        int h = (int)Math.Ceiling(sourceRect.Size.Y);
+        int sw = source.GetWidth();
+        int sh = source.GetHeight();
+
+        // Coverage glyphs are flat white in RGB (shape lives in alpha); an MSDF has per-channel distances, so
+        // any pixel whose channels differ or dip below full is proof of a real distance field. -xlinka
+        int stepY = Math.Max(1, h / 8);
+        int stepX = Math.Max(1, w / 8);
+        for (int j = 0; j < h; j += stepY)
+        {
+            int sy = y0 + j;
+            if (sy < 0 || sy >= sh) continue;
+            for (int i = 0; i < w; i += stepX)
+            {
+                int sx = x0 + i;
+                if (sx < 0 || sx >= sw) continue;
+                var c = source.GetPixel(sx, sy);
+                if (c.R != c.G || c.G != c.B || c.R < 0.99f)
+                    return true;
+            }
+        }
+        return false;
+    }
+
     public bool TryGetGlyph(int codepoint, float displaySize, out GlyphMetrics metrics, out MathRect uvRect)
     {
         if (_glyphs.TryGetValue(codepoint, out var entry))
@@ -124,8 +205,8 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
                 return false;
             }
 
-            // Cached metrics are stored at RasterSize; scale to the requested display size. - xlinka
-            float scale = displaySize / RasterSize;
+            // Cached metrics are stored at _rasterSize; scale to the requested display size. - xlinka
+            float scale = displaySize / _rasterSize;
             metrics = new GlyphMetrics
             {
                 Advance = entry.Metrics.Advance * scale,
@@ -155,7 +236,7 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
 
         EnsureAtlas();
 
-        int glyphIndex = GetGlyphIndex(codepoint, RasterSize);
+        int glyphIndex = GetGlyphIndex(codepoint, _rasterSize);
         if (glyphIndex == 0 && codepoint != '?')
         {
             StoreMissingGlyph(codepoint);
@@ -168,11 +249,11 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
             return;
         }
 
-        var sizeKey = new Vector2I(RasterSize, 0);
+        var sizeKey = new Vector2I(_rasterSize, 0);
         _font.RenderGlyph(0, sizeKey, glyphIndex);
 
         var glyphOffset = _font.GetGlyphOffset(0, sizeKey, glyphIndex);
-        var advance = _font.GetGlyphAdvance(0, RasterSize, glyphIndex);
+        var advance = _font.GetGlyphAdvance(0, _rasterSize, glyphIndex);
         var sourceRect = _font.GetGlyphUVRect(0, sizeKey, glyphIndex);
         int textureIndex = _font.GetGlyphTextureIdx(0, sizeKey, glyphIndex);
 
@@ -198,10 +279,14 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
         }
 
         sourceImage.Convert(Image.Format.Rgba8);
+        if (!_msdfDetermined)
+        {
+            DetermineMsdf(sourceImage, sourceRect);
+        }
         CopyGlyph(sourceImage, sourceRect, dstX, dstY, width, height);
         ScheduleUpload();
 
-        // Metrics are stored at RasterSize coordinates; TryGetGlyph scales on read. Quad size
+        // Metrics are stored at _rasterSize coordinates; TryGetGlyph scales on read. Quad size
         // matches the atlas region (width x height), so UV-to-quad ratio is 1:1. - xlinka
         var metrics = new GlyphMetrics
         {
@@ -224,20 +309,20 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
     public float GetLineHeight(float displaySize)
     {
         if (_font == null) return displaySize;
-        float raw = _font.GetHeight(RasterSize);
-        return raw * displaySize / RasterSize;
+        float raw = _font.GetHeight(_rasterSize);
+        return raw * displaySize / _rasterSize;
     }
 
     public float GetAscent(float displaySize)
     {
         if (_font == null) return displaySize * 0.8f;
-        return _font.GetAscent(RasterSize) * displaySize / RasterSize;
+        return _font.GetAscent(_rasterSize) * displaySize / _rasterSize;
     }
 
     public float GetDescent(float displaySize)
     {
         if (_font == null) return displaySize * 0.2f;
-        return _font.GetDescent(RasterSize) * displaySize / RasterSize;
+        return _font.GetDescent(_rasterSize) * displaySize / _rasterSize;
     }
 
     public float GetKerning(int leftCodepoint, int rightCodepoint, float displaySize)
@@ -247,15 +332,15 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
             return 0f;
         }
 
-        int left = GetGlyphIndex(leftCodepoint, RasterSize);
-        int right = GetGlyphIndex(rightCodepoint, RasterSize);
+        int left = GetGlyphIndex(leftCodepoint, _rasterSize);
+        int right = GetGlyphIndex(rightCodepoint, _rasterSize);
         if (left == 0 || right == 0)
         {
             return 0f;
         }
 
-        // Kerning is queried at RasterSize and scaled to the display size, same path as metrics. - xlinka
-        return _font.GetKerning(0, RasterSize, new Vector2I(left, right)).X * displaySize / RasterSize;
+        // Kerning is queried at _rasterSize and scaled to the display size, same path as metrics. - xlinka
+        return _font.GetKerning(0, _rasterSize, new Vector2I(left, right)).X * displaySize / _rasterSize;
     }
 
     public override void Unload()
@@ -283,12 +368,12 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
     {
         if (_font != null && advance <= 0f)
         {
-            advance = _font.GetCharSize(codepoint, RasterSize).X;
+            advance = _font.GetCharSize(codepoint, _rasterSize).X;
         }
 
         if (advance <= 0f)
         {
-            advance = RasterSize * 0.5f;
+            advance = _rasterSize * 0.5f;
         }
 
         _glyphs[codepoint] = new GlyphEntry(
@@ -378,15 +463,26 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
                     continue;
                 }
 
-                // Godot's runtime TTF rasterizer outputs LA8: luminance flat at 255, coverage
-                // in the alpha channel. Confirmed via the [diag] log. Store coverage in our
-                // atlas alpha; the shader applies fwidth-based AA on it. - xlinka
                 var color = source.GetPixel(sx, sy);
                 int dst = ((dstY + y) * AtlasSize + dstX + x) * 4;
-                _atlasPixels[dst + 0] = 255;
-                _atlasPixels[dst + 1] = 255;
-                _atlasPixels[dst + 2] = 255;
-                _atlasPixels[dst + 3] = ToByte(color.A);
+                if (_isMsdf)
+                {
+                    // Keep the 3-channel distance field in RGB; the shader rebuilds the glyph from their median.
+                    // Alpha carries no shape, so leave it opaque. - xlinka
+                    _atlasPixels[dst + 0] = ToByte(color.R);
+                    _atlasPixels[dst + 1] = ToByte(color.G);
+                    _atlasPixels[dst + 2] = ToByte(color.B);
+                    _atlasPixels[dst + 3] = 255;
+                }
+                else
+                {
+                    // Coverage path: the rasterizer outputs LA8 (flat white RGB, coverage in alpha). Store
+                    // coverage in our atlas alpha; the shader applies fwidth-based AA on it. - xlinka
+                    _atlasPixels[dst + 0] = 255;
+                    _atlasPixels[dst + 1] = 255;
+                    _atlasPixels[dst + 2] = 255;
+                    _atlasPixels[dst + 3] = ToByte(color.A);
+                }
             }
         }
     }

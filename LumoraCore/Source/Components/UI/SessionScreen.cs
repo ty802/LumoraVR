@@ -298,9 +298,16 @@ public sealed class SessionScreen : WidgetScreen
         AddRow(worldBody, $"Description: {(string.IsNullOrEmpty(config.Description.Value) ? "(none)" : config.Description.Value)}");
 
         var saveBody = AddSection(_leftColumn, "World Save Options");
-        SaveButtonRow(saveBody, "Save Changes", SaveFill, () => SaveFocusedWorld(world));
-        SaveButtonRow(saveBody, "Save As…", TabFill, () => SaveWorldCopy(world));
-        SaveButtonRow(saveBody, "Save Copy…", TabFill, () => SaveWorldCopy(world));
+        // Save Changes writes the world back to its own file (the local home to its fixed path; any other
+        // world you host to a stable file named after it). Save As Copy writes an independent timestamped
+        // file. Both report success/failure on the button itself - no silent no-op.
+        // A world you joined as a guest has no local source file to overwrite, so Save Changes is
+        // disabled there; you can still snapshot the replicated scene with Save As Copy.
+        if (world.IsAuthority)
+            SaveButtonRow(saveBody, "Save Changes", SaveFill, (label) => SaveFocusedWorld(world, label));
+        else
+            DisabledSaveRow(saveBody, "Save Changes", "Host only");
+        SaveButtonRow(saveBody, "Save As Copy…", TabFill, (label) => SaveWorldCopy(world, label));
 
         // RIGHT: who-can-join, session policy.
         var accessBody = AddSection(_rightColumn, "Who Can Join This World?");
@@ -585,7 +592,9 @@ public sealed class SessionScreen : WidgetScreen
         b.Radio(group, isChecked, (_, on) => { if (on) onSelect(); });
     }
 
-    private void SaveButtonRow(Slot parent, string label, color fill, Action onClick)
+    // Save row whose handler receives the button's own label Text, so it can show inline
+    // "Saved ✓" / "Save failed" feedback (then the label is restored after a moment).
+    private void SaveButtonRow(Slot parent, string label, color fill, Action<Text> onClick)
     {
         var row = parent.AddSlot(label);
         row.AttachComponent<RectTransform>();
@@ -593,8 +602,58 @@ public sealed class SessionScreen : WidgetScreen
         SetFixedHeight(row, 34f);
         ApplyRoundedPanel(row, fill, RowBorder);
         var button = row.AttachComponent<Button>();
-        button.Clicked += (_, _) => onClick();
-        AddFillLabel(row, label, 16f, TextPrimary);
+        var text = AddFillLabel(row, label, 16f, TextPrimary);
+        button.Clicked += (_, _) => onClick(text);
+    }
+
+    // A non-interactive, dimmed save row that states why it's unavailable (e.g. guest worlds).
+    private void DisabledSaveRow(Slot parent, string label, string reason)
+    {
+        var row = parent.AddSlot(label);
+        row.AttachComponent<RectTransform>();
+        row.AttachComponent<GraphicChunkRoot>();
+        SetFixedHeight(row, 34f);
+        ApplyRoundedPanel(row, TabFill, RowBorder);
+        var text = AddFillLabel(row, $"{label} ({reason})", 16f, TextDim);
+        text.Color.Value = TextDim;
+    }
+
+    // Briefly replace a save button's label with a result, then restore it.
+    private void ShowSaveFeedback(Text label, string original, bool ok)
+    {
+        if (label.IsDestroyed)
+            return;
+        label.Content.Value = ok ? "Saved ✓" : "Save failed";
+        label.Color.Value = ok ? new color(0.62f, 0.92f, 0.66f, 1f) : new color(0.95f, 0.52f, 0.54f, 1f);
+        MarkDirty();
+        World?.RunInSeconds(1.8f, () =>
+        {
+            if (label.IsDestroyed)
+                return;
+            label.Content.Value = original;
+            label.Color.Value = TextPrimary;
+            MarkDirty();
+        });
+    }
+
+    // Resolve where a non-home world saves: a stable file named after the world, in the same
+    // directory as the local home. (The home itself keeps its own fixed plain path.)
+    private static string SavedWorldPath(World world)
+    {
+        var directory = System.IO.Path.GetDirectoryName(Lumora.Core.Engine.LocalHomeSavePath) ?? ".";
+        var safe = SafeFileName(WorldDisplayName(world));
+        return System.IO.Path.Combine(directory, safe + ".lworld");
+    }
+
+    // Strip characters that aren't valid in a file name; fall back to a neutral default if empty.
+    private static string SafeFileName(string name)
+    {
+        var invalid = System.IO.Path.GetInvalidFileNameChars();
+        var sb = new System.Text.StringBuilder(name.Length);
+        foreach (var c in name)
+            sb.Append(System.Array.IndexOf(invalid, c) >= 0 ? '_' : c);
+        var cleaned = sb.ToString().Trim();
+        return string.IsNullOrEmpty(cleaned) ? "world" : cleaned;
     }
 
     private static string PrettyAccess(World.WorldAccessLevel level) => level switch
@@ -611,23 +670,26 @@ public sealed class SessionScreen : WidgetScreen
         _ => level.ToString(),
     };
 
-    private void SaveFocusedWorld(World world)
+    // Save Changes: write the world back over its own file. The local home goes to its fixed plain
+    // path; any other hosted/loaded world goes to a stable file named after it (encrypted at rest).
+    private void SaveFocusedWorld(World world, Text label)
     {
-        // Only the local home has a known save location for now.
-        if (world.Name == "LocalHome")
-            WorldStorage.SaveToFile(world, Lumora.Core.Engine.LocalHomeSavePath);
+        bool ok = world.Name == "LocalHome"
+            ? WorldStorage.SaveToFile(world, Lumora.Core.Engine.LocalHomeSavePath)
+            : WorldStorage.SaveToFile(world, SavedWorldPath(world), encrypt: true);
+        ShowSaveFeedback(label, "Save Changes", ok);
     }
 
-    // "Save As" / "Save Copy" write an independent timestamped file. With no record
-    // system yet, both behave the same; only the local home has a save location.
-    private void SaveWorldCopy(World world)
+    // Save As Copy: write an independent, timestamped file so the current world is left untouched.
+    // The home is copied plain (it round-trips through the home loader); any other world is encrypted.
+    private void SaveWorldCopy(World world, Text label)
     {
-        if (world.Name != "LocalHome")
-            return;
         var directory = System.IO.Path.GetDirectoryName(Lumora.Core.Engine.LocalHomeSavePath) ?? ".";
-        var name = $"home_{DateTime.Now:yyyyMMdd_HHmmss}.lworld";
-        // Saved worlds (unlike the local home) are encrypted at rest.
-        WorldStorage.SaveToFile(world, System.IO.Path.Combine(directory, name), encrypt: true);
+        bool isHome = world.Name == "LocalHome";
+        var stem = isHome ? "home" : SafeFileName(WorldDisplayName(world));
+        var name = $"{stem}_{DateTime.Now:yyyyMMdd_HHmmss}.lworld";
+        bool ok = WorldStorage.SaveToFile(world, System.IO.Path.Combine(directory, name), encrypt: !isHome);
+        ShowSaveFeedback(label, "Save As Copy…", ok);
     }
 
     // USERS PAGE - live list of session users; the host (authority) can change roles and kick.
@@ -657,7 +719,7 @@ public sealed class SessionScreen : WidgetScreen
         var header = BeginRow(page, "UsersHeader");
         var hb = RowBuilder(header);
         hb.MinWidth(200f).FlexibleWidth(1f);
-        AddRowLabel(hb, $"{WorldDisplayName(world)} — users ({users.Count})", 16f, SectionTitleColor, TextHorizontalAlignment.Left);
+        AddRowLabel(hb, $"{WorldDisplayName(world)} - users ({users.Count})", 16f, SectionTitleColor, TextHorizontalAlignment.Left);
         AddInlineButton(header, "Refresh", TabFill, RebuildUsersList);
 
         foreach (var user in users)
@@ -789,13 +851,13 @@ public sealed class SessionScreen : WidgetScreen
         var permissions = world.DataModelPermissions;
 
         AddRow(page, world.IsAuthority
-            ? $"{WorldDisplayName(world)} — default role per user class (host-authoritative, denied at source)."
-            : $"{WorldDisplayName(world)} — permissions are controlled by the host.");
+            ? $"{WorldDisplayName(world)} - default role per user class (host-authoritative, denied at source)."
+            : $"{WorldDisplayName(world)} - permissions are controlled by the host.");
 
         // In Social/Event worlds the authored world is frozen for everyone (incl. host); only the
         // Moderator / User / Spectator roles apply, and editing the world is locked regardless of role.
         if (world.Mode != WorldMode.Builder)
-            AddRow(page, $"This is a {world.Mode} world — world editing is locked; roles cover moderation + your own items only.");
+            AddRow(page, $"This is a {world.Mode} world - world editing is locked; roles cover moderation + your own items only.");
 
         foreach (DataModelAccessClass accessClass in Enum.GetValues<DataModelAccessClass>())
             DefaultRoleRow(page, world, permissions, accessClass);

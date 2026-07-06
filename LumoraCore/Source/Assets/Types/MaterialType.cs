@@ -26,6 +26,11 @@ public enum MaterialType
     UI_Unlit,
 
     /// <summary>
+    /// UI dual-color: lerps between two tints by the texture's luminance (2-tone icons).
+    /// </summary>
+    UI_DualColor,
+
+    /// <summary>
     /// UI mask WRITER: stamps the stencil reference where its (usually invisible) geometry rasterizes,
     /// so stencil-tested content is clipped to the mask's exact SHAPE. Godot 4.5+ stencil_mode shader.
     /// </summary>

@@ -17,7 +17,7 @@ namespace Lumora.Core.Components.UI;
 ///
 /// Example: adding a "Laser" toggle to every user session:
 /// <code>
-///   var item = slot.AttachComponent&lt;RootContextMenuItem&gt;();
+///   var item = slot.AttachComponent<RootContextMenuItem>();
 ///   item.Label.Value    = "Laser";
 ///   item.IconPath.Value = "res://Icons/laser.png";
 ///   item.IsToggle.Value = true;

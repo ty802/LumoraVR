@@ -134,6 +134,12 @@ public interface IMaterialAssetHook : IAssetHook
     void SetFloat2(string property, Math.float2 value);
 
     /// <summary>
+    /// Set a float2 property AND flush just that one to the live material immediately (no full ApplyChanges,
+    /// which re-pushes every property). For per-frame hot paths like scroll clip_offset. -xlinka
+    /// </summary>
+    void ApplyFloat2Now(string property, Math.float2 value);
+
+    /// <summary>
     /// Set a float3 property.
     /// </summary>
     void SetFloat3(string property, Math.float3 value);

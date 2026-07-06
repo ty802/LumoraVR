@@ -19,7 +19,7 @@ namespace Lumora.Core.Networking.Sync;
 ///     pool).
 ///
 /// Dispatch flows through the same authority/sender-validation path as
-/// StreamMessage, so the spoof check (issue #80) applies here too.
+/// StreamMessage, so the sender-identity check (issue #80) applies here too.
 ///
 /// Wire format (the leading <see cref="MessageType"/> byte and sender state
 /// version / sync tick are written by this class' <see cref="Encode"/> and

@@ -3,11 +3,19 @@
 
 using System.Collections.Generic;
 using Lumora.Core;
+using Lumora.Core.Math;
 
 namespace Helio.UI.Layout;
 
 internal static class LayoutSizing
 {
+    // Per-child outer margin (x=left, y=bottom, z=right, w=top). Zero when no LayoutElement.
+    public static float4 GetMargin(RectTransform rect)
+    {
+        var element = rect.Slot.GetComponent<LayoutElement>();
+        return element != null ? element.Margin.Value : float4.Zero;
+    }
+
     internal struct Element
     {
         public float Size;
@@ -164,6 +172,62 @@ internal static class LayoutSizing
             var element = elements[i];
             element.Offset = cursor;
             cursor += element.Size + spacing;
+            elements[i] = element;
+        }
+    }
+
+    // Re-distribute leftover main-axis space across already-sized elements per a
+    // justify-content rule. Called after Distribute when the layout isn't
+    // force-expanding the main axis. No-op for Start or when there's no leftover.
+    internal static void AlignMainAxis(List<Element> elements, float innerSize, float padStart, float spacing, MainAxisAlignment align)
+    {
+        int n = elements.Count;
+        if (n == 0 || align == MainAxisAlignment.Start) return;
+
+        float content = 0f;
+        for (int i = 0; i < n; i++)
+            content += elements[i].Size;
+        content += spacing * Max(0, n - 1);
+
+        float leftover = innerSize - content;
+        if (leftover <= 0.0001f) return; // overflow or exact fit - nothing to distribute
+
+        float start = padStart;
+        float gap = spacing;
+        switch (align)
+        {
+            case MainAxisAlignment.Center:
+                start = padStart + leftover * 0.5f;
+                break;
+            case MainAxisAlignment.End:
+                start = padStart + leftover;
+                break;
+            case MainAxisAlignment.SpaceBetween:
+                if (n > 1) gap = spacing + leftover / (n - 1);
+                else start = padStart + leftover * 0.5f; // single child centers
+                break;
+            case MainAxisAlignment.SpaceAround:
+            {
+                float unit = leftover / n;
+                start = padStart + unit * 0.5f;
+                gap = spacing + unit;
+                break;
+            }
+            case MainAxisAlignment.SpaceEvenly:
+            {
+                float unit = leftover / (n + 1);
+                start = padStart + unit;
+                gap = spacing + unit;
+                break;
+            }
+        }
+
+        float cursor = start;
+        for (int i = 0; i < n; i++)
+        {
+            var element = elements[i];
+            element.Offset = cursor;
+            cursor += element.Size + gap;
             elements[i] = element;
         }
     }

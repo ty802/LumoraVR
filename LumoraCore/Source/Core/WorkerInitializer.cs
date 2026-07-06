@@ -131,6 +131,18 @@ internal static class WorkerInitializer
             }
         }
 
+        var listedMethods = new Dictionary<string, MethodInfo>(StringComparer.Ordinal);
+        GatherListedMethods(workerType, listedMethods);
+        info.ListedMethods = new MethodInfo[listedMethods.Count];
+        info.ListedMethodNameToIndex = new Dictionary<string, int>(StringComparer.Ordinal);
+        int listedIndex = 0;
+        foreach (var entry in listedMethods)
+        {
+            info.ListedMethods[listedIndex] = entry.Value;
+            info.ListedMethodNameToIndex[entry.Key] = listedIndex;
+            listedIndex++;
+        }
+
         info.SingleInstancePerSlot = workerType.GetCustomAttribute<SingleInstancePerSlotAttribute>(inherit: true) != null;
         info.DontDuplicate = workerType.GetCustomAttribute<DontDuplicateAttribute>(inherit: true) != null;
         info.PreserveWithAssets = workerType.GetCustomAttribute<PreserveWithAssetsAttribute>(inherit: true) != null;
@@ -138,6 +150,25 @@ internal static class WorkerInitializer
         info.DefaultUpdateOrder = workerType.GetCustomAttribute<DefaultUpdateOrderAttribute>()?.Order ?? 0;
 
         return info;
+    }
+
+    // Collects every method opened to SyncDelegate binding with [SyncMethod], keyed by name. Walks the
+    // hierarchy base-first so a derived override replaces the base entry for the same name; binding from
+    // data is by name only, matching how the delegate value persists.
+    private static void GatherListedMethods(Type workerType, Dictionary<string, MethodInfo> methods)
+    {
+        if (workerType == null || workerType == typeof(object))
+            return;
+
+        GatherListedMethods(workerType.BaseType!, methods);
+
+        foreach (var method in workerType.GetMethods(BindingFlags.DeclaredOnly | BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic))
+        {
+            if (method.GetCustomAttribute<SyncMethodAttribute>() != null)
+            {
+                methods[method.Name] = method;
+            }
+        }
     }
 
     private static void GatherWorkerFields(Type workerType, List<FieldInfo> fields)

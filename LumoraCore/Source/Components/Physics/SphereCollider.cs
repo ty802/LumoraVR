@@ -34,18 +34,11 @@ public class SphereCollider : Collider
 
     // ABSTRACT METHOD IMPLEMENTATIONS
 
-    public override object CreateGodotShape()
-    {
-        // Created by PhysicsColliderHook
-        return null!;
-    }
-
-    public override object GetLocalBounds()
+    public override BoundingBox GetLocalBounds()
     {
         float r = Radius.Value;
-        float3 min = Offset.Value + new float3(-r, -r, -r);
-        float3 max = Offset.Value + new float3(r, r, r);
-        return new { Min = min, Max = max };
+        var extent = new float3(r, r, r);
+        return new BoundingBox(Offset.Value - extent, Offset.Value + extent);
     }
 
 }

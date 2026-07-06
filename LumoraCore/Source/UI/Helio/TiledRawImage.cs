@@ -79,7 +79,7 @@ public sealed class TiledRawImage : Graphic
             return;
         }
 
-        var clipRect = renderData.ClipRect;
+        var clipRect = renderData.GeometryClipRect;
         if (clipRect.HasValue && !rect.Overlaps(clipRect.Value))
         {
             return;

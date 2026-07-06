@@ -4,208 +4,134 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using Lumora.Core.Networking.Sync;
 
 namespace Lumora.Core;
 
 /// <summary>
-/// Synchronized list of references to world elements.
-/// Handles network synchronization for collections.
+/// Network-synchronized list of references to world elements.
+/// Each entry is a <see cref="SyncRef{T}"/> element, so membership replicates and
+/// persists through the normal sync-element machinery (RefID allocation, delta encode,
+/// validation, save/load). Null entries are allowed and map to a cleared reference.
 /// </summary>
-public class SyncRefList<T> : IEnumerable<T?> where T : class, IWorldElement
+public class SyncRefList<T> : SyncElementList<SyncRef<T>>, IEnumerable<T?> where T : class, IWorldElement
 {
-    private readonly List<T?> _elements;
-    private IWorldElement _owner;
-
     /// <summary>
-    /// Event triggered when the list changes.
+    /// Event triggered when the membership of this list changes (add, remove, clear).
+    /// Does not fire when the value of a referenced element changes.
     /// </summary>
     public event Action<SyncRefList<T>>? OnChanged;
 
-    /// <summary>
-    /// The world element that owns this list.
-    /// </summary>
-    public IWorldElement Owner => _owner;
-
-    /// <summary>
-    /// Whether this list has been modified since last sync.
-    /// </summary>
-    public bool IsDirty { get; internal set; }
-
-    /// <summary>
-    /// Number of elements in the list.
-    /// </summary>
-    public int Count
+    public SyncRefList()
     {
-        get
+        ElementsAdded += (list, idx, count) => OnChanged?.Invoke(this);
+        ElementsRemoved += (list, idx, count) => OnChanged?.Invoke(this);
+    }
+
+    /// <summary>
+    /// Create a reference list owned by a world element, initializing it immediately when
+    /// the owner already has a world (matches the SyncFieldList construction pattern).
+    /// </summary>
+    public SyncRefList(IWorldElement owner) : this()
+    {
+        if (owner?.World != null)
         {
-            Authorize(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, null, null);
-            return _elements.Count;
+            Initialize(owner.World, owner);
         }
     }
 
     /// <summary>
-    /// Indexer to access elements.
+    /// Enumerator that yields the referenced targets instead of the backing SyncRef elements.
     /// </summary>
-    public T? this[int index]
+    public new struct Enumerator : IEnumerator<T?>, IDisposable, IEnumerator
     {
-        get
+        private SyncElementList<SyncRef<T>>.Enumerator _baseEnumerator;
+
+        public T? Current => _baseEnumerator.Current.Target;
+
+        object? IEnumerator.Current => Current;
+
+        internal Enumerator(SyncElementList<SyncRef<T>>.Enumerator baseEnumerator)
         {
-            Authorize(DataModelPermissionAction.Read, index, null);
-            return _elements[index];
+            _baseEnumerator = baseEnumerator;
         }
-        set
-        {
-            if (index < 0 || index >= _elements.Count)
-                throw new IndexOutOfRangeException($"Index {index} is out of range for SyncRefList with count {_elements.Count}");
 
-            Authorize(DataModelPermissionAction.Write | DataModelPermissionAction.ReferenceWrite | DataModelPermissionAction.CollectionSet, index, value);
-            _elements[index] = value;
-            MarkDirty();
-        }
+        public void Dispose() => _baseEnumerator.Dispose();
+
+        public bool MoveNext() => _baseEnumerator.MoveNext();
+
+        public void Reset() => _baseEnumerator.Reset();
     }
-
-    public SyncRefList(IWorldElement owner)
-    {
-        _owner = owner;
-        _elements = new List<T?>();
-        IsDirty = false;
-    }
-
-    // LIST OPERATIONS
 
     /// <summary>
-    /// Add an element to the list.
+    /// Get or set the referenced target at the given index.
+    /// </summary>
+    public new T? this[int index]
+    {
+        get => GetElement(index).Target;
+        set => GetElement(index).Target = value!;
+    }
+
+    /// <summary>
+    /// Add a reference to the given element (null is permitted).
     /// </summary>
     public void Add(T? element)
     {
-        Authorize(DataModelPermissionAction.Write | DataModelPermissionAction.ReferenceWrite | DataModelPermissionAction.CollectionAdd, _elements.Count, element);
-        _elements.Add(element);
-        MarkDirty();
+        Add().Target = element!;
     }
 
     /// <summary>
-    /// Remove an element from the list.
+    /// Remove the first entry referencing the given element.
+    /// Returns true if an entry was removed.
     /// </summary>
     public bool Remove(T? element)
     {
-        int index = _elements.IndexOf(element);
+        int index = IndexOf(element);
         if (index >= 0)
         {
-            Authorize(DataModelPermissionAction.Write | DataModelPermissionAction.ReferenceWrite | DataModelPermissionAction.CollectionRemove, index, element);
+            RemoveAt(index);
+            return true;
         }
-        bool removed = _elements.Remove(element);
-        if (removed)
-            MarkDirty();
-        return removed;
+        return false;
     }
 
     /// <summary>
-    /// Remove element at index.
-    /// </summary>
-    public void RemoveAt(int index)
-    {
-        Authorize(DataModelPermissionAction.Write | DataModelPermissionAction.ReferenceWrite | DataModelPermissionAction.CollectionRemove, index, _elements[index]);
-        _elements.RemoveAt(index);
-        MarkDirty();
-    }
-
-    /// <summary>
-    /// Clear all elements from the list.
-    /// </summary>
-    public void Clear()
-    {
-        Authorize(DataModelPermissionAction.Write | DataModelPermissionAction.ReferenceWrite | DataModelPermissionAction.CollectionClear, null, null);
-        _elements.Clear();
-        MarkDirty();
-    }
-
-    /// <summary>
-    /// Check if list contains an element.
-    /// </summary>
-    public bool Contains(T? element)
-    {
-        Authorize(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, null, element);
-        return _elements.Contains(element);
-    }
-
-    /// <summary>
-    /// Get the index of an element.
-    /// Returns -1 if not found.
-    /// </summary>
-    public int IndexOf(T? element)
-    {
-        Authorize(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, null, element);
-        return _elements.IndexOf(element);
-    }
-
-    /// <summary>
-    /// Insert element at index.
+    /// Insert a reference to the given element at the index.
     /// </summary>
     public void Insert(int index, T? element)
     {
-        Authorize(DataModelPermissionAction.Write | DataModelPermissionAction.ReferenceWrite | DataModelPermissionAction.CollectionInsert, index, element);
-        _elements.Insert(index, element);
-        MarkDirty();
+        Insert(index).Target = element!;
     }
 
-    // ENUMERATION
+    /// <summary>
+    /// Whether any entry references the given element.
+    /// </summary>
+    public bool Contains(T? element) => IndexOf(element) >= 0;
 
-    public IEnumerator<T?> GetEnumerator()
+    /// <summary>
+    /// Index of the first entry referencing the given element, or -1.
+    /// </summary>
+    public int IndexOf(T? element) => FindIndex(r => ReferenceEquals(r.Target, element));
+
+    /// <summary>
+    /// Get the backing SyncRef element at the index.
+    /// </summary>
+    public SyncRef<T> GetReference(int index) => GetElement(index);
+
+    public Enumerator GetEnumerator()
     {
-        Authorize(DataModelPermissionAction.Read | DataModelPermissionAction.CollectionEnumerate, null, null);
-        return _elements.GetEnumerator();
+        return new Enumerator(GetElementsEnumerator());
     }
+
+    IEnumerator<T?> IEnumerable<T?>.GetEnumerator() => GetEnumerator();
 
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
-    // INTERNAL METHODS
-
-    /// <summary>
-    /// Mark this list as dirty for network sync.
-    /// </summary>
-    private void MarkDirty()
-    {
-        IsDirty = true;
-        OnChanged?.Invoke(this);
-
-        if (_owner != null)
-        {
-            _owner.World?.MarkElementDirty(_owner);
-        }
-    }
-
-    private void Authorize(DataModelPermissionAction action, int? index, object? key)
-    {
-        var permissions = _owner?.World?.DataModelPermissions;
-        if (permissions == null)
-        {
-            return;
-        }
-
-        var request = new DataModelPermissionRequest(
-            _owner!.World,
-            null,
-            _owner,
-            null,
-            null,
-            DataModelPermissionSurface.List,
-            action,
-            isNetwork: false,
-            index: index,
-            key: key);
-
-        permissions.Assert(request);
-    }
-
-    /// <summary>
-    /// Check if list was changed and clear the dirty flag.
-    /// </summary>
-    public bool GetWasChangedAndClear()
-    {
-        bool wasChanged = IsDirty;
-        IsDirty = false;
-        return wasChanged;
-    }
-
     public override string ToString() => $"SyncRefList<{typeof(T).Name}>[{Count}]";
+
+    public override void Dispose()
+    {
+        OnChanged = null;
+        base.Dispose();
+    }
 }

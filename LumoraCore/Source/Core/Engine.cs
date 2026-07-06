@@ -369,8 +369,7 @@ public class Engine : IDisposable
 
         try
         {
-            // Phase 1: Core Systems
-            LumoraLogger.Log("Phase 1: Initializing Core Systems...");
+            LumoraLogger.Log("Initializing core systems...");
 
             await InitializeSubsystem("FocusManager", async () =>
             {
@@ -390,8 +389,7 @@ public class Engine : IDisposable
                 await Task.CompletedTask;
             }, cancellationToken);
 
-            // Phase 2: Asset and Audio Systems
-            LumoraLogger.Log("Phase 2: Initializing Asset Systems...");
+            LumoraLogger.Log("Initializing asset systems...");
 
             await InitializeSubsystem("AssetManager", async () =>
             {
@@ -423,8 +421,7 @@ public class Engine : IDisposable
             // Physics is per-world and delegated to the platform engine (Godot/Jolt), accessed
             // through World.Physics - there is no engine-level physics subsystem to initialize.
 
-            // Phase 4: World Management
-            LumoraLogger.Log("Phase 4: Initializing World Management...");
+            LumoraLogger.Log("Initializing world management...");
 
             await InitializeSubsystem("WorldManager", async () =>
             {
@@ -433,8 +430,7 @@ public class Engine : IDisposable
                 WorldLoadingService = new WorldLoadingService(this);
             }, cancellationToken);
 
-            // Phase 5: Post-initialization
-            LumoraLogger.Log("Phase 5: Post-initialization setup...");
+            LumoraLogger.Log("Post-initialization setup...");
             ProcessStartupArguments();
 
             State = EngineState.Running;
@@ -528,11 +524,11 @@ public class Engine : IDisposable
             _localHomePort = SimpleIpHelpers.GetAvailablePortUdp(10) ?? 6000;
         }
 
-        // Load the saved home if one exists (build it into an Empty world so the template's default
+        // Load the saved home if one exists (build it into a blank world so the template's default
         // content isn't duplicated); otherwise build the default from the LocalHome template.
         var savePath = LocalHomeSavePath;
         bool hasSave = File.Exists(savePath);
-        string template = hasSave ? "Empty" : "LocalHome";
+        string template = hasSave ? "" : "LocalHome";
         Action<World>? init = hasSave
             ? w =>
             {
@@ -600,19 +596,73 @@ public class Engine : IDisposable
     }
 
     /// <summary>
-    /// Join via NAT punch-through.
+    /// Join via NAT punch-through: punch a hole to the session host through the relay
+    /// server, then connect directly to the resolved endpoint.
     /// </summary>
     public void JoinNatServer(string identifier)
     {
-        LumoraLogger.Warn($"Engine: NAT join for session '{identifier}' not implemented yet.");
+        if (string.IsNullOrWhiteSpace(identifier))
+        {
+            LumoraLogger.Warn("Engine: NAT join called with an empty session identifier.");
+            return;
+        }
+
+        var addr = Networking.Session.Session.SessionServerAddress;
+        var port = Networking.Session.Session.SessionServerPort;
+        LumoraLogger.Log($"Engine: NAT punch join for session '{identifier}' via {addr}:{port}");
+
+        var client = new Networking.Session.SessionServerClient(addr, port);
+        var joined = false;
+
+        client.OnNATPunchSuccess += ep =>
+        {
+            if (joined) return;
+            joined = true;
+
+            LumoraLogger.Log($"Engine: NAT punch succeeded -> {ep}; connecting directly.");
+            var wm = WorldManager;
+
+            // The punch callback runs on the client's poll task; hop to the main
+            // update thread to create/join the world.
+            if (wm?.FocusedWorld != null)
+                wm.FocusedWorld.RunSynchronously(() => wm.JoinSession("RemoteWorld", ep.Address.ToString(), (ushort)ep.Port));
+            else
+                wm?.JoinSession("RemoteWorld", ep.Address.ToString(), (ushort)ep.Port);
+
+            // Hold the punch socket open briefly so the NAT mapping stays warm while
+            // the direct connection establishes, then release it. (Hard NATs that
+            // can't reuse the hole for a fresh socket fall back to relay.)
+            _ = Task.Delay(5000).ContinueWith(_ => client.Dispose(), TaskScheduler.Default);
+        };
+
+        _ = client.RequestNATPunchAsync(identifier).ContinueWith(t =>
+        {
+            if (t.IsFaulted)
+                LumoraLogger.Warn($"Engine: NAT punch request failed: {t.Exception?.GetBaseException().Message}");
+        }, TaskScheduler.Default);
     }
 
     /// <summary>
-    /// Join via relay server.
+    /// Join via relay server: tunnel the session through the relay when a direct or
+    /// punched path isn't available.
     /// </summary>
     public void JoinNatServerRelay(string identifier)
     {
-        LumoraLogger.Warn($"Engine: Relay join for session '{identifier}' not implemented yet.");
+        if (string.IsNullOrWhiteSpace(identifier))
+        {
+            LumoraLogger.Warn("Engine: Relay join called with an empty session identifier.");
+            return;
+        }
+
+        // Make sure the relay transport is available (Register dedups by type).
+        Networking.NetworkManagerRegistry.Register(new Networking.RelayNetworkManager());
+
+        var addr = Networking.Session.Session.SessionServerAddress;
+        var port = Networking.Session.Session.SessionServerPort;
+        LumoraLogger.Log($"Engine: relay join for session '{identifier}' via {addr}:{port}");
+
+        var relayUri = new Uri($"{Networking.RelayNetworkManager.SCHEME}://relay/{Uri.EscapeDataString(identifier)}");
+        WorldManager?.JoinSession("RemoteWorld", relayUri);
     }
 
     #endregion
@@ -632,20 +682,20 @@ public class Engine : IDisposable
 
         try
         {
-            // Stage 1: Input Processing
+            // Input processing
             InputInterface?.ProcessInput(delta);
 
-            // Stage 2: Global Coroutines
+            // Global coroutines
             CoroutineManager?.Update((float)delta);
 
-            // Stage 3: World Updates
+            // World updates
             WorldManager?.Update(delta);
 
-            // Stage 4: Fixed Updates (physics timestep)
+            // Fixed updates (physics timestep)
             ProcessFixedUpdates(delta);
             InputInterface?.SyncTrackingSpaceToFocusedLocalUser();
 
-            // Stage 5: Asset Processing
+            // Asset processing
             AssetManager?.Update((float)delta);
         }
         catch (Exception ex)

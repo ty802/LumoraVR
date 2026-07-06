@@ -10,7 +10,7 @@ namespace Lumora.Core;
 
 /// <summary>
 /// Network-synchronized list of primitive values.
-/// Each value is wrapped in a Sync&lt;T&gt; field for synchronization.
+/// Each value is wrapped in a Sync<T> field for synchronization.
 /// </summary>
 public class SyncFieldList<T> : SyncElementList<Sync<T>>, IEnumerable<T>, IEnumerable
 {

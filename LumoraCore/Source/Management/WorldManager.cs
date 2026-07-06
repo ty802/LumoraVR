@@ -119,10 +119,10 @@ public class WorldManager : IDisposable
     /// Creates and initializes a new local world instance.
     /// </summary>
     /// <param name="name">World name</param>
-    /// <param name="templateName">Template to apply (LocalHome, Grid, Empty, ShaderTest)</param>
+    /// <param name="templateName">Template to apply (LocalHome, Grid, ShaderTest), or "" for a blank world</param>
     /// <param name="init">Initialization callback</param>
     /// <returns>Created world</returns>
-    public World StartLocal(string name, string templateName = "Empty", Action<World> init = null!)
+    public World StartLocal(string name, string templateName = "", Action<World> init = null!)
     {
         try
         {
@@ -155,10 +155,10 @@ public class WorldManager : IDisposable
     /// <param name="name">World name</param>
     /// <param name="port">Network port</param>
     /// <param name="hostUserName">Host user name</param>
-    /// <param name="templateName">Template to apply (LocalHome, Grid, Empty, ShaderTest)</param>
+    /// <param name="templateName">Template to apply (LocalHome, Grid, ShaderTest), or "" for a blank world</param>
     /// <param name="init">Initialization callback</param>
     /// <returns>Created world</returns>
-    public World StartSession(string name, ushort port, string hostUserName = null!, string templateName = "Empty", Action<World> init = null!)
+    public World StartSession(string name, ushort port, string hostUserName = null!, string templateName = "", Action<World> init = null!)
     {
         return StartSession(name, port, hostUserName, templateName, SessionVisibility.Private, 16, init);
     }
@@ -221,7 +221,7 @@ public class WorldManager : IDisposable
     }
 
     /// <summary>
-    /// Host a previously-saved world file and focus it. Builds it into an Empty world (so a template's
+    /// Host a previously-saved world file and focus it. Builds it into a blank world (so a template's
     /// default content isn't duplicated) and loads the save; the world's mode comes from the file.
     /// Returns the new world, or null on failure.
     /// </summary>
@@ -232,7 +232,7 @@ public class WorldManager : IDisposable
 
         var name = string.IsNullOrEmpty(worldName) ? System.IO.Path.GetFileNameWithoutExtension(path) : worldName;
         ushort port = (ushort)(SimpleIpHelpers.GetAvailablePortUdp(10) ?? 6000);
-        var world = StartSession(name, port, Environment.MachineName, "Empty", SessionVisibility.Private,
+        var world = StartSession(name, port, Environment.MachineName, "", SessionVisibility.Private,
             16, w => Persistence.WorldStorage.LoadFromFile(w, path));
         if (world != null)
             SwitchToWorld(world);

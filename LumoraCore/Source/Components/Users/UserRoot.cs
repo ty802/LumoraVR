@@ -97,20 +97,29 @@ public class UserRoot : Component
 
     private Slot GetBodyNodeSlot(ref Slot cache, Input.BodyNode node)
     {
-        if (cache != null && !cache.IsDestroyed)
-            return cache;
         if (IsDestroyed)
             return null!;
 
         var positioner = GetRegisteredComponent<TrackedDevicePositioner>(p => p.AutoBodyNode.Value == node);
-        var resolved = positioner?.BodyNodeRoot?.Target ?? positioner?.Slot;
+        var resolved = positioner?.Slot;
 
-        // Not every body node is device-tracked: hands are AvatarObjectSlots
+        if (cache != null && !cache.IsDestroyed)
+        {
+            // A tracked device positioner has two relevant slots:
+            // - Slot: the tracked body transform (head/controller/etc.)
+            // - BodyNodeRoot: an equipment/object child that only carries offsets
+            // User-space consumers need the tracked transform. Older code cached the
+            // child, which double-applied desktop head height and moved nametags/IK.
+            if (resolved == null || ReferenceEquals(cache, resolved))
+                return cache;
+        }
+
+        // Not every body node is device-tracked: hands are AvatarSockets
         // riding under the controller positioners. Resolve through the
         // registered object slots before giving up.
         if (resolved == null)
         {
-            resolved = GetRegisteredComponent<Avatar.AvatarObjectSlot>(s => s.Node.Value == node)?.Slot;
+            resolved = GetRegisteredComponent<Avatar.AvatarSocket>(s => s.Node.Value == node)?.Slot;
         }
 
         if (resolved != null)
@@ -577,4 +586,3 @@ public class UserRoot : Component
         base.OnDestroy();
     }
 }
-

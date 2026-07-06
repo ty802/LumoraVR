@@ -97,6 +97,17 @@ public static class ComponentTypeRegistry
 		}
 	}
 
+	/// <summary>
+	/// Snapshot of every registered component type. Used to derive the datamodel compatibility hash.
+	/// </summary>
+	public static IReadOnlyList<Type> GetRegisteredTypes()
+	{
+		lock (_lock)
+		{
+			return _typeToName.Keys.ToList();
+		}
+	}
+
 	public static string GetTypeId(Type type)
 	{
 		if (type == null)

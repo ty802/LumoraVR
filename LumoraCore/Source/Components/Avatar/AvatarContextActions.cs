@@ -8,19 +8,20 @@ namespace Lumora.Core.Components.Avatar;
 
 // Contributes avatar actions to the context menu: "Equip Avatar" when the
 // summoning laser points at an avatar tree, "Dequip Avatar" while one is
-// worn. Equips route through AvatarManager's body-node dispatch - the menu
+// worn. Equips route through AvatarEquipManager's body-node dispatch - the menu
 // is just the confirm step, mirroring the touch-and-confirm flow. - xlinka
-[ComponentCategory("Users/Common Avatar System")]
+[ComponentCategory("Users/Avatar")]
 public class AvatarContextActions : ContextMenuItemSource
 {
     public override void PopulateContextMenu(ContextMenuPage page, ContextMenuContext context)
     {
         var userRoot = Slot?.ActiveUserRoot;
-        var manager = userRoot?.GetRegisteredComponent<AvatarManager>();
+        var manager = userRoot?.GetRegisteredComponent<AvatarEquipManager>();
         if (manager == null)
             return;
 
         var avatarRoot = FindAvatarRoot(context?.Target);
+
         if (avatarRoot != null && !avatarRoot.IsEquipped && avatarRoot.Slot != manager.CurrentAvatar.Target)
         {
             var targetSlot = avatarRoot.Slot;
@@ -39,14 +40,14 @@ public class AvatarContextActions : ContextMenuItemSource
     }
 
     // The laser usually hits a mesh deep inside the avatar; walk up for the
-    // AvatarRoot tag. Stops at user roots so worn avatars don't offer
+    // AvatarForm tag. Stops at user roots so worn avatars don't offer
     // themselves.
-    private static AvatarRoot? FindAvatarRoot(Slot? hit)
+    private static AvatarForm? FindAvatarRoot(Slot? hit)
     {
         var current = hit;
         while (current != null)
         {
-            var root = current.GetComponent<AvatarRoot>();
+            var root = current.GetComponent<AvatarForm>();
             if (root != null)
                 return root;
             if (current.GetComponent<UserRoot>() != null)

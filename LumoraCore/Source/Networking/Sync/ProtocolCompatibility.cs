@@ -1,0 +1,124 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Security.Cryptography;
+using System.Text;
+
+namespace Lumora.Core.Networking.Sync;
+
+/// <summary>
+/// Datamodel compatibility proof for the join handshake.
+///
+/// Hashes the datamodel SCHEMA - every registered synced component type and its sync-member layout (member
+/// names and field types, in canonical order) plus a protocol version - rather than any binary, so peers
+/// built from the same source agree on the value across platforms. The per-join response salts this schema
+/// hash with the host's random join nonce so each join produces a distinct value. The host confirms a
+/// joiner reports the same schema before granting the join. -xlinka
+/// </summary>
+public static class ProtocolCompatibility
+{
+    // Bump when the wire protocol changes in a way the component schema doesn't capture (message formats,
+    // handshake steps, encoders). -xlinka
+    private const int ProtocolVersion = 1;
+
+    private static byte[]? _baseHash;
+    private static readonly object _lock = new();
+
+    /// <summary>
+    /// The schema hash for this build: a digest of the protocol version and every synced component type's
+    /// member layout. Identical across platforms for the same source; cached after first use.
+    /// </summary>
+    public static byte[] BaseHash
+    {
+        get
+        {
+            if (_baseHash != null)
+            {
+                return _baseHash;
+            }
+            lock (_lock)
+            {
+                _baseHash ??= ComputeBaseHash();
+                return _baseHash;
+            }
+        }
+    }
+
+    private static byte[] ComputeBaseHash()
+    {
+        var types = new List<Type>(ComponentTypeRegistry.GetRegisteredTypes());
+        // Order-independent: sort by full name so both peers serialize the schema identically. -xlinka
+        types.Sort((a, b) => string.CompareOrdinal(a.FullName ?? a.Name, b.FullName ?? b.Name));
+
+        using var ms = new MemoryStream();
+        using (var writer = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true))
+        {
+            writer.Write(ProtocolVersion);
+            writer.Write(types.Count);
+
+            foreach (var type in types)
+            {
+                writer.Write(type.FullName ?? type.Name);
+
+                WorkerInitInfo info;
+                try
+                {
+                    info = WorkerInitializer.GetInitInfo(type);
+                }
+                catch
+                {
+                    writer.Write(-1); // unreadable layout - still part of the digest, deterministically
+                    continue;
+                }
+
+                var names = info.SyncMemberNames;
+                var fields = info.SyncMemberFields;
+                int count = names?.Length ?? 0;
+                writer.Write(count);
+                for (int i = 0; i < count; i++)
+                {
+                    writer.Write(names![i] ?? string.Empty);
+                    writer.Write(fields![i]?.FieldType.FullName ?? string.Empty);
+                }
+            }
+        }
+
+        ms.Position = 0;
+        using var sha = SHA256.Create();
+        return sha.ComputeHash(ms);
+    }
+
+    /// <summary>
+    /// The per-join proof: SHA-256(<see cref="BaseHash"/> || nonce). The joiner computes this over the
+    /// host's challenge nonce; the host verifies it against its own schema with <see cref="Verify"/>.
+    /// </summary>
+    public static byte[] ComputeChallengeResponse(byte[] nonce)
+    {
+        var baseHash = BaseHash;
+        int nonceLen = nonce?.Length ?? 0;
+        var buffer = new byte[baseHash.Length + nonceLen];
+        Buffer.BlockCopy(baseHash, 0, buffer, 0, baseHash.Length);
+        if (nonceLen > 0)
+        {
+            Buffer.BlockCopy(nonce!, 0, buffer, baseHash.Length, nonceLen);
+        }
+        using var sha = SHA256.Create();
+        return sha.ComputeHash(buffer);
+    }
+
+    /// <summary>
+    /// Host side: constant-time check that the joiner's proof matches our own schema for the given nonce.
+    /// </summary>
+    public static bool Verify(byte[] nonce, byte[]? response)
+    {
+        if (response == null || response.Length == 0)
+        {
+            return false;
+        }
+        var expected = ComputeChallengeResponse(nonce);
+        return CryptographicOperations.FixedTimeEquals(expected, response);
+    }
+}

@@ -12,7 +12,7 @@ namespace Lumora.Core;
 /// <summary>
 /// General hierarchical key-value config store (the engine's small "settings database").
 /// Keys are dotted paths (e.g.
-/// <c>Security.Ban.Blacklist.&lt;id&gt;.UserId</c>); subsystems that need durable config - bans,
+/// <c>Security.Ban.Blacklist.<id>.UserId</c>); subsystems that need durable config - bans,
 /// per-world security, etc. - read/write here instead of inventing their own files. Persisted as a
 /// single JSON map under the user's application data folder. Typed user/video/audio prefs stay in
 /// <see cref="EngineSettings"/>; this is for arbitrary keyed data.

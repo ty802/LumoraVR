@@ -20,7 +20,7 @@ public enum AvatarReferenceKind
 /// <summary>
 /// Tags a slot as a persistent reference point authored by the avatar creator flow.
 /// </summary>
-[ComponentCategory("Users/Common Avatar System")]
+[ComponentCategory("Users/Avatar")]
 public sealed class AvatarReferencePoint : Component
 {
     public readonly Sync<AvatarReferenceKind> Kind = new();

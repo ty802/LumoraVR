@@ -45,4 +45,13 @@ public interface IPhysicsQueryHook
 
     /// <summary>Collect the slots whose colliders overlap an oriented box (<paramref name="size"/> = full extents).</summary>
     int OverlapBox(in float3 origin, in float3 size, in floatQ orientation, bool hitTriggers, List<Slot> results);
+
+    /// <summary>
+    /// Resting-contact push-out: if a sphere of <paramref name="radius"/> at <paramref name="center"/>
+    /// penetrates any world collider, return true and set <paramref name="correctedCenter"/> to the
+    /// nearest non-penetrating position (surface contact point + radius along the outward normal). Unlike
+    /// a movement raycast this resolves a STATIONARY overlap, so soft bodies rest on / drape over any
+    /// collider shape (box, sphere, capsule, mesh) without sinking through. Skips <paramref name="exclude"/>.
+    /// </summary>
+    bool ResolveSphere(in float3 center, float radius, IReadOnlyList<Slot>? exclude, out float3 correctedCenter, out float3 normal);
 }

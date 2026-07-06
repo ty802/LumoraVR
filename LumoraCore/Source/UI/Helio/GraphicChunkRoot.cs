@@ -17,10 +17,18 @@ public sealed class GraphicChunkRoot : UIComputeComponent
 
     /// <summary>
     /// Render-space translation (canvas pixels) applied to this chunk's whole mesh via ChunkSlot.LocalPosition.
-    /// ScrollRect sets this to scroll content by shifting the chunk instead of mutating the content rect; the
-    /// canvas counter-translates the inherited clip so the viewport window stays fixed. Zero = no offset.
+    /// ScrollRect sets this to scroll content by shifting the chunk instead of mutating the content rect. Zero
+    /// = no offset.
     /// </summary>
     public float2 RenderOffset { get; set; }
+
+    /// <summary>
+    /// This chunk is a ScrollRect's content: its mesh is baked ONCE and scrolled by moving the chunk (see
+    /// RenderOffset). Because the mesh moves as a unit, a baked rect-clip would be stale the moment it slides,
+    /// so its graphics are NOT rect-clipped - the ancestor Mask's screen-space stencil clips them instead
+    /// (the stencil doesn't move with the content, so it stays a fixed viewport window). -xlinka
+    /// </summary>
+    public bool ScrollContent { get; set; }
 
     protected override void FlagChanges(RectTransform rect)
     {

@@ -1343,8 +1343,8 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             OnActiveChanged?.Invoke(this, ActiveSelf.Value);
             ActiveChanged?.Invoke(this);
             // Effective active: descendants whose own ActiveSelf is true just had their effective
-            // active flip with this ancestor, so fire ActiveChanged on them too (mirrors the
-            // reference, whose ActiveChanged is effective). This is what lets a canvas re-render
+            // active flip with this ancestor, so fire ActiveChanged on them too (ActiveChanged
+            // tracks EFFECTIVE active here, not just ActiveSelf). This is what lets a canvas re-render
             // content shown by reactivating an ancestor (e.g. the dashboard's parked render rig)
             // without any forced-rebuild hack. No listeners other than UI RectTransforms, so safe.
             PropagateActiveChangedToDescendants();
@@ -1670,7 +1670,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// <summary>
     /// Schedule an action to run on the next update.
     /// </summary>
-    public void RunInUpdates(int updateCount, Action action)
+    public override void RunInUpdates(int updateCount, Action action)
     {
         if (action == null) return;
 
@@ -1686,7 +1686,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     /// <summary>
     /// Schedule an action to run synchronously.
     /// </summary>
-    public void RunSynchronously(Action action)
+    public override void RunSynchronously(Action action)
     {
         if (action == null) return;
         World?.RunSynchronously(action);
@@ -1821,7 +1821,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
     /// <summary>
     /// Get all Components implementing the specified interface type T.
-    /// Unlike GetComponents&lt;T&gt;, this works with interface types.
+    /// Unlike GetComponents<T>, this works with interface types.
     /// </summary>
     public IEnumerable<T> GetComponentsImplementing<T>() where T : class
     {
@@ -3060,6 +3060,8 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         {
             if (prop.GetIndexParameters().Length != 0)
                 continue;
+            if (prop.GetCustomAttribute<DontCopyAttribute>() != null)
+                continue;
             if (typeof(ISyncMember).IsAssignableFrom(prop.PropertyType))
                 sync.Add(prop);
             else if (IsSyncRefList(prop.PropertyType))
@@ -3067,6 +3069,8 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
         foreach (var field in type.GetFields(BindingFlags.Public | BindingFlags.Instance))
         {
+            if (field.GetCustomAttribute<DontCopyAttribute>() != null)
+                continue;
             if (typeof(ISyncMember).IsAssignableFrom(field.FieldType))
                 sync.Add(field);
             else if (IsSyncRefList(field.FieldType))

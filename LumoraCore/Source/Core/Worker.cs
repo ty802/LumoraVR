@@ -2,8 +2,11 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Threading.Tasks;
+using Lumora.Core.Assets;
 using Lumora.Core.Networking.Sync;
 using Lumora.Core.Persistence;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -64,6 +67,86 @@ public abstract class Worker : IWorker
         return InitInfo.SyncMemberNames[index];
     }
 
+    // Methods this worker type opens to SyncDelegate binding from data, via [SyncMethod]. Used to
+    // validate a delegate target resolved from a save or a peer (see SyncDelegate) and to enumerate
+    // the available actions for tooling.
+    public int ListedMethodCount => InitInfo.ListedMethods.Length;
+
+    public MethodInfo GetSyncMethod(int index) => InitInfo.ListedMethods[index];
+
+    public MethodInfo? GetSyncMethod(string name)
+    {
+        var index = IndexOfSyncMethod(name);
+        return index >= 0 ? InitInfo.ListedMethods[index] : null;
+    }
+
+    public int IndexOfSyncMethod(string name)
+        => !string.IsNullOrEmpty(name) && InitInfo.ListedMethodNameToIndex.TryGetValue(name, out var index) ? index : -1;
+
+    public bool IsListedSyncMethod(string name) => IndexOfSyncMethod(name) >= 0;
+
+    // SCHEDULING
+    // Thin conveniences over the world's update-loop scheduler so a component can defer work without
+    // reaching for World directly. All are no-ops once the worker has no world (detached/destroyed).
+
+    public virtual void RunSynchronously(Action action) => World?.RunSynchronously(action);
+
+    public virtual void RunInUpdates(int updateCount, Action action) => World?.RunInUpdates(updateCount, action);
+
+    public void RunInSeconds(float seconds, Action action) => World?.RunInSeconds(seconds, action);
+
+    public Task DelaySeconds(float seconds) => World?.DelaySeconds(seconds) ?? Task.CompletedTask;
+
+    public void StartTask(Func<Task> task) => World?.StartTask(task);
+
+    public void StartCoroutine(IEnumerator routine) => World?.StartCoroutine(routine);
+
+    // VALUE COPY
+    // Shallow copies of sync FIELD values between workers. References are copied as-is (shared with the
+    // source), not deep-cloned - use Slot.Duplicate for a deep clone. Members flagged [DontCopy] and
+    // non-field members (collections/delegates) are skipped.
+
+    /// <summary>Copy field values from another worker of the same type, member-for-member by index.</summary>
+    public void CopyValues(Worker source)
+    {
+        if (source == null || source.GetType() != GetType())
+            return;
+
+        for (int i = 0; i < SyncMemberCount; i++)
+        {
+            if (InitInfo.SyncMemberDontCopy[i])
+                continue;
+            if (GetSyncMember(i) is IField target && source.GetSyncMember(i) is IField src)
+            {
+                try { target.BoxedValue = src.BoxedValue; }
+                catch (Exception ex) { LumoraLogger.Warn($"CopyValues: member '{GetSyncMemberName(i)}' on {WorkerTypeName} failed: {ex.Message}"); }
+            }
+        }
+    }
+
+    /// <summary>Copy field values from another worker by matching member NAME, so values transfer
+    /// between different worker types that share field names. Mismatched value types are skipped.</summary>
+    public void CopyProperties(Worker source)
+    {
+        if (source == null)
+            return;
+
+        for (int i = 0; i < SyncMemberCount; i++)
+        {
+            if (InitInfo.SyncMemberDontCopy[i])
+                continue;
+            if (GetSyncMember(i) is not IField target)
+                continue;
+
+            var src = source.TryGetField(GetSyncMemberName(i));
+            if (src == null)
+                continue;
+
+            try { target.BoxedValue = src.BoxedValue; }
+            catch (Exception ex) { LumoraLogger.Warn($"CopyProperties: member '{GetSyncMemberName(i)}' on {WorkerTypeName} failed: {ex.Message}"); }
+        }
+    }
+
     // PERSISTENCE
     // Serialize this worker as { ID, memberName: member.Save(), ... }. Slot overrides to also write
     // its child slots; a slot's components live in its "Components" member and serialize through it.
@@ -110,6 +193,20 @@ public abstract class Worker : IWorker
                 continue;
             var memberName = GetSyncMemberName(i);
             var memberNode = dictionary.TryGetNode(memberName);
+
+            // Member was renamed since this save was written: fall back to any [OldName] alias so the
+            // old key still loads into the new member.
+            if (memberNode == null && InitInfo.OldSyncMemberNames != null
+                && InitInfo.OldSyncMemberNames.TryGetValue(memberName, out var oldNames))
+            {
+                foreach (var oldName in oldNames)
+                {
+                    memberNode = dictionary.TryGetNode(oldName);
+                    if (memberNode != null)
+                        break;
+                }
+            }
+
             if (memberNode != null)
             {
                 try
@@ -168,9 +265,77 @@ public abstract class Worker : IWorker
         return (TryGetField(name) as IField<T>) ?? null!;
     }
 
+    // Every object this worker points at through its sync data: each reference member yields its target,
+    // and sync lists / nested sync objects are descended into. Used by duplication (remap references into a
+    // copied subtree), saving (resolve outgoing references), and asset gathering. assetRefOnly keeps only
+    // references to assets (or targets flagged to travel with assets); persistentOnly drops references to
+    // non-persistent targets. -xlinka
     public virtual IEnumerable<IWorldElement> GetReferencedObjects(bool assetRefOnly, bool persistentOnly = true)
     {
-        yield break;
+        for (int i = 0; i < SyncMemberCount; i++)
+        {
+            var member = GetSyncMember(i);
+            if (member == null)
+            {
+                continue;
+            }
+
+            foreach (var referenced in CollectMemberReferences(member, assetRefOnly, persistentOnly))
+            {
+                yield return referenced;
+            }
+        }
+    }
+
+    private static IEnumerable<IWorldElement> CollectMemberReferences(ISyncMember member, bool assetRefOnly, bool persistentOnly)
+    {
+        if (member is ISyncRef syncRef)
+        {
+            var target = syncRef.Target;
+            if (target == null)
+            {
+                yield break;
+            }
+
+            bool isAsset = syncRef is IAssetRef
+                || target is IAssetProvider
+                || (target is Worker worker && worker.PreserveWithAssets);
+
+            if (assetRefOnly && !isAsset)
+            {
+                yield break;
+            }
+            // Asset refs are kept even when non-persistent (the asset still has to travel with the content).
+            if (persistentOnly && !target.IsPersistent && !isAsset)
+            {
+                yield break;
+            }
+
+            yield return target;
+        }
+        else if (member is ISyncList list)
+        {
+            foreach (var element in list.Elements)
+            {
+                if (element is ISyncMember childMember)
+                {
+                    foreach (var referenced in CollectMemberReferences(childMember, assetRefOnly, persistentOnly))
+                    {
+                        yield return referenced;
+                    }
+                }
+            }
+        }
+        else if (member is ISyncObject syncObject)
+        {
+            foreach (var childMember in syncObject.SyncMembers)
+            {
+                foreach (var referenced in CollectMemberReferences(childMember, assetRefOnly, persistentOnly))
+                {
+                    yield return referenced;
+                }
+            }
+        }
     }
 
     public virtual string ParentHierarchyToString()

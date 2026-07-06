@@ -233,6 +233,9 @@ public sealed class ControllerHandVisual : Component
         // to a controller-relative hand rest pose when tracking is unavailable.
         foreach (var joint in _joints)
         {
+            if (joint.VisualSlot == null || joint.VisualSlot.IsDestroyed)
+                continue;
+
             float3 jointWorldPos;
 
             if (input != null)
@@ -261,6 +264,12 @@ public sealed class ControllerHandVisual : Component
         float bRadius = BoneRadius.Value * MathF.Max(HandScale.Value, 0.2f);
         foreach (var bone in _bones)
         {
+            // The default hand visual's cylinders get disposed when a real avatar is equipped over the hands, but
+            // this per-frame refresh can still run for a frame+ - writing a disposed Cylinder.Height spams the log
+            // ("Cannot modify disposed element: Height", tens of thousands). Skip disposed bones. -xlinka
+            if (bone.VisualSlot == null || bone.VisualSlot.IsDestroyed || bone.Cylinder == null || bone.Cylinder.IsDestroyed)
+                continue;
+
             if (!_jointWorldPositions.TryGetValue(bone.NodeA, out var posA) ||
                 !_jointWorldPositions.TryGetValue(bone.NodeB, out var posB))
             {

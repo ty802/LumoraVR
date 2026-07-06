@@ -294,6 +294,28 @@ public abstract class ImportDialog : Component
         button.AddColorDriver(bg.Tint, fill, InteractionColorMode.Direct);
     }
 
+    // Honest "not supported yet" page: shows a message + a Close button that just
+    // tears down the dialog. No content is spawned - we don't fake success for a
+    // pipeline that doesn't exist. Call from a dialog whose format Lumora can't
+    // import yet. - xlinka
+    protected void ShowUnsupported(string message)
+    {
+        OpenPage(ui =>
+        {
+            var body = SetupSection(ui, "Not Supported Yet", backButton: false);
+            body.PushStyle().FlexibleHeight(1f);
+            var msg = body.Text(message, 14f, ButtonText);
+            msg.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
+            msg.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+            msg.WordWrap.Value = true;
+            body.PopStyle();
+
+            body.PushStyle().MinHeight(36f).PreferredHeight(36f);
+            body.Button("Close", (_, _) => { if (CanInteract) Slot.Destroy(); }, ButtonFill);
+            body.PopStyle();
+        });
+    }
+
     private void AddBackButton(Slot parent)
     {
         var slot = parent.AddSlot("Back");

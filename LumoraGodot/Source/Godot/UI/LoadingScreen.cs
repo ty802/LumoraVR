@@ -177,13 +177,13 @@ public partial class LoadingScreen : Control
 	{
 		string[] defaultMessages = new[]
 		{
-			PhaseMessages.EnvironmentSetup,      // Phase 0
-			PhaseMessages.XRDetection,            // Phase 1
-			PhaseMessages.HeadOutputCreation,     // Phase 2
-			PhaseMessages.EngineCoreInit,         // Phase 3
-			PhaseMessages.SystemIntegration,      // Phase 4
-			PhaseMessages.UserspaceSetup,         // Phase 5
-			PhaseMessages.Ready                   // Phase 6
+			PhaseMessages.EnvironmentSetup,
+			PhaseMessages.XRDetection,
+			PhaseMessages.HeadOutputCreation,
+			PhaseMessages.EngineCoreInit,
+			PhaseMessages.SystemIntegration,
+			PhaseMessages.UserspaceSetup,
+			PhaseMessages.Ready
 		};
 
 		int totalPhases = 6; // Not counting "Ready" as a phase

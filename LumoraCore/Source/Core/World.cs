@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -168,7 +169,6 @@ public class World
 	}
 
 
-	private readonly HashSet<IWorldElement> _dirtyElements = new();
 	private readonly Dictionary<string, List<Slot>> _slotsByTag = new();
 	private readonly List<Slot> _rootSlots = new();
 	private readonly List<User> _users = new();
@@ -196,6 +196,13 @@ public class World
 	private UpdateManager _updateManager;
 	private Queue<Action> _synchronousActions = new Queue<Action>();
 	private object _syncLock = new object();
+
+	// Coroutines ticked once per Update (see StartCoroutine) and time-delayed one-shots (see
+	// RunInSeconds). The buffered add list lets a coroutine start another without mutating the live
+	// list mid-tick. All guarded by _syncLock.
+	private readonly List<CoroutineRunner> _coroutines = new();
+	private readonly List<CoroutineRunner> _coroutinesToAdd = new();
+	private readonly List<DelayedAction> _delayedActions = new();
 	// Guards the WhenRunning/WhenDestroyed deferred-or-immediate accessors so a late subscriber can't
 	// slip between the state flip and the fan-out. Separate from _syncLock on purpose - _syncLock is held
 	// while running queued user actions and must not be entangled with this. -xlinka
@@ -530,9 +537,15 @@ public class World
 	public float TimeScale { get; set; } = 1.0f;
 
 	/// <summary>
+	/// Per-world clock: frame deltas (raw/clamped/smoothed), total time, update index, FPS.
+	/// Read this instead of threading deltas through call chains.
+	/// </summary>
+	public WorldClock Time { get; } = new WorldClock();
+
+	/// <summary>
 	/// Total time this World has been running (in seconds).
 	/// </summary>
-	public double TotalTime { get; private set; }
+	public double TotalTime => Time.TotalTime;
 
 	/// <summary>
 	/// Local sync tick counter for ordering messages.
@@ -559,7 +572,7 @@ public class World
 	/// <summary>
 	/// Last frame delta time (seconds).
 	/// </summary>
-	public float LastDelta { get; private set; }
+	public float LastDelta => Time.RawDelta;
 
 	/// <summary>
 	/// Convenience property for WorldName.Value.
@@ -1091,33 +1104,6 @@ public class World
 	}
 
 	/// <summary>
-	/// Mark an element as dirty (needs network synchronization).
-	/// </summary>
-	internal void MarkElementDirty(IWorldElement element)
-	{
-		if (element != null && !element.IsDestroyed)
-		{
-			_dirtyElements.Add(element);
-		}
-	}
-
-	/// <summary>
-	/// Get all elements that have been modified since last sync.
-	/// </summary>
-	public IEnumerable<IWorldElement> GetDirtyElements()
-	{
-		return _dirtyElements.ToArray();
-	}
-
-	/// <summary>
-	/// Clear the dirty elements list (after synchronization).
-	/// </summary>
-	public void ClearDirtyElements()
-	{
-		_dirtyElements.Clear();
-	}
-
-	/// <summary>
 	/// Get all elements in the world.
 	/// </summary>
 	public IEnumerable<KeyValuePair<RefID, IWorldElement>> GetAllElements()
@@ -1205,7 +1191,6 @@ public class World
 			slot.Destroy();
 		}
 
-		_dirtyElements.Clear();
 		_slotsByTag.Clear();
 		_rootSlots.Clear();
 		_users.Clear();
@@ -1945,6 +1930,72 @@ public class World
 	}
 
 	/// <summary>
+	/// Run an action after a delay measured in scaled world time. Thread-safe.
+	/// </summary>
+	public void RunInSeconds(float seconds, Action action)
+	{
+		if (IsDisposed || action == null) return;
+		if (seconds <= 0f) { RunSynchronously(action); return; }
+		lock (_syncLock)
+		{
+			_delayedActions.Add(new DelayedAction { Remaining = seconds, Action = action });
+		}
+	}
+
+	/// <summary>
+	/// A task that completes after a delay in scaled world time. Awaitable from a worker task.
+	/// </summary>
+	public Task DelaySeconds(float seconds)
+	{
+		var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+		RunInSeconds(seconds, () => tcs.TrySetResult(true));
+		return tcs.Task;
+	}
+
+	/// <summary>
+	/// Run a background async operation. Exceptions are logged rather than lost; marshal results back
+	/// onto the world with <see cref="RunSynchronously"/> inside the task.
+	/// </summary>
+	public void StartTask(Func<Task> task)
+	{
+		if (IsDisposed || task == null) return;
+		_ = RunTaskGuarded(task);
+	}
+
+	private async Task RunTaskGuarded(Func<Task> task)
+	{
+		try { await task().ConfigureAwait(false); }
+		catch (Exception ex) { LumoraLogger.Error($"World: task error: {ex}"); }
+	}
+
+	/// <summary>
+	/// Start a coroutine ticked once per Update. A step may yield: null (wait one update), a number
+	/// (wait that many scaled seconds), or a <see cref="Task"/> (wait until it completes). Thread-safe.
+	/// </summary>
+	public void StartCoroutine(IEnumerator routine)
+	{
+		if (IsDisposed || routine == null) return;
+		lock (_syncLock)
+		{
+			_coroutinesToAdd.Add(new CoroutineRunner { Routine = routine });
+		}
+	}
+
+	// One running coroutine: either counting down a time wait or blocked on a task between steps.
+	private sealed class CoroutineRunner
+	{
+		public IEnumerator Routine = null!;
+		public float Wait;
+		public Task? WaitTask;
+	}
+
+	private sealed class DelayedAction
+	{
+		public float Remaining;
+		public Action Action = null!;
+	}
+
+	/// <summary>
 	/// Process all queued synchronous actions.
 	/// </summary>
 	private void ProcessSynchronousActions()
@@ -2003,7 +2054,7 @@ public class World
 	/// <summary>
 	/// Adopt an authority state version (clients only, applying host updates). The host never adopts a
 	/// foreign version (it only increments), and the version can only move forward - a stale/reordered
-	/// or malicious lower version is rejected so a peer can't roll our view of authority state backward.
+	/// or out-of-range lower version is rejected so a peer can't roll our view of authority state backward.
 	/// We log-and-ignore rather than throw, so a stale batch doesn't abort the rest of the sync drain.
 	/// </summary>
 	public void SetStateVersion(ulong version)
@@ -2035,8 +2086,17 @@ public class World
 		try
 		{
 			var scaledDelta = delta * TimeScale;
-			TotalTime += scaledDelta;
-			LastDelta = (float)scaledDelta;
+			Time.Advance(scaledDelta);
+
+			// Replicated FPS for the session UI: only the local user writes, rounded so it isn't a
+			// per-frame sync churn source. -xlinka
+			var localUser = LocalUser;
+			if (localUser != null && Time.UpdateIndex % 30 == 0)
+			{
+				float fps = MathF.Round(Time.FramesPerSecond);
+				if (System.Math.Abs(localUser.FPS.Value - fps) >= 1f)
+					localUser.FPS.Value = fps;
+			}
 
 			// Per-stage timing so a lock-up frame logs WHICH stage ate it (instead of guessing). GetTimestamp is
 			// allocation-free; only logs on a genuinely slow frame so it's not spam. -xlinka
@@ -2044,57 +2104,54 @@ public class World
 			double _mspt = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
 			double Lap() { long n = System.Diagnostics.Stopwatch.GetTimestamp(); double ms = (n - _ts) * _mspt; _ts = n; return ms; }
 
-			// Stage 0: Poll network transport so packets are dispatched before any world logic runs
+			// Poll network transport so packets are dispatched before any world logic runs
 			_session?.Poll();
 
-			// Stage 1: Process synchronous actions (immediate state changes)
+			// Process synchronous actions (immediate state changes)
 			ProcessSynchronousActions();
 			double msSync = Lap();
 
-			// Stage 1.5: Process completed asset fetch tasks
+			// Process completed asset fetch tasks
 			Networking.AssetFetcher.ProcessQueue();
 
-			// Stage 2: Process world events (user joined/left, focus changes)
+			// Process world events (user joined/left, focus changes)
 			RunWorldEvents();
 
-			// Stage 2.5: Register any newly used worker types (authority only)
+			// Register any newly used worker types (authority only)
 			if (IsAuthority)
 			{
 				Workers?.RegisterTypes();
 			}
 
-			// Stage 3: Process input for this world (if focused)
+			// Process input for this world (if focused)
 			if (_focus == WorldFocus.Focused)
 			{
 				ProcessInput((float)scaledDelta);
 			}
 
-			// Stage 4: Update coroutines
+			// Update coroutines
 			UpdateCoroutines((float)scaledDelta);
 			double msPre = Lap();
 
-			// Stage 5: Update components (main update)
+			// Update components (main update)
 			UpdateComponents((float)scaledDelta);
 			double msComp = Lap();
 
-			// Stage 5.5: Apply component changes (from sync field updates)
+			// Apply component changes (from sync field updates)
 			_updateManager?.RunChangeApplications();
 			double msChange = Lap();
 
-			// Stage 5.6: Fire deferred WorldTransformChanged events. Before hooks, so a handler
+			// Fire deferred WorldTransformChanged events. Before hooks, so a handler
 			// that re-drives a transform gets pushed to the engine this same frame.
 			_updateManager?.ProcessMovedSlots();
 
 			_updateManager?.ProcessHookUpdates((float)scaledDelta);
 			double msHooks = Lap();
 
-			// Stage 6: Process changed elements
-			ProcessChangedElements();
-
-			// Stage 7: Process destructions
+			// Process destructions
 			ProcessDestructions();
 
-			// Stage 9: Clean up trash bin
+			// Clean up trash bin
 			_trashBin?.Update();
 			double msEnd = Lap();
 
@@ -2102,7 +2159,7 @@ public class World
 			if (msTotal > 25.0)
 				LumoraLogger.Warn($"World.Update SLOW {msTotal:F0}ms: sync={msSync:F0} pre={msPre:F0} comp={msComp:F0} change={msChange:F0} hooks={msHooks:F0} end={msEnd:F0}");
 
-			// Stage 10: Signal sync manager that world refresh is complete
+			// Signal sync manager that world refresh is complete
 			// Sync thread waits for this before new-user initialization
 			// This ensures OnUserJoined events have fired and avatars are created
 			if (_session?.Sync != null)
@@ -2110,13 +2167,13 @@ public class World
 				_session.Sync.SignalRefreshFinished();
 			}
 
-			// Stage 11: Update local user stats (FPS)
+			// Update local user stats (FPS)
 			if (LocalUser != null && delta > 0)
 			{
 				LocalUser.FPS.Value = (float)(1.0 / delta);
 			}
 
-			// Stage 12: missing-root respawn watchdog - heals a bodyless local user. -xlinka
+			// missing-root respawn watchdog - heals a bodyless local user. -xlinka
 			TickMissingRootWatchdog();
 		}
 		finally
@@ -2183,7 +2240,83 @@ public class World
 	/// </summary>
 	private void UpdateCoroutines(float delta)
 	{
-		// Update world-specific coroutines
+		// Promote staged coroutines and fire any elapsed delayed actions. Both lists are mutated under
+		// _syncLock from any thread; snapshot the ready work under the lock, run it outside so a
+		// callback that schedules more (or starts a coroutine) doesn't re-enter the lock. -xlinka
+		List<Action>? readyActions = null;
+		lock (_syncLock)
+		{
+			if (_coroutinesToAdd.Count > 0)
+			{
+				_coroutines.AddRange(_coroutinesToAdd);
+				_coroutinesToAdd.Clear();
+			}
+
+			for (int i = _delayedActions.Count - 1; i >= 0; i--)
+			{
+				var d = _delayedActions[i];
+				d.Remaining -= delta;
+				if (d.Remaining <= 0f)
+				{
+					(readyActions ??= new List<Action>()).Add(d.Action);
+					_delayedActions.RemoveAt(i);
+				}
+			}
+		}
+
+		if (readyActions != null)
+		{
+			foreach (var action in readyActions)
+			{
+				try { action(); }
+				catch (Exception ex) { LumoraLogger.Error($"World: delayed action error: {ex}"); }
+			}
+		}
+
+		// Tick coroutines: one step per coroutine per update. Iterate a snapshot so a step that starts
+		// another coroutine (staged above, promoted next update) doesn't disturb this pass.
+		if (_coroutines.Count == 0)
+			return;
+
+		for (int i = _coroutines.Count - 1; i >= 0; i--)
+		{
+			var c = _coroutines[i];
+
+			if (c.WaitTask != null)
+			{
+				if (!c.WaitTask.IsCompleted) continue;
+				c.WaitTask = null;
+			}
+			else if (c.Wait > 0f)
+			{
+				c.Wait -= delta;
+				if (c.Wait > 0f) continue;
+			}
+
+			bool moved;
+			try { moved = c.Routine.MoveNext(); }
+			catch (Exception ex)
+			{
+				LumoraLogger.Error($"World: coroutine error: {ex}");
+				_coroutines.RemoveAt(i);
+				continue;
+			}
+
+			if (!moved)
+			{
+				_coroutines.RemoveAt(i);
+				continue;
+			}
+
+			switch (c.Routine.Current)
+			{
+				case float f: c.Wait = f; break;
+				case double d: c.Wait = (float)d; break;
+				case int n: c.Wait = n; break;
+				case Task t: c.WaitTask = t; break;
+				default: c.Wait = 0f; break; // yield null -> resume next update
+			}
+		}
 	}
 
 	/// <summary>
@@ -2225,25 +2358,6 @@ public class World
 	}
 
 	/// <summary>
-	/// Process elements that have changed this frame.
-	/// </summary>
-	private void ProcessChangedElements()
-	{
-		lock (_syncLock)
-		{
-			foreach (var element in _dirtyElements)
-			{
-				// Process changed elements for network sync
-				if (_session != null && IsAuthority)
-				{
-					// Queue state changes for network broadcast
-				}
-			}
-			_dirtyElements.Clear();
-		}
-	}
-
-	/// <summary>
 	/// Process pending destructions.
 	/// </summary>
 	private void ProcessDestructions()
@@ -2256,8 +2370,6 @@ public class World
 	/// </summary>
 	private void UpdatePhysics(float fixedDelta)
 	{
-		// Update all physics components with fixed timestep
-		// This will be called by physics components that register for fixed updates
 		UpdatePhysicsRecursive(RootSlot, fixedDelta);
 	}
 
@@ -2569,7 +2681,6 @@ public class World
 
 		// 10. Clear all collections
 		_users?.Clear();
-		_dirtyElements?.Clear();
 		_slotsByTag?.Clear();
 		_rootSlots?.Clear();
 		_joinedUsers?.Clear();

@@ -2,8 +2,10 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Reflection;
 using Lumora.Core.Networking.Sync;
 using Lumora.Core.Persistence;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
 
@@ -299,6 +301,17 @@ public class SyncDelegate<T> : SyncField<WorldDelegate>, IWorldElementReceiver, 
         if (declaringType == null || string.IsNullOrEmpty(methodName))
             return null;
 
+        // This path only runs when the target is resolved FROM DATA (a static method off the saved
+        // type, or an instance method once its target element loads/syncs in). Refuse to bind anything
+        // the type didn't explicitly open with [SyncMethod] - otherwise crafted save/sync data could
+        // point an action at any same-named method. Runtime SetAction binding is preassigned and never
+        // reaches here, so this gate doesn't affect code-driven UI.
+        if (!IsBindingAllowed(declaringType, methodName))
+        {
+            LumoraLogger.Warn($"SyncDelegate: refusing to bind '{declaringType.FullName}.{methodName}' from data - the handler is not marked [SyncMethod].");
+            return null;
+        }
+
         try
         {
             var created = target == null
@@ -310,6 +323,24 @@ public class SyncDelegate<T> : SyncField<WorldDelegate>, IWorldElementReceiver, 
         {
             return null;
         }
+    }
+
+    // A worker type's opened methods are cached in its init info; a non-worker declaring type (a static
+    // helper) is checked by reflecting the marker directly. -xlinka
+    private static bool IsBindingAllowed(Type declaringType, string methodName)
+    {
+        if (typeof(Worker).IsAssignableFrom(declaringType))
+        {
+            var info = WorkerInitializer.GetInitInfo(declaringType);
+            return info.ListedMethodNameToIndex != null && info.ListedMethodNameToIndex.ContainsKey(methodName);
+        }
+
+        foreach (var method in declaringType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.FlattenHierarchy))
+        {
+            if (method.Name == methodName && method.GetCustomAttribute<SyncMethodAttribute>() != null)
+                return true;
+        }
+        return false;
     }
 
     // Persist the delegate as a remappable target reference + method name. The raw WorldDelegate

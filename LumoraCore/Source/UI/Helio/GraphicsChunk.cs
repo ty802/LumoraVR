@@ -35,6 +35,17 @@ public sealed class GraphicsChunk
         public PhosMesh Mesh { get; } = new();
         public Rect? ClipRect => _clipRect;
 
+        // Scroll content is baked ONCE and moved by the clip_offset uniform, so items off-screen at bake time
+        // still have to be in the mesh (they scroll into view later) and on-screen items must NOT be trimmed to
+        // the viewport (the shader clips them at render). When true, graphics skip geometry culling/trimming and
+        // bake their full quads; the clip rect still rides on the material (GetSubmesh uses _clipRect) so the
+        // shader clips correctly. -xlinka
+        public bool SuppressGeometryClip { get; set; }
+
+        // Clip rect for GEOMETRY culling/trimming - null when SuppressGeometryClip (bake full). The MATERIAL clip
+        // (shader-side, via GetSubmesh) always uses the real _clipRect regardless. -xlinka
+        public Rect? GeometryClipRect => SuppressGeometryClip ? null : _clipRect;
+
         public RenderData(GraphicsChunk chunk)
         {
             _chunk = chunk;
@@ -127,7 +138,20 @@ public sealed class GraphicsChunk
         // reference is stable and submeshes with the same texture/atlas still batch together.
         public static readonly MaterialMapper ImageTexture =
             (rd, baseMaterial, key, usingDefault) =>
-                new MaterialMap(baseMaterial, key is IAssetProvider<TextureAsset> texture ? rd.GetSharedImageBlock(texture) : null);
+            {
+                if (key is not IAssetProvider<TextureAsset> texture)
+                {
+                    return new MaterialMap(baseMaterial);
+                }
+
+                // Default-material image: carry the texture on a shared per-texture material so the per-surface
+                // clone samples it directly and live uniform writes (the scroll clip_offset) reach it. A custom
+                // material keeps the property-block path - its variant is cached, so it won't scroll-clip, but
+                // custom-material images aren't the scrollable list case. -xlinka
+                return usingDefault
+                    ? new MaterialMap(rd.GetSharedImageMaterial(texture))
+                    : new MaterialMap(baseMaterial, rd.GetSharedImageBlock(texture));
+            };
 
         public static readonly MaterialMapper TextAtlas =
             (rd, baseMaterial, key, usingDefault) =>
@@ -136,6 +160,8 @@ public sealed class GraphicsChunk
         public UITextMaterial GetSharedTextMaterial(TextureAsset atlas) => _chunk.GetSharedTextMaterial(atlas);
 
         public MainTexturePropertyBlock GetSharedImageBlock(IAssetProvider<TextureAsset> texture) => _chunk.GetSharedImageBlock(texture);
+
+        public UIUnlitMaterial GetSharedImageMaterial(IAssetProvider<TextureAsset> texture) => _chunk.GetSharedImageMaterial(texture);
 
         internal void SubmitChanges(int sortingOrder)
         {
@@ -601,12 +627,8 @@ public sealed class GraphicsChunk
 
     private UIUnlitMaterial? _defaultMaterial;
     private MaterialCloneCache? _materialCloneCache;
-
-    // Shared per-atlas/per-texture materials so every Text/Image doesn't spawn its own material and
-    // its own mesh surface. Collapsing the surface count is what makes the per-frame Godot mesh
-    // re-upload cheap (each surface is a full AddSurfaceFromArrays). - xlinka
-    private readonly Dictionary<TextureAsset, UITextMaterial> _sharedTextMaterials = new();
-    private readonly Dictionary<IAssetProvider<TextureAsset>, MainTexturePropertyBlock> _sharedImageBlocks = new();
+    private float2 _lastClipOffset;
+    private bool _hasClipOffset;
 
     public GraphicsChunk(Canvas canvas, RectTransform root)
     {
@@ -620,32 +642,32 @@ public sealed class GraphicsChunk
         ChunkSlot ??= Canvas.Slot.AddLocalSlot("GraphicsChunk");
     }
 
-    // All text drawn from the same atlas shares one material -> one submesh per atlas (per clip). - xlinka
-    public UITextMaterial GetSharedTextMaterial(TextureAsset atlas)
+    // Pin this chunk's clip window as it slides (render-offset scrolling): pushes the scroll offset into the
+    // clip_offset uniform on every cloned material, so the fixed canvas-space clip rect clips the moved
+    // content correctly. No mesh touched. -xlinka
+    // persist=false: live scroll (cheap direct shader-param write). persist=true: after a structural rebuild,
+    // also write the material Sync so its own update doesn't reset the offset. -xlinka
+    public void SetClipOffset(float2 offset, bool persist)
     {
-        SetupComponents();
-        if (!_sharedTextMaterials.TryGetValue(atlas, out var material) || material.IsDestroyed)
-        {
-            material = ChunkSlot.AddLocalSlot("TextMaterial").AttachComponent<UITextMaterial>();
-            material.DirectTexture = atlas;
-            material.ForceUpdate();
-            _sharedTextMaterials[atlas] = material;
-        }
-        return material;
+        // Skip the per-clone write when the offset is unchanged: a live scroll re-pushes to every material in
+        // the chunk, so a momentum-settle frame or an idle repaint at the same position would churn one
+        // SetShaderParameter per card for nothing. A rebuild (persist) always applies - the clones were just
+        // re-created and need re-pinning to the current position. -xlinka
+        if (!persist && _hasClipOffset && _lastClipOffset == offset)
+            return;
+        _lastClipOffset = offset;
+        _hasClipOffset = true;
+        _materialCloneCache?.SetClipOffset(offset, persist);
     }
 
-    // All images using the same texture share one property block -> one submesh per texture. - xlinka
-    public MainTexturePropertyBlock GetSharedImageBlock(IAssetProvider<TextureAsset> texture)
-    {
-        SetupComponents();
-        if (!_sharedImageBlocks.TryGetValue(texture, out var block) || block.IsDestroyed)
-        {
-            block = ChunkSlot.AddLocalSlot("ImageBlock").AttachComponent<MainTexturePropertyBlock>();
-            block.Texture.Target = texture;
-            _sharedImageBlocks[texture] = block;
-        }
-        return block;
-    }
+    // Shared per-atlas/per-texture materials live on the CANVAS now: with per-row chunk roots (an
+    // inspector panel has 70+), per-chunk caches duplicated every atlas material and its
+    // render-priority clones once per row. One canvas-wide material per atlas/texture. - xlinka
+    public UITextMaterial GetSharedTextMaterial(TextureAsset atlas) => Canvas.GetSharedTextMaterial(atlas);
+
+    public MainTexturePropertyBlock GetSharedImageBlock(IAssetProvider<TextureAsset> texture) => Canvas.GetSharedImageBlock(texture);
+
+    public UIUnlitMaterial GetSharedImageMaterial(IAssetProvider<TextureAsset> texture) => Canvas.GetSharedImageMaterial(texture);
 
     public IAssetProvider<MaterialAsset> GetDefaultUIMaterial()
     {

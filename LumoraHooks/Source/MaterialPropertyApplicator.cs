@@ -293,6 +293,7 @@ internal static class MaterialPropertyApplicator
             "AlphaClip" when isUnlit => "alpha_clip",
             "UseVertexColor" when isUnlit => "use_vertex_color",
             "PixelRange" => "pixel_range",
+            "UseMSDF" => "use_msdf",
             "RectClip" => "rect_clip",
             "ColorMask" => "color_mask",
             "StencilComparison" => "stencil_comparison",

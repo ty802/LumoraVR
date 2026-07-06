@@ -172,7 +172,7 @@ public class SessionJoinIndicator : Component
                     var progressPercent = (int)(progress * 100f);
                     var progressText = $"{status}";
                     
-                    if (progress > 0f && TargetWorld.InitState == World.InitializationState.InitializingDataModel)
+                    if (progress > 0f && TargetWorld?.InitState == World.InitializationState.InitializingDataModel)
                     {
                         progressText = $"Loading world components... {progressPercent}%\n{status}";
                     }

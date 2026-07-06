@@ -40,7 +40,7 @@ namespace Lumora.Core.Templates
                 dashboard.Close();
 
                 // The radial context menu lives per-user in the game world
-                // (built by CommonAvatarBuilder, opened by HandTool). Items
+                // (built by AvatarAssembler, opened by HandTool). Items
                 // come from ContextMenuItemSource components at open time.
                 Logger.Log("Userspace: Userspace world initialized");
             });

@@ -55,6 +55,8 @@ public class InputInterface : IDisposable
     public VRController LeftController { get; private set; } = null!;
     public VRController RightController { get; private set; } = null!;
     public HeadDevice HeadDevice { get; private set; } = null!;
+    // Face/lip tracking. A hardware hook fills this; null-object semantics until then (untracked, all zero).
+    public MouthDevice MouthDevice { get; private set; } = null!;
 
     // VR state - synced from VR drivers automatically
     public bool VR_Active => IsVRActive;
@@ -209,6 +211,7 @@ public class InputInterface : IDisposable
         LeftController = new VRController(VRControllerSide.Left);
         RightController = new VRController(VRControllerSide.Right);
         HeadDevice = new HeadDevice();
+        MouthDevice = new MouthDevice();
 
         _initialized = true;
 
@@ -717,6 +720,7 @@ public class InputInterface : IDisposable
         LeftController = null!;
         RightController = null!;
         HeadDevice = null!;
+        MouthDevice = null!;
 
         _initialized = false;
         Logger.Log("InputInterface: Disposed");

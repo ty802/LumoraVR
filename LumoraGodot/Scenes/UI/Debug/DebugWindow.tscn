@@ -1,9 +1,14 @@
-[gd_scene load_steps=14 format=3 uid="uid://debug_window_scene"]
+[gd_scene load_steps=15 format=3 uid="uid://debug_window_scene"]
 
 [ext_resource type="FontFile" uid="uid://dne06dcdmx5hj" path="res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf" id="1_font"]
 [ext_resource type="Script" path="res://Source/Godot/Debug/DebugWindow.cs" id="2_script"]
 [ext_resource type="Script" path="res://Source/Godot/Debug/MemoryHistoryGraph.cs" id="3_mem_graph"]
 [ext_resource type="Script" path="res://Source/Godot/Debug/ProfilerGraph.cs" id="4_prof_graph"]
+
+; Scope the debug window to the crisp non-MSDF FiraCode. Without this every label falls back to the
+; project default font (MSDF), and synthetic-bold on MSDF punches holes in the glyphs. -xlinka
+[sub_resource type="Theme" id="debug_theme"]
+default_font = ExtResource("1_font")
 
 [sub_resource type="StyleBoxFlat" id="bg_panel"]
 bg_color = Color(0.08, 0.08, 0.1, 1)
@@ -87,6 +92,7 @@ content_margin_bottom = 2.0
 [node name="DebugWindow" type="Control"]
 unique_name_in_owner = true
 script = ExtResource("2_script")
+theme = SubResource("debug_theme")
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
@@ -1141,3 +1147,474 @@ size_flags_vertical = 3
 theme_override_font_sizes/font_size = 11
 columns = 3
 hide_root = true
+
+; ==================== NETWORK TAB ====================
+[node name="Network" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 6
+
+; -- Session Section --
+[node name="NetSessionSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Network"]
+layout_mode = 2
+theme_override_styles/panel = SubResource("section_bg")
+
+[node name="NetSessionVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection"]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="NetSessionHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.5, 0.85, 1, 1)
+theme_override_font_sizes/font_size = 14
+text = "SESSION"
+
+[node name="NetSessionSep" type="HSeparator" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox"]
+layout_mode = 2
+
+[node name="NetSessionGrid" type="GridContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox"]
+layout_mode = 2
+columns = 4
+
+[node name="NetRoleKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 12
+text = "Role"
+
+[node name="NetRoleValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "-"
+
+[node name="NetLatencyKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 12
+text = "Latency"
+
+[node name="NetLatencyValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "-"
+
+[node name="NetWorldKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 12
+text = "World"
+
+[node name="NetWorldValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "-"
+
+[node name="NetEncryptedKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 12
+text = "Encrypted"
+
+[node name="NetEncryptedValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "-"
+
+[node name="NetSessionIdKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 12
+text = "Session ID"
+
+[node name="NetSessionIdValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "-"
+
+[node name="NetVisibilityKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 12
+text = "Visibility"
+
+[node name="NetVisibilityValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "-"
+
+[node name="NetSyncRateKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 12
+text = "Sync Rate"
+
+[node name="NetSyncRateValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "-"
+
+[node name="NetConnCountKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 12
+text = "Connections"
+
+[node name="NetConnCountValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetSessionSection/NetSessionVBox/NetSessionGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "-"
+
+; -- Traffic Section --
+[node name="NetTrafficSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Network"]
+layout_mode = 2
+theme_override_styles/panel = SubResource("section_bg")
+
+[node name="NetTrafficVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection"]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="NetTrafficHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.6, 1, 0.6, 1)
+theme_override_font_sizes/font_size = 14
+text = "SYNC TRAFFIC (sent / recv)"
+
+[node name="NetTrafficSep" type="HSeparator" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox"]
+layout_mode = 2
+
+[node name="NetTrafficGrid" type="GridContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox"]
+layout_mode = 2
+columns = 4
+
+[node name="NetDeltasKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 12
+text = "Deltas"
+
+[node name="NetDeltasValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "-"
+
+[node name="NetFullsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 12
+text = "Fulls"
+
+[node name="NetFullsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "-"
+
+[node name="NetStreamsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 12
+text = "Streams"
+
+[node name="NetStreamsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "-"
+
+[node name="NetRawKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 12
+text = "Raw Frames"
+
+[node name="NetRawValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "-"
+
+[node name="NetCorrectionsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 12
+text = "Corrections"
+
+[node name="NetCorrectionsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "-"
+
+[node name="NetProcessedKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 12
+text = "Processed"
+
+[node name="NetProcessedValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "-"
+
+[node name="NetLastDeltaKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 12
+text = "Last D Changes"
+
+[node name="NetLastDeltaValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetTrafficSection/NetTrafficVBox/NetTrafficGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "-"
+
+; -- Queues Section --
+[node name="NetQueuesSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Network"]
+layout_mode = 2
+theme_override_styles/panel = SubResource("section_bg")
+
+[node name="NetQueuesVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection"]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="NetQueuesHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 0.75, 0.35, 1)
+theme_override_font_sizes/font_size = 14
+text = "QUEUES (pending)"
+
+[node name="NetQueuesSep" type="HSeparator" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox"]
+layout_mode = 2
+
+[node name="NetQueuesGrid" type="GridContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox"]
+layout_mode = 2
+columns = 4
+
+[node name="NetToProcessKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 12
+text = "To Process"
+
+[node name="NetToProcessValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "-"
+
+[node name="NetToTransmitKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 12
+text = "To Transmit"
+
+[node name="NetToTransmitValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "-"
+
+[node name="NetIncomingKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 12
+text = "Incoming"
+
+[node name="NetIncomingValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "-"
+
+[node name="NetPendingStreamsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 12
+text = "Streams"
+
+[node name="NetPendingStreamsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetQueuesSection/NetQueuesVBox/NetQueuesGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "-"
+
+; -- Assets Section --
+[node name="NetAssetsSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Network"]
+layout_mode = 2
+theme_override_styles/panel = SubResource("section_bg")
+
+[node name="NetAssetsVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection"]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="NetAssetsHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.7, 0.6, 1, 1)
+theme_override_font_sizes/font_size = 14
+text = "ASSET TRANSFERS"
+
+[node name="NetAssetsSep" type="HSeparator" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox"]
+layout_mode = 2
+
+[node name="NetAssetsGrid" type="GridContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox"]
+layout_mode = 2
+columns = 4
+
+[node name="NetUploadsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 12
+text = "Uploads"
+
+[node name="NetUploadsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "-"
+
+[node name="NetDownloadsKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 12
+text = "Downloads"
+
+[node name="NetDownloadsValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "-"
+
+[node name="NetAssetReqKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 12
+text = "Requests"
+
+[node name="NetAssetReqValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "-"
+
+[node name="NetRelaysKey" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.55, 0.55, 0.62, 1)
+theme_override_font_sizes/font_size = 12
+text = "Relays"
+
+[node name="NetRelaysValue" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetAssetsSection/NetAssetsVBox/NetAssetsGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.9, 0.9, 0.95, 1)
+theme_override_font_sizes/font_size = 12
+text = "-"
+
+; -- Connections Section --
+[node name="NetConnectionsSection" type="PanelContainer" parent="Background/RootMargin/RootVBox/Tabs/Network"]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_styles/panel = SubResource("section_bg")
+
+[node name="NetConnectionsVBox" type="VBoxContainer" parent="Background/RootMargin/RootVBox/Tabs/Network/NetConnectionsSection"]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 4
+
+[node name="NetConnectionsHeader" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network/NetConnectionsSection/NetConnectionsVBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 0.75, 0.35, 1)
+theme_override_font_sizes/font_size = 14
+text = "CONNECTIONS"
+
+[node name="NetConnectionTree" type="Tree" parent="Background/RootMargin/RootVBox/Tabs/Network/NetConnectionsSection/NetConnectionsVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_font_sizes/font_size = 11
+columns = 6
+hide_root = true
+
+[node name="NetStatusLabel" type="Label" parent="Background/RootMargin/RootVBox/Tabs/Network"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.45, 0.45, 0.52, 1)
+theme_override_font_sizes/font_size = 10
+text = "Waiting for network packets..."

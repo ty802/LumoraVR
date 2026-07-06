@@ -78,6 +78,7 @@ public partial class LumoraEngineRunner : Node
 	private double _debugPerfTimer;
 	private double _debugMemoryTimer;
 	private double _debugRenderProfileTimer;
+	private double _debugNetworkTimer;
 	private readonly List<Lumora.Core.UpdateManager.ProfileEntry> _profByTypeBuffer = new();
 	private readonly List<Lumora.Core.UpdateManager.ProfileEntry> _profBySlotBuffer = new();
 	private InitializationPhase _currentPhase = InitializationPhase.EnvironmentSetup;
@@ -406,31 +407,24 @@ public partial class LumoraEngineRunner : Node
 
 		try
 		{
-			// PHASE 1: Environment Setup
 			_currentPhase = InitializationPhase.EnvironmentSetup;
 			await PhaseEnvironmentSetup();
 
-			// PHASE 2: XR Detection
 			_currentPhase = InitializationPhase.XRDetection;
 			await PhaseXRDetection();
 
-			// PHASE 3: HeadOutput Creation
 			_currentPhase = InitializationPhase.HeadOutputCreation;
 			await PhaseHeadOutputCreation();
 
-			// PHASE 4: Engine Core Initialization
 			_currentPhase = InitializationPhase.EngineCoreInit;
 			await PhaseEngineCoreInit();
 
-			// PHASE 5: System Integration
 			_currentPhase = InitializationPhase.SystemIntegration;
 			await PhaseSystemIntegration();
 
-			// PHASE 6: Userspace Setup
 			_currentPhase = InitializationPhase.UserspaceSetup;
 			await PhaseUserspaceSetup();
 
-			// PHASE 7: Ready
 			_currentPhase = InitializationPhase.Ready;
 			OnEngineReady();
 		}
@@ -442,7 +436,7 @@ public partial class LumoraEngineRunner : Node
 	}
 
 	/// <summary>
-	/// PHASE 1: Environment Setup
+	/// Environment Setup
 	/// - Parse command-line arguments
 	/// - Configure platform settings
 	/// </summary>
@@ -489,7 +483,7 @@ public partial class LumoraEngineRunner : Node
 	}
 
 	/// <summary>
-	/// PHASE 2: XR Detection
+	/// XR Detection
 	/// - Initialize the OpenXR session if a runtime is available
 	/// - Create a dedicated XR SubViewport when OpenXR is available
 	///
@@ -713,7 +707,7 @@ public partial class LumoraEngineRunner : Node
 	}
 
 	/// <summary>
-	/// PHASE 3: HeadOutput Creation
+	/// HeadOutput Creation
 	/// - Create camera management system
 	/// - Setup VR or screen rendering
 	/// </summary>
@@ -756,7 +750,7 @@ public partial class LumoraEngineRunner : Node
 	}
 
 	/// <summary>
-	/// PHASE 4: Engine Core Initialization
+	/// Engine Core Initialization
 	/// - Create Engine instance
 	/// - Run async engine.InitializeAsync()
 	/// - Wait for completion
@@ -860,7 +854,7 @@ public partial class LumoraEngineRunner : Node
 	}
 
 	/// <summary>
-	/// PHASE 5: System Integration
+	/// System Integration
 	/// - Register input drivers
 	/// - Setup audio system
 	/// - Configure engine callbacks
@@ -966,7 +960,7 @@ public partial class LumoraEngineRunner : Node
 	/// </summary>
 
 	/// <summary>
-	/// PHASE 6: Userspace Setup
+	/// Userspace Setup
 	/// - Initialize userspace world
 	/// - Setup dashboard and UI
 	/// </summary>
@@ -1113,6 +1107,7 @@ public partial class LumoraEngineRunner : Node
 		SendDebugPerf(delta);
 		SendDebugMemory(delta);
 		SendDebugRenderProfile(delta);
+		SendDebugNetwork(delta);
 
 		// Update HeadOutput camera positioning
 		_headOutput?.UpdatePositioning(_engine);
@@ -1339,6 +1334,100 @@ public partial class LumoraEngineRunner : Node
 
 			_debugUdpSender.SendProfile(topComponents, topSlots);
 		}
+	}
+
+	private void SendDebugNetwork(double delta)
+	{
+		if (_debugUdpSender == null || _engine?.WorldManager?.FocusedWorld == null)
+		{
+			return;
+		}
+
+		_debugNetworkTimer += delta;
+		if (_debugNetworkTimer < DebugPerfSendIntervalSec)
+		{
+			return;
+		}
+		_debugNetworkTimer = 0;
+
+		var world = _engine.WorldManager.FocusedWorld;
+		var session = world.Session;
+
+		// No session: send an offline snapshot so the Network tab reads "Local" with no traffic/rows.
+		if (session == null || session.IsDisposed)
+		{
+			_debugUdpSender.SendNetwork(
+				"Local", world.WorldName.Value ?? "Unnamed", "-", "-",
+				0, 0, -1, false,
+				0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+				0, 0, 0, 0, 0, 0, 0, 0,
+				Array.Empty<(string, string, string, int, bool, ulong)>());
+			return;
+		}
+
+		var conns = session.Connections;
+		var sync = session.Sync;
+		var meta = session.Metadata;
+		var assets = session.AssetTransferer;
+
+		// Every mapped connection, plus the host connection on a client (it may not be user-mapped yet).
+		var allConns = conns.GetAllConnections();
+		var host = conns.HostConnection;
+		if (host != null && !allConns.Contains(host))
+		{
+			allConns.Add(host);
+		}
+
+		var rows = new List<(string name, string transport, string endpoint, int ping, bool encrypted, ulong recvBytes)>();
+		bool allEncrypted = allConns.Count > 0;
+		foreach (var c in allConns)
+		{
+			if (c == null)
+			{
+				continue;
+			}
+
+			string name;
+			if (conns.TryGetUser(c, out var user) && user != null)
+			{
+				name = user.UserName.Value ?? "(unknown)";
+			}
+			else
+			{
+				name = c == host ? "(host)" : "(pending)";
+			}
+
+			var endpoint = c.Identifier ?? c.Address?.ToString() ?? "-";
+			rows.Add((name, c.TransportName, endpoint, c.Ping, c.IsEncrypted, c.ReceivedBytes));
+			if (!c.IsEncrypted)
+			{
+				allEncrypted = false;
+			}
+		}
+
+		// Latency: the host connection's ping on a client; the authority is the host, so 0.
+		int latencyMs = world.IsAuthority ? 0 : (host?.Ping ?? -1);
+
+		_debugUdpSender.SendNetwork(
+			world.IsAuthority ? "Host" : "Client",
+			world.WorldName.Value ?? "Unnamed",
+			meta?.SessionId ?? "-",
+			meta?.Visibility.ToString() ?? "-",
+			sync?.SyncRate ?? 0,
+			rows.Count,
+			latencyMs,
+			allEncrypted,
+			sync?.TotalSentDeltas ?? 0, sync?.TotalReceivedDeltas ?? 0,
+			sync?.TotalSentFulls ?? 0, sync?.TotalReceivedFulls ?? 0,
+			sync?.TotalSentStreams ?? 0, sync?.TotalReceivedStreams ?? 0,
+			sync?.TotalSentRawFrames ?? 0, sync?.TotalReceivedRawFrames ?? 0,
+			sync?.TotalCorrections ?? 0, sync?.TotalProcessedMessages ?? 0,
+			sync?.LastGeneratedDeltaChanges ?? 0,
+			sync?.MessagesToProcessCount ?? 0, sync?.MessagesToTransmitCount ?? 0,
+			sync?.IncomingRawCount ?? 0, sync?.PendingStreamCount ?? 0,
+			assets?.UploadJobCount ?? 0, assets?.DownloadJobCount ?? 0,
+			assets?.PendingAssetRequestCount ?? 0, assets?.PendingRelayCount ?? 0,
+			rows);
 	}
 
 	private static List<(string name, int count, long bytes)> BuildComponentMemoryBreakdown(Slot rootSlot)

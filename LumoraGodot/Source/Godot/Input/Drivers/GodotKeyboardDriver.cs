@@ -142,8 +142,6 @@ public class GodotKeyboardDriver : IKeyboardDriver, IInputDriver
 
     public void UpdateKeyboard(Keyboard keyboard)
     {
-        // Update the keyboard device with current state
-        // This method is called by the InputInterface to update the keyboard state
         if (keyboard == null)
             return;
 

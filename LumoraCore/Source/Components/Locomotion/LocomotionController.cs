@@ -44,10 +44,11 @@ public class LocomotionController : Component
     private InputInterface _inputInterface = null!;
     private readonly System.Collections.Generic.List<LocomotionModule> _modules = new();
     private LocomotionModule _activeModule = null!;
-    private readonly LocomotionPermissions _permissions = new LocomotionPermissions();
+    private LocomotionPermissions _permissions = null!;
 
     private float _pitch = 0.0f;
     private float _yaw = 0.0f;
+    private float _crouchBlend = 1.0f;   // smoothed eye-height fraction (1 standing .. CrouchHeight/StandingHeight)
     private bool _mouseCaptured = false;
     private bool _escapeWasPressed = false;
     private bool _initialized = false;
@@ -238,12 +239,13 @@ public class LocomotionController : Component
             _modules.Add(m);
     }
 
-    // First module in list order whose CanActivate passes (permission/eligibility).
+    // First module in list order that is both eligible (CanActivate) and permitted (world-mode gate). Mirrors
+    // the gate ActivateModule enforces, so a denied module (e.g. noclip in a locked world) is never picked. -xlinka
     private LocomotionModule? FirstUsableModule()
     {
         for (int i = 0; i < _modules.Count; i++)
         {
-            if (_modules[i].CanActivate())
+            if (_modules[i].CanActivate() && Permissions.CanUseLocomotion(_modules[i]))
                 return _modules[i];
         }
         return null;
@@ -318,7 +320,10 @@ public class LocomotionController : Component
     }
 
     private const float POS_THRESHOLD_SQ = 0.0001f * 0.0001f;
-    private const float ROT_THRESHOLD = 0.0001f;
+    // Tiny - only skips a truly-still frame. The old 0.0001 gate was ~1.6 deg of rotation: the camera reads the
+    // head slot, so any frame under the gate froze the look until the mouse motion piled up past it, then jumped.
+    // That stepping IS the mouse-look jitter. Keep it microscopic so the local view tracks the mouse every frame. -xlinka
+    private const float ROT_THRESHOLD = 0.0000001f;
 
     private TransformStreamDriver _rootStreamDriver = null!;
 
@@ -350,7 +355,14 @@ public class LocomotionController : Component
             return;
 
         float userHeight = _inputInterface?.UserHeight ?? InputInterface.DEFAULT_USER_HEIGHT;
-        float headHeight = userHeight - InputInterface.EYE_HEAD_OFFSET;
+        // Crouch lowers the EYE POINT in root space (the capsule no longer sinks the root), which is
+        // what makes the avatar actually squat: the head target drops while the floor stays put. -xlinka
+        float crouchTarget = _characterController != null && _characterController.IsCrouching
+            ? _characterController.CrouchHeight / System.MathF.Max(_characterController.StandingHeight, 0.1f)
+            : 1f;
+        float dt = World?.Time.Delta ?? (1f / 60f);
+        _crouchBlend += (crouchTarget - _crouchBlend) * (1f - System.MathF.Exp(-10f * System.MathF.Max(dt, 1e-4f)));
+        float headHeight = (userHeight - InputInterface.EYE_HEAD_OFFSET) * _crouchBlend;
         var newHeadPos = new float3(0, headHeight, 0);
 
         var currentHeadPos = _userRoot.HeadSlot.LocalPosition.Value;
@@ -478,9 +490,13 @@ public class LocomotionController : Component
         right = right.Normalized;
     }
 
+    // Locomotion permissions need the World (for the world's edit mode), which isn't set when the field
+    // initializer runs - bind lazily the first time they're consulted. -xlinka
+    private LocomotionPermissions Permissions => _permissions ??= new LocomotionPermissions(World);
+
     public void ActivateModule(LocomotionModule module)
     {
-        if (module == null || !_permissions.CanUseLocomotion(module))
+        if (module == null || !Permissions.CanUseLocomotion(module))
             return;
         if (ReferenceEquals(module, _activeModule))
             return;

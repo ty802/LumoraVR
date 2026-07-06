@@ -3,7 +3,7 @@ shader_type spatial;
 // reference (written first by UI_StencilWrite). That clips text inside a circular/rounded mask to the
 // SHAPE instead of squaring it off at the mask's AABB. Identical to UI_Text otherwise. Godot 4.5+
 // stencil_mode. -xlinka
-render_mode unshaded, blend_mix, depth_draw_never, depth_test_disabled, cull_disabled;
+render_mode unshaded, blend_mix, depth_draw_never, cull_front;
 stencil_mode read, compare_equal, 1;
 
 uniform vec4 albedo_color : source_color = vec4(1.0);

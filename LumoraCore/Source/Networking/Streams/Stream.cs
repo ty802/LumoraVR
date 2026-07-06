@@ -2,11 +2,8 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
-using System.Collections.Generic;
 using System.IO;
-using System.Threading.Tasks;
 using Lumora.Core.Networking.Sync;
-using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Streams;
 
@@ -206,101 +203,10 @@ public abstract class Stream : Worker, IStream
     {
     }
 
-    // ---- ASYNC CODEC INFRA ----
-    // Streams with an expensive codec (voice) run their Encode/Decode off the world thread so the heavy
-    // work doesn't stall it. The background dispatch + decode sequencing live here. The codec itself, and
-    // the hook into the send/receive path, are not built.
-    // TODO(techy): implement InternalAsyncEncode/InternalAsyncDecode (the codec), and call RunAsyncEncode /
-    // QueueAsyncDecode from the SyncController stream path (SyncController.cs ~ stream.Encode) for streams
-    // where SupportsAsyncCodec is true. -xlinka
-
-    /// <summary>True on streams whose Encode/Decode is heavy enough to run off the world thread.</summary>
-    public virtual bool SupportsAsyncCodec => false;
-
-    /// <summary>When true, queued async decodes run one at a time in arrival order.</summary>
-    protected virtual bool SequenceAsyncDecodes => true;
-
-    private readonly object _asyncDecodeLock = new();
-    private readonly Queue<(byte[] data, StreamMessage message)> _asyncDecodeQueue = new();
-    private bool _asyncDecodeRunning;
-
-    /// <summary>
-    /// Run the (heavy) encode on a background task; the encoded bytes arrive via <paramref name="onEncoded"/>.
-    /// </summary>
-    protected void RunAsyncEncode(Action<byte[]> onEncoded)
-    {
-        Task.Run(() =>
-        {
-            try
-            {
-                using var ms = new MemoryStream();
-                var writer = new BinaryWriter(ms);
-                InternalAsyncEncode(writer);
-                writer.Flush();
-                onEncoded(ms.ToArray());
-            }
-            catch (Exception ex)
-            {
-                LumoraLogger.Error($"Stream async encode failed ({GetType().Name}): {ex.Message}");
-            }
-        });
-    }
-
-    /// <summary>
-    /// Queue an incoming frame for background decode (sequenced when <see cref="SequenceAsyncDecodes"/>).
-    /// </summary>
-    protected void QueueAsyncDecode(byte[] data, StreamMessage message)
-    {
-        lock (_asyncDecodeLock)
-        {
-            _asyncDecodeQueue.Enqueue((data, message));
-            if (_asyncDecodeRunning && SequenceAsyncDecodes)
-                return;
-            _asyncDecodeRunning = true;
-        }
-        Task.Run(DrainAsyncDecodeQueue);
-    }
-
-    private void DrainAsyncDecodeQueue()
-    {
-        while (true)
-        {
-            byte[] data;
-            StreamMessage message;
-            lock (_asyncDecodeLock)
-            {
-                if (_asyncDecodeQueue.Count == 0)
-                {
-                    _asyncDecodeRunning = false;
-                    return;
-                }
-                (data, message) = _asyncDecodeQueue.Dequeue();
-            }
-
-            try
-            {
-                using var ms = new MemoryStream(data);
-                using var reader = new BinaryReader(ms);
-                InternalAsyncDecode(reader, message);
-            }
-            catch (Exception ex)
-            {
-                LumoraLogger.Error($"Stream async decode failed ({GetType().Name}): {ex.Message}");
-            }
-        }
-    }
-
-    /// <summary>Background-thread encode hook. Override with the codec. TODO(techy): implement.</summary>
-    protected virtual void InternalAsyncEncode(BinaryWriter writer)
-    {
-        // TODO(techy): codec encode (e.g. Opus frame) on the background thread.
-    }
-
-    /// <summary>Background-thread decode hook. Override with the codec. TODO(techy): implement.</summary>
-    protected virtual void InternalAsyncDecode(BinaryReader reader, StreamMessage message)
-    {
-        // TODO(techy): codec decode (e.g. Opus frame) on the background thread.
-    }
+    // NOTE: there is no off-world-thread codec seam here. SyncController encodes/decodes streams
+    // synchronously on the sync thread. An earlier async-encode/decode scaffold lived here but was never
+    // wired into the send/receive path, so it was removed to avoid implying a capability that didn't
+    // exist. A real heavy codec (e.g. voice) would add that seam together with the codec itself. -xlinka
 
     /// <summary>
     /// Get hierarchy path for debugging.

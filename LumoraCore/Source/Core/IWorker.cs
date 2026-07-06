@@ -7,8 +7,8 @@ using System.Collections.Generic;
 namespace Lumora.Core;
 
 /// <summary>
-/// Interface for all workers in the world (Slots, Components, etc.)
-/// Matches the engine's worker reflection pattern.
+/// Interface for all workers in the world (Slots, Components, etc.); their sync members are
+/// discovered by reflection at initialization.
 /// </summary>
 public interface IWorker : IWorldElement
 {

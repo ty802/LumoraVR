@@ -60,20 +60,48 @@ public class Session : IDisposable
     /// </summary>
     public Guid LANAnnouncerId => _lanAnnouncer?.AnnouncerId ?? Guid.Empty;
 
-    /// <summary>
-    /// Session server address for public registration.
-    /// </summary>
-    public static string SessionServerAddress { get; set; } = "localhost";
+    // Deployment endpoints are sourced from the config store (Settings) so a build can point at a real
+    // server without code edits; the localhost/dev values are explicit fallbacks for local development
+    // only - they are NOT a production default. An explicit setter still wins (host bootstrap / tests).
+    // -xlinka
+    private const string KeyServerAddress = "Network.SessionServer.Address";
+    private const string KeyServerPort = "Network.SessionServer.Port";
+    private const string KeyBackendUrl = "Network.BackendDirectory.Url";
+
+    private static string? _sessionServerAddress;
+    private static int? _sessionServerPort;
+    private static string? _backendSessionDirectoryUrl;
 
     /// <summary>
-    /// Session server port for public registration.
+    /// Session server address for public registration. Read from config key
+    /// <c>Network.SessionServer.Address</c>; falls back to <c>localhost</c> for local dev.
     /// </summary>
-    public static int SessionServerPort { get; set; } = 8000;
+    public static string SessionServerAddress
+    {
+        get => _sessionServerAddress ??= Settings.ReadValue(KeyServerAddress, "localhost");
+        set => _sessionServerAddress = value;
+    }
 
     /// <summary>
-    /// Backend API base URL used for authenticated public session directory registration.
+    /// Session server port for public registration. Read from config key
+    /// <c>Network.SessionServer.Port</c>; falls back to <c>8000</c> for local dev.
     /// </summary>
-    public static string BackendSessionDirectoryUrl { get; set; } = "http://localhost:5178/api";
+    public static int SessionServerPort
+    {
+        get => _sessionServerPort ??= Settings.ReadValue(KeyServerPort, 8000);
+        set => _sessionServerPort = value;
+    }
+
+    /// <summary>
+    /// Backend API base URL used for authenticated public session directory registration. Read from
+    /// config key <c>Network.BackendDirectory.Url</c>; falls back to a plain-http localhost URL for
+    /// local dev only. Deployments must configure an https URL - do not ship the http fallback.
+    /// </summary>
+    public static string BackendSessionDirectoryUrl
+    {
+        get => _backendSessionDirectoryUrl ??= Settings.ReadValue(KeyBackendUrl, "http://localhost:5178/api");
+        set => _backendSessionDirectoryUrl = value;
+    }
 
     /// <summary>
     /// Provides the current backend auth token for host-owned session registration.
@@ -262,6 +290,12 @@ public class Session : IDisposable
     /// Register with public session server for global discovery. Returns a Task so callers can
     /// observe faults; it runs detached (callers must not block session setup on a network round-trip).
     /// </summary>
+    // NAT-host caveat: this only REGISTERS the session and its metadata with the server. The host does
+    // NOT yet act on NAT punch-through: it never subscribes _serverClient.OnNATPunchSuccess /
+    // OnNATIntroStarted to open the punched socket, and there is no relay server / host-side relay bridge
+    // in this repo for the relay fallback. So public discovery works, but a joiner behind NAT cannot
+    // currently be punched through to (or relayed to) this host - those server-side pieces are external
+    // prerequisites that don't exist yet. Direct/LAN joins are unaffected. -xlinka
     private async Task StartPublicServerRegistration()
     {
         if (_serverClient != null || _directoryClient != null)
@@ -303,8 +337,17 @@ public class Session : IDisposable
                 return;
             }
 
+            var backendUrl = BackendSessionDirectoryUrl;
+            // Auth tokens ride this URL; warn on plain http unless it's an explicit loopback dev target.
+            if (backendUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                && !backendUrl.Contains("localhost", StringComparison.OrdinalIgnoreCase)
+                && !backendUrl.Contains("127.0.0.1", StringComparison.Ordinal))
+            {
+                LumoraLogger.Warn($"[lnl] Session: backend directory URL '{backendUrl}' is plain http; use https in deployment.");
+            }
+
             _directoryClient = new BackendSessionDirectoryClient(
-                BackendSessionDirectoryUrl,
+                backendUrl,
                 () => BackendAuthTokenProvider?.Invoke());
 
             var registered = await _directoryClient.StartAsync(Metadata, GetUserList);
@@ -371,7 +414,7 @@ public class Session : IDisposable
     /// <summary>
     /// Send a raw frame on a stream owned by the local user (e.g. an Opus voice
     /// frame). The frame is routed through the same authority/relay path as
-    /// <see cref="StreamMessage"/>, so spoof protection still applies. Sequence
+    /// <see cref="StreamMessage"/>, so sender-identity validation still applies. Sequence
     /// is opaque to the framework; use it for jitter buffering downstream.
     /// Returns false if the stream is not local, the payload is over the cap,
     /// or there are no eligible targets.

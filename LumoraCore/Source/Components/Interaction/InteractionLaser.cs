@@ -31,11 +31,10 @@ public sealed class InteractionLaser : Component
     public readonly Sync<bool> ShowDirectCursor = new();
 
     private readonly List<TargetHit> _hitBuffer = new(64);
-    // Reused each raycast so the per-frame whole-world collider walk doesn't allocate a fresh list (plus an
-    // iterator at every slot) every frame, per laser. -xlinka
-    private readonly List<Collider> _colliderBuffer = new(64);
-    // Same idea for interaction targets: pulled flat from the world's registry instead of recursing the tree. -xlinka
+    // Interaction targets pulled flat from the world's registry instead of recursing the tree, per frame. -xlinka
     private readonly List<IInteractionTarget> _interactionTargetBuffer = new(64);
+    // Slots the physics ray skips (the laser's own user/avatar hierarchy + ignore root), rebuilt per cast. -xlinka
+    private readonly List<Slot> _rayExclude = new(4);
     private Slot? _beamSlot;
     private Slot? _pointSlot;
     private Slot? _cursorSlot;
@@ -219,7 +218,39 @@ public sealed class InteractionLaser : Component
         }
 
         _lastRefreshFrame = frame;
+
+        // The cast + cursor are per-viewer and only meaningful for the local user's own hands. Another
+        // user's laser is shown purely through its REPLICATED beam - we must not recast it here, or every
+        // observer would build and position a local cursor for each remote hand and you'd see everyone
+        // else's cursor floating in the world (issue #104). The beam is left untouched (its writes are
+        // host/owner-authoritative and replicate on their own). -xlinka
+        if (IsRemoteUserLaser())
+        {
+            HideLocalCursor();
+            return;
+        }
+
         CastAndUpdate(delta);
+    }
+
+    // True only when this laser definitively belongs to a DIFFERENT user than the local one. A laser with
+    // no owning user (e.g. the userspace dash pointer) is not "remote" and keeps working normally. -xlinka
+    private bool IsRemoteUserLaser()
+    {
+        var owningUser = Slot?.ActiveUser;
+        var localUser = World?.LocalUser;
+        return owningUser != null && localUser != null && !ReferenceEquals(owningUser, localUser);
+    }
+
+    // Hide just the per-viewer cursor visuals (cursor, direct cursor, direct line) without touching the
+    // replicated beam, so a remote user's beam still shows but their cursor never does. -xlinka
+    private void HideLocalCursor()
+    {
+        if (_cursorSlot != null) SetIfChanged(_cursorSlot.ActiveSelf, false);
+        if (_directCursorSlot != null) SetIfChanged(_directCursorSlot.ActiveSelf, false);
+        if (_directLineSlot != null) SetIfChanged(_directLineSlot.ActiveSelf, false);
+        if (_cursorRenderer != null) SetIfChanged(_cursorRenderer.Enabled, false);
+        if (_directCursorRenderer != null) SetIfChanged(_directCursorRenderer.Enabled, false);
     }
 
     private void BuildBeamVisual()
@@ -285,6 +316,12 @@ public sealed class InteractionLaser : Component
         _beamSlot.ActiveSelf.Value = false;
     }
 
+    // Cursor render band, ABOVE the dash surface's reserved band (UserspaceDashboard.DashSurfaceSortingOrder
+    // = 20000) so the pointer stays visible on the open dashboard. Effective draw order is
+    // SortingOffset = material RenderQueue + SortingOrder. -xlinka
+    private const int CursorSortingOrder = 21000;
+    private const int DirectCursorSortingOrder = 20900;
+
     // The cursor / direct-cursor / direct-line are LOCAL (per-viewer, like an OS mouse cursor) - AddLocalSlot mints a
     // LOCAL_BYTE RefID the world never replicates, so the whole cursor subtree stays on this machine only and other
     // users never see your cursor (just your beam, built above). Because they're local, they DON'T arrive when a
@@ -316,7 +353,11 @@ public sealed class InteractionLaser : Component
             _cursorRenderer.Mesh.Target = cursorMesh;
             _cursorRenderer.Material.Target = _cursorMaterial;
             _cursorRenderer.ShadowCastMode.Value = ShadowCastMode.Off;
-            _cursorRenderer.SortingOrder.Value = 105;
+            // Draw order is SortingOffset = material RenderQueue + SortingOrder (uncapped). The cursor sits in
+            // a band ABOVE the dash surface (UserspaceDashboard reserves ~20000) so the pointer stays visible
+            // when aiming at the open dashboard; in-world it just keeps the cursor on top of UI it points at.
+            // -xlinka
+            _cursorRenderer.SortingOrder.Value = CursorSortingOrder;
         }
         else
         {
@@ -345,7 +386,7 @@ public sealed class InteractionLaser : Component
             _directCursorRenderer.Mesh.Target = directCursorMesh;
             _directCursorRenderer.Material.Target = _directCursorMaterial;
             _directCursorRenderer.ShadowCastMode.Value = ShadowCastMode.Off;
-            _directCursorRenderer.SortingOrder.Value = 100;
+            _directCursorRenderer.SortingOrder.Value = DirectCursorSortingOrder;
         }
         else
         {
@@ -519,12 +560,41 @@ public sealed class InteractionLaser : Component
                 origin.x + direction.x * beamLength,
                 origin.y + direction.y * beamLength,
                 origin.z + direction.z * beamLength);
-        PositionBeam(origin, direction, beamLength, beamEndPoint, delta);
+
+        // The aim RAY is cast from the head on desktop (so it lines up with the screen reticle), but the
+        // visible beam must start at the HAND - this laser's own slot. The beam slot's transform replicates,
+        // so anchoring it at the ray origin made every other user see the beam shoot out of the desktop
+        // user's head. Anchor it at the hand and aim it at the hit point instead. In VR the ray origin is
+        // already the hand, so this is a no-op there. -xlinka
+        float3 visualOrigin = origin;
+        var beamInput = Engine.Current?.InputInterface;
+        if (beamInput != null && !beamInput.IsVRActive && Slot != null)
+        {
+            visualOrigin = Slot.GlobalPosition;
+        }
+        float3 visualDir = beamEndPoint - visualOrigin;
+        float visualLen = visualDir.Length;
+        visualDir = visualLen > 0.0001f ? visualDir / visualLen : direction;
+
+        PositionBeam(visualOrigin, visualDir, visualLen, beamEndPoint, delta);
 
         if (_beamMesh != null)
         {
-            color wantedColor = (hoveredTarget != null ? HoverColor.Value : IdleColor.Value).ToLDR();
+            // Color the beam + reticle by what the hovered target offers (grab/scale/receive/disabled/...),
+            // read from its interaction description. Nothing hovered falls back to the idle color. -xlinka
+            color wantedColor;
+            if (hoveredTarget != null)
+            {
+                var description = hoveredTarget.GetInteractionDescription(this);
+                wantedColor = ResolveCursorColor(in description);
+            }
+            else
+            {
+                wantedColor = IdleColor.Value.ToLDR();
+            }
             SetIfChanged(_beamMesh.Radius, BeamRadius.Value);
+            // Cursor sizing still uses the head->cursor distance (beamLength) so the reticle keeps a stable
+            // on-screen size; only the beam geometry uses the hand origin. -xlinka
             UpdateLaserVisual(delta, hoveredTarget != null, wantedColor, beamLength);
         }
     }
@@ -586,6 +656,33 @@ public sealed class InteractionLaser : Component
         }
     }
 
+    // Per-cursor-type colors so the beam + reticle signal what the hovered target offers: green = grab,
+    // amber = scale, blue = receive/drop, red = can't interact. Default/Activated use the configured hover
+    // color, and a target may override the color outright. -xlinka
+    private static readonly color GrabCursorColor = new(0.35f, 0.95f, 0.5f, 1f);
+    private static readonly color ScaleCursorColor = new(1f, 0.8f, 0.3f, 1f);
+    private static readonly color ReceiveCursorColor = new(0.45f, 0.7f, 1f, 1f);
+    private static readonly color TextCursorColor = new(0.85f, 0.9f, 1f, 1f);
+    private static readonly color DisabledCursorColor = new(0.78f, 0.36f, 0.36f, 1f);
+
+    private color ResolveCursorColor(in InteractionDescription description)
+    {
+        if (description.OverrideHitColor.HasValue)
+        {
+            return description.OverrideHitColor.Value;
+        }
+
+        return (description.Cursor ?? LaserCursor.Default) switch
+        {
+            LaserCursor.Grab => GrabCursorColor,
+            LaserCursor.Scale => ScaleCursorColor,
+            LaserCursor.Receive => ReceiveCursorColor,
+            LaserCursor.Text => TextCursorColor,
+            LaserCursor.Disabled => DisabledCursorColor,
+            _ => HoverColor.Value.ToLDR(),
+        };
+    }
+
     private void UpdateLaserVisual(float delta, bool hasTarget, color targetColor, float pointDistance)
     {
         var input = Engine.Current?.InputInterface;
@@ -627,7 +724,9 @@ public sealed class InteractionLaser : Component
         SetIfChanged(_beamMesh!.StartPointColor, startColor);
         SetIfChanged(_beamMesh.EndPointColor, endColor);
 
-        color cursorColor = color.Lerp(_currentEndColor, color.White, 0.75f);
+        // Keep the reticle bright but let the target color read through (grab/disabled/etc. should be
+        // visible on the cursor, not washed to white). -xlinka
+        color cursorColor = color.Lerp(_currentEndColor, color.White, 0.55f);
         cursorColor.a *= endVisibility;
         if (_cursorMaterial != null)
         {
@@ -981,6 +1080,37 @@ public sealed class InteractionLaser : Component
 
             _hitBuffer.Add(new TargetHit(target, slot, distance, hitPoint));
         }
+
+        // Resolve interaction targets through the SHAPE the laser actually hits, not just a sphere at each target's
+        // slot origin. A large object (e.g. an avatar) carries its Grabbable/RayTarget on the ROOT, but you point at
+        // its body/mesh - sphere-testing the target at its slot origin misses the body entirely. The physics ray
+        // hits the real collision shape (mesh colliders included) and we walk up to the owning interaction target.
+        // This is what makes a big avatar grabbable/equippable anywhere on its body. -xlinka
+        if (TryPhysicsRaycast(origin, direction, maxDist, out var shapeHit) &&
+            shapeHit.Distance <= blockingDistance && shapeHit.Slot != null)
+        {
+            var ctarget = FindInteractionTargetInParents(shapeHit.Slot);
+            if (ctarget != null)
+            {
+                _hitBuffer.Add(new TargetHit(ctarget, shapeHit.Slot, shapeHit.Distance, shapeHit.Point));
+            }
+        }
+    }
+
+    // Walk up from a collider's slot to the first interaction target that owns it (the Grabbable/RayTarget on a
+    // big object's root). Stops at a SearchBlock so a contained sub-object isn't resolved past its boundary. -xlinka
+    private static IInteractionTarget? FindInteractionTargetInParents(Slot? slot)
+    {
+        var current = slot;
+        while (current != null)
+        {
+            foreach (var t in current.GetComponentsImplementing<IInteractionTarget>())
+                return t;
+            if (current.GetComponent<SearchBlock>() != null)
+                break;
+            current = current.Parent;
+        }
+        return null;
     }
 
     private float GetHoverRadius(IInteractionTarget target)
@@ -1077,146 +1207,94 @@ public sealed class InteractionLaser : Component
     private bool TryFindNearestColliderHitDistance(float3 origin, float3 direction, float maxDistance, out float hitDistance)
     {
         hitDistance = maxDistance;
-        bool hasHit = false;
+        if (!TryPhysicsRaycast(origin, direction, maxDistance, out var hit))
+            return false;
 
-        // Pull from the world's collider registry instead of walking the whole slot tree every frame. Each
-        // candidate is still filtered below, so a stale entry can't cause a wrong hit. -xlinka
-        World.CopyCollidersTo(_colliderBuffer);
-        foreach (var collider in _colliderBuffer)
-        {
-            if (!IsColliderRaycastCandidate(collider)) continue;
-            if (!TryIntersectCollider(collider, origin, direction, maxDistance, out float candidateDistance)) continue;
-            if (candidateDistance < hitDistance)
-            {
-                hitDistance = candidateDistance;
-                hasHit = true;
-            }
-        }
-        return hasHit;
-    }
-
-    private bool IsColliderRaycastCandidate(Collider collider)
-    {
-        if (collider == null || collider.Slot == null) return false;
-        if (!collider.Enabled.Value || !collider.Slot.IsActive) return false;
-        if (collider.IgnoreRaycasts.Value || collider.Type.Value == ColliderType.NoCollision) return false;
-        if (IsSlotOnThisHierarchy(collider.Slot)) return false;
+        hitDistance = hit.Distance;
         return true;
     }
 
-    private static bool TryIntersectCollider(Collider collider, float3 origin, float3 direction, float maxDistance, out float hitDistance)
+    // Shape-accurate ray cast against the world's real physics space (delegated to the platform). Replaces the
+    // old hand-rolled ray-vs-AABB over the collider registry, which treated every shape as its bounding box and
+    // couldn't hit mesh colliders at all. Skips the laser's own avatar (exclude list, like AvatarIK's foot probe),
+    // then re-applies the engine-only filters the platform doesn't know - IgnoreRaycasts colliders and own-hierarchy
+    // slots - by nudging just past a filtered hit and re-casting, bounded so a wall of ignored colliders can't spin.
+    // -xlinka
+    private const int RaycastSkipLimit = 8;
+
+    private bool TryPhysicsRaycast(float3 origin, float3 direction, float maxDistance, out PhysicsRaycastHit hit)
     {
-        hitDistance = 0f;
-        if (!TryGetColliderLocalBounds(collider, out float3 localMin, out float3 localMax)) return false;
+        hit = default;
+        var physics = World?.Physics;
+        if (physics == null)
+            return false;
 
-        float3 localOrigin = collider.Slot.GlobalPointToLocal(origin);
-        float3 localDirection = collider.Slot.GlobalDirectionToLocal(direction);
-        if (localDirection.Length < 0.0001f) return false;
-        if (!RayAabbIntersect(localOrigin, localDirection, localMin, localMax, out float localHitT)) return false;
+        BuildRayExclude();
 
-        float3 localHitPoint = new float3(
-            localOrigin.x + localDirection.x * localHitT,
-            localOrigin.y + localDirection.y * localHitT,
-            localOrigin.z + localDirection.z * localHitT);
-        float3 worldHitPoint = collider.Slot.LocalPointToGlobal(localHitPoint);
+        float3 castOrigin = origin;
+        float remaining = maxDistance;
+        float traveled = 0f;
 
-        float3 worldDelta = new float3(
-            worldHitPoint.x - origin.x,
-            worldHitPoint.y - origin.y,
-            worldHitPoint.z - origin.z);
-        float forwardDistance = float3.Dot(worldDelta, direction);
-        if (forwardDistance <= 0f) return false;
-
-        float distance = worldDelta.Length;
-        if (distance <= 0.0001f || distance > maxDistance) return false;
-
-        hitDistance = distance;
-        return true;
-    }
-
-    private static bool TryGetColliderLocalBounds(Collider collider, out float3 min, out float3 max)
-    {
-        switch (collider)
+        for (int skip = 0; skip < RaycastSkipLimit; skip++)
         {
-            case BoxCollider box:
-            {
-                float3 half = AbsVector(box.Size.Value) * 0.5f;
-                float3 offset = box.Offset.Value;
-                min = new float3(offset.x - half.x, offset.y - half.y, offset.z - half.z);
-                max = new float3(offset.x + half.x, offset.y + half.y, offset.z + half.z);
-                return true;
-            }
-            case SphereCollider sphere:
-            {
-                float radius = MathF.Max(MathF.Abs(sphere.Radius.Value), 0.0005f);
-                float3 offset = sphere.Offset.Value;
-                min = new float3(offset.x - radius, offset.y - radius, offset.z - radius);
-                max = new float3(offset.x + radius, offset.y + radius, offset.z + radius);
-                return true;
-            }
-            case CapsuleCollider capsule:
-            {
-                float radius = MathF.Max(MathF.Abs(capsule.Radius.Value), 0.0005f);
-                float halfHeight = MathF.Max(MathF.Abs(capsule.Height.Value) * 0.5f, radius);
-                float3 offset = capsule.Offset.Value;
-                min = new float3(offset.x - radius, offset.y - halfHeight, offset.z - radius);
-                max = new float3(offset.x + radius, offset.y + halfHeight, offset.z + radius);
-                return true;
-            }
-            case CylinderCollider cylinder:
-            {
-                float radius = MathF.Max(MathF.Abs(cylinder.Radius.Value), 0.0005f);
-                float halfHeight = MathF.Max(MathF.Abs(cylinder.Height.Value) * 0.5f, 0.0005f);
-                float3 offset = cylinder.Offset.Value;
-                min = new float3(offset.x - radius, offset.y - halfHeight, offset.z - radius);
-                max = new float3(offset.x + radius, offset.y + halfHeight, offset.z + radius);
-                return true;
-            }
-            default:
-                min = float3.Zero;
-                max = float3.Zero;
+            if (remaining <= 0.0001f)
                 return false;
+            // hitTriggers MUST be true: grabbables, image colliders, and a worn avatar's body colliders are all
+            // sensor (Trigger/Area3D) colliders on this platform - query-only shapes meant to be raycast-hittable
+            // without acting as walls. With triggers off the ray would pass straight through every grabbable and
+            // avatar body, so equip/grab targeting would never resolve a hit on them. Solid bodies still block
+            // (CollideWithBodies stays on), so walls/floor occlude as before. -xlinka
+            if (!physics.Raycast(in castOrigin, in direction, remaining, _rayExclude, out var candidate, hitTriggers: true))
+                return false;
+
+            float candidateDistance = traveled + candidate.Distance;
+            var slot = candidate.Slot;
+            if (slot != null && IsPhysicsHitFiltered(slot))
+            {
+                // Step just past this hit and re-cast so the next surface behind it can register. -xlinka
+                float step = MathF.Max(candidate.Distance, 0f) + 0.001f;
+                castOrigin = new float3(
+                    castOrigin.x + direction.x * step,
+                    castOrigin.y + direction.y * step,
+                    castOrigin.z + direction.z * step);
+                traveled += step;
+                remaining -= step;
+                continue;
+            }
+
+            hit = candidate;
+            hit.Distance = candidateDistance;
+            return true;
         }
+
+        return false;
     }
 
-    private static bool RayAabbIntersect(float3 origin, float3 direction, float3 min, float3 max, out float t)
+    // Rebuild the exclude list: the laser's own avatar/user hierarchy (so the ray doesn't catch the user's own
+    // body colliders) plus any explicit ignore root. The platform skips these and all their descendants. -xlinka
+    private void BuildRayExclude()
     {
-        const float epsilon = 0.000001f;
-        float tMin = 0f;
-        float tMax = float.MaxValue;
-
-        if (!RayAabbAxis(origin.x, direction.x, min.x, max.x, ref tMin, ref tMax, epsilon) ||
-            !RayAabbAxis(origin.y, direction.y, min.y, max.y, ref tMin, ref tMax, epsilon) ||
-            !RayAabbAxis(origin.z, direction.z, min.z, max.z, ref tMin, ref tMax, epsilon))
-        {
-            t = 0f;
-            return false;
-        }
-
-        if (tMax < 0f)
-        {
-            t = 0f;
-            return false;
-        }
-
-        t = tMin >= 0f ? tMin : tMax;
-        return t >= 0f;
+        _rayExclude.Clear();
+        var ownRoot = Slot?.ActiveUserRoot?.Slot;
+        if (ownRoot != null)
+            _rayExclude.Add(ownRoot);
+        else if (Slot != null)
+            _rayExclude.Add(Slot);
+        if (_ignoreRoot != null && !ReferenceEquals(_ignoreRoot, ownRoot))
+            _rayExclude.Add(_ignoreRoot);
     }
 
-    private static bool RayAabbAxis(float origin, float direction, float min, float max, ref float tMin, ref float tMax, float epsilon)
+    // Engine-only filters the platform raycast doesn't apply: a collider opted out of raycasts, a non-collision
+    // collider, or a slot on this laser's own hierarchy (belt-and-suspenders with the exclude list). -xlinka
+    private bool IsPhysicsHitFiltered(Slot slot)
     {
-        if (MathF.Abs(direction) <= epsilon) return origin >= min && origin <= max;
-
-        float inverse = 1f / direction;
-        float t0 = (min - origin) * inverse;
-        float t1 = (max - origin) * inverse;
-        if (t0 > t1) (t0, t1) = (t1, t0);
-        if (t0 > tMin) tMin = t0;
-        if (t1 < tMax) tMax = t1;
-        return tMin <= tMax;
+        if (IsSlotOnThisHierarchy(slot))
+            return true;
+        var collider = slot.GetComponent<Collider>();
+        if (collider != null && (collider.IgnoreRaycasts.Value || collider.Type.Value == ColliderType.NoCollision))
+            return true;
+        return false;
     }
-
-    private static float3 AbsVector(float3 v) => new(MathF.Abs(v.x), MathF.Abs(v.y), MathF.Abs(v.z));
 
     private void PositionBeam(float3 origin, float3 direction, float length, float3 endPoint, float delta)
     {

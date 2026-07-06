@@ -12,9 +12,9 @@ namespace Lumora.Core;
 
 /// <summary>
 /// Compact synchronized unordered collection.
-/// Stores values in a List&lt;T&gt; backing - allows duplicates, no ordering guarantees.
+/// Stores values in a List<T> backing - allows duplicates, no ordering guarantees.
 /// Supports full and op-log delta network encoding via SyncCoder.
-/// Use this instead of SyncFieldList&lt;T&gt; for unordered bag semantics.
+/// Use this instead of SyncFieldList<T> for unordered bag semantics.
 /// </summary>
 public class SyncBag<T> : ConflictingSyncElement, IEnumerable<T>
 {

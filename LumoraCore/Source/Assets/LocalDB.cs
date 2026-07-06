@@ -37,6 +37,20 @@ public class LocalDB : IDisposable
     private bool _initialized;
 
     /// <summary>
+    /// Encrypt asset cache bytes at rest (AES-GCM via <see cref="LocalEncryption"/>), the same store
+    /// that already protects records.json. Reads always go through <see cref="ReadAssetBytesAsync"/>,
+    /// which transparently decrypts and passes plaintext (legacy / externally-written) files through
+    /// unchanged - so flipping this on is a forward migration with no rewrite of existing cache files.
+    ///
+    /// OFF by default: turning it on is only safe once every cache-byte READER goes through
+    /// <see cref="ReadAssetBytesAsync"/> (the engine's local asset gather path) instead of reading the
+    /// resolved <see cref="LocalAssetRecord.FilePath"/> directly, AND the peer asset transfer DECRYPTS
+    /// before sending (the master key is machine-bound, so ciphertext can't be shipped to a joiner).
+    /// Until those two sites are routed through here, leave this false. - xlinka
+    /// </summary>
+    public bool EncryptAssetsAtRest { get; set; }
+
+    /// <summary>
     /// Get the machine-unique ID for this local database.
     /// </summary>
     public string MachineId => _machineId;
@@ -102,19 +116,30 @@ public class LocalDB : IDisposable
 
         try
         {
+            // Original references the source in place - we don't own that file, so it stays plaintext.
+            // Copy/Move land bytes in OUR cache and get wrapped when at-rest encryption is enabled. - xlinka
+            bool encrypted = false;
+            long plainSize;
             switch (location)
             {
                 case ImportLocation.Original:
                     // Just reference the original file
                     targetPath = filePath;
+                    plainSize = new FileInfo(targetPath).Length;
                     break;
 
                 case ImportLocation.Copy:
-                    await Task.Run(() => File.Copy(filePath, targetPath, true));
+                    plainSize = await WriteCacheFileAsync(targetPath, filePath, deleteSource: false);
+                    encrypted = EncryptAssetsAtRest;
                     break;
 
                 case ImportLocation.Move:
-                    await Task.Run(() => File.Move(filePath, targetPath, true));
+                    plainSize = await WriteCacheFileAsync(targetPath, filePath, deleteSource: true);
+                    encrypted = EncryptAssetsAtRest;
+                    break;
+
+                default:
+                    plainSize = 0;
                     break;
             }
 
@@ -127,7 +152,8 @@ public class LocalDB : IDisposable
                 OriginalPath = filePath,
                 OriginalFileName = Path.GetFileName(filePath),
                 ImportedAt = DateTime.UtcNow,
-                FileSize = new FileInfo(targetPath).Length
+                FileSize = plainSize,
+                Encrypted = encrypted
             };
 
             lock (_lock)
@@ -177,9 +203,13 @@ public class LocalDB : IDisposable
         }
 
         var targetPath = Path.Combine(GetAssetCachePath(), hash + extension);
+        bool encrypted = EncryptAssetsAtRest;
         try
         {
-            await File.WriteAllBytesAsync(targetPath, data);
+            // Hash addresses the PLAINTEXT (above), so dedup stays content-stable regardless of the
+            // at-rest encryption toggle; only the bytes on disk are wrapped. - xlinka
+            var onDisk = encrypted ? LocalEncryption.Encrypt(data) : data;
+            await File.WriteAllBytesAsync(targetPath, onDisk);
         }
         catch (Exception ex)
         {
@@ -195,7 +225,8 @@ public class LocalDB : IDisposable
             OriginalPath = localUri,
             OriginalFileName = hash + extension,
             ImportedAt = DateTime.UtcNow,
-            FileSize = data.LongLength
+            FileSize = data.LongLength,
+            Encrypted = encrypted
         };
 
         lock (_lock)
@@ -314,8 +345,24 @@ public class LocalDB : IDisposable
 
     private string GetOrCreateMachineId()
     {
-        var idPath = Path.Combine(_basePath, ".machine_id");
+        // Prefer the install's self-certifying machine identity so local:// asset URIs carry the SAME id
+        // the session stamps on User.MachineID. The asset transferer resolves which connected peer owns a
+        // local:// asset from that id; when the two differed, a peer-imported mesh/texture could never be
+        // relayed to other users. The id is base64url (no '/'), so it doesn't disturb URI parsing, and the
+        // transferer reads it case-sensitively from the URI's original string.
+        try
+        {
+            var identityId = Lumora.Core.Security.MachineIdentity.Local.MachineId;
+            if (!string.IsNullOrEmpty(identityId))
+                return identityId;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"LocalDB: machine identity unavailable, using a local fallback id: {ex.Message}");
+        }
 
+        // Fallback: a stable random id persisted next to the cache.
+        var idPath = Path.Combine(_basePath, ".machine_id");
         try
         {
             Directory.CreateDirectory(_basePath);
@@ -325,15 +372,60 @@ public class LocalDB : IDisposable
                 return File.ReadAllText(idPath).Trim();
             }
 
-            // Generate new machine ID
             var id = Guid.NewGuid().ToString("N").Substring(0, 16);
             File.WriteAllText(idPath, id);
             return id;
         }
         catch
         {
-            // Fallback to random ID if file operations fail
             return Guid.NewGuid().ToString("N").Substring(0, 16);
+        }
+    }
+
+    // Write a source file into the cache at targetPath, encrypting at rest when enabled, and return the
+    // PLAINTEXT byte length. With encryption off we keep the cheap File.Copy/Move (no read-into-memory).
+    // With it on we must read -> wrap -> write, since copy alone can't transform the bytes. - xlinka
+    private async Task<long> WriteCacheFileAsync(string targetPath, string sourcePath, bool deleteSource)
+    {
+        if (!EncryptAssetsAtRest)
+        {
+            if (deleteSource)
+                await Task.Run(() => File.Move(sourcePath, targetPath, true));
+            else
+                await Task.Run(() => File.Copy(sourcePath, targetPath, true));
+            return new FileInfo(targetPath).Length;
+        }
+
+        var plain = await File.ReadAllBytesAsync(sourcePath);
+        await File.WriteAllBytesAsync(targetPath, LocalEncryption.Encrypt(plain));
+        if (deleteSource)
+        {
+            try { File.Delete(sourcePath); } catch { /* best effort - source already consumed */ }
+        }
+        return plain.LongLength;
+    }
+
+    /// <summary>
+    /// Read a cached asset's bytes, transparently decrypting if it was stored encrypted. A plaintext or
+    /// legacy file is returned as-is (<see cref="LocalEncryption.Decrypt"/> detects the header), so this
+    /// is safe to call for every local:// read and doubles as the migration path. Returns null when the
+    /// URI doesn't resolve. - xlinka
+    /// </summary>
+    public async Task<byte[]?> ReadAssetBytesAsync(string localUri)
+    {
+        var path = GetFilePath(localUri);
+        if (string.IsNullOrEmpty(path) || !File.Exists(path))
+            return null;
+
+        var raw = await File.ReadAllBytesAsync(path);
+        try
+        {
+            return LocalEncryption.Decrypt(raw);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"LocalDB: failed to decrypt cached asset '{localUri}': {ex.Message}");
+            return null;
         }
     }
 
@@ -424,9 +516,16 @@ public class LocalAssetRecord
     public long FileSize { get; set; }
 
     /// <summary>
-    /// Per-asset AES key when the cache file is encrypted at rest (null = plain). Held in the encrypted
-    /// records store - the keystore for cache-file encryption (per-asset key held in the records DB).
-    /// Cache-file encryption itself is pending the asset read path going through a decrypt step.
+    /// True when this cache file is wrapped with <see cref="LocalEncryption"/> (AES-GCM) at rest.
+    /// Stored in the encrypted records store. Reads go through <see cref="LocalDB.ReadAssetBytesAsync"/>,
+    /// which detects the encryption header regardless of this flag, so a plaintext/legacy file still
+    /// reads correctly even if the flag is stale. <see cref="FileSize"/> is the PLAINTEXT length.
+    /// </summary>
+    public bool Encrypted { get; set; }
+
+    /// <summary>
+    /// Reserved. The current model uses a single machine-bound master key (see <see cref="LocalEncryption"/>),
+    /// not a per-asset key, so this stays null. Kept for a future per-asset / server-issued key scheme.
     /// </summary>
     public byte[]? EncryptionKey { get; set; }
 

@@ -9,9 +9,12 @@ using Lumora.Core.Math;
 namespace Lumora.Core.Components.Import;
 
 // Confirmation dialog for video imports. Lumora has no video texture / player
-// pipeline yet, so this dialog only shows what's actually supported: a raw-file
-// passthrough that spawns the file as a labeled grabbable. Once VideoTexture-
-// Provider + VideoPlayer land, add presets here for spheres/stereo/etc. - xlinka
+// pipeline, and no platform handler is registered, so "Regular" import isn't real
+// yet - selecting it shows an honest "not supported" notice instead of spawning a
+// labeled placeholder that pretends the video loaded. "As Raw File" still works: it
+// drops the file into the world as a grabbable so you can hand it off / save it.
+// Once a VideoTextureProvider + IVideoImportHandler land, replace the notice with
+// real presets (flat/sphere/stereo). - xlinka
 [ComponentCategory("Assets/Import")]
 public sealed class VideoImportDialog : ImportDialog
 {
@@ -28,12 +31,20 @@ public sealed class VideoImportDialog : ImportDialog
     public void RunImport()
     {
         if (!CanInteract) return;
-        Logger.Log($"VideoImportDialog: importing {Paths.Count} file(s)");
 
+        // A registered video handler would make this real; until one exists, be honest.
+        var handler = ImportHandlers.Video;
+        if (handler == null)
+        {
+            Logger.Warn($"VideoImportDialog: no video pipeline - {Paths.Count} file(s) not imported.");
+            ShowUnsupported("Video playback isn't supported yet.\nUse \"As Raw File\" to drop the file into the world.");
+            return;
+        }
+
+        Logger.Log($"VideoImportDialog: importing {Paths.Count} file(s)");
         var basePos = Slot.GlobalPosition;
         var baseRot = Slot.GlobalRotation;
         var offset = float3.Zero;
-        var handler = ImportHandlers.Video;
         var target = ResolveTargetWorld();
 
         foreach (var file in Paths)
@@ -43,18 +54,8 @@ public sealed class VideoImportDialog : ImportDialog
             s.GlobalRotation = baseRot;
             s.GlobalScale = float3.One;
 
-            if (handler != null)
-            {
-                var pathCaptured = file;
-                _ = handler.ImportAsync(s, pathCaptured);
-            }
-            else
-            {
-                var label = s.AttachComponent<TextRenderer>();
-                label.Text.Value = Path.GetFileName(file) ?? file;
-                label.Size.Value = 0.08f;
-                s.AttachComponent<Grabbable>().AllowGrab.Value = true;
-            }
+            var pathCaptured = file;
+            _ = handler.ImportAsync(s, pathCaptured);
 
             offset += baseRot * float3.Right;
         }

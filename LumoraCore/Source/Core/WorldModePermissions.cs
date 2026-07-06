@@ -10,7 +10,7 @@ namespace Lumora.Core;
 /// Configures a world's <see cref="DataModelPermissionController"/> for a <see cref="WorldMode"/>.
 /// Applied host-side when the world starts running. The Social/Event lock is a hard floor in the
 /// permission gate (<see cref="DataModelPermissionController.SocialLock"/>), so it holds against a
-/// modified client AND the host - the only way to "edit" again is to host the world in Builder mode.
+/// any client AND the host - the only way to "edit" again is to host the world in Builder mode.
 /// </summary>
 public static class WorldModePermissions
 {

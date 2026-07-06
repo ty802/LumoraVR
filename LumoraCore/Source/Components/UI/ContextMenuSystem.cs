@@ -27,9 +27,15 @@ public sealed class ContextMenuContext
 
 /// <summary>
 /// The user's radial context menu. Owns the page stack, collects items from
-/// sources, and renders itself as an engine-side mesh UI - a local Helio
-/// canvas per peer, hit by the interaction laser like any world canvas.
+/// sources, and renders itself as an engine-side mesh UI - a LOCAL Helio canvas
+/// per peer (AddLocalSlot, never replicated/saved), hit by the interaction laser
+/// like any world canvas. Only the owning user builds/drives it (see Open/Close).
 /// There is no platform view layer.
+/// NOTE: a naive replicated visual (AddSlot) was tried so others could see the
+/// menu, but the lifecycle's Destroy is denied by the datamodel ownership gate
+/// (structural ownership under the user root isn't "strong" per-byte), so the old
+/// canvas couldn't be torn down and menus stacked. Making it visible to others
+/// needs a proper owned/bypassed lifecycle, not a slot-type flip. -xlinka
 /// </summary>
 [ComponentCategory("UI/Context Menu")]
 public class ContextMenuSystem : Component
@@ -87,7 +93,17 @@ public class ContextMenuSystem : Component
     /// </summary>
     public void Open(ContextMenuContext? context = null)
     {
+        // Only the owning user builds/drives their own menu. This component also runs on observers for a
+        // REMOTE user's hand; without this gate the observer's own input could open a ghost menu on the
+        // remote user's ContextMenuSystem. -xlinka
+        if (Slot?.ActiveUserRoot?.ActiveUser != World?.LocalUser)
+        {
+            return;
+        }
+
         CurrentContext = context ?? new ContextMenuContext();
+        _guardOpeningPress = false;  // radial menu opens on a non-select button; no opening-press guard needed
+        _disableAutoClose = false;   // radial keeps its edge-close (point away to dismiss)
         var page = BuildRootPage(CurrentContext);
         if (page.Items.Count == 0)
         {
@@ -111,6 +127,46 @@ public class ContextMenuSystem : Component
         LumoraLogger.Log($"ContextMenuSystem: Opened '{page.Title}' ({page.Items.Count} items)");
     }
 
+    /// <summary>
+    /// Open a small two-button confirm menu (a confirm action + Cancel), bypassing the source-collected root
+    /// page. Used for the touch-to-equip confirmation popup. -xlinka
+    /// </summary>
+    public void OpenConfirm(string title, string confirmLabel, float[] confirmColor, Action onConfirm, ContextMenuContext? context = null)
+    {
+        if (Slot?.ActiveUserRoot?.ActiveUser != World?.LocalUser)
+            return;
+
+        var page = new ContextMenuPage(title);
+        page.AddItem(new ContextMenuItem
+        {
+            Label = confirmLabel,
+            FillColor = confirmColor,
+            OnPressed = _ => { Close(); onConfirm?.Invoke(); },
+        });
+        page.AddItem(new ContextMenuItem
+        {
+            Label = "Cancel",
+            FillColor = new[] { 0.30f, 0.30f, 0.32f, 0.92f },
+            OnPressed = _ => Close(),
+        });
+
+        // Carry the summoning hand's laser slot + side (like the radial menu does), or the edge-close ray-cast and
+        // desktop mouse-aim have no laser to work with and the menu dismisses itself a frame after opening. -xlinka
+        CurrentContext = context ?? new ContextMenuContext { Pointer = Slot };
+        _guardOpeningPress = true;   // opened by the primary button - don't let its release select an item
+        _openingPrimaryReleased = false;
+        _disableAutoClose = true;    // persistent: stays open until Equip/Cancel is clicked
+        page.LayoutItems();
+        _pageStack.Clear();
+        CurrentPage = page;
+        IsOpen.Value = true;
+        _openTime = 0f;
+        PositionMenu(CurrentContext.Pointer);
+        RebuildVisual();
+        SuppressLocomotion();
+        MenuOpened?.Invoke(page);
+    }
+
     /// <summary>Navigate into a sub-page (PopPage goes back).</summary>
     public void PushPage(ContextMenuPage page)
     {
@@ -126,6 +182,11 @@ public class ContextMenuSystem : Component
     /// <summary>Go back one page. Closes the menu if already at the root page.</summary>
     public void PopPage()
     {
+        // Same guard as SelectItem: the press that OPENED the menu lands on the center "back" disc (the menu opens
+        // under the laser), and an unguarded PopPage there closes the menu instantly. Ignore until that press is
+        // released once. -xlinka
+        if (_guardOpeningPress) return;
+
         if (_pageStack.Count == 0) { Close(); return; }
 
         CurrentPage = _pageStack.Pop();
@@ -136,6 +197,12 @@ public class ContextMenuSystem : Component
     /// <summary>Close the menu.</summary>
     public void Close()
     {
+        // Only the owner tears down their own menu - see Open. -xlinka
+        if (Slot?.ActiveUserRoot?.ActiveUser != World?.LocalUser)
+        {
+            return;
+        }
+
         if (!IsOpen.Value) return;
 
         _pageStack.Clear();
@@ -155,6 +222,12 @@ public class ContextMenuSystem : Component
     public void SelectItem(ContextMenuItem item)
     {
         if (item == null || !item.IsEnabled) return;
+
+        // Ignore the click from the very press that OPENED this menu. The confirm opens on the primary (left/
+        // trigger) button - the same button used to select - so without this the opening press's release clicks
+        // an item and the menu closes instantly ("only stays while holding"). Selection arms once that press is
+        // released (UpdateOpeningPressGuard). The radial menu opens on a different button, so it isn't guarded. -xlinka
+        if (_guardOpeningPress) return;
 
         if (item.SubPage != null)
         {
@@ -180,8 +253,40 @@ public class ContextMenuSystem : Component
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
+        UpdateOpeningPressGuard();
         UpdateFlickSelect();
         UpdateEdgeClose(delta);
+    }
+
+    // The confirm menu opens on the primary (left/trigger) button, which is also the select button. Ignore item
+    // selection until that opening press is released once, or its release immediately clicks an item and closes
+    // the menu. Cleared the frame AFTER release so the release-click itself stays guarded. -xlinka
+    private bool _guardOpeningPress;
+    private bool _openingPrimaryReleased;
+    // Confirm menus are PERSISTENT: they stay open until a button is clicked (Equip/Cancel), with no auto-close
+    // when the pointer wanders. The radial menu keeps its edge-close. -xlinka
+    private bool _disableAutoClose;
+
+    private void UpdateOpeningPressGuard()
+    {
+        if (!_guardOpeningPress) return;
+        if (_openingPrimaryReleased)
+        {
+            _guardOpeningPress = false;
+            return;
+        }
+        if (!OpeningHandPrimaryHeld())
+            _openingPrimaryReleased = true;
+    }
+
+    private bool OpeningHandPrimaryHeld()
+    {
+        var side = CurrentContext?.Side;
+        var userRoot = Slot?.ActiveUserRoot?.Slot;
+        if (side == null || userRoot == null) return false;
+        foreach (var hand in userRoot.GetComponentsInChildren<Lumora.Core.Components.Interaction.HandTool>())
+            if (hand.Side.Value == side) return hand.PrimaryHeld;
+        return false;
     }
 
     // Desktop selection: mouse look is frozen while the menu is open and the
@@ -198,6 +303,10 @@ public class ContextMenuSystem : Component
     private void UpdateEdgeClose(float delta)
     {
         if (!IsOpen.Value || _canvasSlot == null || _canvasSlot.IsDestroyed)
+            return;
+
+        // Persistent (confirm) menus never auto-close on pointer movement - only an item click closes them. -xlinka
+        if (_disableAutoClose)
             return;
 
         if (Slot?.ActiveUserRoot?.ActiveUser != World?.LocalUser)
@@ -356,7 +465,7 @@ public class ContextMenuSystem : Component
         }
     }
 
-    // Visual (engine-side mesh UI, local per peer)
+    // Visual (engine-side mesh UI, LOCAL per peer)
 
     private void PositionMenu(Slot? pointer)
     {

@@ -139,7 +139,18 @@ public partial class ClipboardImporter : Node
         ImportHandlers.Image = new ImageHandler(this);
         ImportHandlers.Model = new ModelHandler(this);
         ImportHandlers.Raw = new RawFileHandler(this);
-        GD.Print("ClipboardImporter: Registered Image/Model/Raw import handlers");
+        // Bridge the real OS clipboard into the core's world-side Ctrl+V trigger
+        // (Lumora.Core.Components.ClipboardImporter). That core component owns the
+        // keystroke now, so this node no longer self-triggers paste in _Input. - xlinka
+        ImportHandlers.Clipboard = new ClipboardBridge(this);
+        GD.Print("ClipboardImporter: Registered Image/Model/Raw import + clipboard bridge");
+    }
+
+    private sealed class ClipboardBridge : IClipboardPasteHandler
+    {
+        private readonly ClipboardImporter _owner;
+        public ClipboardBridge(ClipboardImporter owner) { _owner = owner; }
+        public void Paste() => _owner.HandlePaste();
     }
 
     private sealed class ImageHandler : IImageImportHandler
@@ -155,11 +166,32 @@ public partial class ClipboardImporter : Node
         public ModelHandler(ClipboardImporter owner) { _owner = owner; }
         public Task ImportAsync(Slot slot, string path, ModelImportRequest request)
         {
-            // ModelImportRequest fields aren't propagated into ModelImporter yet;
-            // path goes straight through. - xlinka
             var ext = Path.GetExtension(path).ToLowerInvariant();
             bool isAvatar = ext == ".vrm";
-            return _owner.PopulateModelSlotAsync(slot, path, isAvatar);
+            // Map the dialog's request onto the core importer's settings so the Advanced
+            // panel actually drives the import (scale/material/colliders/dual-sided/etc.). - xlinka
+            return _owner.PopulateModelSlotAsync(slot, path, isAvatar, BuildSettings(request, isAvatar));
+        }
+
+        private static ModelImportSettings BuildSettings(ModelImportRequest r, bool isAvatar)
+        {
+            return new ModelImportSettings
+            {
+                // AutoScale -> rescale to a standard height; otherwise honor the unit scale verbatim.
+                Scale = r.Scale,
+                Rescale = r.AutoScale,
+                Center = r.AutoScale,
+                TargetHeight = isAvatar ? 1.7f : 1.8f,
+                GenerateColliders = r.Colliders,
+                Material = r.Material,
+                MakeDualSided = r.MakeDualSided,
+                ImportAlbedoColor = r.ImportAlbedoColor,
+                ImportEmissive = r.ImportEmissive,
+                ForceNoMipMaps = r.ForceNoMipMaps,
+                MaxTextureSize = r.MaxTextureSize,
+                IsAvatarImport = isAvatar,
+                SetupIK = isAvatar,
+            };
         }
     }
 
@@ -203,18 +235,10 @@ public partial class ClipboardImporter : Node
         _targetSlot = slot;
     }
 
-    public override void _Input(InputEvent @event)
-    {
-        // Handle Ctrl+V paste
-        if (@event is InputEventKey keyEvent && keyEvent.Pressed && !keyEvent.Echo)
-        {
-            if (keyEvent.Keycode == Key.V && keyEvent.CtrlPressed)
-            {
-                HandlePaste();
-                GetViewport().SetInputAsHandled();
-            }
-        }
-    }
+    // Ctrl+V is owned by the core world-side ClipboardImporter component, which
+    // gates on world authority/state and calls HandlePaste through the registered
+    // clipboard bridge. We deliberately don't self-trigger paste here to avoid a
+    // double import. Drag & drop (OnFilesDropped) is still handled directly. - xlinka
 
     /// <summary>
     /// Get files from Windows clipboard (when files are copied with Ctrl+C in Explorer).
@@ -519,7 +543,7 @@ public partial class ClipboardImporter : Node
         OnAssetImported?.Invoke(filePath, imageSlot);
     }
 
-    public async Task PopulateModelSlotAsync(Slot slot, string filePath, bool isAvatar)
+    public async Task PopulateModelSlotAsync(Slot slot, string filePath, bool isAvatar, ModelImportSettings? settings = null)
     {
         GD.Print($"ClipboardImporter: Populating model slot as {(isAvatar ? "avatar" : "3D model")}: {filePath}");
 
@@ -535,11 +559,13 @@ public partial class ClipboardImporter : Node
             ModelImportResult result;
             if (isAvatar)
             {
+                // Avatar import uses fixed avatar settings (IK/rig); the dialog's material/texture
+                // options aren't surfaced for avatars yet, so keep the avatar preset. - xlinka
                 result = await ModelImporter.ImportAvatarAsync(filePath, slot, _localDB, progress);
             }
             else
             {
-                result = await ModelImporter.ImportModelAsync(filePath, slot, null!, _localDB, progress);
+                result = await ModelImporter.ImportModelAsync(filePath, slot, settings, _localDB, progress);
             }
             if (result.Success)
             {

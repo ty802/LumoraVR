@@ -51,6 +51,11 @@ public sealed class SteamConnection : IConnection
     public Uri Address { get; internal set; } = null!;
     public string Identifier { get; }
     public ulong ReceivedBytes => _receivedBytes;
+    // m_nPing is refreshed every transport Update via UpdateStats. Steam Datagram Relay is always
+    // end-to-end encrypted, so IsEncrypted is unconditionally true once open. -xlinka
+    public int Ping => IsOpen ? _lastMainStatus.m_nPing : -1;
+    public bool IsEncrypted => IsOpen;
+    public string TransportName => "Steam";
 
     public CSteamID RemoteId => _remoteId;
 

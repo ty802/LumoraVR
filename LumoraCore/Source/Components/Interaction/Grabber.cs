@@ -62,6 +62,70 @@ public class Grabber : Component
         return held;
     }
 
+    // Touch / proximity grab: sphere-overlap at 'point' and grab the best grabbable found in the overlapped
+    // colliders' parents (highest GrabPriority, nearest on a tie). Unlike the laser path this DOES accept
+    // AllowOnlyPhysicalGrab objects - that flag means "only reachable by hand". Arbitration still runs
+    // through CanGrab/TryGrab (host authority); 'grabbed' is set only when the hold is actually recorded. - xlinka
+    public bool TryGrabNearby(float3 point, float radius, out IGrabbable? grabbed)
+    {
+        grabbed = null;
+        var world = World;
+        if (world?.Physics == null) return false;
+
+        var hits = new List<Slot>();
+        // Grabbables are sensor (Trigger/Area3D) colliders on this platform, so the overlap must include
+        // triggers or it would never find anything to grab. - xlinka
+        world.Physics.OverlapSphere(point, radius, hits, hitTriggers: true);
+        if (hits.Count == 0) return false;
+
+        IGrabbable? best = null;
+        int bestPriority = int.MinValue;
+        float bestDistSq = float.MaxValue;
+
+        foreach (var slot in hits)
+        {
+            var candidate = FindGrabbableInParents(slot);
+            if (candidate == null || !candidate.CanGrab(this)) continue;
+
+            // Never grab our own hand rig.
+            if (candidate is Component cc && cc.Slot != null && cc.Slot.IsDescendantOf(Slot)) continue;
+
+            float distSq = (slot.GlobalPosition - point).LengthSquared;
+            if (candidate.GrabPriority > bestPriority ||
+                (candidate.GrabPriority == bestPriority && distSq < bestDistSq))
+            {
+                best = candidate;
+                bestPriority = candidate.GrabPriority;
+                bestDistSq = distSq;
+            }
+        }
+
+        if (best == null || !TryGrab(best)) return false;
+        grabbed = best;
+        return true;
+    }
+
+    // Walk up from a hit slot for the first grabbable this grabber may take. Stops at a SearchBlock (a
+    // boundary another rig owns), except on the originating slot. Mirrors HandTool.FindBestGrabbable but
+    // does NOT exclude AllowOnlyPhysicalGrab (touch is the physical path). - xlinka
+    private IGrabbable? FindGrabbableInParents(Slot? hitSlot)
+    {
+        var current = hitSlot;
+        while (current != null && !current.IsRemoved)
+        {
+            if (!ReferenceEquals(current, hitSlot) && current.GetComponent<SearchBlock>() != null)
+                break;
+
+            foreach (var g in current.GetComponentsImplementing<IGrabbable>())
+            {
+                if (g.CanGrab(this)) return g;
+            }
+
+            current = current.Parent;
+        }
+        return null;
+    }
+
     // Called by a Grabbable when it notices the host gave it to a different holder - drop our claim so
     // we stop driving its transform. - xlinka
     internal void NotifyStolen(IGrabbable target)
@@ -126,7 +190,9 @@ public class Grabber : Component
             return;
 
         var hits = new List<Slot>();
-        world.Physics.OverlapSphere(point, radius, hits);
+        // Receiver surfaces ride on grabbable/sensor slots (Trigger/Area3D), so include triggers here too
+        // or the drop-into-receiver overlap finds nothing. - xlinka
+        world.Physics.OverlapSphere(point, radius, hits, hitTriggers: true);
 
         // Collect enabled, active receivers in the parents of each overlapped slot, deduped. - xlinka
         var receivers = new HashSet<IGrabbableReceiver>();

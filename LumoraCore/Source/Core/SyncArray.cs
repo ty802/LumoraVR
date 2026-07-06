@@ -15,7 +15,7 @@ namespace Lumora.Core;
 /// Compact synchronized array for value types and primitives.
 /// Stores values in a flat T[] buffer - no per-element heap allocation.
 /// Supports full and sparse-delta network encoding via SyncCoder.
-/// Use this instead of SyncFieldList&lt;T&gt; for primitives: 25x less memory.
+/// Use this instead of SyncFieldList<T> for primitives: 25x less memory.
 /// </summary>
 public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
 {

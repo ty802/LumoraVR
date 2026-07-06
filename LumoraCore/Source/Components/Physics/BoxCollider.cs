@@ -34,19 +34,11 @@ public class BoxCollider : Collider
 
     // ABSTRACT METHOD IMPLEMENTATIONS
 
-    public override object CreateGodotShape()
+    public override BoundingBox GetLocalBounds()
     {
-        // Created by PhysicsColliderHook
-        return null!;
-    }
-
-    public override object GetLocalBounds()
-    {
-        // Axis-aligned bounds centered at Offset with extents Size/2
+        // Box is exactly its half-extents around Offset.
         var half = Size.Value * 0.5f;
-        float3 min = Offset.Value - half;
-        float3 max = Offset.Value + half;
-        return new { Min = min, Max = max };
+        return new BoundingBox(Offset.Value - half, Offset.Value + half);
     }
 
 }

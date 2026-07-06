@@ -154,7 +154,7 @@ public class WorldLoadingService
         {
             LumoraLogger.Log($"WorldLoadingService: Starting load for '{operation.WorldName}' at {operation.Address}");
 
-            // Phase 1: Connecting (0-20%)
+            // Connecting (0-20%)
             UpdateProgress(operation, WorldLoadingPhase.Connecting, 0.05f, "Connecting to server...");
 
             // Create world in background (not added to WorldManager yet)
@@ -200,7 +200,7 @@ public class WorldLoadingService
             // Update indicator with session sync now that connection is established
             UpdateIndicatorTarget(operation);
 
-            // Phase 2: Waiting for JoinGrant (20-40%)
+            // Waiting for JoinGrant (20-40%)
             UpdateProgress(operation, WorldLoadingPhase.WaitingForJoinGrant, 0.25f, "Requesting access...");
 
             // Wait for world to finish loading (transitions through states)
@@ -235,7 +235,7 @@ public class WorldLoadingService
                 return;
             }
 
-            // Phase 5: Ready (100%)
+            // Ready (100%)
             UpdateProgress(operation, WorldLoadingPhase.Ready, 1.0f, "Ready!");
             operation.IsComplete = true;
 

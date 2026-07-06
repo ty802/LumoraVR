@@ -43,6 +43,14 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
     private float _targetHeight;
     private TransformStreamDriver _rootStreamDriver = null!;
 
+    // Surface the character is standing on, captured from the floor slide contact each move. Surfaces
+    // carry CharacterControllerModifier components (ice, speed strips, low-jump zones); the matching
+    // parameters are pulled through them the next step. Modifier list cached per floor slot. -xlinka
+    private Lumora.Core.Slot? _floorSlot;
+    private readonly List<CharacterControllerModifier> _floorModifiers = new();
+    private float3 _floorContactPos;
+    private float3 _floorContactNormal;
+
     // When a TransformStreamDriver shares the root slot, the Root stream is the transport for the root position -
     // so writes must be SILENT (no field sync) or the root would replicate over BOTH the stream and the delta
     // channel. Mirrors TrackedDevicePositioner's handling of stream-shared body nodes. Re-checks until found
@@ -95,9 +103,11 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         _characterBody.FloorMaxAngle = Mathf.DegToRad(45f);
         _characterBody.WallMinSlideAngle = Mathf.DegToRad(15f);
 
-        // Set collision layers - must match StaticBody3D layers to collide
-        _characterBody.CollisionLayer = 1u;
-        _characterBody.CollisionMask = 1u;
+        // This world's collision bit (plus the legacy default bit) so the character only ever
+        // collides with geometry in its own world - overlay/userspace bodies are invisible to it.
+        uint worldBit = WorldHook.GetCollisionBitFor(Owner?.World);
+        _characterBody.CollisionLayer = worldBit;
+        _characterBody.CollisionMask = worldBit | 1u;
 
         // Initialize crouch state
         _currentHeight = Owner!.StandingHeight;
@@ -228,6 +238,7 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
                 float speed = _isCrouching ? Owner.CrouchSpeed : Owner.Speed;
                 if (!_isCrouching && Owner.IsSprinting)
                     speed *= Owner.SprintMultiplier;
+                speed = ApplySurfaceParameter(CharacterControllerParameter.TractionSpeed, speed);
                 _velocity.X = _moveDirection.X * speed;
                 _velocity.Z = _moveDirection.Z * speed;
             }
@@ -259,7 +270,7 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         // Apply jump
         if (_jumpRequested && _characterBody.IsOnFloor())
         {
-            _velocity.Y = Owner.JumpSpeed;
+            _velocity.Y = ApplySurfaceParameter(CharacterControllerParameter.TractionJumpSpeed, Owner.JumpSpeed);
             _jumpRequested = false;
         }
 
@@ -267,7 +278,8 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
         _characterBody.MoveAndSlide();
         _velocity = _characterBody.Velocity;
 
-        // Push any rigid bodies we collided with
+        // Push any rigid bodies we collided with, and capture the floor surface for modifiers.
+        Lumora.Core.Slot? floorSlot = null;
         int collisionCount = _characterBody.GetSlideCollisionCount();
         for (int i = 0; i < collisionCount; i++)
         {
@@ -279,7 +291,66 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
                 var pushForce = pushDir * Owner.Speed * 0.5f;
                 rigidBody.ApplyCentralImpulse(new Vector3(pushForce.X, 0, pushForce.Z));
             }
+
+            var normal = collision.GetNormal();
+            if (floorSlot == null && normal.Y > 0.5f && collider is Node colliderNode)
+            {
+                floorSlot = ResolveSlotFromCollider(colliderNode);
+                var pos = collision.GetPosition();
+                _floorContactPos = new float3(pos.X, pos.Y, pos.Z);
+                _floorContactNormal = new float3(normal.X, normal.Y, normal.Z);
+            }
         }
+        SetFloorSurface(floorSlot);
+    }
+
+    private void SetFloorSurface(Lumora.Core.Slot? slot)
+    {
+        // Keep the last floor while airborne (a jump keeps the launch surface's parameters).
+        if (slot == null || ReferenceEquals(slot, _floorSlot))
+            return;
+
+        _floorSlot = slot;
+        _floorModifiers.Clear();
+        foreach (var modifier in slot.GetComponents<CharacterControllerModifier>())
+            _floorModifiers.Add(modifier);
+
+        // Traction slope is a body property, not a per-step multiplier: apply it on surface change.
+        float slopeDeg = 45f;
+        if (_floorModifiers.Count > 0)
+            slopeDeg = ApplySurfaceParameter(CharacterControllerParameter.MaximumTractionSlope, slopeDeg);
+        _characterBody.FloorMaxAngle = Mathf.DegToRad(System.Math.Clamp(slopeDeg, 1f, 89f));
+    }
+
+    private float ApplySurfaceParameter(CharacterControllerParameter parameter, float value)
+    {
+        if (_floorModifiers.Count == 0 || _floorSlot == null || _floorSlot.IsDestroyed)
+            return value;
+        for (int i = 0; i < _floorModifiers.Count; i++)
+        {
+            var modifier = _floorModifiers[i];
+            if (modifier != null && !modifier.IsDestroyed && modifier.Enabled && modifier.Parameter.Value == parameter)
+            {
+                modifier.ComputeParameter(ref value, in _floorContactPos, in _floorContactNormal);
+                break;
+            }
+        }
+        return value;
+    }
+
+    private Lumora.Core.Slot? ResolveSlotFromCollider(Node? collider)
+    {
+        var node = collider;
+        while (node != null && GodotObject.IsInstanceValid(node))
+        {
+            if (node.HasMeta("LumoraSlotRef") &&
+                ulong.TryParse(node.GetMeta("LumoraSlotRef").AsString(), out var raw))
+            {
+                return Owner?.World?.ReferenceController?.GetObjectOrNull(new Lumora.Core.RefID(raw)) as Lumora.Core.Slot;
+            }
+            node = node.GetParent();
+        }
+        return null;
     }
 
     public void SetMovementDirection(float3 direction)
@@ -342,12 +413,17 @@ public partial class CharacterControllerHook : ComponentHook<CharacterController
             var shape = kvp.Value;
             if (shape.Shape is CapsuleShape3D capsule && collider is CapsuleCollider capCollider)
             {
-                // Just update the capsule height - physics will keep us grounded
                 capsule.Height = _currentHeight;
 
-                // Keep original offset from collider component
+                // CapsuleShape3D is CENTRE-anchored: shrinking the height lifts the bottom off the floor
+                // and gravity drops the whole body, sinking the user root (and the avatar with it) under
+                // the ground on crouch. Lower the shape's centre by half the height change so the capsule
+                // BOTTOM stays put. Measured against the controller's STANDING height (the value the
+                // transition runs between) - the collider's authored Height can legitimately differ, and
+                // using it offset the capsule even while standing. -xlinka
                 var offset = capCollider.Offset.Value;
-                shape.Position = new Vector3(offset.x, offset.y, offset.z);
+                float centerDrop = (Owner.StandingHeight - _currentHeight) * 0.5f;
+                shape.Position = new Vector3(offset.x, offset.y - centerDrop, offset.z);
             }
         }
     }

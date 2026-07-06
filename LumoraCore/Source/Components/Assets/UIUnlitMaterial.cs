@@ -22,6 +22,7 @@ public class UIUnlitMaterial : MaterialProvider, ICommonMaterial
     public readonly Sync<int> RenderQueue;
     public readonly Sync<Rect> Rect;
     public readonly Sync<bool> RectClip;
+    public readonly Sync<float2> ClipOffset;
     public readonly Sync<ColorMask> ColorMask;
     public readonly Sync<StencilComparison> StencilComparison;
     public readonly Sync<StencilOperation> StencilOperation;
@@ -70,6 +71,7 @@ public class UIUnlitMaterial : MaterialProvider, ICommonMaterial
         RenderQueue = new Sync<int>(this, -1);
         Rect = new Sync<Rect>(this, Lumora.Core.Math.Rect.Zero);
         RectClip = new Sync<bool>(this, false);
+        ClipOffset = new Sync<float2>(this, float2.Zero);
         ColorMask = new Sync<ColorMask>(this, Assets.ColorMask.RGBA);
         StencilComparison = new Sync<StencilComparison>(this, Assets.StencilComparison.Always);
         StencilOperation = new Sync<StencilOperation>(this, Assets.StencilOperation.Keep);
@@ -96,6 +98,7 @@ public class UIUnlitMaterial : MaterialProvider, ICommonMaterial
         asset.SetInt("RenderQueue", RenderQueue.Value);
         asset.SetFloat4("Rect", new float4(rect.xMin, rect.yMin, rect.xMax, rect.yMax));
         asset.SetBool("RectClip", RectClip.Value);
+        asset.SetFloat2("ClipOffset", ClipOffset.Value);
         asset.SetInt("ColorMask", (int)ColorMask.Value);
         asset.SetInt("StencilComparison", (int)StencilComparison.Value);
         asset.SetInt("StencilOperation", (int)StencilOperation.Value);

@@ -4,7 +4,7 @@ shader_type spatial;
 // is clipped to this mask's exact SHAPE (a circle Image, a rounded panel, any geometry) - not just an AABB.
 // depth_test_disabled keeps the mask on the UI layer; stencil is independent of the depth test. Godot 4.5+
 // stencil_mode (shader-language render mode). -xlinka
-render_mode unshaded, blend_mix, depth_draw_never, depth_test_disabled, cull_disabled;
+render_mode unshaded, blend_mix, depth_draw_never, cull_front;
 stencil_mode write, compare_always, 1;
 
 uniform vec4 albedo_color : source_color = vec4(1.0);

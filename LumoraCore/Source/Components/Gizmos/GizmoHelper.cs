@@ -47,7 +47,6 @@ public static class GizmoHelper
             return null!;
         }
 
-        // Create the SlotGizmo component
         var gizmo = gizmoSlot.AttachComponent<SlotGizmo>();
         gizmo.Setup(targetSlot);
 

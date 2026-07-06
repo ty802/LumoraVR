@@ -24,6 +24,12 @@ public class UserspaceDashboard : UIComponent
     private const int SupersampleScale = 2;
     private const float CanvasScale = 0.001f;
     private const float CaptureDistance = 1f;
+
+    // Reserved high render band for the dash display surface. Draw order is SortingOffset = material
+    // RenderQueue + renderer SortingOrder (uncapped). World UI/lasers/context menus sit at ~4000-10000, so
+    // 20000 keeps the dash above all of them; the laser cursor sits one band above (InteractionLaser) so the
+    // pointer stays visible on the dash. -xlinka
+    private const int DashSurfaceSortingOrder = 20000;
     private static readonly float3 RigWorldPosition = new float3(0f, 1000f, 0f);
 
     private int _captureWidth = 1280;
@@ -355,7 +361,9 @@ public class UserspaceDashboard : UIComponent
     {
         var canvas = _canvasSlot?.GetComponent<Canvas>();
         if (canvas == null) return false;
-        return canvas.ProcessAxis(UIInteractionSource.Desktop, 0, in axis);
+        // The dashboard hovers under a VR* source (the laser), so a fixed (Desktop,0) feed never matched
+        // the hover - route the wheel to whichever pointer is actually over the canvas. -xlinka
+        return canvas.ProcessAxisAnyPointer(in axis);
     }
 
     private string _searchBuffer = string.Empty;
@@ -526,14 +534,10 @@ public class UserspaceDashboard : UIComponent
         _displayMesh.Curvature.Value = 0.5f;
         _displayMesh.Segments.Value = 24;
 
-        // Overlay material: the dash always draws above world geometry, in both
-        // modes. Queue sits below the laser cursor (4005) so the pointer stays
-        // on top of the dash.
-        // UI overlay material: alpha-blended and depth-test-disabled, so the dash
-        // can actually occlude the world (the additive overlay shader can only
-        // brighten - it can never be opaque). Queue sits below the laser cursor
-        // (4005) so the pointer stays on top of the dash.
+        // UI overlay material with ZTest Always: the base UI shader depth-tests now (panels occlude
+        // properly), but the DASH must keep drawing above session-world geometry in desktop + VR.
         _displayMaterial = _surfaceSlot.AttachComponent<UIUnlitMaterial>();
+        _displayMaterial.ZTest.Value = ZTest.Always;
         _displayMaterial.Culling.Value = Culling.None;
         _displayMaterial.UseVertexColor.Value = false;
         // Fully opaque: the capture (its own SubViewport, opaque dark clear, no skybox) is the dash's
@@ -546,6 +550,12 @@ public class UserspaceDashboard : UIComponent
         var renderer = _surfaceSlot.AttachComponent<MeshRenderer>();
         renderer.Mesh.Target = _displayMesh;
         renderer.Material.Target = _displayMaterial;
+        // Draw order is SortingOffset = material RenderQueue + renderer SortingOrder (uncapped), NOT the
+        // Godot-clamped render_priority. With SortingOrder 0 the dash sat at ~4002, BELOW every laser visual
+        // (~4100), the context menu (~10000) and any other session overlay - so they drew over it. Put the
+        // dash in a high reserved band (offset ~24002) so nothing in the session world covers it; the laser
+        // cursor sits one band above (see InteractionLaser) so the pointer stays visible on the dash. -xlinka
+        renderer.SortingOrder.Value = DashSurfaceSortingOrder;
 
         _surfaceSlot.AttachComponent<DashSurfacePortal>();
     }
@@ -560,33 +570,43 @@ public class UserspaceDashboard : UIComponent
         // with the file browser last.
         _dashboard?.AddScreen<HomeScreen>("Home", new color(0.94f, 0.81f, 0f, 1f));
         _dashboard?.AddScreen<WorldsScreen>("Worlds", new color(0.20f, 0.80f, 1f, 1f));
-        AddInfoScreen("Friends", new color(0.30f, 1f, 0.80f, 1f),
-            "Friends, requests and messages.");
+        // No friends/contacts backend exists yet, so present this honestly as a placeholder rather
+        // than a working social feature: a dimmed "(Soon)" tab whose body says it isn't available. -xlinka
+        AddComingSoonScreen("Friends", new color(0.30f, 1f, 0.80f, 1f),
+            "A friends and direct-message system isn't available yet.");
         _dashboard?.AddScreen<GroupsScreen>("Groups", new color(0.55f, 0.45f, 0.95f, 1f));
         _dashboard?.AddScreen<InventoryScreen>("Inventory", new color(0.85f, 0.60f, 0.22f, 1f));
         _dashboard?.AddScreen<SessionScreen>("Session", new color(0.25f, 0.55f, 1f, 1f));
         _dashboard?.AddScreen<SettingsScreen>("Settings", new color(1f, 0.22f, 0.28f, 1f));
         _dashboard?.AddScreen<FileBrowserScreen>("Files", new color(0.70f, 0.66f, 0.32f, 1f));
+        _dashboard?.AddScreen<DebugScreen>("Debug", new color(0.45f, 0.78f, 0.55f, 1f));
         _dashboard?.AddScreen<ExitScreen>("Exit", new color(1f, 0.30f, 0.32f, 1f));
     }
 
-    private void AddInfoScreen(string label, color accent, string body)
+    // An honest placeholder tab for a feature with no backend yet: a "(Soon)" nav label and a body
+    // that plainly states it isn't available, so it never reads as a working feature. -xlinka
+    private void AddComingSoonScreen(string label, color accent, string body)
     {
         if (_dashboard == null) return;
 
-        var screen = _dashboard.AddScreen<DashboardScreen>(label, accent);
+        var screen = _dashboard.AddScreen<DashboardScreen>(label + " (Soon)", accent);
         var content = screen.ContentSlot;
         if (content == null) return;
 
         var builder = new UIBuilder(content);
         builder.Font(Font.Target).TextColor(color.White).BackgroundColor(new color(0.06f, 0.07f, 0.09f, 0.82f));
-        var layout = builder.VerticalLayout(12f, 22f);
+        var layout = builder.VerticalLayout(10f, 28f);
         Fill(layout.RectTransform!);
 
-        builder.FontSize(18f).MinHeight(120f).PreferredHeight(160f).FlexibleHeight(0f);
-        var text = builder.Text(body, 18f, new color(0.82f, 0.87f, 0.92f, 1f));
+        builder.FontSize(24f).MinHeight(44f).PreferredHeight(48f).FlexibleHeight(0f);
+        var heading = builder.Text($"{label} - coming soon", 24f, new color(0.62f, 0.66f, 0.74f, 1f));
+        heading.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
+        heading.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+
+        builder.FontSize(16f).MinHeight(60f).PreferredHeight(90f).FlexibleHeight(0f);
+        var text = builder.Text(body, 16f, new color(0.62f, 0.66f, 0.74f, 1f));
+        text.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
         text.VerticalAlignment.Value = TextVerticalAlignment.Top;
-        Fill(text.RectTransform!);
 
         builder.NestOut();
     }

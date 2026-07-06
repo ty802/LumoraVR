@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core;
+using Lumora.Core.Math;
 using Lumora.Core.Physics;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
@@ -36,20 +37,11 @@ public class CylinderCollider : Collider
 
     // ABSTRACT METHOD IMPLEMENTATIONS
 
-    public override object CreateGodotShape()
+    public override BoundingBox GetLocalBounds()
     {
-        // Created by PhysicsColliderHook
-        return null!;
-    }
-
-    public override object GetLocalBounds()
-    {
-        // Axis-aligned bounds - cylinder inscribed in box
-        var r = Radius.Value;
-        var h = Height.Value * 0.5f;
-        var min = new Math.float3(-r, -h, -r) + Offset.Value;
-        var max = new Math.float3(r, h, r) + Offset.Value;
-        return new { Min = min, Max = max };
+        // Y axis is the cylinder axis: radius in X/Z, half-Height in Y.
+        var extent = new float3(Radius.Value, Height.Value * 0.5f, Radius.Value);
+        return new BoundingBox(Offset.Value - extent, Offset.Value + extent);
     }
 }
 

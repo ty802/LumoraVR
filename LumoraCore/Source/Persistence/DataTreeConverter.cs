@@ -3,18 +3,33 @@
 
 using System;
 using System.IO;
+using System.IO.Compression;
 using System.Text;
 
 namespace Lumora.Core.Persistence;
 
+/// <summary>How a data-tree payload is compressed. The byte is stored in the LDT2 header.</summary>
+public enum CompressionCodec : byte
+{
+    None = 0,
+    Brotli = 1,
+}
+
 /// <summary>
 /// Encodes a <see cref="DataTreeNode"/> tree to bytes and back. A typed binary format is used
-/// (rather than JSON) so exact value types survive the round-trip - JSON would coerce numbers and
-/// re-trigger the '@' URL-escaping on strings. Compression can be layered on later.
+/// (rather than JSON/BSON) so exact value types survive the round-trip - JSON would coerce numbers and
+/// re-trigger the '@' URL-escaping on strings, and our binary is already tighter than a self-describing
+/// dictionary format. The LDT2 header carries a codec byte so the compact binary can be Brotli-compressed
+/// (built into .NET, no extra dependency) while staying format-versioned. Legacy uncompressed LDT1 files
+/// still load.
 /// </summary>
 public static class DataTreeConverter
 {
-    private const uint Magic = 0x4C44_5431; // "LDT1"
+    private const uint Magic = 0x4C44_5431;  // "LDT1" - legacy, uncompressed: a node follows the magic.
+    private const uint Magic2 = 0x4C44_5432; // "LDT2" - magic + codec byte + (optionally compressed) node.
+
+    /// <summary>Codec used for new saves. Brotli by default; set None to write uncompressed LDT2.</summary>
+    public static CompressionCodec DefaultCodec = CompressionCodec.Brotli;
 
     private const byte NodeValue = 0;
     private const byte NodeList = 1;
@@ -26,18 +41,35 @@ public static class DataTreeConverter
         Int64, UInt64, Single, Double, Decimal, Char, String, DateTime,
     }
 
-    public static byte[] SaveToBytes(DataTreeNode root)
+    public static byte[] SaveToBytes(DataTreeNode root, CompressionCodec? codec = null)
     {
         using var stream = new MemoryStream();
-        Save(root, stream);
+        Save(root, stream, codec);
         return stream.ToArray();
     }
 
-    public static void Save(DataTreeNode root, Stream stream)
+    public static void Save(DataTreeNode root, Stream stream, CompressionCodec? codec = null)
     {
-        using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
-        writer.Write(Magic);
-        WriteNode(writer, root);
+        var useCodec = codec ?? DefaultCodec;
+
+        // Header (magic + codec) is always uncompressed; the node payload is compressed per the codec.
+        using (var header = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true))
+        {
+            header.Write(Magic2);
+            header.Write((byte)useCodec);
+        }
+
+        if (useCodec == CompressionCodec.Brotli)
+        {
+            using var brotli = new BrotliStream(stream, CompressionLevel.Optimal, leaveOpen: true);
+            using var writer = new BinaryWriter(brotli, Encoding.UTF8, leaveOpen: true);
+            WriteNode(writer, root);
+        }
+        else
+        {
+            using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
+            WriteNode(writer, root);
+        }
     }
 
     public static DataTreeNode LoadFromBytes(byte[] bytes)
@@ -48,10 +80,31 @@ public static class DataTreeConverter
 
     public static DataTreeNode Load(Stream stream)
     {
-        using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true);
-        if (reader.ReadUInt32() != Magic)
+        // ReadUInt32 + ReadByte consume exactly their bytes (no read-ahead), so the stream is positioned
+        // right at the payload afterwards and a decompression stream can wrap the remainder cleanly.
+        using var header = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true);
+        uint magic = header.ReadUInt32();
+
+        // Legacy uncompressed format: the node tree follows the magic directly.
+        if (magic == Magic)
+            return ReadNode(header);
+
+        if (magic != Magic2)
             throw new InvalidDataException("Not a Lumora data-tree stream (bad magic).");
-        return ReadNode(reader);
+
+        var codec = (CompressionCodec)header.ReadByte();
+        if (codec == CompressionCodec.Brotli)
+        {
+            using var brotli = new BrotliStream(stream, CompressionMode.Decompress, leaveOpen: true);
+            using var reader = new BinaryReader(brotli, Encoding.UTF8, leaveOpen: true);
+            return ReadNode(reader);
+        }
+
+        if (codec != CompressionCodec.None)
+            throw new InvalidDataException($"Unknown data-tree compression codec: {(byte)codec}");
+
+        using var plain = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true);
+        return ReadNode(plain);
     }
 
     private static void WriteNode(BinaryWriter writer, DataTreeNode node)

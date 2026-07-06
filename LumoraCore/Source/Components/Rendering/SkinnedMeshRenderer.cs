@@ -146,6 +146,52 @@ public class SkinnedMeshRenderer : ImplementableComponent
     // weights would just be churn - same reasoning as the IK bone writes.
     private float[]? _runtimeWeights;
 
+    // Blendshape ownership: one owner per shape, like a per-element field drive. A face driver
+    // claims the shapes it animates; a higher priority wins regardless of resolve order, so blink/viseme own
+    // their shapes over the catch-all expression driver. Drivers re-check ownership at drive time, so a shape
+    // that gets stolen stops being written by the loser - this is what stops drivers from fighting (flicker).
+    // Local/runtime only (the drivers run on every peer from replicated inputs), not synced.
+    public const int BlendShapePriorityBlink = 30;
+    public const int BlendShapePriorityEye = 25;
+    public const int BlendShapePriorityViseme = 20;
+    public const int BlendShapePriorityExpression = 10;
+
+    private object?[]? _blendShapeOwners;
+    private int[]? _blendShapeOwnerPriority;
+
+    /// <summary>Claim a blendshape for an animating driver. Succeeds if unclaimed, already yours, or your
+    /// priority beats the current owner's (a steal). Call from the driver's resolve pass.</summary>
+    public bool ClaimBlendShape(int index, object owner, int priority)
+    {
+        if (owner == null || index < 0 || index >= BlendShapeNames.Count)
+            return false;
+        EnsureClaimArrays();
+        var current = _blendShapeOwners![index];
+        if (current == null || ReferenceEquals(current, owner) || priority > _blendShapeOwnerPriority![index])
+        {
+            _blendShapeOwners[index] = owner;
+            _blendShapeOwnerPriority![index] = priority;
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>Whether <paramref name="owner"/> currently owns this blendshape. Check at drive time so a
+    /// stolen shape isn't written by the previous owner.</summary>
+    public bool OwnsBlendShape(int index, object owner)
+        => _blendShapeOwners != null && index >= 0 && index < _blendShapeOwners.Length
+           && ReferenceEquals(_blendShapeOwners[index], owner);
+
+    private void EnsureClaimArrays()
+    {
+        int n = BlendShapeNames.Count;
+        if (_blendShapeOwners == null || _blendShapeOwners.Length != n)
+        {
+            _blendShapeOwners = new object?[n];
+            _blendShapeOwnerPriority = new int[n];
+        }
+    }
+
     /// <summary>Drive a blendshape weight LOCALLY (no network broadcast). For per-frame animation.</summary>
     public void DriveBlendShapeWeight(int index, float weight)
     {
@@ -186,6 +232,9 @@ public class SkinnedMeshRenderer : ImplementableComponent
         BlendShapeVertices.Clear();
         BlendShapeNormals.Clear();
         BlendShapeWeights.Clear();
+        // Shape set changed - drop ownership so drivers re-claim against the new indices.
+        _blendShapeOwners = null;
+        _blendShapeOwnerPriority = null;
 
         if (names == null || names.Length == 0 || flattenedVertices == null)
             return;

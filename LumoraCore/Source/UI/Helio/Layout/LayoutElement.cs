@@ -2,11 +2,15 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core;
+using Lumora.Core.Math;
 
 namespace Helio.UI.Layout;
 
 public sealed class LayoutElement : UIComputeComponent, ILayoutElement
 {
+    /// <summary>Outer margin (x=left, y=bottom, z=right, w=top), the CSS margin. Default zero.</summary>
+    public readonly Sync<float4> Margin;
+
     public readonly Sync<float> MinWidth;
     public readonly Sync<float> PreferredWidth;
     public readonly Sync<float> FlexibleWidth;
@@ -28,6 +32,7 @@ public sealed class LayoutElement : UIComputeComponent, ILayoutElement
 
     public LayoutElement()
     {
+        Margin = new Sync<float4>(this, float4.Zero);
         MinWidth = new Sync<float>(this, -1f);
         PreferredWidth = new Sync<float>(this, -1f);
         FlexibleWidth = new Sync<float>(this, -1f);
@@ -67,6 +72,8 @@ public sealed class LayoutElement : UIComputeComponent, ILayoutElement
         Area.OnChanged += _ => RectTransform?.MarkChangeDirty();
         PriorityValue.OnChanged += _ => RectTransform?.MarkChangeDirty();
         UseZeroMetrics.OnChanged += _ => RectTransform?.MarkChangeDirty();
+        // Margin shifts/sizes the element on BOTH axes, so invalidate both.
+        Margin.OnChanged += _ => RectTransform?.MarkChangeDirty();
     }
 
     public override void PrepareCompute()

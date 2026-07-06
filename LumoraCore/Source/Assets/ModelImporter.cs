@@ -7,6 +7,7 @@ using System.IO;
 using System.Threading.Tasks;
 using Lumora.Core.Components;
 using Lumora.Core.Components.Avatar;
+using Lumora.Core.Components.Import;
 using Lumora.Core.Input;
 using Lumora.Core.Logging;
 using Lumora.Core.Math;
@@ -50,6 +51,29 @@ public class ModelImportSettings
 
     /// <summary>Whether this is an avatar import.</summary>
     public bool IsAvatarImport { get; set; } = false;
+
+    // --- Options driven by the import dialog (ModelImportRequest). Only those the
+    // importer can actually honor in its own scope are wired through; geometry-level
+    // toggles (normals/tangents/flat-shaded) would have to change the shared decode
+    // post-process and are NOT applied here (see ImportModelPhosAsync). - xlinka
+
+    /// <summary>Material provider to build per mesh: PBS metallic (Lit, default) or Unlit.</summary>
+    public ModelMaterialType Material { get; set; } = ModelMaterialType.Lit;
+
+    /// <summary>Force double-sided rendering (material culling = None).</summary>
+    public bool MakeDualSided { get; set; } = false;
+
+    /// <summary>Apply the material's authored albedo/base color factor.</summary>
+    public bool ImportAlbedoColor { get; set; } = true;
+
+    /// <summary>Apply the material's authored emissive color/map.</summary>
+    public bool ImportEmissive { get; set; } = true;
+
+    /// <summary>Disable mipmap generation on imported textures.</summary>
+    public bool ForceNoMipMaps { get; set; } = false;
+
+    /// <summary>Max texture dimension; -1 = no limit. Not enforced yet (no downscaler).</summary>
+    public int MaxTextureSize { get; set; } = -1;
 }
 
 /// <summary>
@@ -163,9 +187,8 @@ public static class ModelImporter
     // The single Assimp + Phos import path (one importer for everything): parse the file once with
     // Assimp, build a Slot per node with its local transform, build a SkeletonBuilder from the meshes' bone
     // names (bones are just named Slots), and per mesh attach a MeshProvider (decoding only that mesh via
-    // MeshIndex) + a SkinnedMeshRenderer bound to the skeleton by name. No Godot GltfDocument, no SharpGLTF, no
-    // ModelData/ModelDataHook. Assimp/glTF/Godot are all right-handed Y-up, so no coordinate mirror is needed
-    // (we deliberately skip the left-handed-import mirror step). -xlinka
+    // MeshIndex) + a SkinnedMeshRenderer bound to the skeleton by name. Assimp/glTF/Godot are all right-handed
+    // Y-up, so we import straight: no axis negate, no winding flip. -xlinka
     private static async Task<ModelImportResult> ImportModelPhosAsync(
         string filePath, Slot targetSlot, ModelImportSettings settings, LocalDB? localDB,
         IProgress<(float progress, string status)>? progress)
@@ -173,6 +196,12 @@ public static class ModelImporter
         var result = new ModelImportResult();
         try
         {
+            // Honesty: MaxTextureSize has no downscaler yet, so it's surfaced rather than silently ignored. (Geometry
+            // toggles like normals/tangents/flat-shading are decode-driven via the shared GetAssimpPostProcessSteps,
+            // which the per-mesh MeshDecoder reuses verbatim to keep MeshIndex aligned, so they aren't carried here.)
+            if (settings.MaxTextureSize > 0)
+                Logger.Warn($"ModelImporter: 'Max Texture Size' ({settings.MaxTextureSize}) is not enforced - no texture downscaler yet; importing at source resolution.");
+
             progress?.Report((0.1f, "Reading model file..."));
             var bytes = await System.Threading.Tasks.Task.Run(() => File.ReadAllBytes(filePath)).ConfigureAwait(false);
 
@@ -264,7 +293,7 @@ public static class ModelImporter
                         provider.MeshIndex.Value = meshIdx;
 
                         resolvedMaterials.TryGetValue(amesh.MaterialIndex, out var rmat);
-                        var material = BuildMaterialSync(meshSlot, rmat);
+                        var material = BuildMaterialSync(meshSlot, rmat, settings);
 
                         bool skinned = amesh.HasBones || amesh.HasMeshAnimationAttachments;
                         if (skinned)
@@ -311,7 +340,7 @@ public static class ModelImporter
     }
 
     // Marshal a chunk of data-model / Godot work onto the WORLD thread and await it. The action runs inside the
-    // next ProcessSynchronousActions (Stage 1 of World.Update) - on the engine's render thread, under the
+    // next ProcessSynchronousActions (the synchronous-actions step of World.Update) - on the engine's render thread, under the
     // Implementer lock - which is the ONLY place these writes are legal: the data model rejects modifications from
     // a "non-locking thread" and Godot rejects scene-tree edits (AddChild) off the main thread. That's exactly the
     // crash we hit when the build ran on the parse's worker thread.
@@ -354,7 +383,7 @@ public static class ModelImporter
         if (boneNames.Count > 0)
         {
             skelBuilder = modelSlot.AttachComponent<SkeletonBuilder>();
-            Slot? rootBoneSlot = null;
+            var boneSlots = new HashSet<Slot>();
             foreach (var bn in boneNames)
             {
                 if (!nameToSlot.TryGetValue(bn, out var bslot)) continue;
@@ -363,29 +392,38 @@ public static class ModelImporter
                 var sc = bslot.LocalScale.Value;
                 var rest = float4x4.Translate(p) * float4x4.Rotate(rq) * float4x4.Scale(sc);
                 skelBuilder.AddBone(bn, bslot, rest);
-                rootBoneSlot ??= bslot;
+                boneSlots.Add(bslot);
             }
+            Slot? rootBoneSlot = FindTopmostBoneSlot(boneSlots, modelSlot);
             if (rootBoneSlot != null) skelBuilder.RootBone.Target = rootBoneSlot;
             skelBuilder.IsBuilt.Value = true;
             result.Skeleton = skelBuilder;
         }
 
-        // Avatar rig + full-body IK (mirrors AvatarCreator.RunCreate): classify the skeleton into a biped rig and,
-        // if it really is a biped, attach AvatarRoot + AvatarIK + auto-placed reference points so the avatar is
-        // wearable/drivable. Tracking auto-wires later on equip (AvatarManager.EquipAvatar). Content-gated, not
+        // Avatar rig + full-body IK (mirrors AvatarStudio.RunCreate): classify the skeleton into a biped rig and,
+        // if it really is a biped, attach AvatarForm + AvatarIK + auto-placed reference points so the avatar is
+        // wearable/drivable. Tracking auto-wires later on equip (AvatarEquipManager.EquipAvatar). Content-gated, not
         // extension-gated: we classify ANY skinned model and only attach the avatar bits when it's actually a biped.
         if (settings.SetupIK && skelBuilder != null && skelBuilder.IsBuilt.Value)
         {
-            var rig = modelSlot.GetComponent<BipedRig>() ?? modelSlot.AttachComponent<BipedRig>();
+            var rig = modelSlot.GetComponent<HumanoidRig>() ?? modelSlot.AttachComponent<HumanoidRig>();
             rig.PopulateFromSkeleton(skelBuilder);
             // Normalize to a T-pose before IK captures the rest pose, when the import asked for it (an A-pose model
             // would otherwise IK-bind crooked). Opt-in - ForceTpose defaults off.
             if (settings.ForceTpose)
                 rig.MakeTPose();
-            if (rig.IsBiped)
+
+            // Point the avatar root frame at the body's front before references are baked. Equip resets the
+            // root to identity, so a +Z-authored model would otherwise wear backward and walk tail-first. The
+            // alignment is world-invariant (frame only), so nothing visibly turns at import. -xlinka
+            AvatarCalibration.AlignAvatarFacing(modelSlot, rig);
+
+            rig.GuessForwardFlipped();
+
+            if (rig.IsHumanoid)
             {
-                if (modelSlot.GetComponent<AvatarRoot>() == null)
-                    modelSlot.AttachComponent<AvatarRoot>();
+                if (modelSlot.GetComponent<AvatarForm>() == null)
+                    modelSlot.AttachComponent<AvatarForm>();
                 var avatarIk = modelSlot.GetComponent<AvatarIK>() ?? modelSlot.AttachComponent<AvatarIK>();
                 avatarIk.Skeleton.Target = skelBuilder;
                 avatarIk.Rig.Target = rig;
@@ -449,6 +487,36 @@ public static class ModelImporter
         return skelBuilder;
     }
 
+    private static Slot? FindTopmostBoneSlot(HashSet<Slot> boneSlots, Slot modelSlot)
+    {
+        Slot? best = null;
+        int bestDepth = int.MaxValue;
+        foreach (var bone in boneSlots)
+        {
+            if (bone == null || bone.IsDestroyed)
+                continue;
+
+            bool hasBoneAncestor = false;
+            int depth = 0;
+            for (var p = bone.Parent; p != null && p != modelSlot; p = p.Parent)
+            {
+                depth++;
+                if (boneSlots.Contains(p))
+                {
+                    hasBoneAncestor = true;
+                    break;
+                }
+            }
+
+            if (!hasBoneAncestor && depth < bestDepth)
+            {
+                best = bone;
+                bestDepth = depth;
+            }
+        }
+        return best;
+    }
+
     // Rescale to target height + center the model (otherwise it imports at authored scale/origin - a cm-authored
     // model would be 100x too big and spawn off-origin). Bounds from raw vertices. Data-model writes - call on the
     // world thread (from inside OnWorldAsync). -xlinka
@@ -460,7 +528,7 @@ public static class ModelImporter
         // axis for "height" and scales the model wrong (it came in far too big). Recreate that offset here =
         // topmost bone's non-bone parent transform relative to the model root. -xlinka
         float4x4 orient = float4x4.Identity;
-        if (skelBuilder != null && modelSlot != null && skelBuilder.BoneCount > 0)
+        if (skelBuilder != null && skelBuilder.BoneCount > 0)
         {
             var boneSet = new HashSet<Slot>();
             for (int bi = 0; bi < skelBuilder.BoneCount; bi++)
@@ -591,28 +659,52 @@ public static class ModelImporter
         return rm;
     }
 
-    // Attach a PBS_Metallic + its texture providers from a pre-resolved material (WORLD thread - call from inside
-    // OnWorldAsync). No IO, no awaits - just data-model writes. Returns null when there's nothing to build. -xlinka
-    private static MaterialProvider? BuildMaterialSync(Slot parentSlot, ResolvedMaterial? rm)
+    // Attach a material + its texture providers from a pre-resolved material (WORLD thread - call from inside
+    // OnWorldAsync). No IO, no awaits - just data-model writes. The dialog options drive material type (Unlit vs
+    // PBS), double-sidedness, albedo/emissive gating, and texture mipmaps. Returns null when there's nothing to
+    // build. -xlinka
+    private static MaterialProvider? BuildMaterialSync(Slot parentSlot, ResolvedMaterial? rm, ModelImportSettings settings)
     {
         if (rm == null)
             return null;
         var matSlot = parentSlot.AddSlot("Material");
-        var pbs = matSlot.AttachComponent<PBS_Metallic>();
 
         // Diagnostic: which maps did this material actually resolve? A stylized model with ONLY albedo should NOT
         // get metallic/occlusion maps - if it does (Assimp handing back a spurious slot), they drive bogus
         // roughness/AO and show as soft specular/occlusion blobs on the surface. -xlinka
-        Logger.Log($"BuildMaterialSync[maps] on '{parentSlot.SlotName.Value}': albedo={rm.AlbedoUri} normal={rm.NormalUri != null} emissive={rm.EmissiveUri != null} metallic={rm.MetallicUri != null} occlusion={rm.OcclusionUri != null}");
+        Logger.Log($"BuildMaterialSync[maps] on '{parentSlot.SlotName.Value}': type={settings.Material} albedo={rm.AlbedoUri} normal={rm.NormalUri != null} emissive={rm.EmissiveUri != null} metallic={rm.MetallicUri != null} occlusion={rm.OcclusionUri != null}");
 
-        if (rm.HasAlbedoColor) pbs.AlbedoColor.Value = rm.AlbedoColor;
-        if (rm.HasEmissiveColor) pbs.EmissiveColor.Value = rm.EmissiveColor;
+        var cull = settings.MakeDualSided ? Culling.None : Culling.Back;
+        bool noMips = settings.ForceNoMipMaps;
+
+        // Unlit is opt-in. It carries only albedo (tint + base texture); normal/emissive/metallic/
+        // occlusion maps have no slot on it, so we deliberately drop them for this material type. -xlinka
+        if (settings.Material == ModelMaterialType.Unlit)
+        {
+            var unlit = matSlot.AttachComponent<UnlitMaterial>();
+            unlit.Culling.Value = cull;
+            if (settings.ImportAlbedoColor && rm.HasAlbedoColor)
+                unlit.TintColor.Value = rm.AlbedoColor;
+            if (rm.AlbedoUri != null)
+            {
+                var tex = AttachTexture(matSlot, rm.AlbedoUri, isNormal: false, noMips);
+                unlit.Texture.Target = tex;
+                var ac = unlit.TintColor.Value;
+                if (ac.r <= 0.001f && ac.g <= 0.001f && ac.b <= 0.001f)
+                    unlit.TintColor.Value = new colorHDR(1f, 1f, 1f, ac.a <= 0.001f ? 1f : ac.a);
+            }
+            return unlit;
+        }
+
+        var pbs = matSlot.AttachComponent<PBS_Metallic>();
+        pbs.Culling.Value = cull;
+
+        if (settings.ImportAlbedoColor && rm.HasAlbedoColor) pbs.AlbedoColor.Value = rm.AlbedoColor;
+        if (settings.ImportEmissive && rm.HasEmissiveColor) pbs.EmissiveColor.Value = rm.EmissiveColor;
 
         if (rm.AlbedoUri != null)
         {
-            var tex = matSlot.AttachComponent<ImageProvider>();
-            tex.URL.Value = rm.AlbedoUri;
-            pbs.AlbedoTexture.Target = tex;
+            pbs.AlbedoTexture.Target = AttachTexture(matSlot, rm.AlbedoUri, isNormal: false, noMips);
             // A base-color FACTOR of ~0 alongside a base-color TEXTURE is legal in glTF, but the shader multiplies
             // texture * factor -> a fully black mesh. Force the tint to white so the texture actually shows. -xlinka
             var ac = pbs.AlbedoColor.Value;
@@ -621,18 +713,11 @@ public static class ModelImporter
         }
 
         if (rm.NormalUri != null)
-        {
-            var ntex = matSlot.AttachComponent<ImageProvider>();
-            ntex.URL.Value = rm.NormalUri;
-            ntex.IsNormalMap.Value = true;
-            pbs.NormalMap.Target = ntex;
-        }
+            pbs.NormalMap.Target = AttachTexture(matSlot, rm.NormalUri, isNormal: true, noMips);
 
-        if (rm.EmissiveUri != null)
+        if (settings.ImportEmissive && rm.EmissiveUri != null)
         {
-            var etex = matSlot.AttachComponent<ImageProvider>();
-            etex.URL.Value = rm.EmissiveUri;
-            pbs.EmissiveMap.Target = etex;
+            pbs.EmissiveMap.Target = AttachTexture(matSlot, rm.EmissiveUri, isNormal: false, noMips);
             // Same trap as albedo: an emissive map with a ~0 emissive factor multiplies to nothing. Force white. -xlinka
             var ec = pbs.EmissiveColor.Value;
             if (ec.r <= 0.001f && ec.g <= 0.001f && ec.b <= 0.001f)
@@ -640,20 +725,22 @@ public static class ModelImporter
         }
 
         if (rm.MetallicUri != null)
-        {
-            var mtex = matSlot.AttachComponent<ImageProvider>();
-            mtex.URL.Value = rm.MetallicUri;
-            pbs.MetallicMap.Target = mtex;
-        }
+            pbs.MetallicMap.Target = AttachTexture(matSlot, rm.MetallicUri, isNormal: false, noMips);
 
         if (rm.OcclusionUri != null)
-        {
-            var aotex = matSlot.AttachComponent<ImageProvider>();
-            aotex.URL.Value = rm.OcclusionUri;
-            pbs.OcclusionMap.Target = aotex;
-        }
+            pbs.OcclusionMap.Target = AttachTexture(matSlot, rm.OcclusionUri, isNormal: false, noMips);
 
         return pbs;
+    }
+
+    // Attach an ImageProvider for a resolved texture URI, honoring the import's mipmap toggle. -xlinka
+    private static ImageProvider AttachTexture(Slot matSlot, Uri uri, bool isNormal, bool noMips)
+    {
+        var tex = matSlot.AttachComponent<ImageProvider>();
+        tex.URL.Value = uri;
+        if (isNormal) tex.IsNormalMap.Value = true;
+        if (noMips) tex.GenerateMipmaps.Value = false;
+        return tex;
     }
 
     // Resolve a material texture slot to a loadable URI. Embedded textures (path "*N") are saved into the local DB
@@ -673,12 +760,32 @@ public static class ModelImporter
         {
             try
             {
-                if (!embedded.HasCompressedData || embedded.CompressedData == null || embedded.CompressedData.Length == 0)
-                    return null; // uncompressed embedded textures would need re-encoding; skip for now
-                string fmt = string.IsNullOrEmpty(embedded.CompressedFormatHint) ? "png" : embedded.CompressedFormatHint;
+                byte[] bytes;
+                string fmt;
+                if (embedded.HasCompressedData && embedded.CompressedData is { Length: > 0 })
+                {
+                    // Already a real image file (png/jpg/...) - save the bytes verbatim.
+                    bytes = embedded.CompressedData;
+                    fmt = string.IsNullOrEmpty(embedded.CompressedFormatHint) ? "png" : embedded.CompressedFormatHint;
+                }
+                else if (embedded.HasNonCompressedData && embedded.NonCompressedData is { Length: > 0 } && embedded.Width > 0)
+                {
+                    // Raw ARGB texels - re-encode to an uncompressed 32-bit BMP. BMP is just a header + raw rows,
+                    // so this needs no image encoder library and the texture loader reads it natively. Previously
+                    // these were silently dropped, leaving the mesh untextured. -xlinka
+                    bytes = EncodeTexelsToBmp(embedded);
+                    fmt = "bmp";
+                    Logger.Log($"ModelImporter: re-encoded uncompressed embedded texture '{path}' ({embedded.Width}x{embedded.Height}) to BMP.");
+                }
+                else
+                {
+                    Logger.Warn($"ModelImporter: embedded texture '{path}' has no usable data (compressed={embedded.HasCompressedData}, raw={embedded.HasNonCompressedData}); skipping.");
+                    return null;
+                }
+
                 if (localDB != null)
                 {
-                    var uri = await localDB.SaveAssetAsync(embedded.CompressedData, fmt).ConfigureAwait(false);
+                    var uri = await localDB.SaveAssetAsync(bytes, fmt).ConfigureAwait(false);
                     if (!string.IsNullOrEmpty(uri)) return new Uri(uri);
                 }
                 // No local DB - fall back to a temp file so the texture at least loads on this machine.
@@ -686,11 +793,12 @@ public static class ModelImporter
                 Directory.CreateDirectory(dir);
                 string tmp = Path.Combine(dir, $"tex_{(uint)path.GetHashCode():x8}.{fmt}");
                 if (!File.Exists(tmp))
-                    File.WriteAllBytes(tmp, embedded.CompressedData);
+                    File.WriteAllBytes(tmp, bytes);
                 return new Uri(tmp);
             }
-            catch
+            catch (Exception ex)
             {
+                Logger.Warn($"ModelImporter: failed to extract embedded texture '{path}': {ex.Message}");
                 return null;
             }
         }
@@ -703,5 +811,55 @@ public static class ModelImporter
             if (!string.IsNullOrEmpty(uri)) return new Uri(uri);
         }
         return new Uri(full);
+    }
+
+    // Encode Assimp raw ARGB texels into an uncompressed 32-bit BMP (BGRA pixels, bottom-up rows). No encoder
+    // library needed - a 32bpp BMP is a 54-byte header + raw pixel rows, 4-byte aligned so no row padding.
+    // Used for embedded textures that arrive as raw pixels instead of a packed image file. -xlinka
+    private static byte[] EncodeTexelsToBmp(Assimp.EmbeddedTexture tex)
+    {
+        int w = tex.Width;
+        int h = tex.Height;
+        var texels = tex.NonCompressedData;
+        const int headerSize = 54;             // 14 (file) + 40 (info)
+        int pixelBytes = checked(w * h * 4);
+        int fileSize = headerSize + pixelBytes;
+
+        var buf = new byte[fileSize];
+        // BITMAPFILEHEADER
+        buf[0] = (byte)'B'; buf[1] = (byte)'M';
+        WriteInt32LE(buf, 2, fileSize);
+        WriteInt32LE(buf, 10, headerSize);     // pixel data offset
+        // BITMAPINFOHEADER
+        WriteInt32LE(buf, 14, 40);             // header size
+        WriteInt32LE(buf, 18, w);
+        WriteInt32LE(buf, 22, h);              // positive => bottom-up rows
+        buf[26] = 1; buf[27] = 0;              // planes = 1
+        buf[28] = 32; buf[29] = 0;             // 32 bpp
+        // compression BI_RGB (0), sizes/resolutions left zero are valid for BI_RGB
+
+        int dst = headerSize;
+        // BMP rows are bottom-up: write the last source row first.
+        for (int y = h - 1; y >= 0; y--)
+        {
+            int rowStart = y * w;
+            for (int x = 0; x < w; x++)
+            {
+                var t = texels[rowStart + x]; // Texel exposes R/G/B/A bytes
+                buf[dst++] = t.B;
+                buf[dst++] = t.G;
+                buf[dst++] = t.R;
+                buf[dst++] = t.A;
+            }
+        }
+        return buf;
+    }
+
+    private static void WriteInt32LE(byte[] buf, int offset, int value)
+    {
+        buf[offset] = (byte)(value & 0xFF);
+        buf[offset + 1] = (byte)((value >> 8) & 0xFF);
+        buf[offset + 2] = (byte)((value >> 16) & 0xFF);
+        buf[offset + 3] = (byte)((value >> 24) & 0xFF);
     }
 }

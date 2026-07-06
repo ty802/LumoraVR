@@ -2,7 +2,6 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
-using System.Collections.Generic;
 using System.IO;
 using Lumora.Core.Networking.Sync;
 
@@ -22,13 +21,8 @@ public abstract class Component : ComponentBase<Component>
         base.Initialize(container, isNew);
     }
 
-    public override IEnumerable<IWorldElement> GetReferencedObjects(bool assetRefOnly, bool persistentOnly = true)
-    {
-        if (Slot != null && (!persistentOnly || Slot.IsPersistent))
-        {
-            yield return Slot;
-        }
-    }
+    // GetReferencedObjects is inherited from Worker: a component's outgoing references are its sync-ref
+    // members. Its owning Slot is reached structurally (Slot -> component), so it isn't re-listed here.
 
     public override string ParentHierarchyToString()
     {

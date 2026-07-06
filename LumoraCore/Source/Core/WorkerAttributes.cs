@@ -77,3 +77,13 @@ public sealed class GloballyRegisteredAttribute : Attribute
 public sealed class HideInInspectorAttribute : Attribute
 {
 }
+
+// Opens a method up to be bound by a SyncDelegate that resolves from saved or replicated data.
+// A delegate target loaded from a world file or received from a peer is refused unless its method
+// carries this - it is the boundary that stops crafted data from binding an action to an arbitrary
+// same-named method. Binding a method group through SetAction at runtime is unaffected (that path
+// hands the delegate over directly and never goes through name resolution).
+[AttributeUsage(AttributeTargets.Method, AllowMultiple = false, Inherited = true)]
+public sealed class SyncMethodAttribute : Attribute
+{
+}

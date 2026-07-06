@@ -148,6 +148,7 @@ public class PanelShell : UIComponent
 
     // Bound to the close button as a duplicable action (not a closure) so a
     // cloned panel's close button destroys the clone, not the original.
+    [SyncMethod]
     public void OnClosePressed(Button button, UIInteractionContext context)
     {
         Close();
@@ -164,6 +165,13 @@ public class PanelShell : UIComponent
         _ = Slot.GetOrAttachComponent<Canvas>();
         _grabbable = Slot.GetOrAttachComponent<Grabbable>();
         _backgroundImage = Slot.GetOrAttachComponent<Image>();
+
+        // The background is the panel's DEPTH WALL: a ZWrite material (pushed slightly away from the
+        // camera in the shader) writes depth first, so the panel's own coplanar UI passes the depth
+        // test while panels/content behind get occluded instead of rendering through. -xlinka
+        var backing = Slot.GetOrAttachComponent<UIUnlitMaterial>();
+        backing.ZWrite.Value = Lumora.Core.Assets.ZWrite.On;
+        _backgroundImage.Material.Target = backing;
 
         _headerSlot = Slot.FindChildOrAdd("Header");
         _headerRect = _headerSlot.GetOrAttachComponent<RectTransform>();

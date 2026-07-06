@@ -114,12 +114,56 @@ public class DebugUdpSender : IDisposable
         Send($"PROF|{comps}|{slots}");
     }
 
+    /// <summary>
+    /// Send the networking snapshot to the debug console (the "Network" tab): session role/identity,
+    /// the sync traffic counters, and one row per live connection (user, transport, endpoint, ping,
+    /// encryption, bytes received).
+    /// Format:
+    /// NET|role|world|sessionId|visibility|syncRate|connCount|latencyMs|allEncrypted
+    ///    |sDeltas|rDeltas|sFulls|rFulls|sStreams|rStreams|sRaw|rRaw|corrections|processed|lastDeltaChanges
+    ///    |toProcess|toTransmit|incoming|pendingStreams|uploads|downloads|assetRequests|relays
+    ///    |name~transport~endpoint~ping~enc~recvBytes;name~...
+    /// </summary>
+    public void SendNetwork(
+        string role, string worldName, string sessionId, string visibility,
+        int syncRate, int connCount, int latencyMs, bool allEncrypted,
+        int sentDeltas, int recvDeltas, int sentFulls, int recvFulls,
+        int sentStreams, int recvStreams, int sentRaw, int recvRaw,
+        int corrections, int processed, int lastDeltaChanges,
+        int toProcess, int toTransmit, int incoming, int pendingStreams,
+        int uploads, int downloads, int assetRequests, int relays,
+        IEnumerable<(string name, string transport, string endpoint, int ping, bool encrypted, ulong recvBytes)> connections)
+    {
+        var rows = string.Join(";", connections.Select(c =>
+            $"{NetField(c.name)}~{NetField(c.transport)}~{NetField(c.endpoint)}~{c.ping}~{(c.encrypted ? 1 : 0)}~{c.recvBytes}"));
+
+        Send(
+            $"NET|{NetField(role)}|{NetField(worldName)}|{NetField(sessionId)}|{NetField(visibility)}" +
+            $"|{syncRate}|{connCount}|{latencyMs}|{(allEncrypted ? 1 : 0)}" +
+            $"|{sentDeltas}|{recvDeltas}|{sentFulls}|{recvFulls}|{sentStreams}|{recvStreams}|{sentRaw}|{recvRaw}" +
+            $"|{corrections}|{processed}|{lastDeltaChanges}" +
+            $"|{toProcess}|{toTransmit}|{incoming}|{pendingStreams}|{uploads}|{downloads}|{assetRequests}|{relays}" +
+            $"|{rows}");
+    }
+
     private static string SanitizeField(string value)
     {
         return value
             .Replace('|', '/')
             .Replace(':', '_')
             .Replace(',', ';');
+    }
+
+    // Network rows use '~' (field) and ';' (row) separators on top of the '|' top-level delimiter, so
+    // strip all three from free-text fields (user names, endpoints) to keep the packet parseable.
+    private static string NetField(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return "-";
+        return value
+            .Replace('|', '/')
+            .Replace('~', '-')
+            .Replace(';', ',');
     }
 
     private void Send(string message)

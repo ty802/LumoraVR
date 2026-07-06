@@ -35,6 +35,9 @@ public class UndoManager : Component
     public string? NextUndoDescription => CanUndo ? _undo[^1].Description : null;
     public string? NextRedoDescription => CanRedo ? _redo[^1].Description : null;
 
+    /// <summary>Most recent undo batch, so consecutive edits of the same target can merge.</summary>
+    public IUndoBatch? CurrentBatch => CanUndo ? _undo[^1] : null;
+
     public void Record(IUndoBatch batch)
     {
         if (batch == null)

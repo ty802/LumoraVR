@@ -78,7 +78,7 @@ public class NoclipLocomotion : SmoothLocomotionBase
             speed *= SprintMultiplier;
 
         // Scale flight speed with the user's own scale so it feels consistent
-        // when shrunk or grown (ref applies LocalScaleToGlobal to MaxSpeed).
+        // when shrunk or grown.
         float scaledSpeed = speed * (userRoot.GlobalScale <= 0f ? 1f : userRoot.GlobalScale);
         userRoot.Slot.GlobalPosition += move * scaledSpeed * delta;
 

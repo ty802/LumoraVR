@@ -8,8 +8,8 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 namespace Lumora.Core.Persistence;
 
 /// <summary>
-/// Persists a <see cref="World"/> to and from bytes/files: <c>World.SaveWorld</c> -&gt; data tree
-/// -&gt; <see cref="DataTreeConverter"/> bytes, and back. Used for the local home save; richer
+/// Persists a <see cref="World"/> to and from bytes/files: <c>World.SaveWorld</c> -> data tree
+/// -> <see cref="DataTreeConverter"/> bytes, and back. Used for the local home save; richer
 /// record/cloud storage and asset bundling can layer on top later.
 /// </summary>
 public static class WorldStorage

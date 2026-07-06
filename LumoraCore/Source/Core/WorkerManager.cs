@@ -193,10 +193,43 @@ public class WorkerManager
     // null. -xlinka
     private static readonly Dictionary<string, Type> _typeCache = new();
 
+    // Renamed component types, old full name -> current full name, so worlds/items saved before a
+    // rename still load. Add an entry here whenever a persisted component class is renamed. -xlinka
+    private static readonly Dictionary<string, string> _renamedTypes = new()
+    {
+        ["Lumora.Core.Components.Avatar.AvatarObjectSlot"] = "Lumora.Core.Components.Avatar.AvatarSocket",
+        ["Lumora.Core.Components.Avatar.AvatarPoseSmoothLerp"] = "Lumora.Core.Components.Avatar.PoseSmoother",
+        ["Lumora.Core.Components.Avatar.AvatarPoseNode"] = "Lumora.Core.Components.Avatar.AvatarPoseDriver",
+        ["Lumora.Core.Components.Avatar.AvatarManager"] = "Lumora.Core.Components.Avatar.AvatarEquipManager",
+        ["Lumora.Core.Components.Avatar.AvatarRoot"] = "Lumora.Core.Components.Avatar.AvatarForm",
+        ["Lumora.Core.Components.Avatar.BipedRig"] = "Lumora.Core.Components.Avatar.HumanoidRig",
+        ["Lumora.Core.Components.Avatar.HandPoser"] = "Lumora.Core.Components.Avatar.HandPoseDriver",
+        ["Lumora.Core.Components.Avatar.AvatarFingerPoseInfo"] = "Lumora.Core.Components.Avatar.UserHandPoseInfo",
+        ["Lumora.Core.Components.Avatar.AvatarHandDataAssigner"] = "Lumora.Core.Components.Avatar.HandPoseBinder",
+        ["Lumora.Core.Components.Avatar.FingerPoseStreamManager"] = "Lumora.Core.Components.Avatar.HandPoseStreamManager",
+        ["Lumora.Core.Components.Avatar.FingerPoseLerp"] = "Lumora.Core.Components.Avatar.HandPoseBlend",
+        ["Lumora.Core.Components.Avatar.StaticFingerPose"] = "Lumora.Core.Components.Avatar.StaticHandPose",
+        ["Lumora.Core.Components.Avatar.FingerPosePreset"] = "Lumora.Core.Components.Avatar.HandPosePreset",
+        ["Lumora.Core.Components.Avatar.FingerPoseModifier"] = "Lumora.Core.Components.Avatar.HandPoseModifier",
+        ["Lumora.Core.Components.Avatar.AvatarDestroyOnDequip"] = "Lumora.Core.Components.Avatar.DiscardOnDequip",
+        ["Lumora.Core.Components.Avatar.AvatarNameTagAssigner"] = "Lumora.Core.Components.Avatar.NameBadgeDriver",
+        ["Lumora.Core.Components.Avatar.CommonAvatarBuilder"] = "Lumora.Core.Components.Avatar.AvatarAssembler",
+        ["Lumora.Core.Components.Avatar.AvatarCreator"] = "Lumora.Core.Components.Avatar.AvatarStudio",
+        ["Lumora.Core.Components.Avatar.DirectVisemeDriver"] = "Lumora.Core.Components.Avatar.VisemeWeightDriver",
+        ["Lumora.Core.Components.Avatar.VisemeAnalyzer"] = "Lumora.Core.Components.Avatar.LipSyncAnalyzer",
+        ["Lumora.Core.Components.Avatar.EyeRotationDriver"] = "Lumora.Core.Components.Avatar.EyeGazeDriver",
+        ["Lumora.Core.Components.Avatar.EyeTrackingStreamManager"] = "Lumora.Core.Components.Avatar.EyeStreamManager",
+        ["Lumora.Core.Components.Avatar.MouthTrackingStreamManager"] = "Lumora.Core.Components.Avatar.MouthStreamManager",
+        ["Lumora.Core.Components.Avatar.ExpressionDriver"] = "Lumora.Core.Components.Avatar.MouthExpressionDriver",
+    };
+
     public static Type GetType(string typename)
     {
         if (string.IsNullOrEmpty(typename))
             return null!;
+
+        if (_renamedTypes.TryGetValue(typename, out var currentName))
+            typename = currentName;
 
         lock (_typeCache)
         {

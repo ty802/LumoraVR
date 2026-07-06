@@ -193,6 +193,29 @@ public struct color : IEquatable<color>
     }
 
     /// <summary>
+    /// Treats this color as sRGB (gamma) and returns its Linear-space equivalent. Alpha is unchanged.
+    /// Convert to Linear before doing lighting/blend math, then back with <see cref="ToGamma"/>.
+    /// </summary>
+    public readonly color ToLinear() =>
+        new color(ColorSpace.GammaToLinear(r), ColorSpace.GammaToLinear(g), ColorSpace.GammaToLinear(b), a);
+
+    /// <summary>
+    /// Treats this color as Linear and returns its sRGB (gamma) equivalent. Alpha is unchanged.
+    /// </summary>
+    public readonly color ToGamma() =>
+        new color(ColorSpace.LinearToGamma(r), ColorSpace.LinearToGamma(g), ColorSpace.LinearToGamma(b), a);
+
+    /// <summary>
+    /// Converts this color from one profile to another; a no-op when the profiles match.
+    /// </summary>
+    public readonly color ConvertProfile(ColorProfile from, ColorProfile to)
+    {
+        if (from == to)
+            return this;
+        return from == ColorProfile.sRGB ? ToLinear() : ToGamma();
+    }
+
+    /// <summary>
     /// Returns the grayscale value (luminance) of this color.
     /// </summary>
     public float Grayscale => 0.299f * r + 0.587f * g + 0.114f * b;

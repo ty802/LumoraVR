@@ -44,8 +44,8 @@ public class StreamMessage
         var message = new StreamMessage();
         int count = reader.ReadInt32();
 
-        // Cap entry count: an attacker could otherwise send count=int.MaxValue
-        // and walk us off the end of the stream while allocating a giant List.
+        // Cap entry count so a malformed or oversized message can't walk us off the
+        // end of the stream or force a giant allocation.
         if (count < 0 || count > NetworkLimits.MaxStreamEntriesPerMessage)
             throw new InvalidDataException($"StreamMessage entry count {count} out of bounds (cap {NetworkLimits.MaxStreamEntriesPerMessage}).");
 
@@ -93,7 +93,7 @@ public struct StreamEntry
             UserID = reader.ReadUInt64(),
             StreamID = reader.ReadInt32(),
             // Bounded: stream entries are high-frequency tracking/audio payloads;
-            // anything past MaxStreamEntryData is malicious or a bug.
+            // anything past MaxStreamEntryData is malformed or a bug.
             Data = reader.ReadBoundedBytesInt32(NetworkLimits.MaxStreamEntryData)
         };
     }

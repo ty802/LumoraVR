@@ -84,6 +84,46 @@ public static class FabrikSolver
         }
     }
 
+    // Reconcile a chain whose BOTH ends are pinned (e.g. hips exact + head exact): alternate a
+    // backward pass from the pinned end and a forward pass from the pinned root so the interior
+    // joints satisfy segment lengths without moving either end. Hard-pinning the end after a
+    // one-ended solve stretches the last segment instead - the neck visibly lengthened on crouch.
+    // The final end re-pin leaves any residual in the last segment, where the neck absorbs it. -xlinka
+    public static void ReconcilePinnedEnds(
+        float3[] joints,
+        float[] lengths,
+        float3 root,
+        float3 end,
+        int iterations = 2)
+    {
+        int n = joints.Length;
+        if (n < 3 || lengths.Length < n - 1)
+            return;
+
+        for (int iter = 0; iter < iterations; iter++)
+        {
+            joints[n - 1] = end;
+            for (int i = n - 2; i >= 1; i--)
+            {
+                float r = float3.Distance(joints[i + 1], joints[i]);
+                if (r < Epsilon) continue;
+                float lambda = lengths[i] / r;
+                joints[i] = joints[i + 1] * (1f - lambda) + joints[i] * lambda;
+            }
+
+            joints[0] = root;
+            for (int i = 0; i < n - 1; i++)
+            {
+                float r = float3.Distance(joints[i + 1], joints[i]);
+                if (r < Epsilon) continue;
+                float lambda = lengths[i] / r;
+                joints[i + 1] = joints[i] * (1f - lambda) + joints[i + 1] * lambda;
+            }
+        }
+
+        joints[n - 1] = end;
+    }
+
     // Analytic 3-joint solve. root is fixed, end goes to target (clamped to
     // reach), mid (elbow/knee) bends toward pole. Returns solved mid + end.
     public static void SolveTwoBone(

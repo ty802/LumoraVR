@@ -43,6 +43,22 @@ public interface IConnection : IDisposable
     ulong ReceivedBytes { get; }
 
     /// <summary>
+    /// Round-trip latency to the remote in milliseconds, or -1 if unknown
+    /// (e.g. not yet connected). For diagnostics/telemetry only.
+    /// </summary>
+    int Ping { get; }
+
+    /// <summary>
+    /// True once the link is end-to-end encrypted. For diagnostics/telemetry only.
+    /// </summary>
+    bool IsEncrypted { get; }
+
+    /// <summary>
+    /// Short transport name for diagnostics (e.g. "LNL", "Steam").
+    /// </summary>
+    string TransportName { get; }
+
+    /// <summary>
     /// Event fired when connection is closed.
     /// </summary>
     event Action<IConnection> Closed;

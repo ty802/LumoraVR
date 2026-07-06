@@ -32,7 +32,17 @@ public class HeadDevice : InputDevice
     public Vector3 CombinedEyeGazeDirection { get; set; }
     public float LeftEyeOpenness { get; set; } = 1f;
     public float RightEyeOpenness { get; set; } = 1f;
+    // Pupil dilation 0..1 (0 = constricted, 1 = dilated). A face/eye tracker fills it; left untouched it
+    // stays 0 and the EyeExpressionDriver supplies a subtle procedural dilation instead.
     public float PupilDilation { get; set; }
+
+    // Extra per-eye expression channels (0..1) a face tracker can provide. Inert (0) without one.
+    public float LeftEyeWiden { get; set; }
+    public float RightEyeWiden { get; set; }
+    public float LeftEyeSqueeze { get; set; }
+    public float RightEyeSqueeze { get; set; }
+    public float LeftEyeFrown { get; set; }
+    public float RightEyeFrown { get; set; }
 
     // IPD (Interpupillary Distance)
     public float IPD { get; set; } = 0.063f; // Default 63mm
@@ -57,9 +67,9 @@ public class HeadDevice : InputDevice
     public bool IsTracked { get; set; } = false;
 
     /// <summary>
-    /// Get the forward direction of the head.
+    /// Get the forward direction of the head. Lumora/Godot view forward is local -Z.
     /// </summary>
-    public Vector3 Forward => Vector3.Transform(Vector3.UnitZ, Rotation);
+    public Vector3 Forward => Vector3.Transform(-Vector3.UnitZ, Rotation);
 
     /// <summary>
     /// Get the up direction of the head.

@@ -501,3 +501,11 @@ public class FloatQValueStream : ValueStream<Lumora.Core.Math.floatQ>
         return Lumora.Core.Math.floatQ.Slerp(a, b, lerp);
     }
 }
+
+/// <summary>
+/// Boolean value stream. Concrete subtype so it resolves by name on decode (the
+/// generic <see cref="ValueStream{T}"/> isn't directly instantiable over the wire).
+/// </summary>
+public class BoolValueStream : ValueStream<bool>
+{
+}

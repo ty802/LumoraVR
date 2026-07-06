@@ -27,6 +27,7 @@ public sealed class HelioTestActions : Component
         ShellClickCount = new Sync<int>(this, 0);
     }
 
+    [SyncMethod]
     public void OnShellPressed(Button button, UIInteractionContext context)
     {
         ShellClickCount.Value++;
@@ -44,16 +45,19 @@ public sealed class HelioTestActions : Component
         SetStatus("PanelShell title/header updated live");
     }
 
+    [SyncMethod]
     public void OnLaserPressed(Button button, UIInteractionContext context)
     {
         SetStatus($"Clicked {DateTime.Now:HH:mm:ss}");
     }
 
+    [SyncMethod]
     public void OnCheckboxChanged(Checkbox checkbox, bool value)
     {
         SetStatus(value ? "Checkbox on" : "Checkbox off");
     }
 
+    [SyncMethod]
     public void OnSliderChanged(Slider slider, float value)
     {
         SetStatus($"Slider {value:0.00}");

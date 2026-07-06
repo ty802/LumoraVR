@@ -20,6 +20,8 @@ public class HorizontalLayout : LayoutController
     public readonly Sync<bool> CenterChildren;
     // Where children sit on the cross (vertical) axis when not force-expanded. Default Center = prior behavior.
     public readonly Sync<LayoutAlignment> CrossAlignment;
+    // How children distribute along the main (horizontal) axis when not force-expanded (justify-content).
+    public readonly Sync<MainAxisAlignment> MainAlignment;
 
     private float _spacing;
     private float _padLeft;
@@ -30,6 +32,7 @@ public class HorizontalLayout : LayoutController
     private bool _forceExpandHeight;
     private bool _centerChildren;
     private LayoutAlignment _crossAlignment;
+    private MainAxisAlignment _mainAlignment;
     private readonly List<LayoutMetrics> _metrics = new();
     private readonly List<LayoutSizing.Element> _elements = new();
 
@@ -44,6 +47,7 @@ public class HorizontalLayout : LayoutController
         ForceExpandHeight = new Sync<bool>(this, true);
         CenterChildren = new Sync<bool>(this, false);
         CrossAlignment = new Sync<LayoutAlignment>(this, LayoutAlignment.Center);
+        MainAlignment = new Sync<MainAxisAlignment>(this, MainAxisAlignment.Start);
     }
 
     protected override void FlagChanges(RectTransform rect)
@@ -65,6 +69,7 @@ public class HorizontalLayout : LayoutController
         _forceExpandHeight = ForceExpandHeight.Value;
         _centerChildren = CenterChildren.Value;
         _crossAlignment = CrossAlignment.Value;
+        _mainAlignment = MainAlignment.Value;
     }
 
     public override void ArrangeChildren(IReadOnlyList<RectTransform> children)
@@ -83,47 +88,57 @@ public class HorizontalLayout : LayoutController
         _metrics.Clear();
         for (int i = 0; i < children.Count; i++)
         {
-            _metrics.Add(LayoutSizing.IsIgnored(children[i])
-                ? default
-                : LayoutSizing.Measured(children[i], LayoutDirection.Horizontal));
+            if (LayoutSizing.IsIgnored(children[i]))
+            {
+                _metrics.Add(default);
+                continue;
+            }
+            var m = LayoutSizing.Measured(children[i], LayoutDirection.Horizontal);
+            var margin = LayoutSizing.GetMargin(children[i]);
+            float mainMargin = margin.x + margin.z; // left + right
+            m.Min += mainMargin;
+            m.Preferred += mainMargin;
+            _metrics.Add(m);
         }
 
         LayoutSizing.Distribute(innerWidth, _spacing, _padLeft, _metrics, _elements, _forceExpandWidth);
 
-        if (_centerChildren && !_forceExpandWidth && _elements.Count > 0)
+        if (!_forceExpandWidth)
         {
-            var first = _elements[0];
-            var last = _elements[_elements.Count - 1];
-            float contentWidth = (last.Offset + last.Size) - first.Offset;
-            float shift = (innerWidth - contentWidth) * 0.5f;
-            if (shift > 0f)
-            {
-                for (int i = 0; i < _elements.Count; i++)
-                {
-                    var element = _elements[i];
-                    element.Offset += shift;
-                    _elements[i] = element;
-                }
-            }
+            // CenterChildren stays as a back-compat shortcut for the common case.
+            var mainAlign = _mainAlignment;
+            if (_centerChildren && mainAlign == MainAxisAlignment.Start)
+                mainAlign = MainAxisAlignment.Center;
+            LayoutSizing.AlignMainAxis(_elements, innerWidth, _padLeft, _spacing, mainAlign);
         }
 
         for (int i = 0; i < children.Count; i++)
         {
             if (LayoutSizing.IsIgnored(children[i])) continue;
             var element = _elements[i];
-            float childHeight = availableHeight;
-            float childY = yMin;
+            var margin = LayoutSizing.GetMargin(children[i]);
+            float mainMargin = margin.x + margin.z;  // left + right
+            float crossMargin = margin.y + margin.w; // bottom + top
+
+            float childX = rect.xMin + element.Offset + margin.x;
+            float childWidth = element.Size - mainMargin;
+            if (childWidth < 0f) childWidth = 0f;
+
+            float cellHeight = availableHeight - crossMargin;
+            if (cellHeight < 0f) cellHeight = 0f;
+            float childHeight = cellHeight;
+            float childY = yMin + margin.y;
 
             if (!_forceExpandHeight)
             {
                 var vertical = LayoutSizing.Measured(children[i], LayoutDirection.Vertical);
-                childHeight = Clamp(vertical.Flexible > 0f ? availableHeight : Max(vertical.Min, Min(vertical.Preferred, availableHeight)), 0f, availableHeight);
+                childHeight = Clamp(vertical.Flexible > 0f ? cellHeight : Max(vertical.Min, Min(vertical.Preferred, cellHeight)), 0f, cellHeight);
                 // Cross-axis (vertical, y-up): Start=top, End=bottom, Center=middle.
                 float align = _crossAlignment switch { LayoutAlignment.Start => 1f, LayoutAlignment.End => 0f, _ => 0.5f };
-                childY = yMin + (availableHeight - childHeight) * align;
+                childY = yMin + margin.y + (cellHeight - childHeight) * align;
             }
 
-            children[i].SetLocalComputeRect(new Rect(rect.xMin + element.Offset, childY, element.Size, childHeight));
+            children[i].SetLocalComputeRect(new Rect(childX, childY, childWidth, childHeight));
         }
     }
 
@@ -140,16 +155,19 @@ public class HorizontalLayout : LayoutController
         {
             if (LayoutSizing.IsIgnored(RectTransform.RectChildren[i])) continue;
             var metrics = LayoutSizing.Measured(RectTransform.RectChildren[i], direction);
+            var margin = LayoutSizing.GetMargin(RectTransform.RectChildren[i]);
             if (direction == LayoutDirection.Horizontal)
             {
-                min += metrics.Min;
-                preferred += metrics.Preferred;
+                float mm = margin.x + margin.z;
+                min += metrics.Min + mm;
+                preferred += metrics.Preferred + mm;
                 flexible += metrics.Flexible;
             }
             else
             {
-                min = Max(min, metrics.Min);
-                preferred = Max(preferred, metrics.Preferred);
+                float cm = margin.y + margin.w;
+                min = Max(min, metrics.Min + cm);
+                preferred = Max(preferred, metrics.Preferred + cm);
                 flexible += metrics.Flexible;
             }
         }

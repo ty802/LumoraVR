@@ -182,8 +182,8 @@ public sealed class DevToolItem : ToolItem
         _visualSlot = Slot.FindChild("Visual", recursive: false) ?? Slot.AddSlot("Visual");
         _visualSlot.LocalPosition.Value = float3.Backward * 0.05f;
         // The cone's apex points along +Y; rotate so it points down the tool's tip direction
-        // (Backward), so the dev tip reads as a forward-facing pointer.
-        _visualSlot.LocalRotation.Value = floatQ.AxisAngle(float3.Right, -90f);
+        // (Backward), so the dev tip reads as a forward-facing pointer. AxisAngle is RADIANS.
+        _visualSlot.LocalRotation.Value = floatQ.AxisAngle(float3.Right, -System.MathF.PI * 0.5f);
         _visualSlot.LocalScale.Value = float3.One;
 
         var cone = _visualSlot.GetComponent<ConeMesh>() ?? _visualSlot.AttachComponent<ConeMesh>();

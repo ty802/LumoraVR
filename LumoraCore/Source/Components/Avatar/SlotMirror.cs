@@ -14,7 +14,7 @@ namespace Lumora.Core.Components.Avatar;
 /// world transform AND the target's parent's, so a WorldTransformChanged subscription on this slot
 /// alone would drift whenever the target's parent moves while the source is static.
 /// </summary>
-[ComponentCategory("Avatar")]
+[ComponentCategory("Users/Avatar")]
 public class SlotMirror : Component
 {
     /// <summary>The slot whose transform will be driven to match this slot.</summary>

@@ -16,6 +16,9 @@ public class UITextMaterial : MaterialProvider, ICommonMaterial
     public readonly Sync<colorHDR> TintColor;
     public readonly Sync<bool> UseVertexColor;
     public readonly Sync<float> PixelRange;
+    // True when the bound atlas is a multi-channel signed distance field (crisp at any size); false = plain
+    // coverage alpha (bitmap fonts, or a font not imported with MSDF). Set from the atlas by whoever binds it. -xlinka
+    public readonly Sync<bool> UseMSDF;
     public readonly Sync<bool> AlphaClip;
     public readonly Sync<float> AlphaCutoff;
     public readonly Sync<BlendMode> BlendMode;
@@ -25,6 +28,7 @@ public class UITextMaterial : MaterialProvider, ICommonMaterial
     public readonly Sync<int> RenderQueue;
     public readonly Sync<Rect> Rect;
     public readonly Sync<bool> RectClip;
+    public readonly Sync<float2> ClipOffset;
     public readonly Sync<ColorMask> ColorMask;
     public readonly Sync<StencilComparison> StencilComparison;
     public readonly Sync<StencilOperation> StencilOperation;
@@ -58,6 +62,7 @@ public class UITextMaterial : MaterialProvider, ICommonMaterial
         TintColor = new Sync<colorHDR>(this, colorHDR.White);
         UseVertexColor = new Sync<bool>(this, true);
         PixelRange = new Sync<float>(this, 8f);
+        UseMSDF = new Sync<bool>(this, false);
         AlphaClip = new Sync<bool>(this, true);
         // SDF-style edge: smoothstep across the half-coverage threshold using fwidth
         // gives a ~1px screen-space edge at any distance/angle, instead of soft-alphaing
@@ -73,6 +78,7 @@ public class UITextMaterial : MaterialProvider, ICommonMaterial
         RenderQueue = new Sync<int>(this, 3010);
         Rect = new Sync<Rect>(this, Lumora.Core.Math.Rect.Zero);
         RectClip = new Sync<bool>(this, false);
+        ClipOffset = new Sync<float2>(this, float2.Zero);
         ColorMask = new Sync<ColorMask>(this, Assets.ColorMask.RGBA);
         StencilComparison = new Sync<StencilComparison>(this, Assets.StencilComparison.Always);
         StencilOperation = new Sync<StencilOperation>(this, Assets.StencilOperation.Keep);
@@ -93,6 +99,7 @@ public class UITextMaterial : MaterialProvider, ICommonMaterial
         asset.SetColor("TintColor", TintColor.Value);
         asset.SetBool("UseVertexColor", UseVertexColor.Value);
         asset.SetFloat("PixelRange", PixelRange.Value);
+        asset.SetBool("UseMSDF", UseMSDF.Value);
         asset.SetBool("AlphaClip", AlphaClip.Value);
         asset.SetFloat("AlphaCutoff", AlphaCutoff.Value);
         asset.SetInt("ZWrite", (int)ZWrite.Value);
@@ -100,6 +107,7 @@ public class UITextMaterial : MaterialProvider, ICommonMaterial
         asset.SetInt("RenderQueue", RenderQueue.Value);
         asset.SetFloat4("Rect", new float4(rect.xMin, rect.yMin, rect.xMax, rect.yMax));
         asset.SetBool("RectClip", RectClip.Value);
+        asset.SetFloat2("ClipOffset", ClipOffset.Value);
         asset.SetInt("ColorMask", (int)ColorMask.Value);
         asset.SetInt("StencilComparison", (int)StencilComparison.Value);
         asset.SetInt("StencilOperation", (int)StencilOperation.Value);

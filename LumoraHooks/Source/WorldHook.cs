@@ -25,6 +25,17 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
     // Cap the skip-and-retry loop that scopes shared-space queries to this world.
     private const int MaxQueryIterations = 16;
 
+    // Per-world collision layer bit: every physics body in this world carries it, and this world's
+    // queries mask to it, so cross-world hits become impossible at the physics level instead of
+    // being filtered by the retry loop (which stays as a fallback for legacy bit-0 bodies and
+    // caller excludes). 31 bits rotate; bit 0 is the legacy default shared by pre-bit bodies.
+    private static int _nextWorldBitIndex;
+    public uint CollisionBit { get; private set; } = 1u;
+
+    // The bit for a body that should collide/query within the given world (1 = legacy default).
+    public static uint GetCollisionBitFor(World? world)
+        => (world?.Hook as WorldHook)?.CollisionBit ?? 1u;
+
     public static WorldHook Constructor()
     {
         return new WorldHook();
@@ -33,6 +44,7 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
     public void Initialize(World owner)
     {
         Owner = owner;
+        CollisionBit = 1u << (1 + System.Threading.Interlocked.Increment(ref _nextWorldBitIndex) % 31);
 
         // Get WorldManager hook to parent under
         var worldManagerHook = Owner.WorldManager.Hook as WorldManagerHook;
@@ -174,6 +186,9 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
         var query = PhysicsRayQueryParameters3D.Create(from, from + dir * maxDistance);
         query.CollideWithBodies = true;
         query.CollideWithAreas = hitTriggers; // grabbable / image colliders are Area3D sensors
+        // This world's bit plus the legacy default bit (pre-bit bodies); the retry loop below
+        // still world-checks whatever comes through.
+        query.CollisionMask = CollisionBit | 1u;
         var excludeRids = new global::Godot.Collections.Array<Rid>();
         query.Exclude = excludeRids;
 
@@ -246,6 +261,7 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
             Shape = shape,
             CollideWithBodies = true,
             CollideWithAreas = hitTriggers,
+            CollisionMask = CollisionBit | 1u,
         };
         var exclude = new global::Godot.Collections.Array<Rid>();
         query.Exclude = exclude;
@@ -267,7 +283,7 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
             if (info.Count == 0)
                 return false; // contact but no rest info to identify/scope the collider
 
-            var slot = ResolveSlot(info["collider"].As<Node>());
+            var slot = ResolveSlotById(info["collider_id"].AsUInt64());
             if (InThisWorld(slot))
             {
                 FillHit(ref hit, (Vector3)info["point"], (Vector3)info["normal"], from, slot);
@@ -291,6 +307,7 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
             Transform = transform,
             CollideWithBodies = true,
             CollideWithAreas = hitTriggers,
+            CollisionMask = CollisionBit | 1u,
         };
 
         foreach (var dict in space.IntersectShape(query, 32))
@@ -300,6 +317,56 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
                 results.Add(slot!);
         }
         return results.Count;
+    }
+
+    // Reused across the hundreds of per-particle soft-body resolves each frame - allocating a shape +
+    // query params per particle would churn the GC hard. -xlinka
+    private SphereShape3D? _resolveShape;
+    private PhysicsShapeQueryParameters3D? _resolveQuery;
+    private global::Godot.Collections.Array<Rid>? _resolveExclude;
+
+    public bool ResolveSphere(in float3 center, float radius, IReadOnlyList<Lumora.Core.Slot>? exclude, out float3 correctedCenter, out float3 normal)
+    {
+        correctedCenter = center;
+        normal = float3.Up;
+        var space = GetSpace();
+        if (space == null || radius <= 0f)
+            return false;
+
+        _resolveShape ??= new SphereShape3D();
+        _resolveShape.Radius = radius;
+        _resolveExclude ??= new global::Godot.Collections.Array<Rid>();
+        _resolveExclude.Clear();
+        var query = _resolveQuery ??= new PhysicsShapeQueryParameters3D();
+        query.Shape = _resolveShape;
+        query.CollideWithBodies = true;
+        query.CollideWithAreas = false;           // solids only - not grab/image sensors
+        query.CollisionMask = CollisionBit | 1u;
+        query.Exclude = _resolveExclude;
+
+        var basis = Basis.Identity;
+        var c = new Vector3(center.x, center.y, center.z);
+        // GetRestInfo returns the single deepest contact; if that collider is foreign-world or excluded,
+        // skip it and retry so an in-world contact underneath still resolves.
+        for (int i = 0; i < MaxQueryIterations; i++)
+        {
+            query.Transform = new Transform3D(basis, c);
+            var info = space.GetRestInfo(query);
+            if (info.Count == 0)
+                return false;
+
+            var slot = ResolveSlotById(info["collider_id"].AsUInt64());
+            if (InThisWorld(slot) && !IsExcluded(slot, exclude))
+            {
+                var point = (Vector3)info["point"];
+                var n = (Vector3)info["normal"];
+                correctedCenter = new float3(point.X + n.X * radius, point.Y + n.Y * radius, point.Z + n.Z * radius);
+                normal = new float3(n.X, n.Y, n.Z);
+                return true;
+            }
+            _resolveExclude.Add(info["rid"].As<Rid>());
+        }
+        return false;
     }
 
     private PhysicsDirectSpaceState3D? GetSpace()
@@ -323,6 +390,15 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
 
     private static Basis ToBasis(in floatQ orientation)
         => new Basis(new Quaternion(orientation.x, orientation.y, orientation.z, orientation.w));
+
+    // GetRestInfo (unlike IntersectRay/IntersectShape) returns "collider_id" - an ObjectID - not a
+    // "collider" node. Resolve the node from the id, then recover the slot the normal way. -xlinka
+    private Lumora.Core.Slot? ResolveSlotById(ulong instanceId)
+    {
+        if (instanceId == 0)
+            return null;
+        return ResolveSlot(GodotObject.InstanceFromId(instanceId) as Node);
+    }
 
     // Physics bodies are tagged with their owning slot's RefID (LumoraSlotRef meta) by the collider
     // hooks; walk up from the hit node to recover the slot.

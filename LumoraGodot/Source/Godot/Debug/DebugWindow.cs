@@ -102,6 +102,34 @@ public partial class DebugWindow : Control
     private Label? _bufferMemValue;
     private Label? _renderVideoMemValue;
 
+    // UI - Network tab
+    private Label? _netRoleValue;
+    private Label? _netLatencyValue;
+    private Label? _netWorldValue;
+    private Label? _netEncryptedValue;
+    private Label? _netSessionIdValue;
+    private Label? _netVisibilityValue;
+    private Label? _netSyncRateValue;
+    private Label? _netConnCountValue;
+    private Label? _netDeltasValue;
+    private Label? _netFullsValue;
+    private Label? _netStreamsValue;
+    private Label? _netRawValue;
+    private Label? _netCorrectionsValue;
+    private Label? _netProcessedValue;
+    private Label? _netLastDeltaValue;
+    private Label? _netToProcessValue;
+    private Label? _netToTransmitValue;
+    private Label? _netIncomingValue;
+    private Label? _netPendingStreamsValue;
+    private Label? _netUploadsValue;
+    private Label? _netDownloadsValue;
+    private Label? _netAssetReqValue;
+    private Label? _netRelaysValue;
+    private Tree? _netConnectionTree;
+    private Label? _netStatusLabel;
+    private long _netPacketCount;
+
     // UI - Profiler tab
     private ProfilerGraph? _profilerGraph;
     private Tree? _profComponentTree;
@@ -147,6 +175,7 @@ public partial class DebugWindow : Control
         CacheNodeReferences();
         ConfigureMemoryProfilerTree();
         ConfigureProfilerTrees();
+        ConfigureNetworkTree();
         WireEvents();
         StartUdpListener();
 
@@ -270,6 +299,32 @@ public partial class DebugWindow : Control
         _bufferMemValue = GetNodeOrNull<Label>("%BufferMemValue");
         _renderVideoMemValue = GetNodeOrNull<Label>("%RenderVideoMemValue");
 
+        _netRoleValue = GetNodeOrNull<Label>("%NetRoleValue");
+        _netLatencyValue = GetNodeOrNull<Label>("%NetLatencyValue");
+        _netWorldValue = GetNodeOrNull<Label>("%NetWorldValue");
+        _netEncryptedValue = GetNodeOrNull<Label>("%NetEncryptedValue");
+        _netSessionIdValue = GetNodeOrNull<Label>("%NetSessionIdValue");
+        _netVisibilityValue = GetNodeOrNull<Label>("%NetVisibilityValue");
+        _netSyncRateValue = GetNodeOrNull<Label>("%NetSyncRateValue");
+        _netConnCountValue = GetNodeOrNull<Label>("%NetConnCountValue");
+        _netDeltasValue = GetNodeOrNull<Label>("%NetDeltasValue");
+        _netFullsValue = GetNodeOrNull<Label>("%NetFullsValue");
+        _netStreamsValue = GetNodeOrNull<Label>("%NetStreamsValue");
+        _netRawValue = GetNodeOrNull<Label>("%NetRawValue");
+        _netCorrectionsValue = GetNodeOrNull<Label>("%NetCorrectionsValue");
+        _netProcessedValue = GetNodeOrNull<Label>("%NetProcessedValue");
+        _netLastDeltaValue = GetNodeOrNull<Label>("%NetLastDeltaValue");
+        _netToProcessValue = GetNodeOrNull<Label>("%NetToProcessValue");
+        _netToTransmitValue = GetNodeOrNull<Label>("%NetToTransmitValue");
+        _netIncomingValue = GetNodeOrNull<Label>("%NetIncomingValue");
+        _netPendingStreamsValue = GetNodeOrNull<Label>("%NetPendingStreamsValue");
+        _netUploadsValue = GetNodeOrNull<Label>("%NetUploadsValue");
+        _netDownloadsValue = GetNodeOrNull<Label>("%NetDownloadsValue");
+        _netAssetReqValue = GetNodeOrNull<Label>("%NetAssetReqValue");
+        _netRelaysValue = GetNodeOrNull<Label>("%NetRelaysValue");
+        _netConnectionTree = GetNodeOrNull<Tree>("%NetConnectionTree");
+        _netStatusLabel = GetNodeOrNull<Label>("%NetStatusLabel");
+
         _profilerGraph = GetNodeOrNull<ProfilerGraph>("%ProfilerGraph");
         _profComponentTree = GetNodeOrNull<Tree>("%ProfComponentTree");
         _profSlotTree = GetNodeOrNull<Tree>("%ProfSlotTree");
@@ -303,6 +358,34 @@ public partial class DebugWindow : Control
     {
         ConfigureProfilerTree(_profComponentTree, "Component");
         ConfigureProfilerTree(_profSlotTree, "Slot");
+    }
+
+    private void ConfigureNetworkTree()
+    {
+        if (_netConnectionTree == null)
+        {
+            return;
+        }
+
+        _netConnectionTree.Columns = 6;
+        _netConnectionTree.HideRoot = true;
+        _netConnectionTree.ColumnTitlesVisible = true;
+        _netConnectionTree.SetColumnTitle(0, "User");
+        _netConnectionTree.SetColumnTitle(1, "Transport");
+        _netConnectionTree.SetColumnTitle(2, "Endpoint");
+        _netConnectionTree.SetColumnTitle(3, "Ping");
+        _netConnectionTree.SetColumnTitle(4, "Enc");
+        _netConnectionTree.SetColumnTitle(5, "Recv");
+        _netConnectionTree.SetColumnExpand(0, true);
+        _netConnectionTree.SetColumnExpand(1, false);
+        _netConnectionTree.SetColumnExpand(2, true);
+        _netConnectionTree.SetColumnExpand(3, false);
+        _netConnectionTree.SetColumnExpand(4, false);
+        _netConnectionTree.SetColumnExpand(5, false);
+        _netConnectionTree.SetColumnCustomMinimumWidth(1, 100);
+        _netConnectionTree.SetColumnCustomMinimumWidth(3, 64);
+        _netConnectionTree.SetColumnCustomMinimumWidth(4, 48);
+        _netConnectionTree.SetColumnCustomMinimumWidth(5, 96);
     }
 
     private static void ConfigureProfilerTree(Tree? tree, string firstColumnTitle)
@@ -525,6 +608,9 @@ public partial class DebugWindow : Control
             case "RNDR":
                 HandleRenderPacket(segments);
                 break;
+            case "NET":
+                HandleNetworkPacket(segments);
+                break;
             case "PROF":
                 HandleProfilePacket(segments);
                 break;
@@ -615,6 +701,140 @@ public partial class DebugWindow : Control
         SetLabel(_textureMemValue, FormatBytes(textureMem));
         SetLabel(_bufferMemValue, FormatBytes(bufferMem));
         SetLabel(_renderVideoMemValue, FormatBytes(videoMem));
+    }
+
+    private void HandleNetworkPacket(string[] parts)
+    {
+        // NET|role|world|sessionId|visibility|syncRate|connCount|latencyMs|allEncrypted
+        //    |sDeltas|rDeltas|sFulls|rFulls|sStreams|rStreams|sRaw|rRaw|corrections|processed|lastDeltaChanges
+        //    |toProcess|toTransmit|incoming|pendingStreams|uploads|downloads|assetRequests|relays|ROWS
+        if (parts.Length < 28)
+        {
+            return;
+        }
+
+        _netPacketCount++;
+
+        SetLabel(_netRoleValue, parts[1]);
+        SetLabel(_netWorldValue, parts[2]);
+        SetLabel(_netSessionIdValue, parts[3]);
+        SetLabel(_netVisibilityValue, parts[4]);
+        SetLabel(_netSyncRateValue, $"{parts[5]} Hz");
+        SetLabel(_netConnCountValue, parts[6]);
+
+        if (TryInt(parts[7], out var latency) && latency >= 0)
+        {
+            SetLabel(_netLatencyValue, $"{latency} ms", PingColor(latency));
+        }
+        else
+        {
+            SetLabel(_netLatencyValue, "-", new Color(0.6f, 0.6f, 0.65f));
+        }
+
+        bool allEncrypted = parts[8] == "1";
+        SetLabel(_netEncryptedValue, allEncrypted ? "Yes" : "No",
+            allEncrypted ? new Color(0.4f, 0.9f, 0.5f) : new Color(1f, 0.55f, 0.4f));
+
+        SetLabel(_netDeltasValue, $"{Count(parts[9])} / {Count(parts[10])}");
+        SetLabel(_netFullsValue, $"{Count(parts[11])} / {Count(parts[12])}");
+        SetLabel(_netStreamsValue, $"{Count(parts[13])} / {Count(parts[14])}");
+        SetLabel(_netRawValue, $"{Count(parts[15])} / {Count(parts[16])}");
+        SetLabel(_netCorrectionsValue, Count(parts[17]));
+        SetLabel(_netProcessedValue, Count(parts[18]));
+        SetLabel(_netLastDeltaValue, Count(parts[19]));
+
+        // Queues: amber when anything is backed up (a healthy session sits near zero).
+        SetQueueLabel(_netToProcessValue, parts[20]);
+        SetQueueLabel(_netToTransmitValue, parts[21]);
+        SetQueueLabel(_netIncomingValue, parts[22]);
+        SetQueueLabel(_netPendingStreamsValue, parts[23]);
+
+        // Asset transfers: green while active, dim when idle.
+        SetActivityLabel(_netUploadsValue, parts[24]);
+        SetActivityLabel(_netDownloadsValue, parts[25]);
+        SetActivityLabel(_netAssetReqValue, parts[26]);
+        SetActivityLabel(_netRelaysValue, parts[27]);
+
+        RebuildNetworkConnections(parts.Length > 28 ? parts[28] : string.Empty);
+
+        SetLabel(_netStatusLabel,
+            $"{parts[1]} | Connections: {parts[6]} | Packets: {_netPacketCount:N0}");
+    }
+
+    // A pending-queue depth: neutral at zero, amber when work is backing up.
+    private static void SetQueueLabel(Label? label, string raw)
+    {
+        bool busy = TryInt(raw, out var n) && n > 0;
+        SetLabel(label, Count(raw), busy ? new Color(1f, 0.85f, 0.3f) : new Color(0.85f, 0.85f, 0.9f));
+    }
+
+    // An activity count (asset transfers): green when active, dim when idle.
+    private static void SetActivityLabel(Label? label, string raw)
+    {
+        bool active = TryInt(raw, out var n) && n > 0;
+        SetLabel(label, Count(raw), active ? new Color(0.4f, 0.9f, 0.5f) : new Color(0.6f, 0.6f, 0.65f));
+    }
+
+    private void RebuildNetworkConnections(string rows)
+    {
+        if (_netConnectionTree == null)
+        {
+            return;
+        }
+
+        _netConnectionTree.Clear();
+        var root = _netConnectionTree.CreateItem();
+
+        if (string.IsNullOrEmpty(rows))
+        {
+            return;
+        }
+
+        foreach (var rowStr in rows.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var f = rowStr.Split('~');
+            if (f.Length < 6)
+            {
+                continue;
+            }
+
+            var item = _netConnectionTree.CreateItem(root);
+            item.SetText(0, f[0]);
+            item.SetText(1, f[1]);
+            item.SetCustomColor(1, f[1] == "Steam"
+                ? new Color(0.45f, 0.7f, 1f)
+                : new Color(0.65f, 0.85f, 0.7f));
+            item.SetText(2, f[2]);
+
+            if (TryInt(f[3], out var ping) && ping >= 0)
+            {
+                item.SetText(3, $"{ping}");
+                item.SetCustomColor(3, PingColor(ping));
+            }
+            else
+            {
+                item.SetText(3, "-");
+            }
+
+            bool enc = f[4] == "1";
+            item.SetText(4, enc ? "Yes" : "No");
+            item.SetCustomColor(4, enc ? new Color(0.4f, 0.9f, 0.5f) : new Color(1f, 0.55f, 0.4f));
+
+            item.SetText(5, TryLong(f[5], out var rb) ? FormatBytes(rb) : f[5]);
+        }
+    }
+
+    private static Color PingColor(int ping)
+    {
+        return ping > 150 ? new Color(1f, 0.4f, 0.4f) :
+            ping > 60 ? new Color(1f, 0.85f, 0.3f) :
+            new Color(0.4f, 0.9f, 0.5f);
+    }
+
+    // Display helper for the integer traffic counters: thousands-separated, raw on parse failure.
+    private static string Count(string raw)
+    {
+        return TryLong(raw, out var v) ? v.ToString("N0", CultureInfo.InvariantCulture) : raw;
     }
 
     private void HandleProfilePacket(string[] parts)

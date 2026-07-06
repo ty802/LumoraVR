@@ -54,7 +54,8 @@ public sealed class LoadControl
     {
         foreach (var (key, node) in dictionary.Children)
         {
-            var type = Type.GetType(key);
+            // WorkerManager.GetType so renamed types keep their saved version.
+            var type = WorkerManager.GetType(key);
             if (type != null && node is DataTreeValue value)
                 _typeVersions[type] = value.Extract<int>();
         }

@@ -124,7 +124,7 @@ public struct JoinRequestData
 
     /// <summary>
     /// A random nonce the joiner generates so the HOST can prove ITS identity back: the host signs this in
-    /// JoinChallenge and the joiner verifies it before trusting the host. That's the anti-MITM half. -xlinka
+    /// JoinChallenge and the joiner verifies it before trusting the host. -xlinka
     /// </summary>
     public byte[] HostVerificationToken;
 
@@ -271,7 +271,7 @@ public struct JoinChallengeData
 {
     public byte[] Nonce;
 
-    // Host's own identity, so the joiner can verify the host before answering (anti-MITM). HostMachineId
+    // Host's own identity, so the joiner can verify the host before answering. HostMachineId
     // must hash to HostMachinePublicKey, and HostMachineSignature is the host signing the joiner's
     // HostVerificationToken with its machine key. -xlinka
     public string HostMachineId;
@@ -339,6 +339,7 @@ public struct JoinAuthenticateData
 {
     public byte[] Signature;          // machine-key signature over the challenge nonce
     public byte[] AccountSignature;   // optional account-key signature over the same nonce, when signed in
+    public byte[] CompatHash;         // salted datamodel-compatibility proof: hash(schema base hash || challenge nonce)
 
     public byte[] Encode()
     {
@@ -351,6 +352,9 @@ public struct JoinAuthenticateData
         writer.Write(AccountSignature?.Length ?? 0);
         if (AccountSignature != null && AccountSignature.Length > 0)
             writer.Write(AccountSignature);
+        writer.Write(CompatHash?.Length ?? 0);
+        if (CompatHash != null && CompatHash.Length > 0)
+            writer.Write(CompatHash);
 
         return ms.ToArray();
     }
@@ -363,7 +367,8 @@ public struct JoinAuthenticateData
         var result = new JoinAuthenticateData
         {
             Signature = Array.Empty<byte>(),
-            AccountSignature = Array.Empty<byte>()
+            AccountSignature = Array.Empty<byte>(),
+            CompatHash = Array.Empty<byte>()
         };
         int len = reader.ReadInt32();
         if (len > 0 && len <= 4096)
@@ -374,6 +379,13 @@ public struct JoinAuthenticateData
             int accLen = reader.ReadInt32();
             if (accLen > 0 && accLen <= 4096)
                 result.AccountSignature = reader.ReadBytes(accLen);
+        }
+        // Compat hash is appended last; tolerate its absence so the host can fail-closed on its own terms. -xlinka
+        if (ms.Position < ms.Length)
+        {
+            int hashLen = reader.ReadInt32();
+            if (hashLen > 0 && hashLen <= 4096)
+                result.CompatHash = reader.ReadBytes(hashLen);
         }
         return result;
     }

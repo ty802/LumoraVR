@@ -10,6 +10,11 @@ namespace Lumora.Core.Components;
 // User nameplate data + behavior. Sets sync field state from the target user
 // and keeps the slot positioned above the head.
 //
+// NOTE: not the live nameplate. The shipping name badge is composed by
+// AvatarEquipManager.EnsureNameBadge (mesh text + NameBadgeDriver) and
+// positioned by PositionAtUser (anchored at UserRoot.HeadSlot). Nothing
+// attaches this component; it stays only as the data-driven reference shape.
+//
 // Visual rendering is intentionally not hooked. Nameplates render as standard
 // mesh + UI primitives (text + image components on child slots) routed through
 // MeshRenderer / material connectors, not a dedicated platform connector. The
@@ -79,7 +84,7 @@ public class Nameplate : ImplementableComponent
         RimColor.Value = ColorNormal;
         IsLoggedIn.Value = true;
         Size.Value = new float2(0.45f, 0.12f); // 45cm x 12cm default
-        HeadOffset.Value = 0.3f; // 30cm above head
+        HeadOffset.Value = 0.35f; // above head, matching the live auto badge
         Billboard.Value = true;
 
         // Subscribe to change events

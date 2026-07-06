@@ -32,12 +32,18 @@ public static class UniversalImporter
                 SpawnImageDialog(list, world, position, rotation, silent);
                 break;
             case AssetClass.Model:
-            case AssetClass.PointCloud:
                 SpawnModelDialog(list, world, position, rotation, silent);
                 break;
             case AssetClass.Video:
                 SpawnVideoDialog(list, world, position, rotation, silent);
                 break;
+            // PointCloud and the rest have no import pipeline yet. PointCloud in particular
+            // can NOT go through the model dialog - its extensions aren't in ModelImporter's
+            // supported set and it throws. Route every unsupported class to an honest notice
+            // dialog (with a raw-file drop) rather than faking success with a labeled
+            // placeholder. As pipelines land (audio/font/text/etc.), give them their own
+            // case above. - xlinka
+            case AssetClass.PointCloud:
             case AssetClass.Unknown:
             case AssetClass.Document:
             case AssetClass.Audio:
@@ -50,11 +56,8 @@ public static class UniversalImporter
             case AssetClass.Cubemap:
             case AssetClass.Special:
             case AssetClass.Shader:
-                // Pipelines for these classes aren't ported yet - fall through to the
-                // raw-file path so the file at least appears in the world as a grabbable
-                // placeholder. Once StaticBinary/StaticAudioClip/etc. land, branch here. - xlinka
-                ImportRawList(list, world, position, rotation);
-                Logger.Warn($"UniversalImporter: {assetClass} pipeline not implemented yet; spawned as raw file(s).");
+                Logger.Warn($"UniversalImporter: {assetClass} import is not supported yet ({list.Count} file(s)).");
+                SpawnUnsupportedDialog(assetClass, list, world, position, rotation);
                 break;
         }
     }
@@ -72,27 +75,25 @@ public static class UniversalImporter
         return result;
     }
 
-    private static void ImportRawList(List<string> files, World world, float3 position, floatQ rotation)
+    // Spawn an honest "not supported yet" dialog for an asset class with no pipeline.
+    // It tells the user the format isn't handled and offers a raw-file drop - it never
+    // fabricates a placeholder that pretends the content loaded. - xlinka
+    private static void SpawnUnsupportedDialog(AssetClass assetClass, List<string> files, World world, float3 position, floatQ rotation)
     {
-        int rowSize = (int)MathF.Max(1f, MathF.Ceiling(MathF.Sqrt(files.Count)));
-        int index = 0;
-        foreach (var file in files)
-        {
-            var slot = world.RootSlot.AddSlot(Path.GetFileName(file) ?? file);
-            var offset = GridOffset(ref index, rowSize);
-            slot.GlobalPosition = position + rotation * offset;
-            slot.GlobalRotation = rotation;
-            slot.GlobalScale = float3.One;
-
-            var label = slot.AttachComponent<TextRenderer>();
-            label.Text.Value = Path.GetFileName(file) ?? file;
-            label.Size.Value = 0.08f;
-
-            var grab = slot.AttachComponent<Grabbable>();
-            grab.AllowGrab.Value = true;
-            grab.Scalable.Value = true;
-        }
+        var slot = CreateDialogSlot(world, "Unsupported Importer", position, rotation);
+        var dialog = slot.AttachComponent<UnsupportedImportDialog>();
+        dialog.TargetWorld = world;
+        dialog.ClassName = ClassDisplayName(assetClass);
+        dialog.Paths.AddRange(files);
+        dialog.SetLocalUserAsImporting();
     }
+
+    private static string ClassDisplayName(AssetClass assetClass) => assetClass switch
+    {
+        AssetClass.PointCloud => "Point cloud",
+        AssetClass.Unknown => "This file type",
+        _ => assetClass.ToString(),
+    };
 
     private static Slot CreateDialogSlot(World world, string name, float3 position, floatQ rotation)
     {

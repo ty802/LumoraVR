@@ -294,6 +294,7 @@ public sealed class MaterialCloneCache
         changed |= Set(clone.StencilReadMask, source.StencilReadMask.Value);
         changed |= Set(clone.Rect, clipRect ?? source.Rect.Value);
         changed |= Set(clone.RectClip, clipRect.HasValue || source.RectClip.Value);
+        changed |= Set(clone.ClipOffset, source.ClipOffset.Value);
 
         if (changed)
         {
@@ -314,6 +315,7 @@ public sealed class MaterialCloneCache
         changed |= Set(clone.TintColor, source.TintColor.Value);
         changed |= Set(clone.UseVertexColor, source.UseVertexColor.Value);
         changed |= Set(clone.PixelRange, source.PixelRange.Value);
+        changed |= Set(clone.UseMSDF, source.UseMSDF.Value);
         changed |= Set(clone.AlphaClip, source.AlphaClip.Value);
         changed |= Set(clone.AlphaCutoff, source.AlphaCutoff.Value);
         changed |= Set(clone.BlendMode, source.BlendMode.Value);
@@ -329,11 +331,45 @@ public sealed class MaterialCloneCache
         changed |= Set(clone.StencilReadMask, source.StencilReadMask.Value);
         changed |= Set(clone.Rect, clipRect ?? source.Rect.Value);
         changed |= Set(clone.RectClip, clipRect.HasValue || source.RectClip.Value);
+        changed |= Set(clone.ClipOffset, source.ClipOffset.Value);
 
         if (changed)
         {
             clone.ForceUpdate();
         }
+    }
+
+    // Set the clip_offset shader param on every live clone (clip + priority + stencil). Used by render-offset
+    // scrolling: the clip rect stays fixed in canvas space and this pins the clip window to the viewport as
+    // the content chunk slides, so a scroll is a per-frame uniform write - no re-mesh, no re-clone. -xlinka
+    public void SetClipOffset(float2 offset, bool persist)
+    {
+        foreach (var e in _clipMaterials.Values) SetClipOffsetOn(e.Material, offset, persist);
+        foreach (var e in _priorityMaterials.Values) SetClipOffsetOn(e.Material, offset, persist);
+        foreach (var e in _stencilMaterials.Values) SetClipOffsetOn(e.Material, offset, persist);
+    }
+
+    private static void SetClipOffsetOn(IAssetProvider<MaterialAsset> material, float2 offset, bool persist)
+    {
+        // Live scroll pushes clip_offset STRAIGHT to the generated material's shader param - one
+        // SetShaderParameter. The old path set the Sync + ForceUpdate, which re-ran the whole UpdateMaterial
+        // (every param) and queued an asset change PER material EVERY frame; with a screen of cards that
+        // O(materials) rebuild is the scroll lag. -xlinka
+        if (persist)
+        {
+            // Rebuild path (infrequent): also write the Sync so the material's own UpdateMaterial - which runs on
+            // a structural rebuild and would otherwise re-push the baked 0 and snap the content back to the top -
+            // carries the current offset. -xlinka
+            switch (material)
+            {
+                case UIUnlitMaterial u: u.ClipOffset.Value = offset; break;
+                case UITextMaterial t: t.ClipOffset.Value = offset; break;
+            }
+        }
+        // ApplyFloat2Now, not SetFloat2: SetFloat2 only STAGES the value (flushed later by a full ApplyChanges
+        // that re-pushes every property). On the live scroll path there is no ApplyChanges, so a plain SetFloat2
+        // never reaches the shader and the content stops moving. This flushes just clip_offset. -xlinka
+        material.Asset?.ApplyFloat2Now("ClipOffset", offset);
     }
 
     private void RemoveUnusedPriorityMaterials()

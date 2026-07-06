@@ -6,6 +6,7 @@ using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
+using Lumora.Core.Phos;
 using Lumora.Core.Physics;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
@@ -16,7 +17,7 @@ namespace Lumora.Godot.Hooks
     /// Creates a StaticBody3D or RigidBody3D with a CollisionShape3D and keeps it synced to the slot.
     /// CharacterController colliders are handled separately by CharacterControllerHook.
     /// </summary>
-    [ImplementableHook(typeof(BoxCollider), typeof(CapsuleCollider), typeof(SphereCollider), typeof(CylinderCollider))]
+    [ImplementableHook(typeof(BoxCollider), typeof(CapsuleCollider), typeof(SphereCollider), typeof(CylinderCollider), typeof(Lumora.Core.Components.MeshCollider), typeof(ConeCollider), typeof(TriangleCollider))]
     public class PhysicsColliderHook : ComponentHook<Collider>
     {
         private Node3D _bodyNode = null!;
@@ -26,6 +27,14 @@ namespace Lumora.Godot.Hooks
         private PhysicsMaterial _material = null!;
         private MeshInstance3D _debugMesh = null!;
         private static bool _showDebugColliders = false;
+
+        // Mesh-shape bake key: the slot's global scale is baked into the vertices (the body node stays
+        // at scale 1 like every other collider here), so a rebuild is needed when the source geometry,
+        // the scale, or the convex flag changes - and only then, cooking a trimesh isn't free. -xlinka
+        private float3[]? _meshBakeSource;
+        private int _meshBakeIndexCount;
+        private Vector3 _meshBakeScale;
+        private bool _meshBakeConvex;
 
         public override void Initialize()
         {
@@ -78,19 +87,22 @@ namespace Lumora.Godot.Hooks
             // Sync transform from slot
             UpdateTransform();
 
-            // Enable/disable collision
-            _bodyNode!.Visible = Owner.Enabled;
+            // Enable/disable collision, scoped to this world's collision bit so bodies in different
+            // worlds can never touch or answer each other's queries.
+            uint worldBit = WorldHook.GetCollisionBitFor(Owner?.World);
+            bool enabled = Owner?.Enabled ?? false;
+            _bodyNode!.Visible = enabled;
             if (_bodyNode is Area3D)
             {
                 // sensor only. on physics layer for engine-side interaction, mask=0 so nothing pushes against it - xlinka
                 var co = (CollisionObject3D)_bodyNode;
-                co.CollisionLayer = Owner.Enabled ? 1u : 0u;
+                co.CollisionLayer = enabled ? worldBit : 0u;
                 co.CollisionMask = 0u;
             }
             else if (_bodyNode is CollisionObject3D co)
             {
-                co.CollisionLayer = Owner.Enabled ? 1u : 0u;
-                co.CollisionMask = Owner.Enabled ? 1u : 0u;
+                co.CollisionLayer = enabled ? worldBit : 0u;
+                co.CollisionMask = enabled ? (worldBit | 1u) : 0u;
             }
         }
 
@@ -155,7 +167,6 @@ namespace Lumora.Godot.Hooks
             {
                 case BoxCollider box:
                     float3 size = box.Size.Value;
-                    LumoraLogger.Log($"PhysicsColliderHook.BuildShape: BoxCollider size={size} on '{Owner.Slot.SlotName.Value}'");
                     if (_shape is BoxShape3D existingBox)
                     {
                         existingBox.Size = new Vector3(size.x, size.y, size.z);
@@ -201,6 +212,18 @@ namespace Lumora.Godot.Hooks
                         _collisionShape.Shape = _shape;
                     }
                     break;
+                case Lumora.Core.Components.MeshCollider meshCollider:
+                    BuildMeshShape(meshCollider);
+                    break;
+                case ConeCollider cone:
+                    // Godot has no cone primitive: convex hull of the base ring + apex.
+                    _shape = BuildConeShape(cone.Radius.Value, cone.Height.Value);
+                    _collisionShape.Shape = _shape;
+                    break;
+                case TriangleCollider triangle:
+                    _shape = BuildTriangleShape(triangle.A.Value, triangle.B.Value, triangle.C.Value);
+                    _collisionShape.Shape = _shape;
+                    break;
                 default:
                     LumoraLogger.Warn($"PhysicsColliderHook: Unknown collider type {Owner.GetType().Name}");
                     return;
@@ -219,6 +242,117 @@ namespace Lumora.Godot.Hooks
             {
                 ClearDebugVisualization();
             }
+        }
+
+        private static ConvexPolygonShape3D BuildConeShape(float radius, float height)
+        {
+            const int segments = 16;
+            var points = new Vector3[segments + 1];
+            float halfH = height * 0.5f;
+            for (int i = 0; i < segments; i++)
+            {
+                float a = System.MathF.Tau * i / segments;
+                points[i] = new Vector3(System.MathF.Cos(a) * radius, -halfH, System.MathF.Sin(a) * radius);
+            }
+            points[segments] = new Vector3(0f, halfH, 0f);
+            return new ConvexPolygonShape3D { Points = points };
+        }
+
+        private static ConcavePolygonShape3D BuildTriangleShape(float3 a, float3 b, float3 c)
+        {
+            var faces = new[]
+            {
+                new Vector3(a.x, a.y, a.z),
+                new Vector3(b.x, b.y, b.z),
+                new Vector3(c.x, c.y, c.z),
+            };
+            return new ConcavePolygonShape3D { Data = faces, BackfaceCollision = true };
+        }
+
+        // Trimesh (or convex hull) from the referenced mesh's geometry. The slot's global scale is
+        // baked into the vertices because the physics body deliberately never inherits scale; the
+        // Collider base re-applies on WorldTransformChanged, so a rescale lands here and the bake key
+        // triggers the rebuild. Missing data is NOT an error: the provider decodes async and the
+        // component polls until it lands.
+        private void BuildMeshShape(Lumora.Core.Components.MeshCollider meshCollider)
+        {
+            PhosMesh? mesh = meshCollider.Mesh.Target switch
+            {
+                Lumora.Core.Components.Meshes.ProceduralMesh procedural => procedural.PhosMesh,
+                MeshProvider provider => provider.Asset?.MeshData,
+                _ => null
+            };
+            int vertexCount = mesh?.VertexCount ?? 0;
+            if (mesh == null || vertexCount == 0)
+                return;
+
+            var gs = Owner.Slot.GlobalScale;
+            var scale = new Vector3(gs.x, gs.y, gs.z);
+            bool convex = meshCollider.Convex.Value;
+
+            int totalIndexCount = 0;
+            foreach (var submesh in mesh.Submeshes)
+            {
+                if (submesh.Topology == PhosTopology.Triangles)
+                    totalIndexCount += submesh.IndexCount;
+            }
+
+            if (_shape != null && ReferenceEquals(_meshBakeSource, mesh.RawPositions)
+                && _meshBakeIndexCount == totalIndexCount && _meshBakeScale == scale && _meshBakeConvex == convex)
+                return;
+
+            var positions = mesh.RawPositions;
+
+            if (convex)
+            {
+                var points = new Vector3[vertexCount];
+                for (int i = 0; i < vertexCount; i++)
+                {
+                    var p = positions[i];
+                    points[i] = new Vector3(p.x * scale.X, p.y * scale.Y, p.z * scale.Z);
+                }
+                _shape = new ConvexPolygonShape3D { Points = points };
+            }
+            else
+            {
+                if (totalIndexCount == 0)
+                    return;
+
+                var faces = new Vector3[totalIndexCount];
+                int write = 0;
+                foreach (var submesh in mesh.Submeshes)
+                {
+                    if (submesh.Topology != PhosTopology.Triangles)
+                        continue;
+                    var indices = submesh.RawIndices;
+                    int count = submesh.IndexCount;
+                    for (int i = 0; i + 2 < count; i += 3)
+                    {
+                        int a = indices[i], b = indices[i + 1], c = indices[i + 2];
+                        // An index past the vertex buffer would corrupt the cook; drop the triangle.
+                        if ((uint)a >= (uint)vertexCount || (uint)b >= (uint)vertexCount || (uint)c >= (uint)vertexCount)
+                            continue;
+                        faces[write++] = new Vector3(positions[a].x * scale.X, positions[a].y * scale.Y, positions[a].z * scale.Z);
+                        faces[write++] = new Vector3(positions[b].x * scale.X, positions[b].y * scale.Y, positions[b].z * scale.Z);
+                        faces[write++] = new Vector3(positions[c].x * scale.X, positions[c].y * scale.Y, positions[c].z * scale.Z);
+                    }
+                }
+                if (write == 0)
+                    return;
+                if (write != totalIndexCount)
+                    System.Array.Resize(ref faces, write);
+
+                // BackfaceCollision: imported world geometry has no winding guarantee; single-sided
+                // trimeshes let users fall through inverted faces.
+                _shape = new ConcavePolygonShape3D { Data = faces, BackfaceCollision = true };
+            }
+
+            _collisionShape.Shape = _shape;
+            _meshBakeSource = positions;
+            _meshBakeIndexCount = totalIndexCount;
+            _meshBakeScale = scale;
+            _meshBakeConvex = convex;
+            LumoraLogger.Log($"PhysicsColliderHook: Built {(convex ? "convex" : "trimesh")} collision for '{Owner.Slot.SlotName.Value}' ({vertexCount} verts)");
         }
 
         private void UpdateDebugVisualization()
@@ -325,6 +459,11 @@ namespace Lumora.Godot.Hooks
         // can walk through it / grab it without getting bounced. covers shader orbs and similar - xlinka
         private bool ShouldBeSensor()
         {
+            // Explicit query-only collider (e.g. a worn avatar's bone capsules): raycast-hittable for grab/laser but
+            // never a solid body, so it can't push the wearer's own character controller around. -xlinka
+            if (Owner != null && Owner.Type.Value == ColliderType.Trigger)
+                return true;
+
             if (IsImageCollider())
                 return true;
 

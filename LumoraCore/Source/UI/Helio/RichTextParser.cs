@@ -1,6 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
@@ -10,33 +11,58 @@ namespace Helio.UI;
 
 /// <summary>
 /// Parses a minimal subset of inline rich-text markup into stripped visible text plus
-/// per-character color, style flags, and size multiplier, so <see cref="Text"/> can
-/// render styled spans. Color/style don't change layout; size does (handled in the shaper).
+/// per-character color, style flags, size multiplier, and highlight color, so <see cref="Text"/>
+/// can render styled spans.
 /// </summary>
-// Supported: <color>, <alpha>, <b>/<i>/<u>/<s>, and
-// <size=Nem|N%> (absolute multiple of base, or relative to the parent). Unknown
-// tags pass through literally. A balanced stack restores color+style+size on close. -xlinka
+// Supported: <color>, <alpha>, <b>/<i>/<u>/<s>, <size=Nem|N%>, <sub>/<sup>, <mark>/<mark=color>, <nobr>,
+// <gradient=a,b>, <lowercase>/<uppercase>/<smallcaps>/<allcaps>, <br>, <noparse>...</noparse>, and <closeall>.
+// Unknown tags pass through literally. A balanced stack restores every attribute on close. -xlinka
 public static class RichTextParser
 {
     public const byte StyleBold = 1;
     public const byte StyleItalic = 2;
     public const byte StyleUnderline = 4;
     public const byte StyleStrike = 8;
+    public const byte StyleSub = 16;
+    public const byte StyleSup = 32;
+    public const byte StyleNoBreak = 64;
+
+    // Case transform applied to a run: uppercase/lowercase change the visible char; smallcaps uppercases and
+    // renders originally-lowercase letters smaller. -xlinka
+    public const byte CaseNone = 0;
+    public const byte CaseLower = 1;
+    public const byte CaseUpper = 2;
+    public const byte CaseSmallCaps = 3;
+
+    // Subscript/superscript shrink and shift off the baseline; shared factor so parser and renderer agree. -xlinka
+    public const float SubSupScale = 0.7f;
+    // Smallcaps renders originally-lowercase letters at this fraction of the run size.
+    public const float SmallCapsScale = 0.75f;
+
+    // Default highlight when <mark> carries no color: soft translucent yellow behind the text. -xlinka
+    private static readonly color DefaultMark = new(1f, 0.92f, 0.35f, 0.4f);
+    private static readonly color NoMark = new(0f, 0f, 0f, 0f);
 
     private readonly struct Span
     {
         public readonly color Color;
         public readonly byte Style;
         public readonly float Size;
-        public Span(color color, byte style, float size) { Color = color; Style = style; Size = size; }
+        public readonly color Mark;
+        public readonly byte Case;
+        public Span(color color, byte style, float size, color mark, byte @case)
+        {
+            Color = color; Style = style; Size = size; Mark = mark; Case = @case;
+        }
     }
 
-    public static void Parse(string? input, in color baseColor, StringBuilder text, List<color> colors, List<byte> styles, List<float> sizes)
+    public static void Parse(string? input, in color baseColor, StringBuilder text, List<color> colors, List<byte> styles, List<float> sizes, List<color> marks)
     {
         text.Clear();
         colors.Clear();
         styles.Clear();
         sizes.Clear();
+        marks.Clear();
         if (string.IsNullOrEmpty(input))
             return;
 
@@ -44,6 +70,12 @@ public static class RichTextParser
         color current = baseColor;
         byte currentStyle = 0;
         float currentSize = 1f;
+        color currentMark = NoMark;
+        byte currentCase = CaseNone;
+        // Gradient runs outside the attribute stack: it back-fills the color of the whole run on close, so it
+        // just needs the run's start index and endpoints, not a push/pop. -xlinka
+        int gradStart = -1;
+        color gradA = color.White, gradB = color.White;
 
         int i = 0;
         while (i < input.Length)
@@ -52,30 +84,113 @@ public static class RichTextParser
             if (c == '<')
             {
                 int close = input.IndexOf('>', i + 1);
-                if (close > i && HandleTag(input.Substring(i + 1, close - i - 1), in baseColor, stack, ref current, ref currentStyle, ref currentSize))
+                if (close > i)
                 {
-                    i = close + 1;
-                    continue;
+                    string body = input.Substring(i + 1, close - i - 1);
+                    string trimmed = body.Trim();
+
+                    // <br> emits a newline and <noparse> copies its content literally: both ADD characters, so
+                    // they live here rather than in the attribute-only HandleTag. -xlinka
+                    if (trimmed.Equals("br", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Append('\n', text, colors, styles, sizes, marks, current, currentStyle, currentSize, currentMark, CaseNone);
+                        i = close + 1;
+                        continue;
+                    }
+                    if (trimmed.Equals("noparse", StringComparison.OrdinalIgnoreCase))
+                    {
+                        int contentStart = close + 1;
+                        int closeTag = input.IndexOf("</noparse>", contentStart, StringComparison.OrdinalIgnoreCase);
+                        int contentEnd = closeTag >= 0 ? closeTag : input.Length;
+                        for (int k = contentStart; k < contentEnd; k++)
+                            Append(input[k], text, colors, styles, sizes, marks, current, currentStyle, currentSize, currentMark, currentCase);
+                        i = closeTag >= 0 ? closeTag + "</noparse>".Length : input.Length;
+                        continue;
+                    }
+
+                    if (TryHandleGradient(body, colors, ref gradStart, ref gradA, ref gradB) ||
+                        HandleTag(body, in baseColor, stack, ref current, ref currentStyle, ref currentSize, ref currentMark, ref currentCase))
+                    {
+                        i = close + 1;
+                        continue;
+                    }
                 }
             }
 
-            text.Append(c);
-            colors.Add(current);
-            styles.Add(currentStyle);
-            sizes.Add(currentSize);
+            Append(c, text, colors, styles, sizes, marks, current, currentStyle, currentSize, currentMark, currentCase);
             i++;
         }
     }
 
-    private static bool HandleTag(string tag, in color baseColor, List<Span> stack, ref color current, ref byte currentStyle, ref float currentSize)
+    // Append one visible char with the current attributes, applying the case transform (and the smallcaps
+    // size shrink for originally-lowercase letters). -xlinka
+    private static void Append(char c, StringBuilder text, List<color> colors, List<byte> styles, List<float> sizes, List<color> marks,
+        color color, byte style, float size, color mark, byte caseMode)
+    {
+        char visible = caseMode switch
+        {
+            CaseLower => char.ToLowerInvariant(c),
+            CaseUpper or CaseSmallCaps => char.ToUpperInvariant(c),
+            _ => c,
+        };
+        float charSize = size;
+        if (caseMode == CaseSmallCaps && char.IsLower(c))
+            charSize *= SmallCapsScale;
+
+        text.Append(visible);
+        colors.Add(color);
+        styles.Add(style);
+        sizes.Add(charSize);
+        marks.Add(mark);
+    }
+
+    // <gradient=a,b> ... </gradient> : lerp each char's color from a (run start) to b (run end). Interpolated by
+    // char index, which is spatially exact for a monospace font and close enough otherwise. -xlinka
+    private static bool TryHandleGradient(string body, List<color> colors, ref int gradStart, ref color gradA, ref color gradB)
+    {
+        string trimmed = body.Trim();
+        if (trimmed.Equals("/gradient", StringComparison.OrdinalIgnoreCase))
+        {
+            if (gradStart >= 0)
+            {
+                int end = colors.Count - 1;
+                int span = end - gradStart;
+                for (int k = gradStart; k <= end; k++)
+                {
+                    float t = span > 0 ? (float)(k - gradStart) / span : 0f;
+                    colors[k] = LerpColor(gradA, gradB, t);
+                }
+                gradStart = -1;
+            }
+            return true;
+        }
+
+        int eq = trimmed.IndexOf('=');
+        if (eq < 0 || !trimmed.Substring(0, eq).Trim().Equals("gradient", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var parts = trimmed.Substring(eq + 1).Split(',');
+        if (parts.Length < 2 || !TryParseColor(parts[0], out gradA) || !TryParseColor(parts[1], out gradB))
+            return false;
+
+        gradStart = colors.Count;
+        return true;
+    }
+
+    private static color LerpColor(in color a, in color b, float t)
+        => new(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, a.a + (b.a - a.a) * t);
+
+    private static bool HandleTag(string tag, in color baseColor, List<Span> stack,
+        ref color current, ref byte currentStyle, ref float currentSize, ref color currentMark, ref byte currentCase)
     {
         if (tag.Length == 0)
             return false;
 
         if (tag[0] == '/')
         {
-            string name = tag.Substring(1).Trim().ToLowerInvariant();
-            if (name is "color" or "alpha" or "b" or "i" or "u" or "s" or "size")
+            string closeName = tag.Substring(1).Trim().ToLowerInvariant();
+            if (closeName is "color" or "alpha" or "b" or "i" or "u" or "s" or "size" or "sub" or "sup"
+                or "mark" or "nobr" or "lowercase" or "uppercase" or "smallcaps" or "allcaps")
             {
                 if (stack.Count > 0)
                 {
@@ -84,12 +199,12 @@ public static class RichTextParser
                     current = prev.Color;
                     currentStyle = prev.Style;
                     currentSize = prev.Size;
+                    currentMark = prev.Mark;
+                    currentCase = prev.Case;
                 }
                 else
                 {
-                    current = baseColor;
-                    currentStyle = 0;
-                    currentSize = 1f;
+                    ResetToBase(in baseColor, ref current, ref currentStyle, ref currentSize, ref currentMark, ref currentCase);
                 }
                 return true;
             }
@@ -100,42 +215,91 @@ public static class RichTextParser
         string key = (eq >= 0 ? tag.Substring(0, eq) : tag).Trim().ToLowerInvariant();
         string value = eq >= 0 ? tag.Substring(eq + 1).Trim() : string.Empty;
 
+        // Every open tag pushes the pre-change state so its close can restore it.
         switch (key)
         {
             case "color":
-                stack.Add(new Span(current, currentStyle, currentSize));
+                Push(stack, current, currentStyle, currentSize, currentMark, currentCase);
                 if (TryParseColor(value, out var col))
                     current = col;
                 return true;
             case "alpha":
-                stack.Add(new Span(current, currentStyle, currentSize));
+                Push(stack, current, currentStyle, currentSize, currentMark, currentCase);
                 current = new color(current.r, current.g, current.b, ParseAlpha(value, current.a));
                 return true;
             case "size":
-                stack.Add(new Span(current, currentStyle, currentSize));
+                Push(stack, current, currentStyle, currentSize, currentMark, currentCase);
                 if (TryParseSize(value, out float factor, out bool relative))
                     currentSize = relative ? currentSize * factor : factor;
                 return true;
             case "b":
-                stack.Add(new Span(current, currentStyle, currentSize));
+                Push(stack, current, currentStyle, currentSize, currentMark, currentCase);
                 currentStyle |= StyleBold;
                 return true;
             case "i":
-                stack.Add(new Span(current, currentStyle, currentSize));
+                Push(stack, current, currentStyle, currentSize, currentMark, currentCase);
                 currentStyle |= StyleItalic;
                 return true;
             case "u":
-                stack.Add(new Span(current, currentStyle, currentSize));
+                Push(stack, current, currentStyle, currentSize, currentMark, currentCase);
                 currentStyle |= StyleUnderline;
                 return true;
             case "s":
-                stack.Add(new Span(current, currentStyle, currentSize));
+                Push(stack, current, currentStyle, currentSize, currentMark, currentCase);
                 currentStyle |= StyleStrike;
+                return true;
+            case "sub":
+                Push(stack, current, currentStyle, currentSize, currentMark, currentCase);
+                currentStyle |= StyleSub;
+                currentSize *= SubSupScale;
+                return true;
+            case "sup":
+                Push(stack, current, currentStyle, currentSize, currentMark, currentCase);
+                currentStyle |= StyleSup;
+                currentSize *= SubSupScale;
+                return true;
+            case "mark":
+                Push(stack, current, currentStyle, currentSize, currentMark, currentCase);
+                currentMark = TryParseColor(value, out var mk) ? mk : DefaultMark;
+                return true;
+            case "nobr":
+                Push(stack, current, currentStyle, currentSize, currentMark, currentCase);
+                currentStyle |= StyleNoBreak;
+                return true;
+            case "lowercase":
+                Push(stack, current, currentStyle, currentSize, currentMark, currentCase);
+                currentCase = CaseLower;
+                return true;
+            case "uppercase":
+            case "allcaps":
+                Push(stack, current, currentStyle, currentSize, currentMark, currentCase);
+                currentCase = CaseUpper;
+                return true;
+            case "smallcaps":
+                Push(stack, current, currentStyle, currentSize, currentMark, currentCase);
+                currentCase = CaseSmallCaps;
+                return true;
+            case "closeall":
+                // Drop every open tag and return to the base state, without a matching close. -xlinka
+                stack.Clear();
+                ResetToBase(in baseColor, ref current, ref currentStyle, ref currentSize, ref currentMark, ref currentCase);
                 return true;
             default:
                 return false;
         }
     }
+
+    private static void ResetToBase(in color baseColor, ref color current, ref byte currentStyle, ref float currentSize, ref color currentMark, ref byte currentCase)
+    {
+        current = baseColor;
+        currentStyle = 0;
+        currentSize = 1f;
+        currentMark = NoMark;
+        currentCase = CaseNone;
+    }
+
+    private static void Push(List<Span> stack, color current, byte style, float size, color mark, byte @case)
+        => stack.Add(new Span(current, style, size, mark, @case));
 
     private static bool TryParseSize(string value, out float factor, out bool relative)
     {

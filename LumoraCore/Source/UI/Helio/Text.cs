@@ -63,7 +63,10 @@ public class Text : Graphic, ILayoutElement
     private readonly List<color> _colors = new();
     private readonly List<byte> _styles = new();
     private readonly List<float> _sizes = new();
+    private readonly List<color> _marks = new();
+    private readonly List<bool> _nobr = new();
     private System.Collections.Generic.IReadOnlyList<float>? _sizeArg;
+    private System.Collections.Generic.IReadOnlyList<bool>? _nobrArg;
     private readonly StringBuilder _richTextBuilder = new();
     private float _layoutPreferredWidth;
     private float _layoutPreferredHeight;
@@ -169,14 +172,16 @@ public class Text : Graphic, ILayoutElement
         // identical to plain text; plain mode shapes Content directly.
         if (_richText)
         {
-            RichTextParser.Parse(_content, _color, _richTextBuilder, _colors, _styles, _sizes);
+            RichTextParser.Parse(_content, _color, _richTextBuilder, _colors, _styles, _sizes, _marks);
             _shapedText = _richTextBuilder.ToString();
             _sizeArg = HasSizeVariation() ? _sizes : null; // null keeps the shaper cache for uniform text
+            _nobrArg = BuildNoBreak() ? _nobr : null; // null keeps the shaper cache when nothing is nobr
         }
         else
         {
             _shapedText = _content;
             _sizeArg = null;
+            _nobrArg = null;
         }
     }
 
@@ -206,7 +211,7 @@ public class Text : Graphic, ILayoutElement
         // which is not safe off-main - doing it there returned garbage metrics and made text
         // collapse/vanish intermittently. The worker only positions the shaped glyphs. - xlinka
         float wrapWidth = _wrap && rect.width > 0f ? rect.width : 0f;
-        _shaper.Shape(fontSet, _shapedText, _size, _wrap, wrapWidth, _sizeArg);
+        _shaper.Shape(fontSet, _shapedText, _size, _wrap, wrapWidth, _sizeArg, _nobrArg);
 
         _ascent = fontSet.GetAscent(_size);
         _lineHeight = fontSet.GetLineHeight(_size) * _lineSpacing;
@@ -250,7 +255,7 @@ public class Text : Graphic, ILayoutElement
 
         var rect = RectTransform?.LocalComputeRect ?? default;
         float wrapWidth = _wrap && rect.width > 0f ? rect.width : 0f;
-        _shaper.Shape(fontSet, _shapedText, _size, _wrap, wrapWidth, _sizeArg);
+        _shaper.Shape(fontSet, _shapedText, _size, _wrap, wrapWidth, _sizeArg, _nobrArg);
 
         float lineHeight = fontSet.GetLineHeight(_size) * _lineSpacing;
         if (lineHeight <= 0f)
@@ -283,7 +288,7 @@ public class Text : Graphic, ILayoutElement
         for (int iter = 0; iter < 6; iter++)
         {
             float wrapW = _wrap && availW > 0f ? availW : 0f;
-            _shaper.Shape(fontSet, _shapedText, size, _wrap, wrapW, _sizeArg);
+            _shaper.Shape(fontSet, _shapedText, size, _wrap, wrapW, _sizeArg, _nobrArg);
 
             float textW = _shaper.MaxLineWidth;
             float lh = fontSet.GetLineHeight(size) * _lineSpacing;
@@ -353,6 +358,10 @@ public class Text : Graphic, ILayoutElement
             _ => rect.yMax,
         };
 
+        // Highlight backgrounds behind marked runs (rich-text <mark>), under everything else.
+        if (_richText)
+            EmitMarkBackgrounds(renderData, rect, lines, blockTop, lineHeight);
+
         // Selection (behind text) + caret, when an editor is driving this text.
         if (_caretPos >= 0)
             EmitEditingVisuals(renderData, rect, lines, blockTop, lineHeight);
@@ -365,9 +374,23 @@ public class Text : Graphic, ILayoutElement
             float penX = AlignLineStart(rect, line.Width);
             float penY = yCursor - ascent * line.MaxSizeScale;
 
+            // Justify spreads the leftover width across word gaps on every line except the last (and never the
+            // line that ends a paragraph). justifyOffset accumulates as we cross each gap. -xlinka
+            float justifyPerGap = 0f;
+            if (_hAlign == TextHorizontalAlignment.Justify && _wrap && lineIndex < lines.Count - 1 && !line.HardBreak)
+            {
+                int gaps = CountWordGaps(line);
+                float extra = rect.width - line.Width;
+                if (gaps > 0 && extra > 0f)
+                    justifyPerGap = extra / gaps;
+            }
+            float justifyOffset = 0f;
+
             for (int i = 0; i < line.Glyphs.Count; i++)
             {
                 var glyph = line.Glyphs[i];
+                if (justifyPerGap > 0f && i > 0 && IsWordGap(line, i))
+                    justifyOffset += justifyPerGap;
                 PhosTriangleSubmesh submesh;
                 if (_material != null)
                 {
@@ -380,7 +403,8 @@ public class Text : Graphic, ILayoutElement
                     if (atlas == null) continue;
                     submesh = renderData.GetSubmesh(null, atlas, GraphicsChunk.RenderData.TextAtlas);
                 }
-                EmitGlyph(renderData, submesh, mesh, penX + glyph.X, penY, glyph.Metrics, glyph.UV, GlyphColor(glyph), GlyphStyle(glyph), renderData.GeometryClipRect);
+                byte style = GlyphStyle(glyph);
+                EmitGlyph(renderData, submesh, mesh, penX + glyph.X + justifyOffset, penY + GlyphBaseline(style), glyph.Metrics, glyph.UV, GlyphColor(glyph), style, renderData.GeometryClipRect);
             }
 
             yCursor -= lineH;
@@ -395,6 +419,24 @@ public class Text : Graphic, ILayoutElement
             TextHorizontalAlignment.Right => rect.xMax - lineWidth,
             _ => rect.xMin,
         };
+    }
+
+    // A word gap sits before glyph i when there's visible whitespace between it and the previous glyph - the
+    // previous glyph's advance doesn't cover the distance to it. Reads off glyph spacing (not source chars), so
+    // a non-breaking space (which IS a glyph) correctly produces no gap after it. -xlinka
+    private bool IsWordGap(TextShaper.Line line, int i)
+    {
+        var prev = line.Glyphs[i - 1];
+        float gap = line.Glyphs[i].X - prev.X - prev.Metrics.Advance;
+        return gap > _size * 0.2f;
+    }
+
+    private int CountWordGaps(TextShaper.Line line)
+    {
+        int gaps = 0;
+        for (int i = 1; i < line.Glyphs.Count; i++)
+            if (IsWordGap(line, i)) gaps++;
+        return gaps;
     }
 
     // Per-glyph color from the rich-text color map (rich mode), else the uniform _color.
@@ -418,6 +460,38 @@ public class Text : Graphic, ILayoutElement
             if (_sizes[i] != 1f)
                 return true;
         return false;
+    }
+
+    // Fill _nobr from the parsed style flags: true where a char is inside a <nobr> run, so the shaper keeps
+    // its spaces from becoming wrap points. Returns false when nothing is nobr, keeping the shaper cache warm. -xlinka
+    private bool BuildNoBreak()
+    {
+        _nobr.Clear();
+        bool any = false;
+        for (int i = 0; i < _styles.Count; i++)
+        {
+            bool nb = (_styles[i] & RichTextParser.StyleNoBreak) != 0;
+            _nobr.Add(nb);
+            any |= nb;
+        }
+        return any;
+    }
+
+    // Per-char highlight color from the rich-text mark map (a<=0 = no highlight).
+    private color GlyphMark(in TextShaper.PositionedGlyph glyph)
+    {
+        if (_richText && glyph.SourceIndex >= 0 && glyph.SourceIndex < _marks.Count)
+            return _marks[glyph.SourceIndex];
+        return default;
+    }
+
+    // Vertical offset (canvas Y-up) for sub/superscript glyphs: superscript rides above the baseline,
+    // subscript drops below it. Fraction of the base size so it scales with the text. -xlinka
+    private float GlyphBaseline(byte style)
+    {
+        if ((style & RichTextParser.StyleSup) != 0) return _size * 0.34f;
+        if ((style & RichTextParser.StyleSub) != 0) return _size * -0.14f;
+        return 0f;
     }
 
     private void EmitGlyph(GraphicsChunk.RenderData renderData, PhosTriangleSubmesh submesh, PhosMesh mesh, float penX, float penY, in GlyphMetrics metrics, in Rect uv, in color glyphColor, byte style, Rect? clipRect)
@@ -521,6 +595,44 @@ public class Text : Graphic, ILayoutElement
 
     // Selection rects + caret, emitted into a solid (untextured) submesh requested
     // BEFORE the glyph submeshes so they render behind the glyphs. Steady caret.
+    // Draw a highlight quad behind each run of same-colored <mark> glyphs, per line, before the glyphs. -xlinka
+    private void EmitMarkBackgrounds(GraphicsChunk.RenderData renderData,
+        in Rect rect, System.Collections.Generic.IReadOnlyList<TextShaper.Line> lines, float blockTop, float lineHeight)
+    {
+        if (lines.Count == 0 || _marks.Count == 0) return;
+        var clip = renderData.GeometryClipRect;
+        float top = blockTop;
+        for (int li = 0; li < lines.Count; li++)
+        {
+            var line = lines[li];
+            float lh = lineHeight * line.MaxSizeScale;
+            float ls = AlignLineStart(rect, line.Width);
+            int gi = 0;
+            while (gi < line.Glyphs.Count)
+            {
+                var mark = GlyphMark(line.Glyphs[gi]);
+                if (mark.a <= 0f) { gi++; continue; }
+
+                float startX = line.Glyphs[gi].X;
+                float endX = (gi + 1 < line.Glyphs.Count) ? line.Glyphs[gi + 1].X : line.Width;
+                int gj = gi + 1;
+                while (gj < line.Glyphs.Count)
+                {
+                    var next = GlyphMark(line.Glyphs[gj]);
+                    if (next.a <= 0f || !SameColor(next, mark)) break;
+                    endX = (gj + 1 < line.Glyphs.Count) ? line.Glyphs[gj + 1].X : line.Width;
+                    gj++;
+                }
+                EmitSolidQuad(renderData, ls + startX, top - lh, ls + endX, top, mark, clip);
+                gi = gj;
+            }
+            top -= lh;
+        }
+    }
+
+    private static bool SameColor(in color a, in color b)
+        => a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
+
     private void EmitEditingVisuals(GraphicsChunk.RenderData renderData,
         in Rect rect, System.Collections.Generic.IReadOnlyList<TextShaper.Line> lines, float blockTop, float lineHeight)
     {

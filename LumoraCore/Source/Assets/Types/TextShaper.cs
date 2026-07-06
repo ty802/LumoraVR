@@ -44,6 +44,7 @@ public sealed class TextShaper
         public readonly List<PositionedGlyph> Glyphs = new();
         public float Width;
         public float MaxSizeScale = 1f;   // largest per-glyph size multiplier on this line
+        public bool HardBreak;            // ended at an explicit newline (not a wrap), so justify leaves it alone
     }
 
     private readonly List<Line> _lines = new();
@@ -56,10 +57,12 @@ public sealed class TextShaper
     private float _shapedMaxWidth;
     private int _shapedGeneration;
     private IReadOnlyList<float>? _shapedScales;
+    private IReadOnlyList<bool>? _shapedNobr;
 
     private float _size;
     private bool _wrap;
     private IReadOnlyList<float>? _sizeScales;
+    private IReadOnlyList<bool>? _nobr;
 
     public IReadOnlyList<Line> Lines => _lines;
 
@@ -81,14 +84,16 @@ public sealed class TextShaper
     /// Shape content into positioned glyph lines. No-op when every shaping
     /// input matches the cached result. Returns true if a reshape happened.
     /// </summary>
-    public bool Shape(FontSet font, string content, float size, bool wrap, float maxWidth, IReadOnlyList<float>? sizeScales = null)
+    public bool Shape(FontSet font, string content, float size, bool wrap, float maxWidth, IReadOnlyList<float>? sizeScales = null, IReadOnlyList<bool>? nobr = null)
     {
         int generation = font.CacheGeneration;
-        // Per-char size scales can change behind the same list reference, so never
-        // reuse the cache when they're in play (uniform text still caches).
+        // Per-char size scales and non-breaking flags can change behind the same list reference, so never
+        // reuse the cache when either is in play (uniform text still caches).
         if (sizeScales == null
+            && nobr == null
             && _valid
             && _shapedScales == null
+            && _shapedNobr == null
             && ReferenceEquals(_shapedFont, font)
             && _shapedContent == content
             && _shapedSize == size
@@ -102,6 +107,7 @@ public sealed class TextShaper
         _size = size;
         _wrap = wrap;
         _sizeScales = sizeScales;
+        _nobr = nobr;
         BuildLines(font, content, maxWidth);
 
         _shapedFont = font;
@@ -111,6 +117,7 @@ public sealed class TextShaper
         _shapedMaxWidth = maxWidth;
         _shapedGeneration = generation;
         _shapedScales = sizeScales;
+        _shapedNobr = nobr;
         _valid = true;
         return true;
     }
@@ -160,6 +167,7 @@ public sealed class TextShaper
             if (cp == '\n')
             {
                 FlushWord(ref line, ref word, ref pendingWhitespace, maxWidth);
+                line.HardBreak = true;
                 _lines.Add(line);
                 line = new Line();
                 pendingWhitespace = 0f;
@@ -170,6 +178,14 @@ public sealed class TextShaper
 
             if (IsCollapsibleWhitespace(cp))
             {
+                if (IsNoBreak(start))
+                {
+                    // Non-breaking space inside a <nobr> run: keep it IN the current word so wrapping can't
+                    // split the run at this space (the whole run flushes as one unbreakable unit). -xlinka
+                    AppendCodepoint(font, word, cp, start, ref prevWordCodepoint, ref prevWordFont);
+                    continue;
+                }
+
                 FlushWord(ref line, ref word, ref pendingWhitespace, maxWidth);
                 if (line.Width > 0f)
                 {
@@ -207,6 +223,9 @@ public sealed class TextShaper
 
     private static bool IsCollapsibleWhitespace(int codepoint)
         => codepoint == ' ' || codepoint == '\t';
+
+    private bool IsNoBreak(int sourceIndex)
+        => _nobr != null && (uint)sourceIndex < (uint)_nobr.Count && _nobr[sourceIndex];
 
     private float MeasureWhitespace(FontSet font, int codepoint)
     {

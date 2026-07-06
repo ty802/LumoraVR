@@ -21,8 +21,8 @@ public static class Inventory
         get
         {
             var dir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "Lumora", "inventory");
+                Lumora.Core.Persistence.PathResolver.RoamingPath,
+                "LumoraVR", "inventory");
             Directory.CreateDirectory(dir);
             return dir;
         }

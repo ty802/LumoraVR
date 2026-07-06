@@ -23,6 +23,10 @@ config/icon="res://Assets/Textures/lumoravricon.svg"
 
 driver/enable_input=true
 
+[autoload]
+
+PathResolverSetup="*uid://c8ohgparu466q"
+
 [debug_draw_3d]
 
 settings/3d/volumetric_defaults/thickness=0.0

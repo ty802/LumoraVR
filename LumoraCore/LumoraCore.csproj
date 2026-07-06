@@ -30,4 +30,14 @@
     <ProjectReference Include="..\LumoraCDN\LumoraCDN.csproj" />
     <ProjectReference Include="..\LumoraMath\LumoraMath.csproj" />
   </ItemGroup>
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''"> 
+    <DefineConstants Condition="$(RuntimeIdentifier.Contains('linux'))">$(DefineConstants);LINUX</DefineConstants>
+    <DefineConstants Condition="$(RuntimeIdentifier.Contains('osx')) Or $(RuntimeIdentifier.Contains('mac'))">$(DefineConstants);OSX</DefineConstants>
+    <DefineConstants Condition="$(RuntimeIdentifier.Contains('win'))">$(DefineConstants);WINDOWS</DefineConstants>
+  </PropertyGroup> 
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' == ''">
+    <DefineConstants Condition="$([MSBuild]::IsOsPlatform('Linux'))">$(DefineConstants);LINUX</DefineConstants>
+    <DefineConstants Condition="$([MSBuild]::IsOsPlatform('OSX'))">$(DefineConstants);OSX</DefineConstants>
+    <DefineConstants Condition="$([MSBuild]::IsOsPlatform('Windows'))">$(DefineConstants);WINDOWS</DefineConstants>
+  </PropertyGroup>
 </Project>

@@ -23,8 +23,8 @@ public static class Settings
     private static Dictionary<string, string>? _values;
 
     private static string StorePath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "Lumora", "config.dat");
+        Lumora.Core.Persistence.PathResolver.RoamingPath,
+        "LumoraVR", "config.dat");
 
     public static void WriteValue(string key, string value)
     {

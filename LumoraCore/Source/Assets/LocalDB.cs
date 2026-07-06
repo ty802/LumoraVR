@@ -60,9 +60,9 @@ public class LocalDB : IDisposable
     /// </summary>
     public string BasePath => _basePath;
 
-    public LocalDB(string basePath = null!)
+    public LocalDB(string? dbPath = null)
     {
-        _basePath = basePath ?? GetDefaultBasePath();
+        _basePath = dbPath ?? GetDefaultBasePath();
         _machineId = GetOrCreateMachineId();
     }
 
@@ -336,7 +336,7 @@ public class LocalDB : IDisposable
 
     private string GetDefaultBasePath()
     {
-        var appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var appData = Lumora.Core.Persistence.PathResolver.LocalPath;
         return Path.Combine(appData, "LumoraVR", "LocalDB");
     }
 

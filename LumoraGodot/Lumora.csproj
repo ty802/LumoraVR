@@ -47,4 +47,14 @@
     <Copy SourceFiles="$(ProjectDir)steam_api64.dll" DestinationFolder="$(OutputPath)" Condition="Exists('$(ProjectDir)steam_api64.dll')" />
     <Copy SourceFiles="$(ProjectDir)libsteam_api.so" DestinationFolder="$(OutputPath)" Condition="Exists('$(ProjectDir)libsteam_api.so')" />
   </Target>
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''"> 
+    <DefineConstants Condition="$(RuntimeIdentifier.Contains('linux'))">$(DefineConstants);LINUX</DefineConstants>
+    <DefineConstants Condition="$(RuntimeIdentifier.Contains('osx')) Or $(RuntimeIdentifier.Contains('mac'))">$(DefineConstants);OSX</DefineConstants>
+    <DefineConstants Condition="$(RuntimeIdentifier.Contains('win'))">$(DefineConstants);WINDOWS</DefineConstants>
+  </PropertyGroup> 
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' == ''">
+    <DefineConstants Condition="$([MSBuild]::IsOsPlatform('Linux'))">$(DefineConstants);LINUX</DefineConstants>
+    <DefineConstants Condition="$([MSBuild]::IsOsPlatform('OSX'))">$(DefineConstants);OSX</DefineConstants>
+    <DefineConstants Condition="$([MSBuild]::IsOsPlatform('Windows'))">$(DefineConstants);WINDOWS</DefineConstants>
+  </PropertyGroup>
 </Project>

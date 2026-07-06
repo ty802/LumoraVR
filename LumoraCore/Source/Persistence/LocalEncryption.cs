@@ -125,7 +125,7 @@ public static class LocalEncryption
     }
 
     private static string KeyPath()
-        => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        => Path.Combine(Lumora.Core.Persistence.PathResolver.LocalPath,
             "LumoraVR", "vault.key");
 }
 

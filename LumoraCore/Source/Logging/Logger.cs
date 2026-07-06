@@ -158,7 +158,7 @@ namespace Lumora.Core.Logging
 
                 try
                 {
-                    var logDirectory = Path.Combine(basePath, "Lumora", "logs");
+                    var logDirectory = Path.Combine(basePath, "LumoraVR", "logs");
                     Directory.CreateDirectory(logDirectory);
                     return logDirectory;
                 }
@@ -175,25 +175,9 @@ namespace Lumora.Core.Logging
         {
             return new[]
             {
-                TryGetGodotUserDataDir(),
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                Lumora.Core.Persistence.PathResolver.LocalPath,
                 Path.GetTempPath()
             };
-        }
-
-        private static string TryGetGodotUserDataDir()
-        {
-            try
-            {
-                var godotOsType = Type.GetType("Godot.OS, GodotSharp");
-                var method = godotOsType?.GetMethod("GetUserDataDir", Type.EmptyTypes);
-                return method?.Invoke(null, null) as string ?? string.Empty;
-            }
-            catch
-            {
-                return string.Empty;
-            }
         }
 
         public static void Shutdown()

@@ -401,7 +401,7 @@ public class Engine : IDisposable
             {
                 var deviceId = Environment.MachineName;
                 CDNClient = new LumoraClient(deviceId, "LumoraVR", EngineVersion.VersionString);
-                var cachePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Lumora", "Cache");
+                var cachePath = Path.Combine(Lumora.Core.Persistence.PathResolver.CachePath, "LumoraVR", "Cache");
                 ContentCache = new ContentCache(CDNClient, cachePath);
                 await Task.CompletedTask;
             }, cancellationToken);
@@ -508,8 +508,8 @@ public class Engine : IDisposable
 
     /// <summary>On-disk location of the persisted local home world.</summary>
     public static string LocalHomeSavePath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "Lumora", "home.lworld");
+        Lumora.Core.Persistence.PathResolver.RoamingPath,
+        "LumoraVR", "home.lworld");
 
     private void StartLocalHome()
     {

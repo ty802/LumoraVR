@@ -14,8 +14,11 @@ uniform bool use_vertex_color = true;
 uniform vec2 uv_scale = vec2(1.0);
 uniform vec2 uv_offset = vec2(0.0);
 
-uniform float pixel_range = 4.0;
+uniform float pixel_range = 8.0;
 uniform float coverage_gamma : hint_range(0.5, 2.0) = 0.9;
+// Same MSDF-vs-coverage branch as UI_Text: an MSDF atlas keeps the shape in RGB with opaque alpha, so reading
+// coverage from alpha would fill the whole glyph quad solid. Set from atlas.IsMSDF by the material. -xlinka
+uniform bool use_msdf = false;
 
 uniform float alpha_cutoff : hint_range(0.0, 1.0) = 0.5;
 uniform bool alpha_clip = true;
@@ -36,6 +39,16 @@ float rect_alpha(vec2 pos, vec4 clip_rect) {
 	return clamp(left * bottom * right * top, 0.0, 1.0);
 }
 
+float median3(float a, float b, float c) {
+	return max(min(a, b), min(max(a, b), c));
+}
+
+float msdf_screen_range(vec2 uv) {
+	vec2 unit_range = vec2(pixel_range) / vec2(textureSize(albedo_texture, 0));
+	vec2 screen_tex_size = vec2(1.0) / max(fwidth(uv), vec2(1e-6));
+	return max(0.5 * dot(unit_range, screen_tex_size), 1.0);
+}
+
 void vertex() {
 	local_pos = VERTEX.xy;
 	UV = UV * uv_scale + uv_offset;
@@ -49,16 +62,22 @@ void fragment() {
 		out_color *= COLOR;
 	}
 
-	float coverage = 1.0;
-	if (use_albedo_texture) {
-		coverage = texture(albedo_texture, UV).a;
-		coverage = pow(clamp(coverage, 0.0, 1.0), coverage_gamma);
-	}
-	out_color.a *= coverage;
+	if (use_msdf) {
+		vec3 msd = texture(albedo_texture, UV).rgb;
+		float sd = median3(msd.r, msd.g, msd.b);
+		out_color.a *= clamp(msdf_screen_range(UV) * (sd - 0.5) + 0.5, 0.0, 1.0);
+	} else {
+		float coverage = 1.0;
+		if (use_albedo_texture) {
+			coverage = texture(albedo_texture, UV).a;
+			coverage = pow(clamp(coverage, 0.0, 1.0), coverage_gamma);
+		}
+		out_color.a *= coverage;
 
-	if (alpha_clip) {
-		float alpha_width = max(fwidth(out_color.a), 0.001);
-		out_color.a *= smoothstep(alpha_cutoff - alpha_width, alpha_cutoff + alpha_width, out_color.a);
+		if (alpha_clip) {
+			float alpha_width = max(fwidth(out_color.a), 0.001);
+			out_color.a *= smoothstep(alpha_cutoff - alpha_width, alpha_cutoff + alpha_width, out_color.a);
+		}
 	}
 
 	out_color.a *= clip_alpha;

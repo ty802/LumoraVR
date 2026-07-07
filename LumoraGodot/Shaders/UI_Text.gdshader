@@ -7,13 +7,13 @@ render_mode unshaded, blend_mix, depth_draw_never, cull_front;
 // sampling stays stable.
 
 uniform vec4 albedo_color : source_color = vec4(1.0);
-// Plain bilinear, no mipmaps, no aniso. At glancing angles screen-space
-// derivatives grow along the foreshortened axis and the GPU picks higher mip
-// levels of the font atlas - the glyph alpha blurs, then the fwidth-widened
-// smoothstep below preserves the blurred shape with a thick fuzzy edge, so
-// glyph interiors disappear and labels bleed white across the whole quad.
-// Forcing mip 0 keeps glyphs sharp at any angle. The 96-px atlas raster is
-// high enough that distant text reads cleanly without mipmaps. - xlinka
+// Sample MIP 0 only (no mipmaps), and for the love of god do not "improve" this to
+// filter_linear_mipmap_anisotropic. I did exactly that thinking it'd sharpen text at a distance and it does
+// the opposite: MSDF is resolution-independent, the median reconstruction + the screen-space pixel_range
+// below rebuild a crisp 1px edge from the FULL-RES distance field at any size. Mipmaps pre-average the
+// distance field, so minified/far text samples a blurred mip and the whole edge goes soft. That is the
+// "blurry at a distance" trap, learned the hard way. Aniso needs mipmaps so it's out for the same reason;
+// the fwidth range already handles glancing angles. The atlas still uploads mips, just never sampled. - xlinka
 uniform sampler2D albedo_texture : filter_linear, repeat_disable;
 uniform bool use_albedo_texture = true;
 uniform bool use_vertex_color = true;

@@ -15,6 +15,10 @@ namespace Lumora.Core.Assets;
 // until the font gains glyphs (CacheGeneration). - xlinka
 public sealed class TextShaper
 {
+    // Placeholder codepoint (U+FFFC OBJECT REPLACEMENT CHARACTER) for an inline sprite: the shaper reserves a
+    // square advance for it and the renderer draws a sprite texture there instead of a font glyph. -xlinka
+    public const int SpriteGlyph = 0xFFFC;
+
     public readonly struct PositionedGlyph
     {
         public readonly FontAsset Font;
@@ -58,11 +62,15 @@ public sealed class TextShaper
     private int _shapedGeneration;
     private IReadOnlyList<float>? _shapedScales;
     private IReadOnlyList<bool>? _shapedNobr;
+    private IReadOnlyList<(int Index, FontSet? Font)>? _shapedFonts;
 
     private float _size;
     private bool _wrap;
     private IReadOnlyList<float>? _sizeScales;
     private IReadOnlyList<bool>? _nobr;
+    // Per-run font overrides as sparse (source-index, FontSet) markers; the char at index i shapes with the last
+    // marker at or before i (null Font = the default). null list = uniform (default font everywhere). -xlinka
+    private IReadOnlyList<(int Index, FontSet? Font)>? _fontMarks;
 
     public IReadOnlyList<Line> Lines => _lines;
 
@@ -84,16 +92,19 @@ public sealed class TextShaper
     /// Shape content into positioned glyph lines. No-op when every shaping
     /// input matches the cached result. Returns true if a reshape happened.
     /// </summary>
-    public bool Shape(FontSet font, string content, float size, bool wrap, float maxWidth, IReadOnlyList<float>? sizeScales = null, IReadOnlyList<bool>? nobr = null)
+    public bool Shape(FontSet font, string content, float size, bool wrap, float maxWidth, IReadOnlyList<float>? sizeScales = null, IReadOnlyList<bool>? nobr = null,
+        IReadOnlyList<(int Index, FontSet? Font)>? fontMarks = null)
     {
         int generation = font.CacheGeneration;
-        // Per-char size scales and non-breaking flags can change behind the same list reference, so never
-        // reuse the cache when either is in play (uniform text still caches).
+        // Per-char size scales, non-breaking flags, and font runs can change behind the same list reference, so
+        // never reuse the cache when any is in play (uniform text still caches).
         if (sizeScales == null
             && nobr == null
+            && fontMarks == null
             && _valid
             && _shapedScales == null
             && _shapedNobr == null
+            && _shapedFonts == null
             && ReferenceEquals(_shapedFont, font)
             && _shapedContent == content
             && _shapedSize == size
@@ -108,6 +119,7 @@ public sealed class TextShaper
         _wrap = wrap;
         _sizeScales = sizeScales;
         _nobr = nobr;
+        _fontMarks = fontMarks;
         BuildLines(font, content, maxWidth);
 
         _shapedFont = font;
@@ -118,6 +130,7 @@ public sealed class TextShaper
         _shapedGeneration = generation;
         _shapedScales = sizeScales;
         _shapedNobr = nobr;
+        _shapedFonts = fontMarks;
         _valid = true;
         return true;
     }
@@ -131,7 +144,7 @@ public sealed class TextShaper
     /// Request atlas rasterization for every renderable codepoint in content.
     /// Call before Shape when the content may contain new glyphs.
     /// </summary>
-    public static void RequestGlyphs(FontSet font, string content, float size)
+    public static void RequestGlyphs(FontSet font, string content, float size, IReadOnlyList<(int Index, FontSet? Font)>? fontMarks = null)
     {
         if (font == null || string.IsNullOrEmpty(content))
             return;
@@ -140,9 +153,21 @@ public sealed class TextShaper
         {
             int cp = char.ConvertToUtf32(content, i);
             if (char.IsHighSurrogate(content[i])) i++;
-            if (cp == '\r' || cp == '\n' || cp == '\t') continue;
-            font.RequestGlyph(cp, size);
+            if (cp == '\r' || cp == '\n' || cp == '\t' || cp == SpriteGlyph) continue;
+            ResolveFont(fontMarks, i, font).RequestGlyph(cp, size);
         }
+    }
+
+    // Static resolver shared by RequestGlyphs and the instance path: the FontSet active at a char is the last
+    // marker at or before it (null Font = default). -xlinka
+    private static FontSet ResolveFont(IReadOnlyList<(int Index, FontSet? Font)>? marks, int sourceIndex, FontSet defaultFont)
+    {
+        if (marks == null)
+            return defaultFont;
+        FontSet? f = null;
+        for (int i = 0; i < marks.Count && marks[i].Index <= sourceIndex; i++)
+            f = marks[i].Font;
+        return f ?? defaultFont;
     }
 
     private void BuildLines(FontSet font, string content, float maxWidth)
@@ -227,6 +252,8 @@ public sealed class TextShaper
     private bool IsNoBreak(int sourceIndex)
         => _nobr != null && (uint)sourceIndex < (uint)_nobr.Count && _nobr[sourceIndex];
 
+    private FontSet ResolveFont(int sourceIndex, FontSet defaultFont) => ResolveFont(_fontMarks, sourceIndex, defaultFont);
+
     private float MeasureWhitespace(FontSet font, int codepoint)
     {
         if (codepoint == '\t')
@@ -248,14 +275,29 @@ public sealed class TextShaper
         if (scale > target.MaxSizeScale)
             target.MaxSizeScale = scale;
 
+        if (codepoint == SpriteGlyph)
+        {
+            // Inline sprite: reserve a square em advance and add a placeholder glyph (no font). The renderer
+            // identifies it by this codepoint and draws the sprite texture here. -xlinka
+            var spriteMetrics = new GlyphMetrics { Advance = gsize, Offset = new float2(0f, -gsize * 0.1f), Size = new float2(gsize, gsize) };
+            target.Glyphs.Add(new PositionedGlyph(null!, codepoint, spriteMetrics, Rect.Zero, target.Width, sourceIndex));
+            target.Width += gsize;
+            prevCodepoint = 0;
+            prevFont = null;
+            return;
+        }
+
         float kerning = 0f;
         float advance;
 
-        if (font.TryGetGlyph(codepoint, gsize, out var metrics, out var uv, out var glyphFont) && glyphFont != null)
+        // <font=...> runs shape from a different FontSet; kerning naturally breaks at the boundary because
+        // prevFont (the FontAsset) won't match the new run's glyph font. -xlinka
+        FontSet runFont = ResolveFont(sourceIndex, font);
+        if (runFont.TryGetGlyph(codepoint, gsize, out var metrics, out var uv, out var glyphFont) && glyphFont != null)
         {
             if (prevCodepoint != 0 && ReferenceEquals(prevFont, glyphFont))
             {
-                kerning = font.GetKerning(glyphFont, prevCodepoint, codepoint, gsize);
+                kerning = runFont.GetKerning(glyphFont, prevCodepoint, codepoint, gsize);
             }
 
             target.Glyphs.Add(new PositionedGlyph(glyphFont, codepoint, metrics, uv, target.Width + kerning, sourceIndex));

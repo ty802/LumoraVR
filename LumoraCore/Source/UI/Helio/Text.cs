@@ -19,6 +19,10 @@ public class Text : Graphic, ILayoutElement
 {
     public readonly Sync<string> Content;
     public readonly AssetRef<FontSet> Font;
+    // Resolves inline <sprite=name> tags in rich text. Optional; when unset, sprite placeholders draw nothing. -xlinka
+    public readonly SyncRef<SpriteSet> Sprites;
+    // Resolves inline <font=name> tags in rich text. Optional; when unset, <font> runs use the default Font. -xlinka
+    public readonly SyncRef<FontSetGroup> Fonts;
     public readonly AssetRef<MaterialAsset> Material;
     public readonly Sync<float> Size;
     public readonly Sync<color> Color;
@@ -65,6 +69,17 @@ public class Text : Graphic, ILayoutElement
     private readonly List<float> _sizes = new();
     private readonly List<color> _marks = new();
     private readonly List<bool> _nobr = new();
+    private readonly List<string?> _sprites = new();
+    private readonly List<RichTextParser.AlignMark> _alignMarks = new();
+    private readonly List<RichTextParser.LineHeightMark> _lineHeightMarks = new();
+    private readonly List<RichTextParser.FontMark> _fontMarks = new();
+    private readonly List<(int Index, FontSet? Font)> _resolvedFontMarks = new();
+    private System.Collections.Generic.IReadOnlyList<(int Index, FontSet? Font)>? _fontMarksArg;
+    private FontSetGroup? _fontGroup;
+    private SpriteSet? _spriteSet;
+    // Sprite names resolved to (texture, uv) on the MAIN thread; the worker emit reads only this snapshot,
+    // never the live slot tree (SpriteSet.Get walks child slots, which is main-thread only). -xlinka
+    private readonly Dictionary<string, (IAssetProvider<TextureAsset> texture, Rect uv)> _resolvedSprites = new();
     private System.Collections.Generic.IReadOnlyList<float>? _sizeArg;
     private System.Collections.Generic.IReadOnlyList<bool>? _nobrArg;
     private readonly StringBuilder _richTextBuilder = new();
@@ -74,6 +89,7 @@ public class Text : Graphic, ILayoutElement
     // glyphs from these instead of calling the font hook, which hits Godot's font server. - xlinka
     private float _ascent;
     private float _lineHeight;
+    private float _rawLineHeight; // font line height WITHOUT _lineSpacing, for <line-height> overrides
 
     // Shared shaping engine with built-in result caching (see TextShaper).
     private readonly TextShaper _shaper = new();
@@ -82,6 +98,8 @@ public class Text : Graphic, ILayoutElement
     {
         Content = new Sync<string>(this, string.Empty);
         Font = new AssetRef<FontSet>(this);
+        Sprites = new SyncRef<SpriteSet>(this);
+        Fonts = new SyncRef<FontSetGroup>(this);
         Material = new AssetRef<MaterialAsset>(this);
         Size = new Sync<float>(this, 16f);
         Color = new Sync<color>(this, Lumora.Core.Math.color.White);
@@ -152,6 +170,8 @@ public class Text : Graphic, ILayoutElement
     {
         _content = Content.Value ?? string.Empty;
         _font = Font.Target;
+        _spriteSet = Sprites.Target; // snapshot on the main thread; ComputeGraphic runs on the worker
+        _fontGroup = Fonts.Target;
         _material = Material.Target;
         _size = Size.Value;
         _color = Color.Value;
@@ -172,16 +192,25 @@ public class Text : Graphic, ILayoutElement
         // identical to plain text; plain mode shapes Content directly.
         if (_richText)
         {
-            RichTextParser.Parse(_content, _color, _richTextBuilder, _colors, _styles, _sizes, _marks);
+            RichTextParser.Parse(_content, _color, _richTextBuilder, _colors, _styles, _sizes, _marks, _sprites, _alignMarks, _lineHeightMarks, _fontMarks);
             _shapedText = _richTextBuilder.ToString();
             _sizeArg = HasSizeVariation() ? _sizes : null; // null keeps the shaper cache for uniform text
             _nobrArg = BuildNoBreak() ? _nobr : null; // null keeps the shaper cache when nothing is nobr
+            ResolveSprites();
+            ResolveFontMarks();
         }
         else
         {
             _shapedText = _content;
             _sizeArg = null;
             _nobrArg = null;
+            _fontMarksArg = null;
+            _sprites.Clear();
+            _resolvedSprites.Clear();
+            _alignMarks.Clear();
+            _lineHeightMarks.Clear();
+            _fontMarks.Clear();
+            _resolvedFontMarks.Clear();
         }
     }
 
@@ -192,6 +221,7 @@ public class Text : Graphic, ILayoutElement
         {
             _ascent = _size * 0.8f;
             _lineHeight = _size;
+            _rawLineHeight = _size;
             return default;
         }
 
@@ -204,19 +234,24 @@ public class Text : Graphic, ILayoutElement
             _size = ComputeFittedSize(fontSet, rect.width, rect.height);
 
         // request rasterization for every codepoint we're about to draw - xlinka
-        TextShaper.RequestGlyphs(fontSet, _shapedText, _size);
+        TextShaper.RequestGlyphs(fontSet, _shapedText, _size, _fontMarksArg);
 
-        // Shape and read font metrics HERE, on the main thread. ComputeGraphic runs on the canvas
-        // worker, and the font hook (GetAscent/GetLineHeight/GetKerning) calls Godot's font server,
-        // which is not safe off-main - doing it there returned garbage metrics and made text
-        // collapse/vanish intermittently. The worker only positions the shaped glyphs. - xlinka
+        // Shape and read font metrics HERE, on the main thread, and do NOT move this to the worker no
+        // matter how tempting. ComputeGraphic runs on the canvas worker, and the font hook
+        // (GetAscent/GetLineHeight/GetKerning) calls Godot's font server, which is not thread safe. I
+        // learned this the hard way: off-main it hands back garbage metrics and text randomly
+        // collapses/vanishes for a frame or two, which is an absolute nightmare to repro. The worker
+        // only positions the already-shaped glyphs. - xlinka
         float wrapWidth = _wrap && rect.width > 0f ? rect.width : 0f;
-        _shaper.Shape(fontSet, _shapedText, _size, _wrap, wrapWidth, _sizeArg, _nobrArg);
+        _shaper.Shape(fontSet, _shapedText, _size, _wrap, wrapWidth, _sizeArg, _nobrArg, _fontMarksArg);
 
         _ascent = fontSet.GetAscent(_size);
-        _lineHeight = fontSet.GetLineHeight(_size) * _lineSpacing;
+        _rawLineHeight = fontSet.GetLineHeight(_size);
+        _lineHeight = _rawLineHeight * _lineSpacing;
         if (_lineHeight <= 0f)
             _lineHeight = _size;
+        if (_rawLineHeight <= 0f)
+            _rawLineHeight = _size;
 
         return default;
     }
@@ -255,7 +290,7 @@ public class Text : Graphic, ILayoutElement
 
         var rect = RectTransform?.LocalComputeRect ?? default;
         float wrapWidth = _wrap && rect.width > 0f ? rect.width : 0f;
-        _shaper.Shape(fontSet, _shapedText, _size, _wrap, wrapWidth, _sizeArg, _nobrArg);
+        _shaper.Shape(fontSet, _shapedText, _size, _wrap, wrapWidth, _sizeArg, _nobrArg, _fontMarksArg);
 
         float lineHeight = fontSet.GetLineHeight(_size) * _lineSpacing;
         if (lineHeight <= 0f)
@@ -288,7 +323,7 @@ public class Text : Graphic, ILayoutElement
         for (int iter = 0; iter < 6; iter++)
         {
             float wrapW = _wrap && availW > 0f ? availW : 0f;
-            _shaper.Shape(fontSet, _shapedText, size, _wrap, wrapW, _sizeArg, _nobrArg);
+            _shaper.Shape(fontSet, _shapedText, size, _wrap, wrapW, _sizeArg, _nobrArg, _fontMarksArg);
 
             float textW = _shaper.MaxLineWidth;
             float lh = fontSet.GetLineHeight(size) * _lineSpacing;
@@ -342,14 +377,12 @@ public class Text : Graphic, ILayoutElement
         if (lines.Count == 0) return;
 
         float ascent = _ascent;
-        float lineHeight = _lineHeight;
-        if (lineHeight <= 0f) lineHeight = _size;
 
-        // Lines can differ in height when rich-text <size> is used (line height scales
-        // with the tallest glyph on the line); uniform text has MaxSizeScale == 1.
+        // Lines can differ in height when rich-text <size> is used (line height scales with the tallest glyph),
+        // or when a <line-height> override is active on the line; uniform text has MaxSizeScale == 1. -xlinka
         float blockHeight = 0f;
         for (int i = 0; i < lines.Count; i++)
-            blockHeight += lineHeight * lines[i].MaxSizeScale;
+            blockHeight += LineHeightFor(lines[i]) * lines[i].MaxSizeScale;
 
         float blockTop = _vAlign switch
         {
@@ -360,24 +393,25 @@ public class Text : Graphic, ILayoutElement
 
         // Highlight backgrounds behind marked runs (rich-text <mark>), under everything else.
         if (_richText)
-            EmitMarkBackgrounds(renderData, rect, lines, blockTop, lineHeight);
+            EmitMarkBackgrounds(renderData, rect, lines, blockTop);
 
         // Selection (behind text) + caret, when an editor is driving this text.
         if (_caretPos >= 0)
-            EmitEditingVisuals(renderData, rect, lines, blockTop, lineHeight);
+            EmitEditingVisuals(renderData, rect, lines, blockTop);
 
         float yCursor = blockTop;
         for (int lineIndex = 0; lineIndex < lines.Count; lineIndex++)
         {
             var line = lines[lineIndex];
-            float lineH = lineHeight * line.MaxSizeScale;
-            float penX = AlignLineStart(rect, line.Width);
+            float lineH = LineHeightFor(line) * line.MaxSizeScale;
+            var lineAlign = LineAlign(line);
+            float penX = AlignLineStart(rect, line.Width, lineAlign);
             float penY = yCursor - ascent * line.MaxSizeScale;
 
             // Justify spreads the leftover width across word gaps on every line except the last (and never the
             // line that ends a paragraph). justifyOffset accumulates as we cross each gap. -xlinka
             float justifyPerGap = 0f;
-            if (_hAlign == TextHorizontalAlignment.Justify && _wrap && lineIndex < lines.Count - 1 && !line.HardBreak)
+            if (lineAlign == TextHorizontalAlignment.Justify && _wrap && lineIndex < lines.Count - 1 && !line.HardBreak)
             {
                 int gaps = CountWordGaps(line);
                 float extra = rect.width - line.Width;
@@ -391,6 +425,14 @@ public class Text : Graphic, ILayoutElement
                 var glyph = line.Glyphs[i];
                 if (justifyPerGap > 0f && i > 0 && IsWordGap(line, i))
                     justifyOffset += justifyPerGap;
+
+                // Inline sprite placeholder: draw the sprite texture instead of a font glyph.
+                if (glyph.Codepoint == TextShaper.SpriteGlyph)
+                {
+                    EmitSprite(renderData, glyph, penX + glyph.X + justifyOffset, penY, renderData.GeometryClipRect);
+                    continue;
+                }
+
                 PhosTriangleSubmesh submesh;
                 if (_material != null)
                 {
@@ -411,14 +453,43 @@ public class Text : Graphic, ILayoutElement
         }
     }
 
-    private float AlignLineStart(in Rect rect, float lineWidth)
+    private static float AlignLineStart(in Rect rect, float lineWidth, TextHorizontalAlignment align)
     {
-        return _hAlign switch
+        return align switch
         {
             TextHorizontalAlignment.Center => rect.xMin + (rect.width - lineWidth) * 0.5f,
             TextHorizontalAlignment.Right => rect.xMax - lineWidth,
-            _ => rect.xMin,
+            _ => rect.xMin, // Left and Justify both start at the left; justify then spreads the slack
         };
+    }
+
+    private static int LineFirstSourceIndex(TextShaper.Line line)
+        => line.Glyphs.Count > 0 ? line.Glyphs[0].SourceIndex : -1;
+
+    // Alignment active on this line: the last <align> marker at or before the line's first char, else the
+    // Text-wide default. Markers are stored in source order. -xlinka
+    private TextHorizontalAlignment LineAlign(TextShaper.Line line)
+    {
+        if (_alignMarks.Count == 0)
+            return _hAlign;
+        int idx = LineFirstSourceIndex(line);
+        byte a = 0;
+        for (int i = 0; i < _alignMarks.Count && _alignMarks[i].Index <= idx; i++)
+            a = _alignMarks[i].Align;
+        return a > 0 ? (TextHorizontalAlignment)(a - 1) : _hAlign;
+    }
+
+    // Line height active on this line: a <line-height> override (multiplier of the raw font height) or the
+    // default (font height x line spacing). -xlinka
+    private float LineHeightFor(TextShaper.Line line)
+    {
+        if (_lineHeightMarks.Count == 0)
+            return _lineHeight;
+        int idx = LineFirstSourceIndex(line);
+        float h = 0f;
+        for (int i = 0; i < _lineHeightMarks.Count && _lineHeightMarks[i].Index <= idx; i++)
+            h = _lineHeightMarks[i].Height;
+        return h > 0f ? _rawLineHeight * h : _lineHeight;
     }
 
     // A word gap sits before glyph i when there's visible whitespace between it and the previous glyph - the
@@ -597,7 +668,7 @@ public class Text : Graphic, ILayoutElement
     // BEFORE the glyph submeshes so they render behind the glyphs. Steady caret.
     // Draw a highlight quad behind each run of same-colored <mark> glyphs, per line, before the glyphs. -xlinka
     private void EmitMarkBackgrounds(GraphicsChunk.RenderData renderData,
-        in Rect rect, System.Collections.Generic.IReadOnlyList<TextShaper.Line> lines, float blockTop, float lineHeight)
+        in Rect rect, System.Collections.Generic.IReadOnlyList<TextShaper.Line> lines, float blockTop)
     {
         if (lines.Count == 0 || _marks.Count == 0) return;
         var clip = renderData.GeometryClipRect;
@@ -605,8 +676,8 @@ public class Text : Graphic, ILayoutElement
         for (int li = 0; li < lines.Count; li++)
         {
             var line = lines[li];
-            float lh = lineHeight * line.MaxSizeScale;
-            float ls = AlignLineStart(rect, line.Width);
+            float lh = LineHeightFor(line) * line.MaxSizeScale;
+            float ls = AlignLineStart(rect, line.Width, LineAlign(line));
             int gi = 0;
             while (gi < line.Glyphs.Count)
             {
@@ -634,7 +705,7 @@ public class Text : Graphic, ILayoutElement
         => a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
 
     private void EmitEditingVisuals(GraphicsChunk.RenderData renderData,
-        in Rect rect, System.Collections.Generic.IReadOnlyList<TextShaper.Line> lines, float blockTop, float lineHeight)
+        in Rect rect, System.Collections.Generic.IReadOnlyList<TextShaper.Line> lines, float blockTop)
     {
         if (lines.Count == 0) return;
         var clip = renderData.GeometryClipRect;
@@ -647,7 +718,7 @@ public class Text : Graphic, ILayoutElement
             for (int li = 0; li < lines.Count; li++)
             {
                 var line = lines[li];
-                float lh = lineHeight * line.MaxSizeScale;
+                float lh = LineHeightFor(line) * line.MaxSizeScale;
                 float startX = -1f;
                 float endX = -1f;
                 for (int gi = 0; gi < line.Glyphs.Count; gi++)
@@ -661,7 +732,7 @@ public class Text : Graphic, ILayoutElement
                 }
                 if (startX >= 0f && endX > startX)
                 {
-                    float ls = AlignLineStart(rect, line.Width);
+                    float ls = AlignLineStart(rect, line.Width, LineAlign(line));
                     EmitSolidQuad(renderData, ls + startX, top - lh, ls + endX, top, _selColor, clip);
                 }
                 top -= lh;
@@ -671,9 +742,9 @@ public class Text : Graphic, ILayoutElement
         TryGetCaretPos(lines, _caretPos, out int caretLine, out float caretX);
         float caretTop = blockTop;
         for (int li = 0; li < caretLine; li++)
-            caretTop -= lineHeight * lines[li].MaxSizeScale;
-        float caretLh = lineHeight * lines[caretLine].MaxSizeScale;
-        float lineStart = AlignLineStart(rect, lines[caretLine].Width);
+            caretTop -= LineHeightFor(lines[li]) * lines[li].MaxSizeScale;
+        float caretLh = LineHeightFor(lines[caretLine]) * lines[caretLine].MaxSizeScale;
+        float lineStart = AlignLineStart(rect, lines[caretLine].Width, LineAlign(lines[caretLine]));
         float cx = lineStart + caretX;
         float w = _size * 0.06f;
         if (w < 1f) w = 1f;
@@ -697,6 +768,60 @@ public class Text : Graphic, ILayoutElement
         }
         lineIndex = lines.Count - 1;
         localX = lines[lineIndex].Width;
+    }
+
+    // Inline sprites show their own colors (no tint), matching the reference's non-tintable inline glyphs. -xlinka
+    private static readonly color SpriteTint = color.White;
+
+    // Resolve each <font> marker's name to a FontSet on the main thread (walks the FontSetGroup's child slots),
+    // so the shaper worker only reads resolved FontSet references. -xlinka
+    private void ResolveFontMarks()
+    {
+        _resolvedFontMarks.Clear();
+        for (int i = 0; i < _fontMarks.Count; i++)
+        {
+            var m = _fontMarks[i];
+            FontSet? f = (m.Name != null && _fontGroup != null) ? _fontGroup.Get(m.Name) : null;
+            _resolvedFontMarks.Add((m.Index, f));
+        }
+        _fontMarksArg = _resolvedFontMarks.Count > 0 ? _resolvedFontMarks : null;
+    }
+
+    // Resolve every inline sprite name to its (texture, uv) on the main thread, so the worker emit never
+    // touches the live slot tree. Distinct names only. -xlinka
+    private void ResolveSprites()
+    {
+        _resolvedSprites.Clear();
+        if (_spriteSet == null)
+            return;
+        for (int i = 0; i < _sprites.Count; i++)
+        {
+            var name = _sprites[i];
+            if (string.IsNullOrEmpty(name) || _resolvedSprites.ContainsKey(name))
+                continue;
+            var sprite = _spriteSet.Get(name);
+            var tex = sprite?.Texture.Target;
+            if (sprite != null && tex != null)
+                _resolvedSprites[name] = (tex, sprite.UVRect.Value);
+        }
+    }
+
+    // Draw the sprite named for this placeholder glyph as a textured quad at the reserved square, from the
+    // main-thread snapshot. Draws nothing if the name wasn't resolved (no SpriteSet, or unknown name). -xlinka
+    private void EmitSprite(GraphicsChunk.RenderData renderData, in TextShaper.PositionedGlyph glyph, float x, float y, Rect? clip)
+    {
+        if (glyph.SourceIndex < 0 || glyph.SourceIndex >= _sprites.Count)
+            return;
+        var name = _sprites[glyph.SourceIndex];
+        if (name == null || !_resolvedSprites.TryGetValue(name, out var resolved))
+            return;
+
+        var m = glyph.Metrics;
+        float x0 = x + m.Offset.x;
+        float y0 = y + m.Offset.y;
+        var rect = Rect.FromMinMax(new float2(x0, y0), new float2(x0 + m.Size.x, y0 + m.Size.y));
+        var submesh = renderData.GetSubmesh(null, resolved.texture, GraphicsChunk.RenderData.ImageTexture);
+        RawImage.GenerateImage(submesh.Mesh, submesh, rect, resolved.uv, null, false, in SpriteTint, clip);
     }
 
     private static void EmitSolidQuad(GraphicsChunk.RenderData renderData, float x0, float y0, float x1, float y1, in color c, Rect? clip)

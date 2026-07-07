@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
+using Lumora.Core.Assets;
 using Lumora.Core.Math;
 
 namespace Helio.UI;
@@ -56,13 +57,43 @@ public static class RichTextParser
         }
     }
 
-    public static void Parse(string? input, in color baseColor, StringBuilder text, List<color> colors, List<byte> styles, List<float> sizes, List<color> marks)
+    // Per-line block attributes recorded as SPARSE position markers (align/line-height change per line, not per
+    // char, so a marker at the change position is enough - the renderer picks the one active at each line). -xlinka
+    public readonly struct AlignMark
+    {
+        public readonly int Index;
+        public readonly byte Align; // 0 = inherit the Text default; else (TextHorizontalAlignment + 1)
+        public AlignMark(int index, byte align) { Index = index; Align = align; }
+    }
+
+    public readonly struct LineHeightMark
+    {
+        public readonly int Index;
+        public readonly float Height; // 0 = inherit; else multiplier of the base line height
+        public LineHeightMark(int index, float height) { Index = index; Height = height; }
+    }
+
+    // <font=name> switches the shaping font for the run. Marker holds the font name active from Index onward
+    // (null = the Text's default font); the renderer resolves the name to a FontSet and the shaper uses it. -xlinka
+    public readonly struct FontMark
+    {
+        public readonly int Index;
+        public readonly string? Name;
+        public FontMark(int index, string? name) { Index = index; Name = name; }
+    }
+
+    public static void Parse(string? input, in color baseColor, StringBuilder text, List<color> colors, List<byte> styles, List<float> sizes, List<color> marks, List<string?> sprites,
+        List<AlignMark> alignMarks, List<LineHeightMark> lineHeightMarks, List<FontMark> fontMarks)
     {
         text.Clear();
         colors.Clear();
         styles.Clear();
         sizes.Clear();
         marks.Clear();
+        sprites.Clear();
+        alignMarks.Clear();
+        lineHeightMarks.Clear();
+        fontMarks.Clear();
         if (string.IsNullOrEmpty(input))
             return;
 
@@ -76,6 +107,13 @@ public static class RichTextParser
         // just needs the run's start index and endpoints, not a push/pop. -xlinka
         int gradStart = -1;
         color gradA = color.White, gradB = color.White;
+        // align/line-height/font nest with their own small stacks and emit a marker on open and close. -xlinka
+        byte currentAlign = 0;
+        float currentLineHeight = 0f;
+        string? currentFontName = null;
+        var alignStack = new List<byte>();
+        var lhStack = new List<float>();
+        var fontStack = new List<string?>();
 
         int i = 0;
         while (i < input.Length)
@@ -93,7 +131,7 @@ public static class RichTextParser
                     // they live here rather than in the attribute-only HandleTag. -xlinka
                     if (trimmed.Equals("br", StringComparison.OrdinalIgnoreCase))
                     {
-                        Append('\n', text, colors, styles, sizes, marks, current, currentStyle, currentSize, currentMark, CaseNone);
+                        Append('\n', text, colors, styles, sizes, marks, sprites, current, currentStyle, currentSize, currentMark, CaseNone);
                         i = close + 1;
                         continue;
                     }
@@ -103,8 +141,25 @@ public static class RichTextParser
                         int closeTag = input.IndexOf("</noparse>", contentStart, StringComparison.OrdinalIgnoreCase);
                         int contentEnd = closeTag >= 0 ? closeTag : input.Length;
                         for (int k = contentStart; k < contentEnd; k++)
-                            Append(input[k], text, colors, styles, sizes, marks, current, currentStyle, currentSize, currentMark, currentCase);
+                            Append(input[k], text, colors, styles, sizes, marks, sprites, current, currentStyle, currentSize, currentMark, currentCase);
                         i = closeTag >= 0 ? closeTag + "</noparse>".Length : input.Length;
+                        continue;
+                    }
+                    // <sprite=name> / <sprite name=name> emits one placeholder char that the renderer draws as a
+                    // sprite; it ADDS a character, so it lives here rather than in HandleTag. -xlinka
+                    string? spriteName = ParseSpriteName(trimmed);
+                    if (spriteName != null)
+                    {
+                        Append((char)TextShaper.SpriteGlyph, text, colors, styles, sizes, marks, sprites,
+                            current, currentStyle, currentSize, currentMark, CaseNone, spriteName);
+                        i = close + 1;
+                        continue;
+                    }
+
+                    if (TryHandleBlockTag(trimmed, text.Length, alignStack, ref currentAlign, alignMarks, lhStack, ref currentLineHeight, lineHeightMarks) ||
+                        TryHandleFont(trimmed, text.Length, fontStack, ref currentFontName, fontMarks))
+                    {
+                        i = close + 1;
                         continue;
                     }
 
@@ -117,15 +172,28 @@ public static class RichTextParser
                 }
             }
 
-            Append(c, text, colors, styles, sizes, marks, current, currentStyle, currentSize, currentMark, currentCase);
+            Append(c, text, colors, styles, sizes, marks, sprites, current, currentStyle, currentSize, currentMark, currentCase);
             i++;
         }
+    }
+
+    // <sprite=name>, <sprite name=name>, or the <glyph...> aliases -> the sprite name; null for any other tag.
+    private static string? ParseSpriteName(string trimmed)
+    {
+        int eq = trimmed.IndexOf('=');
+        if (eq < 0)
+            return null;
+        string key = trimmed.Substring(0, eq).Trim().ToLowerInvariant();
+        if (key is not ("sprite" or "glyph" or "sprite name" or "glyph name"))
+            return null;
+        string val = trimmed.Substring(eq + 1).Trim().Trim('"', '\'');
+        return val.Length > 0 ? val : null;
     }
 
     // Append one visible char with the current attributes, applying the case transform (and the smallcaps
     // size shrink for originally-lowercase letters). -xlinka
     private static void Append(char c, StringBuilder text, List<color> colors, List<byte> styles, List<float> sizes, List<color> marks,
-        color color, byte style, float size, color mark, byte caseMode)
+        List<string?> sprites, color color, byte style, float size, color mark, byte caseMode, string? spriteName = null)
     {
         char visible = caseMode switch
         {
@@ -142,6 +210,7 @@ public static class RichTextParser
         styles.Add(style);
         sizes.Add(charSize);
         marks.Add(mark);
+        sprites.Add(spriteName);
     }
 
     // <gradient=a,b> ... </gradient> : lerp each char's color from a (run start) to b (run end). Interpolated by
@@ -179,6 +248,91 @@ public static class RichTextParser
 
     private static color LerpColor(in color a, in color b, float t)
         => new(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, a.a + (b.a - a.a) * t);
+
+    // <align=left|center|right|justify> and <line-height=N> - per-LINE attributes, so we record a marker at the
+    // change position (nested via their own small stacks) and the renderer resolves the value active per line. -xlinka
+    private static bool TryHandleBlockTag(string trimmed, int pos, List<byte> alignStack, ref byte currentAlign, List<AlignMark> alignMarks,
+        List<float> lhStack, ref float currentLineHeight, List<LineHeightMark> lineHeightMarks)
+    {
+        if (trimmed.Equals("/align", StringComparison.OrdinalIgnoreCase))
+        {
+            currentAlign = alignStack.Count > 0 ? Pop(alignStack) : (byte)0;
+            alignMarks.Add(new AlignMark(pos, currentAlign));
+            return true;
+        }
+        if (trimmed.Equals("/line-height", StringComparison.OrdinalIgnoreCase))
+        {
+            currentLineHeight = lhStack.Count > 0 ? Pop(lhStack) : 0f;
+            lineHeightMarks.Add(new LineHeightMark(pos, currentLineHeight));
+            return true;
+        }
+
+        int eq = trimmed.IndexOf('=');
+        if (eq < 0)
+            return false;
+        string key = trimmed.Substring(0, eq).Trim().ToLowerInvariant();
+        string val = trimmed.Substring(eq + 1).Trim();
+
+        if (key == "align")
+        {
+            alignStack.Add(currentAlign);
+            currentAlign = ParseAlign(val);
+            alignMarks.Add(new AlignMark(pos, currentAlign));
+            return true;
+        }
+        if (key == "line-height")
+        {
+            lhStack.Add(currentLineHeight);
+            currentLineHeight = ParseLineHeight(val);
+            lineHeightMarks.Add(new LineHeightMark(pos, currentLineHeight));
+            return true;
+        }
+        return false;
+    }
+
+    // <font=name> / </font> : like the block tags but carries a name; the renderer resolves it to a FontSet. -xlinka
+    private static bool TryHandleFont(string trimmed, int pos, List<string?> fontStack, ref string? currentFontName, List<FontMark> fontMarks)
+    {
+        if (trimmed.Equals("/font", StringComparison.OrdinalIgnoreCase))
+        {
+            currentFontName = fontStack.Count > 0 ? Pop(fontStack) : null;
+            fontMarks.Add(new FontMark(pos, currentFontName));
+            return true;
+        }
+        int eq = trimmed.IndexOf('=');
+        if (eq < 0 || trimmed.Substring(0, eq).Trim().ToLowerInvariant() != "font")
+            return false;
+        fontStack.Add(currentFontName);
+        string name = trimmed.Substring(eq + 1).Trim().Trim('"', '\'');
+        currentFontName = name.Length > 0 ? name : null;
+        fontMarks.Add(new FontMark(pos, currentFontName));
+        return true;
+    }
+
+    // 0 = inherit; otherwise (TextHorizontalAlignment + 1) so the renderer can tell "no override" apart from Left.
+    private static byte ParseAlign(string value) => value.ToLowerInvariant() switch
+    {
+        "left" => 1,
+        "center" or "centre" => 2,
+        "right" => 3,
+        "justify" or "justified" => 4,
+        _ => 0,
+    };
+
+    // Reference uses percent (150 -> 1.5). Accept a bare multiplier too (1.5 -> 1.5): treat values >= 3 as percent.
+    private static float ParseLineHeight(string value)
+    {
+        if (!float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out float n) || n <= 0f)
+            return 0f;
+        return n >= 3f ? n * 0.01f : n;
+    }
+
+    private static T Pop<T>(List<T> stack)
+    {
+        var v = stack[stack.Count - 1];
+        stack.RemoveAt(stack.Count - 1);
+        return v;
+    }
 
     private static bool HandleTag(string tag, in color baseColor, List<Span> stack,
         ref color current, ref byte currentStyle, ref float currentSize, ref color currentMark, ref byte currentCase)

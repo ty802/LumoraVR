@@ -253,9 +253,24 @@ public class ContextMenuSystem : Component
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
+        UpdateOpenAnimation(delta);
         UpdateOpeningPressGuard();
         UpdateFlickSelect();
         UpdateEdgeClose(delta);
+    }
+
+    // Open/page-change pop: the canvas scales 0.6 -> 1.0 over ~0.12s with a smoother-step ease. Scale only -
+    // it's one slot-transform write per frame while animating, no re-mesh and no per-material alpha churn. -xlinka
+    private float _openAnim = 1f;
+
+    private void UpdateOpenAnimation(float delta)
+    {
+        if (_openAnim >= 1f || _canvasSlot == null || _canvasSlot.IsDestroyed)
+            return;
+        _openAnim = MathF.Min(1f, _openAnim + delta / 0.12f);
+        float t = _openAnim;
+        float ease = t * t * t * (t * (t * 6f - 15f) + 10f);
+        _canvasSlot.LocalScale.Value = float3.One * (CanvasScale * (0.6f + 0.4f * ease));
     }
 
     // The confirm menu opens on the primary (left/trigger) button, which is also the select button. Ignore item
@@ -532,7 +547,9 @@ public class ContextMenuSystem : Component
 
         _canvasSlot?.Destroy();
         _canvasSlot = _menuRoot.AddLocalSlot("Canvas");
-        _canvasSlot.LocalScale.Value = float3.One * CanvasScale;
+        // Start small; UpdateOpenAnimation eases to full size (also fires on page changes - each rebuild pops).
+        _openAnim = 0f;
+        _canvasSlot.LocalScale.Value = float3.One * (CanvasScale * 0.6f);
 
         // Canvas root size comes from a centered RectTransform on the canvas
         // slot (same convention as PanelShell).
@@ -540,8 +557,16 @@ public class ContextMenuSystem : Component
         rootRect.OffsetMin.Value = new float2(-CanvasSize * 0.5f, -CanvasSize * 0.5f);
         rootRect.OffsetMax.Value = new float2(CanvasSize * 0.5f, CanvasSize * 0.5f);
         var canvas = _canvasSlot.AttachComponent<Canvas>();
-        // The menu is overlay UI: it renders over everything.
+        // The menu is overlay UI: it renders over everything. SortingOrder wins the transparent sort;
+        // Overlay makes every canvas material skip the DEPTH test too - without it, world geometry still
+        // clips into the menu (the "objects showing through the ring" render bug). -xlinka
         canvas.SortingOrder.Value = 10000;
+        canvas.Overlay.Value = true;
+        // Black outline + slight bolding on every label: floating text over an arbitrary world background
+        // is unreadable without a contrast ring, and thin glyphs wash out on bright skies. -xlinka
+        canvas.TextOutlineColor.Value = new colorHDR(0f, 0f, 0f, 1f);
+        canvas.TextOutlineThickness.Value = 0.22f;
+        canvas.TextFaceDilate.Value = 0.06f;
 
         var page = CurrentPage;
         if (page == null) return;
@@ -571,8 +596,8 @@ public class ContextMenuSystem : Component
         disc.ArcLength.Value = 360f;
         disc.InnerRadius.Value = 0f;
         disc.OuterRadius.Value = 46f;
-        disc.Tint.Value = new color(0.08f, 0.09f, 0.12f, 0.92f);
-        disc.OutlineColor.Value = new color(0.10f, 0.11f, 0.14f, 0.9f);
+        disc.Tint.Value = new color(0.08f, 0.09f, 0.12f, 1f);
+        disc.OutlineColor.Value = new color(0.30f, 0.32f, 0.40f, 0.95f);
         disc.OutlineThickness.Value = 2f;
 
         var button = center.AttachComponent<ArcButton>();
@@ -602,19 +627,43 @@ public class ContextMenuSystem : Component
         rect.AnchorMin.Value = float2.Zero;
         rect.AnchorMax.Value = float2.One;
 
-        var fill = ToColor(item.FillColor, new color(0.12f, 0.12f, 0.12f, 0.9f));
-        if (item.IsToggle && item.IsToggled)
-            fill = new color(0.16f, 0.34f, 0.22f, 0.95f);
+        // Wedge style: dark neutral fill with the item's color moved to the OUTLINE accent. A colored fill
+        // reads as a pie chart; a dark petal with a colored ring reads as a menu. Toggles signal state by
+        // outline: green = on, red = off. Fills stay near-opaque - this is an overlay, and anything bleeding
+        // through the wedges reads as a rendering error, not a style. -xlinka
+        var sourceColor = ToColor(item.FillColor, new color(0.45f, 0.47f, 0.55f, 1f));
+        color accent;
+        if (item.IsToggle)
+            accent = item.IsToggled ? new color(0.42f, 0.92f, 0.55f, 1f) : new color(0.95f, 0.32f, 0.32f, 1f);
+        else
+            accent = BrightenAccent(sourceColor);
+        accent = ToColor(item.OutlineColor, accent); // an explicit outline from the source still wins
+        // Fully opaque petals (0.97 still ghosted the world grid through), tinted a touch toward the accent
+        // so each wedge carries its identity in the body, not just the ring. -xlinka
+        var fill = new color(
+            0.085f + accent.r * 0.05f,
+            0.09f + accent.g * 0.05f,
+            0.115f + accent.b * 0.05f,
+            1f);
         if (!item.IsEnabled)
-            fill = new color(fill.r * 0.5f, fill.g * 0.5f, fill.b * 0.5f, fill.a * 0.7f);
+        {
+            fill = new color(0.06f, 0.06f, 0.075f, 1f);
+            accent = new color(0.38f, 0.38f, 0.42f, 0.8f);
+        }
 
         var arc = itemSlot.AttachComponent<ArcSegment>();
-        arc.AngleStart.Value = item.AngleStart;
-        arc.ArcLength.Value = item.ArcLength;
+        // Separated petals: each wedge gives up a couple of degrees per side so neighbors don't fuse into
+        // one solid donut. Visual + hit arc only - flick lookup reads the item's LOGICAL angles
+        // (FindItemAtAngle), so the gaps don't create flick dead zones. -xlinka
+        float gap = MathF.Min(2.5f, item.ArcLength * 0.08f);
+        arc.AngleStart.Value = item.AngleStart + gap;
+        arc.ArcLength.Value = MathF.Max(4f, item.ArcLength - gap * 2f);
         arc.InnerRadius.Value = item.RadiusStart;
         arc.OuterRadius.Value = item.RadiusEnd;
         arc.Tint.Value = fill;
-        arc.OutlineColor.Value = ToColor(item.OutlineColor, new color(0.45f, 0.45f, 0.45f, 1f));
+        arc.OutlineColor.Value = accent;
+        arc.OutlineThickness.Value = 3f;
+        arc.CornerRadius.Value = 10f;
 
         if (item.IsEnabled && (item.OnPressed != null || item.SubPage != null))
         {
@@ -656,11 +705,23 @@ public class ContextMenuSystem : Component
         _font = null!;
     }
 
-    private static color ToColor(float[] rgba, color fallback)
+    private static color ToColor(float[]? rgba, color fallback)
     {
         if (rgba == null || rgba.Length < 4)
             return fallback;
         return new color(rgba[0], rgba[1], rgba[2], rgba[3]);
+    }
+
+    // Lift a (usually dark, fill-styled) source color to outline-accent brightness, preserving hue. The
+    // menu sources still pass muted panel fills; as outlines those read near-black, so scale the max
+    // channel up to a readable accent. Near-grey/black sources fall back to a neutral light outline. -xlinka
+    private static color BrightenAccent(color c)
+    {
+        float max = MathF.Max(c.r, MathF.Max(c.g, c.b));
+        if (max < 1e-3f)
+            return new color(0.62f, 0.64f, 0.72f, 1f);
+        float s = 0.88f / max;
+        return new color(MathF.Min(1f, c.r * s), MathF.Min(1f, c.g * s), MathF.Min(1f, c.b * s), 1f);
     }
 
     // Item collection

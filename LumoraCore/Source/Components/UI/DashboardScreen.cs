@@ -41,11 +41,14 @@ public class DashboardScreen : UIComponent
     public override void OnStart()
     {
         base.OnStart();
-        EnsureContent();
+        // Content is built lazily on first ShowScreen (or first ContentSlot access), NOT here. Opening the dash
+        // used to tessellate every screen's UI up front (all screens OnStart at once), a big one-frame comp
+        // spike. Now only the screen you actually land on builds; the rest defer until navigated to. - xlinka
     }
 
     public void ShowScreen()
     {
+        EnsureContent();
         Slot.ActiveSelf.Value = true;
         OnShow();
         // Activating the slot doesn't dirty the canvas on its own, so a freshly

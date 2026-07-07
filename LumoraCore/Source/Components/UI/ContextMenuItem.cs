@@ -26,8 +26,9 @@ public class ContextMenuItem
     /// <summary>Arc fill color (RGBA 0-1).</summary>
     public float[] FillColor { get; set; } = { 0.12f, 0.12f, 0.12f, 0.9f };
 
-    /// <summary>Arc border/outline color. Subtle and dark so segments read as one ring.</summary>
-    public float[] OutlineColor { get; set; } = { 0.10f, 0.11f, 0.14f, 0.9f };
+    /// <summary>Arc outline accent color. Null = derived from FillColor (or toggle state) by the menu;
+    /// only set this to force a specific outline.</summary>
+    public float[]? OutlineColor { get; set; }
 
     /// <summary>Label text color.</summary>
     public float[] LabelColor { get; set; } = { 1f, 1f, 1f, 1f };

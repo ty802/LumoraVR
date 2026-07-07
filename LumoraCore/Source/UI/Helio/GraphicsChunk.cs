@@ -678,6 +678,8 @@ public sealed class GraphicsChunk
             _defaultMaterial.Culling.Value = Culling.None;
             _defaultMaterial.ZWrite.Value = ZWrite.Off;
             _defaultMaterial.RenderQueue.Value = 3000;
+            if (Canvas.Overlay.Value)
+                _defaultMaterial.ZTest.Value = ZTest.Always;
         }
         return _defaultMaterial;
     }

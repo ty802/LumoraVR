@@ -316,6 +316,13 @@ public sealed class MaterialCloneCache
         changed |= Set(clone.UseVertexColor, source.UseVertexColor.Value);
         changed |= Set(clone.PixelRange, source.PixelRange.Value);
         changed |= Set(clone.UseMSDF, source.UseMSDF.Value);
+        changed |= Set(clone.OutlineColor, source.OutlineColor.Value);
+        changed |= Set(clone.OutlineThickness, source.OutlineThickness.Value);
+        changed |= Set(clone.FaceDilate, source.FaceDilate.Value);
+        changed |= Set(clone.FaceSoftness, source.FaceSoftness.Value);
+        changed |= Set(clone.UnderlayColor, source.UnderlayColor.Value);
+        changed |= Set(clone.UnderlayOffset, source.UnderlayOffset.Value);
+        changed |= Set(clone.UnderlaySoftness, source.UnderlaySoftness.Value);
         changed |= Set(clone.AlphaClip, source.AlphaClip.Value);
         changed |= Set(clone.AlphaCutoff, source.AlphaCutoff.Value);
         changed |= Set(clone.BlendMode, source.BlendMode.Value);

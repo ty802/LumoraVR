@@ -8,13 +8,17 @@ namespace Lumora.Core.Components.Interaction;
 [ComponentCategory("Interaction/Tools")]
 public abstract class ToolItem : Component
 {
+    private static readonly float[] EquipMenuColor = { 0.30f, 0.22f, 0.12f, 0.92f };
     public readonly SyncRef<Slot> TipReference = new();
     public readonly Sync<bool> BlockGripEquip = new();
     public readonly Sync<bool> BlockRemoteEquip = new();
     public readonly Sync<string> EquipName = new();
     public readonly SyncRef<Tool> OverrideActiveTool = new();
 
-    public Tool? ActiveTool => OverrideActiveTool.Target ?? Slot.GetComponentInParents<Tool>();
+    // Equipped = the equip link is set (EquipToolItem wires it both ways). NOT a parent walk: a merely HELD
+    // tool is also parented under the hand (grabber holder), so walking parents for a Tool would read a
+    // grabbed-but-not-equipped item as equipped and lock it out of every equip route. - xlinka
+    public Tool? ActiveTool => OverrideActiveTool.Target;
 
     public bool IsEquipped => ActiveTool != null;
 
@@ -57,6 +61,75 @@ public abstract class ToolItem : Component
     public virtual bool CanUseWhenHolding => false;
 
     public virtual bool IsInUse => ActiveTool?.PrimaryHeld == true;
+
+    public override void OnAttach()
+    {
+        base.OnAttach();
+        // A tool in the world is an ordinary grabbable prop. BlockWhenWorn doubles as the "can't grab while
+        // equipped" guard: an equipped tool sits under the user root, same as a worn avatar. - xlinka
+        var grabbable = Slot.GetComponent<Grabbable>() ?? Slot.AttachComponent<Grabbable>();
+        grabbable.BlockWhenWorn.Value = true;
+    }
+
+    public override void OnStart()
+    {
+        base.OnStart();
+        // Touch-to-equip: primary-click on the tool pops an "Equip <name>" confirm. The RayTarget persists but
+        // its Activated event doesn't, so re-hook every session (OnStart, not OnAttach). Priority beats the
+        // sibling Grabbable for the hovered target; grab resolves the Grabbable by parent-walk regardless. -xlinka
+        var target = Slot.GetComponent<RayTarget>() ?? Slot.AttachComponent<RayTarget>();
+        if (target.InteractionPriority.Value < 10)
+            target.InteractionPriority.Value = 10;
+        if (target.HoverRadius.Value < 0.15f)
+            target.HoverRadius.Value = 0.15f;
+        target.Activated += _ => ConfirmEquip();
+    }
+
+    private void ConfirmEquip()
+    {
+        if (IsEquipped || BlockRemoteEquip.Value || IsDestroyed)
+            return;
+        // Held items equip through the held-object context menu, not touch (the grab state has to be released
+        // by the same code that equips, or the grabber is left pointing at a docked slot). - xlinka
+        if (Slot.GetComponent<Grabbable>()?.IsGrabbed == true)
+            return;
+
+        var userRootSlot = World?.LocalUser?.Root?.Slot;
+        if (userRootSlot == null)
+            return;
+
+        // Owner hand = right on desktop (the menu-owning hand), the pointing hand in VR. Same owner resolution
+        // as the avatar equip confirm: the wrong hand means no camera freeze and the menu edge-closes. - xlinka
+        bool vr = Engine.Current?.InputInterface?.IsVRActive == true;
+        var rayTarget = Slot.GetComponent<RayTarget>();
+        HandTool? owner = null;
+        foreach (var hand in userRootSlot.GetComponentsInChildren<HandTool>())
+        {
+            bool isOwner = vr
+                ? (hand.Laser != null && ReferenceEquals(hand.Laser.CurrentRayTarget, rayTarget))
+                : hand.Side.Value == Input.Chirality.Right;
+            if (!isOwner)
+                continue;
+            owner = hand;
+            break;
+        }
+        if (owner == null)
+            return;
+
+        var menu = userRootSlot.GetComponentInChildren<UI.ContextMenuSystem>();
+        if (menu == null)
+        {
+            owner.EquipToolItem(this);
+            return;
+        }
+        if (menu.IsOpen.Value)
+            return;
+
+        string name = string.IsNullOrWhiteSpace(EquipName.Value) ? Slot.SlotName.Value ?? "Tool" : EquipName.Value;
+        var ctx = new UI.ContextMenuContext { Target = Slot, Pointer = owner.Laser?.Slot, Side = owner.Side.Value };
+        var hand2 = owner;
+        menu.OpenConfirm($"Equip {name}?", "Equip Tool", EquipMenuColor, () => hand2.EquipToolItem(this), ctx);
+    }
 
     internal void SetActiveTool(Tool? tool)
     {

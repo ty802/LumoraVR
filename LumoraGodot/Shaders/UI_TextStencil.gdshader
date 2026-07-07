@@ -19,6 +19,14 @@ uniform float coverage_gamma : hint_range(0.5, 2.0) = 0.9;
 // Same MSDF-vs-coverage branch as UI_Text: an MSDF atlas keeps the shape in RGB with opaque alpha, so reading
 // coverage from alpha would fill the whole glyph quad solid. Set from atlas.IsMSDF by the material. -xlinka
 uniform bool use_msdf = false;
+// SDF styling, same units/semantics as UI_Text.gdshader. -xlinka
+uniform vec4 outline_color : source_color = vec4(0.0, 0.0, 0.0, 1.0);
+uniform float outline_thickness = 0.0;
+uniform float face_dilate = 0.0;
+uniform float face_softness = 0.0;
+uniform vec4 underlay_color : source_color = vec4(0.0);
+uniform vec2 underlay_offset = vec2(0.0);
+uniform float underlay_softness = 0.0;
 
 uniform float alpha_cutoff : hint_range(0.0, 1.0) = 0.5;
 uniform bool alpha_clip = true;
@@ -65,7 +73,28 @@ void fragment() {
 	if (use_msdf) {
 		vec3 msd = texture(albedo_texture, UV).rgb;
 		float sd = median3(msd.r, msd.g, msd.b);
-		out_color.a *= clamp(msdf_screen_range(UV) * (sd - 0.5) + 0.5, 0.0, 1.0);
+		float range = msdf_screen_range(UV);
+		float spread = 1.0 / max(range, 0.0001) + face_softness;
+		float face_edge = 0.5 - face_dilate;
+		float face = clamp((sd - face_edge) / spread + 0.5, 0.0, 1.0);
+		if (outline_thickness > 0.0) {
+			float outer = clamp((sd - (face_edge - outline_thickness)) / spread + 0.5, 0.0, 1.0);
+			float face_a = out_color.a * face;
+			float ring_a = outline_color.a * outer;
+			float comb_a = max(face_a, ring_a);
+			out_color = vec4(mix(outline_color.rgb, out_color.rgb, face_a / max(comb_a, 0.0001)), comb_a);
+		} else {
+			out_color.a *= face;
+		}
+		if (underlay_color.a > 0.0) {
+			vec2 uv2 = UV - underlay_offset / vec2(textureSize(albedo_texture, 0));
+			vec3 msd2 = texture(albedo_texture, uv2).rgb;
+			float sd2 = median3(msd2.r, msd2.g, msd2.b);
+			float u = clamp((sd2 - face_edge) / max(spread + underlay_softness, 0.0001) + 0.5, 0.0, 1.0);
+			float u_a = underlay_color.a * u * (1.0 - out_color.a);
+			float total = out_color.a + u_a;
+			out_color = vec4((out_color.rgb * out_color.a + underlay_color.rgb * u_a) / max(total, 0.0001), total);
+		}
 	} else {
 		float coverage = 1.0;
 		if (use_albedo_texture) {

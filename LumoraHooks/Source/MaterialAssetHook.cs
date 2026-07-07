@@ -351,6 +351,19 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
             }
         }
 
+        // Same variant swap for UI TEXT: overlay canvases (context menu) need their glyphs to skip the depth
+        // test too, or the labels get cut by world geometry while the arcs draw on top of it. -xlinka
+        if (_materialType == MaterialType.UI_Text && _shaderMaterial != null && property == "ZTest")
+        {
+            _uiZTestOff = value == 0 || value == 8; // Disabled / Always
+            string shaderPath = _uiZTestOff
+                ? "res://Shaders/UI_TextOverlay.gdshader"
+                : "res://Shaders/UI_Text.gdshader";
+            var shader = ResourceLoader.Load<Shader>(shaderPath);
+            if (shader != null && _shaderMaterial.Shader != shader)
+                _shaderMaterial.Shader = shader;
+        }
+
         _pendingProperties[property] = value;
     }
 

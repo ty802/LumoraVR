@@ -14,10 +14,16 @@ namespace Lumora.Core.Components;
 /// Implements IColliderOwner pattern for collision management.
 /// Physics behaviour is delegated to ICharacterControllerHook (e.g. CharacterControllerHook in LumoraGodot).
 /// </summary>
-// Very late update order: locomotion modules write movement input earlier in
-// the same frame, then the character steps once per render frame. - xlinka
+// EARLY update order: the character steps (and moves the user root) BEFORE the component pass, right
+// after device tracking lands. Everything that bakes a WORLD-space value during its update - the laser
+// hold point, laser cursor, IK solves, nameplate followers - then computes against the post-move root.
+// This used to be +1000000 (step last, consume locomotion input same-frame), which made every one of
+// those bakes one frame of root motion behind the camera: the whole world felt rough while moving, worst
+// while holding something. Locomotion input written at order 0 is now consumed NEXT frame - one frame of
+// input latency on walk start beats one frame of visual lag on everything you carry. Must stay after
+// TrackedDevicePositioner (-1000000): the rebase reads the head slot's fresh tracking pose. - xlinka
 [ComponentCategory("Physics")]
-[DefaultUpdateOrder(1000000)]
+[DefaultUpdateOrder(-500000)]
 public class CharacterController : ImplementableComponent, IColliderOwner
 {
     // When set, the character body follows this slot's ground projection

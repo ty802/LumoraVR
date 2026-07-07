@@ -152,6 +152,29 @@ public class Text : Graphic, ILayoutElement
         return hash.ToHashCode();
     }
 
+    // Atlas glyphs rasterize ASYNCHRONOUSLY: text shaped before its glyphs landed bakes without them, and
+    // nothing used to re-drive the canvas when the atlas grew - fresh labels stayed invisible until some
+    // unrelated dirty finally rebuilt the chunk (the "flick tabs to make the buttons appear" bug, and why
+    // new screens loaded in like dialup). Capture the font generation at shape time and poll it here, same
+    // as the world-space text renderer does; a moved generation re-drives this text once. -1 = never
+    // shaped, nothing to re-drive. - xlinka
+    private int _appliedFontGeneration = -1;
+
+    public override void OnUpdate(float delta)
+    {
+        base.OnUpdate(delta);
+        if (_appliedFontGeneration < 0)
+            return;
+        var fontSet = Font.Asset;
+        if (fontSet == null || fontSet.CacheGeneration == _appliedFontGeneration)
+            return;
+        _appliedFontGeneration = fontSet.CacheGeneration;
+        // Glyph arrival changes advances/line widths, so take the content-change path (layout + re-mesh),
+        // not the visual-only one - autosized rects grow when the real metrics land.
+        ChangedMetrics = LayoutMetric.MinWidth | LayoutMetric.PreferredWidth | LayoutMetric.MinHeight | LayoutMetric.PreferredHeight;
+        RectTransform?.MarkChangeDirty();
+    }
+
     protected override void FlagChanges(RectTransform rect)
     {
         int signature = ComputeLayoutSignature();
@@ -234,6 +257,7 @@ public class Text : Graphic, ILayoutElement
             _size = ComputeFittedSize(fontSet, rect.width, rect.height);
 
         // request rasterization for every codepoint we're about to draw - xlinka
+        _appliedFontGeneration = fontSet.CacheGeneration;
         TextShaper.RequestGlyphs(fontSet, _shapedText, _size, _fontMarksArg);
 
         // Shape and read font metrics HERE, on the main thread, and do NOT move this to the worker no
@@ -770,7 +794,8 @@ public class Text : Graphic, ILayoutElement
         localX = lines[lineIndex].Width;
     }
 
-    // Inline sprites show their own colors (no tint), matching the reference's non-tintable inline glyphs. -xlinka
+    // Inline sprites keep their own art colors (no text tint) - running the text color over emoji-style
+    // sprite art would just discolor it. -xlinka
     private static readonly color SpriteTint = color.White;
 
     // Resolve each <font> marker's name to a FontSet on the main thread (walks the FontSetGroup's child slots),

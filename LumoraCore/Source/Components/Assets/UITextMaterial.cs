@@ -19,6 +19,18 @@ public class UITextMaterial : MaterialProvider, ICommonMaterial
     // True when the bound atlas is a multi-channel signed distance field (crisp at any size); false = plain
     // coverage alpha (bitmap fonts, or a font not imported with MSDF). Set from the atlas by whoever binds it. -xlinka
     public readonly Sync<bool> UseMSDF;
+    // Distance-field styling (MSDF path only). Thickness/dilate are in distance-field units: 0.5 spans the
+    // whole PixelRange, so 0.2 = ~1.6 atlas texels at range 8. Dilate bolds the face by pushing its edge
+    // outward; the outline is a ring of OutlineColor outside the (dilated) face. 0 = off. - xlinka
+    public readonly Sync<colorHDR> OutlineColor;
+    public readonly Sync<float> OutlineThickness;
+    public readonly Sync<float> FaceDilate;
+    // Softness widens the edge smoothing past the ~1px screen AA (glow/soft text). Underlay is a drop
+    // shadow: the field re-sampled at UnderlayOffset (atlas texels) laid behind the glyph. Alpha 0 = off. -xlinka
+    public readonly Sync<float> FaceSoftness;
+    public readonly Sync<colorHDR> UnderlayColor;
+    public readonly Sync<float2> UnderlayOffset;
+    public readonly Sync<float> UnderlaySoftness;
     public readonly Sync<bool> AlphaClip;
     public readonly Sync<float> AlphaCutoff;
     public readonly Sync<BlendMode> BlendMode;
@@ -63,6 +75,13 @@ public class UITextMaterial : MaterialProvider, ICommonMaterial
         UseVertexColor = new Sync<bool>(this, true);
         PixelRange = new Sync<float>(this, 8f);
         UseMSDF = new Sync<bool>(this, false);
+        OutlineColor = new Sync<colorHDR>(this, new colorHDR(0f, 0f, 0f, 1f));
+        OutlineThickness = new Sync<float>(this, 0f);
+        FaceDilate = new Sync<float>(this, 0f);
+        FaceSoftness = new Sync<float>(this, 0f);
+        UnderlayColor = new Sync<colorHDR>(this, new colorHDR(0f, 0f, 0f, 0f));
+        UnderlayOffset = new Sync<float2>(this, float2.Zero);
+        UnderlaySoftness = new Sync<float>(this, 0f);
         AlphaClip = new Sync<bool>(this, true);
         // SDF-style edge: smoothstep across the half-coverage threshold using fwidth
         // gives a ~1px screen-space edge at any distance/angle, instead of soft-alphaing
@@ -100,6 +119,13 @@ public class UITextMaterial : MaterialProvider, ICommonMaterial
         asset.SetBool("UseVertexColor", UseVertexColor.Value);
         asset.SetFloat("PixelRange", PixelRange.Value);
         asset.SetBool("UseMSDF", UseMSDF.Value);
+        asset.SetColor("OutlineColor", OutlineColor.Value);
+        asset.SetFloat("OutlineThickness", OutlineThickness.Value);
+        asset.SetFloat("FaceDilate", FaceDilate.Value);
+        asset.SetFloat("FaceSoftness", FaceSoftness.Value);
+        asset.SetColor("UnderlayColor", UnderlayColor.Value);
+        asset.SetFloat2("UnderlayOffset", UnderlayOffset.Value);
+        asset.SetFloat("UnderlaySoftness", UnderlaySoftness.Value);
         asset.SetBool("AlphaClip", AlphaClip.Value);
         asset.SetFloat("AlphaCutoff", AlphaCutoff.Value);
         asset.SetInt("ZWrite", (int)ZWrite.Value);

@@ -377,6 +377,12 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         if (_meshInstance == null)
             return;
 
+        // A full mesh rebuild re-uploads the ArrayMesh and re-registers the instance with lights/shadows,
+        // which reads as a visible shadow/light pop on the whole avatar. Rebuilds should be RARE (import,
+        // mesh data change, skeleton rebind) - if this line spams in the log while an avatar blinks or
+        // idles, something upstream is tripping MeshDataChanged per frame and that's the bug. - xlinka
+        LumoraLogger.Log($"SkinnedMeshHook: full mesh rebuild on '{Owner.Slot?.SlotName.Value}'");
+
         // Phos asset path (the universal pipeline): geometry + bone bindings + bind poses come from a
         // content-hashed MeshDataAsset, and skinning is driven by an explicit Skin. Takes precedence over the
         // inline lists (which serve the legacy Godot-glTF import path). -xlinka
@@ -517,11 +523,12 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
 
             // Godot 4 requires every blend shape to carry the SAME morphable attributes as the base surface for
             // VERTEX/NORMAL/TANGENT. The base here has NORMAL, so each shape must include a NORMAL array too or
-            // the whole surface is rejected (the mesh vanishes). We don't morph normals, so feed values that mean
-            // "no change": a zero delta in Relative mode (glTF morph targets are deltas), or the base normal in
-            // Normalized mode. -xlinka
+            // the whole surface is rejected (the mesh vanishes). "No change" = the BASE normal in EVERY mode,
+            // never a zero vector - zeros octahedral-encode to NaN garbage that gets blended in by weight and
+            // the whole mesh's lighting pulses with every blink. See the identical fix in BuildArrayMeshCore
+            // for the full autopsy; that bug ate days. base + w*base renormalizes to the same direction, so
+            // the base array is safe in Relative mode too. -xlinka
             bool baseHasNormals = Owner.Normals.Count == vertexCount;
-            bool relativeMode = (Mesh.BlendShapeMode)Owner.BlendShapeMode.Value == Mesh.BlendShapeMode.Relative;
             // Use the source's real NORMAL morph deltas when the import carried them (so lighting follows the
             // expression); otherwise fall back to "no normal morph" values just to satisfy Godot's format
             // requirement. -xlinka
@@ -550,10 +557,6 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
                         {
                             var nd = Owner.BlendShapeNormals[baseIdx + i];
                             sn[i] = new Vector3(nd.x, nd.y, nd.z);
-                        }
-                        else if (relativeMode)
-                        {
-                            sn[i] = Vector3.Zero;
                         }
                         else
                         {
@@ -837,15 +840,21 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
                     sv[i] = (sp != null && i < sp.Length) ? new Vector3(sp[i].x, sp[i].y, sp[i].z) : Vector3.Zero;
                 shapeArrays[(int)Mesh.ArrayType.Vertex] = sv;
 
-                // Feed ZERO normal/tangent deltas: a blendshape (blink/expression) moves GEOMETRY only, not the
-                // shading basis. Assimp's per-morph normals/tangents are frequently un-normalized/noisy across the
-                // whole mesh; applied as Relative deltas at full weight they skew the normals and the mesh reads
-                // DARK on blink. Letting the base normals/tangents stand is stable. Godot still requires each
-                // shape to carry matching Normal (and Tangent, when the base has one) arrays or it rejects the
-                // morph surface - zeros satisfy that without changing shading. - xlinka
-                shapeArrays[(int)Mesh.ArrayType.Normal] = new Vector3[vcount];
+                // "No normal/tangent morph" = feed the BASE normals/tangents. NOT zeros. NEVER FUCKING ZEROS.
+                // This innocent-looking array cost DAYS: Godot packs mesh normals/tangents octahedral-encoded,
+                // and octahedral can only represent UNIT vectors - a zero vector encodes as 0/0 = NaN garbage,
+                // and the blend path then happily mixes that garbage in PROPORTIONALLY TO THE WEIGHT. Result:
+                // the whole goddamn avatar's shading went dark every single blink, no rebuild in the log,
+                // nothing wrong in the data model, just Godot quietly shitting NaNs into the normal buffer
+                // where no debugger looks. Third attempt at this line: Assimp's real morph normals were noise
+                // (whole mesh dark always), zeros "fixed" it into a weight-proportional skew (dark only WHILE
+                // blinking, the absolute worst kind of subtle), base arrays are the correct end state - safe
+                // under every blend convention: as a target the base IS "unchanged", as an added delta
+                // base + w*base renormalizes to the same direction in the fragment shader. If you are reading
+                // this because an avatar's lighting pulses with its face: it's this. It's always this. - xlinka
+                shapeArrays[(int)Mesh.ArrayType.Normal] = arrays[(int)Mesh.ArrayType.Normal];
                 if (baseHasTangents)
-                    shapeArrays[(int)Mesh.ArrayType.Tangent] = new float[vcount * 4];
+                    shapeArrays[(int)Mesh.ArrayType.Tangent] = arrays[(int)Mesh.ArrayType.Tangent];
 
                 blendShapes.Add(shapeArrays);
             }

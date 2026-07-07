@@ -214,7 +214,30 @@ public sealed class HandTool : Tool
         {
             item.SetActiveTool(this);
             item.OnEquipped();
+            DockInHolder(item);
         }
+    }
+
+    // Physically snap the equipped item into the Tool Holder (a world tool stays put without this - the equip
+    // link alone doesn't move anything). No-op for items already in the holder (the rig's default tool). -xlinka
+    private void DockInHolder(ToolItem item)
+    {
+        var itemSlot = item?.Slot;
+        if (itemSlot == null || itemSlot.IsDestroyed)
+            return;
+        EnsureRig();
+        if (_toolHolderSlot == null || itemSlot == _toolHolderSlot || itemSlot.IsDescendantOf(_toolHolderSlot))
+            return;
+
+        // Still held (menu equip releases first; this covers stragglers) - let go before reparenting or the
+        // grabber keeps a stale ref to a slot it no longer holds.
+        var grabbable = itemSlot.GetComponent<Grabbable>();
+        if (grabbable != null && grabbable.IsGrabbed)
+            grabbable.Grabber?.Release(grabbable);
+
+        itemSlot.SetParent(_toolHolderSlot, preserveGlobalTransform: false);
+        itemSlot.LocalPosition.Value = float3.Zero;
+        itemSlot.LocalRotation.Value = floatQ.Identity;
     }
 
     // Dequip must physically remove the item from the Tool Holder, otherwise

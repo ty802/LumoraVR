@@ -1,19 +1,13 @@
 shader_type spatial;
-// UI is rendered as a logical 2D layer above world geometry. Render priority
-// handles ordering inside the UI tree.
-render_mode unshaded, blend_mix, depth_draw_never, cull_front;
-
-// FontAssetHook stores glyph coverage in alpha and uploads mipmaps so distance
-// sampling stays stable.
+// OVERLAY variant of UI_Text: depth test DISABLED so glyphs always draw above world geometry -
+// context menu labels and other overlay UI whose text must never be cut into by session content.
+// Swapped in by the material hook when a UI text material asks for ZTest Always/Disabled; keep the
+// uniforms in lockstep with UI_Text.gdshader or values silently stop applying after a swap. - xlinka
+render_mode unshaded, blend_mix, depth_draw_never, depth_test_disabled, cull_front;
 
 uniform vec4 albedo_color : source_color = vec4(1.0);
-// Sample MIP 0 only (no mipmaps), and for the love of god do not "improve" this to
-// filter_linear_mipmap_anisotropic. I did exactly that thinking it'd sharpen text at a distance and it does
-// the opposite: MSDF is resolution-independent, the median reconstruction + the screen-space pixel_range
-// below rebuild a crisp 1px edge from the FULL-RES distance field at any size. Mipmaps pre-average the
-// distance field, so minified/far text samples a blurred mip and the whole edge goes soft. That is the
-// "blurry at a distance" trap, learned the hard way. Aniso needs mipmaps so it's out for the same reason;
-// the fwidth range already handles glancing angles. The atlas still uploads mips, just never sampled. - xlinka
+// Sample MIP 0 only (no mipmaps) - see UI_Text.gdshader for the full story: MSDF is resolution
+// independent and mipmaps pre-average the distance field into blur. - xlinka
 uniform sampler2D albedo_texture : filter_linear, repeat_disable;
 uniform bool use_albedo_texture = true;
 uniform bool use_vertex_color = true;
@@ -21,37 +15,23 @@ uniform bool use_vertex_color = true;
 uniform vec2 uv_scale = vec2(1.0);
 uniform vec2 uv_offset = vec2(0.0);
 
-// MSDF: distance-field span (in atlas texels) the font was generated with. Must match the atlas's
-// msdf_pixel_range. Drives the screen-space edge width in the MSDF branch below. - xlinka
 uniform float pixel_range = 8.0;
 uniform float coverage_gamma : hint_range(0.5, 2.0) = 0.9;
-// SDF styling (MSDF path only - coverage has no true distance to offset). Units are distance-field units:
-// 0.5 spans the whole pixel_range, so 0.2 = ~1.6 atlas texels at range 8. face_dilate bolds the glyph by
-// pushing its edge outward; outline_thickness draws an outline_color ring outside the dilated face. -xlinka
+uniform bool use_msdf = false;
+// SDF styling, same units/semantics as UI_Text.gdshader. -xlinka
 uniform vec4 outline_color : source_color = vec4(0.0, 0.0, 0.0, 1.0);
 uniform float outline_thickness = 0.0;
 uniform float face_dilate = 0.0;
-// face_softness widens the edge-smoothing band past the ~1px screen AA (glow/soft text, 0 = crisp).
-// underlay = drop shadow: the field re-sampled at underlay_offset (atlas texels), laid BEHIND the glyph. -xlinka
 uniform float face_softness = 0.0;
 uniform vec4 underlay_color : source_color = vec4(0.0);
 uniform vec2 underlay_offset = vec2(0.0);
 uniform float underlay_softness = 0.0;
-// When the atlas holds a multi-channel signed distance field (RGB), reconstruct the glyph from the median of
-// the three channels for a crisp edge at any size/angle. Off = plain coverage in the alpha channel (fallback
-// for bitmap fonts or when the font wasn't imported with MSDF). Set by the material from the atlas. -xlinka
-uniform bool use_msdf = false;
 
-// Crisp text at any distance/angle: smoothstep across the half-coverage
-// threshold using fwidth so the edge stays ~1px wide in screen space, rather
-// than soft-alphaing the whole glyph coverage. - xlinka
 uniform float alpha_cutoff : hint_range(0.0, 1.0) = 0.5;
 uniform bool alpha_clip = true;
 
 uniform bool rect_clip = false;
 uniform vec4 rect = vec4(0.0);
-// Scroll offset added to the vertex before the rect test (see UI_Unlit). Lets a moved (scrolled) content
-// chunk clip correctly against a fixed canvas-space rect without re-tessellating. Zero for static UI. -xlinka
 uniform vec2 clip_offset = vec2(0.0);
 
 uniform int color_mask = 15;
@@ -78,9 +58,6 @@ float median3(float a, float b, float c) {
 	return max(min(a, b), min(max(a, b), c));
 }
 
-// Screen pixels the atlas's pixel_range spans at this fragment. Converts the distance field's texel range into
-// screen space so the smoothstep edge stays ~1px wide regardless of how big/small/angled the glyph is drawn -
-// this is what keeps MSDF crisp without mipmaps. - xlinka
 float msdf_screen_range(vec2 uv) {
 	vec2 unit_range = vec2(pixel_range) / vec2(textureSize(albedo_texture, 0));
 	vec2 screen_tex_size = vec2(1.0) / max(fwidth(uv), vec2(1e-6));
@@ -88,8 +65,6 @@ float msdf_screen_range(vec2 uv) {
 }
 
 void vertex() {
-	// Scroll offset moves the vertex and the clip test from the same uniform (see UI_Unlit) - keeps a
-	// scrolled chunk's position and clip in lockstep so text never leaks past the viewport. -xlinka
 	VERTEX.xy += clip_offset;
 	local_pos = VERTEX.xy;
 	UV = UV * uv_scale + uv_offset;
@@ -105,13 +80,9 @@ void fragment() {
 
 	if (use_albedo_texture) {
 		if (use_msdf) {
-			// Reconstruct the signed distance from the median of the 3 MSDF channels, then anti-alias across
-			// the (dilated) edge in SCREEN space so it stays ~1px at any scale. The outline is a second,
-			// further-out threshold filled with outline_color; the face wins where both cover. -xlinka
 			vec3 msd = texture(albedo_texture, UV).rgb;
 			float sd = median3(msd.r, msd.g, msd.b);
 			float range = msdf_screen_range(UV);
-			// Base smoothing width is the ~1px screen AA (1/range in field units); softness adds to it.
 			float spread = 1.0 / max(range, 0.0001) + face_softness;
 			float face_edge = 0.5 - face_dilate;
 			float face = clamp((sd - face_edge) / spread + 0.5, 0.0, 1.0);
@@ -139,8 +110,6 @@ void fragment() {
 		}
 	}
 
-	// Coverage path still wants the fwidth smoothstep to crisp its soft alpha; MSDF already produced a clean
-	// screen-space edge above, so the extra smoothstep would only erode it. -xlinka
 	if (alpha_clip && !use_msdf) {
 		float alpha_width = max(fwidth(out_color.a), 0.001);
 		out_color.a *= smoothstep(alpha_cutoff - alpha_width, alpha_cutoff + alpha_width, out_color.a);

@@ -51,16 +51,20 @@ public class AvatarEquipManager : UserRootComponent
     public readonly Sync<bool> AutoAddNameBadge = new();
     private readonly SyncRef<Slot> _autoNameBadge = new();
 
-    public SyncRefList<Slot> AvailableAvatars { get; private set; } = null!;
+    public readonly SyncRefList<Slot> AvailableAvatars;
 
     public event Action<Slot> OnAvatarChanged = null!;
 
     public bool IsEquippingManually { get; private set; }
 
+    public AvatarEquipManager()
+    {
+        AvailableAvatars = new SyncRefList<Slot>(this);
+    }
+
     public override void OnAwake()
     {
         base.OnAwake();
-        AvailableAvatars = new SyncRefList<Slot>(this);
         BadgeColor.Value = color.White;
         BadgeOutline.Value = color.Black;
         BadgeBackground.Value = new color(0f, 0f, 0f, 0.6f);

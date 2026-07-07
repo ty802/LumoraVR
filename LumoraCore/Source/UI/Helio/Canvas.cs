@@ -44,6 +44,23 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     // of everything.
     public readonly Sync<int> SortingOrder = new();
 
+    // Overlay canvas: every material this canvas mints gets ZTest Always, so the whole canvas skips the
+    // depth test and can never be occluded or cut into by world geometry. SortingOrder alone only wins the
+    // transparent SORT - the depth test still clips UI pixels against opaque world geometry, which is how
+    // world objects "show through" a sorted-on-top menu. Set before the first build (mint-time flag). -xlinka
+    public readonly Sync<bool> Overlay = new();
+
+    // Canvas-wide text styling, applied to every shared text material at mint time. Thickness/dilate are in
+    // distance-field units (see UITextMaterial). Floating UI over arbitrary backgrounds (context menu,
+    // nameplates-on-canvas) wants an outline + a touch of dilate for contrast; flat panels leave it 0. -xlinka
+    public readonly Sync<colorHDR> TextOutlineColor = new();
+    public readonly Sync<float> TextOutlineThickness = new();
+    public readonly Sync<float> TextFaceDilate = new();
+    public readonly Sync<float> TextFaceSoftness = new();
+    public readonly Sync<colorHDR> TextUnderlayColor = new();
+    public readonly Sync<float2> TextUnderlayOffset = new();
+    public readonly Sync<float> TextUnderlaySoftness = new();
+
     // Opt-in: size a BoxCollider on the canvas slot to the aggregated UI bounds, for physical/grab
     // interaction against the surface. Off by default - leaves hit-testing on the existing raycast path. -xlinka
     public readonly Sync<bool> SizeCollider = new();
@@ -104,6 +121,23 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             material.UseMSDF.Value = atlas.IsMSDF;
             if (atlas.IsMSDF)
                 material.PixelRange.Value = atlas.MsdfPixelRange;
+            if (Overlay.Value)
+                material.ZTest.Value = ZTest.Always;
+            if (TextOutlineThickness.Value > 0f)
+            {
+                material.OutlineColor.Value = TextOutlineColor.Value;
+                material.OutlineThickness.Value = TextOutlineThickness.Value;
+            }
+            if (TextFaceDilate.Value != 0f)
+                material.FaceDilate.Value = TextFaceDilate.Value;
+            if (TextFaceSoftness.Value > 0f)
+                material.FaceSoftness.Value = TextFaceSoftness.Value;
+            if (TextUnderlayColor.Value.a > 0f)
+            {
+                material.UnderlayColor.Value = TextUnderlayColor.Value;
+                material.UnderlayOffset.Value = TextUnderlayOffset.Value;
+                material.UnderlaySoftness.Value = TextUnderlaySoftness.Value;
+            }
             material.ForceUpdate();
             _sharedTextMaterials[atlas] = material;
         }
@@ -135,6 +169,8 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             material.Culling.Value = Culling.None;
             material.ZWrite.Value = ZWrite.Off;
             material.RenderQueue.Value = 3000;
+            if (Overlay.Value)
+                material.ZTest.Value = ZTest.Always;
             material.ForceUpdate();
             _sharedImageMaterials[texture] = material;
         }

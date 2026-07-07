@@ -269,7 +269,10 @@ public class SlotHook : Hook<Slot>, ISlotHook
 				}
 				else
 				{
-					Lumora.Core.Logging.Logger.Warn($"SlotHook: World root not found for root slot '{Owner.SlotName.Value}'");
+					// Not an error, just startup ordering: the root slot initializes before the world's own scene
+					// node exists (World.Initialize builds the root slot; the world hook creates the scene root and
+					// reparents this node right after). Fires on every world creation, so trace it, don't warn. - xlinka
+					Lumora.Core.Logging.Logger.Log($"SlotHook: root slot '{Owner.SlotName.Value}' waiting for world scene root (the world hook attaches it once created)");
 				}
 			}
 			else

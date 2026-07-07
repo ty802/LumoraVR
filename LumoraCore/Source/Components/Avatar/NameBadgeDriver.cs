@@ -13,11 +13,10 @@ namespace Lumora.Core.Components.Avatar;
 [ComponentCategory("Users/Avatar")]
 public class NameBadgeDriver : Component, IAvatarEquipReceiver
 {
-    public SyncRefList<TextRenderer> LabelTargets { get; private set; } = null!;
+    public readonly SyncRefList<TextRenderer> LabelTargets;
 
-    public override void OnAwake()
+    public NameBadgeDriver()
     {
-        base.OnAwake();
         LabelTargets = new SyncRefList<TextRenderer>(this);
     }
 

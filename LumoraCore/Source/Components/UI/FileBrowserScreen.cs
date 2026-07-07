@@ -19,6 +19,9 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
     private const float CardHeight = 64f;
     private const float CardSpacing = 6f;
     private const float ContentPad = 6f;
+    // Extra rows built above/below the viewport so a fast scroll doesn't flash a blank row before the recycle
+    // catches up. Higher = smoother but more live draw surfaces. - xlinka
+    private const int BufferRows = 2;
 
     private static readonly color FolderColor = new color(0.95f, 0.78f, 0.28f, 0.40f);
     private static readonly color FileColor = new color(0.40f, 0.46f, 0.62f, 0.40f);
@@ -55,8 +58,19 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
     private Slot? _newFolderSlot;
     private Text? _newFolderNameText;
     private Text? _newFolderErrorText;
-    private readonly Dictionary<Slot, ItemData> _items = new();
     private readonly List<Entry> _entries = new();
+    private readonly List<Entry> _filtered = new();
+
+    // Virtualized card pool: we only build enough card visuals to cover the visible viewport (plus a small
+    // buffer) and recycle them as you scroll, instead of one card per file. A folder with hundreds of files
+    // used to build a card each = hundreds of draw surfaces that blew past the render-priority band and cost
+    // ~380ms to build in one frame. Pool slot for entry E is E % _pool.Count, so scrolling one row only
+    // re-binds the row that wrapped around instead of every visible card. - xlinka
+    private readonly List<CardView> _pool = new();
+    private int _boundFirstRow = -1;
+    private float _lastCardW = -1f;
+    private IAssetProvider<FontSet>? _font;
+    private RoundedRectTextureProvider? _rounded;
 
     private readonly struct Entry
     {
@@ -73,19 +87,20 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         }
     }
 
-    private readonly struct ItemData
+    // One reusable card visual in the virtualized pool. EntryIndex is the filtered-list index it currently
+    // shows (-1 = unbound/hidden); Path/IsDirectory/BaseColor are the live state the click handler and the
+    // selection highlight read back off the recycled card. - xlinka
+    private sealed class CardView
     {
-        public readonly string Path;
-        public readonly bool IsDirectory;
-        public readonly BorderedImage Background;
-        public readonly color BaseColor;
-        public ItemData(string path, bool isDirectory, BorderedImage bg, color baseColor)
-        {
-            Path = path;
-            IsDirectory = isDirectory;
-            Background = bg;
-            BaseColor = baseColor;
-        }
+        public Slot Slot = null!;
+        public RectTransform Rect = null!;
+        public BorderedImage Bg = null!;
+        public Text Label = null!;
+        public string Path = string.Empty;
+        public bool IsDirectory;
+        public color BaseColor;
+        public int EntryIndex = -1;
+        public bool Active;
     }
 
     protected override void BuildContent(UIBuilder builder)
@@ -93,6 +108,8 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         _dashboard = FindDashboard();
         var font = _dashboard?.Font.Target;
         var rounded = _dashboard?.RoundedSprite;
+        _font = font;
+        _rounded = rounded;
 
         var root = builder.Current;
         var v = root.AttachComponent<VerticalLayout>();
@@ -209,7 +226,7 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         viewport.AttachComponent<Mask>();
         _scroll = viewport.AttachComponent<ScrollRect>();
         _scroll.ScrollSensitivity.Value = new float2(1f, 1f);
-        _scroll.ScrollChanged += (_, _) => UpdateScrollHandle();
+        _scroll.ScrollChanged += (_, _) => OnScrollChanged();
 
         _contentSlot = viewport.AddSlot("Content");
         _contentRect = _contentSlot.AttachComponent<RectTransform>();
@@ -218,13 +235,8 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         _contentRect.OffsetMin.Value = new float2(0f, -CardHeight);
         _contentRect.OffsetMax.Value = new float2(0f, 0f);
 
-        var grid = _contentSlot.AttachComponent<GridLayout>();
-        grid.Columns.Value = GridColumns;
-        grid.Spacing.Value = CardSpacing;
-        grid.PaddingLeft.Value = ContentPad;
-        grid.PaddingRight.Value = ContentPad;
-        grid.PaddingTop.Value = ContentPad;
-        grid.PaddingBottom.Value = ContentPad;
+        // No GridLayout here on purpose: cards are virtualized and positioned manually by index (RelayoutVirtual),
+        // so an auto-layout that walks every child every frame would defeat the whole point. - xlinka
 
         _scroll.Content.Target = _contentRect;
 
@@ -506,29 +518,29 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
     {
         if (_contentSlot == null) return;
 
-        var toRemove = new List<Slot>(_contentSlot.Children);
-        foreach (var s in toRemove) s.Destroy();
-        _items.Clear();
-
-        var font = _dashboard?.Font.Target;
-        var rounded = _dashboard?.RoundedSprite;
+        _filtered.Clear();
         var filter = _search.ToLowerInvariant();
-
-        int visible = 0;
         foreach (var e in _entries)
         {
             if (filter.Length > 0 && !e.NameLower.Contains(filter))
                 continue;
-            AddCard(e.Name, e.Path, e.IsDirectory, font, rounded);
-            visible++;
+            _filtered.Add(e);
         }
 
-        int rows = (visible + GridColumns - 1) / GridColumns;
+        // Size the content to the FULL list so the scrollbar range is right, even though we only build the
+        // handful of cards that are actually on screen.
+        int rows = (_filtered.Count + GridColumns - 1) / GridColumns;
         if (rows < 1) rows = 1;
         SetContentHeight(rows * CardHeight + (rows - 1) * CardSpacing + ContentPad * 2f);
 
-        // Refresh the scrollbar now and again once the new content height has been laid out (the second
-        // pass also re-touches the scroll so ScrollRect recomputes its range against the fresh rects).
+        // New listing: snap to the top and force a full re-bind (resets every pooled card so none keeps showing
+        // a stale entry). Runs now if laid out; if not, OnUpdate picks it up (the pool starts empty so a fresh
+        // screen binds cleanly without the force anyway).
+        if (_scroll != null)
+            _scroll.AbsolutePosition = float2.Zero;
+        _boundFirstRow = -1;
+        RelayoutVirtual(force: true);
+
         UpdateScrollHandle();
         World?.RunInUpdates(2, UpdateScrollHandle);
     }
@@ -540,56 +552,172 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         _contentRect.OffsetMax.Value = new float2(0f, 0f);
     }
 
-    private void AddCard(string label, string fullPath, bool isDirectory, IAssetProvider<FontSet>? font, RoundedRectTextureProvider? rounded)
+    public override void OnUpdate(float delta)
     {
-        if (_contentSlot == null) return;
-
-        var slot = _contentSlot.AddSlot(label);
-        slot.AttachComponent<RectTransform>();
-
-        var bg = slot.AttachComponent<BorderedImage>();
-        var baseColor = isDirectory ? FolderColor : GetFileClassColor(fullPath);
-        ApplyRounded(bg, baseColor, RowBorder, rounded);
-
-        var nameBuilder = new UIBuilder(slot);
-        nameBuilder.Font(font).FontSize(11f);
-        var nameText = nameBuilder.Text(TruncateLabel(label), 11f, TextPrimary);
-        nameText.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
-        nameText.VerticalAlignment.Value = TextVerticalAlignment.Middle;
-        nameText.WordWrap.Value = true;
-        FillRect(nameText.RectTransform!, 4f, 4f, 4f, 4f);
-
-        var btn = slot.AttachComponent<Button>();
-        bool isDir = isDirectory;
-        string path = fullPath;
-        btn.Clicked += (_, _) =>
-        {
-            if (isDir) NavigateTo(path);
-            else Select(slot, path);
-        };
-
-        _items[slot] = new ItemData(fullPath, isDirectory, bg, baseColor);
+        base.OnUpdate(delta);
+        // Drive the virtualized layout from the frame loop so it binds reliably once the viewport lays out, and
+        // keeps up with scroll/resize. Early-outs cheaply when nothing crossed a row boundary. - xlinka
+        RelayoutVirtual(force: false);
     }
 
-    private void Select(Slot itemSlot, string path)
+    private void OnScrollChanged()
     {
-        _selectedPath = path;
-        foreach (var pair in _items)
+        UpdateScrollHandle();
+        RelayoutVirtual(force: false);
+    }
+
+    // Rebuild the set of on-screen cards for the current scroll position. Early-outs when the scroll hasn't
+    // crossed a row boundary; when it has, the ring-buffer mapping (entry E -> pool slot E % poolCount) means
+    // only the row that wrapped around gets re-bound, not every visible card. - xlinka
+    private void RelayoutVirtual(bool force)
+    {
+        if (_contentSlot == null || _contentRect == null || _viewportRect == null || _scroll == null)
+            return;
+
+        float viewportH = _viewportRect.LocalComputeRect.height;
+        float contentW = _contentRect.LocalComputeRect.width;
+        if (viewportH <= LaidOutViewportFloor || contentW <= 0f)
         {
-            bool sel = ReferenceEquals(pair.Key, itemSlot);
-            pair.Value.Background.Tint.Value = sel ? Highlight(pair.Value.BaseColor) : pair.Value.BaseColor;
+            // Not laid out yet (fresh screen / just navigated). Don't retry-spam here - OnUpdate re-drives this
+            // every frame and binds the moment the rects come up. A self-scheduling retry raced the first-open
+            // layout hitch and left the grid permanently empty. - xlinka
+            return;
+        }
+
+        int cols = GridColumns;
+        float rowStride = CardHeight + CardSpacing;
+        int visibleRows = (int)MathF.Ceiling(viewportH / rowStride) + BufferRows;
+        int poolCount = System.Math.Max(1, visibleRows * cols);
+        EnsurePool(poolCount);
+
+        float cardW = (contentW - 2f * ContentPad - (cols - 1) * CardSpacing) / cols;
+        if (cardW <= 0f)
+            return;
+
+        // Width change (panel resized) moves every card, so force a full re-bind.
+        if (MathF.Abs(cardW - _lastCardW) > 0.5f)
+        {
+            force = true;
+            _lastCardW = cardW;
+        }
+
+        float scrollY = _scroll.AbsolutePosition.y;
+        int firstRow = (int)MathF.Floor((scrollY - ContentPad) / rowStride);
+        if (firstRow < 0) firstRow = 0;
+
+        if (!force && firstRow == _boundFirstRow)
+            return;
+        if (force)
+        {
+            for (int i = 0; i < _pool.Count; i++)
+                _pool[i].EntryIndex = -1;
+        }
+        _boundFirstRow = firstRow;
+
+        int startEntry = firstRow * cols;
+        int endEntry = System.Math.Min(_filtered.Count, (firstRow + visibleRows) * cols);
+
+        for (int e = startEntry; e < endEntry; e++)
+        {
+            var card = _pool[e % poolCount];
+            if (card.EntryIndex == e && card.Active)
+                continue;
+            BindCard(card, _filtered[e], e, e / cols, e % cols, cardW);
+        }
+
+        // Hide anything that fell outside the window (only bites at the list ends; a steady scroll reuses all).
+        for (int i = 0; i < _pool.Count; i++)
+        {
+            var card = _pool[i];
+            if (card.Active && (card.EntryIndex < startEntry || card.EntryIndex >= endEntry))
+            {
+                if (card.Slot.ActiveSelf.Value) card.Slot.ActiveSelf.Value = false;
+                card.Active = false;
+            }
+        }
+    }
+
+    private void EnsurePool(int count)
+    {
+        if (_contentSlot == null) return;
+        while (_pool.Count < count)
+        {
+            var card = new CardView();
+            var slot = _contentSlot.AddSlot("Card");
+            slot.ActiveSelf.Value = false;
+            card.Slot = slot;
+
+            card.Rect = slot.AttachComponent<RectTransform>();
+            // Anchor to the content's top-left corner; BindCard places each card by pixel offset from there.
+            card.Rect.AnchorMin.Value = new float2(0f, 1f);
+            card.Rect.AnchorMax.Value = new float2(0f, 1f);
+
+            card.Bg = slot.AttachComponent<BorderedImage>();
+            ApplyRounded(card.Bg, FileColor, RowBorder, _rounded);
+
+            var nameBuilder = new UIBuilder(slot);
+            nameBuilder.Font(_font).FontSize(11f);
+            card.Label = nameBuilder.Text(string.Empty, 11f, TextPrimary);
+            card.Label.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
+            card.Label.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+            card.Label.WordWrap.Value = true;
+            FillRect(card.Label.RectTransform!, 4f, 4f, 4f, 4f);
+
+            // Handler reads the card's LIVE path/type, not a captured value, because the card is recycled to a
+            // different entry as you scroll. - xlinka
+            var captured = card;
+            var btn = slot.AttachComponent<Button>();
+            btn.Clicked += (_, _) =>
+            {
+                if (captured.IsDirectory) NavigateTo(captured.Path);
+                else Select(captured);
+            };
+
+            _pool.Add(card);
+        }
+    }
+
+    private void BindCard(CardView card, in Entry entry, int entryIndex, int row, int col, float cardW)
+    {
+        card.EntryIndex = entryIndex;
+        card.Path = entry.Path;
+        card.IsDirectory = entry.IsDirectory;
+        card.BaseColor = entry.IsDirectory ? FolderColor : GetFileClassColor(entry.Path);
+        card.Label.Content.Value = TruncateLabel(entry.Name);
+        card.Bg.Tint.Value = entry.Path == _selectedPath ? Highlight(card.BaseColor) : card.BaseColor;
+
+        float x = ContentPad + col * (cardW + CardSpacing);
+        float y = ContentPad + row * (CardHeight + CardSpacing);
+        card.Rect.OffsetMin.Value = new float2(x, -(y + CardHeight));
+        card.Rect.OffsetMax.Value = new float2(x + cardW, -y);
+
+        if (!card.Active)
+        {
+            card.Slot.ActiveSelf.Value = true;
+            card.Active = true;
+        }
+    }
+
+    private void Select(CardView card)
+    {
+        _selectedPath = card.Path;
+        for (int i = 0; i < _pool.Count; i++)
+        {
+            var c = _pool[i];
+            if (c.Active)
+                c.Bg.Tint.Value = c.Path == _selectedPath ? Highlight(c.BaseColor) : c.BaseColor;
         }
         if (_statusLabel != null)
         {
             _statusLabel.Color.Value = TextPrimary;
             try
             {
-                var info = new FileInfo(path);
-                _statusLabel.Content.Value = $"{Path.GetFileName(path)}  ·  {FormatBytes(info.Length)}";
+                var info = new FileInfo(card.Path);
+                _statusLabel.Content.Value = $"{Path.GetFileName(card.Path)}  ·  {FormatBytes(info.Length)}";
             }
             catch
             {
-                _statusLabel.Content.Value = Path.GetFileName(path) ?? path;
+                _statusLabel.Content.Value = Path.GetFileName(card.Path) ?? card.Path;
             }
         }
     }

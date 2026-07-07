@@ -322,7 +322,13 @@ public class TextRenderer : ProceduralMesh
             if (material == null || material.IsDestroyed)
                 continue;
 
-            material.DirectTexture = _regenAtlases[i];
+            var atlas = _regenAtlases[i];
+            material.DirectTexture = atlas;
+            // Match the shader path to the atlas: an MSDF atlas (distance field in RGB, opaque alpha) must use
+            // the median-reconstruction branch, or the coverage-in-alpha path fills the glyph quads solid. Set
+            // per atlas because a fallback chain can mix MSDF and coverage atlases. - xlinka
+            material.UseMSDF.Value = atlas.IsMSDF;
+            material.PixelRange.Value = atlas.MsdfPixelRange;
             material.OutlineColor.Value = OutlineColor.Value;
             material.OutlineThickness.Value = OutlineThickness.Value;
             material.ForceUpdate();

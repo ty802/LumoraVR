@@ -17,6 +17,9 @@ public class TextMaterial : MaterialProvider, ICommonMaterial
     public readonly Sync<colorHDR> TintColor;
     public readonly Sync<bool> UseVertexColor;
     public readonly Sync<float> PixelRange;
+    // Atlas is a distance field (RGB), not coverage (alpha). Drives the MSDF reconstruction branch in the
+    // shader; set per-atlas by TextRenderer from atlas.IsMSDF. False keeps the plain coverage path. - xlinka
+    public readonly Sync<bool> UseMSDF;
 
     // Optional glyph outline (readability for floating text). Thickness is in atlas texels;
     // 0 = no outline (unchanged glyph). Maps to outline_color / outline_thickness in the shader.
@@ -56,6 +59,7 @@ public class TextMaterial : MaterialProvider, ICommonMaterial
         TintColor = new Sync<colorHDR>(this, colorHDR.White);
         UseVertexColor = new Sync<bool>(this, true);
         PixelRange = new Sync<float>(this, 8f);
+        UseMSDF = new Sync<bool>(this, false);
         OutlineColor = new Sync<colorHDR>(this, new colorHDR(0f, 0f, 0f, 0f));
         OutlineThickness = new Sync<float>(this, 0f);
         AlphaClip = new Sync<bool>(this, true);
@@ -77,6 +81,7 @@ public class TextMaterial : MaterialProvider, ICommonMaterial
         asset.SetColor("TintColor", TintColor.Value);
         asset.SetBool("UseVertexColor", UseVertexColor.Value);
         asset.SetFloat("PixelRange", PixelRange.Value);
+        asset.SetBool("UseMSDF", UseMSDF.Value);
         asset.SetColor("OutlineColor", OutlineColor.Value);
         asset.SetFloat("OutlineThickness", OutlineThickness.Value);
         asset.SetBool("AlphaClip", AlphaClip.Value);

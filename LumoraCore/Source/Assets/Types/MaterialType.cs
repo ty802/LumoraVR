@@ -3,141 +3,92 @@
 
 namespace Lumora.Core.Assets;
 
-/// <summary>
-/// Material types supported by the system.
-/// Maps to shader configurations in the Godot hook layer.
-/// </summary>
 public enum MaterialType
 {
-    /// <summary>
-    /// Physically-Based Rendering with metallic workflow.
-    /// Uses StandardMaterial3D in Godot.
-    /// </summary>
     PBS_Metallic,
 
-    /// <summary>
-    /// Simple unlit material - no lighting calculations.
-    /// Uses ShaderMaterial with custom shader in Godot.
-    /// </summary>
     Unlit,
 
     OverlayUnlit,
 
     UI_Unlit,
 
-    /// <summary>
-    /// UI dual-color: lerps between two tints by the texture's luminance (2-tone icons).
-    /// </summary>
     UI_DualColor,
 
-    /// <summary>
-    /// UI mask WRITER: stamps the stencil reference where its (usually invisible) geometry rasterizes,
-    /// so stencil-tested content is clipped to the mask's exact SHAPE. Godot 4.5+ stencil_mode shader.
-    /// </summary>
+    // UI mask WRITER: stamps the stencil reference where its (usually invisible) geometry rasterizes,
+    // so stencil-tested content is clipped to the mask's exact SHAPE. Godot 4.5+ stencil_mode shader.
     UI_StencilWrite,
 
-    /// <summary>
-    /// Stencil-TESTED UI content: like UI_Unlit but only draws where the stencil equals the mask reference
-    /// (written first by UI_StencilWrite). Drawn after the writer via render-priority ordering.
-    /// </summary>
+    // Stencil-TESTED UI content: like UI_Unlit but only draws where the stencil equals the mask reference
+    // (written first by UI_StencilWrite). Drawn after the writer via render-priority ordering.
     UI_StencilTest,
 
-    /// <summary>
-    /// Dedicated UI text material - rasterized coverage atlas + fwidth-based AA.
-    /// </summary>
     UI_Text,
 
-    /// <summary>
-    /// Stencil-tested UI text: like UI_Text but only draws where the stencil equals the mask reference, so
-    /// text inside a shaped (circle/rounded) mask is clipped to the shape, not the AABB.
-    /// </summary>
+    // Stencil-tested UI text: like UI_Text but only draws where the stencil equals the mask reference, so
+    // text inside a shaped (circle/rounded) mask is clipped to the shape, not the AABB.
     UI_TextStencil,
 
-    /// <summary>
-    /// World-space text material (nameplates, labels) - same glyph coverage
-    /// path as UI_Text but depth-tested so text occludes behind geometry.
-    /// </summary>
+    // Depth-tested, so world text occludes behind geometry.
     Text,
 
-    /// <summary>
-    /// Custom shader material - uses user-provided .gdshader file.
-    /// </summary>
     Custom,
 
-    /// <summary>
-    /// Ray-marched metaball blobs rising from a surface. Vibrant gradient with rim/fresnel.
-    /// </summary>
     Metaball,
 
-    /// <summary>
-    /// Built-in grid ground material.
-    /// </summary>
     GridSpaceGround,
 
-    /// <summary>
-    /// LocalHome-specific rising orb volume material. Not a generic shader.
-    /// </summary>
     LocalHomeRising,
 
-    /// <summary>
-    /// Frosted-glass backdrop for modal overlays: samples + blurs/pixelates the screen behind it.
-    /// </summary>
-    Blur
+    Blur,
+
+    UI_ColorGradient,
+
+    // Values below are appended only. The enum is serialized by ordinal, so reordering or inserting
+    // would repoint every saved material at a different shader. -xlinka
+
+    // Needs barycentric coordinates baked into the mesh vertex color channel.
+    Wireframe,
+
+    Matcap,
+
+    // Outline is an inverted hull on the material's next pass.
+    FlatToon,
+
+    PBS_Triplanar,
+
+    PBS_DualSided,
+
+    PBS_VertexColor,
+
+    FresnelLerp,
+
+    // Overlay-band fresnel outline. Renders in the same late additive band as OverlayUnlit and
+    // picks its color set from a depth-buffer occlusion test rather than the depth test.
+    OverlayFresnel
 }
 
-/// <summary>
-/// Blend modes for material transparency.
-/// </summary>
 public enum BlendMode
 {
-    /// <summary>
-    /// Fully opaque - no transparency.
-    /// </summary>
     Opaque,
 
-    /// <summary>
-    /// Alpha cutout - pixels are either fully opaque or fully transparent.
-    /// Uses alpha threshold (AlphaCutoff).
-    /// </summary>
     Cutout,
 
-    /// <summary>
-    /// Alpha blending - smooth transparency.
-    /// </summary>
     Alpha,
 
-    /// <summary>
-    /// Alpha blending - smooth transparency.
-    /// </summary>
     Transparent,
 
-    /// <summary>
-    /// Additive blending - adds to background color.
-    /// Used for glow effects.
-    /// </summary>
     Additive,
 
     Multiply
 }
 
-/// <summary>
-/// Face culling modes for materials.
-/// </summary>
 public enum Culling
 {
-    /// <summary>
-    /// Cull back faces (default) - only front faces visible.
-    /// </summary>
     Back,
 
-    /// <summary>
-    /// Cull front faces - only back faces visible.
-    /// </summary>
     Front,
 
-    /// <summary>
-    /// No culling - both sides visible (double-sided).
-    /// </summary>
     None
 }
 

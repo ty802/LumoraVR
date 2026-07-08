@@ -9,14 +9,17 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Assets;
 
-/// <summary>
-/// Parses Godot gdshader uniform declarations into definitions.
-/// </summary>
 public static class ShaderUniformParser
 {
+    // Optional "instance" prefix is accepted (per-instance uniforms are still per-material params for
+    // us); "global" uniforms are project-scope in the engine, not material params, so they are NOT
+    // matched. Comments are stripped before matching, so commented-out declarations can't parse. -xlinka
     private static readonly Regex UniformRegex = new(
-        @"^\s*uniform\s+(?<type>\w+)\s+(?<name>\w+)\s*(?::\s*(?<hint>[^=;]+))?\s*(?:=\s*(?<default>[^;]+))?;",
+        @"^\s*(?:instance\s+)?uniform\s+(?<type>\w+)\s+(?<name>\w+)\s*(?:\[[^\]]*\]\s*)?(?::\s*(?<hint>[^=;]+))?\s*(?:=\s*(?<default>[^;]+))?;",
         RegexOptions.Multiline | RegexOptions.Compiled);
+
+    private static readonly Regex BlockCommentRegex = new(@"/\*.*?\*/", RegexOptions.Singleline | RegexOptions.Compiled);
+    private static readonly Regex LineCommentRegex = new(@"//[^\r\n]*", RegexOptions.Compiled);
 
     public sealed class Definition
     {
@@ -37,6 +40,11 @@ public static class ShaderUniformParser
             return results;
         }
 
+        // Strip comments first: a block-commented "uniform float x;" on its own line matched the
+        // multiline regex and minted a phantom parameter. -xlinka
+        shaderCode = BlockCommentRegex.Replace(shaderCode, " ");
+        shaderCode = LineCommentRegex.Replace(shaderCode, " ");
+
         foreach (Match match in UniformRegex.Matches(shaderCode))
         {
             var typeText = match.Groups["type"].Value.Trim();
@@ -48,6 +56,9 @@ public static class ShaderUniformParser
 
             if (!TryMapType(typeText, out var uniformType))
             {
+                // Not an error, but silence here meant users could never tell why a uniform grew no
+                // parameter row (mat4, samplerCube, uint...). Say what was skipped.
+                Logging.Logger.Debug($"ShaderUniformParser: skipping uniform '{name}' (unsupported type '{typeText}')");
                 continue;
             }
 
@@ -207,6 +218,19 @@ public static class ShaderUniformParser
 
         var inner = text.Substring(start + 1, end - start - 1);
         var parts = inner.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        // Single-argument splat constructor (vec3(0.5) = all components 0.5) is legal shader syntax and
+        // common in defaults; it used to fail the "not enough parts" check and drop the default. -xlinka
+        if (parts.Length == 1 && components > 1)
+        {
+            if (!TryParseFloat(parts[0], out var splat))
+            {
+                return false;
+            }
+            value = new float4(splat, splat, splat, components >= 4 ? splat : 0f);
+            return true;
+        }
+
         if (parts.Length < components)
         {
             return false;

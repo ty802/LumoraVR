@@ -3,7 +3,8 @@
 
 using System;
 using System.Collections.Generic;
-using Lumora.CDN;
+using Helio.UI;
+using Lumora.Nexus.Cloud.Cdn;
 using Lumora.Core.Assets;
 using Lumora.Core.Math;
 using Lumora.Core.Networking.Sync;
@@ -11,11 +12,8 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components.Assets;
 
-/// <summary>
-/// Custom shader material driven by gdshader source.
-/// </summary>
 [ComponentCategory("Assets/Materials")]
-public sealed class CustomShaderMaterial : MaterialProvider
+public sealed class CustomShaderMaterial : MaterialProvider, ICustomInspectorUI
 {
     private sealed class UniformObserver
     {
@@ -27,39 +25,44 @@ public sealed class CustomShaderMaterial : MaterialProvider
         public ReferenceEvent<IAssetProvider<TextureAsset>> TextureChanged = _ => { };
     }
 
-    /// <summary>
-    /// Shader source provider reference.
-    /// </summary>
     public readonly AssetRef<ShaderSourceAsset> Shader;
 
-    /// <summary>
-    /// Optional engine shader resource path, for built-in res:// .gdshader files.
-    /// </summary>
+    // built-in res:// .gdshader path; used instead of Shader for engine shaders
     public readonly Sync<string> ShaderPath;
 
-    /// <summary>
-    /// Shader uniform parameters (synced).
-    /// </summary>
     public readonly SyncList<ShaderUniformParam> Parameters;
 
-    /// <summary>
-    /// Blend mode (Opaque, Cutout, Transparent, Additive).
-    /// </summary>
     public readonly Sync<BlendMode> BlendMode;
 
-    /// <summary>
-    /// Face culling mode.
-    /// </summary>
     public readonly Sync<Culling> Culling;
 
-    /// <summary>
-    /// Render queue priority (-1 = default).
-    /// </summary>
+    // -1 = default
     public readonly Sync<int> RenderQueue;
 
     private string _lastShaderHash = null!;
     private readonly Dictionary<ShaderUniformParam, UniformObserver> _uniformObservers = new();
     private bool _isUpdatingMaterial;
+    // Sandbox verdict for the current source, cached by content hash (validation is pure static
+    // analysis, no need to re-run per material update). Local only, never synced. - xlinka
+    private ShaderSourceValidator.Result? _validation;
+    private string? _validationHash;
+
+    private ShaderSourceValidator.Result ValidateSource(string source)
+    {
+        var hash = ContentHash.FromString(source);
+        if (_validation != null && hash == _validationHash)
+        {
+            return _validation;
+        }
+        _validationHash = hash;
+        _validation = ShaderSourceValidator.Validate(source);
+        if (!_validation.IsValid)
+        {
+            LumoraLogger.Warn($"CustomShaderMaterial: shader rejected by sandbox on '{Slot?.SlotName.Value}': {_validation.Errors[0]}"
+                + (_validation.Errors.Count > 1 ? $" (+{_validation.Errors.Count - 1} more)" : ""));
+        }
+        return _validation;
+    }
 
     protected override MaterialType MaterialType => MaterialType.Custom;
 
@@ -95,11 +98,27 @@ public sealed class CustomShaderMaterial : MaterialProvider
             var shaderSource = shaderAsset?.Source;
             if (!string.IsNullOrWhiteSpace(shaderSource))
             {
-                if (string.IsNullOrWhiteSpace(shaderPath))
+                // Sandbox gate. Runs on EVERY peer right here because the source syncs: a remote user's
+                // material is compiled by THIS client, so an import-time check alone is worthless. An
+                // invalid shader never reaches the platform compile at all. ShaderPath (built-in res://
+                // shaders) stays trusted and unvalidated. - xlinka
+                var validation = ValidateSource(shaderSource!);
+                if (validation.IsValid)
                 {
-                    asset.SetCustomShaderSource(shaderSource);
+                    if (string.IsNullOrWhiteSpace(shaderPath))
+                    {
+                        asset.SetCustomShaderSource(shaderSource);
+                    }
+                    EnsureUniforms(shaderSource!);
                 }
-                EnsureUniforms(shaderSource);
+                else if (string.IsNullOrWhiteSpace(shaderPath))
+                {
+                    // Rejected source: a prior update may have already compiled an older, valid
+                    // version onto this asset. Never leave that stale compile rendering under a
+                    // "REJECTED (not compiled)" verdict - drop back to the material's default
+                    // (un-shaded) look. Empty source is the hook's "clear" signal. -xlinka
+                    asset.SetCustomShaderSource(string.Empty);
+                }
             }
 
             ApplyParameters(asset);
@@ -312,6 +331,91 @@ public sealed class CustomShaderMaterial : MaterialProvider
                 param.Texture.Target = _textureTarget;
             }
         }
+    }
+
+    // Inspector diagnostics: the sandbox verdict plus every stat we can honestly compute from the
+    // source and bound assets. No per-material GPU timings - the renderer does not expose them, and a
+    // made-up number is worse than none. - xlinka
+    public void BuildInspectorBody(UIBuilder ui)
+    {
+        var source = Shader.Asset?.Source;
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            AddStatRow(ui, "Shader", string.IsNullOrWhiteSpace(ShaderPath.Value) ? "no shader source" : $"built-in ({ShaderPath.Value})");
+            return;
+        }
+
+        var v = ValidateSource(source!);
+        AddStatRow(ui, "Sandbox", v.IsValid ? "passed" : "REJECTED (not compiled)");
+        for (int i = 0; i < v.Errors.Count && i < 3; i++)
+            AddStatRow(ui, i == 0 ? "Errors" : "", v.Errors[i]);
+        if (v.Errors.Count > 3)
+            AddStatRow(ui, "", $"+{v.Errors.Count - 3} more");
+        for (int i = 0; i < v.Warnings.Count && i < 2; i++)
+            AddStatRow(ui, i == 0 ? "Warnings" : "", v.Warnings[i]);
+
+        AddStatRow(ui, "Shader type", string.IsNullOrEmpty(v.ShaderType) ? "unknown" : v.ShaderType);
+        AddStatRow(ui, "Source", $"{v.SourceBytes / 1024f:0.#} KB");
+        AddStatRow(ui, "Uniforms", v.UniformCount.ToString());
+        AddStatRow(ui, "Texture samples", v.TextureSampleCount.ToString());
+        if (v.LoopCount > 0)
+            AddStatRow(ui, "Loops", $"{v.LoopCount} (max bound {v.MaxLoopBoundSeen})");
+
+        // Sum only what we can actually account for. A texture whose renderer has reported its GPU
+        // format contributes an exact byte count computed from that format, its dimensions and its
+        // mip count; one that has not is counted as unmeasured rather than folded in behind a
+        // fudge factor, and the row says how many were left out. A total that silently mixes
+        // measurements with guesses is not a measurement. -xlinka
+        long vramBytes = 0;
+        int boundTextures = 0;
+        int unmeasured = 0;
+        foreach (var param in Parameters)
+        {
+            var tex = param.Texture.Asset;
+            if (tex == null || tex.Width <= 0 || tex.Height <= 0)
+                continue;
+            boundTextures++;
+
+            if (tex.Metadata?.GpuBytes is { } bytes)
+                vramBytes += bytes;
+            else
+                unmeasured++;
+        }
+        if (boundTextures > 0)
+        {
+            string measured = unmeasured == 0
+                ? $"{boundTextures} tex"
+                : $"{boundTextures - unmeasured}/{boundTextures} tex measured";
+            AddStatRow(ui, "Texture VRAM", $"{InspectorStats.Bytes(vramBytes)} ({measured})");
+        }
+
+        int refCount = 0;
+        foreach (var _ in References)
+            refCount++;
+        AddStatRow(ui, "Referenced by", refCount.ToString());
+    }
+
+    private static void AddStatRow(UIBuilder ui, string label, string value)
+    {
+        // Theme from the hosting panel's UI tree, NOT this component's world slot: the material's
+        // slot has no UITheme above it, and Helio text without a font renders nothing.
+        InspectorUI.FixedRow(ui.Root, label, 24f, out var rowUi, ui.Root);
+        rowUi.PushStyle();
+        rowUi.MinWidth(150f);
+        rowUi.PreferredWidth(190f);
+        rowUi.FlexibleWidth(0f);
+        var labelText = rowUi.Text(label, InspectorUI.FontSize - 1f, InspectorUI.MutedColor);
+        InspectorUI.FillParent(labelText.RectTransform!);
+        labelText.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
+        labelText.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+        rowUi.PopStyle();
+        rowUi.PushStyle();
+        rowUi.FlexibleWidth(1f);
+        var valueText = rowUi.Text(value, InspectorUI.FontSize - 1f, InspectorUI.TextColor);
+        InspectorUI.FillParent(valueText.RectTransform!);
+        valueText.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
+        valueText.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+        rowUi.PopStyle();
     }
 
     public override void OnDestroy()

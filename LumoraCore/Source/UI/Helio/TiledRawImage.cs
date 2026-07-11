@@ -48,6 +48,9 @@ public sealed class TiledRawImage : Graphic
 
     public override bool RequiresPreGraphicsCompute => false;
 
+    // Trims its quads to RenderData.GeometryClipRect, so it can carry a clip window that rides the chunk.
+    public override bool TrimsGeometryToClip => true;
+
     protected override void FlagChanges(RectTransform rect)
     {
         rect.MarkGraphicDirty();

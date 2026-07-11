@@ -39,6 +39,54 @@ internal static class LayoutSizing
         return rect.Slot.GetComponent<IgnoreLayout>() != null;
     }
 
+    // Measure-time child collection. RectChildren is registered only by the arrange pass
+    // (ComputeRects), which runs AFTER measure - so a container built this frame would measure over
+    // an empty registry as 0x0, get arranged zero-tall, and its content overlaps whatever follows
+    // until a later full pass. When the registry is empty, walk the slot tree the way registration
+    // does (active slots, descending through rect-less ones). Either path skips destroyed/inactive
+    // slots so a just-cleared container doesn't aggregate corpses. -xlinka
+    public static void CollectMeasureChildren(RectTransform rect, List<RectTransform> results)
+    {
+        results.Clear();
+        var registered = rect.RectChildren;
+        if (registered.Count > 0)
+        {
+            for (int i = 0; i < registered.Count; i++)
+            {
+                var child = registered[i];
+                var slot = child.Slot;
+                if (slot == null || slot.IsDestroyed || !slot.ActiveSelf.Value)
+                    continue;
+                results.Add(child);
+            }
+            return;
+        }
+        if (rect.Slot != null)
+            CollectFromSlot(rect.Slot, results);
+    }
+
+    private static void CollectFromSlot(Slot slot, List<RectTransform> results)
+    {
+        foreach (var child in slot.Children)
+            CollectChild(child, results);
+        foreach (var child in slot.LocalChildren)
+            CollectChild(child, results);
+    }
+
+    private static void CollectChild(Slot child, List<RectTransform> results)
+    {
+        if (child == null || child.IsDestroyed || !child.ActiveSelf.Value)
+            return;
+        var rect = child.GetComponent<RectTransform>();
+        if (rect != null)
+        {
+            results.Add(rect);
+            return;
+        }
+        // Rect-less slots pass registration through to their descendants, same as ComputeRects.
+        CollectFromSlot(child, results);
+    }
+
     // Prefer the bottom-up measured cache (populated by the canvas measure pass before arrange); fall
     // back to a live compute for any rect not yet measured (e.g. added mid-arrange) so we never read a
     // stale zero. This is what layouts read during arrange/aggregation. -xlinka

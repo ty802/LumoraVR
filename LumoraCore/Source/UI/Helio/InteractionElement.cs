@@ -48,10 +48,24 @@ public class InteractionElement : UIComponent, IUIInteractable
 
     public IEnumerable<ColorDriver> ColorDrivers => Slot?.GetComponents<ColorDriver>() ?? Array.Empty<ColorDriver>();
 
+    // One driver per tint field. A ColorDriver's Target IS its drive link now, and a field takes exactly
+    // one granted driver - a second driver aimed at the same tint would be refused and sit there inert
+    // behind the first, so its colors would silently never show. Reconfigure the driver that already
+    // holds the field instead of stacking a dead one behind it. -xlinka
     public ColorDriver AddColorDriver(IField<color> target, color? normalColor = null,
         InteractionColorMode mode = InteractionColorMode.Explicit)
     {
-        var driver = Slot.AttachComponent<ColorDriver>();
+        ColorDriver? driver = null;
+        foreach (var existing in Slot.GetComponents<ColorDriver>())
+        {
+            if (ReferenceEquals(existing.Target.Target, target))
+            {
+                driver = existing;
+                break;
+            }
+        }
+
+        driver ??= Slot.AttachComponent<ColorDriver>();
         driver.Interaction.Target = this;
         driver.Target.Target = target;
         driver.TintColorMode.Value = mode;

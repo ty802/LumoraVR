@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -7,13 +7,10 @@ using Lumora.Core.Input;
 
 namespace Helio.UI;
 
-/// <summary>
-/// An editable text field. Click to focus, then type; Backspace/Delete remove,
-/// arrows/Home/End move the caret, Shift+move selects, typing replaces a selection,
-/// Enter submits (or inserts a newline when <see cref="Multiline"/>), Escape cancels.
-/// Drives a child "Text" component's content and its caret/selection visuals; shows
-/// <see cref="Placeholder"/> when empty and unfocused. Maps to an HTML input/textarea.
-/// </summary>
+// editable text field. click to focus, then type; backspace/delete remove, arrows/home/end move
+// the caret, shift+move selects, typing replaces a selection, enter submits (or inserts a newline
+// when Multiline), escape cancels. drives a child "Text" component's content and its
+// caret/selection visuals; shows Placeholder when empty and unfocused.
 // The caret + selection are REAL geometry rendered by the child Text (steady caret).
 // Only the clicked instance edits (single static focus), reading the LOCAL keyboard;
 // the value replicates through the synced Text field. Mouse-drag selection and a VR
@@ -24,9 +21,9 @@ public sealed class TextInput : InteractionElement
     public readonly Sync<string> Placeholder;
     public readonly Sync<bool> Multiline;
     public readonly Sync<int> MaxLength;
-    /// <summary>Mask each character as a bullet (password field).</summary>
+    // mask each character as a bullet (password field)
     public readonly Sync<bool> Mask;
-    /// <summary>Display-only: can't be focused or edited.</summary>
+    // display-only: can't be focused or edited
     public readonly Sync<bool> ReadOnly;
 
     public readonly SyncDelegate<Action<TextInput, string>> ChangeAction;
@@ -35,16 +32,27 @@ public sealed class TextInput : InteractionElement
     public event Action<TextInput>? EditingStarted;
     public event Action<TextInput, string>? EditingChanged;
     public event Action<TextInput, string>? EditingFinished;
+    // fires on ANY focus loss (enter, escape, click-away, destroy), unlike EditingFinished which
+    // is submit-only. editors use it to close a typing session exactly once.
+    public event Action<TextInput, string>? FocusLost;
 
-    public FieldDrive<string>? ContentDrive { get; private set; }
+    // drives the child Text's content. declared member: the target replicates and saves.
+    public readonly FieldDrive<string> ContentDrive = new();
 
     private static TextInput? _focused;
 
     private Helio.UI.Text? _text;
     private int _caret;
     private int _selStart = -1; // selection anchor, -1 = no selection
+    // The suppression set we registered with while focused. Cached so the release always hits the
+    // SAME instance even if the focused world changes underneath us; no stuck-unable-to-walk state. -xlinka
+    private Lumora.Core.Components.UserInputState? _suppressionState;
 
     public bool IsFocused => ReferenceEquals(_focused, this);
+
+    // the input currently owning the local keyboard, if any. game-input readers (menu key, tool
+    // hotkeys) stand down while this is non-null.
+    public static TextInput? Focused => _focused;
 
     public TextInput()
     {
@@ -72,12 +80,6 @@ public sealed class TextInput : InteractionElement
         else EditingFinished += action;
     }
 
-    public override void OnAwake()
-    {
-        base.OnAwake();
-        ContentDrive = new FieldDrive<string>(World);
-    }
-
     public override void OnStart()
     {
         base.OnStart();
@@ -93,18 +95,23 @@ public sealed class TextInput : InteractionElement
     public override void OnDestroy()
     {
         if (ReferenceEquals(_focused, this))
+        {
             _focused = null;
-        ContentDrive?.Release();
-        ContentDrive = null;
+            // Destroyed mid-edit (pane rebuild): close the session and let go of the keyboard.
+            FocusLost?.Invoke(this, Text.Value ?? string.Empty);
+        }
+        SetTypingSuppression(false);
         _text = null;
         base.OnDestroy();
     }
 
     private void RebindVisuals()
     {
+        // _text is a per-peer handle for the caret/selection fields; the CONTENT link is a real member,
+        // so only default it when nothing named a target.
         _text = Slot?.FindChild("Text", recursive: false)?.GetComponent<Helio.UI.Text>();
-        if (_text != null)
-            ContentDrive?.DriveTarget(_text.Content);
+        if (_text != null && ContentDrive.ShouldApplyDefault)
+            ContentDrive.DriveTarget(_text.Content);
         UpdateDisplay();
     }
 
@@ -125,6 +132,11 @@ public sealed class TextInput : InteractionElement
             return;
         }
 
+        // A focused field OWNS the keyboard: it reads keys raw, and the action map's keyboard source
+        // is gated off for as long as this holds focus, so nothing else can see the same keystrokes.
+        // That ownership is why the reads below are not action reads - routing them through the map
+        // would mean gating the map on the very thing the map would have to drive. Modifiers here
+        // (shift for selection) are text-editing state, not rebindable controls. -xlinka
         var kb = Engine.Current?.InputInterface?.Keyboard;
         if (kb == null)
             return;
@@ -172,8 +184,22 @@ public sealed class TextInput : InteractionElement
 
         if (kb.IsKeyJustPressed(Key.LeftArrow)) { MoveCaret(_caret - 1, shift); caretMoved = true; }
         if (kb.IsKeyJustPressed(Key.RightArrow)) { MoveCaret(_caret + 1, shift, value.Length); caretMoved = true; }
-        if (kb.IsKeyJustPressed(Key.Home)) { MoveCaret(0, shift); caretMoved = true; }
-        if (kb.IsKeyJustPressed(Key.End)) { MoveCaret(value.Length, shift, value.Length); caretMoved = true; }
+        // Home/End are line-relative (single-line has no newlines, so this is unchanged for it). Up/Down
+        // keep the column and hop to the same spot on the neighbor line - the caret moves users expect
+        // in a multi-line editor. -xlinka
+        if (kb.IsKeyJustPressed(Key.Home)) { MoveCaret(LineStartOf(value, _caret), shift, value.Length); caretMoved = true; }
+        if (kb.IsKeyJustPressed(Key.End)) { MoveCaret(LineEndOf(value, _caret), shift, value.Length); caretMoved = true; }
+        if (kb.IsKeyJustPressed(Key.UpArrow)) { MoveCaret(CaretLineStep(value, _caret, up: true), shift, value.Length); caretMoved = true; }
+        if (kb.IsKeyJustPressed(Key.DownArrow)) { MoveCaret(CaretLineStep(value, _caret, up: false), shift, value.Length); caretMoved = true; }
+
+        // Tab in a multi-line field indents by spaces (Tab is stripped from typed text, so handle it here).
+        if (Multiline.Value && kb.IsKeyJustPressed(Key.Tab) && (max <= 0 || value.Length < max))
+        {
+            if (HasSelection()) { DeleteSelection(ref value); }
+            value = value.Insert(_caret, "    ");
+            _caret += 4;
+            changed = true;
+        }
 
         bool enter = kb.IsKeyJustPressed(Key.Return) || kb.IsKeyJustPressed(Key.KeypadEnter);
         bool escape = kb.IsKeyJustPressed(Key.Escape);
@@ -194,6 +220,44 @@ public sealed class TextInput : InteractionElement
 
         if (enter) { Submit(); return; }
         if (escape) { Unfocus(); return; }
+    }
+
+    // Index of the first char on the caret's line (just after the previous '\n', or 0).
+    private static int LineStartOf(string s, int caret)
+    {
+        int i = System.Math.Clamp(caret, 0, s.Length) - 1;
+        while (i >= 0 && s[i] != '\n') i--;
+        return i + 1;
+    }
+
+    // Index of the '\n' ending the caret's line, or the string length for the last line.
+    private static int LineEndOf(string s, int caret)
+    {
+        int i = System.Math.Clamp(caret, 0, s.Length);
+        while (i < s.Length && s[i] != '\n') i++;
+        return i;
+    }
+
+    // Same-column move to the previous/next line; clamps to that line's length. Returns the caret index
+    // for the neighbor line, or the document edge when there is no neighbor. -xlinka
+    private static int CaretLineStep(string s, int caret, bool up)
+    {
+        int lineStart = LineStartOf(s, caret);
+        int column = caret - lineStart;
+        if (up)
+        {
+            if (lineStart == 0)
+                return 0; // already on the first line
+            int prevEnd = lineStart - 1; // the '\n' before this line
+            int prevStart = LineStartOf(s, prevEnd);
+            return System.Math.Min(prevStart + column, prevEnd);
+        }
+        int lineEnd = LineEndOf(s, caret);
+        if (lineEnd >= s.Length)
+            return s.Length; // already on the last line
+        int nextStart = lineEnd + 1;
+        int nextEnd = LineEndOf(s, nextStart);
+        return System.Math.Min(nextStart + column, nextEnd);
     }
 
     private bool HasSelection() => _selStart >= 0 && _selStart != _caret;
@@ -244,6 +308,9 @@ public sealed class TextInput : InteractionElement
         _caret = (Text.Value ?? string.Empty).Length;
         _selStart = -1;
         UpdateDisplay();
+        // Typing owns the keyboard: gate walking/crouch/hotkeys through the shared requester set
+        // until focus is released.
+        SetTypingSuppression(true);
         EditingStarted?.Invoke(this);
     }
 
@@ -254,6 +321,28 @@ public sealed class TextInput : InteractionElement
             _focused = null;
         _selStart = -1;
         UpdateDisplay();
+        if (was)
+        {
+            SetTypingSuppression(false);
+            FocusLost?.Invoke(this, Text.Value ?? string.Empty);
+        }
+    }
+
+    private void SetTypingSuppression(bool active)
+    {
+        if (active)
+        {
+            var state = Lumora.Core.Components.UserInputState.ForFocusedLocalUser;
+            if (_suppressionState != null && !ReferenceEquals(_suppressionState, state))
+                _suppressionState.SetDesktopInputSuppressed(this, false);
+            _suppressionState = state;
+            state?.SetDesktopInputSuppressed(this, true);
+        }
+        else
+        {
+            _suppressionState?.SetDesktopInputSuppressed(this, false);
+            _suppressionState = null;
+        }
     }
 
     private void Submit()
@@ -277,7 +366,7 @@ public sealed class TextInput : InteractionElement
         else
             content = masked;
 
-        ContentDrive?.SetValue(content);
+        ContentDrive.SetValue(content);
 
         if (_text != null)
         {

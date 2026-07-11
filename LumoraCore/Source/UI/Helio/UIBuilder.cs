@@ -595,7 +595,7 @@ public class UIBuilder
         fillRect.OffsetMax.Value = float2.Zero;
         var fillImage = fillSlot.AttachComponent<Image>();
         fillImage.Tint.Value = CurrentStyle.ForegroundColor;
-        slider.FillAnchorMaxDrive?.DriveTarget(fillRect.AnchorMax);
+        slider.FillAnchorMaxDrive.DriveTarget(fillRect.AnchorMax);
 
         // Handle travel area inset by the handle radius so the dot's center
         // ranges over [radius, width-radius] - the dot stays fully on the track
@@ -623,8 +623,8 @@ public class UIBuilder
         handleDot.OutlineColor.Value = new color(0.10f, 0.10f, 0.14f, 0.9f);
         handleDot.OutlineThickness.Value = 1.5f;
         slider.AddColorDriver(handleDot.Tint, handleDot.Tint.Value);
-        slider.HandleAnchorMinDrive?.DriveTarget(handleRect.AnchorMin);
-        slider.HandleAnchorMaxDrive?.DriveTarget(handleRect.AnchorMax);
+        slider.HandleAnchorMinDrive.DriveTarget(handleRect.AnchorMin);
+        slider.HandleAnchorMaxDrive.DriveTarget(handleRect.AnchorMax);
         slider.UpdateHandleDrives();
 
         slider.SetAction(changed);
@@ -632,7 +632,44 @@ public class UIBuilder
         return slider;
     }
 
-    public ScrollRect ScrollRect(out RectTransform content, float2? sensitivity = null, color? background = null)
+    // 2D drag pad. initial is a normalized float2 in [0,1] per axis: x runs left
+    // (0) -> right (1), y runs bottom (0) -> top (1), so (0,0) is bottom-left.
+    public Pad2D Pad2D(float2 initial, Action<Pad2D, float2>? changed = null, color? background = null)
+    {
+        Next("Pad2D");
+        var image = Current.AttachComponent<Image>();
+        image.Tint.Value = background ?? new color(0.34f, 0.36f, 0.45f, 1f);
+
+        var pad = Current.AttachComponent<Pad2D>();
+        pad.Value.Value = initial;
+        SetElementSize(Current, 96f, 96f);
+
+        float ix = initial.x < 0f ? 0f : (initial.x > 1f ? 1f : initial.x);
+        float iy = initial.y < 0f ? 0f : (initial.y > 1f ? 1f : initial.y);
+        const float handleRadius = 6f;
+
+        // Small cursor dot anchored at the value; the anchor is driven live and
+        // the fixed offsets keep it a constant 12x12 regardless of pad size.
+        var handleSlot = Current.AddSlot("Handle");
+        var handleRect = handleSlot.AttachComponent<RectTransform>();
+        handleRect.AnchorMin.Value = new float2(ix, iy);
+        handleRect.AnchorMax.Value = new float2(ix, iy);
+        handleRect.OffsetMin.Value = new float2(-handleRadius, -handleRadius);
+        handleRect.OffsetMax.Value = new float2(handleRadius, handleRadius);
+        var handleImage = handleSlot.AttachComponent<Image>();
+        handleImage.Tint.Value = CurrentStyle.ForegroundColor;
+        pad.AddColorDriver(handleImage.Tint, handleImage.Tint.Value);
+        pad.HandleAnchorMinDrive.DriveTarget(handleRect.AnchorMin);
+        pad.HandleAnchorMaxDrive.DriveTarget(handleRect.AnchorMax);
+        pad.UpdateHandleDrives();
+
+        pad.SetAction(changed);
+
+        return pad;
+    }
+
+    public ScrollRect ScrollRect(out RectTransform content, float2? sensitivity = null, color? background = null,
+        bool fitVertical = true)
     {
         Next("ScrollRect");
         var image = Current.AttachComponent<Image>();
@@ -645,11 +682,32 @@ public class UIBuilder
         var contentSlot = Current.AddSlot("Content");
         content = contentSlot.AttachComponent<RectTransform>();
         scroll.Content.Target = content;
-        Fill(content);
+        if (fitVertical)
+        {
+            // EXACTLY what the working scrollers do (code editor / session / the helio scroll test): top-anchored
+            // content, pin OffsetMin.y to the content height so it overflows the viewport. A ScrollContentSizer
+            // keeps that pin updated from the content layout's summed height (the rows are dynamic). It ONLY writes
+            // the anchor offset - NOT a ContentSizeFitter, which also overrides the computed rect + re-anchors every
+            // row, and that extra churn re-meshes the content chunk and kills the scroll's clip_offset. -xlinka
+            content.AnchorMin.Value = new float2(0f, 1f);
+            content.AnchorMax.Value = new float2(1f, 1f);
+            content.OffsetMin.Value = new float2(0f, -100f);
+            content.OffsetMax.Value = float2.Zero;
+            contentSlot.AttachComponent<ScrollContentSizer>();
+        }
+        else
+        {
+            Fill(content);
+        }
         // Render-offset scrolling needs the content in its own chunk so it can slide independently of the
-        // fixed viewport background/mask (which stay in the parent chunk). Off by default. -xlinka
+        // fixed viewport background/mask (which stay in the parent chunk). Flag ScrollContent at BUILD time so
+        // the very first bake already knows (full geometry, no clip elision) - waiting for the first ApplyScroll
+        // to set it left the first bake clip-elided when the viewport wasn't laid out yet. -xlinka
         if (Canvas.ScrollRenderOffset)
-            contentSlot.AttachComponent<GraphicChunkRoot>();
+        {
+            var contentChunk = contentSlot.AttachComponent<GraphicChunkRoot>();
+            contentChunk.ScrollContent = true;
+        }
         return scroll;
     }
 

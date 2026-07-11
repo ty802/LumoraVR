@@ -1,38 +1,31 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core;
 
 namespace Helio.UI;
 
-/// <summary>
-/// Shows a "Tip" child slot while a sibling <see cref="InteractionElement"/> on the
-/// same slot is hovered (a tooltip). Composes with any existing interactable
-/// (Button, Checkbox, ...) - maps to an HTML title/tooltip.
-/// </summary>
+// shows a "Tip" child slot while a sibling InteractionElement on the same slot is hovered.
+// composes with any existing interactable (Button, Checkbox, ...).
 public sealed class HoverTip : UIComponent
 {
-    // Drives the tip slot's active state.
-    public FieldDrive<bool>? TipVisual { get; private set; }
+    // Drives the tip slot's active state. Declared member: the target replicates and saves.
+    public readonly FieldDrive<bool> TipVisual = new();
 
     private InteractionElement? _source;
-
-    public override void OnAwake()
-    {
-        base.OnAwake();
-        TipVisual = new FieldDrive<bool>(World);
-    }
 
     public override void OnStart()
     {
         base.OnStart();
 
-        var tip = Slot?.FindChild("Tip", recursive: false);
-        if (tip != null)
+        // Only when nothing set the target: a loaded or replicated link already names its tip.
+        if (TipVisual.ShouldApplyDefault)
         {
-            TipVisual?.DriveTarget(tip.ActiveSelf);
-            TipVisual?.SetValue(false); // hidden until hovered
+            var tip = Slot?.FindChild("Tip", recursive: false);
+            if (tip != null)
+                TipVisual.DriveTarget(tip.ActiveSelf);
         }
+        TipVisual.SetValue(false); // hidden until hovered
 
         _source = Slot?.GetComponent<InteractionElement>();
         if (_source != null)
@@ -50,8 +43,6 @@ public sealed class HoverTip : UIComponent
             _source.HoverExited -= OnHoverExit;
             _source = null;
         }
-        TipVisual?.Release();
-        TipVisual = null;
         base.OnDestroy();
     }
 
@@ -60,7 +51,7 @@ public sealed class HoverTip : UIComponent
 
     private void SetTip(bool visible)
     {
-        if (TipVisual?.IsLinkValid == true)
+        if (TipVisual.IsLinkValid)
             TipVisual.SetValue(visible);
     }
 }

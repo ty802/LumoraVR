@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -14,10 +14,11 @@ public sealed class Slider : InteractionElement
     public readonly Sync<float> Max;
     public readonly Sync<float> Power;
     public readonly Sync<float2> AnchorOffset;
-    public FieldDrive<float2>? HandleAnchorMinDrive { get; private set; }
-    public FieldDrive<float2>? HandleAnchorMaxDrive { get; private set; }
+    // Handle/fill anchor drives. Declared members: the targets replicate and save.
+    public readonly FieldDrive<float2> HandleAnchorMinDrive = new();
+    public readonly FieldDrive<float2> HandleAnchorMaxDrive = new();
     // Drives the filled-track portion's AnchorMax so the track shows progress.
-    public FieldDrive<float2>? FillAnchorMaxDrive { get; private set; }
+    public readonly FieldDrive<float2> FillAnchorMaxDrive = new();
 
     // Duplicable change action - see Button.Pressed.
     public readonly SyncDelegate<Action<Slider, float>> ChangeAction;
@@ -44,14 +45,6 @@ public sealed class Slider : InteractionElement
             ValueChanged += action;
     }
 
-    public override void OnAwake()
-    {
-        base.OnAwake();
-        HandleAnchorMinDrive = new FieldDrive<float2>(World);
-        HandleAnchorMaxDrive = new FieldDrive<float2>(World);
-        FillAnchorMaxDrive = new FieldDrive<float2>(World);
-    }
-
     public override void OnStart()
     {
         base.OnStart();
@@ -64,39 +57,34 @@ public sealed class Slider : InteractionElement
         UpdateHandleDrives();
     }
 
-    // Re-establish the handle/fill drives from the built child structure. The
-    // UIBuilder wires these at build time, but a duplicated slider doesn't re-run
-    // the builder and FieldDrive targets aren't sync members, so the clone would
-    // have dead drives. OnStart runs for clones too, so rebinding here from the
-    // named child slots restores a working handle/fill. Idempotent for originals.
+    // Default the handle/fill drives from the built child structure when nothing named a target. The
+    // UIBuilder wires these at build time and the links now replicate and persist, so this only fills
+    // in for a slider built by hand or duplicated before a link was stored.
     private void RebindVisuals()
     {
         if (Slot == null)
             return;
 
-        var handle = Slot.FindChild("HandleArea", recursive: false)?.FindChild("Handle", recursive: false)?.GetComponent<RectTransform>();
-        if (handle != null)
+        if (HandleAnchorMinDrive.ShouldApplyDefault || HandleAnchorMaxDrive.ShouldApplyDefault)
         {
-            HandleAnchorMinDrive?.DriveTarget(handle.AnchorMin);
-            HandleAnchorMaxDrive?.DriveTarget(handle.AnchorMax);
+            var handle = Slot.FindChild("HandleArea", recursive: false)?.FindChild("Handle", recursive: false)?.GetComponent<RectTransform>();
+            if (handle != null)
+            {
+                if (HandleAnchorMinDrive.ShouldApplyDefault)
+                    HandleAnchorMinDrive.DriveTarget(handle.AnchorMin);
+                if (HandleAnchorMaxDrive.ShouldApplyDefault)
+                    HandleAnchorMaxDrive.DriveTarget(handle.AnchorMax);
+            }
         }
 
-        var fill = Slot.FindChild("Track", recursive: false)?.FindChild("Fill", recursive: false)?.GetComponent<RectTransform>();
-        if (fill != null)
-            FillAnchorMaxDrive?.DriveTarget(fill.AnchorMax);
+        if (FillAnchorMaxDrive.ShouldApplyDefault)
+        {
+            var fill = Slot.FindChild("Track", recursive: false)?.FindChild("Fill", recursive: false)?.GetComponent<RectTransform>();
+            if (fill != null)
+                FillAnchorMaxDrive.DriveTarget(fill.AnchorMax);
+        }
 
         UpdateHandleDrives();
-    }
-
-    public override void OnDestroy()
-    {
-        HandleAnchorMinDrive?.Release();
-        HandleAnchorMaxDrive?.Release();
-        FillAnchorMaxDrive?.Release();
-        HandleAnchorMinDrive = null;
-        HandleAnchorMaxDrive = null;
-        FillAnchorMaxDrive = null;
-        base.OnDestroy();
     }
 
     // Horizontal slider: keep horizontal drags (that's the value), but hand a clearly-vertical drag to a
@@ -119,7 +107,10 @@ public sealed class Slider : InteractionElement
         var rect = RectTransform?.LocalComputeRect;
         if (!rect.HasValue || rect.Value.width <= 0f) return;
 
-        float t = (context.LocalPoint.x - rect.Value.xMin) / rect.Value.width;
+        // PointIn, not LocalPoint: a slider inside a scrolled list draws where its chunk offset puts it, so
+        // the raw canvas point would read against the rect's unscrolled position and jump the value. -xlinka
+        var point = context.PointIn(Slot);
+        float t = (point.x - rect.Value.xMin) / rect.Value.width;
         if (t < 0f) t = 0f;
         if (t > 1f) t = 1f;
         if (Power.Value > 0f && Power.Value != 1f)
@@ -141,15 +132,15 @@ public sealed class Slider : InteractionElement
     public void UpdateHandleDrives()
     {
         var anchor = GetHandleAnchor();
-        if (HandleAnchorMinDrive?.IsLinkValid == true)
+        if (HandleAnchorMinDrive.IsLinkValid)
         {
             HandleAnchorMinDrive.SetValue(anchor);
         }
-        if (HandleAnchorMaxDrive?.IsLinkValid == true)
+        if (HandleAnchorMaxDrive.IsLinkValid)
         {
             HandleAnchorMaxDrive.SetValue(anchor);
         }
-        if (FillAnchorMaxDrive?.IsLinkValid == true)
+        if (FillAnchorMaxDrive.IsLinkValid)
         {
             FillAnchorMaxDrive.SetValue(new float2(anchor.x - AnchorOffset.Value.x, 1f));
         }

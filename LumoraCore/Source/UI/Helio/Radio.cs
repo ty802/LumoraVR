@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -10,7 +10,8 @@ public sealed class Radio : InteractionElement
 {
     public readonly Sync<bool> IsChecked;
     public readonly Sync<string> Group;
-    public FieldDrive<bool>? CheckVisual { get; private set; }
+    // drives the dot's active state. declared member, so the target replicates and saves.
+    public readonly FieldDrive<bool> CheckVisual = new();
 
     public event Action<Radio, bool>? ValueChanged;
 
@@ -20,10 +21,19 @@ public sealed class Radio : InteractionElement
         Group = new Sync<string>(this, string.Empty);
     }
 
-    public override void OnAwake()
+    public override void OnStart()
     {
-        base.OnAwake();
-        CheckVisual = new FieldDrive<bool>(World);
+        base.OnStart();
+        // Default the dot drive from the built child structure when nothing named a target yet. The
+        // link itself replicates and persists now, so a peer or a loaded save arrives with the target
+        // already set and this no-ops; it only fills in for a radio built by hand or duplicated. -xlinka
+        if (CheckVisual.ShouldApplyDefault)
+        {
+            var dot = Slot?.FindChild("Ring", recursive: false)?.FindChild("Dot", recursive: false);
+            if (dot != null)
+                CheckVisual.DriveTarget(dot.ActiveSelf);
+        }
+        UpdateCheckVisual();
     }
 
     public override void OnChanges()
@@ -32,16 +42,9 @@ public sealed class Radio : InteractionElement
         UpdateCheckVisual();
     }
 
-    public override void OnDestroy()
-    {
-        CheckVisual?.Release();
-        CheckVisual = null;
-        base.OnDestroy();
-    }
-
     public void SetCheckVisual(IField<bool> target)
     {
-        CheckVisual?.DriveTarget(target);
+        CheckVisual.DriveTarget(target);
         UpdateCheckVisual();
     }
 
@@ -71,7 +74,7 @@ public sealed class Radio : InteractionElement
 
     private void UpdateCheckVisual()
     {
-        if (CheckVisual?.IsLinkValid == true)
+        if (CheckVisual.IsLinkValid)
         {
             CheckVisual.SetValue(IsChecked.Value);
         }

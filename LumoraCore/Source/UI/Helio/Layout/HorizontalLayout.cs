@@ -142,6 +142,8 @@ public class HorizontalLayout : LayoutController
         }
     }
 
+    private readonly List<RectTransform> _measureChildren = new();
+
     public override void EnsureValidMetrics(LayoutDirection direction)
     {
         if (RectTransform == null) return;
@@ -149,13 +151,14 @@ public class HorizontalLayout : LayoutController
         float min = 0f;
         float preferred = 0f;
         float flexible = 0f;
-        int count = RectTransform.RectChildren.Count;
+        LayoutSizing.CollectMeasureChildren(RectTransform, _measureChildren);
+        int count = _measureChildren.Count;
 
         for (int i = 0; i < count; i++)
         {
-            if (LayoutSizing.IsIgnored(RectTransform.RectChildren[i])) continue;
-            var metrics = LayoutSizing.Measured(RectTransform.RectChildren[i], direction);
-            var margin = LayoutSizing.GetMargin(RectTransform.RectChildren[i]);
+            if (LayoutSizing.IsIgnored(_measureChildren[i])) continue;
+            var metrics = LayoutSizing.Measured(_measureChildren[i], direction);
+            var margin = LayoutSizing.GetMargin(_measureChildren[i]);
             if (direction == LayoutDirection.Horizontal)
             {
                 float mm = margin.x + margin.z;

@@ -13,6 +13,13 @@ public abstract class Graphic : UIComputeComponent
     // if false, batcher can reorder graphics on the same rect for fewer drawcalls - xlinka
     public virtual bool RequirePreciseSameLevelSorting => true;
 
+    // True if ComputeGraphic trims/culls its geometry against RenderData.GeometryClipRect. Only those graphics
+    // can take a clip window that MOVES WITH the chunk (a mask inside scrolled content) - it has to be baked
+    // into the geometry, since a material rect is a fixed canvas-space window. A graphic that says false keeps
+    // that window on its material instead, where it goes stale as the chunk scrolls, which is what everything
+    // did before. Default false so a new graphic is never silently left unclipped. -xlinka
+    public virtual bool TrimsGeometryToClip => false;
+
     public abstract void ComputeGraphic(GraphicsChunk.RenderData renderData);
 
     public abstract bool IsPointInside(in float2 point);

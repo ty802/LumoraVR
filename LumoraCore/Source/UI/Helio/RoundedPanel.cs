@@ -10,11 +10,9 @@ using Lumora.Core.Phos;
 
 namespace Helio.UI;
 
-/// <summary>
-/// A rounded-rectangle panel (CSS border-radius) with an optional border. Built as a
-/// procedural mesh (corner arcs tessellated) like <see cref="ArcSegment"/> - no special
-/// shader, batches with the default UI material, hit-tests to the rounded shape.
-/// </summary>
+// rounded-rectangle panel with an optional border. built as a procedural mesh (corner arcs
+// tessellated) like ArcSegment - no special shader, batches with the default UI material,
+// hit-tests to the rounded shape.
 public sealed class RoundedPanel : Graphic
 {
     public readonly Sync<color> Color;
@@ -36,6 +34,9 @@ public sealed class RoundedPanel : Graphic
     }
 
     public override bool RequiresPreGraphicsCompute => false;
+
+    // Trims its quads to RenderData.GeometryClipRect, so it can carry a clip window that rides the chunk.
+    public override bool TrimsGeometryToClip => true;
 
     protected override void FlagChanges(RectTransform rect)
     {

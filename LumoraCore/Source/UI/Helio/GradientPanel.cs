@@ -7,11 +7,8 @@ using Lumora.Core.Math;
 
 namespace Helio.UI;
 
-/// <summary>
-/// Fills its rect with a 4-corner color gradient (no texture). Set the four corner
-/// colors directly; for a simple linear gradient just match the two pairs. Maps to
-/// a CSS gradient background.
-/// </summary>
+// fills its rect with a 4-corner color gradient (no texture). set the four corner colors
+// directly; for a simple linear gradient just match the two pairs.
 public sealed class GradientPanel : Graphic
 {
     public readonly AssetRef<MaterialAsset> Material;
@@ -36,6 +33,9 @@ public sealed class GradientPanel : Graphic
     }
 
     public override bool RequiresPreGraphicsCompute => false;
+
+    // Trims its quads to RenderData.GeometryClipRect, so it can carry a clip window that rides the chunk.
+    public override bool TrimsGeometryToClip => true;
 
     protected override void FlagChanges(RectTransform rect)
     {

@@ -118,6 +118,11 @@ public class Text : Graphic, ILayoutElement
     }
 
     public override bool RequiresPreGraphicsCompute => true;
+
+    // Glyph quads are trimmed (with their UVs) to RenderData.GeometryClipRect, so text can carry a clip window
+    // that rides the chunk - see EmitGlyph.
+    public override bool TrimsGeometryToClip => true;
+
     public float? MinWidth => 0f;
     public float? PreferredWidth => _layoutPreferredWidth;
     public float? FlexibleWidth => 0f;
@@ -160,9 +165,24 @@ public class Text : Graphic, ILayoutElement
     // shaped, nothing to re-drive. - xlinka
     private int _appliedFontGeneration = -1;
 
+    // Armed when a compute ran with NO valid font: the generation stays -1 so the poll below can
+    // never fire, and a font that loads later would leave this text invisible forever (baked empty,
+    // chunk latched built). The arm re-drives ONCE when the asset turns valid. - xlinka
+    private bool _fontRedriveArmed;
+
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
+        if (_fontRedriveArmed)
+        {
+            var pending = Font.Asset;
+            if (pending == null || !pending.IsValid)
+                return;
+            _fontRedriveArmed = false;
+            ChangedMetrics = LayoutMetric.MinWidth | LayoutMetric.PreferredWidth | LayoutMetric.MinHeight | LayoutMetric.PreferredHeight;
+            RectTransform?.MarkChangeDirty();
+            return;
+        }
         if (_appliedFontGeneration < 0)
             return;
         var fontSet = Font.Asset;
@@ -242,11 +262,15 @@ public class Text : Graphic, ILayoutElement
         var fontSet = _font?.Asset;
         if (fontSet == null || !fontSet.IsValid)
         {
+            // Baking with no font emits nothing; arm the OnUpdate re-drive so the asset landing
+            // later re-measures and re-meshes this text instead of leaving it invisible.
+            _fontRedriveArmed = true;
             _ascent = _size * 0.8f;
             _lineHeight = _size;
             _rawLineHeight = _size;
             return default;
         }
+        _fontRedriveArmed = false;
 
         var rect = RectTransform?.LocalComputeRect ?? default;
 

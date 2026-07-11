@@ -7,12 +7,9 @@ using Lumora.Core.Math;
 
 namespace Helio.UI.Layout;
 
-/// <summary>
-/// Stacks every child in the same place, each filling the layout's inner rect.
-/// Metrics are the MAX of the children on both axes (not the sum), so the
-/// container shrink-wraps to its largest child. Useful for layered content
-/// (background + foreground, overlapping panels) - the CSS "stack" / z-stack.
-/// </summary>
+// stacks every child in the same place, each filling the layout's inner rect. metrics are the
+// MAX of the children on both axes (not the sum), so the container shrink-wraps to its largest
+// child. useful for layered content (background + foreground, overlapping panels).
 public class OverlappingLayout : LayoutController
 {
     public readonly Sync<float> PaddingLeft;
@@ -66,6 +63,8 @@ public class OverlappingLayout : LayoutController
         }
     }
 
+    private readonly List<RectTransform> _measureChildren = new();
+
     public override void EnsureValidMetrics(LayoutDirection direction)
     {
         if (RectTransform == null) return;
@@ -73,12 +72,13 @@ public class OverlappingLayout : LayoutController
         float min = 0f;
         float preferred = 0f;
         float flexible = 0f;
-        int count = RectTransform.RectChildren.Count;
+        LayoutSizing.CollectMeasureChildren(RectTransform, _measureChildren);
+        int count = _measureChildren.Count;
 
         for (int i = 0; i < count; i++)
         {
-            if (LayoutSizing.IsIgnored(RectTransform.RectChildren[i])) continue;
-            var metrics = LayoutSizing.Measured(RectTransform.RectChildren[i], direction);
+            if (LayoutSizing.IsIgnored(_measureChildren[i])) continue;
+            var metrics = LayoutSizing.Measured(_measureChildren[i], direction);
             min = Max(min, metrics.Min);
             preferred = Max(preferred, metrics.Preferred);
             flexible = Max(flexible, metrics.Flexible);

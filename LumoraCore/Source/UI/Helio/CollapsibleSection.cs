@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -6,19 +6,16 @@ using Lumora.Core;
 
 namespace Helio.UI;
 
-/// <summary>
-/// A clickable header that expands/collapses a content section (accordion row).
-/// Toggles the "Content" child's active state and an optional "Indicator" child -
-/// maps to an HTML details element.
-/// </summary>
+// clickable header that expands/collapses a content section (accordion row). toggles the
+// "Content" child's active state and an optional "Indicator" child.
 public sealed class CollapsibleSection : InteractionElement
 {
     public readonly Sync<bool> Expanded;
 
-    // Drives the content slot's active state.
-    public FieldDrive<bool>? ContentVisual { get; private set; }
+    // Drives the content slot's active state. Declared member: the target replicates and saves.
+    public readonly FieldDrive<bool> ContentVisual = new();
     // Optional: drives an indicator (e.g. an expanded-state arrow) active.
-    public FieldDrive<bool>? IndicatorVisual { get; private set; }
+    public readonly FieldDrive<bool> IndicatorVisual = new();
 
     // Duplicable change action - see Button.Pressed.
     public readonly SyncDelegate<Action<CollapsibleSection, bool>> ChangeAction;
@@ -41,13 +38,6 @@ public sealed class CollapsibleSection : InteractionElement
             ExpandedChanged += action;
     }
 
-    public override void OnAwake()
-    {
-        base.OnAwake();
-        ContentVisual = new FieldDrive<bool>(World);
-        IndicatorVisual = new FieldDrive<bool>(World);
-    }
-
     public override void OnStart()
     {
         base.OnStart();
@@ -60,26 +50,24 @@ public sealed class CollapsibleSection : InteractionElement
         UpdateVisuals();
     }
 
-    public override void OnDestroy()
-    {
-        ContentVisual?.Release();
-        IndicatorVisual?.Release();
-        ContentVisual = null;
-        IndicatorVisual = null;
-        base.OnDestroy();
-    }
-
-    // Rebind from the built child structure so a duplicated section keeps working.
+    // Default the visual drives from the built child structure, but only where nothing named a target:
+    // a link that arrived from a save or a peer already knows what it drives.
     private void RebindVisuals()
     {
-        var content = Slot?.FindChild("Content", recursive: false);
-        if (content != null)
-            ContentVisual?.DriveTarget(content.ActiveSelf);
+        if (ContentVisual.ShouldApplyDefault)
+        {
+            var content = Slot?.FindChild("Content", recursive: false);
+            if (content != null)
+                ContentVisual.DriveTarget(content.ActiveSelf);
+        }
 
-        var indicator = Slot?.FindChild("Indicator", recursive: false)
-                        ?? Slot?.FindChild("Header", recursive: false)?.FindChild("Indicator", recursive: false);
-        if (indicator != null)
-            IndicatorVisual?.DriveTarget(indicator.ActiveSelf);
+        if (IndicatorVisual.ShouldApplyDefault)
+        {
+            var indicator = Slot?.FindChild("Indicator", recursive: false)
+                            ?? Slot?.FindChild("Header", recursive: false)?.FindChild("Indicator", recursive: false);
+            if (indicator != null)
+                IndicatorVisual.DriveTarget(indicator.ActiveSelf);
+        }
 
         UpdateVisuals();
     }
@@ -94,9 +82,9 @@ public sealed class CollapsibleSection : InteractionElement
 
     private void UpdateVisuals()
     {
-        if (ContentVisual?.IsLinkValid == true)
+        if (ContentVisual.IsLinkValid)
             ContentVisual.SetValue(Expanded.Value);
-        if (IndicatorVisual?.IsLinkValid == true)
+        if (IndicatorVisual.IsLinkValid)
             IndicatorVisual.SetValue(Expanded.Value);
     }
 }

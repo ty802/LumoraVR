@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -9,7 +9,9 @@ namespace Helio.UI;
 public sealed class Checkbox : InteractionElement
 {
     public readonly Sync<bool> IsChecked;
-    public FieldDrive<bool>? CheckVisual { get; private set; }
+    // Drives the tick's active state. A real sync member: the target replicates and saves,
+    // so a loaded or remote checkbox already knows what it drives. -xlinka
+    public readonly FieldDrive<bool> CheckVisual = new();
 
     // Duplicable change action - see Button.Pressed.
     public readonly SyncDelegate<Action<Checkbox, bool>> ChangeAction;
@@ -32,20 +34,19 @@ public sealed class Checkbox : InteractionElement
             ValueChanged += action;
     }
 
-    public override void OnAwake()
-    {
-        base.OnAwake();
-        CheckVisual = new FieldDrive<bool>(World);
-    }
-
     public override void OnStart()
     {
         base.OnStart();
-        // Rebind the check visual from the built child structure so duplicated
-        // checkboxes (which don't re-run the builder) keep a working tick.
-        var check = Slot?.FindChild("Box", recursive: false)?.FindChild("Check", recursive: false);
-        if (check != null)
-            SetCheckVisual(check.ActiveSelf);
+        // Default the tick drive from the built child structure, but ONLY when nothing set it. A link
+        // that came from a save or from a peer already names its target and must not be stomped; this
+        // is just the fallback for a checkbox built by hand or duplicated without a stored link.
+        if (CheckVisual.ShouldApplyDefault)
+        {
+            var check = Slot?.FindChild("Box", recursive: false)?.FindChild("Check", recursive: false);
+            if (check != null)
+                CheckVisual.DriveTarget(check.ActiveSelf);
+        }
+        UpdateCheckVisual();
     }
 
     public override void OnChanges()
@@ -54,16 +55,9 @@ public sealed class Checkbox : InteractionElement
         UpdateCheckVisual();
     }
 
-    public override void OnDestroy()
-    {
-        CheckVisual?.Release();
-        CheckVisual = null;
-        base.OnDestroy();
-    }
-
     public void SetCheckVisual(IField<bool> target)
     {
-        CheckVisual?.DriveTarget(target);
+        CheckVisual.DriveTarget(target);
         UpdateCheckVisual();
     }
 
@@ -77,7 +71,7 @@ public sealed class Checkbox : InteractionElement
 
     private void UpdateCheckVisual()
     {
-        if (CheckVisual?.IsLinkValid == true)
+        if (CheckVisual.IsLinkValid)
         {
             CheckVisual.SetValue(IsChecked.Value);
         }

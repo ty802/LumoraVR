@@ -58,7 +58,11 @@ public sealed class MaterialCloneCache
         };
     }
 
-    public IAssetProvider<MaterialAsset>? GetRenderPriorityMaterial(IAssetProvider<MaterialAsset>? source, int renderPriority)
+    // Keyed by SURFACE INDEX, not the priority value: per-surface priorities are band-packed from
+    // the chunk's material count, so ANY surface-count change used to shift every priority and
+    // re-mint the whole clone set (a ~200-clone, ~130ms sync spike per panel toggle). The copy path
+    // rewrites RenderQueue on every fetch, so a shifted priority is an in-place update now. -xlinka
+    public IAssetProvider<MaterialAsset>? GetRenderPriorityMaterial(IAssetProvider<MaterialAsset>? source, int surfaceIndex, int renderPriority)
     {
         if (source == null || source.IsDestroyed)
         {
@@ -67,8 +71,8 @@ public sealed class MaterialCloneCache
 
         return source switch
         {
-            UIUnlitMaterial unlit => GetPriorityUIUnlit(unlit, renderPriority),
-            UITextMaterial text => GetPriorityUIText(text, renderPriority),
+            UIUnlitMaterial unlit => GetPriorityUIUnlit(unlit, surfaceIndex, renderPriority),
+            UITextMaterial text => GetPriorityUIText(text, surfaceIndex, renderPriority),
             _ => source,
         };
     }
@@ -132,12 +136,20 @@ public sealed class MaterialCloneCache
         return clone;
     }
 
+    // Entries are evicted only after sitting unused for many cycles, NOT the first cycle they miss:
+    // settle-time re-meshes shift per-surface priorities (they derive from the chunk's material
+    // COUNT, which changes as text surfaces land), and eager eviction made every shift destroy and
+    // re-mint its clones - each fresh clone is a not-yet-applied material, so the panel flashed
+    // broken on every rebuild while the cache slots churned by the hundreds. Grace is counted in
+    // this chunk's rebuild cycles, so rarely-rebuilt chunks keep their clones indefinitely. -xlinka
+    private const int EvictAfterCycles = 120;
+
     public void EndFrame()
     {
         List<ClipMaterialKey>? remove = null;
         foreach (var pair in _clipMaterials)
         {
-            if (pair.Value.LastUsedFrame == _frame)
+            if (_frame - pair.Value.LastUsedFrame <= EvictAfterCycles)
             {
                 continue;
             }
@@ -204,9 +216,9 @@ public sealed class MaterialCloneCache
         return clone;
     }
 
-    private UIUnlitMaterial GetPriorityUIUnlit(UIUnlitMaterial source, int renderPriority)
+    private UIUnlitMaterial GetPriorityUIUnlit(UIUnlitMaterial source, int surfaceIndex, int renderPriority)
     {
-        var key = new PriorityMaterialKey(source, renderPriority);
+        var key = new PriorityMaterialKey(source, surfaceIndex);
         if (!_priorityMaterials.TryGetValue(key, out var entry) || entry.Material is not UIUnlitMaterial clone || clone.IsDestroyed)
         {
             var slot = _root.AddLocalSlot("RenderPriorityMaterial");
@@ -250,9 +262,9 @@ public sealed class MaterialCloneCache
         };
     }
 
-    private UITextMaterial GetPriorityUIText(UITextMaterial source, int renderPriority)
+    private UITextMaterial GetPriorityUIText(UITextMaterial source, int surfaceIndex, int renderPriority)
     {
-        var key = new PriorityMaterialKey(source, renderPriority);
+        var key = new PriorityMaterialKey(source, surfaceIndex);
         if (!_priorityMaterials.TryGetValue(key, out var entry) || entry.Material is not UITextMaterial clone || clone.IsDestroyed)
         {
             var slot = _root.AddLocalSlot("RenderPriorityTextMaterial");
@@ -384,7 +396,7 @@ public sealed class MaterialCloneCache
         List<PriorityMaterialKey>? remove = null;
         foreach (var pair in _priorityMaterials)
         {
-            if (pair.Value.LastUsedFrame == _frame)
+            if (_frame - pair.Value.LastUsedFrame <= EvictAfterCycles)
             {
                 continue;
             }
@@ -411,7 +423,7 @@ public sealed class MaterialCloneCache
         List<StencilMaterialKey>? remove = null;
         foreach (var pair in _stencilMaterials)
         {
-            if (pair.Value.LastUsedFrame == _frame)
+            if (_frame - pair.Value.LastUsedFrame <= EvictAfterCycles)
             {
                 continue;
             }
@@ -522,24 +534,24 @@ public sealed class MaterialCloneCache
     private readonly struct PriorityMaterialKey
     {
         private readonly IAssetProvider<MaterialAsset> _material;
-        private readonly int _renderPriority;
+        private readonly int _surfaceIndex;
 
-        public PriorityMaterialKey(IAssetProvider<MaterialAsset> material, int renderPriority)
+        public PriorityMaterialKey(IAssetProvider<MaterialAsset> material, int surfaceIndex)
         {
             _material = material;
-            _renderPriority = renderPriority;
+            _surfaceIndex = surfaceIndex;
         }
 
         public override bool Equals(object? obj)
         {
             return obj is PriorityMaterialKey other
                 && ReferenceEquals(_material, other._material)
-                && _renderPriority == other._renderPriority;
+                && _surfaceIndex == other._surfaceIndex;
         }
 
         public override int GetHashCode()
         {
-            return System.HashCode.Combine(_material, _renderPriority);
+            return System.HashCode.Combine(_material, _surfaceIndex);
         }
     }
 

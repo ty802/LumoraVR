@@ -26,6 +26,8 @@ internal sealed class LNLCryptoSession : IDisposable
 
     private readonly bool _isClient;
     private readonly ECDiffieHellman _ecdh;
+    private AesGcm? _txGcm;
+    private AesGcm? _rxGcm;
     private readonly byte[] _localPublicKey;
     private readonly object _sendLock = new();
 
@@ -99,8 +101,7 @@ internal sealed class LNLCryptoSession : IDisposable
             var nonce = BuildNonce(_sendNonceBase, sequence);
             var cipher = output.AsSpan(EncryptedHeaderLen, length);
             var tag = output.AsSpan(EncryptedHeaderLen + length, TagLen);
-            using var gcm = new AesGcm(_sendKey, TagLen);
-            gcm.Encrypt(nonce, data.AsSpan(0, length), cipher, tag, output.AsSpan(0, EncryptedHeaderLen));
+            _txGcm!.Encrypt(nonce, data.AsSpan(0, length), cipher, tag, output.AsSpan(0, EncryptedHeaderLen));
             return output;
         }
     }
@@ -168,6 +169,8 @@ internal sealed class LNLCryptoSession : IDisposable
             _receiveKey = _isClient ? h2cKey : c2hKey;
             _sendNonceBase = _isClient ? c2hNonce : h2cNonce;
             _receiveNonceBase = _isClient ? h2cNonce : c2hNonce;
+            _txGcm = new AesGcm(_sendKey,TagLen);
+            _rxGcm = new AesGcm(_receiveKey,TagLen);
             return true;
         }
         catch (CryptographicException)
@@ -198,8 +201,7 @@ internal sealed class LNLCryptoSession : IDisposable
 
         try
         {
-            using var gcm = new AesGcm(_receiveKey, TagLen);
-            gcm.Decrypt(
+            _rxGcm!.Decrypt(
                 nonce,
                 data.AsSpan(EncryptedHeaderLen, cipherLen),
                 data.AsSpan(EncryptedHeaderLen + cipherLen, TagLen),

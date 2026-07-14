@@ -9,11 +9,9 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Base of every inspector field editor: holds the edited sync field plus a dotted path addressing
-/// one leaf inside its value ("x", "r"; "" = the whole value). Editors read/write the WHOLE boxed
-/// value through a StructMemberAccessor, so one non-generic component edits any value type.
-/// </summary>
+// dotted path addresses one leaf inside the field's value ("x", "r"; "" = the whole value).
+// editors read/write the WHOLE boxed value through a StructMemberAccessor, so one non-generic
+// component edits any value type.
 public abstract class MemberEditor : Component
 {
     public readonly SyncRef<IWorldElement> TargetMember;
@@ -51,7 +49,7 @@ public abstract class MemberEditor : Component
 
     protected abstract void BuildUI(UIBuilder ui);
 
-    /// <summary>Pull the current member value into the widgets (also called on remote changes).</summary>
+    // also called on remote changes
     protected virtual void RefreshDisplay() { }
 
     public override void OnStart()
@@ -92,6 +90,16 @@ public abstract class MemberEditor : Component
             RefreshDisplay();
     }
 
+    // Whether this editor must refuse writes to the EDITED MEMBER (not this editor component's own
+    // drive state, which is what ComponentBase.IsDriven answers). A driven value is DERIVED: the
+    // editor shows it live but must not author it, or the write lands for one frame and the driver
+    // stamps over it - an edit box that silently rejects everything you type.
+    // A hooked link is the passthrough escape: a hook INTERCEPTS the write and decides what to do
+    // with it rather than rejecting it, so the editor stays live and lets the hook arbitrate. Same
+    // rule as the datamodel's IsBlockedByDrive. -xlinka
+    protected bool IsReadOnly
+        => TargetMember.Target is ILinkable { IsDestroyed: false, IsDriven: true, IsHooked: false };
+
     protected object? GetMemberValue()
     {
         var field = Field;
@@ -105,7 +113,7 @@ public abstract class MemberEditor : Component
     {
         var field = Field;
         var accessor = Accessor;
-        if (field == null || accessor == null)
+        if (field == null || accessor == null || IsReadOnly)
             return;
 
         object? before = field.BoxedValue;
@@ -115,27 +123,119 @@ public abstract class MemberEditor : Component
         InspectorUndo.RecordEdit(this, field, before, after);
     }
 
-    /// <summary>Tint hint for the editor's text (drive detection is per-editor where it matters).</summary>
-    protected color FieldStateColor() => InspectorUI.TextColor;
+    // no undo record: live per-keystroke edits route here, editor records ONE edit for the
+    // whole typing session on focus loss instead
+    protected void SetMemberValueSilent(object? leaf)
+    {
+        var field = Field;
+        var accessor = Accessor;
+        if (field == null || accessor == null || IsReadOnly)
+            return;
+        object? after = accessor.SetValue(field.BoxedValue, leaf);
+        field.BoxedValue = after!;
+    }
+
+    // shared tint rule: a member that has gone away reads broken, a driven one magenta,
+    // a merely linked one cyan, anything else normal
+    protected color FieldStateColor(color? normal = null)
+        => InspectorUI.FieldStateColor(TargetMember.Target, normal);
+
+    // Put a widget's color field on the row's live state tint so it re-colors as drives attach and
+    // detach, and paint it once now. The tint component is attached to the ROW by the member-row
+    // builder BEFORE the editor is built, so an editor always finds it in its parents; no tint
+    // component (a standalone editor outside a member row) just means the build-time color stands.
+    // Takes the color field rather than the graphic so any widget kind can be signalled. -xlinka
+    protected void BindStateTint(IField<color>? widgetTint, color baseColor)
+    {
+        if (widgetTint == null || widgetTint.IsDestroyed)
+            return;
+        InspectorUI.ApplyStateTint(widgetTint, FieldStateColor(baseColor));
+        var tint = Slot?.GetComponentInParent<MemberStateTint>();
+        if (tint == null)
+            return;
+        tint.StateTint.Target = widgetTint;
+        tint.TintBaseColor.Value = baseColor;
+    }
 }
 
-/// <summary>Shared inspector UI construction helpers + palette.</summary>
 public static class InspectorUI
 {
-    public static readonly color TextColor = new color(0.92f, 0.94f, 0.97f, 1f);
-    public static readonly color MutedColor = new color(0.62f, 0.66f, 0.72f, 1f);
+    public static readonly color TextColor = new color(0.93f, 0.94f, 0.98f, 1f);
+    public static readonly color MutedColor = new color(0.64f, 0.63f, 0.74f, 1f);
+    // slot's own persistence flag is off
+    public static readonly color NonPersistentColor = new color(0.95f, 0.58f, 0.20f, 1f);
+    // non-persistent only through an ancestor
+    public static readonly color NonPersistentInheritedColor = new color(0.78f, 0.56f, 0.34f, 1f);
     public static readonly color DrivenColor = new color(0.85f, 0.45f, 0.9f, 1f);
-    public static readonly color RowColor = new color(0.13f, 0.15f, 0.20f, 0.85f);
-    public static readonly color HeaderColor = new color(0.16f, 0.19f, 0.26f, 0.95f);
-    public static readonly color AccentColor = new color(0.35f, 0.6f, 0.95f, 1f);
-    public static readonly color DangerColor = new color(0.85f, 0.3f, 0.3f, 1f);
+    // Linked but not driving (a hook/link holds the field without writing it) - reads cyan.
+    public static readonly color LinkedColor = new color(0.38f, 0.78f, 0.85f, 1f);
+    // a member the editor can no longer resolve (destroyed or never wired)
+    public static readonly color BrokenColor = new color(0.50f, 0.50f, 0.52f, 1f);
+    // Section headers/dividers in inspector panels.
+    public static readonly color CyanColor = new color(0.35f, 0.75f, 0.90f, 1f);
+    public static readonly color RowColor = new color(0.10f, 0.09f, 0.16f, 1f);
+    public static readonly color HeaderColor = new color(0.15f, 0.13f, 0.22f, 1f);
+    // opaque near-black backing for the hierarchy and detail panes
+    public static readonly color PaneColor = new color(0.09f, 0.08f, 0.13f, 1f);
+    public static readonly color AccentColor = new color(0.45f, 0.38f, 0.80f, 1f);
+    // row backing for the selected hierarchy entry
+    public static readonly color SelectionColor = new color(0.45f, 0.38f, 0.80f, 0.60f);
+    public static readonly color DangerColor = new color(0.70f, 0.24f, 0.28f, 1f);
+    public static readonly color AxisXColor = new color(0.90f, 0.30f, 0.32f, 1f);
+    public static readonly color AxisYColor = new color(0.36f, 0.80f, 0.42f, 1f);
+    public static readonly color AxisZColor = new color(0.35f, 0.55f, 0.95f, 1f);
     public const float RowHeight = 30f;
     public const float FontSize = 15f;
 
-    /// <summary>
-    /// Pull the surrounding UITheme into a fresh builder. Font above all: Helio text WITHOUT a font
-    /// renders nothing, which is exactly how the first inspector shipped with invisible content.
-    /// </summary>
+    // THE field-state color rule, one implementation for every editor and every widget in a member
+    // row: a member that is gone reads broken gray, a driven one the drive magenta, one that is
+    // merely linked (something holds it but nothing writes it) cyan, anything else the caller's
+    // normal color. Keep new editors on this instead of hand-rolling a tint, or the row's chip, its
+    // label and its value widget end up disagreeing about what state the field is in. -xlinka
+    public static color FieldStateColor(IWorldElement? member, color? normal = null)
+    {
+        // Broken means the MEMBER ITSELF is gone. A member kind that simply has no link machinery
+        // (a delegate, a bag) is normal, not broken.
+        if (member == null || member.IsDestroyed)
+            return BrokenColor;
+        if (member is not ILinkable linkable)
+            return normal ?? TextColor;
+        if (linkable.IsDriven)
+            return DrivenColor;
+        if (linkable.IsLinked)
+            return LinkedColor;
+        return normal ?? TextColor;
+    }
+
+    // Paint a widget's backing with a field-state color.
+    // Helio buttons DRIVE their own Image.Tint from an interaction ColorDriver (normal/hover/pressed),
+    // so writing the tint directly is silently reverted on the driver's next pass - the base color has
+    // to be retuned on the DRIVER instead, which also re-derives the hover and pressed shades from it.
+    // A plain image (a text input backing) has no driver and takes the write. Anything tinting an
+    // inspector widget must go through here or it will look like it worked and then flicker back on
+    // the first hover. -xlinka
+    public static void ApplyStateTint(IField<color>? widgetTint, in color value)
+    {
+        if (widgetTint == null || widgetTint.IsDestroyed)
+            return;
+
+        // The color field's parent is the graphic component, whose slot carries any interaction
+        // ColorDriver bound to it. Every Helio Button installs one on its own backing in OnAttach.
+        var slot = ((widgetTint as SyncElement)?.Parent as Component)?.Slot;
+        if (slot != null)
+        {
+            foreach (var driver in slot.GetComponents<ColorDriver>())
+            {
+                if (!ReferenceEquals(driver.Target.Target, widgetTint))
+                    continue;
+                driver.SetColors(value);
+                return;
+            }
+        }
+        widgetTint.Value = value;
+    }
+
+    // text without a font renders nothing - the first inspector shipped with invisible content this way
     public static Lumora.Core.Components.UI.UITheme? ApplyTheme(UIBuilder ui, Slot context)
     {
         var theme = context.GetComponentInParent<Lumora.Core.Components.UI.UITheme>();
@@ -150,7 +250,6 @@ public static class InspectorUI
         return theme;
     }
 
-    /// <summary>Background image + TextInput + child "Text" - the standard editable field.</summary>
     public static TextInput CreateTextInput(UIBuilder ui, string name = "Input")
     {
         var slot = ui.Next(name);
@@ -172,7 +271,27 @@ public static class InspectorUI
         return input;
     }
 
-    /// <summary>Anchor a rect to fill its parent (a bare RectTransform is a 100x100 centered chunk).</summary>
+    public static void SectionHeader(Slot parent, string label, Slot themeContext)
+    {
+        FixedRow(parent, "Section", 26f, out var ui, themeContext);
+        ui.PushStyle();
+        ui.FlexibleWidth(1f);
+        var text = ui.Text(label, FontSize - 1f, CyanColor);
+        FillParent(text.RectTransform!);
+        text.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
+        text.VerticalAlignment.Value = TextVerticalAlignment.Bottom;
+        ui.PopStyle();
+
+        var divider = parent.AddSlot("Divider");
+        divider.AttachComponent<RectTransform>();
+        var dividerLE = divider.AttachComponent<Helio.UI.Layout.LayoutElement>();
+        dividerLE.MinHeight.Value = 4f;
+        dividerLE.PreferredHeight.Value = 4f;
+        var rule = divider.AttachComponent<Image>();
+        rule.Tint.Value = new color(CyanColor.r, CyanColor.g, CyanColor.b, 0.85f);
+    }
+
+    // a bare RectTransform defaults to a 100x100 centered chunk
     public static void FillParent(RectTransform rect)
     {
         rect.AnchorMin.Value = float2.Zero;
@@ -181,10 +300,6 @@ public static class InspectorUI
         rect.OffsetMax.Value = float2.Zero;
     }
 
-    /// <summary>
-    /// The proven fixed-height row: slot + rect + LayoutElement(Min/Preferred) + HorizontalLayout,
-    /// returning a themed builder rooted at the row.
-    /// </summary>
     public static Slot FixedRow(Slot parent, string name, float height, out UIBuilder rowUi, Slot themeContext)
     {
         var row = parent.AddSlot(name);
@@ -206,7 +321,31 @@ public static class InspectorUI
         return row;
     }
 
-    /// <summary>Relay button: synced argument routed to an IInspectorActionHandler (never closures).</summary>
+    // color coding: purple ref, blue field, green list, magenta driven. pressing it pops the
+    // member's reference card out of the panel when a pull source is wired; otherwise just the marker
+    public static void MemberChip(UIBuilder ui, color tint, ReferenceProxySource? pullSource)
+    {
+        ui.PushStyle();
+        ui.MinWidth(14f);
+        ui.PreferredWidth(14f);
+        ui.FlexibleWidth(0f);
+        if (pullSource != null)
+        {
+            ui.PushStyle();
+            ui.BackgroundColor(tint);
+            var button = ui.Button("", null!);
+            button.SetAction(pullSource.OnPullPressed);
+            ui.PopStyle();
+        }
+        else
+        {
+            var chip = ui.Image(null, tint);
+            FillParent(chip.RectTransform!);
+        }
+        ui.PopStyle();
+    }
+
+    // synced argument routed to an IInspectorActionHandler, never closures
     public static Button RelayButton(UIBuilder ui, Component handler, string argument, string label, float width)
     {
         ui.PushStyle();

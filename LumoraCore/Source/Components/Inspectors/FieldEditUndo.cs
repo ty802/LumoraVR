@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core;
@@ -6,7 +6,6 @@ using Lumora.Core.Networking.Sync;
 
 namespace Lumora.Core.Components;
 
-/// <summary>Undoable sync-field value edit (whole boxed value before/after).</summary>
 public sealed class FieldEditUndoBatch : IUndoBatch
 {
     private readonly IField _field;
@@ -23,7 +22,7 @@ public sealed class FieldEditUndoBatch : IUndoBatch
         Description = description;
     }
 
-    /// <summary>Consecutive edits of the same field merge into one step (slider drags, typing).</summary>
+    // consecutive edits of the same field merge into one step (slider drags, typing)
     public bool TryMerge(IField field, object? after)
     {
         if (!ReferenceEquals(field, _field))
@@ -54,7 +53,18 @@ public sealed class FieldEditUndoBatch : IUndoBatch
 
 public static class InspectorUndo
 {
-    /// <summary>Record a field edit into the local user's undo history (no-op without a manager).</summary>
+    // no-op without a manager or batch
+    public static void Record(Worker context, IUndoBatch? batch)
+        => Record(context?.World, batch);
+
+    // overload for a caller that has a world but no worker of its own (static import paths)
+    public static void Record(World? world, IUndoBatch? batch)
+    {
+        if (batch == null)
+            return;
+        world?.LocalUser?.Root?.Slot?.GetComponentInChildren<UndoManager>()?.Record(batch);
+    }
+
     public static void RecordEdit(Worker context, IField field, object? before, object? after)
     {
         var world = context?.World;

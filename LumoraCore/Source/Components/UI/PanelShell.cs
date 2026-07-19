@@ -33,7 +33,7 @@ public class PanelShell : UIComponent
     public readonly Sync<color> CloseButtonDisabledColor;
     public readonly Sync<color> CloseIconColor;
     public readonly AssetRef<FontSet> Font;
-    /// <summary>Rounded-rect sprite for the panel/header corners (e.g. a RoundedRectTextureProvider). Null = square.</summary>
+    // e.g. a RoundedRectTextureProvider. null = square.
     public readonly AssetRef<TextureAsset> RoundedSprite;
     public readonly Sync<float> CornerRadius;
 

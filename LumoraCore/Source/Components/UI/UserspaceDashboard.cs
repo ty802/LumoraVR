@@ -67,10 +67,10 @@ public class UserspaceDashboard : UIComponent
 
     public RenderTextureProvider? RenderTextureSource => _renderTexture;
 
-    /// <summary>The display surface slot; lasers are restricted to it while the dash is open on desktop.</summary>
+    // lasers are restricted to this slot while the dash is open on desktop
     public Slot? SurfaceSlot => _surfaceSlot != null && !_surfaceSlot.IsDestroyed ? _surfaceSlot : null;
 
-    /// <summary>The local user's dashboard, if built.</summary>
+    // null until built
     public static UserspaceDashboard? LocalInstance { get; private set; }
 
     public UserspaceDashboard()
@@ -166,8 +166,12 @@ public class UserspaceDashboard : UIComponent
             // observe it a frame later, by which point the deferred upload has landed. It's the standard
             // atlas-update -> re-render pattern, minus any async pin/await (our rasterizer is synchronous, so the
             // UVs are already right and a re-render is enough - no re-mesh). -xlinka
+            // Coherence gate: only pulse the viewport when no rebuild is in flight. This path fires DIRECTLY
+            // (not via ConsumeRenderRequested), and mid-cycle the canvas shows old chunks + unmeshed new ones -
+            // capturing that frame was the dash tab-switch/first-open FLICKER. Leave _lastFontGeneration
+            // unconsumed on a gated frame so we retry next frame once the submit lands. -xlinka
             int fontGeneration = Font.Target?.Asset?.CacheGeneration ?? 0;
-            if (fontGeneration != _lastFontGeneration)
+            if (fontGeneration != _lastFontGeneration && canvas != null && !canvas.IsRebuildInProgress)
             {
                 _lastFontGeneration = fontGeneration;
                 _renderTexture?.Asset?.RequestRender();
@@ -177,57 +181,65 @@ public class UserspaceDashboard : UIComponent
         // The whole-surface grab is disabled: boosting it above the canvas to move
         // the dash also stole the laser in edit mode (you'd grab the whole dash
         // instead of dragging a widget) and blocked clicks. Freeform place-and-stay
-        // (below) doesn't need it; repositioning should use a dedicated grab handle
-        // (future), not the entire surface.
-        bool freeform = Freeform.Value;
+        // (in OnLateUpdate) doesn't need it; repositioning should use a dedicated
+        // grab handle (future), not the entire surface.
         if (_grabHandle != null)
         {
             _grabHandle.AllowGrab.Value = false;
             _grabHandle.InteractionPriority.Value = -1;
         }
 
+        // Positioning is intentionally NOT done here, for VR or desktop. OnCommonUpdate runs the
+        // userspace world BEFORE the session world each frame, so the head pose read here is one
+        // frame stale; while walking that trailing offset changes every frame and the dash visibly
+        // bobs against the view. Both modes position in OnLateUpdate instead (after all worlds'
+        // updates), from the same post-move head pose the camera rig is placed from. While closed,
+        // OnLateUpdate doesn't run (slot inactive), so keep the freeform edge-tracker current here
+        // so reopening doesn't see a stale transition. -xlinka
         if (!open)
-        {
-            _lastFreeform = freeform;
-            return;
-        }
-
-        if (vr)
-        {
-            // Locked: pin the panel in front of the view every frame.
-            // Freeform: leave it where it was placed; snap it back in front once
-            // at the moment freeform is switched on so it stays within reach.
-            if (!freeform)
-            {
-                if (FollowViewWhileOpen.Value)
-                    PositionInFrontOfFocusedView();
-            }
-            else if (!_lastFreeform)
-            {
-                PositionInFrontOfFocusedView();
-            }
-        }
-        // Desktop positioning is intentionally NOT done here. OnCommonUpdate runs the userspace world BEFORE the
-        // session world each frame, so the head pose would be a frame stale here. It's done in OnLateUpdate
-        // (after all worlds' updates, incl. the session locomotion/physics) so it reads the fresh head pose. -xlinka
-
-        _lastFreeform = freeform;
+            _lastFreeform = Freeform.Value;
     }
 
     public override void OnLateUpdate(float delta)
     {
         base.OnLateUpdate(delta);
 
-        // Position the DESKTOP dashboard here, in late update, so it runs AFTER the session world's
-        // locomotion/physics has moved the head this frame - the panel then reads the exact pose the camera
-        // renders with and stays screen-locked instead of bobbing when you walk/jump. (VR positioning stays in
-        // OnCommonUpdate; its head is HMD-driven, not physics-bounced.) -xlinka
+        // Position the dashboard here, in late update, for BOTH modes. This runs AFTER every
+        // world's common update, so the session world's locomotion/physics has already moved the
+        // user root/head this frame; the camera rig is placed from that same post-move pose right
+        // after the engine's late update, and our slot flush to the render tree happens after this
+        // call in the same frame. Desktop reads the live head to stay screen-locked; VR pins the
+        // panel to the same fresh head pose the tracking origin is aligned from. VR used to do this
+        // in OnCommonUpdate, which reads a one-frame-stale head (userspace updates before the
+        // session world) and made the dash trail/bob while walking. Pointer hit-testing is
+        // unaffected: at cast time (next common update) the surface pose and the pointer rig pose
+        // both come from this same late phase, so they stay consistent with each other. -xlinka
         if (!IsOpen.Value)
             return;
 
         var input = Engine.Current?.InputInterface;
-        if (input != null && !input.VR_Active)
+        bool vr = input?.VR_Active ?? false;
+
+        if (!vr)
+        {
             PositionDesktopProjection(input);
+            return;
+        }
+
+        // Locked: pin the panel in front of the view every frame.
+        // Freeform: leave it where it was placed; snap it back in front once
+        // at the moment freeform is switched on so it stays within reach.
+        bool freeform = Freeform.Value;
+        if (!freeform)
+        {
+            if (FollowViewWhileOpen.Value)
+                PositionInFrontOfFocusedView();
+        }
+        else if (!_lastFreeform)
+        {
+            PositionInFrontOfFocusedView();
+        }
+        _lastFreeform = freeform;
     }
 
     // Fit the flat surface to the window: place it ahead of the camera and scale
@@ -335,7 +347,7 @@ public class UserspaceDashboard : UIComponent
         else Open();
     }
 
-    /// <summary>Freeform places the panel and leaves it; locked keeps it pinned in front of the view (VR only).</summary>
+    // freeform places the panel and leaves it; locked keeps it pinned in front of the view (VR only)
     public void SetFreeform(bool value) => Freeform.Value = value;
 
     public void ToggleFreeform() => Freeform.Value = !Freeform.Value;

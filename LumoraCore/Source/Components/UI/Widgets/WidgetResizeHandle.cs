@@ -35,7 +35,7 @@ public class WidgetResizeHandle : InteractionElement
         if (grid == null || widget == null || !grid.EditMode.Value)
             return;
 
-        var (col, row) = grid.CellAt(context.LocalPoint);
+        var (col, row) = grid.CellAt(context.PointIn(grid.Slot));
         grid.PreviewResize(widget, col, row);
     }
 
@@ -48,7 +48,7 @@ public class WidgetResizeHandle : InteractionElement
             return;
 
         // The cell under the cursor is the widget's new bottom-right corner.
-        var (col, row) = grid.CellAt(context.LocalPoint);
+        var (col, row) = grid.CellAt(context.PointIn(grid.Slot));
         grid.ResizeTo(widget, col, row);
     }
 }

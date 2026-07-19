@@ -31,7 +31,8 @@ public class WidgetDragHandle : InteractionElement
         var gridRect = grid.RectTransform?.LocalComputeRect;
         if (gridRect == null)
             return false;
-        return context.LocalPoint.y < gridRect.Value.yMin - grid.EffectiveCellSize.y;
+        // Grid space (PointIn), not raw canvas space - the widget bar can itself sit in a scrolled panel.
+        return context.PointIn(grid.Slot).y < gridRect.Value.yMin - grid.EffectiveCellSize.y;
     }
 
     // During the drag, PREVIEW the destination (a green/red cell highlight) instead of moving
@@ -49,7 +50,7 @@ public class WidgetDragHandle : InteractionElement
             return;
         }
 
-        var (col, row) = grid.CellAt(context.LocalPoint);
+        var (col, row) = grid.CellAt(context.PointIn(grid.Slot));
         grid.PreviewPlacement(widget, col, row);
     }
 
@@ -68,7 +69,7 @@ public class WidgetDragHandle : InteractionElement
         }
 
         // Collision-aware: snaps to the cell under the cursor, dodging/shrinking to avoid overlap.
-        var (col, row) = grid.CellAt(context.LocalPoint);
+        var (col, row) = grid.CellAt(context.PointIn(grid.Slot));
         grid.TryPlace(widget, col, row);
     }
 }

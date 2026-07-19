@@ -8,11 +8,9 @@ using LumoraWorld = Lumora.Core.World;
 
 namespace Lumora.Source.Godot.Bootstrap;
 
-/// <summary>
-/// Discord Rich Presence: tells your friends which world you're in (name, mode, head-count) and lets
-/// them Ask-to-Join public ones. Fails soft - no app ID or no Discord running and it just shrugs,
-/// logs once, and gets on with its day.
-/// </summary>
+// Discord Rich Presence: tells your friends which world you're in (name, mode, head-count) and lets
+// them Ask-to-Join public ones. Fails soft - no app ID or no Discord running and it just shrugs,
+// logs once, and gets on with its day.
 public static class DiscordManager
 {
     // LumoraVR's Discord application (discord.com/developers). Empty string = presence is off.
@@ -24,8 +22,8 @@ public static class DiscordManager
     private const string PublicIconKey = "status_public";
     private const string PrivateIconKey = "status_private";
 
-    /// <summary>Raised on the main thread (via <see cref="Poll"/>) with the session URI to connect to
-    /// when a friend joins / their Ask-to-Join is accepted. The bootstrap layer wires this to the join path.</summary>
+    // Raised on the main thread (via Poll) with the session URI to connect to when a friend joins /
+    // their Ask-to-Join is accepted. The bootstrap layer wires this to the join path.
     public static Action<Uri>? JoinRequested;
 
     private static DiscordRpcClient? _client;
@@ -70,7 +68,7 @@ public static class DiscordManager
         }
     }
 
-    /// <summary>Pump the client's event queue (ready/error/join callbacks). Call from the update loop.</summary>
+    // call from the update loop
     public static void Poll()
     {
         if (_client != null && !_client.IsDisposed)
@@ -101,10 +99,7 @@ public static class DiscordManager
         _client?.Respond(args, true);
     }
 
-    /// <summary>
-    /// Push presence for the focused world. De-duped: only re-sends when the resulting state actually
-    /// changes, so it's cheap to call every frame/tick.
-    /// </summary>
+    // de-duped: only re-sends when the resulting state actually changes, so it's cheap every frame/tick
     public static void UpdatePresence(LumoraWorld? world)
     {
         if (_client == null || _client.IsDisposed)
@@ -148,8 +143,8 @@ public static class DiscordManager
         var mode = world.Mode;
         string modeLabel = mode switch
         {
-            Lumora.Core.WorldMode.Social => "Social",
-            Lumora.Core.WorldMode.Event => "Event",
+            Lumora.Warden.WorldMode.Social => "Social",
+            Lumora.Warden.WorldMode.Event => "Event",
             _ => "Builder",
         };
         int users = world.UserCount;

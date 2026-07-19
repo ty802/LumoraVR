@@ -303,7 +303,9 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
             ui.NestOut();
             ui.NestOut();
 
-            var scroll = ui.ScrollRect(out var scrollContent, new float2(1f, 1f), new color(0.045f, 0.060f, 0.080f, 0.90f));
+            // Opt out of auto-fit: this validation panel sets an explicit oversized content height below
+            // (ConfigureScrollContent) to demonstrate clipping, so it manages its own content rect. -xlinka
+            var scroll = ui.ScrollRect(out var scrollContent, new float2(1f, 1f), new color(0.045f, 0.060f, 0.080f, 0.90f), fitVertical: false);
             Fill(scroll.RectTransform!);
             SetLayoutHeight(scroll.RectTransform!, 150f, 190f, 1f);
             const float scrollContentHeight = 260f;

@@ -7,15 +7,13 @@ using Helio.UI.Layout;
 using Lumora.Core.Math;
 using Lumora.Core.Networking.Session;
 using Lumora.Core.Templates;
+using Lumora.Nexus.Cloud;
 
 namespace Lumora.Core.Components.UI;
 
-/// <summary>
-/// Dashboard Home screen: a widget grid of quick actions and toggles. Each item is
-/// a widget placed by grid cell; turning on Edit Widgets reveals the grid lines and
-/// lets you drag them. "Create New World" is a widget that opens a menu overlay on
-/// click and closes it once you host.
-/// </summary>
+// widget grid of quick actions and toggles. each item is a widget placed by grid cell; turning on
+// Edit Widgets reveals the grid lines and lets you drag them. "Create New World" is a widget that
+// opens a menu overlay on click and closes it once you host.
 public sealed class HomeScreen : WidgetScreen
 {
     private static readonly color CreateFill = new color(0.28f, 0.60f, 0.40f, 0.95f);
@@ -179,7 +177,7 @@ public sealed class HomeScreen : WidgetScreen
             // Dismiss only when the click lands OUTSIDE the dialog panel, so clicks on the panel or
             // its rows never close it even if the full-screen backdrop catches the hit.
             var panelRect = _createOverlay?.GetComponent<RectTransform>()?.LocalComputeRect;
-            bool inside = panelRect.HasValue && panelRect.Value.Contains(ctx.LocalPoint);
+            bool inside = panelRect.HasValue && panelRect.Value.Contains(ctx.PointIn(_createOverlay));
             if (inside)
                 return;
             CloseCreateMenu();

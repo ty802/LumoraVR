@@ -7,18 +7,16 @@ using System.Linq;
 using System.Threading.Tasks;
 using Helio.UI;
 using Helio.UI.Layout;
-using Lumora.CDN;
+using Lumora.Nexus.Cloud.Cdn;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.UI;
 
-/// <summary>
-/// Dashboard "Groups" screen. A two-view cloud page: a list of groups (yours, or a public browse) and a
-/// detail page for one group with its info, members, pending join requests and the membership/role actions.
-/// Everything talks to the account service through <see cref="Engine.CDNClient"/>; results are marshalled back
-/// onto the world update thread before touching the UI tree. The whole screen rebuilds from in-memory state so
-/// there's no per-widget diffing to keep straight. -xlinka
-/// </summary>
+// Dashboard "Groups" screen. A two-view cloud page: a list of groups (yours, or a public browse) and a
+// detail page for one group with its info, members, pending join requests and the membership/role actions.
+// Everything talks to the account service through Engine.CDNClient; results are marshalled back
+// onto the world update thread before touching the UI tree. The whole screen rebuilds from in-memory state so
+// there's no per-widget diffing to keep straight. -xlinka
 public sealed class GroupsScreen : WidgetScreen, IDashboardKeyInput
 {
     private static readonly color JoinFill = new color(0.28f, 0.60f, 0.40f, 0.95f);
@@ -224,7 +222,6 @@ public sealed class GroupsScreen : WidgetScreen, IDashboardKeyInput
         if (!string.IsNullOrWhiteSpace(group.Description))
             AddInfoRow(root, group.Description);
 
-        // Facts pills.
         var facts = BeginRow(root, "Facts");
         var fb = RowBuilder(facts);
         fb.MinWidth(40f).FlexibleWidth(1f);
@@ -235,13 +232,11 @@ public sealed class GroupsScreen : WidgetScreen, IDashboardKeyInput
         if (!string.IsNullOrEmpty(group.StorageStatus))
             AddPill(facts, group.StorageStatus!, StorageStatusColor(group.StorageStatus!), 86f);
 
-        // Spell out what a lapsed-owner storage state means.
         if (group.StorageStatus == "Grace")
             AddInfoRow(root, $"The owner's support has lapsed. Group storage stays usable until {ShortDate(group.StorageLockAt)}, then it locks.", new color(0.95f, 0.78f, 0.35f, 1f));
         else if (group.StorageStatus == "Locked")
             AddInfoRow(root, "Group storage is locked: the owner's support lapsed, so no new uploads. Existing content stays and the lock lifts if the owner resubscribes.", ErrorText);
 
-        // Membership actions.
         var actions = BeginRow(root, "Actions");
         var ab = RowBuilder(actions);
         ab.MinWidth(40f).FlexibleWidth(1f);
@@ -273,7 +268,6 @@ public sealed class GroupsScreen : WidgetScreen, IDashboardKeyInput
                 RequestRow(root, group.Id, req);
         }
 
-        // Members.
         AddSectionRow(root, $"Members ({_members.Count})");
         if (_members.Count == 0)
             AddInfoRow(root, "No members listed.");

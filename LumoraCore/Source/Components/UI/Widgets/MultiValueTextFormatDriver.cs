@@ -11,9 +11,10 @@ public class MultiValueTextFormatDriver : Component
 {
     public readonly SyncRefList<IField> Sources;
     public readonly Sync<string> Format;
-    public readonly SyncRef<IField<string>> Target;
+    // Target and drive are one member: pointing this at a string field is what establishes the drive,
+    // on every peer and after a load.
+    public readonly FieldDrive<string> Target;
 
-    private FieldDrive<string>? _drive;
     private IField<string>? _linkedTarget;
     private object?[] _args = Array.Empty<object?>();
     private object?[] _lastArgs = Array.Empty<object?>();
@@ -24,21 +25,7 @@ public class MultiValueTextFormatDriver : Component
     {
         Sources = new SyncRefList<IField>(this);
         Format = new Sync<string>(this, "{0}");
-        Target = new SyncRef<IField<string>>(this);
-    }
-
-    public override void OnAwake()
-    {
-        base.OnAwake();
-        _drive = new FieldDrive<string>(World);
-    }
-
-    public override void OnDestroy()
-    {
-        _drive?.Release();
-        _drive = null;
-        _linkedTarget = null;
-        base.OnDestroy();
+        Target = new FieldDrive<string>(this);
     }
 
     // SyncRefList only relays membership changes, not value changes on the referenced
@@ -47,7 +34,17 @@ public class MultiValueTextFormatDriver : Component
     public override void OnCommonUpdate()
     {
         base.OnCommonUpdate();
-        if (!EnsureDrive())
+
+        // A retarget invalidates the cached result so the new field gets written even when the format
+        // output happens to be unchanged.
+        var linked = Target.Target;
+        if (!ReferenceEquals(linked, _linkedTarget))
+        {
+            _linkedTarget = linked;
+            _lastResult = null;
+        }
+
+        if (!Target.IsLinkValid)
             return;
 
         int n = Sources.Count;
@@ -87,28 +84,7 @@ public class MultiValueTextFormatDriver : Component
         if (!string.Equals(result, _lastResult, StringComparison.Ordinal))
         {
             _lastResult = result;
-            _drive!.SetValue(result);
+            Target.SetValue(result);
         }
-    }
-
-    private bool EnsureDrive()
-    {
-        if (_drive == null)
-            return false;
-
-        var target = Target.Target;
-        if (ReferenceEquals(target, _linkedTarget))
-            return _drive.IsLinkValid;
-
-        _drive.ReleaseLink();
-        _linkedTarget = null;
-        _lastResult = null;
-
-        if (target == null)
-            return false;
-
-        _drive.DriveTarget(target);
-        _linkedTarget = target;
-        return _drive.IsLinkValid;
     }
 }

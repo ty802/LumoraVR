@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Helio.UI;
@@ -7,10 +7,8 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.UI;
 
-/// <summary>
-/// Dashboard "Inventory" screen: lists saved items (grabbed objects saved via "Save to Inventory")
-/// and spawns them back into the focused world in front of the user. Backed by <see cref="Inventory"/>.
-/// </summary>
+// lists saved items (grabbed objects saved via "Save to Inventory") and spawns them back into the
+// focused world in front of the user. backed by Inventory.
 public sealed class InventoryScreen : WidgetScreen
 {
     private static readonly color SpawnFill = new color(0.28f, 0.60f, 0.40f, 0.95f);
@@ -96,7 +94,9 @@ public sealed class InventoryScreen : WidgetScreen
             ? userRoot.HeadPosition + userRoot.HeadRotation * (float3.Backward * 1.0f)
             : new float3(0f, 1f, 0f);
 
-        Inventory.SpawnItem(world, path, position);
+        var spawned = Inventory.SpawnItem(world, path, position);
+        if (spawned != null)
+            InspectorUndo.Record(world, SlotExistenceUndoBatch.Created(world, new[] { spawned }, "Spawn Item"));
     }
 
     private void AddInfoRow(Slot parent, string text)

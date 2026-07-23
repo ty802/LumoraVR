@@ -10,21 +10,13 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Mesh-shaped collider. Uses the referenced mesh for collision geometry.
-/// Maps to Godot's ConcavePolygonShape3D (or ConvexPolygonShape3D if Convex is true).
-/// </summary>
+// maps to Godot's ConcavePolygonShape3D, or ConvexPolygonShape3D when Convex is true
 [ComponentCategory("Physics/Colliders")]
 public class MeshCollider : Collider
 {
-    /// <summary>
-    /// Reference to the mesh component to use for collision.
-    /// </summary>
     public readonly SyncRef<Component> Mesh;
 
-    /// <summary>
-    /// If true, uses convex hull instead of concave mesh (better performance, less accurate).
-    /// </summary>
+    // convex hull: better performance, less accurate
     public readonly Sync<bool> Convex;
 
     public MeshCollider()

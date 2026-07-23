@@ -11,11 +11,6 @@ using LumoraRigidBody = Lumora.Core.Components.RigidBody;
 
 namespace Lumora.Godot.Hooks;
 
-/// <summary>
-/// Hook for RigidBody component -> Godot RigidBody3D.
-/// Syncs physics simulation back to the Lumora slot transform.
-/// Uses colliders on the same slot for collision shapes.
-/// </summary>
 [ImplementableHook(typeof(LumoraRigidBody))]
 public class RigidBodyHook : ComponentHook<LumoraRigidBody>
 {
@@ -52,7 +47,6 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
             _rigidBody.SetMeta("LumoraSlotRef", Owner.Slot.ReferenceID.ToDecimalString());
         }
 
-        // Enable contact monitoring
         _rigidBody.ContactMonitor = true;
         _rigidBody.MaxContactsReported = 4;
         _rigidBody.ContinuousCd = true;
@@ -93,7 +87,6 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
             _pendingWorldRootReparent = true;
         }
 
-        // Set initial transform - use CallDeferred if not in tree yet
         if (_rigidBody.IsInsideTree())
         {
             SetInitialTransform();
@@ -258,7 +251,6 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
             var slotPos = Owner.Slot.GlobalPosition;
             _rigidBody.GlobalPosition = new Vector3(slotPos.x, slotPos.y, slotPos.z);
 
-            // Now unfreeze to start physics simulation
             if (!Owner.IsKinematic.Value)
             {
                 _rigidBody.Freeze = false;
@@ -272,7 +264,6 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
             AddCollidersFromSlot();
         }
 
-        // Update physics properties
         _rigidBody.Mass = Owner.Mass.Value;
         _rigidBody.GravityScale = Owner.UseGravity.Value ? 1f : 0f;
         _rigidBody.LinearDamp = Owner.LinearDamping.Value;
@@ -294,7 +285,6 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
             }
         }
 
-        // Apply pending forces
         if (Owner.PendingForce != float3.Zero)
         {
             _rigidBody.ApplyCentralForce(new Vector3(
@@ -335,16 +325,13 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
                 _rigidBody.AngularVelocity = av.Normalized() * MaxAngularSpeed;
         }
 
-        // Sync physics state back to component
         Owner.IsSleeping = _rigidBody.Sleeping;
 
-        // Sync velocity from physics
         var linVel = _rigidBody.LinearVelocity;
         var angVel = _rigidBody.AngularVelocity;
         Owner.LinearVelocity.Value = new float3(linVel.X, linVel.Y, linVel.Z);
         Owner.AngularVelocity.Value = new float3(angVel.X, angVel.Y, angVel.Z);
 
-        // Sync physics transform back to Lumora slot
         SyncTransformToSlot();
     }
 

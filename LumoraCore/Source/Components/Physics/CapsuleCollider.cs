@@ -8,9 +8,6 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Capsule-shaped collider (cylinder with hemispherical ends).
-/// </summary>
 [ComponentCategory("Physics/Colliders")]
 public class CapsuleCollider : Collider
 {
@@ -19,10 +16,7 @@ public class CapsuleCollider : Collider
     public readonly Sync<float> Height;
     public readonly Sync<float> Radius;
 
-    /// <summary>
-    /// Cylinder length (excluding the spherical caps).
-    /// Height = Length + (Radius * 2)
-    /// </summary>
+    // Height = Length + (Radius * 2)
     public float Length
     {
         get => System.Math.Max(0f, Height.Value - Radius.Value * 2f);

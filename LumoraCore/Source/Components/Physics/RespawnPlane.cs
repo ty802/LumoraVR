@@ -6,52 +6,24 @@ using Lumora.Core.Networking.Sync;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// A plane collider that respawns objects and teleports users back to spawn when they fall through.
-/// Objects are returned to their original position, users are teleported to the spawn point.
-/// </summary>
 [ComponentCategory("Physics")]
 public class RespawnPlane : ImplementableComponent
 {
-    /// <summary>
-    /// Size of the respawn plane (X and Z dimensions).
-    /// </summary>
+    // X/Z dimensions
     public readonly Sync<float2> Size = null!;
 
-    /// <summary>
-    /// Whether to enforce X/Z bounds when checking the respawn plane.
-    /// </summary>
     public readonly Sync<bool> UseBounds = null!;
 
-    /// <summary>
-    /// Height of the respawn plane relative to the parent slot.
-    /// </summary>
     public readonly Sync<float> Height = null!;
 
-    /// <summary>
-    /// Visual color for the respawn plane.
-    /// </summary>
     public readonly Sync<color> VisualColor = null!;
 
-    /// <summary>
-    /// Debug line color for the respawn bounds.
-    /// </summary>
     public readonly Sync<color> DebugColor = null!;
 
-    /// <summary>
-    /// Whether to render the respawn plane visual.
-    /// </summary>
     public readonly Sync<bool> ShowVisual = null!;
 
-    /// <summary>
-    /// Whether to render the respawn bounds debug lines.
-    /// </summary>
     public readonly Sync<bool> ShowDebug = null!;
 
-    /// <summary>
-    /// Position to teleport users to when they hit the plane.
-    /// If not set, uses the world's spawn point.
-    /// </summary>
     public readonly Sync<float3> UserRespawnPosition = null!;
 
     public override void OnAwake()
@@ -100,33 +72,26 @@ public class RespawnPlane : ImplementableComponent
         }
     }
 
-    /// <summary>
-    /// Called by the hook when an object enters the respawn plane.
-    /// </summary>
+    // called by the hook when an object enters the plane
     public void OnObjectEntered(Slot objectSlot)
     {
         if (objectSlot == null || objectSlot.IsDestroyed) return;
 
-        // Check if this is a user
         var userRoot = objectSlot.GetComponentInParents<UserRoot>();
         if (userRoot != null)
         {
-            // Teleport user to spawn position
             var spawnPos = UserRespawnPosition.Value;
             userRoot.Slot.GlobalPosition = spawnPos;
             Logging.Logger.Log($"RespawnPlane: Teleported user '{userRoot.ActiveUser?.UserName?.Value ?? "Unknown"}' to spawn");
             return;
         }
 
-        // Check if object has a stored original position
         var respawnData = objectSlot.GetComponent<RespawnData>();
         if (respawnData != null)
         {
-            // Reset to original position
             objectSlot.GlobalPosition = respawnData.OriginalPosition.Value;
             objectSlot.GlobalRotation = respawnData.OriginalRotation.Value;
 
-            // Reset velocity if it has a RigidBody
             var rigidBody = objectSlot.GetComponent<RigidBody>();
             if (rigidBody != null)
             {
@@ -139,10 +104,7 @@ public class RespawnPlane : ImplementableComponent
     }
 }
 
-/// <summary>
-/// Stores the original spawn position/rotation for respawning.
-/// Attach this to objects that should respawn when hitting the RespawnPlane.
-/// </summary>
+// attach to objects that should respawn when hitting the RespawnPlane
 [ComponentCategory("Physics")]
 public class RespawnData : Component
 {
@@ -154,9 +116,6 @@ public class RespawnData : Component
         base.OnAwake();
     }
 
-    /// <summary>
-    /// Store the current position as the respawn position.
-    /// </summary>
     public void StoreCurrentPosition()
     {
         OriginalPosition.Value = Slot.GlobalPosition;

@@ -8,9 +8,6 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Box-shaped collider (rectangular prism).
-/// </summary>
 [ComponentCategory("Physics/Colliders")]
 public class BoxCollider : Collider
 {
@@ -36,7 +33,6 @@ public class BoxCollider : Collider
 
     public override BoundingBox GetLocalBounds()
     {
-        // Box is exactly its half-extents around Offset.
         var half = Size.Value * 0.5f;
         return new BoundingBox(Offset.Value - half, Offset.Value + half);
     }

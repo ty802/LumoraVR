@@ -9,11 +9,7 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Physics-based character controller for user movement.
-/// Implements IColliderOwner pattern for collision management.
-/// Physics behaviour is delegated to ICharacterControllerHook (e.g. CharacterControllerHook in LumoraGodot).
-/// </summary>
+// physics behavior delegated to ICharacterControllerHook (e.g. CharacterControllerHook in LumoraGodot)
 // EARLY update order: the character steps (and moves the user root) BEFORE the component pass, right
 // after device tracking lands. Everything that bakes a WORLD-space value during its update - the laser
 // hold point, laser cursor, IK solves, nameplate followers - then computes against the post-move root.

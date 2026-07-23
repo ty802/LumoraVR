@@ -12,12 +12,9 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Godot.Hooks
 {
-    /// <summary>
-    /// Shared hook for BoxCollider, CapsuleCollider, and SphereCollider -> Godot physics bodies.
-    /// Creates a StaticBody3D or RigidBody3D with a CollisionShape3D and keeps it synced to the slot.
-    /// CharacterController colliders are handled separately by CharacterControllerHook.
-    /// </summary>
-    [ImplementableHook(typeof(BoxCollider), typeof(CapsuleCollider), typeof(SphereCollider), typeof(CylinderCollider), typeof(Lumora.Core.Components.MeshCollider), typeof(ConeCollider), typeof(TriangleCollider))]
+    // Creates a StaticBody3D or RigidBody3D with a CollisionShape3D and keeps it synced to the slot.
+    // CharacterController colliders are handled separately by CharacterControllerHook.
+    [ImplementableHook(typeof(BoxCollider), typeof(CapsuleCollider), typeof(SphereCollider), typeof(CylinderCollider), typeof(Lumora.Core.Components.MeshCollider), typeof(ConeCollider), typeof(TriangleCollider), typeof(ConvexHullCollider))]
     public class PhysicsColliderHook : ComponentHook<Collider>
     {
         private Node3D _bodyNode = null!;
@@ -35,6 +32,12 @@ namespace Lumora.Godot.Hooks
         private int _meshBakeIndexCount;
         private Vector3 _meshBakeScale;
         private bool _meshBakeConvex;
+
+        // Hull-shape bake key. The hull itself is solved engine-side and cached there, so all this
+        // side tracks is which version of it was uploaded and at what scale.
+        private int _hullBakeVersion = -1;
+        private int _hullBakePointCount = -1;
+        private Vector3 _hullBakeScale;
 
         public override void Initialize()
         {
@@ -72,7 +75,6 @@ namespace Lumora.Godot.Hooks
                 // Don't return - continue to apply any pending changes
             }
 
-            // Recreate body if dynamic/static state changed
             bool shouldBeDynamic = Owner.Mass.Value > 0.0001f && Owner.Type.Value != ColliderType.Static;
             if (shouldBeDynamic != _isDynamic)
             {
@@ -81,10 +83,8 @@ namespace Lumora.Godot.Hooks
                 BuildShape();
             }
 
-            // Update shape parameters
             BuildShape();
 
-            // Sync transform from slot
             UpdateTransform();
 
             // Enable/disable collision, scoped to this world's collision bit so bodies in different
@@ -215,6 +215,9 @@ namespace Lumora.Godot.Hooks
                 case Lumora.Core.Components.MeshCollider meshCollider:
                     BuildMeshShape(meshCollider);
                     break;
+                case ConvexHullCollider hullCollider:
+                    BuildConvexHullShape(hullCollider);
+                    break;
                 case ConeCollider cone:
                     // Godot has no cone primitive: convex hull of the base ring + apex.
                     _shape = BuildConeShape(cone.Radius.Value, cone.Height.Value);
@@ -229,11 +232,9 @@ namespace Lumora.Godot.Hooks
                     return;
             }
 
-            // Apply offset
             var offset = Owner.Offset.Value;
             _collisionShape.Position = new Vector3(offset.x, offset.y, offset.z);
 
-            // Update debug visualization
             if (ShouldShowDebugForCollider())
             {
                 UpdateDebugVisualization();
@@ -355,9 +356,55 @@ namespace Lumora.Godot.Hooks
             LumoraLogger.Log($"PhysicsColliderHook: Built {(convex ? "convex" : "trimesh")} collision for '{Owner.Slot.SlotName.Value}' ({vertexCount} verts)");
         }
 
+        // Points only. The hull is solved in the component so every peer collides against the same
+        // shape; this side just scales the result into the body's space and uploads it. The slot's
+        // global scale is baked into the points because the physics body deliberately never inherits
+        // scale, and the Collider base re-applies on WorldTransformChanged, so a rescale lands here and
+        // the bake key catches it. Missing points are NOT an error: an asset-backed source decodes
+        // async and the component polls until it lands.
+        private void BuildConvexHullShape(ConvexHullCollider hullCollider)
+        {
+            var hull = hullCollider.GetHullPoints();
+            if (hull.Count < 4)
+            {
+                // Under four points there is no volume to collide with. Leaving the previous shape in
+                // place would be worse than having none, so drop it.
+                if (_shape != null)
+                {
+                    _shape = null!;
+                    _collisionShape.Shape = null;
+                    _hullBakeVersion = -1;
+                    _hullBakePointCount = -1;
+                }
+                return;
+            }
+
+            var gs = Owner.Slot.GlobalScale;
+            var scale = new Vector3(gs.x, gs.y, gs.z);
+
+            if (_shape != null
+                && _hullBakeVersion == hullCollider.HullVersion
+                && _hullBakePointCount == hull.Count
+                && _hullBakeScale == scale)
+                return;
+
+            var points = new Vector3[hull.Count];
+            for (int i = 0; i < hull.Count; i++)
+            {
+                var p = hull[i];
+                points[i] = new Vector3(p.x * scale.X, p.y * scale.Y, p.z * scale.Z);
+            }
+
+            _shape = new ConvexPolygonShape3D { Points = points };
+            _collisionShape.Shape = _shape;
+            _hullBakeVersion = hullCollider.HullVersion;
+            _hullBakePointCount = hull.Count;
+            _hullBakeScale = scale;
+            LumoraLogger.Log($"PhysicsColliderHook: Built convex hull collision for '{Owner.Slot.SlotName.Value}' ({hull.Count} hull points, {hullCollider.LastResult})");
+        }
+
         private void UpdateDebugVisualization()
         {
-            // Remove old debug mesh
             if (_debugMesh != null && GodotObject.IsInstanceValid(_debugMesh))
             {
                 _debugMesh.QueueFree();
@@ -369,11 +416,9 @@ namespace Lumora.Godot.Hooks
 
             bool isImageCollider = IsImageCollider();
 
-            // Create wireframe debug mesh based on collider type
             _debugMesh = new MeshInstance3D();
             _debugMesh.Name = "DebugCollider";
 
-            // Create blue wireframe material
             var material = new StandardMaterial3D();
             material.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
             material.AlbedoColor = new Color(0.2f, 0.5f, 1.0f, 0.8f); // Blue
@@ -394,7 +439,6 @@ namespace Lumora.Godot.Hooks
                         var boxMesh = new BoxMesh();
                         boxMesh.Size = new Vector3(boxSize.x, boxSize.y, boxSize.z);
                         _debugMesh.Mesh = boxMesh;
-                        // Use wireframe by setting material to show edges
                         material.AlbedoColor = new Color(0.2f, 0.5f, 1.0f, 0.3f);
                     }
                     break;
@@ -426,7 +470,6 @@ namespace Lumora.Godot.Hooks
 
             _debugMesh.MaterialOverride = material;
 
-            // Position at collider offset
             var offset = Owner.Offset.Value;
             _debugMesh.Position = new Vector3(offset.x, offset.y, offset.z);
 

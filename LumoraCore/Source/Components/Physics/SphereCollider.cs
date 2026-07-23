@@ -8,9 +8,6 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Sphere-shaped collider.
-/// </summary>
 [ComponentCategory("Physics/Colliders")]
 public class SphereCollider : Collider
 {

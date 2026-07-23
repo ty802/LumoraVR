@@ -7,43 +7,32 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Rigid body physics component.
-/// Enables physics simulation on a slot - responds to forces, gravity, and collisions.
-/// Requires a Collider component on the same slot to define the collision shape.
-/// </summary>
+// requires a Collider component on the same slot to define the collision shape
 [ComponentCategory("Physics")]
 public class RigidBody : ImplementableComponent
 {
     // SYNC FIELDS
 
-    /// <summary>Mass in kilograms</summary>
+    // kilograms
     public readonly Sync<float> Mass;
 
-    /// <summary>Linear velocity</summary>
     public readonly Sync<float3> LinearVelocity;
 
-    /// <summary>Angular velocity (radians per second)</summary>
+    // radians per second
     public readonly Sync<float3> AngularVelocity;
 
-    /// <summary>Whether gravity affects this body</summary>
     public readonly Sync<bool> UseGravity;
 
-    /// <summary>Whether the body is kinematic (driven by animation, not physics)</summary>
     public readonly Sync<bool> IsKinematic;
 
-    /// <summary>Linear damping (drag)</summary>
     public readonly Sync<float> LinearDamping;
 
-    /// <summary>Angular damping</summary>
     public readonly Sync<float> AngularDamping;
 
-    /// <summary>Freeze position on specific axes</summary>
     public readonly Sync<bool> FreezePositionX;
     public readonly Sync<bool> FreezePositionY;
     public readonly Sync<bool> FreezePositionZ;
 
-    /// <summary>Freeze rotation on specific axes</summary>
     public readonly Sync<bool> FreezeRotationX;
     public readonly Sync<bool> FreezeRotationY;
     public readonly Sync<bool> FreezeRotationZ;
@@ -56,10 +45,10 @@ public class RigidBody : ImplementableComponent
     // the owner writes, not these. If a future need requires them network-wide, promote to Sync fields the
     // owner writes. -xlinka
 
-    /// <summary>Whether the body is sleeping (not moving). Owner-local; only valid on the simulating peer.</summary>
+    // owner-local; only valid on the simulating peer
     public bool IsSleeping { get; set; }
 
-    /// <summary>Whether the body is colliding with something. Owner-local; only valid on the simulating peer.</summary>
+    // owner-local; only valid on the simulating peer
     public bool IsColliding { get; set; }
 
     // INITIALIZATION
@@ -104,13 +93,9 @@ public class RigidBody : ImplementableComponent
 
     // AUTHORITY
 
-    /// <summary>
-    /// Whether THIS peer owns the simulation of this body. Exactly one peer integrates forces and replicates
-    /// the resulting pose/velocity; every other peer follows that replicated transform instead of running its
-    /// own divergent sim. Ownership is host-authoritative: a body parented under a user's root belongs to that
-    /// user's peer; everything else is world content owned by the world authority (host). A body under a REMOTE
-    /// user's root is owned by them, not us.
-    /// </summary>
+    // exactly one peer integrates forces and replicates pose/velocity; everyone else follows that
+    // replicated transform. host-authoritative: a body under a user's root belongs to that user's peer,
+    // everything else belongs to the world authority (host)
     public bool IsSimulationOwner
     {
         get
@@ -160,9 +145,7 @@ public class RigidBody : ImplementableComponent
 
     // FORCE METHODS
 
-    /// <summary>
-    /// Apply a force at the center of mass. No-op on a non-owner (forces are integrated only by the simulating peer).
-    /// </summary>
+    // no-op on a non-owner; forces are integrated only by the simulating peer
     public void AddForce(float3 force)
     {
         if (!IsSimulationOwner)
@@ -170,9 +153,7 @@ public class RigidBody : ImplementableComponent
         PendingForce += force;
     }
 
-    /// <summary>
-    /// Apply an impulse at the center of mass (instantaneous velocity change). No-op on a non-owner.
-    /// </summary>
+    // instantaneous velocity change; no-op on a non-owner
     public void AddImpulse(float3 impulse)
     {
         if (!IsSimulationOwner)
@@ -180,9 +161,7 @@ public class RigidBody : ImplementableComponent
         PendingImpulse += impulse;
     }
 
-    /// <summary>
-    /// Apply torque to rotate the body. No-op on a non-owner.
-    /// </summary>
+    // no-op on a non-owner
     public void AddTorque(float3 torque)
     {
         if (!IsSimulationOwner)
@@ -195,9 +174,7 @@ public class RigidBody : ImplementableComponent
     public float3 PendingImpulse;
     public float3 PendingTorque;
 
-    /// <summary>
-    /// Clear pending forces (called by hook after applying them).
-    /// </summary>
+    // called by the hook after applying pending forces
     public void ClearPendingForces()
     {
         PendingForce = float3.Zero;

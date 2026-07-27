@@ -11,32 +11,21 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Renders a skeletal hand visualization on a tracked VR controller slot.
-///
-/// Displays sphere joints and cylinder bones driven by InputInterface body node
-/// positions each frame when hand tracking is active. The skeleton is always visible;
-/// when hand tracking is unavailable, a stable controller-relative rest pose is shown.
-///
-/// Intended usage:
-///   Attach to the same slot as a TrackedDevicePositioner.
-///   Set HandSide before the component reaches OnStart.
-/// </summary>
+// attach to the same slot as a TrackedDevicePositioner; set HandSide before the component reaches OnStart
 [ComponentCategory("XR/Visuals")]
 public sealed class ControllerHandVisual : Component
 {
     // SYNC FIELDS
 
-    /// <summary>Which hand side this visual represents.</summary>
     public readonly Sync<Chirality> HandSide = null!;
 
-    /// <summary>Radius of the sphere rendered at each finger joint, in metres.</summary>
+    // metres
     public readonly Sync<float> JointRadius = null!;
 
-    /// <summary>Radius of the cylinder rendered along each finger bone, in metres.</summary>
+    // metres
     public readonly Sync<float> BoneRadius = null!;
 
-    /// <summary>Uniform scale applied to controller-relative hand rest pose and mesh thickness.</summary>
+    // scales both the controller-relative rest pose and the mesh thickness
     public readonly Sync<float> HandScale = null!;
 
     // INNER TYPES
@@ -130,6 +119,26 @@ public sealed class ControllerHandVisual : Component
     {
         base.OnUpdate(delta);
         RefreshVisuals();
+    }
+
+    // These slots are already positioned in world space from whatever the best available source is
+    // that frame - tracked hand skeleton, or the rest pose off the controller. Anything that needs to
+    // sit ON a finger (a touch probe, say) rides this rather than re-deriving an offset off the
+    // controller and drifting away from the hand the user can actually see. -xlinka
+    public Slot? TryGetJointSlot(BodyNode node)
+    {
+        var joints = _joints;
+        if (joints == null)
+            return null;
+
+        for (int i = 0; i < joints.Count; i++)
+        {
+            if (joints[i].Node != node)
+                continue;
+            var slot = joints[i].VisualSlot;
+            return slot != null && !slot.IsDestroyed ? slot : null;
+        }
+        return null;
     }
 
     public override void OnDestroy()
@@ -387,11 +396,7 @@ public sealed class ControllerHandVisual : Component
 
     // STATIC HELPERS
 
-    /// <summary>
-    /// Returns the ordered sequence of BodyNodes for a single finger on the given side.
-    /// Thumb uses a four-node sequence (no Intermediate segment).
-    /// All other fingers use a five-node sequence.
-    /// </summary>
+    // thumb uses a four-node sequence (no Intermediate); other fingers use five
     private static BodyNode[] GetFingerNodes(FingerType finger, Chirality chirality)
     {
         FingerSegmentType[] segments = finger == FingerType.Thumb ? ThumbSegments : FingerSegments;
@@ -401,11 +406,8 @@ public sealed class ControllerHandVisual : Component
         return nodes;
     }
 
-    /// <summary>
-    /// Returns a rotation whose local Y-axis points along <paramref name="direction"/>.
-    /// CylinderMesh geometry extends along the local Y-axis, so this orients bone
-    /// cylinders correctly between two joint positions.
-    /// </summary>
+    // CylinderMesh geometry extends along local Y, so this orients bone cylinders correctly between
+    // two joint positions
     private static floatQ AlignYToDirection(float3 direction)
     {
         float len = direction.Length;

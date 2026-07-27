@@ -75,9 +75,6 @@ public class AvatarEquipManager : UserRootComponent
         Logger.Log($"AvatarEquipManager: Awake on slot '{Slot.SlotName.Value}'");
     }
 
-    /// <summary>
-    /// Push current name-tag data into every assigner under this manager.
-    /// </summary>
     public void UpdateBadges()
     {
         if (Slot == null || World?.IsAuthority != true)
@@ -176,9 +173,6 @@ public class AvatarEquipManager : UserRootComponent
         EnsureNameBadge();
     }
 
-    // Body-node dispatch equip. Walks target's IAvatarEquippable components,
-    // pairs them with the user's AvatarSockets by BodyNode + priority,
-    // calls Equip on each pair, then reparents the target tree under us.
     public bool Equip(Slot target, bool isManualEquip = false, bool forceDestroyOld = false, bool isFillingEmptySlot = false)
     {
         if (target == null || target.IsDestroyed)
@@ -205,7 +199,6 @@ public class AvatarEquipManager : UserRootComponent
         // Descending priority - Root last (it's MaxValue and reparents the rest).
         equipObjects.Sort((a, b) => -a.EquipPriority.CompareTo(b.EquipPriority));
 
-        // Collect user's body-node slots, deduping by BodyNode (one per node).
         var objectSlots = new List<AvatarSocket>();
         var seenNodes = new HashSet<BodyNode>();
         foreach (var s in userRoot.GetRegisteredComponents<AvatarSocket>())
@@ -535,8 +528,8 @@ public class AvatarEquipManager : UserRootComponent
             if (rig.HasRightFingerBones)
                 EnsureHandPoser(rig, Chirality.Right);
 
-            // Coarse body colliders so a created/equipped avatar has grab/point hitboxes (previously only
-            // the model-import path generated these). Idempotent - skips bones that already have one.
+            // Coarse body colliders so a created/equipped avatar has grab/point hitboxes on every equip
+            // path, not just model-import. Idempotent - skips bones that already have one.
             avatarIk.GenerateBodyColliders();
 
             // Face drivers (blink/eye-look/eye-expression/mouth/viseme). The in-world AvatarStudio wires

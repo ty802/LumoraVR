@@ -8,18 +8,12 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components.Avatar;
 
-/// <summary>
-/// Marks a slot in an avatar hierarchy as a specific BodyNode position.
-/// Other objects (accessories, hats, tools, held items) can equip themselves to an
-/// AvatarBodyAnchor to attach to the correct body part even after the avatar is swapped.
-/// </summary>
+// lets accessories/tools re-attach to the correct body part even after the avatar is swapped
 [ComponentCategory("Users/Avatar")]
 public class AvatarBodyAnchor : Component, IAvatarEquippable, IAvatarEquipReceiver
 {
-    /// <summary>Which body node this slot represents in the avatar.</summary>
     public readonly Sync<BodyNode> Node = new();
 
-    /// <summary>If true, destroys this slot when dequipped from an AvatarSocket.</summary>
     public readonly Sync<bool> DestroyOnDequip = new();
 
     // IAvatarEquippable state

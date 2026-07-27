@@ -10,11 +10,6 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Avatar;
 
-/// <summary>
-/// Drives an avatar hand's finger bones from an <see cref="IHandPoseSource"/>.
-/// Attached to a hand under a rigged avatar; finds its finger bones through the
-/// <see cref="HumanoidRig"/> and aims each segment toward the next.
-/// </summary>
 // Retarget approach: a convention-robust direction-aim swing rather than a
 // LookRotation-based coordinate compensation (floatQ.LookRotation returns the
 // inverse here and Godot is right-handed, so that path would invert). Each
@@ -30,21 +25,15 @@ namespace Lumora.Core.Components.Avatar;
 [ComponentCategory("Users/Avatar/Hands")]
 public class HandPoseDriver : UserRootComponent
 {
-    /// <summary>Which hand this poser drives.</summary>
     public readonly Sync<Chirality> Side = new();
 
-    /// <summary>Explicit finger source. When null, falls back to the user-root <see cref="UserHandPoseInfo"/>.</summary>
+    // falls back to the user-root UserHandPoseInfo when null
     public readonly SyncRef<IHandPoseSourceComponent> PoseSource = null!;
 
-    /// <summary>
-    /// Idle fallback source, used only when no live/explicit source is tracking this hand - e.g. an idle
-    /// <see cref="HandPosePreset"/> so a desktop hand holds a real relaxed shape instead of the authored
-    /// bind pose. Live VR finger tracking (via <see cref="PoseSource"/> / the user-root source) still wins
-    /// whenever it's actually tracking.
-    /// </summary>
+    // used only when nothing is tracking; live VR finger tracking still wins whenever it's actually tracking
     public readonly SyncRef<IHandPoseSourceComponent> IdlePose = null!;
 
-    /// <summary>Wrist bone used as the hand-root frame. Resolved from the rig when unset.</summary>
+    // resolved from the rig when unset
     public readonly SyncRef<Slot> HandRoot = null!;
 
     // The visibly-curling joints, proximal outward. Thumb has no intermediate.
@@ -64,16 +53,15 @@ public class HandPoseDriver : UserRootComponent
         FingerSegmentType.Proximal, FingerSegmentType.Intermediate, FingerSegmentType.Distal, FingerSegmentType.Tip,
     };
 
-    // One driven segment: its bone, the next node it aims at, and rest calibration.
     private sealed class SegmentDrive
     {
         public Slot Bone = null!;
         public BodyNode Node;
         public BodyNode NextNode;
         public FieldDrive<floatQ> Drive = null!;
-        public floatQ RestLocalRotation;   // bone.LocalRotation captured at rest
-        public floatQ RestRotWrist;        // bone rotation in wrist space at rest
-        public float3 RestDirWrist;        // rest direction (this -> next) in wrist space
+        public floatQ RestLocalRotation;
+        public floatQ RestRotWrist;
+        public float3 RestDirWrist;        // (this -> next)
     }
 
     private readonly List<List<SegmentDrive>> _fingers = new();
@@ -170,7 +158,6 @@ public class HandPoseDriver : UserRootComponent
     {
         var segTypes = finger == FingerType.Thumb ? ThumbSegments : FingerSegments;
 
-        // Collect the segments that actually have bones, with rest data.
         var bones = new List<(Slot bone, BodyNode node, float3 posWrist, floatQ rotWrist, floatQ local)>();
         foreach (var seg in segTypes)
         {
@@ -187,7 +174,6 @@ public class HandPoseDriver : UserRootComponent
                 bone.LocalRotation.Value));
         }
 
-        // Drive every bone that has a following node to aim at.
         var chain = new List<SegmentDrive>();
         for (int i = 0; i < bones.Count - 1; i++)
         {
@@ -198,7 +184,12 @@ public class HandPoseDriver : UserRootComponent
             if (dir.LengthSquared < 1e-10f)
                 continue;
 
-            var drive = new FieldDrive<floatQ>(World) { LocalValueOnly = true };
+            // Detached local drives, NOT members: how many finger segments exist and which bones they
+            // land on is discovered from whatever rig this peer built, so replicating the links would put
+            // every peer's rig discovery on the wire to fight over. Each peer drives its own copy of the
+            // same bones from the same replicated hand-pose source instead. -xlinka
+            var drive = FieldDrive<floatQ>.CreateLocal(this);
+            drive.LocalValueOnly = true;
             drive.DriveTarget(a.bone.LocalRotation);
 
             chain.Add(new SegmentDrive
@@ -280,7 +271,7 @@ public class HandPoseDriver : UserRootComponent
     {
         foreach (var chain in _fingers)
             foreach (var seg in chain)
-                seg.Drive?.ReleaseLink();
+                seg.Drive?.Dispose();
         _fingers.Clear();
         _assigned = false;
         _handReset = false;

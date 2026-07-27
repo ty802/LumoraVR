@@ -11,17 +11,8 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components.Avatar;
 
-/// <summary>
-/// Full-body VR IK avatar. The single IK component - owns an engine-side
-/// FABRIK solver, no platform IK dependency.
-///
-/// Responsibilities:
-/// 1. Create one proxy slot per tracked body node.
-/// 2. Equip one AvatarPoseDriver per proxy onto the matching user tracking slot.
-/// 3. Run the engine FullBodyIKSolver each frame from the proxy poses.
-/// 4. Apply authored reference offsets from the avatar creator flow.
-/// 5. Run procedural feet when foot tracking is absent.
-/// </summary>
+// owns an engine-side FABRIK solver, no platform IK dependency; proxies mirror tracked body nodes,
+// feed the solver each frame, apply authored reference offsets, and run procedural feet when tracking is absent
 [ComponentCategory("Users/Avatar")]
 [DefaultUpdateOrder(-5000)]
 public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
@@ -34,10 +25,12 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         public floatQ LocalRotation;
     }
 
+    [Group("References")]
     public readonly SyncRef<SkeletonBuilder> Skeleton = null!;
     public readonly SyncRef<HumanoidRig> Rig = null!;
     public readonly SyncRef<UserRoot> UserRoot = null!;
 
+    [Group("General")]
     public readonly Sync<float> HeightCompensation = null!;
     public readonly Sync<float> AvatarHeight = null!;
     public readonly Sync<float> UserResizeThreshold = null!;
@@ -51,8 +44,10 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     public readonly Sync<bool> ForceTpose = null!;
 
     // IK tunables - exposed so feel can be dialed in live in-world (no rebuild).
+    [Group("Solver")]
     public readonly Sync<float> SpineStiffness = null!;
     public readonly Sync<float> PelvisDamping = null!;
+    [Group("Shoulders")]
     public readonly Sync<float> ShoulderReach = null!;
     // Stronger shoulder/clavicle solve: yaw/pitch clamp half-ranges (degrees, asymmetric) + the overhead roll-up gain.
     public readonly Sync<float> ShoulderYawForward = null!; // deg the clavicle swings forward/across toward a reach
@@ -60,16 +55,20 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     public readonly Sync<float> ShoulderPitchUp = null!;    // deg it lifts up on a high reach
     public readonly Sync<float> ShoulderPitchDown = null!;  // deg it drops down
     public readonly Sync<float> ArmLift = null!;            // deg the shoulder rolls up at a fully-overhead reach
+    [Group("Arms")]
     public readonly Sync<float> ArmStretch = null!;
     public readonly Sync<float> BendGoalWeight = null!;
     public readonly Sync<float> TwistRelax = null!;
     public readonly Sync<float> WristBendInfluence = null!; // 0..1 tracked wrist roll steering the elbow pole
     public readonly Sync<float> ChestFollowHands = null!;   // 0..1 chest yaw toward tracked hands
+    [Group("Idle Motion")]
     public readonly Sync<float> IdleBreathing = null!;      // 0..2 chest breathing amount
     public readonly Sync<float> IdleSway = null!;           // 0..2 standing weight-shift sway amount
     public readonly Sync<float> WalkArmSwing = null!;       // 0..1 walking counter-swing on untracked arms
+    [Group("IK Weights")]
     public readonly Sync<float> HandIKWeight = null!;   // per-effector IK weight for both hands
     public readonly Sync<float> FootIKWeight = null!;   // per-effector IK weight for both feet
+    [Group("Gait")]
     public readonly Sync<float> FootStanceWidth = null!;
     public readonly Sync<float> StepThreshold = null!;
     public readonly Sync<float> StepDuration = null!;
@@ -83,10 +82,12 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     public readonly Sync<float> MaxStepVelocity = null!;    // m/s cap on body velocity used for step prediction
     // Horizontal body settle: the torso eases toward the centroid of the planted feet (biased to the support foot)
     // so the hips don't hover dead-centre when the feet step out to a stance. The counterpart to the vertical BodyBob.
+    [Group("Body Settle")]
     public readonly Sync<float> BodySettle = null!;         // 0..1 fraction of the foot-centroid offset the hips settle toward
     public readonly Sync<float> BodySettleSmoothTime = null!; // seconds; SmoothDamp time so the settle never pops on a step
     public readonly Sync<float> SupportLegBias = null!;     // 0..1 how far the settle leans from the foot midpoint toward the support foot
 
+    [Group("Proxies")]
     protected readonly SyncRef<Slot> _headProxy = null!;
     protected readonly SyncRef<Slot> _pelvisProxy = null!;
     protected readonly SyncRef<Slot> _chestProxy = null!;
@@ -99,6 +100,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
     protected readonly SyncRef<Slot> _leftKneeProxy = null!;
     protected readonly SyncRef<Slot> _rightKneeProxy = null!;
 
+    [Group("Pose Nodes")]
     protected readonly SyncRef<AvatarPoseDriver> _headNode = null!;
     protected readonly SyncRef<AvatarPoseDriver> _pelvisNode = null!;
     protected readonly SyncRef<AvatarPoseDriver> _chestNode = null!;
@@ -854,9 +856,6 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         return (q2 * q1).Normalized;
     }
 
-    /// <summary>
-    /// Full avatar setup using explicit skeleton and rig references.
-    /// </summary>
     public void Setup(SkeletonBuilder skeleton, HumanoidRig rig, UserRoot userRoot)
     {
         Skeleton.Target = skeleton;
@@ -871,10 +870,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         LumoraLogger.Log($"AvatarIK: Setup complete ({rig?.Bones.Count ?? 0} bones)");
     }
 
-    /// <summary>
-    /// Full avatar setup discovering skeleton and rig from the avatar tree.
-    /// An avatar is self-describing: its components ARE the metadata.
-    /// </summary>
+    // an avatar is self-describing: its components ARE the metadata
     public bool SetupFromAvatar(UserRoot userRoot)
     {
         var skeleton = Skeleton.Target ?? Slot.GetComponent<SkeletonBuilder>() ?? Slot.GetComponentInChildren<SkeletonBuilder>();
@@ -890,9 +886,6 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         return true;
     }
 
-    /// <summary>
-    /// Connect tracking by equipping our pose nodes to the local user's tracking slots.
-    /// </summary>
     public void SetupTracking(UserRoot userRoot)
     {
         if (userRoot == null)
@@ -915,12 +908,10 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
         LumoraLogger.Log($"AvatarIK: Tracking connected for UserRoot '{userRoot.Slot.SlotName.Value}'");
     }
 
-    /// <summary>
-    /// Build coarse body colliders for a worn avatar: a sphere on the head and a capsule along each limb segment
-    /// + the torso, so grab/interaction raycasts have something to hit. Idempotent-ish - skips a segment if a
-    /// "BodyCollider" child already exists on the proximal bone. Each capsule lives on a child slot oriented so
-    /// its local Y runs down the bone (the capsule shape is Y-aligned). -xlinka
-    /// </summary>
+    // Build coarse body colliders for a worn avatar: a sphere on the head and a capsule along each limb segment
+    // + the torso, so grab/interaction raycasts have something to hit. Idempotent-ish - skips a segment if a
+    // "BodyCollider" child already exists on the proximal bone. Each capsule lives on a child slot oriented so
+    // its local Y runs down the bone (the capsule shape is Y-aligned). -xlinka
     public void GenerateBodyColliders()
     {
         var rig = Rig.Target;

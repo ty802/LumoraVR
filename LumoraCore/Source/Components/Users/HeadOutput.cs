@@ -6,10 +6,7 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Creates a camera that follows the user's head.
-/// This is now an ImplementableComponent so it can have platform-specific hooks.
-/// </summary>
+// ImplementableComponent so it can carry platform-specific hooks
 [ComponentCategory("Users")]
 public class HeadOutput : ImplementableComponent
 {

@@ -26,46 +26,23 @@ namespace Lumora.Core.Components;
 [ComponentCategory("Users")]
 public class Nameplate : ImplementableComponent
 {
-    /// <summary>
-    /// Reference to the user this nameplate belongs to.
-    /// </summary>
     public readonly SyncRef<User> TargetUser = new();
 
-    /// <summary>
-    /// Username text to display.
-    /// </summary>
     public readonly Sync<string> DisplayName = new();
 
-    /// <summary>
-    /// Rim glow color based on user status.
-    /// White = normal logged in, Grey = not logged in, Colored = patreon tier.
-    /// </summary>
+    // white = normal logged in, grey = not logged in, colored = patreon tier
     public readonly Sync<color> RimColor = new();
 
-    /// <summary>
-    /// Whether the user is logged in (affects rim color).
-    /// </summary>
     public readonly Sync<bool> IsLoggedIn = new();
 
-    /// <summary>
-    /// Patreon tier color hex (e.g. "#00FF00" for Enthusiast).
-    /// Empty string means no patreon tier.
-    /// </summary>
+    // empty string means no patreon tier
     public readonly Sync<string> PatreonColorHex = new();
 
-    /// <summary>
-    /// Size of the nameplate in world units.
-    /// </summary>
+    // world units
     public readonly Sync<float2> Size = new();
 
-    /// <summary>
-    /// Vertical offset above the head slot.
-    /// </summary>
     public readonly Sync<float> HeadOffset = new();
 
-    /// <summary>
-    /// Whether the nameplate should billboard (always face camera).
-    /// </summary>
     public readonly Sync<bool> Billboard = new();
 
     // Patreon tier colors
@@ -80,14 +57,12 @@ public class Nameplate : ImplementableComponent
     {
         base.OnInit();
 
-        // Set default values
         RimColor.Value = ColorNormal;
         IsLoggedIn.Value = true;
         Size.Value = new float2(0.45f, 0.12f); // 45cm x 12cm default
         HeadOffset.Value = 0.35f; // above head, matching the live auto badge
         Billboard.Value = true;
 
-        // Subscribe to change events
         TargetUser.OnChanged += _ => UpdateFromUser();
         IsLoggedIn.OnChanged += _ => UpdateRimColor();
         PatreonColorHex.OnChanged += _ => UpdateRimColor();
@@ -98,11 +73,8 @@ public class Nameplate : ImplementableComponent
 
     private User _subscribedUser = null!;
 
-    /// <summary>
-    /// Initialize the nameplate for a specific user.
-    /// Called on authority when creating the nameplate.
-    /// Clients receive TargetUser via sync and UpdateFromUser handles subscription.
-    /// </summary>
+    // called on authority when creating the nameplate; clients receive TargetUser via sync and
+    // UpdateFromUser handles subscription
     public void Initialize(User user)
     {
         TargetUser.Target = user;
@@ -120,7 +92,6 @@ public class Nameplate : ImplementableComponent
         var user = TargetUser.Target;
         if (user == null)
         {
-            // Unsubscribe from previous user if any
             if (_subscribedUser != null)
             {
                 _subscribedUser.UserName.Changed -= OnUserNameChanged;
@@ -130,8 +101,7 @@ public class Nameplate : ImplementableComponent
             return;
         }
 
-        // Subscribe to username changes if not already subscribed
-        // This handles both Initialize() calls (authority) and sync receives (client)
+        // handles both Initialize() calls (authority) and sync receives (client)
         if (_subscribedUser != user)
         {
             if (_subscribedUser != null)
@@ -149,14 +119,12 @@ public class Nameplate : ImplementableComponent
             newName = "Unknown";
         }
 
-        // Only update and log if name actually changed
         if (DisplayName.Value != newName)
         {
             Logging.Logger.Log($"Nameplate: DisplayName changed from '{DisplayName.Value}' to '{newName}'");
             DisplayName.Value = newName;
         }
 
-        // Check login status from user
         IsLoggedIn.Value = !string.IsNullOrEmpty(user.UserID.Value);
 
         // Get patreon color from user metadata (if available)
@@ -181,21 +149,14 @@ public class Nameplate : ImplementableComponent
             return;
         }
 
-        // Parse hex color
         RimColor.Value = ParseHexColor(hexColor);
     }
 
-    /// <summary>
-    /// Set the patreon tier color directly.
-    /// </summary>
     public void SetPatreonColor(string hexColor)
     {
         PatreonColorHex.Value = hexColor ?? "";
     }
 
-    /// <summary>
-    /// Parse a hex color string to color.
-    /// </summary>
     private static color ParseHexColor(string hex)
     {
         if (string.IsNullOrEmpty(hex)) return ColorNormal;
@@ -220,7 +181,6 @@ public class Nameplate : ImplementableComponent
     {
         base.OnUpdate(delta);
 
-        // Update display name if user changes it
         var user = TargetUser.Target;
         if (user != null && DisplayName.Value != user.UserName.Value)
         {

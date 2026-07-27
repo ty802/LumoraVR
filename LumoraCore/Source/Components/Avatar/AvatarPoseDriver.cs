@@ -9,10 +9,6 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Avatar;
 
-/// <summary>
-/// Receives pose data from an AvatarSocket and drives a slot's transform.
-/// This is the component that bridges tracking data to avatar bones.
-/// </summary>
 // Equip only assigns the synced refs (_objectSlot/_source). Drive links are
 // derived from those refs in RefreshDriveLinks on EVERY peer, and the drives
 // write local-only values: each peer computes bone poses itself from the
@@ -24,51 +20,32 @@ namespace Lumora.Core.Components.Avatar;
 [DefaultUpdateOrder(-7500)]
 public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable, IInputUpdateReceiver
 {
-    /// <summary>
-    /// The body node this pose node corresponds to.
-    /// </summary>
     public readonly Sync<BodyNode> Node = new();
 
-    /// <summary>
-    /// Priority for equipping order (higher = later).
-    /// </summary>
+    // higher = later
     [OldName("EquipOrderPriority_")]
     public readonly Sync<int> EquipPriority_ = new();
 
-    /// <summary>
-    /// Whether to run the update after input update instead of before.
-    /// </summary>
     public readonly Sync<bool> RunAfterInputUpdate = new();
 
-    /// <summary>
-    /// Body nodes that cannot be equipped simultaneously.
-    /// </summary>
-    public SyncFieldList<BodyNode> ConflictingNodes_ { get; private set; } = null!;
+    public readonly SyncFieldList<BodyNode> ConflictingNodes_ = new();
 
-    /// <summary>
-    /// Output: Whether tracking is currently active.
-    /// </summary>
     public readonly Sync<bool> IsTracking = new();
 
-    /// <summary>
-    /// Output: Whether the source slot is tracking.
-    /// </summary>
     public readonly Sync<bool> SourceIsTracking = new();
 
-    /// <summary>
-    /// Output: Whether the source slot is active.
-    /// </summary>
     public readonly Sync<bool> SourceIsActive = new();
 
     // Replicated equip state. Drive links below are derived from these.
     protected readonly SyncRef<AvatarSocket> _objectSlot = null!;
     protected readonly SyncRef<Slot> _source = null!;
 
-    // Local drive links, established per-peer from the synced refs.
-    protected FieldDrive<float3> _position = null!;
-    protected FieldDrive<floatQ> _rotation = null!;
-    protected FieldDrive<float3> _scale = null!;
-    protected FieldDrive<bool> _active = null!;
+    // Drive links onto this slot's own transform. Declared members, so the link targets replicate and
+    // persist with the component; the VALUES they push stay local-only (see LocalValueOnly).
+    protected readonly FieldDrive<float3> _position = new() { LocalValueOnly = true };
+    protected readonly FieldDrive<floatQ> _rotation = new() { LocalValueOnly = true };
+    protected readonly FieldDrive<float3> _scale = new() { LocalValueOnly = true };
+    protected readonly FieldDrive<bool> _active = new() { LocalValueOnly = true };
 
     private bool _isRegistered;
 
@@ -80,32 +57,11 @@ public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable, IInputUpda
     public IEnumerable<BodyNode> ConflictingNodes => ConflictingNodes_;
     public User AllowedEquipUser { get; private set; } = null!;
 
-    /// <summary>
-    /// Whether equipped and the source is active.
-    /// </summary>
     public bool IsEquippedAndActive => IsEquipped && SourceIsActive.Value;
 
-    /// <summary>
-    /// Whether tracking and the source is active.
-    /// </summary>
     public bool IsTrackingAndActive => IsTracking.Value && SourceIsActive.Value;
 
-    /// <summary>
-    /// Whether this node can be equipped (slot position/rotation not already driven).
-    /// </summary>
     public bool CanEquip => !Slot.LocalPosition.IsDriven && !Slot.LocalRotation.IsDriven;
-
-    public override void OnAwake()
-    {
-        base.OnAwake();
-
-        ConflictingNodes_ = new SyncFieldList<BodyNode>();
-
-        _position = new FieldDrive<float3>(World) { LocalValueOnly = true };
-        _rotation = new FieldDrive<floatQ>(World) { LocalValueOnly = true };
-        _scale = new FieldDrive<float3>(World) { LocalValueOnly = true };
-        _active = new FieldDrive<bool>(World) { LocalValueOnly = true };
-    }
 
     public override void OnInit()
     {
@@ -152,9 +108,6 @@ public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable, IInputUpda
         base.OnDestroy();
     }
 
-    /// <summary>
-    /// Ensure update order is correct relative to parent AvatarPoseDrivers.
-    /// </summary>
     private void EnsureCorrectUpdateOrder(bool updateChildren = true)
     {
         var parent = Slot.Parent;
@@ -179,10 +132,7 @@ public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable, IInputUpda
         }
     }
 
-    /// <summary>
-    /// Equip this pose node to an AvatarSocket. Only assigns the synced
-    /// refs; drive links follow on every peer via OnChanges.
-    /// </summary>
+    // only assigns the synced refs; drive links follow on every peer via OnChanges
     public void Equip(AvatarSocket slot)
     {
         _objectSlot.Target = slot;
@@ -190,9 +140,6 @@ public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable, IInputUpda
         RefreshDriveLinks();
     }
 
-    /// <summary>
-    /// Dequip this pose node from its current slot.
-    /// </summary>
     public void Dequip()
     {
         _objectSlot.Target = null!;
@@ -205,30 +152,32 @@ public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable, IInputUpda
         if (Slot == null || IsDestroyed)
             return;
 
+        // Assign only where nothing named a target yet - a link restored from a save or received from a
+        // peer already points at this slot's field and must not be re-written every frame.
         if (_source?.Target != null && _objectSlot?.Target != null)
         {
-            if (!_position.IsLinkValid)
+            if (!_position.HasTarget)
                 _position.DriveTarget(Slot.LocalPosition);
-            if (!_rotation.IsLinkValid)
+            if (!_rotation.HasTarget)
                 _rotation.DriveTarget(Slot.LocalRotation);
 
             var objSlot = _objectSlot.Target;
             if (objSlot.DriveScale.Value)
             {
-                if (!_scale.IsLinkValid)
+                if (!_scale.HasTarget)
                     _scale.DriveTarget(Slot.LocalScale);
             }
-            else if (_scale.IsLinkValid)
+            else if (_scale.HasTarget)
             {
                 _scale.ReleaseLink();
             }
 
             if (objSlot.DriveActive.Value)
             {
-                if (!_active.IsLinkValid)
+                if (!_active.HasTarget)
                     _active.DriveTarget(Slot.ActiveSelf);
             }
-            else if (_active.IsLinkValid)
+            else if (_active.HasTarget)
             {
                 _active.ReleaseLink();
             }
@@ -241,15 +190,12 @@ public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable, IInputUpda
 
     private void ReleaseDriveLinks()
     {
-        _position?.ReleaseLink();
-        _rotation?.ReleaseLink();
-        _scale?.ReleaseLink();
-        _active?.ReleaseLink();
+        _position.ReleaseLink();
+        _rotation.ReleaseLink();
+        _scale.ReleaseLink();
+        _active.ReleaseLink();
     }
 
-    /// <summary>
-    /// Explicitly allow a user to equip this node.
-    /// </summary>
     public void AllowEquip(User user)
     {
         if (AllowedEquipUser != null && user != AllowedEquipUser)
@@ -259,16 +205,13 @@ public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable, IInputUpda
         AllowedEquipUser = user;
     }
 
-    /// <summary>
-    /// Run the pose update - called by BeforeInputUpdate or AfterInputUpdate.
-    /// Runs on every peer; results are written through local-only drives.
-    /// </summary>
+    // runs on every peer; results are written through local-only drives
     private void RunUpdate()
     {
         var equippingSlot = CurrentSocket;
         if (_source?.Target != null && equippingSlot != null && !equippingSlot.IsDestroyed)
         {
-            if (!_position.IsLinkValid || !_rotation.IsLinkValid)
+            if (!_position.HasTarget || !_rotation.HasTarget)
                 RefreshDriveLinks();
 
             var space = equippingSlot.GetFilteredPose(out var position, out var rotation, out var isTracking);
@@ -317,9 +260,6 @@ public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable, IInputUpda
             field.Value = value;
     }
 
-    /// <summary>
-    /// Called before input update.
-    /// </summary>
     public void BeforeInputUpdate()
     {
         if (!RunAfterInputUpdate.Value)
@@ -328,9 +268,6 @@ public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable, IInputUpda
         }
     }
 
-    /// <summary>
-    /// Called after input update.
-    /// </summary>
     public void AfterInputUpdate()
     {
         if (RunAfterInputUpdate.Value)

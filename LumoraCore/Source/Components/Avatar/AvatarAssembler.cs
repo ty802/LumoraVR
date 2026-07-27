@@ -172,8 +172,14 @@ public class AvatarAssembler : Component, IAvatarAssembler, IAvatarSocketFiller
 
         if (SetupHandTools.Value)
         {
-            EnsureHandTool(bodyNodes.FindChild("LeftController", recursive: false), Chirality.Left);
-            EnsureHandTool(bodyNodes.FindChild("RightController", recursive: false), Chirality.Right);
+            var leftController = bodyNodes.FindChild("LeftController", recursive: false);
+            var rightController = bodyNodes.FindChild("RightController", recursive: false);
+
+            EnsureHandTool(leftController, Chirality.Left);
+            EnsureHandTool(rightController, Chirality.Right);
+
+            EnsureTouchProbes(leftController, userRoot, Chirality.Left);
+            EnsureTouchProbes(rightController, userRoot, Chirality.Right);
         }
 
         // Per-user radial context menu + the avatar equip/dequip actions it offers when pointing at an avatar.
@@ -205,6 +211,39 @@ public class AvatarAssembler : Component, IAvatarAssembler, IAvatarSocketFiller
         var tool = toolSlot.AttachComponent<HandTool>();
         tool.Side.Value = side;
     }
+
+    // Touch probes for one hand: an index fingertip that presses physical controls, and a beam probe that
+    // lets the same controls be worked from across the room (and at all on desktop, where there is no
+    // fingertip to put through anything).
+    //
+    // Built into a LOCAL slot on purpose. A probe only ever runs on the machine of the user driving it,
+    // and everything it produces reaches other peers as the TARGET's synced state - so replicating the
+    // probe itself would cost bandwidth and RefID space to tell everyone about a component none of them
+    // will ever run. Local also means it never lands in a save. -xlinka
+    private static void EnsureTouchProbes(Slot controller, UserRoot userRoot, Chirality side)
+    {
+        if (controller == null || controller.IsDestroyed)
+            return;
+        if (controller.FindChild(TouchProbeSlotName, recursive: false) != null)
+            return;
+
+        var user = userRoot?.ActiveUser;
+        var probeSlot = controller.AddLocalSlot(TouchProbeSlotName);
+        probeSlot.Persistent.Value = false;
+
+        var fingertip = probeSlot.AttachComponent<Touch.FingertipProbe>();
+        fingertip.Hand.Value = side;
+        fingertip.Finger.Value = FingerType.Index;
+        if (user != null)
+            fingertip.Owner.Target = user;
+
+        var remote = probeSlot.AttachComponent<Touch.RemoteProbe>();
+        remote.Hand.Value = side;
+        if (user != null)
+            remote.Owner.Target = user;
+    }
+
+    private const string TouchProbeSlotName = "Touch Probes";
 
     private Slot BuildHeadNode(Slot bodyNodes, User user)
     {

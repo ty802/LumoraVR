@@ -10,16 +10,9 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Container component that marks a slot as belonging to a user.
-/// Provides access to avatar body nodes and manages user transforms.
-/// </summary>
 [ComponentCategory("Users")]
 public class UserRoot : Component
 {
-    /// <summary>
-    /// User node types for positioning and targeting.
-    /// </summary>
     public enum UserNode
     {
         None,
@@ -33,23 +26,13 @@ public class UserRoot : Component
     }
 
     // USER REFERENCE
-    /// <summary>
-    /// Synced reference to the user that owns this UserRoot.
-    /// This syncs over the network so clients can identify their own UserRoot.
-    /// </summary>
+    // so clients can identify their own
     public readonly SyncRef<User> TargetUser = null!;
 
     private bool _isRegistered = false;
 
-    /// <summary>
-    /// The User that owns this UserRoot.
-    /// </summary>
     public User ActiveUser => (TargetUser?.Target) ?? null!;
 
-    /// <summary>
-    /// Check if this UserRoot belongs to the local user.
-    /// Uses direct object reference comparison.
-    /// </summary>
     public bool IsLocalUserRoot => TargetUser?.Target != null && TargetUser.Target == World?.LocalUser;
 
     // CACHED BODY NODES
@@ -146,9 +129,6 @@ public class UserRoot : Component
 
     // POSITION ACCESSORS
 
-    /// <summary>
-    /// Head position in world space.
-    /// </summary>
     public float3 HeadPosition
     {
         get => HeadSlot?.GlobalPosition ?? Slot.GlobalPosition;
@@ -162,9 +142,6 @@ public class UserRoot : Component
         }
     }
 
-    /// <summary>
-    /// Head rotation in world space.
-    /// </summary>
     public floatQ HeadRotation
     {
         get => HeadSlot?.GlobalRotation ?? Slot.GlobalRotation;
@@ -185,9 +162,6 @@ public class UserRoot : Component
         }
     }
 
-    /// <summary>
-    /// Feet position in world space (center between feet).
-    /// </summary>
     public float3 FeetPosition
     {
         get
@@ -207,9 +181,6 @@ public class UserRoot : Component
         }
     }
 
-    /// <summary>
-    /// Global scale of this UserRoot.
-    /// </summary>
     public float GlobalScale
     {
         get => Slot.Scale.x;
@@ -219,10 +190,7 @@ public class UserRoot : Component
         }
     }
 
-    /// <summary>
-    /// Rotate the user root while keeping the current head world position fixed.
-    /// This matches VR comfort expectations for snap and smooth turning.
-    /// </summary>
+    // keeps the head world position fixed, matching VR comfort expectations for snap and smooth turning
     public void RotateAroundHead(floatQ deltaRotation)
     {
         if (Slot == null)
@@ -237,9 +205,6 @@ public class UserRoot : Component
             Slot.GlobalPosition += offset;
     }
 
-    /// <summary>
-    /// Rotate around world up while preserving the head world position.
-    /// </summary>
     public void RotateYawAroundHead(float yawRadians)
     {
         if (System.Math.Abs(yawRadians) < 0.000001f)
@@ -248,10 +213,6 @@ public class UserRoot : Component
         RotateAroundHead(floatQ.AxisAngle(float3.Up, yawRadians));
     }
 
-    /// <summary>
-    /// Check if we've received first positional tracking data.
-    /// Used to know when VR tracking has started.
-    /// </summary>
     public bool ReceivedFirstPositionalData
     {
         get
@@ -260,12 +221,10 @@ public class UserRoot : Component
             {
                 var headPos = HeadSlot.LocalPosition.Value;
                 var headRot = HeadSlot.LocalRotation.Value;
-                // If head has moved from default position, we have tracking
                 if (headPos != float3.Zero || headRot != floatQ.Identity)
                     return true;
             }
 
-            // Check if we have a TrackedDevicePositioner that is tracking
             var headPositioner = HeadSlot?.GetComponent<TrackedDevicePositioner>();
             if (headPositioner != null)
                 return headPositioner.IsTracking.Value;
@@ -283,11 +242,7 @@ public class UserRoot : Component
 
     // INITIALIZATION
 
-    /// <summary>
-    /// Initialize this UserRoot with a User.
-    /// Called by SimpleUserSpawn after attaching the component.
-    /// Sets TargetUser which syncs to clients.
-    /// </summary>
+    // called by SimpleUserSpawn after attaching the component
     public void Initialize(User user)
     {
         if (user == null)
@@ -296,10 +251,8 @@ public class UserRoot : Component
             return;
         }
 
-        // Set the synced reference - this will sync to clients
         TargetUser.Target = user;
 
-        // Register with user on authority
         if (World?.IsAuthority == true)
         {
             user.Root = this;
@@ -309,10 +262,6 @@ public class UserRoot : Component
         LumoraLogger.Log($"UserRoot: Initialized for user '{user.UserName.Value}' (RefID: {user.ReferenceID})");
     }
 
-    /// <summary>
-    /// Called when synced fields change. Handles client-side local user detection.
-    /// Simple direct object reference comparison.
-    /// </summary>
     public override void OnAwake()
     {
         base.OnAwake();
@@ -408,7 +357,6 @@ public class UserRoot : Component
     {
         base.OnChanges();
 
-        // Simple direct reference comparison
         if (TargetUser.Target == World?.LocalUser && !_isRegistered)
         {
             World.LocalUser.Root = this;
@@ -426,9 +374,6 @@ public class UserRoot : Component
         }
     }
 
-    /// <summary>
-    /// Get the global position of a user node.
-    /// </summary>
     public float3 GetGlobalPosition(UserNode node)
     {
         return node switch
@@ -445,9 +390,6 @@ public class UserRoot : Component
         };
     }
 
-    /// <summary>
-    /// Get the global rotation of a user node.
-    /// </summary>
     public floatQ GetGlobalRotation(UserNode node)
     {
         return node switch
@@ -464,9 +406,7 @@ public class UserRoot : Component
         };
     }
 
-    /// <summary>
-    /// Forward direction the user is facing (from head), flattened for locomotion.
-    /// </summary>
+    // flattened for locomotion
     public float3 HeadFacingDirection
     {
         get
@@ -479,9 +419,6 @@ public class UserRoot : Component
         }
     }
 
-    /// <summary>
-    /// Full head-facing rotation (uses head slot if available).
-    /// </summary>
     public floatQ HeadFacingRotation
     {
         get
@@ -492,9 +429,6 @@ public class UserRoot : Component
         }
     }
 
-    /// <summary>
-    /// Set the global position of a user node.
-    /// </summary>
     public void SetGlobalPosition(UserNode node, float3 position)
     {
         switch (node)
@@ -528,9 +462,26 @@ public class UserRoot : Component
         }
     }
 
-    /// <summary>
-    /// Called every frame to update the UserRoot.
-    /// </summary>
+    // Rotates the ROOT, not the node's own slot: every body node except Root is written each frame by
+    // whatever drives it (tracking positioner, IK), so a rotation stamped on the node itself survives
+    // exactly until the next update. Turning the root is the only write that sticks, and pinning the
+    // node's position across the turn is what stops the rig from swinging out from under the user -
+    // the same pivot trick RotateAroundHead uses, generalized to any node. - xlinka
+    public void SetGlobalRotation(UserNode node, floatQ rotation)
+    {
+        if (Slot == null || node == UserNode.None)
+            return;
+
+        var current = GetGlobalRotation(node);
+        var delta = (rotation * current.Inverse).Normalized;
+
+        var pivot = GetGlobalPosition(node);
+        Slot.GlobalRotation = (delta * Slot.GlobalRotation).Normalized;
+        var moved = pivot - GetGlobalPosition(node);
+        if (moved.LengthSquared > 0f)
+            Slot.GlobalPosition += moved;
+    }
+
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
@@ -549,7 +500,6 @@ public class UserRoot : Component
             Slot.LocalScale.Value = float3.One;
         }
 
-        // Ensure uniform scale (all axes same)
         if (System.Math.Abs(scale.x - scale.y) > 0.0001f || System.Math.Abs(scale.y - scale.z) > 0.0001f)
         {
             var avgScale = (scale.x + scale.y + scale.z) / 3f;
@@ -558,9 +508,6 @@ public class UserRoot : Component
         }
     }
 
-    /// <summary>
-    /// Called when the component is destroyed.
-    /// </summary>
     public override void OnDestroy()
     {
         LumoraLogger.Log($"UserRoot: Destroying UserRoot for user '{ActiveUser?.UserName.Value ?? "Unknown"}'");
@@ -575,7 +522,6 @@ public class UserRoot : Component
         }
         _isRegistered = false;
 
-        // Clear cached references
         _cachedHeadSlot = null!;
         _cachedBodySlot = null!;
         _cachedLeftHandSlot = null!;

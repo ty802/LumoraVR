@@ -9,64 +9,29 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Positions a slot based on VR tracking data from InputInterface body nodes.
-/// This component registers as an IInputUpdateReceiver to update slot transforms
-/// BEFORE other components read them, ensuring tracking data flows correctly.
-/// Creates an AvatarSocket for avatar systems to equip to.
-/// </summary>
 [ComponentCategory("Users")]
 [DefaultUpdateOrder(-1000000)] // Runs very early - before IK and other components
 public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
 {
-    /// <summary>
-    /// Device index in the input system.
-    /// </summary>
     public readonly Sync<int> DeviceIndex = null!;
 
-    /// <summary>
-    /// The body node this positioner corresponds to.
-    /// </summary>
     public readonly Sync<BodyNode> CorrespondingBodyNode = null!;
 
-    /// <summary>
-    /// Auto-assign body node from device (if set, overrides DeviceIndex).
-    /// </summary>
+    // overrides DeviceIndex when set
     public readonly Sync<BodyNode?> AutoBodyNode = null!;
 
-    /// <summary>
-    /// Whether to always render the reference model.
-    /// </summary>
     public readonly Sync<bool> AlwaysRenderModel = null!;
 
-    /// <summary>
-    /// Reference to the reference model slot (controller model, etc).
-    /// </summary>
     public readonly SyncRef<Slot> ReferenceModel = null!;
 
-    /// <summary>
-    /// Root slot for body node positioning offset.
-    /// </summary>
     public readonly SyncRef<Slot> BodyNodeRoot = null!;
 
-    /// <summary>
-    /// Reference to the AvatarSocket created for this body node.
-    /// </summary>
     public readonly SyncRef<AvatarSocket> ObjectSlot = null!;
 
-    /// <summary>
-    /// Whether this device is currently tracking.
-    /// </summary>
     public readonly Sync<bool> IsTracking = null!;
 
-    /// <summary>
-    /// Whether this device is currently active.
-    /// </summary>
     public readonly Sync<bool> IsActive = null!;
 
-    /// <summary>
-    /// Whether to create an AvatarSocket for equipping.
-    /// </summary>
     public readonly Sync<bool> CreateAvatarObjectSlot = null!;
 
     // Internal state
@@ -76,11 +41,8 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
     private TransformStreamDriver _streamDriver = null!;
     private bool _streamDriverChecked;
 
-    /// <summary>
-    /// Get the tracked device from InputInterface. Pure read - never writes synced fields,
-    /// so a property access (including remote/inspector reads) has no replication side effects.
-    /// The synced DeviceIndex/CorrespondingBodyNode are written only from the update path.
-    /// </summary>
+    // pure read, never writes synced fields, so a property access (including remote/inspector reads) has
+    // no replication side effects; DeviceIndex/CorrespondingBodyNode are written only from the update path
     public ITrackedDevice TrackedDevice
     {
         get
@@ -112,9 +74,6 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
         }
     }
 
-    /// <summary>
-    /// Check if this component is under the local user.
-    /// </summary>
     public new bool IsUnderLocalUser
     {
         get
@@ -125,9 +84,6 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
         }
     }
 
-    /// <summary>
-    /// Get the local UserRoot.
-    /// </summary>
     public UserRoot LocalUserRoot
     {
         get
@@ -160,9 +116,7 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
         TryRegisterWithInput();
     }
 
-    /// <summary>
-    /// Called every frame. Check if we need to register (handles late SyncRef resolution).
-    /// </summary>
+    // handles late SyncRef resolution
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
@@ -175,9 +129,6 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
         }
     }
 
-    /// <summary>
-    /// Try to register with InputInterface if we're under the local user.
-    /// </summary>
     private void TryRegisterWithInput()
     {
         if (_isRegistered)
@@ -213,9 +164,6 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
         _userRoot = Slot?.ActiveUserRoot!;
     }
 
-    /// <summary>
-    /// Remove the body node slot and dequip any equipped object.
-    /// </summary>
     private void RemoveBodyNode()
     {
         if (ObjectSlot.Target != null && ObjectSlot.Target.HasEquipped)
@@ -225,9 +173,6 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
         BodyNodeRoot.Target?.Destroy();
     }
 
-    /// <summary>
-    /// Update or create the AvatarSocket for this body node.
-    /// </summary>
     private void UpdateObjectSlot()
     {
         if (BodyNodeRoot.Target == null)
@@ -249,9 +194,6 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
         }
     }
 
-    /// <summary>
-    /// Update body node from tracked device.
-    /// </summary>
     private void UpdateBodyNode()
     {
         var device = TrackedDevice;
@@ -286,12 +228,8 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
         }
     }
 
-    /// <summary>
-    /// Called before main input update. Updates slot transform from tracking data.
-    /// Tracking updates happen here before any other components read the slot transforms.
-    /// Body node slots are children of the user root, so tracked local pose is written directly.
-    /// World-space consumers should read ITrackedDevice.Position/Rotation.
-    /// </summary>
+    // body node slots are children of the user root, so this writes local pose directly; world-space
+    // consumers should read ITrackedDevice.Position/Rotation instead
     public void BeforeInputUpdate()
     {
         var device = TrackedDevice;
@@ -318,7 +256,6 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
 
             if (tracking)
             {
-                // Use tracked pose when available
                 pos = device.RawPosition;
                 rot = device.RawRotation;
             }
@@ -394,11 +331,9 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
                 Slot.LocalRotation.Value = rot;
         }
 
-        // Update tracking state
         IsTracking.Value = tracking;
         IsActive.Value = isActive;
 
-        // Update body node and object slot if we have a valid node
         if (node != BodyNode.NONE)
         {
             UpdateBodyNode();
@@ -408,16 +343,12 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
             RemoveBodyNode();
         }
 
-        // Update reference model visibility
         if (ReferenceModel.Target != null)
         {
             ReferenceModel.Target.ActiveSelf.Value = ShouldShowReferenceModel(device!, tracking);
         }
     }
 
-    /// <summary>
-    /// Called after main input update. Used for cleanup/post-processing.
-    /// </summary>
     public void AfterInputUpdate()
     {
         // Nothing to do here for now

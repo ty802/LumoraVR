@@ -6,10 +6,6 @@ using System.Threading;
 
 namespace Lumora.Core;
 
-/// <summary>
-/// Manages thread-safe locking for World modifications.
-/// Uses a proper mutex to allow threads to wait for the lock.
-/// </summary>
 public class HookManager : IDisposable
 {
     public enum LockOwner
@@ -25,26 +21,21 @@ public class HookManager : IDisposable
     public World Owner { get; private set; }
     public LockOwner Lock { get; private set; }
 
-    /// <summary>
-    /// Whether the current thread can modify world state.
-    /// Modifications are allowed when:
-    /// - World is not running (initialization phase)
-    /// - No lock is held (between update cycles)
-    /// - Current thread holds the lock
-    /// </summary>
+    // Whether the current thread can modify world state.
+    // Modifications are allowed when:
+    // - World is not running (initialization phase)
+    // - No lock is held (between update cycles)
+    // - Current thread holds the lock
     public bool CanCurrentThreadModify
     {
         get
         {
-            // Always allow modifications when world is not running
             if (Owner.State != World.WorldState.Running)
                 return true;
 
-            // Allow modifications when no lock is held (between cycles)
             if (Lock == LockOwner.None)
                 return true;
 
-            // Allow if current thread holds the lock
             return Thread.CurrentThread == _lockingThread;
         }
     }
@@ -54,10 +45,7 @@ public class HookManager : IDisposable
         Owner = owner;
     }
 
-    /// <summary>
-    /// Verify the current thread can modify world state.
-    /// Throws if modification is not allowed.
-    /// </summary>
+    // Throws when modification is not allowed.
     public void ThreadCheck()
     {
         if (!CanCurrentThreadModify)
@@ -66,10 +54,7 @@ public class HookManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Lock for DataModel (sync thread) modifications.
-    /// Waits if another thread has the lock.
-    /// </summary>
+    // Waits if another thread holds the lock.
     public void DataModelLock(Thread ownerThread)
     {
         Monitor.Enter(_lockObj);
@@ -77,9 +62,6 @@ public class HookManager : IDisposable
         Lock = LockOwner.DataModel;
     }
 
-    /// <summary>
-    /// Unlock DataModel modifications.
-    /// </summary>
     public void DataModelUnlock()
     {
         if (Lock != LockOwner.DataModel)
@@ -91,10 +73,7 @@ public class HookManager : IDisposable
         Monitor.Exit(_lockObj);
     }
 
-    /// <summary>
-    /// Lock for Implementer (main thread) modifications.
-    /// Waits if another thread has the lock.
-    /// </summary>
+    // Waits if another thread holds the lock.
     public void ImplementerLock(Thread ownerThread)
     {
         Monitor.Enter(_lockObj);
@@ -102,9 +81,6 @@ public class HookManager : IDisposable
         Lock = LockOwner.Implementer;
     }
 
-    /// <summary>
-    /// Unlock Implementer modifications.
-    /// </summary>
     public void ImplementerUnlock()
     {
         if (Lock != LockOwner.Implementer)

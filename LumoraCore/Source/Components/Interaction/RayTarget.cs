@@ -18,20 +18,12 @@ public sealed class RayTarget : Component, IInteractionTarget
     // set automatically by the laser; treat as read-only from outside. - xlinka
     public readonly Sync<bool> IsHovered = new();
 
-    /// <summary>
-    /// Fired once when a ray first enters the hover sphere.
-    /// </summary>
     public event Action HoverEntered = null!;
 
-    /// <summary>
-    /// Fired once when the hovering ray exits the sphere or the beam is destroyed.
-    /// </summary>
+    // also fires when the beam is destroyed while hovering, not just on exiting the sphere
     public event Action HoverExited = null!;
 
-    /// <summary>
-    /// Fired when this target is activated (trigger pressed while hovered).
-    /// The float3 parameter is the world-space intersection point on the hover sphere.
-    /// </summary>
+    // float3 param is the world-space intersection point on the hover sphere
     public event Action<float3> Activated = null!;
 
     public int InteractionTargetPriority => InteractionPriority.Value;

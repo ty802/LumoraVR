@@ -87,8 +87,17 @@ public class GrabbedObjectContextActions : ContextMenuItemSource
     {
         foreach (var slot in CollectGrabbedSlots(grabber))
         {
-            if (!slot.IsDestroyed)
-                Inventory.SaveItem(slot, slot.Name);
+            if (slot.IsDestroyed)
+                continue;
+            // Game-mechanic props are meant to be played with, not pocketed. Not a security
+            // boundary - an inspector still copies whatever it likes - so nothing else in the save
+            // path leans on this. - xlinka
+            if (GrabSaveBlock.BlocksInventorySave(slot))
+            {
+                Logging.Logger.Log($"Save to Inventory refused for '{slot.Name}': marked not saveable.");
+                continue;
+            }
+            Inventory.SaveItem(slot, slot.Name);
         }
     }
 

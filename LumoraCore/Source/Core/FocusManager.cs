@@ -6,18 +6,12 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
 
-/// <summary>
-/// Manages focus between the active world and userspace world.
-/// </summary>
 public class FocusManager
 {
     private World _focusedWorld = null!;
     private World _previousFocusedWorld = null!;
     private World _userspaceWorld = null!;
 
-    /// <summary>
-    /// The currently focused world (main world user is in).
-    /// </summary>
     public World FocusedWorld
     {
         get => _focusedWorld;
@@ -39,16 +33,10 @@ public class FocusManager
         }
     }
 
-    /// <summary>
-    /// The world that was focused immediately before the current one. Used as a
-    /// natural "back" target when closing the focused world.
-    /// </summary>
+    // The natural back target when closing the focused world.
     public World PreviousFocusedWorld => _previousFocusedWorld;
 
-    /// <summary>
-    /// The userspace world (overlay UI, dashboard, settings).
-    /// Always rendered on top of focused world.
-    /// </summary>
+    // Always rendered on top of the focused world.
     public World UserspaceWorld
     {
         get => _userspaceWorld;
@@ -61,14 +49,8 @@ public class FocusManager
         }
     }
 
-    /// <summary>
-    /// Event triggered when the focused world changes.
-    /// </summary>
     public event Action<World, World> OnFocusedWorldChanged = null!;
 
-    /// <summary>
-    /// Switch focus to a different world.
-    /// </summary>
     public void SwitchToWorld(World world)
     {
         if (world == null)
@@ -86,10 +68,7 @@ public class FocusManager
         FocusedWorld = world;
     }
 
-    /// <summary>
-    /// Get all worlds that should be updated.
-    /// Returns: [FocusedWorld, UserspaceWorld] (if both exist).
-    /// </summary>
+    // [FocusedWorld, UserspaceWorld] when both exist.
     public World[] GetActiveWorlds()
     {
         if (_focusedWorld != null && _userspaceWorld != null)
@@ -110,17 +89,11 @@ public class FocusManager
         }
     }
 
-    /// <summary>
-    /// Check if a world is currently focused.
-    /// </summary>
     public bool IsFocused(World world)
     {
         return _focusedWorld == world;
     }
 
-    /// <summary>
-    /// Check if a world is the userspace world.
-    /// </summary>
     public bool IsUserspace(World world)
     {
         return _userspaceWorld == world;

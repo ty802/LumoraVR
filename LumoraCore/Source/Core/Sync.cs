@@ -10,18 +10,10 @@ using Lumora.Core.Persistence;
 
 namespace Lumora.Core;
 
-/// <summary>
-/// Synchronized field that automatically replicates changes across the network.
-/// Supports linking and driving for IK and animation systems.
-/// </summary>
-/// <typeparam name="T">The type of value to synchronize.</typeparam>
 public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
 {
     protected T _value;
 
-    /// <summary>
-    /// Optional filter applied to values before setting.
-    /// </summary>
     public Func<T, IField<T>, T>? LocalFilter;
 
     private ILinkRef? _directLink;
@@ -46,12 +38,8 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
 
     #region Value Property
 
-    /// <summary>
-    /// The current value.
-    /// Setting this will trigger network synchronization.
-    /// When driven/linked, the value comes from the drive source.
-    /// If hooked and modification not allowed, calls the hook instead.
-    /// </summary>
+    // Setting this will trigger network synchronization. When driven/linked, the value comes from the drive
+    // source. If hooked and modification not allowed, calls the hook instead.
     public virtual T Value
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -59,7 +47,6 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         set
         {
-            // If hooked, NOT modification allowed, and not in special state, call hook
             if (IsHooked && !ActiveLink!.IsModificationAllowed &&
                 (_flags & HOOK_CHECK_FLAGS) == 0 &&
                 ActiveLink is FieldHook<T> fieldHook && fieldHook.ValueSetHook != null)
@@ -85,9 +72,7 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
         }
     }
 
-    /// <summary>
-    /// Direct value bypassing hook machinery.
-    /// </summary>
+    // Bypasses the hook machinery.
     public T DirectValue
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -100,72 +85,32 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
 
     #region Events
 
-    /// <summary>
-    /// Event triggered when the value changes.
-    /// </summary>
     public event SyncFieldEvent<T>? OnValueChange;
 
-    /// <summary>
-    /// Event triggered when the value changes (backward compatible alias).
-    /// </summary>
     public event Action<T>? OnChanged;
 
-    /// <summary>
-    /// Event fired when this sync field changes (IChangeable implementation).
-    /// </summary>
     public event Action<IChangeable>? Changed;
 
     #endregion
 
     #region Linking
 
-    /// <summary>
-    /// Whether this field is currently linked to another element.
-    /// </summary>
-    public bool IsLinked => ActiveLink != null;
+    // IsLinked / IsDriven / IsHooked live on SyncElement and read through ResolveActiveLink, so the
+    // base class's drive gates (sync suppression, inbound-delta ignore, IsBlockedByDrive) and this
+    // public ILinkable surface can never disagree about whether the field is driven. -xlinka
 
-    /// <summary>
-    /// Whether this field is being driven (value controlled by another element).
-    /// </summary>
-    public new bool IsDriven
-    {
-        get
-        {
-            var link = ActiveLink;
-            return link != null && link.IsDriving && IsDrivable;
-        }
-    }
+    public ILinkRef? ActiveLink => _inheritedLink ?? _directLink;
 
-    /// <summary>
-    /// Whether this field is hooked (has callback intercepting changes).
-    /// </summary>
-    public bool IsHooked => ActiveLink?.IsHooking ?? false;
+    protected override ILinkRef? ResolveActiveLink() => _inheritedLink ?? _directLink;
 
-    /// <summary>
-    /// The currently active link reference (inherited takes precedence over direct).
-    /// </summary>
-    public new ILinkRef? ActiveLink => _inheritedLink ?? _directLink;
-
-    /// <summary>
-    /// The direct link reference (not inherited from parent).
-    /// </summary>
     public ILinkRef? DirectLink => _directLink;
 
-    /// <summary>
-    /// The inherited link reference (from parent element).
-    /// </summary>
     public ILinkRef? InheritedLink => _inheritedLink;
 
-    /// <summary>
-    /// Children elements that can be linked (Sync fields don't have linkable children).
-    /// </summary>
     public IEnumerable<ILinkable>? LinkableChildren => null;
 
     ILinkRef? ILinkable.ActiveLink => ActiveLink;
 
-    /// <summary>
-    /// Establish a direct link to this field.
-    /// </summary>
     public void Link(ILinkRef link)
     {
         _directLink = link;
@@ -176,9 +121,6 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
         SyncElementChanged();
     }
 
-    /// <summary>
-    /// Establish an inherited link to this field.
-    /// </summary>
     public void InheritLink(ILinkRef link)
     {
         _inheritedLink = link;
@@ -186,9 +128,6 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
         SyncElementChanged();
     }
 
-    /// <summary>
-    /// Release a direct link from this field.
-    /// </summary>
     public void ReleaseLink(ILinkRef link)
     {
         if (_directLink == link)
@@ -199,9 +138,6 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
         }
     }
 
-    /// <summary>
-    /// Release an inherited link from this field.
-    /// </summary>
     public void ReleaseInheritedLink(ILinkRef link)
     {
         if (_inheritedLink != link)
@@ -236,9 +172,6 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
 
     #region Internal Value Setting
 
-    /// <summary>
-    /// Internal method to set value with change tracking.
-    /// </summary>
     protected virtual bool InternalSetValue(in T value, bool sync = true, bool change = true)
     {
         if (BeginModification(throwOnError: false))
@@ -263,9 +196,6 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
         return false;
     }
 
-    /// <summary>
-    /// Called when value changes to fire events.
-    /// </summary>
     protected virtual void ValueChanged()
     {
         SyncElementChanged();
@@ -273,9 +203,6 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
         OnChanged?.Invoke(_value);
     }
 
-    /// <summary>
-    /// Notify parent and fire Changed event.
-    /// </summary>
     protected void SyncElementChanged(IChangeable member = null!)
     {
         member = member ?? this;
@@ -294,26 +221,18 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
         }
     }
 
-    /// <summary>
-    /// Force set value bypassing equality check.
-    /// </summary>
+    // Bypasses the equality check.
     public void ForceSet(T value)
     {
         InternalSetValue(in value);
     }
 
-    /// <summary>
-    /// Set value without generating sync data (used for remote-applied updates).
-    /// </summary>
     internal void SetValueSilently(T value, bool change = true)
     {
         InternalSetValue(in value, sync: false, change: change);
     }
 
-    /// <summary>
-    /// Set the value when driven by a FieldDrive.
-    /// This bypasses the IsDriven check and allows drives to push values.
-    /// </summary>
+    // Bypasses the IsDriven check so drives can push values.
     internal void SetDrivenValue(T value)
     {
         if (SyncCoder.Equals(_value, value)) return;
@@ -329,12 +248,9 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
         ValueChanged();
     }
 
-    /// <summary>
-    /// Set a driven value without generating sync data. For drives whose
-    /// source state replicates on its own and whose computation runs on every
-    /// peer (avatar pose driving) - broadcasting the result would duplicate
-    /// the source traffic and fight the remote peer's own computation.
-    /// </summary>
+    // For drives whose source state replicates on its own and whose computation runs on every peer (avatar pose
+    // driving) - broadcasting the result would duplicate the source traffic and fight the remote peer's own
+    // computation.
     internal void SetDrivenValueLocal(T value)
     {
         if (SyncCoder.Equals(_value, value)) return;
@@ -389,17 +305,11 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
         // No additional dirty state to clear
     }
 
-    /// <summary>
-    /// Encode the current value to binary.
-    /// </summary>
     public void Encode(BinaryWriter writer)
     {
         SyncCoder.Encode(writer, _value);
     }
 
-    /// <summary>
-    /// Decode a value from binary and set it.
-    /// </summary>
     public void Decode(BinaryReader reader)
     {
         T value = SyncCoder.Decode<T>(reader);
@@ -444,9 +354,6 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
         InternalSetValue(in value, sync: false, change: false);
     }
 
-    /// <summary>
-    /// Provide better hierarchy info for debugging.
-    /// </summary>
     public override string ParentHierarchyToString()
     {
         var memberName = ((ISyncMember)this).Name ?? GetType().Name;
@@ -457,16 +364,10 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
         return memberName;
     }
 
-    /// <summary>
-    /// Whether this field has been changed since the last clear.
-    /// Alias for WasChanged for hook compatibility.
-    /// </summary>
+    // Alias for WasChanged, for hook compatibility.
     public bool IsDirty => WasChanged;
 
-    /// <summary>
-    /// Get whether this field was changed and clear the changed flag.
-    /// Used by hooks to check and acknowledge changes.
-    /// </summary>
+    // Hooks use this to check and acknowledge in one call.
     public bool GetWasChangedAndClear()
     {
         bool changed = WasChanged;
@@ -477,15 +378,8 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
     #endregion
 }
 
-/// <summary>
-/// Concrete synchronized field implementation with equality checking.
-/// </summary>
-/// <typeparam name="T">Value type.</typeparam>
 public class Sync<T> : SyncField<T>
 {
-    /// <summary>
-    /// Event triggered when the value changes (backward compatible alias).
-    /// </summary>
     public new event Action<T>? OnChanged;
 
     public override T Value

@@ -7,18 +7,13 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
 
-/// <summary>
-/// Trash system for temporarily holding deleted objects until authority confirms deletion.
-/// Prevents permanent data loss from rejected delete operations.
-/// </summary>
+// Trash system for temporarily holding deleted objects until authority confirms deletion.
+// Prevents permanent data loss from rejected delete operations.
 public class TrashBin
 {
 	private readonly Dictionary<RefID, TrashEntry> _trashedElements = new();
 	private readonly World _world;
 
-    /// <summary>
-    /// How long to keep items in trash before permanent deletion (in seconds).
-    /// </summary>
     public double TrashRetentionTime { get; set; } = 60.0; // 1 minute default
 
     public TrashBin(World world)
@@ -26,9 +21,6 @@ public class TrashBin
         _world = world;
     }
 
-    /// <summary>
-    /// Move an element to trash instead of destroying it immediately.
-    /// </summary>
     public void MoveToTrash(IWorldElement element)
     {
         if (element == null || element.IsDestroyed)
@@ -48,9 +40,7 @@ public class TrashBin
 		LumoraLogger.Debug($"Moved element {element.ReferenceID} to trash");
 	}
 
-	/// <summary>
-	/// Restore an element from trash (if deletion was rejected by authority).
-	/// </summary>
+	// For a deletion the authority rejected.
 	public bool RestoreFromTrash(RefID refID)
 	{
 		if (!_trashedElements.TryGetValue(refID, out var entry))
@@ -61,7 +51,6 @@ public class TrashBin
 
         _trashedElements.Remove(refID);
 
-        // Unmark as destroyed and re-register with world
         if (entry.Element is Slot slot)
         {
             _world.RegisterSlot(slot);
@@ -75,9 +64,7 @@ public class TrashBin
         return true;
     }
 
-	/// <summary>
-	/// Permanently delete an element from trash (authority confirmed deletion).
-	/// </summary>
+	// Authority confirmed the deletion.
 	public void PermanentlyDelete(RefID refID)
 	{
 		if (!_trashedElements.TryGetValue(refID, out var entry))
@@ -87,7 +74,6 @@ public class TrashBin
 
         _trashedElements.Remove(refID);
 
-        // Now actually destroy the element
         if (entry.Element is Slot slot)
         {
             slot.Destroy();
@@ -100,10 +86,7 @@ public class TrashBin
         LumoraLogger.Debug($"Permanently deleted element {refID}");
     }
 
-	/// <summary>
-	/// Update the trash bin and clean up expired entries.
-	/// Call this periodically from World._Process.
-	/// </summary>
+	// Call periodically from World._Process.
 	public void Update()
 	{
 		var currentTime = _world.TotalTime;
@@ -114,14 +97,12 @@ public class TrashBin
             var entry = kvp.Value;
             var timeInTrash = currentTime - entry.TrashedTime;
 
-            // If element has been in trash longer than retention time, permanently delete it
             if (timeInTrash > TrashRetentionTime)
             {
                 toRemove.Add(kvp.Key);
             }
         }
 
-        // Permanently delete expired entries
         foreach (var refID in toRemove)
         {
             PermanentlyDelete(refID);
@@ -129,17 +110,11 @@ public class TrashBin
         }
     }
 
-	/// <summary>
-	/// Check if an element is in trash.
-	/// </summary>
 	public bool IsInTrash(RefID refID)
 	{
 		return _trashedElements.ContainsKey(refID);
 	}
 
-    /// <summary>
-    /// Clear all trash (emergency cleanup).
-    /// </summary>
     public void Clear()
     {
         foreach (var entry in _trashedElements.Values)
@@ -158,9 +133,6 @@ public class TrashBin
         LumoraLogger.Log("Cleared trash bin");
     }
 
-    /// <summary>
-    /// Get statistics about trash contents.
-    /// </summary>
     public (int count, int slots, int components) GetStatistics()
     {
         int slots = 0;
@@ -176,9 +148,6 @@ public class TrashBin
     }
 }
 
-/// <summary>
-/// Entry in the trash bin.
-/// </summary>
 internal class TrashEntry
 {
 	public IWorldElement Element { get; set; } = null!;

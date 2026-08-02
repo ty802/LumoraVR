@@ -10,50 +10,28 @@ using Lumora.Core.Networking.Session;
 using Lumora.Core.Networking.Sync;
 using Lumora.Core.Components;
 using Lumora.Core.Persistence;
+using Lumora.Warden;
+using Lumora.Nexus.Cloud;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
 
-/// <summary>
-/// Represents a World instance containing Slots, Components, and Users.
-/// </summary>
-public class World
+public class World : IPermissionWorldFacts
 {
 	public enum WorldState
 	{
-		/// <summary>
-		/// World has been created but not initialized yet.
-		/// </summary>
 		Created,
 
-		/// <summary>
-		/// Setting up network connections and listeners.
-		/// </summary>
 		InitializingNetwork,
 
-		/// <summary>
-		/// Waiting for authority to grant join permission (client only).
-		/// </summary>
 		WaitingForJoinGrant,
 
-		/// <summary>
-		/// Initializing data model (slots, components, users).
-		/// </summary>
 		InitializingDataModel,
 
-		/// <summary>
-		/// World is fully initialized and running.
-		/// </summary>
 		Running,
 
-		/// <summary>
-		/// World failed to initialize or encountered fatal error.
-		/// </summary>
 		Failed,
 
-		/// <summary>
-		/// World has been destroyed and cleaned up.
-		/// </summary>
 		Destroyed
 	}
 
@@ -83,63 +61,43 @@ public class World
 		OnWorldDestroy
 	}
 
-	/// <summary>
-	/// World statistics and metrics.
-	/// </summary>
 	public class WorldMetrics
 	{
-		/// <summary>Total slots in this world.</summary>
 		public int SlotCount { get; internal set; }
 
-		/// <summary>Total components in this world.</summary>
 		public int ComponentCount { get; internal set; }
 
-		/// <summary>Total sync elements (networked).</summary>
 		public int SyncElementCount { get; internal set; }
 
-		/// <summary>Total RefIDs allocated.</summary>
 		public long RefIDsAllocated { get; internal set; }
 
-		/// <summary>Network messages sent.</summary>
 		public long MessagesSent { get; internal set; }
 
-		/// <summary>Network messages received.</summary>
 		public long MessagesReceived { get; internal set; }
 
-		/// <summary>Total bytes sent.</summary>
 		public long BytesSent { get; internal set; }
 
-		/// <summary>Total bytes received.</summary>
 		public long BytesReceived { get; internal set; }
 
-		/// <summary>Updates processed.</summary>
 		public long UpdatesProcessed { get; internal set; }
 
-		/// <summary>Average update time in ms.</summary>
 		public double AverageUpdateTimeMs { get; internal set; }
 
-		/// <summary>Peak update time in ms.</summary>
 		public double PeakUpdateTimeMs { get; internal set; }
 
-		/// <summary>Godot-reported frames per second.</summary>
 		public double GodotFps { get; set; }
 
-		/// <summary>Godot-reported frame time in ms.</summary>
 		public double GodotFrameTimeMs { get; set; }
 
-		/// <summary>Godot CPU process time in ms. Kept as RenderTimeMs for compatibility.</summary>
+		// Godot CPU process time. Named RenderTimeMs for compatibility.
 		public double RenderTimeMs { get; set; }
 
-		/// <summary>Physics time in ms.</summary>
 		public double PhysicsTimeMs { get; set; }
 
-		/// <summary>Video memory usage in bytes.</summary>
 		public long VideoMemoryBytes { get; set; }
 
-		/// <summary>Total Godot objects.</summary>
 		public int GodotObjectCount { get; set; }
 
-		/// <summary>Total Godot nodes.</summary>
 		public int GodotNodeCount { get; set; }
 
 		public override string ToString()
@@ -149,20 +107,14 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Who is allowed to join a world, from most to least restrictive.
-	/// </summary>
 	public enum WorldAccessLevel
 	{
 		Private,
 		LAN,
 		Contacts,
 		ContactsPlus,
-		/// <summary>Only members of the group hosting this world.</summary>
 		GroupMembers,
-		/// <summary>Group members plus guests they bring.</summary>
 		GroupPlus,
-		/// <summary>Anyone, but listed/hosted under the group.</summary>
 		GroupPublic,
 		RegisteredUsers,
 		Anyone,
@@ -175,7 +127,6 @@ public class World
 	private readonly List<User> _joinedUsers = new();
 	private readonly List<User> _leftUsers = new();
 
-	// Network replicators for world structure synchronization
 	private Networking.Sync.ReplicatedSlotCollection? _slotCollection;
 	private Networking.Sync.ReplicatedUserCollection? _userCollection;
 
@@ -228,13 +179,12 @@ public class World
 	private const int MissingRootGraceFrames = 180; // ~3s
 	private const int MaxRespawnAttempts = 3;
 
-	/// <summary>Seconds since this client began data-model init, or 0 on the authority / before join. -xlinka</summary>
+	// Seconds since this client began data-model init, or 0 on the authority / before join. -xlinka
 	public double TimeSinceDataModelInit => _dataModelInitStartTime <= 0 ? 0 : TotalTime - _dataModelInitStartTime;
 
 	// Static global hook type registry (shared across all worlds)
 	private static HookTypeRegistry _staticHookTypes = new HookTypeRegistry();
 
-	// Platform hook for world rendering
 	public IWorldHook Hook { get; set; } = null!;
 
 	// Godot scene access - set by WorldHook
@@ -242,34 +192,22 @@ public class World
 
 	private Physics.WorldPhysics _physics = null!;
 
-	/// <summary>
-	/// Component-facing physics service for this world: collision queries (routed to the platform
-	/// physics engine via the world hook) and physics settings. The platform owns the simulation.
-	/// </summary>
+	// The platform owns the simulation.
 	public Physics.WorldPhysics Physics => _physics ??= new Physics.WorldPhysics(this);
 
-	// Reference to the WorldManager that owns this World
 	public Management.WorldManager WorldManager { get; internal set; } = null!;
 
 	private static int _worldEventTypeCount = Enum.GetValues(typeof(WorldEvent)).Length;
 
-	/// <summary>
-	/// Global hook type registry (static, shared across all worlds).
-	/// </summary>
 	public static HookTypeRegistry HookTypes => _staticHookTypes;
 
-	/// <summary>
-	/// Event fired when world state changes.
-	/// </summary>
 	public event Action<WorldState, WorldState>? OnStateChanged;
 
 	private Action<World>? _whenRunning;
 
-	/// <summary>
-	/// Fires once the world is Running. If it's ALREADY running when you subscribe, your handler runs
-	/// immediately (inline, on the calling thread); otherwise it's queued and fires at the transition.
-	/// Either way a late subscriber never misses the running edge. Unsubscribe with -=. -xlinka
-	/// </summary>
+	// Fires once the world is Running. If it's ALREADY running when you subscribe, your handler runs
+	// immediately (inline, on the calling thread); otherwise it's queued and fires at the transition.
+	// Either way a late subscriber never misses the running edge. Unsubscribe with -=. -xlinka
 	public event Action<World> WhenRunning
 	{
 		add
@@ -300,11 +238,9 @@ public class World
 
 	private Action<World>? _whenDestroyed;
 
-	/// <summary>
-	/// Fires once the world is destroyed. If it's ALREADY destroyed when you subscribe, your handler runs
-	/// immediately; otherwise it's queued and fires at teardown. A late subscriber never misses the
-	/// destroyed edge - handy for cleanup that may register after the world is already gone. -xlinka
-	/// </summary>
+	// Fires once the world is destroyed. If it's ALREADY destroyed when you subscribe, your handler runs
+	// immediately; otherwise it's queued and fires at teardown. A late subscriber never misses the
+	// destroyed edge - handy for cleanup that may register after the world is already gone. -xlinka
 	public event Action<World> WhenDestroyed
 	{
 		add
@@ -331,16 +267,11 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Current state of the World.
-	/// </summary>
 	public WorldState State => _state;
 
-	/// <summary>
-	/// Edit mode of this world (Builder / Social / Event). Set at host time from the world's allowed
-	/// modes and applied to the permission gate when the world starts running. Not a live toggle - the
-	/// Social/Event lock is enforced host-authoritatively and cannot be turned off in-session.
-	/// </summary>
+	// Set at host time from the world's allowed modes and applied to the permission gate when the world starts
+	// running. Not a live toggle - the Social/Event lock is enforced host-authoritatively and cannot be turned
+	// off in-session.
 	public WorldMode Mode
 	{
 		get => Configuration?.Mode?.Value ?? WorldMode.Builder;
@@ -360,37 +291,22 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Whether the authored world can be edited here (build tools, dev tools, inspectors, gizmos).
-	/// False in Social/Event worlds. This is a UX/availability hint - the actual lock is the
-	/// host-authoritative <see cref="DataModelPermissionController.SocialLock"/> gate.
-	/// </summary>
-	public bool AllowsWorldEditing => Mode == WorldMode.Builder;
+	// False in Social/Event worlds. This is a UX/availability hint - the actual lock is the host-authoritative
+	// SocialLock gate, which reads the same floor.
+	public bool AllowsWorldEditing => !WorldModePolicy.SocialLockFloor(Mode);
 
-	/// <summary>Whether users may spawn their own items here (true except in Event worlds).</summary>
-	public bool AllowsItemSpawning => Mode != WorldMode.Event;
+	public bool AllowsItemSpawning => WorldModePolicy.AllowsOwnItems(Mode);
 
-	/// <summary>
-	/// Detailed initialization state for the World.
-	/// </summary>
 	public InitializationState InitState => _initState;
 
-	/// <summary>
-	/// Human-readable initialization failure reason, if initialization failed.
-	/// </summary>
 	public string InitializationFailureReason { get; private set; } = "";
 
-	/// <summary>
-	/// The root Slot of this World.
-	/// </summary>
 	public Slot RootSlot { get; private set; } = null!;
 
-	/// <summary>
-	/// Live collider registry for this world, maintained by Collider on attach/destroy. Lets raycasts
-	/// iterate a flat list instead of walking the entire slot tree every frame, per laser. Holds ALL
-	/// colliders (active or not); raycast callers filter by their own candidacy checks, so a momentarily
-	/// stale entry (e.g. a just-destroyed collider) can't produce a wrong hit. -xlinka
-	/// </summary>
+	// Live collider registry for this world, maintained by Collider on attach/destroy. Lets raycasts
+	// iterate a flat list instead of walking the entire slot tree every frame, per laser. Holds ALL
+	// colliders (active or not); raycast callers filter by their own candidacy checks, so a momentarily
+	// stale entry (e.g. a just-destroyed collider) can't produce a wrong hit. -xlinka
 	private readonly HashSet<Components.Collider> _colliders = new();
 
 	public void RegisterCollider(Components.Collider collider)
@@ -405,7 +321,7 @@ public class World
 			_colliders.Remove(collider);
 	}
 
-	/// <summary>Copy the live colliders into a caller-provided (reusable) buffer - allocation-free. -xlinka</summary>
+	// Copy the live colliders into a caller-provided (reusable) buffer - allocation-free. -xlinka
 	public void CopyCollidersTo(List<Components.Collider> buffer)
 	{
 		buffer.Clear();
@@ -413,14 +329,12 @@ public class World
 			buffer.Add(c);
 	}
 
-	/// <summary>
-	/// Live interaction-target registry for this world, maintained centrally by ComponentBase on init/destroy
-	/// (so EVERY IInteractionTarget component is in here, no per-implementer opt-in to forget). Lets the laser
-	/// iterate a flat list instead of walking the entire slot tree every frame, per laser. Holds ALL targets
-	/// (active, disabled, even momentarily stale); the laser filters each candidate by enabled/active/hierarchy
-	/// at use-site, so a stale entry can't produce a wrong hit. A target moved across worlds re-registers via
-	/// its re-init (same caveat as the collider registry). -xlinka
-	/// </summary>
+	// Live interaction-target registry for this world, maintained centrally by ComponentBase on init/destroy
+	// (so EVERY IInteractionTarget component is in here, no per-implementer opt-in to forget). Lets the laser
+	// iterate a flat list instead of walking the entire slot tree every frame, per laser. Holds ALL targets
+	// (active, disabled, even momentarily stale); the laser filters each candidate by enabled/active/hierarchy
+	// at use-site, so a stale entry can't produce a wrong hit. A target moved across worlds re-registers via
+	// its re-init (same caveat as the collider registry). -xlinka
 	private readonly HashSet<Components.Interaction.IInteractionTarget> _interactionTargets = new();
 
 	public void RegisterInteractionTarget(Components.Interaction.IInteractionTarget target)
@@ -435,7 +349,7 @@ public class World
 			_interactionTargets.Remove(target);
 	}
 
-	/// <summary>Copy the live interaction targets into a caller-provided (reusable) buffer - allocation-free. -xlinka</summary>
+	// Copy the live interaction targets into a caller-provided (reusable) buffer - allocation-free. -xlinka
 	public void CopyInteractionTargetsTo(List<Components.Interaction.IInteractionTarget> buffer)
 	{
 		buffer.Clear();
@@ -443,150 +357,76 @@ public class World
 			buffer.Add(t);
 	}
 
-	/// <summary>
-	/// Display name of this World.
-	/// </summary>
 	public Sync<string> WorldName { get; private set; }
 
-	/// <summary>
-	/// Session ID for network identification.
-	/// </summary>
 	public Sync<string> SessionID { get; private set; }
 
-	/// <summary>
-	/// The authority ID (host) that validates all changes.
-	/// -1 means local-only world.
-	/// </summary>
+	// -1 means local-only world.
 	public int AuthorityID { get; set; } = -1;
 
-	/// <summary>
-	/// Whether this instance is the authority (host).
-	/// Local ID for checking authority status.
-	/// </summary>
 	public int LocalID { get; set; } = -1;
 
-	/// <summary>
-	/// Whether this instance is the authority (host).
-	/// </summary>
 	public bool IsAuthority => AuthorityID == -1 || AuthorityID == LocalID;
 
-	/// <summary>
-	/// Session for networking.
-	/// </summary>
 	public Session Session => _session;
 
-	/// <summary>
-	/// URLs that can be used to connect to this session.
-	/// </summary>
 	public IReadOnlyList<Uri> SessionURLs => (_session?.Metadata?.SessionURLs as IReadOnlyList<Uri>) ?? Array.Empty<Uri>();
 
-	/// <summary>
-	/// Synchronization controller for this world.
-	/// </summary>
 	public SyncController SyncController { get; private set; } = null!;
 
-	/// <summary>
-	/// Tracks fields that just lost their driving link so the sync loop can re-broadcast their
-	/// real current value to peers (authority only).
-	/// </summary>
+	// Tracks fields that just lost their driving link so the sync loop can re-broadcast their
+	// real current value to peers (authority only).
 	public LinkManager LinkManager { get; private set; } = null!;
 
-	/// <summary>
-	/// Reference controller for object lookup and async resolution.
-	/// </summary>
 	public ReferenceController ReferenceController { get; private set; } = null!;
 
-	/// <summary>
-	/// Worker manager for type encoding/decoding during sync.
-	/// </summary>
 	public WorkerManager Workers { get; private set; } = null!;
 
-	/// <summary>
-	/// Thread-safe hook manager for world modifications.
-	/// </summary>
 	public HookManager HookManager => _hookManager;
 
-	/// <summary>
-	/// Trash bin for temporarily holding deleted objects.
-	/// </summary>
 	public TrashBin TrashBin => _trashBin;
 
-	/// <summary>
-	/// RefID allocator for preventing ID conflicts between users.
-	/// </summary>
 	public RefIDAllocator RefIDAllocator => _refIDAllocator;
 
-	/// <summary>
-	/// Hook type registry for mapping components to hooks (instance property for compatibility).
-	/// </summary>
 	public HookTypeRegistry InstanceHookTypes => _hookTypes;
 
-	/// <summary>
-	/// Update manager for coordinating hook updates.
-	/// </summary>
 	public UpdateManager UpdateManager => _updateManager;
 
-	/// <summary>
-	/// Local user (client's own user).
-	/// </summary>
 	public User LocalUser { get; private set; } = null!;
 
-	/// <summary>
-	/// Time scale for the World simulation.
-	/// </summary>
 	public float TimeScale { get; set; } = 1.0f;
 
-	/// <summary>
-	/// Per-world clock: frame deltas (raw/clamped/smoothed), total time, update index, FPS.
-	/// Read this instead of threading deltas through call chains.
-	/// </summary>
+	// Per-world clock: frame deltas (raw/clamped/smoothed), total time, update index, FPS. Read this instead of
+	// threading deltas through call chains.
 	public WorldClock Time { get; } = new WorldClock();
 
-	/// <summary>
-	/// Total time this World has been running (in seconds).
-	/// </summary>
+	// Seconds.
 	public double TotalTime => Time.TotalTime;
 
-	/// <summary>
-	/// Local sync tick counter for ordering messages.
-	/// Incremented every sync cycle.
-	/// </summary>
+	// Anything whose PHASE has to match across peers - a spinner's angle, an animator's anchor - reads
+	// SessionSeconds from here instead of the world clock, which starts at zero per peer, or wall clock, which
+	// only agrees as well as the machines happen to.
+	public SessionClock SessionClock { get; } = new SessionClock();
+
+	public double SessionSeconds => SessionClock.SessionSeconds;
+
+	// Incremented every sync cycle.
 	public ulong SyncTick { get; private set; }
 
-	/// <summary>
-	/// Authority state version for conflict detection.
-	/// Incremented whenever the authority makes a state change.
-	/// </summary>
+	// Incremented whenever the authority makes a state change.
 	public ulong StateVersion { get; private set; }
 
-	/// <summary>
-	/// Whether this world has been destroyed.
-	/// </summary>
 	public bool IsDestroyed { get; internal set; }
 
-	/// <summary>
-	/// Whether this world has been disposed.
-	/// </summary>
 	public bool IsDisposed { get; private set; }
 
-	/// <summary>
-	/// Last frame delta time (seconds).
-	/// </summary>
+	// Seconds.
 	public float LastDelta => Time.RawDelta;
 
-	/// <summary>
-	/// Convenience property for WorldName.Value.
-	/// </summary>
 	public string Name => WorldName?.Value ?? "Unknown";
 
-	/// <summary>
-	/// Whether this world is currently focused.
-	/// </summary>
 	public bool IsFocused => _focus == WorldFocus.Focused;
 
-	/// <summary>
-	/// Number of users in the world.
-	/// </summary>
 	public int UserCount
 	{
 		get
@@ -598,9 +438,6 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Current focus mode of this world.
-	/// </summary>
 	public WorldFocus Focus
 	{
 		get => _focus;
@@ -609,7 +446,6 @@ public class World
 			if (_focus == value) return;
 			_focus = value;
 
-			// Notify world hook of focus change
 			if (Hook is IWorldHook worldHook)
 			{
 				worldHook.ChangeFocus(value);
@@ -617,16 +453,10 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// World statistics and metrics.
-	/// </summary>
 	public WorldMetrics Metrics => _metrics;
 
-	/// <summary>
-	/// World configuration settings, as a synced component on the root slot (replicates to clients +
-	/// persists with the world tree). On the authority it's created on first access; on a client it's
-	/// null until state-synced - callers that may run client-side should null-check.
-	/// </summary>
+	// On the authority it's created on first access; on a client it's null until state-synced - callers that
+	// may run client-side should null-check.
 	public WorldSettings Configuration
 	{
 		get
@@ -641,10 +471,18 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Hard permission gate for datamodel fields, collections, and replication.
-	/// </summary>
 	public DataModelPermissionController DataModelPermissions => _dataModelPermissions;
+
+	// PERMISSION GATE VIEW
+	// The gate reads world state through these, and only these. They are explicit so nothing else picks
+	// them up by accident, and every one of them is host-authoritative state the local client cannot
+	// author for itself. -xlinka
+
+	bool IPermissionWorldFacts.IsRunning => _state == WorldState.Running;
+
+	IPermissionActor? IPermissionWorldFacts.LocalActor => LocalUser;
+
+	IPermissionTarget? IPermissionWorldFacts.SlotRegistry => SlotRegistryElement;
 
 	// PERSISTENCE
 	// Serialize/restore the whole world (its slot tree) to/from a data tree. Permissions are NOT
@@ -653,11 +491,14 @@ public class World
 
 	private const int WorldFormatVersion = 1;
 
-	/// <summary>Serialize this world's data (name + slot tree) into a data tree.</summary>
 	public DataTreeDictionary SaveWorld()
 	{
 		var translator = new ReferenceTranslator();
 		var control = new SaveControl(RootSlot, translator);
+
+		// Claim an identity for every member the tree points at before any of it serializes. Without
+		// this a plain reference resolves on load only when its target happened to be written first.
+		control.ReserveSubtreeIdentities(RootSlot);
 
 		// Save the tree first so type versions are collected before they're stored.
 		var rootNode = RootSlot.Save(control);
@@ -676,7 +517,6 @@ public class World
 		return dictionary;
 	}
 
-	/// <summary>Restore this world's contents from a data tree into the (already-created) root slot.</summary>
 	public void LoadWorld(DataTreeDictionary dictionary)
 	{
 		var translator = new ReferenceTranslator();
@@ -708,9 +548,6 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Get a diagnostic summary of this world.
-	/// </summary>
 	public string GetDiagnostics()
 	{
 		var sb = new System.Text.StringBuilder();
@@ -726,9 +563,6 @@ public class World
 		return sb.ToString();
 	}
 
-	/// <summary>
-	/// Update world metrics (call periodically).
-	/// </summary>
 	internal void UpdateMetrics()
 	{
 		_metrics.SlotCount = RootSlot?.GetDescendants(true).Count() ?? 0;
@@ -736,14 +570,8 @@ public class World
 		_metrics.RefIDsAllocated = ReferenceController?.ObjectCount ?? 0;
 	}
 
-	/// <summary>
-	/// Event triggered when a Slot is added to the World.
-	/// </summary>
 	public event Action<Slot> OnSlotAdded = null!;
 
-	/// <summary>
-	/// Event triggered when a Slot is removed from the World.
-	/// </summary>
 	public event Action<Slot> OnSlotRemoved = null!;
 
 	public World()
@@ -757,7 +585,6 @@ public class World
 		_updateManager = new UpdateManager(this);
 		_dataModelPermissions = new DataModelPermissionController(this);
 
-		// Initialize event receiver arrays
 		int length = Enum.GetValues(typeof(WorldEvent)).Length;
 		_worldEventReceivers = new List<IWorldEventReceiver>[length];
 		for (int i = 0; i < length; i++)
@@ -766,9 +593,6 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Create a local-only world (single user, no networking).
-	/// </summary>
 	public static World LocalWorld(Engine engine, string name, Action<World> init = null!)
 	{
 		var world = new World();
@@ -778,7 +602,6 @@ public class World
 		world.IsDestroyed = false;
 		world.IsDisposed = false;
 
-		// Initialize world
 		world.Initialize();
 
 		// Run initialization callback first so event receivers (like SimpleUserSpawn) are registered
@@ -787,24 +610,17 @@ public class World
 		// Create local user (this triggers OnUserJoined after SimpleUserSpawn is ready)
 		world.CreateHostUser("LocalUser");
 
-		// Start running
 		world.StartRunning();
 		LumoraLogger.Log($"Local world '{name}' created and started");
 
 		return world;
 	}
 
-	/// <summary>
-	/// Start a hosted session (authority/server).
-	/// </summary>
 	public static World StartSession(Engine engine, string name, ushort port, string hostUserName = null!, Action<World> init = null!)
 	{
 		return StartSession(engine, name, port, hostUserName, SessionVisibility.Private, 16, init);
 	}
 
-	/// <summary>
-	/// Start a hosted session (authority/server) with visibility settings.
-	/// </summary>
 	public static World StartSession(
 		Engine engine,
 		string name,
@@ -821,7 +637,6 @@ public class World
 		world.IsDestroyed = false;
 		world.IsDisposed = false;
 
-		// Initialize world
 		world.Initialize();
 
 		world.Configuration.MaxUsers.Value = global::System.Math.Max(1, maxUsers);
@@ -839,7 +654,6 @@ public class World
 			_ => WorldAccessLevel.Private,
 		};
 
-		// Build session metadata
 		var metadata = new SessionMetadata
 		{
 			Name = name,
@@ -852,7 +666,6 @@ public class World
 		// Start session network (creates LNL listener) but don't create user yet
 		world.StartSessionNetwork(port, metadata);
 
-		// Set session ID from the generated metadata
 		world.SessionID.Value = world._session?.Metadata?.SessionId ?? SessionIdentifier.Generate();
 
 		// Run initialization callback first so event receivers (like SimpleUserSpawn) are registered
@@ -861,16 +674,12 @@ public class World
 		// Now create the host user (triggers OnUserJoined after SimpleUserSpawn is ready)
 		world.CreateHostUser(hostUserName!);
 
-		// Start running
 		world.StartRunning();
 		LumoraLogger.Log($"Session '{name}' started on port {port} with visibility {visibility}");
 
 		return world;
 	}
 
-	/// <summary>
-	/// Join a remote session (client).
-	/// </summary>
 	public static World JoinSession(Engine engine, string name, Uri address)
 	{
 		var world = new World();
@@ -884,7 +693,6 @@ public class World
 		// Initialize world as CLIENT (uses LOCAL RefID space to avoid collisions with host's Authority RefIDs)
 		world.Initialize(isAuthority: false);
 
-		// Join session (connects to LNL server)
 		world.JoinSession(address);
 
 		// World will transition to Running when connection succeeds
@@ -893,9 +701,6 @@ public class World
 		return world;
 	}
 
-	/// <summary>
-	/// Join a remote session (client) asynchronously.
-	/// </summary>
 	public static async Task<World?> JoinSessionAsync(Engine engine, string name, Uri address)
 	{
 		var world = new World();
@@ -909,7 +714,6 @@ public class World
 		// Initialize world as CLIENT (uses LOCAL RefID space to avoid collisions with host's Authority RefIDs)
 		world.Initialize(isAuthority: false);
 
-		// Join session (connects to LNL server)
 		var joined = await world.JoinSessionAsync(address);
 		if (!joined)
 		{
@@ -920,11 +724,7 @@ public class World
 		return world;
 	}
 
-	/// <summary>
-	/// Initialize the World and create the root Slot.
-	/// </summary>
-	/// <param name="isAuthority">True if this is the authority/host, false for clients.
-	/// Clients use LOCAL RefID space to avoid conflicts with network-received Authority RefIDs.</param>
+	// Initialize the World and create the root Slot.
 	public void Initialize(bool isAuthority = true)
 	{
 		if (_state != WorldState.Created) return;
@@ -940,7 +740,8 @@ public class World
 		SyncController = new SyncController(this);
 		LumoraLogger.Log("SyncController initialized");
 
-		// Released-drive tracker rides alongside the sync controller. -xlinka
+		// Link arbitration + released-drive tracker. Rides alongside the sync controller: every drive link
+		// asks it for its target, and it feeds released drives back into the sync loop. -xlinka
 		LinkManager = new LinkManager(this);
 		LumoraLogger.Log("LinkManager initialized");
 
@@ -990,18 +791,14 @@ public class World
 		LumoraLogger.Log($"World '{WorldName.Value}' initialized successfully - state={_state}, initState={_initState}");
 	}
 
-	/// <summary>
-	/// Get or create the Users container slot (NOT a UserRoot component!).
-	/// This is just a container - each user gets their own UserRootComponent via SimpleUserSpawn.
-	/// </summary>
+	// Get or create the Users container slot (NOT a UserRoot component!) - just a container; each user gets
+	// their own UserRootComponent via SimpleUserSpawn.
 	public Slot GetOrCreateUsersSlot()
 	{
-		// Try to find existing Users slot
 		var usersSlot = FindSlotsByTag("UserRoot").FirstOrDefault();
 
 		if (usersSlot == null)
 		{
-			// Create Users container slot under Root
 			usersSlot = RootSlot.AddSlot("Users");
 			usersSlot.Tag.Value = "UserRoot";
 			LumoraLogger.Log("Created Users container slot in world");
@@ -1014,9 +811,6 @@ public class World
 	}
 
 
-	/// <summary>
-	/// Register a Slot with the World.
-	/// </summary>
 	internal void RegisterSlot(Slot slot)
 	{
 		if (slot == null) return;
@@ -1052,9 +846,6 @@ public class World
 		OnSlotAdded?.Invoke(slot);
 	}
 
-	/// <summary>
-	/// Unregister a Slot from the World.
-	/// </summary>
 	internal void UnregisterSlot(Slot slot)
 	{
 		if (slot == null) return;
@@ -1062,7 +853,6 @@ public class World
 		ReferenceController?.UnregisterObject(slot.ReferenceID);
 		Metrics.SlotCount--;
 
-		// Remove from slot replicator for network sync
 		if (!slot.IsLocalElement)
 		{
 			_slotCollection?.Remove(slot.ReferenceID);
@@ -1080,9 +870,6 @@ public class World
 		OnSlotRemoved?.Invoke(slot);
 	}
 
-	/// <summary>
-	/// Register a Component with the World.
-	/// </summary>
 	internal void RegisterComponent(Component component)
 	{
 		if (component == null) return;
@@ -1093,9 +880,6 @@ public class World
 		Metrics.ComponentCount++;
 	}
 
-	/// <summary>
-	/// Unregister a Component from the World.
-	/// </summary>
 	internal void UnregisterComponent(Component component)
 	{
 		if (component == null) return;
@@ -1103,41 +887,26 @@ public class World
 		Metrics.ComponentCount--;
 	}
 
-	/// <summary>
-	/// Get all elements in the world.
-	/// </summary>
 	public IEnumerable<KeyValuePair<RefID, IWorldElement>> GetAllElements()
 	{
 		return ReferenceController?.AllObjects ?? Array.Empty<KeyValuePair<RefID, IWorldElement>>();
 	}
 
-	/// <summary>
-	/// Find a world element by its RefID.
-	/// </summary>
 	public IWorldElement FindElement(RefID refID)
 	{
 		return (ReferenceController?.GetObjectOrNull(refID)) ?? null!;
 	}
 
-	/// <summary>
-	/// Find a world element by its RefID (legacy ulong overload).
-	/// </summary>
 	public IWorldElement FindElement(ulong refID)
 	{
 		return FindElement(new RefID(refID));
 	}
 
-	/// <summary>
-	/// Try to retrieve a trashed object for the given tick and ID (used during confirmations).
-	/// </summary>
 	public IWorldElement TryRetrieveFromTrash(ulong tick, RefID id)
 	{
 		return (ReferenceController?.TryRetrieveFromTrash(tick, id)) ?? null!;
 	}
 
-	/// <summary>
-	/// Find all Slots with the specified tag.
-	/// </summary>
 	public IEnumerable<Slot> FindSlotsByTag(string tag)
 	{
 		if (_slotsByTag.TryGetValue(tag, out var slots))
@@ -1147,9 +916,6 @@ public class World
 		return Array.Empty<Slot>();
 	}
 
-	/// <summary>
-	/// Find a Slot by name (searches entire hierarchy).
-	/// </summary>
 	public Slot FindSlotByName(string name)
 	{
 		return FindSlotByNameRecursive(RootSlot, name);
@@ -1174,9 +940,6 @@ public class World
 		return null!;
 	}
 
-	/// <summary>
-	/// Destroy the World and all its contents.
-	/// </summary>
 	public void DestroyWorld()
 	{
 		if (_state == WorldState.Destroyed) return;
@@ -1202,9 +965,6 @@ public class World
 		// Note: Godot scene cleanup handled by WorldDriver wrapper
 	}
 
-	/// <summary>
-	/// Add a user to the world.
-	/// </summary>
 	public void AddUser(User user)
 	{
 		if (user == null) return;
@@ -1245,7 +1005,6 @@ public class World
 					TriggerUserJoinedEvent(user);
 				}
 
-				// Notify session of user count change
 				_session?.OnUserCountChanged(_users.Count);
 			}
 		}
@@ -1264,9 +1023,6 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Remove a user from the world.
-	/// </summary>
 	public void RemoveUser(User user)
 	{
 		if (user == null) return;
@@ -1276,7 +1032,6 @@ public class World
 			_users.Remove(user);
 			ReferenceController?.UnregisterObject(user.ReferenceID);
 
-			// Remove from user replicator for network sync
 			_userCollection?.Remove(user.ReferenceID);
 
 			LumoraLogger.Log($"User removed from world: {user.UserName.Value}");
@@ -1301,26 +1056,14 @@ public class World
 				TriggerUserLeftEvent(user);
 			}
 
-			// Notify session of user count change
 			_session?.OnUserCountChanged(_users.Count);
 		}
 	}
 
-	/// <summary>
-	/// Register a user with the world (called by UserCollection).
-	/// Alias for AddUser.
-	/// </summary>
 	internal void RegisterUser(User user) => AddUser(user);
 
-	/// <summary>
-	/// Unregister a user from the world (called by UserCollection).
-	/// Alias for RemoveUser.
-	/// </summary>
 	internal void UnregisterUser(User user) => RemoveUser(user);
 
-	/// <summary>
-	/// Set the local user (client's own user). First valid assignment wins for the session.
-	/// </summary>
 	public void SetLocalUser(User user)
 	{
 		if (user == null)
@@ -1362,12 +1105,10 @@ public class World
 			TriggerUserJoinedEvent(user);
 	}
 
-	/// <summary>
-	/// Resolve which RefID byte the local user's own content should mint into. On the host the local user IS
-	/// the authority, so this returns the authority byte (host owns everything anyway). On a client it's the
-	/// local user's allocation byte once known, else the byte carried in the user's own RefID (set even
-	/// before AllocationID syncs), else authority as a last resort. -xlinka
-	/// </summary>
+	// Resolve which RefID byte the local user's own content should mint into. On the host the local user IS
+	// the authority, so this returns the authority byte (host owns everything anyway). On a client it's the
+	// local user's allocation byte once known, else the byte carried in the user's own RefID (set even
+	// before AllocationID syncs), else authority as a last resort. -xlinka
 	private byte ResolveOwnedAllocationByte()
 	{
 		var u = LocalUser;
@@ -1382,11 +1123,9 @@ public class World
 		return RefIDConstants.IsValidUserByte(b) ? b : RefIDConstants.AUTHORITY_BYTE;
 	}
 
-	/// <summary>
-	/// Arm owned-namespace building for the local user. Idempotent. Must run AFTER LocalUser is set and its
-	/// allocation byte is resolvable, BEFORE any per-peer spawn builds the user's own equipment, so that
-	/// equipment lands in the owned namespace. Host short-circuits true (it authors in authority byte 0). -xlinka
-	/// </summary>
+	// Arm owned-namespace building for the local user. Idempotent. Must run AFTER LocalUser is set and its
+	// allocation byte is resolvable, BEFORE any per-peer spawn builds the user's own equipment, so that
+	// equipment lands in the owned namespace. Host short-circuits true (it authors in authority byte 0). -xlinka
 	public bool InitializeAllocationForLocalUser()
 	{
 		if (IsAuthority)
@@ -1410,23 +1149,19 @@ public class World
 		return true;
 	}
 
-	/// <summary>True once owned-namespace building is armed for the local user (or we're the host). -xlinka</summary>
+	// True once owned-namespace building is armed for the local user (or we're the host). -xlinka
 	public bool IsLocalAllocationReady => _localAllocationReady || IsAuthority;
 
-	/// <summary>
-	/// Run an action with the allocation context scoped to the local user's own namespace, so everything
-	/// built inside - slots, components, sub-slots - is minted into and OWNED by the local user. The entry
-	/// point a per-peer spawn uses to build its own equipment. On the host this is the authority byte (a
-	/// no-op scope). -xlinka
-	/// </summary>
+	// Run an action with the allocation context scoped to the local user's own namespace, so everything
+	// built inside - slots, components, sub-slots - is minted into and OWNED by the local user. The entry
+	// point a per-peer spawn uses to build its own equipment. On the host this is the authority byte (a
+	// no-op scope). -xlinka
 	public IDisposable EnterLocalUserAllocation() => new OwnedAllocationScope(this, ResolveOwnedAllocationByte());
 
-	/// <summary>
-	/// Create a slot in the local user's own RefID namespace under the given parent. Networked (others see
-	/// it) but OWNED by the local user, so the permission gate lets them keep mutating it with no system
-	/// bypass. For a joining user's own equipment - NOT shared world content (that stays host-authoritative
-	/// via AddSlot). -xlinka
-	/// </summary>
+	// Create a slot in the local user's own RefID namespace under the given parent. Networked (others see
+	// it) but OWNED by the local user, so the permission gate lets them keep mutating it with no system
+	// bypass. For a joining user's own equipment - NOT shared world content (that stays host-authoritative
+	// via AddSlot). -xlinka
 	public Slot AddLocalUserSlot(Slot parent, string name = "Slot")
 	{
 		if (parent == null) throw new ArgumentNullException(nameof(parent));
@@ -1468,9 +1203,6 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Get all users in the world.
-	/// </summary>
 	public List<User> GetAllUsers()
 	{
 		lock (_users)
@@ -1479,19 +1211,13 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Start a new session as host (authority).
-	/// </summary>
 	public void StartSession(ushort port = 7777, string hostUserName = null!)
 	{
 		StartSessionNetwork(port);
 		CreateHostUser(hostUserName);
 	}
 
-	/// <summary>
-	/// Start the session network without creating the host user.
-	/// Used internally to allow init callback to run before user creation.
-	/// </summary>
+	// Lets the init callback run before user creation.
 	private void StartSessionNetwork(ushort port, SessionMetadata metadata = null!)
 	{
 		if (_session != null)
@@ -1529,9 +1255,6 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Create the host user for a locally hosted session.
-	/// </summary>
 	public User CreateHostUser(string userName = null!)
 	{
 		var (rangeStart, rangeEnd) = _refIDAllocator.GetAuthorityIDRange();
@@ -1552,12 +1275,10 @@ public class World
 		hostUser.PresentInWorld.Value = true;
 		hostUser.IsSilenced.Value = false;
 
-		// Set head device type based on VR status
 		var inputInterface = Engine.Current?.InputInterface;
 		hostUser.HeadDevice.Value = inputInterface?.CurrentHeadOutputDevice ?? HeadOutputDevice.Screen;
 		hostUser.VRActive.Value = inputInterface?.IsVRActive ?? false;
 
-		// Set platform
 		hostUser.UserPlatform.Value = GetCurrentPlatform();
 
 		LocalUser = hostUser;
@@ -1568,9 +1289,6 @@ public class World
 		return hostUser;
 	}
 
-	/// <summary>
-	/// Get the current platform type.
-	/// </summary>
 	private static Platform GetCurrentPlatform()
 	{
 		if (OperatingSystem.IsWindows())
@@ -1582,9 +1300,6 @@ public class World
 		return Platform.Other;
 	}
 
-	/// <summary>
-	/// Join an existing session as client.
-	/// </summary>
 	public void JoinSession(Uri address)
 	{
 		if (_session != null)
@@ -1599,10 +1314,8 @@ public class World
 
 			_session = Session.JoinSession(this, new[] { address });
 
-			// Client now waits for JoinGrant from authority
 			WaitForJoinGrant();
 
-			// Create loading indicator in current world
 			CreateSessionJoinIndicator();
 		}
 		catch (Exception ex)
@@ -1612,9 +1325,6 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Join an existing session as client (async).
-	/// </summary>
 	public async Task<bool> JoinSessionAsync(Uri address)
 	{
 		if (_session != null)
@@ -1634,7 +1344,6 @@ public class World
 				return false;
 			}
 
-			// Client now waits for JoinGrant from authority
 			WaitForJoinGrant();
 			return true;
 		}
@@ -1646,11 +1355,8 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Called when client receives JoinGrant from authority.
-	/// Transitions from WaitingForJoinGrant to InitializingDataModel.
-	/// Note: Allocation context switch is handled in SessionSyncManager before SetLocalUser.
-	/// </summary>
+	// Transitions from WaitingForJoinGrant to InitializingDataModel. Note: Allocation context switch is handled
+	// in SessionSyncManager before SetLocalUser.
 	public void OnJoinGrantReceived()
 	{
 		if (_state == WorldState.WaitingForJoinGrant)
@@ -1667,10 +1373,7 @@ public class World
 		TryClaimPendingLocalUser();
 	}
 
-	/// <summary>
-	/// Assign LocalUser from an already-synced user matching the join grant's target RefID, if it arrived
-	/// before the grant. Order-independent companion to the per-user check in User.Initialize().
-	/// </summary>
+	// Order-independent companion to the per-user check in User.Initialize().
 	private void TryClaimPendingLocalUser()
 	{
 		if (LocalUser != null)
@@ -1691,10 +1394,7 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Called when client receives full world state from authority.
-	/// Transitions from InitializingDataModel to Running.
-	/// </summary>
+	// Transitions InitializingDataModel to Running.
 	public void OnFullStateReceived()
 	{
 		if (_state != WorldState.InitializingDataModel)
@@ -1723,11 +1423,9 @@ public class World
 		return LocalUser != null;
 	}
 
-	/// <summary>
-	/// Pumped from the session control-drain while we deferred Running waiting for the local user. Promotes
-	/// to Running the moment the user lands, after the bound it goes Running anyway but logs a LOUD error so
-	/// a genuinely-missing local user is a visible failure, never silent. -xlinka
-	/// </summary>
+	// Pumped from the session control-drain while we deferred Running waiting for the local user. Promotes
+	// to Running the moment the user lands, after the bound it goes Running anyway but logs a LOUD error so
+	// a genuinely-missing local user is a visible failure, never silent. -xlinka
 	private void TickAwaitingLocalUser()
 	{
 		if (_state != WorldState.InitializingDataModel || IsAuthority)
@@ -1749,7 +1447,7 @@ public class World
 		}
 	}
 
-	/// <summary>Pumped each session control-drain so join progress advances while the world is still pre-Running. -xlinka</summary>
+	// Pumped each session control-drain so join progress advances while the world is still pre-Running. -xlinka
 	public void PumpJoinProgress()
 	{
 		if (_state == WorldState.InitializingDataModel)
@@ -1785,9 +1483,6 @@ public class World
 		TriggerUserJoinedEvent(lu);
 	}
 
-	/// <summary>
-	/// Enter network initialization stage.
-	/// </summary>
 	public void NetworkInitStart()
 	{
 		var oldState = _state;
@@ -1797,9 +1492,6 @@ public class World
 		OnStateChanged?.Invoke(oldState, _state);
 	}
 
-	/// <summary>
-	/// Enter join grant wait stage (clients only).
-	/// </summary>
 	public void WaitForJoinGrant()
 	{
 		if (IsAuthority)
@@ -1815,9 +1507,6 @@ public class World
 		OnStateChanged?.Invoke(oldState, _state);
 	}
 
-	/// <summary>
-	/// Enter data model initialization stage (clients only).
-	/// </summary>
 	public void StartDataModelInit()
 	{
 		if (IsAuthority)
@@ -1834,9 +1523,6 @@ public class World
 		OnStateChanged?.Invoke(oldState, _state);
 	}
 
-	/// <summary>
-	/// Mark the world as running.
-	/// </summary>
 	public void StartRunning()
 	{
 		if (_state == WorldState.Destroyed)
@@ -1874,9 +1560,6 @@ public class World
 		OnStateChanged?.Invoke(oldState, _state);
 	}
 
-	/// <summary>
-	/// Mark initialization failure.
-	/// </summary>
 	public void InitializationFailed(string? reason = null)
 	{
 		var oldState = _state;
@@ -1887,10 +1570,7 @@ public class World
 		OnStateChanged?.Invoke(oldState, _state);
 	}
 
-	/// <summary>
-	/// Queue action to run synchronously on next update.
-	/// Thread-safe for cross-thread calls.
-	/// </summary>
+	// Thread-safe for cross-thread calls.
 	public void RunSynchronously(Action action)
 	{
 		if (IsDisposed) return;
@@ -1901,11 +1581,6 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Queue action to run after a number of update cycles.
-	/// </summary>
-	/// <param name="updateCount">Number of updates to wait</param>
-	/// <param name="action">Action to execute</param>
 	public void RunInUpdates(int updateCount, Action action)
 	{
 		if (IsDisposed || action == null) return;
@@ -1916,7 +1591,6 @@ public class World
 			return;
 		}
 
-		// Wrap to count down updates
 		int remaining = updateCount;
 		void CountdownAction()
 		{
@@ -1929,9 +1603,7 @@ public class World
 		RunSynchronously(CountdownAction);
 	}
 
-	/// <summary>
-	/// Run an action after a delay measured in scaled world time. Thread-safe.
-	/// </summary>
+	// Scaled world time. Thread-safe.
 	public void RunInSeconds(float seconds, Action action)
 	{
 		if (IsDisposed || action == null) return;
@@ -1942,9 +1614,7 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// A task that completes after a delay in scaled world time. Awaitable from a worker task.
-	/// </summary>
+	// Scaled world time. Awaitable from a worker task.
 	public Task DelaySeconds(float seconds)
 	{
 		var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1952,10 +1622,8 @@ public class World
 		return tcs.Task;
 	}
 
-	/// <summary>
-	/// Run a background async operation. Exceptions are logged rather than lost; marshal results back
-	/// onto the world with <see cref="RunSynchronously"/> inside the task.
-	/// </summary>
+	// Exceptions are logged rather than lost; marshal results back onto the world with RunSynchronously inside
+	// the task.
 	public void StartTask(Func<Task> task)
 	{
 		if (IsDisposed || task == null) return;
@@ -1968,10 +1636,8 @@ public class World
 		catch (Exception ex) { LumoraLogger.Error($"World: task error: {ex}"); }
 	}
 
-	/// <summary>
-	/// Start a coroutine ticked once per Update. A step may yield: null (wait one update), a number
-	/// (wait that many scaled seconds), or a <see cref="Task"/> (wait until it completes). Thread-safe.
-	/// </summary>
+	// A step may yield: null (wait one update), a number (wait that many scaled seconds), or a Task (wait until
+	// it completes). Thread-safe.
 	public void StartCoroutine(IEnumerator routine)
 	{
 		if (IsDisposed || routine == null) return;
@@ -1995,9 +1661,6 @@ public class World
 		public Action Action = null!;
 	}
 
-	/// <summary>
-	/// Process all queued synchronous actions.
-	/// </summary>
 	private void ProcessSynchronousActions()
 	{
 		lock (_syncLock)
@@ -2016,9 +1679,6 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Leave the current session.
-	/// </summary>
 	public void LeaveSession()
 	{
 		if (_session != null)
@@ -2029,19 +1689,13 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Increment the sync tick counter.
-	/// Called once per sync cycle by SessionSyncManager.
-	/// </summary>
 	public void IncrementSyncTick()
 	{
 		SyncTick++;
 	}
 
-	/// <summary>
-	/// Increment the state version counter. Only the authority owns the state version, and only by
-	/// incrementing it - a non-authority calling this is a bug.
-	/// </summary>
+	// Only the authority owns the state version, and only by incrementing it. A non-authority calling
+	// this is a bug.
 	public void IncrementStateVersion()
 	{
 		if (!IsAuthority)
@@ -2051,12 +1705,10 @@ public class World
 		StateVersion++;
 	}
 
-	/// <summary>
-	/// Adopt an authority state version (clients only, applying host updates). The host never adopts a
-	/// foreign version (it only increments), and the version can only move forward - a stale/reordered
-	/// or out-of-range lower version is rejected so a peer can't roll our view of authority state backward.
-	/// We log-and-ignore rather than throw, so a stale batch doesn't abort the rest of the sync drain.
-	/// </summary>
+	// The host never adopts a foreign version (it only increments), and the version can only move forward - a
+	// stale/reordered or out-of-range lower version is rejected so a peer can't roll our view of authority
+	// state backward. We log-and-ignore rather than throw, so a stale batch doesn't abort the rest of the sync
+	// drain.
 	public void SetStateVersion(ulong version)
 	{
 		if (IsAuthority)
@@ -2072,21 +1724,64 @@ public class World
 		StateVersion = version;
 	}
 
-	/// <summary>
-	/// Process the World update loop with comprehensive stages.
-	/// Handles all update phases for the world simulation.
-	/// Called by EngineDriver or similar wrapper.
-	/// </summary>
+	// Slow-frame accounting. One summary line per window instead of a warning per frame: a warning is a
+	// stack-traced push on the platform side, and an import or a spawn burst produces dozens of legitimately
+	// slow frames in a row. The first slow frame after a quiet spell logs at once so the timing is visible,
+	// the rest of the window is folded into a count with the worst breakdown and the hook types behind it.
+	// Startup gets a grace period: the first seconds of a world are all hitches by nature. -xlinka
+	private const double SlowFrameMs = 25.0;
+	private const double SlowReportWindowSeconds = 5.0;
+	private const double SlowStartupGraceSeconds = 8.0;
+	private int _slowFrameCount;
+	private double _slowWindowStart;
+	private double _slowWorstMs;
+	private string _slowWorstDetail = "";
+
+	private void NoteSlowFrame(double total, double sync, double pre, double comp, double change, double hooks, double end)
+	{
+		if (Time.TotalTime < SlowStartupGraceSeconds)
+			return;
+		if (_slowFrameCount == 0)
+		{
+			_slowWindowStart = Time.TotalTime;
+			_slowWorstMs = 0;
+		}
+		_slowFrameCount++;
+		if (total > _slowWorstMs)
+		{
+			_slowWorstMs = total;
+			string hookDetail = hooks >= comp && hooks >= change ? _updateManager?.DescribeHookCost() ?? "" : "";
+			_slowWorstDetail = $"sync={sync:F0} pre={pre:F0} comp={comp:F0} change={change:F0} hooks={hooks:F0} end={end:F0}"
+				+ (hookDetail.Length > 0 ? $" [{hookDetail}]" : "");
+		}
+		if (_slowFrameCount == 1)
+			LumoraLogger.Log($"World.Update slow frame {total:F0}ms: {_slowWorstDetail}");
+		else if (Time.TotalTime - _slowWindowStart >= SlowReportWindowSeconds)
+			FlushSlowFrameReport();
+	}
+
+	private void FlushSlowFrameReport()
+	{
+		if (_slowFrameCount > 1)
+			LumoraLogger.Log($"World.Update: {_slowFrameCount} slow frames in {Time.TotalTime - _slowWindowStart:F1}s, worst {_slowWorstMs:F0}ms ({_slowWorstDetail})");
+		_slowFrameCount = 0;
+		_slowWorstMs = 0;
+		_slowWorstDetail = "";
+	}
+
 	public void Update(double delta)
 	{
 		if (_state != WorldState.Running) return;
 
-		// Acquire Implementer lock for main thread modifications
 		_hookManager?.ImplementerLock(System.Threading.Thread.CurrentThread);
 		try
 		{
 			var scaledDelta = delta * TimeScale;
 			Time.Advance(scaledDelta);
+
+			// Unscaled delta: the correction is chasing another machine's clock, which does not care
+			// what this world's time scale is set to.
+			SessionClock.Advance(delta);
 
 			// Replicated FPS for the session UI: only the local user writes, rounded so it isn't a
 			// per-frame sync churn source. -xlinka
@@ -2107,14 +1802,11 @@ public class World
 			// Poll network transport so packets are dispatched before any world logic runs
 			_session?.Poll();
 
-			// Process synchronous actions (immediate state changes)
 			ProcessSynchronousActions();
 			double msSync = Lap();
 
-			// Process completed asset fetch tasks
 			Networking.AssetFetcher.ProcessQueue();
 
-			// Process world events (user joined/left, focus changes)
 			RunWorldEvents();
 
 			// Register any newly used worker types (authority only)
@@ -2123,21 +1815,23 @@ public class World
 				Workers?.RegisterTypes();
 			}
 
-			// Process input for this world (if focused)
 			if (_focus == WorldFocus.Focused)
 			{
 				ProcessInput((float)scaledDelta);
 			}
 
-			// Update coroutines
 			UpdateCoroutines((float)scaledDelta);
+
+			// Hand out link grants before anything reads a drive. A link whose target resolved since the
+			// last frame (arrived over the wire, finished loading, or was freed by another driver letting
+			// go) becomes active here, so a component reading IsLinkValid in its update sees the settled
+			// answer instead of lagging a frame behind. -xlinka
+			LinkManager?.GrantLinks();
 			double msPre = Lap();
 
-			// Update components (main update)
 			UpdateComponents((float)scaledDelta);
 			double msComp = Lap();
 
-			// Apply component changes (from sync field updates)
 			_updateManager?.RunChangeApplications();
 			double msChange = Lap();
 
@@ -2148,16 +1842,16 @@ public class World
 			_updateManager?.ProcessHookUpdates((float)scaledDelta);
 			double msHooks = Lap();
 
-			// Process destructions
 			ProcessDestructions();
 
-			// Clean up trash bin
 			_trashBin?.Update();
 			double msEnd = Lap();
 
 			double msTotal = msSync + msPre + msComp + msChange + msHooks + msEnd;
-			if (msTotal > 25.0)
-				LumoraLogger.Warn($"World.Update SLOW {msTotal:F0}ms: sync={msSync:F0} pre={msPre:F0} comp={msComp:F0} change={msChange:F0} hooks={msHooks:F0} end={msEnd:F0}");
+			if (msTotal > SlowFrameMs)
+				NoteSlowFrame(msTotal, msSync, msPre, msComp, msChange, msHooks, msEnd);
+			else if (_slowFrameCount > 0 && Time.TotalTime - _slowWindowStart >= SlowReportWindowSeconds)
+				FlushSlowFrameReport();
 
 			// Signal sync manager that world refresh is complete
 			// Sync thread waits for this before new-user initialization
@@ -2167,7 +1861,6 @@ public class World
 				_session.Sync.SignalRefreshFinished();
 			}
 
-			// Update local user stats (FPS)
 			if (LocalUser != null && delta > 0)
 			{
 				LocalUser.FPS.Value = (float)(1.0 / delta);
@@ -2182,9 +1875,6 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Fixed update for physics and deterministic operations.
-	/// </summary>
 	public void FixedUpdate(double fixedDelta)
 	{
 		if (_state != WorldState.Running) return;
@@ -2194,7 +1884,6 @@ public class World
 		{
 			var scaledDelta = fixedDelta * TimeScale;
 
-			// Update physics for all physics components
 			UpdatePhysics((float)scaledDelta);
 		}
 		finally
@@ -2203,9 +1892,6 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Late update for cameras and final positioning.
-	/// </summary>
 	public void LateUpdate(double delta)
 	{
 		if (_state != WorldState.Running) return;
@@ -2215,8 +1901,12 @@ public class World
 		{
 			var scaledDelta = delta * TimeScale;
 
-			// Update cameras and final transforms
 			UpdateCameras((float)scaledDelta);
+
+			// Same order as the main pass: anything a late component moved fires its WorldTransformChanged
+			// before the hooks flush, so a collider or a follower riding a slot that only gets its final pose
+			// here (a laser-held object, say) resyncs this frame instead of the next. -xlinka
+			_updateManager?.ProcessMovedSlots();
 
 			_updateManager?.ProcessHookUpdates((float)scaledDelta);
 		}
@@ -2226,18 +1916,10 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Process input for this world.
-	/// </summary>
 	private void ProcessInput(float delta)
 	{
-		// Process input through input manager
-		// This would handle VR controllers, keyboard, mouse for this world
 	}
 
-	/// <summary>
-	/// Update coroutines for this world.
-	/// </summary>
 	private void UpdateCoroutines(float delta)
 	{
 		// Promote staged coroutines and fire any elapsed delayed actions. Both lists are mutated under
@@ -2319,9 +2001,6 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Update all components in the world.
-	/// </summary>
 	private void UpdateComponents(float delta)
 	{
 		_updateManager?.RunStartups();
@@ -2329,15 +2008,11 @@ public class World
 		_updateManager?.RunUpdates(delta);
 	}
 
-	/// <summary>
-	/// Recursively update slots and their components.
-	/// </summary>
 	private void UpdateSlotsRecursive(Slot slot, float delta)
 	{
 		if (slot == null || !slot.ActiveSelf)
 			return;
 
-		// Update components on this slot
 		foreach (var component in slot.Components)
 		{
 			if (component.Enabled)
@@ -2346,7 +2021,6 @@ public class World
 			}
 		}
 
-		// Update child slots
 		foreach (var child in slot.Children)
 		{
 			UpdateSlotsRecursive(child, delta);
@@ -2357,31 +2031,21 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Process pending destructions.
-	/// </summary>
 	private void ProcessDestructions()
 	{
 		_updateManager?.RunDestructions();
 	}
 
-	/// <summary>
-	/// Update physics components.
-	/// </summary>
 	private void UpdatePhysics(float fixedDelta)
 	{
 		UpdatePhysicsRecursive(RootSlot, fixedDelta);
 	}
 
-	/// <summary>
-	/// Recursively update physics on slots.
-	/// </summary>
 	private void UpdatePhysicsRecursive(Slot slot, float fixedDelta)
 	{
 		if (slot == null || !slot.ActiveSelf)
 			return;
 
-		// Update physics components on this slot
 		foreach (var component in slot.Components)
 		{
 			if (component.Enabled)
@@ -2392,7 +2056,6 @@ public class World
 			}
 		}
 
-		// Update child slots
 		foreach (var child in slot.Children)
 		{
 			UpdatePhysicsRecursive(child, fixedDelta);
@@ -2403,34 +2066,24 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Update camera components.
-	/// </summary>
 	private void UpdateCameras(float delta)
 	{
-		// Update all camera components for final positioning
 		UpdateCamerasRecursive(RootSlot, delta);
 	}
 
-	/// <summary>
-	/// Recursively update cameras on slots.
-	/// </summary>
 	private void UpdateCamerasRecursive(Slot slot, float delta)
 	{
 		if (slot == null || !slot.ActiveSelf)
 			return;
 
-		// Update camera components on this slot
 		foreach (var component in slot.Components)
 		{
 			if (component.Enabled)
 			{
-				// Call late update for cameras and final positioning
 				component.OnLateUpdate(delta);
 			}
 		}
 
-		// Update child slots
 		foreach (var child in slot.Children)
 		{
 			UpdateCamerasRecursive(child, delta);
@@ -2441,9 +2094,6 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Register a component to receive world events.
-	/// </summary>
 	public void RegisterEventReceiver(IWorldEventReceiver receiver)
 	{
 		foreach (WorldEvent eventType in Enum.GetValues(typeof(WorldEvent)))
@@ -2455,9 +2105,6 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Unregister a component from receiving world events.
-	/// </summary>
 	public void UnregisterEventReceiver(IWorldEventReceiver receiver)
 	{
 		foreach (WorldEvent eventType in Enum.GetValues(typeof(WorldEvent)))
@@ -2469,31 +2116,18 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Trigger user joined events to all registered receivers.
-	/// Should be called from AddUser.
-	/// </summary>
 	private void TriggerUserJoinedEvent(User user)
 	{
 		_joinedUsers.Add(user);
 	}
 
-	/// <summary>
-	/// Trigger user left events to all registered receivers.
-	/// Should be called from RemoveUser.
-	/// </summary>
 	private void TriggerUserLeftEvent(User user)
 	{
 		_leftUsers.Add(user);
 	}
 
-	/// <summary>
-	/// Process all pending world events and notify receivers.
-	/// Called during world update cycle.
-	/// </summary>
 	private void RunWorldEvents()
 	{
-		// Process user joined events
 		if (_joinedUsers.Count > 0)
 		{
 			foreach (var user in _joinedUsers)
@@ -2513,7 +2147,6 @@ public class World
 			_joinedUsers.Clear();
 		}
 
-		// Process user left events
 		if (_leftUsers.Count > 0)
 		{
 			foreach (var user in _leftUsers)
@@ -2534,27 +2167,18 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Add a slot to the world.
-	/// </summary>
 	public Slot AddSlot(string name = "Slot")
 	{
 		return RootSlot.AddSlot(name);
 	}
 
-	/// <summary>
-	/// Create a SessionJoinIndicator in the current world.
-	/// Shows a loading indicator in the currently focused world.
-	/// </summary>
 	private void CreateSessionJoinIndicator()
 	{
-		// Only create indicator for client worlds that have a local user
 		if (IsAuthority || LocalUser == null || WorldManager?.FocusedWorld == null)
 			return;
 
 		try
 		{
-			// Create indicator in the currently focused world
 			var currentWorld = WorldManager.FocusedWorld;
 			
 			RunSynchronously(() =>
@@ -2578,12 +2202,8 @@ public class World
 		}
 	}
 
-	/// <summary>
-	/// Dispose of the world and clean up resources.
-	/// </summary>
 	public void Dispose()
 	{
-		// 1. Check double-dispose
 		if (IsDisposed)
 		{
 			LumoraLogger.Warn($"World: Already disposed world '{WorldName.Value}'");
@@ -2592,7 +2212,6 @@ public class World
 
 		LumoraLogger.Log($"World: Disposing world '{WorldName.Value}'");
 
-		// 2. Mark as destroyed
 		IsDestroyed = true;
 		IsDisposed = true;
 
@@ -2611,7 +2230,6 @@ public class World
 		try { destroyed?.Invoke(this); }
 		catch (Exception ex) { LumoraLogger.Error($"World: Error in WhenDestroyed handler during dispose: {ex}"); }
 
-		// 3. Process remaining synchronous actions
 		lock (_syncLock)
 		{
 			while (_synchronousActions.Count > 0)
@@ -2627,7 +2245,6 @@ public class World
 			}
 		}
 
-		// 4. Dispose session
 		try
 		{
 			_session?.Dispose();
@@ -2638,7 +2255,6 @@ public class World
 			LumoraLogger.Error($"World: Error disposing session: {ex.Message}");
 		}
 
-		// Dispose sync controller
 		try
 		{
 			SyncController?.Dispose();
@@ -2651,7 +2267,6 @@ public class World
 			LumoraLogger.Error($"World: Error disposing sync controller: {ex.Message}");
 		}
 
-		// 5. Dispose all users
 		foreach (var user in _users.ToList())
 		{
 			try
@@ -2664,8 +2279,6 @@ public class World
 			}
 		}
 
-		// 8. Dispose all components in all slots
-		// 9. Dispose all slots
 		try
 		{
 			RootSlot?.Destroy();
@@ -2679,14 +2292,12 @@ public class World
 			LumoraLogger.Error($"World: Error disposing root slot: {ex.Message}");
 		}
 
-		// 10. Clear all collections
 		_users?.Clear();
 		_slotsByTag?.Clear();
 		_rootSlots?.Clear();
 		_joinedUsers?.Clear();
 		_leftUsers?.Clear();
 
-		// Clear event receivers
 		if (_worldEventReceivers != null)
 		{
 			for (int i = 0; i < _worldEventReceivers.Length; i++)
@@ -2695,7 +2306,6 @@ public class World
 			}
 		}
 
-		// 11. Dispose managers
 		try
 		{
 			_hookManager?.Dispose();

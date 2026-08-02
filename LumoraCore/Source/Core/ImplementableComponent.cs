@@ -5,51 +5,27 @@ using System;
 
 namespace Lumora.Core;
 
-/// <summary>
-/// Base class for components that can be implemented by engine-specific hooks.
-/// Non-generic version that uses IHook.
-/// </summary>
 public abstract class ImplementableComponent : ImplementableComponent<IHook>
 {
 }
 
-/// <summary>
-/// Generic base class for components with typed hooks.
-/// </summary>
 public abstract class ImplementableComponent<C> : Component, IImplementable<C> where C : class, IHook
 {
-    /// <summary>
-    /// The hook that implements this component in the engine.
-    /// </summary>
     public C Hook { get; private set; } = null!;
 
-    /// <summary>
-    /// Explicit interface implementation for non-generic IImplementable.
-    /// </summary>
     IHook IImplementable.Hook => Hook;
 
-    /// <summary>
-    /// Constructor - hook initialization happens after Initialize() is called.
-    /// </summary>
+    // Hook init happens after Initialize(), not here.
     protected ImplementableComponent()
     {
-        // Hook will be created in OnAwake() after Initialize() sets up World reference
     }
 
-    /// <summary>
-    /// Create and assign the hook for this component.
-    /// Called during component construction.
-    /// </summary>
     private void InitializeHook()
     {
         Hook = InstantiateHook();
         Hook?.AssignOwner(this);
     }
 
-    /// <summary>
-    /// Instantiate the hook for this component.
-    /// Override this to create custom hooks.
-    /// </summary>
     protected virtual C InstantiateHook()
     {
         if (World == null)
@@ -88,20 +64,13 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
         }
     }
 
-    /// <summary>
-    /// Create the hook when component awakens (after Initialize() sets World).
-    /// </summary>
     public override void OnAwake()
     {
         base.OnAwake();
 
-        // Now that Initialize() has been called and World is set, create the hook
         InitializeHook();
     }
 
-    /// <summary>
-    /// Initialize the hook when the component starts.
-    /// </summary>
     public override void OnStart()
     {
         base.OnStart();
@@ -137,18 +106,12 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
         RunApplyChanges();
     }
 
-    /// <summary>
-    /// Destroy the hook when the component is destroyed.
-    /// </summary>
     public override void OnDestroy()
     {
         DisposeHook();
         base.OnDestroy();
     }
 
-    /// <summary>
-    /// Clean up the hook.
-    /// </summary>
     private void DisposeHook()
     {
         if (Hook != null)

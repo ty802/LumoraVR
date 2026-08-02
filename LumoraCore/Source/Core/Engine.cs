@@ -15,50 +15,34 @@ using Lumora.Core.Coroutines;
 using Lumora.Core.Physics;
 using Lumora.Core.Persistence;
 using Lumora.Core.Templates;
-using Lumora.CDN;
+using Lumora.Nexus;
+using Lumora.Nexus.Cloud.Cdn;
+using Lumora.Nexus.Diagnostics;
+using Lumora.Nexus.Cloud;
+using Lumora.Nexus.Transport;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
 
-/// <summary>
-/// Engine initialization state.
-/// </summary>
 public enum EngineState
 {
-    /// <summary>Not yet initialized.</summary>
     NotInitialized,
-    /// <summary>Currently initializing subsystems.</summary>
     Initializing,
-    /// <summary>Fully initialized and running.</summary>
     Running,
-    /// <summary>Currently shutting down.</summary>
     ShuttingDown,
-    /// <summary>Fully disposed.</summary>
     Disposed,
-    /// <summary>Initialization failed.</summary>
     Failed
 }
 
-/// <summary>
-/// Status of a subsystem initialization.
-/// </summary>
 public enum SubsystemStatus
 {
-    /// <summary>Not yet initialized.</summary>
     Pending,
-    /// <summary>Currently initializing.</summary>
     Initializing,
-    /// <summary>Successfully initialized.</summary>
     Ready,
-    /// <summary>Initialization failed.</summary>
     Failed,
-    /// <summary>Disposed.</summary>
     Disposed
 }
 
-/// <summary>
-/// Engine version information.
-/// </summary>
 public static class EngineVersion
 {
     public const int Major = 0;
@@ -69,40 +53,31 @@ public static class EngineVersion
     public static readonly DateTime BuildDate = new DateTime(2024, 1, 1); // Update with actual build
 }
 
-/// <summary>
-/// Engine performance metrics.
-/// </summary>
 public class EngineMetrics
 {
     private readonly Stopwatch _frameTimer = new Stopwatch();
     private readonly Queue<double> _frameTimes = new Queue<double>();
     private const int FrameTimeHistorySize = 120;
 
-    /// <summary>Total frames processed.</summary>
     public long TotalFrames { get; private set; }
 
-    /// <summary>Total time engine has been running in seconds.</summary>
+    // Seconds.
     public double TotalTime { get; private set; }
 
-    /// <summary>Time of the last frame in seconds.</summary>
+    // Seconds.
     public double LastFrameTime { get; private set; }
 
-    /// <summary>Average frame time over recent history.</summary>
     public double AverageFrameTime { get; private set; }
 
-    /// <summary>Current frames per second.</summary>
     public double CurrentFPS => LastFrameTime > 0 ? 1.0 / LastFrameTime : 0;
 
-    /// <summary>Average frames per second.</summary>
     public double AverageFPS => AverageFrameTime > 0 ? 1.0 / AverageFrameTime : 0;
 
-    /// <summary>Peak memory usage in bytes.</summary>
+    // Bytes.
     public long PeakMemoryUsage { get; private set; }
 
-    /// <summary>Current memory usage in bytes.</summary>
     public long CurrentMemoryUsage => GC.GetTotalMemory(false);
 
-    /// <summary>Number of garbage collections (Gen 0).</summary>
     public int GCCollections => GC.CollectionCount(0);
 
     internal void BeginFrame()
@@ -136,10 +111,6 @@ public class EngineMetrics
     }
 }
 
-/// <summary>
-/// Core engine singleton managing all engine subsystems.
-/// Provides initialization, update loop, and shutdown coordination.
-/// </summary>
 public class Engine : IDisposable
 {
     private static Engine _instance = null!;
@@ -153,13 +124,11 @@ public class Engine : IDisposable
     private readonly Dictionary<string, SubsystemStatus> _subsystemStatus = new Dictionary<string, SubsystemStatus>();
     private Exception _initializationError = null!;
 
-    // Engine timing
     private readonly Stopwatch _engineTimer = new Stopwatch();
     private readonly EngineMetrics _metrics = new EngineMetrics();
     private double _fixedTimeAccumulator;
     private const double DefaultFixedTimestep = 1.0 / 60.0;
 
-    // Core subsystems
     public WorldManager WorldManager { get; private set; } = null!;
     public WorldLoadingService WorldLoadingService { get; private set; } = null!;
     public FocusManager FocusManager { get; private set; } = null!;
@@ -168,43 +137,27 @@ public class Engine : IDisposable
     public GlobalCoroutineManager CoroutineManager { get; private set; } = null!;
     public RemoteAudioManager AudioManager { get; private set; } = null!;
 
-    // CDN / Content delivery
     public LumoraClient? CDNClient { get; private set; }
     public ContentCache? ContentCache { get; private set; }
 
-    // Local asset storage
     public LocalDB? LocalDB { get; set; }
 
-    /// <summary>
-    /// The asset transferer for the currently active session.
-    /// Set automatically when a session is created or joined; cleared on dispose.
-    /// AssetFetcher uses this to pull remote local:// assets from peers.
-    /// </summary>
+    // Set automatically when a session is created or joined; cleared on dispose. AssetFetcher uses this to pull
+    // remote local:// assets from peers.
     public Networking.Session.SessionAssetTransferer? ActiveSessionTransferer { get; set; }
 
-    /// <summary>
-    /// Root directory for lumres:// and res:// URI resolution.
-    /// </summary>
     public string ResourceRoot { get; set; } = null!;
 
-    // Events
-    /// <summary>Fired when engine state changes.</summary>
     public event Action<EngineState> OnStateChanged = null!;
 
-    /// <summary>Fired before each update cycle.</summary>
     public event Action<double> OnPreUpdate = null!;
 
-    /// <summary>Fired after each update cycle.</summary>
     public event Action<double> OnPostUpdate = null!;
 
-    /// <summary>Fired when a subsystem status changes.</summary>
     public event Action<string, SubsystemStatus> OnSubsystemStatusChanged = null!;
 
     #region Static Properties
 
-    /// <summary>
-    /// Get the engine instance, throws if not initialized.
-    /// </summary>
     public static Engine Instance
     {
         get
@@ -215,48 +168,24 @@ public class Engine : IDisposable
         }
     }
 
-    /// <summary>
-    /// Current engine instance (null if not initialized).
-    /// </summary>
     public static Engine Current => _instance;
 
-    /// <summary>
-    /// Check if the engine is initialized and running.
-    /// </summary>
     public static bool IsInitialized => _instance?._state == EngineState.Running;
 
-    /// <summary>
-    /// Check if an engine instance exists.
-    /// </summary>
     public static bool HasInstance => _instance != null;
 
-    /// <summary>
-    /// Enable debug output and features.
-    /// </summary>
     public static bool ShowDebug { get; set; } = true;
 
-    /// <summary>
-    /// Whether running as a dedicated server (no rendering).
-    /// </summary>
     public static bool IsDedicatedServer { get; set; } = false;
 
-    /// <summary>
-    /// Platform identifier string.
-    /// </summary>
     public static string Platform => Environment.OSVersion.Platform.ToString();
 
-    /// <summary>
-    /// Whether running in editor mode.
-    /// </summary>
     public static bool IsEditor { get; set; } = false;
 
     #endregion
 
     #region Instance Properties
 
-    /// <summary>
-    /// Current engine state.
-    /// </summary>
     public EngineState State
     {
         get { lock (_stateLock) return _state; }
@@ -273,69 +202,34 @@ public class Engine : IDisposable
         }
     }
 
-    /// <summary>
-    /// Whether the engine is currently shutting down.
-    /// </summary>
     public bool IsShuttingDown => State == EngineState.ShuttingDown;
 
-    /// <summary>
-    /// Whether the engine is running.
-    /// </summary>
     public bool IsRunning => State == EngineState.Running;
 
-    /// <summary>
-    /// Total time since engine start in seconds.
-    /// </summary>
+    // Seconds.
     public double TotalTime => _metrics.TotalTime;
 
-    /// <summary>
-    /// Total frames processed since engine start.
-    /// </summary>
     public long FrameCount => _metrics.TotalFrames;
 
-    /// <summary>
-    /// Engine performance metrics.
-    /// </summary>
     public EngineMetrics Metrics => _metrics;
 
-    /// <summary>
-    /// Fixed timestep for physics updates.
-    /// </summary>
     public double FixedTimestep { get; set; } = DefaultFixedTimestep;
 
-    /// <summary>
-    /// Maximum fixed updates per frame (prevents spiral of death).
-    /// </summary>
+    // Caps the fixed-step catch-up so a long frame can't spiral.
     public int MaxFixedUpdatesPerFrame { get; set; } = 8;
 
-    /// <summary>
-    /// Auto-host local home world on startup.
-    /// </summary>
     public bool AutoHostLocalHome { get; set; } = true;
 
-    /// <summary>
-    /// Auto-connect to local home on startup.
-    /// </summary>
     public bool AutoConnectLocalHome { get; set; } = true;
 
-    /// <summary>
-    /// Error that occurred during initialization (if any).
-    /// </summary>
     public Exception InitializationError => _initializationError;
 
-    /// <summary>
-    /// Get the status of all subsystems.
-    /// </summary>
     public IReadOnlyDictionary<string, SubsystemStatus> SubsystemStatuses => _subsystemStatus;
 
     #endregion
 
     #region Initialization
 
-    /// <summary>
-    /// Create a new engine instance without initializing.
-    /// Use InitializeAsync() to initialize.
-    /// </summary>
     public Engine()
     {
         lock (_instanceLock)
@@ -346,9 +240,25 @@ public class Engine : IDisposable
         }
     }
 
-    /// <summary>
-    /// Initialize the engine and all subsystems asynchronously.
-    /// </summary>
+    // LumoraNexus sits below the engine and cannot see the logger or the version constant, so push both
+    // down before anything in it runs. Without this, transport and cloud lines go to the console only and
+    // the session directory advertises a placeholder version. -xlinka
+    private static void WireNexus()
+    {
+        NexusRuntime.AppVersion = EngineVersion.VersionString;
+        NexusLog.EnableDebug = LumoraLogger.EnableDebug;
+        NexusLog.Sink = (level, message) =>
+        {
+            switch (level)
+            {
+                case NexusLogLevel.Warn: LumoraLogger.Warn(message); break;
+                case NexusLogLevel.Error: LumoraLogger.Error(message); break;
+                case NexusLogLevel.Debug: LumoraLogger.Debug(message); break;
+                default: LumoraLogger.Log(message); break;
+            }
+        };
+    }
+
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
         if (State != EngineState.NotInitialized)
@@ -359,6 +269,8 @@ public class Engine : IDisposable
 
         State = EngineState.Initializing;
         _engineTimer.Start();
+
+        WireNexus();
 
         LumoraLogger.Log("=====================================");
         LumoraLogger.Log($"Lumora Engine v{EngineVersion.VersionString}");
@@ -406,7 +318,6 @@ public class Engine : IDisposable
                 await Task.CompletedTask;
             }, cancellationToken);
 
-            // Initialize AudioSystem
             AudioManager = new();
             foreach (string name in new string[] { "Music", "Effects", "Voice" })
             {
@@ -506,7 +417,6 @@ public class Engine : IDisposable
 
     #region Local Home Management
 
-    /// <summary>On-disk location of the persisted local home world.</summary>
     public static string LocalHomeSavePath => Path.Combine(
         Lumora.Core.Persistence.PathResolver.RoamingPath,
         "LumoraVR", "home.lworld");
@@ -572,33 +482,19 @@ public class Engine : IDisposable
         return Environment.MachineName;
     }
 
-    /// <summary>
-    /// Get the world pending userspace setup.
-    /// </summary>
     public World GetPendingUserSpaceSetup() => _pendingUserSpaceSetup;
 
-    /// <summary>
-    /// Clear the pending userspace setup.
-    /// </summary>
     public void ClearPendingUserSpaceSetup() => _pendingUserSpaceSetup = null!;
 
-    /// <summary>
-    /// Join the local home world.
-    /// </summary>
     public void JoinLocalHome() => SwitchToLocalHome();
 
-    /// <summary>
-    /// Join a remote server.
-    /// </summary>
     public void JoinServer(string address, int port, string worldName = "RemoteWorld")
     {
         WorldManager?.JoinSession(worldName, address, (ushort)port);
     }
 
-    /// <summary>
-    /// Join via NAT punch-through: punch a hole to the session host through the relay
-    /// server, then connect directly to the resolved endpoint.
-    /// </summary>
+    // Join via NAT punch-through: punch a hole to the session host through the relay
+    // server, then connect directly to the resolved endpoint.
     public void JoinNatServer(string identifier)
     {
         if (string.IsNullOrWhiteSpace(identifier))
@@ -611,7 +507,7 @@ public class Engine : IDisposable
         var port = Networking.Session.Session.SessionServerPort;
         LumoraLogger.Log($"Engine: NAT punch join for session '{identifier}' via {addr}:{port}");
 
-        var client = new Networking.Session.SessionServerClient(addr, port);
+        var client = new SessionServerClient(addr, port);
         var joined = false;
 
         client.OnNATPunchSuccess += ep =>
@@ -642,10 +538,8 @@ public class Engine : IDisposable
         }, TaskScheduler.Default);
     }
 
-    /// <summary>
-    /// Join via relay server: tunnel the session through the relay when a direct or
-    /// punched path isn't available.
-    /// </summary>
+    // Join via relay server: tunnel the session through the relay when a direct or
+    // punched path isn't available.
     public void JoinNatServerRelay(string identifier)
     {
         if (string.IsNullOrWhiteSpace(identifier))
@@ -655,7 +549,7 @@ public class Engine : IDisposable
         }
 
         // Make sure the relay transport is available (Register dedups by type).
-        Networking.NetworkManagerRegistry.Register(new Networking.RelayNetworkManager());
+        NetworkManagerRegistry.Register(new Networking.RelayNetworkManager());
 
         var addr = Networking.Session.Session.SessionServerAddress;
         var port = Networking.Session.Session.SessionServerPort;
@@ -669,9 +563,6 @@ public class Engine : IDisposable
 
     #region Update Loop
 
-    /// <summary>
-    /// Main update loop - call every frame.
-    /// </summary>
     public void Update(double delta)
     {
         if (State != EngineState.Running)
@@ -682,20 +573,15 @@ public class Engine : IDisposable
 
         try
         {
-            // Input processing
             InputInterface?.ProcessInput(delta);
 
-            // Global coroutines
             CoroutineManager?.Update((float)delta);
 
-            // World updates
             WorldManager?.Update(delta);
 
-            // Fixed updates (physics timestep)
             ProcessFixedUpdates(delta);
             InputInterface?.SyncTrackingSpaceToFocusedLocalUser();
 
-            // Asset processing
             AssetManager?.Update((float)delta);
         }
         catch (Exception ex)
@@ -732,10 +618,7 @@ public class Engine : IDisposable
         WorldManager?.FixedUpdate(fixedDelta);
     }
 
-    /// <summary>
-    /// Fixed update for deterministic physics (called automatically by Update).
-    /// Can also be called manually for custom fixed-step simulations.
-    /// </summary>
+    // Called automatically by Update; can also be driven manually for a custom fixed step.
     public void FixedUpdate(double fixedDelta)
     {
         if (State != EngineState.Running)
@@ -744,9 +627,6 @@ public class Engine : IDisposable
         FixedUpdateInternal(fixedDelta);
     }
 
-    /// <summary>
-    /// Late update for camera and final positioning.
-    /// </summary>
     public void LateUpdate(double delta)
     {
         if (State != EngineState.Running)
@@ -759,9 +639,6 @@ public class Engine : IDisposable
 
     #region Shutdown
 
-    /// <summary>
-    /// Request graceful shutdown.
-    /// </summary>
     public void RequestShutdown()
     {
         if (State != EngineState.Running)
@@ -771,21 +648,14 @@ public class Engine : IDisposable
         Dispose();
     }
 
-    /// <summary>
-    /// Raised by <see cref="RequestQuit"/>. The platform layer subscribes to close the app
-    /// (which tears the engine down through the normal exit path).
-    /// </summary>
+    // Raised by RequestQuit. The platform layer subscribes to close the app
+    // (which tears the engine down through the normal exit path).
     public event Action? QuitRequested;
 
-    /// <summary>
-    /// Request the application quit. Fires <see cref="QuitRequested"/> rather than disposing
-    /// inline, so it's safe to call from UI during a world update.
-    /// </summary>
+    // Request the application quit. Fires QuitRequested rather than disposing
+    // inline, so it's safe to call from UI during a world update.
     public void RequestQuit() => QuitRequested?.Invoke();
 
-    /// <summary>
-    /// Dispose the engine and all subsystems.
-    /// </summary>
     public void Dispose()
     {
         if (State == EngineState.Disposed || State == EngineState.NotInitialized)
@@ -843,9 +713,6 @@ public class Engine : IDisposable
 
     #region Utility
 
-    /// <summary>
-    /// Get diagnostic information about the engine.
-    /// </summary>
     public string GetDiagnostics()
     {
         var sb = new System.Text.StringBuilder();

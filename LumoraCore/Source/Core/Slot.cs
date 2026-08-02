@@ -12,14 +12,11 @@ using Lumora.Core.Components;
 using Lumora.Core.Math;
 using Lumora.Core.Networking.Sync;
 using Lumora.Core.Persistence;
+using Lumora.Warden;
 
 namespace Lumora.Core;
 
-/// <summary>
-/// A Slot is the fundamental container for Components and child Slots.
-/// Forms a hierarchical structure for organizing objects in a World.
-/// </summary>
-public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, IChangeable, IInitializable
+public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, IChangeable, IInitializable, IPermissionGrabSurface
 {
     #region Fields
 
@@ -37,7 +34,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     private Slot _parent = null!;
     private bool _isRemoved;
 
-    // Transform caching with dirty flags
     private int _transformDirty = 0;
     private float4x4 _cachedTRS = float4x4.Identity;
     private float4x4 _cachedLocalToWorld = float4x4.Identity;
@@ -46,7 +42,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     private floatQ _cachedGlobalRotation = floatQ.Identity;
     private float3 _cachedGlobalScale = float3.One;
 
-    // Transform cache constants
     private const int DIRTY_TRS = 1;
     private const int DIRTY_LOCAL_TO_WORLD = 2;
     private const int DIRTY_WORLD_TO_LOCAL = 4;
@@ -56,7 +51,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     private const int DIRTY_ALL_GLOBAL = DIRTY_LOCAL_TO_WORLD | DIRTY_WORLD_TO_LOCAL |
                                           DIRTY_GLOBAL_POSITION | DIRTY_GLOBAL_ROTATION | DIRTY_GLOBAL_SCALE;
 
-    // Scheduled actions
     private readonly Queue<Action> _scheduledActions = new();
     private readonly object _scheduleLock = new();
 
@@ -64,49 +58,22 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
     #region Events
 
-    /// <summary>
-    /// Event fired when this slot changes.
-    /// </summary>
     public event Action<IChangeable> Changed = null!;
 
-    /// <summary>
-    /// Event fired when a child is added.
-    /// </summary>
     public event Action<Slot, Slot> OnChildAdded = null!;
 
-    /// <summary>
-    /// Event fired when a child is removed.
-    /// </summary>
     public event Action<Slot, Slot> OnChildRemoved = null!;
 
-    /// <summary>
-    /// Event fired when a component is added.
-    /// </summary>
     public event Action<Slot, Component> OnComponentAdded = null!;
 
-    /// <summary>
-    /// Event fired when a component is removed.
-    /// </summary>
     public event Action<Slot, Component> OnComponentRemoved = null!;
 
-    /// <summary>
-    /// Event fired when parent changes.
-    /// </summary>
     public event Action<Slot, Slot, Slot> OnParentChanged = null!;
 
-    /// <summary>
-    /// Event fired when active state changes.
-    /// </summary>
     public event Action<Slot, bool> OnActiveChanged = null!;
 
-    /// <summary>
-    /// Event fired when name changes.
-    /// </summary>
     public event Action<Slot, string> OnNameChanged = null!;
 
-    /// <summary>
-    /// Event fired when children order is invalidated.
-    /// </summary>
     public event Action<Slot> ChildrenOrderInvalidated
     {
         add { }
@@ -117,98 +84,101 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     public event Action<Slot> ActiveChanged = null!;
     public event Action<Slot> ParentChanged = null!;
 
-    /// <summary>Fired when this slot's persistence flag changes.</summary>
     public event Action<Slot> PersistentChanged = null!;
 
-    /// <summary>Fired when this slot's order offset changes.</summary>
     public event Action<Slot> OrderOffsetChanged = null!;
 
-    /// <summary>Fired at the start of destruction, before children/components are torn down.</summary>
+    // Before children/components are torn down.
     public event Action<Slot> OnPrepareDestroy = null!;
 
-    /// <summary>
-    /// Fired once per frame (deferred) when this slot's world transform changed - either its own
-    /// local transform or that of an ancestor. Handlers run before hook/connector updates, so a
-    /// handler that re-drives a transform takes effect the same frame. Subscribe to react to
-    /// movement without polling every frame in OnUpdate.
-    /// </summary>
+    // Fired once per frame (deferred) when this slot's world transform changed - either its own
+    // local transform or that of an ancestor. Handlers run before hook/connector updates, so a
+    // handler that re-drives a transform takes effect the same frame. Subscribe to react to
+    // movement without polling every frame in OnUpdate.
     public event Action<Slot> WorldTransformChanged = null!;
+
+    // Fired on this slot and on every ancestor of it when a slot or a component is added to or
+    // removed from the subtree rooted here. The argument is the slot the change actually happened
+    // on, which is a descendant (or this slot itself).
+    // Structural only: transforms, field edits and asset swaps never fire it. Anything that caches
+    // a measurement of a whole subtree (bounds, counts, budgets) needs to know when the shape of
+    // that subtree changed without subscribing to every descendant individually, and re-subscribing
+    // on every add/remove costs more than the walk. The bubble is O(depth) with a null-delegate
+    // check per level, and it only runs on structural edits, never per frame. -xlinka
+    public event Action<Slot> SubtreeStructureChanged = null!;
+
+    // Bubble from the slot that changed up to the root. Ancestors with no listener cost one null
+    // check each.
+    private void RaiseSubtreeStructureChanged()
+    {
+        var current = this;
+        while (current != null)
+        {
+            current.SubtreeStructureChanged?.Invoke(this);
+            current = current._parent;
+        }
+    }
 
     #endregion
 
     #region Sync Fields
 
-    /// <summary>
-    /// Name of this Slot (synchronized).
-    /// </summary>
     public readonly Sync<string> Name = new();
 
-    /// <summary>
-    /// Reference to parent slot (synchronized).
-    /// This is how parent-child relationships are synced over the network.
-    /// </summary>
     [NameOverride("Parent")]
     public readonly SyncRef<Slot> ParentSlotRef = new();
 
-    /// <summary>
-    /// Tag for categorization and searching.
-    /// </summary>
     public readonly Sync<string> Tag = new();
 
-    /// <summary>
-    /// Whether this Slot is active locally (synchronized).
-    /// </summary>
     [NameOverride("Active")]
     public readonly Sync<bool> ActiveSelf = new();
 
-    /// <summary>
-    /// Whether this Slot and its contents should persist when saved.
-    /// </summary>
     [NameOverride("Persistent")]
     [NonPersistent]
     public readonly Sync<bool> Persistent = new();
 
-    /// <summary>
-    /// Position in local space (synchronized).
-    /// </summary>
     [NameOverride("Position")]
     public readonly Sync<float3> LocalPosition = new();
 
-    /// <summary>
-    /// Rotation in local space (synchronized).
-    /// </summary>
     [NameOverride("Rotation")]
     public readonly Sync<floatQ> LocalRotation = new();
 
-    /// <summary>
-    /// Scale in local space (synchronized).
-    /// </summary>
     [NameOverride("Scale")]
     public readonly Sync<float3> LocalScale = new();
 
-    /// <summary>
-    /// Order offset for sorting children.
-    /// </summary>
     [NameOverride("OrderOffset")]
     public readonly Sync<long> OrderOffset = new();
 
-    /// <summary>
-    /// Alias for Name for backward compatibility.
-    /// </summary>
+    // PERMISSION GATE VIEW
+    // A grab writes the held object's parent and pose, which land on the SLOT, not on the grabbable.
+    // Only those four members count as grab traffic, and only while the slot actually carries a
+    // grabbable that allows grabbing - anything else here stays owner-gated. The component lookup is
+    // deliberately behind the member test so it only runs for a transform write. -xlinka
+
+    bool IPermissionGrabSurface.AllowsGrab => GetComponent<Components.Grabbable>()?.AllowGrab.Value == true;
+
+    bool IPermissionGrabSurface.AllowsSteal => false;
+
+    IPermissionActor? IPermissionGrabSurface.CurrentHolder => null;
+
+    GrabWriteKind IPermissionGrabSurface.ClassifyGrabWrite(IPermissionTarget? member)
+    {
+        bool transformOrParent =
+            ReferenceEquals(member, ParentSlotRef) ||
+            ReferenceEquals(member, LocalPosition) ||
+            ReferenceEquals(member, LocalRotation) ||
+            ReferenceEquals(member, LocalScale);
+        return transformOrParent ? GrabWriteKind.Transform : GrabWriteKind.None;
+    }
+
     public Sync<string> SlotName => Name;
 
     #endregion
 
     #region Properties
 
-    /// <summary>
-    /// Numeric alias for RefID.
-    /// </summary>
     public ulong RefIdNumeric => (ulong)ReferenceID;
 
-    /// <summary>
-    /// Whether this Slot persists when saved.
-    /// </summary>
     public override bool IsPersistent => Persistent.Value;
 
     // Protected slots refuse Destroy / RemoveFromHierarchy calls. Set via
@@ -300,23 +270,17 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             child.RefreshActiveUserRootFromParent();
     }
 
-    /// <summary>
-    /// Get all referenced objects from this slot (IWorker implementation).
-    /// </summary>
     public override IEnumerable<IWorldElement> GetReferencedObjects(bool assetRefOnly, bool persistentOnly = true)
     {
-        // Return parent if referenced
         if (ParentSlotRef?.Target != null && (!persistentOnly || ParentSlotRef.Target.IsPersistent))
             yield return ParentSlotRef.Target;
 
-        // Return components
         foreach (var component in _components)
         {
             if (!persistentOnly || component.IsPersistent)
                 yield return component;
         }
 
-        // Return children
         foreach (var child in _children)
         {
             if (!persistentOnly || child.IsPersistent)
@@ -324,89 +288,43 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// The hook that implements this slot in the engine (e.g., Godot Node3D).
-    /// </summary>
     public IHook<Slot> Hook { get; private set; } = null!;
 
-    /// <summary>
-    /// Explicit interface implementation for non-generic IHook.
-    /// </summary>
     IHook IImplementable.Hook => Hook;
 
-    /// <summary>
-    /// Slot refers to itself for IImplementable.
-    /// </summary>
     Slot IImplementable.Slot => this;
 
-    /// <summary>
-    /// Whether this Slot has been removed from the hierarchy but not destroyed.
-    /// </summary>
     public override bool IsRemoved => _isRemoved;
 
-    /// <summary>
-    /// Read-only list of child Slots.
-    /// </summary>
     public IReadOnlyList<Slot> Children => _childrenReadOnly ??= _children.AsReadOnly();
 
-    /// <summary>
-    /// Read-only list of local-only child Slots.
-    /// </summary>
     public IReadOnlyList<Slot> LocalChildren => _localChildrenReadOnly ??= _localChildren.AsReadOnly();
 
-    /// <summary>
-    /// Number of child Slots.
-    /// </summary>
     public int ChildCount => _children.Count;
 
-    /// <summary>
-    /// Number of local-only child Slots.
-    /// </summary>
     public int LocalChildCount => _localChildren.Count;
 
-    /// <summary>
-    /// Read-only list of Components attached to this Slot.
-    /// </summary>
     public new IReadOnlyList<Component> Components => _componentsReadOnly ??= _components.AsReadOnly();
 
-    /// <summary>
-    /// Number of Components attached to this Slot.
-    /// </summary>
     public new int ComponentCount => _components.Count;
 
-    /// <summary>
-    /// Whether this is the root slot (has no parent).
-    /// </summary>
     public bool IsRootSlot => World != null && ReferenceEquals(World.RootSlot, this);
 
-    /// <summary>
-    /// Whether this slot has a pending (unresolved) parent reference.
-    /// True if ParentSlotRef has a RefID but the Target hasn't resolved yet.
-    /// Used to distinguish between true root slots and slots waiting for parent resolution.
-    /// </summary>
+    // True if ParentSlotRef has a RefID but the Target hasn't resolved yet. Used to distinguish between true
+    // root slots and slots waiting for parent resolution.
     public bool HasPendingParent => _parent == null && ParentSlotRef != null && !ParentSlotRef.Value.IsNull;
 
-    /// <summary>
-    /// Whether we're still waiting to know if this slot has a parent.
-    /// True if ParentSlotRef hasn't been decoded yet (still in init phase).
-    /// During network decode, sync members are decoded separately from slots,
-    /// so we can't know the parent until ParentSlotRef is decoded.
-    /// </summary>
+    // True if ParentSlotRef hasn't been decoded yet (still in init phase). During network decode, sync members
+    // are decoded separately from slots, so we can't know the parent until ParentSlotRef is decoded.
     public bool IsParentUnknown => _parent == null && ParentSlotRef != null && ParentSlotRef.IsInInitPhase;
 
-    /// <summary>
-    /// Whether this slot is truly a root slot (no parent and no pending parent).
-    /// Unlike IsRootSlot, this returns false for slots waiting for parent resolution
-    /// AND for slots where ParentSlotRef hasn't been decoded yet.
-    /// </summary>
+    // Unlike IsRootSlot, this returns false for slots waiting for parent resolution AND for slots where
+    // ParentSlotRef hasn't been decoded yet.
     public bool IsTrueRootSlot => _parent == null &&
         ParentSlotRef != null &&
         !ParentSlotRef.IsInInitPhase &&
         ParentSlotRef.Value.IsNull;
 
-    /// <summary>
-    /// Get the root slot of this hierarchy.
-    /// </summary>
     public Slot Root
     {
         get
@@ -418,9 +336,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Depth of this slot in the hierarchy (root = 0).
-    /// </summary>
     public int Depth
     {
         get
@@ -436,14 +351,8 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Index of this slot among its siblings.
-    /// </summary>
     public int SiblingIndex => _parent?._children.IndexOf(this) ?? 0;
 
-    /// <summary>
-    /// Get the object root (first slot with a specific component like UserRoot).
-    /// </summary>
     public Slot ObjectRoot
     {
         get
@@ -451,7 +360,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             var current = this;
             while (current != null)
             {
-                // Check for common object root markers
                 if (current.GetComponent<ObjectRoot>() != null)
                     return current;
                 if (current._parent == null)
@@ -462,9 +370,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Whether this slot is under the local user's hierarchy.
-    /// </summary>
     public bool IsUnderLocalUser
     {
         get
@@ -483,20 +388,14 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
     #region Parent Property
 
-    /// <summary>
-    /// The parent Slot in the hierarchy (null if root).
-    /// </summary>
     public new Slot Parent
     {
         get => _parent;
         set => SetParent(value, preserveGlobalTransform: false);
     }
 
-    /// <summary>
-    /// Set parent with option to preserve global transform.
-    /// Updates ParentSlotRef which triggers network sync and internal state update.
-    /// Warns if changing parent during init phase.
-    /// </summary>
+    // Writes ParentSlotRef, which drives the network sync and the internal state update.
+    // Warns when the parent changes during the init phase.
     public void SetParent(Slot newParent, bool preserveGlobalTransform = false)
     {
         if (IsRemoved)
@@ -523,6 +422,17 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         {
             Logging.Logger.Warn($"Trying to assign a removed parent for slot '{Name?.Value}', resetting to root.");
             newParent = World?.RootSlot!;
+        }
+
+        // A slot can never be its own parent, and the descendant check below does NOT catch it (a slot
+        // is not its own descendant). Without this the self-reference is WRITTEN to the synced
+        // ParentSlotRef and only unwound afterwards, so peers decode a self-parent in between and the
+        // slot briefly sits in its own child list - which renders as the same row twice. The world root
+        // reaches here through the null-parent fallback above (null resolves to the root, i.e. itself),
+        // so this also kills the pointless "tried to assign root slot parent" churn. -xlinka
+        if (ReferenceEquals(newParent, this))
+        {
+            return;
         }
 
         if (newParent != null && newParent.IsDescendantOf(this))
@@ -559,9 +469,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
     #region Active State
 
-    /// <summary>
-    /// Whether this Slot is active (considering parent chain).
-    /// </summary>
     public bool IsActive
     {
         get
@@ -571,9 +478,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Check if this slot is active and not destroyed.
-    /// </summary>
     public bool IsActiveAndEnabled => IsActive && !IsDestroyed && !_isRemoved;
 
     // When this slot's ActiveSelf flips, every descendant whose own ActiveSelf is true had its
@@ -597,9 +501,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         child.PropagateActiveChangedToDescendants();
     }
 
-    /// <summary>
-    /// Set active state, optionally affecting children.
-    /// </summary>
     public void SetActive(bool active, bool recursive = false)
     {
         bool wasActive = ActiveSelf.Value;
@@ -615,6 +516,8 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         {
             foreach (var child in _children)
                 child.SetActive(active, true);
+            foreach (var child in _localChildren)
+                child.SetActive(active, true);
         }
     }
 
@@ -622,45 +525,30 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
     #region Transform Properties
 
-    /// <summary>
-    /// Position in local space (convenience accessor).
-    /// </summary>
     public float3 Position
     {
         get => LocalPosition.Value;
         set => LocalPosition.Value = value;
     }
 
-    /// <summary>
-    /// Rotation in local space (convenience accessor).
-    /// </summary>
     public floatQ Rotation
     {
         get => LocalRotation.Value;
         set => LocalRotation.Value = value;
     }
 
-    /// <summary>
-    /// Quaternion alias for Rotation.
-    /// </summary>
     public floatQ Quaternion
     {
         get => LocalRotation.Value;
         set => LocalRotation.Value = value;
     }
 
-    /// <summary>
-    /// Scale in local space (convenience accessor).
-    /// </summary>
     public float3 Scale
     {
         get => LocalScale.Value;
         set => LocalScale.Value = value;
     }
 
-    /// <summary>
-    /// Position in global/world space.
-    /// </summary>
     public float3 GlobalPosition
     {
         get
@@ -708,9 +596,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Rotation in global/world space.
-    /// </summary>
     public floatQ GlobalRotation
     {
         get
@@ -742,12 +627,10 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Set GlobalPosition WITHOUT generating a field sync (delta). Use when a stream on this slot is the transport
-    /// for the position, so it isn't also replicated over the delta channel (mirrors how TrackedDevicePositioner
-    /// writes stream-shared body nodes). Still fires change events for rendering / transform-dirty / stream
-    /// sampling - it only skips the sync element going dirty. -xlinka
-    /// </summary>
+    // Set GlobalPosition WITHOUT generating a field sync (delta). Use when a stream on this slot is the transport
+    // for the position, so it isn't also replicated over the delta channel (mirrors how TrackedDevicePositioner
+    // writes stream-shared body nodes). Still fires change events for rendering / transform-dirty / stream
+    // sampling - it only skips the sync element going dirty. -xlinka
     public void SetGlobalPositionSilently(float3 value)
     {
         if (_parent == null)
@@ -782,9 +665,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Set GlobalRotation WITHOUT generating a field sync (delta). See <see cref="SetGlobalPositionSilently"/>. -xlinka
-    /// </summary>
+    // Set GlobalRotation WITHOUT generating a field sync (delta). See SetGlobalPositionSilently. -xlinka
     public void SetGlobalRotationSilently(floatQ value)
     {
         if (_parent == null)
@@ -802,9 +683,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Scale in global/world space.
-    /// </summary>
     public float3 GlobalScale
     {
         get
@@ -856,9 +734,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Full local TRS matrix.
-    /// </summary>
     public float4x4 LocalTransform
     {
         get
@@ -868,9 +743,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Full global TRS matrix.
-    /// </summary>
     public float4x4 GlobalTransform
     {
         get
@@ -880,9 +752,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Transformation matrix from local space to world space.
-    /// </summary>
     public float4x4 LocalToWorld
     {
         get
@@ -892,9 +761,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Transformation matrix from world space to local space.
-    /// </summary>
     public float4x4 WorldToLocal
     {
         get
@@ -904,34 +770,16 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Forward direction in global space.
-    /// </summary>
     public float3 Forward => GlobalRotation * float3.Forward;
 
-    /// <summary>
-    /// Right direction in global space.
-    /// </summary>
     public float3 Right => GlobalRotation * float3.Right;
 
-    /// <summary>
-    /// Up direction in global space.
-    /// </summary>
     public float3 Up => GlobalRotation * float3.Up;
 
-    /// <summary>
-    /// Backward direction in global space.
-    /// </summary>
     public float3 Backward => GlobalRotation * float3.Backward;
 
-    /// <summary>
-    /// Left direction in global space.
-    /// </summary>
     public float3 Left => GlobalRotation * float3.Left;
 
-    /// <summary>
-    /// Down direction in global space.
-    /// </summary>
     public float3 Down => GlobalRotation * float3.Down;
 
     #endregion
@@ -959,9 +807,10 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
         foreach (var child in _children)
             child.InvalidateGlobalTransforms();
+        foreach (var child in _localChildren)
+            child.InvalidateGlobalTransforms();
     }
 
-    /// <summary>Invoke this slot's deferred WorldTransformChanged event (driven by the UpdateManager).</summary>
     internal void FireWorldTransformChanged()
     {
         WorldTransformChanged?.Invoke(this);
@@ -1005,71 +854,47 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Transform a point from global space to local space.
-    /// </summary>
     public float3 GlobalPointToLocal(float3 globalPoint)
     {
         EnsureValidWorldToLocal();
         return _cachedWorldToLocal.MultiplyPoint(globalPoint);
     }
 
-    /// <summary>
-    /// Transform a point from global space to local space (ref version).
-    /// </summary>
     public float3 GlobalPointToLocal(in float3 globalPoint)
     {
         EnsureValidWorldToLocal();
         return _cachedWorldToLocal.MultiplyPoint(in globalPoint);
     }
 
-    /// <summary>
-    /// Transform a point from local space to global space.
-    /// </summary>
     public float3 LocalPointToGlobal(float3 localPoint)
     {
         EnsureValidLocalToWorld();
         return _cachedLocalToWorld.MultiplyPoint(localPoint);
     }
 
-    /// <summary>
-    /// Transform a point from local space to global space (ref version).
-    /// </summary>
     public float3 LocalPointToGlobal(in float3 localPoint)
     {
         EnsureValidLocalToWorld();
         return _cachedLocalToWorld.MultiplyPoint(in localPoint);
     }
 
-    /// <summary>
-    /// Transform a direction from global space to local space.
-    /// </summary>
     public float3 GlobalDirectionToLocal(float3 globalDirection)
     {
         EnsureValidWorldToLocal();
         return _cachedWorldToLocal.MultiplyVector(globalDirection);
     }
 
-    /// <summary>
-    /// Transform a direction from local space to global space.
-    /// </summary>
     public float3 LocalDirectionToGlobal(float3 localDirection)
     {
         EnsureValidLocalToWorld();
         return _cachedLocalToWorld.MultiplyVector(localDirection);
     }
 
-    /// <summary>
-    /// Transform a rotation from global space to local space.
-    /// </summary>
     public floatQ GlobalRotationToLocal(floatQ globalRotation)
     {
         return GlobalRotation.Inverse * globalRotation;
     }
 
-    /// <summary>
-    /// Transform a rotation from local space to global space.
-    /// </summary>
     public floatQ LocalRotationToGlobal(floatQ localRotation)
     {
         return GlobalRotation * localRotation;
@@ -1079,29 +904,25 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     // Like the direction conversions but carry scale; the direction helpers above
     // already use MultiplyVector, so these are the explicitly-named "vector" forms.
 
-    /// <summary>Transform a vector (rotation + scale, no translation) from local to global space.</summary>
     public float3 LocalVectorToGlobal(in float3 localVector)
         => IsRootSlot ? localVector : LocalToWorld.MultiplyVector(in localVector);
 
-    /// <summary>Transform a vector (rotation + scale, no translation) from global to local space.</summary>
     public float3 GlobalVectorToLocal(in float3 globalVector)
         => IsRootSlot ? globalVector : WorldToLocal.MultiplyVector(in globalVector);
 
     // ── Scale conversions ───────────────────────────────────────────────────────
 
-    /// <summary>Convert a scale expressed in this slot's local space into global space.</summary>
     public float3 LocalScaleToGlobal(in float3 localScale)
         => IsRootSlot ? localScale : localScale * GlobalScale;
 
-    /// <summary>Convert a scale expressed in global space into this slot's local space.</summary>
     public float3 GlobalScaleToLocal(in float3 globalScale)
         => IsRootSlot ? globalScale : globalScale / GlobalScale;
 
-    /// <summary>Uniform-scale convenience: averages the components after conversion.</summary>
+    // Averages the components after conversion.
     public float LocalScaleToGlobal(float localScale)
         => IsRootSlot ? localScale : AvgComponent(LocalScaleToGlobal(new float3(localScale, localScale, localScale)));
 
-    /// <summary>Uniform-scale convenience: averages the components after conversion.</summary>
+    // Averages the components after conversion.
     public float GlobalScaleToLocal(float globalScale)
         => IsRootSlot ? globalScale : AvgComponent(GlobalScaleToLocal(new float3(globalScale, globalScale, globalScale)));
 
@@ -1185,15 +1006,11 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     public floatQ SpaceRotationToLocal(in floatQ spaceRotation, Slot space)
         => ReferenceEquals(space, this) ? spaceRotation : GlobalRotationToLocal(space.LocalRotationToGlobal(spaceRotation));
 
-    /// <summary>Matrix that maps this slot's local space into <paramref name="space"/>'s local space.</summary>
     public float4x4 GetLocalToSpaceMatrix(Slot space)
         => space.WorldToLocal * LocalToWorld;
 
     private static float AvgComponent(float3 v) => (v.x + v.y + v.z) / 3f;
 
-    /// <summary>
-    /// Look at a target position.
-    /// </summary>
     public void LookAt(float3 target, float3? up = null)
     {
         var upVec = up ?? float3.Up;
@@ -1204,9 +1021,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Rotate by euler angles in degrees.
-    /// </summary>
+    // Euler angles in degrees.
     public void Rotate(float3 eulerAngles, bool worldSpace = false)
     {
         const float Deg2Rad = (float)(System.Math.PI / 180.0);
@@ -1221,9 +1036,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Translate by offset.
-    /// </summary>
     public void Translate(float3 translation, bool worldSpace = false)
     {
         if (worldSpace)
@@ -1236,9 +1048,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Set local transform from TRS components.
-    /// </summary>
     public void SetLocalTransform(float3 position, floatQ rotation, float3 scale)
     {
         LocalPosition.Value = position;
@@ -1246,9 +1055,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         LocalScale.Value = scale;
     }
 
-    /// <summary>
-    /// Set global transform from TRS components.
-    /// </summary>
     public void SetGlobalTransform(float3 position, floatQ rotation, float3 scale)
     {
         GlobalPosition = position;
@@ -1256,9 +1062,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         GlobalScale = scale;
     }
 
-    /// <summary>
-    /// Copy transform from another slot.
-    /// </summary>
     public void CopyTransformFrom(Slot source, bool global = false)
     {
         if (source == null) return;
@@ -1277,9 +1080,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Reset transform to identity.
-    /// </summary>
     public void ResetTransform()
     {
         LocalPosition.Value = float3.Zero;
@@ -1364,7 +1164,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             OrderOffsetChanged?.Invoke(this);
         };
 
-        // When ParentSlotRef changes (from network sync), update internal parent-child structure
         ParentSlotRef.OnTargetChange += OnParentSlotRefChanged;
 
         // When ParentSlotRef.Value changes (RefID decoded), trigger hook update
@@ -1385,6 +1184,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
         World?.RegisterComponent(component);
         OnComponentAdded?.Invoke(this, component);
+        RaiseSubtreeStructureChanged();
         OnChanged();
     }
 
@@ -1396,13 +1196,11 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         _components.Remove(component);
         World?.UnregisterComponent(component);
         OnComponentRemoved?.Invoke(this, component);
+        RaiseSubtreeStructureChanged();
         OnChanged();
     }
 
-    /// <summary>
-    /// Called when ParentSlotRef.Value changes (RefID decoded, not target resolution).
-    /// Used to trigger hook updates when parent info is first decoded from network.
-    /// </summary>
+    // Used to trigger hook updates when parent info is first decoded from network.
     private void OnParentSlotRefValueChanged(RefID newValue)
     {
         if (Hook != null && !ParentSlotRef.IsInInitPhase)
@@ -1411,12 +1209,8 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Called when ParentSlotRef changes (e.g., from network sync).
-    /// Updates the internal _parent field and child collections.
-    /// Don't apply null-to-RootSlot fallback during batch decode,
-    /// as the real parent may not be registered yet.
-    /// </summary>
+    // Updates the internal _parent field and child collections. Don't apply null-to-RootSlot fallback during
+    // batch decode, as the real parent may not be registered yet.
     private void OnParentSlotRefChanged(SyncRef<Slot> syncRef)
     {
         if (IsDestroyed)
@@ -1490,9 +1284,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-	/// <summary>
-	/// Initialize this Slot with a World context.
-	/// </summary>
 	public void Initialize(World world)
 	{
 		if (world == null)
@@ -1529,12 +1320,10 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         EndInitPhase();
 	}
 
-    /// <summary>
-    /// Initialize this Slot from network replication with a pre-assigned RefID.
-    /// Used by SlotCollection when creating slots from network data.
-    /// NOTE: This runs on the sync thread - no Godot operations allowed here!
-    /// Hook initialization is deferred to the main thread.
-    /// </summary>
+    // Initialize this Slot from network replication with a pre-assigned RefID.
+    // Used by SlotCollection when creating slots from network data.
+    // NOTE: This runs on the sync thread - no Godot operations allowed here!
+    // Hook initialization is deferred to the main thread.
 	internal void InitializeFromReplicator(World world, RefID assignedId)
 	{
 		if (world == null)
@@ -1589,12 +1378,9 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         EndInitPhase();
     }
 
-    /// <summary>
-    /// Mark all sync members as dirty after slot initialization.
-    /// This is needed because sync member values may have been set BEFORE Initialize()
-    /// was called (e.g., slot.Name.Value = "User X"), and at that time the sync member
-    /// wasn't registered with SyncController yet, so InvalidateSyncElement() did nothing.
-    /// </summary>
+    // Mark all sync members as dirty after slot initialization: sync member values may have
+    // been set BEFORE Initialize() was called (e.g., slot.Name.Value = "User X"), when the sync
+    // member wasn't yet registered with SyncController, so InvalidateSyncElement() did nothing then.
     private void InvalidateSyncMembersForNewSlot()
     {
         Name?.InvalidateSyncElement();
@@ -1667,9 +1453,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
     #region Scheduling
 
-    /// <summary>
-    /// Schedule an action to run on the next update.
-    /// </summary>
     public override void RunInUpdates(int updateCount, Action action)
     {
         if (action == null) return;
@@ -1683,26 +1466,17 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         World?.RunInUpdates(updateCount, action);
     }
 
-    /// <summary>
-    /// Schedule an action to run synchronously.
-    /// </summary>
     public override void RunSynchronously(Action action)
     {
         if (action == null) return;
         World?.RunSynchronously(action);
     }
 
-    /// <summary>
-    /// Schedule an action for the next frame.
-    /// </summary>
     public void RunNextFrame(Action action)
     {
         RunInUpdates(1, action);
     }
 
-    /// <summary>
-    /// Process scheduled actions.
-    /// </summary>
     internal void ProcessScheduledActions()
     {
         lock (_scheduleLock)
@@ -1726,9 +1500,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
     #region Component Methods
 
-    /// <summary>
-    /// Attach a new Component to this Slot.
-    /// </summary>
 	public T AttachComponent<T>() where T : Component, new()
 	{
         if (World == null)
@@ -1744,9 +1515,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         return base.AttachComponent<T>();
     }
 
-    /// <summary>
-    /// Attach a Component by type.
-    /// </summary>
 	public Component AttachComponent(Type componentType)
 	{
 		if (!typeof(Component).IsAssignableFrom(componentType))
@@ -1765,18 +1533,12 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         return base.AttachComponent(componentType);
 	}
 
-    /// <summary>
-    /// Get or attach a component.
-    /// </summary>
     public T GetOrAttachComponent<T>() where T : Component, new()
     {
         var existing = GetComponent<T>();
         return existing ?? AttachComponent<T>();
     }
 
-    /// <summary>
-    /// Get the first Component of the specified type.
-    /// </summary>
     public T GetComponent<T>() where T : Component
     {
         // Hot path: the UI hit-test calls this per slot, twice per laser, every frame. A plain loop avoids
@@ -1790,9 +1552,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         return null!;
     }
 
-    /// <summary>
-    /// Get Component by type.
-    /// </summary>
     public Component GetComponent(Type type)
     {
         for (int i = 0; i < _components.Count; i++)
@@ -1803,43 +1562,28 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         return null!;
     }
 
-    /// <summary>
-    /// Get all Components of the specified type.
-    /// </summary>
     public IEnumerable<T> GetComponents<T>() where T : Component
     {
         return _components.OfType<T>();
     }
 
-    /// <summary>
-    /// Get all Components.
-    /// </summary>
     public IEnumerable<Component> GetAllComponents()
     {
         return _components;
     }
 
-    /// <summary>
-    /// Get all Components implementing the specified interface type T.
-    /// Unlike GetComponents<T>, this works with interface types.
-    /// </summary>
+    // Unlike GetComponents, this works with interface types.
     public IEnumerable<T> GetComponentsImplementing<T>() where T : class
     {
         return _components.OfType<T>();
     }
 
-    /// <summary>
-    /// Try to get a Component.
-    /// </summary>
     public bool TryGetComponent<T>(out T component) where T : Component
     {
         component = GetComponent<T>();
         return component != null;
     }
 
-    /// <summary>
-    /// Get the first Component of the specified type matching a predicate.
-    /// </summary>
     public T GetComponent<T>(Func<T, bool> predicate) where T : Component
     {
         for (int i = 0; i < _components.Count; i++)
@@ -1850,9 +1594,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         return null!;
     }
 
-    /// <summary>
-    /// Get Component in parent hierarchy.
-    /// </summary>
     public T GetComponentInParent<T>(bool includeSelf = true) where T : Component
     {
         if (includeSelf)
@@ -1864,15 +1605,9 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         return (_parent?.GetComponentInParent<T>(true)) ?? null!;
     }
 
-    /// <summary>
-    /// Alias for GetComponentInParent for API compatibility.
-    /// </summary>
     public T GetComponentInParents<T>(bool includeSelf = true) where T : Component
         => GetComponentInParent<T>(includeSelf);
 
-    /// <summary>
-    /// Get Component in children hierarchy.
-    /// </summary>
     public T GetComponentInChildren<T>(bool includeSelf = true) where T : Component
     {
         if (includeSelf)
@@ -1890,9 +1625,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         return null!;
     }
 
-    /// <summary>
-    /// Get all Components in children hierarchy.
-    /// </summary>
     public IEnumerable<T> GetComponentsInChildren<T>(bool includeSelf = true) where T : Component
     {
         if (includeSelf)
@@ -1908,11 +1640,9 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Allocation-free variant of <see cref="GetComponentsInChildren{T}(bool)"/>: fills a caller-provided
-    /// (ideally reused) list instead of allocating an iterator state machine + an OfType wrapper at EVERY
-    /// slot. The per-frame laser raycast walks the whole world with this, so those allocations were real. -xlinka
-    /// </summary>
+    // Allocation-free variant of GetComponentsInChildren{T}: fills a caller-provided
+    // (ideally reused) list instead of allocating an iterator state machine + an OfType wrapper at EVERY
+    // slot. The per-frame laser raycast walks the whole world with this, so those allocations were real. -xlinka
     public void GetComponentsInChildren<T>(List<T> results, bool includeSelf = true) where T : Component
     {
         if (includeSelf)
@@ -1926,9 +1656,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             _localChildren[i].GetComponentsInChildren(results, true);
     }
 
-    /// <summary>
-    /// Get all Components in parent hierarchy.
-    /// </summary>
     public IEnumerable<T> GetComponentsInParent<T>(bool includeSelf = true) where T : Component
     {
         if (includeSelf)
@@ -1944,27 +1671,18 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Find a Component on this slot or its parents first, falling back to the children.
-    /// </summary>
     public T GetComponentInParentsOrChildren<T>() where T : Component
     {
         var comp = GetComponentInParents<T>();
         return comp != null ? comp : GetComponentInChildren<T>(includeSelf: false);
     }
 
-    /// <summary>
-    /// Find a Component on this slot or its children first, falling back to the parents.
-    /// </summary>
     public T GetComponentInChildrenOrParents<T>() where T : Component
     {
         var comp = GetComponentInChildren<T>();
         return comp != null ? comp : GetComponentInParents<T>(includeSelf: false);
     }
 
-    /// <summary>
-    /// Run an action over every Component of type T in this slot and its parent hierarchy.
-    /// </summary>
     public void ForeachComponentInParents<T>(Action<T> action, bool includeSelf = true) where T : Component
     {
         foreach (var comp in GetComponentsInParent<T>(includeSelf))
@@ -1975,7 +1693,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     // parameterless calls above stay unambiguous; pass null to match any component.
     // "Disabled" = the owning slot is inactive or the component's Enabled flag is false.
 
-    /// <summary>Find the first Component of type T on this slot or its children matching the filter.</summary>
     public T GetComponentInChildren<T>(Predicate<T>? filter, bool excludeDisabled = false) where T : Component
     {
         if (excludeDisabled && !IsActive)
@@ -1993,7 +1710,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         return null!;
     }
 
-    /// <summary>Enumerate Components of type T on this slot and its children matching the filter.</summary>
     public IEnumerable<T> GetComponentsInChildren<T>(Predicate<T>? filter, bool excludeDisabled = false) where T : Component
     {
         if (excludeDisabled && !IsActive)
@@ -2008,7 +1724,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
                 yield return comp;
     }
 
-    /// <summary>Find the first Component of type T on this slot or its parents matching the filter.</summary>
     public T GetComponentInParents<T>(Predicate<T>? filter, bool excludeDisabled = false) where T : Component
     {
         var current = this;
@@ -2027,7 +1742,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         return null!;
     }
 
-    /// <summary>Enumerate Components of type T on this slot and its parents matching the filter.</summary>
     public IEnumerable<T> GetComponentsInParent<T>(Predicate<T>? filter, bool excludeDisabled = false) where T : Component
     {
         var current = this;
@@ -2045,9 +1759,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-	/// <summary>
-	/// Remove a Component from this Slot.
-	/// </summary>
 	public new void RemoveComponent(Component component)
 	{
         if (component == null)
@@ -2056,9 +1767,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         base.RemoveComponent(component);
 	}
 
-    /// <summary>
-    /// Remove all Components of a type.
-    /// </summary>
     public void RemoveComponents<T>() where T : Component
     {
         var toRemove = _components.OfType<T>().ToArray();
@@ -2066,26 +1774,17 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             RemoveComponent(comp);
     }
 
-    /// <summary>
-    /// Check if this slot has a component of type.
-    /// </summary>
     public bool HasComponent<T>() where T : Component
     {
         return _components.OfType<T>().Any();
     }
 
-    /// <summary>
-    /// Iterate all components with an action.
-    /// </summary>
     public void ForeachComponent(Action<Component> action)
     {
         foreach (var comp in _components)
             action(comp);
     }
 
-    /// <summary>
-    /// Iterate all components in children.
-    /// </summary>
     public void ForeachComponentInChildren<T>(Action<T> action, bool includeSelf = true) where T : Component
     {
         if (includeSelf)
@@ -2104,8 +1803,12 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
     // Components and child slots are polymorphic/recursive, so they're serialized explicitly here
     // rather than through the generic member loop; the "Components" member collection is excluded from it.
+    // Still chains to base so [NonPersistent] fields (Persistent itself among them) get the same
+    // treatment as everywhere else - a slot that made it into a save had Persistent=true already
+    // (its parent filters on IsPersistent before calling this), so a loaded slot's constructor default
+    // of true is exactly what would have round-tripped anyway.
     protected override bool ShouldSerializeMember(ISyncMember member)
-        => !ReferenceEquals(member, componentCollection);
+        => !ReferenceEquals(member, componentCollection) && base.ShouldSerializeMember(member);
 
     public override DataTreeNode Save(SaveControl control)
     {
@@ -2173,7 +1876,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     // its asset dependencies). Lets an object be written to a file/record and loaded into ANY
     // world (spawning, inventory, copy-paste).
 
-    /// <summary>Add this slot and every slot beneath it (including local children) to <paramref name="set"/>.</summary>
     public void GenerateHierarchy(HashSet<Slot> set)
     {
         if (set == null || !set.Add(this))
@@ -2182,10 +1884,8 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             child.GenerateHierarchy(set);
     }
 
-    /// <summary>
-    /// Serialize this slot's subtree into a self-contained <see cref="SavedGraph"/>. References that
-    /// point outside the subtree (and its collected dependencies) are nulled so the graph stands alone.
-    /// </summary>
+    // References that point outside the subtree (and its collected dependencies) are nulled so the graph stands
+    // alone.
     public SavedGraph SaveObject(DependencyHandling dependencyHandling = DependencyHandling.BreakExternal,
                                  bool saveNonPersistent = false, ReferenceTranslator? refTranslator = null)
     {
@@ -2227,6 +1927,21 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             foreach (var dependency in assetDependencies)
                 AddReferenceableIds(dependency, allowed);
         control.ReferenceFilter = r => (r == RefID.Null || allowed.Contains(r)) ? r : RefID.Null;
+
+        // Claim identities for the members this graph points at, after the filter is in place so
+        // references leaving the subtree are skipped. Ordering inside the graph then stops mattering:
+        // a ref to a field resolves whether its holder was written before or after it.
+        control.ReserveSubtreeIdentities(this);
+        if (slotDependencies != null)
+        {
+            foreach (var dependency in slotDependencies)
+                control.ReserveSubtreeIdentities(dependency);
+        }
+        if (assetDependencies != null)
+        {
+            foreach (var dependency in assetDependencies)
+                control.ReserveWorkerIdentities(dependency);
+        }
 
         var dictionary = new DataTreeDictionary();
         dictionary.Add("Object", Save(control));
@@ -2353,11 +2068,8 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Load a graph produced by <see cref="SaveObject"/> into this slot. Any collected "Assets" are
-    /// attached under <paramref name="assetsRoot"/> (or a new child of the world root) so their
-    /// references resolve. Intended for an empty target slot (e.g. <c>parent.AddSlot().LoadObject(…)</c>).
-    /// </summary>
+    // Any collected "Assets" are attached under assetsRoot (or a new child of the world root) so their
+    // references resolve. Intended for an empty target slot (e.g. parent.AddSlot().LoadObject(…)).
     public void LoadObject(DataTreeDictionary node, Slot? assetsRoot = null, ReferenceTranslator? refTranslator = null)
     {
         if (IsDestroyed)
@@ -2413,10 +2125,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Save this slot's subtree to a file in the binary data-tree format. Set <paramref name="encrypt"/>
-    /// to store it AES-GCM encrypted at rest (inventory items / saved objects).
-    /// </summary>
+    // Set encrypt to store it AES-GCM encrypted at rest (inventory items / saved objects).
     public void SaveObjectToFile(string path, DependencyHandling dependencyHandling = DependencyHandling.CollectAssets,
                                  bool saveNonPersistent = false, bool encrypt = false)
     {
@@ -2427,7 +2136,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         File.WriteAllBytes(path, bytes);
     }
 
-    /// <summary>Load a graph from a file into this slot. Transparently handles encrypted + plain files.</summary>
     public void LoadObjectFromFile(string path, Slot? assetsRoot = null, ReferenceTranslator? refTranslator = null)
     {
         if (DataTreeConverter.LoadFromBytes(LocalEncryption.Decrypt(File.ReadAllBytes(path))) is DataTreeDictionary dictionary)
@@ -2436,10 +2144,8 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             throw new InvalidDataException("File does not contain a saved object graph.");
     }
 
-    /// <summary>
-    /// Asynchronously load a graph from a local file: the bytes are read off-thread, then the actual
-    /// load is marshaled back onto the world update thread (data-model mutations must happen there).
-    /// </summary>
+    // Asynchronously load a graph from a local file: the bytes are read off-thread, then the actual load is
+    // marshaled back onto the world update thread (data-model mutations must happen there).
     public async Task LoadObjectAsync(string path, Slot? assetsRoot = null, ReferenceTranslator? refTranslator = null)
     {
         var bytes = await File.ReadAllBytesAsync(path).ConfigureAwait(false);
@@ -2464,9 +2170,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
     #region Child Slot Methods
 
-    /// <summary>
-    /// Create a new child Slot.
-    /// </summary>
     public Slot AddSlot(string name = "Slot")
     {
         if (World == null)
@@ -2495,9 +2198,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         return slot;
     }
 
-    /// <summary>
-    /// Add a local-only child slot (not synchronized).
-    /// </summary>
+    // Not synchronized.
     public Slot AddLocalSlot(string name = "LocalSlot")
     {
         if (World == null)
@@ -2527,15 +2228,26 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         if (child == null)
             return;
 
+        // A locally-allocated child gets its local RefID only during Initialize, AFTER the first
+        // parent attach already filed it under _children. Re-file on the post-init attach so a
+        // local slot lives in exactly one list; otherwise it double-registers and leaks into
+        // Children (and from there into saves, duplication and the inspector tree). - xlinka
         var list = ShouldStoreInLocalChildren(child) ? _localChildren : _children;
+        var other = ReferenceEquals(list, _children) ? _localChildren : _children;
+        bool refiled = other.Remove(child);
+
         if (!list.Contains(child))
         {
             list.Add(child);
-            if (IsInInitPhase)
+            if (IsInInitPhase && !refiled)
             {
                 childInitializables.Add(child);
             }
-            OnChildAdded?.Invoke(this, child);
+            if (!refiled)
+            {
+                OnChildAdded?.Invoke(this, child);
+                RaiseSubtreeStructureChanged();
+            }
         }
     }
 
@@ -2544,10 +2256,13 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         if (child == null)
             return;
 
-        var list = ShouldStoreInLocalChildren(child) ? _localChildren : _children;
-        if (list.Remove(child))
+        // Check both lists: the child's local flag can differ between attach and detach. - xlinka
+        bool removed = _children.Remove(child);
+        removed |= _localChildren.Remove(child);
+        if (removed)
         {
             OnChildRemoved?.Invoke(this, child);
+            RaiseSubtreeStructureChanged();
         }
     }
 
@@ -2559,9 +2274,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             yield return child;
     }
 
-    /// <summary>
-    /// Get child by index.
-    /// </summary>
     public Slot GetChild(int index)
     {
         if (index < 0 || index >= _children.Count)
@@ -2569,35 +2281,20 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         return _children[index];
     }
 
-    /// <summary>
-    /// Indexer for children.
-    /// </summary>
     public Slot this[int index] => GetChild(index);
 
-    /// <summary>
-    /// Indexer for children by name.
-    /// </summary>
     public Slot this[string name] => GetChild(name);
 
-    /// <summary>
-    /// Get child by name (first match).
-    /// </summary>
     public Slot GetChild(string name)
     {
         return _children.FirstOrDefault(c => c.Name.Value == name)!;
     }
 
-    /// <summary>
-    /// Find child by name (recursive optional).
-    /// </summary>
     public Slot FindChild(string name, bool recursive = false, int maxDepth = -1)
     {
         return FindChild(s => s.Name.Value == name, recursive, maxDepth);
     }
 
-    /// <summary>
-    /// Find child by predicate.
-    /// </summary>
     public Slot FindChild(Predicate<Slot> predicate, bool recursive = false, int maxDepth = -1)
     {
         foreach (var child in EnumerateAllChildren())
@@ -2615,9 +2312,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         return null!;
     }
 
-    /// <summary>
-    /// Find all children matching predicate.
-    /// </summary>
     public IEnumerable<Slot> FindChildren(Predicate<Slot> predicate, bool recursive = false)
     {
         foreach (var child in EnumerateAllChildren())
@@ -2633,17 +2327,11 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Find children by tag.
-    /// </summary>
     public IEnumerable<Slot> FindChildrenByTag(string tag, bool recursive = false)
     {
         return FindChildren(s => s.Tag.Value == tag, recursive);
     }
 
-    /// <summary>
-    /// Set the tag on this slot and every slot beneath it.
-    /// </summary>
     public void TagHierarchy(string tag)
     {
         Tag.Value = tag;
@@ -2651,9 +2339,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             child.TagHierarchy(tag);
     }
 
-    /// <summary>
-    /// Collect every descendant slot whose tag matches (whole hierarchy).
-    /// </summary>
     public List<Slot> GetChildrenWithTag(string tag)
     {
         var result = new List<Slot>();
@@ -2661,9 +2346,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         return result;
     }
 
-    /// <summary>
-    /// Fill <paramref name="children"/> with every descendant slot whose tag matches.
-    /// </summary>
     public void GetChildrenWithTag(string tag, List<Slot> children)
     {
         foreach (var child in EnumerateAllChildren())
@@ -2674,18 +2356,12 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Find child or create if not found.
-    /// </summary>
     public Slot FindChildOrAdd(string name, bool recursive = false)
     {
         var found = FindChild(name, recursive);
         return found ?? AddSlot(name);
     }
 
-    /// <summary>
-    /// Get or create a slot at a relative path.
-    /// </summary>
     public Slot GetSlotAtPath(string path, bool createIfMissing = false)
     {
         if (string.IsNullOrEmpty(path))
@@ -2718,18 +2394,12 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         return current;
     }
 
-    /// <summary>
-    /// Iterate all children.
-    /// </summary>
     public void ForeachChild(Action<Slot> action)
     {
         foreach (var child in EnumerateAllChildren())
             action(child);
     }
 
-    /// <summary>
-    /// Iterate all descendants.
-    /// </summary>
     public void ForeachChildRecursive(Action<Slot> action)
     {
         foreach (var child in EnumerateAllChildren())
@@ -2739,9 +2409,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Move a child to a specific index.
-    /// </summary>
     public void MoveChildToIndex(Slot child, int index)
     {
         if (!_children.Contains(child))
@@ -2752,17 +2419,11 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         _children.Insert(index, child);
     }
 
-    /// <summary>
-    /// Move this slot to <paramref name="index"/> within its parent's child list.
-    /// </summary>
     public void InsertAtIndex(int index)
     {
         _parent?.MoveChildToIndex(this, index);
     }
 
-    /// <summary>
-    /// Swap the sibling positions of two slots that share the same parent.
-    /// </summary>
     public static void SwapChildren(Slot a, Slot b)
     {
         if (a == null || b == null || ReferenceEquals(a, b))
@@ -2787,9 +2448,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Add a child slot and move it to a specific index in the child list.
-    /// </summary>
     public Slot InsertSlot(int index, string name = "Slot")
     {
         var slot = AddSlot(name);
@@ -2797,25 +2455,16 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         return slot;
     }
 
-    /// <summary>
-    /// Sort children by order offset.
-    /// </summary>
     public void SortChildren()
     {
         _children.Sort((a, b) => a.OrderOffset.Value.CompareTo(b.OrderOffset.Value));
     }
 
-    /// <summary>
-    /// Sort children by name.
-    /// </summary>
     public void SortChildrenByName()
     {
         _children.Sort((a, b) => string.Compare(a.Name.Value, b.Name.Value, StringComparison.Ordinal));
     }
 
-    /// <summary>
-    /// Get all ancestors up to root.
-    /// </summary>
     public IEnumerable<Slot> GetAncestors(bool includeSelf = false)
     {
         if (includeSelf)
@@ -2829,9 +2478,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Get all descendants.
-    /// </summary>
     public IEnumerable<Slot> GetDescendants(bool includeSelf = false)
     {
         if (includeSelf)
@@ -2845,9 +2491,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Check if this slot is a descendant of another.
-    /// </summary>
     public bool IsDescendantOf(Slot slot)
     {
         if (slot == null) return false;
@@ -2861,17 +2504,11 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         return false;
     }
 
-    /// <summary>
-    /// Check if this slot is an ancestor of another.
-    /// </summary>
     public bool IsAncestorOf(Slot slot)
     {
         return slot?.IsDescendantOf(this) ?? false;
     }
 
-    /// <summary>
-    /// Find common ancestor with another slot.
-    /// </summary>
     public Slot FindCommonAncestor(Slot other)
     {
         if (other == null) return null!;
@@ -2885,9 +2522,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         return null!;
     }
 
-    /// <summary>
-    /// Count total descendants.
-    /// </summary>
     public int CountDescendants()
     {
         int count = _children.Count + _localChildren.Count;
@@ -2902,9 +2536,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
     #region Duplication
 
-    /// <summary>
-    /// Duplicate this slot and its contents.
-    /// </summary>
     public Slot Duplicate(Slot newParent = null!, bool preserveGlobalTransform = false)
     {
         newParent ??= _parent;
@@ -3085,10 +2716,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     private static object? GetMemberValue(MemberInfo member, object instance)
         => member is PropertyInfo p ? p.GetValue(instance) : ((FieldInfo)member).GetValue(instance);
 
-    /// <summary>
-    /// Copy all sync member data from source to target component, using the
-    /// cached member layout for the type.
-    /// </summary>
     private void CopyComponentData(Component source, Component target, Dictionary<RefID, RefID> elementMap,
         List<(ISyncRef cloneRef, ISyncRef sourceRef)> deferredRefs)
     {
@@ -3158,11 +2785,8 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Copy value from one sync member to another. Every member registers its
-    /// RefID in the map so references aimed at it can be remapped; references
-    /// themselves are deferred and resolved once the whole tree exists.
-    /// </summary>
+    // Every member registers its RefID in the map so references aimed at it can be remapped; references
+    // themselves are deferred and resolved once the whole tree exists.
     private void CopySyncMemberValue(ISyncMember source, ISyncMember target,
         Dictionary<RefID, RefID> elementMap, List<(ISyncRef cloneRef, ISyncRef sourceRef)> deferredRefs)
     {
@@ -3208,7 +2832,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             return;
         }
 
-        // Handle regular sync fields
         var sourceVal = source.GetValueAsObject();
         if (sourceVal != null)
         {
@@ -3221,7 +2844,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
                 }
                 catch
                 {
-                    // Value type mismatch, skip
                 }
             }
         }
@@ -3244,9 +2866,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             cloneRef.Value = sourceTarget;
     }
 
-    /// <summary>
-    /// Create a deep copy with all references resolved.
-    /// </summary>
     public Slot DeepCopy(Slot newParent = null!)
     {
         return Duplicate(newParent, false);
@@ -3256,9 +2875,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
     #region Path & Hierarchy
 
-    /// <summary>
-    /// Get the hierarchical path of this slot.
-    /// </summary>
     public string GetPath()
     {
         if (_parent == null)
@@ -3266,9 +2882,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         return _parent.GetPath() + "/" + Name.Value;
     }
 
-    /// <summary>
-    /// Get path relative to another slot.
-    /// </summary>
     public string GetRelativePath(Slot relativeTo)
     {
         if (relativeTo == null || relativeTo == this)
@@ -3286,10 +2899,9 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             return string.Join("/", path);
         }
 
-        // Need to go up to common ancestor
         var ancestor = FindCommonAncestor(relativeTo);
         if (ancestor == null)
-            return GetPath(); // No common ancestor, return full path
+            return GetPath();
 
         var upCount = 0;
         var check = relativeTo;
@@ -3304,17 +2916,11 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         return ups + "/" + relativePath;
     }
 
-    /// <summary>
-    /// Get a string representation for hierarchy tracing.
-    /// </summary>
     public override string ParentHierarchyToString()
     {
         return GetPath();
     }
 
-    /// <summary>
-    /// Print hierarchy to string for debugging.
-    /// </summary>
     public string PrintHierarchy(int indent = 0)
     {
         var sb = new System.Text.StringBuilder();
@@ -3335,9 +2941,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
     #region Destroy & Cleanup
 
-    /// <summary>
-    /// Destroy this Slot and all its children and components.
-    /// </summary>
     public void Destroy()
     {
         if (IsDestroyed) return;
@@ -3350,13 +2953,11 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         IsDestroyed = true;
         OnPrepareDestroy?.Invoke(this);
 
-        // Destroy all children
         foreach (var child in _children.ToArray())
             child.Destroy();
         foreach (var child in _localChildren.ToArray())
             child.Destroy();
 
-		// Destroy all components
 			foreach (var component in _components.ToArray())
 			{
 				RemoveComponent(component);
@@ -3365,20 +2966,167 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 		_children.Clear();
 		_localChildren.Clear();
 
-        // Remove from parent
         _parent?.DetachChildInternal(this);
 
-        // Unregister from world
         World?.ReferenceController?.UnregisterObject(this);
         World?.UnregisterSlot(this);
 
-        // Dispose hook
         Hook?.Dispose();
     }
 
-    /// <summary>
-    /// Remove from hierarchy without destroying.
-    /// </summary>
+    // Surviving providers keep their slots, which get reparented under relocateAssets (created under the world
+    // root as "<name> - Assets" when null, the same shape the object loaders use); everything else is
+    // destroyed.
+    public void DestroyPreservingAssets(Slot? relocateAssets = null, ISlotStripRecorder? recorder = null)
+    {
+        if (IsDestroyed || IsProtected || World == null)
+            return;
+        if (relocateAssets != null && (relocateAssets == this || relocateAssets.IsDescendantOf(this)))
+            return;
+
+        var hierarchy = new HashSet<Slot>();
+        GenerateHierarchy(hierarchy);
+
+        Slot? target = relocateAssets;
+        Slot GetRelocationTarget()
+        {
+            if (target != null)
+                return target;
+            target = World.RootSlot.AddSlot(Name.Value + " - Assets");
+            recorder?.HolderCreated(target);
+            return target;
+        }
+
+        var externallyReferenced = new Dictionary<IAssetProvider, bool>();
+        StripNonAssetComponents(hierarchy, externallyReferenced, recorder);
+        RelocateOrDestroyEmpty(GetRelocationTarget, recorder);
+    }
+
+    // Bottom-up: drop every component that is not an externally-referenced asset provider.
+    // Support components marked PreserveWithAssets ride along only next to a surviving provider.
+    private void StripNonAssetComponents(HashSet<Slot> hierarchy, Dictionary<IAssetProvider, bool> memo,
+        ISlotStripRecorder? recorder)
+    {
+        for (int i = _children.Count - 1; i >= 0; i--)
+            _children[i].StripNonAssetComponents(hierarchy, memo, recorder);
+        for (int i = _localChildren.Count - 1; i >= 0; i--)
+            _localChildren[i].StripNonAssetComponents(hierarchy, memo, recorder);
+
+        for (int i = _components.Count - 1; i >= 0; i--)
+        {
+            var component = _components[i];
+            if (component.IsDestroyed)
+                continue;
+            if (component.PreserveWithAssets)
+                continue;
+            if (component is IAssetProvider provider && IsExternallyReferenced(provider, hierarchy, memo))
+                continue;
+            recorder?.ComponentStripped(component);
+            component.Destroy();
+        }
+
+        bool hasProvider = false;
+        foreach (var component in _components)
+        {
+            if (component is IAssetProvider)
+            {
+                hasProvider = true;
+                break;
+            }
+        }
+        if (!hasProvider)
+        {
+            for (int i = _components.Count - 1; i >= 0; i--)
+            {
+                if (_components[i].PreserveWithAssets)
+                {
+                    recorder?.ComponentStripped(_components[i]);
+                    _components[i].Destroy();
+                }
+            }
+        }
+    }
+
+    // Bottom-up: slots stripped bare are destroyed; slots that kept components move (flattened)
+    // under the relocation target. A recorder can claim an emptied slot instead of losing it.
+    private void RelocateOrDestroyEmpty(Func<Slot> getRelocationTarget, ISlotStripRecorder? recorder)
+    {
+        for (int i = _children.Count - 1; i >= 0; i--)
+            _children[i].RelocateOrDestroyEmpty(getRelocationTarget, recorder);
+        for (int i = _localChildren.Count - 1; i >= 0; i--)
+            _localChildren[i].RelocateOrDestroyEmpty(getRelocationTarget, recorder);
+
+        if (_components.Count == 0)
+        {
+            if (recorder?.SlotEmptied(this) != true)
+                Destroy();
+            return;
+        }
+
+        var holder = getRelocationTarget();
+        recorder?.SlotRelocating(this, holder);
+        SetParent(holder);
+    }
+
+    // A provider survives when a reference to it lives outside the doomed subtree, directly or
+    // through a chain of providers (a mesh referenced by a preserved material is preserved too).
+    // The memo doubles as the cycle guard: a provider currently being evaluated reads as
+    // not-external, so reference loops cannot recurse forever. - xlinka
+    private static bool IsExternallyReferenced(IAssetProvider provider, HashSet<Slot> hierarchy,
+        Dictionary<IAssetProvider, bool> memo)
+    {
+        if (memo.TryGetValue(provider, out bool cached))
+            return cached;
+        memo[provider] = false;
+
+        bool external = false;
+        foreach (var reference in provider.References)
+        {
+            var element = reference as IWorldElement;
+            var owner = FindOwningSlot(element);
+            if (owner == null || owner.IsDestroyed)
+                continue;
+            if (!hierarchy.Contains(owner))
+            {
+                external = true;
+                break;
+            }
+            var owningProvider = FindOwningProvider(element);
+            if (owningProvider != null && !ReferenceEquals(owningProvider, provider)
+                && IsExternallyReferenced(owningProvider, hierarchy, memo))
+            {
+                external = true;
+                break;
+            }
+        }
+        memo[provider] = external;
+        return external;
+    }
+
+    private static Slot? FindOwningSlot(IWorldElement? element)
+    {
+        while (element != null)
+        {
+            if (element is Slot slot)
+                return slot;
+            if (element is Component component)
+                return component.Slot;
+            element = (element as SyncElement)?.Parent;
+        }
+        return null;
+    }
+
+    private static IAssetProvider? FindOwningProvider(IWorldElement? element)
+    {
+        while (element != null)
+        {
+            if (element is Component component)
+                return component as IAssetProvider;
+            element = (element as SyncElement)?.Parent;
+        }
+        return null;
+    }
+
     public void RemoveFromHierarchy()
     {
         if (IsProtected)
@@ -3392,10 +3140,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         _parent = null!;
     }
 
-    /// <summary>
-    /// Destroy all children. Protected children are skipped; their Destroy()
-    /// call no-ops with a warning.
-    /// </summary>
+    // Protected children are skipped; their Destroy() no-ops with a warning.
     public void DestroyChildren()
     {
         foreach (var child in _children.ToArray())
@@ -3404,9 +3149,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             child.Destroy();
     }
 
-    /// <summary>
-    /// Destroy all children matching predicate.
-    /// </summary>
     public void DestroyChildren(Predicate<Slot> predicate)
     {
         foreach (var child in _children.ToArray())
@@ -3421,9 +3163,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Destroy with delay.
-    /// </summary>
     public void DestroyDelayed(float seconds)
     {
         int updates = (int)(seconds * 60); // Approximate 60 fps
@@ -3434,9 +3173,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
     #region Update
 
-    /// <summary>
-    /// Update all components.
-    /// </summary>
     public void UpdateComponents(float delta)
     {
         ProcessScheduledActions();
@@ -3468,16 +3204,11 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
     #region Network Serialization
 
-    /// <summary>
-    /// Encode slot state for network transmission.
-    /// </summary>
     public void Encode(BinaryWriter writer)
     {
-        // Write slot header
         writer.Write((ulong)ReferenceID);
         writer.Write((ulong)(_parent?.ReferenceID ?? RefID.Null));
 
-        // Write sync fields
         EncodeSyncField(writer, Name);
         EncodeSyncField(writer, ActiveSelf);
         EncodeSyncField(writer, LocalPosition);
@@ -3487,7 +3218,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         EncodeSyncField(writer, Persistent);
         EncodeSyncField(writer, OrderOffset);
 
-        // Write components
         writer.Write(_components.Count);
         foreach (var comp in _components)
         {
@@ -3504,16 +3234,11 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
     }
 
-    /// <summary>
-    /// Decode slot state from network transmission.
-    /// </summary>
     public void Decode(BinaryReader reader, Dictionary<RefID, object> refLookup)
     {
-        // Read slot header
         var refId = new RefID(reader.ReadUInt64());
         var parentRefId = new RefID(reader.ReadUInt64());
 
-        // Read sync fields
         DecodeSyncField(reader, Name);
         DecodeSyncField(reader, ActiveSelf);
         DecodeSyncField(reader, LocalPosition);
@@ -3523,7 +3248,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         DecodeSyncField(reader, Persistent);
         DecodeSyncField(reader, OrderOffset);
 
-        // Read components
         int compCount = reader.ReadInt32();
         for (int i = 0; i < compCount; i++)
         {
@@ -3564,28 +3288,21 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
     #region Binary Serialization (File Save/Load)
 
-    /// <summary>
-    /// Save this slot to a binary writer.
-    /// </summary>
     public void SaveToBinary(BinaryWriter writer)
     {
-        // Write header
         writer.Write("SLOT"); // Magic
         writer.Write(1); // Version
 
-        // Write slot data
         writer.Write(Name.Value ?? "");
         writer.Write(ActiveSelf.Value);
         writer.Write(Tag.Value ?? "");
         writer.Write(Persistent.Value);
         writer.Write(OrderOffset.Value);
 
-        // Transform
         WriteFloat3(writer, LocalPosition.Value);
         WriteFloatQ(writer, LocalRotation.Value);
         WriteFloat3(writer, LocalScale.Value);
 
-        // Components
         writer.Write(_components.Count);
         foreach (var comp in _components)
         {
@@ -3593,18 +3310,13 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             SaveComponentToBinary(writer, comp);
         }
 
-        // Children
         writer.Write(_children.Count);
         foreach (var child in _children)
             child.SaveToBinary(writer);
     }
 
-    /// <summary>
-    /// Load this slot from a binary reader.
-    /// </summary>
     public void LoadFromBinary(BinaryReader reader)
     {
-        // Read header
         var magic = reader.ReadString();
         if (magic != "SLOT")
             throw new InvalidDataException("Invalid slot data format");
@@ -3613,19 +3325,16 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         if (version > 1)
             throw new InvalidDataException($"Unsupported slot version: {version}");
 
-        // Read slot data
         Name.Value = reader.ReadString();
         ActiveSelf.Value = reader.ReadBoolean();
         Tag.Value = reader.ReadString();
         Persistent.Value = reader.ReadBoolean();
         OrderOffset.Value = reader.ReadInt64();
 
-        // Transform
         LocalPosition.Value = ReadFloat3(reader);
         LocalRotation.Value = ReadFloatQ(reader);
         LocalScale.Value = ReadFloat3(reader);
 
-        // Components
         int compCount = reader.ReadInt32();
         for (int i = 0; i < compCount; i++)
         {
@@ -3639,12 +3348,10 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             }
             else
             {
-                // Skip unknown component data
                 SkipComponentData(reader);
             }
         }
 
-        // Children
         int childCount = reader.ReadInt32();
         for (int i = 0; i < childCount; i++)
         {
@@ -3725,14 +3432,12 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             }
             catch
             {
-                // Type conversion failed, try direct assignment
                 try
                 {
                     valueProp.SetValue(member, value);
                 }
                 catch
                 {
-                    // Skip incompatible value
                 }
             }
         }
@@ -3826,7 +3531,6 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         }
         else
         {
-            // Unknown type, serialize as string if possible
             writer.Write((byte)255);
             writer.Write(value.ToString() ?? "");
         }

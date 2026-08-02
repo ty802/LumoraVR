@@ -7,10 +7,7 @@ using System.Reflection;
 
 namespace Lumora.Core;
 
-/// <summary>
-/// Category tree of every attachable component type, built once from [ComponentCategory] attributes.
-/// The inspector's component browser walks this.
-/// </summary>
+// Built once from [ComponentCategory] attributes.
 public static class ComponentLibrary
 {
     public sealed class CategoryNode
@@ -37,7 +34,6 @@ public static class ComponentLibrary
         }
     }
 
-    /// <summary>Resolve a "Physics/Colliders"-style path to its node (null when absent).</summary>
     public static CategoryNode? GetNode(string path)
     {
         var node = Root;
@@ -63,7 +59,7 @@ public static class ComponentLibrary
 
             foreach (var type in types)
             {
-                if (type == null || type.IsAbstract || !type.IsPublic || type.IsGenericTypeDefinition)
+                if (type == null || type.IsAbstract || !type.IsPublic)
                     continue;
                 if (!typeof(Component).IsAssignableFrom(type))
                     continue;
@@ -79,6 +75,16 @@ public static class ComponentLibrary
                     }
                     node = child;
                 }
+
+                // An open generic can't be attached, so the browser lists its declared closed forms
+                // instead. One that declares none stays out entirely, which is the same as before.
+                if (type.IsGenericTypeDefinition)
+                {
+                    foreach (var closed in GenericComponentTypes.Enumerate(type))
+                        node.Types.Add(closed);
+                    continue;
+                }
+
                 node.Types.Add(type);
             }
         }
@@ -89,8 +95,29 @@ public static class ComponentLibrary
 
     private static void SortTypes(CategoryNode node)
     {
-        node.Types.Sort((a, b) => string.CompareOrdinal(a.Name, b.Name));
+        // Sorted by display name: every closed form of one generic shares the same Type.Name, so
+        // sorting on that would leave them in whatever order reflection produced.
+        node.Types.Sort((a, b) => string.CompareOrdinal(DisplayName(a), DisplayName(b)));
         foreach (var child in node.Subcategories.Values)
             SortTypes(child);
+    }
+
+    public static string DisplayName(Type type)
+    {
+        if (type == null)
+            return "";
+        if (!type.IsGenericType)
+            return type.Name;
+
+        var name = type.Name;
+        int tick = name.IndexOf('`');
+        if (tick >= 0)
+            name = name[..tick];
+
+        var args = type.GetGenericArguments();
+        var argNames = new string[args.Length];
+        for (int i = 0; i < args.Length; i++)
+            argNames[i] = DisplayName(args[i]);
+        return $"{name}<{string.Join(", ", argNames)}>";
     }
 }

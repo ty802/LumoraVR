@@ -1,39 +1,44 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using Lumora.Nexus.Cloud;
+
 namespace Lumora.Core;
 
-/// <summary>
-/// World-level settings as a synced datamodel component on the world's root slot. Because it rides the
-/// normal component replication, settings replicate to clients, persist with the world (in the slot
-/// tree), and update live - reached via <see cref="World.Configuration"/>. The authority owns it; a
-/// client receives it through state sync. Edit/access policy (e.g. <see cref="Mode"/>) is still
-/// enforced host-authoritatively by the permission gate, not by trusting these synced values.
-/// </summary>
+// Because it rides the normal component replication, settings replicate to clients, persist with the world
+// (in the slot tree), and update live - reached via Configuration. The authority owns it; a client receives
+// it through state sync. Edit/access policy (e.g. Mode) is still enforced host-authoritatively by the
+// permission gate, not by trusting these synced values.
 [ComponentCategory("World")]
 public sealed class WorldSettings : Component
 {
+    [Group("Access")]
     public readonly Sync<int> MaxUsers = new();
     public readonly Sync<bool> AllowJoin = new();
     public readonly Sync<bool> IsPublic = new();
     public readonly Sync<World.WorldAccessLevel> AccessLevel = new();
 
-    /// <summary>Edit mode (Builder / Social / Event). Baked at host; drives the permission preset.</summary>
+    // Baked at host; drives the permission preset.
+    [Group("Mode")]
     public readonly Sync<WorldMode> Mode = new();
 
     public readonly Sync<bool> MobileFriendly = new();
     public readonly Sync<bool> EditMode = new();
+    [Group("Session")]
     public readonly Sync<bool> HideFromSessionLists = new();
     public readonly Sync<bool> AutoKickAFK = new();
     public readonly Sync<int> MaxAFKMinutes = new();
+    [Group("Assets")]
     public readonly Sync<bool> CleanupUnusedAssets = new();
     public readonly Sync<float> AssetCleanupInterval = new();
+    [Group("Info")]
     public readonly Sync<string> Description = new();
+    [Group("Persistence")]
     public readonly Sync<bool> EnablePersistence = new();
     public readonly Sync<float> AutoSaveInterval = new();
     public readonly Sync<int> MaxWorldSizeMB = new();
 
-    /// <summary>World tags for discovery.</summary>
+    [Group("Discovery")]
     public readonly SyncFieldList<string> Tags = new();
 
     public override void OnInit()
@@ -85,13 +90,13 @@ public sealed class WorldSettings : Component
 
     // Map the user-facing access level to the network session visibility that drives the LAN beacon / public
     // registration. Contacts tiers advertise to contacts, the open tiers advertise publicly. -xlinka
-    internal static Networking.Session.SessionVisibility ToVisibility(World.WorldAccessLevel level) => level switch
+    internal static SessionVisibility ToVisibility(World.WorldAccessLevel level) => level switch
     {
-        World.WorldAccessLevel.Private => Networking.Session.SessionVisibility.Private,
-        World.WorldAccessLevel.LAN => Networking.Session.SessionVisibility.LAN,
+        World.WorldAccessLevel.Private => SessionVisibility.Private,
+        World.WorldAccessLevel.LAN => SessionVisibility.LAN,
         World.WorldAccessLevel.Contacts or World.WorldAccessLevel.ContactsPlus
             or World.WorldAccessLevel.GroupMembers or World.WorldAccessLevel.GroupPlus
-            => Networking.Session.SessionVisibility.Contacts,
-        _ => Networking.Session.SessionVisibility.Public, // RegisteredUsers / Anyone / GroupPublic
+            => SessionVisibility.Contacts,
+        _ => SessionVisibility.Public, // RegisteredUsers / Anyone / GroupPublic
     };
 }

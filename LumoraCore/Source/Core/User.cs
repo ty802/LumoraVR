@@ -6,13 +6,11 @@ using System.Collections.Generic;
 using Lumora.Core.Input;
 using Lumora.Core.Networking.Sync;
 using Lumora.Core.Networking.Streams;
+using Lumora.Warden;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
 
-/// <summary>
-/// Head output device types.
-/// </summary>
 public enum HeadOutputDevice
 {
     Server,
@@ -21,9 +19,6 @@ public enum HeadOutputDevice
     Camera
 }
 
-/// <summary>
-/// Platform types.
-/// </summary>
 public enum Platform
 {
     Windows,
@@ -32,10 +27,7 @@ public enum Platform
     Other
 }
 
-/// <summary>
-/// Represents a user in the world.
-/// </summary>
-public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
+public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IPermissionActor
 {
     private List<ISyncMember> _syncMembers = new();
     private readonly Dictionary<BodyNode, TrackingStreamPair> _trackingStreams = new();
@@ -102,17 +94,26 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
     public int ImmediateControlCount { get; set; }
     public int ImmediateStreamCount { get; set; }
 
-    // ISyncObject implementation
     public new List<ISyncMember> SyncMembers => _syncMembers;
     public bool IsAuthority => World?.IsAuthority ?? false;
 
-    /// <summary>
-    /// Hierarchy path for debugging.
-    /// </summary>
     public override string ParentHierarchyToString() => $"User:{UserName.Value ?? UserID.Value}";
 
     public bool IsHost => World?.IsAuthority == true && World.LocalUser == this;
     public bool IsDisposed { get; private set; }
+
+    // PERMISSION GATE VIEW
+    // The gate identifies a user by the host-assigned allocation byte, never by anything the client
+    // sends. AllocationID reads 0 until the host's value syncs across, which is why the gate falls back
+    // to the byte baked into the reference id. -xlinka
+
+    ulong IPermissionActor.Id => ReferenceID.RawValue;
+
+    byte IPermissionActor.AllocationByte => AllocationID.Value;
+
+    string? IPermissionActor.DisplayName => UserName?.Value ?? ReferenceID.ToString();
+
+    IPermissionTarget? IPermissionActor.RootElement => Root?.Slot;
 
     public void Destroy()
     {
@@ -127,21 +128,12 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
     // visibility guarantee without a lock. -xlinka
     private volatile bool _receivingStreams = false;
 
-    /// <summary>
-    /// Whether the authority should fan out deltas/corrections/streams to this user yet. False while the
-    /// user is still being initialized; true once it has been handed full state.
-    /// </summary>
+    // False while the user is still being initialized; true once it has been handed full state.
     public bool ReceiveStreams => _receivingStreams;
 
-    /// <summary>
-    /// Mark this user as ready to receive live replicated traffic. Called right after its full state +
-    /// JoinStartDelta have been enqueued.
-    /// </summary>
+    // Called right after the user's full state + JoinStartDelta are enqueued.
     internal void StartTransmittingStreamData() => _receivingStreams = true;
 
-    /// <summary>
-    /// Stop fanning out live traffic to this user (re-initialization, opt-out, teardown).
-    /// </summary>
     internal void StopTransmittingStreamData() => _receivingStreams = false;
 
     // one stream container per user (userStreams); the old parallel bag was dead state and is gone -xlinka
@@ -153,17 +145,11 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
 
     public uint StreamConfigurationVersion => streamConfiguration.Value;
 
-    /// <summary>
-    /// Whether this is the local user.
-    /// </summary>
     public bool IsLocal => World?.LocalUser == this;
 
     private Components.UserRoot _root = null!;
     public readonly SyncRef<Components.UserRoot> UserRootRef = new();
 
-    /// <summary>
-    /// UserRoot component for this user.
-    /// </summary>
     public Components.UserRoot Root
     {
         get => _root;
@@ -232,7 +218,6 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
             userStreams.OnElementAdded += OnStreamAdded;
             userStreams.OnElementRemoved += OnStreamRemoved;
 
-            // Bind UserRootRef changes to keep UserRoot.ActiveUser in sync
             UserRootRef.OnTargetChange += OnUserRootRefChanged;
 
             // Only create tracking streams on authority - clients receive them via sync
@@ -250,11 +235,6 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
         }
     }
 
-    /// <summary>
-    /// Called when User is fully initialized (after network sync).
-    /// Detects if this is the local user based on Session.LocalUserRefIDToInit.
-    /// Uses Initialize() to handle local user detection.
-    /// </summary>
     internal void Initialize()
     {
         // Only clients need to detect their local user this way
@@ -273,9 +253,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
         }
     }
 
-    /// <summary>
-    /// Set user name (authority or local user only).
-    /// </summary>
+    // Authority or local user only.
     public void SetUserName(string name)
     {
         if (IsAuthority || World.LocalUser == this)
@@ -288,9 +266,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
         }
     }
 
-    /// <summary>
-    /// Kick this user from the world. Host-authoritative; cannot kick the host.
-    /// </summary>
+    // Host-authoritative; cannot kick the host.
     public void Kick()
     {
         if (World == null || !World.IsAuthority)
@@ -307,10 +283,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
         World.RemoveUser(this);
     }
 
-    /// <summary>
-    /// Ban this user: record a temp + persistent ban (keyed by user/machine id, scoped to this world)
-    /// so they can't rejoin, then kick. Host-authoritative; cannot ban the host.
-    /// </summary>
+    // Host-authoritative; cannot ban the host.
     public void Ban()
     {
         if (World == null || !World.IsAuthority)
@@ -329,9 +302,6 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
         World.RemoveUser(this);
     }
 
-    /// <summary>
-    /// Get all dirty sync members that need to be sent over network.
-    /// </summary>
     public List<ISyncMember> GetDirtySyncMembers()
     {
         var dirty = new List<ISyncMember>();
@@ -345,9 +315,6 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
         return dirty;
     }
 
-    /// <summary>
-    /// Clear dirty flags after sync.
-    /// </summary>
     public void ClearDirtyFlags()
     {
         foreach (var member in _syncMembers)
@@ -371,9 +338,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
         return stream;
     }
 
-    /// <summary>
-    /// Find the first stream of type S matching the predicate, or null. -xlinka
-    /// </summary>
+    // Find the first stream of type S matching the predicate, or null. -xlinka
     public S? GetStream<S>(Func<S, bool> predicate) where S : Networking.Streams.Stream
     {
         foreach (var stream in Streams)
@@ -384,10 +349,8 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
         return null;
     }
 
-    /// <summary>
-    /// Find this user's stream of type S with the given name, or add and name one. The per-user
-    /// named-stream pattern (e.g. a "Voice" stream); the name replicates so peers agree. -xlinka
-    /// </summary>
+    // Find this user's stream of type S with the given name, or add and name one. The per-user
+    // named-stream pattern (e.g. a "Voice" stream); the name replicates so peers agree. -xlinka
     public S GetStreamOrAdd<S>(string name, Action<S>? init = null) where S : Networking.Streams.Stream, new()
     {
         var existing = GetStream<S>(s => s.Name == name);
@@ -451,9 +414,6 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable
         _justAddedStreams.Clear();
     }
 
-    /// <summary>
-    /// Get tracking streams for a body node.
-    /// </summary>
     public void GetTrackingStreams(BodyNode node, out Float3ValueStream position, out FloatQValueStream rotation)
     {
         EnsureTrackingStreamsInitialized();

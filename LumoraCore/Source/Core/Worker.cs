@@ -106,7 +106,6 @@ public abstract class Worker : IWorker
     // source), not deep-cloned - use Slot.Duplicate for a deep clone. Members flagged [DontCopy] and
     // non-field members (collections/delegates) are skipped.
 
-    /// <summary>Copy field values from another worker of the same type, member-for-member by index.</summary>
     public void CopyValues(Worker source)
     {
         if (source == null || source.GetType() != GetType())
@@ -124,12 +123,13 @@ public abstract class Worker : IWorker
         }
     }
 
-    /// <summary>Copy field values from another worker by matching member NAME, so values transfer
-    /// between different worker types that share field names. Mismatched value types are skipped.</summary>
-    public void CopyProperties(Worker source)
+    // Returns the names of this worker's fields that did NOT receive a value, so a caller changing a worker's
+    // type can report what it dropped.
+    public List<string> CopyProperties(Worker source)
     {
+        var skipped = new List<string>();
         if (source == null)
-            return;
+            return skipped;
 
         for (int i = 0; i < SyncMemberCount; i++)
         {
@@ -138,13 +138,36 @@ public abstract class Worker : IWorker
             if (GetSyncMember(i) is not IField target)
                 continue;
 
-            var src = source.TryGetField(GetSyncMemberName(i));
-            if (src == null)
+            var name = GetSyncMemberName(i);
+            var src = source.TryGetField(name);
+            if (src == null || !CanCopyBetween(src, target))
+            {
+                skipped.Add(name);
                 continue;
+            }
 
             try { target.BoxedValue = src.BoxedValue; }
-            catch (Exception ex) { LumoraLogger.Warn($"CopyProperties: member '{GetSyncMemberName(i)}' on {WorkerTypeName} failed: {ex.Message}"); }
+            catch (Exception ex)
+            {
+                skipped.Add(name);
+                LumoraLogger.Warn($"CopyProperties: member '{name}' on {WorkerTypeName} failed: {ex.Message}");
+            }
         }
+        return skipped;
+    }
+
+    // A name match is not a type match. Two workers can both declare "Size" as a float3 and a float,
+    // and boxing hides the difference until the setter throws (or worse, silently coerces). A
+    // reference member carries a second constraint on top: the RefID it holds is only meaningful if
+    // the destination accepts the same element type, otherwise the copy plants a reference the
+    // destination can never resolve. -xlinka
+    private static bool CanCopyBetween(IField source, IField destination)
+    {
+        if (source.ValueType != destination.ValueType)
+            return false;
+        if (source is ISyncRef sourceRef && destination is ISyncRef destinationRef)
+            return destinationRef.TargetType.IsAssignableFrom(sourceRef.TargetType);
+        return true;
     }
 
     // PERSISTENCE
@@ -158,12 +181,31 @@ public abstract class Worker : IWorker
         for (int i = 0; i < SyncMemberCount; i++)
         {
             var member = GetSyncMember(i);
-            if (member == null || !ShouldSerializeMember(member))
+            if (member == null)
                 continue;
             var memberName = GetSyncMemberName(i);
+
+            if (!ShouldSerializeMember(member))
+            {
+                // The VALUE is excluded (a [NonPersistent] field, or a member a worker handles itself -
+                // Slot's own Components list). Its identity can still matter: something linked to it, or
+                // an earlier member in this same save already named it, needs an ID to resolve against.
+                if (NeedsSavedIdentity(member, control))
+                    dictionary.Add(memberName + "-ID", control.SaveReference(member.ReferenceID));
+                continue;
+            }
+
             try
             {
                 dictionary.Add(memberName, member.Save(control));
+
+                // A member's saved VALUE carries no identity, so a reference pointing AT the member -
+                // a drive's target, a binding's backing store - has nothing to resolve to on load and
+                // comes back empty. Write the identity alongside the value for the members something
+                // actually points at, so those survive the round trip. Kept conditional because an
+                // extra GUID on every member of every slot is real weight in a large world. -xlinka
+                if (NeedsSavedIdentity(member, control))
+                    dictionary.Add(memberName + "-ID", control.SaveReference(member.ReferenceID));
             }
             catch (NotSupportedException)
             {
@@ -177,6 +219,14 @@ public abstract class Worker : IWorker
         return dictionary;
     }
 
+    // Two ways to know a member is pointed at. A LINKED member is one a drive or a hook holds right
+    // now, which is true regardless of save order. A member the translator already minted a GUID for
+    // is one an EARLIER-saved reference named; a reference saved after its target still slips
+    // through that half, so links are the reliable one. -xlinka
+    private static bool NeedsSavedIdentity(ISyncMember member, SaveControl control)
+        => member is ILinkable { IsLinked: true }
+        || control.ReferenceTranslator.HasLocal(member.ReferenceID);
+
     public virtual void Load(DataTreeNode node, LoadControl control)
     {
         if (node is not DataTreeDictionary dictionary)
@@ -189,9 +239,29 @@ public abstract class Worker : IWorker
         for (int i = 0; i < SyncMemberCount; i++)
         {
             var member = GetSyncMember(i);
-            if (member == null || !ShouldSerializeMember(member))
+            if (member == null)
                 continue;
             var memberName = GetSyncMemberName(i);
+
+            // "<name>-ID" is the member's own identity. It sits BESIDE the value for a member
+            // something points at, and stands alone for a non-codeable one or one excluded from this
+            // worker's own save, so bind it either way and bind it BEFORE the value: a reference
+            // waiting on this member resolves the moment the association lands. Looked up regardless
+            // of ShouldSerializeMember - a [NonPersistent] field with nothing pointing at it never got
+            // an ID written (see Save), so this is a harmless miss for the common case.
+            //
+            // A member with NEITHER key present is simply absent from this save, written before the
+            // member existed, and keeps whatever the worker constructed it with. That tolerance is what
+            // lets a worker gain a member (a drive link, say) without invalidating every old save; the
+            // component's own OnStart defaults then fill the gap. A member the save DID name is marked
+            // below so those defaults can tell the two cases apart. -xlinka
+            var memberIdNode = dictionary.TryGetNode(memberName + "-ID");
+            if (memberIdNode != null)
+                control.AssociateReference(member.ReferenceID, memberIdNode);
+
+            if (!ShouldSerializeMember(member))
+                continue;
+
             var memberNode = dictionary.TryGetNode(memberName);
 
             // Member was renamed since this save was written: fall back to any [OldName] alias so the
@@ -207,30 +277,33 @@ public abstract class Worker : IWorker
                 }
             }
 
-            if (memberNode != null)
-            {
-                try
-                {
-                    member.Load(memberNode, control);
-                }
-                catch (Exception ex)
-                {
-                    LumoraLogger.Error($"Worker.Load: member '{memberName}' on {WorkerTypeName} failed: {ex.Message}");
-                }
+            if (memberNode == null)
                 continue;
-            }
 
-            // Saved as identity-only ("<name>-ID" for non-codeable/non-persistent members):
-            // register the member's RefID so references to it still resolve on load.
-            var memberIdNode = dictionary.TryGetNode(memberName + "-ID");
-            if (memberIdNode != null)
-                control.AssociateReference(member.ReferenceID, memberIdNode);
+            // The save named this member, so whatever it holds now - a value, an empty reference - is a
+            // real answer and not an absence. Components read this back through
+            // LinkBase.ShouldApplyDefault to tell a link the user deliberately cleared from one that
+            // predates the member entirely.
+            if (member is SyncElement syncElement)
+                syncElement.ValueCameFromData = true;
+
+            try
+            {
+                member.Load(memberNode, control);
+            }
+            catch (Exception ex)
+            {
+                LumoraLogger.Error($"Worker.Load: member '{memberName}' on {WorkerTypeName} failed: {ex.Message}");
+            }
         }
     }
 
-    /// <summary>Whether a member is serialized (both saved and loaded). Override to skip ones
-    /// handled specially by the worker (e.g. a slot serializes its components itself).</summary>
-    protected virtual bool ShouldSerializeMember(ISyncMember member) => true;
+    // A [NonPersistent] field is excluded here unconditionally - the flag is pushed onto the member itself at
+    // init (InitializeSyncMembers -> SyncElement.MarkNonPersistent), so this is a plain property check, not a
+    // reflection lookup on every save. Override further to skip members a worker handles specially (e.g. a slot
+    // serializes its components itself).
+    protected virtual bool ShouldSerializeMember(ISyncMember member)
+        => member is not SyncElement { IsPersistent: false };
 
     public int IndexOfMember(ISyncMember member)
     {

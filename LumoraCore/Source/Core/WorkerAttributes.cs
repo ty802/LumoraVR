@@ -73,7 +73,9 @@ public sealed class GloballyRegisteredAttribute : Attribute
 {
 }
 
-[AttributeUsage(AttributeTargets.Field, AllowMultiple = false, Inherited = true)]
+// On a field: no editor row for that member. On a class: the component renders no section at all,
+// for render plumbing that is pure noise in the inspector. - xlinka
+[AttributeUsage(AttributeTargets.Field | AttributeTargets.Class, AllowMultiple = false, Inherited = true)]
 public sealed class HideInInspectorAttribute : Attribute
 {
 }

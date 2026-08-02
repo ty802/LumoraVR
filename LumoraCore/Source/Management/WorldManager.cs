@@ -8,21 +8,12 @@ using Lumora.Core;
 using Lumora.Core.Helpers;
 using Lumora.Core.Networking.Session;
 using Lumora.Core.Templates;
+using Lumora.Nexus.Cloud;
 using World = Lumora.Core.World;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Management;
 
-/// <summary>
-/// Manages all worlds (local, hosted sessions, joined sessions).
-/// Core world management system for Lumora Engine.
-///
-/// Responsibilities:
-/// - World lifecycle (creation, destruction)
-/// - Focus management (focused, background, overlay worlds)
-/// - Update loop coordination
-/// - World discovery and lookup
-/// </summary>
 public class WorldManager : IDisposable
 {
     private readonly List<World> _worlds = new();
@@ -32,26 +23,37 @@ public class WorldManager : IDisposable
 
     private World _focusedWorld = null!;
     private World _userspaceWorld = null!;
-    private World _setWorldFocus = null!; // Queued focus change
+    private World _setWorldFocus = null!;
     private bool _initialized = false;
     private Engine _engine = null!;
 
-    // Platform hook for world container
+    // Background worlds (Focus == Background: not the focused world, not an overlay) still have to tick for network
+    // sync + persistence, but they don't need to run their full component/hook update EVERY frame - doing so is why
+    // FPS tanks with several worlds open (you pay N x the per-frame CPU for worlds you can't even see). Throttle
+    // their main update to this rate; physics + late-update are skipped for them entirely (nothing's rendering
+    // them). Focused/Overlay/PrivateOverlay worlds are never throttled. -xlinka
+    private const double BackgroundWorldTickHz = 10.0;
+    private readonly Dictionary<World, double> _backgroundUpdateAccum = new();
+
+    // A world is throttleable only once the SESSION IS RUNNING NORMALLY: some world holds focus and it
+    // isn't this one. Every world defaults to Background at construction and focus is only assigned
+    // later - throttling during that boot window starved the userspace/home worlds to 10Hz with no
+    // physics, so the pointer rig and the user's own Root never spawned (watchdog re-fired spawn
+    // forever, leaking slots until the GPU died). The userspace world is never throttled, period. -xlinka
+    private bool IsThrottledBackgroundWorld(World world)
+        => world.Focus == World.WorldFocus.Background
+           && _focusedWorld != null && !_focusedWorld.IsDestroyed
+           && !ReferenceEquals(world, _focusedWorld)
+           && !ReferenceEquals(world, _userspaceWorld);
+
     public IWorldManagerHook Hook { get; set; } = null!;
 
-    // Events for world lifecycle notifications
     public event Action<World> WorldAdded = null!;
     public event Action<World> WorldRemoved = null!;
     public event Action<World> WorldFocused = null!;
 
-    /// <summary>
-    /// Currently focused world (main world user is interacting with).
-    /// </summary>
     public World FocusedWorld => _focusedWorld;
 
-    /// <summary>
-    /// The userspace world (always present, contains UI overlays and settings).
-    /// </summary>
     public World UserspaceWorld
     {
         get => _userspaceWorld;
@@ -66,9 +68,6 @@ public class WorldManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Number of worlds currently managed.
-    /// </summary>
     public int WorldCount
     {
         get
@@ -80,9 +79,6 @@ public class WorldManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Get all managed worlds (readonly).
-    /// </summary>
     public IReadOnlyList<World> Worlds
     {
         get
@@ -94,10 +90,6 @@ public class WorldManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Initialize the WorldManager asynchronously. Called by Engine.
-    /// Sets up core world management infrastructure.
-    /// </summary>
     public async Task InitializeAsync(Engine engine)
     {
         if (_initialized)
@@ -114,28 +106,18 @@ public class WorldManager : IDisposable
         LumoraLogger.Log("WorldManager initialized.");
     }
 
-    /// <summary>
-    /// Start a local world (single-user, no networking).
-    /// Creates and initializes a new local world instance.
-    /// </summary>
-    /// <param name="name">World name</param>
-    /// <param name="templateName">Template to apply (LocalHome, Grid, ShaderTest), or "" for a blank world</param>
-    /// <param name="init">Initialization callback</param>
-    /// <returns>Created world</returns>
     public World StartLocal(string name, string templateName = "", Action<World> init = null!)
     {
         try
         {
             LumoraLogger.Log($"WorldManager: Starting local world '{name}' with template '{templateName}'");
 
-            // Use World static factory with template application
             var world = World.LocalWorld(_engine, name, (w) =>
             {
                 WorldTemplates.ApplyTemplate(w, templateName);
                 init?.Invoke(w);
             });
 
-            // Add to managed worlds
             AddWorld(world);
 
             LumoraLogger.Log($"WorldManager: Local world '{name}' started successfully");
@@ -148,24 +130,11 @@ public class WorldManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Start a hosted session (authority/server).
-    /// Creates and initializes a new hosted multiplayer session.
-    /// </summary>
-    /// <param name="name">World name</param>
-    /// <param name="port">Network port</param>
-    /// <param name="hostUserName">Host user name</param>
-    /// <param name="templateName">Template to apply (LocalHome, Grid, ShaderTest), or "" for a blank world</param>
-    /// <param name="init">Initialization callback</param>
-    /// <returns>Created world</returns>
     public World StartSession(string name, ushort port, string hostUserName = null!, string templateName = "", Action<World> init = null!)
     {
         return StartSession(name, port, hostUserName, templateName, SessionVisibility.Private, 16, init);
     }
 
-    /// <summary>
-    /// Start a hosted session with explicit discovery and capacity settings.
-    /// </summary>
     public World StartSession(
         string name,
         ushort port,
@@ -180,7 +149,6 @@ public class WorldManager : IDisposable
         {
             LumoraLogger.Log($"WorldManager: Starting session '{name}' on port {port} with template '{templateName}', visibility {visibility}, max {maxUsers}, mode {mode}");
 
-            // Use World static factory with template application
             var world = World.StartSession(_engine, name, port, hostUserName, visibility, maxUsers, (w) =>
             {
                 WorldTemplates.ApplyTemplate(w, templateName);
@@ -194,7 +162,6 @@ public class WorldManager : IDisposable
                 WorldModePermissions.StampModeTag(w.Session?.Metadata?.Tags, w.Mode);
             });
 
-            // Add to managed worlds
             AddWorld(world);
 
             LumoraLogger.Log($"WorldManager: Session '{name}' started successfully on port {port}");
@@ -207,10 +174,7 @@ public class WorldManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Create and host a new world from a template and focus it. Picks a free local UDP port and
-    /// hosts under the machine name. Returns the new world, or null on failure.
-    /// </summary>
+    // Picks a free local UDP port and hosts under the machine name. Returns the new world, or null on failure.
     public World HostNewWorld(string templateName, string worldName, SessionVisibility visibility, int maxUsers, WorldMode mode = WorldMode.Builder)
     {
         ushort port = (ushort)(SimpleIpHelpers.GetAvailablePortUdp(10) ?? 6000);
@@ -220,11 +184,8 @@ public class WorldManager : IDisposable
         return world!;
     }
 
-    /// <summary>
-    /// Host a previously-saved world file and focus it. Builds it into a blank world (so a template's
-    /// default content isn't duplicated) and loads the save; the world's mode comes from the file.
-    /// Returns the new world, or null on failure.
-    /// </summary>
+    // Builds it into a blank world (so a template's default content isn't duplicated) and loads the save; the
+    // world's mode comes from the file. Returns the new world, or null on failure.
     public World OpenSavedWorld(string path, string worldName = null!)
     {
         if (string.IsNullOrEmpty(path) || !System.IO.File.Exists(path))
@@ -239,25 +200,14 @@ public class WorldManager : IDisposable
         return world!;
     }
 
-    /// <summary>
-    /// Join a remote session (client).
-    /// Connects to and initializes a remote multiplayer session.
-    /// </summary>
-    /// <param name="name">World name</param>
-    /// <param name="address">Server address</param>
-    /// <param name="port">Server port</param>
-    /// <returns>Created world</returns>
     public World JoinSession(string name, string address, ushort port)
     {
         // Plain host+port -> assume LNL (the only scheme that's addressed this way).
         return JoinSession(name, new UriBuilder("lnl", address, port).Uri);
     }
 
-    /// <summary>
-    /// Join a remote session by its FULL URI, scheme preserved (e.g. lnl:// or steam://). The connect
-    /// path resolves the transport from the scheme (NetworkManagerRegistry.FindForUri), so this works
-    /// for any registered manager - which is why Discord Ask-to-Join hands us the whole URI.
-    /// </summary>
+    // The connect path resolves the transport from the scheme (NetworkManagerRegistry.FindForUri), so this
+    // works for any registered manager - which is why Discord Ask-to-Join hands us the whole URI.
     public World JoinSession(string name, Uri uri)
     {
         try
@@ -275,9 +225,6 @@ public class WorldManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Join a remote session (client) asynchronously.
-    /// </summary>
     public async Task<World> JoinSessionAsync(string name, string address, ushort port)
     {
         try
@@ -303,19 +250,13 @@ public class WorldManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Add a world to managed list and fire events.
-    /// Adds world to managed collection and triggers events.
-    /// </summary>
     public void AddWorld(World world)
     {
         if (world == null)
             return;
 
-        // Set WorldManager reference
         world.WorldManager = this;
 
-        // Subscribe to world disconnection events
         if (world.Session != null)
         {
             world.Session.OnDisconnected += () => OnWorldDisconnected(world);
@@ -329,7 +270,6 @@ public class WorldManager : IDisposable
             }
         }
 
-        // Fire event
         try
         {
             WorldAdded?.Invoke(world);
@@ -340,28 +280,21 @@ public class WorldManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Handle world disconnection and switch focus to fallback world.
-    /// </summary>
     private void OnWorldDisconnected(World disconnectedWorld)
     {
         LumoraLogger.Log($"WorldManager: World '{disconnectedWorld.WorldName.Value}' disconnected");
 
-        // If this was the focused world, switch to a fallback
         if (_focusedWorld == disconnectedWorld)
         {
             LumoraLogger.Log("WorldManager: Disconnected world was focused, switching to fallback");
 
-            // Find fallback world (LocalHome or any available world)
             World fallbackWorld = null!;
             lock (_worldsLock)
             {
-                // Prefer LocalHome world
                 fallbackWorld = _worlds.Find(w => !w.IsDestroyed && 
                                                   w.State == World.WorldState.Running && 
                                                   w.WorldName.Value == "LocalHome")!;
 
-                // If no LocalHome, use any available running world
                 if (fallbackWorld == null)
                 {
                     fallbackWorld = _worlds.Find(w => !w.IsDestroyed && 
@@ -382,14 +315,9 @@ public class WorldManager : IDisposable
             }
         }
 
-        // Queue the disconnected world for destruction
         DestroyWorld(disconnectedWorld);
     }
 
-    /// <summary>
-    /// Queue a world for destruction (safe async removal).
-    /// Safely schedules world cleanup and removal.
-    /// </summary>
     public void DestroyWorld(World world)
     {
         if (world == null)
@@ -405,10 +333,6 @@ public class WorldManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Request focus change to a specific world.
-    /// Changes active world context for user interaction.
-    /// </summary>
     public void FocusWorld(World world)
     {
         if (world == null)
@@ -427,9 +351,6 @@ public class WorldManager : IDisposable
         _setWorldFocus = world;
     }
 
-    /// <summary>
-    /// Get a world by name.
-    /// </summary>
     public World GetWorldByName(string name)
     {
         lock (_worldsLock)
@@ -438,9 +359,7 @@ public class WorldManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Set world as private overlay (visible only to local user, always on top).
-    /// </summary>
+    // Visible only to the local user, always on top.
     public void PrivateOverlayWorld(World world)
     {
         if (world == null) return;
@@ -458,25 +377,19 @@ public class WorldManager : IDisposable
         LumoraLogger.Log($"WorldManager: Set world '{world.WorldName.Value}' as private overlay");
     }
 
-    /// <summary>
-    /// Switch to a world by name (convenience method).
-    /// </summary>
     public void SwitchToWorld(World world)
     {
         FocusWorld(world);
     }
 
-    /// <summary>
-    /// Remove a world from management (internal use).
-    /// </summary>
     private void RemoveWorld(World world)
     {
         lock (_worldsLock)
         {
             _worlds.Remove(world);
         }
+        _backgroundUpdateAccum.Remove(world); // don't keep a dead world alive via the throttle accumulator
 
-        // Fire event
         try
         {
             WorldRemoved?.Invoke(world);
@@ -487,74 +400,49 @@ public class WorldManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Update all worlds. Called by Engine.
-    /// Processes world updates, focus changes, and cleanup.
-    /// </summary>
     public void Update(double delta)
     {
         if (!_initialized)
             return;
 
-        // Process queued focus change
         ProcessFocusChange();
 
-        // Process queued destructions
         ProcessDestructions();
 
-        // Update all running worlds
         UpdateWorlds(delta);
     }
 
-    /// <summary>
-    /// Fixed update for physics and deterministic operations.
-    /// Called at fixed intervals defined by the physics timestep.
-    /// </summary>
     public void FixedUpdate(double fixedDelta)
     {
         if (!_initialized)
             return;
 
-        // Fixed update all running worlds
         FixedUpdateWorlds(fixedDelta);
     }
 
-    /// <summary>
-    /// Late update for cameras and final positioning.
-    /// Called after all regular updates have completed.
-    /// </summary>
     public void LateUpdate(double delta)
     {
         if (!_initialized)
             return;
 
-        // Late update all running worlds
         LateUpdateWorlds(delta);
     }
 
-    /// <summary>
-    /// Process queued focus change.
-    /// Handles world focus transitions and notifications.
-    /// </summary>
     private void ProcessFocusChange()
     {
         World targetWorld = _setWorldFocus;
         _setWorldFocus = null!;
 
-        // Auto-fallback if focused world destroyed
         if (_focusedWorld != null && _focusedWorld.IsDestroyed && targetWorld == null)
         {
-            // Find first non-destroyed background world
             lock (_worldsLock)
             {
                 targetWorld = _worlds.Find(w => !w.IsDestroyed && w.State == World.WorldState.Running)!;
             }
         }
 
-        // Apply focus change
         if (targetWorld != null && targetWorld != _focusedWorld)
         {
-            // Unfocus previous world
             if (_focusedWorld != null && !_focusedWorld.IsDestroyed)
             {
                 _focusedWorld.Focus = World.WorldFocus.Background;
@@ -569,7 +457,6 @@ public class WorldManager : IDisposable
                 LumoraLogger.Log($"WorldManager: Unfocused world '{_focusedWorld.WorldName.Value}'");
             }
 
-            // Focus new world
             _focusedWorld = targetWorld;
             _focusedWorld.Focus = World.WorldFocus.Focused;
             if (_focusedWorld.LocalUser != null)
@@ -581,13 +468,11 @@ public class WorldManager : IDisposable
                 });
             }
 
-            // Update Engine's FocusManager
             if (_engine?.FocusManager != null)
             {
                 _engine.FocusManager.SwitchToWorld(_focusedWorld);
             }
 
-            // Fire event
             try
             {
                 WorldFocused?.Invoke(_focusedWorld);
@@ -601,10 +486,6 @@ public class WorldManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Process queued world destructions.
-    /// Safely disposes and removes queued worlds.
-    /// </summary>
     private void ProcessDestructions()
     {
         lock (_destroyWorlds)
@@ -621,13 +502,11 @@ public class WorldManager : IDisposable
                 {
                     world.Dispose();
 
-                    // Clear focus if this was focused world
                     if (_focusedWorld == world)
                     {
                         _focusedWorld = null!;
                     }
 
-                    // Remove from list
                     RemoveWorld(world);
 
                     LumoraLogger.Log($"WorldManager: Destroyed world '{world.WorldName.Value}'");
@@ -641,20 +520,14 @@ public class WorldManager : IDisposable
             _destroyWorlds.Clear();
         }
 
-        // Clean up any destroyed worlds from main list
         lock (_worldsLock)
         {
             _worlds.RemoveAll(w => w.IsDestroyed);
         }
     }
 
-    /// <summary>
-    /// Update all running worlds.
-    /// Runs update cycle for all active worlds.
-    /// </summary>
     private void UpdateWorlds(double delta)
     {
-        // Get snapshot of running worlds
         List<World> runningWorlds = new List<World>();
         lock (_worldsLock)
         {
@@ -667,12 +540,32 @@ public class WorldManager : IDisposable
             }
         }
 
-        // Update each world
+        // Update each world. Background worlds are throttled to BackgroundWorldTickHz (accumulate real time, run a
+        // single catch-up update when the interval elapses) instead of updating every frame - this is the main
+        // fix for the multi-world FPS drop. Focused/overlay worlds update every frame.
+        double interval = BackgroundWorldTickHz > 0 ? 1.0 / BackgroundWorldTickHz : 0.0;
         foreach (var world in runningWorlds)
         {
             try
             {
-                world.Update(delta);
+                if (IsThrottledBackgroundWorld(world))
+                {
+                    if (interval <= 0.0)
+                        continue; // throttle disabled -> background worlds fully paused
+                    double acc = (_backgroundUpdateAccum.TryGetValue(world, out var a) ? a : 0.0) + delta;
+                    if (acc < interval)
+                    {
+                        _backgroundUpdateAccum[world] = acc;
+                        continue; // not this frame
+                    }
+                    _backgroundUpdateAccum[world] = 0.0;
+                    world.Update(acc); // pass the accumulated time so the world clock advances correctly
+                }
+                else
+                {
+                    _backgroundUpdateAccum.Remove(world); // just focused/overlaid - drop any stale accumulator
+                    world.Update(delta);
+                }
             }
             catch (Exception ex)
             {
@@ -681,13 +574,8 @@ public class WorldManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Fixed update all running worlds.
-    /// Runs fixed update cycle for physics on all active worlds.
-    /// </summary>
     private void FixedUpdateWorlds(double fixedDelta)
     {
-        // Get snapshot of running worlds
         List<World> runningWorlds = new List<World>();
         lock (_worldsLock)
         {
@@ -700,11 +588,14 @@ public class WorldManager : IDisposable
             }
         }
 
-        // Fixed update each world
+        // Fixed update each world. Throttled background worlds skip physics entirely - nothing is rendering
+        // them, and they resume stepping the moment they're focused. -xlinka
         foreach (var world in runningWorlds)
         {
             try
             {
+                if (IsThrottledBackgroundWorld(world))
+                    continue;
                 world.FixedUpdate(fixedDelta);
             }
             catch (Exception ex)
@@ -714,13 +605,8 @@ public class WorldManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Late update all running worlds.
-    /// Runs late update cycle for cameras on all active worlds.
-    /// </summary>
     private void LateUpdateWorlds(double delta)
     {
-        // Get snapshot of running worlds
         List<World> runningWorlds = new List<World>();
         lock (_worldsLock)
         {
@@ -733,11 +619,14 @@ public class WorldManager : IDisposable
             }
         }
 
-        // Late update each world
+        // Late update each world. Throttled background worlds skip late-update (cameras/render-side
+        // follow-ups) - they aren't being rendered, so there's nothing to update late for them. -xlinka
         foreach (var world in runningWorlds)
         {
             try
             {
+                if (IsThrottledBackgroundWorld(world))
+                    continue;
                 world.LateUpdate(delta);
             }
             catch (Exception ex)
@@ -747,14 +636,10 @@ public class WorldManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Dispose the WorldManager and all worlds.
-    /// </summary>
     public void Dispose()
     {
         LumoraLogger.Log("WorldManager: Disposing...");
 
-        // Destroy all worlds
         lock (_worldsLock)
         {
             foreach (var world in _worlds)

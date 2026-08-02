@@ -11,12 +11,8 @@ using Lumora.Core.Persistence;
 
 namespace Lumora.Core;
 
-/// <summary>
-/// Compact synchronized array for value types and primitives.
-/// Stores values in a flat T[] buffer - no per-element heap allocation.
-/// Supports full and sparse-delta network encoding via SyncCoder.
-/// Use this instead of SyncFieldList<T> for primitives: 25x less memory.
-/// </summary>
+// Stores values in a flat T[] buffer - no per-element heap allocation. Supports full and sparse-delta
+// network encoding via SyncCoder. Use this instead of SyncFieldList<T> for primitives: 25x less memory.
 public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
 {
     private const int DefaultCapacity = 4;
@@ -43,11 +39,7 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
     public event Action<SyncArray<T>, int, int>? ElementsAdded;
     public event Action<SyncArray<T>, int, int>? ElementsRemoved;
 
-    /// <summary>
-    /// Fired whenever elements are written (added/appended) to the array.
-    /// Fired when elements are added or appended to the array.
-    /// Signature: (sender, startIndex, count)
-    /// </summary>
+    // (sender, startIndex, count)
     public event Action<SyncArray<T>, int, int>? DataWritten;
 
     public T this[int index]
@@ -90,10 +82,6 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
         EndModification();
     }
 
-    /// <summary>
-    /// Append a single element to the end of the array.
-    /// Equivalent to Add().
-    /// </summary>
     public void Append(T item) => Add(item);
 
     public void AddRange(IEnumerable<T> items)
@@ -268,8 +256,12 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
             InternalEncodeFull(writer, outboundMessage);
             return;
         }
-        // Only value updates at known indices: sparse encoding
+        // Only value updates at known indices: sparse encoding. The sparse path never resizes, so the
+        // live count IS the count these indices were computed against - a receiver of a different
+        // length would silently drop the out-of-range ones and keep the rest, which is divergence that
+        // never surfaces. -xlinka
         writer.Write(ModeSparseValues);
+        WriteDeltaBaseCount(writer, _count);
         writer.Write7BitEncoded((ulong)_dirtyIndices.Count);
         foreach (int idx in _dirtyIndices)
         {
@@ -287,6 +279,7 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
             return;
         }
         // Sparse: apply value updates at individual indices
+        ReadAndCheckDeltaBaseCount(reader, _count);
         int changedCount = (int)reader.Read7BitEncoded();
         for (int i = 0; i < changedCount; i++)
         {
@@ -321,6 +314,11 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
                     return MessageValidity.Conflict;
                 }
                 return MessageValidity.Valid;
+            }
+
+            if (!ReadDeltaBaseCountMatches(reader, _count))
+            {
+                return MessageValidity.Conflict;
             }
 
             int changedCount = (int)reader.Read7BitEncoded();

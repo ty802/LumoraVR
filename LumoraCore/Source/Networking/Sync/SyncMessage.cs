@@ -6,12 +6,11 @@ using System.Collections.Generic;
 using System.IO;
 using Lumora.Core;
 using Lumora.Core.Networking;
+using Lumora.Nexus.Protocol;
+using Lumora.Nexus.Transport;
 
 namespace Lumora.Core.Networking.Sync;
 
-/// <summary>
-/// Base class for all sync messages.
-/// </summary>
 public abstract class SyncMessage : IDisposable
 {
     public ulong SenderStateVersion { get; set; }
@@ -26,12 +25,10 @@ public abstract class SyncMessage : IDisposable
     public virtual bool Reliable => true;
     public virtual bool Background => false;
 
-    /// <summary>
-    /// Minimum encoded size (bytes) at/above which this message's frame is worth compressing,
-    /// or 0 to never compress. Small/latency-critical messages (Confirmation, Control, Ping,
-    /// RawFrame) leave this at 0; batched and stream payloads override it. The encoder gates
-    /// on the actual encoded length, so a message under its threshold always ships raw. -xlinka
-    /// </summary>
+    // Minimum encoded size (bytes) at/above which this message's frame is worth compressing,
+    // or 0 to never compress. Small/latency-critical messages (Confirmation, Control, Ping,
+    // RawFrame) leave this at 0; batched and stream payloads override it. The encoder gates
+    // on the actual encoded length, so a message under its threshold always ships raw. -xlinka
     public virtual int CompressionThreshold => 0;
 
     protected SyncMessage(ulong stateVersion, ulong syncTick, IConnection sender = null!)

@@ -8,16 +8,9 @@ using Lumora.Core;
 
 namespace Lumora.Core.Networking.Sync;
 
-/// <summary>
-/// Base class for sync elements that support conflict detection.
-/// Most sync elements inherit from this rather than SyncElement directly.
-/// </summary>
 public abstract class ConflictingSyncElement : SyncElement
 {
-    /// <summary>
-    /// Default MemberType for most conflicting elements is Dynamic.
-    /// Override in concrete classes if needed.
-    /// </summary>
+    // Dynamic by default; override in concrete classes.
     public override SyncMemberType MemberType => SyncMemberType.Dynamic;
     protected new enum InternalFlags
     {
@@ -33,54 +26,31 @@ public abstract class ConflictingSyncElement : SyncElement
         set => SetFlag((int)InternalFlags.IsValid, value);
     }
 
-    /// <summary>
-    /// Whether this element is in a valid state.
-    /// Invalid elements have experienced conflicts and await resync.
-    /// </summary>
+    // Invalid elements have hit conflicts and await resync.
     public override bool IsValid => _isValid;
 
-    /// <summary>
-    /// Whether this element can only be modified by the host.
-    /// </summary>
     public bool IsHostOnly
     {
         get => GetFlag((int)InternalFlags.IsHostOnly);
         private set => SetFlag((int)InternalFlags.IsHostOnly, value);
     }
 
-    /// <summary>
-    /// Whether this element can only be modified through direct access.
-    /// </summary>
     public bool DirectAccessOnly
     {
         get => GetFlag((int)InternalFlags.DirectAccessOnly);
         private set => SetFlag((int)InternalFlags.DirectAccessOnly, value);
     }
 
-    /// <summary>
-    /// Last host state version when this element was modified.
-    /// </summary>
     public ulong LastHostVersion { get; private set; }
 
-    /// <summary>
-    /// Last version (host tick on server, sync tick on client).
-    /// </summary>
+    // Host tick on the server, sync tick on the client.
     public ulong LastVersion { get; private set; }
 
-    /// <summary>
-    /// Last confirmed sync time.
-    /// </summary>
     public ulong LastConfirmedTime { get; private set; }
 
-    /// <summary>
-    /// User who last modified this element.
-    /// </summary>
     public User LastModifyingUser { get; private set; } = null!;
 
-    /// <summary>
-    /// Whether this element's changes have been confirmed.
-    /// Authority is always confirmed; guests need confirmation from host.
-    /// </summary>
+    // The authority is always confirmed; guests need confirmation from the host.
     public virtual bool IsConfirmed
     {
         get
@@ -93,9 +63,6 @@ public abstract class ConflictingSyncElement : SyncElement
         }
     }
 
-    /// <summary>
-    /// Event fired when this element is invalidated due to a conflict.
-    /// </summary>
     public event Action Invalidated = null!;
 
     public ConflictingSyncElement()
@@ -103,9 +70,6 @@ public abstract class ConflictingSyncElement : SyncElement
         _isValid = true;
     }
 
-    /// <summary>
-    /// Check if this element was last modified by the given user.
-    /// </summary>
     public bool WasLastModifiedBy(User user)
     {
         if (user == LastModifyingUser)
@@ -115,26 +79,17 @@ public abstract class ConflictingSyncElement : SyncElement
         return false;
     }
 
-    /// <summary>
-    /// Mark this element as host-only (cannot be modified by guests).
-    /// </summary>
     public void MarkHostOnly()
     {
         IsHostOnly = true;
         DirectAccessOnly = true;
     }
 
-    /// <summary>
-    /// Mark this element as direct access only.
-    /// </summary>
     public void MarkDirectAccessOnly()
     {
         DirectAccessOnly = true;
     }
 
-    /// <summary>
-    /// Validate an incoming message for this element.
-    /// </summary>
     public override MessageValidity Validate(BinaryMessageBatch inboundMessage, BinaryReader reader, List<ValidationGroup.Rule> rules)
     {
         if (!IsValid)
@@ -148,7 +103,6 @@ public abstract class ConflictingSyncElement : SyncElement
             if (IsHostOnly)
                 return MessageValidity.Conflict;
 
-            // Check if message is newer than last modification
             bool messageNewer;
             if (inboundMessage.SenderUser != LastModifyingUser)
             {
@@ -176,7 +130,6 @@ public abstract class ConflictingSyncElement : SyncElement
             return MessageValidity.Valid;
         }
 
-        // Guest logic: update validity based on confirmation
         _isValid = IsConfirmed;
         if (!_isValid)
             return MessageValidity.Conflict;
@@ -184,9 +137,6 @@ public abstract class ConflictingSyncElement : SyncElement
         return MessageValidity.Valid;
     }
 
-    /// <summary>
-    /// Invalidate this element due to a conflict.
-    /// </summary>
     public override void Invalidate()
     {
         if (World?.IsAuthority != true)
@@ -196,9 +146,6 @@ public abstract class ConflictingSyncElement : SyncElement
         }
     }
 
-    /// <summary>
-    /// Confirm this element's changes up to the given sync time.
-    /// </summary>
     public override void Confirm(ulong confirmSyncTime)
     {
         if (confirmSyncTime <= LastConfirmedTime)

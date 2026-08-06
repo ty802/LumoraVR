@@ -8,9 +8,6 @@ using Lumora.Core;
 
 namespace Lumora.Core.Networking.Sync;
 
-/// <summary>
-/// Validation group for sync message validation
-/// </summary>
 public class ValidationGroup
 {
     public int RequestingRecordIndex { get; private set; }

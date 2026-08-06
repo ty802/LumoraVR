@@ -11,10 +11,7 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Sync;
 
-/// <summary>
-/// Provides a stable mapping between component types and serialized identifiers.
-/// Uses assembly-qualified names for deterministic round-tripping.
-/// </summary>
+// Assembly-qualified names, for deterministic round-tripping.
 public static class ComponentTypeRegistry
 {
 	private static readonly object _lock = new();
@@ -97,9 +94,6 @@ public static class ComponentTypeRegistry
 		}
 	}
 
-	/// <summary>
-	/// Snapshot of every registered component type. Used to derive the datamodel compatibility hash.
-	/// </summary>
 	public static IReadOnlyList<Type> GetRegisteredTypes()
 	{
 		lock (_lock)

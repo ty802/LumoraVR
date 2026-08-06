@@ -1,99 +1,40 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
 
 namespace Lumora.Core;
 
-/// <summary>
-/// Delegate for intercepting value sets on a field.
-/// </summary>
-/// <typeparam name="T">The type of value being set</typeparam>
-/// <param name="field">The field being set</param>
-/// <param name="value">The value being set</param>
 public delegate void HookFieldSetter<T>(SyncField<T> field, T value);
 
-/// <summary>
-/// Base class for field hooks that intercept value changes on Sync fields.
-/// Used for IK bone driving and other field interception patterns.
-/// </summary>
-/// <typeparam name="T">The type of value being hooked</typeparam>
-public class FieldHook<T> : ILinkRef
+// Declare it as a readonly member on the owning worker like any other sync member; the target ref
+// replicates and persists, and the interception delegate is wired in code on each peer.
+public class FieldHook<T> : LinkBase<IField<T>>
 {
-	private SyncField<T> _target = null!;
-	private HookFieldSetter<T> _fieldHook = null!;
-	private bool _isActive;
-	private World _world;
+    private HookFieldSetter<T>? _fieldHook;
 
-    /// <summary>
-    /// The target being linked to.
-    /// </summary>
-    public ILinkable Target => _target;
-
-    public SyncField<T> TargetField => _target;
-
-    /// <summary>
-    /// Whether the link is currently valid and active.
-    /// </summary>
-    public bool IsLinkValid => _isActive && _target != null && _target.ActiveLink == this;
-
-    /// <summary>
-    /// Whether the link was granted by the target.
-    /// </summary>
-    public bool WasLinkGranted => _isActive;
-
-    /// <summary>
-    /// Whether this is a driving link (FieldDrive overrides this to true).
-    /// </summary>
-    public virtual bool IsDriving => false;
-
-    /// <summary>
-    /// Whether this is a hooking link.
-    /// True if a hook delegate has been set up.
-    /// </summary>
-    public virtual bool IsHooking => HookSetup;
-
-    /// <summary>
-    /// Whether modifications are allowed from this link.
-    /// </summary>
-    public virtual bool IsModificationAllowed => IsDriving;
-
-    /// <summary>
-    /// Whether this hook is currently active.
-    /// </summary>
-    public bool IsActive => _isActive;
-
-    /// <summary>
-    /// The value set hook delegate.
-    /// </summary>
-    public HookFieldSetter<T> ValueSetHook => _fieldHook;
-
-    /// <summary>
-    /// Whether a hook has been set up.
-    /// </summary>
-    public bool HookSetup => _fieldHook != null;
-
-	// IWorldElement implementation
-	public World World => _world;
-	public RefID ReferenceID => RefID.Null;
-	public bool IsLocalElement => true;
-	public bool IsPersistent => false;
-	public bool IsDestroyed { get; private set; }
-	public bool IsInitialized { get; private set; }
-	public string ParentHierarchyToString() => $"FieldHook<{typeof(T).Name}>";
-
-    public FieldHook(World world)
+    public FieldHook()
     {
-        _world = world;
-        _isActive = false;
-        IsInitialized = true;
     }
 
-    /// <summary>
-    /// Set up the value set hook delegate.
-    /// Can only be called once.
-    /// </summary>
-    /// <param name="hook">The hook delegate to intercept value sets</param>
+    public FieldHook(IWorldElement? owner) : base(owner)
+    {
+    }
+
+    public override bool IsDriving => false;
+
+    // A hook only intercepts once a delegate has been installed.
+    public override bool IsHooking => HookSetup;
+
+    public HookFieldSetter<T>? ValueSetHook => _fieldHook;
+
+    public bool HookSetup => _fieldHook != null;
+
+    public SyncField<T>? TargetField => Target as SyncField<T>;
+
+    public bool IsActive => IsLinkValid;
+
+    // Can only be called once.
     public void SetupValueSetHook(HookFieldSetter<T> hook)
     {
         if (HookSetup)
@@ -103,63 +44,14 @@ public class FieldHook<T> : ILinkRef
         _fieldHook = hook;
     }
 
-	/// <summary>
-	/// Set the target field to hook.
-	/// </summary>
-	/// <param name="target">The Sync field to hook</param>
-	public void HookTarget(SyncField<T> target)
-	{
-		// Release previous target if any
-		if (_target != null && _isActive)
-		{
-			_target.ReleaseLink(this);
-		}
-
-        _target = target;
-
-        // Establish link if we have a target
-        if (_target != null)
-        {
-            _target.Link(this);
-            _isActive = true;
-            GrantLink();
-        }
-    }
-
-    /// <summary>
-    /// Release the hook and unlink from the target.
-    /// </summary>
-    /// <param name="undoable">Whether this should be an undoable operation</param>
-    public void ReleaseLink(bool undoable = false)
+    public void HookTarget(IField<T>? target)
     {
-        if (_target != null && _isActive)
-        {
-            _target.ReleaseLink(this);
-        }
-
-        _target = null!;
-        _isActive = false;
+        Target = target!;
     }
 
-    /// <summary>
-    /// Grant the link permission to the target.
-    /// </summary>
-    public void GrantLink()
-    {
-        _isActive = true;
-    }
-
-    /// <summary>
-    /// Fully release and dispose of this hook.
-    /// </summary>
+    // The member itself stays alive, it is disposed with its owner.
     public void Release()
     {
-        ReleaseLink(false);
-        IsDestroyed = true;
-    }
-
-    public void Destroy()
-    {
-        Release();
+        ReleaseLink();
     }
 }

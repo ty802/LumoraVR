@@ -5,33 +5,48 @@ using System;
 
 namespace Lumora.Core;
 
+// A link that PRODUCES a value field's value. Declared as a readonly member on the driving worker:
+//
+//     public readonly FieldDrive<bool> CheckVisual = new();
+//
+// The target is a normal replicated, persisted reference, so a drive authored on one machine exists on
+// every peer and comes back after a save. Each peer grants its own copy of the link against its own copy
+// of the target (see LinkManager), and a driven field is excluded from value sync in both directions
+// (see SyncElement.InvalidateSyncElement / ConflictingSyncElement.Validate) because the value is DERIVED
+// - every peer computes it from the driver's own replicated inputs. -xlinka
 public class FieldDrive<T> : FieldHook<T>
 {
     private Func<T>? _valueSource;
 
-    public override bool IsDriving => true;
-
-    public override bool IsModificationAllowed => true;
-
-    /// <summary>
-    /// When true, driven writes update the field locally without generating
-    /// sync data. Use when the drive's inputs already replicate and the drive
-    /// runs on every peer - each peer computes the same value itself, so
-    /// broadcasting the result would double the traffic and fight the remote
-    /// computation. Leave false for drives that exist on a single peer.
-    /// </summary>
-    public bool LocalValueOnly { get; set; }
-
-    public IField<T>? Field => Target as IField<T>;
-
-    public T Value
+    public FieldDrive()
     {
-        get => Field != null ? Field.Value : default!;
-        set => SetValue(value);
     }
 
-    public FieldDrive(World world) : base(world)
+    public FieldDrive(IWorldElement? owner) : base(owner)
     {
+    }
+
+    public override bool IsDriving => true;
+
+    // A driven field still takes hand writes. Deliberate: reparenting writes LocalPosition on driven
+    // avatar slots, and refusing that would break equip. The drive simply wins again on its next pass.
+    public override bool IsModificationAllowed => true;
+
+    // When true, driven writes update the field locally without generating
+    // sync data. Use when the drive's inputs already replicate and the drive
+    // runs on every peer - each peer computes the same value itself, so
+    // broadcasting the result would double the traffic and fight the remote
+    // computation. Leave false for drives that exist on a single peer.
+    public bool LocalValueOnly { get; set; }
+
+    public IField<T>? Field => Target;
+
+    // The value currently sitting in the driven field. Named apart from Value,
+    // which on a link member is the target's RefID, not the driven value.
+    public T DrivenValue
+    {
+        get => Target is { } field ? field.Value : default!;
+        set => SetValue(value);
     }
 
     public void DriveFrom(Func<T> source)
@@ -39,36 +54,15 @@ public class FieldDrive<T> : FieldHook<T>
         _valueSource = source;
     }
 
-    public void DriveTarget(SyncField<T>? target)
-    {
-        if (target == null)
-        {
-            ReleaseLink();
-            return;
-        }
-
-        HookTarget(target);
-    }
-
+    // Passing null releases the current target.
     public void DriveTarget(IField<T>? target)
     {
-        if (target == null)
-        {
-            ReleaseLink();
-            return;
-        }
-
-        if (target is not SyncField<T> syncTarget)
-        {
-            throw new InvalidOperationException($"FieldDrive target must be a SyncField<{typeof(T).Name}>");
-        }
-
-        DriveTarget(syncTarget);
+        Target = target!;
     }
 
     public void UpdateDrive()
     {
-        if (!IsActive || Target == null || _valueSource == null)
+        if (!IsLinkValid || _valueSource == null)
         {
             return;
         }
@@ -83,32 +77,56 @@ public class FieldDrive<T> : FieldHook<T>
         }
     }
 
+    // Silently does nothing unless the link was granted.
     public void SetValue(T value)
     {
-        if (!IsActive || Target == null)
+        if (!IsLinkValid || Target is not SyncField<T> syncTarget)
         {
             return;
         }
 
-        if (Target is SyncField<T> syncTarget)
+        if (LocalValueOnly)
         {
-            if (LocalValueOnly)
-            {
-                syncTarget.SetDrivenValueLocal(value);
-            }
-            else
-            {
-                syncTarget.SetDrivenValue(value);
-            }
+            syncTarget.SetDrivenValueLocal(value);
+        }
+        else
+        {
+            syncTarget.SetDrivenValue(value);
+        }
+    }
+
+    // Build a drive that is NOT a member of anything: a local-allocation element, so it never replicates
+    // and never saves. For drives whose count and targets are discovered per peer at runtime and would be
+    // nonsense to replicate - a rig's finger bones, for instance. Dispose it when done. -xlinka
+    public static FieldDrive<T> CreateLocal(IWorldElement owner)
+    {
+        var world = owner?.World ?? throw new ArgumentNullException(nameof(owner));
+        var controller = world.ReferenceController
+            ?? throw new InvalidOperationException("World has no reference controller");
+
+        controller.LocalAllocationBlockBegin();
+        try
+        {
+            var drive = new FieldDrive<T>();
+            drive.MarkNonPersistent();
+            drive.Initialize(world, owner);
+            drive.EndInitPhase();
+            return drive;
+        }
+        finally
+        {
+            controller.LocalAllocationBlockEnd();
         }
     }
 }
 
 public static class FieldDriveExtensions
 {
+    // Detached convenience drive over a field, pulled from a source function. Local-only; a drive
+    // meant to replicate belongs on a worker as a declared member.
     public static FieldDrive<T> CreateDrive<T>(this SyncField<T> target, Func<T> source)
     {
-        var drive = new FieldDrive<T>(target.World);
+        var drive = FieldDrive<T>.CreateLocal(target);
         drive.DriveFrom(source);
         drive.DriveTarget(target);
         return drive;

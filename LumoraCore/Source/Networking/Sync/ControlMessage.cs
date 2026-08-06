@@ -3,12 +3,10 @@
 
 using System.IO;
 using Lumora.Core.Networking;
+using Lumora.Nexus.Transport;
 
 namespace Lumora.Core.Networking.Sync;
 
-/// <summary>
-/// Control message for session management.
-/// </summary>
 public class ControlMessage : SyncMessage
 {
     public enum Message
@@ -22,21 +20,37 @@ public class ControlMessage : SyncMessage
         RequestFullState,
 
         // Asset transfer protocol
-        /// <summary>Client requests an asset by URI from the authority/owner.</summary>
         AssetRequest,
-        /// <summary>Sender is about to transmit an asset: contains job ID, URI, total byte count.</summary>
+        // Job ID, URI, total byte count.
         AssetTransmissionStart,
-        /// <summary>One chunk of asset data: job ID, byte offset, chunk bytes.</summary>
+        // Job ID, byte offset, chunk bytes.
         AssetChunk,
-        /// <summary>Receiver pulls the next chunk(s).</summary>
         AssetNextChunkRequest,
-        /// <summary>Sender cannot provide the requested asset.</summary>
         AssetNotAvailable,
 
-        /// <summary>Host -> joiner: a nonce the joiner must sign with its machine key to prove identity.</summary>
+        // Host to joiner: nonce the joiner must sign with its machine key.
         JoinChallenge,
-        /// <summary>Joiner -> host: the signed challenge nonce, proving it holds the claimed machine key.</summary>
+        // Joiner to host: the signed challenge nonce.
         JoinAuthenticate,
+
+        // Session clock. Appended, never reordered: this enum goes on the wire as a byte, so an
+        // existing value moving renames every message a peer on the other build sends. -xlinka
+        // Peer to authority: clock probe carrying the sender's own stamp.
+        ClockRequest,
+        // Authority to peer: that stamp handed back plus the authority's reading.
+        ClockReply,
+
+        // Delta-loss recovery.
+        // Peer -> authority: a specific set of elements whose incremental deltas no longer line up
+        // with what the peer holds. Payload is a 7-bit count followed by that many RefIDs; the
+        // authority answers with a full record for each, so one bad list costs one list instead of
+        // the whole world.
+        ResyncElements,
+        // Peer -> authority: the peer has applied the full world state the authority pushed at it and
+        // its outgoing deltas are based on that state from here. Lets the authority stop refusing the
+        // peer's deltas and rebase the link cursor, which cannot be inferred from the peer's own
+        // counter since that keeps running across the repair.
+        ResyncComplete,
     }
 
     public override MessageType MessageType => MessageType.Control;

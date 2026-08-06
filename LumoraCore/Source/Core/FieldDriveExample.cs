@@ -7,139 +7,81 @@ using Lumora.Core.Math;
 
 namespace Lumora.Examples;
 
-/// <summary>
-/// Example demonstrating how to use FieldDrive for IK bone driving.
-/// This is an illustrative example - not meant for production use.
-/// </summary>
+// Reference for how a drive is wired up. Illustrative, not production code.
+//
+// A drive is a MEMBER. Declare it readonly on the worker that does the driving and let the normal
+// member machinery own it: it gets a RefID, its target replicates, and it comes back from a save. The
+// only thing written in code per peer is the value being pushed.
 public class FieldDriveExample
 {
-    /// <summary>
-    /// Example: Drive a bone's position from an IK target.
-    /// </summary>
-    public static void DrivePositionExample(World world, Sync<float3> bonePosition, Func<float3> ikTargetPosition)
+    // The shape every driver should have: declared links, a default target assigned only when nothing
+    // already named one, and a push per update.
+    public class IKDriverComponent : Component
     {
-        // Create a field drive that will continuously update the bone position
-        var drive = new FieldDrive<float3>(world);
+        // Declared members. Discovered by WorkerInitializer, initialized with the component.
+        public readonly FieldDrive<float3> PositionDrive = new();
+        public readonly FieldDrive<floatQ> RotationDrive = new();
 
-        // Set the source function that provides the IK target position
-        drive.DriveFrom(ikTargetPosition);
+        public override void OnStart()
+        {
+            base.OnStart();
 
-        // Set the target field to drive
-        drive.DriveTarget(bonePosition);
+            // ShouldApplyDefault is the guard. It refuses when the link already names a field, and
+            // also when the save it came back from held an empty link on purpose - a drive someone
+            // deliberately broke stays broken instead of being rebuilt on every load.
+            if (PositionDrive.ShouldApplyDefault)
+                PositionDrive.DriveTarget(Slot.LocalPosition);
+            if (RotationDrive.ShouldApplyDefault)
+                RotationDrive.DriveTarget(Slot.LocalRotation);
+        }
 
-        // Now the bone position will be driven by the IK target
-        // Call drive.UpdateDrive() each frame to push the latest value
-        // The Sync field will reject direct value sets while driven
+        public override void OnUpdate(float delta)
+        {
+            base.OnUpdate(delta);
+
+            // SetValue is a no-op unless the link was granted, so there is nothing to check first.
+            PositionDrive.SetValue(ComputeIKPosition());
+            RotationDrive.SetValue(ComputeIKRotation());
+        }
+
+        private float3 ComputeIKPosition() => float3.Zero;
+
+        private floatQ ComputeIKRotation() => floatQ.Identity;
     }
 
-    /// <summary>
-    /// Example: Drive a bone's rotation from an IK solver.
-    /// </summary>
-    public static void DriveRotationExample(World world, Sync<floatQ> boneRotation, Func<floatQ> ikSolverRotation)
+    public static void DriveFromSource(FieldDrive<float3> drive, Sync<float3> bonePosition, Func<float3> source)
     {
-        // Create and configure the drive
-        var drive = new FieldDrive<floatQ>(world);
-        drive.DriveFrom(ikSolverRotation);
-        drive.DriveTarget(boneRotation);
+        drive.DriveFrom(source);
+        if (drive.ShouldApplyDefault)
+            drive.DriveTarget(bonePosition);
 
-        // The rotation is now driven
-        // Update each frame with drive.UpdateDrive()
-    }
-
-    /// <summary>
-    /// Example: Using the extension method for cleaner syntax.
-    /// </summary>
-    public static void DriveWithExtensionExample(Sync<float> blendshapeWeight, Func<float> expressionValue)
-    {
-        // Create and configure a drive in one line
-        var drive = blendshapeWeight.CreateDrive(expressionValue);
-
-        // Update each frame
+        // Then once per frame:
         drive.UpdateDrive();
     }
 
-    /// <summary>
-    /// Example: Updating drives in a component's update loop.
-    /// </summary>
-    public class IKDriverComponent
+    // Drives whose count and targets are discovered per peer at runtime - a rig's finger bones, say -
+    // have no business replicating. Those are built detached with a local RefID and disposed by hand.
+    public static FieldDrive<float3> DetachedDrive(Component owner, Sync<float3> target, Func<float3> source)
     {
-        private FieldDrive<float3> _positionDrive = null!;
-        private FieldDrive<floatQ> _rotationDrive = null!;
-        private Func<float3> _positionSource = null!;
-        private Func<floatQ> _rotationSource = null!;
-
-        public void Initialize(World world, Sync<float3> targetPosition, Sync<floatQ> targetRotation)
-        {
-            // Setup position drive
-            _positionDrive = new FieldDrive<float3>(world);
-            _positionSource = () => ComputeIKPosition();
-            _positionDrive.DriveFrom(_positionSource);
-            _positionDrive.DriveTarget(targetPosition);
-
-            // Setup rotation drive
-            _rotationDrive = new FieldDrive<floatQ>(world);
-            _rotationSource = () => ComputeIKRotation();
-            _rotationDrive.DriveFrom(_rotationSource);
-            _rotationDrive.DriveTarget(targetRotation);
-        }
-
-        public void Update()
-        {
-            // Update both drives each frame
-            _positionDrive?.UpdateDrive();
-            _rotationDrive?.UpdateDrive();
-        }
-
-        public void Cleanup()
-        {
-            // Release drives when done
-            _positionDrive?.Release();
-            _rotationDrive?.Release();
-        }
-
-        private float3 ComputeIKPosition()
-        {
-            // Your IK solver logic here
-            return new float3(0, 0, 0);
-        }
-
-        private floatQ ComputeIKRotation()
-        {
-            // Your IK solver logic here
-            return floatQ.Identity;
-        }
+        var drive = FieldDrive<float3>.CreateLocal(owner);
+        drive.LocalValueOnly = true;
+        drive.DriveFrom(source);
+        drive.DriveTarget(target);
+        return drive;
     }
 
-    /// <summary>
-    /// Example: Checking if a field is driven before modifying it.
-    /// </summary>
-    public static void CheckDrivenExample(Sync<float3> position)
+    // Reading link state off a field. A driven value is DERIVED; releasing the link hands the field back.
+    public static void InspectAndRelease(Sync<float3> position)
     {
         if (position.IsDriven)
         {
-            Console.WriteLine("Position is being driven by an IK system");
-            Console.WriteLine($"Active link: {position.ActiveLink}");
+            Console.WriteLine($"Driven by: {position.ActiveLink?.ParentHierarchyToString()}");
             Console.WriteLine($"Is hooked: {position.IsHooked}");
+
+            // Clears the driver's ref, which replicates and persists like any other reference write.
+            position.ActiveLink?.ReleaseLink();
         }
-        else
-        {
-            // Safe to set directly
-            position.Value = new float3(1, 2, 3);
-        }
-    }
 
-    /// <summary>
-    /// Example: Releasing a drive to restore manual control.
-    /// </summary>
-    public static void ReleaseDriveExample(FieldDrive<float3> drive, Sync<float3> position)
-    {
-        // Release the drive
-        drive.ReleaseLink();
-
-        // Or fully dispose
-        drive.Release();
-
-        // Now the position can be set manually again
-        position.Value = new float3(0, 0, 0);
+        position.Value = new float3(1, 2, 3);
     }
 }

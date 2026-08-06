@@ -2,21 +2,16 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core.Networking;
+using Lumora.Nexus.Transport;
 
 namespace Lumora.Core.Networking.Sync;
 
-/// <summary>
-/// Confirmation message - sent by authority to confirm/correct client changes.
-/// Contains full state for conflicting elements.
-/// </summary>
+// Carries full state for conflicting elements.
 public class ConfirmationMessage : BinaryMessageBatch
 {
     public override MessageType MessageType => MessageType.Confirmation;
     public override bool Reliable => true;
 
-    /// <summary>
-    /// The sync tick being confirmed.
-    /// </summary>
     public ulong ConfirmTime { get; set; }
 
     public ConfirmationMessage(ulong confirmTime, ulong stateVersion, ulong syncTick, IConnection sender = null!)

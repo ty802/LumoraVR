@@ -7,12 +7,10 @@ using System.IO;
 using Lumora.Core;
 using Lumora.Core.Math;
 using Lumora.Core.Input;
+using Lumora.Nexus.Transport;
 
 namespace Lumora.Core.Networking.Sync;
 
-/// <summary>
-/// Binary encoding/decoding for sync types.
-/// </summary>
 public static class SyncCoder
 {
     private static readonly Dictionary<Type, Action<BinaryWriter, object>> Encoders = new()
@@ -191,9 +189,6 @@ public static class SyncCoder
         return GetDefault<T>();
     }
 
-    /// <summary>
-    /// Get the default value for a type.
-    /// </summary>
     public static T GetDefault<T>()
     {
         var type = typeof(T);
@@ -210,9 +205,6 @@ public static class SyncCoder
         return default!;
     }
 
-    /// <summary>
-    /// Check equality between two values.
-    /// </summary>
     public static bool Equals<T>(T a, T b)
     {
         if (a == null && b == null) return true;
@@ -220,9 +212,6 @@ public static class SyncCoder
         return EqualityComparer<T>.Default.Equals(a, b);
     }
 
-    /// <summary>
-    /// Encode a WorldDelegate to binary.
-    /// </summary>
     private static void EncodeWorldDelegate(BinaryWriter writer, WorldDelegate value)
     {
         writer.Write((ulong)value.Target);
@@ -235,9 +224,6 @@ public static class SyncCoder
         }
     }
 
-    /// <summary>
-    /// Decode a WorldDelegate from binary.
-    /// </summary>
     private static WorldDelegate DecodeWorldDelegate(BinaryReader reader)
     {
         RefID target = new RefID(reader.ReadUInt64());
@@ -254,9 +240,6 @@ public static class SyncCoder
         return new WorldDelegate(target, method, type!);
     }
 
-    /// <summary>
-    /// Encode a BoundingBox to binary.
-    /// </summary>
     private static void EncodeBoundingBox(BinaryWriter writer, BoundingBox value)
     {
         writer.Write(value.Min.x);
@@ -267,9 +250,6 @@ public static class SyncCoder
         writer.Write(value.Max.z);
     }
 
-    /// <summary>
-    /// Decode a BoundingBox from binary.
-    /// </summary>
     private static BoundingBox DecodeBoundingBox(BinaryReader reader)
     {
         float minX = reader.ReadSingle();
@@ -281,9 +261,6 @@ public static class SyncCoder
         return new BoundingBox(new float3(minX, minY, minZ), new float3(maxX, maxY, maxZ));
     }
 
-    /// <summary>
-    /// Encode a nullable BodyNode to binary.
-    /// </summary>
     private static void EncodeNullableBodyNode(BinaryWriter writer, BodyNode? value)
     {
         bool hasValue = value.HasValue;
@@ -294,9 +271,6 @@ public static class SyncCoder
         }
     }
 
-    /// <summary>
-    /// Decode a nullable BodyNode from binary.
-    /// </summary>
     private static BodyNode? DecodeNullableBodyNode(BinaryReader reader)
     {
         bool hasValue = reader.ReadBoolean();
@@ -307,9 +281,6 @@ public static class SyncCoder
         return null;
     }
 
-    /// <summary>
-    /// Encode an object to binary. For System.Object type, we skip it to avoid sync issues.
-    /// </summary>
     private static void EncodeObject(BinaryWriter writer, object value)
     {
         // For generic object type, we write a null marker to maintain stream consistency
@@ -317,9 +288,7 @@ public static class SyncCoder
         writer.Write(false); // false = no data
     }
 
-    /// <summary>
-    /// Decode an object from binary. Returns null for System.Object type.
-    /// </summary>
+    // Returns null for System.Object.
     private static object DecodeObject(BinaryReader reader)
     {
         // Read the null marker to maintain stream consistency

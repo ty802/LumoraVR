@@ -3,13 +3,10 @@
 
 using System.IO;
 using Lumora.Core.Networking;
+using Lumora.Nexus.Transport;
 
 namespace Lumora.Core.Networking.Sync;
 
-/// <summary>
-/// High-frequency stream data message.
-/// Used for continuous data like voice, tracking, etc.
-/// </summary>
 public class StreamMessage : SyncMessage
 {
     public const float MAX_AGE_SECONDS = 4f;

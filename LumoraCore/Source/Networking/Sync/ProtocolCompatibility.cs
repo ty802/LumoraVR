@@ -9,28 +9,26 @@ using System.Text;
 
 namespace Lumora.Core.Networking.Sync;
 
-/// <summary>
-/// Datamodel compatibility proof for the join handshake.
-///
-/// Hashes the datamodel SCHEMA - every registered synced component type and its sync-member layout (member
-/// names and field types, in canonical order) plus a protocol version - rather than any binary, so peers
-/// built from the same source agree on the value across platforms. The per-join response salts this schema
-/// hash with the host's random join nonce so each join produces a distinct value. The host confirms a
-/// joiner reports the same schema before granting the join. -xlinka
-/// </summary>
+// Datamodel compatibility proof for the join handshake.
+//
+// Hashes the datamodel SCHEMA - every registered synced component type and its sync-member layout (member
+// names and field types, in canonical order) plus a protocol version - rather than any binary, so peers
+// built from the same source agree on the value across platforms. The per-join response salts this schema
+// hash with the host's random join nonce so each join produces a distinct value. The host confirms a
+// joiner reports the same schema before granting the join. -xlinka
 public static class ProtocolCompatibility
 {
     // Bump when the wire protocol changes in a way the component schema doesn't capture (message formats,
     // handshake steps, encoders). -xlinka
-    private const int ProtocolVersion = 1;
+    // 2: batch headers carry a per-link delta sequence and incremental collection deltas carry the
+    //    sender's pre-op element count. Both sit before data an older build expects, so a v1 peer reads
+    //    every batch off by a field; the handshake has to reject it instead of letting it try.
+    private const int ProtocolVersion = 2;
 
     private static byte[]? _baseHash;
     private static readonly object _lock = new();
 
-    /// <summary>
-    /// The schema hash for this build: a digest of the protocol version and every synced component type's
-    /// member layout. Identical across platforms for the same source; cached after first use.
-    /// </summary>
+    // Identical across platforms for the same source; cached after first use.
     public static byte[] BaseHash
     {
         get
@@ -91,10 +89,8 @@ public static class ProtocolCompatibility
         return sha.ComputeHash(ms);
     }
 
-    /// <summary>
-    /// The per-join proof: SHA-256(<see cref="BaseHash"/> || nonce). The joiner computes this over the
-    /// host's challenge nonce; the host verifies it against its own schema with <see cref="Verify"/>.
-    /// </summary>
+    // The per-join proof: SHA-256(BaseHash || nonce). The joiner computes this over the
+    // host's challenge nonce; the host verifies it against its own schema with Verify.
     public static byte[] ComputeChallengeResponse(byte[] nonce)
     {
         var baseHash = BaseHash;
@@ -109,9 +105,7 @@ public static class ProtocolCompatibility
         return sha.ComputeHash(buffer);
     }
 
-    /// <summary>
-    /// Host side: constant-time check that the joiner's proof matches our own schema for the given nonce.
-    /// </summary>
+    // Constant-time check against our own schema for the given nonce.
     public static bool Verify(byte[] nonce, byte[]? response)
     {
         if (response == null || response.Length == 0)

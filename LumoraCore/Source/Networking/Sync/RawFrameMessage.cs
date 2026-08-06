@@ -5,55 +5,49 @@ using System;
 using System.Buffers;
 using System.IO;
 using Lumora.Core.Networking;
+using Lumora.Nexus.Transport;
 
 namespace Lumora.Core.Networking.Sync;
 
-/// <summary>
-/// Lightweight per-user payload message designed for tight latency loops such as
-/// voice. Sibling of <see cref="StreamMessage"/> but skips its per-tick
-/// gather/batch/copy pipeline:
-///   - <see cref="Encode"/> writes once into a single right-sized byte[].
-///   - <see cref="Decode"/> reads the payload into a pooled buffer; receivers
-///     either consume it during the dispatch callback or copy it into their own
-///     storage before the message is disposed (which returns the buffer to the
-///     pool).
-///
-/// Dispatch flows through the same authority/sender-validation path as
-/// StreamMessage, so the sender-identity check (issue #80) applies here too.
-///
-/// Wire format (the leading <see cref="MessageType"/> byte and sender state
-/// version / sync tick are written by this class' <see cref="Encode"/> and
-/// consumed by <see cref="SyncMessage.Decode"/> before this class' Decode runs):
-/// <code>
-///   UserID         varint   claimed origin (validated against sender connection)
-///   StreamRefID    u64      routes to a per-user stream consumer
-///   Sequence       u16      caller-managed; useful for jitter buffers
-///   PayloadLength  varint   capped at NetworkLimits.MaxRawFrameBytes
-///   Payload        bytes
-/// </code>
-/// </summary>
+// Sibling of StreamMessage but skips its per-tick
+// gather/batch/copy pipeline:
+//   - Encode writes once into a single right-sized byte[].
+//   - Decode reads the payload into a pooled buffer; receivers
+//     either consume it during the dispatch callback or copy it into their own
+//     storage before the message is disposed (which returns the buffer to the
+//     pool).
+//
+// Dispatch flows through the same authority/sender-validation path as
+// StreamMessage, so the sender-identity check (issue #80) applies here too.
+//
+// Wire format (the leading MessageType byte and sender state
+// version / sync tick are written by this class' Encode and
+// consumed by Decode before this class' Decode runs):
+//
+//   UserID         varint   claimed origin (validated against sender connection)
+//   StreamRefID    u64      routes to a per-user stream consumer
+//   Sequence       u16      caller-managed; useful for jitter buffers
+//   PayloadLength  varint   capped at NetworkLimits.MaxRawFrameBytes
+//   Payload        bytes
 public class RawFrameMessage : SyncMessage
 {
     public override MessageType MessageType => Networking.Sync.MessageType.RawFrame;
     public override bool Reliable => false;
 
-    /// <summary>Claimed user ID of the originating peer.</summary>
     public ulong UserID { get; set; }
 
-    /// <summary>Per-user stream this frame belongs to (e.g. a voice stream).</summary>
     public RefID StreamRefID { get; set; }
 
-    /// <summary>Caller-managed sequence number; framework does not interpret it.</summary>
+    // Caller-managed; the framework does not interpret it.
     public ushort Sequence { get; set; }
 
     private byte[] _payloadBuffer = null!;
     private int _payloadLength;
     private bool _payloadPooled;
 
-    /// <summary>Read-only view of the payload bytes. Valid only until <see cref="Dispose"/>.</summary>
+    // Valid only until Dispose.
     public ReadOnlyMemory<byte> Payload => new(_payloadBuffer, 0, _payloadLength);
 
-    /// <summary>Length of the payload in bytes.</summary>
     public int PayloadLength => _payloadLength;
 
     public RawFrameMessage(ulong stateVersion, ulong syncTick, IConnection sender = null!)
@@ -61,10 +55,7 @@ public class RawFrameMessage : SyncMessage
     {
     }
 
-    /// <summary>
-    /// Copy <paramref name="source"/> into the message as the outgoing payload.
-    /// The caller's span can be reused after this call returns.
-    /// </summary>
+    // Copies; the caller's span can be reused after this returns.
     public void SetPayload(ReadOnlySpan<byte> source)
     {
         if (source.Length > NetworkLimits.MaxRawFrameBytes)
@@ -153,10 +144,7 @@ public class RawFrameMessage : SyncMessage
         return msg;
     }
 
-    /// <summary>
-    /// Build an independent message that can be relayed to a different target set.
-    /// The clone owns its own (non-pooled) payload copy.
-    /// </summary>
+    // The clone owns its own non-pooled payload copy.
     public RawFrameMessage CloneForRelay()
     {
         var clone = new RawFrameMessage(SenderStateVersion, SenderSyncTick)

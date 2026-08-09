@@ -67,12 +67,7 @@ public sealed class UserspacePointer : Component
 
     private bool ReadPrimary(InputInterface input)
     {
-        if (input.IsVRActive)
-        {
-            var controller = Side.Value == Chirality.Left ? input.LeftController : input.RightController;
-            return controller != null && controller.TriggerPressed;
-        }
-        return input.Mouse?.LeftButton.Held == true;
+        return input.Actions?.Interaction(Side.Value).Primary.Held == true;
     }
 
     public override void OnDestroy()

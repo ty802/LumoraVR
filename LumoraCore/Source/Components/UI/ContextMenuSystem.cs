@@ -11,32 +11,28 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components.UI;
 
-/// <summary>
-/// What the menu was opened against: the pointer that summoned it and the
-/// slot the laser was hitting at open time. Item sources use this to add
-/// contextual actions (equip the avatar you point at, etc.).
-/// </summary>
+// what the menu was opened against: the pointer that summoned it and the slot the laser was
+// hitting at open time. item sources use this to add contextual actions (equip the avatar you
+// point at, etc.).
 public sealed class ContextMenuContext
 {
     public Slot? Pointer;
     public Slot? Target;
 
-    /// <summary>Which hand summoned the menu - enables stick flick-select.</summary>
+    // which hand summoned the menu - enables stick flick-select
     public Input.Chirality? Side;
 }
 
-/// <summary>
-/// The user's radial context menu. Owns the page stack, collects items from
-/// sources, and renders itself as an engine-side mesh UI - a LOCAL Helio canvas
-/// per peer (AddLocalSlot, never replicated/saved), hit by the interaction laser
-/// like any world canvas. Only the owning user builds/drives it (see Open/Close).
-/// There is no platform view layer.
-/// NOTE: a naive replicated visual (AddSlot) was tried so others could see the
-/// menu, but the lifecycle's Destroy is denied by the datamodel ownership gate
-/// (structural ownership under the user root isn't "strong" per-byte), so the old
-/// canvas couldn't be torn down and menus stacked. Making it visible to others
-/// needs a proper owned/bypassed lifecycle, not a slot-type flip. -xlinka
-/// </summary>
+// The user's radial context menu. Owns the page stack, collects items from
+// sources, and renders itself as an engine-side mesh UI - a LOCAL Helio canvas
+// per peer (AddLocalSlot, never replicated/saved), hit by the interaction laser
+// like any world canvas. Only the owning user builds/drives it (see Open/Close).
+// There is no platform view layer.
+// NOTE: a naive replicated visual (AddSlot) was tried so others could see the
+// menu, but the lifecycle's Destroy is denied by the datamodel ownership gate
+// (structural ownership under the user root isn't "strong" per-byte), so the old
+// canvas couldn't be torn down and menus stacked. Making it visible to others
+// needs a proper owned/bypassed lifecycle, not a slot-type flip. -xlinka
 [ComponentCategory("UI/Context Menu")]
 public class ContextMenuSystem : Component
 {
@@ -45,13 +41,12 @@ public class ContextMenuSystem : Component
     private const float ItemSize = 120f;
     private const float OpenDistance = 0.35f;
 
-    /// <summary>Whether the menu is currently open.</summary>
     public readonly Sync<bool> IsOpen = null!;
 
-    /// <summary>The page currently being displayed (null when closed).</summary>
+    // null when closed
     public ContextMenuPage? CurrentPage { get; private set; }
 
-    /// <summary>The context the menu was opened with (null when closed).</summary>
+    // null when closed
     public ContextMenuContext? CurrentContext { get; private set; }
 
     public bool HasPageHistory => _pageStack.Count > 0;
@@ -64,7 +59,7 @@ public class ContextMenuSystem : Component
 
     private Slot _menuRoot = null!;
 
-    /// <summary>Root slot of the open menu's visuals; null while closed.</summary>
+    // null while closed
     public Slot? VisualRoot => _menuRoot != null && !_menuRoot.IsDestroyed ? _menuRoot : null;
     private Slot _canvasSlot = null!;
     private FontProvider _font = null!;
@@ -78,19 +73,14 @@ public class ContextMenuSystem : Component
 
     // Public API
 
-    /// <summary>
-    /// Toggle the menu at the pointer. Bind to a controller button.
-    /// </summary>
     public void Toggle(ContextMenuContext? context = null)
     {
         if (IsOpen.Value) Close();
         else Open(context);
     }
 
-    /// <summary>
-    /// Open the root context menu. Collects items from RootContextMenuItem and
-    /// ContextMenuItemSource components under this slot's user hierarchy.
-    /// </summary>
+    // collects items from RootContextMenuItem and ContextMenuItemSource components under this
+    // slot's user hierarchy
     public void Open(ContextMenuContext? context = null)
     {
         // Only the owning user builds/drives their own menu. This component also runs on observers for a
@@ -127,15 +117,10 @@ public class ContextMenuSystem : Component
         LumoraLogger.Log($"ContextMenuSystem: Opened '{page.Title}' ({page.Items.Count} items)");
     }
 
-    /// <summary>
-    /// Open a small two-button confirm menu (a confirm action + Cancel), bypassing the source-collected root
-    /// page. Used for the touch-to-equip confirmation popup. -xlinka
-    /// </summary>
+    // Open a small two-button confirm menu (a confirm action + Cancel), bypassing the source-collected root
+    // page. Used for the touch-to-equip confirmation popup. -xlinka
     public void OpenConfirm(string title, string confirmLabel, float[] confirmColor, Action onConfirm, ContextMenuContext? context = null)
     {
-        if (Slot?.ActiveUserRoot?.ActiveUser != World?.LocalUser)
-            return;
-
         var page = new ContextMenuPage(title);
         page.AddItem(new ContextMenuItem
         {
@@ -149,13 +134,25 @@ public class ContextMenuSystem : Component
             FillColor = new[] { 0.30f, 0.30f, 0.32f, 0.92f },
             OnPressed = _ => Close(),
         });
+        OpenPage(page, context);
+    }
+
+    // Open a prebuilt custom page, bypassing the source-collected root page. Item handlers are
+    // responsible for calling Close themselves (so multi-step flows can PushPage instead).
+    // Persistent: stays open until an item is picked rather than edge-closing when the pointer drifts. -xlinka
+    public void OpenPage(ContextMenuPage page, ContextMenuContext? context = null, bool persistent = true)
+    {
+        if (Slot?.ActiveUserRoot?.ActiveUser != World?.LocalUser)
+            return;
+        if (page == null || page.Items.Count == 0)
+            return;
 
         // Carry the summoning hand's laser slot + side (like the radial menu does), or the edge-close ray-cast and
         // desktop mouse-aim have no laser to work with and the menu dismisses itself a frame after opening. -xlinka
         CurrentContext = context ?? new ContextMenuContext { Pointer = Slot };
         _guardOpeningPress = true;   // opened by the primary button - don't let its release select an item
         _openingPrimaryReleased = false;
-        _disableAutoClose = true;    // persistent: stays open until Equip/Cancel is clicked
+        _disableAutoClose = persistent;
         page.LayoutItems();
         _pageStack.Clear();
         CurrentPage = page;
@@ -167,7 +164,7 @@ public class ContextMenuSystem : Component
         MenuOpened?.Invoke(page);
     }
 
-    /// <summary>Navigate into a sub-page (PopPage goes back).</summary>
+    // PopPage goes back
     public void PushPage(ContextMenuPage page)
     {
         if (page == null || CurrentPage == null) return;
@@ -179,7 +176,7 @@ public class ContextMenuSystem : Component
         PageChanged?.Invoke(CurrentPage);
     }
 
-    /// <summary>Go back one page. Closes the menu if already at the root page.</summary>
+    // closes the menu if already at the root page
     public void PopPage()
     {
         // Same guard as SelectItem: the press that OPENED the menu lands on the center "back" disc (the menu opens
@@ -194,7 +191,6 @@ public class ContextMenuSystem : Component
         PageChanged?.Invoke(CurrentPage);
     }
 
-    /// <summary>Close the menu.</summary>
     public void Close()
     {
         // Only the owner tears down their own menu - see Open. -xlinka
@@ -215,10 +211,6 @@ public class ContextMenuSystem : Component
         MenuClosed?.Invoke();
     }
 
-    /// <summary>
-    /// Handle item selection. Navigates to SubPage if set, otherwise invokes
-    /// OnPressed and closes.
-    /// </summary>
     public void SelectItem(ContextMenuItem item)
     {
         if (item == null || !item.IsEnabled) return;
@@ -338,14 +330,17 @@ public class ContextMenuSystem : Component
         if (rayOrigin == null || rayOrigin.IsDestroyed)
             return;
 
-        // Use the laser's actual cast ray when available - on desktop the slot
-        // pose isn't the ray (head + mouse deflection is).
+        // Use the laser's actual cast ray when available - on desktop the slot pose isn't the ray (head or
+        // camera, plus the mouse deflection, is). The CAST ray specifically: under an external camera the
+        // laser's exposed ray is re-anchored at the hand, and a hand standing metres off the view line
+        // crosses this plane somewhere else entirely (often behind it, which reads as pointing away and
+        // slams the menu shut the moment the aim leaves the ring). -xlinka
         float3 origin, direction;
         var laser = rayOrigin.GetComponent<Interaction.InteractionLaser>();
         if (laser != null)
         {
-            origin = laser.RayOrigin;
-            direction = laser.RayDirection;
+            origin = laser.CastOrigin;
+            direction = laser.CastDirection;
         }
         else
         {
@@ -387,19 +382,18 @@ public class ContextMenuSystem : Component
         if (side == null)
             return;
 
-        var input = Engine.Current?.InputInterface;
-        var controller = side == Input.Chirality.Left ? input?.LeftController : input?.RightController;
-        if (controller == null)
+        var actions = Engine.Current?.InputInterface?.Actions;
+        if (actions == null)
             return;
 
-        var stick = controller.ThumbstickPosition;
-        float magnitude = MathF.Sqrt(stick.X * stick.X + stick.Y * stick.Y);
+        var stick = actions.Interaction(side.Value).Stick.Value;
+        float magnitude = MathF.Sqrt(stick.x * stick.x + stick.y * stick.y);
 
         if (magnitude >= FlickEngageThreshold)
         {
             // Stick up = top item: same clockwise-from-right angle convention
             // as the arc layout.
-            float angle = MathF.Atan2(-stick.Y, stick.X) * (180f / MathF.PI);
+            float angle = MathF.Atan2(-stick.y, stick.x) * (180f / MathF.PI);
             SetFlickItem(FindItemAtAngle(angle));
         }
         else if (magnitude <= FlickReleaseThreshold && _flickItem != null)
@@ -459,6 +453,14 @@ public class ContextMenuSystem : Component
             // VR: the flick gesture shares the stick with locomotion.
             state.SetDesktopInputSuppressed(this, true);
         }
+        else if (Engine.Current?.InputInterface?.DesktopExternalCameraAim == true)
+        {
+            // Third-person / free-cam: the mouse is steering the CAMERA, and the menu aim rides the camera
+            // ray. Leaving it live would move the aim twice per mouse delta - once by orbiting/flying the
+            // view, once by the menu's own deflection. Freeze the camera the way first person freezes head
+            // look; WASD stays live either way. -xlinka
+            state.SetDesktopInputSuppressed(this, true);
+        }
         else if (!state.MouseLookSuppressed)
         {
             // Desktop: freeze the camera and hand the mouse to the menu
@@ -487,40 +489,49 @@ public class ContextMenuSystem : Component
         EnsureVisualRoot();
 
         var head = Slot.ActiveUserRoot?.HeadSlot;
-        bool vrActive = Engine.Current?.InputInterface?.VR_Active == true;
+        var input = Engine.Current?.InputInterface;
+        bool vrActive = input?.VR_Active == true;
+
+        // The viewpoint the menu opens in front of and turns to face. First person is the head; third-person
+        // and free-cam are a camera flying somewhere else entirely, and putting the menu on the parked head
+        // there would drop it off screen (or inside the avatar's skull) where nothing can click it. -xlinka
+        bool external = input?.DesktopExternalCameraAim == true;
+        bool hasView = external || head != null;
+        float3 viewPosition = external ? input!.DesktopCameraPosition : (head?.GlobalPosition ?? float3.Zero);
+        floatQ viewRotation = external ? input!.DesktopCameraRotation : (head?.GlobalRotation ?? floatQ.Identity);
 
         // View/laser facing is -Z (rotation * Backward) - Slot.Forward (+Z)
         // points behind the camera and was putting the menu out of view.
         //
-        // Desktop/first-person: directly in front of the camera at half a
-        // meter, so it always lands in view. VR: in front of the summoning
-        // pointer. (FaceLocalUser turns it toward the viewer either way.)
-        if (!vrActive && head != null)
+        // Desktop: directly in front of the active camera at half a meter, so it
+        // always lands in view. VR: in front of the summoning pointer.
+        // (FaceLocalUser turns it toward the viewer either way.)
+        if (!vrActive && hasView)
         {
             float scale = Slot.ActiveUserRoot?.GlobalScale ?? 1f;
-            var viewDirection = head.GlobalRotation * float3.Backward;
-            _menuRoot.GlobalPosition = head.GlobalPosition + viewDirection * (0.5f * scale);
+            var viewDirection = viewRotation * float3.Backward;
+            _menuRoot.GlobalPosition = viewPosition + viewDirection * (0.5f * scale);
         }
         else if (pointer != null && !pointer.IsDestroyed)
         {
             var pointDirection = pointer.GlobalRotation * float3.Backward;
             _menuRoot.GlobalPosition = pointer.GlobalPosition + pointDirection * OpenDistance;
         }
-        else if (head != null)
+        else if (hasView)
         {
-            var viewDirection = head.GlobalRotation * float3.Backward;
-            _menuRoot.GlobalPosition = head.GlobalPosition + viewDirection * (OpenDistance + 0.15f);
+            var viewDirection = viewRotation * float3.Backward;
+            _menuRoot.GlobalPosition = viewPosition + viewDirection * (OpenDistance + 0.15f);
         }
 
-        // Face the head ONCE here (yaw billboard). The menu is a child of the user root, so after this
+        // Face the viewpoint ONCE here (yaw billboard). The menu is a child of the user root, so after this
         // it rides along rigidly with no per-frame world re-derivation - locked in place when you move
         // (never re-faces or re-positions the menu per frame).
-        if (head != null)
+        if (hasView)
         {
-            var toHead = head.GlobalPosition - _menuRoot.GlobalPosition;
-            toHead.y = 0f;
-            if (toHead.LengthSquared > 1e-6f)
-                _menuRoot.GlobalRotation = floatQ.AxisAngle(float3.Up, MathF.Atan2(toHead.x, toHead.z));
+            var toView = viewPosition - _menuRoot.GlobalPosition;
+            toView.y = 0f;
+            if (toView.LengthSquared > 1e-6f)
+                _menuRoot.GlobalRotation = floatQ.AxisAngle(float3.Up, MathF.Atan2(toView.x, toView.z));
         }
     }
 

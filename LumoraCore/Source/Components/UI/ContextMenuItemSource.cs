@@ -5,31 +5,12 @@ using System;
 
 namespace Lumora.Core.Components.UI;
 
-/// <summary>
-/// Base component that contributes items to the context menu when it opens.
-///
-/// Attach to any slot in the world or user hierarchy.
-/// The ContextMenuSystem collects all active ContextMenuItemSource components
-/// and calls PopulateContextMenu() on each one when the menu opens.
-///
-/// Example usage:
-/// <code>
-///   public class GrabTool : ContextMenuItemSource
-///   {
-///       public override void PopulateContextMenu(ContextMenuPage page)
-///       {
-///           page.AddItem("Duplicate", _ => Duplicate(), "res://Icons/duplicate.png");
-///           page.AddItem("Delete",    _ => Delete(),    "res://Icons/delete.png");
-///       }
-///   }
-/// </code>
-/// </summary>
+// attach to any slot in the world or user hierarchy. ContextMenuSystem collects every active
+// ContextMenuItemSource and calls PopulateContextMenu() on each when the menu opens.
 [ComponentCategory("UI/Context Menu")]
 public class ContextMenuItemSource : Component
 {
-    /// <summary>
-    /// Priority for ordering. Higher priority sources run first (their items appear first).
-    /// </summary>
+    // higher priority sources run first (their items appear first)
     public readonly Sync<int> Priority = null!;
 
     public override void OnAwake()
@@ -37,12 +18,8 @@ public class ContextMenuItemSource : Component
         base.OnAwake();
     }
 
-    /// <summary>
-    /// Override to add items to the context menu page.
-    /// Called each time the context menu opens (before it is shown).
-    /// Items already added by higher-priority sources are visible in page.Items.
-    /// The context carries the summoning pointer and the slot it was aimed at,
-    /// for contextual actions like "Equip Avatar".
-    /// </summary>
+    // called each time the menu opens, before it's shown. items already added by higher-priority
+    // sources are visible in page.Items. context carries the summoning pointer and the slot it was
+    // aimed at, for contextual actions like "Equip Avatar".
     public virtual void PopulateContextMenu(ContextMenuPage page, ContextMenuContext context) { }
 }

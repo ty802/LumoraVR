@@ -1,6 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System;
 using System.Collections.Generic;
 using Lumora.Core.Math;
 
@@ -44,9 +45,40 @@ public class Grabber : Component
         get { CleanupGrabbed(); return _grabbed.Count > 0; }
     }
 
-    public bool TryGrab(IGrabbable target)
+    // TWO-HAND SCALING: second grip on an object this user already holds stretches it instead of
+    // stealing it. Local state - only the resulting LocalScale writes replicate. - xlinka
+    private const float MinScaleGrabDistance = 0.05f; // hands nearly touching at start would explode the ratio
+    private const float MinScaleFactor = 0.02f;
+    private const float MaxScaleFactor = 50f;
+
+    private IGrabbable? _scaleTarget;
+    private Grabber? _scalePartner;
+    private float _scaleStartDistance;
+    private float3 _scaleStartScale;
+    private SlotTransformUndoBatch? _scaleUndo;
+
+    public bool TryGrab(IGrabbable target) => TryGrab(target, out _);
+
+    // Same grab, but reporting WHICH object ended up in the hand. Grab is allowed to hand the grip to
+    // something other than the thing that was aimed at - a dispenser stamps out a copy and gives you
+    // that instead of moving itself - so the return value of Grab is the hold, and the target is only
+    // ever the request. Callers that go on to do something with what they grabbed (in-hand alignment,
+    // tool routing) have to read it from here or they'll be working on the wrong object. - xlinka
+    public bool TryGrab(IGrabbable target, out IGrabbable? held)
     {
-        if (target == null || !target.CanGrab(this)) return false;
+        held = null;
+        if (target == null) return false;
+
+        // Second hand of the SAME user on a Scalable object: that's the resize gesture, not a steal.
+        // Runs before CanGrab so grab arbitration/steal rules never see it.
+        if (IsScaleAssistCandidate(target))
+        {
+            if (!BeginScaleAssist(target, target.Grabber!)) return false;
+            held = target;
+            return true;
+        }
+
+        if (!target.CanGrab(this)) return false;
 
         var holder = HolderSlot;
         if (holder == null) return false;
@@ -57,9 +89,12 @@ public class Grabber : Component
         // Only record it if we actually came away holding it. On a client whose contested grab the host
         // rejects, the holder ref points elsewhere and CleanupGrabbed would drop it anyway - skip the
         // round trip and don't claim it. - xlinka
-        bool held = ReferenceEquals(grabbed.Grabber, this);
-        if (held && !_grabbed.Contains(grabbed)) _grabbed.Add(grabbed);
-        return held;
+        bool isHeld = ReferenceEquals(grabbed.Grabber, this);
+        if (!isHeld) return false;
+
+        if (!_grabbed.Contains(grabbed)) _grabbed.Add(grabbed);
+        held = grabbed;
+        return true;
     }
 
     // Touch / proximity grab: sphere-overlap at 'point' and grab the best grabbable found in the overlapped
@@ -85,7 +120,7 @@ public class Grabber : Component
         foreach (var slot in hits)
         {
             var candidate = FindGrabbableInParents(slot);
-            if (candidate == null || !candidate.CanGrab(this)) continue;
+            if (candidate == null) continue;
 
             // Never grab our own hand rig.
             if (candidate is Component cc && cc.Slot != null && cc.Slot.IsDescendantOf(Slot)) continue;
@@ -100,9 +135,9 @@ public class Grabber : Component
             }
         }
 
-        if (best == null || !TryGrab(best)) return false;
-        grabbed = best;
-        return true;
+        // Report what is actually in the hand, not what was reached for: a dispenser under the fingers
+        // answers a grip with a fresh copy, and the caller's in-hand alignment has to act on that.
+        return best != null && TryGrab(best, out grabbed) && grabbed != null;
     }
 
     // Walk up from a hit slot for the first grabbable this grabber may take. Stops at a SearchBlock (a
@@ -118,7 +153,7 @@ public class Grabber : Component
 
             foreach (var g in current.GetComponentsImplementing<IGrabbable>())
             {
-                if (g.CanGrab(this)) return g;
+                if (g.CanGrab(this) || IsScaleAssistCandidate(g)) return g;
             }
 
             current = current.Parent;
@@ -152,8 +187,69 @@ public class Grabber : Component
         target.Release(this);
     }
 
+    // A Scalable object THIS user already holds in the OTHER hand: grabbing it with this hand is the
+    // two-hand resize gesture. CanGrab deliberately rejects same-user steals, so the candidate filters
+    // must accept these explicitly or the second grip never reaches TryGrab. - xlinka
+    private bool IsScaleAssistCandidate(IGrabbable target)
+        => target.Scalable && target.Grabber is { } other && !ReferenceEquals(other, this)
+           && other.OwningUser != null && ReferenceEquals(other.OwningUser, OwningUser);
+
+    private bool BeginScaleAssist(IGrabbable target, Grabber partner)
+    {
+        var slot = (target as Component)?.Slot;
+        if (slot == null || slot.IsDestroyed || Slot == null || partner.Slot == null)
+            return false;
+
+        _scaleTarget = target;
+        _scalePartner = partner;
+        _scaleStartDistance = HandDistanceTo(partner);
+        if (_scaleStartDistance < MinScaleGrabDistance)
+            _scaleStartDistance = MinScaleGrabDistance;
+        _scaleStartScale = slot.LocalScale.Value;
+        _scaleUndo = SlotTransformUndoBatch.Begin(slot, "Scale");
+        return true;
+    }
+
+    public override void OnUpdate(float delta)
+    {
+        if (_scaleTarget == null)
+            return;
+
+        var slot = (_scaleTarget as Component)?.Slot;
+        // The gesture dies with either hand, the object, or the partner's hold (released or stolen).
+        if (_scalePartner?.Slot == null || Slot == null || slot == null || slot.IsDestroyed
+            || !ReferenceEquals(_scaleTarget.Grabber, _scalePartner))
+        {
+            EndScaleAssist();
+            return;
+        }
+
+        float factor = HandDistanceTo(_scalePartner) / _scaleStartDistance;
+        if (factor < MinScaleFactor) factor = MinScaleFactor;
+        if (factor > MaxScaleFactor) factor = MaxScaleFactor;
+        slot.LocalScale.Value = _scaleStartScale * factor;
+    }
+
+    private float HandDistanceTo(Grabber partner)
+    {
+        var delta = Slot!.GlobalPosition - partner.Slot!.GlobalPosition;
+        return MathF.Sqrt(delta.LengthSquared);
+    }
+
+    private void EndScaleAssist()
+    {
+        if (_scaleTarget == null)
+            return;
+        _scaleTarget = null;
+        _scalePartner = null;
+        // One undo step for the whole stretch (start scale -> final scale).
+        InspectorUndo.Record(this, _scaleUndo?.Commit());
+        _scaleUndo = null;
+    }
+
     public void ReleaseAll()
     {
+        EndScaleAssist();
         // Snapshot what we're letting go so the receivable ones can be offered to a drop target after
         // they've been released back to the world. - xlinka
         var released = new List<IGrabbable>(_grabbed);

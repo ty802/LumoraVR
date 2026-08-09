@@ -23,6 +23,7 @@ public sealed class HandTool : Tool
     public readonly Sync<float> HoldScrollStep = new();
     public readonly Sync<float> HoldScaleStep = new();
     public readonly Sync<float> HoldRotationSensitivity = new();
+    public readonly Sync<float> GrabSmoothing = new();
     public readonly Sync<LaserRotationMode> RotationMode = new();
     public readonly SyncRef<ToolItem> ActiveToolItem = new();
 
@@ -37,6 +38,8 @@ public sealed class HandTool : Tool
     private bool _prevSecondaryHeld;
     private bool _gripHeld;
     private bool _prevGripHeld;
+    // Handle drag started by a bare-hand primary press (no tool equipped); the dev tool tracks its own.
+    private Gizmos.TransformHandle? _bareHandle;
     private ToolItem? _activePrimaryToolItem;
     private ToolItem? _activeSecondaryToolItem;
     private bool _isHoldingWithLaser;
@@ -45,7 +48,10 @@ public sealed class HandTool : Tool
     private floatQ _holderRotationOffset = floatQ.Identity;
     private floatQ? _holderRotationReference;
     private bool _desktopInputSuppressed;
+    private bool _scrollWheelCaptured;
     private double _lastAlignPress = -1000.0;
+    private long _holdPoseFrame = long.MinValue;
+    private long _holdPoseWrittenFrame = long.MinValue;
 
     public override Grabber? Grabber => _grabber;
     public override InteractionLaser? Laser => _laser;
@@ -61,6 +67,12 @@ public sealed class HandTool : Tool
         HoldScrollStep.Value = 0.12f;
         HoldScaleStep.Value = 0.10f;
         HoldRotationSensitivity.Value = MathF.PI * 2f;
+        // Base damping rate for the laser's aim while this hand is carrying something, in 1/s (a 1/8 second
+        // time constant). Below the laser's bare-pointer SmoothSpeed because a load on the end of a
+        // several-metre ray magnifies every bit of sampling noise into a visible swing. Sized so a stop
+        // settles inside 0.2s with no overshoot (first order, so it can't overshoot) while a 90 degree sweep
+        // in a quarter second ends about 10 degrees behind and closes that in another 0.2s. -xlinka
+        GrabSmoothing.Value = 8f;
         RotationMode.Value = LaserRotationMode.AxisY;
     }
 
@@ -89,9 +101,11 @@ public sealed class HandTool : Tool
         if (dashOwner != null && dashOwner.IsAnyUserspaceLaserActive)
         {
             _laser.SetToolState(false, false);
+            _laser.ArmRaySmoothing(false);
             _laser.SetExclusiveRoot(null);
             _laser.SetDormant(true);
             SetDesktopInputSuppression(false);
+            SetScrollWheelCapture(false);
             return;
         }
         _laser.SetDormant(false);
@@ -122,12 +136,26 @@ public sealed class HandTool : Tool
             exclusiveRoot = UI.UserspaceDashboard.LocalInstance?.SurfaceSlot;
         _laser.SetExclusiveRoot(exclusiveRoot);
         bool uiPress = _primaryHeld && (menuVisible || !IsHoldingObjectsWithLaser);
-        _laser.SetToolState(uiPress, IsHoldingObjectsWithLaser && !menuVisible);
+        bool carryingOnLaser = IsHoldingObjectsWithLaser && !menuVisible;
+        // Damp the aim only while something is actually riding the laser. A bare pointer wants to be
+        // pixel-exact, and while the menu is open the mouse IS the pointer.
+        _laser.ArmRaySmoothing(carryingOnLaser, GrabSmoothing.Value);
+        _laser.SetToolState(uiPress, carryingOnLaser);
+        // Hit classification belongs to whatever is equipped: the tool is the only thing that knows
+        // which chrome it wants pulled in front of the world. A modal menu takes that away - while one
+        // is up the beam may touch nothing but the menu, and a tool preferring its own targets through
+        // the modal filter would be fighting it. Pushed per frame rather than on equip because the
+        // beam is built lazily and an equip can land before it exists. -xlinka
+        _laser.SetHitClassifier(menuVisible ? null : ActiveToolItem.Target as ILaserHitClassifier);
         _laser.RefreshNow(delta);
         ProcessPrimary(_laser);
         ProcessSecondary(_laser);
         ProcessMenuKey(_laser);
         ProcessGrip(_laser);
+
+        // The wheel is the held object's distance control while something rides the laser. Say so, or the
+        // third-person orbit zooms the camera on the same notch that pulls the object in. -xlinka
+        SetScrollWheelCapture(!vrActive && IsHoldingObjectsWithLaser && !menuVisible);
 
         if (IsHoldingObjectsWithLaser && !menuVisible)
         {
@@ -294,6 +322,9 @@ public sealed class HandTool : Tool
 
     private void SampleInput(InteractionLaser laser)
     {
+        // Tool secondary on desktop is a KEY, and a focused text field owns the keyboard outright -
+        // the keyboard source is gated at that point, so typing never reaches an action and the VR
+        // controller buttons carry on regardless.
         _primaryHeld = ReadPrimaryPressed(laser);
         _secondaryHeld = ReadSecondaryPressed(laser);
         _gripHeld = ReadGripPressed(laser);
@@ -310,7 +341,23 @@ public sealed class HandTool : Tool
             }
             else if (IsHoldingObjectsWithLaser)
             {
-                ProcessAlignPress(laser);
+                // Order matters. Holding with the laser SUPPRESSES canvas presses (uiPress below), so a
+                // press aimed at a UI row can never reach the row's own button - the row has to be
+                // offered the hand's contents from here instead. That has to happen BEFORE the held
+                // object gets the press, or clicking a reference field while carrying a card would run
+                // the CARD's action (open an inspector on its target) and spend the card without ever
+                // assigning it: you aim at the field you wanted to fill, click, and lose the card. So:
+                // a receiver under the pointer wins, then the held object's own action, then align.
+                // -xlinka
+                if (!TryDropProxyOnUI(laser) && !TryActivateHeldObject())
+                    ProcessAlignPress(laser);
+            }
+            else if (laser.CurrentTarget is Gizmos.TransformHandle handle && handle.BeginToolDrag(laser))
+            {
+                // A gizmo handle is a control, not an object: primary on it drags whether or not a tool is
+                // equipped. The inspector spawns gizmos with no tool in hand, and a handle that only answers
+                // the dev tool's primary (or a grip) reads as dead to a mouse user. -xlinka
+                _bareHandle = handle;
             }
             else if (laser.CurrentTarget != null && laser.CurrentPointerTarget == null)
             {
@@ -322,13 +369,47 @@ public sealed class HandTool : Tool
         {
             _activePrimaryToolItem.OnPrimaryHold();
         }
+        else if (_primaryHeld && _bareHandle != null)
+        {
+            if (!_bareHandle.IsDragging || _bareHandle.IsDestroyed)
+                _bareHandle = null;
+        }
         else if (!_primaryHeld && _prevPrimaryHeld && _activePrimaryToolItem != null)
         {
             _activePrimaryToolItem.OnPrimaryRelease();
             _activePrimaryToolItem = null;
         }
+        else if (!_primaryHeld && _prevPrimaryHeld && _bareHandle != null)
+        {
+            _bareHandle.EndToolDrag();
+            _bareHandle = null;
+        }
 
         _prevPrimaryHeld = _primaryHeld;
+    }
+
+    // Offer the primary press to any held object that wants to run its own action instead of aligning
+    // (a reference card opens its target). Snapshot the hold list first: a claimer may remove itself
+    // from the hand mid-iteration. Returns true when one consumed the press. -xlinka
+    private bool TryActivateHeldObject()
+    {
+        if (_grabber == null)
+            return false;
+
+        var held = new List<IGrabbable>(_grabber.GrabbedObjects);
+        foreach (var grabbable in held)
+        {
+            if (grabbable is not Component component || component.Slot == null || component.IsDestroyed)
+                continue;
+            foreach (var activatable in component.Slot.GetComponentsImplementing<IHeldActivatable>())
+            {
+                if (activatable is Component c && (!c.Enabled.Value || c.IsDestroyed))
+                    continue;
+                if (activatable.OnHeldActivate(_grabber))
+                    return true;
+            }
+        }
+        return false;
     }
 
     private void ProcessSecondary(InteractionLaser laser)
@@ -420,33 +501,23 @@ public sealed class HandTool : Tool
         _laser.SetDesktopAimOffset(_menuAim);
     }
 
-    private bool _menuKeyWasDown;
-    private bool _menuTKeyWasDown;
-
-    // Desktop context menu binding: middle mouse click OR the T key toggles open/close
-    // (tool secondary owns R, primary owns left click). Only the right hand
-    // listens so both hands don't double-toggle. T is tracked on its own edge so it
-    // and the mouse each toggle independently. -xlinka
+    // Desktop context menu toggle. Only the right hand listens so both hands cannot double-toggle;
+    // in VR the menu is summoned by the tool itself, not from here. Whichever control is bound
+    // (stock: middle click, T, or the pad's top face button) toggles on its press edge, and a
+    // focused text field takes the keyboard out of play before an action ever sees a keystroke.
+    // -xlinka
     private void ProcessMenuKey(InteractionLaser laser)
     {
         var input = Engine.Current?.InputInterface;
         if (input == null || input.IsVRActive || Side.Value != Chirality.Right)
         {
-            _menuKeyWasDown = false;
-            _menuTKeyWasDown = false;
             return;
         }
 
-        bool mouseDown = input.Mouse?.MiddleButton.Held == true;
-        bool tDown = input.Keyboard?.IsKeyPressed(Key.T) == true;
-
-        if ((mouseDown && !_menuKeyWasDown) || (tDown && !_menuTKeyWasDown))
+        if (input.Actions?.Right.ContextMenu.Pressed == true)
         {
             ToggleContextMenu(laser);
         }
-
-        _menuKeyWasDown = mouseDown;
-        _menuTKeyWasDown = tDown;
     }
 
     private UI.ContextMenuSystem? _contextMenu;
@@ -460,7 +531,11 @@ public sealed class HandTool : Tool
 
     private bool IsContextMenuOpenByThisHand()
     {
-        var menu = _contextMenu;
+        // Resolve, don't just read the cache: a confirm menu opened by something else (a tool's
+        // touch-to-equip prompt) never goes through ToggleContextMenu, and an unfilled cache reads as
+        // "no menu", so the laser keeps its world aim and the prompt can't be clicked until the
+        // radial menu has been opened once by hand. -xlinka
+        var menu = FindContextMenu();
         if (menu == null || menu.IsDestroyed || !menu.IsOpen.Value)
             return false;
         return menu.CurrentContext?.Side == Side.Value;
@@ -486,6 +561,9 @@ public sealed class HandTool : Tool
         }
         else if (!_gripHeld && _prevGripHeld)
         {
+            // Letting go over a UI row that accepts references consumes the held card before the
+            // release puts anything back into the world. -xlinka
+            TryDropProxyOnUI(laser);
             _grabber?.ReleaseAll();
             ResetInteraction(releaseHeld: false);
         }
@@ -500,7 +578,9 @@ public sealed class HandTool : Tool
             return;
         }
 
-        var grabbable = FindBestGrabbable(laser.CurrentTarget, laser.CurrentHitSlot);
+        // A UI row under the pointer that offers a reference card wins over grabbing the panel:
+        // gripping a member row pulls the card, gripping the frame still moves the window. -xlinka
+        var grabbable = TryPullProxyFromUI(laser) ?? FindBestGrabbable(laser.CurrentTarget, laser.CurrentHitSlot);
         if (grabbable == null)
         {
             return;
@@ -515,7 +595,13 @@ public sealed class HandTool : Tool
         _laserGrabDistance = MathF.Max(0.05f, laser.CurrentHitDistance);
         _holderAxisOffset = 0f;
         _holderRotationOffset = floatQ.Identity;
-        _holderRotationReference = GetHeadFacingRotation(laser);
+        // Frozen at grab, never recomputed. The held object keeps the facing it had when you picked it up;
+        // letting it re-derive from the head every frame makes it swing to face you as the view pitches and
+        // yaws, which is the last thing you want while trying to place something. Resolve it to a real value
+        // here so UpdateHolderRotation can never fall through to the chasing path. -xlinka
+        _holderRotationReference = GetHeadFacingRotation(laser)
+            ?? laser.FindHeadSlot()?.GlobalRotation
+            ?? Slot.GlobalRotation;
         RotationMode.Value = LaserRotationMode.AxisY;
 
         holder.GlobalPosition = laser.CurrentHitPoint;
@@ -528,6 +614,72 @@ public sealed class HandTool : Tool
         }
 
         _isHoldingWithLaser = true;
+    }
+
+    // Pull a reference card out of a hovered UI panel: resolve the exact row under the pointer
+    // (the interactable hit test can't see labels or plain containers) and ask up its parent chain
+    // for a proxy source. Returns the freshly spawned card, ready to grab at the hit point. -xlinka
+    private IGrabbable? TryPullProxyFromUI(InteractionLaser laser)
+    {
+        if (_grabber == null || laser.CurrentTarget is not Helio.UI.Canvas canvas || canvas.Slot == null)
+        {
+            return null;
+        }
+        if (!canvas.TryResolveUISlot(laser.RayOrigin, laser.RayDirection, out var uiSlot, out var worldPoint) || uiSlot == null)
+        {
+            return null;
+        }
+        var source = FindUIBehavior<IProxySource>(uiSlot, canvas.Slot);
+        return source?.TryCreateProxy(_grabber, worldPoint);
+    }
+
+    // Offer everything in the hand to a reference receiver under the pointer. Two callers: the grip
+    // release edge (before the release puts the held items back into the world) and the primary press
+    // while laser-holding. Returns true when a receiver consumed something. -xlinka
+    private bool TryDropProxyOnUI(InteractionLaser laser)
+    {
+        if (_grabber == null || !_grabber.IsHoldingObjects)
+        {
+            return false;
+        }
+        if (laser.CurrentTarget is not Helio.UI.Canvas canvas || canvas.Slot == null)
+        {
+            return false;
+        }
+        if (!canvas.TryResolveUISlot(laser.RayOrigin, laser.RayDirection, out var uiSlot, out _) || uiSlot == null)
+        {
+            return false;
+        }
+        var receiver = FindUIBehavior<IProxyReceiver>(uiSlot, canvas.Slot);
+        // Snapshot the hold list: a receiver consumes the card it took (releases it from this hand and
+        // destroys it), which mutates the grabber's list mid-call. -xlinka
+        if (receiver == null)
+        {
+            return false;
+        }
+        var held = new List<IGrabbable>(_grabber.GrabbedObjects);
+        return held.Count > 0 && receiver.TryReceiveProxy(held, _grabber);
+    }
+
+    // First T on the slot or its parents, stopping at the canvas root (UI rows never reach outside
+    // their own panel).
+    private static T? FindUIBehavior<T>(Slot start, Slot canvasRoot) where T : class
+    {
+        for (var current = start; current != null; current = current.Parent)
+        {
+            foreach (var behavior in current.GetComponentsImplementing<T>())
+            {
+                if (behavior is Component component && component.Enabled.Value && !component.IsDestroyed)
+                {
+                    return behavior;
+                }
+            }
+            if (ReferenceEquals(current, canvasRoot))
+            {
+                break;
+            }
+        }
+        return null;
     }
 
     // Hand reach for a touch grab, in metres at unit user scale. Roughly the grab-sphere of the hand.
@@ -620,6 +772,49 @@ public sealed class HandTool : Tool
 
         ApplyHoldInputs(laser, holder, delta);
         _laserGrabDistance = Clamp(_laserGrabDistance, 0.05f, MathF.Max(laser.MaxDistance.Value, 0.05f));
+
+        // The pose write waits for the late pass. This tool updates at -1000, but on desktop the head pitch,
+        // the body yaw and the very hand slot the holder hangs off are all written at update order 0 - so
+        // writing here aims the object down LAST frame's view, and then those ancestors rotate underneath it
+        // before anything renders, dragging it around the feet and the hand instead of the eye. Next frame
+        // recomputes from the eye and yanks it back. That push-pull is the stepping, and it flips sign
+        // between looking up and looking down because the hand's aim pitch clamps on the way down.
+        //
+        // A world whose late pass is throttled off (a background world) never reaches OnLateUpdate, so fall
+        // back to writing inline the moment the late write goes missing. -xlinka
+        long frame = Engine.Current?.FrameCount ?? -1;
+        _holdPoseFrame = frame;
+        if (frame < 0 || _holdPoseWrittenFrame < frame - 2)
+        {
+            WriteHolderPose(laser, holder, delta);
+        }
+    }
+
+    public override void OnLateUpdate(float delta)
+    {
+        base.OnLateUpdate(delta);
+
+        long frame = Engine.Current?.FrameCount ?? -1;
+        if (frame < 0 || _holdPoseFrame != frame || _laser == null || _grabber == null)
+        {
+            return;
+        }
+
+        var holder = _grabber.HolderSlot;
+        if (holder == null || holder.IsRemoved)
+        {
+            return;
+        }
+
+        WriteHolderPose(_laser, holder, delta);
+        _holdPoseWrittenFrame = frame;
+    }
+
+    // Aim, then place. RefreshHeldAim re-resolves the laser ray off the head/root as they stand NOW and takes
+    // the smoothing step, so the beam and the object it carries come off the same ray. -xlinka
+    private void WriteHolderPose(InteractionLaser laser, Slot holder, float delta)
+    {
+        laser.RefreshHeldAim(delta);
         UpdateHolderPosition(laser, holder);
         UpdateHolderRotation(laser, holder);
     }
@@ -633,20 +828,27 @@ public sealed class HandTool : Tool
             return;
         }
 
-        if (input.IsVRActive)
+        var hand = input.Actions?.Interaction(Side.Value);
+        if (hand == null)
         {
             SetDesktopInputSuppression(false);
-            ApplyVrHoldInputs(laser, input, delta, holder);
             return;
         }
 
-        bool freezeCursor = IsKeyHeld(input, Key.E);
+        if (input.IsVRActive)
+        {
+            SetDesktopInputSuppression(false);
+            ApplyVrHoldInputs(hand, delta, holder);
+            return;
+        }
+
+        bool freezeCursor = hand.HoldFreeze.Held;
         SetDesktopInputSuppression(freezeCursor);
 
-        float scroll = input.Mouse?.ScrollWheelDelta.Value ?? 0f;
+        float scroll = hand.HoldScroll.Value;
         if (scroll != 0f)
         {
-            if (IsShiftHeld(input) && CanScaleHeldObjects())
+            if (hand.HoldModifier.Held && CanScaleHeldObjects())
             {
                 ScaleHolder(holder, scroll * HoldScaleStep.Value);
             }
@@ -662,13 +864,13 @@ public sealed class HandTool : Tool
             return;
         }
 
-        float2 mouseDelta = input.Mouse?.DirectDelta.Value ?? float2.Zero;
+        float2 mouseDelta = hand.HoldLook.Value;
         if (mouseDelta == float2.Zero)
         {
             return;
         }
 
-        if (IsShiftHeld(input))
+        if (hand.HoldModifier.Held)
         {
             _holderAxisOffset += mouseDelta.x * HoldRotationSensitivity.Value;
         }
@@ -681,18 +883,15 @@ public sealed class HandTool : Tool
         }
     }
 
-    private void ApplyVrHoldInputs(InteractionLaser laser, InputInterface input, float delta, Slot holder)
+    private void ApplyVrHoldInputs(Input.Actions.InteractionActions hand, float delta, Slot holder)
     {
-        var controller = Side.Value == Chirality.Left ? input.LeftController : input.RightController;
-        if (controller == null)
-        {
-            return;
-        }
+        // The axis action applies its own PER-AXIS deadzone, so slide and twist stay independent: a
+        // hard pull toward you must not smear rotation onto the object as well.
+        var axis = hand.HoldAxis.Value;
+        float slide = axis.y;
+        float rotate = axis.x;
 
-        float slide = ApplyDeadzone(controller.ThumbstickPosition.Y, 0.15f);
-        float rotate = ApplyDeadzone(controller.ThumbstickPosition.X, 0.15f);
-
-        if (controller.SecondaryButtonPressed && slide != 0f && CanScaleHeldObjects())
+        if (hand.HoldModifier.Held && slide != 0f && CanScaleHeldObjects())
         {
             ScaleHolder(holder, slide * delta);
         }
@@ -970,6 +1169,10 @@ public sealed class HandTool : Tool
         }
 
         SetDesktopInputSuppression(false);
+        SetScrollWheelCapture(false);
+        _laser?.ArmRaySmoothing(false);
+        _holdPoseFrame = long.MinValue;
+        _holdPoseWrittenFrame = long.MinValue;
         _isHoldingWithLaser = false;
         _laserGrabDistance = 0f;
         _holderAxisOffset = 0f;
@@ -1134,6 +1337,17 @@ public sealed class HandTool : Tool
         UserInputState.ForFocusedLocalUser?.SetDesktopInputSuppressed(this, active);
     }
 
+    private void SetScrollWheelCapture(bool active)
+    {
+        if (_scrollWheelCaptured == active)
+        {
+            return;
+        }
+
+        _scrollWheelCaptured = active;
+        UserInputState.ForFocusedLocalUser?.SetScrollWheelCaptured(this, active);
+    }
+
     private static float3 ProjectOnPlane(float3 vector, float3 normal)
     {
         if (normal.Length <= 0.0001f)
@@ -1202,17 +1416,7 @@ public sealed class HandTool : Tool
             return false;
         }
 
-        bool vrTrigger = laser.ControllerSide.Value == Chirality.Left
-            ? input.LeftController.TriggerPressed
-            : input.RightController.TriggerPressed;
-        if (vrTrigger)
-        {
-            return true;
-        }
-
-        return !input.IsVRActive &&
-               laser.ControllerSide.Value == Chirality.Right &&
-               input.Mouse?.LeftButton.Held == true;
+        return input.Actions?.Interaction(laser.ControllerSide.Value).Primary.Held == true;
     }
 
     private static bool ReadGripPressed(InteractionLaser laser)
@@ -1223,17 +1427,7 @@ public sealed class HandTool : Tool
             return false;
         }
 
-        bool vrGrip = laser.ControllerSide.Value == Chirality.Left
-            ? input.LeftController.GripPressed || input.LeftController.GripValue > 0.5f
-            : input.RightController.GripPressed || input.RightController.GripValue > 0.5f;
-        if (vrGrip)
-        {
-            return true;
-        }
-
-        return !input.IsVRActive &&
-               laser.ControllerSide.Value == Chirality.Right &&
-               input.Mouse?.RightButton.Held == true;
+        return input.Actions?.Interaction(laser.ControllerSide.Value).Grab.Held == true;
     }
 
     private static bool ReadSecondaryPressed(InteractionLaser laser)
@@ -1244,34 +1438,7 @@ public sealed class HandTool : Tool
             return false;
         }
 
-        bool vrSecondary = laser.ControllerSide.Value == Chirality.Left
-            ? input.LeftController.SecondaryButtonPressed
-            : input.RightController.SecondaryButtonPressed;
-        if (vrSecondary)
-        {
-            return true;
-        }
-
-        // Desktop tool secondary is R (middle mouse is free; the context menu
-        // gets its own T binding so nothing conflicts).
-        return !input.IsVRActive &&
-               laser.ControllerSide.Value == Chirality.Right &&
-               input.Keyboard?.IsKeyPressed(Key.R) == true;
-    }
-
-    private static bool IsShiftHeld(InputInterface input)
-    {
-        return IsKeyHeld(input, Key.LeftShift) || IsKeyHeld(input, Key.RightShift);
-    }
-
-    private static bool IsKeyHeld(InputInterface input, Key key)
-    {
-        return input.Keyboard?.IsKeyPressed(key) == true;
-    }
-
-    private static float ApplyDeadzone(float value, float deadzone)
-    {
-        return MathF.Abs(value) < deadzone ? 0f : value;
+        return input.Actions?.Interaction(laser.ControllerSide.Value).Secondary.Held == true;
     }
 
     private static float Clamp(float value, float min, float max)

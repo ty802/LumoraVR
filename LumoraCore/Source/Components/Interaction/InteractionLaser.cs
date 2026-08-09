@@ -26,6 +26,11 @@ public sealed class InteractionLaser : Component
     public readonly Sync<float> DefaultHoverRadius = new();
     public readonly Sync<float> StickyHitDistance = new();
     public readonly Sync<float> VisualSmoothing = new();
+    public readonly Sync<float> SmoothSpeed = new();
+    public readonly Sync<float> SmoothModulateStartAngle = new();
+    public readonly Sync<float> SmoothModulateEndAngle = new();
+    public readonly Sync<float> SmoothModulateExponent = new();
+    public readonly Sync<float> SmoothModulateMultiplier = new();
     public readonly Sync<float> CursorSize = new();
     public readonly Sync<bool> ShowDesktopBeam = new();
     public readonly Sync<bool> ShowDirectCursor = new();
@@ -65,14 +70,33 @@ public sealed class InteractionLaser : Component
     private bool _toolBlocksPointerActions;
     private float3 _rayOrigin;
     private float3 _rayDirection = float3.Backward;
+    private float3 _castOrigin;
+    private float3 _castDirection = float3.Backward;
+    // Aim smoother state, kept in LOCAL USER ROOT space on purpose: walking, turning and being scaled move
+    // the root, and holding the state there means none of that registers as aim error. Only the aim relative
+    // to the body gets damped, so locomotion while carrying something costs nothing. -xlinka
+    private float? _raySmoothSpeed;
+    private float3 _smoothedRayOriginLocal;
+    private float3 _smoothedRayDirectionLocal = float3.Backward;
+    private bool _hasSmoothedRay;
     private long _lastRefreshFrame = long.MinValue;
     private float _laserVisibleLerp;
+    // Where the beam ends this frame in world space, plus the distance the CAST covered to get there. Under an
+    // external camera the cast comes off the camera and the beam off the hand, so the two disagree: the aim
+    // point is what both of them share, and the cast distance is what keeps the reticle a constant size on
+    // screen (it is the distance from the eye, not from the hand). -xlinka
+    private float3 _aimPoint;
+    private bool _hasAimPoint;
+    private float _lastCastDistance;
+    private bool _externalAim;
     private float3 _visualActualPoint;
     private bool _hasVisualActualPoint;
     private color _currentStartColor = color.Transparent;
     private color _currentEndColor = color.Transparent;
     private float _lastDirectHitDistance;
     private float2 _laserTextureOffset;
+    private ILaserHitClassifier? _hitClassifier;
+    private bool _currentHitPreferred;
 
     public IInteractionTarget? CurrentTarget => _currentTarget;
     public RayTarget? CurrentRayTarget => _currentRayTarget;
@@ -80,9 +104,26 @@ public sealed class InteractionLaser : Component
     public Slot? CurrentHitSlot => _currentHitSlot;
     public float3 CurrentHitPoint => _currentHitPoint;
     public float CurrentHitDistance => _currentHitDistance;
+
+    // won as a Prefer hit: may be sitting behind or inside solid geometry the beam passed straight
+    // through, so anything reasoning about physical contact rather than aim needs to know the difference
+    public bool CurrentHitPreferred => _currentHitPreferred;
     public float3 RayOrigin => _rayOrigin;
     public float3 RayDirection => _rayDirection;
     public bool IsActive => _currentTarget != null;
+
+    // World point the beam ends at this frame: the hit when something is hovered, otherwise the far end of
+    // the aim ray. The desktop hand-aim step points the hand here so the beam leaves it along the view's aim
+    // instead of wherever the parked head happens to face. -xlinka
+    public float3 AimPoint => _aimPoint;
+    public bool HasAimPoint => _hasAimPoint;
+
+    // The ray the CAST ran along. Identical to RayOrigin/RayDirection everywhere except under an external
+    // desktop camera, where the cast is the camera's and the exposed ray is re-anchored at the hand. Anything
+    // asking "where on that surface is the aim" wants this one, not the hand's line to the same point.
+    // -xlinka
+    public float3 CastOrigin => _castOrigin;
+    public float3 CastDirection => _castDirection;
 
     public event Action<IInteractionTarget?>? TargetChanged;
     public event Action<IInteractionTarget, float3>? Activated;
@@ -93,13 +134,17 @@ public sealed class InteractionLaser : Component
         public readonly Slot Slot;
         public readonly float Distance;
         public readonly float3 HitPoint;
+        // Prefer-classified: collected past the blocking distance, and takes the selection away from
+        // every ordinary hit on the ray
+        public readonly bool Preferred;
 
-        public TargetHit(IInteractionTarget target, Slot slot, float distance, float3 hitPoint)
+        public TargetHit(IInteractionTarget target, Slot slot, float distance, float3 hitPoint, bool preferred)
         {
             Target = target;
             Slot = slot;
             Distance = distance;
             HitPoint = hitPoint;
+            Preferred = preferred;
         }
     }
 
@@ -116,6 +161,18 @@ public sealed class InteractionLaser : Component
         DefaultHoverRadius.Value = 0.05f;
         StickyHitDistance.Value = 0.08f;
         VisualSmoothing.Value = 12f;
+        // Aim smoothing, armed only while a tool is carrying something on this laser. The base speed is an
+        // exponential rate in 1/s (a 1/SmoothSpeed second time constant); the modulate block scales it by how
+        // far the raw aim has run ahead of the smoothed ray, so sub-2-degree mouse noise is damped at the base
+        // rate while a deliberate sweep past 45 degrees tracks at up to Multiplier times that. The exponent
+        // below 1 makes the ramp bite early, otherwise mid-speed drags feel like dragging through syrup.
+        // Faster than a bare pointer wants, because the pose write is already frame-aligned with the view -
+        // this only has to eat mouse sampling noise, not a frame of lag. -xlinka
+        SmoothSpeed.Value = 12f;
+        SmoothModulateStartAngle.Value = 2f;
+        SmoothModulateEndAngle.Value = 45f;
+        SmoothModulateExponent.Value = 0.75f;
+        SmoothModulateMultiplier.Value = 8f;
         CursorSize.Value = 0.018f;
         ShowDesktopBeam.Value = false;
         ShowDirectCursor.Value = true;
@@ -151,11 +208,24 @@ public sealed class InteractionLaser : Component
         _ignoreRoot = root;
     }
 
+    // pushed from the hand rather than resolved here: a beam is not always under a hand (the userspace
+    // pointer is not), and the hand is the only thing that knows when a modal menu has taken the tool's say away
+    public void SetHitClassifier(ILaserHitClassifier? classifier)
+    {
+        _hitClassifier = classifier;
+    }
+
     public void SetToolState(bool primaryPressed, bool blockPointerActions)
     {
         _toolPrimaryPressed = primaryPressed;
         _toolBlocksPointerActions = blockPointerActions;
     }
+
+    // Read-only view of the press state the owning tool last pushed in. Anything that wants to act on
+    // a HELD primary rather than a click edge reads this instead of sampling the controller itself, so
+    // it inherits the tool's arbitration for free: suppressed while carrying an object, dead while the
+    // dash owns the pointer, dead while the laser is dormant. -xlinka
+    public bool ToolPrimaryPressed => _toolPrimaryPressed;
 
     // Desktop aim steering: while the context menu owns the mouse the camera is
     // frozen, so the mouse instead deflects the laser ray off head-forward
@@ -195,6 +265,157 @@ public sealed class InteractionLaser : Component
     public void SetDormant(bool dormant)
     {
         _dormant = dormant;
+    }
+
+    // Arm the aim smoother for a tool that is carrying something on this laser. speedOverride replaces
+    // SmoothSpeed for the duration (a hand tool passes its GrabSmoothing, so a loaded laser damps harder
+    // than a bare pointer); null uses SmoothSpeed. Disarming drops the state so the next arm seeds clean
+    // instead of dragging the object in from wherever the pointer was last time. -xlinka
+    public void ArmRaySmoothing(bool armed, float? speedOverride = null)
+    {
+        if (!armed)
+        {
+            _raySmoothSpeed = null;
+            _hasSmoothedRay = false;
+            return;
+        }
+
+        float speed = speedOverride ?? SmoothSpeed.Value;
+        _raySmoothSpeed = speed > 0f ? speed : null;
+        if (_raySmoothSpeed == null)
+        {
+            _hasSmoothedRay = false;
+        }
+    }
+
+    // Re-resolve the aim ray late in the frame, after locomotion has moved the head, the root and the hand,
+    // and slide the beam onto it. The cast is NOT repeated: hover, hit slot and hit distance stay as the cast
+    // found them, only the geometry moves. A tool that hangs an object off this ray calls this immediately
+    // before it writes the holder pose, so the beam and the thing on the end of it cannot disagree. -xlinka
+    public void RefreshHeldAim(float delta)
+    {
+        if (_dormant || _beamSlot == null || IsRemoteUserLaser())
+        {
+            return;
+        }
+
+        float3 origin;
+        float3 direction;
+        float3 endPoint;
+        float cursorDistance;
+
+        if (_externalAim && _hasAimPoint)
+        {
+            // The camera cast already nailed the aim point into the world this frame and nothing but the hand
+            // has moved since, so re-aim from where the hand is NOW at that same point. Cursor sizing keeps
+            // the CAST distance: the reticle is measured from the eye, and the eye is the camera. -xlinka
+            AnchorRayAtHand(_aimPoint, delta, advance: true);
+            origin = _rayOrigin;
+            direction = _rayDirection;
+            // Hovering something pins the beam to that surface; otherwise it runs the same length down the
+            // damped hand ray, so a carried object never floats off the side of its own beam.
+            endPoint = _currentTarget != null
+                ? _aimPoint
+                : origin + direction * (_aimPoint - origin).Length;
+            cursorDistance = MathF.Max(_lastCastDistance, 0f);
+        }
+        else
+        {
+            ResolveRayPose(out origin, out direction);
+            ApplyRaySmoothing(ref origin, ref direction, delta, advance: true);
+            _rayOrigin = origin;
+            _rayDirection = direction;
+
+            // A hovered surface point stays where the surface is; with nothing hovered the beam ends at the
+            // same distance down the new ray as the cast gave it.
+            cursorDistance = MathF.Max(_lastDirectHitDistance, 0f);
+            endPoint = _currentTarget != null
+                ? _currentHitPoint
+                : origin + direction * cursorDistance;
+        }
+
+        float3 visualOrigin = origin;
+        var input = Engine.Current?.InputInterface;
+        if (input != null && !input.IsVRActive && Slot != null)
+        {
+            visualOrigin = Slot.GlobalPosition;
+        }
+
+        float3 visualDir = endPoint - visualOrigin;
+        float visualLen = visualDir.Length;
+        visualDir = visualLen > 0.0001f ? visualDir / visualLen : direction;
+
+        // Zero delta: the beam's own visual smoothing already took its step during the cast, and this pass
+        // is the same frame.
+        PositionBeam(visualOrigin, visualDir, visualLen, endPoint, 0f);
+        // Cursor scale keys off the ORIGIN-to-cursor distance, not the hand-to-cursor one the beam geometry
+        // uses, or the reticle would change size between this pass and the cast on desktop (where the ray
+        // comes off the head and the beam off the hand). -xlinka
+        OrientCursor(cursorDistance);
+    }
+
+    // Exponential aim damping with the rate modulated by how far the raw aim has run ahead of the smoothed
+    // ray. Under SmoothModulateStartAngle it is all sampling noise and gets the base rate; past
+    // SmoothModulateEndAngle it is a deliberate sweep and gets up to SmoothModulateMultiplier times that, so
+    // a fast 90 degree turn does not leave the object trailing halfway across the room. Everything happens in
+    // local user root space (see the field comment) and only 'advance' steps the state. -xlinka
+    private void ApplyRaySmoothing(ref float3 origin, ref float3 direction, float delta, bool advance)
+    {
+        if (_raySmoothSpeed is not float baseSpeed)
+        {
+            _hasSmoothedRay = false;
+            return;
+        }
+
+        var space = Slot?.ActiveUserRoot?.Slot;
+        float3 rawOrigin = space != null ? space.GlobalPointToLocal(origin) : origin;
+        float3 rawDirection = space != null ? space.GlobalDirectionToLocal(direction) : direction;
+        float rawLength = rawDirection.Length;
+        if (rawLength <= 0.0001f)
+        {
+            _hasSmoothedRay = false;
+            return;
+        }
+        rawDirection /= rawLength;
+
+        if (!_hasSmoothedRay)
+        {
+            _smoothedRayOriginLocal = rawOrigin;
+            _smoothedRayDirectionLocal = rawDirection;
+            _hasSmoothedRay = true;
+            return;
+        }
+
+        if (advance)
+        {
+            float angle = float3.Angle(_smoothedRayDirectionLocal, rawDirection) * (180f / MathF.PI);
+            float start = SmoothModulateStartAngle.Value;
+            float end = SmoothModulateEndAngle.Value;
+            float x = end > start
+                ? System.Math.Clamp((angle - start) / (end - start), 0f, 1f)
+                : (angle > start ? 1f : 0f);
+            x = MathF.Pow(x, MathF.Max(SmoothModulateExponent.Value, 0.0001f));
+            if (float.IsNaN(x) || float.IsInfinity(x))
+            {
+                x = 0f;
+            }
+
+            float multiplier = MathF.Max(SmoothModulateMultiplier.Value, 1f);
+            float speed = baseSpeed * (1f + (multiplier - 1f) * x);
+            float t = System.Math.Clamp(1f - MathF.Exp(-speed * MathF.Max(delta, 0f)), 0f, 1f);
+
+            _smoothedRayOriginLocal = float3.Lerp(_smoothedRayOriginLocal, rawOrigin, t);
+            float3 blended = float3.Lerp(_smoothedRayDirectionLocal, rawDirection, t);
+            // A near-180 flip in one frame cancels to nothing under a straight lerp; snap rather than
+            // hand back a zero-length aim.
+            _smoothedRayDirectionLocal = blended.Length > 0.0001f ? blended.Normalized : rawDirection;
+        }
+
+        origin = space != null ? space.LocalPointToGlobal(_smoothedRayOriginLocal) : _smoothedRayOriginLocal;
+        float3 outDirection = space != null
+            ? space.LocalDirectionToGlobal(_smoothedRayDirectionLocal)
+            : _smoothedRayDirectionLocal;
+        direction = outDirection.Length > 0.0001f ? outDirection.Normalized : direction;
     }
 
     private void HideVisuals()
@@ -442,14 +663,27 @@ public sealed class InteractionLaser : Component
             if (_currentTarget != null) UpdatePointerTarget(null, _rayOrigin, _rayDirection, false);
             _currentTarget = null;
             _currentHitSlot = null;
+            _currentHitPreferred = false;
+            _hasAimPoint = false;
             HideVisuals();
             return;
         }
 
         float maxDist = MathF.Max(MaxDistance.Value, 0.01f);
+        _externalAim = UseExternalCameraAim(Engine.Current?.InputInterface);
         ResolveRayPose(out float3 origin, out float3 direction);
+        // Read the smoother without stepping it. The step belongs to RefreshHeldAim, which runs later in the
+        // frame off a head/root that has already moved; stepping here as well would double the rate and make
+        // the damping frame-order dependent. Under an external camera the cast is the CAMERA's and stays
+        // crosshair-exact - the smoothing moves to the hand ray, the one carrying the load. -xlinka
+        if (!_externalAim)
+        {
+            ApplyRaySmoothing(ref origin, ref direction, delta, advance: false);
+        }
         _rayOrigin = origin;
         _rayDirection = direction;
+        _castOrigin = origin;
+        _castDirection = direction;
 
         bool exclusive = _exclusiveRoot != null && !_exclusiveRoot.IsDestroyed;
 
@@ -480,10 +714,33 @@ public sealed class InteractionLaser : Component
             }
         }
 
+        // PREFERRED HITS TAKE THE WHOLE SELECTION. A gizmo arrow lives inside the object it moves and a
+        // ring can end up behind a wall, so the occluder is always the nearer hit - the only way the
+        // control is ever reachable is for its hit to beat every ordinary one on the ray, not merely
+        // outrank it by priority. Dropping the rest here means nearest-wins, sticky-keep and priority
+        // promotion below all run over preferred hits alone, and the ordinary path is untouched on
+        // every frame where nothing asked to be preferred. -xlinka
+        bool anyPreferred = false;
+        for (int i = 0; i < _hitBuffer.Count; i++)
+        {
+            if (!_hitBuffer[i].Preferred) continue;
+            anyPreferred = true;
+            break;
+        }
+        if (anyPreferred)
+        {
+            for (int i = _hitBuffer.Count - 1; i >= 0; i--)
+            {
+                if (!_hitBuffer[i].Preferred)
+                    _hitBuffer.RemoveAt(i);
+            }
+        }
+
         IInteractionTarget? hoveredTarget = null;
         Slot? hoveredSlot = null;
         float hoveredDistance = maxDist;
         float3 hoveredHitPoint = float3.Zero;
+        bool hoveredPreferred = false;
 
         if (_hitBuffer.Count > 0)
         {
@@ -520,6 +777,7 @@ public sealed class InteractionLaser : Component
             hoveredSlot = selected.Slot;
             hoveredDistance = selected.Distance;
             hoveredHitPoint = selected.HitPoint;
+            hoveredPreferred = selected.Preferred;
         }
         else if (!exclusive && TryKeepStickyTarget(origin, direction, maxDist, blockingDistance,
             out var stickyTarget, out var stickySlot, out float stickyDistance, out float3 stickyPoint))
@@ -528,6 +786,9 @@ public sealed class InteractionLaser : Component
             hoveredSlot = stickySlot;
             hoveredDistance = stickyDistance;
             hoveredHitPoint = stickyPoint;
+            // Same target as last frame, so it keeps the class it was selected with - a handle the ray
+            // slid off for one frame must not start being occluded by the thing it sits inside.
+            hoveredPreferred = _currentHitPreferred;
         }
 
         if (!ReferenceEquals(hoveredTarget, _currentTarget))
@@ -549,6 +810,7 @@ public sealed class InteractionLaser : Component
         _currentHitSlot = hoveredSlot;
         _currentHitPoint = hoveredHitPoint;
         _currentHitDistance = hoveredDistance;
+        _currentHitPreferred = hoveredTarget != null && hoveredPreferred;
 
         UpdatePointerTarget(hoveredTarget as ILaserPointerTarget, origin, direction, _toolPrimaryPressed);
         ProcessPointerActions();
@@ -560,6 +822,29 @@ public sealed class InteractionLaser : Component
                 origin.x + direction.x * beamLength,
                 origin.y + direction.y * beamLength,
                 origin.z + direction.z * beamLength);
+
+        _aimPoint = beamEndPoint;
+        _hasAimPoint = true;
+        _lastCastDistance = beamLength;
+
+        // Under an external camera the cast came off the camera, but the held object, the UI resolution and
+        // the beam all hang off the HAND. Re-anchor the ray the tool sees there, aimed at what the crosshair
+        // found, and damp THAT instead of the cast. The hit distance moves to the same anchor or a grab would
+        // shove the object out by however far the camera is parked behind the body. -xlinka
+        if (_externalAim && Slot != null)
+        {
+            AnchorRayAtHand(beamEndPoint, delta, advance: false);
+            _currentHitDistance = (beamEndPoint - _rayOrigin).Length;
+
+            // Reticle sizing is a distance-from-the-EYE measure and the cast started short of the lens by
+            // the body skip. Measure from the camera itself or the cursor comes out undersized by however
+            // far the view is parked behind the avatar. -xlinka
+            var aimInput = Engine.Current?.InputInterface;
+            if (aimInput != null && aimInput.DesktopCameraPoseValid)
+            {
+                _lastCastDistance = (beamEndPoint - aimInput.DesktopCameraPosition).Length;
+            }
+        }
 
         // The aim RAY is cast from the head on desktop (so it lines up with the screen reticle), but the
         // visible beam must start at the HAND - this laser's own slot. The beam slot's transform replicates,
@@ -593,9 +878,9 @@ public sealed class InteractionLaser : Component
                 wantedColor = IdleColor.Value.ToLDR();
             }
             SetIfChanged(_beamMesh.Radius, BeamRadius.Value);
-            // Cursor sizing still uses the head->cursor distance (beamLength) so the reticle keeps a stable
-            // on-screen size; only the beam geometry uses the hand origin. -xlinka
-            UpdateLaserVisual(delta, hoveredTarget != null, wantedColor, beamLength);
+            // Cursor sizing still uses the CAST distance so the reticle keeps a stable on-screen size; only
+            // the beam geometry uses the hand origin. -xlinka
+            UpdateLaserVisual(delta, hoveredTarget != null, wantedColor, _lastCastDistance);
         }
     }
 
@@ -695,7 +980,14 @@ public sealed class InteractionLaser : Component
         _laserVisibleLerp = Progress01(_laserVisibleLerp, visualStep, shouldShow);
 
         bool rootVisible = _laserVisibleLerp > 0.001f;
-        bool beamVisible = rootVisible && (isVr || ShowDesktopBeam.Value) && !_suppressBeam;
+        // Under an external camera the beam is the only thing that tells you where the hand is pointing, but a
+        // line hanging off it at all times is just clutter in a shot you can see your whole avatar in. Show it
+        // while it means something: something hovered, a press down, or a load on the end of it. -xlinka
+        // Right side only: the desktop pointer is the right hand (that is where the mouse buttons are read),
+        // so the off hand casts along for hit resolution but never grows a beam of its own.
+        bool externalBeam = _externalAim && ControllerSide.Value == Chirality.Right
+            && (hasTarget || _toolPrimaryPressed || _toolBlocksPointerActions);
+        bool beamVisible = rootVisible && (isVr || ShowDesktopBeam.Value || externalBeam) && !_suppressBeam;
         bool cursorVisible = rootVisible;
         bool directVisible = rootVisible && ShowDirectCursor.Value && isVr;
 
@@ -840,6 +1132,7 @@ public sealed class InteractionLaser : Component
         }
         _currentTarget = null;
         _currentHitSlot = null;
+        _currentHitPreferred = false;
         ClearPointerTarget();
         _hasSmoothedHitPoint = false;
     }
@@ -939,7 +1232,10 @@ public sealed class InteractionLaser : Component
             _currentHitPoint.y - origin.y,
             _currentHitPoint.z - origin.z);
         float projected = float3.Dot(oldDelta, direction);
-        if (projected <= 0f || projected > maxDistance || projected > blockingDistance) return false;
+        if (projected <= 0f || projected > maxDistance) return false;
+        // A preferred target was never occluded to begin with, so the blocking distance has no say over
+        // whether it can be kept.
+        if (!_currentHitPreferred && projected > blockingDistance) return false;
 
         float3 candidate = new(
             origin.x + direction.x * projected,
@@ -1057,10 +1353,13 @@ public sealed class InteractionLaser : Component
             if (target is ILaserPointerTarget pointerTarget)
             {
                 if (!pointerTarget.TryGetLaserPointerHit(this, origin, direction, maxDist, out var pointerHit)) continue;
-                if (pointerHit.Distance > blockingDistance) continue;
                 if (IsSlotOnThisHierarchy(slot)) continue;
+                var pointerClass = ClassifyHit(target, slot);
+                if (pointerClass == LaserHitClass.Ignore) continue;
+                bool pointerPreferred = pointerClass == LaserHitClass.Prefer;
+                if (!pointerPreferred && pointerHit.Distance > blockingDistance) continue;
 
-                _hitBuffer.Add(new TargetHit(target, slot, pointerHit.Distance, pointerHit.Point));
+                _hitBuffer.Add(new TargetHit(target, slot, pointerHit.Distance, pointerHit.Point, pointerPreferred));
                 continue;
             }
 
@@ -1069,8 +1368,12 @@ public sealed class InteractionLaser : Component
 
             float3 center = slot.GlobalPosition;
             if (!RaySphereIntersect(origin, direction, center, radius, out float distance)) continue;
-            if (distance > maxDist || distance > blockingDistance) continue;
+            if (distance > maxDist) continue;
             if (IsSlotOnThisHierarchy(slot)) continue;
+            var sphereClass = ClassifyHit(target, slot);
+            if (sphereClass == LaserHitClass.Ignore) continue;
+            bool spherePreferred = sphereClass == LaserHitClass.Prefer;
+            if (!spherePreferred && distance > blockingDistance) continue;
 
             var hitPoint = new float3(
                 origin.x + direction.x * distance,
@@ -1078,7 +1381,7 @@ public sealed class InteractionLaser : Component
                 origin.z + direction.z * distance);
             if (!TryApplyLaserModifiers(slot, direction, hitPoint, out hitPoint)) continue;
 
-            _hitBuffer.Add(new TargetHit(target, slot, distance, hitPoint));
+            _hitBuffer.Add(new TargetHit(target, slot, distance, hitPoint, spherePreferred));
         }
 
         // Resolve interaction targets through the SHAPE the laser actually hits, not just a sphere at each target's
@@ -1092,9 +1395,44 @@ public sealed class InteractionLaser : Component
             var ctarget = FindInteractionTargetInParents(shapeHit.Slot);
             if (ctarget != null)
             {
-                _hitBuffer.Add(new TargetHit(ctarget, shapeHit.Slot, shapeHit.Distance, shapeHit.Point));
+                // Classified like everything else, but this hit is by definition the FIRST solid thing on
+                // the ray: a Prefer here can outrank the nearer sphere and pointer hits, it cannot pull
+                // something out from behind a wall, because the cast never saw behind the wall. Anything
+                // that needs THAT answers the beam itself, the way the gizmo handles do. -xlinka
+                var shapeClass = ClassifyHit(ctarget, shapeHit.Slot);
+                if (shapeClass != LaserHitClass.Ignore)
+                {
+                    _hitBuffer.Add(new TargetHit(ctarget, shapeHit.Slot, shapeHit.Distance, shapeHit.Point,
+                        shapeClass == LaserHitClass.Prefer));
+                }
             }
         }
+    }
+
+    // What this hit is allowed to do. A target can ask to be reachable through the geometry in front of
+    // it (gizmo handles do, so they still work with a bare hand), and the equipped tool gets the final
+    // say so it can pull its own chrome forward or drop hits it must never act on. A tool can only
+    // raise a hit or kill it: an Allow from the tool leaves the target's own request standing.
+    //
+    // Called only for hits the ray actually crossed, after the cheap distance and hierarchy rejects.
+    // Classifying every registered target up front would be a parent walk per target per frame, and
+    // almost none of them are anywhere near the beam. -xlinka
+    private LaserHitClass ClassifyHit(IInteractionTarget target, Slot slot)
+    {
+        var result = target is ILaserPreferredTarget preferred && preferred.PreferLaserHit(this)
+            ? LaserHitClass.Prefer
+            : LaserHitClass.Allow;
+
+        var classifier = _hitClassifier;
+        if (classifier == null)
+            return result;
+        if (classifier is Component component && (component.IsDestroyed || !component.Enabled.Value))
+            return result;
+
+        var toolClass = classifier.ClassifyLaserHit(this, slot, target);
+        if (toolClass == LaserHitClass.Ignore)
+            return LaserHitClass.Ignore;
+        return toolClass == LaserHitClass.Prefer ? LaserHitClass.Prefer : result;
     }
 
     // Walk up from a collider's slot to the first interaction target that owns it (the Grabbable/RayTarget on a
@@ -1119,6 +1457,57 @@ public sealed class InteractionLaser : Component
         return MathF.Max(DefaultHoverRadius.Value, 0.001f);
     }
 
+    // Clearance past the body when the cast starts beyond the avatar, and the floor the skip never drops
+    // below so a camera parked away from the body still ignores its own rig.
+    private const float ExternalAimSkipMargin = 0.35f;
+    private const float ExternalAimMinSkip = 0.20f;
+
+    // True when this laser has to aim off the desktop CAMERA rather than the avatar head. An open dash owns
+    // the pointer outright - the OS cursor is unlocked there, so the mouse rather than the crosshair is the
+    // pointer and the platform's free-cursor ray is the aim - and the in-world tools stand down for it
+    // anyway, so the whole dash case stays out of this. -xlinka
+    private static bool UseExternalCameraAim(InputInterface? input)
+    {
+        return input != null && input.DesktopExternalCameraAim && !input.IsDashboardOpen;
+    }
+
+    // How far along the camera ray the cast starts. Third-person puts the whole avatar between the lens and
+    // whatever you are pointing at, and the hand holding the beam is the closest part of it, so start just
+    // past the hand's DEPTH along the ray - projecting instead of measuring straight-line distance keeps the
+    // skip honest when the body sits off to one side, and a body behind the camera (free-cam) projects
+    // negative and falls back to the minimum. The own-user-root exclusion still runs; this covers everything
+    // else riding on you that the exclusion never hears about. A modal target is exempt: the radial menu
+    // opens between the camera and the body, so skipping past it would start the cast beyond the one thing
+    // it is allowed to hit. -xlinka
+    private float ResolveExternalAimSkip(float3 cameraOrigin, float3 cameraDirection)
+    {
+        if (_exclusiveRoot != null && !_exclusiveRoot.IsDestroyed)
+            return 0f;
+
+        float3 hand = Slot?.GlobalPosition ?? cameraOrigin;
+        float depth = float3.Dot(hand - cameraOrigin, cameraDirection);
+        return MathF.Max(depth + ExternalAimSkipMargin, ExternalAimMinSkip);
+    }
+
+    // Re-aim the tool-facing ray so it leaves the HAND and lands on a world point, then run it through the
+    // aim smoother. Under an external camera the cast belongs to the camera but the beam, the held object and
+    // every UI resolution downstream belong to the hand, and this is the seam between them. -xlinka
+    private void AnchorRayAtHand(float3 targetPoint, float delta, bool advance)
+    {
+        if (Slot == null)
+            return;
+
+        float3 handPosition = Slot.GlobalPosition;
+        float3 toTarget = targetPoint - handPosition;
+        float length = toTarget.Length;
+        float3 handDirection = length > 0.0001f ? toTarget / length : _rayDirection;
+        float3 handOrigin = handPosition + handDirection * MathF.Max(BeamStartOffset.Value, 0f);
+
+        ApplyRaySmoothing(ref handOrigin, ref handDirection, delta, advance);
+        _rayOrigin = handOrigin;
+        _rayDirection = handDirection;
+    }
+
     private void ResolveRayPose(out float3 origin, out float3 direction)
     {
         float startOffset = MathF.Max(BeamStartOffset.Value, 0f);
@@ -1136,6 +1525,31 @@ public sealed class InteractionLaser : Component
                 float cursorLen = direction.Length;
                 direction = cursorLen > 0.0001f ? direction / cursorLen : float3.Backward;
                 origin = input.DesktopCursorRayOrigin + direction * startOffset;
+                return;
+            }
+
+            // Third-person / free-cam: the view flies on its own and the head is parked where mouse look
+            // last left it, so head-forward is a stale direction. Aim from the CAMERA through the screen
+            // centre - the mouse is captured in these modes, so the crosshair IS the pointer - and start the
+            // cast past the body so the avatar standing between the lens and the target never eats the ray.
+            // -xlinka
+            if (UseExternalCameraAim(input) &&
+                input.TryGetDesktopViewRay(float2.Zero, out float3 viewOrigin, out float3 viewDirection))
+            {
+                if (_desktopAimOffset != float2.Zero)
+                {
+                    floatQ aimRotation = input.DesktopCameraRotation
+                        * floatQ.AxisAngle(float3.Up, _desktopAimOffset.x)
+                        * floatQ.AxisAngle(new float3(1f, 0f, 0f), _desktopAimOffset.y);
+                    float3 deflected = aimRotation * float3.Backward;
+                    if (deflected.Length > 0.0001f)
+                    {
+                        viewDirection = deflected.Normalized;
+                    }
+                }
+
+                direction = viewDirection;
+                origin = viewOrigin + direction * (ResolveExternalAimSkip(viewOrigin, direction) + startOffset);
                 return;
             }
 
@@ -1389,50 +1803,21 @@ public sealed class InteractionLaser : Component
         return null;
     }
 
+    // Scroll input for whatever the laser is pointing at. The action carries its own per-axis
+    // deadzone and, on desktop, only the right hand has a wheel bound to it - there is one mouse.
     private float2 ReadPointerAxis()
     {
-        var input = Engine.Current?.InputInterface;
-        if (input == null) return float2.Zero;
-
-        if (!input.IsVRActive)
-        {
-            if (ControllerSide.Value != Chirality.Right)
-            {
-                return float2.Zero;
-            }
-
-            float scroll = input.Mouse?.ScrollWheelDelta.Value ?? 0f;
-            return scroll == 0f ? float2.Zero : new float2(0f, scroll);
-        }
-
-        var controller = ControllerSide.Value == Chirality.Left
-            ? input.LeftController
-            : input.RightController;
-        if (controller == null) return float2.Zero;
-
-        float x = ApplyDeadzone(controller.ThumbstickPosition.X, 0.20f);
-        float y = ApplyDeadzone(controller.ThumbstickPosition.Y, 0.20f);
-        return new float2(x, y);
+        return Engine.Current?.InputInterface?.Actions?.Interaction(ControllerSide.Value).Pointer.Value
+            ?? float2.Zero;
     }
 
+    // VR only, deliberately. Outside VR the secondary control belongs to the equipped tool, and
+    // letting the laser fire a target's secondary on the same press would double up on every click.
     private bool ReadSecondaryPressed()
     {
         var input = Engine.Current?.InputInterface;
-        if (input == null) return false;
-
-        if (input.IsVRActive)
-        {
-            return ControllerSide.Value == Chirality.Left
-                ? input.LeftController.SecondaryButtonPressed
-                : input.RightController.SecondaryButtonPressed;
-        }
-
-        return false;
-    }
-
-    private static float ApplyDeadzone(float value, float deadzone)
-    {
-        return MathF.Abs(value) < deadzone ? 0f : value;
+        if (input == null || !input.IsVRActive) return false;
+        return input.Actions?.Interaction(ControllerSide.Value).Secondary.Held == true;
     }
 
     private static bool RaySphereIntersect(float3 origin, float3 direction, float3 center, float radius, out float t)

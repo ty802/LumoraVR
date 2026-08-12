@@ -5,23 +5,12 @@ using System;
 
 namespace Lumora.Core.Assets;
 
-/// <summary>
-/// Base class for asset providers that create and manage dynamic (procedural) assets.
-/// Unlike URL-based providers, these assets are generated at runtime.
-/// </summary>
-/// <typeparam name="A">The asset type to provide</typeparam>
 public abstract class DynamicAssetProvider<A> : AssetProvider<A> where A : Asset, new()
 {
     private A _asset = null!;
 
-    /// <summary>
-    /// Whether this asset should be processed with high priority.
-    /// </summary>
     public readonly Sync<bool> HighPriorityIntegration;
 
-    /// <summary>
-    /// When true, asset updates must be triggered manually via RunManualUpdate().
-    /// </summary>
     public bool LocalManualUpdate { get; set; }
 
     public override A Asset => _asset;
@@ -33,9 +22,7 @@ public abstract class DynamicAssetProvider<A> : AssetProvider<A> where A : Asset
         HighPriorityIntegration = new Sync<bool>(this, false);
     }
 
-    /// <summary>
-    /// Manually trigger an asset update. Only works if LocalManualUpdate is true.
-    /// </summary>
+    // No-op unless LocalManualUpdate is set.
     public void RunManualUpdate()
     {
         if (!LocalManualUpdate)
@@ -84,25 +71,13 @@ public abstract class DynamicAssetProvider<A> : AssetProvider<A> where A : Asset
         }
     }
 
-    /// <summary>
-    /// Called when a new asset instance is created.
-    /// </summary>
     protected abstract void OnAssetCreated(A asset);
 
-    /// <summary>
-    /// Update the asset data. Called whenever the asset needs to be regenerated.
-    /// </summary>
     protected abstract void UpdateAsset(A asset);
 
-    /// <summary>
-    /// Called when the asset is cleared/freed.
-    /// </summary>
     protected abstract void OnAssetCleared();
 
-    /// <summary>
-    /// Mark the asset as needing an update.
-    /// Safe to call from any thread - defers the actual Godot work to the main thread.
-    /// </summary>
+    // Safe from any thread, defers the Godot work to the main thread.
     protected new void MarkChangeDirty()
     {
         if (AssetReferenceCount > 0)

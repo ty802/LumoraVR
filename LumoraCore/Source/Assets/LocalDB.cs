@@ -14,19 +14,12 @@ using Lumora.Core.Phos;
 
 namespace Lumora.Core.Assets;
 
-/// <summary>
-/// Local database for storing imported assets.
-/// Provides local:// URI scheme for locally stored assets.
-/// </summary>
 public class LocalDB : IDisposable
 {
     public enum ImportLocation
     {
-        /// <summary>Reference file at original location</summary>
         Original,
-        /// <summary>Copy file to local cache</summary>
         Copy,
-        /// <summary>Move file to local cache</summary>
         Move
     }
 
@@ -36,28 +29,20 @@ public class LocalDB : IDisposable
     private readonly object _lock = new();
     private bool _initialized;
 
-    /// <summary>
-    /// Encrypt asset cache bytes at rest (AES-GCM via <see cref="LocalEncryption"/>), the same store
-    /// that already protects records.json. Reads always go through <see cref="ReadAssetBytesAsync"/>,
-    /// which transparently decrypts and passes plaintext (legacy / externally-written) files through
-    /// unchanged - so flipping this on is a forward migration with no rewrite of existing cache files.
-    ///
-    /// OFF by default: turning it on is only safe once every cache-byte READER goes through
-    /// <see cref="ReadAssetBytesAsync"/> (the engine's local asset gather path) instead of reading the
-    /// resolved <see cref="LocalAssetRecord.FilePath"/> directly, AND the peer asset transfer DECRYPTS
-    /// before sending (the master key is machine-bound, so ciphertext can't be shipped to a joiner).
-    /// Until those two sites are routed through here, leave this false. - xlinka
-    /// </summary>
+    // Encrypt asset cache bytes at rest (AES-GCM via LocalEncryption), the same store
+    // that already protects records.json. Reads always go through ReadAssetBytesAsync,
+    // which transparently decrypts and passes plaintext (legacy / externally-written) files through
+    // unchanged - so flipping this on is a forward migration with no rewrite of existing cache files.
+    //
+    // OFF by default: turning it on is only safe once every cache-byte READER goes through
+    // ReadAssetBytesAsync (the engine's local asset gather path) instead of reading the
+    // resolved FilePath directly, AND the peer asset transfer DECRYPTS
+    // before sending (the master key is machine-bound, so ciphertext can't be shipped to a joiner).
+    // Until those two sites are routed through here, leave this false. - xlinka
     public bool EncryptAssetsAtRest { get; set; }
 
-    /// <summary>
-    /// Get the machine-unique ID for this local database.
-    /// </summary>
     public string MachineId => _machineId;
 
-    /// <summary>
-    /// Get the base path for local asset storage.
-    /// </summary>
     public string BasePath => _basePath;
 
     public LocalDB(string? dbPath = null)
@@ -66,28 +51,20 @@ public class LocalDB : IDisposable
         _machineId = GetOrCreateMachineId();
     }
 
-    /// <summary>
-    /// Initialize the local database.
-    /// </summary>
     public async Task InitializeAsync()
     {
         if (_initialized) return;
 
-        // Ensure directories exist
         Directory.CreateDirectory(_basePath);
         Directory.CreateDirectory(GetAssetCachePath());
         Directory.CreateDirectory(GetTempPath());
 
-        // Load existing asset records
         await LoadAssetRecordsAsync();
 
         _initialized = true;
         Logger.Log($"LocalDB: Initialized at '{_basePath}' with machine ID '{_machineId}'");
     }
 
-    /// <summary>
-    /// Import a local file into the asset database.
-    /// </summary>
     public async Task<string> ImportLocalAssetAsync(string filePath, ImportLocation location = ImportLocation.Copy)
     {
         if (!File.Exists(filePath))
@@ -96,13 +73,11 @@ public class LocalDB : IDisposable
             return null!;
         }
 
-        // Calculate content hash for deduplication
         var hash = await ComputeFileHashAsync(filePath);
         var localUri = $"local://{_machineId}/{hash}";
 
         lock (_lock)
         {
-            // Check if already imported
             if (_assetRecords.TryGetValue(hash, out var existing))
             {
                 Logger.Log($"LocalDB: Asset already imported: {localUri}");
@@ -110,7 +85,6 @@ public class LocalDB : IDisposable
             }
         }
 
-        // Determine target path
         var extension = Path.GetExtension(filePath);
         var targetPath = Path.Combine(GetAssetCachePath(), hash + extension);
 
@@ -123,7 +97,6 @@ public class LocalDB : IDisposable
             switch (location)
             {
                 case ImportLocation.Original:
-                    // Just reference the original file
                     targetPath = filePath;
                     plainSize = new FileInfo(targetPath).Length;
                     break;
@@ -143,7 +116,6 @@ public class LocalDB : IDisposable
                     break;
             }
 
-            // Create asset record
             var record = new LocalAssetRecord
             {
                 Hash = hash,
@@ -161,7 +133,6 @@ public class LocalDB : IDisposable
                 _assetRecords[hash] = record;
             }
 
-            // Save records
             await SaveAssetRecordsAsync();
 
             Logger.Log($"LocalDB: Imported '{Path.GetFileName(filePath)}' -> {localUri}");
@@ -174,11 +145,7 @@ public class LocalDB : IDisposable
         }
     }
 
-    /// <summary>
-    /// Save an in-memory byte buffer as a content-addressed local:// asset and return its URI. The hash
-    /// of the bytes IS the address, so saving identical content twice is a no-op that returns the same
-    /// URI (true content addressing). Used by the mesh-as-asset path (SaveMeshAsync) but format-agnostic.
-    /// </summary>
+    // Used by the mesh-as-asset path (SaveMeshAsync) but format-agnostic.
     public async Task<string> SaveAssetAsync(byte[] data, string extension = ".lmesh")
     {
         if (data == null)
@@ -239,7 +206,6 @@ public class LocalDB : IDisposable
         return localUri;
     }
 
-    /// <summary>Serialize a PhosMesh to .lmesh bytes and save it as a content-addressed local:// asset.</summary>
     public Task<string> SaveMeshAsync(PhosMesh mesh)
     {
         if (mesh == null)
@@ -247,9 +213,140 @@ public class LocalDB : IDisposable
         return SaveAssetAsync(PhosMeshSerializer.Serialize(mesh), ".lmesh");
     }
 
-    /// <summary>
-    /// Get the local file path for a local:// URI.
-    /// </summary>
+    // DERIVED ASSETS
+    //
+    // Most entries here are content-addressed: hash the bytes, that's the key. A derived asset is
+    // one that is COMPUTED from another asset (a downscaled texture variant, a metadata sidecar)
+    // and must be addressable BEFORE it exists, by anyone who knows the base URI. So its key is the
+    // base hash plus a suffix instead of its own content hash.
+    //
+    // That single decision is what makes derived assets transfer for free: the URI still carries
+    // the owner's machine id in the same position, so the peer transferer resolves and serves it
+    // exactly like any other local asset, and a joiner that has only ever seen the base URI can
+    // build the address of a derivative it has never received and request it by name. No manifest
+    // of derived assets has to be replicated anywhere. -xlinka
+
+    // '~' is URI-unreserved and filename-safe, and never appears in a hex hash, so it is an
+    // unambiguous split point in both a URI and a cache filename.
+    private const char DerivedSeparator = '~';
+
+    // The URI of a derived asset: the base URI with suffix appended to its
+    // hash, keeping the base's machine id so the owner still serves it. Null if the base is not a
+    // local:// URI or is already itself a derivative.
+    public static string? DeriveUri(string? baseLocalUri, string suffix)
+    {
+        if (string.IsNullOrEmpty(baseLocalUri) || string.IsNullOrEmpty(suffix))
+            return null;
+        if (!baseLocalUri!.StartsWith("local://", StringComparison.Ordinal))
+            return null;
+        if (baseLocalUri.IndexOf(DerivedSeparator) >= 0)
+            return null;
+        return baseLocalUri + DerivedSeparator + suffix;
+    }
+
+    public static string? GetBaseUri(string? localUri)
+    {
+        if (string.IsNullOrEmpty(localUri))
+            return localUri;
+        int separator = localUri!.IndexOf(DerivedSeparator);
+        return separator < 0 ? localUri : localUri.Substring(0, separator);
+    }
+
+    // Overwrites any previous blob at that address, since a derivative is defined by its inputs: if the suffix
+    // matches, the newer computation supersedes the older one.
+    public async Task<string> SaveDerivedAssetAsync(string baseLocalUri, string suffix, byte[] data, string extension)
+    {
+        var uri = DeriveUri(baseLocalUri, suffix);
+        if (uri == null || data == null)
+        {
+            Logger.Error($"LocalDB: cannot derive asset '{suffix}' from '{baseLocalUri}'");
+            return null!;
+        }
+
+        var key = ExtractKey(uri);
+        if (string.IsNullOrEmpty(key))
+            return null!;
+
+        if (!string.IsNullOrEmpty(extension) && !extension.StartsWith("."))
+            extension = "." + extension;
+
+        // The key can be long-ish (hash + suffix); it is still well inside path limits, and keeping
+        // it readable makes the cache directory diagnosable by eye.
+        var targetPath = Path.Combine(GetAssetCachePath(), key + extension);
+        bool encrypted = EncryptAssetsAtRest;
+        try
+        {
+            var onDisk = encrypted ? LocalEncryption.Encrypt(data) : data;
+            await File.WriteAllBytesAsync(targetPath, onDisk);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"LocalDB: failed to save derived asset {uri}: {ex.Message}");
+            return null!;
+        }
+
+        var record = new LocalAssetRecord
+        {
+            Hash = key,
+            LocalUri = uri,
+            FilePath = targetPath,
+            OriginalPath = baseLocalUri,
+            OriginalFileName = key + extension,
+            ImportedAt = DateTime.UtcNow,
+            FileSize = data.LongLength,
+            Encrypted = encrypted,
+        };
+
+        lock (_lock)
+        {
+            _assetRecords[key] = record;
+        }
+
+        await SaveAssetRecordsAsync();
+        return uri;
+    }
+
+    // METADATA
+
+    // Empty when the asset is unknown here.
+    public IReadOnlyDictionary<string, string>? GetAssetMetadata(string localUri)
+    {
+        var key = ExtractKey(localUri);
+        if (string.IsNullOrEmpty(key))
+            return null;
+        lock (_lock)
+        {
+            return _assetRecords.TryGetValue(key, out var record) ? record.Metadata : null;
+        }
+    }
+
+    // No-op when the asset is not in this database (a peer-owned asset we never received).
+    public async Task SetAssetMetadataAsync(string localUri, Action<IDictionary<string, string>> mutate)
+    {
+        var key = ExtractKey(localUri);
+        if (string.IsNullOrEmpty(key) || mutate == null)
+            return;
+
+        lock (_lock)
+        {
+            if (!_assetRecords.TryGetValue(key, out var record))
+                return;
+            record.Metadata ??= new Dictionary<string, string>();
+            mutate(record.Metadata);
+        }
+
+        await SaveAssetRecordsAsync();
+    }
+
+    // The record key inside a local:// URI: everything after the machine id.
+    private static string? ExtractKey(string localUri)
+    {
+        if (string.IsNullOrEmpty(localUri) || !localUri.StartsWith("local://", StringComparison.Ordinal))
+            return null;
+        var parts = localUri.Substring(8).Split('/');
+        return parts.Length < 2 ? null : parts[1];
+    }
+
     public string GetFilePath(string localUri)
     {
         if (!localUri.StartsWith("local://"))
@@ -273,18 +370,12 @@ public class LocalDB : IDisposable
         return null!;
     }
 
-    /// <summary>
-    /// Check if a local URI exists in the database.
-    /// </summary>
     public bool Exists(string localUri)
     {
         var path = GetFilePath(localUri);
         return path != null && File.Exists(path);
     }
 
-    /// <summary>
-    /// Get a temporary file path for import operations.
-    /// </summary>
     public string GetTempFilePath(string extension = null!)
     {
         var fileName = Guid.NewGuid().ToString("N");
@@ -297,9 +388,6 @@ public class LocalDB : IDisposable
         return Path.Combine(GetTempPath(), fileName);
     }
 
-    /// <summary>
-    /// Clean up old temporary files.
-    /// </summary>
     public void CleanupTempFiles(TimeSpan maxAge = default)
     {
         if (maxAge == default)
@@ -323,9 +411,6 @@ public class LocalDB : IDisposable
         }
     }
 
-    /// <summary>
-    /// Get all imported asset records.
-    /// </summary>
     public IReadOnlyList<LocalAssetRecord> GetAllRecords()
     {
         lock (_lock)
@@ -342,6 +427,18 @@ public class LocalDB : IDisposable
 
     private string GetAssetCachePath() => Path.Combine(_basePath, "Assets");
     private string GetTempPath() => Path.Combine(_basePath, "Temp");
+
+    // Cache directory for renderer-side artifacts that are valid only on THIS machine's GPU stack
+    // (block-compressed texture variants, above all). These are never content-addressed and never
+    // transferred: what a given driver accepts is a property of the machine, not of the asset, so
+    // shipping one to a peer would at best waste bandwidth and at worst hand them a format their
+    // device cannot sample. Deleting this directory only costs a recompress. -xlinka
+    public string GetGpuCachePath()
+    {
+        var path = Path.Combine(_basePath, "GpuCache");
+        try { Directory.CreateDirectory(path); } catch { /* first use recreates it */ }
+        return path;
+    }
 
     private string GetOrCreateMachineId()
     {
@@ -405,12 +502,10 @@ public class LocalDB : IDisposable
         return plain.LongLength;
     }
 
-    /// <summary>
-    /// Read a cached asset's bytes, transparently decrypting if it was stored encrypted. A plaintext or
-    /// legacy file is returned as-is (<see cref="LocalEncryption.Decrypt"/> detects the header), so this
-    /// is safe to call for every local:// read and doubles as the migration path. Returns null when the
-    /// URI doesn't resolve. - xlinka
-    /// </summary>
+    // Read a cached asset's bytes, transparently decrypting if it was stored encrypted. A plaintext or
+    // legacy file is returned as-is (Decrypt detects the header), so this
+    // is safe to call for every local:// read and doubles as the migration path. Returns null when the
+    // URI doesn't resolve. - xlinka
     public async Task<byte[]?> ReadAssetBytesAsync(string localUri)
     {
         var path = GetFilePath(localUri);
@@ -502,9 +597,6 @@ public class LocalDB : IDisposable
     }
 }
 
-/// <summary>
-/// Record of a locally imported asset.
-/// </summary>
 public class LocalAssetRecord
 {
     public string Hash { get; set; } = null!;
@@ -515,18 +607,14 @@ public class LocalAssetRecord
     public DateTime ImportedAt { get; set; }
     public long FileSize { get; set; }
 
-    /// <summary>
-    /// True when this cache file is wrapped with <see cref="LocalEncryption"/> (AES-GCM) at rest.
-    /// Stored in the encrypted records store. Reads go through <see cref="LocalDB.ReadAssetBytesAsync"/>,
-    /// which detects the encryption header regardless of this flag, so a plaintext/legacy file still
-    /// reads correctly even if the flag is stale. <see cref="FileSize"/> is the PLAINTEXT length.
-    /// </summary>
+    // True when this cache file is wrapped with LocalEncryption (AES-GCM) at rest.
+    // Stored in the encrypted records store. Reads go through ReadAssetBytesAsync,
+    // which detects the encryption header regardless of this flag, so a plaintext/legacy file still
+    // reads correctly even if the flag is stale. FileSize is the PLAINTEXT length.
     public bool Encrypted { get; set; }
 
-    /// <summary>
-    /// Reserved. The current model uses a single machine-bound master key (see <see cref="LocalEncryption"/>),
-    /// not a per-asset key, so this stays null. Kept for a future per-asset / server-issued key scheme.
-    /// </summary>
+    // Reserved. The current model uses a single machine-bound master key (see LocalEncryption),
+    // not a per-asset key, so this stays null. Kept for a future per-asset / server-issued key scheme.
     public byte[]? EncryptionKey { get; set; }
 
     public Dictionary<string, string> Metadata { get; set; } = new();

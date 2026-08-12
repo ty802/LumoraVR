@@ -5,22 +5,12 @@ using Lumora.Core;
 
 namespace Lumora.Core.Assets;
 
-/// <summary>
-/// Reference to an asset provider backed by SyncRef behavior.
-/// Handles reference counting and change notifications for asset updates.
-/// </summary>
 public class AssetRef<A> : SyncRef<IAssetProvider<A>>, IAssetRef where A : Asset
 {
     private bool _skipReleaseOnValueChange;
 
-    /// <summary>
-    /// The loaded asset instance (null if not loaded or no provider).
-    /// </summary>
     public A Asset => (Target?.Asset) ?? null!;
 
-    /// <summary>
-    /// Check if the asset is currently available (loaded).
-    /// </summary>
     public bool IsAssetAvailable => Target?.IsAssetAvailable ?? false;
 
     IAssetProvider IAssetRef.Target

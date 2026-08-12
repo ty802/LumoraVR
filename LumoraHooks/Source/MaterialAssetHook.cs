@@ -11,15 +11,14 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Godot.Hooks;
 
-/// <summary>
-/// Godot implementation of material asset hook.
-/// Creates and manages Godot StandardMaterial3D or ShaderMaterial resources.
-/// </summary>
 [ImplementableHook(typeof(MaterialAsset))]
 public class MaterialAssetHook : AssetHook, IMaterialAssetHook
 {
     private StandardMaterial3D _standardMaterial = null!;
     private ShaderMaterial _shaderMaterial = null!;
+    // Second material chained onto the first. Godot 4 shaders have no multi-pass, so an effect that
+    // genuinely needs two passes (the toon outline's inverted hull) gets one here. -xlinka
+    private ShaderMaterial _nextPassMaterial = null!;
     private MaterialType _materialType;
     private bool _uiZWriteOn;
     private bool _uiZTestOff;
@@ -30,37 +29,25 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
     // Pending properties to apply
     private readonly Dictionary<string, object> _pendingProperties = new();
 
-    /// <summary>
-    /// Get the underlying Godot material for assignment to renderers.
-    /// </summary>
     public object GodotMaterial => _usesShaderMaterial
         ? (object)_shaderMaterial
         : (object)_standardMaterial;
 
-    /// <summary>
-    /// Renderer queue requested by the owning material provider.
-    /// </summary>
     public int RenderQueue => _renderQueue;
 
-    /// <summary>
-    /// Whether the material is valid and ready for use.
-    /// </summary>
     public bool IsValid => _shaderMaterial != null || _standardMaterial != null;
 
-    /// <summary>
-    /// Set the material type/shader.
-    /// </summary>
     public void SetMaterialType(MaterialType type)
     {
         _materialType = type;
 
-        // Dispose existing materials
         _standardMaterial?.Dispose();
         _standardMaterial = null!;
         _shaderMaterial?.Dispose();
         _shaderMaterial = null!;
+        _nextPassMaterial?.Dispose();
+        _nextPassMaterial = null!;
 
-        // Create appropriate material type
         switch (type)
         {
             case MaterialType.PBS_Metallic:
@@ -154,6 +141,55 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
                 _shaderMaterial = CreateShaderMaterial("res://Shaders/Blur.gdshader", MaterialType.Blur);
                 break;
 
+            case MaterialType.UI_ColorGradient:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/UI_ColorGradient.gdshader", MaterialType.UI_ColorGradient);
+                break;
+
+            case MaterialType.Wireframe:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/Mat_Wireframe.gdshader", MaterialType.Wireframe);
+                break;
+
+            case MaterialType.Matcap:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/Mat_Matcap.gdshader", MaterialType.Matcap);
+                break;
+
+            case MaterialType.FlatToon:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/Mat_FlatToon.gdshader", MaterialType.FlatToon);
+                // The outline hull is a separate material chained after the lit pass. It discards
+                // itself at width 0, so it costs a degenerate draw and nothing else when unused.
+                _nextPassMaterial = CreateShaderMaterial("res://Shaders/Mat_FlatToonOutline.gdshader", MaterialType.FlatToon);
+                _shaderMaterial.NextPass = _nextPassMaterial;
+                break;
+
+            case MaterialType.PBS_Triplanar:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/Mat_PBS_Triplanar.gdshader", MaterialType.PBS_Triplanar);
+                break;
+
+            case MaterialType.PBS_DualSided:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/Mat_PBS_DualSided.gdshader", MaterialType.PBS_DualSided);
+                break;
+
+            case MaterialType.PBS_VertexColor:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/Mat_PBS_VertexColor.gdshader", MaterialType.PBS_VertexColor);
+                break;
+
+            case MaterialType.FresnelLerp:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/Mat_FresnelLerp.gdshader", MaterialType.FresnelLerp);
+                break;
+
+            case MaterialType.OverlayFresnel:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/Mat_OverlayFresnel.gdshader", MaterialType.OverlayFresnel);
+                break;
+
             default:
                 _usesShaderMaterial = false;
                 _standardMaterial = new StandardMaterial3D();
@@ -178,9 +214,6 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         return material;
     }
 
-    /// <summary>
-    /// Set a custom shader path (for Custom material type).
-    /// </summary>
     public void SetCustomShader(string shaderPath)
     {
         _customShaderPath = NormalizeShaderPath(shaderPath);
@@ -198,13 +231,17 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         }
     }
 
-    /// <summary>
-    /// Set a custom shader from loaded gdshader source text.
-    /// </summary>
     public void SetCustomShaderSource(string shaderSource)
     {
         if (string.IsNullOrWhiteSpace(shaderSource))
         {
+            // Empty is the caller's "clear" signal (e.g. a sandbox-rejected update), not "leave the
+            // last compile alone" - a rejected shader must never keep rendering a stale previous
+            // compile. Drop back to the un-shaded state a fresh Custom material starts in. -xlinka
+            if (_shaderMaterial != null)
+            {
+                _shaderMaterial.Shader = null;
+            }
             return;
         }
 
@@ -236,9 +273,6 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         return shaderPath;
     }
 
-    /// <summary>
-    /// Set blend mode.
-    /// </summary>
     public void SetBlendMode(BlendMode mode)
     {
         if (_standardMaterial != null)
@@ -253,7 +287,6 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
                 _ => BaseMaterial3D.TransparencyEnum.Disabled
             };
 
-            // Set blend mode for additive
             if (mode == BlendMode.Additive)
             {
                 _standardMaterial.BlendMode = BaseMaterial3D.BlendModeEnum.Add;
@@ -286,9 +319,6 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         }
     }
 
-    /// <summary>
-    /// Set face culling mode.
-    /// </summary>
     public void SetCulling(Culling culling)
     {
         if (_standardMaterial != null)
@@ -306,9 +336,6 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         }
     }
 
-    /// <summary>
-    /// Set a float property.
-    /// </summary>
     public void SetFloat(string property, float value)
     {
         if (property == "RenderQueue")
@@ -319,9 +346,6 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         _pendingProperties[property] = value;
     }
 
-    /// <summary>
-    /// Set an int property.
-    /// </summary>
     public void SetInt(string property, int value)
     {
         if (property == "RenderQueue")
@@ -367,25 +391,47 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         _pendingProperties[property] = value;
     }
 
-    /// <summary>
-    /// Set a bool property.
-    /// </summary>
     public void SetBool(string property, bool value)
     {
+        // Both of these are compile-time render_modes in gdshader, not uniforms, so they swap the
+        // shader instead of setting a parameter. Uniform values live on the material and survive the
+        // swap, same as the UI unlit family's ZTest variants. -xlinka
+        if (_shaderMaterial != null)
+        {
+            if (_materialType == MaterialType.Wireframe && property == "DrawOverDepth")
+            {
+                SwapShader(value
+                    ? "res://Shaders/Mat_WireframeOverlay.gdshader"
+                    : "res://Shaders/Mat_Wireframe.gdshader");
+                return;
+            }
+
+            if (_materialType == MaterialType.PBS_VertexColor && property == "UseVertexAlpha")
+            {
+                SwapShader(value
+                    ? "res://Shaders/Mat_PBS_VertexColorTransparent.gdshader"
+                    : "res://Shaders/Mat_PBS_VertexColor.gdshader");
+                return;
+            }
+        }
+
         _pendingProperties[property] = value;
     }
 
-    /// <summary>
-    /// Set a color property.
-    /// </summary>
+    private void SwapShader(string shaderPath)
+    {
+        var shader = ResourceLoader.Load<Shader>(shaderPath);
+        if (shader != null && _shaderMaterial.Shader != shader)
+        {
+            _shaderMaterial.Shader = shader;
+        }
+    }
+
     public void SetColor(string property, colorHDR value)
     {
         _pendingProperties[property] = new Color(value.r, value.g, value.b, value.a);
     }
 
-    /// <summary>
-    /// Set a float2 property.
-    /// </summary>
     public void SetFloat2(string property, float2 value)
     {
         _pendingProperties[property] = new Vector2(value.x, value.y);
@@ -401,25 +447,16 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         ApplyProperty(property, v);
     }
 
-    /// <summary>
-    /// Set a float3 property.
-    /// </summary>
     public void SetFloat3(string property, float3 value)
     {
         _pendingProperties[property] = new Vector3(value.x, value.y, value.z);
     }
 
-    /// <summary>
-    /// Set a float4 property.
-    /// </summary>
     public void SetFloat4(string property, float4 value)
     {
         _pendingProperties[property] = new Vector4(value.x, value.y, value.z, value.w);
     }
 
-    /// <summary>
-    /// Set a texture property.
-    /// </summary>
     public void SetTexture(string property, TextureAsset texture)
     {
         if (texture?.Hook is IGodotTexture textureHook && textureHook.IsValid)
@@ -432,18 +469,12 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         }
     }
 
-    /// <summary>
-    /// Clear all pending properties.
-    /// </summary>
     public void Clear()
     {
         _pendingProperties.Clear();
         ApplyRenderPriority(-1);
     }
 
-    /// <summary>
-    /// Apply all pending changes.
-    /// </summary>
     public void ApplyChanges(Action callback)
     {
         LumoraLogger.Debug($"MaterialAssetHook.ApplyChanges: Applying {_pendingProperties.Count} properties, usesShader={_usesShaderMaterial}");
@@ -455,17 +486,19 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         callback?.Invoke();
     }
 
-    /// <summary>
-    /// Apply a single property to the material.
-    /// </summary>
     private void ApplyProperty(string property, object value)
     {
+        // Outline controls belong to the chained hull material, not the lit surface - the base shader
+        // has no such uniforms and would swallow the write.
+        if (_nextPassMaterial != null && property is "OutlineWidth" or "OutlineColor")
+        {
+            MaterialPropertyApplicator.Apply(_nextPassMaterial, _materialType, property, value);
+            return;
+        }
+
         MaterialPropertyApplicator.Apply(GodotMaterial as Material, _materialType, property, value);
     }
 
-    /// <summary>
-    /// Apply property to StandardMaterial3D.
-    /// </summary>
     private void ApplyStandardMaterialProperty(string property, object value)
     {
         switch (property)
@@ -564,9 +597,6 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         }
     }
 
-    /// <summary>
-    /// Apply property to ShaderMaterial.
-    /// </summary>
     private void ApplyShaderMaterialProperty(string property, object value)
     {
         if (_shaderMaterial == null)
@@ -578,7 +608,6 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
             return;
         }
 
-        // Convert property name to shader parameter name (snake_case)
         string shaderParam = ToSnakeCase(property);
 
         // Map common property names to shader uniform names. The UI/text
@@ -624,7 +653,6 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
             return;
         }
 
-        // Convert value to appropriate Godot Variant based on type
         Variant variantValue = value switch
         {
             float f => Variant.From(f),
@@ -658,9 +686,6 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         }
     }
 
-    /// <summary>
-    /// Convert PascalCase to snake_case.
-    /// </summary>
     private static string ToSnakeCase(string text)
     {
         if (string.IsNullOrEmpty(text)) return text;
@@ -709,9 +734,6 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         return renderQueue < 0 ? 0 : System.Math.Clamp(renderQueue, -128, 127);
     }
 
-    /// <summary>
-    /// Unload and dispose the Godot material.
-    /// </summary>
     public override void Unload()
     {
         _standardMaterial?.Dispose();
@@ -719,6 +741,9 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
 
         _shaderMaterial?.Dispose();
         _shaderMaterial = null!;
+
+        _nextPassMaterial?.Dispose();
+        _nextPassMaterial = null!;
 
         _pendingProperties.Clear();
     }

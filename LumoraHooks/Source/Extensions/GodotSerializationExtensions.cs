@@ -96,7 +96,6 @@ public static class GodotSerializationExtensions
         writer.Write(t.Basis.X);
         writer.Write(t.Basis.Y);
         writer.Write(t.Basis.Z);
-        // Origin
         writer.Write(t.Origin);
     }
 

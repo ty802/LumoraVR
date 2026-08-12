@@ -3,17 +3,25 @@
 
 namespace Lumora.Core.Assets;
 
-/// <summary>
-/// The load options that distinguish one shared <see cref="TextureAsset"/> instance from another
-/// for the same URL: mipmaps, wrap modes, and normal-map flag. Requests with equal descriptors
-/// share a texture; differing ones get separate instances.
-/// </summary>
+// The load options that distinguish one shared TextureAsset instance from another
+// for the same URL: resolution cap, mipmaps, wrap modes, compression intent, and normal-map flag.
+// Requests with equal descriptors share a texture; differing ones get separate instances.
+//
+// MaxSize is what makes the quality setting work without a reload: it is part of the
+// descriptor, so raising or lowering the cap produces a DIFFERENT descriptor, the provider
+// re-requests, and the manager hands back (or loads) the instance for the new cap while the old
+// one stays alive for anyone still on it. Nothing has to be torn down and rebuilt by hand. -xlinka
 public sealed record TextureVariantDescriptor(
     bool GenerateMipmaps,
     TextureWrapMode WrapU,
     TextureWrapMode WrapV,
-    bool IsNormalMap) : IAssetVariantDescriptor
+    bool IsNormalMap,
+    int MaxSize = 0,
+    TextureCompressionKind Compression = TextureCompressionKind.Block) : IAssetVariantDescriptor
 {
     public static readonly TextureVariantDescriptor Default =
         new(GenerateMipmaps: true, TextureWrapMode.Repeat, TextureWrapMode.Repeat, IsNormalMap: false);
+
+    public TextureVariantId ResolveVariant(int sourceWidth, int sourceHeight) =>
+        TextureVariantId.Select(sourceWidth, sourceHeight, MaxSize, GenerateMipmaps, Compression);
 }

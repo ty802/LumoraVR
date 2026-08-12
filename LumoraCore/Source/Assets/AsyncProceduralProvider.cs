@@ -8,17 +8,8 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Assets;
 
-/// <summary>
-/// Delegate for asset integration callbacks.
-/// </summary>
-/// <param name="isNewInstance">True if this is a newly created asset instance</param>
 public delegate void AssetIntegratedCallback(bool isNewInstance);
 
-/// <summary>
-/// Base class for procedural asset providers that generate assets asynchronously.
-/// Implements thread-safe update synchronization using SpinLock and write locks.
-/// </summary>
-/// <typeparam name="A">The asset type to provide</typeparam>
 public abstract class AsyncProceduralProvider<A> : DynamicAssetProvider<A> where A : Asset, new()
 {
     private SpinLock _updateLock = new SpinLock(enableThreadOwnerTracking: false);
@@ -33,19 +24,11 @@ public abstract class AsyncProceduralProvider<A> : DynamicAssetProvider<A> where
     private Func<Task> _asyncUpdateAction = null!;
     private AssetIntegratedCallback _integratedCallback = null!;
 
-    /// <summary>
-    /// Number of completed asset updates.
-    /// </summary>
     public int CompletedUpdateCount => _completedUpdates;
 
-    /// <summary>
-    /// Whether an error occurred during the last update.
-    /// </summary>
     public bool HasError => _hasError;
 
-    /// <summary>
-    /// Override to return true if async updates should be used instead of background thread.
-    /// </summary>
+    // True routes updates through async instead of a background thread.
     protected virtual bool PreferAsyncUpdate => false;
 
     protected override void UpdateAsset(A asset)
@@ -76,7 +59,6 @@ public abstract class AsyncProceduralProvider<A> : DynamicAssetProvider<A> where
 
         PrepareUpdateState();
 
-        // Cache delegates to avoid allocations
         _onWriteLockAcquired ??= OnWriteLockAcquired;
         _backgroundUpdateAction ??= ExecuteBackgroundUpdate;
         _asyncUpdateAction ??= ExecuteAsyncUpdate;
@@ -229,57 +211,28 @@ public abstract class AsyncProceduralProvider<A> : DynamicAssetProvider<A> where
         }
     }
 
-    /// <summary>
-    /// Clear the error state to allow updates to resume.
-    /// </summary>
     public void ClearError()
     {
         _hasError = false;
     }
 
-    // Abstract Methods
-
-    /// <summary>
-    /// Capture state from sync fields before the async update begins.
-    /// Called on main thread before write lock is acquired.
-    /// </summary>
+    // Main thread, before the write lock is taken.
     protected abstract void PrepareUpdateState();
 
-    /// <summary>
-    /// Generate the asset data synchronously.
-    /// Called on a background thread while holding write lock.
-    /// </summary>
+    // Background thread, holds the write lock.
     protected abstract void GenerateAsset(A asset);
 
-    /// <summary>
-    /// Generate the asset data asynchronously.
-    /// Called when PreferAsyncUpdate is true.
-    /// </summary>
     protected abstract ValueTask GenerateAssetAsync(A asset);
 
-    /// <summary>
-    /// Upload the generated asset data to the renderer.
-    /// Must call the callback when complete.
-    /// </summary>
     protected abstract void UploadToRenderer(AssetIntegratedCallback onComplete);
 
-    /// <summary>
-    /// Called when asset generation fails with an error.
-    /// </summary>
     protected abstract void OnGenerationFailed(string error);
 
-    // Virtual Methods
-
-    /// <summary>
-    /// Called after asset integration is complete.
-    /// </summary>
     protected virtual void OnAssetIntegrationComplete(bool isNewInstance)
     {
     }
 
-    /// <summary>
-    /// Called for safe cleanup after disposal while an update was in progress.
-    /// </summary>
+    // Cleanup path for a disposal that landed mid-update.
     protected virtual void OnSafeDispose()
     {
     }

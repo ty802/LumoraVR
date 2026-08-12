@@ -12,14 +12,21 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Godot.Hooks;
 
-/// <summary>
-/// Hook for SkinnedMeshRenderer component -> Godot MeshInstance3D + Skeleton3D.
-/// Creates a deformable mesh that follows a skeleton's bone transforms.
-/// Uses bone slot references for proper bone index mapping.
-/// </summary>
 [ImplementableHook(typeof(SkinnedMeshRenderer))]
-public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
+public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarget
 {
+    // LOD plumbing. A LodGroup or LodDistanceCull decides the band; the single mesh instance this hook
+    // owns is created once in Initialize and never replaced, so applying on receipt is enough. -xlinka
+    private LodVisibilityRange _lodRange = LodVisibilityRange.Unbounded;
+
+    public void SetLodVisibilityRange(in LodVisibilityRange range)
+    {
+        if (_lodRange.Equals(range))
+            return;
+        _lodRange = range;
+        _lodRange.ApplyTo(_meshInstance);
+    }
+
     private MeshInstance3D _meshInstance = null!;
     private ArrayMesh _arrayMesh = null!;
     private StandardMaterial3D _material = null!;
@@ -114,7 +121,6 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         }
     }
 
-    /// <summary>Push the component's blendshape weights onto the Godot mesh instance (cheap).</summary>
     private void ApplyBlendShapeWeights()
     {
         if (_meshInstance == null || !GodotObject.IsInstanceValid(_meshInstance) || _arrayMesh == null)
@@ -135,9 +141,6 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
             _meshInstance.SetBlendShapeValue(i, i < weights ? Owner.GetEffectiveBlendShapeWeight(i) : 0f);
     }
 
-    /// <summary>
-    /// Apply the component's material or use default fallback.
-    /// </summary>
     private void ApplyMaterial()
     {
         if (_meshInstance == null || _arrayMesh == null) return;
@@ -166,9 +169,6 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         }
     }
 
-    /// <summary>
-    /// Try to bind the mesh instance to the skeleton and build bone index map.
-    /// </summary>
     private void TryBindToSkeleton()
     {
         if (Owner.Skeleton.Target != null)
@@ -266,7 +266,6 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         }
     }
 
-    /// <summary>Map mesh bone indices to Godot skeleton bone indices.</summary>
     private void BuildBoneIndexMap()
     {
         _boneIndexMap.Clear();
@@ -348,10 +347,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         LumoraLogger.Log($"SkinnedMeshHook: Using direct bone index mapping (fallback)");
     }
 
-    /// <summary>
-    /// Remap a mesh bone index to the corresponding Godot skeleton bone index.
-    /// Returns 0 for invalid indices to prevent Godot errors.
-    /// </summary>
+    // returns 0 for invalid indices to prevent Godot errors
     private int RemapBoneIndex(int meshBoneIndex)
     {
         if (meshBoneIndex < 0)
@@ -369,9 +365,6 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>
         return System.Math.Clamp(meshBoneIndex, 0, System.Math.Max(0, maxBone));
     }
 
-    /// <summary>
-    /// Build and apply the mesh from component data.
-    /// </summary>
     private void ApplyMesh()
     {
         if (_meshInstance == null)

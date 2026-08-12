@@ -5,48 +5,74 @@ using System;
 
 namespace Lumora.Core.Assets;
 
-/// <summary>
-/// Base interface for asset hooks that bridge C# assets to engine-specific implementations.
-/// </summary>
 public interface IAssetHook
 {
-    /// <summary>
-    /// Initialize the hook with an asset instance.
-    /// </summary>
     void Initialize(IAsset asset);
 
-    /// <summary>
-    /// Unload/dispose the hook and its resources.
-    /// </summary>
     void Unload();
 }
 
-/// <summary>
-/// Hook interface for texture assets.
-/// </summary>
 public interface ITextureAssetHook : IAssetHook
 {
-    /// <summary>
-    /// Upload texture data to the renderer.
-    /// </summary>
     void UploadData(byte[] pixels, int width, int height, bool hasMipmaps);
 
-    /// <summary>
-    /// Update texture wrap modes.
-    /// </summary>
     void SetWrapMode(TextureWrapMode wrapU, TextureWrapMode wrapV);
 
-    /// <summary>
-    /// Whether the texture is valid and can be used.
-    /// </summary>
     bool IsValid { get; }
 
-    /// <summary>
-    /// Completes once the most recent <see cref="UploadData"/> has actually built the GPU texture - UploadData
-    /// itself only QUEUES a deferred (main-thread) build. The asset awaits this before reporting FullyLoaded so a
-    /// consuming material never binds the texture while <see cref="IsValid"/> is still false (the white-body race).
-    /// </summary>
+    // Completes once the most recent UploadData has actually built the GPU texture - UploadData
+    // itself only QUEUES a deferred (main-thread) build. The asset awaits this before reporting FullyLoaded so a
+    // consuming material never binds the texture while IsValid is still false (the white-body race).
     System.Threading.Tasks.Task WaitForUploadAsync();
+
+    // Upload a texture the renderer is allowed to make decisions about: a pre-built mip chain
+    // instead of a single level, and permission to block-compress if the device supports it.
+    //
+    // The split between this and UploadData is deliberate. The engine cannot know
+    // which compressed formats the running GPU accepts, so it never picks one; it states intent
+    // (compressible or not, normal map or not, sRGB or not) and the renderer decides. Whatever the
+    // renderer ends up building it reports back through Report,
+    // so the format and VRAM figures the inspector shows are observed rather than assumed.
+    //
+    // Default implementation uploads the base level the old way, which keeps every renderer that
+    // has not implemented this compiling and correct, just without compression. -xlinka
+    void UploadTexture(TextureUploadRequest request)
+    {
+        var levels = request.MipLevels;
+        if (levels == null || levels.Length == 0)
+            return;
+        UploadData(levels[0], request.Width, request.Height, request.GenerateMipmaps || levels.Length > 1);
+    }
+}
+
+public sealed class TextureUploadRequest
+{
+    public byte[][] MipLevels { get; init; } = System.Array.Empty<byte[]>();
+
+    public int Width { get; init; }
+    public int Height { get; init; }
+
+    public bool GenerateMipmaps { get; init; }
+
+    public bool AllowBlockCompression { get; init; }
+
+    // Measured from the pixel scan, so the renderer can pick a format without alpha.
+    public bool HasAlpha { get; init; }
+
+    // Set only when the importer or user marked it; drives normal-map-aware compression.
+    public bool IsNormalMap { get; init; }
+
+    public bool? SRgb { get; init; }
+
+    // Same key means same pixels and same compression intent. Null skips the cache.
+    public string? CacheKey { get; init; }
+
+    // Null disables the cache.
+    public string? CacheDirectory { get; init; }
+
+    // The renderer reports the format it actually built, the mip count it holds and the resident
+    // bytes. Never a guess.
+    public System.Action<TextureFormatKind, int, long>? Report { get; init; }
 }
 
 public interface IRenderTextureAssetHook : ITextureAssetHook
@@ -60,133 +86,62 @@ public interface IRenderTextureAssetHook : ITextureAssetHook
         Math.floatQ cameraRotation,
         float orthographicSize);
 
-    /// <summary>
-    /// Pause or resume offscreen rendering without tearing the viewport down.
-    /// </summary>
     void SetRenderEnabled(bool enabled);
 
-    /// <summary>
-    /// Render exactly one frame now, then go idle again (keeping the last frame). Used for render-on-change:
-    /// the UI viewport only re-renders when its captured content actually changed, instead of every frame.
-    /// </summary>
+    // Render exactly one frame now, then go idle again (keeping the last frame). Used for render-on-change:
+    // the UI viewport only re-renders when its captured content actually changed, instead of every frame.
     void RequestRender();
 }
 
-/// <summary>
-/// Hook interface for mesh data assets.
-/// </summary>
 public interface IMeshAssetHook : IAssetHook
 {
-    /// <summary>
-    /// Upload mesh data to the renderer.
-    /// </summary>
     void UploadMesh(Phos.PhosMesh mesh);
 
-    /// <summary>
-    /// Whether the mesh is valid and can be used.
-    /// </summary>
     bool IsValid { get; }
 }
 
-/// <summary>
-/// Hook interface for material assets - bridges to Godot ShaderMaterial/StandardMaterial3D.
-/// </summary>
 public interface IMaterialAssetHook : IAssetHook
 {
-    /// <summary>
-    /// Set the material type/shader.
-    /// </summary>
     void SetMaterialType(MaterialType type);
 
-    /// <summary>
-    /// Set blend mode (Opaque, Cutout, Transparent, Additive).
-    /// </summary>
     void SetBlendMode(BlendMode mode);
 
-    /// <summary>
-    /// Set face culling mode.
-    /// </summary>
     void SetCulling(Culling culling);
 
-    /// <summary>
-    /// Set a float property.
-    /// </summary>
     void SetFloat(string property, float value);
 
-    /// <summary>
-    /// Set an int property.
-    /// </summary>
     void SetInt(string property, int value);
 
-    /// <summary>
-    /// Set a bool property.
-    /// </summary>
     void SetBool(string property, bool value);
 
-    /// <summary>
-    /// Set a color/float4 property.
-    /// </summary>
     void SetColor(string property, Math.colorHDR value);
 
-    /// <summary>
-    /// Set a float2 property (e.g., texture scale/offset).
-    /// </summary>
     void SetFloat2(string property, Math.float2 value);
 
-    /// <summary>
-    /// Set a float2 property AND flush just that one to the live material immediately (no full ApplyChanges,
-    /// which re-pushes every property). For per-frame hot paths like scroll clip_offset. -xlinka
-    /// </summary>
+    // Set a float2 property AND flush just that one to the live material immediately (no full ApplyChanges,
+    // which re-pushes every property). For per-frame hot paths like scroll clip_offset. -xlinka
     void ApplyFloat2Now(string property, Math.float2 value);
 
-    /// <summary>
-    /// Set a float3 property.
-    /// </summary>
     void SetFloat3(string property, Math.float3 value);
 
-    /// <summary>
-    /// Set a float4 property.
-    /// </summary>
     void SetFloat4(string property, Math.float4 value);
 
-    /// <summary>
-    /// Set a texture property.
-    /// </summary>
     void SetTexture(string property, TextureAsset texture);
 
-    /// <summary>
-    /// Set a custom shader path (for Custom material type).
-    /// </summary>
     void SetCustomShader(string shaderPath);
 
-    /// <summary>
-    /// Set a custom shader source code string.
-    /// </summary>
     void SetCustomShaderSource(string shaderSource);
 
-    /// <summary>
-    /// Clear all properties (called before UpdateMaterial).
-    /// </summary>
+    // Called before UpdateMaterial.
     void Clear();
 
-    /// <summary>
-    /// Apply all pending changes.
-    /// </summary>
     void ApplyChanges(Action callback);
 
-    /// <summary>
-    /// Get the underlying Godot material for assignment to renderers.
-    /// </summary>
     object GodotMaterial { get; }
 
-    /// <summary>
-    /// Renderer queue requested by the material provider (-1 = default queue).
-    /// </summary>
+    // -1 = default queue.
     int RenderQueue { get; }
 
-    /// <summary>
-    /// Whether the material is valid and ready for use.
-    /// </summary>
     bool IsValid { get; }
 }
 
@@ -236,9 +191,6 @@ public interface IMaterialPropertyBlockAssetHook : IAssetHook
     bool IsValid { get; }
 }
 
-/// <summary>
-/// Texture wrap modes for sampling.
-/// </summary>
 public enum TextureWrapMode
 {
     Repeat,

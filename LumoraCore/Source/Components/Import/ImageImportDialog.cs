@@ -3,16 +3,19 @@
 
 using System;
 using System.IO;
+using System.Threading.Tasks;
 using Helio.UI;
+using Lumora.Core.Assets;
 using Lumora.Core.Logging;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Import;
 
 // Confirmation dialog for image imports. Only exposes options the image pipeline
-// actually supports today: a flat-quad import or a raw-file passthrough. Sphere
-// projections (360/180), stereo layouts, LUT, screenshot metadata, etc. are not
-// implemented and intentionally not shown - add buttons here when those land. - xlinka
+// actually supports today: a flat-quad import, an equirectangular panorama turned
+// into the world's sky, or a raw-file passthrough. Stereo layouts, LUT, screenshot
+// metadata, etc. are not implemented and intentionally not shown - add buttons here
+// when those land. - xlinka
 [ComponentCategory("Assets/Import")]
 public sealed class ImageImportDialog : ImportDialog
 {
@@ -23,6 +26,7 @@ public sealed class ImageImportDialog : ImportDialog
         var body = SetupSection(ui, "How should this image be imported?", backButton: false);
         SetupGrid(body);
         GridButton(body, "Regular", RunImport);
+        GridButton(body, "As Skybox", AsSkybox);
         GridButton(body, "As Raw File", AsRawFile, BackColor);
     }
 
@@ -61,5 +65,54 @@ public sealed class ImageImportDialog : ImportDialog
         }
 
         Slot.Destroy();
+    }
+
+    // Treat the image as an equirectangular panorama and make it the world's sky.
+    //
+    // Only the first file is used. A world has one sky, and importing four panoramas at once would
+    // either build four skyboxes that fight over it or silently drop three - neither is what anyone
+    // dropping a folder of them meant, so take the first and say so in the log. - xlinka
+    public void AsSkybox()
+    {
+        if (!CanInteract) return;
+        if (Paths.Count == 0) { Slot.Destroy(); return; }
+
+        var file = Paths[0];
+        if (Paths.Count > 1)
+            Logger.Log($"ImageImportDialog: a world has one sky; using {Path.GetFileName(file)} and ignoring {Paths.Count - 1} other file(s)");
+
+        var target = ResolveTargetWorld();
+        var slot = target.RootSlot.AddSlot(Path.GetFileNameWithoutExtension(file) ?? "Skybox");
+
+        var cubemap = slot.AttachComponent<StaticCubemap>();
+        var skybox = slot.AttachComponent<Skybox>();
+        skybox.Cubemap.Target = cubemap;
+        // Outbid whatever sky the world already has: someone who just dropped a panorama in wants to
+        // see it, not to find out they also have to go turn the old one off.
+        skybox.MakeActive();
+
+        _ = AssignPanoramaAsync(target, cubemap, file);
+        Slot.Destroy();
+    }
+
+    // The copy into local storage is I/O, so it cannot happen on the world thread; the URL write has
+    // to go back onto it. Everything after that is the ordinary asset path - the cubemap gathers,
+    // projects and uploads itself, and the sky hook picks it up when it reports loaded.
+    private static async Task AssignPanoramaAsync(World world, StaticCubemap cubemap, string file)
+    {
+        string uri = file;
+        var db = Engine.Current?.LocalDB;
+        if (db != null)
+        {
+            var imported = await db.ImportLocalAssetAsync(file, LocalDB.ImportLocation.Copy).ConfigureAwait(false);
+            if (!string.IsNullOrEmpty(imported))
+                uri = imported;
+        }
+
+        world.RunSynchronously(() =>
+        {
+            if (!cubemap.IsDestroyed)
+                cubemap.URL.Value = new Uri(uri);
+        });
     }
 }

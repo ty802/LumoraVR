@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using Lumora.Core.Components;
+using Lumora.Core.Components.Assets;
 using Lumora.Core.Components.Avatar;
 using Lumora.Core.Components.Import;
 using Lumora.Core.Input;
@@ -14,42 +15,28 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Assets;
 
-/// <summary>
-/// Settings for model import.
-/// </summary>
 public class ModelImportSettings
 {
-    /// <summary>Scale factor to apply during import.</summary>
     public float Scale { get; set; } = 1.0f;
 
-    /// <summary>Whether to import bones/skeleton.</summary>
     public bool ImportBones { get; set; } = true;
 
-    /// <summary>Whether to import animations.</summary>
     public bool ImportAnimations { get; set; } = true;
 
-    /// <summary>Whether to import materials.</summary>
     public bool ImportMaterials { get; set; } = true;
 
-    /// <summary>Whether to generate colliders.</summary>
     public bool GenerateColliders { get; set; } = false;
 
-    /// <summary>Whether to setup IK for humanoid avatars.</summary>
     public bool SetupIK { get; set; } = true;
 
-    /// <summary>Whether to center the model.</summary>
     public bool Center { get; set; } = true;
 
-    /// <summary>Whether to rescale to standard height.</summary>
     public bool Rescale { get; set; } = true;
 
-    /// <summary>Target height when rescaling.</summary>
     public float TargetHeight { get; set; } = 1.7f;
 
-    /// <summary>Whether to force T-pose for humanoids.</summary>
     public bool ForceTpose { get; set; } = false;
 
-    /// <summary>Whether this is an avatar import.</summary>
     public bool IsAvatarImport { get; set; } = false;
 
     // --- Options driven by the import dialog (ModelImportRequest). Only those the
@@ -57,28 +44,20 @@ public class ModelImportSettings
     // toggles (normals/tangents/flat-shaded) would have to change the shared decode
     // post-process and are NOT applied here (see ImportModelPhosAsync). - xlinka
 
-    /// <summary>Material provider to build per mesh: PBS metallic (Lit, default) or Unlit.</summary>
     public ModelMaterialType Material { get; set; } = ModelMaterialType.Lit;
 
-    /// <summary>Force double-sided rendering (material culling = None).</summary>
     public bool MakeDualSided { get; set; } = false;
 
-    /// <summary>Apply the material's authored albedo/base color factor.</summary>
     public bool ImportAlbedoColor { get; set; } = true;
 
-    /// <summary>Apply the material's authored emissive color/map.</summary>
     public bool ImportEmissive { get; set; } = true;
 
-    /// <summary>Disable mipmap generation on imported textures.</summary>
     public bool ForceNoMipMaps { get; set; } = false;
 
-    /// <summary>Max texture dimension; -1 = no limit. Not enforced yet (no downscaler).</summary>
+    // -1 = no limit. Not enforced yet, no downscaler.
     public int MaxTextureSize { get; set; } = -1;
 }
 
-/// <summary>
-/// Result of a model import operation.
-/// </summary>
 public class ModelImportResult
 {
     public bool Success { get; set; }
@@ -87,16 +66,15 @@ public class ModelImportResult
     public SkeletonBuilder Skeleton { get; set; } = null!;
     public List<SkinnedMeshRenderer> SkinnedMeshes { get; set; } = new();
     public string LocalUri { get; set; } = null!;
+
+    // In source order. Empty when the model has none.
+    public List<AnimationProvider> AnimationProviders { get; set; } = new();
+
+    public Animator Animator { get; set; } = null!;
 }
 
-/// <summary>
-/// Imports 3D models using Godot's GLTFDocument.
-/// </summary>
 public static class ModelImporter
 {
-    /// <summary>
-    /// Supported model file extensions.
-    /// </summary>
     public static readonly string[] SupportedExtensions = new[]
     {
         ".glb",
@@ -112,9 +90,6 @@ public static class ModelImporter
         ".ase"
     };
 
-    /// <summary>
-    /// Check if a file is a supported model format.
-    /// </summary>
     public static bool IsSupportedFormat(string filePath)
     {
         var extension = Path.GetExtension(filePath).ToLowerInvariant();
@@ -126,10 +101,6 @@ public static class ModelImporter
         return false;
     }
 
-    /// <summary>
-    /// Import a model file and create the slot hierarchy.
-    /// This is the core API method called from Godot side.
-    /// </summary>
     public static async Task<ModelImportResult> ImportModelAsync(
         string filePath,
         Slot targetSlot,
@@ -161,10 +132,6 @@ public static class ModelImporter
         return await ImportModelPhosAsync(filePath, targetSlot, settings, localDB, progress);
     }
 
-    /// <summary>
-    /// Import a model as an avatar.
-    /// Sets up IK, skeleton, and avatar-specific components.
-    /// </summary>
     public static async Task<ModelImportResult> ImportAvatarAsync(
         string filePath,
         Slot targetSlot,
@@ -241,6 +208,37 @@ public static class ModelImporter
             {
                 if (amesh == null || resolvedMaterials.ContainsKey(amesh.MaterialIndex)) continue;
                 resolvedMaterials[amesh.MaterialIndex] = await ResolveMaterialAsync(scene, amesh.MaterialIndex, modelDir, localDB).ConfigureAwait(false);
+            }
+
+            // PHASE A2 (off-thread): animation clips. Extraction is pure CPU over the already-parsed scene and
+            // the serialize + local-DB write is file IO, so both belong out here rather than on the world
+            // thread. Clip bytes land in the content-addressed DB exactly like meshes and textures, which is
+            // what makes a clip replicate to joiners by hash instead of every peer re-deriving it from the
+            // model file. With no local DB there is nowhere to put the bytes and therefore no URL a provider
+            // could load, so animation import is skipped rather than attaching a provider that resolves to
+            // nothing. -xlinka
+            var animations = new List<(Animation.AnimationClip clip, Uri uri)>();
+            if (settings.ImportAnimations && scene.HasAnimations)
+            {
+                progress?.Report((0.35f, "Extracting animations..."));
+                var extracted = AnimationExtractor.Extract(scene);
+                if (extracted.Count > 0 && localDB == null)
+                {
+                    Logger.Warn($"ModelImporter: '{Path.GetFileNameWithoutExtension(filePath)}' has {extracted.Count} animation(s) but no local DB is available - skipping animation import.");
+                }
+                else
+                {
+                    foreach (var clip in extracted)
+                    {
+                        var localUri = await localDB!.SaveAssetAsync(clip.ToBytes(), ".lanim").ConfigureAwait(false);
+                        if (string.IsNullOrEmpty(localUri))
+                        {
+                            Logger.Warn($"ModelImporter: failed to store animation clip '{clip.Name}'");
+                            continue;
+                        }
+                        animations.Add((clip, new Uri(localUri)));
+                    }
+                }
             }
 
             // PHASE B (world thread, chunked): EVERY data-model + Godot scene-tree write happens from here on, on
@@ -323,6 +321,39 @@ public static class ModelImporter
                 progress?.Report((0.7f + 0.25f * (totalMeshNodes > 0 ? (float)meshNodeDone / totalMeshNodes : 1f), "Building meshes..."));
             }
 
+            // Animation chunk: one provider per clip under an "Animations" holder, and - when the model has a
+            // skeleton to drive - an Animator on the model root pre-bound to the first clip. Binding runs
+            // against the clip object we already hold instead of waiting on the provider's asset to gather
+            // back out of the local DB, so the animator is wired the moment the model appears. The bindings
+            // are track-index based, so they stay valid once the identical clip arrives through the provider.
+            if (animations.Count > 0)
+            {
+                progress?.Report((0.96f, "Attaching animations..."));
+                await OnWorldAsync(world, () =>
+                {
+                    var holder = modelSlot.AddSlot("Animations");
+                    foreach (var (clip, uri) in animations)
+                    {
+                        var clipSlot = holder.AddSlot(string.IsNullOrEmpty(clip.Name) ? "Clip" : clip.Name);
+                        var provider = clipSlot.AttachComponent<AnimationProvider>();
+                        provider.URL.Value = uri;
+                        result.AnimationProviders.Add(provider);
+                    }
+
+                    if (skelBuilder != null && result.AnimationProviders.Count > 0)
+                    {
+                        var animator = modelSlot.AttachComponent<Animator>();
+                        animator.Clip.Target = result.AnimationProviders[0];
+                        animator.WrapMode.Value = Animation.AnimationWrapMode.Loop;
+                        // Left paused on purpose: import should not start something moving on its own. The
+                        // bindings are live, so pressing play in the inspector is all it takes.
+                        int bound = animator.AutoBind(modelSlot, animations[0].clip);
+                        result.Animator = animator;
+                        Logger.Log($"ModelImporter: animator bound {bound}/{animations[0].clip.TrackCount} tracks of '{animations[0].clip.Name}'");
+                    }
+                });
+            }
+
             // Final chunk: rescale to target height + center.
             if (settings.Rescale || settings.Center)
                 await OnWorldAsync(world, () => ApplyModelTransform(scene, modelSlot, settings, skelBuilder));
@@ -334,7 +365,9 @@ public static class ModelImporter
         catch (Exception ex)
         {
             result.ErrorMessage = ex.Message;
-            Logger.Error($"ModelImporter(Phos): failed '{filePath}': {ex.Message}");
+            // The whole stack, not just the message: a failure inside a world-thread chunk surfaces here with
+            // no other trace, and "Value cannot be null" alone names nothing.
+            Logger.Error($"ModelImporter(Phos): failed '{filePath}': {ex}");
         }
         return result;
     }
@@ -771,8 +804,8 @@ public static class ModelImporter
                 else if (embedded.HasNonCompressedData && embedded.NonCompressedData is { Length: > 0 } && embedded.Width > 0)
                 {
                     // Raw ARGB texels - re-encode to an uncompressed 32-bit BMP. BMP is just a header + raw rows,
-                    // so this needs no image encoder library and the texture loader reads it natively. Previously
-                    // these were silently dropped, leaving the mesh untextured. -xlinka
+                    // so this needs no image encoder library and the texture loader reads it natively. Skip this
+                    // and raw embedded textures get silently dropped, leaving the mesh untextured. -xlinka
                     bytes = EncodeTexelsToBmp(embedded);
                     fmt = "bmp";
                     Logger.Log($"ModelImporter: re-encoded uncompressed embedded texture '{path}' ({embedded.Width}x{embedded.Height}) to BMP.");

@@ -70,7 +70,7 @@ public sealed class FolderImportDialog : Component
         var ui = new UIBuilder(content);
         if (_fontProvider != null) ui.Font(_fontProvider);
         ui.FontSize(14f);
-        ui.ScrollRect(out _);
+        ui.ScrollRect(out _, fitVertical: false);
         ui.VerticalLayout(4f, 6f);
 
         var importers = FolderImporter.FolderImporters;

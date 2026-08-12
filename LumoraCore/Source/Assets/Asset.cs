@@ -9,11 +9,6 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Assets;
 
-/// <summary>
-/// Base class for all assets in Lumora.
-/// Implements thread-safe locking mechanism for concurrent asset access.
-/// Supports both static (loaded from external sources) and dynamic (procedural) assets.
-/// </summary>
 public abstract class Asset : IAsset
 {
     private readonly struct LockRequest
@@ -34,13 +29,11 @@ public abstract class Asset : IAsset
         }
     }
 
-    // Locking state
     private SpinLock lockRequestLock = new SpinLock(enableThreadOwnerTracking: false);
     private List<object> readLocks = new List<object>();
     private object writeLock = null!;
     private Queue<LockRequest> lockRequests = new Queue<LockRequest>();
 
-    // Asset properties
     public bool HighPriorityIntegration { get; set; }
     internal int UnloadKey { get; set; }
     public int Version { get; protected set; }
@@ -49,31 +42,18 @@ public abstract class Asset : IAsset
     public AssetLoadState LoadState { get; protected set; }
     public Uri AssetURL { get; private set; } = null!;
 
-    /// <summary>
-    /// The manager that owns this asset, assigned at initialization. Assets reach engine
-    /// services through this rather than the global <c>Engine.Current</c>.
-    /// </summary>
+    // Assets reach engine services through this, not the global Engine.Current.
     public AssetManager AssetManager { get; protected set; } = null!;
 
-    /// <summary>The engine this asset belongs to.</summary>
     public Engine Engine => AssetManager?.Engine!;
 
-    /// <summary>
-    /// Number of active requests for this asset.
-    /// </summary>
     public abstract int ActiveRequestCount { get; }
 
-    /// <summary>
-    /// Delay (in seconds) before unloading unused assets.
-    /// </summary>
     public virtual float UnloadDelay => 5.0f; // Default 5 seconds
 
     // INITIALIZATION
 
-    /// <summary>
-    /// Initialize a static asset with a URL. The owning manager defaults to the current
-    /// engine's manager; callers may pass one explicitly once they thread it through.
-    /// </summary>
+    // manager defaults to the current engine's manager.
     public virtual void InitializeStatic(Uri assetUrl, AssetManager? manager = null)
     {
         AssetURL = assetUrl;
@@ -82,10 +62,7 @@ public abstract class Asset : IAsset
         AssetManager = manager ?? Lumora.Core.Engine.Current?.AssetManager!;
     }
 
-    /// <summary>
-    /// Initialize a dynamic (procedural) asset. The owning manager defaults to the current
-    /// engine's manager; callers may pass one explicitly once they thread it through.
-    /// </summary>
+    // manager defaults to the current engine's manager.
     public virtual void InitializeDynamic(AssetManager? manager = null)
     {
         AssetType = AssetType.Dynamic;
@@ -93,9 +70,6 @@ public abstract class Asset : IAsset
         AssetManager = manager ?? Lumora.Core.Engine.Current?.AssetManager!;
     }
 
-    /// <summary>
-    /// Set the owner of this asset instance.
-    /// </summary>
     public void SetOwner(object owner)
     {
         if (Owner != null)
@@ -105,9 +79,7 @@ public abstract class Asset : IAsset
         Owner = owner;
     }
 
-    /// <summary>
-    /// Set the asset URL (only for static assets during initialization).
-    /// </summary>
+    // Static assets only, during initialization.
     public virtual void SetURL(Uri assetUrl)
     {
         CheckStatic();
@@ -162,9 +134,6 @@ public abstract class Asset : IAsset
 
     // ABSTRACT METHODS
 
-    /// <summary>
-    /// Queue this asset for unloading.
-    /// </summary>
     public abstract void Unload();
 
     // LOCKING SYSTEM

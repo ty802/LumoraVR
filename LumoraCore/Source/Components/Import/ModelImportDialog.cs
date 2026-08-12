@@ -28,6 +28,7 @@ public sealed class ModelImportDialog : ImportDialog
     public readonly Sync<bool> MakeFlatShaded;
     public readonly Sync<int> MaxTextureSize;
     public readonly Sync<bool> ForceNoMipMaps;
+    public readonly Sync<bool> ImportAnimations;
 
     protected override string TitleText => "Model Import";
     protected override float2 CanvasSize => new float2(420f, 640f);
@@ -50,6 +51,7 @@ public sealed class ModelImportDialog : ImportDialog
         MakeFlatShaded = new Sync<bool>(this, false);
         MaxTextureSize = new Sync<int>(this, -1);
         ForceNoMipMaps = new Sync<bool>(this, false);
+        ImportAnimations = new Sync<bool>(this, true);
     }
 
     private void DefaultPreset()
@@ -119,7 +121,7 @@ public sealed class ModelImportDialog : ImportDialog
     private void MenuCustom(UIBuilder ui)
     {
         var body = SetupSection(ui, "Advanced Settings");
-        body.ScrollRect(out _);
+        body.ScrollRect(out _, fitVertical: false);
         body.VerticalLayout(4f, 4f);
 
         SetupCheckbox(body, AutoScale, "Auto Scale");
@@ -129,6 +131,7 @@ public sealed class ModelImportDialog : ImportDialog
         SetupCheckbox(body, ImportAlbedoColor, "Import Albedo Color");
         SetupCheckbox(body, ImportEmissive, "Import Emissive");
         SetupCheckbox(body, Colliders, "Generate Colliders");
+        SetupCheckbox(body, ImportAnimations, "Import Animations");
         SetupCheckbox(body, MakeDualSided, "Dual Sided");
         SetupCheckbox(body, MakeFlatShaded, "Flat Shaded");
         SetupCheckbox(body, ForceNoMipMaps, "No Texture Mipmaps");
@@ -207,6 +210,7 @@ public sealed class ModelImportDialog : ImportDialog
             MakeFlatShaded = MakeFlatShaded.Value,
             MaxTextureSize = MaxTextureSize.Value,
             ForceNoMipMaps = ForceNoMipMaps.Value,
+            ImportAnimations = ImportAnimations.Value,
         };
     }
 }

@@ -28,6 +28,10 @@ public sealed class ModelImportRequest
     public bool MakeFlatShaded;
     public int MaxTextureSize = -1;
     public bool ForceNoMipMaps;
+
+    // On by default: a model with no animation channels extracts nothing, so leaving this on costs
+    // files without animations exactly nothing.
+    public bool ImportAnimations = true;
 }
 
 public interface IImageImportHandler

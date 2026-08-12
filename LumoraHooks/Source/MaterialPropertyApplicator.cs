@@ -45,6 +45,10 @@ internal static class MaterialPropertyApplicator
             {
                 Shader = shaderMaterial.Shader,
                 RenderPriority = shaderMaterial.RenderPriority,
+                // Carried over by hand because this clone is built from scratch rather than
+                // duplicated: without it a chained pass (the toon outline) is lost the moment a
+                // property block clones the material. -xlinka
+                NextPass = shaderMaterial.NextPass,
             };
             CopyShaderParameters(shaderMaterial, fresh);
             foreach (var (property, value) in properties)
@@ -242,6 +246,21 @@ internal static class MaterialPropertyApplicator
             return;
         }
 
+        // Custom shader uniforms are parsed VERBATIM from the user's shader source - the name IS the
+        // uniform. Running them through the built-in name map snake_cased anything with an uppercase
+        // letter (MyColor -> my_color) into a uniform the shader doesn't have, and the write silently
+        // vanished. No mapping, no use_albedo_texture sidecar; apply exactly what the shader declared.
+        // (RenderQueue above stays reserved as the material's render-priority control channel.) -xlinka
+        if (materialType == MaterialType.Custom)
+        {
+            if (value == null)
+                return;
+            Variant customValue = ToVariant(value);
+            if (customValue.VariantType != Variant.Type.Nil)
+                material.SetShaderParameter(property, customValue);
+            return;
+        }
+
         string mappedParam = MapShaderProperty(materialType, property);
 
         if (value == null)
@@ -271,9 +290,20 @@ internal static class MaterialPropertyApplicator
         bool isUnlit = materialType is MaterialType.Unlit or MaterialType.UI_Unlit or MaterialType.UI_StencilWrite or MaterialType.UI_StencilTest or MaterialType.UI_Text or MaterialType.UI_TextStencil or MaterialType.Text;
         bool isOverlay = materialType == MaterialType.OverlayUnlit;
         bool isMetaball = materialType == MaterialType.Metaball;
+        bool isOverlayFresnel = materialType == MaterialType.OverlayFresnel;
+        bool isFresnelLerp = materialType == MaterialType.FresnelLerp;
 
         return property switch
         {
+            // The overlay fresnel shares the overlay unlit's uv-set naming so the two read the same
+            // when you have both on a slot.
+            "Texture" when isOverlayFresnel => "albedo_texture",
+            "FrontTextureScale" when isOverlayFresnel => "front_uv_scale",
+            "FrontTextureOffset" when isOverlayFresnel => "front_uv_offset",
+            "BehindTextureScale" when isOverlayFresnel => "behind_uv_scale",
+            "BehindTextureOffset" when isOverlayFresnel => "behind_uv_offset",
+            // "lerp" on its own reads as the operation rather than the amount.
+            "Lerp" when isFresnelLerp => "lerp_amount",
             "FrontTintColor" when isOverlay => "front_color",
             "BehindTintColor" when isOverlay => "behind_color",
             "Texture" when isOverlay => "albedo_texture",

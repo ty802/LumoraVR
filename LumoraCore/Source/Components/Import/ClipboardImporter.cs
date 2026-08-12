@@ -7,13 +7,11 @@ using Lumora.Core.Logging;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// World-side Ctrl+V trigger. Detects the paste keystroke (gated on authority +
-/// running world) and hands off to the platform clipboard bridge, which reads the
-/// real OS clipboard and routes its contents through the import pipeline. The core
-/// has no clipboard access of its own, so without a registered bridge a paste is a
-/// no-op - it never fabricates placeholder content. - xlinka
-/// </summary>
+// World-side Ctrl+V trigger. Detects the paste keystroke (gated on authority +
+// running world) and hands off to the platform clipboard bridge, which reads the
+// real OS clipboard and routes its contents through the import pipeline. The core
+// has no clipboard access of its own, so without a registered bridge a paste is a
+// no-op - it never fabricates placeholder content. - xlinka
 [ComponentCategory("Assets/Import")]
 public class ClipboardImporter : Component
 {
@@ -40,20 +38,11 @@ public class ClipboardImporter : Component
         if (!CanImport)
             return;
 
-        var inputInterface = Engine.Current?.InputInterface;
-        if (inputInterface == null)
-            return;
-
-        // Check for Ctrl+V paste
-        if (inputInterface.GetKeyboardDriver() is Keyboard keyboard)
+        // Paste is an action like anything else, so a focused text field takes the keyboard out of
+        // play before this sees it - typing ctrl+V into a name box no longer spawns an import.
+        if (Engine.Current?.InputInterface?.Actions?.Editing.Paste.Pressed == true)
         {
-            bool ctrlPressed = keyboard.IsKeyPressed(Key.LeftControl) || keyboard.IsKeyPressed(Key.RightControl);
-            bool vPressed = keyboard.IsKeyJustPressed(Key.V);
-
-            if (ctrlPressed && vPressed)
-            {
-                HandleClipboardPaste();
-            }
+            HandleClipboardPaste();
         }
     }
 

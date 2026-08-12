@@ -9,11 +9,6 @@ using Lumora.Core.Logging;
 
 namespace Lumora.Core.Assets;
 
-/// <summary>
-/// Central coordinator for the asset system. Owns asset gathering (file/network resolution)
-/// and is the single handle assets use to reach engine services. Assets hold a back-reference
-/// to this manager and route their loads through <see cref="RequestGather"/>.
-/// </summary>
 public class AssetManager : IDisposable
 {
     private bool _disposing;
@@ -23,10 +18,7 @@ public class AssetManager : IDisposable
     private readonly List<AssetID> _managersToRemove = new();
     private readonly object _managerLock = new();
 
-    /// <summary>
-    /// The engine this manager belongs to. Assets reach the engine via <c>AssetManager.Engine</c>
-    /// rather than the global <c>Engine.Current</c>.
-    /// </summary>
+    // Assets reach the engine through here, not the global Engine.Current.
     public Engine Engine { get; }
 
     public AssetManager(Engine engine)
@@ -40,26 +32,26 @@ public class AssetManager : IDisposable
         return Task.CompletedTask;
     }
 
-    /// <summary>
-    /// Fetch the raw bytes for an asset URL. Scheme resolution (local/file/http/builtin/peer)
-    /// is handled by <see cref="AssetFetcher"/>; the completion callback fires on whichever
-    /// thread pumps <see cref="AssetFetcher.ProcessQueue"/> (currently the world update loop).
-    /// </summary>
+    // AssetFetcher resolves the scheme (local/file/http/builtin/peer). The completion callback fires on
+    // whichever thread pumps ProcessQueue, currently the world update loop.
     public Task<byte[]> RequestGather(Uri assetURL)
     {
         if (assetURL == null)
             return Task.FromResult<byte[]>(null!);
 
         var tcs = new TaskCompletionSource<byte[]>();
-        AssetFetcher.FetchAsset(assetURL.ToString(), bytes => tcs.TrySetResult(bytes));
+        // OriginalString, not ToString(): System.Uri lowercases the authority, and for a local://
+        // asset the authority IS the owning machine's id. The peer transferer resolves an owner by
+        // matching that id against the connected users' MachineID, which is case-sensitive, so a
+        // lowercased one matches nobody and the asset can only ever be served from our own cache.
+        // Every local:// URI in the engine is built from a full string, so OriginalString is exactly
+        // what the caller asked for. -xlinka
+        AssetFetcher.FetchAsset(assetURL.OriginalString, bytes => tcs.TrySetResult(bytes));
         return tcs.Task;
     }
 
-    /// <summary>
-    /// Request the shared asset for <paramref name="assetURL"/>. All requesters for the same
-    /// (URL, type) share a single instance; the asset loads itself on the first request and
-    /// stays alive until every requester releases it via <see cref="ReleaseAsset{A}"/>.
-    /// </summary>
+    // All requesters for the same (URL, type) share one instance. It loads on the first request and
+    // stays alive until every requester releases it.
     public void RequestAsset<A>(Uri assetURL, IAssetRequester requester, IAssetVariantDescriptor? descriptor = null) where A : LoadableAsset, new()
     {
         if (assetURL == null || requester == null)
@@ -78,7 +70,6 @@ public class AssetManager : IDisposable
         manager.RequestAsset(requester, descriptor);
     }
 
-    /// <summary>Release a requester's hold on the shared asset for <paramref name="assetURL"/>.</summary>
     public void ReleaseAsset<A>(Uri assetURL, IAssetRequester requester, IAssetVariantDescriptor? descriptor = null) where A : LoadableAsset, new()
     {
         if (assetURL == null || requester == null)
@@ -102,11 +93,8 @@ public class AssetManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Per-frame tick, driven by the engine update loop. Gather completion is presently pumped
-    /// by the world loop; the gather and engine-integration pumps move here once the integration
-    /// queue lands.
-    /// </summary>
+    // Gather completion is still pumped by the world loop; both pumps move here once the integration
+    // queue lands.
     public void Update(float deltaTime)
     {
         lock (_managerLock)

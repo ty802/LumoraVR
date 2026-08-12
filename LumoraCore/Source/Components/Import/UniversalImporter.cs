@@ -1,11 +1,13 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
 using System.Collections.Generic;
 using System.IO;
+using Lumora.Core.Components.Meshes;
 using Lumora.Core.Logging;
 using Lumora.Core.Math;
+using Lumora.Core.Physics;
 
 namespace Lumora.Core.Components.Import;
 
@@ -43,6 +45,9 @@ public static class UniversalImporter
             // dialog (with a raw-file drop) rather than faking success with a labeled
             // placeholder. As pipelines land (audio/font/text/etc.), give them their own
             // case above. - xlinka
+            case AssetClass.Shader:
+                SpawnShaderDialog(list, world, position, rotation, silent);
+                break;
             case AssetClass.PointCloud:
             case AssetClass.Unknown:
             case AssetClass.Document:
@@ -55,7 +60,6 @@ public static class UniversalImporter
             case AssetClass.Volume:
             case AssetClass.Cubemap:
             case AssetClass.Special:
-            case AssetClass.Shader:
                 Logger.Warn($"UniversalImporter: {assetClass} import is not supported yet ({list.Count} file(s)).");
                 SpawnUnsupportedDialog(assetClass, list, world, position, rotation);
                 break;
@@ -66,6 +70,143 @@ public static class UniversalImporter
     {
         var cls = rawFile ? AssetClass.Unknown : AssetHelper.IdentifyClass(path);
         Import(cls, new[] { path }, world, position, rotation, silent);
+    }
+
+    // Shader confirmation dialog. The .gdshader/other split happens HERE so glsl/hlsl go straight to
+    // the honest unsupported notice and only orb-capable files reach the dialog; silent imports skip
+    // the dialog like every other class. -xlinka
+    private static void SpawnShaderDialog(List<string> files, World world, float3 position, floatQ rotation, bool silent)
+    {
+        var supported = new List<string>();
+        var unsupported = new List<string>();
+        foreach (var file in files)
+        {
+            if (string.Equals(Path.GetExtension(file), ".gdshader", StringComparison.OrdinalIgnoreCase))
+                supported.Add(file);
+            else
+                unsupported.Add(file);
+        }
+
+        if (unsupported.Count > 0)
+            SpawnUnsupportedDialog(AssetClass.Shader, unsupported, world, position, rotation);
+        if (supported.Count == 0)
+            return;
+
+        var slot = CreateDialogSlot(world, "Shader Importer", position, rotation);
+        var dialog = slot.AttachComponent<ShaderImportDialog>();
+        dialog.TargetWorld = world;
+        dialog.Paths.AddRange(supported);
+        dialog.SetLocalUserAsImporting();
+        if (silent) dialog.RunImport();
+    }
+
+    // Shader import: each .gdshader becomes a grabbable material orb carrying a ShaderSourceProvider
+    // (local asset URL, so it peer-transfers like any imported texture) + a CustomShaderMaterial whose
+    // uniform params auto-populate from the parsed source. glsl/hlsl identify as Shader too but are not
+    // material shaders here, so they get the honest unsupported notice instead of a broken orb. -xlinka
+    public static void SpawnShaderOrbs(List<string> files, World world, float3 position, floatQ rotation)
+    {
+        var supported = new List<string>();
+        var unsupported = new List<string>();
+        foreach (var file in files)
+        {
+            if (string.Equals(Path.GetExtension(file), ".gdshader", StringComparison.OrdinalIgnoreCase))
+                supported.Add(file);
+            else
+                unsupported.Add(file);
+        }
+
+        if (unsupported.Count > 0)
+        {
+            Logger.Warn($"UniversalImporter: {unsupported.Count} shader file(s) skipped (only .gdshader imports as a material).");
+            SpawnUnsupportedDialog(AssetClass.Shader, unsupported, world, position, rotation);
+        }
+
+        int rowSize = (int)System.Math.Max(1, System.Math.Ceiling(System.Math.Sqrt(supported.Count)));
+        int index = 0;
+        foreach (var file in supported)
+        {
+            var offset = GridOffset(ref index, rowSize);
+            _ = ImportShaderOrbAsync(file, world, position + rotation * offset, rotation);
+        }
+    }
+
+    private static async System.Threading.Tasks.Task ImportShaderOrbAsync(string path, World world, float3 position, floatQ rotation)
+    {
+        string source;
+        try
+        {
+            source = await File.ReadAllTextAsync(path).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"UniversalImporter: failed to read shader '{path}': {ex.Message}");
+            return;
+        }
+
+        // Early verdict for the log; the orb is created either way so the user can open its inspector
+        // and read the full sandbox report. A rejected shader never compiles regardless - the material
+        // gate re-validates on every peer.
+        var verdict = Lumora.Core.Assets.ShaderSourceValidator.Validate(source);
+        if (!verdict.IsValid)
+        {
+            Logger.Warn($"UniversalImporter: shader '{Path.GetFileName(path)}' fails the sandbox ({verdict.Errors[0]}); importing anyway so the inspector can show the report.");
+        }
+
+        var localDb = Engine.Current?.LocalDB;
+        if (localDb == null)
+        {
+            Logger.Warn("UniversalImporter: no local asset database; cannot import shader.");
+            return;
+        }
+
+        string uri;
+        try
+        {
+            uri = await localDb.ImportLocalAssetAsync(path).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"UniversalImporter: failed to store shader '{path}': {ex.Message}");
+            return;
+        }
+
+        // Datamodel writes happen on the world's update thread.
+        world.RunSynchronously(() =>
+        {
+            var slot = world.RootSlot.AddSlot(Path.GetFileNameWithoutExtension(path));
+            slot.GlobalPosition = position;
+            slot.GlobalRotation = rotation;
+            slot.AttachComponent<Grabbable>();
+
+            var mesh = slot.AttachComponent<SphereMesh>();
+            mesh.Radius.Value = 0.18f;
+            mesh.Segments.Value = 32;
+            mesh.Rings.Value = 16;
+            mesh.UVScale.Value = new float2(5f, 2.5f);
+
+            var collider = slot.AttachComponent<SphereCollider>();
+            collider.Radius.Value = mesh.Radius.Value;
+            collider.Type.Value = ColliderType.Trigger;
+
+            var provider = slot.AttachComponent<Lumora.Core.Components.Assets.ShaderSourceProvider>();
+            provider.URL.Value = new Uri(uri);
+
+            var material = slot.AttachComponent<Lumora.Core.Components.Assets.CustomShaderMaterial>();
+            material.Shader.Target = provider;
+
+            var renderer = slot.AttachComponent<MeshRenderer>();
+            renderer.Mesh.Target = mesh;
+            renderer.Material.Target = material;
+
+            // Open the focused material panel half a meter to the orb's right so tuning can start
+            // immediately, facing the same way the orb spawned.
+            MaterialInspectorPanel.Spawn(world, material, position + rotation * new float3(0.5f, 0f, 0f), rotation);
+
+            Lumora.Core.Components.InspectorUndo.Record(world,
+                Lumora.Core.Components.SlotExistenceUndoBatch.Created(world, new[] { slot }, "Import Shader"));
+            Logger.Log($"UniversalImporter: shader orb '{slot.SlotName.Value}' created ({uri}).");
+        });
     }
 
     public static float3 GridOffset(ref int index, int rowSize)

@@ -24,10 +24,11 @@ public sealed class GraphicsChunk
         // Captured on the main thread (prepare walk), drained on the worker (EmitQueued). The worker
         // never traverses the live slot tree - it only iterates this queue and calls ComputeGraphic,
         // which reads each graphic's already-snapshotted state + stable LocalComputeRect. - xlinka
-        private readonly List<(Graphic Graphic, Rect? Clip, StencilRole Stencil)> _emitQueue = new();
+        private readonly List<(Graphic Graphic, Rect? Clip, Rect? RidingClip, StencilRole Stencil)> _emitQueue = new();
         private readonly GraphicsChunk _chunk;
         private int _minimumSubmeshIndex;
         private Rect? _clipRect;
+        private Rect? _ridingClipRect;
         private StencilRole _stencilRole;
         // Latch so the render-priority band-exhaustion warning fires once per RenderData, not every submit. -xlinka
         private bool _loggedBandExhaustion;
@@ -37,14 +38,18 @@ public sealed class GraphicsChunk
 
         // Scroll content is baked ONCE and moved by the clip_offset uniform, so items off-screen at bake time
         // still have to be in the mesh (they scroll into view later) and on-screen items must NOT be trimmed to
-        // the viewport (the shader clips them at render). When true, graphics skip geometry culling/trimming and
-        // bake their full quads; the clip rect still rides on the material (GetSubmesh uses _clipRect) so the
-        // shader clips correctly. -xlinka
+        // the FIXED viewport window (the shader clips them at render). When true, graphics stop trimming against
+        // the material clip rect and trim against the RIDING window instead (see GeometryClipRect). -xlinka
         public bool SuppressGeometryClip { get; set; }
 
-        // Clip rect for GEOMETRY culling/trimming - null when SuppressGeometryClip (bake full). The MATERIAL clip
-        // (shader-side, via GetSubmesh) always uses the real _clipRect regardless. -xlinka
-        public Rect? GeometryClipRect => SuppressGeometryClip ? null : _clipRect;
+        // Clip rect for GEOMETRY culling/trimming. Static chunk: the same window the material carries (trim +
+        // shader clip, as always). Scroll-riding chunk: only the RIDING window - a mask that moves with this
+        // chunk's geometry (a mask inside it, or an ancestor mask locked to the same scroll offset). Their
+        // relationship to the verts is fixed, so trimming at bake is exact and stays exact however far the
+        // chunk slides; a material rect is a FIXED canvas-space window and cannot ride a live offset, which is
+        // why the riding half must not go there. The static half stays on the material (GetSubmesh reads
+        // _clipRect) where clip_offset moves the test point to match. -xlinka
+        public Rect? GeometryClipRect => SuppressGeometryClip ? _ridingClipRect : _clipRect;
 
         public RenderData(GraphicsChunk chunk)
         {
@@ -54,9 +59,10 @@ public sealed class GraphicsChunk
 
         public IReadOnlyDictionary<MaterialKey, AssignedMaterial> AssignedMaterials => _assignedMaterials;
 
-        public void SetClipRect(Rect? clipRect)
+        public void SetClipRect(Rect? clipRect, Rect? ridingClipRect = null)
         {
             _clipRect = clipRect;
+            _ridingClipRect = ridingClipRect;
         }
 
         public void PrepareCompute()
@@ -74,9 +80,11 @@ public sealed class GraphicsChunk
         }
 
         // MAIN: queue a prepared graphic (with its computed clip + stencil role) for the worker emit pass.
-        public void QueueGraphic(Graphic graphic, Rect? clip, StencilRole stencil = StencilRole.None)
+        // ridingClip is the half of the window that moves with this chunk (geometry trim only, never keyed
+        // into a material) - see GeometryClipRect.
+        public void QueueGraphic(Graphic graphic, Rect? clip, Rect? ridingClip = null, StencilRole stencil = StencilRole.None)
         {
-            _emitQueue.Add((graphic, clip, stencil));
+            _emitQueue.Add((graphic, clip, ridingClip, stencil));
         }
 
         // WORKER: build the geometry for every queued graphic. No slot/datamodel access (materials
@@ -86,9 +94,9 @@ public sealed class GraphicsChunk
         {
             for (int i = 0; i < _emitQueue.Count; i++)
             {
-                var (graphic, clip, stencil) = _emitQueue[i];
+                var (graphic, clip, ridingClip, stencil) = _emitQueue[i];
                 BeginGraphic();
-                SetClipRect(clip);
+                SetClipRect(clip, ridingClip);
                 _stencilRole = stencil;
                 graphic.ComputeGraphic(this);
             }
@@ -224,7 +232,7 @@ public sealed class GraphicsChunk
                 {
                     int priority = perSurfacePriorities[surfaceIndex];
                     _chunk.MeshRenderer.SetSurfaceRenderPriority(surfaceIndex, priority);
-                    var clonedMaterial = _chunk.GetRenderPriorityMaterial(request.Map.FilteredMaterial, priority);
+                    var clonedMaterial = _chunk.GetRenderPriorityMaterial(request.Map.FilteredMaterial, surfaceIndex, priority);
                     var clonedMap = new MaterialMap(clonedMaterial, request.Map.FilteredPropertyBlock);
                     singleIndex.Clear();
                     singleIndex.Add(surfaceIndex);
@@ -621,8 +629,8 @@ public sealed class GraphicsChunk
     // Tree-order sort index, assigned by the Canvas in hierarchy order on each render-root cycle. Drives the
     // mesh renderer's SortingOrder (Godot sorting_offset), which is the INNER transparent-sort key under
     // render_priority. So this gives later-in-tree chunks a higher offset -> they tie-break ON TOP of earlier
-    // ones that share a render_priority value (previously all nested chunks shared one offset, leaving
-    // same-band overlap undefined). Stored on the chunk so a scoped re-mesh keeps its place. -xlinka
+    // ones that share a render_priority value; without it, same-band chunks would tie in an undefined
+    // order. Stored on the chunk so a scoped re-mesh keeps its place. -xlinka
     public int OrderIndex { get; set; }
 
     private UIUnlitMaterial? _defaultMaterial;
@@ -754,11 +762,11 @@ public sealed class GraphicsChunk
     // all surfaces sharing the source material collapse to whichever priority
     // was written last -> coplanar UI quads fall back to Godot's distance sort
     // and flip order as the camera rotates ("colors lost at angle"). - xlinka
-    internal IAssetProvider<MaterialAsset>? GetRenderPriorityMaterial(IAssetProvider<MaterialAsset>? source, int renderPriority)
+    internal IAssetProvider<MaterialAsset>? GetRenderPriorityMaterial(IAssetProvider<MaterialAsset>? source, int surfaceIndex, int renderPriority)
     {
         if (source == null) return null;
         SetupComponents();
         _materialCloneCache ??= new MaterialCloneCache(ChunkSlot);
-        return _materialCloneCache.GetRenderPriorityMaterial(source, renderPriority);
+        return _materialCloneCache.GetRenderPriorityMaterial(source, surfaceIndex, renderPriority);
     }
 }

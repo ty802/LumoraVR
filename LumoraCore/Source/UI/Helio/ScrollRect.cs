@@ -25,14 +25,6 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
     private float2 _pressPoint;
     private float2 _pressAbsolute;
 
-    // Anti-compounding: ApplyScroll overrides the content's computed rect to scroll it. On cycles where the
-    // content's layout is clean, ComputeRects SKIPS re-deriving its rect from anchors, so the rect coming into
-    // ApplyScroll is the (already-scrolled) value we wrote last time. Re-applying the offset to that compounds
-    // it and the content marches off-screen. We remember the unscrolled base + exactly what we last wrote, so we
-    // can detect the skip and always scroll from the base. -xlinka
-    private Rect _scrollBaseRect;
-    private Rect _lastWrittenRect;
-    private bool _hasScrollBase;
     // Live scrollable excess (content - viewport, per axis) cached each ApplyScroll so AbsolutePosition can
     // convert pixels <-> normalized at drag/wheel time without re-reading the rects. -xlinka
     private float2 _excess;
@@ -51,15 +43,15 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
         ScrollSensitivity = new Sync<float2>(this, float2.One);
     }
 
-    /// <summary>Normalized 0..1 scroll position (the persisted value), clamped on set.</summary>
+    // normalized 0..1 scroll position (the persisted value), clamped on set
     public float2 NormalizedPosition
     {
         get => Scroll.Value;
         set => SetNormalized(new float2(Clamp01(value.x), Clamp01(value.y)));
     }
 
-    /// <summary>Scroll position in PIXELS = normalized * scrollable excess. Setting converts back to normalized
-    /// against the live excess (a zero-excess axis keeps its value, so no divide-by-zero).</summary>
+    // pixels = normalized * scrollable excess. setting converts back to normalized against the
+    // live excess (a zero-excess axis keeps its value, so no divide-by-zero).
     public float2 AbsolutePosition
     {
         get => new float2(Scroll.Value.x * _excess.x, Scroll.Value.y * _excess.y);
@@ -74,22 +66,19 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
         ApplyScrollNow();
     }
 
-    // Apply the current scroll position. Render-offset path: MOVE the content chunk's transform directly (no
-    // rebuild, no re-tessellation). Falls back to one full pass
-    // only when render-offset is off or the content chunk isn't built yet (first scroll). -xlinka
+    // Apply the current scroll position by sliding the content chunk's clip_offset (no rebuild, no
+    // re-tessellation). Only forces a layout pass when the content chunk isn't built yet (the very first scroll),
+    // so the chunk gets baked and ApplyScroll can position it. -xlinka
     private void ApplyScrollNow()
     {
         var canvas = FindCanvas();
         if (canvas == null)
             return;
-        if (Canvas.ScrollRenderOffset)
-        {
-            EnsureScrollSetup();
-            // Content slides left/up as you scroll right/down (same sign as the rebuild path in ApplyScroll).
-            var absolute = AbsolutePosition;
-            if (_contentRoot != null && canvas.ApplyScrollOffset(_contentRoot, new float2(-absolute.x, absolute.y)))
-                return;
-        }
+        EnsureScrollSetup();
+        // Content slides left/up as you scroll right/down (same sign as the rebuild path in ApplyScroll).
+        var absolute = AbsolutePosition;
+        if (_contentRoot != null && canvas.ApplyScrollOffset(_contentRoot, new float2(-absolute.x, absolute.y)))
+            return;
         canvas.MarkLayoutDirty();
     }
 
@@ -119,13 +108,16 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
 
     protected override void OnPress(in UIInteractionContext context)
     {
-        _pressPoint = context.LocalPoint;
+        // Viewport space, not raw canvas space: for a scroll nested in another scroll the outer offset can
+        // move mid-gesture (wheel, second pointer), and a raw press anchor would make this drag jump by the
+        // outer delta. Same space on both ends, so the delta is pure pointer motion. -xlinka
+        _pressPoint = context.PointIn(Slot);
         _pressAbsolute = AbsolutePosition;
     }
 
     protected override void OnDrag(in UIInteractionContext context)
     {
-        var delta = context.LocalPoint - _pressPoint;
+        var delta = context.PointIn(Slot) - _pressPoint;
         var sensitivity = ScrollSensitivity.Value;
         AbsolutePosition = new float2(
             _pressAbsolute.x - delta.x * sensitivity.x,
@@ -182,46 +174,15 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
 
         var absolute = new float2(norm.x * _excess.x, norm.y * _excess.y);
 
-        if (Canvas.ScrollRenderOffset)
-        {
-            // Render-offset path: the content is its own chunk baked once; scrolling MOVES that chunk (no rect
-            // mutation, no re-tessellation). Here (a structural rebuild) we just store the current offset so
-            // ComputeChunk positions the freshly-baked chunk; live scrolling moves it via ApplyScrollOffset. The
-            // rect is never touched, so return false and the caller skips ApplyLayout. -xlinka
-            EnsureScrollSetup();
-            if (_contentRoot != null)
-                _contentRoot.RenderOffset = new float2(-absolute.x, absolute.y);
-            return false;
-        }
-
-        // Resolve the unscrolled base. If the incoming rect is EXACTLY what we wrote last cycle, ComputeRects
-        // skipped re-anchoring the clean content this cycle - reuse the stored base so the offset can't compound.
-        // Otherwise the layout re-derived the rect (fresh, or the content resized), so adopt it as the new base.
-        Rect baseRect = (_hasScrollBase && SameRect(contentRect, _lastWrittenRect)) ? _scrollBaseRect : contentRect;
-        _scrollBaseRect = baseRect;
-        _hasScrollBase = true;
-
-        var scrolled = new Rect(
-            baseRect.x - absolute.x,
-            baseRect.y + absolute.y,
-            baseRect.width,
-            baseRect.height);
-
-        // Already at the right place (no scroll, or the base already equals the target) - don't touch the rect
-        // or force a needless re-layout.
-        if (SameRect(scrolled, contentRect))
-        {
-            _lastWrittenRect = contentRect;
-            return false;
-        }
-
-        content.SetLocalComputeRect(scrolled);
-        _lastWrittenRect = scrolled;
-        return true;
+        // Position lives in the content's mesh-chunk offset, NEVER in its rect. We only store the current offset
+        // here (a structural rebuild just baked the chunk); live scrolling moves it via ApplyScrollOffset. The
+        // content rect is owned solely by its ContentSizeFitter (size), so the two never fight. Always return false
+        // - the caller never re-lays-out the content for a scroll. -xlinka
+        EnsureScrollSetup();
+        if (_contentRoot != null)
+            _contentRoot.RenderOffset = new float2(-absolute.x, absolute.y);
+        return false;
     }
-
-    private static bool SameRect(in Rect a, in Rect b)
-        => a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height;
 
     private static float Clamp01(float value)
     {

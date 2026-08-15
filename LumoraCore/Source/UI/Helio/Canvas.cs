@@ -69,14 +69,21 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     // set false to force every mask back to the rectangular clip path. -xlinka
     public static bool StencilMaskingEnabled = true;
 
-    // Scroll by translating the content chunk + counter-translating its clip, instead of mutating the content
-    // rect every tick. Side-steps the rect-mutation never-settle freeze class entirely (it never touches the
-    // rect). A ScrollRect's content gets its own GraphicChunkRoot and scrolls via GraphicChunkRoot.RenderOffset
-    // (see ComputeChunk + ScrollRect.ApplyScroll). PARKED OFF: in-engine the content didn't visually move with
-    // the flag on - the C# offset math and the ChunkSlot->Node3D->mesh transform chain both check out on
-    // inspection, so it's a runtime propagation issue still under diagnosis. Falls back to the proven
-    // rect-mutation scroll when off. -xlinka
-    public static bool ScrollRenderOffset = true;
+    // Scroll by sliding the content's mesh chunk via the shader clip_offset uniform (which moves the vertex AND
+    // the clip test in lockstep - see UI_Unlit/UI_Text/UI_TextOverlay), instead of mutating the content rect. The
+    // model is split ownership: the content's SIZE lives in its rect (owned by ContentSizeFitter) and its POSITION
+    // lives in the chunk offset (owned by ScrollRect) - two separate fields, so a size-fitter and the scroll can
+    // never fight over one rect (that shared-field conflict was the old "re-dirty freeze"). A ScrollRect's content
+    // gets its own GraphicChunkRoot and scrolls via GraphicChunkRoot.RenderOffset -> SetClipOffset (see ComputeChunk
+    // + ScrollRect.ApplyScroll + ApplyScrollOffset). Always on. NOTE the old "parked off, didn't visually move"
+    // note was a MISDIAGNOSIS: the content wasn't moving because a per-frame content re-mesh kept resetting
+    // clip_offset to 0 (the shared source materials have ClipOffset=0) - the propagation itself works. -xlinka
+    public static readonly bool ScrollRenderOffset = true;
+
+    // World-space cull margin for scroll-participating chunks: their verts are displaced in the vertex shader
+    // (clip_offset), so the baked AABB stops bounding the visible pixels and Godot frustum-culls them at
+    // glancing angles / up close. 4m covers ~8000 canvas px of scroll at the standard 0.0005 panel scale. -xlinka
+    private const float ScrolledChunkCullMargin = 4f;
 
     // Per-chunk rendering: each GraphicChunkRoot below the canvas owns an independent mesh, so a
     // subtree that animates (e.g. the FPS sparkline) re-uploads only its own small mesh instead of
@@ -90,9 +97,17 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     // untouched instead of re-tessellating the whole canvas (the "everything flashes" bug). -xlinka
     private readonly Dictionary<GraphicChunkRoot, Rect> _chunkMeshedRect = new();
     private readonly HashSet<GraphicChunkRoot> _dirtyChunks = new();
+    // This cycle's captured dirty set: _dirtyChunks is cleared BEFORE the prepare pass so dirt
+    // raised DURING prepare survives to the next cycle instead of being wiped after the fact.
+    private readonly HashSet<GraphicChunkRoot> _cycleDirtyChunks = new();
     // Chunks whose subtree layout (not just mesh) needs recomputing - scoped layout for
     // self-contained changes (e.g. a slider handle) so we don't re-lay-out the whole canvas.
     private readonly HashSet<GraphicChunkRoot> _layoutDirtyChunks = new();
+    // Chunks whose material clip window had a LIVE scroll offset folded into it at bake (only happens for a
+    // scroll nested inside another scroll - see ComputeInheritedClips). That window is right only for the
+    // offset it was baked at, so these must re-mesh when the ancestor scroll moves; every other chunk keeps
+    // the cheap uniform-only scroll path. -xlinka
+    private readonly HashSet<GraphicChunkRoot> _offsetBakedClipChunks = new();
     private readonly HashSet<GraphicChunkRoot> _seenChunkRoots = new();
     // Same chunks as _seenChunkRoots but kept in DISCOVERY (tree) order, so we can hand each chunk a
     // monotonically increasing SortingOrder in hierarchy order -> later-in-tree chunks tie-break on top. -xlinka
@@ -187,16 +202,19 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     // for it. Consumed by the host (dashboard). This is what lets the UI render on change instead of every
     // single frame. -xlinka
     private bool _renderRequested;
-    // While rendering a render-offset scroll-content chunk, clip elision is disabled: an item fully inside
-    // the viewport at bake time will scroll OUT later, and if its clip was elided it would spill past the
-    // viewport. The chunk is baked once, so it must keep its clip for every item. -xlinka
-    private bool _noClipElision;
+    // The chunk being rendered rides a scroll offset (it IS scroll content or sits under some). Two effects:
+    // clip elision is off (an item fully inside the viewport at bake time scrolls OUT later, and an elided
+    // clip would let it spill past the viewport), and a mask INSIDE the chunk clips as a geometry trim
+    // instead of a material window - it moves with the geometry, and a material window can't. -xlinka
+    private bool _chunkRidesScroll;
     // Guards the async rebuild cycle: prepare (main) -> emit (worker) -> submit (main). Only one
     // cycle at a time; a change mid-cycle leaves its dirty flag set so the next OnCommonUpdate
     // re-runs. Touched only on the main thread (OnCommonUpdate + the RunSynchronously submit
     // callback), so no locking is needed.
     private bool _updateRunning;
     private bool _cycleRenderRoot;
+    // Any emit failure this cycle: written on the worker, read on main in FinishRebuildCycle.
+    private volatile bool _emitFailed;
 
     // Full refresh: recompute layout and rebuild the root chunk and every nested chunk. - xlinka
     public void MarkDirty()
@@ -308,6 +326,12 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             // with it). Nested-chunk elements never reach this branch - they take the scoped path below. -xlinka
             _layoutDirty = true;
             _rootDirty = true;
+            // A KNOWN chunk that just isn't flagged built yet still has to re-mesh on that pass. Text
+            // glyphs land mid-cycle (async atlas raster) and re-drive here before submit flips built;
+            // without this the next root pass skips the chunk (built, unmoved, not dirty) and the row
+            // keeps its glyphless bake until something else touches it - the vanishing-letters bug. -xlinka
+            if (root != null && _chunkMap.ContainsKey(root))
+                _dirtyChunks.Add(root);
             return;
         }
         _layoutDirtyChunks.Add(root);
@@ -328,10 +352,13 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             _dirtyChunks.Add(root);
     }
 
-    /// <summary>
-    /// True once after each rebuild/mesh submit. The host (dashboard) polls this each frame to render exactly
-    /// ONE offscreen frame per change, instead of re-rendering the full-res capture every frame. -xlinka
-    /// </summary>
+    // A rebuild cycle is in flight (prepared on main, worker tessellating, submit pending). External
+    // render triggers (the dash's font-atlas pulse) must NOT capture the viewport mid-cycle: old chunks are
+    // still visible and new ones aren't meshed yet, so a capture now shows overlap/holes = flicker. -xlinka
+    public bool IsRebuildInProgress => _updateRunning;
+
+    // True once after each rebuild/mesh submit. The host (dashboard) polls this each frame to render exactly
+    // ONE offscreen frame per change, instead of re-rendering the full-res capture every frame. -xlinka
     public bool ConsumeRenderRequested()
     {
         if (!_renderRequested)
@@ -408,6 +435,81 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         return TryHitTest(rayOrigin, rayDirection, out var hit) ? hit : null;
     }
 
+    // resolves the deepest active rect under the ray, interactable or not. grip interactions use this
+    // to find the ROW under the pointer (labels and plain containers are not IUIInteractable, so the
+    // press-oriented hit test can't see them) and then walk its parents for grab-time behaviors
+    public bool TryResolveUISlot(float3 rayOrigin, float3 rayDirection, out Slot? slot, out float3 worldPoint)
+    {
+        slot = null;
+        worldPoint = float3.Zero;
+        if (!TryRayToCanvasPoint(rayOrigin, rayDirection, out var context, UIInteractionSource.Unknown, 0))
+        {
+            return false;
+        }
+        worldPoint = context.WorldPoint;
+        slot = FindDeepestRectAt(Slot, context.LocalPoint, null, float2.Zero);
+        return slot != null;
+    }
+
+    // Depth-first, honoring active state and mask clips like ScanHitSlot; later siblings win ties the
+    // same way later-drawn content renders on top. Scroll composition is identical to ScanHitSlot - see the
+    // two-space rule documented there.
+    private Slot? FindDeepestRectAt(Slot slot, in float2 canvasPoint, Rect? clipRect, float2 scroll)
+    {
+        if (slot != Slot && !slot.ActiveSelf.Value)
+        {
+            return null;
+        }
+        if (clipRect.HasValue && !clipRect.Value.Contains(canvasPoint))
+        {
+            return null;
+        }
+
+        scroll += SlotScrollStep(slot);
+        var point = canvasPoint - scroll;
+
+        var rect = slot.GetComponent<RectTransform>();
+        var nextClip = clipRect;
+        var mask = slot.GetComponent<Mask>();
+        if (mask != null && mask.Enabled.Value && rect != null)
+        {
+            var maskRect = Translate(rect.LocalComputeRect, scroll);
+            nextClip = nextClip.HasValue
+                ? nextClip.Value.Intersection(maskRect)
+                : maskRect;
+            if (nextClip.Value.IsEmpty)
+            {
+                return null;
+            }
+        }
+
+        Slot? deepest = null;
+        var children = slot.Children;
+        for (int i = 0; i < children.Count; i++)
+        {
+            var found = FindDeepestRectAt(children[i], in canvasPoint, nextClip, scroll);
+            if (found != null)
+            {
+                deepest = found;
+            }
+        }
+        var localChildren = slot.LocalChildren;
+        for (int i = 0; i < localChildren.Count; i++)
+        {
+            var found = FindDeepestRectAt(localChildren[i], in canvasPoint, nextClip, scroll);
+            if (found != null)
+            {
+                deepest = found;
+            }
+        }
+        if (deepest != null)
+        {
+            return deepest;
+        }
+
+        return rect != null && rect.LocalComputeRect.Contains(point) ? slot : null;
+    }
+
     public bool TryHitTest(float3 rayOrigin, float3 rayDirection, out UIHit hit)
     {
         return TryHitTest(rayOrigin, rayDirection, UIInteractionSource.Unknown, 0, out hit);
@@ -428,7 +530,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         }
 
         var candidate = default(HitCandidate);
-        ScanHitSlot(Slot, in context, ref candidate, null);
+        ScanHitSlot(Slot, in context, ref candidate, null, float2.Zero);
         if (candidate.Interactable == null)
         {
             return false;
@@ -453,7 +555,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         }
 
         var candidate = default(HitCandidate);
-        ScanHitSlot(Slot, in context, ref candidate, null);
+        ScanHitSlot(Slot, in context, ref candidate, null, float2.Zero);
         var hovered = candidate.Interactable;
         int key = PointerKey(source, pointerId);
 
@@ -673,8 +775,19 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             _layoutDirtyChunks.Clear();
         }
 
+        // Capture + clear the root/chunk dirt BEFORE the prepare pass (but AFTER the layout branch,
+        // so rect-change dirt raised by this cycle's layout is still consumed now): anything raised
+        // DURING prepare (chunk SetActive side effects, glyph re-drives) must survive to the next
+        // cycle instead of being wiped with the pre-pass state. -xlinka
+        bool fullDirty = _fullDirty;
         bool renderRoot = _fullDirty || _rootDirty;
         _cycleRenderRoot = renderRoot;
+        _cycleDirtyChunks.Clear();
+        foreach (var dirty in _dirtyChunks)
+            _cycleDirtyChunks.Add(dirty);
+        _rootDirty = false;
+        _fullDirty = false;
+        _dirtyChunks.Clear();
 
         // PREPARE PASS (main): clear meshes + queue graphics (snapshot + glyph raster on main),
         // discover nested chunks. The geometry build (ComputeGraphic) is queued, not run here.
@@ -684,7 +797,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             _seenChunkRoots.Clear();
             _chunkOrder.Clear();
             _rootChunk.PrepareCompute();
-            RenderPartition(_rootChunk.ContentRenderData, Slot, null, null);
+            RenderPartition(_rootChunk.ContentRenderData, Slot, null, null, null);
 
             // Prepare every nested chunk that's dirty/unbuilt. ComputeChunk can discover deeper
             // nested roots, so drain a worklist until stable. - xlinka
@@ -701,7 +814,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
                 bool built = _chunkBuilt.TryGetValue(root, out var b) && b;
                 // Re-mesh only chunks that are new, explicitly dirty, moved, or on a genuine full
                 // refresh - NOT every chunk on any structural change. -xlinka
-                if ((_fullDirty || _dirtyChunks.Contains(root) || !built || ChunkMoved(root)) && ComputeChunk(root))
+                if ((fullDirty || _cycleDirtyChunks.Contains(root) || !built || ChunkMoved(root)) && ComputeChunk(root))
                 {
                     _computedChunks.Add(root);
                     if (root.Slot.GetComponent<RectTransform>() is { } crt)
@@ -728,18 +841,14 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         else
         {
             // Only nested chunks changed (e.g. the sparkline): re-mesh just those.
-            foreach (var root in _dirtyChunks)
+            foreach (var root in _cycleDirtyChunks)
             {
                 if (_chunkMap.ContainsKey(root) && ComputeChunk(root))
                     _computedChunks.Add(root);
             }
         }
 
-        // Dirty handled this cycle; a change arriving during the worker/submit sets its own flag again.
-        _rootDirty = false;
-        _fullDirty = false;
-        _dirtyChunks.Clear();
-
+        _emitFailed = false;
         _updateRunning = true;
 
         // Emit (geometry build) runs on a background worker. Everything
@@ -758,6 +867,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
                 }
                 catch (Exception ex)
                 {
+                    _emitFailed = true;
                     Lumora.Core.Logging.Logger.Error($"Canvas graphics worker failed: {ex}");
                 }
                 finally
@@ -791,18 +901,58 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     {
         if (IsDestroyed)
             return;
+        // Exception isolation PER CHUNK: one poisoned chunk must not abort the rest of the batch
+        // mid-emit. Any failure flags the cycle so FinishRebuildCycle retries instead of submitting
+        // (and latching as built) half-built empty meshes. -xlinka
         if (_cycleRenderRoot)
-            _rootChunk?.ContentRenderData.EmitQueued();
+        {
+            try
+            {
+                _rootChunk?.ContentRenderData.EmitQueued();
+            }
+            catch (Exception ex)
+            {
+                _emitFailed = true;
+                Lumora.Core.Logging.Logger.Error($"Canvas root chunk emit failed: {ex}");
+            }
+        }
         foreach (var root in _computedChunks)
-            if (_chunkMap.TryGetValue(root, out var chunk))
+        {
+            if (!_chunkMap.TryGetValue(root, out var chunk))
+                continue;
+            try
+            {
                 chunk.ContentRenderData.EmitQueued();
+            }
+            catch (Exception ex)
+            {
+                _emitFailed = true;
+                Lumora.Core.Logging.Logger.Error($"Canvas chunk emit failed ({root.Slot?.Name?.Value}): {ex}");
+            }
+        }
     }
 
     // MAIN: push the worker-built meshes + their materials to the renderers, then release the guard.
     private void FinishRebuildCycle()
     {
         if (!IsDestroyed)
-            SubmitCycle();
+        {
+            if (_emitFailed)
+            {
+                // A failed emit means cleared/partial meshes: submitting would latch EMPTY chunks
+                // as built and blank them until an unrelated dirty finally re-meshed them. The
+                // renderers keep their last GOOD meshes as long as we don't submit - so re-flag
+                // everything this cycle touched and retry on the next update. -xlinka
+                foreach (var root in _computedChunks)
+                    _dirtyChunks.Add(root);
+                if (_cycleRenderRoot)
+                    _rootDirty = true;
+            }
+            else
+            {
+                SubmitCycle();
+            }
+        }
         // A change that arrived during the cycle left its dirty flag set, so the next
         // OnCommonUpdate starts a fresh cycle.
         _updateRunning = false;
@@ -842,18 +992,122 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         {
             if (_chunkMap.TryGetValue(root, out var chunk))
             {
+                // Scroll-participating chunks (the content root and every row chunk nested under one) displace
+                // their verts in the vertex shader, so their baked AABB no longer bounds the visible pixels -
+                // grow the cull margin BEFORE submit (the per-surface instances read it as they're built) or
+                // Godot frustum-culls them at glancing angles / up close ("panel clips when I get close"). -xlinka
+                bool scrolled = ScrollRenderOffset &&
+                    (root.ScrollContent || FindScrollContentAncestor(root.Slot) != null);
+                if (scrolled && chunk.MeshRenderer != null)
+                    chunk.MeshRenderer.ExtraCullMargin = ScrolledChunkCullMargin;
+
                 chunk.SubmitChanges(chunk.OrderIndex);
                 // Render-offset content: its materials were just (re)cloned by submit, so re-pin the clip
                 // offset onto them for the current scroll position. persist=true so the materials' own update
-                // (queued by the re-clone) doesn't re-push the baked 0 and snap the content back to the top. -xlinka
-                if (ScrollRenderOffset && root.ScrollContent)
-                    chunk.SetClipOffset(root.RenderOffset, persist: true);
+                // (queued by the re-clone) doesn't re-push the baked 0 and snap the content back to the top.
+                // Applies to the scroll content root AND every chunk nested under one: inspector/session rows
+                // are their own chunks (per-row re-mesh perf), and a chunk that never gets the offset renders
+                // frozen while the (empty) content chunk scrolls - THE "value moves, pixels don't" bug. The
+                // offset is cumulative so a scroll nested inside a scroll (code editor in a panel) rides both. -xlinka
+                if (scrolled)
+                    chunk.SetClipOffset(CumulativeScrollOffset(root), persist: true);
                 _chunkBuilt[root] = true;
             }
         }
 
         if (_cycleRenderRoot)
             CleanupChunks();
+        else
+            DisposeDeadChunks();
+    }
+
+    // Chunk slots are filed FLAT under the canvas slot (GraphicsChunk.EnsureSlot), not under the element
+    // that owns the chunk, so destroying a row slot does not take its mesh with it. Only CleanupChunks
+    // frees a dead chunk, and that runs on ROOT passes alone; a structural rebuild inside a built nested
+    // chunk (the inspector tree re-listing its rows, all their own chunks) takes the scoped path and never
+    // gets one. The dead row meshes then keep rendering under the new rows until some unrelated root pass
+    // sweeps them: ghost rows, most visibly a stale highlighted root row stacked above the real one. Sweep
+    // dead chunks on EVERY cycle; the not-seen -> deactivate half of CleanupChunks stays root-only because
+    // a scoped pass has no complete seen-set to judge liveness by. -xlinka
+    private void DisposeDeadChunks()
+    {
+        _chunkScratch.Clear();
+        foreach (var pair in _chunkMap)
+        {
+            var root = pair.Key;
+            if (root.IsDestroyed || root.Slot == null || root.Slot.IsDestroyed)
+                _chunkScratch.Add(root);
+        }
+        foreach (var root in _chunkScratch)
+        {
+            _chunkMap[root].Dispose();
+            _chunkMap.Remove(root);
+            _chunkBuilt.Remove(root);
+            _chunkMeshedRect.Remove(root);
+            _offsetBakedClipChunks.Remove(root);
+        }
+    }
+
+    // Nearest ancestor GraphicChunkRoot flagged ScrollContent, strictly ABOVE this slot (stops at the canvas
+    // root). Rows inside a scroll content are their own chunks; this is how they're recognized as scrolled. -xlinka
+    private GraphicChunkRoot? FindScrollContentAncestor(Slot start)
+    {
+        for (var s = start?.Parent; s != null && !ReferenceEquals(s, Slot); s = s.Parent)
+        {
+            var cr = s.GetComponent<GraphicChunkRoot>();
+            if (cr != null && cr.ScrollContent)
+                return cr;
+        }
+        return null;
+    }
+
+    // Total scroll offset a chunk should render at: its own RenderOffset (if it IS scroll content) plus every
+    // ScrollContent ancestor's offset. Cumulative so a scroll nested inside a scroll composes linearly. -xlinka
+    private float2 CumulativeScrollOffset(GraphicChunkRoot root)
+    {
+        float2 own = root.ScrollContent ? root.RenderOffset : float2.Zero;
+        return own + ScrollOffsetOf(root.Slot?.Parent);
+    }
+
+    // One slot's contribution to the render displacement: a ScrollRect's content chunk is slid by its
+    // RenderOffset (the shader's clip_offset moves the verts AND the clip test together), so this slot and
+    // everything under it DRAWS that far from its layout rect. Zero for every non-scroll slot. -xlinka
+    private static float2 SlotScrollStep(Slot? slot)
+    {
+        if (!ScrollRenderOffset || slot == null)
+            return float2.Zero;
+        var cr = slot.GetComponent<GraphicChunkRoot>();
+        return cr != null && cr.ScrollContent ? cr.RenderOffset : float2.Zero;
+    }
+
+    // gap between a slot's LAYOUT rect and where it actually renders: every ScrollContent chunk root at
+    // or above it, summed (nested scrolls compose linearly).
+    // THE single source for that number. Rendering (CumulativeScrollOffset -> clip_offset) and every hit path
+    // (ScanHitSlot / FindDeepestRectAt / CanvasPointToLocal) go through this one walk, so the pixel you see and
+    // the thing you hit can't drift apart - which is exactly what they did while hit-testing read raw layout
+    // rects and rendering read the offset. -xlinka
+    public float2 ScrollOffsetOf(Slot? slot)
+    {
+        float2 total = float2.Zero;
+        for (var s = slot; s != null && !ReferenceEquals(s, Slot); s = s.Parent)
+            total += SlotScrollStep(s);
+        return total;
+    }
+
+    // maps a canvas-space point (what UIInteractionContext.LocalPoint carries) into a slot's own layout
+    // space by undoing the scroll displacement it renders at. anything comparing a pointer point to a
+    // RectTransform rect - value-from-point, cell-from-point, point-in-panel - must go through this, or
+    // it reads the rect as it sat at scroll 0.
+    public float2 CanvasPointToLocal(Slot? slot, in float2 canvasPoint) => canvasPoint - ScrollOffsetOf(slot);
+
+    private bool IsSlotDescendantOf(Slot slot, Slot ancestor)
+    {
+        for (var s = slot?.Parent; s != null && !ReferenceEquals(s, Slot); s = s.Parent)
+        {
+            if (ReferenceEquals(s, ancestor))
+                return true;
+        }
+        return false;
     }
 
     // Tessellate a nested chunk's mesh without submitting it. Returns true if computed.
@@ -862,8 +1116,20 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         if (!_chunkMap.TryGetValue(root, out var chunk))
             return false;
 
-        var clip = ComputeInheritedClip(root.Slot);
+        // This chunk's mesh rides a scroll offset - it IS scroll content, or it's a row/box chunk nested under
+        // some (those scroll too). Drives all three clip decisions below: no clip elision (an item fully in
+        // view at bake scrolls out later, and an elided clip would let it spill), full geometry bake against
+        // the fixed window, and the window/riding split. -xlinka
+        bool ridesScroll = ScrollRenderOffset && (root.ScrollContent || FindScrollContentAncestor(root.Slot) != null);
+        var clips = ComputeInheritedClips(root, ridesScroll);
         var stencil = ComputeInheritedStencil(root.Slot);
+
+        // Only the genuinely nested case (a scroll inside a scroll) bakes a live offset into the window; that
+        // window needs re-baking when the ancestor moves, and ApplyScrollOffset uses this set to find it.
+        if (clips.WindowRidesScroll)
+            _offsetBakedClipChunks.Add(root);
+        else
+            _offsetBakedClipChunks.Remove(root);
 
         // Render-offset scrolling: the content is moved by the clip_offset uniform IN THE SHADER (it offsets
         // the vertex and clips against the same value, so position and clip can never desync), NOT by the
@@ -873,15 +1139,14 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         chunk.SetComputeOffset(float2.Zero);
 
         chunk.PrepareCompute();
-        // Scroll content keeps every item's clip (no elision): items in view now scroll out later, and the
-        // chunk is baked once, so an elided item would spill past the viewport once moved. -xlinka
-        _noClipElision = ScrollRenderOffset && root.ScrollContent;
-        // Scroll content must bake its FULL geometry (nothing culled or trimmed to the viewport), or items
-        // below the fold are never in the mesh and scrolling reveals empty space. The shader still clips at
-        // render via the material rect + clip_offset. -xlinka
-        chunk.ContentRenderData.SuppressGeometryClip = _noClipElision;
-        RenderPartition(chunk.ContentRenderData, root.Slot, clip, root, stencil);
-        _noClipElision = false;
+        _chunkRidesScroll = ridesScroll;
+        // Scroll content must bake its FULL geometry (nothing culled or trimmed to the FIXED viewport window),
+        // or items below the fold are never in the mesh and scrolling reveals empty space. The shader clips
+        // those at render via the material rect + clip_offset. A window that RIDES with this chunk is the
+        // opposite case and IS trimmed at bake - see RenderData.GeometryClipRect. -xlinka
+        chunk.ContentRenderData.SuppressGeometryClip = ridesScroll;
+        RenderPartition(chunk.ContentRenderData, root.Slot, clips.Window, clips.Riding, root, stencil);
+        _chunkRidesScroll = false;
         return true;
     }
 
@@ -900,7 +1165,31 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             // Move + clip the content in one shot via the shader's clip_offset uniform (no re-mesh, no chunk
             // transform, so position and clip stay locked together). persist=false: write the shader param
             // directly, no per-material asset rebuild - this is the hot path hit every scroll frame. -xlinka
-            chunk.SetClipOffset(pixelOffset, persist: false);
+            chunk.SetClipOffset(CumulativeScrollOffset(content), persist: false);
+
+            // Rows built inside the content are their OWN chunks (per-row re-mesh perf) with their own material
+            // clones - the content chunk's uniform doesn't reach them. Push the offset to every built chunk
+            // nested under the scrolled content or they render frozen while the (empty) content chunk moves.
+            // Cumulative per chunk so an inner scroll (code editor in a panel) keeps its own offset on top. -xlinka
+            foreach (var kv in _chunkMap)
+            {
+                if (ReferenceEquals(kv.Key, content))
+                    continue;
+                var nested = kv.Value;
+                if (nested.ChunkSlot == null || nested.ChunkSlot.IsDestroyed)
+                    continue;
+                if (!IsSlotDescendantOf(kv.Key.Slot, content.Slot))
+                    continue;
+                nested.SetClipOffset(CumulativeScrollOffset(kv.Key), persist: false);
+                // A chunk under a SECOND scroll carries an ancestor mask's displacement baked into its material
+                // window (a fixed canvas-space rect can't ride a live offset), and this move just invalidated
+                // that number - the verts follow clip_offset but the baked window doesn't. Re-mesh it. Only a
+                // scroll inside a scroll ever lands in this set, so the normal list scroll keeps the
+                // uniform-only path; the price of the nested case is a re-tessellation per scroll frame. -xlinka
+                if (_offsetBakedClipChunks.Contains(kv.Key))
+                    _dirtyChunks.Add(kv.Key);
+            }
+
             _renderRequested = true;   // repaint the offscreen dashboard capture this frame
             return true;
         }
@@ -976,6 +1265,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
                 _chunkMap.Remove(root);
                 _chunkBuilt.Remove(root);
                 _chunkMeshedRect.Remove(root);
+                _offsetBakedClipChunks.Remove(root);
             }
             else
             {
@@ -998,26 +1288,103 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         return null;
     }
 
-    // Clip a nested chunk inherits from masks on its ancestors (above the chunk root). - xlinka
-    private Rect? ComputeInheritedClip(Slot start)
+    // Clip a nested chunk inherits from masks on its ancestors (above the chunk root), split by whether each
+    // mask MOVES WITH the chunk's geometry.
+    //
+    // The shader displaces a vert by clip_offset and tests the DISPLACED position against the material rect, so
+    // a material window is only right when it is a FIXED canvas-space window - true for a mask sitting above
+    // every scroll the chunk rides, false for one that rides a scroll itself (its pixels move, the baked rect
+    // doesn't, and the content gets sliced by a window that isn't where the mask is any more). A mask locked to
+    // the chunk (nothing scrolls between them) keeps a fixed relationship to the verts, so it comes back as
+    // Riding and is applied as a bake-time geometry trim instead - exact at any scroll position.
+    //
+    // A mask that rides a DIFFERENT amount than the chunk (a scroll inside a scroll) fits neither: it goes in
+    // the window with its CURRENT displacement folded in, which is exact as baked and drifts if that ancestor
+    // scrolls without a re-mesh. WindowRidesScroll flags those chunks so ApplyScrollOffset can re-bake them.
+    //
+    // split=false (a chunk that rides nothing) keeps the old single-window behavior verbatim: no scroll roots
+    // exist above it, so every offset here is zero anyway. -xlinka
+    private InheritedClips ComputeInheritedClips(GraphicChunkRoot root, bool split)
     {
-        Rect? clip = null;
-        for (var s = start.Parent; s != null; s = s.Parent)
+        Rect? window = null;
+        Rect? riding = null;
+        bool windowRides = false;
+
+        // Total displacement of this chunk's verts, and how many scrolls it comes from.
+        float2 total = float2.Zero;
+        int totalScrolls = 0;
+        for (var s = root.Slot; s != null; s = s.Parent)
         {
-            var mask = s.GetComponent<Mask>();
-            var rect = s.GetComponent<RectTransform>();
-            if (mask != null && mask.Enabled.Value && rect != null)
+            var cr = ReferenceEquals(s, root.Slot) ? root : s.GetComponent<GraphicChunkRoot>();
+            if (cr != null && cr.ScrollContent)
             {
-                clip = clip.HasValue ? clip.Value.Intersection(rect.LocalComputeRect) : rect.LocalComputeRect;
+                total += cr.RenderOffset;
+                totalScrolls++;
             }
             if (ReferenceEquals(s, Slot))
                 break;
         }
-        return clip;
+
+        // Walking up, `crossed` is the part of that displacement the mask does NOT share, so the mask's own
+        // displacement is (total - crossed) - exactly how far its window has to move to sit on its pixels.
+        float2 crossed = float2.Zero;
+        int crossedScrolls = 0;
+        for (var s = root.Slot; s != null; s = s.Parent)
+        {
+            var mask = ReferenceEquals(s, root.Slot) ? null : s.GetComponent<Mask>();
+            var rect = s.GetComponent<RectTransform>();
+            if (mask != null && mask.Enabled.Value && rect != null)
+            {
+                if (split && crossedScrolls == 0)
+                {
+                    // Locked to the chunk: nothing scrolls between them, so their relationship is fixed and
+                    // the window can be baked into the geometry.
+                    var maskRect = rect.LocalComputeRect;
+                    riding = riding.HasValue ? riding.Value.Intersection(maskRect) : maskRect;
+                }
+                else
+                {
+                    var maskRect = Translate(rect.LocalComputeRect, total - crossed);
+                    window = window.HasValue ? window.Value.Intersection(maskRect) : maskRect;
+                    // Structural, not value-based: a nested scroll parked at 0 right now still moves later,
+                    // and a window baked as if it were static would be wrong the moment it does. -xlinka
+                    windowRides |= totalScrolls - crossedScrolls > 0;
+                }
+            }
+            var chunkRoot = ReferenceEquals(s, root.Slot) ? root : s.GetComponent<GraphicChunkRoot>();
+            if (chunkRoot != null && chunkRoot.ScrollContent)
+            {
+                crossed += chunkRoot.RenderOffset;
+                crossedScrolls++;
+            }
+            if (ReferenceEquals(s, Slot))
+                break;
+        }
+        return new InheritedClips(window, riding, windowRides);
+    }
+
+    private static Rect Translate(in Rect rect, in float2 offset)
+        => new Rect(rect.x + offset.x, rect.y + offset.y, rect.width, rect.height);
+
+    private readonly struct InheritedClips
+    {
+        // Fixed canvas-space window, carried on the material and tested against the scroll-displaced position.
+        public readonly Rect? Window;
+        // Window that moves with the chunk's geometry - applied as a geometry trim at bake, never on a material.
+        public readonly Rect? Riding;
+        // Window has a live scroll offset baked into it (scroll inside a scroll): re-bake when it moves.
+        public readonly bool WindowRidesScroll;
+
+        public InheritedClips(Rect? window, Rect? riding, bool windowRidesScroll)
+        {
+            Window = window;
+            Riding = riding;
+            WindowRidesScroll = windowRidesScroll;
+        }
     }
 
     // Stencil role a nested chunk inherits from a stencil-enabled Mask on its ancestors (above the chunk
-    // root). Mirror of ComputeInheritedClip - without this, a shaped mask over a separately-chunked subtree
+    // root). Mirror of ComputeInheritedClips - without this, a shaped mask over a separately-chunked subtree
     // (e.g. a scroll region or any GraphicChunkRoot) would silently fall back to the rect-AABB clip instead
     // of the stencil shape. Single-depth, so any ancestor stencil mask => Test (the writer lives in an
     // ancestor chunk, which draws first via the root/tree-order priority, so the stencil is set in time). -xlinka
@@ -1444,7 +1811,17 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         return true;
     }
 
-    private void ScanHitSlot(Slot slot, in UIInteractionContext context, ref HitCandidate candidate, Rect? clipRect)
+    // Two spaces here, and mixing them up is the whole bug this guards against:
+    //  - CANVAS-VISIBLE space is where the pointer is (context.LocalPoint) and where pixels land. Clip windows
+    //    accumulate in this space, so a viewport mask keeps clipping where it actually sits and a row scrolled
+    //    out of view is rejected by that window before its own rect is ever tested.
+    //  - CONTENT space is a slot's raw layout rect. Rect/graphic tests happen there, against the pointer with
+    //    the accumulated scroll displacement taken back off.
+    // scroll is that displacement, summed on the way down (SlotScrollStep per slot) - the same composition the
+    // shader gets from CumulativeScrollOffset -> clip_offset. A mask window is pushed the other way (Translate
+    // by the scroll AT THE MASK) so it lands on the pixels the mask is really covering. Before this, the scan
+    // read every rect at scroll 0, so a scrolled list handed presses to whatever row USED to be there. -xlinka
+    private void ScanHitSlot(Slot slot, in UIInteractionContext context, ref HitCandidate candidate, Rect? clipRect, float2 scroll)
     {
         if (slot != Slot && !slot.ActiveSelf.Value)
         {
@@ -1456,6 +1833,9 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             return;
         }
 
+        scroll += SlotScrollStep(slot);
+        var point = context.LocalPoint - scroll;
+
         // Index iteration (not foreach) so this per-frame, per-slot scan doesn't allocate an enumerator on
         // the IReadOnlyList each call. -xlinka
         var comps = slot.Components;
@@ -1463,10 +1843,10 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         {
             switch (comps[ci])
             {
-                case InteractionBlock block when block.BlocksPoint(context.LocalPoint):
+                case InteractionBlock block when block.BlocksPoint(point):
                     candidate = HitCandidate.Blocked;
                     break;
-                case IUIInteractable interactable when interactable.CanInteract && interactable.IsPointInside(context.LocalPoint):
+                case IUIInteractable interactable when interactable.CanInteract && interactable.IsPointInside(point):
                     candidate = new HitCandidate(interactable);
                     break;
             }
@@ -1477,9 +1857,10 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         var rect = slot.GetComponent<RectTransform>();
         if (mask != null && mask.Enabled.Value && rect != null)
         {
+            var maskRect = Translate(rect.LocalComputeRect, scroll);
             nextClip = nextClip.HasValue
-                ? nextClip.Value.Intersection(rect.LocalComputeRect)
-                : rect.LocalComputeRect;
+                ? nextClip.Value.Intersection(maskRect)
+                : maskRect;
             if (nextClip.Value.IsEmpty)
             {
                 return;
@@ -1489,12 +1870,12 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         var children = slot.Children;
         for (int i = 0; i < children.Count; i++)
         {
-            ScanHitSlot(children[i], in context, ref candidate, nextClip);
+            ScanHitSlot(children[i], in context, ref candidate, nextClip, scroll);
         }
         var localChildren = slot.LocalChildren;
         for (int i = 0; i < localChildren.Count; i++)
         {
-            ScanHitSlot(localChildren[i], in context, ref candidate, nextClip);
+            ScanHitSlot(localChildren[i], in context, ref candidate, nextClip, scroll);
         }
     }
 
@@ -1573,14 +1954,14 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
 
     // Render a slot subtree into one chunk's mesh, stopping at any nested GraphicChunkRoot (those
     // render into their own chunk). ownRoot is the chunk root we're rendering for (null = root). - xlinka
-    private void RenderPartition(GraphicsChunk.RenderData rd, Slot slot, Rect? clipRect, GraphicChunkRoot? ownRoot, StencilRole stencil = StencilRole.None)
+    private void RenderPartition(GraphicsChunk.RenderData rd, Slot slot, Rect? clipRect, Rect? ridingClip, GraphicChunkRoot? ownRoot, StencilRole stencil = StencilRole.None)
     {
         if (slot != Slot && !slot.ActiveSelf.Value)
         {
             return;
         }
 
-        if (clipRect.HasValue && clipRect.Value.IsEmpty)
+        if ((clipRect.HasValue && clipRect.Value.IsEmpty) || (ridingClip.HasValue && ridingClip.Value.IsEmpty))
         {
             return;
         }
@@ -1598,22 +1979,39 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             // A stencil mask stamps its SHAPE into the stencil buffer (Write pass). Queued BEFORE the
             // children recurse, and render_priority follows submission order, so the writer draws first and
             // the tested content draws after - even though the mask itself is invisible. -xlinka
-            EmitGraphics(rd, slot, clipRect, StencilRole.Write);
+            EmitGraphics(rd, slot, clipRect, ridingClip, StencilRole.Write);
         }
         else if (showOwnGraphics)
         {
-            EmitGraphics(rd, slot, clipRect, stencil);
+            EmitGraphics(rd, slot, clipRect, ridingClip, stencil);
         }
 
         var nextClip = clipRect;
+        var nextRiding = ridingClip;
         if (isMask)
         {
-            nextClip = nextClip.HasValue
-                ? nextClip.Value.Intersection(rect!.LocalComputeRect)
-                : rect!.LocalComputeRect;
-            if (nextClip.Value.IsEmpty)
+            // A mask BELOW the chunk root always moves with this chunk's geometry, so on a scroll-riding chunk
+            // it belongs in the riding window (geometry trim). On a static chunk nothing moves and it stays in
+            // the material window, exactly as before. -xlinka
+            if (_chunkRidesScroll)
             {
-                return;
+                nextRiding = nextRiding.HasValue
+                    ? nextRiding.Value.Intersection(rect!.LocalComputeRect)
+                    : rect!.LocalComputeRect;
+                if (nextRiding.Value.IsEmpty)
+                {
+                    return;
+                }
+            }
+            else
+            {
+                nextClip = nextClip.HasValue
+                    ? nextClip.Value.Intersection(rect!.LocalComputeRect)
+                    : rect!.LocalComputeRect;
+                if (nextClip.Value.IsEmpty)
+                {
+                    return;
+                }
             }
         }
 
@@ -1622,16 +2020,16 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
 
         foreach (var child in slot.Children)
         {
-            RenderChildPartition(rd, child, nextClip, ownRoot, nextStencil);
+            RenderChildPartition(rd, child, nextClip, nextRiding, ownRoot, nextStencil);
         }
         foreach (var child in slot.LocalChildren)
         {
-            RenderChildPartition(rd, child, nextClip, ownRoot, nextStencil);
+            RenderChildPartition(rd, child, nextClip, nextRiding, ownRoot, nextStencil);
         }
     }
 
     // Queue a slot's own enabled graphics for the worker emit pass, tagging each with its stencil role. -xlinka
-    private void EmitGraphics(GraphicsChunk.RenderData rd, Slot slot, Rect? clipRect, StencilRole stencil)
+    private void EmitGraphics(GraphicsChunk.RenderData rd, Slot slot, Rect? clipRect, Rect? ridingClip, StencilRole stencil)
     {
         // Indexed scan: GetComponents allocated a LINQ iterator + a copy list PER SLOT PER REBUILD.
         var comps = slot.Components;
@@ -1661,7 +2059,19 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             // key must keep the shape). Common win: scroll items fully in view, content well inside a panel
             // mask. -xlinka
             var effectiveClip = clipRect;
-            if (effectiveClip.HasValue && !_noClipElision && stencil == StencilRole.None && IsRectBoundedGraphic(graphic))
+            var effectiveRiding = ridingClip;
+            if (effectiveRiding.HasValue && !graphic.TrimsGeometryToClip)
+            {
+                // This graphic never trims its own geometry, so a material window is the only clip it can get.
+                // Fold the riding half back in there: it goes stale as the chunk scrolls, exactly as it did
+                // before the split, but it's never left with LESS clipping than it had. -xlinka
+                effectiveClip = effectiveClip.HasValue
+                    ? effectiveClip.Value.Intersection(effectiveRiding.Value)
+                    : effectiveRiding;
+                effectiveRiding = null;
+            }
+
+            if (effectiveClip.HasValue && !_chunkRidesScroll && stencil == StencilRole.None && IsRectBoundedGraphic(graphic))
             {
                 var grect = slot.GetComponent<RectTransform>();
                 if (grect != null && effectiveClip.Value.Encloses(grect.LocalComputeRect))
@@ -1670,7 +2080,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
                 }
             }
 
-            rd.QueueGraphic(graphic, effectiveClip, stencil);
+            rd.QueueGraphic(graphic, effectiveClip, effectiveRiding, stencil);
         }
     }
 
@@ -1679,7 +2089,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     private static bool IsRectBoundedGraphic(Graphic graphic)
         => graphic is Image or RawImage or TiledRawImage or BorderedImage;
 
-    private void RenderChildPartition(GraphicsChunk.RenderData rd, Slot child, Rect? clip, GraphicChunkRoot? ownRoot, StencilRole stencil = StencilRole.None)
+    private void RenderChildPartition(GraphicsChunk.RenderData rd, Slot child, Rect? clip, Rect? ridingClip, GraphicChunkRoot? ownRoot, StencilRole stencil = StencilRole.None)
     {
         // An inactive child renders nothing - and, critically, must NOT register its chunk root as "seen"
         // this cycle. If it did, CleanupChunks wouldn't disable that chunk, and a hidden overlay/screen
@@ -1697,7 +2107,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             if (_seenChunkRoots.Add(childRoot)) _chunkOrder.Add(childRoot);
             return;
         }
-        RenderPartition(rd, child, clip, ownRoot, stencil);
+        RenderPartition(rd, child, clip, ridingClip, ownRoot, stencil);
     }
 
     private static UIInteractionSource GetInteractionSource(InteractionLaser laser)

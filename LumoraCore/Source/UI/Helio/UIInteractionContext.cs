@@ -39,4 +39,12 @@ public readonly struct UIInteractionContext
         Distance = distance;
         Actor = actor;
     }
+
+    // LocalPoint mapped into a slot's own layout space, with the scroll displacement that slot
+    // renders at taken back off (see Canvas.CanvasPointToLocal).
+    // Use this, never the raw LocalPoint, whenever the point is compared against a RectTransform rect:
+    // value-from-point, cell-from-point, point-in-panel. LocalPoint is canvas-visible space; a rect inside a
+    // scrolled list is NOT where its layout rect says it is, so the raw point reads the list as if it were
+    // parked at the top. Free (returns the point unchanged) when nothing above the slot scrolls. -xlinka
+    public float2 PointIn(Slot? slot) => Canvas != null ? Canvas.CanvasPointToLocal(slot, in LocalPoint) : LocalPoint;
 }

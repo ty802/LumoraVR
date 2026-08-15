@@ -224,8 +224,8 @@ public class RectTransform : Component
         return null;
     }
 
-    /// <summary>True if this rect or any descendant has a pending layout change (so the cached-layout pass
-    /// must not skip it).</summary>
+    // true if this rect or any descendant has a pending layout change (so the cached-layout pass
+    // must not skip it)
     public bool LayoutSubtreeDirty => _layoutSelfDirty || _descendantLayoutDirty;
 
     internal void ClearLayoutDirty()
@@ -273,14 +273,14 @@ public class RectTransform : Component
         }
     }
 
-    /// <summary>True if this rect's cached measured metric for the axis is stale and must be re-measured.</summary>
+    // true if this rect's cached measured metric for the axis is stale and must be re-measured
     public bool MetricsDirty(LayoutDirection direction)
         => direction == LayoutDirection.Horizontal ? _metricsDirtyH : _metricsDirtyV;
 
-    /// <summary>True once the canvas measure pass has cached this rect's metrics.</summary>
+    // true once the canvas measure pass has cached this rect's metrics
     public bool MetricsValid => _metricsValid;
 
-    /// <summary>The bottom-up measured metrics for an axis (valid only after the measure pass; see MetricsValid).</summary>
+    // bottom-up measured metrics for an axis, valid only after the measure pass (see MetricsValid)
     public LayoutMetrics GetMeasuredMetrics(LayoutDirection direction)
         => direction == LayoutDirection.Horizontal ? _measuredHorizontal : _measuredVertical;
 
@@ -299,7 +299,18 @@ public class RectTransform : Component
         _metricsValid = true;
     }
 
-    internal void SetLocalComputeRect(in Rect rect) => _localComputeRect = rect;
+    // Chunk geometry is canvas-absolute and bakes against this rect: a layout pass that moves a
+    // graphic inside an already-built chunk must re-mesh that chunk, or it keeps stale geometry
+    // until an unrelated dirty rebuilds it (the render-only-after-hover bug - ChunkMoved only
+    // watches the chunk ROOT's rect, so inner moves were invisible). Equality-gated so idle passes
+    // and scrolling (a render offset, never a rect write) cost nothing. -xlinka
+    internal void SetLocalComputeRect(in Rect rect)
+    {
+        if (_localComputeRect.Equals(rect))
+            return;
+        _localComputeRect = rect;
+        _registeredCanvas?.MarkDirty(this);
+    }
     internal void SetRegisteredCanvas(Canvas? canvas) => _registeredCanvas = canvas;
     internal void SetRectParent(RectTransform? parent) => _rectParent = parent;
     internal void AddRectChild(RectTransform child) => _rectChildren.Add(child);

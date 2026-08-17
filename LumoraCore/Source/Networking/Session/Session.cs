@@ -5,16 +5,14 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Lumora.Core;
-using Lumora.Core.Networking.Discovery;
-using Lumora.Core.Networking.LNL;
+using Lumora.Nexus.Discovery;
+using Lumora.Nexus.Transport.LNL;
 using Lumora.Core.Networking.Streams;
+using Lumora.Nexus.Cloud;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Session;
 
-/// <summary>
-/// Session wraps all networking for a World.
-/// </summary>
 public class Session : IDisposable
 {
     public World World { get; private set; }
@@ -22,9 +20,6 @@ public class Session : IDisposable
     public SessionSyncManager Sync { get; private set; } = null!;
     public SessionAssetTransferer AssetTransferer { get; private set; } = null!;
 
-    /// <summary>
-    /// Session metadata describing identity, settings, and state.
-    /// </summary>
     public SessionMetadata Metadata { get; private set; } = null!;
 
     public bool IsDisposed { get; private set; }
@@ -34,30 +29,14 @@ public class Session : IDisposable
     private SessionServerClient? _serverClient;
     private BackendSessionDirectoryClient? _directoryClient;
 
-    /// <summary>
-    /// Event triggered when session is disconnected.
-    /// </summary>
     public event Action OnDisconnected = null!;
 
-    /// <summary>
-    /// Callback fired when a <see cref="RawFrameMessage"/> arrives, after sender
-    /// validation and authority-side relay. Runs on the sync thread - keep the
-    /// callback fast (push to a lock-free queue and return). The
-    /// <paramref name="payload"/> memory is only valid for the duration of the
-    /// invocation; copy bytes out if you need to retain them.
-    /// </summary>
+    // Runs on the sync thread - keep the callback fast (push to a lock-free queue and return). The
     public delegate void RawFrameHandler(User sender, RefID streamRefID, ushort sequence, ReadOnlyMemory<byte> payload);
 
-    /// <summary>
-    /// Subscribe to receive raw frames bound for any stream this peer can see.
-    /// Audio / voice consumers typically filter by <c>streamRefID</c>.
-    /// </summary>
     public event RawFrameHandler? RawFrameReceived;
 
-    /// <summary>
-    /// Gets the LAN announcer ID for filtering out own broadcasts during discovery.
-    /// Returns Guid.Empty if not hosting or not announcing.
-    /// </summary>
+    // Guid.Empty when not hosting or not announcing.
     public Guid LANAnnouncerId => _lanAnnouncer?.AnnouncerId ?? Guid.Empty;
 
     // Deployment endpoints are sourced from the config store (Settings) so a build can point at a real
@@ -72,41 +51,36 @@ public class Session : IDisposable
     private static int? _sessionServerPort;
     private static string? _backendSessionDirectoryUrl;
 
-    /// <summary>
-    /// Session server address for public registration. Read from config key
-    /// <c>Network.SessionServer.Address</c>; falls back to <c>localhost</c> for local dev.
-    /// </summary>
+    // Config key Network.SessionServer.Address; falls back to localhost for local dev.
     public static string SessionServerAddress
     {
         get => _sessionServerAddress ??= Settings.ReadValue(KeyServerAddress, "localhost");
         set => _sessionServerAddress = value;
     }
 
-    /// <summary>
-    /// Session server port for public registration. Read from config key
-    /// <c>Network.SessionServer.Port</c>; falls back to <c>8000</c> for local dev.
-    /// </summary>
+    // Config key Network.SessionServer.Port; falls back to 8000 for local dev.
     public static int SessionServerPort
     {
         get => _sessionServerPort ??= Settings.ReadValue(KeyServerPort, 8000);
         set => _sessionServerPort = value;
     }
 
-    /// <summary>
-    /// Backend API base URL used for authenticated public session directory registration. Read from
-    /// config key <c>Network.BackendDirectory.Url</c>; falls back to a plain-http localhost URL for
-    /// local dev only. Deployments must configure an https URL - do not ship the http fallback.
-    /// </summary>
+    // Read from config key Network.BackendDirectory.Url; falls back to a plain-http localhost URL for local dev
+    // only. Deployments must configure an https URL - do not ship the http fallback.
     public static string BackendSessionDirectoryUrl
     {
         get => _backendSessionDirectoryUrl ??= Settings.ReadValue(KeyBackendUrl, "http://localhost:5178/api");
         set => _backendSessionDirectoryUrl = value;
     }
 
-    /// <summary>
-    /// Provides the current backend auth token for host-owned session registration.
-    /// </summary>
-    public static Func<string?>? BackendAuthTokenProvider { get; set; }
+    // Provides the current backend auth token for host-owned session registration. Nothing assigned this,
+    // so every backend directory registration bailed at the null check below and no session ever reached
+    // the internet listing. It now falls back to the signed-in account's token, which is the only token
+    // that exists; the setter stays for host bootstrap and tests. -xlinka
+    public static Func<string?> BackendAuthTokenProvider { get; set; } = DefaultBackendAuthToken;
+
+    private static string? DefaultBackendAuthToken()
+        => Engine.Current?.CDNClient?.CurrentSession?.Token;
 
     private Session(World world)
     {
@@ -114,9 +88,6 @@ public class Session : IDisposable
         Connections = new SessionConnectionManager(this);
     }
 
-    /// <summary>
-    /// Create a new session as host (authority) with default metadata.
-    /// </summary>
     public static Session NewSession(World world, ushort port = 7777)
     {
         var metadata = new SessionMetadata
@@ -129,14 +100,10 @@ public class Session : IDisposable
         return NewSession(world, port, metadata);
     }
 
-    /// <summary>
-    /// Create a new session as host (authority) with specified metadata.
-    /// </summary>
     public static Session NewSession(World world, ushort port, SessionMetadata metadata)
     {
         var session = new Session(world);
 
-        // Initialize metadata
         session.Metadata = metadata ?? new SessionMetadata();
         session.Metadata.SessionId = SessionIdentifier.Generate();
         session.Metadata.StartTime = DateTime.UtcNow;
@@ -147,7 +114,6 @@ public class Session : IDisposable
         LumoraLogger.Log($"[lnl] Creating new session '{metadata!.Name}' on port {port}");
         LumoraLogger.Log($"[lnl] Session ID: {session.Metadata.SessionId}");
 
-        // Start listener
         if (!session.Connections.StartListener(port))
         {
             throw new Exception($"Failed to start listener on port {port}");
@@ -170,19 +136,15 @@ public class Session : IDisposable
         }
         session.Metadata.SessionURLs = urls;
 
-        // Create sync manager with dedicated thread
         session.Sync = new SessionSyncManager(session);
         session.Sync.Start();
 
-        // Create asset transferer and register it with the engine
         session.AssetTransferer = new SessionAssetTransferer(session);
         if (Engine.Current is { } e)
             e.ActiveSessionTransferer = session.AssetTransferer;
 
-        // Subscribe to connection events
         session.Connections.OnHostDisconnected += () => session.OnDisconnected?.Invoke();
 
-        // Start LAN announcer if visibility allows
         if (metadata.Visibility == SessionVisibility.LAN ||
             metadata.Visibility == SessionVisibility.Public)
         {
@@ -204,9 +166,6 @@ public class Session : IDisposable
         return session;
     }
 
-    /// <summary>
-    /// Join an existing session as client.
-    /// </summary>
     public static Session JoinSession(World world, IEnumerable<Uri> addresses)
     {
         var session = JoinSessionAsync(world, addresses).GetAwaiter().GetResult();
@@ -218,9 +177,6 @@ public class Session : IDisposable
         return session;
     }
 
-    /// <summary>
-    /// Join an existing session as client (async).
-    /// </summary>
     public static async Task<Session?> JoinSessionAsync(World world, IEnumerable<Uri> addresses)
     {
         var session = new Session(world);
@@ -250,11 +206,9 @@ public class Session : IDisposable
                 return (Session?)null;
             }
 
-            // Create sync manager with dedicated thread
             session.Sync = new SessionSyncManager(session);
             session.Sync.Start();
 
-            // Create asset transferer and register it with the engine
             session.AssetTransferer = new SessionAssetTransferer(session);
             if (Engine.Current is { } e)
                 e.ActiveSessionTransferer = session.AssetTransferer;
@@ -264,9 +218,6 @@ public class Session : IDisposable
         }).ConfigureAwait(false);
     }
 
-    /// <summary>
-    /// Start the LAN announcer to broadcast session availability.
-    /// </summary>
     private void StartLANAnnouncer()
     {
         if (_lanAnnouncer != null)
@@ -276,9 +227,6 @@ public class Session : IDisposable
         _lanAnnouncer.StartAnnouncing(Metadata);
     }
 
-    /// <summary>
-    /// Stop the LAN announcer.
-    /// </summary>
     private void StopLANAnnouncer()
     {
         _lanAnnouncer?.StopAnnouncing();
@@ -286,10 +234,8 @@ public class Session : IDisposable
         _lanAnnouncer = null!;
     }
 
-    /// <summary>
-    /// Register with public session server for global discovery. Returns a Task so callers can
-    /// observe faults; it runs detached (callers must not block session setup on a network round-trip).
-    /// </summary>
+    // Returns a Task so callers can observe faults; it runs detached (callers must not block session setup on a
+    // network round-trip).
     // NAT-host caveat: this only REGISTERS the session and its metadata with the server. The host does
     // NOT yet act on NAT punch-through: it never subscribes _serverClient.OnNATPunchSuccess /
     // OnNATIntroStarted to open the punched socket, and there is no relay server / host-side relay bridge
@@ -330,10 +276,10 @@ public class Session : IDisposable
 
         try
         {
-            if (BackendAuthTokenProvider == null)
+            if (string.IsNullOrWhiteSpace(BackendAuthTokenProvider?.Invoke()))
             {
                 if (!natRegistered)
-                    LumoraLogger.Warn("[lnl] Session: No backend auth token provider available for public directory registration");
+                    LumoraLogger.Warn("[lnl] Session: Not signed in, session will not be listed on the backend directory");
                 return;
             }
 
@@ -350,10 +296,12 @@ public class Session : IDisposable
                 backendUrl,
                 () => BackendAuthTokenProvider?.Invoke());
 
-            var registered = await _directoryClient.StartAsync(Metadata, GetUserList);
-            if (registered)
+            // True means the publisher is running, not that the first register succeeded - it keeps retrying
+            // and re-registers itself if the directory expires us. Only a missing token gives up here.
+            var publishing = await _directoryClient.StartAsync(Metadata, GetUserList);
+            if (publishing)
             {
-                LumoraLogger.Log($"[lnl] Session registered with backend directory at {BackendSessionDirectoryUrl}");
+                LumoraLogger.Log($"[lnl] Session publishing to backend directory at {BackendSessionDirectoryUrl}");
             }
             else
             {
@@ -369,9 +317,6 @@ public class Session : IDisposable
         }
     }
 
-    /// <summary>
-    /// Get list of usernames in this session.
-    /// </summary>
     private string[] GetUserList()
     {
         if (World == null)
@@ -392,52 +337,57 @@ public class Session : IDisposable
         return usernames.Count > 0 ? usernames.ToArray() : new[] { Metadata?.HostUsername ?? "Host" };
     }
 
-    /// <summary>
-    /// Disconnect from public session server.
-    /// </summary>
     private void StopPublicServerRegistration()
     {
         _serverClient?.Dispose();
         _serverClient = null;
-        _directoryClient?.Dispose();
+
+        var directory = _directoryClient;
         _directoryClient = null;
+        if (directory == null)
+            return;
+
+        // Taking the session OUT of the directory is a network round-trip, and this runs on the world thread
+        // (world close, or flipping visibility off Public). Hand it off so a slow or dead backend cannot
+        // stall teardown; the client stays alive until its own task disposes it. Skipping the unregister
+        // entirely would leave a dead session in everyone's browser for a full expiry window. -xlinka
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await directory.StopAsync();
+            }
+            catch (Exception ex)
+            {
+                LumoraLogger.Warn($"[lnl] Session: Backend directory unregister failed - {ex.Message}");
+            }
+            finally
+            {
+                directory.Dispose();
+            }
+        });
     }
 
-    /// <summary>
-    /// Poll network events for this session. Called every frame by World.Update().
-    /// </summary>
     public void Poll()
     {
         Connections.Poll();
     }
 
-    /// <summary>
-    /// Send a raw frame on a stream owned by the local user (e.g. an Opus voice
-    /// frame). The frame is routed through the same authority/relay path as
-    /// <see cref="StreamMessage"/>, so sender-identity validation still applies. Sequence
-    /// is opaque to the framework; use it for jitter buffering downstream.
-    /// Returns false if the stream is not local, the payload is over the cap,
-    /// or there are no eligible targets.
-    /// </summary>
+    // The frame is routed through the same authority/relay path as StreamMessage, so sender-identity validation
+    // still applies. Sequence is opaque to the framework; use it for jitter buffering downstream. Returns false
+    // if the stream is not local, the payload is over the cap, or there are no eligible targets.
     public bool SendRawFrame(Stream stream, ushort sequence, ReadOnlySpan<byte> payload)
     {
         if (Sync == null || IsDisposed) return false;
         return Sync.EnqueueRawFrame(stream, sequence, payload);
     }
 
-    /// <summary>
-    /// Invoked by <see cref="SessionSyncManager"/> on the sync thread when a
-    /// validated raw frame is ready to dispatch. Fires <see cref="RawFrameReceived"/>.
-    /// </summary>
+    // Called by SessionSyncManager on the sync thread.
     internal void HandleIncomingRawFrame(User sender, RefID streamRefID, ushort sequence, ReadOnlyMemory<byte> payload)
     {
         RawFrameReceived?.Invoke(sender, streamRefID, sequence, payload);
     }
 
-    /// <summary>
-    /// Update session metadata with a modifier action.
-    /// </summary>
-    /// <param name="update">Action to modify the metadata</param>
     public void UpdateMetadata(Action<SessionMetadata> update)
     {
         if (Metadata == null)
@@ -446,13 +396,9 @@ public class Session : IDisposable
         update?.Invoke(Metadata);
         Metadata.LastUpdate = DateTime.UtcNow;
 
-        // Update the announcer with new metadata
         _lanAnnouncer?.UpdateMetadata(Metadata);
     }
 
-    /// <summary>
-    /// Called when user count changes to update metadata.
-    /// </summary>
     internal void OnUserCountChanged(int count)
     {
         if (Metadata == null)
@@ -461,17 +407,12 @@ public class Session : IDisposable
         Metadata.ActiveUsers = count;
         Metadata.LastUpdate = DateTime.UtcNow;
 
-        // Update announcer
         _lanAnnouncer?.UpdateMetadata(Metadata);
 
-        // Update session server
         _serverClient?.SendSessionUpdate(count, GetUserList());
         _directoryClient?.SendHeartbeat(count, GetUserList());
     }
 
-    /// <summary>
-    /// Change the session visibility and start/stop announcer as needed.
-    /// </summary>
     public void SetVisibility(SessionVisibility visibility)
     {
         if (Metadata == null)
@@ -481,7 +422,6 @@ public class Session : IDisposable
         Metadata.Visibility = visibility;
         Metadata.LastUpdate = DateTime.UtcNow;
 
-        // Handle LAN announcer state change
         bool shouldAnnounceLAN = visibility == SessionVisibility.LAN ||
                                  visibility == SessionVisibility.Public;
 
@@ -501,7 +441,6 @@ public class Session : IDisposable
             _lanAnnouncer?.UpdateMetadata(Metadata);
         }
 
-        // Handle public server registration
         bool shouldRegisterPublic = visibility == SessionVisibility.Public;
         bool wasRegisteredPublic = oldVisibility == SessionVisibility.Public;
 
@@ -526,10 +465,8 @@ public class Session : IDisposable
 
         LumoraLogger.Log("[lnl] Disposing session");
 
-        // Stop LAN announcer
         StopLANAnnouncer();
 
-        // Stop public server registration
         StopPublicServerRegistration();
 
         AssetTransferer?.Dispose();

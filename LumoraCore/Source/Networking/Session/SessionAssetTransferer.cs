@@ -8,31 +8,29 @@ using System.Linq;
 using Lumora.Core.Assets;
 using Lumora.Core.Networking;
 using Lumora.Core.Networking.Sync;
+using Lumora.Nexus.Transport;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Session;
 
-/// <summary>
-/// Handles peer-to-peer asset transfer over the control message channel.
-///
-/// Protocol:
-///   Client -> AssetRequest(uri) -> Host/Owner
-///   Host -> AssetTransmissionStart(id, uri, totalBytes) -> Client
-///   Client -> AssetNextChunkRequest(id) -> Host   (first pull fetches 16 chunks)
-///   Host -> AssetChunk(id, offset, data) xN -> Client
-///   ...repeat until done...
-///   Host -> AssetNotAvailable(uri) -> Client  (if it can't serve the file)
-///
-/// Host relay: a client always asks the host for an asset, but the host might not own it - another
-/// peer may have imported it (its URI carries that peer's machine id). When the host can't serve a
-/// local:// asset from its own store, instead of giving up it forwards the request to the owning peer,
-/// receives the bytes, and streams them on to the original requester. Several requesters waiting on the
-/// same asset are coalesced onto one fetch. This is what lets "B imports content, C joins" work when
-/// the host is neither B nor C.
-/// </summary>
+// Handles peer-to-peer asset transfer over the control message channel.
+//
+// Protocol:
+//   Client -> AssetRequest(uri) -> Host/Owner
+//   Host -> AssetTransmissionStart(id, uri, totalBytes) -> Client
+//   Client -> AssetNextChunkRequest(id) -> Host   (first pull fetches 16 chunks)
+//   Host -> AssetChunk(id, offset, data) xN -> Client
+//   ...repeat until done...
+//   Host -> AssetNotAvailable(uri) -> Client  (if it can't serve the file)
+//
+// Host relay: a client always asks the host for an asset, but the host might not own it - another
+// peer may have imported it (its URI carries that peer's machine id). When the host can't serve a
+// local:// asset from its own store, instead of giving up it forwards the request to the owning peer,
+// receives the bytes, and streams them on to the original requester. Several requesters waiting on the
+// same asset are coalesced onto one fetch. This is what lets "B imports content, C joins" work when
+// the host is neither B nor C.
 public class SessionAssetTransferer : IDisposable
 {
-    // Job identity
 
     private readonly struct JobID : IEquatable<JobID>
     {
@@ -73,7 +71,6 @@ public class SessionAssetTransferer : IDisposable
             _data = File.ReadAllBytes(filePath);
         }
 
-        /// <summary>Build the AssetTransmissionStart control message.</summary>
         public ControlMessage Initialize()
         {
             var msg = new ControlMessage(ControlMessage.Message.AssetTransmissionStart);
@@ -87,7 +84,6 @@ public class SessionAssetTransferer : IDisposable
             return msg;
         }
 
-        /// <summary>Build one AssetChunk control message.</summary>
         public ControlMessage GetChunk()
         {
             int size = System.Math.Min(ChunkSize, _data.Length - _offset);
@@ -170,15 +166,12 @@ public class SessionAssetTransferer : IDisposable
             return msg;
         }
 
-        /// <summary>Write buffered data to disk and return the temp file path.</summary>
         public string FinalizeAndGetFile()
         {
             File.WriteAllBytes(_tempPath, _buffer);
             return _tempPath;
         }
     }
-
-    // State
 
     private const int MaxTransmitJobs = 4;
 
@@ -224,7 +217,6 @@ public class SessionAssetTransferer : IDisposable
     public int PendingAssetRequestCount { get { lock (_lock) { return _assetRequests.Count; } } }
     public int PendingRelayCount { get { lock (_lock) { return _pendingRelays.Count; } } }
 
-    /// <summary>One in-flight asset transfer, for the Debug panel's transfer list.</summary>
     public readonly struct AssetTransfer
     {
         public readonly Uri Uri;
@@ -243,7 +235,7 @@ public class SessionAssetTransferer : IDisposable
         public float Fraction => Total > 0 ? (float)Transferred / Total : 0f;
     }
 
-    /// <summary>Snapshot of all active uploads and downloads. Safe to call from the render/UI thread.</summary>
+    // Safe to call from the render/UI thread.
     public List<AssetTransfer> GetActiveTransfers()
     {
         var list = new List<AssetTransfer>();
@@ -262,13 +254,8 @@ public class SessionAssetTransferer : IDisposable
         Session = session;
     }
 
-    // Public API
-
-    /// <summary>
-    /// Request an asset by URI. Sends AssetRequest to the host (clients) or to the
-    /// asset owner's connection (if we are the authority).
-    /// <paramref name="onGathered"/> receives (uri, localFilePath) - path is null on failure.
-    /// </summary>
+    // Request an asset by URI. Sends AssetRequest to the host (clients) or to the asset owner's connection (if
+    // we are the authority).
     public void RequestAsset(Uri assetUri, Action<Uri, string> onGathered, Action<Uri, long, long>? onProgress = null)
     {
         lock (_lock)
@@ -308,11 +295,9 @@ public class SessionAssetTransferer : IDisposable
         }
     }
 
-    /// <summary>
-    /// Send a bare AssetRequest control message to <paramref name="target"/>. Does NOT register a
-    /// completion callback - callers that want one register in <c>_assetRequests</c> themselves
-    /// (a client fetch) or track their own pending list (the host relay). -xlinka
-    /// </summary>
+    // Send a bare AssetRequest control message to target. Does NOT register a
+    // completion callback - callers that want one register in _assetRequests themselves
+    // (a client fetch) or track their own pending list (the host relay). -xlinka
     private void SendAssetRequest(Uri assetUri, IConnection target)
     {
         var msg = new ControlMessage(ControlMessage.Message.AssetRequest);
@@ -324,7 +309,6 @@ public class SessionAssetTransferer : IDisposable
         Session.Sync.EnqueueForTransmission(msg);
     }
 
-    /// <summary>Send an AssetNotAvailable control message for <paramref name="uriStr"/> to a peer.</summary>
     private void SendNotAvailable(string uriStr, IConnection target)
     {
         if (target == null)
@@ -339,7 +323,6 @@ public class SessionAssetTransferer : IDisposable
         Session.Sync.EnqueueForTransmission(msg);
     }
 
-    /// <summary>Process an incoming asset control message.</summary>
     public void ProcessMessage(ControlMessage message)
     {
         lock (_lock)
@@ -366,16 +349,13 @@ public class SessionAssetTransferer : IDisposable
         }
     }
 
-    /// <summary>Clean up all jobs associated with a disconnected peer.</summary>
     public void ConnectionClosed(IConnection connection)
     {
         lock (_lock)
         {
-            // Cancel outbound jobs
             var dead = _transmitJobs.Keys.Where(k => k.Connection == connection).ToList();
             foreach (var key in dead) _transmitJobs.Remove(key);
 
-            // Cancel inbound jobs and fail their callbacks
             dead = _receiveJobs.Keys.Where(k => k.Connection == connection).ToList();
             foreach (var key in dead)
             {
@@ -411,8 +391,6 @@ public class SessionAssetTransferer : IDisposable
         }
     }
 
-    // Message handlers
-
     private void HandleAssetRequest(ControlMessage message)
     {
         string uriStr;
@@ -422,7 +400,6 @@ public class SessionAssetTransferer : IDisposable
 
         var assetUri = new Uri(uriStr);
 
-        // Try to resolve locally via LocalDB
         var localDB = Engine.Current?.LocalDB;
         string localPath = null!;
         if (assetUri.Scheme == "local" && localDB != null)
@@ -457,11 +434,9 @@ public class SessionAssetTransferer : IDisposable
         SendNotAvailable(uriStr, message.Sender);
     }
 
-    /// <summary>
-    /// Host-as-relay: fetch a peer-owned asset from its owner and forward it to <paramref name="requester"/>.
-    /// Coalesces multiple requesters of the same asset onto a single fetch; the bytes are handed to all of
-    /// them when they arrive (see <see cref="ServePendingRelays"/>). -xlinka
-    /// </summary>
+    // Host-as-relay: fetch a peer-owned asset from its owner and forward it to requester.
+    // Coalesces multiple requesters of the same asset onto a single fetch; the bytes are handed to all of
+    // them when they arrive (see ServePendingRelays). -xlinka
     private void RelayFromOwner(Uri assetUri, IConnection requester)
     {
         var uriStr = assetUri.ToString();
@@ -514,7 +489,6 @@ public class SessionAssetTransferer : IDisposable
         }
     }
 
-    /// <summary>Relay finished gathering: stream the bytes on to everyone who was waiting for it.</summary>
     private void ServePendingRelays(Uri assetUri, string localPath)
     {
         var uriStr = assetUri.ToString();
@@ -535,7 +509,6 @@ public class SessionAssetTransferer : IDisposable
         LumoraLogger.Log($"AssetTransferer: relayed {uriStr} to {requesters.Count} requester(s)");
     }
 
-    /// <summary>Relay couldn't be gathered: tell everyone waiting on it the asset isn't available.</summary>
     private void FailPendingRelays(string uriStr)
     {
         if (!_pendingRelays.TryGetValue(uriStr, out var requesters))
@@ -639,8 +612,6 @@ public class SessionAssetTransferer : IDisposable
         // The owner we were relaying from doesn't have it either - pass the bad news on to the requesters. -xlinka
         FailPendingRelays(uriStr);
     }
-
-    // Helpers
 
     // Pull the owner machine id out of a local://{machineId}/{hash} URI. Read from the ORIGINAL string,
     // not Uri.Host - Uri.Host lowercases the authority, which would mangle the case-sensitive id stamped on

@@ -4,25 +4,30 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Lumora.Core.Networking.Discovery;
+using Lumora.Nexus.Discovery;
 using Lumora.Core.Networking.Session;
+using Lumora.Nexus.Cloud;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components.Network;
 
-/// <summary>
-/// Component for discovering and browsing available sessions on the local network.
-/// </summary>
 [ComponentCategory("Network")]
 public class SessionBrowser : Component
 {
     private LANDiscovery _discovery = null!;
+    private BackendSessionDirectoryQuery _backendQuery = null!;
 
-    // Single aggregate of every session we know about, keyed by SessionId (lowercased). LAN discovery and our
-    // own hosted session both funnel through ONE upsert path (Upsert) into this one SessionId-keyed collection -
-    // so the same session can never list twice and an entry seen from two angles just merges. -xlinka
+    // Single aggregate of every session we know about, keyed by SessionId (lowercased). LAN discovery, the
+    // backend directory and our own hosted session all funnel through ONE upsert path (Upsert) into this one
+    // SessionId-keyed collection - so the same session can never list twice and an entry seen from two angles
+    // just merges. -xlinka
     private readonly Dictionary<string, SessionListEntry> _sessions = new();
     private readonly object _sessionsLock = new();
+
+    // Keys currently held by the backend directory. The directory sends a full snapshot every poll, so this
+    // is how we tell "the host stopped advertising" from "we never heard about it on LAN": anything in here
+    // that falls out of a snapshot goes, anything sourced from LAN is left alone. -xlinka
+    private readonly HashSet<string> _backendKeys = new();
 
     // Tracks the key of our own hosted session so we can keep it fresh and drop it when we stop hosting.
     private string? _ownSessionKey;
@@ -32,14 +37,8 @@ public class SessionBrowser : Component
     private float _ownRefreshTimer;
     private const float OwnRefreshInterval = 1f; // seconds
 
-    /// <summary>
-    /// Whether the browser is currently scanning for sessions.
-    /// </summary>
     public readonly Sync<bool> IsScanning;
 
-    /// <summary>
-    /// Number of sessions currently discovered.
-    /// </summary>
     public int SessionCount
     {
         get
@@ -51,19 +50,10 @@ public class SessionBrowser : Component
         }
     }
 
-    /// <summary>
-    /// Event raised when a new session is discovered.
-    /// </summary>
     public event Action<SessionListEntry> OnSessionFound = null!;
 
-    /// <summary>
-    /// Event raised when a session is no longer available.
-    /// </summary>
     public event Action<string> OnSessionLost = null!;
 
-    /// <summary>
-    /// Event raised when a session's info is updated.
-    /// </summary>
     public event Action<SessionListEntry> OnSessionUpdated = null!;
 
     public SessionBrowser()
@@ -99,9 +89,12 @@ public class SessionBrowser : Component
         }
     }
 
-    /// <summary>
-    /// Start scanning for sessions on the local network.
-    /// </summary>
+    // also false when polling never started; check IsScanning alongside it
+    public bool BackendUnreachable => _backendQuery?.IsUnreachable ?? true;
+
+    // LAN discovery is already continuous; this only nudges the backend poll off its interval
+    public void RequestRefresh() => _backendQuery?.RequestRefresh();
+
     public void StartScanning()
     {
         if (_discovery != null)
@@ -126,6 +119,13 @@ public class SessionBrowser : Component
         }
 
         _discovery.StartDiscovery(ignoreId);
+
+        // Second source: sessions published to the backend directory by hosts we will never hear on the
+        // local network. It polls on its own thread and reports through the same upsert path.
+        _backendQuery = new BackendSessionDirectoryQuery(Lumora.Core.Networking.Session.Session.BackendSessionDirectoryUrl);
+        _backendQuery.OnResults += OnBackendResults;
+        _backendQuery.Start();
+
         IsScanning.Value = true;
 
         // Show our own hosted session immediately, then OnUpdate keeps it fresh.
@@ -135,13 +135,20 @@ public class SessionBrowser : Component
         LumoraLogger.Log("SessionBrowser: Started scanning for sessions");
     }
 
-    /// <summary>
-    /// Stop scanning for sessions.
-    /// </summary>
     public void StopScanning()
     {
+        if (_backendQuery != null)
+        {
+            _backendQuery.OnResults -= OnBackendResults;
+            _backendQuery.Dispose();
+            _backendQuery = null!;
+        }
+
         if (_discovery == null)
+        {
+            IsScanning.Value = false;
             return;
+        }
 
         _discovery.SessionFound -= OnDiscoveryFound;
         _discovery.SessionLost -= OnDiscoveryLost;
@@ -155,22 +162,17 @@ public class SessionBrowser : Component
         LumoraLogger.Log("SessionBrowser: Stopped scanning");
     }
 
-    /// <summary>
-    /// Clear all discovered sessions.
-    /// </summary>
     public void ClearSessions()
     {
         lock (_sessionsLock)
         {
             _sessions.Clear();
+            _backendKeys.Clear();
         }
         _ownSessionKey = null;
         _discovery?.ClearSessions();
     }
 
-    /// <summary>
-    /// Get all currently discovered sessions.
-    /// </summary>
     public List<SessionListEntry> GetSessions()
     {
         lock (_sessionsLock)
@@ -179,9 +181,6 @@ public class SessionBrowser : Component
         }
     }
 
-    /// <summary>
-    /// Get a specific session by ID.
-    /// </summary>
     public SessionListEntry GetSession(string sessionId)
     {
         if (string.IsNullOrEmpty(sessionId))
@@ -195,11 +194,9 @@ public class SessionBrowser : Component
 
     // --- Single choke point every source funnels through -------------------------------------------------
 
-    /// <summary>
-    /// Insert or update a session in the aggregate, keyed by SessionId. Fires OnSessionFound for a brand-new
-    /// session and OnSessionUpdated for one we already had, so the same session never lists twice no matter how
-    /// many sources report it. -xlinka
-    /// </summary>
+    // Insert or update a session in the aggregate, keyed by SessionId. Fires OnSessionFound for a brand-new
+    // session and OnSessionUpdated for one we already had, so the same session never lists twice no matter how
+    // many sources report it. -xlinka
     private void Upsert(SessionListEntry entry)
     {
         if (entry == null || string.IsNullOrEmpty(entry.SessionId))
@@ -211,6 +208,11 @@ public class SessionBrowser : Component
         {
             isNew = !_sessions.ContainsKey(key);
             _sessions[key] = entry;
+
+            // A session we can now see locally is no longer the directory's to remove: LAN sees it live,
+            // and the directory listing lags by up to a poll.
+            if (entry.Source == SessionSource.Local)
+                _backendKeys.Remove(key);
         }
 
         if (isNew)
@@ -235,6 +237,7 @@ public class SessionBrowser : Component
         {
             if (_sessions.TryGetValue(key, out removed))
                 _sessions.Remove(key);
+            _backendKeys.Remove(key);
         }
 
         if (removed != null)
@@ -251,6 +254,74 @@ public class SessionBrowser : Component
     private void OnDiscoveryUpdated(DiscoveredSession discovered) => Upsert(CreateEntry(discovered));
 
     private void OnDiscoveryLost(string sessionId) => Remove(sessionId);
+
+    // --- Backend directory feed --------------------------------------------------------------------------
+
+    // Fold a directory snapshot into the aggregate. Three rules, in order:
+    //
+    //   1. Our own hosted session never comes back in through here. RefreshOwnHostedSession lists it from
+    //      live metadata; the directory copy is up to a heartbeat stale and would fight it every poll.
+    //   2. A session LAN discovery can see wins. Same session, and the LAN copy carries the address the
+    //      announcer was actually reached on, which beats whatever the host advertised to the internet.
+    //   3. Anything the previous snapshot gave us that is missing from this one is gone. That is the only
+    //      "lost" signal the directory has - hosts stop heartbeating and the backend expires them.
+    //
+    // An empty snapshot (backend down, offline, nothing listed) is a legitimate answer and clears every
+    // backend-sourced row. It never leaves stale entries behind and never invents one. -xlinka
+    private void OnBackendResults(IReadOnlyList<SessionListingDto> listings)
+    {
+        var seen = new HashSet<string>();
+        var fresh = new List<SessionListEntry>(listings.Count);
+
+        for (int i = 0; i < listings.Count; i++)
+        {
+            var entry = BuildEntry(listings[i]);
+            if (entry == null)
+                continue;   // no session id or no dialable URL: nothing we could join
+
+            string key = entry.SessionId.ToLowerInvariant();
+            if (key == _ownSessionKey)
+                continue;
+
+            if (!seen.Add(key))
+                continue;   // duplicate id in one snapshot
+
+            fresh.Add(entry);
+        }
+
+        var stale = new List<string>();
+        var updates = new List<SessionListEntry>(fresh.Count);
+
+        lock (_sessionsLock)
+        {
+            foreach (var key in _backendKeys)
+            {
+                if (!seen.Contains(key))
+                    stale.Add(key);
+            }
+
+            for (int i = 0; i < fresh.Count; i++)
+            {
+                string key = fresh[i].SessionId.ToLowerInvariant();
+                if (_sessions.TryGetValue(key, out var existing) && existing.Source == SessionSource.Local)
+                    continue;   // LAN copy wins
+                updates.Add(fresh[i]);
+            }
+        }
+
+        // Upsert/Remove take the lock themselves and raise events, so they run outside it.
+        for (int i = 0; i < stale.Count; i++)
+            Remove(stale[i]);
+
+        for (int i = 0; i < updates.Count; i++)
+        {
+            Upsert(updates[i]);
+            lock (_sessionsLock)
+            {
+                _backendKeys.Add(updates[i].SessionId.ToLowerInvariant());
+            }
+        }
+    }
 
     // --- Own hosted session feed -------------------------------------------------------------------------
 
@@ -298,74 +369,90 @@ public class SessionBrowser : Component
             JoinUrl = (m.SessionURLs != null && m.SessionURLs.Count > 0) ? m.SessionURLs[0] : null!,
             ThumbnailUrl = m.ThumbnailUrl,
             ThumbnailBase64 = m.ThumbnailBase64,
-            Tags = m.Tags != null ? new List<string>(m.Tags) : new List<string>()
+            Tags = m.Tags != null ? new List<string>(m.Tags) : new List<string>(),
+            Source = SessionSource.Local
+        };
+    }
+
+    // Map a directory listing onto the same entry the LAN path produces. Every field is copied straight
+    // from what the backend sent; nothing is filled in from guesses, so ThumbnailBase64 stays null (the
+    // directory carries no image data) and the description stays empty if the host never set one.
+    // Returns null when the listing is unusable rather than surfacing an unjoinable row. -xlinka
+    private static SessionListEntry? BuildEntry(SessionListingDto dto)
+    {
+        if (dto == null || string.IsNullOrEmpty(dto.SessionId))
+            return null;
+
+        Uri? joinUrl = null;
+        if (dto.SessionUrls != null)
+        {
+            foreach (var raw in dto.SessionUrls)
+            {
+                if (Uri.TryCreate(raw, UriKind.Absolute, out var parsed))
+                {
+                    joinUrl = parsed;
+                    break;
+                }
+            }
+        }
+
+        if (joinUrl == null)
+            return null;
+
+        return new SessionListEntry
+        {
+            SessionId = dto.SessionId,
+            Name = dto.Name ?? "",
+            Description = dto.Description ?? "",
+            HostUsername = dto.HostUsername ?? "",
+            ActiveUsers = dto.ActiveUsers,
+            MaxUsers = dto.MaxUsers,
+            Visibility = dto.AccessLevel,
+            JoinUrl = joinUrl,
+            ThumbnailUrl = dto.ThumbnailUrl ?? "",
+            ThumbnailBase64 = null,
+            Tags = dto.Tags != null ? new List<string>(dto.Tags) : new List<string>(),
+            Source = SessionSource.Internet
         };
     }
 }
 
-/// <summary>
-/// Entry representing a discovered session for display in UI.
-/// </summary>
+// lets a user tell a machine on their own network from one on the internet, and lets join failures
+// land where they belong
+public enum SessionSource
+{
+    // or hosted by us
+    Local,
+
+    Internet
+}
+
 public class SessionListEntry
 {
-    /// <summary>
-    /// Unique session identifier.
-    /// </summary>
     public string SessionId { get; set; } = null!;
 
-    /// <summary>
-    /// Display name of the session.
-    /// </summary>
     public string Name { get; set; } = null!;
 
-    /// <summary>
-    /// Session description.
-    /// </summary>
     public string Description { get; set; } = null!;
 
-    /// <summary>
-    /// Name of the session host.
-    /// </summary>
     public string HostUsername { get; set; } = null!;
 
-    /// <summary>
-    /// Current number of users in the session.
-    /// </summary>
     public int ActiveUsers { get; set; }
 
-    /// <summary>
-    /// Maximum users allowed in the session.
-    /// </summary>
     public int MaxUsers { get; set; }
 
-    /// <summary>
-    /// Session visibility level.
-    /// </summary>
     public SessionVisibility Visibility { get; set; }
 
-    /// <summary>
-    /// URL to join this session.
-    /// </summary>
     public Uri JoinUrl { get; set; } = null!;
 
-    /// <summary>
-    /// URL to session thumbnail image.
-    /// </summary>
     public string ThumbnailUrl { get; set; } = null!;
 
-    /// <summary>
-    /// Base64-encoded thumbnail image data.
-    /// </summary>
     public string? ThumbnailBase64 { get; set; }
 
-    /// <summary>
-    /// Tags for filtering.
-    /// </summary>
     public List<string> Tags { get; set; } = new();
 
-    /// <summary>
-    /// Whether the session has room for more users.
-    /// </summary>
+    public SessionSource Source { get; set; } = SessionSource.Local;
+
     public bool HasSpace => ActiveUsers < MaxUsers;
 
     public override string ToString()

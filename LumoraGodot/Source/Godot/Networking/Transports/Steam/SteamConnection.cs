@@ -6,19 +6,16 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Net;
 using System.Runtime.InteropServices;
-using Lumora.Core.Networking;
 using Steamworks;
+using Lumora.Nexus.Transport;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Godot.Networking.Transports.Steam;
 
-/// <summary>
-/// One peer connection over SteamNetworkingSockets. Maintains two channels
-/// (foreground + background) so high-priority frames don't queue behind bulk
-/// asset transfers - same shape as the LNL transport's reliable/sequenced
-/// channel split. Handles >512KB reliable payloads via length-prefix +
-/// fragment reassembly; small frames go straight through. - xlinka
-/// </summary>
+// One peer connection over SteamNetworkingSockets. Maintains two channels (foreground +
+// background) so high-priority frames don't queue behind bulk asset transfers - same shape as the
+// LNL transport's reliable/sequenced channel split. Handles >512KB reliable payloads via
+// length-prefix + fragment reassembly; small frames go straight through. - xlinka
 public sealed class SteamConnection : IConnection
 {
     private const int ChannelCount = 2;
@@ -111,9 +108,7 @@ public sealed class SteamConnection : IConnection
         }
     }
 
-    /// <summary>
-    /// SteamConnection is polled centrally by the manager. - xlinka
-    /// </summary>
+    // polled centrally by the manager - xlinka
     public void Poll() { }
 
     public void Send(byte[] data, int length, bool reliable, bool background)
@@ -172,11 +167,8 @@ public sealed class SteamConnection : IConnection
         }
     }
 
-    /// <summary>
-    /// Listener calls this after AcceptConnection to bind a channel handle to
-    /// this peer. Returns false if the handle/channel combination is invalid.
-    /// - xlinka
-    /// </summary>
+    // Listener calls this after AcceptConnection to bind a channel handle to this peer. Returns
+    // false if the handle/channel combination is invalid. - xlinka
     internal bool AssignConnection(HSteamNetConnection connection, int channel)
     {
         if (_state != State.Connecting) return false;

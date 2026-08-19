@@ -6,50 +6,26 @@ using System.Collections.Generic;
 
 namespace Lumora.Core.Networking.Streams;
 
-/// <summary>
-/// Collection of streams owned by a user.
-/// </summary>
 public class StreamBag
 {
     private readonly Dictionary<RefID, Stream> _streams = new();
     private readonly List<Stream> _justAdded = new();
 
-    /// <summary>
-    /// The user that owns this bag.
-    /// </summary>
     public User User { get; private set; } = null!;
 
-    /// <summary>
-    /// Number of streams in the bag.
-    /// </summary>
     public int Count => _streams.Count;
 
-    /// <summary>
-    /// All streams in the bag.
-    /// </summary>
     public IEnumerable<Stream> Streams => _streams.Values;
 
-    /// <summary>
-    /// Event triggered when a stream is added.
-    /// </summary>
     public event Action<Stream> StreamAdded = null!;
 
-    /// <summary>
-    /// Event triggered when a stream is removed.
-    /// </summary>
     public event Action<Stream> StreamRemoved = null!;
 
-    /// <summary>
-    /// Initialize the bag with its owning user.
-    /// </summary>
     public void Initialize(User user)
     {
         User = user;
     }
 
-    /// <summary>
-    /// Add a stream to the bag.
-    /// </summary>
     public void Add(Stream stream)
     {
         if (stream == null)
@@ -60,9 +36,6 @@ public class StreamBag
         StreamAdded?.Invoke(stream);
     }
 
-    /// <summary>
-    /// Remove a stream from the bag.
-    /// </summary>
     public bool Remove(Stream stream)
     {
         if (stream == null)
@@ -77,9 +50,6 @@ public class StreamBag
         return false;
     }
 
-    /// <summary>
-    /// Remove a stream by RefID.
-    /// </summary>
     public bool Remove(RefID id)
     {
         if (_streams.TryGetValue(id, out var stream))
@@ -92,17 +62,11 @@ public class StreamBag
         return false;
     }
 
-    /// <summary>
-    /// Get a stream by RefID.
-    /// </summary>
     public Stream Get(RefID id)
     {
         return (_streams.TryGetValue(id, out var stream) ? stream : null) ?? null!;
     }
 
-    /// <summary>
-    /// Try to get a stream by RefID.
-    /// </summary>
     public bool TryGet(RefID id, out Stream stream)
     {
         if (_streams.TryGetValue(id, out var found))
@@ -114,25 +78,16 @@ public class StreamBag
         return false;
     }
 
-    /// <summary>
-    /// Check if a stream was just added (can be modified by non-owner briefly).
-    /// </summary>
     public bool WasJustAdded(Stream stream)
     {
         return _justAdded.Contains(stream);
     }
 
-    /// <summary>
-    /// Clear the just-added list after sync.
-    /// </summary>
     public void ClearJustAdded()
     {
         _justAdded.Clear();
     }
 
-    /// <summary>
-    /// Clear all streams.
-    /// </summary>
     public void Clear()
     {
         foreach (var stream in _streams.Values)
@@ -143,9 +98,6 @@ public class StreamBag
         _justAdded.Clear();
     }
 
-    /// <summary>
-    /// Update all streams.
-    /// </summary>
     public void Update()
     {
         foreach (var stream in _streams.Values)

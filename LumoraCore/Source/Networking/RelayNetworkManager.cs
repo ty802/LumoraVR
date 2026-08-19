@@ -1,17 +1,16 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
 using System.Collections.Generic;
 using Lumora.Core.Networking.Session;
+using Lumora.Nexus.Transport;
+using Lumora.Nexus.Transport.Relay;
 
 namespace Lumora.Core.Networking;
 
-/// <summary>
-/// <see cref="INetworkManager"/> for relay-routed client connections. A relay URI
-/// is <c>lnlrelay://{sessionId}</c>; the session id is the relay target, dialed
-/// through the configured session/relay server.
-/// </summary>
+// A relay URI is lnlrelay://{sessionId}; the session id is the relay target, dialed through the configured
+// session/relay server.
 // Client-side join transport: dialing a relay URI produces a RelayConnection that
 // tunnels session traffic through the relay server. Hosting over relay (a
 // listener) is a separate concern and not provided here. - xlinka

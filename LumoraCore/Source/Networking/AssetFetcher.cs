@@ -7,21 +7,18 @@ using System.IO;
 using System.Net.Http;
 using System.Threading.Tasks;
 using Lumora.Core.Assets;
+using Lumora.Nexus.Assets;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking;
 
-/// <summary>
-/// Platform-agnostic async asset fetcher.
-///
-/// Supported URI schemes
-///   local://machineId/hash - served from LocalDB; if not held locally, requested
-///                             from the active session peer via SessionAssetTransferer.
-///   file:///abs/path - direct disk read.
-///   http:// / https:// - HTTP download.
-///   builtin://... - built-in engine assets.
-///   test://... - local test assets (editor/dev only).
-/// </summary>
+// Supported URI schemes
+//   local://machineId/hash - served from LocalDB; if not held locally, requested
+//                             from the active session peer via SessionAssetTransferer.
+//   file:///abs/path - direct disk read.
+//   http:// / https:// - HTTP download.
+//   builtin://... - built-in engine assets.
+//   test://... - local test assets (editor/dev only).
 public static class AssetFetcher
 {
     private static readonly HttpClient Http = new();
@@ -37,11 +34,8 @@ public static class AssetFetcher
     // re-enter FetchAsset). -xlinka
     private static readonly object _lock = new();
 
-    /// <summary>
-    /// Asynchronously fetch an asset. Calls <paramref name="callback"/> with the
-    /// raw bytes on the calling thread once the fetch task completes (via ProcessQueue).
-    /// Returns immediately; duplicate requests share a single in-flight task.
-    /// </summary>
+    // Calls callback with the raw bytes on the calling thread once the fetch task completes (via ProcessQueue).
+    // Returns immediately; duplicate requests share a single in-flight task.
     public static void FetchAsset(string uri, Action<byte[]> callback)
     {
         // local:// - may need peer-to-peer transfer
@@ -53,7 +47,6 @@ public static class AssetFetcher
 
         lock (_lock)
         {
-            // Coalesce duplicate in-flight requests
             if (_active.TryGetValue(uri, out var existing))
             {
                 existing.callbacks.Add(callback);
@@ -65,10 +58,7 @@ public static class AssetFetcher
         }
     }
 
-    /// <summary>
-    /// Process completed fetch tasks and invoke their callbacks.
-    /// Must be called every frame by the platform driver update loop.
-    /// </summary>
+    // Must be called every frame by the platform driver update loop.
     public static void ProcessQueue()
     {
         if (_active.Count == 0)
@@ -107,8 +97,6 @@ public static class AssetFetcher
                 catch (Exception ex) { LumoraLogger.Error($"AssetFetcher: callback exception for '{uri}': {ex.Message}"); }
             }
     }
-
-    // local://
 
     private static void FetchLocalAsset(string uri, Action<byte[]> callback)
     {
@@ -173,8 +161,6 @@ public static class AssetFetcher
         LumoraLogger.Warn($"AssetFetcher: '{uri}' not in LocalDB and no active session - cannot fetch");
         callback(null!);
     }
-
-    // Synchronous fetcher for non-local URIs
 
     private static byte[] FetchSync(string uri)
     {

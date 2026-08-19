@@ -5,22 +5,18 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
-using Lumora.Core.Networking;
 using Steamworks;
+using Lumora.Nexus.Transport;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Godot.Networking.Transports.Steam;
 
-/// <summary>
-/// Top-level Steam relay transport. One instance per engine: owns the global
-/// <see cref="SteamNetConnectionStatusChangedCallback_t"/> callback, allocates
-/// channel-group indices, and pumps every owned <see cref="SteamListener"/> /
-/// <see cref="SteamConnection"/> from its <see cref="Update"/> loop.
-///
-/// URI scheme is <c>steam://{hostSteamID}/{channelGroup}/{sessionId}</c>;
-/// channel group is doubled to virtual ports (foreground/background) inside
-/// the listener and connection. - xlinka
-/// </summary>
+// Top-level Steam relay transport. One instance per engine: owns the global
+// SteamNetConnectionStatusChangedCallback_t callback, allocates channel-group indices, and pumps
+// every owned SteamListener / SteamConnection from its Update loop.
+//
+// URI scheme is steam://{hostSteamID}/{channelGroup}/{sessionId}; channel group is doubled to
+// virtual ports (foreground/background) inside the listener and connection. - xlinka
 public sealed class SteamNetworkManager : INetworkManager
 {
     public const string SCHEME = "steam";
@@ -60,22 +56,17 @@ public sealed class SteamNetworkManager : INetworkManager
 
     public int Priority => 100;
 
-    /// <summary>Steam relay has no host port - addressing is identity-based.</summary>
+    // Steam relay has no host port - addressing is identity-based.
     public bool UsesPort => false;
 
-    /// <summary>
-    /// True once <see cref="Initialize"/> has succeeded. Bootstrap should skip
-    /// the manager (and not register it) if Steam isn't running. - xlinka
-    /// </summary>
+    // True once Initialize has succeeded. Bootstrap should skip the manager (and not register it)
+    // if Steam isn't running. - xlinka
     public bool IsInitialized => _initialized;
 
     public CSteamID LocalUser => _localUser;
 
-    /// <summary>
-    /// Wires up the relay callback and reads the local CSteamID. Must be
-    /// called after SteamAPI.Init() (or returns false silently if Steam is
-    /// unavailable). - xlinka
-    /// </summary>
+    // Wires up the relay callback and reads the local CSteamID. Must be called after
+    // SteamAPI.Init() (or returns false silently if Steam is unavailable). - xlinka
     public bool Initialize()
     {
         if (_initialized) return true;
@@ -210,11 +201,8 @@ public sealed class SteamNetworkManager : INetworkManager
 
     internal int AllocateChannelGroup() => _channelPool++;
 
-    /// <summary>
-    /// Reliable messages over the per-frame send cap are split into a 4-byte
-    /// size prefix + 512KB chunks; receivers reassemble before surfacing the
-    /// frame as one message. - xlinka
-    /// </summary>
+    // Reliable messages over the per-frame send cap are split into a 4-byte size prefix + 512KB
+    // chunks; receivers reassemble before surfacing the frame as one message. - xlinka
     internal static bool NeedReassembly(uint size)
     {
         // The 4-byte case is the prefix itself - never reassemble it. - xlinka
@@ -222,10 +210,7 @@ public sealed class SteamNetworkManager : INetworkManager
         return size > MaxSendableMessageSize;
     }
 
-    /// <summary>
-    /// Builds the canonical relay URI. Stored in session metadata for clients
-    /// to dial back through the relay. - xlinka
-    /// </summary>
+    // Stored in session metadata for clients to dial back through the relay. - xlinka
     public static Uri BuildUri(CSteamID host, int channelGroup, string sessionId)
         => new($"{SCHEME}://{host.m_SteamID}/{channelGroup}/{sessionId}");
 

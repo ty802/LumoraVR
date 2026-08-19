@@ -6,35 +6,21 @@ using System.Collections.Generic;
 using System.IO;
 using Lumora.Core.Math;
 using Lumora.Core.Networking.Sync;
+using Lumora.Nexus.Protocol;
 
 namespace Lumora.Core.Networking.Streams;
 
-/// <summary>
-/// Value encoding mode for streams.
-/// </summary>
 public enum ValueEncoding
 {
-    /// <summary>
-    /// Full precision encoding.
-    /// </summary>
     Full,
 
-    /// <summary>
-    /// Quantized encoding with bit-packing.
-    /// </summary>
     Quantized,
 
-    /// <summary>
-    /// Quantized full keyframes with bit-packed deltas in between - lower bandwidth for slowly-changing values.
-    /// </summary>
+    // Quantized full keyframes with bit-packed deltas between - lower bandwidth for slow-changing
+    // values.
     Delta
 }
 
-/// <summary>
-/// Generic value stream with optional interpolation support.
-/// Used for streaming transforms, tracking data, and other continuous values.
-/// </summary>
-/// <typeparam name="T">The type of value to stream.</typeparam>
 public class ValueStream<T> : ImplicitStream, IValue<T>
 {
     private struct DataPoint
@@ -51,7 +37,6 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
 
     protected T _value = default!;
 
-    // Sync members for configuration
     protected readonly Sync<bool> _isInterpolated = new();
     protected readonly Sync<float> _interpolationOffset = new();
     protected readonly Sync<ValueEncoding> _encoding = new();
@@ -70,7 +55,6 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
     private T _lastDecodedValue = default!;
     private bool _hasLastDecoded;
 
-    // Interpolation state
     private List<DataPoint> _dataPoints = new();
     private float _timeTransition;
     private DateTime _trailingTime;
@@ -78,9 +62,6 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
 
     private bool _receivedFirstData;
 
-    /// <summary>
-    /// Value encoding mode.
-    /// </summary>
     public ValueEncoding Encoding
     {
         get => _encoding.Value;
@@ -91,51 +72,42 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
         }
     }
 
-    /// <summary>Bit depth per component when <see cref="Encoding"/> is Quantized.</summary>
     public int FullFrameBits
     {
         get => _fullFrameBits.Value;
         set { CheckOwnership(); _fullFrameBits.Value = value; }
     }
 
-    /// <summary>Lower bound of the quantization range (per component) for Quantized encoding.</summary>
     public T FullFrameMin
     {
         get => _fullFrameMin.Value;
         set { CheckOwnership(); _fullFrameMin.Value = value; }
     }
 
-    /// <summary>Upper bound of the quantization range (per component) for Quantized encoding.</summary>
     public T FullFrameMax
     {
         get => _fullFrameMax.Value;
         set { CheckOwnership(); _fullFrameMax.Value = value; }
     }
 
-    /// <summary>Bit depth per component for the delta frames in Delta encoding.</summary>
     public int DeltaFrameBits
     {
         get => _deltaFrameBits.Value;
         set { CheckOwnership(); _deltaFrameBits.Value = value; }
     }
 
-    /// <summary>Lower bound of the per-component delta range (Delta encoding).</summary>
     public T DeltaFrameMin
     {
         get => _deltaFrameMin.Value;
         set { CheckOwnership(); _deltaFrameMin.Value = value; }
     }
 
-    /// <summary>Upper bound of the per-component delta range (Delta encoding).</summary>
     public T DeltaFrameMax
     {
         get => _deltaFrameMax.Value;
         set { CheckOwnership(); _deltaFrameMax.Value = value; }
     }
 
-    /// <summary>
-    /// Whether interpolation is enabled for smooth playback.
-    /// </summary>
     public bool IsInterpolated
     {
         get => _isInterpolated.Value;
@@ -146,9 +118,7 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
         }
     }
 
-    /// <summary>
-    /// Time offset for interpolation in seconds.
-    /// </summary>
+    // Seconds.
     public float InterpolationOffset
     {
         get => _interpolationOffset.Value;
@@ -161,9 +131,6 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
 
     private DateTime CurrentTime => Lerp(_trailingTime, _leadingTime, _timeTransition);
 
-    /// <summary>
-    /// Whether this stream has valid data to read.
-    /// </summary>
     public override bool HasValidData
     {
         get
@@ -174,9 +141,6 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
         }
     }
 
-    /// <summary>
-    /// Current value of the stream.
-    /// </summary>
     public T Value
     {
         get => _value;
@@ -187,9 +151,6 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
         }
     }
 
-    /// <summary>
-    /// Event triggered when the value changes.
-    /// </summary>
     public event Action<IChangeable> Changed = null!;
 
     protected override void OnInit()
@@ -203,9 +164,6 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
         _deltaFrameBits.Value = 8;
     }
 
-    /// <summary>
-    /// Enable interpolation with default settings.
-    /// </summary>
     public void SetInterpolation()
     {
         CheckOwnership();
@@ -213,9 +171,6 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
         _interpolationOffset.Value = 0.05f;
     }
 
-    /// <summary>
-    /// Called every frame to update interpolation.
-    /// </summary>
     public override void Update()
     {
         if (IsInterpolated && !IsLocal)
@@ -229,7 +184,6 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
                 return;
             }
 
-            // Advance time
             var delta = World?.LastDelta ?? 0.016f;
             _trailingTime = _trailingTime.AddSeconds(delta);
             _leadingTime = _leadingTime.AddSeconds(delta);
@@ -258,9 +212,6 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
         Changed?.Invoke(this);
     }
 
-    /// <summary>
-    /// Decode stream data from the reader.
-    /// </summary>
     public override void Decode(BinaryReader reader, StreamMessage message)
     {
         var enc = _encoding.Value;
@@ -286,9 +237,6 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
         _receivedFirstData = true;
     }
 
-    /// <summary>
-    /// Encode stream data to the writer.
-    /// </summary>
     public override void Encode(BinaryWriter writer)
     {
         var enc = _encoding.Value;
@@ -364,9 +312,6 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
         return true;
     }
 
-    /// <summary>
-    /// Write a data point for interpolation.
-    /// </summary>
     protected void WriteDataPoint(T value, DateTime time)
     {
         if (IsInterpolated)
@@ -395,17 +340,11 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
         }
     }
 
-    /// <summary>
-    /// Interpolate between two values.
-    /// Override for custom interpolation behavior.
-    /// </summary>
     protected virtual T Interpolate(T a, T b, float lerp)
     {
-        // Default: no interpolation, just return target
         return lerp < 0.5f ? a : b;
     }
 
-    // Helper methods
     private static DateTime Lerp(DateTime a, DateTime b, float t)
     {
         long ticksA = a.Ticks;
@@ -434,14 +373,8 @@ public class ValueStream<T> : ImplicitStream, IValue<T>
     }
 }
 
-/// <summary>
-/// Float3 value stream with linear interpolation.
-/// </summary>
 public class Float3ValueStream : ValueStream<Lumora.Core.Math.float3>
 {
-    /// <summary>
-    /// Override to check for valid float3 (no NaN or Infinity values).
-    /// </summary>
     public override bool HasValidData
     {
         get
@@ -449,7 +382,6 @@ public class Float3ValueStream : ValueStream<Lumora.Core.Math.float3>
             if (!base.HasValidData)
                 return false;
 
-            // Check for NaN or Infinity
             var v = _value;
             return float.IsFinite(v.x) && float.IsFinite(v.y) && float.IsFinite(v.z);
         }
@@ -469,15 +401,9 @@ public class Float3ValueStream : ValueStream<Lumora.Core.Math.float3>
 
 }
 
-/// <summary>
-/// Quaternion value stream with spherical interpolation.
-/// </summary>
 public class FloatQValueStream : ValueStream<Lumora.Core.Math.floatQ>
 {
-    /// <summary>
-    /// Override to check for valid quaternion (non-zero length).
-    /// A zero quaternion is invalid and would cause NaN when normalized.
-    /// </summary>
+    // A zero quaternion would NaN when normalized.
     public override bool HasValidData
     {
         get
@@ -485,7 +411,6 @@ public class FloatQValueStream : ValueStream<Lumora.Core.Math.floatQ>
             if (!base.HasValidData)
                 return false;
 
-            // Check if the quaternion has valid (non-zero) length
             var q = _value;
             float lengthSq = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
             return lengthSq > 0.0001f;
@@ -502,10 +427,8 @@ public class FloatQValueStream : ValueStream<Lumora.Core.Math.floatQ>
     }
 }
 
-/// <summary>
-/// Boolean value stream. Concrete subtype so it resolves by name on decode (the
-/// generic <see cref="ValueStream{T}"/> isn't directly instantiable over the wire).
-/// </summary>
+// Concrete subtype so it resolves by name on decode; the generic isn't directly instantiable over
+// the wire.
 public class BoolValueStream : ValueStream<bool>
 {
 }

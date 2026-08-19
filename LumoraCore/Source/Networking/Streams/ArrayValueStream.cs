@@ -6,14 +6,12 @@ using System.Collections.Generic;
 using System.IO;
 using Lumora.Core.Math;
 using Lumora.Core.Networking.Sync;
+using Lumora.Nexus.Protocol;
 
 namespace Lumora.Core.Networking.Streams;
 
-/// <summary>
-/// A stream of a fixed-size array of values, sent together each update. One stream
-/// instead of N single-value streams when many related values move as a unit
-/// (finger bones, blendshape weights, bone chains, ...).
-/// </summary>
+// One stream instead of N single-value streams when many related values move as a unit (finger bones,
+// blendshape weights, bone chains, ...).
 // Count is synced so both ends agree on the element count without a per-frame
 // length field. Quantized (bit-packed, length-prefixed because the packed size is
 // implied by Count+bits but the reader is shared) or full precision; optional
@@ -43,7 +41,6 @@ public class ArrayValueStream<T> : ImplicitStream
     private DateTime _leadingTime;
     private bool _receivedFirstData;
 
-    /// <summary>Number of elements carried by the stream.</summary>
     public int Count
     {
         get => _count.Value;
@@ -86,7 +83,6 @@ public class ArrayValueStream<T> : ImplicitStream
         set { CheckOwnership(); _interpolationOffset.Value = value; }
     }
 
-    /// <summary>Indexed access to the current element values.</summary>
     public T this[int index]
     {
         get => (uint)index < (uint)_values.Length ? _values[index] : default!;
@@ -111,7 +107,6 @@ public class ArrayValueStream<T> : ImplicitStream
         _fullFrameBits.Value = 12;
     }
 
-    /// <summary>Enable interpolation with default settings.</summary>
     public void SetInterpolation()
     {
         CheckOwnership();
@@ -243,7 +238,6 @@ public class ArrayValueStream<T> : ImplicitStream
             _values[i] = InterpolateElement(a[i], b[i], lerp);
     }
 
-    /// <summary>Interpolate a single element. Override per type (lerp, slerp, ...).</summary>
     protected virtual T InterpolateElement(T a, T b, float lerp) => lerp < 0.5f ? a : b;
 
     private static DateTime Lerp(DateTime a, DateTime b, float t)
@@ -268,18 +262,12 @@ public class ArrayValueStream<T> : ImplicitStream
     }
 }
 
-/// <summary>
-/// Array stream of <see cref="float3"/> with linear per-element interpolation.
-/// </summary>
 public class Float3ArrayValueStream : ArrayValueStream<float3>
 {
     protected override float3 InterpolateElement(float3 a, float3 b, float lerp)
         => new float3(a.x + (b.x - a.x) * lerp, a.y + (b.y - a.y) * lerp, a.z + (b.z - a.z) * lerp);
 }
 
-/// <summary>
-/// Array stream of <see cref="floatQ"/> with spherical per-element interpolation.
-/// </summary>
 public class FloatQArrayValueStream : ArrayValueStream<floatQ>
 {
     protected override floatQ InterpolateElement(floatQ a, floatQ b, float lerp)

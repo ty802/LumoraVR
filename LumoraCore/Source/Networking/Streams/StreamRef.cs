@@ -7,19 +7,11 @@ using Lumora.Core.Networking.Sync;
 
 namespace Lumora.Core.Networking.Streams;
 
-/// <summary>
-/// Type-safe reference to a stream.
-/// Similar to SyncRef but for stream references.
-/// </summary>
-/// <typeparam name="T">The stream type.</typeparam>
 public class StreamRef<T> : SyncElement where T : Stream
 {
     private RefID _targetID;
     private T _target = null!;
 
-    /// <summary>
-    /// The RefID of the target stream.
-    /// </summary>
     public RefID TargetID
     {
         get => _targetID;
@@ -34,16 +26,12 @@ public class StreamRef<T> : SyncElement where T : Stream
         }
     }
 
-    /// <summary>
-    /// The target stream.
-    /// </summary>
     public T Target
     {
         get
         {
             if (_target == null && !_targetID.IsNull)
             {
-                // Try to resolve the reference
                 var element = World?.ReferenceController?.GetObjectOrNull(_targetID);
                 _target = (element as T)!;
             }
@@ -60,9 +48,6 @@ public class StreamRef<T> : SyncElement where T : Stream
         }
     }
 
-    /// <summary>
-    /// Whether this reference points to a valid stream.
-    /// </summary>
     public bool HasTarget => Target != null;
 
     public override SyncMemberType MemberType => SyncMemberType.Field;
@@ -90,7 +75,6 @@ public class StreamRef<T> : SyncElement where T : Stream
 
     protected override void InternalClearDirty()
     {
-        // Nothing to clear
     }
 
     public override void Dispose()

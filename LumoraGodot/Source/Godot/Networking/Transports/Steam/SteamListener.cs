@@ -3,21 +3,18 @@
 
 using System;
 using System.Collections.Generic;
-using Lumora.Core.Networking;
 using Steamworks;
+using Lumora.Nexus.Transport;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Godot.Networking.Transports.Steam;
 
-/// <summary>
-/// Host-side P2P listener over SteamNetworkingSockets. Opens two virtual ports
-/// per session (foreground + background, mirroring SteamConnection's channel
-/// split) and lazily materialises a SteamConnection per remote CSteamID as
-/// incoming requests come in.
-///
-/// LocalUri is null because Steam P2P is relay-only; only the GlobalUri
-/// (steam://{hostSteamID}/{channelGroup}/{sessionId}) is dialable. - xlinka
-/// </summary>
+// Host-side P2P listener over SteamNetworkingSockets. Opens two virtual ports per session
+// (foreground + background, mirroring SteamConnection's channel split) and lazily materialises a
+// SteamConnection per remote CSteamID as incoming requests come in.
+//
+// LocalUri is null because Steam P2P is relay-only; only the GlobalUri
+// (steam://{hostSteamID}/{channelGroup}/{sessionId}) is dialable. - xlinka
 public sealed class SteamListener : IListener
 {
     private const int ChannelCount = 2;

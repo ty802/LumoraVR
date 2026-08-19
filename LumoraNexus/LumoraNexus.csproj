@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <LangVersion>13</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>Lumora.Nexus</RootNamespace>
+    <AssemblyName>LumoraNexus</AssemblyName>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Description>LumoraNexus - Transport, wire protocol, discovery and cloud services. Knows nothing about the datamodel.</Description>
+    <Company>Lumora Project</Company>
+    <Product>LumoraNexus</Product>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="LiteNetLib" Version="2.0.2" />
+    <PackageReference Include="K4os.Compression.LZ4" Version="1.3.8" />
+    <PackageReference Include="System.Net.Http.Json" Version="9.0.0" />
+    <PackageReference Include="System.Text.Json" Version="9.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- LumoraMath only. A reference back to LumoraCore would recreate the datamodel coupling this split removes. -->
+    <ProjectReference Include="..\LumoraMath\LumoraMath.csproj" />
+  </ItemGroup>
+</Project>

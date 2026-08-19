@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <LangVersion>13</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>Lumora.Simulation</RootNamespace>
+    <AssemblyName>LumoraSimulation</AssemblyName>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Description>LumoraSimulation - Pure CPU simulation kernels (particles, soft bodies). No datamodel, no networking, no engine types. Depends only on LumoraMath.</Description>
+    <Company>Lumora Project</Company>
+    <Product>LumoraSimulation</Product>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\LumoraMath\LumoraMath.csproj" />
+  </ItemGroup>
+</Project>

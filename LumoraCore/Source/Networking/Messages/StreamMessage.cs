@@ -4,20 +4,14 @@
 using System.Collections.Generic;
 using System.IO;
 using Lumora.Core.Networking;
+using Lumora.Nexus.Protocol;
+using Lumora.Nexus.Transport;
 
 namespace Lumora.Core.Networking.Messages;
 
-/// <summary>
-/// Stream message - high-frequency continuous data.
-/// Sent at 60+ Hz for transforms, audio, etc.
-/// Separate from delta batching system.
-/// </summary>
+// Sent at 60+ Hz for transforms, audio, etc. Separate from delta batching system.
 public class StreamMessage
 {
-    /// <summary>
-    /// Stream data entries.
-    /// Each entry: UserID + StreamID + Data
-    /// </summary>
     public List<StreamEntry> Entries = new();
 
     public MessageType Type => MessageType.Stream;
@@ -58,24 +52,12 @@ public class StreamMessage
     }
 }
 
-/// <summary>
-/// Single stream data entry.
-/// </summary>
 public struct StreamEntry
 {
-    /// <summary>
-    /// User who owns this stream.
-    /// </summary>
     public ulong UserID;
 
-    /// <summary>
-    /// Stream identifier (e.g., "HeadTransform", "LeftHandTransform").
-    /// </summary>
     public int StreamID;
 
-    /// <summary>
-    /// Raw stream data.
-    /// </summary>
     public byte[] Data;
 
     public void Encode(BinaryWriter writer)

@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <LangVersion>13</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>Lumora.Warden</RootNamespace>
+    <AssemblyName>LumoraWarden</AssemblyName>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Description>LumoraWarden - Host-authoritative permission policy: actions, roles, world-mode floor and the authorization algorithm. Leaf assembly, references nothing.</Description>
+    <Company>Lumora Project</Company>
+    <Product>LumoraWarden</Product>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <!-- Keep this list EMPTY. Warden sits below the engine so the policy is a dependency the engine
+       cannot skip; referencing the engine back would let the gate be edited from inside what it
+       gates. It sees the world only through the interfaces it declares. -xlinka -->
+  <ItemGroup />
+</Project>

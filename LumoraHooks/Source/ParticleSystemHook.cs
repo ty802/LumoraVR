@@ -1,33 +1,33 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
-using System;
 using Godot;
 using Lumora.Core;
+using Lumora.Core.Math;
 using LumoraParticleSystem = Lumora.Core.Components.ParticleSystem;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Godot.Hooks;
 
-/// <summary>
-/// CPU-simulated engine particle renderer backed by a Godot MultiMesh draw call.
-/// </summary>
+// Renders a ParticleSystem's particles as one MultiMesh draw call. The simulation lives in LumoraSimulation
+// and is driven by the engine component (emitters/modules are engine components too); this hook only pulls
+// the finished position/size/rotation/color buffers each frame and writes the instance buffer in a single
+// upload - per-instance Set* calls cost a marshalling round-trip each, which at particle counts IS the
+// frame budget. -xlinka
 [ImplementableHook(typeof(LumoraParticleSystem))]
 public sealed partial class ParticleSystemHook : ComponentHook<LumoraParticleSystem>
 {
     private const string ShaderPath = "res://Shaders/EngineParticle.gdshader";
-    private const int HardMaxParticles = 4096;
+    private const int InstanceStride = 16; // 12 transform + 4 color
 
     private ParticleProcessNode _processNode = null!;
     private MultiMeshInstance3D _instance = null!;
     private MultiMesh _multiMesh = null!;
-    private global::Godot.SphereMesh _particleMesh = null!;
+    private SphereMesh _particleMesh = null!;
     private ShaderMaterial _material = null!;
-    private Particle[] _particles = Array.Empty<Particle>();
-    private int _activeCount;
-    private uint _rngState;
-    private float _emissionAccumulator;
-    private float _burstTimer;
+    private float[] _buffer = System.Array.Empty<float>();
+    private int _capacity;
+    private int _lastRenderVersion = -1;
 
     public static IHook<LumoraParticleSystem> Constructor() => new ParticleSystemHook();
 
@@ -35,15 +35,10 @@ public sealed partial class ParticleSystemHook : ComponentHook<LumoraParticleSys
     {
         base.Initialize();
 
-        _rngState = NormalizeSeed(Owner.Seed.Value);
-
-        _processNode = new ParticleProcessNode(this)
-        {
-            Name = "ParticleSystem"
-        };
+        _processNode = new ParticleProcessNode(this) { Name = "ParticleSystem" };
         attachedNode.AddChild(_processNode);
 
-        _particleMesh = new global::Godot.SphereMesh
+        _particleMesh = new SphereMesh
         {
             Radius = 1.0f,
             Height = 2.0f,
@@ -53,19 +48,11 @@ public sealed partial class ParticleSystemHook : ComponentHook<LumoraParticleSys
 
         _material = new ShaderMaterial();
         if (ResourceLoader.Exists(ShaderPath))
-        {
             _material.Shader = GD.Load<Shader>(ShaderPath);
-        }
         else
-        {
             LumoraLogger.Warn($"ParticleSystemHook: Particle shader not found at {ShaderPath}");
-        }
 
-        _multiMesh = new MultiMesh
-        {
-            Mesh = _particleMesh
-        };
-
+        _multiMesh = new MultiMesh { Mesh = _particleMesh };
         _instance = new MultiMeshInstance3D
         {
             Name = "ParticleMultiMesh",
@@ -81,278 +68,145 @@ public sealed partial class ParticleSystemHook : ComponentHook<LumoraParticleSys
     public override void ApplyChanges()
     {
         if (_multiMesh == null || _instance == null)
-        {
             return;
-        }
 
-        if (Owner.Seed.GetWasChangedAndClear())
-        {
-            _rngState = NormalizeSeed(Owner.Seed.Value);
-            _activeCount = 0;
-            _emissionAccumulator = 0f;
-            _burstTimer = 0f;
-        }
-
-        EnsureCapacity();
-        ApplyBounds();
-
-        var renderQueue = NormalizeRenderQueue(Owner.RenderQueue.Value);
-        _material.RenderPriority = renderQueue;
+        var renderQueue = System.Math.Clamp(Owner.RenderQueue.Value, -100, 10000);
+        _material.RenderPriority = System.Math.Clamp(renderQueue, -128, 127);
         _instance.SortingOffset = renderQueue;
         _instance.Visible = Owner.Enabled.Value;
         _material.SetShaderParameter("emission_strength", Owner.EmissionStrength.Value);
-    }
-
-    private void EnsureCapacity()
-    {
-        int maxParticles = Math.Clamp(Owner.MaxParticles.Value, 1, HardMaxParticles);
-        if (_particles.Length == maxParticles)
-        {
-            return;
-        }
-
-        var oldParticles = _particles;
-        int oldActive = _activeCount;
-        _particles = new Particle[maxParticles];
-        _activeCount = Math.Min(oldActive, maxParticles);
-
-        for (int i = 0; i < _activeCount; i++)
-        {
-            _particles[i] = oldParticles[i];
-        }
-
-        _multiMesh.InstanceCount = 0;
-        _multiMesh.TransformFormat = MultiMesh.TransformFormatEnum.Transform3D;
-        _multiMesh.UseColors = true;
-        _multiMesh.InstanceCount = maxParticles;
-        _multiMesh.VisibleInstanceCount = _activeCount;
+        ApplyBounds();
     }
 
     private void ApplyBounds()
     {
+        // Generous custom AABB: particles are sim'd engine-side in slot-local space, so the extents plus
+        // travel headroom keeps Godot from frustum-culling a system whose node origin is off screen.
         var extents = Owner.EmitterExtents.Value;
-        float height = Math.Max(Owner.InitialSpeed.Value * Owner.Lifetime.Value * 1.8f, 1f);
+        float height = System.Math.Max(Owner.InitialSpeed.Value * Owner.Lifetime.Value * 1.8f, 1f);
+        float pad = System.Math.Max(System.Math.Max(extents.x, extents.z), 1f);
         _instance.CustomAabb = new Aabb(
-            new Vector3(-extents.x, -0.25f, -extents.z),
-            new Vector3(extents.x * 2f, height, extents.z * 2f));
-    }
-
-    internal void Step(float delta)
-    {
-        if (_multiMesh == null || _particles.Length == 0)
-        {
-            return;
-        }
-
-        if (!Owner.Enabled.Value)
-        {
-            _multiMesh.VisibleInstanceCount = 0;
-            return;
-        }
-
-        float dt = Math.Clamp(delta, 0f, 0.05f);
-        UpdateParticles(dt);
-        EmitParticles(dt);
-        WriteInstances();
-    }
-
-    private void UpdateParticles(float dt)
-    {
-        for (int i = _activeCount - 1; i >= 0; i--)
-        {
-            var particle = _particles[i];
-            particle.Age += dt;
-
-            if (particle.Age >= particle.Lifetime)
-            {
-                _particles[i] = _particles[_activeCount - 1];
-                _activeCount--;
-                continue;
-            }
-
-            particle.Velocity.Y += Owner.Gravity.Value * dt;
-            particle.Position += particle.Velocity * dt;
-            _particles[i] = particle;
-        }
-    }
-
-    private void EmitParticles(float dt)
-    {
-        float emissionRate = Math.Max(0f, Owner.EmissionRate.Value);
-        _emissionAccumulator += emissionRate * dt;
-
-        while (_emissionAccumulator >= 1f)
-        {
-            SpawnParticle();
-            _emissionAccumulator -= 1f;
-        }
-
-        float burstInterval = Owner.BurstInterval.Value;
-        if (burstInterval <= 0f || Owner.BurstCount.Value <= 0)
-        {
-            return;
-        }
-
-        _burstTimer += dt;
-        while (_burstTimer >= burstInterval)
-        {
-            int burstCount = Math.Clamp(Owner.BurstCount.Value, 0, 64);
-            for (int i = 0; i < burstCount; i++)
-            {
-                SpawnParticle();
-            }
-
-            _burstTimer -= burstInterval;
-        }
-    }
-
-    private void SpawnParticle()
-    {
-        if (_activeCount >= _particles.Length)
-        {
-            return;
-        }
-
-        var extents = Owner.EmitterExtents.Value;
-        float angle = Next01() * MathF.PI * 2f;
-        float radius = MathF.Sqrt(Next01());
-        var position = new Vector3(
-            MathF.Cos(angle) * extents.x * radius,
-            Owner.SpawnHeight.Value,
-            MathF.Sin(angle) * extents.z * radius);
-
-        float speed = Owner.InitialSpeed.Value + (Next01() * 2f - 1f) * Owner.SpeedVariance.Value;
-        float spread = Owner.Spread.Value;
-        var velocity = new Vector3(
-            (Next01() * 2f - 1f) * spread,
-            Math.Max(0.02f, speed),
-            (Next01() * 2f - 1f) * spread);
-
-        float lifetime = Math.Max(0.05f, Owner.Lifetime.Value + (Next01() * 2f - 1f) * Owner.LifetimeVariance.Value);
-        float sizeJitter = 0.78f + Next01() * 0.44f;
-
-        _particles[_activeCount++] = new Particle
-        {
-            Position = position,
-            Velocity = velocity,
-            Age = 0f,
-            Lifetime = lifetime,
-            StartSize = Math.Max(0.001f, Owner.StartSize.Value * sizeJitter),
-            EndSize = Math.Max(0.001f, Owner.EndSize.Value * sizeJitter),
-            StartColor = ToGodotColor(Owner.StartColor.Value),
-            EndColor = ToGodotColor(Owner.EndColor.Value)
-        };
-    }
-
-    private void WriteInstances()
-    {
-        for (int i = 0; i < _activeCount; i++)
-        {
-            var particle = _particles[i];
-            float life = Math.Clamp(particle.Age / particle.Lifetime, 0f, 1f);
-            float birth = SmoothStep(0f, 0.16f, life);
-            float death = 1f - SmoothStep(0.74f, 1f, life);
-            float pop = 1f + MathF.Sin(Math.Clamp(life / 0.22f, 0f, 1f) * MathF.PI) * 0.48f;
-            float size = Lerp(particle.StartSize, particle.EndSize, life) * birth * death * pop;
-            var color = Lerp(particle.StartColor, particle.EndColor, life);
-            color.A *= birth * death;
-
-            var transform = Transform3D.Identity;
-            transform.Basis = Basis.Identity.Scaled(new Vector3(size, size, size));
-            transform.Origin = particle.Position;
-
-            _multiMesh.SetInstanceTransform(i, transform);
-            _multiMesh.SetInstanceColor(i, color);
-        }
-
-        _multiMesh.VisibleInstanceCount = _activeCount;
-    }
-
-    private float Next01()
-    {
-        _rngState ^= _rngState << 13;
-        _rngState ^= _rngState >> 17;
-        _rngState ^= _rngState << 5;
-        return (_rngState & 0x00FFFFFF) / 16777216f;
-    }
-
-    private static uint NormalizeSeed(int seed)
-    {
-        return seed == 0 ? 1u : unchecked((uint)seed);
-    }
-
-    private static int NormalizeRenderQueue(int renderQueue)
-    {
-        return renderQueue < 0 ? 0 : Math.Clamp(renderQueue, -128, 127);
-    }
-
-    private static float SmoothStep(float edge0, float edge1, float value)
-    {
-        float t = Math.Clamp((value - edge0) / Math.Max(edge1 - edge0, 0.0001f), 0f, 1f);
-        return t * t * (3f - 2f * t);
-    }
-
-    private static float Lerp(float a, float b, float t)
-    {
-        return a + (b - a) * t;
-    }
-
-    private static Color Lerp(Color a, Color b, float t)
-    {
-        return new Color(
-            Lerp(a.R, b.R, t),
-            Lerp(a.G, b.G, t),
-            Lerp(a.B, b.B, t),
-            Lerp(a.A, b.A, t));
-    }
-
-    private static Color ToGodotColor(Lumora.Core.Math.colorHDR color)
-    {
-        return new Color(color.r, color.g, color.b, color.a);
+            new Vector3(-pad, -height, -pad),
+            new Vector3(pad * 2f, height * 2f, pad * 2f));
     }
 
     public override void Destroy(bool destroyingWorld)
     {
         if (!destroyingWorld && _processNode != null && GodotObject.IsInstanceValid(_processNode))
-        {
             _processNode.QueueFree();
-        }
-
-        _processNode = null!;
-        _instance = null!;
-        _multiMesh = null!;
-        _particleMesh = null!;
-        _material = null!;
-        _particles = Array.Empty<Particle>();
-        _activeCount = 0;
-
         base.Destroy(destroyingWorld);
     }
 
-    private struct Particle
+    internal void PullRender()
     {
-        public Vector3 Position;
-        public Vector3 Velocity;
-        public float Age;
-        public float Lifetime;
-        public float StartSize;
-        public float EndSize;
-        public Color StartColor;
-        public Color EndColor;
+        if (Owner == null || Owner.IsDestroyed || _multiMesh == null)
+            return;
+        if (Owner.RenderVersion == _lastRenderVersion)
+            return;
+        _lastRenderVersion = Owner.RenderVersion;
+
+        var positions = Owner.RenderPositions;
+        var sizes = Owner.RenderSizes;
+        var colors = Owner.RenderColors;
+        int count = Owner.ParticleCount;
+        if (positions == null || count <= 0)
+        {
+            _multiMesh.VisibleInstanceCount = 0;
+            return;
+        }
+
+        if (_capacity < count)
+        {
+            _capacity = count;
+            _multiMesh.InstanceCount = 0;
+            _multiMesh.TransformFormat = MultiMesh.TransformFormatEnum.Transform3D;
+            _multiMesh.UseColors = true;
+            _multiMesh.InstanceCount = _capacity;
+            _buffer = new float[_capacity * InstanceStride];
+        }
+
+        // Two loops rather than one with a branch inside: the rotation path costs a quaternion-to-basis
+        // per particle and most systems never spin anything, so the sim tells us whether it is even
+        // integrating rotation and the common case stays a plain diagonal write. -xlinka
+        if (Owner.HasRotations)
+            WriteRotatedInstances(positions, sizes, colors, Owner.RenderRotations, count);
+        else
+            WriteAxisAlignedInstances(positions, sizes, colors, count);
+
+        for (int i = count; i < _capacity; i++)
+            System.Array.Clear(_buffer, i * InstanceStride, InstanceStride);
+
+        _multiMesh.Buffer = _buffer;
+        _multiMesh.VisibleInstanceCount = count;
     }
 
+    private void WriteAxisAlignedInstances(float3[] positions, float3[] sizes, colorHDR[] colors, int count)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            int o = i * InstanceStride;
+            var p = positions[i];
+            var s = sizes[i];
+            // Row-major 3x4: per-axis scale on the diagonal, position in the 4th column.
+            _buffer[o + 0] = s.x; _buffer[o + 1] = 0f; _buffer[o + 2] = 0f; _buffer[o + 3] = p.x;
+            _buffer[o + 4] = 0f; _buffer[o + 5] = s.y; _buffer[o + 6] = 0f; _buffer[o + 7] = p.y;
+            _buffer[o + 8] = 0f; _buffer[o + 9] = 0f; _buffer[o + 10] = s.z; _buffer[o + 11] = p.z;
+            var c = colors[i];
+            _buffer[o + 12] = c.r;
+            _buffer[o + 13] = c.g;
+            _buffer[o + 14] = c.b;
+            _buffer[o + 15] = c.a;
+        }
+    }
+
+    private void WriteRotatedInstances(float3[] positions, float3[] sizes, colorHDR[] colors, floatQ[] rotations, int count)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            int o = i * InstanceStride;
+            var p = positions[i];
+            var s = sizes[i];
+            var q = rotations[i];
+
+            // Basis columns straight from the quaternion, each scaled by its own axis size.
+            float xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
+            float xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z;
+            float wx = q.w * q.x, wy = q.w * q.y, wz = q.w * q.z;
+
+            float m00 = (1f - 2f * (yy + zz)) * s.x;
+            float m10 = (2f * (xy + wz)) * s.x;
+            float m20 = (2f * (xz - wy)) * s.x;
+            float m01 = (2f * (xy - wz)) * s.y;
+            float m11 = (1f - 2f * (xx + zz)) * s.y;
+            float m21 = (2f * (yz + wx)) * s.y;
+            float m02 = (2f * (xz + wy)) * s.z;
+            float m12 = (2f * (yz - wx)) * s.z;
+            float m22 = (1f - 2f * (xx + yy)) * s.z;
+
+            _buffer[o + 0] = m00; _buffer[o + 1] = m01; _buffer[o + 2] = m02; _buffer[o + 3] = p.x;
+            _buffer[o + 4] = m10; _buffer[o + 5] = m11; _buffer[o + 6] = m12; _buffer[o + 7] = p.y;
+            _buffer[o + 8] = m20; _buffer[o + 9] = m21; _buffer[o + 10] = m22; _buffer[o + 11] = p.z;
+            var c = colors[i];
+            _buffer[o + 12] = c.r;
+            _buffer[o + 13] = c.g;
+            _buffer[o + 14] = c.b;
+            _buffer[o + 15] = c.a;
+        }
+    }
+
+    // Node3D, NOT a plain Node: Godot only propagates visibility down through Node3D ancestors, so a plain
+    // Node between WorldRoot and the MultiMeshInstance severs the chain - backgrounding a world (WorldRoot
+    // Visible=false) then failed to hide the particles while ProcessMode still froze them, leaving frozen
+    // particles bleeding into the next world. Kept at identity; particle transforms live in the buffer. -xlinka
     private sealed partial class ParticleProcessNode : Node3D
     {
         private readonly ParticleSystemHook _hook;
+        public ParticleProcessNode(ParticleSystemHook hook) => _hook = hook;
+        public ParticleProcessNode() => _hook = null!;
 
-        public ParticleProcessNode(ParticleSystemHook hook)
+        public override void _Process(double delta)
         {
-            _hook = hook;
-        }
-
-        public override void _PhysicsProcess(double delta)
-        {
-            _hook?.Step((float)delta);
+            _hook?.PullRender();
         }
     }
 }

@@ -8,11 +8,6 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Godot.Hooks;
 
-/// <summary>
-/// Hook for MeshRenderer component -> Godot MeshInstance3D.
-/// Platform mesh renderer hook for Godot.
-/// Now properly uses the asset system instead of hardcoded mesh creation.
-/// </summary>
 [ImplementableHook(typeof(MeshRenderer))]
 public class MeshRendererHook : MeshRendererHookBase<MeshRenderer, Node3D>
 {
@@ -36,9 +31,6 @@ public class MeshRendererHook : MeshRendererHookBase<MeshRenderer, Node3D>
         LumoraLogger.Log($"MeshRendererHook: Cleaned up renderer for slot '{Owner?.Slot?.SlotName.Value}'");
     }
 
-    /// <summary>
-    /// Factory method for creating MeshRenderer hooks.
-    /// </summary>
     public static IHook<MeshRenderer> Constructor()
     {
         return new MeshRendererHook();

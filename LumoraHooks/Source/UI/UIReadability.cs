@@ -7,10 +7,6 @@ namespace Lumora.Godot.UI;
 
 #nullable enable
 
-/// <summary>
-/// Applies a readability-focused pass to loaded UI trees:
-/// larger minimum font sizes, larger interactive controls, and improved neutral text contrast.
-/// </summary>
 public static class UIReadability
 {
     private const int MinLabelFontSize = 14;
@@ -26,10 +22,6 @@ public static class UIReadability
         ApplyRecursive(root!);
     }
 
-    /// <summary>
-    /// Readability-biased render scale for in-world SubViewport UI.
-    /// Keeps text/buttons physically readable by avoiding over-dense render scale.
-    /// </summary>
     public static int GetReadableResolutionScale(int requestedScale)
     {
         // Keep authored resolution behavior; readability is handled by targeted font sizing.

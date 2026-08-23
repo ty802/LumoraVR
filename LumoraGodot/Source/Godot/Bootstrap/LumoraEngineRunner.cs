@@ -13,8 +13,7 @@ using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
-using Lumora.Core.Networking;
-using Lumora.Core.Networking.LNL;
+using Lumora.Nexus.Transport.LNL;
 using Lumora.Core.Networking.Sync;
 using Lumora.Godot.Networking.Transports.Steam;
 using Lumora.Core.Components.Meshes;
@@ -27,17 +26,14 @@ using Lumora.Source.Input;
 using Lumora.Source.UI;
 using Lumora.Godot.Input;
 using Lumora.Godot.Debug;
+using Lumora.Nexus.Transport;
 using LumoraLogger = Lumora.Core.Logging.Logger;
-using ThreadingMutex = System.Threading.Mutex;
 
+using ThreadingMutex = System.Threading.Mutex;
 using InspectorInputHandler = Lumora.Source.Input.InspectorInputHandler;
 
 namespace Lumora.Source.Godot.Bootstrap;
 
-/// <summary>
-/// Bootstrap script for Lumora engine initialization in Godot.
-/// Handles environment setup, XR detection, and system integration.
-/// </summary>
 public partial class LumoraEngineRunner : Node
 {
 	private const string DebugFlag = "--Lumora-Debug";
@@ -65,6 +61,7 @@ public partial class LumoraEngineRunner : Node
 	// INPUT DRIVERS
 	private GodotMouseDriver _mouseDriver = null!;
 	private GodotKeyboardDriver _keyboardDriver = null!;
+	private GodotGamepadDriver _gamepadDriver = null!;
 	private GodotVRDriver _vrDriver = null!;
 	private ClipboardImporter _clipboardImporter = null!;
 	private LocalDB _localDB = null!;
@@ -114,9 +111,6 @@ public partial class LumoraEngineRunner : Node
 				break;
 		}
 	}
-	/// <summary>
-	/// Initialization phases for engine bootstrap.
-	/// </summary>
 	private enum InitializationPhase
 	{
 		EnvironmentSetup,
@@ -128,10 +122,7 @@ public partial class LumoraEngineRunner : Node
 		Ready
 	}
 
-	/// <summary>
-	/// XR startup mode resolved from command-line args.
-	/// Defaults to desktop to avoid launching OpenXR runtimes unexpectedly.
-	/// </summary>
+	// defaults to desktop to avoid launching OpenXR runtimes unexpectedly
 	private enum XrLaunchMode
 	{
 		Desktop,
@@ -178,10 +169,8 @@ public partial class LumoraEngineRunner : Node
 			LaunchDebugConsoleProcess();
 		}
 
-		// Load and show loading screen
 		InitializeLoadingScreen();
 
-		// Start initialization sequence
 		CallDeferred(MethodName.StartInitialization);
 	}
 
@@ -377,9 +366,6 @@ public partial class LumoraEngineRunner : Node
 		return false;
 	}
 
-	/// <summary>
-	/// Initialize and display the loading screen.
-	/// </summary>
 	private void InitializeLoadingScreen()
 	{
 		if (VerboseInit)
@@ -387,7 +373,6 @@ public partial class LumoraEngineRunner : Node
 			LumoraLogger.Debug("InitializeLoadingScreen: Loading loading screen scene...");
 		}
 
-		// Load LoadingScreen scene
 		var loadingScreenScene = GD.Load<PackedScene>(LumAssets.UI.LoadingScreen);
 		if (loadingScreenScene != null)
 		{
@@ -409,9 +394,6 @@ public partial class LumoraEngineRunner : Node
 		}
 	}
 
-	/// <summary>
-	/// Main initialization sequence (async).
-	/// </summary>
 	private async void StartInitialization()
 	{
 		if (VerboseInit)
@@ -449,11 +431,6 @@ public partial class LumoraEngineRunner : Node
 		}
 	}
 
-	/// <summary>
-	/// Environment Setup
-	/// - Parse command-line arguments
-	/// - Configure platform settings
-	/// </summary>
 	private async Task PhaseEnvironmentSetup()
 	{
 		LumoraLogger.Log("[Phase 1/6] Environment Setup");
@@ -496,17 +473,10 @@ public partial class LumoraEngineRunner : Node
 		}
 	}
 
-	/// <summary>
-	/// XR Detection
-	/// - Initialize the OpenXR session if a runtime is available
-	/// - Create a dedicated XR SubViewport when OpenXR is available
-	///
-	/// Architecture: the root viewport is always the normal desktop window.
-	/// The XR SubViewport owns the headset render path and XRModeManager keeps
-	/// that viewport UseXR=true while the OpenXR session is alive. F8 swaps
-	/// input and camera ownership; it does not tear down OpenXR.
-	/// - xlinka
-	/// </summary>
+	// Architecture: the root viewport is always the normal desktop window. The XR SubViewport
+	// owns the headset render path and XRModeManager keeps that viewport UseXR=true while the
+	// OpenXR session is alive. F8 swaps input and camera ownership; it does not tear down OpenXR.
+	// - xlinka
 	private async Task PhaseXRDetection()
 	{
 		LumoraLogger.Log("[Phase 2/6] XR Detection");
@@ -720,11 +690,6 @@ public partial class LumoraEngineRunner : Node
 		LumoraLogger.Log("OpenXR: pose recentered");
 	}
 
-	/// <summary>
-	/// HeadOutput Creation
-	/// - Create camera management system
-	/// - Setup VR or screen rendering
-	/// </summary>
 	private async Task PhaseHeadOutputCreation()
 	{
 		LumoraLogger.Log("[Phase 3/6] HeadOutput Creation");
@@ -763,12 +728,6 @@ public partial class LumoraEngineRunner : Node
 		await Task.Delay(180); // Artificial delay to show phase message
 	}
 
-	/// <summary>
-	/// Engine Core Initialization
-	/// - Create Engine instance
-	/// - Run async engine.InitializeAsync()
-	/// - Wait for completion
-	/// </summary>
 	private async Task PhaseEngineCoreInit()
 	{
 		LumoraLogger.Log("[Phase 4/6] Engine Core Initialization");
@@ -781,7 +740,6 @@ public partial class LumoraEngineRunner : Node
 				LumoraLogger.Debug("PhaseEngineCoreInit: Creating SystemInfoHook...");
 			}
 
-			// Create SystemInfoHook
 			_systemInfoHook = new SystemInfoHook();
 			AddChild(_systemInfoHook);
 			if (VerboseInit)
@@ -799,7 +757,6 @@ public partial class LumoraEngineRunner : Node
 			// anything touches the vault (engine init loads the local home / asset DB).
 			Lumora.Core.Persistence.LocalEncryption.Sealer = new PlatformSecretSealer();
 
-			// Create Engine with configuration
 			_engine = new Lumora.Core.Engine
 			{
 				AutoHostLocalHome = this.AutoHostLocalHome,
@@ -821,8 +778,7 @@ public partial class LumoraEngineRunner : Node
 				LumoraLogger.Debug("PhaseEngineCoreInit: Engine instance created");
 			}
 
-			// Register hooks BEFORE engine initialization
-			// This ensures slots get hooks when they're created
+			// hooks must be registered before engine init so slots get hooks when they're created
 			if (VerboseInit)
 			{
 				LumoraLogger.Debug("PhaseEngineCoreInit: Registering hooks...");
@@ -839,7 +795,6 @@ public partial class LumoraEngineRunner : Node
 			// registered"). Steam is already initialized by now (early in _Ready). - xlinka
 			RegisterNetworkManagers();
 
-			// Initialize engine asynchronously
 			LumoraLogger.Log("LumoraEngineRunner: Calling Engine.InitializeAsync()...");
 			await _engine.InitializeAsync();
 
@@ -850,7 +805,6 @@ public partial class LumoraEngineRunner : Node
 				LumoraLogger.Debug("PhaseEngineCoreInit: Initializing WorldManager hook...");
 			}
 
-			// Initialize WorldManager hook
 			var worldManagerHook = WorldManagerHook.Constructor();
 			// IMPORTANT: Set Hook BEFORE Initialize() so existing worlds can find it
 			_engine.WorldManager.Hook = worldManagerHook;
@@ -867,12 +821,6 @@ public partial class LumoraEngineRunner : Node
 		}
 	}
 
-	/// <summary>
-	/// System Integration
-	/// - Register input drivers
-	/// - Setup audio system
-	/// - Configure engine callbacks
-	/// </summary>
 	private async Task PhaseSystemIntegration()
 	{
 		LumoraLogger.Log("[Phase 5/6] System Integration");
@@ -883,7 +831,7 @@ public partial class LumoraEngineRunner : Node
 		_engine.AudioManager.Initialize(AudioMixer.GetMixer());
 
 		// Register Godot-specific builtin asset loader (reads from res:// using FileAccess)
-		Lumora.Core.Networking.BuiltinAssetHelper.PlatformLoader = (relativePath) =>
+		Lumora.Nexus.Assets.BuiltinAssetHelper.PlatformLoader = (relativePath) =>
 		{
 			string resPath = $"res://{relativePath}";
 			if (!FileAccess.FileExists(resPath))
@@ -911,39 +859,37 @@ public partial class LumoraEngineRunner : Node
 		await Task.Delay(150); // Artificial delay to show phase message
 	}
 
-	/// <summary>
-	/// Register low-level input drivers (keyboard, mouse, VR tracking).
-	/// The desktop scene overlay (DesktopInput) is created by XRModeManager
-	/// when desktop mode is active; VR mode has no extra scene node.
-	/// </summary>
+	// The desktop scene overlay (DesktopInput) is created by XRModeManager when desktop mode is
+	// active; VR mode has no extra scene node.
 	private void RegisterInputDrivers()
 	{
-		// Keyboard driver
 		_keyboardDriver = new GodotKeyboardDriver();
 		_inputInterface.RegisterKeyboardDriver(_keyboardDriver);
 
-		// Mouse driver
 		_mouseDriver = new GodotMouseDriver();
 		_inputInterface.RegisterMouseDriver(_mouseDriver);
+
+		// registered as a plain input driver too so it gets the hot-plug hookup
+		_gamepadDriver = new GodotGamepadDriver();
+		_inputInterface.RegisterGamepadDriver(_gamepadDriver);
+		_inputInterface.RegisterInputDriver(_gamepadDriver);
 
 		_vrDriver = new GodotVRDriver();
 		_vrDriver.InitializeVR();
 		_vrDriver.FindXRNodes(GetTree().Root);
 		_inputInterface.RegisterVRDriver(_vrDriver);
 		_vrDriver.LogRuntimeDiagnostics();
-		LumoraLogger.Log($"Input drivers: keyboard={_keyboardDriver.GetType().Name}, mouse={_mouseDriver.GetType().Name}, vr={_vrDriver.VRSystemName}, active={_vrDriver.IsVRActive}");
+		LumoraLogger.Log($"Input drivers: keyboard={_keyboardDriver.GetType().Name}, mouse={_mouseDriver.GetType().Name}, gamepad={_gamepadDriver.ConnectedPadCount} pad(s), vr={_vrDriver.VRSystemName}, active={_vrDriver.IsVRActive}");
 
-		// Initialize LocalDB for asset storage
 		_localDB = new LocalDB();
 		_ = _localDB.InitializeAsync();
 
-		// Wire up LocalDB to Engine for local:// URI resolution
+		// wires LocalDB into Engine for local:// URI resolution
 		if (_engine != null)
 		{
 			_engine.LocalDB = _localDB;
 		}
 
-		// Create clipboard importer for Ctrl+V paste handling
 		_clipboardImporter = new ClipboardImporter();
 		_clipboardImporter.Name = "ClipboardImporter";
 		AddChild(_clipboardImporter);
@@ -952,32 +898,13 @@ public partial class LumoraEngineRunner : Node
 		LumoraLogger.Log("ClipboardImporter: Created for paste handling");
 	}
 
-	/// <summary>
-	/// Called when an asset is imported from clipboard.
-	/// </summary>
 	private void OnClipboardAssetImported(string filePath, Lumora.Core.Slot slot)
 	{
 		LumoraLogger.Log($"ClipboardImporter: Asset imported from '{filePath}' to slot '{slot?.SlotName.Value}'");
 	}
 
-	/// <summary>
-	/// Create renderer for new world.
-	/// NOTE: WorldHook is now created by WorldManagerHook automatically
-	/// </summary>
+	// NOTE: WorldHook is now created by WorldManagerHook automatically
 
-	/// <summary>
-	/// Remove renderer for deleted world.
-	/// </summary>
-
-	/// <summary>
-	/// Update renderers when world focus changes.
-	/// </summary>
-
-	/// <summary>
-	/// Userspace Setup
-	/// - Initialize userspace world
-	/// - Setup dashboard and UI
-	/// </summary>
 	private async Task PhaseUserspaceSetup()
 	{
 		LumoraLogger.Log("[Phase 6/6] Userspace Setup");
@@ -988,7 +915,6 @@ public partial class LumoraEngineRunner : Node
 			var userspace = Userspace.SetupUserspace(_engine);
 			LumoraLogger.Log($"LumoraEngineRunner: Userspace created: '{userspace.WorldName.Value}'");
 
-			// Create dashboard toggle input handler
 			var dashboardToggle = new DashboardToggle();
 			dashboardToggle.Name = "DashboardToggle";
 			AddChild(dashboardToggle);
@@ -1006,16 +932,12 @@ public partial class LumoraEngineRunner : Node
 		LumoraLogger.Log("LumoraEngineRunner: Userspace setup complete");
 	}
 
-	/// <summary>
-	/// Called when engine is fully initialized and ready.
-	/// </summary>
 	private async void OnEngineReady()
 	{
 		LumoraLogger.Log("==========================================================");
 		LumoraLogger.Log("LumoraEngineRunner: Engine initialization COMPLETE!");
 		LumoraLogger.Log("==========================================================");
 
-		// Update loading screen to 100% and show "Ready!" message
 		_loadingScreen?.UpdatePhase(6); // Phase index 6 = Ready
 
 		_engineInitialized = true;
@@ -1037,7 +959,6 @@ public partial class LumoraEngineRunner : Node
 			manager.JoinSession(uri.Host, uri);
 		};
 
-		// Set up clipboard importer with engine reference for dynamic slot lookup
 		if (_clipboardImporter != null)
 		{
 			_clipboardImporter.SetEngine(_engine);
@@ -1048,7 +969,7 @@ public partial class LumoraEngineRunner : Node
 			LumoraLogger.Log("ClipboardImporter: Configured with engine reference");
 		}
 
-		// Create inspector input handler for "I" key inspection
+		// bound to the "I" key
 		_inspectorInputHandler = new InspectorInputHandler();
 		_inspectorInputHandler.Name = "InspectorInputHandler";
 		_inspectorInputHandler.Engine = _engine;
@@ -1062,15 +983,12 @@ public partial class LumoraEngineRunner : Node
 			PrintSceneTree();
 		}
 
-		// Restore normal screen timeout
 		DisplayServer.ScreenSetKeepOn(false);
 
 		// NOTE: WorldRenderers are now created via event subscriptions when worlds are added.
 
-		// Keep "Ready!" message visible for 1.5 seconds before hiding
-		await Task.Delay(1500);
+		await Task.Delay(1500); // keep "Ready!" message visible before hiding
 
-		// Hide loading screen with fade-out animation
 		if (_loadingScreen != null)
 		{
 			LumoraLogger.Log("LoadingScreen: Hiding loading screen");
@@ -1078,9 +996,6 @@ public partial class LumoraEngineRunner : Node
 		}
 	}
 
-	/// <summary>
-	/// Main update loop - runs every frame.
-	/// </summary>
 	public override void _Process(double delta)
 	{
 		if (!_engineInitialized || _shutdownRequested)
@@ -1116,20 +1031,15 @@ public partial class LumoraEngineRunner : Node
 		_engine?.Update(delta);
 		_engine?.LateUpdate(delta);
 
-		// Update Godot metrics for debug panels
 		UpdateGodotMetrics(delta);
 		SendDebugPerf(delta);
 		SendDebugMemory(delta);
 		SendDebugRenderProfile(delta);
 		SendDebugNetwork(delta);
 
-		// Update HeadOutput camera positioning
 		_headOutput?.UpdatePositioning(_engine);
 	}
 
-	/// <summary>
-	/// Handle Godot input events (for scroll wheel, text input, etc.)
-	/// </summary>
 	public override void _Input(InputEvent @event)
 	{
 		base._Input(@event);
@@ -1137,16 +1047,10 @@ public partial class LumoraEngineRunner : Node
 		if (!_engineInitialized)
 			return;
 
-		// Forward to mouse driver for scroll wheel
 		_mouseDriver?.HandleInputEvent(@event);
-
-		// Forward to keyboard driver for text input
 		_keyboardDriver?.HandleInputEvent(@event);
 	}
 
-	/// <summary>
-	/// Engine panic callback.
-	/// </summary>
 	private void OnEnginePanic(Exception ex)
 	{
 		LumoraLogger.Error($"ENGINE PANIC: {ex.Message}");
@@ -1154,19 +1058,13 @@ public partial class LumoraEngineRunner : Node
 		_shutdownRequested = true;
 	}
 
-	/// <summary>
-	/// Engine shutdown callback.
-	/// </summary>
 	private void OnEngineShutdown()
 	{
 		LumoraLogger.Log("Engine shutdown requested");
 		_shutdownRequested = true;
 	}
 
-	/// <summary>
-	/// Core requested an application quit (e.g. the dashboard Exit screen). Defer the tree quit
-	/// so it runs at a safe point rather than mid engine-update.
-	/// </summary>
+	// Defer the tree quit so it runs at a safe point rather than mid engine-update.
 	private void OnQuitRequested()
 	{
 		LumoraLogger.Log("LumoraEngineRunner: Quit requested; closing application");
@@ -1174,10 +1072,7 @@ public partial class LumoraEngineRunner : Node
 	}
 
 
-	/// <summary>
-	/// Register all Godot-specific hooks with fewer, broader connectors.
-	/// Called before engine initialization.
-	/// </summary>
+	// fewer, broader connectors; called before engine initialization
 	private void RegisterHooks()
 	{
 		LumoraLogger.Log("Registering Godot hooks...");
@@ -1186,9 +1081,6 @@ public partial class LumoraEngineRunner : Node
 		LumoraLogger.Log("Hook registration complete");
 	}
 
-	/// <summary>
-	/// Update Godot-specific metrics for debug panels.
-	/// </summary>
 	private void UpdateGodotMetrics(double delta)
 	{
 		if (_engine?.WorldManager?.FocusedWorld == null) return;
@@ -1207,10 +1099,8 @@ public partial class LumoraEngineRunner : Node
 		metrics.RenderTimeMs = perfMonitor.GetMonitor(Performance.Monitor.TimeProcess) * 1000.0;
 		metrics.PhysicsTimeMs = perfMonitor.GetMonitor(Performance.Monitor.TimePhysicsProcess) * 1000.0;
 
-		// Memory from Godot
 		metrics.VideoMemoryBytes = (long)perfMonitor.GetMonitor(Performance.Monitor.RenderVideoMemUsed);
 
-		// Object counts
 		metrics.GodotObjectCount = (int)perfMonitor.GetMonitor(Performance.Monitor.ObjectCount);
 		metrics.GodotNodeCount = (int)perfMonitor.GetMonitor(Performance.Monitor.ObjectNodeCount);
 	}
@@ -1539,9 +1429,6 @@ public partial class LumoraEngineRunner : Node
 		return estimate;
 	}
 
-	/// <summary>
-	/// Debug: Print the entire scene tree to see what exists.
-	/// </summary>
 	private void PrintSceneTree()
 	{
 		LumoraLogger.Debug("==========================================================");
@@ -1550,7 +1437,6 @@ public partial class LumoraEngineRunner : Node
 		PrintNodeTree(GetTree().Root, 0);
 		LumoraLogger.Debug("==========================================================");
 
-		// Also print world info
 		LumoraLogger.Debug($"Engine worlds count: {_engine?.WorldManager?.Worlds?.Count ?? 0}");
 		if (_engine?.WorldManager?.Worlds != null)
 		{
@@ -1596,9 +1482,6 @@ public partial class LumoraEngineRunner : Node
 		}
 	}
 
-	/// <summary>
-	/// Cleanup on exit.
-	/// </summary>
 	public override void _ExitTree()
 	{
 		LumoraLogger.Log("LumoraEngineRunner: Shutting down...");
@@ -1639,13 +1522,10 @@ public partial class LumoraEngineRunner : Node
 		return !OS.HasFeature("android");
 	}
 
-	/// <summary>
-	/// Stand up the transports and register them with the central registry.
-	/// Runs once after the engine is initialized so transports can publish
-	/// session URIs the moment a host opens a listener. LNL is always
-	/// registered; Steam is registered only when SteamAPI initialised
-	/// successfully and SteamNetworkingSockets is available. - xlinka
-	/// </summary>
+	// Runs once after the engine is initialized so transports can publish
+	// session URIs the moment a host opens a listener. LNL is always
+	// registered; Steam is registered only when SteamAPI initialised
+	// successfully and SteamNetworkingSockets is available. - xlinka
 	private static void RegisterNetworkManagers()
 	{
 		var lnl = new LNLNetworkManager();

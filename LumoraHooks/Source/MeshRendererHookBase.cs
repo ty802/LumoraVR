@@ -10,10 +10,7 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Godot.Hooks;
 
-/// <summary>
-/// Abstract base class for MeshRenderer hooks.
-/// </summary>
-public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
+public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTarget
     where T : MeshRenderer
     where U : Node3D
 {
@@ -42,13 +39,9 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
 
     protected virtual void OnAttachRenderer()
     {
-        // Hide the source mesh's MeshInstance3D since we're taking over rendering
         HideSourceMeshInstance();
     }
 
-    /// <summary>
-    /// Hide the MeshInstance3D from the source mesh (ProceduralMesh) since MeshRenderer handles rendering.
-    /// </summary>
     private void HideSourceMeshInstance()
     {
         var meshValue = Owner.Mesh.Target;
@@ -125,7 +118,6 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
             meshWasChanged = meshRefChanged || !haveRealMesh;
             if (meshWasChanged)
             {
-                // Hide the source mesh's MeshInstance3D when mesh changes
                 HideSourceMeshInstance();
 
                 var godotMesh = GetGodotMeshFromAsset();
@@ -133,7 +125,6 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
                 {
                     meshInstance.Mesh = godotMesh;
 
-                    // Debug: verify mesh has UV data
                     if (godotMesh is ArrayMesh arrayMesh && arrayMesh.GetSurfaceCount() > 0)
                     {
                         var arrays = arrayMesh.SurfaceGetArrays(0);
@@ -160,6 +151,12 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
             if (meshInstance != null && meshInstance.Visible != enabled)
             {
                 meshInstance.Visible = enabled;
+            }
+
+            // See MeshRenderer.ExtraCullMargin: vertex-shader-displaced UI needs grown cull bounds.
+            if (meshInstance != null && meshInstance.ExtraCullMargin != Owner.ExtraCullMargin)
+            {
+                meshInstance.ExtraCullMargin = Owner.ExtraCullMargin;
             }
 
             if (Owner.SortingOrder.GetWasChangedAndClear())
@@ -192,11 +189,31 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
             }
 
             SyncPerSurfaceInstances();
+            ApplyLodRange();
         }
         else
         {
             CleanupRenderer(destroyingWorld: false);
         }
+    }
+
+    // LOD plumbing. A LodGroup decides the band; this only makes sure every instance the hook owns
+    // carries it, including per-surface ones that get built after the group last spoke. -xlinka
+    private LodVisibilityRange _lodRange = LodVisibilityRange.Unbounded;
+
+    public void SetLodVisibilityRange(in LodVisibilityRange range)
+    {
+        if (_lodRange.Equals(range))
+            return;
+        _lodRange = range;
+        ApplyLodRange();
+    }
+
+    private void ApplyLodRange()
+    {
+        _lodRange.ApplyTo(meshInstance);
+        foreach (var inst in _perSurfaceInstances)
+            _lodRange.ApplyTo(inst);
     }
 
     // Unbounded UI ordering. When Owner.PerSurfaceOrdering is set (Helio's opt-in mode), render each surface of
@@ -258,6 +275,9 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
             }
 
             inst.SortingOffset = baseKey + i;
+            // Scrolled UI chunks displace verts in the vertex shader; grow the cull bounds or Godot culls the
+            // instance at glancing angles/up close while displaced pixels should still be visible. -xlinka
+            inst.ExtraCullMargin = Owner.ExtraCullMargin;
             inst.Visible = enabled;
         }
 
@@ -417,7 +437,6 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
         var meshComponent = Owner.Mesh.Target;
         if (meshComponent == null) return null!;
 
-        // Handle ProceduralMesh components - get mesh from their hook
         if (meshComponent is LumoraMeshes.ProceduralMesh proceduralMesh)
         {
             if (proceduralMesh.Hook is MeshHook meshHook)
@@ -432,7 +451,19 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>
             return null!;
         }
 
-        // TODO: Handle MeshDataAssetProvider components when needed
+        // Imported / asset-system meshes: a MeshProvider supplies a MeshDataAsset whose hook (MeshAssetHook) has
+        // already built the Godot ArrayMesh from the decoded PhosMesh. Hand that straight to the renderer. Without
+        // this, MeshProvider meshes never rendered and spammed "Unsupported mesh component type MeshProvider". -xlinka
+        if (meshComponent is MeshProvider meshProvider)
+        {
+            if (meshProvider.Asset?.Hook is MeshAssetHook meshAssetHook && meshAssetHook.IsValid)
+                return meshAssetHook.GodotMesh;
+            // Asset still decoding/uploading (the ArrayMesh builds deferred on the main thread) - not an error;
+            // the renderer re-applies when the asset finishes.
+            LumoraLogger.Debug("MeshRendererHookBase: MeshProvider mesh asset/hook not ready yet");
+            return null!;
+        }
+
         LumoraLogger.Warn($"MeshRendererHookBase: Unsupported mesh component type {meshComponent.GetType().Name}");
         return null!;
     }

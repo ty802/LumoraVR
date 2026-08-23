@@ -6,10 +6,6 @@ using Lumora.Core.Management;
 
 namespace Lumora.Godot.Hooks;
 
-/// <summary>
-/// WorldManager hook for Godot - creates root node for all worlds.
-/// Platform world manager hook for Godot.
-/// </summary>
 public class WorldManagerHook : IWorldManagerHook
 {
     public WorldManager Owner { get; private set; } = null!;
@@ -28,26 +24,21 @@ public class WorldManagerHook : IWorldManagerHook
         Owner = owner;
         Instance = this;
 
-        // Create root node for all worlds
         Root = new Node3D();
         Root.Name = "WorldManager";
 
-        // Add to scene root
         if (sceneRoot is Node node)
         {
             node.AddChild(Root);
         }
 
-        // Reset transform
         Root.Position = Vector3.Zero;
         Root.Rotation = Vector3.Zero;
         Root.Scale = Vector3.One;
 
-        // Subscribe to world events to create WorldHooks
         Owner.WorldAdded += OnWorldAdded;
         Owner.WorldRemoved += OnWorldRemoved;
 
-        // Initialize hooks for existing worlds
         foreach (var world in Owner.Worlds)
         {
             OnWorldAdded(world);
@@ -56,8 +47,7 @@ public class WorldManagerHook : IWorldManagerHook
 
     private void OnWorldAdded(Lumora.Core.World world)
     {
-        // Create WorldHook for the new world IMMEDIATELY
-        // This must happen before any slots are created
+        // must happen before any slots are created
         var worldHook = WorldHook.Constructor();
         world.Hook = worldHook;  // Set hook FIRST
         worldHook.Initialize(world);   // Then initialize it
@@ -66,7 +56,6 @@ public class WorldManagerHook : IWorldManagerHook
 
     private void OnWorldRemoved(Lumora.Core.World world)
     {
-        // Destroy WorldHook
         if (world.Hook is WorldHook worldHook)
         {
             worldHook.Destroy();

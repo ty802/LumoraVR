@@ -6,11 +6,8 @@ using Godot;
 
 namespace Lumora.Source.Godot.UI;
 
-/// <summary>
-/// Runtime-tweakable interface settings (reticle, mouse sensitivity/smoothing, ...).
-/// Values are read directly by the corresponding subsystems each frame so changes
-/// take effect immediately. Persistence is left to the settings UI.
-/// </summary>
+// Values are read directly by the corresponding subsystems each frame so changes take effect
+// immediately. Persistence is left to the settings UI.
 public static class InterfaceSettings
 {
     public enum ReticleStyle
@@ -61,18 +58,14 @@ public static class InterfaceSettings
         set { _reticleStyle = value; Changed?.Invoke(); }
     }
 
-    /// <summary>
-    /// Mouse-look sensitivity multiplier (1.0 = engine default).
-    /// </summary>
+    // 1.0 = engine default
     public static float MouseSensitivity
     {
         get => _mouseSensitivity;
         set { _mouseSensitivity = Mathf.Clamp(value, 0.05f, 10f); Changed?.Invoke(); }
     }
 
-    /// <summary>
-    /// Mouse-delta smoothing (0 = raw input, recommended at high refresh rates).
-    /// </summary>
+    // 0 = raw input, recommended at high refresh rates
     public static float MouseSmoothing
     {
         get => _mouseSmoothing;

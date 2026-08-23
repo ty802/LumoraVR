@@ -7,16 +7,6 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Source.Godot.Bootstrap;
 
-/// <summary>
-/// SystemInfoHook - Tracks system performance metrics.
-/// Platform system information hook for Godot.
-///
-/// Responsibilities:
-/// - Track FPS (frames per second)
-/// - Monitor GPU time
-/// - Track output device info
-/// - Provide system stats to Engine
-/// </summary>
 public partial class SystemInfoHook : Node
 {
     // PERFORMANCE TRACKING
@@ -39,7 +29,6 @@ public partial class SystemInfoHook : Node
 
     public override void _Ready()
     {
-        // Gather system info
         GatherSystemInfo();
 
         _lastFrameTime = Time.GetTicksUsec() / 1000000.0;
@@ -51,28 +40,20 @@ public partial class SystemInfoHook : Node
         LumoraLogger.Log($"  Memory: {TotalMemoryMB} MB");
     }
 
-    /// <summary>
-    /// Gather system information.
-    /// </summary>
     private void GatherSystemInfo()
     {
-        // GPU info
         GPUName = RenderingServer.GetVideoAdapterName();
 
-        // CPU info
         CPUName = OS.GetProcessorName();
 
-        // OS info
         OSName = OS.GetName() + " " + OS.GetVersion();
 
-        // Memory info
         var memInfo = OS.GetMemoryInfo();
         if (memInfo.ContainsKey("physical"))
         {
             TotalMemoryMB = (long)memInfo["physical"] / (1024 * 1024);
         }
 
-        // Output device (VR or Screen)
         var xrInterface = XRServer.FindInterface("OpenXR");
         if (xrInterface != null && xrInterface.IsInitialized())
         {
@@ -84,23 +65,18 @@ public partial class SystemInfoHook : Node
         }
     }
 
-    /// <summary>
-    /// Update performance metrics every frame.
-    /// </summary>
     public override void _Process(double delta)
     {
-        // Track FPS
         double currentTime = Time.GetTicksUsec() / 1000000.0;
         double frameDelta = currentTime - _lastFrameTime;
         _lastFrameTime = currentTime;
 
-        // Instant FPS
         if (frameDelta > 0)
         {
             CurrentFPS = (float)(1.0 / frameDelta);
         }
 
-        // Average FPS (rolling average over FPS_SAMPLE_FRAMES)
+        // rolling average over FPS_SAMPLE_FRAMES
         _deltaTimeAccumulator += frameDelta;
         _frameCount++;
 
@@ -116,9 +92,6 @@ public partial class SystemInfoHook : Node
         GPUTimeMs = (float)(frameDelta * 1000.0);
     }
 
-    /// <summary>
-    /// Get debug string with all stats.
-    /// </summary>
     public string GetDebugString()
     {
         return $"FPS: {CurrentFPS:F1} (Avg: {AverageFPS:F1}) | GPU: {GPUTimeMs:F2}ms | Device: {OutputDevice}";

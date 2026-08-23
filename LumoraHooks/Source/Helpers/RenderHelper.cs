@@ -8,14 +8,8 @@ using Lumora.Core;
 
 namespace Lumora.Godot.Helpers;
 
-/// <summary>
-/// Rendering helper utilities for layer management and camera registration.
-/// </summary>
 public static class RenderHelper
 {
-    /// <summary>
-    /// Callback to register cameras with rendering system.
-    /// </summary>
     public static Action<Camera3D> RegisterCamera = null!;
 
     // Render layer bit assignments. Bit 0 (layer 1) is the default "public" layer.
@@ -32,9 +26,6 @@ public static class RenderHelper
     public const int PUBLIC_RENDER_MASK = ~(PRIVATE_LAYER | TEMP_LAYER | HIDDEN_LAYER | OVERLAY_LAYER);
     public const int PRIVATE_RENDER_MASK = ~(TEMP_LAYER | HIDDEN_LAYER | OVERLAY_LAYER);
 
-    /// <summary>
-    /// Set render layer for slot hierarchy.
-    /// </summary>
     public static void SetHierarchyLayer(List<Slot> slots, int layer, Dictionary<Node3D, int> previous)
     {
         var nodes = new List<Node3D>();
@@ -42,9 +33,6 @@ public static class RenderHelper
         SetHierarchyLayer(nodes, layer, previous);
     }
 
-    /// <summary>
-    /// Set render layer for node hierarchy.
-    /// </summary>
     public static void SetHierarchyLayer(List<Node3D> nodes, int layer, Dictionary<Node3D, int> previous)
     {
         if (nodes == null)
@@ -59,9 +47,6 @@ public static class RenderHelper
         }
     }
 
-    /// <summary>
-    /// Restore render layers from previous state.
-    /// </summary>
     public static void RestoreHierarchyLayer(List<Node3D> nodes, Dictionary<Node3D, int> previous)
     {
         if (nodes == null)
@@ -76,9 +61,6 @@ public static class RenderHelper
         }
     }
 
-    /// <summary>
-    /// Set render layer for single node and children.
-    /// </summary>
     public static void SetHierarchyLayer(Node3D root, int layer, Dictionary<Node3D, int> previous)
     {
         if (root is VisualInstance3D visual && visual.Layers != (uint)layer)
@@ -99,9 +81,6 @@ public static class RenderHelper
         }
     }
 
-    /// <summary>
-    /// Restore render layer for single node and children.
-    /// </summary>
     public static void RestoreHierarchyLayer(Node3D root, Dictionary<Node3D, int> previous)
     {
         if (root is VisualInstance3D visual && previous.TryGetValue(root, out int previousLayer))
@@ -118,9 +97,6 @@ public static class RenderHelper
         }
     }
 
-    /// <summary>
-    /// Restore all layers from dictionary.
-    /// </summary>
     public static void RestoreLayers(Dictionary<Node3D, int> previous)
     {
         foreach (var pair in previous)

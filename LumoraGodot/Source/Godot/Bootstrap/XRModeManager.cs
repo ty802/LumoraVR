@@ -13,46 +13,28 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Source.Godot.Bootstrap;
 
-/// <summary>
-/// Manages dynamic hot-swapping between Desktop and VR rendering/input modes at runtime.
-/// Uses F8 for runtime mode switching in exported builds.
-///
-/// On launch: auto-detects a connected VR headset via OpenXR and starts in VR if one is found.
-/// At runtime: press <b>F8</b> to toggle between Desktop and VR without restarting.
-/// (When running from the Godot Editor, use <b>Shift+F8</b>. The editor consumes
-/// bare F8/F9 as its own Stop/Pause shortcuts before the game can see them.)
-///
-/// The manager owns the desktop overlay nodes (cursor / camera controller) and
-/// flips XR viewport ownership when toggling. VR input data flows through
-/// InputInterface drivers directly, no extra provider node is needed.
-///
-/// Rendering follows the BarkVR-style split-camera pattern: the desktop camera
-/// never has XR enabled, the XR camera only drives VR, and mode changes are
-/// queued across frame boundaries so queued frees and renderer state settle
-/// before another switch can start.
-/// - xlinka
-/// </summary>
+// Hot-swaps between Desktop and VR rendering/input modes at runtime (F8 in exported builds; on
+// launch it auto-detects a connected headset via OpenXR and starts in VR if one is found). From
+// the Godot Editor use Shift+F8 - the editor consumes bare F8/F9 as its own Stop/Pause shortcuts.
+// The manager owns the desktop overlay nodes (cursor / camera controller) and flips XR viewport
+// ownership when toggling; VR input flows through InputInterface drivers directly, no extra
+// provider node needed. Rendering follows a split-camera pattern: the desktop camera never has XR
+// enabled, the XR camera only drives VR, and mode changes are queued across frame boundaries so
+// queued frees and renderer state settle before another switch can start.
+// - xlinka
 public partial class XRModeManager : Node
 {
     // SINGLETON
     public static XRModeManager Instance { get; private set; } = null!;
 
-    /// <summary>
-    /// Fired after every successful mode switch.
-    /// <c>true</c> = VR is now active, <c>false</c> = Desktop is now active.
-    /// </summary>
+    // true = VR is now active, false = Desktop is now active
     public static event Action<bool> ModeChanged = null!;
 
-    /// <summary>
-    /// The Camera3D currently driving rendering for the active mode.
-    /// In VR: the XRCamera3D under XROrigin3D. In desktop: the regular
-    /// mono Camera3D that <see cref="LumoraEngineRunner"/> resolved from
-    /// %DesktopCamera and that we keep as <c>_mainCamera</c>.
-    /// </summary>
+    // In VR: the XRCamera3D under XROrigin3D. In desktop: the regular mono Camera3D that
+    // LumoraEngineRunner resolved from %DesktopCamera and that we keep as _mainCamera.
     public Camera3D CurrentCamera => IsVRActive ? _xrCamera : _mainCamera;
 
     // STATE
-    /// <summary>Whether VR mode is currently active.</summary>
     public bool IsVRActive { get; private set; }
 
     private bool _initialized = false;
@@ -92,15 +74,7 @@ public partial class XRModeManager : Node
     //  INITIALIZATION
 
 
-    /// <summary>
-    /// Initialize the manager.  Call this once after the engine is fully ready.
-    /// </summary>
-    /// <param name="engine">The running Lumora engine instance.</param>
-    /// <param name="headOutput">The active HeadOutput node.</param>
-    /// <param name="inputInterface">The engine's InputInterface.</param>
-    /// <param name="mainCamera">The main (desktop) Camera3D, from %DesktopCamera.</param>
-    /// <param name="vrDriver">The low-level Godot VR driver (for node refresh).</param>
-    /// <param name="startingInVR">Whether the engine launched in VR mode.</param>
+    // call this once after the engine is fully ready
     public void Initialize(
         Lumora.Core.Engine engine,
         HeadOutput         headOutput,
@@ -166,12 +140,8 @@ public partial class XRModeManager : Node
         }
     }
 
-    /// <summary>
-    /// True when running on a standalone XR device (Quest, Pico, Focus 3, ...).
-    /// On standalone there is no meaningful "desktop mode" - the headset IS
-    /// the screen - so F8 is disabled and gameplay code should avoid offering
-    /// mode-swap UI when this is true.
-    /// </summary>
+    // On standalone (Quest, Pico, Focus 3, ...) there is no meaningful desktop mode - the headset
+    // IS the screen - so F8 is disabled and gameplay code should avoid offering mode-swap UI here.
     public static bool IsStandalone => OS.HasFeature("android");
 
     // Edge-triggered polling. Consults Godot's polled key state every frame.
@@ -202,37 +172,20 @@ public partial class XRModeManager : Node
     //  PUBLIC TOGGLE API
 
 
-    /// <summary>
-    /// Toggle between Desktop and VR mode. Safe to call from any thread / signal.
-    /// </summary>
+    // safe to call from any thread / signal
     public void ToggleMode()
     {
         QueueModeSwitch(!IsVRActive);
     }
 
-
-    // Switch to Desktop
-
-
-    /// <summary>
-    /// Switch to Desktop (screen) rendering and input mode.
-    /// </summary>
     public void SwitchToDesktop()
     {
         QueueModeSwitch(false);
     }
 
-
-    // Switch to VR
-
-
-    /// <summary>
-    /// Switch to VR rendering and input mode.
-    /// The OpenXR session is normally established at boot in
-    /// LumoraEngineRunner.PhaseXRDetection. If it isn't (user launched in
-    /// <c>--desktop</c> or the runtime came up late), this will attempt
-    /// Initialize() once and bail cleanly back to desktop if that still fails.
-    /// </summary>
+    // The OpenXR session is normally established at boot in LumoraEngineRunner.PhaseXRDetection.
+    // If it isn't (user launched in --desktop or the runtime came up late), this will attempt
+    // Initialize() once and bail cleanly back to desktop if that still fails.
     public void SwitchToVR()
     {
         QueueModeSwitch(true);
@@ -597,11 +550,6 @@ public partial class XRModeManager : Node
     //  UTILITIES
 
 
-    /// <summary>
-    /// Queue a node for deletion at the end of the current frame.
-    /// Using QueueFree (rather than Free) is safe to call during input callbacks
-    /// and avoids use-after-free crashes when nodes are freed mid-frame.
-    /// </summary>
     private static void FreeIfValid<T>(ref T node) where T : Node
     {
         if (node != null && GodotObject.IsInstanceValid(node))

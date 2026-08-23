@@ -9,15 +9,8 @@ using Lumora.Core.Logging;
 
 namespace Lumora.Godot.Hooks;
 
-/// <summary>
-/// Hook for Slot -> Godot Node3D.
-/// Platform slot hook for Godot.
-///
-/// Uses lazy creation pattern:
-/// - Node3D is only created when RequestNode3D() is first called
-/// - Reference counting tracks how many components need the Node3D
-/// - When count reaches 0 and shouldDestroy is set, Node3D is freed
-/// </summary>
+// Lazy creation: Node3D is only created when RequestNode3D() is first called. Reference counting
+// tracks how many components need the Node3D; when count reaches 0 and shouldDestroy is set, it's freed.
 [ImplementableHook(typeof(Slot))]
 public class SlotHook : Hook<Slot>, ISlotHook
 {
@@ -31,12 +24,6 @@ public class SlotHook : Hook<Slot>, ISlotHook
 	private WorldHook _worldHook = null!;
 	private bool _didDeferLog;
 
-	/// <summary>
-	/// Whether hierarchy updates should be deferred.
-	/// Defers when:
-	/// - World not running yet (client still connecting)
-	/// - Currently in batch decode (sync fields not populated yet)
-	/// </summary>
 	private bool ShouldDeferHierarchy
 	{
 		get
@@ -57,30 +44,15 @@ public class SlotHook : Hook<Slot>, ISlotHook
 		}
 	}
 
-	/// <summary>
-	/// The generated Node3D for this slot (created on-demand).
-	/// </summary>
 	public Node3D GeneratedNode3D { get; private set; } = null!;
 
-	/// <summary>
-	/// Get the world hook for this slot.
-	/// </summary>
 	public WorldHook WorldHook => _worldHook ??= (WorldHook)Owner.World.Hook;
 
-	/// <summary>
-	/// Factory method for creating slot hooks.
-	/// </summary>
 	public static IHook<Slot> Constructor()
 	{
 		return new SlotHook();
 	}
 
-	/// <summary>
-	/// Find a Lumora Slot from a Godot Node.
-	/// Traverses up the node hierarchy to find a registered slot.
-	/// </summary>
-	/// <param name="node">The Godot node to search from.</param>
-	/// <returns>The associated Slot, or null if not found.</returns>
 	public static Slot? GetSlotFromNode(Node? node)
 	{
 		var current = node;
@@ -93,9 +65,6 @@ public class SlotHook : Hook<Slot>, ISlotHook
 		return null;
 	}
 
-	/// <summary>
-	/// Force get the Node3D (create if needed).
-	/// </summary>
 	public Node3D ForceGetNode3D()
 	{
 		if (GeneratedNode3D == null || !GodotObject.IsInstanceValid(GeneratedNode3D))
@@ -105,29 +74,18 @@ public class SlotHook : Hook<Slot>, ISlotHook
 		return GeneratedNode3D!;
 	}
 
-	/// <summary>
-	/// Request the Node3D for this slot.
-	/// Increments reference count.
-	/// </summary>
 	public Node3D RequestNode3D()
 	{
 		_node3DRequests++;
 		return ForceGetNode3D();
 	}
 
-	/// <summary>
-	/// Free the Node3D request.
-	/// Decrements reference count.
-	/// </summary>
 	public void FreeNode3D()
 	{
 		_node3DRequests--;
 		TryDestroy();
 	}
 
-	/// <summary>
-	/// Try to destroy the Node3D if no longer needed.
-	/// </summary>
 	private void TryDestroy(bool destroyingWorld = false)
 	{
 		if (!_shouldDestroy || _node3DRequests > 0)
@@ -139,12 +97,10 @@ public class SlotHook : Hook<Slot>, ISlotHook
 		{
 			if (GeneratedNode3D != null && GodotObject.IsInstanceValid(GeneratedNode3D))
 			{
-				// Unregister from slot lookup
 				_nodeToSlot.Remove(GeneratedNode3D);
 				GeneratedNode3D.QueueFree();
 			}
 
-			// Free parent request if we had one
 			_parentHook?.FreeNode3D();
 		}
 		else if (GeneratedNode3D != null)
@@ -158,15 +114,11 @@ public class SlotHook : Hook<Slot>, ISlotHook
 		_parentHook = null!;
 	}
 
-	/// <summary>
-	/// Generate the Node3D for this slot.
-	/// </summary>
 	private void GenerateNode3D()
 	{
 		GeneratedNode3D = new Node3D();
 		GeneratedNode3D.Name = SafeNodeName(Owner.SlotName.Value);
 
-		// Register this node for slot lookup
 		_nodeToSlot[GeneratedNode3D] = Owner;
 
 		UpdateParent();
@@ -178,9 +130,6 @@ public class SlotHook : Hook<Slot>, ISlotHook
 	private static string SafeNodeName(string? name)
 		=> string.IsNullOrWhiteSpace(name) ? "Slot" : name;
 
-	/// <summary>
-	/// Update the parent hierarchy.
-	/// </summary>
 	private void UpdateParent()
 	{
 		if (ShouldDeferHierarchy)
@@ -209,14 +158,12 @@ public class SlotHook : Hook<Slot>, ISlotHook
 
 		_lastParent = Owner.Parent;
 
-		// Free old parent hook request
 		if (_parentHook != null)
 		{
 			_parentHook.FreeNode3D();
 			_parentHook = null!;
 		}
 
-		// Set new parent
 		if (_lastParent != null && !Owner.IsRootSlot)
 		{
 			_parentHook = (SlotHook)_lastParent.Hook;
@@ -250,7 +197,6 @@ public class SlotHook : Hook<Slot>, ISlotHook
 			bool isActualRootSlot = Owner == Owner.World?.RootSlot;
 			if (isActualRootSlot)
 			{
-				// Get the world's Godot scene root directly
 				var worldRoot = Owner.World!.GodotSceneRoot as Node3D;
 				if (worldRoot != null)
 				{
@@ -285,10 +231,8 @@ public class SlotHook : Hook<Slot>, ISlotHook
 				bool worldIsRunning = Owner.World?.State == World.WorldState.Running;
 				bool parentRefIsNull = parentRefValue.IsNull;
 
-				// If world is running and parent ref is explicitly null, fall back to RootSlot
 				if (worldIsRunning && parentRefIsNull && Owner.World?.RootSlot != null)
 				{
-					// Parent to RootSlot's Node3D
 					var rootSlot = Owner.World.RootSlot;
 					var rootHook = rootSlot.Hook as SlotHook;
 					if (rootHook != null)
@@ -318,9 +262,6 @@ public class SlotHook : Hook<Slot>, ISlotHook
 		}
 	}
 
-	/// <summary>
-	/// Set initial transform and visibility data.
-	/// </summary>
 	private void SetData()
 	{
 		if (GeneratedNode3D == null) return;
@@ -331,9 +272,6 @@ public class SlotHook : Hook<Slot>, ISlotHook
 		GeneratedNode3D.Scale = ToGodotVector3(Owner.LocalScale.Value);
 	}
 
-	/// <summary>
-	/// Update transform and visibility data.
-	/// </summary>
 	private void UpdateData()
 	{
 		if (GeneratedNode3D == null) return;
@@ -398,10 +336,8 @@ public class SlotHook : Hook<Slot>, ISlotHook
 			GenerateNode3D();
 		}
 
-		// Only apply changes if Node3D exists
 		if (GeneratedNode3D != null && GodotObject.IsInstanceValid(GeneratedNode3D))
 		{
-			// Check if parent changed
 			Slot parent = Owner.Parent;
 			if (parent != _lastParent)
 			{
@@ -429,9 +365,6 @@ public class SlotHook : Hook<Slot>, ISlotHook
 	}
 }
 
-/// <summary>
-/// Interface for slot hooks (marker interface).
-/// </summary>
 public interface ISlotHook : IHook<Slot>
 {
 }

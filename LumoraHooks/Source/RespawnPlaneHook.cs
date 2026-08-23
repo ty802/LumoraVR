@@ -9,10 +9,6 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Godot.Hooks;
 
-/// <summary>
-/// Hook for RespawnPlane - checks if objects are within bounds and below respawn height.
-/// Uses bounds checking for proper area detection.
-/// </summary>
 [ImplementableHook(typeof(RespawnPlane))]
 public class RespawnPlaneHook : ComponentHook<RespawnPlane>
 {
@@ -135,7 +131,6 @@ public class RespawnPlaneHook : ComponentHook<RespawnPlane>
         var world = Owner?.World;
         if (world == null) return;
 
-        // Check all users
         foreach (var user in world.GetAllUsers())
         {
             if (user?.Root?.Slot == null) continue;
@@ -148,7 +143,6 @@ public class RespawnPlaneHook : ComponentHook<RespawnPlane>
             }
         }
 
-        // Check all objects with RespawnData
         CheckSlotAndChildren(world.RootSlot);
     }
 
@@ -156,7 +150,6 @@ public class RespawnPlaneHook : ComponentHook<RespawnPlane>
     {
         if (slot == null || slot.IsDestroyed) return;
 
-        // Check this slot
         RespawnData respawnData = null!;
         foreach (var data in slot.GetComponents<RespawnData>())
         {
@@ -171,11 +164,9 @@ public class RespawnPlaneHook : ComponentHook<RespawnPlane>
                 var originalRot = respawnData.OriginalRotation.Value;
                 LumoraLogger.Log($"RespawnPlaneHook: Reset '{slot.SlotName.Value}' from {slotPos} to {originalPos} (rot={originalRot})");
 
-                // Reset to original position
                 slot.GlobalPosition = originalPos;
                 slot.GlobalRotation = originalRot;
 
-                // Reset velocity if it has a RigidBody
                 var rigidBody = slot.GetComponent<RigidBody>();
                 if (rigidBody != null)
                 {
@@ -198,7 +189,6 @@ public class RespawnPlaneHook : ComponentHook<RespawnPlane>
             }
         }
 
-        // Check children
         foreach (var child in slot.Children)
         {
             CheckSlotAndChildren(child);

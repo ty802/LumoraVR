@@ -9,15 +9,8 @@ using Lumora.Godot.Hooks;
 
 namespace Lumora.Godot.Helpers;
 
-/// <summary>
-/// Helper utilities for Godot interop.
-/// Godot platform helper utilities.
-/// </summary>
 public static class GodotHelper
 {
-    /// <summary>
-    /// Get the generated Godot Node3D for a slot, optionally forcing generation.
-    /// </summary>
     public static Node3D GetGeneratedNode3D(this Slot slot, bool forceGenerate = false)
     {
         if (slot == null)
@@ -33,10 +26,6 @@ public static class GodotHelper
         return slotHook.GeneratedNode3D;
     }
 
-    /// <summary>
-    /// Convert list of slots to list of GameObjects.
-    /// Slot hierarchy conversion utilities.
-    /// </summary>
     public static void ConvertSlots(System.Collections.Generic.List<Slot> slots, System.Collections.Generic.List<Node3D> nodes)
     {
         if (slots == null || nodes == null)
@@ -50,10 +39,7 @@ public static class GodotHelper
         }
     }
 
-    /// <summary>
-    /// Get Godot Texture2D from LumoraCore ITexture2D.
-    /// TODO: Implement when texture asset system is ready.
-    /// </summary>
+    // TODO: Implement when texture asset system is ready.
     // public static Texture2D GetGodot(this ITexture2D texture)
     // {
     //     if (texture == null)
@@ -63,10 +49,7 @@ public static class GodotHelper
     //     return hook?.GodotTexture;
     // }
 
-    /// <summary>
-    /// Get Godot Mesh from LumoraCore IMesh.
-    /// TODO: Implement when mesh asset system is ready.
-    /// </summary>
+    // TODO: Implement when mesh asset system is ready.
     // public static Mesh GetGodot(this IMesh mesh)
     // {
     //     if (mesh == null)

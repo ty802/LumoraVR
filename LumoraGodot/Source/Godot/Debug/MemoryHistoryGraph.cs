@@ -9,10 +9,6 @@ namespace Lumora.Godot.Debug;
 
 #nullable enable
 
-/// <summary>
-/// Lightweight custom graph for visualizing memory history samples.
-/// Draws line traces for committed, GC, estimated component memory and video memory.
-/// </summary>
 public partial class MemoryHistoryGraph : Control
 {
     private readonly struct MemoryPoint
@@ -86,7 +82,6 @@ public partial class MemoryHistoryGraph : Control
             Mathf.Max(1f, Size.X - (padLeft + padRight)),
             Mathf.Max(1f, Size.Y - (padTop + padBottom)));
 
-        // Grid lines
         for (int i = 0; i <= 4; i++)
         {
             float t = i / 4f;

@@ -10,10 +10,8 @@ using Lumora.Godot.Helpers;
 
 namespace Lumora.Godot.Hooks;
 
-/// <summary>
-/// World hook for Godot - creates and manages world root node, and answers the world's physics
-/// collision queries against the Godot/Jolt physics space.
-/// </summary>
+// Creates and manages the world root node, and answers the world's physics collision queries
+// against the Godot/Jolt physics space.
 public class WorldHook : IWorldHook, IPhysicsQueryHook
 {
     public World Owner { get; private set; } = null!;
@@ -46,14 +44,11 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
         Owner = owner;
         CollisionBit = 1u << (1 + System.Threading.Interlocked.Increment(ref _nextWorldBitIndex) % 31);
 
-        // Get WorldManager hook to parent under
         var worldManagerHook = Owner.WorldManager.Hook as WorldManagerHook;
-        // Create world root node
         WorldRoot = new Node3D();
         WorldRoot.Name = $"World_{Owner.WorldName.Value}";
-        WorldRoot.Visible = false; // Start inactive
+        WorldRoot.Visible = false;
 
-        // Parent under WorldManager root
         if (worldManagerHook?.Root != null)
         {
             worldManagerHook.Root.AddChild(WorldRoot);
@@ -63,33 +58,26 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
             GD.Print($"WorldHook.Initialize: WARNING - Could not parent WorldRoot (WorldManagerHook or Root is null)");
         }
 
-        // Reset transform
         WorldRoot.Position = Vector3.Zero;
         WorldRoot.Rotation = Vector3.Zero;
         WorldRoot.Scale = Vector3.One;
 
-        // Store reference in World for hooks to access
         Owner.GodotSceneRoot = WorldRoot;
 
-        // Reparent any existing slot Node3Ds that were created before world root existed
         if (Owner.IsAuthority || Owner.State == World.WorldState.Running)
         {
             ReparentExistingSlots(Owner.RootSlot);
         }
 
-        // Apply the world's current focus state (important for worlds that set focus before hook was created)
+        // important for worlds that set focus before this hook was created
         ChangeFocus(Owner.Focus);
     }
 
-    /// <summary>
-    /// Recursively reparent existing slot Node3Ds to the world root.
-    /// Called after WorldRoot is created to fix slots that were orphaned.
-    /// </summary>
+    // Fixes up slots whose Node3D was created (and left parentless) before WorldRoot existed.
     private void ReparentExistingSlots(Lumora.Core.Slot slot)
     {
         if (slot == null) return;
 
-        // If this slot has a hook with a generated Node3D, reparent it
         if (slot.Hook is SlotHook slotHook && slotHook.GeneratedNode3D != null)
         {
             Node3D node3D = slotHook.GeneratedNode3D;
@@ -98,7 +86,6 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
             bool isExplicitOrphan = slot.Parent == null && !slot.HasPendingParent && !slot.IsParentUnknown;
             if (isRootSlot || isExplicitOrphan)
             {
-                // If node is orphaned (no parent), add it. Otherwise reparent it.
                 if (node3D.GetParent() == null)
                 {
                     WorldRoot.AddChild(node3D);
@@ -118,12 +105,10 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
                     Node3D parentNode3D = parentHook.GeneratedNode3D;
                     if (parentNode3D == null)
                     {
-                        // Parent doesn't have a Node3D yet, create it
                         parentNode3D = parentHook.RequestNode3D();
                     }
 
-                    // If node is orphaned (no parent), add it. Otherwise reparent it.
-                    if (node3D.GetParent() == null)
+                        if (node3D.GetParent() == null)
                     {
                         parentNode3D.AddChild(node3D);
                         GD.Print($"WorldHook: Added orphaned slot '{slot.SlotName.Value}' to parent '{slot.Parent.SlotName.Value}'");
@@ -137,7 +122,6 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
             }
         }
 
-        // Recursively process children
         foreach (var child in slot.Children)
         {
             ReparentExistingSlots(child);

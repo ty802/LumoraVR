@@ -3,14 +3,11 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Diagnostics;
 
 namespace Lumora.Core;
 
-/// <summary>
-/// Manages component updates with bucketed ordering.
-/// Provides deterministic update execution with ordered buckets.
-/// </summary>
 public class UpdateManager
 {
     private World _world;
@@ -22,7 +19,6 @@ public class UpdateManager
     private readonly object _movedSlotsLock = new object();
     private float _currentDeltaTime = 0f;
 
-    // Bucketed update system for ordered execution
     private SortedDictionary<int, List<IUpdatable>> _updateBuckets = new SortedDictionary<int, List<IUpdatable>>();
     private Queue<IUpdatable> _startupQueue = new Queue<IUpdatable>();
     private Queue<IUpdatable> _destructionQueue = new Queue<IUpdatable>();
@@ -38,7 +34,6 @@ public class UpdateManager
     private int _changeUpdateIndex = 0;
     private Dictionary<IInitializable, List<IInitializable>> _initializableChildren = new Dictionary<IInitializable, List<IInitializable>>();
 
-    // Currently updating component (for debugging)
     public IUpdatable CurrentlyUpdating { get; private set; } = null!;
 
     // PER-FRAME UPDATE PROFILER. Opt-in (zero overhead when off) - the host turns it on only while the debug
@@ -51,7 +46,6 @@ public class UpdateManager
     private readonly Dictionary<string, ProfBucket> _profByType = new(StringComparer.Ordinal);
     private readonly Dictionary<Slot, ProfBucket> _profBySlot = new();
 
-    /// <summary>One profiler row: a name (component type or slot), its measured CPU time, and instance count.</summary>
     public readonly struct ProfileEntry
     {
         public readonly string Name;
@@ -65,17 +59,9 @@ public class UpdateManager
         _world = world;
     }
 
-    /// <summary>
-    /// Gets the current delta time for this frame.
-    /// Used by hooks during ApplyChanges.
-    /// </summary>
     public float DeltaTime => _currentDeltaTime;
 
-    // Registration Methods
-
-    /// <summary>
-    /// Register a component for startup (runs before first update).
-    /// </summary>
+    // Runs before the first update.
     public void RegisterForStartup(IUpdatable updatable)
     {
         if (updatable != null && !updatable.IsDestroyed)
@@ -84,9 +70,6 @@ public class UpdateManager
         }
     }
 
-    /// <summary>
-    /// Register a component for updates (runs every frame).
-    /// </summary>
     public void RegisterForUpdates(IUpdatable updatable)
     {
         if (updatable == null || updatable.IsDestroyed)
@@ -104,9 +87,6 @@ public class UpdateManager
         }
     }
 
-    /// <summary>
-    /// Unregister a component from updates.
-    /// </summary>
     public void UnregisterFromUpdates(IUpdatable updatable)
     {
         if (updatable == null)
@@ -119,15 +99,11 @@ public class UpdateManager
         }
     }
 
-    /// <summary>
-    /// Called when a component's UpdateOrder changes.
-    /// </summary>
     public void UpdateBucketChanged(IUpdatable updatable)
     {
         if (updatable == null)
             return;
 
-        // Remove from all buckets and re-add to correct one
         foreach (var bucket in _updateBuckets.Values)
         {
             bucket.Remove(updatable);
@@ -139,9 +115,6 @@ public class UpdateManager
         }
     }
 
-    /// <summary>
-    /// Register a component for change application.
-    /// </summary>
     public void RegisterForChanges(IUpdatable updatable)
     {
         if (updatable == null || updatable.IsDestroyed)
@@ -156,9 +129,6 @@ public class UpdateManager
         queue.Enqueue(updatable);
     }
 
-    /// <summary>
-    /// Register a component for destruction.
-    /// </summary>
     public void RegisterForDestruction(IUpdatable updatable)
     {
         if (updatable != null)
@@ -167,10 +137,6 @@ public class UpdateManager
         }
     }
 
-    /// <summary>
-    /// Register a component for hook update.
-    /// Called when component properties change.
-    /// </summary>
     public void RegisterHookUpdate(IImplementable component)
     {
         if (component != null && component.Hook != null)
@@ -185,11 +151,6 @@ public class UpdateManager
         }
     }
 
-    // Update Execution
-
-    /// <summary>
-    /// Run all startup callbacks.
-    /// </summary>
     public void RunStartups()
     {
         while (_startupQueue.Count > 0)
@@ -200,10 +161,8 @@ public class UpdateManager
         }
     }
 
-    /// <summary>
-    /// Re-attempt updatables whose startup previously threw. Drops one only when it finally starts, is
-    /// destroyed, or exhausts its retry budget (logged loudly then). Pumped each frame after RunStartups. -xlinka
-    /// </summary>
+    // Re-attempt updatables whose startup previously threw. Drops one only when it finally starts, is
+    // destroyed, or exhausts its retry budget (logged loudly then). Pumped each frame after RunStartups. -xlinka
     public void RunStartupRetries()
     {
         if (_failedStartups.Count == 0) return;
@@ -260,9 +219,6 @@ public class UpdateManager
         }
     }
 
-    /// <summary>
-    /// Run all component updates in bucket order.
-    /// </summary>
     public void RunUpdates(float deltaTime)
     {
         _currentDeltaTime = deltaTime;
@@ -338,10 +294,8 @@ public class UpdateManager
         }
     }
 
-    /// <summary>
-    /// Copy the latest frame's update profile into the caller's lists (by component type, and by slot), converted
-    /// to milliseconds. Cheap and allocation-light; the host reads this for the debug console's profiler. -xlinka
-    /// </summary>
+    // Copy the latest frame's update profile into the caller's lists (by component type, and by slot), converted
+    // to milliseconds. Cheap and allocation-light; the host reads this for the debug console's profiler. -xlinka
     public void CollectProfile(List<ProfileEntry> byType, List<ProfileEntry> bySlot)
     {
         double tickToMs = 1000.0 / Stopwatch.Frequency;
@@ -355,9 +309,6 @@ public class UpdateManager
         }
     }
 
-    /// <summary>
-    /// Run all change application callbacks in bucket order.
-    /// </summary>
     public void RunChangeApplications()
     {
         _changeUpdateIndex++;
@@ -388,9 +339,6 @@ public class UpdateManager
         }
     }
 
-    /// <summary>
-    /// Run all destruction callbacks.
-    /// </summary>
     public void RunDestructions()
     {
         while (_destructionQueue.Count > 0)
@@ -412,10 +360,25 @@ public class UpdateManager
         }
     }
 
-    /// <summary>
-    /// Process all pending hook updates.
-    /// Called by the world renderer after component updates.
-    /// </summary>
+    private readonly Dictionary<Type, double> _hookMsByType = new();
+
+    // Allocates; call only when reporting.
+    public string DescribeHookCost(int top = 3)
+    {
+        if (_hookMsByType.Count == 0)
+            return "";
+        var sb = new System.Text.StringBuilder();
+        int n = 0;
+        foreach (var pair in _hookMsByType.OrderByDescending(p => p.Value))
+        {
+            if (n++ >= top || pair.Value < 0.5)
+                break;
+            if (sb.Length > 0) sb.Append(", ");
+            sb.Append(pair.Key.Name).Append(' ').Append(pair.Value.ToString("F0")).Append("ms");
+        }
+        return sb.ToString();
+    }
+
     public void ProcessHookUpdates(float deltaTime)
     {
         _currentDeltaTime = deltaTime;
@@ -432,6 +395,7 @@ public class UpdateManager
         const double budgetMs = 6.0;
         long startTicks = System.Diagnostics.Stopwatch.GetTimestamp();
         double ticksToMs = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+        _hookMsByType.Clear();
 
         while (true)
         {
@@ -458,6 +422,7 @@ public class UpdateManager
             // abort the whole world update mid-frame, which left queued startups,
             // changed-element processing and destructions undrained - destroyed UI
             // kept getting hover writes and the same hook re-threw every frame. - xlinka
+            long hookStart = System.Diagnostics.Stopwatch.GetTimestamp();
             try
             {
                 implementable.Hook.ApplyChanges();
@@ -466,6 +431,11 @@ public class UpdateManager
             {
                 Logging.Logger.Error($"UpdateManager: Error in hook update for {implementable}: {ex}");
             }
+            // Per-type cost for the slow-frame report: a timestamp pair per hook, no allocation, so the
+            // question "which hook ate the frame" is answerable without a profiler attached.
+            var hookType = implementable.Hook.GetType();
+            double hookMs = (System.Diagnostics.Stopwatch.GetTimestamp() - hookStart) * ticksToMs;
+            _hookMsByType[hookType] = (_hookMsByType.TryGetValue(hookType, out var prior) ? prior : 0.0) + hookMs;
 
             processed++;
             if (processed >= maxUpdates)
@@ -483,10 +453,7 @@ public class UpdateManager
         }
     }
 
-    /// <summary>
-    /// Register a slot whose world transform changed this frame. Deduplicated; the queued slots
-    /// fire their WorldTransformChanged event once, in <see cref="ProcessMovedSlots"/>.
-    /// </summary>
+    // Deduplicated; queued slots fire WorldTransformChanged once, in ProcessMovedSlots.
     public void RegisterMovedSlot(Slot slot)
     {
         if (slot == null || slot.IsDestroyed)
@@ -497,11 +464,8 @@ public class UpdateManager
         }
     }
 
-    /// <summary>
-    /// Fire deferred WorldTransformChanged events for slots that moved this frame, parents before
-    /// children. Runs before hook updates so a handler that re-drives a transform reaches the
-    /// engine the same frame. Returns the number fired.
-    /// </summary>
+    // Runs before hook updates so a handler that re-drives a transform reaches the engine the same frame.
+    // Returns the number fired.
     public int ProcessMovedSlots()
     {
         List<Slot> batch;
@@ -532,9 +496,6 @@ public class UpdateManager
         return batch.Count;
     }
 
-    /// <summary>
-    /// Clear all pending updates.
-    /// </summary>
     public void Clear()
     {
         lock (_hookUpdatesLock)
@@ -554,9 +515,6 @@ public class UpdateManager
         _initializableChildren.Clear();
     }
 
-    /// <summary>
-    /// Track a child initializable so its init phase can be ended when the parent finishes.
-    /// </summary>
     public void AddInitializableChild(IInitializable parent, IInitializable child)
     {
         if (parent == null || child == null)
@@ -571,9 +529,6 @@ public class UpdateManager
         list.Add(child);
     }
 
-    /// <summary>
-    /// End initialization phase on all tracked children of the given parent.
-    /// </summary>
     public void EndInitPhaseInChildren(IInitializable parent)
     {
         if (parent == null)

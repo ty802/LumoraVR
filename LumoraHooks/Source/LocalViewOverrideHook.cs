@@ -9,15 +9,9 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Godot.Hooks;
 
-/// <summary>
-/// Godot hook for LocalViewOverride.
-///
-/// When Context == UserView and this slot belongs to the local user,
-/// sets every MeshInstance3D under the slot to ShadowsOnly - invisible
-/// to the camera but still casting shadows on the floor.
-///
-/// When the context does not apply, restores normal shadow casting.
-/// </summary>
+// When Context == UserView and this slot belongs to the local user, sets every MeshInstance3D
+// under the slot to ShadowsOnly - invisible to the camera but still casting shadows on the floor.
+// When the context does not apply, restores normal shadow casting.
 [ImplementableHook(typeof(LocalViewOverride))]
 public class LocalViewOverrideHook : ComponentHook<LocalViewOverride>
 {

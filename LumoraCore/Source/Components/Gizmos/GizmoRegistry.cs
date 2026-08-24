@@ -9,25 +9,18 @@ using Lumora.Core.Logging;
 
 namespace Lumora.Core.Components.Gizmos;
 
-/// <summary>
-/// Registry for gizmo types. Maps component types to their associated gizmo types.
-/// </summary>
+// live gizmo instances are tracked in WorldGizmos, one table per world; this only maps component types to gizmo types
 public static class GizmoRegistry
 {
     private static readonly Dictionary<Type, Type> _gizmoTypes = new();
-    private static readonly Dictionary<Slot, IGizmo> _activeGizmos = new();
     private static bool _initialized = false;
 
-    /// <summary>
-    /// Initialize the registry by scanning assemblies for GizmoForComponent attributes.
-    /// </summary>
     public static void Initialize()
     {
         if (_initialized) return;
 
         _gizmoTypes.Clear();
 
-        // Scan all loaded assemblies for gizmo types
         foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
         {
             try
@@ -56,9 +49,6 @@ public static class GizmoRegistry
         }
     }
 
-    /// <summary>
-    /// Register a gizmo type for a component type.
-    /// </summary>
     public static void RegisterGizmo(Type componentType, Type gizmoType)
     {
         if (componentType == null)
@@ -75,9 +65,6 @@ public static class GizmoRegistry
         Logger.Log($"GizmoRegistry: Registered {gizmoType.Name} for {componentType.Name}");
     }
 
-    /// <summary>
-    /// Get the gizmo type for a component type.
-    /// </summary>
     public static Type GetGizmoType(Type componentType)
     {
         if (!_initialized) Initialize();
@@ -85,7 +72,6 @@ public static class GizmoRegistry
         if (_gizmoTypes.TryGetValue(componentType, out var gizmoType))
             return gizmoType;
 
-        // Check base types
         var baseType = componentType.BaseType;
         while (baseType != null && baseType != typeof(object))
         {
@@ -97,47 +83,25 @@ public static class GizmoRegistry
         return null!;
     }
 
-    /// <summary>
-    /// Get all registered gizmo types.
-    /// </summary>
+    // Filtered rather than kept in a second table: the map also holds the slot gizmo, which is not a
+    // component gizmo and must never be spawned onto a component. The base-type walk in
+    // GetGizmoType is what makes one registration cover a family - a renderer gizmo
+    // registered for MeshRenderer also serves the skinned one. -xlinka
+    public static Type? GetComponentGizmoType(Type componentType)
+    {
+        if (componentType == null)
+            return null;
+        var gizmoType = GetGizmoType(componentType);
+        if (gizmoType == null || !typeof(ComponentGizmo).IsAssignableFrom(gizmoType) || gizmoType.IsAbstract)
+            return null;
+        return gizmoType;
+    }
+
+    public static bool HasComponentGizmo(Type componentType) => GetComponentGizmoType(componentType) != null;
+
     public static IEnumerable<(Type ComponentType, Type GizmoType)> GetAllRegistered()
     {
         if (!_initialized) Initialize();
         return _gizmoTypes.Select(kvp => (kvp.Key, kvp.Value));
-    }
-
-    /// <summary>
-    /// Track an active gizmo for a slot.
-    /// </summary>
-    public static void TrackGizmo(Slot slot, IGizmo gizmo)
-    {
-        if (slot == null) return;
-        _activeGizmos[slot] = gizmo;
-    }
-
-    /// <summary>
-    /// Remove tracking for a slot's gizmo.
-    /// </summary>
-    public static void UntrackGizmo(Slot slot)
-    {
-        if (slot == null) return;
-        _activeGizmos.Remove(slot);
-    }
-
-    /// <summary>
-    /// Get the active gizmo for a slot, if any.
-    /// </summary>
-    public static IGizmo GetGizmoForSlot(Slot slot)
-    {
-        if (slot == null) return null!;
-        return (_activeGizmos.TryGetValue(slot, out var gizmo) ? gizmo : null) ?? null!;
-    }
-
-    /// <summary>
-    /// Check if a slot has an active gizmo.
-    /// </summary>
-    public static bool HasGizmo(Slot slot)
-    {
-        return slot != null && _activeGizmos.ContainsKey(slot);
     }
 }

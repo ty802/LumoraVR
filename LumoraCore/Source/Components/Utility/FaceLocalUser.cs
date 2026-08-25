@@ -23,18 +23,13 @@ public class FaceLocalUser : Component
         if (viewerHead == null || viewerHead.IsDestroyed)
             return;
 
-        var toViewer = viewerHead.GlobalPosition - Slot!.GlobalPosition;
-        toViewer.y = 0f;
-        if (toViewer.LengthSquared < 1e-6f)
+        // Yaw-only: the readable front of quad/canvas content is its +Z side, so point local +Z at the
+        // viewer without tipping. Shared with FaceUser so both get the hand-built basis that avoids
+        // floatQ.LookRotation's inverted result.
+        if (!Utility.UserFacing.TryLookRotation(Slot!.GlobalPosition, viewerHead.GlobalPosition,
+                float3.Up, yawOnly: true, out var global))
             return;
 
-        // Build the yaw directly: the readable front of quad/canvas content
-        // is its +Z side, so point local +Z at the viewer. floatQ.LookRotation
-        // builds its matrix from basis ROWS (returns the inverse rotation) so
-        // headings come out negated and planes go edge-on at oblique angles -
-        // avoid it for facing math.
-        float yaw = System.MathF.Atan2(toViewer.x, toViewer.z);
-        var global = floatQ.AxisAngle(float3.Up, yaw);
         var local = parent.GlobalRotationToLocal(global);
 
         float dot = floatQ.Dot(local, Slot.LocalRotation.Value);

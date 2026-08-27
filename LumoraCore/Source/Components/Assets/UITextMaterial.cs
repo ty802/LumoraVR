@@ -10,11 +10,14 @@ namespace Lumora.Core.Assets;
 [ComponentCategory("Assets/Materials/UI/Text")]
 public class UITextMaterial : MaterialProvider, ICommonMaterial
 {
+    [Group("Texture")]
     public readonly AssetRef<TextureAsset> Texture;
     public readonly Sync<float2> TextureScale;
     public readonly Sync<float2> TextureOffset;
+    [Group("Tint")]
     public readonly Sync<colorHDR> TintColor;
     public readonly Sync<bool> UseVertexColor;
+    [Group("MSDF")]
     public readonly Sync<float> PixelRange;
     // True when the bound atlas is a multi-channel signed distance field (crisp at any size); false = plain
     // coverage alpha (bitmap fonts, or a font not imported with MSDF). Set from the atlas by whoever binds it. -xlinka
@@ -22,25 +25,32 @@ public class UITextMaterial : MaterialProvider, ICommonMaterial
     // Distance-field styling (MSDF path only). Thickness/dilate are in distance-field units: 0.5 spans the
     // whole PixelRange, so 0.2 = ~1.6 atlas texels at range 8. Dilate bolds the face by pushing its edge
     // outward; the outline is a ring of OutlineColor outside the (dilated) face. 0 = off. - xlinka
+    [Group("Outline")]
     public readonly Sync<colorHDR> OutlineColor;
     public readonly Sync<float> OutlineThickness;
+    [Group("Face")]
     public readonly Sync<float> FaceDilate;
     // Softness widens the edge smoothing past the ~1px screen AA (glow/soft text). Underlay is a drop
     // shadow: the field re-sampled at UnderlayOffset (atlas texels) laid behind the glyph. Alpha 0 = off. -xlinka
     public readonly Sync<float> FaceSoftness;
+    [Group("Underlay")]
     public readonly Sync<colorHDR> UnderlayColor;
     public readonly Sync<float2> UnderlayOffset;
     public readonly Sync<float> UnderlaySoftness;
+    [Group("Alpha")]
     public readonly Sync<bool> AlphaClip;
     public readonly Sync<float> AlphaCutoff;
+    [Group("Rendering")]
     public readonly Sync<BlendMode> BlendMode;
     public readonly Sync<Culling> Culling;
     public readonly Sync<ZWrite> ZWrite;
     public readonly Sync<ZTest> ZTest;
     public readonly Sync<int> RenderQueue;
+    [Group("Clipping")]
     public readonly Sync<Rect> Rect;
     public readonly Sync<bool> RectClip;
     public readonly Sync<float2> ClipOffset;
+    [Group("Masking")]
     public readonly Sync<ColorMask> ColorMask;
     public readonly Sync<StencilComparison> StencilComparison;
     public readonly Sync<StencilOperation> StencilOperation;

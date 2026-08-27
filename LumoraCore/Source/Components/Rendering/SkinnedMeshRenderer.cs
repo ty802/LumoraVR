@@ -9,104 +9,69 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Renders a skinned mesh that deforms based on a skeleton's bone transforms.
-/// Stores direct bone slot references for skeletal mesh deformation.
-/// </summary>
 [ComponentCategory("Rendering")]
 public class SkinnedMeshRenderer : ImplementableComponent
 {
     // BONE REFERENCES
 
-    /// <summary>
-    /// Direct references to bone slots in order matching mesh bone indices.
-    /// Bone index 0 in mesh data corresponds to Bones[0], etc.
-    /// </summary>
-    public SyncRefList<Slot> Bones { get; private set; } = null!;
+    // bone index 0 in mesh data corresponds to Bones[0], etc.
+    // Readonly fields, never properties: member discovery only sees init-only ISyncMember fields, and a
+    // list it cannot see is never initialized before OnAwake, replicated, or saved. -xlinka
+    public readonly SyncRefList<Slot> Bones = new();
 
-    /// <summary>
-    /// Names of bones in order (for debugging and lookup).
-    /// </summary>
-    public SyncFieldList<string> BoneNames { get; private set; } = null!;
+    public readonly SyncFieldList<string> BoneNames = new();
 
-    /// <summary>
-    /// Reference to the SkeletonBuilder (for skeleton binding).
-    /// </summary>
     public readonly SyncRef<SkeletonBuilder> Skeleton = null!;
 
-    /// <summary>
-    /// Phos mesh asset source (the universal pipeline). When set, the hook sources geometry, bone bindings AND
-    /// bind poses from this content-hashed asset and drives skinning through an explicit Skin - instead of the
-    /// inline Vertices/BoneIndices/BoneWeights lists below (which exist for the legacy Godot-glTF import path).
-    /// This is what lets a skinned avatar travel as one asset instead of thousands of synced elements.
-    /// MUST be an AssetRef, not a plain SyncRef: an AssetRef reference-counts the MeshProvider (so its underlying
-    /// MeshDataAsset is actually requested + decoded - a StaticAssetProvider only loads while AssetReferenceCount
-    /// > 0) AND re-fires ApplyChanges when the async decode finishes (AssetRef.AssetUpdated). A bare SyncRef did
-    /// NEITHER, so the provider never loaded and a Phos-imported avatar rendered as nothing. -xlinka
-    /// </summary>
+    // Phos mesh asset source (the universal pipeline). When set, the hook sources geometry, bone bindings AND
+    // bind poses from this content-hashed asset and drives skinning through an explicit Skin - instead of the
+    // inline Vertices/BoneIndices/BoneWeights lists below (which exist for the legacy Godot-glTF import path).
+    // So a skinned avatar travels as one asset instead of thousands of synced elements.
+    // MUST be an AssetRef, not a plain SyncRef: an AssetRef reference-counts the MeshProvider (so its underlying
+    // MeshDataAsset is actually requested + decoded - a StaticAssetProvider only loads while AssetReferenceCount
+    // > 0) AND re-fires ApplyChanges when the async decode finishes (AssetRef.AssetUpdated). A bare SyncRef did
+    // NEITHER, so the provider never loaded and a Phos-imported avatar rendered as nothing. -xlinka
     public readonly AssetRef<MeshDataAsset> MeshAsset = null!;
 
     // MESH DATA
 
-    /// <summary>
-    /// Mesh vertex positions (XYZ coordinates).
-    /// </summary>
-    public SyncFieldList<float3> Vertices { get; private set; } = null!;
+    public readonly SyncFieldList<float3> Vertices = new();
 
-    /// <summary>
-    /// Mesh normals for lighting calculations.
-    /// </summary>
-    public SyncFieldList<float3> Normals { get; private set; } = null!;
+    public readonly SyncFieldList<float3> Normals = new();
 
-    /// <summary>
-    /// UV texture coordinates.
-    /// </summary>
-    public SyncFieldList<float2> UVs { get; private set; } = null!;
+    public readonly SyncFieldList<float2> UVs = new();
 
-    /// <summary>
-    /// Triangle indices (3 indices per triangle).
-    /// </summary>
-    public SyncFieldList<int> Indices { get; private set; } = null!;
+    public readonly SyncFieldList<int> Indices = new();
 
-    /// <summary>
-    /// Bone indices for each vertex (up to 4 bones per vertex).
-    /// These indices reference bones in the Bones list.
-    /// </summary>
-    public SyncFieldList<int4> BoneIndices { get; private set; } = null!;
+    // up to 4 bones per vertex; indices reference the Bones list
+    public readonly SyncFieldList<int4> BoneIndices = new();
 
-    /// <summary>
-    /// Bone weights for each vertex (up to 4 bones per vertex).
-    /// </summary>
-    public SyncFieldList<float4> BoneWeights { get; private set; } = null!;
+    public readonly SyncFieldList<float4> BoneWeights = new();
 
     // BLENDSHAPES (morph targets, e.g. facial expressions / visemes / blink)
 
-    /// <summary>Blendshape names, one per shape (mesh-level, shared across surfaces of a mesh).</summary>
-    public SyncFieldList<string> BlendShapeNames { get; private set; } = null!;
+    // mesh-level, shared across surfaces of a mesh
+    public readonly SyncFieldList<string> BlendShapeNames = new();
 
-    /// <summary>
-    /// Per-shape vertex positions, flattened: shape k occupies [k*VertexCount, (k+1)*VertexCount).
-    /// Stored exactly as the source mesh reported them so the round-trip honors <see cref="BlendShapeMode"/>.
-    /// </summary>
-    public SyncFieldList<float3> BlendShapeVertices { get; private set; } = null!;
+    // flattened: shape k occupies [k*VertexCount, (k+1)*VertexCount); stored exactly as the source mesh
+    // reported them so the round-trip honors BlendShapeMode
+    public readonly SyncFieldList<float3> BlendShapeVertices = new();
 
-    /// <summary>
-    /// Per-shape vertex NORMAL deltas, flattened like <see cref="BlendShapeVertices"/>. Optional - empty when the
-    /// source carried no normal morph data; when present the hook morphs normals too, so lighting follows the
-    /// expression (matches how the morph was authored, with per-frame normal deltas). -xlinka
-    /// </summary>
-    public SyncFieldList<float3> BlendShapeNormals { get; private set; } = null!;
+    // Per-shape vertex NORMAL deltas, flattened like BlendShapeVertices. Optional - empty when the
+    // source carried no normal morph data; when present the hook morphs normals too, so lighting follows the
+    // expression (matches how the morph was authored, with per-frame normal deltas). -xlinka
+    public readonly SyncFieldList<float3> BlendShapeNormals = new();
 
-    /// <summary>True when normal morph deltas are present for every shape vertex (so the hook morphs normals).</summary>
+    // true when normal morph deltas are present for every shape vertex, so the hook morphs normals too
     public bool HasBlendShapeNormals => BlendShapeVertices.Count > 0 && BlendShapeNormals.Count == BlendShapeVertices.Count;
 
-    /// <summary>Current weight (0..1) for each blendshape, driven by expression/viseme/blink drivers.</summary>
-    public SyncFieldList<float> BlendShapeWeights { get; private set; } = null!;
+    // 0..1; driven by expression/viseme/blink drivers
+    public readonly SyncFieldList<float> BlendShapeWeights = new();
 
-    /// <summary>Source blendshape mode: 0 = Normalized, 1 = Relative (Godot Mesh.BlendShapeMode).</summary>
+    // 0 = Normalized, 1 = Relative (Godot Mesh.BlendShapeMode)
     public readonly Sync<int> BlendShapeMode = new();
 
-    /// <summary>Set true when only weights changed - the hook reapplies weights without a mesh rebuild.</summary>
+    // set when only weights changed, so the hook reapplies weights without a full mesh rebuild
     public bool BlendWeightsChanged { get; set; }
 
     public int BlendShapeCount => BlendShapeNames.Count;
@@ -159,8 +124,8 @@ public class SkinnedMeshRenderer : ImplementableComponent
     private object?[]? _blendShapeOwners;
     private int[]? _blendShapeOwnerPriority;
 
-    /// <summary>Claim a blendshape for an animating driver. Succeeds if unclaimed, already yours, or your
-    /// priority beats the current owner's (a steal). Call from the driver's resolve pass.</summary>
+    // succeeds if unclaimed, already yours, or your priority beats the current owner's (a steal); call
+    // from the driver's resolve pass
     public bool ClaimBlendShape(int index, object owner, int priority)
     {
         if (owner == null || index < 0 || index >= BlendShapeNames.Count)
@@ -176,8 +141,7 @@ public class SkinnedMeshRenderer : ImplementableComponent
         return false;
     }
 
-    /// <summary>Whether <paramref name="owner"/> currently owns this blendshape. Check at drive time so a
-    /// stolen shape isn't written by the previous owner.</summary>
+    // check at drive time so a stolen shape isn't written by the previous owner
     public bool OwnsBlendShape(int index, object owner)
         => _blendShapeOwners != null && index >= 0 && index < _blendShapeOwners.Length
            && ReferenceEquals(_blendShapeOwners[index], owner);
@@ -192,7 +156,7 @@ public class SkinnedMeshRenderer : ImplementableComponent
         }
     }
 
-    /// <summary>Drive a blendshape weight LOCALLY (no network broadcast). For per-frame animation.</summary>
+    // local only, no network broadcast; for per-frame animation
     public void DriveBlendShapeWeight(int index, float weight)
     {
         if (index < 0 || index >= BlendShapeNames.Count)
@@ -209,7 +173,7 @@ public class SkinnedMeshRenderer : ImplementableComponent
     public void DriveBlendShapeWeight(string name, float weight)
         => DriveBlendShapeWeight(GetBlendShapeIndex(name), weight);
 
-    /// <summary>Weight the hook should apply: the local driver override if set, else the synced value.</summary>
+    // local driver override if set, else the synced value
     public float GetEffectiveBlendShapeWeight(int index)
     {
         if (_runtimeWeights != null && index >= 0 && index < _runtimeWeights.Length)
@@ -217,15 +181,13 @@ public class SkinnedMeshRenderer : ImplementableComponent
         return (index >= 0 && index < BlendShapeWeights.Count) ? BlendShapeWeights[index] : 0f;
     }
 
-    /// <summary>Populate blendshapes (called at import). names.Length shapes, each with VertexCount verts.</summary>
+    // called at import; names.Length shapes, each with VertexCount verts
     public void SetBlendShapes(string[]? names, float3[]? flattenedVertices, int mode)
         => SetBlendShapes(names, flattenedVertices, null, mode);
 
-    /// <summary>
-    /// Populate blendshapes with optional NORMAL morph deltas (carried when the source provided them, so normals
-    /// morph with the expression instead of staying frozen at the base). flattenedNormals must line up 1:1 with
-    /// flattenedVertices or it's ignored. -xlinka
-    /// </summary>
+    // Populate blendshapes with optional NORMAL morph deltas (carried when the source provided them, so normals
+    // morph with the expression instead of staying frozen at the base). flattenedNormals must line up 1:1 with
+    // flattenedVertices or it's ignored. -xlinka
     public void SetBlendShapes(string[]? names, float3[]? flattenedVertices, float3[]? flattenedNormals, int mode)
     {
         BlendShapeNames.Clear();
@@ -260,71 +222,28 @@ public class SkinnedMeshRenderer : ImplementableComponent
 
     // SETTINGS
 
-    /// <summary>
-    /// Shadow casting mode.
-    /// </summary>
     public readonly Sync<ShadowCastMode> ShadowCastMode = new();
 
-    /// <summary>
-    /// The material to use for rendering.
-    /// </summary>
-    public AssetRef<MaterialAsset> Material { get; private set; } = null!;
+    public readonly AssetRef<MaterialAsset> Material = new();
 
-    /// <summary>
-    /// Whether to update the mesh when bones move.
-    /// </summary>
     public readonly Sync<bool> UpdateWhenOffscreen = new();
 
-    /// <summary>
-    /// Quality of skinning (number of bones per vertex).
-    /// </summary>
     public readonly Sync<SkinQuality> Quality = new();
 
     // CHANGE FLAGS
 
-    /// <summary>
-    /// Flag indicating mesh data has changed and needs rebuild.
-    /// </summary>
     public bool MeshDataChanged { get; set; }
 
-    /// <summary>
-    /// Flag indicating skeleton/bones reference has changed.
-    /// </summary>
     public bool SkeletonChanged { get; set; }
 
-    /// <summary>
-    /// Flag indicating bones have been setup.
-    /// </summary>
     public bool BonesReady => Bones.Count > 0 && Bones[0] != null;
 
-    /// <summary>
-    /// Flag indicating the hook has successfully bound to skeleton.
-    /// Set by the hook when binding is complete.
-    /// </summary>
+    // set by the hook when binding is complete
     public bool HookBindingComplete { get; set; }
 
     public override void OnAwake()
     {
         base.OnAwake();
-
-        // Initialize bone references
-        Bones = new SyncRefList<Slot>(this);
-        BoneNames = new SyncFieldList<string>(this);
-        // Initialize mesh data
-        Vertices = new SyncFieldList<float3>(this);
-        Normals = new SyncFieldList<float3>(this);
-        UVs = new SyncFieldList<float2>(this);
-        Indices = new SyncFieldList<int>(this);
-        BoneIndices = new SyncFieldList<int4>(this);
-        BoneWeights = new SyncFieldList<float4>(this);
-        // Blendshapes
-        BlendShapeNames = new SyncFieldList<string>(this);
-        BlendShapeVertices = new SyncFieldList<float3>(this);
-        BlendShapeNormals = new SyncFieldList<float3>(this);
-        BlendShapeWeights = new SyncFieldList<float>(this);
-
-        // Initialize settings
-        Material = new AssetRef<MaterialAsset>(this);
 
         // Subscribe to changes
         Skeleton.OnChanged += (field) => { SkeletonChanged = true; RunApplyChanges(); };
@@ -374,11 +293,7 @@ public class SkinnedMeshRenderer : ImplementableComponent
 
     // BONE SETUP
 
-    /// <summary>
-    /// Setup bones by finding them in the hierarchy by name.
-    /// Call this after mesh data is loaded and bone names are known.
-    /// </summary>
-    /// <param name="rootSlot">The root slot to search for bones (usually skeleton root).</param>
+    // call after mesh data is loaded and bone names are known
     public void SetupBones(Slot rootSlot)
     {
         if (rootSlot == null)
@@ -417,10 +332,6 @@ public class SkinnedMeshRenderer : ImplementableComponent
         LumoraLogger.Log($"SkinnedMeshRenderer: Setup {Bones.Count} bones from root '{rootSlot.SlotName.Value}'");
     }
 
-    /// <summary>
-    /// Setup bones from a SkeletonBuilder.
-    /// Maps mesh bone names to skeleton bone slots.
-    /// </summary>
     public void SetupBonesFromSkeleton(SkeletonBuilder skeleton)
     {
         if (skeleton == null || !skeleton.IsBuilt.Value)
@@ -453,9 +364,6 @@ public class SkinnedMeshRenderer : ImplementableComponent
         LumoraLogger.Log($"SkinnedMeshRenderer: Setup {Bones.Count} bones from skeleton");
     }
 
-    /// <summary>
-    /// Find a bone slot by name in the hierarchy (recursive search).
-    /// </summary>
     private static Slot FindBoneInHierarchy(Slot root, string boneName)
     {
         if (root == null || string.IsNullOrEmpty(boneName))
@@ -474,9 +382,6 @@ public class SkinnedMeshRenderer : ImplementableComponent
         return null!;
     }
 
-    /// <summary>
-    /// Get a bone slot by index.
-    /// </summary>
     public Slot GetBone(int index)
     {
         if (index < 0 || index >= Bones.Count)
@@ -484,9 +389,6 @@ public class SkinnedMeshRenderer : ImplementableComponent
         return Bones[index]!;
     }
 
-    /// <summary>
-    /// Get a bone slot by name.
-    /// </summary>
     public Slot GetBone(string name)
     {
         int index = BoneNames.IndexOf(name);
@@ -497,9 +399,6 @@ public class SkinnedMeshRenderer : ImplementableComponent
 
     // MESH DATA METHODS
 
-    /// <summary>
-    /// Set the mesh data from arrays.
-    /// </summary>
     public void SetMeshData(float3[]? vertices, float3[]? normals, float2[]? uvs, int[]? indices,
                             int4[]? boneIndices, float4[]? boneWeights, string[]? boneNames = null)
     {
@@ -577,9 +476,6 @@ public class SkinnedMeshRenderer : ImplementableComponent
         LumoraLogger.Log($"SkinnedMeshRenderer: Set mesh data with {vertices.Length} vertices, {indices.Length / 3} triangles, {boneNames?.Length ?? 0} bones");
     }
 
-    /// <summary>
-    /// Clear all mesh data.
-    /// </summary>
     public void ClearMesh()
     {
         Vertices.Clear();
@@ -595,9 +491,6 @@ public class SkinnedMeshRenderer : ImplementableComponent
     }
 }
 
-/// <summary>
-/// Skinning quality settings.
-/// </summary>
 public enum SkinQuality
 {
     Auto = 0,

@@ -67,41 +67,34 @@ public sealed class SyncIntList : SyncList<Sync<int>>
     }
 }
 
-/// <summary>
-/// Renders a 3D mesh.
-/// </summary>
 [ComponentCategory("Rendering")]
 public class MeshRenderer : ImplementableComponent
 {
     public const int NoSurfaceRenderPriority = int.MinValue;
 
-    /// <summary>
-    /// The mesh to render (ProceduralMesh or MeshDataAsset component).
-    /// Uses SyncRef to properly sync component references over network.
-    /// </summary>
     public readonly SyncRef<Component> Mesh;
 
     public readonly SyncAssetList<MaterialAsset> Materials;
     public readonly SyncAssetList<MaterialPropertyBlockAsset> MaterialPropertyBlocks;
     public readonly SyncIntList SurfaceRenderPriorities;
 
-    /// <summary>
-    /// Shadow casting mode (Off, On, ShadowOnly, DoubleSided).
-    /// </summary>
     public readonly Sync<ShadowCastMode> ShadowCastMode;
 
-    /// <summary>
-    /// Sorting order for transparent rendering (lower values render first).
-    /// </summary>
+    // lower values render first
     public readonly Sync<int> SortingOrder;
 
-    /// <summary>
-    /// When true, the hook renders each mesh surface as its OWN MeshInstance3D ordered purely by a distinct
-    /// per-surface SortingOffset (= SortingOrder * a stride + surface index), with uniform render_priority. This
-    /// bypasses Godot's 256-level render_priority cap to give unbounded positional order for UI. Set by Helio's
-    /// GraphicsChunk when the unbounded-ordering mode is enabled; off for all normal (world) meshes. -xlinka
-    /// </summary>
+    // When true, the hook renders each mesh surface as its OWN MeshInstance3D ordered purely by a distinct
+    // per-surface SortingOffset (= SortingOrder * a stride + surface index), with uniform render_priority. This
+    // bypasses Godot's 256-level render_priority cap to give unbounded positional order for UI. Set by Helio's
+    // GraphicsChunk when the unbounded-ordering mode is enabled; off for all normal (world) meshes. -xlinka
     public bool PerSurfaceOrdering { get; set; }
+
+    // Extra frustum-cull margin (world units) the hook applies to the mesh instance(s). Scrolled UI chunks
+    // displace their vertices in the VERTEX SHADER (clip_offset), so the instance AABB - computed from the
+    // baked, undisplaced verts - no longer bounds what's on screen; at glancing angles or up close Godot
+    // culls the instance while displaced pixels should still be visible. Set by Helio's canvas for
+    // scroll-participating chunks; zero for normal meshes. -xlinka
+    public float ExtraCullMargin { get; set; }
 
     public bool MaterialsChanged { get; set; }
     public bool MaterialPropertyBlocksChanged { get; set; }
@@ -209,9 +202,6 @@ public class MeshRenderer : ImplementableComponent
     }
 }
 
-/// <summary>
-/// Shadow casting modes for MeshRenderer.
-/// </summary>
 public enum ShadowCastMode
 {
     Off = 0,
@@ -220,9 +210,6 @@ public enum ShadowCastMode
     DoubleSided = 3
 }
 
-/// <summary>
-/// Motion vector generation modes for motion blur and temporal effects.
-/// </summary>
 public enum MotionVectorMode
 {
     Camera = 0,

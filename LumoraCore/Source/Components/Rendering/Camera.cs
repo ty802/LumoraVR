@@ -8,104 +8,55 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Renders the scene from a viewpoint.
-/// </summary>
 [ComponentCategory("Rendering")]
 public class Camera : ImplementableComponent
 {
-    /// <summary>
-    /// Camera projection mode (Perspective or Orthographic)
-    /// </summary>
+    [Group("Projection")]
     public readonly Sync<ProjectionType> Projection = new();
 
-    /// <summary>
-    /// Field of view in degrees (for Perspective mode)
-    /// </summary>
+    // degrees; used in Perspective mode
     public readonly Sync<float> FieldOfView = new();
 
-    /// <summary>
-    /// Orthographic size (height in world units, for Orthographic mode)
-    /// </summary>
+    // height in world units; used in Orthographic mode
     public readonly Sync<float> OrthographicSize = new();
 
-    /// <summary>
-    /// Near clipping plane distance
-    /// </summary>
     public readonly Sync<float> NearClip = new();
 
-    /// <summary>
-    /// Far clipping plane distance
-    /// </summary>
     public readonly Sync<float> FarClip = new();
 
-    /// <summary>
-    /// Clear mode (Skybox, Color, DepthOnly, Nothing)
-    /// </summary>
+    [Group("Clear")]
     public readonly Sync<ClearMode> Clear = new();
 
-    /// <summary>
-    /// Background clear color (when Clear = Color)
-    /// </summary>
+    // used when Clear = Color
     public readonly Sync<color> BackgroundColor = new();
 
-    /// <summary>
-    /// Render target this camera draws into; null = render to screen.
-    /// </summary>
+    // null = render to screen
+    [Group("Output")]
     public readonly AssetRef<RenderTexture> TargetTexture = new();
 
-    /// <summary>
-    /// Camera depth (rendering order)
-    /// Lower depth cameras render first
-    /// </summary>
+    // lower depth renders first
     public readonly Sync<int> Depth = new();
 
-    /// <summary>
-    /// Culling mask (which layers to render)
-    /// </summary>
     public readonly Sync<int> CullingMask = new();
 
-    /// <summary>
-    /// Render shadows
-    /// </summary>
+    [Group("Rendering")]
     public readonly Sync<bool> RenderShadows = new();
 
-    /// <summary>
-    /// Use occlusion culling
-    /// </summary>
     public readonly Sync<bool> UseOcclusionCulling = new();
 
-    /// <summary>
-    /// Allow HDR rendering
-    /// </summary>
     public readonly Sync<bool> AllowHDR = new();
 
-    /// <summary>
-    /// Allow MSAA (multi-sample anti-aliasing)
-    /// </summary>
     public readonly Sync<bool> AllowMSAA = new();
 
-    /// <summary>
-    /// Viewport rect within the screen, normalized 0-1 as (x, y, width, height).
-    /// </summary>
+    // normalized 0-1, as (x, y, width, height)
     public readonly Sync<float4> ViewportRect = new();
 
-    /// <summary>
-    /// Selective rendering - only render specific objects
-    /// </summary>
     public readonly Sync<bool> SelectiveRender = new();
 
-    /// <summary>
-    /// Render post-processing effects
-    /// </summary>
     public readonly Sync<bool> RenderPostProcessing = new();
 
-    /// <summary>
-    /// Aspect ratio (width / height) of the screen viewport this camera renders into.
-    /// Only the platform layer knows the real window size, so it feeds this each frame
-    /// while the camera renders to screen. Used as the fallback for <see cref="AspectRatio"/>
-    /// when no render target is set. Defaults to a 16:9 sentinel until the platform updates it.
-    /// </summary>
+    // fed each frame by the platform layer (only it knows the real window size); fallback for
+    // AspectRatio when no render target is set; defaults to a 16:9 sentinel until updated
     public float ScreenAspect { get; set; } = 16f / 9f;
 
     public override void OnInit()
@@ -131,11 +82,7 @@ public class Camera : ImplementableComponent
         RenderPostProcessing.Value = true;
     }
 
-    /// <summary>
-    /// Aspect ratio (width / height) of the camera.
-    /// Derived from the render target when one is set (a real, reachable source);
-    /// otherwise the screen viewport aspect the platform feeds via <see cref="ScreenAspect"/>.
-    /// </summary>
+    // derived from the render target when one is set, otherwise the platform-fed ScreenAspect
     public float AspectRatio
     {
         get
@@ -148,31 +95,22 @@ public class Camera : ImplementableComponent
         }
     }
 
-    /// <summary>
-    /// Check if this camera is rendering to a texture
-    /// </summary>
     public bool IsRenderTexture
     {
         get { return TargetTexture.Target != null; }
     }
 }
 
-/// <summary>
-/// Camera projection types.
-/// </summary>
 public enum ProjectionType
 {
-    Perspective,   // Perspective projection (realistic 3D)
-    Orthographic   // Orthographic projection (no depth perspective)
+    Perspective,
+    Orthographic
 }
 
-/// <summary>
-/// Camera clear modes.
-/// </summary>
 public enum ClearMode
 {
-    Skybox,      // Clear to skybox
-    Color,       // Clear to solid color
-    DepthOnly,   // Clear depth only, keep color
-    Nothing      // Don't clear anything
+    Skybox,
+    Color,
+    DepthOnly,
+    Nothing
 }

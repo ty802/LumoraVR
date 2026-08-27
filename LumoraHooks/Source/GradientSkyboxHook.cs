@@ -9,23 +9,19 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Godot.Hooks;
 
-// Applies a gradient sky to the Godot WorldEnvironment, gated on FocusManager
-// focus. Worlds aren't unloaded when the user switches between them, so the
-// hook also lives across switches. We attach our gradient only while our world
-// is the focused one and restore the previous env when focus moves away. - xlinka
+// Draws a gradient sky with a procedural sun. Worlds are not unloaded when the user switches between
+// them, so this hook outlives focus changes; it registers a claim with SkyEnvironment and that arbiter
+// decides when the claim is showing. It claims at the lower priority, so a Skybox in the same world
+// takes the sky over. - xlinka
 [ImplementableHook(typeof(GradientSkybox))]
 public sealed class GradientSkyboxHook : ComponentHook<GradientSkybox>
 {
     private const string ShaderPath = "res://Shaders/GradientSkybox.gdshader";
 
-    private WorldEnvironment _worldEnvironment = null!;
-    private global::Godot.Environment _previousEnvironment = null!;
-    private bool _ownsWorldEnvironment;
     private global::Godot.Environment _environment = null!;
     private Sky _sky = null!;
     private ShaderMaterial _skyMaterial = null!;
-    private FocusManager _focusManager = null!;
-    private bool _gradientActive;
+    private bool _claimed;
 
     public static IHook<GradientSkybox> Constructor() => new GradientSkyboxHook();
 
@@ -33,22 +29,12 @@ public sealed class GradientSkyboxHook : ComponentHook<GradientSkybox>
     {
         base.Initialize();
 
-        _worldEnvironment = FindWorldEnvironment();
-        if (_worldEnvironment == null)
-        {
-            _worldEnvironment = new WorldEnvironment { Name = "WorldEnvironment" };
-            attachedNode.GetTree().Root.AddChild(_worldEnvironment);
-            _ownsWorldEnvironment = true;
-        }
+        // Duplicate the bootstrap environment so the project's fog, tonemapping and post settings
+        // survive; only the sky and ambient are ours to set.
+        var bootstrap = SkyEnvironment.Bootstrap(attachedNode);
+        _environment = bootstrap?.Duplicate() as global::Godot.Environment ?? new global::Godot.Environment();
 
-        // Snapshot once: this is whatever the WE shows when our world isn't
-        // focused (bootstrap default, or another hook's env if we're stacked). - xlinka
-        _previousEnvironment = _worldEnvironment.Environment;
-
-        _environment = _previousEnvironment?.Duplicate() as global::Godot.Environment ?? new global::Godot.Environment();
-        _sky = new Sky();
         _skyMaterial = new ShaderMaterial();
-
         if (ResourceLoader.Exists(ShaderPath))
         {
             _skyMaterial.Shader = GD.Load<Shader>(ShaderPath);
@@ -58,32 +44,16 @@ public sealed class GradientSkyboxHook : ComponentHook<GradientSkybox>
             LumoraLogger.Warn($"GradientSkyboxHook: Sky shader not found at {ShaderPath}");
         }
 
-        _sky.SkyMaterial = _skyMaterial;
+        _sky = new Sky { SkyMaterial = _skyMaterial };
         _environment.BackgroundMode = global::Godot.Environment.BGMode.Sky;
         _environment.Sky = _sky;
-        // Sky still drives ambient color, but reflections are explicitly killed
-        // so the bright sun disc inside the shader doesn't mirror onto glossy
-        // floors as a hard hotspot. Specular highlights now come only from real
-        // lights (DirectionalLight, etc.), not from the sky. - xlinka
+        // Sky still drives ambient color, but reflections are explicitly killed so the bright sun disc
+        // inside the shader doesn't mirror onto glossy floors as a hard hotspot. Specular highlights
+        // come only from real lights and reflection probes, not from this sky. - xlinka
         _environment.AmbientLightSource = global::Godot.Environment.AmbientSource.Sky;
         _environment.ReflectedLightSource = global::Godot.Environment.ReflectionSource.Disabled;
 
         ApplyChanges();
-
-        _focusManager = Lumora.Core.Engine.Current?.FocusManager!;
-        if (_focusManager != null)
-        {
-            _focusManager.OnFocusedWorldChanged += OnFocusedWorldChanged;
-            if (_focusManager.FocusedWorld == Owner.World)
-            {
-                ApplyGradient();
-            }
-        }
-        else
-        {
-            // No focus manager available (single-world boot path), apply directly.
-            ApplyGradient();
-        }
     }
 
     public override void ApplyChanges()
@@ -105,46 +75,22 @@ public sealed class GradientSkyboxHook : ComponentHook<GradientSkybox>
         _skyMaterial.SetShaderParameter("sun_glow_power", Owner.SunGlowPower.Value);
 
         _environment.AmbientLightEnergy = Owner.AmbientEnergy.Value;
+
+        UpdateClaim();
     }
 
-    private void OnFocusedWorldChanged(World oldWorld, World newWorld)
+    private void UpdateClaim()
     {
-        if (newWorld == Owner.World)
+        if (Owner.Enabled)
         {
-            ApplyGradient();
+            _claimed = true;
+            SkyEnvironment.Claimed(this, Owner.World, SkyEnvironment.GradientPriority, _environment, attachedNode);
         }
-        else if (oldWorld == Owner.World)
+        else if (_claimed)
         {
-            RestorePreviousEnv();
+            _claimed = false;
+            SkyEnvironment.Released(this);
         }
-    }
-
-    private void ApplyGradient()
-    {
-        if (_gradientActive || _environment == null) return;
-        if (_worldEnvironment == null || !GodotObject.IsInstanceValid(_worldEnvironment)) return;
-
-        _gradientActive = true;
-        _worldEnvironment.Environment = _environment;
-    }
-
-    private void RestorePreviousEnv()
-    {
-        if (!_gradientActive) return;
-        _gradientActive = false;
-
-        if (_worldEnvironment == null || !GodotObject.IsInstanceValid(_worldEnvironment)) return;
-
-        // Only stomp the env if it's still ours. If another hook has taken over
-        // since (someone else's world got focus first), leave it alone. - xlinka
-        if (_worldEnvironment.Environment != _environment) return;
-
-        _worldEnvironment.Environment = _previousEnvironment;
-    }
-
-    private WorldEnvironment FindWorldEnvironment()
-    {
-        return (attachedNode.GetTree()?.Root?.FindChild("WorldEnvironment", true, false) as WorldEnvironment)!;
     }
 
     private void SetColor(string uniform, color value)
@@ -154,29 +100,18 @@ public sealed class GradientSkyboxHook : ComponentHook<GradientSkybox>
 
     public override void Destroy(bool destroyingWorld)
     {
-        if (_focusManager != null)
-        {
-            _focusManager.OnFocusedWorldChanged -= OnFocusedWorldChanged;
-            _focusManager = null!;
-        }
-
-        RestorePreviousEnv();
-
-        if (_ownsWorldEnvironment && _worldEnvironment != null && GodotObject.IsInstanceValid(_worldEnvironment))
-        {
-            _worldEnvironment.QueueFree();
-        }
+        SkyEnvironment.Released(this);
+        _claimed = false;
 
         _environment?.Dispose();
         _sky?.Dispose();
         _skyMaterial?.Dispose();
 
-        _worldEnvironment = null!;
-        _previousEnvironment = null!;
         _environment = null!;
         _sky = null!;
         _skyMaterial = null!;
 
+        SkyEnvironment.ReleaseNodeIfUnused();
         base.Destroy(destroyingWorld);
     }
 }

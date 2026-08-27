@@ -3,6 +3,7 @@
 
 using System;
 using Lumora.Core.Components.Interaction;
+using Lumora.Warden;
 
 namespace Lumora.Core.Components;
 
@@ -13,7 +14,7 @@ namespace Lumora.Core.Components;
 // and the loser drops it on their next check. parent under the grabber's holder slot on grab; restore
 // on release. - xlinka
 [ComponentCategory("Interaction")]
-public sealed class Grabbable : Component, IGrabbable
+public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface
 {
     public readonly Sync<bool> AllowGrab = new();
     public readonly Sync<bool> FollowRotation = new();
@@ -47,6 +48,26 @@ public sealed class Grabbable : Component, IGrabbable
 
     public bool IsGrabbed => GrabberRef.Target != null;
     public Grabber? Grabber => GrabberRef.Target;
+
+    // PERMISSION GATE VIEW
+    // A grab is an interaction, not an ownership edit, so the gate needs to tell a write to the grab
+    // protocol apart from an edit of the object. Only the two replicated grab refs count; everything
+    // else on this component stays owner-gated. -xlinka
+
+    bool IPermissionGrabSurface.AllowsGrab => AllowGrab.Value;
+
+    bool IPermissionGrabSurface.AllowsSteal => AllowSteal.Value;
+
+    IPermissionActor? IPermissionGrabSurface.CurrentHolder => GrabberRef.Target?.OwningUser;
+
+    GrabWriteKind IPermissionGrabSurface.ClassifyGrabWrite(IPermissionTarget? member)
+    {
+        if (ReferenceEquals(member, GrabberRef))
+            return GrabWriteKind.HolderRef;
+        if (ReferenceEquals(member, LastParentRef))
+            return GrabWriteKind.GrabState;
+        return GrabWriteKind.None;
+    }
 
     bool IGrabbable.Scalable => Scalable.Value;
     bool IGrabbable.Receivable => Receivable.Value;

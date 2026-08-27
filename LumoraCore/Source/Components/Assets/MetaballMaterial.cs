@@ -5,28 +5,29 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Assets;
 
-/// <summary>
-/// Built-in water floor material backed by res://Shaders/Metaball.gdshader.
-/// Renders a dark futuristic liquid surface with small rising droplet metaballs.
-/// </summary>
+// backed by res://Shaders/Metaball.gdshader
 [ComponentCategory("Assets/Materials")]
 public class MetaballMaterial : MaterialProvider, ICommonMaterial
 {
+    [Group("Colors")]
     public readonly Sync<colorHDR> TintA;
     public readonly Sync<colorHDR> TintB;
     public readonly Sync<colorHDR> WaterDeepColor;
     public readonly Sync<colorHDR> WaterSurfaceColor;
     public readonly Sync<colorHDR> RippleColor;
 
+    [Group("Blobs")]
     public readonly Sync<float> BlobRadius;
     public readonly Sync<float> BlobSmoothness;
     public readonly Sync<int> BlobCount;
     public readonly Sync<float> RiseSpeed;
 
+    [Group("Volume")]
     public readonly Sync<float2> VolumeExtents;
     public readonly Sync<float> VolumeHeight;
     public readonly Sync<float3> VolumeOffset;
 
+    [Group("Surface")]
     public readonly Sync<float> RimStrength;
     public readonly Sync<float> RimFalloff;
     public readonly Sync<float> FresnelPower;
@@ -39,6 +40,7 @@ public class MetaballMaterial : MaterialProvider, ICommonMaterial
     public readonly Sync<float> RippleWidth;
     public readonly Sync<float> LineStrength;
 
+    [Group("Rendering")]
     public readonly Sync<BlendMode> BlendMode;
     public readonly Sync<Culling> Culling;
     public readonly Sync<int> RenderQueue;

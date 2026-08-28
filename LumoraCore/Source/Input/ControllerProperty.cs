@@ -5,10 +5,6 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Input;
 
-/// <summary>
-/// Base class for all input properties (buttons, axes, etc.)
-/// Standard controller property interface
-/// </summary>
 public abstract class ControllerProperty
 {
     public IInputDevice Device { get; private set; } = null!;
@@ -23,10 +19,6 @@ public abstract class ControllerProperty
     }
 }
 
-/// <summary>
-/// Digital input (button/key state with press/release detection)
-/// Standard digital button property
-/// </summary>
 public class Digital : ControllerProperty
 {
     public bool Held { get; private set; }
@@ -47,10 +39,6 @@ public class Digital : ControllerProperty
     }
 }
 
-/// <summary>
-/// Analog input (single-axis value with delta and velocity)
-/// Standard analog axis property
-/// </summary>
 public class Analog : ControllerProperty
 {
     public float Value { get; private set; }
@@ -65,10 +53,6 @@ public class Analog : ControllerProperty
     }
 }
 
-/// <summary>
-/// 2D analog input (thumbstick, touchpad, mouse delta)
-/// Standard 2D analog property
-/// </summary>
 public class Analog2D : ControllerProperty
 {
     public float2 Value { get; private set; }

@@ -3,14 +3,10 @@
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Decides which locomotion modules a user is allowed to use, gated on real world state rather than an
-/// unconditional allow. The only honest per-module gate we have today is the world's edit mode: a locked
-/// world (Social / Event) is a bounded experience the host froze, so free-fly that lets a user leave the
-/// authored space (noclip / fly) is denied there - everyone keeps ground locomotion. Builder worlds allow
-/// everything. There is no per-module permission field on the data model yet; when one exists this is where
-/// it would be consulted (host-authoritative, like the rest of the permission surface).
-/// </summary>
+// Gated on real world state, not an unconditional allow: a locked world (Social/Event) is a bounded
+// experience the host froze, so free-fly that lets a user leave the authored space (noclip/fly) is
+// denied there; Builder worlds allow everything. No per-module permission field on the data model yet -
+// when one exists this is where it gets consulted, host-authoritative like the rest of the permission surface.
 public class LocomotionPermissions
 {
     private readonly World? _world;
@@ -20,7 +16,6 @@ public class LocomotionPermissions
         _world = world;
     }
 
-    /// <summary>True if the user may use <paramref name="module"/> right now.</summary>
     public bool CanUseLocomotion(LocomotionModule module)
     {
         if (module == null)
@@ -38,7 +33,7 @@ public class LocomotionPermissions
         return true;
     }
 
-    /// <summary>True if at least one locomotion module is usable (always true - ground locomotion is never gated).</summary>
+    // always true; ground locomotion is never gated
     public bool CanUseAnyLocomotion() => true;
 
     // Free-flight modules move the rig directly with no ground/collision constraint, letting a user leave the
@@ -46,13 +41,14 @@ public class LocomotionPermissions
     // inherit the same restriction without editing this list.
     private static bool IsFreeFly(LocomotionModule module) => module is NoclipLocomotion;
 
-    // Social / Event worlds are host-frozen, bounded experiences (the SocialLock floor in the permission gate).
-    // Builder worlds are open. Mode is baked host-authoritatively at host time and can't be toggled live.
+    // Social / Event worlds are host-frozen, bounded experiences. Read the floor from the permission
+    // policy rather than re-deriving it here, or this drifts from what the gate actually enforces.
+    // Mode is baked host-authoritatively at host time and can't be toggled live.
     private bool IsWorldLocked()
     {
         var world = _world;
         if (world == null)
             return false;
-        return world.Mode != Lumora.Core.WorldMode.Builder;
+        return Lumora.Warden.WorldModePolicy.SocialLockFloor(world.Mode);
     }
 }

@@ -83,10 +83,41 @@ public class UserInputState : Component
         }
     }
 
+    // Same multi-requester shape as the suppression set: raised by a hand tool while it is carrying something
+    // on its laser, where the wheel pushes that object nearer or further. The third-person orbit reads it and
+    // leaves the wheel alone, so reeling a held object in doesn't zoom the camera on the same notch. -xlinka
+    private readonly object _wheelCaptureLock = new();
+    private readonly HashSet<object> _wheelCaptureRequests = new();
+
+    public bool ScrollWheelCaptured
+    {
+        get
+        {
+            lock (_wheelCaptureLock)
+                return _wheelCaptureRequests.Count > 0;
+        }
+    }
+
+    public void SetScrollWheelCaptured(object requester, bool value)
+    {
+        if (requester == null)
+            return;
+
+        lock (_wheelCaptureLock)
+        {
+            if (value)
+                _wheelCaptureRequests.Add(requester);
+            else
+                _wheelCaptureRequests.Remove(requester);
+        }
+    }
+
     public override void OnDestroy()
     {
         lock (_suppressionLock)
             _suppressionRequests.Clear();
+        lock (_wheelCaptureLock)
+            _wheelCaptureRequests.Clear();
 
         MouseCaptureRequested = false;
         FreeCamActive = false;
@@ -112,4 +143,5 @@ public class UserInputState : Component
     public static bool FocusedMouseLookSuppressed => ForFocusedLocalUser?.MouseLookSuppressed ?? false;
     public static bool FocusedDesktopInputSuppressed => ForFocusedLocalUser?.DesktopInputSuppressed ?? false;
     public static bool FocusedExternalCameraActive => ForFocusedLocalUser?.ExternalCameraActive ?? false;
+    public static bool FocusedScrollWheelCaptured => ForFocusedLocalUser?.ScrollWheelCaptured ?? false;
 }

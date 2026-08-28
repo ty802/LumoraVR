@@ -14,12 +14,6 @@ using Vector2 = System.Numerics.Vector2;
 
 namespace Lumora.Source.Godot.Input.Drivers;
 
-/// <summary>
-/// Godot VR driver for passing VR tracking data to Lumora engine.
-/// Handles head-mounted display and controller tracking using OpenXR/SteamVR.
-/// Implements VR input handling with body node system.
-/// Uses XRController3D/XRCamera3D nodes for proper Godot 4.x OpenXR support.
-/// </summary>
 public class GodotVRDriver : IVRDriver, IInputDriver
 {
     public int UpdateOrder => 0;
@@ -78,10 +72,8 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         FingerSegmentType.Tip
     };
 
-    /// <summary>
-    /// Pick up the XR interface that PhaseXRDetection() already initialized.
-    /// Also subscribes to TrackerAdded to log the HMD device name on connect.
-    /// </summary>
+    // Picks up the XR interface that PhaseXRDetection() already initialized; also subscribes to
+    // TrackerAdded to log the HMD device name on connect.
     public void InitializeVR()
     {
         _xrInterface = XRServer.PrimaryInterface;
@@ -202,10 +194,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         return VRPlatform.DesktopOpenXR;
     }
 
-    /// <summary>
-    /// Find or create XR nodes in the scene tree for proper Godot 4.x tracking.
-    /// XRController3D nodes MUST exist for Godot to track controllers via OpenXR.
-    /// </summary>
+    // XRController3D nodes MUST exist for Godot to track controllers via OpenXR.
     public void FindXRNodes(Node? sceneRoot)
     {
         if (sceneRoot == null) return;
@@ -213,7 +202,6 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         _xrOrigin = FindNodeOfType<XROrigin3D>(sceneRoot);
         _xrCamera = FindNodeOfType<XRCamera3D>(sceneRoot);
 
-        // Find controllers by tracker name
         foreach (var node in GetAllNodes(sceneRoot))
         {
             if (node is XRController3D controller)
@@ -228,7 +216,6 @@ public class GodotVRDriver : IVRDriver, IInputDriver
             }
         }
 
-        // If XR nodes not found, create them - required for OpenXR controller tracking
         if (_xrOrigin == null || _leftController == null || _rightController == null)
         {
             global::Godot.GD.Print("GodotVRDriver: XR nodes not found, creating them...");
@@ -238,12 +225,8 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         global::Godot.GD.Print($"GodotVRDriver: XR nodes ready - Origin:{_xrOrigin != null}, Camera:{_xrCamera != null}, Left:{_leftController != null}, Right:{_rightController != null}");
     }
 
-    /// <summary>
-    /// Create required XR nodes for OpenXR controller tracking.
-    /// </summary>
     private void CreateXRNodes(Node sceneRoot)
     {
-        // Create XROrigin3D if not found
         if (_xrOrigin == null)
         {
             _xrOrigin = new XROrigin3D();
@@ -252,7 +235,6 @@ public class GodotVRDriver : IVRDriver, IInputDriver
             global::Godot.GD.Print("GodotVRDriver: Created XROrigin3D");
         }
 
-        // Create XRCamera3D if not found
         if (_xrCamera == null)
         {
             _xrCamera = new XRCamera3D();
@@ -261,7 +243,6 @@ public class GodotVRDriver : IVRDriver, IInputDriver
             global::Godot.GD.Print("GodotVRDriver: Created XRCamera3D");
         }
 
-        // Create left controller if not found
         if (_leftController == null)
         {
             _leftController = new XRController3D();
@@ -271,7 +252,6 @@ public class GodotVRDriver : IVRDriver, IInputDriver
             global::Godot.GD.Print("GodotVRDriver: Created LeftController (left_hand)");
         }
 
-        // Create right controller if not found
         if (_rightController == null)
         {
             _rightController = new XRController3D();
@@ -305,15 +285,10 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         }
     }
 
-    /// <summary>
-    /// Register inputs with the InputInterface.
-    /// Creates TrackedObjects for each body node we track.
-    /// </summary>
     public void RegisterInputs(InputInterface inputInterface)
     {
         _inputInterface = inputInterface;
 
-        // Create TrackedObjects for VR devices
         _headTrackedObject = inputInterface.CreateDevice<TrackedObject>("VR_Head");
         _headTrackedObject.CorrespondingBodyNode = BodyNode.Head;
         _headTrackedObject.Priority = 100; // High priority for actual VR tracking
@@ -326,7 +301,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         _rightControllerTrackedObject.CorrespondingBodyNode = BodyNode.RightController;
         _rightControllerTrackedObject.Priority = 100;
 
-        // Create TrackedObjects for hands (same tracking as controllers for now)
+        // same tracking as controllers for now
         _leftHandTrackedObject = inputInterface.CreateDevice<TrackedObject>("VR_LeftHand");
         _leftHandTrackedObject.CorrespondingBodyNode = BodyNode.LeftHand;
         _leftHandTrackedObject.Priority = 50; // Lower priority than controller
@@ -342,9 +317,6 @@ public class GodotVRDriver : IVRDriver, IInputDriver
 
     private int _debugLogCounter = 0;
 
-    /// <summary>
-    /// Update inputs each frame.
-    /// </summary>
     public void UpdateInputs(float deltaTime)
     {
         if (_inputInterface == null)
@@ -356,10 +328,8 @@ public class GodotVRDriver : IVRDriver, IInputDriver
             return;
         }
 
-        // Update head tracking
         UpdateHeadTracking();
 
-        // Update controller tracking (positions)
         UpdateControllerTracking(_leftControllerTrackedObject, _leftHandTrackedObject, Chirality.Left);
         UpdateControllerTracking(_rightControllerTrackedObject, _rightHandTrackedObject, Chirality.Right);
 
@@ -373,7 +343,6 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         UpdateHandSkeletonTracking(Chirality.Left);
         UpdateHandSkeletonTracking(Chirality.Right);
 
-        // Debug log every 60 frames
         _debugLogCounter++;
         if (_debugLogCounter >= 60)
         {
@@ -698,10 +667,6 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         return new float3(a.x + b.x, a.y + b.y, a.z + b.z);
     }
 
-    /// <summary>
-    /// Update head tracking from HMD.
-    /// Reads the XR server directly; XRCamera3D node transform is a fallback.
-    /// </summary>
     // Scene-node transforms (XRCamera3D/XRController3D.Position) are written
     // during those nodes' own internal process, in tree order - sampling them
     // from the engine runner can read a frame-stale pose while the headset
@@ -749,11 +714,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         _headTrackedObject.TrackingSpace = _inputInterface?.GlobalTrackingSpace!;
     }
 
-    /// <summary>
-    /// Update controller tracking.
-    /// Reads the XR server tracker pose directly; XRController3D node
-    /// transform is a fallback (it can be a frame stale - see UpdateHeadTracking).
-    /// </summary>
+    // XRController3D node transform is a fallback; it can be a frame stale (see UpdateHeadTracking)
     private void UpdateControllerTracking(TrackedObject controllerObj, TrackedObject handObj, Chirality side)
     {
         if (controllerObj == null)
@@ -807,14 +768,13 @@ public class GodotVRDriver : IVRDriver, IInputDriver
             isTracking = true;
         }
 
-        // Update controller tracked object
         controllerObj.RawPosition = position;
         controllerObj.RawRotation = rotation;
         controllerObj.IsTracking = isTracking;
         controllerObj.IsDeviceActive = isTracking;
         controllerObj.TrackingSpace = _inputInterface?.GlobalTrackingSpace!;
 
-        // Update hand tracked object (same position as controller for now)
+        // same position as controller for now
         if (handObj != null)
         {
             handObj.RawPosition = position;
@@ -825,9 +785,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         }
     }
 
-    /// <summary>
-    /// Update VR devices (legacy compatibility with old IVRDriver interface).
-    /// </summary>
+    // legacy compatibility with old IVRDriver interface
     public void UpdateVRDevices(VRController leftController, VRController rightController, HeadDevice headDevice)
     {
         if (!IsVRActive)
@@ -839,7 +797,6 @@ public class GodotVRDriver : IVRDriver, IInputDriver
             return;
         }
 
-        // Update legacy devices for compatibility
         UpdateHeadDevice(headDevice);
         UpdateController(leftController, Chirality.Left);
         UpdateController(rightController, Chirality.Right);
@@ -930,13 +887,11 @@ public class GodotVRDriver : IVRDriver, IInputDriver
             controller.IsDeviceActive = trackedObj.IsDeviceActive;
         }
 
-        // Update controller inputs
         UpdateControllerInputs(controller);
     }
 
     private void UpdateControllerInputs(VRController controller)
     {
-        // Get the appropriate XRController3D
         var xrController = controller.Side == VRControllerSide.Left ? _leftController : _rightController;
         string sideName = controller.Side == VRControllerSide.Left ? "left" : "right";
 
@@ -968,7 +923,6 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         {
             int joyId = controller.Side == VRControllerSide.Left ? 0 : 1;
 
-            // Try to read from joypad
             float joyX = global::Godot.Input.GetJoyAxis(joyId, JoyAxis.LeftX);
             float joyY = global::Godot.Input.GetJoyAxis(joyId, JoyAxis.LeftY);
             if (joyX != 0 || joyY != 0)
@@ -985,7 +939,6 @@ public class GodotVRDriver : IVRDriver, IInputDriver
                 secondaryButton = global::Godot.Input.IsJoyButtonPressed(joyId, JoyButton.B);
         }
 
-        // Apply values to controller
         controller.ThumbstickPosition = new Vector2(thumbstick.X, thumbstick.Y);
         controller.TriggerValue = trigger;
         controller.TriggerPressed = trigger > 0.5f;
@@ -993,11 +946,38 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         controller.GripPressed = grip > 0.5f;
         controller.PrimaryButtonPressed = primaryButton;
         controller.SecondaryButtonPressed = secondaryButton;
+
+        DrainHaptics(controller, xrController);
     }
 
-    /// <summary>
-    /// Shutdown VR system.
-    /// </summary>
+    // Hand any pulse the engine queued this frame to the runtime. Reading it CLEARS it, so a pulse
+    // requested while VR is off or the node is gone is dropped rather than saved up and fired all at
+    // once the moment a headset appears.
+    //
+    // Amplitude 0 means nothing was requested, which is the common case - this runs twice a frame all
+    // session. Frequency 0 hands the choice to the runtime, which is what you want: controllers
+    // disagree wildly about what a usable frequency is and picking one here gets you silence on
+    // hardware that does not do it. -xlinka
+    private static void DrainHaptics(VRController controller, XRController3D? xrController)
+    {
+        var (amplitude, duration, frequency) = controller.GetPendingHaptic();
+        if (amplitude <= 0f || duration <= 0f)
+            return;
+
+        if (xrController == null || !GodotObject.IsInstanceValid(xrController))
+            return;
+
+        xrController.TriggerHapticPulse(
+            HapticActionName,
+            frequency > 0f ? frequency : 0.0,
+            global::System.Math.Clamp(amplitude, 0f, 1f),
+            duration,
+            0.0);
+    }
+
+    // Standard OpenXR output action name; the action map ships it bound on every profile.
+    private const string HapticActionName = "haptic";
+
     public void ShutdownVR()
     {
         if (_trackerAddedConnected)

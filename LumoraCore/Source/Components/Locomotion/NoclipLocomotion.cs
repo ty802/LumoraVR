@@ -45,9 +45,9 @@ public class NoclipLocomotion : SmoothLocomotionBase
         if ((state?.FreeCamActive ?? false) || (state?.DesktopInputSuppressed ?? false))
             return;
 
-        var rawAxis = LocomotionInputHelper.ReadMovementAxis(InputInterface, KeyboardDriver);
+        var rawAxis = LocomotionInputHelper.ReadMovementAxis(InputInterface);
         var axis = LocomotionInputHelper.ApplyDeadzone(rawAxis, MovementDeadzone);
-        float vertical = LocomotionInputHelper.ReadVerticalAxis(InputInterface, KeyboardDriver);
+        float vertical = LocomotionInputHelper.ReadVerticalAxis(InputInterface);
 
         // Full view direction (includes pitch), so looking up flies up - the
         // horizontal+pitch half of the 3-axis move.
@@ -74,7 +74,7 @@ public class NoclipLocomotion : SmoothLocomotionBase
             move = move.Normalized;
 
         float speed = EngineSettings.NoclipSpeed;
-        if (LocomotionInputHelper.ReadSprint(KeyboardDriver))
+        if (LocomotionInputHelper.ReadSprint(InputInterface))
             speed *= SprintMultiplier;
 
         // Scale flight speed with the user's own scale so it feels consistent

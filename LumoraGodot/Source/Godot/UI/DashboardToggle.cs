@@ -17,6 +17,16 @@ public partial class DashboardToggle : Node
 	public static DashboardToggle? Instance => _instance;
 	public static bool IsDashboardVisible { get; private set; }
 
+	// Escape does two jobs: back out of whatever dash screen is up, and close the dash. The first
+	// runs off the raw key event, the second off the rebindable action, and the action's edge can
+	// land a frame later than the event depending on where this node sits in the tree - so a
+	// consumed back-out latches here and eats the next toggle edge instead of racing it. The timeout
+	// covers the case where the toggle was rebound off Escape entirely and no edge ever arrives.
+	// -xlinka
+	private bool _escapeConsumedByScreen;
+	private double _escapeConsumedAge;
+	private const double EscapeConsumeWindow = 0.35;
+
 	public override void _Ready()
 	{
 		base._Ready();
@@ -48,16 +58,22 @@ public partial class DashboardToggle : Node
 
 		if (key.Keycode == Key.Escape)
 		{
+			// Escape inside an open dash backs out of whatever screen is up. Only that part is
+			// handled here; the open/close toggle itself is an action, polled in _Process, so it can
+			// be rebound and so a pad's Start button reaches it too.
 			if (TryGetDashboard(out var escDash) && escDash.IsOpen.Value && escDash.FeedEscape())
 			{
+				_escapeConsumedByScreen = true;
+				_escapeConsumedAge = 0.0;
 				GetViewport()?.SetInputAsHandled();
 				return;
 			}
-			ToggleDashboard();
-			GetViewport()?.SetInputAsHandled();
 			return;
 		}
 
+		// Everything below is the dash search box TYPING, not controls: characters, backspace and
+		// enter belong to whatever field has focus, the same way a text field owns the keyboard
+		// while it is focused. Nothing here is rebindable and nothing here should be.
 		if (TryGetDashboard(out var dash) && dash.IsOpen.Value)
 		{
 			if (key.Keycode == Key.Backspace)
@@ -83,6 +99,24 @@ public partial class DashboardToggle : Node
 
 	public override void _Process(double delta)
 	{
+		// The dash toggle is the one action that must survive its own set being blocked: the menu set
+		// asserts itself while the dash is open, and it sits at the top of the priority order, so it
+		// keeps evaluating and the same control closes what it opened.
+		if (_escapeConsumedByScreen)
+		{
+			_escapeConsumedAge += delta;
+			if (_escapeConsumedAge > EscapeConsumeWindow)
+				_escapeConsumedByScreen = false;
+		}
+
+		if (Lumora.Core.Engine.Current?.InputInterface?.Actions?.Menu.ToggleDashboard.Pressed == true)
+		{
+			if (_escapeConsumedByScreen)
+				_escapeConsumedByScreen = false;
+			else
+				ToggleDashboard();
+		}
+
 		IsDashboardVisible = TryGetDashboard(out var dashboard) && dashboard.IsOpen.Value;
 	}
 

@@ -5,10 +5,6 @@ using System.Collections.Generic;
 
 namespace Lumora.Core.Input;
 
-/// <summary>
-/// Interface for all input devices (mouse, keyboard, controllers, etc.)
-/// Standard input device interface
-/// </summary>
 public interface IInputDevice
 {
     bool IsDeviceActive { get; set; }
@@ -23,10 +19,6 @@ public interface IInputDevice
     void RegisterProperty(ControllerProperty property);
 }
 
-/// <summary>
-/// Base implementation of IInputDevice
-/// Standard input device base class
-/// </summary>
 public class InputDevice : IInputDevice
 {
     private List<ControllerProperty> _properties = new List<ControllerProperty>();

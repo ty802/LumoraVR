@@ -7,15 +7,12 @@ using System.Linq;
 using System.Threading.Tasks;
 using Lumora.Core;
 using Lumora.Core.Components;
+using Lumora.Core.Input.Actions;
 using Lumora.Core.Logging;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Input;
 
-/// <summary>
-/// Central manager for all input devices and drivers.
-/// Manages keyboard, mouse, VR controllers, trackers, and body node tracking.
-/// </summary>
 public class InputInterface : IDisposable
 {
     private class UpdateBucket
@@ -38,18 +35,22 @@ public class InputInterface : IDisposable
     private List<IInputDevice> _inputDevices = new List<IInputDevice>();
     private bool _initialized = false;
 
-    // Body node tracking for avatar and input mapping
     private ITrackedDevice[] _bodyNodes = null!;
 
-    // Input event receivers (for TrackedDevicePositioner etc.)
     private List<IInputUpdateReceiver> _inputReceivers = new List<IInputUpdateReceiver>();
 
-    // Tracking space for VR coordinate transformation
     public TrackingSpace GlobalTrackingSpace { get; private set; } = new TrackingSpace();
 
-    // Standard devices
     public Mouse Mouse { get; private set; } = null!;
     public Keyboard Keyboard { get; private set; } = null!;
+
+    // Present whether or not a pad is plugged in; IsConnected says whether one actually is, so
+    // bindings on it are inert rather than absent.
+    public Gamepad Gamepad { get; private set; } = null!;
+
+    // Everything above the driver layer reads THIS, never a key or a button: which control fires an action is a
+    // user setting, not a fact about the code.
+    public InputBindingMap Actions { get; private set; } = null!;
 
     // VR devices (legacy compatibility)
     public VRController LeftController { get; private set; } = null!;
@@ -139,26 +140,51 @@ public class InputInterface : IDisposable
 
     public void SetDesktopCameraOverride(bool hasOverride) => DesktopCameraHasOverride = hasOverride;
 
-    // Global tracking offset
+    // True while the desktop view is flown by a camera of its own (third-person orbit, free-cam) instead of
+    // riding the local head. Anything that aims with the view has to come off the CAMERA in that state: the
+    // head is parked where mouse look last left it and never moves again until first person comes back.
+    // -xlinka
+    public bool DesktopExternalCameraAim => !IsVRActive && DesktopCameraHasOverride && DesktopCameraPoseValid;
+
+    // World-space aim ray through a point on the desktop view, built from the camera pose + projection the
+    // platform pushes each frame - so it follows whichever camera is actually rendering.
+    public bool TryGetDesktopViewRay(in float2 viewCoord, out float3 origin, out float3 direction)
+    {
+        origin = DesktopCameraPosition;
+        direction = float3.Backward;
+        if (!DesktopCameraPoseValid)
+            return false;
+
+        // Camera looks along its local -Z, so the image plane sits one unit down -Z and the half-extents are
+        // the FOV tangent (vertical) and that times the aspect (horizontal).
+        float tanHalfFov = MathF.Tan(DesktopCameraFovY * 0.5f * (MathF.PI / 180f));
+        var local = new float3(
+            viewCoord.x * tanHalfFov * DesktopViewportAspect,
+            viewCoord.y * tanHalfFov,
+            -1f);
+
+        float3 world = DesktopCameraRotation * local;
+        float length = world.Length;
+        if (length <= 0.0001f)
+            return false;
+
+        direction = world / length;
+        return true;
+    }
+
     public float3 GlobalTrackingOffset { get; set; } = float3.Zero;
     public float3 CustomTrackingOffset { get; set; } = float3.Zero;
 
-    // Driver interfaces
     private IKeyboardDriver _keyboardDriver = null!;
     private IMouseDriver _mouseDriver = null!;
+    private IGamepadDriver _gamepadDriver = null!;
     private List<IVRDriver> _vrDrivers = new List<IVRDriver>();
     private HashSet<string> _loggedBodyNodeAssignments = new HashSet<string>();
 
     public int InputDeviceCount => _inputDevices.Count;
 
-    /// <summary>
-    /// Check if any VR driver is active.
-    /// </summary>
     public bool IsVRActive => _vrDrivers.Any(d => d.IsVRActive);
 
-    /// <summary>
-    /// Get the current head output device type based on VR status.
-    /// </summary>
     public HeadOutputDevice CurrentHeadOutputDevice
     {
         get
@@ -169,11 +195,8 @@ public class InputInterface : IDisposable
         }
     }
 
-    /// <summary>
-    /// Sync tracking-space transform from the focused local user root.
-    /// Called before XR sampling and after output/root updates so raw device poses
-    /// and transformed poses agree on the same user root.
-    /// </summary>
+    // Called before XR sampling and after output/root updates so raw device poses and transformed poses agree
+    // on the same user root.
     public bool SyncTrackingSpaceToFocusedLocalUser()
     {
         UserRoot root = _engine?.WorldManager?.FocusedWorld?.LocalUser?.Root!;
@@ -190,9 +213,6 @@ public class InputInterface : IDisposable
     {
     }
 
-    /// <summary>
-    /// Initialize the input interface asynchronously.
-    /// </summary>
     public async Task InitializeAsync()
     {
         if (_initialized)
@@ -200,18 +220,23 @@ public class InputInterface : IDisposable
 
         _engine = Engine.Current;
 
-        // Initialize body nodes array for tracked device mapping
         InitializeBodyNodes();
 
-        // Create standard input devices
         Keyboard = new Keyboard();
         RegisterInputDevice(Keyboard, "Keyboard");
 
-        // Create VR devices placeholders
         LeftController = new VRController(VRControllerSide.Left);
         RightController = new VRController(VRControllerSide.Right);
         HeadDevice = new HeadDevice();
         MouthDevice = new MouthDevice();
+
+        // The gamepad device exists from the start. A pad plugged in mid-session flips IsConnected
+        // and its bindings come alive; nothing has to be built or rebound at that moment.
+        Gamepad = new Gamepad();
+        RegisterInputDevice(Gamepad, "Gamepad");
+
+        Actions = new InputBindingMap(this);
+        LoadBindingOverrides();
 
         _initialized = true;
 
@@ -219,14 +244,10 @@ public class InputInterface : IDisposable
         Logger.Log("InputInterface: Initialized successfully");
     }
 
-    /// <summary>
-    /// Initialize the body nodes array with default TrackedObjects.
-    /// </summary>
     private void InitializeBodyNodes()
     {
         _bodyNodes = new ITrackedDevice[(int)BodyNode.END];
 
-        // Create default TrackedObject for each body node
         foreach (BodyNode bodyNode in Enum.GetValues(typeof(BodyNode)))
         {
             if (bodyNode == BodyNode.NONE || bodyNode == BodyNode.END)
@@ -246,9 +267,6 @@ public class InputInterface : IDisposable
 
     #region Body Node Access
 
-    /// <summary>
-    /// Get the tracked device for a specific body node.
-    /// </summary>
     public ITrackedDevice GetBodyNode(BodyNode node)
     {
         int index = (int)node;
@@ -257,13 +275,8 @@ public class InputInterface : IDisposable
         return _bodyNodes[index];
     }
 
-    /// <summary>
-    /// Update body node assignment from tracked devices.
-    /// Called during input update to assign devices to body nodes based on priority.
-    /// </summary>
     private void UpdateBodyNodeAssignments()
     {
-        // Reset to default tracked objects first
         foreach (BodyNode bodyNode in Enum.GetValues(typeof(BodyNode)))
         {
             if (bodyNode == BodyNode.NONE || bodyNode == BodyNode.END)
@@ -272,7 +285,6 @@ public class InputInterface : IDisposable
             int index = (int)bodyNode;
             if (index >= 0 && index < _bodyNodes.Length)
             {
-                // Check if current device is still the best choice
                 var current = _bodyNodes[index];
                 if (current != null && current is TrackedObject defaultObj)
                 {
@@ -282,7 +294,6 @@ public class InputInterface : IDisposable
             }
         }
 
-        // Assign tracked devices to body nodes based on priority
         foreach (var device in _inputDevices)
         {
             if (device is ITrackedDevice trackedDevice &&
@@ -311,7 +322,6 @@ public class InputInterface : IDisposable
             }
         }
 
-        // Also update from VR devices (legacy compatibility)
         UpdateBodyNodeFromVRDevice(HeadDevice, BodyNode.Head);
         UpdateBodyNodeFromVRDevice(LeftController, BodyNode.LeftController);
         UpdateBodyNodeFromVRDevice(RightController, BodyNode.RightController);
@@ -326,7 +336,6 @@ public class InputInterface : IDisposable
         if (index < 0 || index >= _bodyNodes.Length)
             return;
 
-        // Create or update TrackedObject for this body node from VR device
         if (_bodyNodes[index] is TrackedObject trackedObj)
         {
             if (device is HeadDevice head)
@@ -345,7 +354,6 @@ public class InputInterface : IDisposable
                 trackedObj.IsDeviceActive = true;
                 trackedObj.TrackingSpace = GlobalTrackingSpace;
 
-                // Also update hand body nodes
                 var handNode = node == BodyNode.LeftController ? BodyNode.LeftHand : BodyNode.RightHand;
                 int handIndex = (int)handNode;
                 if (handIndex >= 0 && handIndex < _bodyNodes.Length && _bodyNodes[handIndex] is TrackedObject handObj)
@@ -364,9 +372,6 @@ public class InputInterface : IDisposable
 
     #region Input Update Receivers
 
-    /// <summary>
-    /// Register an input event receiver for before/after input updates.
-    /// </summary>
     public void RegisterInputEventReceiver(IInputUpdateReceiver receiver)
     {
         if (!_inputReceivers.Contains(receiver))
@@ -375,9 +380,6 @@ public class InputInterface : IDisposable
         }
     }
 
-    /// <summary>
-    /// Unregister an input event receiver.
-    /// </summary>
     public void UnregisterInputEventReceiver(IInputUpdateReceiver receiver)
     {
         _inputReceivers.Remove(receiver);
@@ -387,21 +389,16 @@ public class InputInterface : IDisposable
 
     #region Driver Registration
 
-    /// <summary>
-    /// Register a generic input driver (for VR controllers, gamepads, etc.)
-    /// </summary>
     public void RegisterInputDriver(IInputDriver driver)
     {
         _inputDrivers.Add(driver);
         driver.RegisterInputs(this);
 
-        // Find or create UpdateBucket for this driver's order
         UpdateBucket bucket = _inputDriverUpdateBuckets.FirstOrDefault(b => b.Order == driver.UpdateOrder)!;
         if (bucket == null)
         {
             bucket = new UpdateBucket(driver.UpdateOrder);
             _inputDriverUpdateBuckets.Add(bucket);
-            // Keep buckets sorted by order
             _inputDriverUpdateBuckets.Sort((a, b) => a.Order.CompareTo(b.Order));
         }
         bucket.InputDrivers.Add(driver);
@@ -409,9 +406,6 @@ public class InputInterface : IDisposable
         Logger.Log($"InputInterface: Registered driver with UpdateOrder {driver.UpdateOrder}");
     }
 
-    /// <summary>
-    /// Register the keyboard driver
-    /// </summary>
     public void RegisterKeyboardDriver(IKeyboardDriver keyboardDriver)
     {
         if (_keyboardDriver != null)
@@ -421,9 +415,6 @@ public class InputInterface : IDisposable
         Logger.Log("InputInterface: Keyboard driver registered");
     }
 
-    /// <summary>
-    /// Register the mouse driver and create the Mouse device
-    /// </summary>
     public void RegisterMouseDriver(IMouseDriver mouseDriver)
     {
         if (_mouseDriver != null)
@@ -436,9 +427,18 @@ public class InputInterface : IDisposable
         Logger.Log("InputInterface: Mouse driver registered");
     }
 
-    /// <summary>
-    /// Register an input device (mouse, controller, etc.)
-    /// </summary>
+    // Optional: with no driver the Gamepad device never connects and every pad binding stays inert.
+    public void RegisterGamepadDriver(IGamepadDriver gamepadDriver)
+    {
+        if (_gamepadDriver != null)
+            throw new InvalidOperationException("Gamepad Driver already registered!");
+
+        _gamepadDriver = gamepadDriver;
+        Logger.Log("InputInterface: Gamepad driver registered");
+    }
+
+    public IGamepadDriver GetGamepadDriver() => _gamepadDriver;
+
     public void RegisterInputDevice(IInputDevice device, string name)
     {
         int deviceIndex = _inputDevices.Count;
@@ -448,9 +448,6 @@ public class InputInterface : IDisposable
         Logger.Log($"InputInterface: Registered device '{name}' (index {deviceIndex})");
     }
 
-    /// <summary>
-    /// Create and register a new device of the specified type.
-    /// </summary>
     public T CreateDevice<T>(string name) where T : IInputDevice, new()
     {
         var device = new T();
@@ -458,16 +455,12 @@ public class InputInterface : IDisposable
         return device;
     }
 
-    /// <summary>
-    /// Register a VR driver.
-    /// </summary>
     public void RegisterVRDriver(IVRDriver vrDriver)
     {
         if (!_vrDrivers.Contains(vrDriver))
         {
             _vrDrivers.Add(vrDriver);
 
-            // Register VR devices if not already registered
             if (!_inputDevices.Contains(LeftController))
             {
                 RegisterInputDevice(LeftController, "LeftController");
@@ -492,9 +485,6 @@ public class InputInterface : IDisposable
 
     #region Update Loop
 
-    /// <summary>
-    /// Process all input for the current frame.
-    /// </summary>
     public void ProcessInput(double deltaTime)
     {
         if (!_initialized)
@@ -503,15 +493,10 @@ public class InputInterface : IDisposable
         UpdateInputs((float)deltaTime);
     }
 
-    /// <summary>
-    /// Update all input drivers and devices.
-    /// Calls before/after input receiver callbacks.
-    /// </summary>
     public void UpdateInputs(float deltaTime)
     {
         SyncTrackingSpaceToFocusedLocalUser();
 
-        // Update drivers in order by their UpdateOrder buckets
         foreach (var bucket in _inputDriverUpdateBuckets)
         {
             foreach (var driver in bucket.InputDrivers)
@@ -520,32 +505,88 @@ public class InputInterface : IDisposable
             }
         }
 
-        // Update mouse through driver
         if (_mouseDriver != null && Mouse != null)
         {
             _mouseDriver.UpdateMouse(Mouse);
         }
 
-        // Update keyboard through driver
         if (_keyboardDriver != null && Keyboard != null)
         {
             _keyboardDriver.UpdateKeyboard(Keyboard);
         }
 
-        // Update VR devices through drivers
         foreach (var vrDriver in _vrDrivers)
         {
             vrDriver.UpdateVRDevices(LeftController, RightController, HeadDevice);
         }
 
-        // Update body node assignments from all tracked devices
+        if (_gamepadDriver != null && Gamepad != null)
+        {
+            _gamepadDriver.UpdateGamepad(Gamepad, deltaTime);
+        }
+
         UpdateBodyNodeAssignments();
+
+        // Actions resolve AFTER every device has this frame's hardware and BEFORE anything reads
+        // them, so a receiver and a component update in the same frame agree on what was pressed.
+        UpdateActionGates();
+        Actions?.Evaluate(deltaTime);
 
         // Call BeforeInputUpdate on all receivers (TrackedDevicePositioner updates slots here)
         DispatchInputReceivers(before: true);
 
-        // Call AfterInputUpdate on all receivers
         DispatchInputReceivers(before: false);
+    }
+
+    // Decide which action sets are live this frame.
+    // The dashboard asserting the menu set is the whole of "the dash stops you walking": locomotion
+    // sits below it in priority, so it stops evaluating and every module underneath reads a resting
+    // stick without knowing a panel is up.
+    //
+    // The per-user suppression requesters (free-cam, a tool holding the cursor, the radial menu)
+    // stay where they are rather than becoming gates. They are finer-grained than a whole set -
+    // the radial menu freezes MOUSE LOOK but deliberately leaves walking alive - and folding them
+    // in here would flatten that distinction. -xlinka
+    private void UpdateActionGates()
+    {
+        var actions = Actions;
+        if (actions == null)
+            return;
+
+        // A focused text field owns the keyboard outright. Only the keyboard: a controller still
+        // works while somebody types.
+        actions.TextFocusHeld = Helio.UI.TextInput.Focused != null;
+
+        actions.Menu.Set.Asserting = IsDashboardOpen;
+    }
+
+    private void LoadBindingOverrides()
+    {
+        try
+        {
+            InputBindingStore.Apply(Actions, Settings.ReadValue<string>(InputBindingStore.SettingsKey, string.Empty));
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"InputInterface: failed to load control bindings, using defaults: {ex.Message}");
+        }
+    }
+
+    // Write the current bindings to disk now.
+    // Bindings save on change rather than on exit like the rest of the settings. A rebind you cannot
+    // undo because you rebound the key that reaches the menu is a trap, and "preview until you quit"
+    // is the wrong model for the thing you press to quit. -xlinka
+    public void SaveBindingOverrides()
+    {
+        try
+        {
+            if (Actions != null)
+                Settings.WriteValue(InputBindingStore.SettingsKey, InputBindingStore.Serialize(Actions));
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"InputInterface: failed to save control bindings: {ex.Message}");
+        }
     }
 
     private void DispatchInputReceivers(bool before)
@@ -690,33 +731,28 @@ public class InputInterface : IDisposable
 
     #region Disposal
 
-    /// <summary>
-    /// Dispose of the input interface and clean up resources.
-    /// </summary>
     public void Dispose()
     {
         if (!_initialized)
             return;
 
-        // Clear input receivers
         _inputReceivers.Clear();
 
-        // Clear all drivers
         _inputDrivers.Clear();
         _inputDriverUpdateBuckets.Clear();
         _vrDrivers.Clear();
 
-        // Clear devices
         _inputDevices.Clear();
 
-        // Clear body nodes
         _bodyNodes = null!;
 
-        // Clear references
         _keyboardDriver = null!;
         _mouseDriver = null!;
+        _gamepadDriver = null!;
+        Actions = null!;
         Mouse = null!;
         Keyboard = null!;
+        Gamepad = null!;
         LeftController = null!;
         RightController = null!;
         HeadDevice = null!;

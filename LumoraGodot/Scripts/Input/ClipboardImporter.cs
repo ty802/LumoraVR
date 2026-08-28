@@ -19,10 +19,6 @@ using LumoraMeshes = Lumora.Core.Components.Meshes;
 
 namespace Lumora.Godot.Input;
 
-/// <summary>
-/// Handles clipboard paste operations for importing assets.
-/// Detects file paths, URLs, and file data from clipboard.
-/// </summary>
 public partial class ClipboardImporter : Node
 {
     private static readonly HashSet<string> ClipboardModelExtensions = new(ModelImporter.SupportedExtensions, StringComparer.OrdinalIgnoreCase);
@@ -50,16 +46,12 @@ public partial class ClipboardImporter : Node
     private Camera3D _camera = null!;
     private Lumora.Core.Engine _engine = null!;
 
-    /// <summary>
-    /// Event fired when an asset is imported from clipboard.
-    /// </summary>
     public event Action<string, Slot> OnAssetImported = null!;
 
     public override void _Ready()
     {
         GD.Print("ClipboardImporter: Ready");
 
-        // Connect to files dropped signal for drag & drop
         GetTree().Root.FilesDropped += OnFilesDropped;
     }
 
@@ -69,12 +61,9 @@ public partial class ClipboardImporter : Node
         base._ExitTree();
     }
 
-    /// <summary>
-    /// Handle files dropped onto the window (drag & drop).
-    /// Routes through UniversalImporter so the matching import dialog (Image/Model/
-    /// Video/Folder) appears at the user's view, rather than auto-importing silently.
-    /// - xlinka
-    /// </summary>
+    // Routes through UniversalImporter so the matching import dialog (Image/Model/
+    // Video/Folder) appears at the user's view, rather than auto-importing silently.
+    // - xlinka
     private async void OnFilesDropped(string[] files)
     {
         GD.Print($"ClipboardImporter: {files.Length} file(s) dropped");
@@ -115,9 +104,6 @@ public partial class ClipboardImporter : Node
         return (float3.Zero, floatQ.Identity);
     }
 
-    /// <summary>
-    /// Initialize the clipboard importer.
-    /// </summary>
     public void Initialize(LocalDB localDB, Slot targetSlot, Camera3D camera)
     {
         _localDB = localDB;
@@ -125,9 +111,6 @@ public partial class ClipboardImporter : Node
         _camera = camera;
     }
 
-    /// <summary>
-    /// Set the engine reference for dynamic slot lookup.
-    /// </summary>
     public void SetEngine(Lumora.Core.Engine engine)
     {
         _engine = engine;
@@ -189,6 +172,7 @@ public partial class ClipboardImporter : Node
                 ImportEmissive = r.ImportEmissive,
                 ForceNoMipMaps = r.ForceNoMipMaps,
                 MaxTextureSize = r.MaxTextureSize,
+                ImportAnimations = r.ImportAnimations,
                 IsAvatarImport = isAvatar,
                 SetupIK = isAvatar,
             };
@@ -215,21 +199,14 @@ public partial class ClipboardImporter : Node
         }
     }
 
-    /// <summary>
-    /// Get the target slot, falling back to focused world root if not set.
-    /// </summary>
     private Slot GetTargetSlot()
     {
         if (_targetSlot != null)
             return _targetSlot;
 
-        // Try to get from focused world
         return _engine?.WorldManager?.FocusedWorld?.RootSlot!;
     }
 
-    /// <summary>
-    /// Set the target slot for imports.
-    /// </summary>
     public void SetTargetSlot(Slot slot)
     {
         _targetSlot = slot;
@@ -240,9 +217,7 @@ public partial class ClipboardImporter : Node
     // clipboard bridge. We deliberately don't self-trigger paste here to avoid a
     // double import. Drag & drop (OnFilesDropped) is still handled directly. - xlinka
 
-    /// <summary>
-    /// Get files from Windows clipboard (when files are copied with Ctrl+C in Explorer).
-    /// </summary>
+    // files copied with Ctrl+C in Explorer land here
     private List<string> GetClipboardFiles()
     {
         var files = new List<string>();
@@ -265,12 +240,10 @@ public partial class ClipboardImporter : Node
                 if (hDrop == IntPtr.Zero)
                     return files;
 
-                // Get number of files
                 uint fileCount = DragQueryFile(hDrop, 0xFFFFFFFF, null!, 0);
 
                 for (uint i = 0; i < fileCount; i++)
                 {
-                    // Get required buffer size
                     uint size = DragQueryFile(hDrop, i, null!, 0) + 1;
                     var sb = new StringBuilder((int)size);
                     DragQueryFile(hDrop, i, sb, size);
@@ -290,14 +263,10 @@ public partial class ClipboardImporter : Node
         return files;
     }
 
-    /// <summary>
-    /// Handle paste from clipboard.
-    /// </summary>
     public async void HandlePaste()
     {
         GD.Print("ClipboardImporter: Handling paste...");
 
-        // Check for Windows clipboard files first (copied from Explorer with Ctrl+C)
         var clipboardFiles = GetClipboardFiles();
         if (clipboardFiles.Count > 0)
         {
@@ -310,7 +279,6 @@ public partial class ClipboardImporter : Node
             return;
         }
 
-        // Check for clipboard image (e.g., screenshot, copied image)
         if (DisplayServer.ClipboardHasImage())
         {
             GD.Print("ClipboardImporter: Found image in clipboard");
@@ -318,7 +286,6 @@ public partial class ClipboardImporter : Node
             return;
         }
 
-        // Check for text (file path or URL)
         var clipboardText = DisplayServer.ClipboardGet();
 
         if (string.IsNullOrEmpty(clipboardText))
@@ -329,7 +296,6 @@ public partial class ClipboardImporter : Node
 
         GD.Print($"ClipboardImporter: Clipboard text: {clipboardText.Substring(0, System.Math.Min(100, clipboardText.Length))}...");
 
-        // Detect what type of content is in the clipboard
         var contentType = DetectContentType(clipboardText);
 
         switch (contentType)
@@ -364,13 +330,11 @@ public partial class ClipboardImporter : Node
     {
         content = NormalizeFilePath(content);
 
-        // Check for file path
         if (IsFilePath(content))
         {
             return ClipboardContentType.FilePath;
         }
 
-        // Check for URL
         if (content.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
             content.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
         {
@@ -396,7 +360,6 @@ public partial class ClipboardImporter : Node
             return File.Exists(content) || Directory.Exists(content);
         }
 
-        // Check common file extensions
         foreach (var ext in ClipboardModelExtensions)
         {
             if (content.EndsWith(ext, StringComparison.OrdinalIgnoreCase))
@@ -462,9 +425,6 @@ public partial class ClipboardImporter : Node
         return Task.CompletedTask;
     }
 
-    /// <summary>
-    /// Handle image data from clipboard (e.g., screenshots, copied images).
-    /// </summary>
     private Task HandleClipboardImage()
     {
         var image = DisplayServer.ClipboardGetImage();
@@ -541,6 +501,33 @@ public partial class ClipboardImporter : Node
 
         GD.Print($"ClipboardImporter: Image populated with visual components from {localUri ?? filePath}");
         OnAssetImported?.Invoke(filePath, imageSlot);
+
+        QueueTextureVariants(localUri, imageProvider.IsNormalMap.Value);
+    }
+
+    // Deliberately not awaited. Decoding a large image and filtering four mip chains off it is
+    // hundreds of milliseconds of CPU that would otherwise be added to how long the user waits for
+    // their picture to appear, for a benefit that is entirely about LATER loads. The material binds
+    // the base asset immediately and keeps using it; the next load of this texture - this session
+    // or a future one - is the first that can pick up a variant. -xlinka
+    private static void QueueTextureVariants(string? localUri, bool isNormalMap)
+    {
+        var db = Lumora.Core.Engine.Current?.LocalDB;
+        if (db == null || string.IsNullOrEmpty(localUri))
+            return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await TextureVariantStore.GenerateAsync(db, localUri!, isNormalMap).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                // Variants are an optimization; a failure here must never make the import look broken.
+                GD.PrintErr($"ClipboardImporter: texture variant generation failed for {localUri}: {ex.Message}");
+            }
+        });
     }
 
     public async Task PopulateModelSlotAsync(Slot slot, string filePath, bool isAvatar, ModelImportSettings? settings = null)
@@ -586,17 +573,14 @@ public partial class ClipboardImporter : Node
     {
         GD.Print($"ClipboardImporter: Handling URL: {url}");
 
-        // Determine file type from URL
         var extension = GetExtensionFromUrl(url);
 
         if (string.IsNullOrEmpty(extension))
         {
-            // Need to fetch to determine content type
             await FetchAndImport(url);
             return;
         }
 
-        // Download the file first
         var tempPath = await DownloadFile(url);
         if (!string.IsNullOrEmpty(tempPath))
         {
@@ -682,11 +666,9 @@ public partial class ClipboardImporter : Node
 
     private async Task FetchAndImport(string url)
     {
-        // Download and detect content type from response headers
         var tempPath = await DownloadFile(url);
         if (!string.IsNullOrEmpty(tempPath))
         {
-            // Try to detect file type from magic bytes
             var extension = DetectFileTypeFromHeader(tempPath);
             if (!string.IsNullOrEmpty(extension))
             {
@@ -815,9 +797,6 @@ public partial class ClipboardImporter : Node
         OnAssetImported?.Invoke(filePath, rootSlot);
     }
 
-    /// <summary>
-    /// Position a slot in front of the camera and face it toward the camera.
-    /// </summary>
     private void PositionInFrontOfCamera(Slot slot, float distance = 2.0f)
     {
         if (slot == null)

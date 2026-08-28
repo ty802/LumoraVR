@@ -6,14 +6,9 @@ using Lumora.Core;
 using Lumora.Core.Math;
 using Lumora.Core.Input;
 using LumoraLogger = Lumora.Core.Logging.Logger;
-using EngineKey = Lumora.Core.Input.Key;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Manages user movement via input drivers and CharacterController.
-/// Reads input and calculates movement direction.
-/// </summary>
 [ComponentCategory("Users")]
 public class LocomotionController : Component
 {
@@ -50,7 +45,6 @@ public class LocomotionController : Component
     private float _yaw = 0.0f;
     private float _crouchBlend = 1.0f;   // smoothed eye-height fraction (1 standing .. CrouchHeight/StandingHeight)
     private bool _mouseCaptured = false;
-    private bool _escapeWasPressed = false;
     private bool _initialized = false;
     private bool _loggedMissingUserRoot = false;
     private bool _loggedActiveUserState = false;
@@ -152,11 +146,9 @@ public class LocomotionController : Component
             return;
         if (!ScalingEnabled.Value)
             return;
-        if (_keyboardDriver == null
-            || (!_keyboardDriver.GetKeyState(EngineKey.LeftControl) && !_keyboardDriver.GetKeyState(EngineKey.RightControl)))
-            return;
 
-        float scroll = _mouse?.ScrollWheelDelta.Value ?? 0f;
+        // The modifier is part of the binding now (stock: ctrl + wheel), so this is one read.
+        float scroll = _inputInterface.Actions?.Locomotion.ScaleUser.Value ?? 0f;
         if (scroll == 0f)
             return;
 
@@ -231,6 +223,9 @@ public class LocomotionController : Component
     private void EnsureDefaultModules()
     {
         Slot.GetOrAttachComponent<PhysicalLocomotion>();
+        // Attach order IS list order, and the default pick is the first usable entry - Walk has to stay
+        // first or every user spawns into blink.
+        Slot.GetOrAttachComponent<BlinkLocomotion>();
         Slot.GetOrAttachComponent<NoclipLocomotion>();
         Slot.GetOrAttachComponent<NullLocomotionModule>();
 
@@ -239,23 +234,47 @@ public class LocomotionController : Component
             _modules.Add(m);
     }
 
-    // First module in list order that is both eligible (CanActivate) and permitted (world-mode gate). Mirrors
-    // the gate ActivateModule enforces, so a denied module (e.g. noclip in a locked world) is never picked. -xlinka
+    // Whether a module is both internally eligible (CanActivate) and permitted right now (world-mode
+    // gate). Public so UI (the Settings locomotion picker) can grey out a denied module without
+    // duplicating the permission check ActivateModule itself enforces.
+    public bool IsModuleUsable(LocomotionModule module) => module != null && module.CanActivate() && Permissions.CanUseLocomotion(module);
+
+    // First module in list order that is usable. Mirrors the gate ActivateModule enforces, so a denied
+    // module (e.g. noclip in a locked world) is never picked. -xlinka
     private LocomotionModule? FirstUsableModule()
     {
         for (int i = 0; i < _modules.Count; i++)
         {
-            if (_modules[i].CanActivate() && Permissions.CanUseLocomotion(_modules[i]))
+            if (IsModuleUsable(_modules[i]))
                 return _modules[i];
         }
         return null;
     }
 
-    // Spawn in the default (first usable) module. Locomotion mode is session state,
-    // not a persisted setting - the user opts into noclip/fly per session.
+    // A persisted preference (set from the Settings screen's locomotion picker) overrides the plain
+    // first-usable pick when it still names a usable module by DisplayName - a stale name (renamed
+    // module, or denied by the current world's permission gate) just falls through to the default so
+    // spawn never strands the user on a mode it can't grant.
+    private LocomotionModule? PreferredOrDefaultModule()
+    {
+        string preferred = EngineSettings.PreferredLocomotion;
+        if (!string.IsNullOrEmpty(preferred))
+        {
+            for (int i = 0; i < _modules.Count; i++)
+            {
+                var module = _modules[i];
+                if (string.Equals(module.DisplayName, preferred, StringComparison.OrdinalIgnoreCase) && IsModuleUsable(module))
+                    return module;
+            }
+        }
+        return FirstUsableModule();
+    }
+
+    // Spawn in the preferred module if one is set and still usable, otherwise the default
+    // (first usable) module.
     private void ActivateDefaultModule()
     {
-        var pick = FirstUsableModule();
+        var pick = PreferredOrDefaultModule();
         if (pick != null && pick != _activeModule)
             ActivateModule(pick);
     }
@@ -293,15 +312,15 @@ public class LocomotionController : Component
 
     private void HandleMouseLook(float delta)
     {
-        // Check for Escape to toggle mouse capture (only on key press, not hold)
-        bool escapePressed = _keyboardDriver != null && _keyboardDriver.GetKeyState(EngineKey.Escape);
-        if (escapePressed && !_escapeWasPressed)
+        // Release/recapture the cursor. The action's own edge replaces the local was-pressed latch,
+        // and because it lives in the locomotion set it stays quiet while the dashboard is up - the
+        // same key closes the dash there instead of also unlocking the mouse behind it.
+        if (_inputInterface.Actions?.Locomotion.ToggleMouseCapture.Pressed == true)
         {
             _mouseCaptured = !_mouseCaptured;
             _inputState?.SetMouseCaptureRequested(_mouseCaptured);
             LumoraLogger.Log($"[LocomotionController] Mouse capture toggled: {_mouseCaptured}");
         }
-        _escapeWasPressed = escapePressed;
 
         bool freeCam = _inputState?.FreeCamActive ?? false;
         bool lookSuppressed = _inputState?.MouseLookSuppressed ?? false;
@@ -398,7 +417,8 @@ public class LocomotionController : Component
                 : new float3(0.25f, 1.0f, 0f);
 
             SetIfChanged(rightController.LocalPosition, targetPos);
-            SetIfChanged(rightController.LocalRotation, targetRot);
+            if (!TryAimHandAtLaserTarget(rightController, dt))
+                SetIfChanged(rightController.LocalRotation, targetRot);
         }
 
         var leftController = ResolveControllerSlot(ref _leftControllerSlot, Input.BodyNode.LeftController);
@@ -412,6 +432,52 @@ public class LocomotionController : Component
     private Slot? _leftControllerSlot;
     private Slot? _rightControllerSlot;
     private UI.ContextMenuSystem? _contextMenuCache;
+    private Interaction.InteractionLaser? _rightLaserCache;
+
+    // Rate the pointing hand eases onto the view's aim, in 1/s. Fast enough that the beam lands where you are
+    // looking within a couple of frames, slow enough that a flick of the mouse doesn't snap the arm.
+    private const float HandAimSmoothing = 10f;
+
+    // Point the pointing hand at whatever the view is aimed at while an external camera is up (F5/F6). The
+    // mouse drives the CAMERA in those modes and head look is frozen, so the mouse-pitch rest pose leaves the
+    // hand aimed at wherever the head last looked while the beam has to leave it toward the crosshair's
+    // target. Take the rotation that carries the laser's own forward onto the hand->target direction and apply
+    // it to the controller: the laser rides the controller rigidly, so that is exact in one step rather than a
+    // frame-by-frame chase. Work in the parent's frame so body turn and walking don't read as aim error, then
+    // ease in. Left hand keeps its rest pose, and VR never reaches here (UpdateHead bails on a tracked head).
+    // -xlinka
+    private bool TryAimHandAtLaserTarget(Slot controller, float delta)
+    {
+        if (_inputState?.ExternalCameraActive != true)
+            return false;
+
+        var parent = controller.Parent;
+        if (parent == null)
+            return false;
+
+        if (_rightLaserCache == null || _rightLaserCache.IsDestroyed)
+            _rightLaserCache = controller.GetComponentInChildren<Interaction.InteractionLaser>();
+
+        var laser = _rightLaserCache;
+        var laserSlot = laser?.Slot;
+        if (laser == null || laserSlot == null || !laser.HasAimPoint)
+            return false;
+
+        float3 toTarget = laser.AimPoint - laserSlot.GlobalPosition;
+        if (toTarget.LengthSquared <= 1e-6f)
+            return false;
+
+        float3 wanted = parent.GlobalDirectionToLocal(toTarget.Normalized);
+        float3 current = parent.GlobalDirectionToLocal(laserSlot.GlobalRotation * float3.Backward);
+        if (wanted.LengthSquared <= 1e-6f || current.LengthSquared <= 1e-6f)
+            return false;
+
+        floatQ aimed = Avatar.IK.FabrikSolver.FromToRotation(current.Normalized, wanted.Normalized)
+            * controller.LocalRotation.Value;
+        float t = System.Math.Clamp(1f - MathF.Exp(-HandAimSmoothing * MathF.Max(delta, 0f)), 0f, 1f);
+        SetIfChanged(controller.LocalRotation, floatQ.Slerp(controller.LocalRotation.Value, aimed.Normalized, t));
+        return true;
+    }
 
     private Slot? ResolveControllerSlot(ref Slot? cache, Input.BodyNode node)
     {
@@ -440,9 +506,6 @@ public class LocomotionController : Component
             field.Value = value;
     }
 
-    /// <summary>
-    /// Apply a snap turn by modifying internal yaw (for VR snap turns).
-    /// </summary>
     public void ApplySnapTurn(float deltaYaw)
     {
         _yaw += deltaYaw;
@@ -456,10 +519,6 @@ public class LocomotionController : Component
         SetRootRotation((floatQ.AxisAngle(float3.Up, deltaYaw) * Slot.GlobalRotation).Normalized);
     }
 
-    /// <summary>
-    /// Compute horizontal movement basis using head tracking if available, otherwise fall back to yaw.
-    /// Movement is always on the horizontal plane in the direction the head is facing.
-    /// </summary>
     public void GetMovementBasis(out float3 forward, out float3 right)
     {
         if (_userRoot != null && _userRoot.HeadSlot != null)
@@ -506,15 +565,9 @@ public class LocomotionController : Component
         _activeModule.ActivateInternal(this);
     }
 
-    /// <summary>
-    /// Expose CharacterController for modules.
-    /// </summary>
     public CharacterController CharacterController => _characterController;
 
-    /// <summary>
-    /// Expose the controlled UserRoot for modules that move the rig directly
-    /// (e.g. noclip flight bypasses the character controller).
-    /// </summary>
+    // noclip flight bypasses the character controller and moves the rig directly
     public UserRoot UserRoot => _userRoot;
 
     // CLEANUP

@@ -71,7 +71,7 @@ public class PhysicalLocomotion : SmoothLocomotionBase
 
     private void ApplyMovement()
     {
-        var rawAxis = LocomotionInputHelper.ReadMovementAxis(InputInterface, KeyboardDriver);
+        var rawAxis = LocomotionInputHelper.ReadMovementAxis(InputInterface);
         if (ExclusiveAxisMode)
             rawAxis = LocomotionInputHelper.SnapToDominantAxis(rawAxis);
         var axis = LocomotionInputHelper.ApplyDeadzone(rawAxis, MovementDeadzone);
@@ -95,19 +95,19 @@ public class PhysicalLocomotion : SmoothLocomotionBase
 
     private void ApplyActions()
     {
-        bool jumpPressed = LocomotionInputHelper.ReadJump(InputInterface, KeyboardDriver);
+        bool jumpPressed = LocomotionInputHelper.ReadJump(InputInterface);
         if (jumpPressed && !_wasJumpPressed && !_isCrouching)
             _characterController.RequestJump();
         _wasJumpPressed = jumpPressed;
 
-        bool crouchPressed = LocomotionInputHelper.ReadCrouch(KeyboardDriver);
+        bool crouchPressed = LocomotionInputHelper.ReadCrouch(InputInterface);
         if (crouchPressed != _isCrouching)
         {
             _isCrouching = crouchPressed;
             _characterController.SetCrouching(_isCrouching);
         }
 
-        bool sprintPressed = LocomotionInputHelper.ReadSprint(KeyboardDriver);
+        bool sprintPressed = LocomotionInputHelper.ReadSprint(InputInterface);
         bool wantsSprint = sprintPressed && !_isCrouching;
         if (wantsSprint != _isSprinting)
         {

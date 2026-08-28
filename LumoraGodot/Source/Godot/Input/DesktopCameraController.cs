@@ -10,16 +10,12 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Source.Godot.Input;
 
-/// <summary>
-/// Desktop camera modes:
-///   F5 - third-person orbit (mouse orbits camera around character; press again for first-person)
-///   F6 - free-cam fly      (WASD+mouse, character frozen; press again for first-person)
-///
-/// There is ONE rendering camera (the HeadOutput screen camera). Each mode just feeds it a pose
-/// via HeadOutput's position/rotation override - it never spawns its own camera. That keeps a single
-/// source of truth for "the active camera", so the dashboard, cursor ray and laser (which all track
-/// the HeadOutput camera) follow the view in every mode. First-person = clear the override.
-/// </summary>
+// Desktop camera modes: F5 = third-person orbit (mouse orbits camera around character; press again
+// for first-person), F6 = free-cam fly (WASD+mouse, character frozen; press again for first-person).
+// There is ONE rendering camera (the HeadOutput screen camera); each mode just feeds it a pose via
+// HeadOutput's position/rotation override, it never spawns its own camera. That keeps a single
+// source of truth for "the active camera", so the dashboard, cursor ray and laser (which all track
+// the HeadOutput camera) follow the view in every mode. First-person = clear the override.
 public partial class DesktopCameraController : Node
 {
     public enum CameraMode { FirstPerson, ThirdPerson, FreeCam }
@@ -52,8 +48,6 @@ public partial class DesktopCameraController : Node
     public static CameraMode ActiveMode { get; private set; } = CameraMode.FirstPerson;
 
     private CameraMode _mode      = CameraMode.FirstPerson;
-    private bool       _f5WasDown;
-    private bool       _f6WasDown;
 
     // Third-person orbit (values in radians)
     private float   _tpDistance = TpDefaultDistance;
@@ -82,11 +76,8 @@ public partial class DesktopCameraController : Node
         CreateFreeCamIndicator();
     }
 
-    /// <summary>
-    /// Clear any active camera override and clean up the freecam indicator (parented under the scene
-    /// root). Without this, the camera could stay stuck in an override pose and every F8 cycle would
-    /// leak an indicator into the scene tree. - xlinka
-    /// </summary>
+    // Without this, the camera could stay stuck in an override pose and every F8 cycle would leak
+    // an indicator into the scene tree. - xlinka
     public override void _ExitTree()
     {
         _headOutput?.ClearPositionOverride();
@@ -107,7 +98,6 @@ public partial class DesktopCameraController : Node
             _freeCamIndicator = new Node3D { Name = "FreeCamIndicator" };
             _freeCamIndicator.Visible = false;
 
-            // Glowing sphere
             var mesh = new MeshInstance3D();
             mesh.Layers = FreeCamIndicatorLayer;
             mesh.Mesh = new SphereMesh { Radius = 0.18f, Height = 0.36f };
@@ -120,7 +110,6 @@ public partial class DesktopCameraController : Node
             mesh.MaterialOverride = mat;
             _freeCamIndicator.AddChild(mesh);
 
-            // Billboard username label above the sphere
             _freeCamLabel = new Label3D
             {
                 Name        = "UsernameLabel",
@@ -150,23 +139,38 @@ public partial class DesktopCameraController : Node
 
     public override void _Process(double delta)
     {
-        bool f5Down = global::Godot.Input.IsKeyPressed(Key.F5);
-        bool f6Down = global::Godot.Input.IsKeyPressed(Key.F6);
+        var camera = Lumora.Core.Engine.Current?.InputInterface?.Actions?.Camera;
+        if (camera != null)
+        {
+            if (camera.ThirdPerson.Pressed)
+                SwitchMode(_mode == CameraMode.ThirdPerson ? CameraMode.FirstPerson : CameraMode.ThirdPerson);
 
-        if (f5Down && !_f5WasDown)
-            SwitchMode(_mode == CameraMode.ThirdPerson ? CameraMode.FirstPerson : CameraMode.ThirdPerson);
+            if (camera.FreeCam.Pressed)
+                SwitchMode(_mode == CameraMode.FreeCam ? CameraMode.FirstPerson : CameraMode.FreeCam);
+        }
 
-        if (f6Down && !_f6WasDown)
-            SwitchMode(_mode == CameraMode.FreeCam ? CameraMode.FirstPerson : CameraMode.FreeCam);
-
-        _f5WasDown = f5Down;
-        _f6WasDown = f6Down;
+        UpdateOrbitZoom(camera);
 
         switch (_mode)
         {
             case CameraMode.ThirdPerson: UpdateThirdPerson();         break;
             case CameraMode.FreeCam:     UpdateFreeCam((float)delta); break;
         }
+    }
+
+    // Orbit distance. The wheel is shared with the held-object distance control, so a hand carrying
+    // something on its laser claims it and the camera leaves that notch alone - otherwise reeling an
+    // object in would zoom the view at the same time. -xlinka
+    private void UpdateOrbitZoom(Lumora.Core.Input.Actions.CameraActions? camera)
+    {
+        if (_mode != CameraMode.ThirdPerson || camera == null)
+            return;
+        if (DashboardToggle.IsDashboardVisible || UserInputState.FocusedScrollWheelCaptured)
+            return;
+
+        float zoom = camera.OrbitZoom.Value;
+        if (zoom != 0f)
+            _tpDistance = Mathf.Clamp(_tpDistance - zoom * 0.5f, TpMinDistance, TpMaxDistance);
     }
 
     public override void _Input(InputEvent @event)
@@ -179,22 +183,14 @@ public partial class DesktopCameraController : Node
             return;
         }
 
-        // Third-person: mouse orbits the camera around the character
         if (_mode == CameraMode.ThirdPerson && @event is InputEventMouseMotion tpMotion)
             _pendingTpMouse += tpMotion.Relative;
 
-        // Free-cam: mouse steers
         if (_mode == CameraMode.FreeCam && @event is InputEventMouseMotion fcMotion)
             _pendingFreeCamMouse += fcMotion.Relative;
 
-        // Scroll wheel adjusts orbit / freecam sprint in third-person
-        if (_mode == CameraMode.ThirdPerson && @event is InputEventMouseButton btn && btn.Pressed)
-        {
-            if (btn.ButtonIndex == MouseButton.WheelUp)
-                _tpDistance = Mathf.Clamp(_tpDistance - 0.5f, TpMinDistance, TpMaxDistance);
-            else if (btn.ButtonIndex == MouseButton.WheelDown)
-                _tpDistance = Mathf.Clamp(_tpDistance + 0.5f, TpMinDistance, TpMaxDistance);
-        }
+        // Raw motion stays on the event path: look is a continuous pixel delta accumulated between
+        // frames, not a control anybody would rebind. Everything discrete goes through actions.
     }
 
     // MODE SWITCHING
@@ -207,7 +203,6 @@ public partial class DesktopCameraController : Node
 
         var state = UserInputState.ForFocusedLocalUser;
 
-        // Tear down previous
         if (prev == CameraMode.FreeCam)
         {
             state?.SetFreeCamActive(false);
@@ -224,11 +219,9 @@ public partial class DesktopCameraController : Node
         // any external camera must show the full avatar.
         state?.SetExternalCameraActive(newMode != CameraMode.FirstPerson);
 
-        // Set up new
         switch (newMode)
         {
             case CameraMode.FirstPerson:
-                // Hand the screen camera back to first-person head-follow.
                 _headOutput?.ClearPositionOverride();
                 _headOutput?.ClearRotationOverride();
                 LumoraLogger.Log("[DesktopCameraController] First-person");
@@ -262,7 +255,6 @@ public partial class DesktopCameraController : Node
             _pendingTpMouse = Vector2.Zero;
         }
 
-        // Apply mouse orbit delta
         var mouse       = _pendingTpMouse;
         _pendingTpMouse = Vector2.Zero;
 
@@ -271,7 +263,6 @@ public partial class DesktopCameraController : Node
         _tpOrbitPitch -= mouse.Y * sensitivity;
         _tpOrbitPitch  = Mathf.Clamp(_tpOrbitPitch, TpMinPitch, TpMaxPitch);
 
-        // Character world position
         Vector3 charPos;
         var charBody = CharacterControllerHook.LocalPlayerBody;
         if (charBody != null && GodotObject.IsInstanceValid(charBody))
@@ -287,7 +278,6 @@ public partial class DesktopCameraController : Node
         Vector3 offset = (yawQ * pitchQ) * new Vector3(0f, 0f, _tpDistance);
         Vector3 camPos = pivot + offset;
 
-        // Camera looks toward pivot
         Vector3 lookDir = (pivot - camPos).Normalized();
         Quaternion camRot = lookDir.LengthSquared() > 0.001f
             ? Basis.LookingAt(lookDir, Vector3.Up).GetRotationQuaternion()
@@ -348,17 +338,20 @@ public partial class DesktopCameraController : Node
         var pitchQ = Quaternion.FromEuler(new Vector3(_freeCamPitch, 0f, 0f));
         Quaternion camRot = yawQ * pitchQ;
 
-        float speed = global::Godot.Input.IsKeyPressed(Key.Shift)
+        var cameraActions = Lumora.Core.Engine.Current?.InputInterface?.Actions?.Camera;
+        float speed = cameraActions?.FlyFast.Held == true
             ? FreeCamBaseSpeed * FreeCamFastMult
             : FreeCamBaseSpeed;
 
         var move = Vector3.Zero;
-        if (global::Godot.Input.IsKeyPressed(Key.W))     move.Z -= 1f;
-        if (global::Godot.Input.IsKeyPressed(Key.S))     move.Z += 1f;
-        if (global::Godot.Input.IsKeyPressed(Key.A))     move.X -= 1f;
-        if (global::Godot.Input.IsKeyPressed(Key.D))     move.X += 1f;
-        if (global::Godot.Input.IsKeyPressed(Key.Space)) move.Y += 1f;
-        if (global::Godot.Input.IsKeyPressed(Key.Ctrl))  move.Y -= 1f;
+        if (cameraActions != null)
+        {
+            // The move action is +Y forward; the camera's local forward is -Z.
+            var plane = cameraActions.FlyMove.Value;
+            move.X = plane.x;
+            move.Z = -plane.y;
+            move.Y = cameraActions.FlyVertical.Value;
+        }
 
         if (move.LengthSquared() > 0.001f)
             _freeCamPos += (camRot * move.Normalized()) * speed * delta;
@@ -366,7 +359,6 @@ public partial class DesktopCameraController : Node
         _headOutput.SetPositionOverride(_freeCamPos);
         _headOutput.SetRotationOverride(camRot);
 
-        // Move the visual indicator to the freecam position
         if (_freeCamIndicator != null && _freeCamIndicator.IsInsideTree())
             _freeCamIndicator.GlobalPosition = _freeCamPos;
     }

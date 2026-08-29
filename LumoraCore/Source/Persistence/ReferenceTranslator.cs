@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -6,12 +6,9 @@ using System.Collections.Generic;
 
 namespace Lumora.Core.Persistence;
 
-/// <summary>
-/// Maps a world's local <see cref="RefID"/>s to stable GUIDs and back, so cross-references survive
-/// a save/load round-trip. On save, every referenced element's RefID is fetched as a GUID written
-/// into the tree. On load, each rebuilt element binds its fresh RefID to its saved GUID; references
-/// to a GUID resolve immediately if their target is already loaded, otherwise they wait for it.
-/// </summary>
+// Maps a world's local RefIDs to stable GUIDs and back so cross-references survive a save/load
+// round-trip. On load, a reference resolves immediately if its target is already loaded, otherwise
+// it waits for it.
 public sealed class ReferenceTranslator
 {
     private readonly Dictionary<Guid, RefID> _globalToLocal = new();
@@ -21,7 +18,7 @@ public sealed class ReferenceTranslator
     public bool HasLocal(RefID local) => _localToGlobal.ContainsKey(local);
     public bool HasGlobal(Guid global) => _globalToLocal.ContainsKey(global);
 
-    /// <summary>SAVE: the stable GUID for a local RefID, allocating one the first time it's seen.</summary>
+    // save: stable GUID for a local RefID, allocating one the first time it's seen
     public Guid Fetch(RefID local)
     {
         if (local == RefID.Null)
@@ -33,7 +30,7 @@ public sealed class ReferenceTranslator
         return global;
     }
 
-    /// <summary>LOAD: bind a rebuilt element's local RefID to its saved GUID and resolve any waiters.</summary>
+    // load: bind a rebuilt element's local RefID to its saved GUID and resolve any waiters
     public void Associate(RefID local, Guid global)
     {
         if (local == RefID.Null)
@@ -49,7 +46,20 @@ public sealed class ReferenceTranslator
         }
     }
 
-    /// <summary>LOAD: point a reference at the GUID's element now, or queue it until that element loads.</summary>
+    // Drops a local RefID/GUID binding. Needed for a translator that outlives the elements it
+    // recorded (undo history): once an element is destroyed its GUID must stop resolving, or a later
+    // load hands a dead ID to a waiter instead of letting the rebuilt element claim the GUID. Leaves
+    // the binding alone if the GUID has already been re-pointed at a different element.
+    public void Forget(RefID local)
+    {
+        if (!_localToGlobal.TryGetValue(local, out var global))
+            return;
+        _localToGlobal.Remove(local);
+        if (_globalToLocal.TryGetValue(global, out var current) && current == local)
+            _globalToLocal.Remove(global);
+    }
+
+    // load: point a reference at the GUID's element now, or queue it until that element loads
     public void Request(Guid global, ISyncRef requestee)
     {
         if (_globalToLocal.TryGetValue(global, out var local))
@@ -65,7 +75,7 @@ public sealed class ReferenceTranslator
         list.Add(requestee);
     }
 
-    /// <summary>Take and clear the still-unresolved requests (targets that never loaded).</summary>
+    // unresolved = targets that never loaded
     public Dictionary<Guid, List<ISyncRef>> TakeUnresolved()
     {
         var unresolved = _pendingRequests;

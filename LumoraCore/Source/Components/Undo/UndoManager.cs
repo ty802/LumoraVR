@@ -1,15 +1,12 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.Collections.Generic;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// One reversible user action. Undo/Redo return false when the batch can no
-/// longer apply (targets destroyed); the manager then drops it. OnEvicted is
-/// the permanent-cleanup hook for batches that park resources (graveyard slots).
-/// </summary>
+// Undo/Redo return false when the batch can no longer apply (targets destroyed) and the manager drops
+// it; OnEvicted is the permanent-cleanup hook for batches that park resources (graveyard slots)
 public interface IUndoBatch
 {
     string Description { get; }
@@ -18,10 +15,7 @@ public interface IUndoBatch
     void OnEvicted();
 }
 
-/// <summary>
-/// Local-user undo/redo history, one per user. Holds plain local state (no sync) -
-/// undo history is a per-client concern.
-/// </summary>
+// plain local state, no sync: undo history is a per-client concern
 [ComponentCategory("Users")]
 public class UndoManager : Component
 {
@@ -35,7 +29,7 @@ public class UndoManager : Component
     public string? NextUndoDescription => CanUndo ? _undo[^1].Description : null;
     public string? NextRedoDescription => CanRedo ? _redo[^1].Description : null;
 
-    /// <summary>Most recent undo batch, so consecutive edits of the same target can merge.</summary>
+    // so consecutive edits of the same target can merge
     public IUndoBatch? CurrentBatch => CanUndo ? _undo[^1] : null;
 
     public void Record(IUndoBatch batch)
@@ -64,7 +58,7 @@ public class UndoManager : Component
         {
             var batch = _undo[^1];
             _undo.RemoveAt(_undo.Count - 1);
-            if (batch.Undo())
+            if (SafeApply(batch, undo: true))
             {
                 _redo.Add(batch);
                 return true;
@@ -80,7 +74,7 @@ public class UndoManager : Component
         {
             var batch = _redo[^1];
             _redo.RemoveAt(_redo.Count - 1);
-            if (batch.Redo())
+            if (SafeApply(batch, undo: false))
             {
                 _undo.Add(batch);
                 return true;
@@ -99,6 +93,22 @@ public class UndoManager : Component
         _undo.Clear();
         _redo.Clear();
         base.OnDestroy();
+    }
+
+    // A record that throws is a record that can no longer apply, so it is dropped exactly like one
+    // that reported false. Anything else takes the press handler - and whatever called it - down with
+    // it, and a half-applied record is not worth a crash. -xlinka
+    private static bool SafeApply(IUndoBatch batch, bool undo)
+    {
+        try
+        {
+            return undo ? batch.Undo() : batch.Redo();
+        }
+        catch (System.Exception ex)
+        {
+            Logging.Logger.Warn($"UndoManager: '{batch.Description}' threw during {(undo ? "undo" : "redo")}: {ex.Message}");
+            return false;
+        }
     }
 
     private static void SafeEvict(IUndoBatch batch)

@@ -1,7 +1,8 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections.Generic;
 using Helio.UI;
 using Helio.UI.Layout;
 using Lumora.Core;
@@ -11,60 +12,145 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Component browser: walks the ComponentLibrary category tree, attaches the chosen type to the
-/// target slot. Rows carry their action in a synced argument (never closures) so presses work for
-/// every user. Spawned by the inspector's "Attach Component" button.
-/// </summary>
+// Rows carry their action in a synced argument (never closures) so presses work for every user.
+// With SwapTarget set it browses in SWAP mode: category tree is replaced by the flat set of types
+// that can stand in for the target, and picking one replaces the component instead of adding a second.
 [ComponentCategory("Utility/Inspectors")]
 public class ComponentSelectorPanel : Component, IInspectorActionHandler
 {
     public readonly SyncRef<Slot> TargetSlot;
     public readonly SyncRef<SceneInspectorPanel> Owner;
     public readonly Sync<string> CategoryPath;
+    public readonly Sync<string> Query;
+
+    // set to browse replacements for this component instead of attaching a new one
+    public readonly SyncRef<Component> SwapTarget;
 
     private readonly SyncRef<Slot> _listContent;
+    private readonly SyncRef<TextInput> _searchInput;
     private readonly Sync<string> _builtPath;
+    private readonly Sync<string> _builtQuery;
+
+    private const float RowHeight = 30f;
+    private const int MaxSearchResults = 120;
 
     public ComponentSelectorPanel()
     {
         TargetSlot = new SyncRef<Slot>(this);
         Owner = new SyncRef<SceneInspectorPanel>(this);
         CategoryPath = new Sync<string>(this, "");
+        Query = new Sync<string>(this, "");
         _listContent = new SyncRef<Slot>(this);
+        _searchInput = new SyncRef<TextInput>(this);
         _builtPath = new Sync<string>(this, "unbuilt");
+        _builtQuery = new Sync<string>(this, "unbuilt");
+        SwapTarget = new SyncRef<Component>(this);
     }
+
+    private bool IsSwapMode => SwapTarget.Target is { IsDestroyed: false };
 
     public static ComponentSelectorPanel Spawn(SceneInspectorPanel owner, Slot target)
     {
-        var panelSlot = owner.Slot.Parent?.AddSlot("Component Selector") ?? owner.World.RootSlot.AddSlot("Component Selector");
-        panelSlot.Persistent.Value = false;
-        panelSlot.Tag.Value = "Developer";
-        panelSlot.GlobalPosition = owner.Slot.GlobalPosition + owner.Slot.GlobalRotation * new float3(0.55f, 0f, 0f);
-        panelSlot.GlobalRotation = owner.Slot.GlobalRotation;
-        panelSlot.LocalScale.Value = owner.Slot.LocalScale.Value;
-
-        var selector = panelSlot.AttachComponent<ComponentSelectorPanel>();
+        var selector = Create(owner.Slot);
         selector.Owner.Target = owner;
         selector.TargetSlot.Target = target;
         return selector;
+    }
+
+    // anchor is only used to place the picker beside the panel the request came from
+    public static ComponentSelectorPanel SpawnForSwap(Slot anchor, Component swapTarget, SceneInspectorPanel? owner)
+    {
+        var selector = Create(anchor);
+        if (owner != null)
+            selector.Owner.Target = owner;
+        selector.TargetSlot.Target = swapTarget.Slot;
+        selector.SwapTarget.Target = swapTarget;
+        var shell = selector.Slot.GetComponent<PanelShell>();
+        if (shell != null)
+            shell.Title.Value = "Swap " + SyncMemberEditorBuilder.NiceTypeName(swapTarget.GetType());
+        return selector;
+    }
+
+    private static ComponentSelectorPanel Create(Slot anchor)
+    {
+        var panelSlot = anchor.Parent?.AddSlot("Component Selector") ?? anchor.World.RootSlot.AddSlot("Component Selector");
+        panelSlot.Persistent.Value = false;
+        panelSlot.Tag.Value = "Developer";
+        panelSlot.GlobalPosition = anchor.GlobalPosition + anchor.GlobalRotation * new float3(0.55f, 0f, 0f);
+        panelSlot.GlobalRotation = anchor.GlobalRotation;
+        panelSlot.LocalScale.Value = anchor.LocalScale.Value;
+        return panelSlot.AttachComponent<ComponentSelectorPanel>();
     }
 
     public override void OnAttach()
     {
         base.OnAttach();
         var theme = Slot.GetOrAttachComponent<UITheme>();
+        // Same dark set as the inspector so the pair reads as one tool. -xlinka
+        theme.PanelBackground.Value = new color(0.075f, 0.07f, 0.115f, 1f);
+        theme.Header.Value = new color(0.11f, 0.10f, 0.17f, 1f);
+        theme.ButtonFill.Value = new color(0.22f, 0.20f, 0.34f, 1f);
+        theme.Accent.Value = InspectorUI.AccentColor;
+        theme.Separator.Value = new color(0.52f, 0.46f, 0.82f, 0.6f);
+        theme.Border.Value = new color(0.52f, 0.46f, 0.82f, 0.45f);
+
         var shell = Slot.GetOrAttachComponent<PanelShell>();
         shell.Title.Value = "Attach Component";
         shell.Size.Value = new float2(620f, 1100f);
         theme.ApplyTo(shell);
-        shell.RebuildContent(ui =>
-        {
-            var scroll = ui.ScrollRect(out var content);
-            InspectorUI.FillParent(scroll.Slot.GetComponent<RectTransform>()!);
-            content.Slot.AttachComponent<VerticalLayout>();
-            _listContent.Target = content.Slot;
-        });
+        shell.RebuildContent(BuildLayout);
+    }
+
+    private void BuildLayout(UIBuilder ui)
+    {
+        var page = ui.Current;
+        InspectorUI.ApplyTheme(ui, Slot);
+
+        var vLayout = page.AttachComponent<VerticalLayout>();
+        vLayout.Spacing.Value = 6f;
+        vLayout.PaddingLeft.Value = 6f;
+        vLayout.PaddingRight.Value = 6f;
+        vLayout.PaddingTop.Value = 6f;
+        vLayout.PaddingBottom.Value = 6f;
+        vLayout.ForceExpandWidth.Value = true;
+        vLayout.ForceExpandHeight.Value = false;
+
+        InspectorUI.FixedRow(page, "SearchRow", 38f, out var searchUi, Slot);
+        searchUi.PushStyle();
+        searchUi.FlexibleWidth(1f);
+        var input = InspectorUI.CreateTextInput(searchUi, "Search");
+        input.Placeholder.Value = "Search components...";
+        input.SetChangeAction(OnSearchChanged);
+        input.SetSubmitAction(OnSearchChanged);
+        _searchInput.Target = input;
+        searchUi.PopStyle();
+
+        var host = page.AddSlot("List");
+        host.AttachComponent<RectTransform>();
+        var hostLE = host.AttachComponent<LayoutElement>();
+        hostLE.FlexibleHeight.Value = 1f;
+        hostLE.MinHeight.Value = 200f;
+
+        var scrollUi = new UIBuilder(host);
+        InspectorUI.ApplyTheme(scrollUi, Slot);
+        var scroll = scrollUi.ScrollRect(out var content, null, InspectorUI.PaneColor);
+        InspectorUI.FillParent(scroll.Slot.GetComponent<RectTransform>()!);
+
+        // Fixed-height rows stacked from the top; never stretched to share the viewport.
+        var contentLayout = content.Slot.AttachComponent<VerticalLayout>();
+        contentLayout.Spacing.Value = 2f;
+        contentLayout.ForceExpandWidth.Value = true;
+        contentLayout.ForceExpandHeight.Value = false;
+        _listContent.Target = content.Slot;
+    }
+
+    public override void OnUpdate(float delta)
+    {
+        // Close the husk when the slot this selector would attach to dies.
+        if (World?.IsAuthority != true)
+            return;
+        if (TargetSlot.RawTarget is { IsDestroyed: true } || SwapTarget.RawTarget is { IsDestroyed: true })
+            Slot.Destroy();
     }
 
     public override void OnChanges()
@@ -72,10 +158,18 @@ public class ComponentSelectorPanel : Component, IInspectorActionHandler
         base.OnChanges();
         if (World?.IsAuthority != true)
             return;
-        if (_builtPath.Value == CategoryPath.Value)
+        if (_builtPath.Value == CategoryPath.Value && _builtQuery.Value == Query.Value)
             return;
         _builtPath.Value = CategoryPath.Value;
+        _builtQuery.Value = Query.Value;
         RebuildList();
+    }
+
+    // every keystroke updates the synced query, which rebuilds the list
+    [SyncMethod]
+    public void OnSearchChanged(TextInput input, string text)
+    {
+        Query.Value = text ?? "";
     }
 
     private void RebuildList()
@@ -85,12 +179,21 @@ public class ComponentSelectorPanel : Component, IInspectorActionHandler
             return;
         container.DestroyChildren();
 
+        string query = (Query.Value ?? "").Trim();
+
+        if (IsSwapMode)
+        {
+            BuildSwapCandidates(container, query);
+            return;
+        }
+
+        if (query.Length > 0)
+        {
+            BuildSearchResults(container, query);
+            return;
+        }
+
         var node = ComponentLibrary.GetNode(CategoryPath.Value) ?? ComponentLibrary.Root;
-        var ui = new UIBuilder(container);
-        InspectorUI.ApplyTheme(ui, Slot);
-        ui.NestInto(container);
-        ui.PushStyle();
-        ui.MinHeight(32f);
 
         if (!string.IsNullOrEmpty(CategoryPath.Value))
             AddRow(container, "< Back", "back:", InspectorUI.MutedColor);
@@ -99,22 +202,136 @@ public class ComponentSelectorPanel : Component, IInspectorActionHandler
             AddRow(container, sub.Name + " >", "cat:" + sub.Path, InspectorUI.AccentColor);
 
         foreach (var type in node.Types)
-            AddRow(container, type.Name, "type:" + type.AssemblyQualifiedName, InspectorUI.TextColor);
+            AddRow(container, ComponentLibrary.DisplayName(type), "type:" + type.AssemblyQualifiedName, InspectorUI.TextColor);
+    }
 
+    // Swap mode: one flat list of the types that can replace the target. A family is small enough
+    // that making the user walk the category tree to find its siblings is pure friction.
+    private void BuildSwapCandidates(Slot container, string query)
+    {
+        var source = SwapTarget.Target;
+        if (source == null)
+            return;
+        var sourceType = source.GetType();
+
+        var candidates = new List<Type>();
+        CollectSwapCandidates(ComponentLibrary.Root, sourceType, query, candidates);
+        candidates.Sort((a, b) => string.Compare(ComponentLibrary.DisplayName(a), ComponentLibrary.DisplayName(b),
+            StringComparison.OrdinalIgnoreCase));
+
+        if (candidates.Count == 0)
+        {
+            AddLabelRow(container, query.Length > 0 ? "No matches" : "Nothing can replace this type",
+                InspectorUI.MutedColor);
+            return;
+        }
+
+        foreach (var type in candidates)
+            AddRow(container, ComponentLibrary.DisplayName(type), "type:" + type.AssemblyQualifiedName, InspectorUI.TextColor);
+    }
+
+    private static void CollectSwapCandidates(ComponentLibrary.CategoryNode node, Type sourceType, string query,
+        List<Type> output)
+    {
+        foreach (var type in node.Types)
+        {
+            if (!ComponentTypeSwapUndoBatch.IsCompatible(sourceType, type))
+                continue;
+            if (query.Length > 0 && !ComponentLibrary.DisplayName(type).Contains(query, StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (!output.Contains(type))
+                output.Add(type);
+        }
+        foreach (var sub in node.Subcategories.Values)
+            CollectSwapCandidates(sub, sourceType, query, output);
+    }
+
+    // Flattened matches across every category: type name OR category path substring, case-insensitive.
+    private void BuildSearchResults(Slot container, string query)
+    {
+        int shown = 0;
+        int total = 0;
+        CollectMatches(ComponentLibrary.Root, query, container, ref shown, ref total);
+        if (total == 0)
+            AddLabelRow(container, "No matches", InspectorUI.MutedColor);
+        else if (total > shown)
+            AddLabelRow(container, $"{total - shown} more, refine the search", InspectorUI.MutedColor);
+    }
+
+    private void CollectMatches(ComponentLibrary.CategoryNode node, string query, Slot container, ref int shown, ref int total)
+    {
+        bool pathMatches = node.Path.Contains(query, StringComparison.OrdinalIgnoreCase);
+        foreach (var type in node.Types)
+        {
+            if (!pathMatches && !ComponentLibrary.DisplayName(type).Contains(query, StringComparison.OrdinalIgnoreCase))
+                continue;
+            total++;
+            if (shown >= MaxSearchResults)
+                continue;
+            shown++;
+            AddSearchRow(container, type, node.Path);
+        }
+        foreach (var sub in node.Subcategories.Values)
+            CollectMatches(sub, query, container, ref shown, ref total);
+    }
+
+    // Search hit: type name button plus a muted category path, one 30px row.
+    private void AddSearchRow(Slot container, Type type, string categoryPath)
+    {
+        var label = ComponentLibrary.DisplayName(type);
+        InspectorUI.FixedRow(container, label, RowHeight, out var ui, Slot);
+        ui.PushStyle();
+        ui.FlexibleWidth(1f);
+        var button = InspectorUI.RelayButton(ui, this, "type:" + type.AssemblyQualifiedName, label, 0f);
+        AlignButtonTextLeft(button);
         ui.PopStyle();
-        ui.NestOut();
+
+        ui.PushStyle();
+        ui.MinWidth(200f);
+        ui.PreferredWidth(220f);
+        ui.FlexibleWidth(0f);
+        var path = ui.Text(categoryPath, InspectorUI.FontSize - 2f, InspectorUI.MutedColor);
+        InspectorUI.FillParent(path.RectTransform!);
+        path.HorizontalAlignment.Value = TextHorizontalAlignment.Right;
+        path.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+        ui.PopStyle();
     }
 
     private void AddRow(Slot container, string label, string action, color tint)
     {
-        InspectorUI.FixedRow(container, label, 32f, out var ui, Slot);
+        InspectorUI.FixedRow(container, label, RowHeight, out var ui, Slot);
         ui.PushStyle();
         ui.TextColor(tint);
-        InspectorUI.RelayButton(ui, this, action, label, 0f);
+        var button = InspectorUI.RelayButton(ui, this, action, label, 0f);
+        AlignButtonTextLeft(button);
         ui.PopStyle();
     }
 
-    /// <summary>Handle a browser row action ("back:", "cat:Path", "type:AssemblyQualifiedName").</summary>
+    private void AddLabelRow(Slot container, string label, color tint)
+    {
+        InspectorUI.FixedRow(container, "Note", RowHeight, out var ui, Slot);
+        ui.PushStyle();
+        ui.FlexibleWidth(1f);
+        var text = ui.Text(label, InspectorUI.FontSize, tint);
+        InspectorUI.FillParent(text.RectTransform!);
+        text.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
+        text.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+        ui.PopStyle();
+    }
+
+    // Browser rows read better ragged-left than centered.
+    private static void AlignButtonTextLeft(Button button)
+    {
+        var text = button.Slot.GetComponentInChildren<Text>();
+        if (text == null)
+            return;
+        text.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
+        var rect = text.RectTransform;
+        if (rect != null)
+            rect.OffsetMin.Value = new float2(10f, 0f);
+    }
+
+    // action strings: "back:", "cat:Path", "type:AssemblyQualifiedName"
     public void HandleInspectorAction(string action)
     {
         if (action.StartsWith("back:", StringComparison.Ordinal))
@@ -131,11 +348,23 @@ public class ComponentSelectorPanel : Component, IInspectorActionHandler
         }
         if (action.StartsWith("type:", StringComparison.Ordinal))
         {
-            var target = TargetSlot.Target;
             var type = Type.GetType(action[5..]);
+            var swapTarget = SwapTarget.Target;
+            if (swapTarget != null && !swapTarget.IsDestroyed)
+            {
+                var batch = ComponentTypeSwapUndoBatch.Swap(swapTarget, type);
+                if (batch != null)
+                    InspectorUndo.Record(this, batch);
+                Owner.Target?.MarkListsDirty();
+                Slot.Destroy();
+                return;
+            }
+
+            var target = TargetSlot.Target;
             if (target != null && type != null && typeof(Component).IsAssignableFrom(type))
             {
-                target.AttachComponent(type);
+                var attached = target.AttachComponent(type);
+                ComponentUndo.RecordAttach(this, attached);
                 Owner.Target?.MarkListsDirty();
             }
             Slot.Destroy();

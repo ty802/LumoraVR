@@ -12,14 +12,8 @@ using Lumora.Core.Persistence;
 
 namespace Lumora.Core.Networking.Sync;
 
-/// <summary>
-/// Network-synchronized list of sync members with delta encoding.
-/// </summary>
 public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList where T : class, ISyncMember, new()
 {
-    /// <summary>
-    /// Enumerator for list elements.
-    /// </summary>
     public struct Enumerator : IEnumerator<T>, IDisposable, IEnumerator
     {
         private List<NodeRecord>.Enumerator _listEnumerator;
@@ -151,9 +145,6 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
         }
     }
 
-    /// <summary>
-    /// Wrapper for enumerating elements.
-    /// </summary>
     public struct SyncListEnumerableWrapper : IEnumerable<T>, IEnumerable
     {
         private readonly SyncElementList<T> _list;
@@ -194,19 +185,10 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
     public IEnumerable<T> Elements => new SyncListEnumerableWrapper(this);
     IEnumerable ISyncList.Elements => Elements;
 
-    /// <summary>
-    /// Event triggered when elements are added.
-    /// </summary>
     public event SyncListElementsEvent<T> ElementsAdded = null!;
 
-    /// <summary>
-    /// Event triggered when elements are removed.
-    /// </summary>
     public event SyncListElementsEvent<T> ElementsRemoved = null!;
 
-    /// <summary>
-    /// Event triggered before elements are removed.
-    /// </summary>
     public event SyncListElementsEvent<T> ElementsRemoving = null!;
 
     private event SyncListElementsEvent _genElementsAdded = null!;
@@ -254,6 +236,11 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
     ISyncMember ISyncList.AddElement()
     {
         return Add();
+    }
+
+    ISyncMember ISyncList.InsertElement(int index)
+    {
+        return Insert(index);
     }
 
     void ISyncList.RemoveElement(int index)
@@ -446,6 +433,7 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
             }
             if (sync && GenerateSyncData)
             {
+                CaptureDeltaBase(_records.Count);
                 var deltaRecords = GetDeltaRecords();
                 record.IsDirty = true;
                 record.DeltaRecordIndex = deltaRecords.Count;
@@ -480,6 +468,13 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
         }
 
         BeginModification();
+
+        // Before the removal: the base count is what the receiver must be holding to make sense of the
+        // index ops in this batch, not what we are left with afterwards.
+        if (sync && GenerateSyncData)
+        {
+            CaptureDeltaBase(_records.Count);
+        }
 
         if (change)
         {
@@ -574,6 +569,11 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
         }
 
         int count = _records.Count;
+
+        if (sync && GenerateSyncData)
+        {
+            CaptureDeltaBase(count);
+        }
 
         if (change)
         {
@@ -688,6 +688,8 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
 
     protected override void InternalEncodeDelta(BinaryWriter writer, BinaryMessageBatch outboundMessage)
     {
+        WriteDeltaBaseCount(writer, _records.Count);
+
         var deltaRecords = GetDeltaRecords();
         uint recordCount = 0;
         RefID minId = new RefID(ulong.MaxValue);
@@ -721,6 +723,11 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
 
     protected override void InternalDecodeDelta(BinaryReader reader, BinaryMessageBatch inboundMessage)
     {
+        // Throws before anything is touched when our count disagrees with the sender's. Index ops
+        // against a list of a different length are not recoverable by clamping - the answer is a full
+        // re-encode of this list, which the session layer requests off the back of this. -xlinka
+        ReadAndCheckDeltaBaseCount(reader, _records.Count);
+
         var count = (uint)reader.Read7BitEncoded();
         var offset = new RefID(reader.Read7BitEncoded());
 
@@ -756,6 +763,14 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
         long position = reader.BaseStream.CanSeek ? reader.BaseStream.Position : -1;
         try
         {
+            // A client whose list is a different length than ours computed these index ops against
+            // state we never had. Reject as a conflict so the correction path hands it our real list
+            // back, instead of letting the indices land on whatever happens to sit there.
+            if (!ReadDeltaBaseCountMatches(reader, _records.Count))
+            {
+                return MessageValidity.Conflict;
+            }
+
             var count = (uint)reader.Read7BitEncoded();
             var offset = new RefID(reader.Read7BitEncoded());
 

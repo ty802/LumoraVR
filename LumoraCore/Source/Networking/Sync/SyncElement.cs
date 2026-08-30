@@ -9,37 +9,21 @@ using Lumora.Core;
 
 namespace Lumora.Core.Networking.Sync;
 
-/// <summary>
-/// Base class for all synchronizable elements.
-/// </summary>
 public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, ISyncMember
 {
-    /// <summary>
-    /// Flags stored as bits for fast checks.
-    /// </summary>
     protected int _flags;
 
-    /// <summary>
-    /// Modification nesting guard.
-    /// </summary>
     private int _modificationLevel;
 
     protected World _world = null!;
     protected RefID _referenceID;
 
-    // ISyncMember fields
     private int _memberIndex;
     private string? _memberName;
     private ulong _version;
 
-    /// <summary>
-    /// Parent element that owns this sync element.
-    /// </summary>
     protected IWorldElement? _parent;
 
-    /// <summary>
-    /// Parent element that owns this sync element.
-    /// </summary>
     public IWorldElement? Parent
     {
         get => _parent;
@@ -52,21 +36,15 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
         IsInInitPhase = true;
     }
 
-    /// <summary>
-    /// Serialize this member into the persistence data tree. Overridden by the concrete member
-    /// types (fields, references, lists); the base throws so an unhandled type is caught at save.
-    /// </summary>
+    // Overridden by the concrete member types (fields, references, lists); the base throws so an unhandled type
+    // is caught at save.
     public virtual Persistence.DataTreeNode Save(Persistence.SaveControl control)
         => throw new NotSupportedException($"{GetType().Name} does not support persistence.");
 
-    /// <summary>Restore this member's value from the persistence data tree.</summary>
     public virtual void Load(Persistence.DataTreeNode node, Persistence.LoadControl control)
         => throw new NotSupportedException($"{GetType().Name} does not support persistence.");
 
-    /// <summary>
-    /// Initialize this sync element with the world and parent.
-    /// Allocates RefID and registers with ReferenceController.
-    /// </summary>
+    // Allocates the RefID and registers with ReferenceController.
     public virtual void Initialize(World world, IWorldElement? parent)
     {
         if (world == null)
@@ -83,7 +61,6 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
         World = world;
         world.ReferenceController.RegisterObject(this);
         
-        // Register with SyncController for network sync
         world.SyncController?.RegisterSyncElement(this);
 
         WasChanged = true;
@@ -104,13 +81,14 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
         IsWithinHookCallback,
         ModificationBlocked,
         DriveErrorLogged,
-        // 13-15 reserved for future use
-        // 16+ available for derived classes
+        // 13 through 17 are NOT free, whatever a "reserved" note used to claim here: 13-15 belong to
+        // ConflictingSyncElement (IsValid/IsHostOnly/DirectAccessOnly), 16 to SyncRef, 17 to LinkBase.
+        // A base-class flag landing on one of those reads back as another class's state, which is a
+        // very quiet way to break every field in the engine. Keep this map current. -xlinka
+        ValueCameFromData = 18,
+        // 19+ available for derived classes
     }
 
-    /// <summary>
-    /// Current world context.
-    /// </summary>
     public World World
     {
         get => _world;
@@ -121,24 +99,14 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
         }
     }
 
-    /// <summary>
-    /// Strongly-typed RefID for this element.
-    /// </summary>
     public RefID ReferenceID
     {
         get => _referenceID;
         protected set => _referenceID = value;
     }
 
-    /// <summary>
-    /// Numeric alias for compatibility.
-    /// </summary>
     public ulong RefIdNumeric => (ulong)ReferenceID;
 
-    /// <summary>
-    /// Internal helper for specialized initializers to set world and reference.
-    /// Avoids protected setter access limitations on derived instance creation.
-    /// </summary>
     internal void SetWorldAndReference(World world, RefID id)
     {
         ReferenceID = id;
@@ -149,10 +117,7 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
         }
     }
 
-    /// <summary>
-    /// Initialize this sync element from network replication with a pre-assigned RefID.
-    /// Used when decoding from FullBatch - does NOT allocate a new RefID.
-    /// </summary>
+    // Does NOT allocate a new RefID; used when decoding a FullBatch.
     internal void InitializeFromReplicator(World world, IWorldElement? parent, RefID assignedId)
     {
         if (world == null)
@@ -169,7 +134,6 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
         World = world;
         world.ReferenceController.RegisterObject(this);
 
-        // Register with SyncController for network sync
         world.SyncController?.RegisterSyncElement(this);
 
         WasChanged = true;
@@ -198,37 +162,69 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
     public bool IsWithinHookCallback { get => GetFlag((int)InternalFlags.IsWithinHookCallback); protected set => SetFlag((int)InternalFlags.IsWithinHookCallback, value); }
     public bool ModificationBlocked { get => GetFlag((int)InternalFlags.ModificationBlocked); protected set => SetFlag((int)InternalFlags.ModificationBlocked, value); }
     public bool DriveErrorLogged { get => GetFlag((int)InternalFlags.DriveErrorLogged); protected set => SetFlag((int)InternalFlags.DriveErrorLogged, value); }
+
+    // Whether this member's value was handed to it by a save or by a peer, rather than being whatever
+    // the owning worker constructed it with.
+    //
+    // It separates "the file/peer said empty" from "nobody ever said anything". A component that
+    // installs an attach-time default has to know which of those it is looking at: a user who cleared
+    // a drive link wrote a real answer, and re-installing the default on the next load would undo the
+    // edit every single time. A save written before the member existed says nothing, and there the
+    // default is exactly right. Set per member so a worker can gain members without invalidating old
+    // saves. -xlinka
+    public bool ValueCameFromData { get => GetFlag((int)InternalFlags.ValueCameFromData); internal set => SetFlag((int)InternalFlags.ValueCameFromData, value); }
+
     public bool IsPersistent => !NonPersistent;
     public bool IsDestroyed => IsDisposed;
     public bool GenerateSyncData => !IsLocalElement && World?.State == World.WorldState.Running;
 
-    /// <summary>
-    /// Whether this sync element is in a valid state for encoding/decoding.
-    /// Override in derived classes (e.g., ConflictingSyncElement tracks validity based on host confirmation).
-    /// </summary>
     public virtual bool IsValid => true;
 
-    /// <summary>
-    /// Whether this element is currently driven via link.
-    /// Override in derived classes that expose ActiveLink.
-    /// </summary>
-    protected virtual bool IsDriven => IsDrivable && ActiveLink != null && ActiveLink.IsDriving;
+    // The link currently held on this element, or null when it carries none. Overridden by the
+    // element types that actually have link machinery (fields).
+    //
+    // A METHOD on purpose: SyncField must expose ActiveLink PUBLICLY to satisfy ILinkable,
+    // and C# won't let a public property override a protected one, so the old code declared
+    // `public new ILinkRef? ActiveLink` - which HID the base member instead of overriding it. Every
+    // drive gate down here then kept binding to the base's always-null property, so all three of
+    // them were silently dead for every field in the engine: driven fields still generated outbound
+    // deltas, still accepted inbound ones, and IsBlockedByDrive never fired. Routing the gates
+    // through a virtual method that the public property forwards to is what keeps them honest, and
+    // no `new` can quietly detach them again. -xlinka
+    protected virtual ILinkRef? ResolveActiveLink() => null;
 
-    protected virtual ILinkRef ActiveLink => null!;
+    public bool IsLinked => ResolveActiveLink() != null;
+
+    // Whether this element's value is produced by a driving link. A driven value is DERIVED, so it
+    // is excluded from value sync in both directions - see InvalidateSyncElement and
+    // ConflictingSyncElement.Validate.
+    public bool IsDriven
+    {
+        get
+        {
+            var link = ResolveActiveLink();
+            return link != null && link.IsDriving && IsDrivable;
+        }
+    }
+
+    public bool IsHooked => ResolveActiveLink()?.IsHooking ?? false;
 
     protected virtual string Name => GetType().Name;
     
-    /// <summary>
-    /// Type of sync member - must be implemented by concrete classes
-    /// </summary>
     public abstract SyncMemberType MemberType { get; }
 
-    /// <summary>
-    /// Default hierarchy info used in messages.
-    /// </summary>
     public virtual string ParentHierarchyToString() => Name;
 
-    public bool IsBlockedByDrive => IsDriven && ActiveLink != null && ActiveLink.WasLinkGranted && !ActiveLink.IsModificationAllowed;
+    // A HOOKED link is the passthrough escape: it intercepts the write instead of rejecting it, so it never
+    // blocks.
+    public bool IsBlockedByDrive
+    {
+        get
+        {
+            var link = ResolveActiveLink();
+            return IsDriven && link != null && link.WasLinkGranted && !link.IsModificationAllowed && !IsHooked;
+        }
+    }
 
     protected bool AuthorizeDataModelAccess(
         DataModelPermissionAction action,
@@ -388,15 +384,22 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
         _modificationLevel--;
     }
 
-    /// <summary>
-    /// Mark this element as needing synchronization.
-    /// Also checks IsInInitPhase and IsLoading to prevent
-    /// elements created during network decode from being marked dirty.
-    /// </summary>
+    // Checks IsInInitPhase and IsLoading so elements created during network decode aren't marked dirty.
     public void InvalidateSyncElement()
     {
         // IsInInitPhase and IsLoading checks prevent spurious dirty marking during decode
         if (IsLocalElement || IsDisposed || IsSyncDirty || IsInInitPhase || IsLoading || !GenerateSyncData)
+            return;
+
+        // A field under a GRANTED drive is DERIVED, not authored: the driver component replicates,
+        // every peer runs its own copy of it, and every peer computes the same value locally. Sending
+        // the result would double the traffic AND fight the remote peer's own computation, so the
+        // value is excluded from sync for as long as the drive holds it. The other half of this pair
+        // is ConflictingSyncElement.Validate, which ignores INBOUND deltas on a driven field; and
+        // LinkManager, which re-broadcasts the real value once the drive is released (peers are
+        // otherwise stuck on whatever the drive last pushed, since a released field stops changing
+        // and generates no delta of its own). All three were dead until ResolveActiveLink. -xlinka
+        if (IsDriven && ResolveActiveLink()!.WasLinkGranted)
             return;
 
         if (World?.SyncController == null)
@@ -430,14 +433,73 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
 
     #region Encoding/Decoding
 
+    // Incremental collections ship OPS, not values, so an op run only means anything against the exact
+    // state it was computed from. A receiver one op behind applies the rest to the wrong base and
+    // diverges with nothing to notice it - and an index op against a shorter list is worse than wrong,
+    // it hits the neighbouring element or throws. So every incremental delta carries the sender's
+    // element count from BEFORE the ops in it, and the receiver refuses the whole record when its own
+    // count disagrees rather than half-applying it.
+    //
+    // The base is captured the first time a mutation opens a delta window and held until the window
+    // closes at encode, so a batch covering several ops still reports the count the receiver is
+    // expected to be sitting at, not the count after.
+    //
+    // INDEX-addressed collections only (lists, arrays). A key-addressed op names the entry it acts on
+    // and lands correctly whatever the counts are, and the replicated slot/component/user collections
+    // change on every peer concurrently by design - requiring a shared count there would reject a
+    // client creating a slot any time the authority created one first. Lost ops on those are the
+    // sequencing layer's job, not this one's. -xlinka
+    private int _deltaBaseCount;
+    private bool _deltaBaseCaptured;
+
+    // Call BEFORE mutating, on every path that can produce a delta record; repeat calls within the same window
+    // are ignored.
+    protected void CaptureDeltaBase(int currentCount)
+    {
+        if (_deltaBaseCaptured)
+            return;
+        _deltaBaseCaptured = true;
+        _deltaBaseCount = currentCount;
+    }
+
+    protected void ResetDeltaBase()
+    {
+        _deltaBaseCaptured = false;
+        _deltaBaseCount = 0;
+    }
+
+    // Count this delta window started from, falling back to the live count when no mutation opened a window (an
+    // element can be encoded dirty without any op having been recorded).
+    protected int GetDeltaBaseCount(int currentCount) => _deltaBaseCaptured ? _deltaBaseCount : currentCount;
+
+    protected void WriteDeltaBaseCount(BinaryWriter writer, int currentCount)
+        => writer.Write7BitEncoded((ulong)GetDeltaBaseCount(currentCount));
+
+    // Throws before a single op is applied; the session layer turns it into a full re-encode of this one
+    // element.
+    protected void ReadAndCheckDeltaBaseCount(BinaryReader reader, int localCount)
+    {
+        int senderCount = (int)reader.Read7BitEncoded();
+        if (senderCount != localCount)
+        {
+            throw new ElementResyncRequiredException(
+                ReferenceID,
+                $"{GetType().Name} {ReferenceID}: delta base count {senderCount} but local count is {localCount}");
+        }
+    }
+
+    // Used on the authority, where a mismatching client delta is rejected through the conflict path and
+    // answered with an authoritative full record instead of a resync request.
+    protected bool ReadDeltaBaseCountMatches(BinaryReader reader, int localCount)
+        => (int)reader.Read7BitEncoded() == localCount;
+
+
     public virtual void EncodeFull(BinaryWriter writer, BinaryMessageBatch outboundMessage)
     {
         EncodeFull(writer, outboundMessage, forFullBatch: false);
     }
 
-    /// <summary>
-    /// Encode full state. When forFullBatch is true, skips authority check (used when encoding for new clients).
-    /// </summary>
+    // forFullBatch skips the authority check.
     public virtual void EncodeFull(BinaryWriter writer, BinaryMessageBatch outboundMessage, bool forFullBatch)
     {
         if (!forFullBatch)
@@ -472,9 +534,7 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
         DecodeFull(reader, inboundMessage, forFullBatch: false);
     }
 
-    /// <summary>
-    /// Decode full state. When forFullBatch is true, skips authority check (used when receiving FullBatch from host).
-    /// </summary>
+    // forFullBatch skips the authority check.
     public virtual void DecodeFull(BinaryReader reader, BinaryMessageBatch inboundMessage, bool forFullBatch)
     {
         if (!forFullBatch)
@@ -483,10 +543,21 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
                 throw new InvalidOperationException("Authority shouldn't do a full decode!");
         }
 
+        // try/finally so a decode that throws part-way cannot leave IsLoading stuck on. A stuck flag is
+        // silent and permanent: it suppresses this element's own dirty marking and skips its permission
+        // gate for the rest of the session. -xlinka
         IsLoading = true;
-        InternalDecodeFull(reader, inboundMessage);
-        InternalClearDirty();
-        IsLoading = false;
+        try
+        {
+            InternalDecodeFull(reader, inboundMessage);
+            InternalClearDirty();
+            ResetDeltaBase();
+        }
+        finally
+        {
+            IsLoading = false;
+        }
+        ValueCameFromData = true;
     }
 
     public virtual void EncodeDelta(BinaryWriter writer, BinaryMessageBatch outboundMessage)
@@ -503,6 +574,7 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
         InternalEncodeDelta(writer, outboundMessage);
         IsSyncDirty = false;
         InternalClearDirty();
+        ResetDeltaBase();
     }
 
     public virtual void DecodeDelta(BinaryReader reader, BinaryMessageBatch inboundMessage)
@@ -522,9 +594,18 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
             }
         }
 
+        // Same reasoning as DecodeFull: a collection that refuses its delta on a base-count mismatch
+        // throws out of here by design, and must not strand the flag.
         IsLoading = true;
-        InternalDecodeDelta(reader, inboundMessage);
-        IsLoading = false;
+        try
+        {
+            InternalDecodeDelta(reader, inboundMessage);
+        }
+        finally
+        {
+            IsLoading = false;
+        }
+        ValueCameFromData = true;
     }
 
     protected abstract void InternalEncodeFull(BinaryWriter writer, BinaryMessageBatch outboundMessage);
@@ -558,98 +639,63 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
 
     #region ISyncMember Implementation
 
-    /// <summary>
-    /// Index of this sync member in the parent's sync member list.
-    /// </summary>
     public int MemberIndex
     {
         get => _memberIndex;
         set => _memberIndex = value;
     }
 
-    /// <summary>
-    /// Name of this sync member (field name).
-    /// </summary>
     string? ISyncMember.Name
     {
         get => _memberName ?? Name;
         set => _memberName = value;
     }
 
-    /// <summary>
-    /// Whether this member has changed since last sync.
-    /// Maps to IsSyncDirty for SyncElements.
-    /// </summary>
     bool ISyncMember.IsDirty
     {
         get => IsSyncDirty;
         set => IsSyncDirty = value;
     }
 
-    /// <summary>
-    /// Version of this member's value.
-    /// </summary>
     public ulong Version
     {
         get => _version;
         set => _version = value;
     }
 
-    /// <summary>
-    /// Encode using delta encoding for ISyncMember compatibility.
-    /// </summary>
     void ISyncMember.Encode(BinaryWriter writer)
     {
         AuthorizeDataModelAccess(DataModelPermissionAction.Serialize);
         InternalEncodeDelta(writer, null!);
     }
 
-    /// <summary>
-    /// Decode using delta decoding for ISyncMember compatibility.
-    /// </summary>
     void ISyncMember.Decode(BinaryReader reader)
     {
         InternalDecodeDelta(reader, null!);
     }
 
-    /// <summary>
-    /// Get the current value as object.
-    /// Override in derived classes.
-    /// </summary>
     public virtual object? GetValueAsObject() => null;
 
     #endregion
 
     #region Trash Support
 
-    /// <summary>
-    /// Move this element to trash for potential restoration.
-    /// Used when deleting elements that may need to be restored if authority rejects.
-    /// </summary>
+    // Used when deleting elements that may need to be restored if authority rejects.
     public void MoveToTrash(ulong tick)
     {
         World?.ReferenceController?.MoveToTrash(this, tick);
     }
 
-    /// <summary>
-    /// Restore this element from trash after deletion was rejected.
-    /// </summary>
     public static bool RestoreFromTrash(World world, RefID id)
     {
         return world?.ReferenceController?.RestoreFromTrash(id) ?? false;
     }
 
-    /// <summary>
-    /// Try to retrieve an element from trash.
-    /// </summary>
     public static IWorldElement TryRetrieveFromTrash(World world, ulong tick, RefID id)
     {
         return (world?.ReferenceController?.TryRetrieveFromTrash(tick, id)) ?? null!;
     }
 
-    /// <summary>
-    /// Permanently delete this element from trash.
-    /// </summary>
     public static void DeleteFromTrash(World world, RefID id)
     {
         world?.ReferenceController?.DeleteFromTrash(id);
@@ -661,7 +707,6 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
 
     public virtual void Dispose()
     {
-        // Unregister from both controllers
         World?.ReferenceController?.UnregisterObject(this);
         World?.SyncController?.UnregisterSyncElement(this);
 

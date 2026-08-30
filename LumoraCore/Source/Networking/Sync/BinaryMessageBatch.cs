@@ -6,14 +6,11 @@ using System.Collections.Generic;
 using System.IO;
 using Lumora.Core;
 using Lumora.Core.Networking;
+using Lumora.Nexus.Transport;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Sync;
 
-/// <summary>
-/// Base class for batched binary messages (Delta, Full, Confirmation).
-/// Manages multiple data records for different sync elements.
-/// </summary>
 public abstract class BinaryMessageBatch : SyncMessage
 {
     private MemoryStream _stream;
@@ -22,18 +19,24 @@ public abstract class BinaryMessageBatch : SyncMessage
     private List<DataRecord> _dataRecords = new();
     private int _currentRecordIndex = -1;
 
-    /// <summary>
-    /// Number of data records in this batch.
-    /// </summary>
     public int DataRecordCount => _dataRecords.Count;
 
-    /// <summary>
-    /// Message type identifier.
-    /// </summary>
     public override abstract MessageType MessageType { get; }
 
     public override bool Reliable => true;
     public override bool Background => false;
+
+    // Per-link delta sequence. On a Delta this is the batch's own position in the sender's stream and
+    // the receiver applies it only when it is exactly next. On a FULL-WORLD batch it is a tag meaning
+    // "this supersedes every delta up to and including N". A PARTIAL full batch - drive corrections, a
+    // single-element resync - leaves it at 0 so it never moves the receiver's cursor past deltas that
+    // are still in flight for other elements. A Confirmation carries the sequence of the relay the
+    // authority deliberately did not echo back to this peer, so the peer's run stays unbroken. -xlinka
+    public ulong LinkSequence { get; set; }
+
+    // Used to account for queued backlog by memory instead of by batch count, since batch count says nothing
+    // about what a backlog actually costs.
+    public int PayloadByteSize => _stream != null ? (int)_stream.Length : 0;
 
     // Batched state (Delta/Full, and large Confirmations) compresses well and isn't on the
     // tightest latency path; 150 bytes is the floor below which the codec rarely pays off and
@@ -50,9 +53,6 @@ public abstract class BinaryMessageBatch : SyncMessage
 
     // DATA RECORD MANAGEMENT
 
-	/// <summary>
-	/// Begin writing a new data record for a sync element.
-	/// </summary>
 	public BinaryWriter BeginNewDataRecord(RefID targetID)
 	{
 		if (_currentRecordIndex >= 0)
@@ -72,9 +72,6 @@ public abstract class BinaryMessageBatch : SyncMessage
         return _writer;
     }
 
-	/// <summary>
-	/// Finish writing the current data record.
-	/// </summary>
 	public void FinishDataRecord(RefID targetID)
 	{
 		if (_currentRecordIndex < 0)
@@ -90,10 +87,7 @@ public abstract class BinaryMessageBatch : SyncMessage
         _currentRecordIndex = -1;
     }
 
-	/// <summary>
-	/// Cancel the current data record (used when encoding fails).
-	/// Removes the record and resets stream position.
-	/// </summary>
+	// Used when encoding fails: removes the record and resets the stream position.
 	public void CancelDataRecord()
 	{
 		if (_currentRecordIndex < 0)
@@ -105,17 +99,11 @@ public abstract class BinaryMessageBatch : SyncMessage
 		_currentRecordIndex = -1;
 	}
 
-    /// <summary>
-    /// Get a data record by index.
-    /// </summary>
     public DataRecord GetDataRecord(int index)
     {
         return _dataRecords[index];
     }
 
-	/// <summary>
-	/// Find data record index by target ID.
-	/// </summary>
 	public int FindDataRecordIndex(RefID targetID)
 	{
 		for (int i = 0; i < _dataRecords.Count; i++)
@@ -126,9 +114,6 @@ public abstract class BinaryMessageBatch : SyncMessage
 		return -1;
 	}
 
-    /// <summary>
-    /// Seek to a data record for reading.
-    /// </summary>
     public BinaryReader SeekDataRecord(int index)
     {
         if (_reader == null)
@@ -145,9 +130,6 @@ public abstract class BinaryMessageBatch : SyncMessage
         return _reader;
     }
 
-    /// <summary>
-    /// Mark a data record as processed.
-    /// </summary>
     public void MarkDataRecordAsProcessed(int index)
     {
         var record = _dataRecords[index];
@@ -155,17 +137,11 @@ public abstract class BinaryMessageBatch : SyncMessage
         _dataRecords[index] = record;
     }
 
-    /// <summary>
-    /// Check if a data record has been processed.
-    /// </summary>
     public bool IsProcessed(int index)
     {
         return _dataRecords[index].IsProcessed;
     }
 
-    /// <summary>
-    /// Invalidate a data record (mark as conflicting).
-    /// </summary>
     public void InvalidateDataRecord(int index, bool conflict)
     {
         var record = _dataRecords[index];
@@ -173,17 +149,11 @@ public abstract class BinaryMessageBatch : SyncMessage
         _dataRecords[index] = record;
     }
 
-    /// <summary>
-    /// Remove all invalid records from the batch.
-    /// </summary>
     public void RemoveInvalidRecords()
     {
         _dataRecords.RemoveAll(r => r.Validity != MessageValidity.Valid);
     }
 
-	/// <summary>
-	/// Get all conflicting record IDs.
-	/// </summary>
 	public void GetConflictingDataRecords(List<RefID> output)
 	{
 		foreach (var record in _dataRecords)
@@ -195,26 +165,29 @@ public abstract class BinaryMessageBatch : SyncMessage
 
     // ENCODING/DECODING
 
-    /// <summary>
-    /// Encode this batch to bytes for transmission.
-    /// Simple format without complex framing.
-    /// </summary>
+    // Encode this batch to bytes for transmission.
+    //
+    // Header: [type][stateVersion:7bit][syncTick:7bit][senderTime:f64][linkSequence:7bit]
+    // [confirmTime:7bit, Confirmation only][recordCount:7bit], then [RefID][len:7bit][data] per record.
+    // The link sequence is part of the header for every batch type - a build that does not write it
+    // misreads the record count as a sequence and produces garbage, so ProtocolCompatibility's
+    // protocol version is bumped alongside this and the join handshake refuses the mismatch outright
+    // rather than letting two builds trade unreadable frames. -xlinka
     public override byte[] Encode()
     {
         using var output = new MemoryStream();
         using var writer = new BinaryWriter(output);
 
-        // Header
         writer.Write((byte)MessageType);
         writer.Write7BitEncoded(SenderStateVersion);
         writer.Write7BitEncoded(SenderSyncTick);
         writer.Write(SenderTime);
+        writer.Write7BitEncoded(LinkSequence);
         if (this is ConfirmationMessage confirmation)
         {
             writer.Write7BitEncoded(confirmation.ConfirmTime);
         }
 
-        // Record count
         writer.Write7BitEncoded((ulong)_dataRecords.Count);
 
         // Write each record: [RefID][DataLength][Data]
@@ -224,11 +197,9 @@ public abstract class BinaryMessageBatch : SyncMessage
             var record = _dataRecords[i];
             var dataSize = record.EndOffset - record.StartOffset;
 
-            // Write record header
             writer.WriteRefID(record.TargetID);
             writer.Write7BitEncoded((ulong)dataSize);
 
-            // Write data
             _stream.Position = record.StartOffset;
             var buffer = new byte[dataSize];
             _stream.Read(buffer, 0, dataSize);
@@ -238,9 +209,6 @@ public abstract class BinaryMessageBatch : SyncMessage
         return output.ToArray();
     }
 
-    /// <summary>
-    /// Decode batch from bytes.
-    /// </summary>
     public static BinaryMessageBatch Decode(byte[] data)
     {
         using var input = new MemoryStream(data);
@@ -252,6 +220,7 @@ public abstract class BinaryMessageBatch : SyncMessage
         var stateVersion = reader.Read7BitEncoded();
         var syncTick = reader.Read7BitEncoded();
         var senderTime = reader.ReadDouble();
+        var linkSequence = reader.Read7BitEncoded();
         var confirmTime = 0UL;
         if (messageType == MessageType.Confirmation)
         {
@@ -268,8 +237,8 @@ public abstract class BinaryMessageBatch : SyncMessage
         };
 
         batch.SenderTime = senderTime;
+        batch.LinkSequence = linkSequence;
 
-        // Read records directly into batch stream
         batch._stream = new MemoryStream();
         batch._writer = new BinaryWriter(batch._stream);
 
@@ -296,9 +265,6 @@ public abstract class BinaryMessageBatch : SyncMessage
         return batch;
     }
 
-    /// <summary>
-    /// Parse data records from the stream (not needed with new approach).
-    /// </summary>
     protected virtual void ParseDataRecords(int expectedCount)
     {
     }
@@ -313,9 +279,6 @@ public abstract class BinaryMessageBatch : SyncMessage
     }
 }
 
-/// <summary>
-/// Data record within a batch.
-/// </summary>
 public struct DataRecord
 {
 	public RefID TargetID;
@@ -325,9 +288,6 @@ public struct DataRecord
 	public bool IsProcessed;
 }
 
-/// <summary>
-/// Message type enumeration.
-/// </summary>
 public enum MessageType : byte
 {
     Delta = 1,
@@ -338,10 +298,6 @@ public enum MessageType : byte
     AsyncStream = 6,
     Ping = 7,
     Disconnect = 8,
-    /// <summary>
-    /// Lightweight per-user payload for tight latency loops (voice etc).
-    /// See <c>RawFrameMessage</c>.
-    /// </summary>
     RawFrame = 9
 }
 

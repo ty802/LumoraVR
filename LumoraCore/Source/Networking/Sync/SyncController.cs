@@ -29,7 +29,6 @@ public class SyncController
 	{
 		syncElements.Add(element.ReferenceID, element);
 
-		// Log slot name registrations for debugging
 		if (element.Parent is Slot parentSlot && element is SyncField<string> sf)
 		{
 			var memberName = ((ISyncMember)sf).Name;
@@ -38,6 +37,13 @@ public class SyncController
 				LumoraLogger.Debug($"SyncController.RegisterSyncElement: Slot.Name RefID={element.ReferenceID}, Value='{sf.Value}', ParentSlot={parentSlot.ReferenceID}");
 			}
 		}
+	}
+
+	// Look up a registered sync element by RefID. Used by the targeted-resync path, which is handed RefIDs off
+	// the wire and needs the elements to hand to EncodeFullBatch.
+	public bool TryGetElement(RefID id, out SyncElement element)
+	{
+		return syncElements.TryGetValue(id, out element!);
 	}
 
 	public void UnregisterSyncElement(SyncElement element)
@@ -78,7 +84,6 @@ public class SyncController
 			// Skip invalid or disposed elements - they'll be retried once valid
 			if (!dirtySyncElement.IsValid || dirtySyncElement.IsDisposed)
 			{
-				// Re-add to dirty list to retry later
 				if (!dirtySyncElement.IsDisposed)
 				{
 					AddDirtySyncElement(dirtySyncElement);
@@ -133,11 +138,9 @@ public class SyncController
 			if (element.IsLocalElement)
 				continue;
 
-			// Count by parent type for summary
 			if (element.Parent is Slot parentSlot)
 			{
 				slotFieldCount++;
-				// Log slot name fields specifically
 				if (element is SyncField<string> sf)
 				{
 					var memberName = ((ISyncMember)sf).Name;
@@ -303,7 +306,6 @@ public class SyncController
 			{
 				value.DecodeFull(reader, message);
 
-				// Log slot name decode for debugging
 				if (value.Parent is Slot parentSlot && value is SyncField<string> sf)
 				{
 					var memberName = ((ISyncMember)sf).Name;
@@ -320,10 +322,7 @@ public class SyncController
 		return false;
 	}
 
-	/// <summary>
-	/// Gather stream data from local user's streams into messages.
-	/// Called by SessionSyncManager during the sync loop.
-	/// </summary>
+	// Called by SessionSyncManager during the sync loop.
 	public void GatherStreams(List<StreamMessage> messages)
 	{
 		if (Owner == null)
@@ -343,20 +342,17 @@ public class SyncController
 			}
 		}
 
-		// Iterate through all stream groups
 		foreach (var group in localUser.StreamGroupManager.Groups)
 		{
 			bool hasData = false;
 			using var dataStream = new MemoryStream();
 			using var writer = new BinaryWriter(dataStream);
 
-			// Check each stream in the group
 			foreach (var stream in group.Streams)
 			{
 				if (!stream.Active)
 					continue;
 
-				// Check if this stream should send data
 				bool shouldSend = stream.IsImplicitUpdatePoint(syncTick) ||
 				                  stream.IsExplicitUpdatePoint(syncTick);
 
@@ -365,14 +361,12 @@ public class SyncController
 				// Local streams should send their current value regardless.
 				if (shouldSend)
 				{
-					// Write stream RefID and encode data
 					writer.Write((ulong)stream.ReferenceID);
 					stream.Encode(writer);
 					hasData = true;
 				}
 			}
 
-			// Create message if we have data
 			if (hasData)
 			{
 				var message = new StreamMessage(Owner.StateVersion, syncTick)
@@ -383,7 +377,6 @@ public class SyncController
 					StreamGroup = group.GroupIndex
 				};
 
-				// Copy the data to the message
 				dataStream.Position = 0;
 				var msgData = message.GetData();
 				dataStream.CopyTo(msgData);
@@ -393,19 +386,14 @@ public class SyncController
 		}
 	}
 
-	// Counter for periodic stream receive logging
 	private int _appliedStreamCount;
 
-	/// <summary>
-	/// Apply received stream data to remote user's streams.
-	/// Called by SessionSyncManager when a StreamMessage is received.
-	/// </summary>
+	// Called by SessionSyncManager when a StreamMessage arrives.
 	public void ApplyStreams(StreamMessage message)
 	{
 		if (message == null || message.IsOutdated)
 			return;
 
-		// Find the user that owns these streams
 		var userElement = Owner?.ReferenceController?.GetObjectOrNull(new RefID(message.UserID));
 		if (userElement is not User user)
 		{
@@ -417,13 +405,11 @@ public class SyncController
 		if (user.IsLocal)
 			return;
 
-		// Check stream configuration version
 		if (message.StreamStateVersion < user.StreamConfigurationVersion)
 		{
 			return;
 		}
 
-		// Read and apply stream data
 		var data = message.GetData();
 		using var reader = new BinaryReader(data);
 		int streamCount = 0;
@@ -432,10 +418,8 @@ public class SyncController
 		{
 			try
 			{
-				// Read stream RefID
 				var streamRefID = new RefID(reader.ReadUInt64());
 
-				// Find the stream
 				var streamElement = Owner?.ReferenceController?.GetObjectOrNull(streamRefID);
 				if (streamElement is IStream stream && stream.Active)
 				{

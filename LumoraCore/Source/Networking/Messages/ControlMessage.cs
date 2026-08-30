@@ -4,54 +4,29 @@
 using System;
 using System.IO;
 using Lumora.Core.Networking;
+using Lumora.Nexus.Protocol;
+using Lumora.Nexus.Transport;
 
 namespace Lumora.Core.Networking.Messages;
 
-/// <summary>
-/// Control message types for session management.
-/// </summary>
 public enum ControlMessageType : byte
 {
-    /// <summary>
-    /// Client requests to join the session.
-    /// </summary>
     JoinRequest = 0,
 
-    /// <summary>
-    /// Authority grants join permission and provides initial data.
-    /// Contains: UserID, MaxUsers, WorldTime, StateVersion
-    /// </summary>
+    // Carries UserID, MaxUsers, WorldTime, StateVersion.
     JoinGrant = 1,
 
-    /// <summary>
-    /// Authority signals that full state has been sent, client can start receiving deltas.
-    /// </summary>
     JoinStartDelta = 2,
 
-    /// <summary>
-    /// User is leaving the session.
-    /// </summary>
     Leave = 3,
 
-    /// <summary>
-    /// Authority kicked a user.
-    /// </summary>
     Kick = 4,
 
-    /// <summary>
-    /// Ping/keepalive message.
-    /// </summary>
     Ping = 5,
 
-    /// <summary>
-    /// Pong response to ping.
-    /// </summary>
     Pong = 6
 }
 
-/// <summary>
-/// Control message for session management.
-/// </summary>
 public class ControlMessage
 {
     public ControlMessageType SubType;
@@ -95,9 +70,6 @@ public class ControlMessage
     }
 }
 
-/// <summary>
-/// Join request data sent by client when connecting.
-/// </summary>
 public struct JoinRequestData
 {
     public string UserName;
@@ -105,27 +77,21 @@ public struct JoinRequestData
     public string UserID;
     public byte HeadDevice;
 
-    /// <summary>
-    /// DER SubjectPublicKeyInfo for this client's machine key. MachineID must be the hash of this, and
-    /// the joiner has to sign the host's challenge nonce with the matching private key to get in. This
-    /// is what makes MachineID actually mean something instead of being free text. -xlinka
-    /// </summary>
+    // DER SubjectPublicKeyInfo for this client's machine key. MachineID must be the hash of this, and
+    // the joiner has to sign the host's challenge nonce with the matching private key to get in. This
+    // is what makes MachineID actually mean something instead of being free text. -xlinka
     public byte[] MachinePublicKey;
 
-    /// <summary>
-    /// Optional account identity. When the joiner is signed into an account, these name the
-    /// account and the login session whose public key it published to the backend. The host fetches that
-    /// key from the cloud and verifies the account signature (in JoinAuthenticate). Empty = guest, machine
-    /// key only. We do NOT send the account public key itself, the host gets the trusted one from the
-    /// cloud so a joiner can't present a key of their choosing. -xlinka
-    /// </summary>
+    // Optional account identity. When the joiner is signed into an account, these name the
+    // account and the login session whose public key it published to the backend. The host fetches that
+    // key from the cloud and verifies the account signature (in JoinAuthenticate). Empty = guest, machine
+    // key only. We do NOT send the account public key itself, the host gets the trusted one from the
+    // cloud so a joiner can't present a key of their choosing. -xlinka
     public string AccountUserId;
     public string AccountSessionId;
 
-    /// <summary>
-    /// A random nonce the joiner generates so the HOST can prove ITS identity back: the host signs this in
-    /// JoinChallenge and the joiner verifies it before trusting the host. -xlinka
-    /// </summary>
+    // A random nonce the joiner generates so the HOST can prove ITS identity back: the host signs this in
+    // JoinChallenge and the joiner verifies it before trusting the host. -xlinka
     public byte[] HostVerificationToken;
 
     public byte[] Encode()
@@ -189,9 +155,6 @@ public struct JoinRequestData
     }
 }
 
-/// <summary>
-/// Join grant data sent by authority.
-/// </summary>
 public struct JoinGrantData
 {
     public ulong AssignedUserID;
@@ -233,9 +196,6 @@ public struct JoinGrantData
     }
 }
 
-/// <summary>
-/// Join rejection data sent by authority when a user cannot enter a session.
-/// </summary>
 public struct JoinRejectData
 {
     public string Reason;
@@ -262,11 +222,9 @@ public struct JoinRejectData
     }
 }
 
-/// <summary>
-/// Host -> joiner: a random nonce the joiner must sign with its machine private key to prove it holds
-/// the key behind the MachineID it claimed. Fresh per join, so a captured signature can't be replayed
-/// to another join (different nonce). -xlinka
-/// </summary>
+// Host -> joiner: a random nonce the joiner must sign with its machine private key to prove it holds
+// the key behind the MachineID it claimed. Fresh per join, so a captured signature can't be replayed
+// to another join (different nonce). -xlinka
 public struct JoinChallengeData
 {
     public byte[] Nonce;
@@ -331,10 +289,8 @@ public struct JoinChallengeData
     }
 }
 
-/// <summary>
-/// Joiner -> host: the joiner's signature over the challenge nonce, made with its machine private key.
-/// The host verifies it against the public key from the JoinRequest. -xlinka
-/// </summary>
+// Joiner -> host: the joiner's signature over the challenge nonce, made with its machine private key.
+// The host verifies it against the public key from the JoinRequest. -xlinka
 public struct JoinAuthenticateData
 {
     public byte[] Signature;          // machine-key signature over the challenge nonce

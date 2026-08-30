@@ -10,12 +10,8 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.UI;
 
-/// <summary>
-/// Dashboard Debug screen: a live read-out of the active session's networking and in-flight asset
-/// transfers (with per-asset progress). Built so a user can SEE whether a spawned mesh/texture is
-/// actually transferring and how far along it is, instead of guessing. Two sub-tabs - Network and
-/// Assets - refreshed a few times a second while the screen is visible.
-/// </summary>
+// live read-out of the active session's networking and in-flight asset transfers, with per-asset
+// progress. Two sub-tabs - Network and Assets - refreshed a few times a second while visible.
 public sealed class DebugScreen : WidgetScreen
 {
     private const float TabBarHeight = 44f;
@@ -171,6 +167,9 @@ public sealed class DebugScreen : WidgetScreen
             sb.AppendLine($"Fulls   sent/recv: {sync.TotalSentFulls}/{sync.TotalReceivedFulls}");
             sb.AppendLine($"Streams sent/recv: {sync.TotalSentStreams}/{sync.TotalReceivedStreams}");
             sb.AppendLine($"Corrections: {sync.TotalCorrections}");
+            sb.AppendLine($"Desyncs: {sync.TotalDesyncs}  dup deltas: {sync.TotalDuplicateDeltas}");
+            sb.AppendLine($"List mismatches: {sync.TotalListMismatches}  targeted resyncs: {sync.TotalTargetedResyncs}");
+            sb.AppendLine($"Delta backlog: {sync.PendingDeltaCount} batches / {sync.PendingDeltaBytes / 1024} KB{(sync.IsDesynced ? " (DESYNCED)" : "")}");
             sb.AppendLine($"Queues  proc/tx: {sync.MessagesToProcessCount}/{sync.MessagesToTransmitCount}");
         }
         sb.AppendLine($"Asset jobs  up/down: {transferer!.UploadJobCount}/{transferer.DownloadJobCount}");

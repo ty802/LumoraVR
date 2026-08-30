@@ -2,13 +2,11 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core.Networking;
+using Lumora.Nexus.Transport;
 
 namespace Lumora.Core.Networking.Sync;
 
-/// <summary>
-/// Delta batch - contains only changed state.
-/// Sent every sync tick to synchronize changes.
-/// </summary>
+// Sent every sync tick.
 public class DeltaBatch : BinaryMessageBatch
 {
     public override MessageType MessageType => MessageType.Delta;

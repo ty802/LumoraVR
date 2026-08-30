@@ -12,6 +12,9 @@ using System.Threading.Tasks;
 using Lumora.Core;
 using Lumora.Core.Networking;
 using Lumora.Core.Networking.Sync;
+using Lumora.Nexus.Transport;
+using Lumora.Nexus.Protocol;
+using Lumora.Nexus.Transport.LNL;
 using LegacyJoinGrantData = Lumora.Core.Networking.Messages.JoinGrantData;
 using LegacyJoinRequestData = Lumora.Core.Networking.Messages.JoinRequestData;
 using LegacyJoinRejectData = Lumora.Core.Networking.Messages.JoinRejectData;
@@ -21,10 +24,6 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Networking.Session;
 
-/// <summary>
-/// Manages connections and maps them to users.
-/// 
-/// </summary>
 public class SessionConnectionManager : IDisposable
 {
     private readonly object _lock = new();
@@ -68,9 +67,6 @@ public class SessionConnectionManager : IDisposable
     public IReadOnlyList<IListener> StartedListeners => _listeners;
     public IConnection HostConnection { get; private set; } = null!;
 
-    /// <summary>
-    /// Event triggered when host connection is lost (client side).
-    /// </summary>
     public event Action OnHostDisconnected = null!;
 
     public SessionConnectionManager(Session session)
@@ -78,12 +74,10 @@ public class SessionConnectionManager : IDisposable
         Session = session;
     }
 
-    /// <summary>
-    /// Start listening for connections (host only). Picks the
-    /// highest-priority registered <see cref="INetworkManager"/> as the
-    /// transport. Override the scheme with <paramref name="preferredScheme"/>
-    /// to pin a specific transport (e.g. "lnl" for direct UDP). - xlinka
-    /// </summary>
+    // Start listening for connections (host only). Picks the
+    // highest-priority registered INetworkManager as the
+    // transport. Override the scheme with preferredScheme
+    // to pin a specific transport (e.g. "lnl" for direct UDP). - xlinka
     public bool StartListener(ushort port, string preferredScheme = null!)
     {
         if (_listeners.Count > 0)
@@ -145,9 +139,6 @@ public class SessionConnectionManager : IDisposable
         return true;
     }
 
-    /// <summary>
-    /// Connect to host as client.
-    /// </summary>
     public async Task<bool> ConnectToAsync(IEnumerable<Uri> addresses)
     {
         // Try every advertised address in order (LAN, public, relay, ...), falling through to the next on
@@ -220,7 +211,6 @@ public class SessionConnectionManager : IDisposable
             LumoraLogger.Warn($"[lnl] Connection closed: {c.FailReason}");
             taskCompletionSource.TrySetResult(false);
             
-            // Trigger host disconnected event if this was the host connection
             if (HostConnection == c)
             {
                 OnHostDisconnected?.Invoke();
@@ -238,7 +228,6 @@ public class SessionConnectionManager : IDisposable
         {
             HostConnection = connection;
 
-            // Send JoinRequest to host with our username
             SendJoinRequest();
             return true;
         }
@@ -252,10 +241,8 @@ public class SessionConnectionManager : IDisposable
         return false;
     }
 
-    /// <summary>
-    /// True if the given host string is an IPv4 address that belongs to THIS machine (loopback or any of its
-    /// own interface addresses) - i.e. the join target is a session hosted on the same PC. -xlinka
-    /// </summary>
+    // True if the given host string is an IPv4 address that belongs to THIS machine (loopback or any of its
+    // own interface addresses) - i.e. the join target is a session hosted on the same PC. -xlinka
     private static bool IsLocalAddress(string host)
     {
         if (string.IsNullOrEmpty(host) || !IPAddress.TryParse(host, out var target))
@@ -285,9 +272,6 @@ public class SessionConnectionManager : IDisposable
         return false;
     }
 
-    /// <summary>
-    /// Send JoinRequest to host (client only).
-    /// </summary>
     private void SendJoinRequest()
     {
         if (HostConnection == null)
@@ -383,6 +367,10 @@ public class SessionConnectionManager : IDisposable
         LumoraLogger.Log($"[lnl] Peer disconnected: {peer.Identifier}");
 
         Session.AssetTransferer?.ConnectionClosed(peer);
+        // Drop this link's delta cursor. A reconnect arrives as a new IConnection and therefore a new
+        // cursor, which is what stops it resuming a delta run across the stretch it was gone for - it
+        // has to start from the tagged full batch the join path sends. -xlinka
+        Session.Sync?.OnConnectionClosed(peer);
 
         lock (_lock)
         {
@@ -397,7 +385,7 @@ public class SessionConnectionManager : IDisposable
         }
     }
 
-    /// <summary>Remove a connection from the pending set and decrement its per-IP count. Caller must hold _lock.</summary>
+    // Caller must hold _lock.
     private bool RemovePendingLocked(IConnection connection)
     {
         if (!_pendingConnections.Remove(connection))
@@ -415,13 +403,11 @@ public class SessionConnectionManager : IDisposable
     // How long a joiner has to answer the signed challenge before we give up on them. -xlinka
     private static readonly TimeSpan PendingAuthTtl = TimeSpan.FromSeconds(20);
 
-    /// <summary>
-    /// Caller must hold _lock. Pulls out any pending-auth entries that have sat past the challenge TTL without
-    /// answering. Those slots count against MaxPendingConnections (and the joiner already freed its per-IP slot
-    /// when it left _pendingConnections), so without this a single source can open valid join requests, never
-    /// sign the challenge, and park every pending slot - locking real players out. Returns the dropped
-    /// connections so the caller can reject + close them AFTER releasing the lock. -xlinka
-    /// </summary>
+    // Caller must hold _lock. Pulls out any pending-auth entries that have sat past the challenge TTL without
+    // answering. Those slots count against MaxPendingConnections (and the joiner already freed its per-IP slot
+    // when it left _pendingConnections), so without this a single source can open valid join requests, never
+    // sign the challenge, and park every pending slot - locking real players out. Returns the dropped
+    // connections so the caller can reject + close them AFTER releasing the lock. -xlinka
     private List<IConnection>? ReclaimStalePendingAuthLocked()
     {
         var cutoff = DateTime.UtcNow - PendingAuthTtl;
@@ -453,9 +439,6 @@ public class SessionConnectionManager : IDisposable
     private static string GetIpKey(IConnection connection)
         => connection?.IP?.ToString() ?? connection?.Identifier ?? "<unknown>";
 
-    /// <summary>
-    /// Handle incoming JoinRequest from client.
-    /// </summary>
     public void HandleJoinRequest(IConnection connection, LegacyJoinRequestData requestData)
     {
         bool isPending;
@@ -598,7 +581,6 @@ public class SessionConnectionManager : IDisposable
             return;
         }
 
-        // Allocate ID range using RefIDAllocator
         var (allocStart, allocEnd) = World.RefIDAllocator.AllocateUserIDRange();
 
         // Defensively clear any stale objects still sitting on this byte BEFORE we build the new user on it.
@@ -688,9 +670,6 @@ public class SessionConnectionManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Host -> joiner: send the random nonce the joiner must sign with its machine key to prove identity.
-    /// </summary>
     private void SendJoinChallenge(IConnection connection, byte[] nonce, byte[] hostVerificationToken)
     {
         var hostIdentity = Lumora.Core.Security.MachineIdentity.Local;
@@ -725,9 +704,6 @@ public class SessionConnectionManager : IDisposable
         LumoraLogger.Log($"[lnl] Sent JoinChallenge to {connection.Identifier}");
     }
 
-    /// <summary>
-    /// Client side: the host challenged us, so sign the nonce with our machine key and send it back.
-    /// </summary>
     public void HandleJoinChallenge(IConnection connection, LegacyJoinChallengeData challenge)
     {
         if (challenge.Nonce == null || challenge.Nonce.Length == 0)
@@ -813,10 +789,8 @@ public class SessionConnectionManager : IDisposable
         LumoraLogger.Log("[lnl] Sent JoinAuthenticate to host");
     }
 
-    /// <summary>
-    /// Host side: verify the joiner's signed challenge. Only if the signature proves they hold the
-    /// private key behind their claimed MachineID do we actually grant the join. Otherwise reject. -xlinka
-    /// </summary>
+    // Host side: verify the joiner's signed challenge. Only if the signature proves they hold the
+    // private key behind their claimed MachineID do we actually grant the join. Otherwise reject. -xlinka
     public async Task HandleJoinAuthenticate(IConnection connection, LegacyJoinAuthenticateData auth)
     {
         if (connection == null || !World.IsAuthority)
@@ -919,12 +893,10 @@ public class SessionConnectionManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Verify a joiner's CLAIMED account: fetch the public key that account published to the cloud for the
-    /// given login session, verify the account signature over the challenge nonce against THAT key (so the
-    /// joiner can't present a key of their choosing), then check platform moderation ban status. Returns
-    /// the verified account id, or null if anything fails. World bans are a separate, host-side check. -xlinka
-    /// </summary>
+    // Verify a joiner's CLAIMED account: fetch the public key that account published to the cloud for the
+    // given login session, verify the account signature over the challenge nonce against THAT key (so the
+    // joiner can't present a key of their choosing), then check platform moderation ban status. Returns
+    // the verified account id, or null if anything fails. World bans are a separate, host-side check. -xlinka
     private async Task<(string accountId, bool forceSilenced)?> VerifyAccountAsync(string accountUserId, string accountSessionId, byte[] nonce, byte[] accountSignature)
     {
         var cdn = Engine.Current?.CDNClient;
@@ -1007,9 +979,6 @@ public class SessionConnectionManager : IDisposable
         Session.Sync.QueueRawIncoming(raw);
     }
 
-    /// <summary>
-    /// Get user for connection.
-    /// </summary>
     public bool TryGetUser(IConnection connection, out User user)
     {
         lock (_lock)
@@ -1024,9 +993,6 @@ public class SessionConnectionManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Get connection for user.
-    /// </summary>
     public bool TryGetConnection(User user, out IConnection connection)
     {
         lock (_lock)
@@ -1041,9 +1007,6 @@ public class SessionConnectionManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Get all connections for broadcasting.
-    /// </summary>
     public List<IConnection> GetAllConnections()
     {
         lock (_lock)
@@ -1052,9 +1015,6 @@ public class SessionConnectionManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Broadcast data to specified connections.
-    /// </summary>
     public void Broadcast(byte[] data, List<IConnection> targets, bool reliable)
     {
         foreach (var target in targets)
@@ -1063,10 +1023,7 @@ public class SessionConnectionManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Poll network events for this session's connections and listeners.
-    /// Must be called every frame by the world update loop.
-    /// </summary>
+    // Must be called every frame by the world update loop.
     public void Poll()
     {
         // Periodic reap of join challenges nobody answered (host side; no-op for a client). The contention
@@ -1083,7 +1040,7 @@ public class SessionConnectionManager : IDisposable
         // covers any listeners/connections created outside the session. - xlinka
         foreach (var l in _listeners)
         {
-            if (l is LNL.LNLListener lnlListener) lnlListener.Poll();
+            if (l is LNLListener lnlListener) lnlListener.Poll();
         }
         HostConnection?.Poll();
     }

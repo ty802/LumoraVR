@@ -5,31 +5,19 @@ using System.Collections.Generic;
 using System.IO;
 using Lumora.Core;
 using Lumora.Core.Networking;
+using Lumora.Nexus.Protocol;
 
 namespace Lumora.Core.Networking.Messages;
 
-/// <summary>
-/// Confirms or corrects client delta changes.
-/// </summary>
 public class ConfirmationMessage
 {
     public MessageType Type => MessageType.Confirmation;
     public bool Reliable => true;
 
-    /// <summary>
-    /// Authority's current state version after applying validated changes.
-    /// </summary>
     public ulong AuthorityStateVersion { get; set; }
 
-    /// <summary>
-    /// State version that the client's delta claimed to be based on.
-    /// Used for detecting conflicts.
-    /// </summary>
     public ulong ClientStateVersion { get; set; }
 
-    /// <summary>
-    /// Records of confirmations or corrections.
-    /// </summary>
     public List<ConfirmationRecord> Records { get; set; } = new();
 
     public byte[] Encode()
@@ -50,7 +38,6 @@ public class ConfirmationMessage
 
             if (!record.Accepted)
             {
-                // Write corrected value
                 writer.Write(record.CorrectedData.Length);
                 writer.Write(record.CorrectedData);
                 writer.Write(record.RejectionReason ?? "");
@@ -92,33 +79,16 @@ public class ConfirmationMessage
     }
 }
 
-/// <summary>
-/// Single confirmation or correction for a sync member change.
-/// </summary>
 	public class ConfirmationRecord
 	{
-	/// <summary>
-	/// RefID of the element (User, Slot, Component) being confirmed.
-	/// </summary>
 	public RefID TargetID { get; set; }
 
-    /// <summary>
-    /// Index of the sync member within the element.
-    /// </summary>
     public int MemberIndex { get; set; }
 
-    /// <summary>
-    /// Whether the authority accepted this change.
-    /// </summary>
     public bool Accepted { get; set; }
 
-    /// <summary>
-    /// If rejected, the corrected value from authority.
-    /// </summary>
+    // Set when rejected: the authority's corrected value.
     public byte[] CorrectedData { get; set; } = null!;
 
-    /// <summary>
-    /// Human-readable reason for rejection (for debugging/logging).
-    /// </summary>
     public string RejectionReason { get; set; } = null!;
 }

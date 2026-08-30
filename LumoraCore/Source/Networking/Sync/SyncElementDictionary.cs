@@ -12,33 +12,21 @@ using Lumora.Core.Networking;
 
 namespace Lumora.Core.Networking.Sync;
 
-/// <summary>
-/// Delegate for dictionary element events.
-/// </summary>
 public delegate void SyncDictionaryElementEvent<K, T>(K key, T element, SyncElementDictionary<K, T> dictionary)
     where K : notnull
     where T : SyncElement, new();
 
-/// <summary>
-/// Delegate for general dictionary events.
-/// </summary>
 public delegate void SyncDictionaryEvent<K, T>(SyncElementDictionary<K, T> dictionary)
     where K : notnull
     where T : SyncElement, new();
 
-/// <summary>
-/// Interface for synchronized dictionaries.
-/// </summary>
 public interface ISyncDictionary
 {
     IEnumerable Values { get; }
     IEnumerable<KeyValuePair<object, SyncElement>> BoxedEntries { get; }
 }
 
-/// <summary>
-/// Network-synchronized dictionary with SyncElement values: each value is a sub-element with its own
-/// RefID that syncs and persists itself. For a dictionary of plain value types use SyncValueDictionary.
-/// </summary>
+// For a dictionary of plain value types use SyncValueDictionary.
 public class SyncElementDictionary<K, T> : ConflictingSyncElement, IEnumerable<KeyValuePair<K, T>>, ISyncDictionary
     where K : notnull
     where T : SyncElement, new()
@@ -79,24 +67,12 @@ public class SyncElementDictionary<K, T> : ConflictingSyncElement, IEnumerable<K
         }
     }
 
-    /// <summary>
-    /// Event triggered when an element is added.
-    /// </summary>
     public event SyncDictionaryElementEvent<K, T> ElementAdded = null!;
 
-    /// <summary>
-    /// Event triggered when an element is removed.
-    /// </summary>
     public event SyncDictionaryElementEvent<K, T> ElementRemoved = null!;
 
-    /// <summary>
-    /// Event triggered before the dictionary is cleared.
-    /// </summary>
     public event SyncDictionaryEvent<K, T> BeforeClear = null!;
 
-    /// <summary>
-    /// Event triggered after the dictionary is cleared.
-    /// </summary>
     public event SyncDictionaryEvent<K, T> Cleared = null!;
 
     public SyncElementDictionary()

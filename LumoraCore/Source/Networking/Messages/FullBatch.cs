@@ -2,13 +2,10 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core.Networking;
+using Lumora.Nexus.Transport;
 
 namespace Lumora.Core.Networking.Sync;
 
-/// <summary>
-/// Full batch - contains complete state.
-/// Sent to new users or for conflict resolution.
-/// </summary>
 public class FullBatch : BinaryMessageBatch
 {
     public override MessageType MessageType => MessageType.Full;

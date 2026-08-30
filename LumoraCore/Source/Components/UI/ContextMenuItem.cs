@@ -6,69 +6,54 @@ using System.Collections.Generic;
 
 namespace Lumora.Core.Components.UI;
 
-/// <summary>
-/// Data for a single radial context menu item.
-///
-/// Polar coordinate layout:
-///   AngleStart + ArcLength (degrees) = arc position around the ring
-///   RadiusStart + Thickness (pixels) = inner and outer radius of the arc
-/// </summary>
+// polar coordinate layout: AngleStart + ArcLength (degrees) = arc position around the ring;
+// RadiusStart + Thickness (pixels) = inner and outer radius of the arc
 public class ContextMenuItem
 {
     // Display
 
-    /// <summary>Text label shown on the arc segment.</summary>
     public string Label { get; set; } = "";
 
-    /// <summary>res:// path to an icon Texture2D. Null = no icon.</summary>
+    // res:// path to an icon Texture2D. null = no icon
     public string? IconPath { get; set; }
 
-    /// <summary>Arc fill color (RGBA 0-1).</summary>
+    // RGBA 0-1
     public float[] FillColor { get; set; } = { 0.12f, 0.12f, 0.12f, 0.9f };
 
-    /// <summary>Arc outline accent color. Null = derived from FillColor (or toggle state) by the menu;
-    /// only set this to force a specific outline.</summary>
+    // null = derived from FillColor (or toggle state) by the menu; only set this to force a specific outline
     public float[]? OutlineColor { get; set; }
 
-    /// <summary>Label text color.</summary>
     public float[] LabelColor { get; set; } = { 1f, 1f, 1f, 1f };
 
     // State
 
-    /// <summary>Whether this item responds to interaction.</summary>
     public bool IsEnabled { get; set; } = true;
 
-    /// <summary>Whether this is a stateful toggle (IsToggled reflects current state).</summary>
     public bool IsToggle { get; set; } = false;
 
-    /// <summary>Current toggled state. Only meaningful when IsToggle is true.</summary>
+    // only meaningful when IsToggle is true
     public bool IsToggled { get; set; } = false;
 
     // Actions
 
-    /// <summary>
-    /// Callback fired when the item is pressed.
-    /// Null for label-only (non-interactive) items.
-    /// </summary>
+    // null for label-only (non-interactive) items
     public Action<ContextMenuItem>? OnPressed { get; set; }
 
-    /// <summary>
-    /// If set, pressing this item navigates into this sub-page instead of firing OnPressed.
-    /// </summary>
+    // if set, pressing this item navigates into this sub-page instead of firing OnPressed
     public ContextMenuPage? SubPage { get; set; }
 
     // Polar coordinate layout (set by ContextMenuPage.LayoutItems)
 
-    /// <summary>Start angle in degrees. 0 degrees = right, increases clockwise.</summary>
+    // degrees, 0 = right, increases clockwise
     public float AngleStart { get; internal set; }
 
-    /// <summary>Angular size of this segment in degrees.</summary>
+    // degrees
     public float ArcLength { get; internal set; }
 
-    /// <summary>Inner radius in pixels (distance from center to the inner arc edge).</summary>
+    // pixels, distance from center to the inner arc edge
     public float RadiusStart { get; set; } = 55f;
 
-    /// <summary>Radial depth in pixels (inner-to-outer arc width).</summary>
+    // pixels, inner-to-outer arc width
     public float Thickness { get; set; } = 80f;
 
     // Computed helpers
@@ -79,19 +64,15 @@ public class ContextMenuItem
     public float RadiusMiddle => RadiusStart + Thickness * 0.5f;
 }
 
-/// <summary>
-/// A page of context menu items displayed as a radial ring.
-/// Pages can be stacked to create sub-menus.
-/// </summary>
+// pages can be stacked to create sub-menus
 public class ContextMenuPage
 {
-    /// <summary>Short title shown in the center circle.</summary>
+    // shown in the center circle
     public string Title { get; set; } = "";
 
-    /// <summary>All items on this page. Laid out by LayoutItems().</summary>
     public List<ContextMenuItem> Items { get; } = new();
 
-    /// <summary>Gap in degrees between adjacent items (default 5 degrees).</summary>
+    // degrees, gap between adjacent items
     public float SeparationAngle { get; set; } = 2f;
 
     public ContextMenuPage(string title = "") => Title = title;
@@ -102,6 +83,26 @@ public class ContextMenuPage
     {
         Items.Add(item);
         return this;
+    }
+
+    // sub-page behind the root item labelled `label`, created on first use. several sources
+    // contribute tool actions to one page; each asks for the same submenu instead of stacking its
+    // own items on the root ring, so the root stays one entry per topic.
+    public ContextMenuPage GetOrAddSubPage(string label, float[] fillColor)
+    {
+        foreach (var existing in Items)
+        {
+            if (existing.SubPage != null && existing.Label == label)
+                return existing.SubPage;
+        }
+        var subPage = new ContextMenuPage(label);
+        Items.Add(new ContextMenuItem
+        {
+            Label = label,
+            FillColor = fillColor,
+            SubPage = subPage,
+        });
+        return subPage;
     }
 
     public ContextMenuPage AddItem(string label, Action<ContextMenuItem> onPressed,
@@ -118,10 +119,8 @@ public class ContextMenuPage
 
     // Layout
 
-    /// <summary>
-    /// Distribute all items evenly around 360 degrees, respecting SeparationAngle gaps.
-    /// Call this before passing a page to ContextMenuView.
-    /// </summary>
+    // distributes all items evenly around 360 degrees, respecting SeparationAngle gaps.
+    // call this before passing a page to ContextMenuView.
     public void LayoutItems()
     {
         if (Items.Count == 0) return;

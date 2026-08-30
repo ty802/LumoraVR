@@ -34,6 +34,15 @@ public class ToolContextActions : ContextMenuItemSource
             return;
 
         var item = hand.ActiveToolItem.Target;
+        var grabber = hand.Grabber;
+        bool holdingSomething = grabber != null && grabber.IsHoldingObjects;
+        if ((item == null || item.IsDestroyed) && !holdingSomething)
+            return;
+
+        // Shares the submenu the gizmo mode items use, so equip/dequip sit with the rest of the tool's
+        // actions instead of on the root ring.
+        page = page.GetOrAddSubPage(Gizmos.GizmoModeMenuSource.ToolSubmenuLabel, Gizmos.GizmoModeMenuSource.ToolSubmenuFill);
+
         if (item != null && !item.IsDestroyed)
         {
             page.AddItem(new ContextMenuItem
@@ -47,7 +56,6 @@ public class ToolContextActions : ContextMenuItemSource
         // Holding a tool: offer to equip it into this hand. Allowed even with a tool already equipped (the
         // equip swaps, popping the old one off) - the hand carries a default tool, so a held-only gate would
         // make this item unreachable. Release the grab first or the grabber keeps a ref to a docked slot. -xlinka
-        var grabber = hand.Grabber;
         if (grabber == null || !grabber.IsHoldingObjects)
             return;
 

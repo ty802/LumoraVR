@@ -199,7 +199,7 @@ public static class ModelImporter
                 return result;
             }
 
-            // PHASE A (off-thread): resolve every used material's textures into local:// URIs up front. Texture
+            // OFF-THREAD: resolve every used material's textures into local:// URIs up front. Texture
             // saves hit the local DB (file IO) and must NOT run on the world thread - so do them here, off-thread.
             // The world-thread build below only ATTACHES components from these resolved results (no IO, no await).
             progress?.Report((0.3f, "Decoding materials..."));
@@ -210,7 +210,7 @@ public static class ModelImporter
                 resolvedMaterials[amesh.MaterialIndex] = await ResolveMaterialAsync(scene, amesh.MaterialIndex, modelDir, localDB).ConfigureAwait(false);
             }
 
-            // PHASE A2 (off-thread): animation clips. Extraction is pure CPU over the already-parsed scene and
+            // OFF-THREAD, animation clips: extraction is pure CPU over the already-parsed scene and
             // the serialize + local-DB write is file IO, so both belong out here rather than on the world
             // thread. Clip bytes land in the content-addressed DB exactly like meshes and textures, which is
             // what makes a clip replicate to joiners by hash instead of every peer re-deriving it from the
@@ -241,7 +241,7 @@ public static class ModelImporter
                 }
             }
 
-            // PHASE B (world thread, chunked): EVERY data-model + Godot scene-tree write happens from here on, on
+            // WORLD THREAD, CHUNKED: EVERY data-model + Godot scene-tree write happens from here on, on
             // the world thread under the engine's Implementer lock - the only place they're legal. We hop on per
             // logical chunk (and per mesh node) via OnWorldAsync so each lands on its own frame and the world keeps
             // rendering between chunks (load-in-pieces). The heavy decode + texture IO already ran off-thread above. -xlinka
@@ -304,8 +304,7 @@ public static class ModelImporter
                         }
                         else
                         {
-                            // Static mesh: a plain MeshRenderer off the Phos asset. (MeshRenderer's asset render
-                            // path is still a hook TODO, so fully static models won't show until that lands.)
+                            // Static mesh: a plain MeshRenderer off the Phos asset.
                             var mr = meshSlot.AttachComponent<MeshRenderer>();
                             mr.Mesh.Target = provider;
                             if (material != null) mr.Material.Target = material;

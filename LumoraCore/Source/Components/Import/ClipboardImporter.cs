@@ -39,7 +39,7 @@ public class ClipboardImporter : Component
             return;
 
         // Paste is an action like anything else, so a focused text field takes the keyboard out of
-        // play before this sees it - typing ctrl+V into a name box no longer spawns an import.
+        // play before this sees it; ctrl+V typed into a name box never reaches the importer.
         if (Engine.Current?.InputInterface?.Actions?.Editing.Paste.Pressed == true)
         {
             HandleClipboardPaste();

@@ -1225,7 +1225,7 @@ public sealed class FullBodyIKSolver
         WriteGlobalRotation(toe, toeRot);
     }
 
-    // Pole vector for two-bone IK. Primary path is the clean-room version of the stable rest-bend behavior:
+    // Pole vector for two-bone IK. Primary path is the stable rest-bend behaviour:
     // transport the captured root->mid offset by the rotation from rest root->end to current root->target. That keeps
     // elbows and digitigrade hocks on the side the avatar was authored with. Only if the captured bend is too straight
     // do we fall back to body-frame preferences.

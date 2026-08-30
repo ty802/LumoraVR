@@ -38,25 +38,5 @@ public static class GodotHelper
                 nodes.Add(node);
         }
     }
-
-    // TODO: Implement when texture asset system is ready.
-    // public static Texture2D GetGodot(this ITexture2D texture)
-    // {
-    //     if (texture == null)
-    //         return null;
-    //
-    //     var hook = texture.Hook as TextureHook;
-    //     return hook?.GodotTexture;
-    // }
-
-    // TODO: Implement when mesh asset system is ready.
-    // public static Mesh GetGodot(this IMesh mesh)
-    // {
-    //     if (mesh == null)
-    //         return null;
-    //
-    //     var hook = mesh.Hook as MeshHook;
-    //     return hook?.GodotMesh;
-    // }
 }
 

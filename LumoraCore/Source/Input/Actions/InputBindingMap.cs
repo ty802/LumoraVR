@@ -131,8 +131,7 @@ public sealed class InputBindingMap
 
     // GATING
 
-    // Called by the InputInterface just before evaluation, from the same suppression state the
-    // desktop modules used to each check for themselves.
+    // Called by the InputInterface just before evaluation, with the current suppression state.
     public void SetGate(InputActionSet set, bool open)
     {
         if (set != null)

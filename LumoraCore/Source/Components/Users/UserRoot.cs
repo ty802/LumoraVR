@@ -149,14 +149,6 @@ public class UserRoot : Component
         {
             if (HeadSlot != null)
             {
-                // TODO: Platform driver - Rotation delta calculation
-                // var currentPos = HeadPosition;
-                // var rotationDelta = value * HeadRotation.Inverse();
-                // Slot.GlobalTransform = new Transform3D(
-                // 	Slot.GlobalTransform.Basis * new Basis(rotationDelta),
-                // 	Slot.GlobalPosition
-                // );
-                // HeadPosition = currentPos; // Restore head position
                 HeadSlot.GlobalRotation = value;
             }
         }

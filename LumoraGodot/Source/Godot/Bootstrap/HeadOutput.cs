@@ -214,8 +214,7 @@ public partial class HeadOutput : Node
     /// </summary>
     private void UpdateCameraSettings(World world)
     {
-        // TODO: Get settings from world when RenderSettings component exists
-        // For now, use defaults
+        // Defaults until a RenderSettings component exists to read from.
         _camera.Near = NearClip;
         _camera.Far = FarClip;
 

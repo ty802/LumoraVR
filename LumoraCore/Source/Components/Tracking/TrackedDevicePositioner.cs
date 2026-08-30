@@ -351,7 +351,6 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
 
     public void AfterInputUpdate()
     {
-        // Nothing to do here for now
     }
 
     private bool ShouldShowReferenceModel(ITrackedDevice device, bool isTracking)

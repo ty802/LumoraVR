@@ -2050,8 +2050,6 @@ public class World : IPermissionWorldFacts
 		{
 			if (component.Enabled)
 			{
-				// Check if component has physics
-				// For now, call a virtual method that components can override
 				component.OnFixedUpdate(fixedDelta);
 			}
 		}

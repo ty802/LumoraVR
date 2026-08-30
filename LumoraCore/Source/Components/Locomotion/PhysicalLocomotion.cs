@@ -59,8 +59,7 @@ public class PhysicalLocomotion : SmoothLocomotionBase
 
         if (InputInterface == null && Engine.Current?.InputInterface != null)
         {
-            // late-bind path used to happen here but base now handles it. Keep
-            // this only as a defensive null check.
+            // The base class does the late bind; this is only a defensive null check.
             return;
         }
 

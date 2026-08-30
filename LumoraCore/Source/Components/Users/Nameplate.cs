@@ -127,9 +127,7 @@ public class Nameplate : ImplementableComponent
 
         IsLoggedIn.Value = !string.IsNullOrEmpty(user.UserID.Value);
 
-        // Get patreon color from user metadata (if available)
-        // For now, we'll use empty string until patreon data is synced
-        // PatreonColorHex will be set by the server/cloud when user data is fetched
+        // PatreonColorHex is filled from the account data when the cloud fetch lands; empty until then.
 
         UpdateRimColor();
     }

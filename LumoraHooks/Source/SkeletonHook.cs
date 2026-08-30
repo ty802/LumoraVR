@@ -234,10 +234,6 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
             if (!_boneNameToIndex.TryGetValue(boneName, out int boneIndex))
                 continue;
 
-            // Skip bones that are being driven by IK
-            // TODO: Add a way to mark bones as IK-driven to skip this step
-
-            // Convert slot local transform to Godot Transform3D
             Transform3D boneTransform = ConvertSlotLocalTransform(boneSlot);
 
             // Set bone pose (relative to parent)

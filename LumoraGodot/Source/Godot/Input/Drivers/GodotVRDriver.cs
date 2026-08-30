@@ -301,7 +301,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         _rightControllerTrackedObject.CorrespondingBodyNode = BodyNode.RightController;
         _rightControllerTrackedObject.Priority = 100;
 
-        // same tracking as controllers for now
+        // Hand devices ride the controller tracking; there is no separate hand-tracking source.
         _leftHandTrackedObject = inputInterface.CreateDevice<TrackedObject>("VR_LeftHand");
         _leftHandTrackedObject.CorrespondingBodyNode = BodyNode.LeftHand;
         _leftHandTrackedObject.Priority = 50; // Lower priority than controller
@@ -774,7 +774,7 @@ public class GodotVRDriver : IVRDriver, IInputDriver
         controllerObj.IsDeviceActive = isTracking;
         controllerObj.TrackingSpace = _inputInterface?.GlobalTrackingSpace!;
 
-        // same position as controller for now
+        // Hands take the controller pose; no separate hand-tracking source.
         if (handObj != null)
         {
             handObj.RawPosition = position;

@@ -434,7 +434,7 @@ public partial class LumoraEngineRunner : Node
 	private async Task PhaseEnvironmentSetup()
 	{
 		LumoraLogger.Log("[Phase 1/6] Environment Setup");
-		_loadingScreen?.UpdatePhase(0); // Phase index 0
+		_loadingScreen?.UpdatePhase(0);
 
 		// Leave vsync off but allow high framerates; mouse driver normalizes deltas to 60 Hz feel
 		global::Godot.Engine.MaxFps = 0;
@@ -480,7 +480,7 @@ public partial class LumoraEngineRunner : Node
 	private async Task PhaseXRDetection()
 	{
 		LumoraLogger.Log("[Phase 2/6] XR Detection");
-		_loadingScreen?.UpdatePhase(1); // Phase index 1
+		_loadingScreen?.UpdatePhase(1);
 
 		if (_xrLaunchMode == XrLaunchMode.Desktop)
 		{
@@ -693,7 +693,7 @@ public partial class LumoraEngineRunner : Node
 	private async Task PhaseHeadOutputCreation()
 	{
 		LumoraLogger.Log("[Phase 3/6] HeadOutput Creation");
-		_loadingScreen?.UpdatePhase(2); // Phase index 2
+		_loadingScreen?.UpdatePhase(2);
 
 		// DesktopCamera lives under the root viewport and drives the desktop
 		// window. XRCamera3D is moved under XRViewport during PhaseXRDetection
@@ -731,7 +731,7 @@ public partial class LumoraEngineRunner : Node
 	private async Task PhaseEngineCoreInit()
 	{
 		LumoraLogger.Log("[Phase 4/6] Engine Core Initialization");
-		_loadingScreen?.UpdatePhase(3); // Phase index 3
+		_loadingScreen?.UpdatePhase(3);
 
 		try
 		{
@@ -824,7 +824,7 @@ public partial class LumoraEngineRunner : Node
 	private async Task PhaseSystemIntegration()
 	{
 		LumoraLogger.Log("[Phase 5/6] System Integration");
-		_loadingScreen?.UpdatePhase(4); // Phase index 4
+		_loadingScreen?.UpdatePhase(4);
 
 		// Get InputInterface from Engine (it's already initialized in Engine.InitializeAsync)
 		_inputInterface = _engine.InputInterface;
@@ -908,7 +908,7 @@ public partial class LumoraEngineRunner : Node
 	private async Task PhaseUserspaceSetup()
 	{
 		LumoraLogger.Log("[Phase 6/6] Userspace Setup");
-		_loadingScreen?.UpdatePhase(5); // Phase index 5
+		_loadingScreen?.UpdatePhase(5);
 
 		try
 		{
@@ -938,7 +938,7 @@ public partial class LumoraEngineRunner : Node
 		LumoraLogger.Log("LumoraEngineRunner: Engine initialization COMPLETE!");
 		LumoraLogger.Log("==========================================================");
 
-		_loadingScreen?.UpdatePhase(6); // Phase index 6 = Ready
+		_loadingScreen?.UpdatePhase(6);
 
 		_engineInitialized = true;
 

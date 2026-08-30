@@ -1566,7 +1566,7 @@ public class AvatarIK : Component, IAvatarEquipReceiver, IInputUpdateReceiver
             return;
         }
 
-        // Clean-room gait scheduling: each planted foot computes how badly it wants to move, then the higher-priority
+        // Gait scheduling: each planted foot computes how badly it wants to move, then the higher-priority
         // foot starts if the other foot is planted or far enough through its travel. This avoids the old left-first
         // bias and makes turn/stride correction behave like a paired-foot state machine rather than two independent
         // distance checks.

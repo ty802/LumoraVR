@@ -10,7 +10,7 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core;
 
-public class RemoteAudioManager : IDisposable
+public class EngineMixerManager : IDisposable
 {
     private sealed class CacheBus : IAudioBus
     {

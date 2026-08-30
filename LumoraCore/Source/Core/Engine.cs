@@ -166,7 +166,7 @@ public class Engine : IDisposable
     public Input.InputInterface InputInterface { get; private set; } = null!;
     public AssetManager AssetManager { get; private set; } = null!;
     public GlobalCoroutineManager CoroutineManager { get; private set; } = null!;
-    public RemoteAudioManager AudioManager { get; private set; } = null!;
+    public EngineMixerManager AudioManager { get; private set; } = null!;
 
     // CDN / Content delivery
     public LumoraClient? CDNClient { get; private set; }

@@ -58,7 +58,16 @@ public readonly struct TouchContact
     // short of contact. A depressible control turns this into travel; a plain switch ignores it.
     public readonly float Penetration;
 
-    public readonly TouchProbe Probe;
+    // Null on a contact the authority rebuilt from a relayed touch: the probe is a component on the
+    // toucher's own machine and does not exist here. Kind and Hand are carried as values for exactly
+    // that reason.
+    public readonly TouchProbe? Probe;
+
+    // For targets that accept one kind and refuse the other.
+    public readonly TouchProbeKind Kind;
+
+    // For haptics and per-hand filtering.
+    public readonly Input.Chirality Hand;
 
     // Null only if the probe outlived its owner.
     public readonly User? User;
@@ -82,14 +91,36 @@ public readonly struct TouchContact
         Direction = direction;
         Penetration = penetration;
         Probe = probe;
+        Kind = probe?.Kind ?? TouchProbeKind.Fingertip;
+        Hand = probe?.Hand.Value ?? Input.Chirality.None;
         User = user;
     }
 
-    // For targets that accept one kind and refuse the other.
-    public TouchProbeKind Kind => Probe?.Kind ?? TouchProbeKind.Fingertip;
-
-    // For haptics and per-hand filtering.
-    public Input.Chirality Hand => Probe?.Hand.Value ?? Input.Chirality.None;
+    // The authority's rebuild of a touch relayed from another peer. The surface normal and the push
+    // direction deliberately do not cross the seam: nothing in the control family reads them, and only
+    // the toucher's own geometry can produce them, so they would double the record for nothing. -xlinka
+    public TouchContact(
+        TouchPhase hover,
+        TouchPhase contact,
+        in float3 point,
+        in float3 tip,
+        float penetration,
+        TouchProbeKind kind,
+        Input.Chirality hand,
+        User? user)
+    {
+        Hover = hover;
+        Contact = contact;
+        Point = point;
+        Normal = float3.Zero;
+        Tip = tip;
+        Direction = float3.Zero;
+        Penetration = penetration;
+        Probe = null;
+        Kind = kind;
+        Hand = hand;
+        User = user;
+    }
 
     public bool IsContacting => Contact == TouchPhase.Begin || Contact == TouchPhase.Stay;
 

@@ -61,7 +61,11 @@ public static class TouchUserFilterExtensions
     // authority byte, every client in its own allocated byte. Match that byte back to a user rather
     // than storing a separate owner ref that a client could just rewrite. Host-authored content
     // lands on whichever user object is itself minted in the authority byte, so no special case. -xlinka
-    private static User? ResolveOwner(IWorldElement element)
+    //
+    // Public because the authority needs the same answer for two more questions than the filter: who
+    // relayed a touch (TouchRelay) and who authored a control (TouchControl.RunTouch). All three want
+    // the byte, none of them may take a client's word for it.
+    public static User? ResolveOwner(IWorldElement element)
     {
         var world = element.World;
         if (world == null)

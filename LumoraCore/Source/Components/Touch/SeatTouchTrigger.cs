@@ -48,6 +48,11 @@ public class SeatTouchTrigger : TouchControl, ISeatTrigger
         }
     }
 
+    // Seating moves the TOUCHER's own rig and Seat.TrySit refuses any user but the caller's own, so
+    // this one reaction has to stay on the peer that touched. Nothing it writes belongs to the world -
+    // the rig it reparents is the toucher's - so there is nothing here for the authority to arbitrate.
+    public override bool RunsOnToucher => true;
+
     protected override string? PointerLabel
     {
         get

@@ -122,6 +122,14 @@ public class PlungerButton : TouchControl, ICustomInspectorUI
 
     public void SetReleasedAction(TouchAction? action) => Bind(Released, ref _localReleased, action);
 
+    public override SyncDelegate<TouchAction>? ResponseSlot(TouchResponse response) => response switch
+    {
+        TouchResponse.Pressed => Pressed,
+        TouchResponse.Pressing => Pressing,
+        TouchResponse.Released => Released,
+        _ => null,
+    };
+
     public override void OnAttach()
     {
         base.OnAttach();

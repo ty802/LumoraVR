@@ -63,6 +63,14 @@ public class TouchSwitch : TouchControl
 
     public void SetReleasedAction(TouchAction? action) => Bind(Released, ref _localReleased, action);
 
+    public override SyncDelegate<TouchAction>? ResponseSlot(TouchResponse response) => response switch
+    {
+        TouchResponse.Pressed => Pressed,
+        TouchResponse.Pressing => Pressing,
+        TouchResponse.Released => Released,
+        _ => null,
+    };
+
     protected override void OnTouchContact(in TouchContact contact)
     {
         if (contact.Hover == TouchPhase.Begin)

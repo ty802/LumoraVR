@@ -44,6 +44,12 @@ public abstract class TouchProbe : Component, ICustomInspectorUI
 
     private readonly List<Slot> _excludeBuffer = new(2);
 
+    private TouchRelay? _relay;
+    private double _nextRelaySearch;
+
+    private const double RelaySearchInterval = 0.25;
+    private const string RelaySlotName = "Touch Relay ";
+
     protected TouchProbe()
     {
         Owner = new SyncRef<User>(this);
@@ -204,12 +210,80 @@ public abstract class TouchProbe : Component, ICustomInspectorUI
     {
         try
         {
-            target.OnTouch(in contact);
+            if (World?.IsAuthority == true || !Relay(target, in contact))
+                target.OnTouch(in contact);
         }
         catch (Exception ex)
         {
             LumoraLogger.Error($"Touch target {DescribeTarget(target)} threw during OnTouch: {ex}");
         }
+    }
+
+    // Off the authority a touch is a REQUEST, not a fact. The control's own state and everything its
+    // responders write belong to whoever owns them, and on world content that is the host - so the
+    // contact goes into this user's own relay and the authority runs the reaction. Returns false when
+    // there is nowhere to publish (a probe standing outside a user rig), which falls back to dispatching
+    // locally exactly as before. -xlinka
+    private bool Relay(ITouchTarget target, in TouchContact contact)
+    {
+        if (target is not TouchControl control || control.RunsOnToucher)
+            return false;
+
+        // A closing dispatch can come from OnDisabled or OnDestroy, which is no moment to be building
+        // slots. By then a relay either exists from the contact that opened this or there was never
+        // anything to close.
+        var relay = ResolveRelay(create: contact.Hover != TouchPhase.End);
+        if (relay == null)
+            return false;
+
+        // Feedback is this machine's own hardware. It stays here rather than waiting out a round trip,
+        // which is the one part of a touch that has to be immediate to feel right.
+        if (contact.Hover == TouchPhase.Begin)
+            Haptics.Pulse(contact.User, contact.Hand, control.HoverHaptics.Value);
+        if (contact.Contact == TouchPhase.Begin || contact.Contact == TouchPhase.End)
+            Haptics.Pulse(contact.User, contact.Hand, control.ContactHaptics.Value);
+
+        relay.Publish(control, in contact);
+        return true;
+    }
+
+    // The probe itself is a local element (see AvatarAssembler), so it cannot carry the signal. The
+    // relay hangs off the replicated node the probe's local slot sits under, minted in the local user's
+    // own namespace, one per probe kind so a fingertip and a beam can be on two controls at once.
+    private TouchRelay? ResolveRelay(bool create)
+    {
+        if (_relay != null && !_relay.IsDestroyed)
+            return _relay;
+        _relay = null;
+
+        var world = World;
+        var parent = Slot?.Parent;
+        if (world == null || parent == null || parent.IsDestroyed || parent.ReferenceID.IsLocalID)
+            return null;
+
+        // Throttled: the rig node this hangs under can still be syncing in, and a miss must not turn
+        // into a hierarchy search every frame for the first second of the session.
+        double now = world.Time.TotalTime;
+        if (now < _nextRelaySearch)
+            return null;
+        _nextRelaySearch = now + RelaySearchInterval;
+
+        string name = RelaySlotName + Kind;
+        var existing = parent.FindChild(name, false)?.GetComponent<TouchRelay>();
+        if (existing != null && !existing.IsDestroyed)
+        {
+            _relay = existing;
+            return _relay;
+        }
+
+        if (!create || IsDestroyed || !world.IsLocalAllocationReady)
+            return null;
+
+        var slot = world.AddLocalUserSlot(parent, name);
+        slot.Persistent.Value = false;
+        using (world.EnterLocalUserAllocation())
+            _relay = slot.AttachComponent<TouchRelay>();
+        return _relay;
     }
 
     private static string DescribeTarget(ITouchTarget target)

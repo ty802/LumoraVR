@@ -57,6 +57,16 @@ public class TouchFlip : TouchControl
 
     public void SetTurnedOffAction(TouchAction? action) => Bind(TurnedOff, ref _localTurnedOff, action);
 
+    // A flip has no press-and-hold and no release, so those two responses have nothing to answer with.
+    // Toggled is what "the control did its thing" means here, so it stands in for Pressed.
+    public override SyncDelegate<TouchAction>? ResponseSlot(TouchResponse response) => response switch
+    {
+        TouchResponse.Pressed => Toggled,
+        TouchResponse.TurnedOn => TurnedOn,
+        TouchResponse.TurnedOff => TurnedOff,
+        _ => null,
+    };
+
     protected override void OnTouchContact(in TouchContact contact)
     {
         if (contact.Hover == TouchPhase.Begin)

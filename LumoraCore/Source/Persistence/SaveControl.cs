@@ -12,6 +12,7 @@ namespace Lumora.Core.Persistence;
 public sealed class SaveControl
 {
     private readonly Dictionary<Type, int> _typeVersions = new();
+    private Dictionary<string, int>? _savedTypeVersions;
 
     public ReferenceTranslator ReferenceTranslator { get; }
 
@@ -81,6 +82,18 @@ public sealed class SaveControl
         if (worker == null)
             return;
 
+        // The reserve walk is the one pass that sees every worker a save is about to write, so the
+        // version stamps ride along with it rather than costing a second traversal. Types that declare
+        // no version add no entry and no work beyond a memoised lookup. -xlinka
+        RegisterTypeVersion(worker.WorkerType, TypeVersioning.GetDeclaredVersion(worker.WorkerType));
+
+        // A preserved component is written back out under the type it came from, so the version stamp
+        // that type had in the ORIGINAL file has to be written back out with it. Losing it would leave
+        // the build that can read the type reading it as version 0 and migrating data that was already
+        // current. -xlinka
+        if (worker is UnresolvedComponent { HasPreservedData: true } preserved)
+            RegisterSavedTypeVersion(preserved.MissingType.Value, preserved.MissingTypeVersion.Value);
+
         for (int i = 0; i < worker.SyncMemberCount; i++)
         {
             var member = worker.GetSyncMember(i);
@@ -137,12 +150,33 @@ public sealed class SaveControl
             _typeVersions.TryAdd(type, version);
     }
 
+    // For a stamp that has no local Type behind it - a preserved component carrying forward the version
+    // its own file recorded.
+    public void RegisterSavedTypeVersion(string typeName, int version)
+    {
+        if (version <= 0 || string.IsNullOrEmpty(typeName))
+            return;
+        _savedTypeVersions ??= new Dictionary<string, int>(StringComparer.Ordinal);
+        _savedTypeVersions.TryAdd(typeName, version);
+    }
+
     public void StoreTypeVersions(DataTreeDictionary dictionary)
     {
         foreach (var (type, version) in _typeVersions)
         {
             if (type.FullName != null)
-                dictionary.Add(type.FullName, version);
+                dictionary.AddOrUpdate(type.FullName, version);
+        }
+
+        if (_savedTypeVersions == null)
+            return;
+
+        foreach (var (typeName, version) in _savedTypeVersions)
+        {
+            // A live type that resolves under the same name has already spoken for it; the carried
+            // stamp only fills names this build has nothing for.
+            if (!dictionary.ContainsKey(typeName))
+                dictionary.Add(typeName, version);
         }
     }
 }

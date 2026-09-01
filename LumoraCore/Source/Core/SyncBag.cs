@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.IO;
 using Lumora.Core.Networking;
 using Lumora.Core.Networking.Sync;
+using Lumora.Core.Persistence;
 
 namespace Lumora.Core;
 
@@ -16,7 +17,7 @@ namespace Lumora.Core;
 /// Supports full and op-log delta network encoding via SyncCoder.
 /// Use this instead of SyncFieldList<T> for unordered bag semantics.
 /// </summary>
-public class SyncBag<T> : ConflictingSyncElement, IEnumerable<T>
+public class SyncBag<T> : ConflictingSyncElement, IEnumerable<T>, ISyncMemberCopy
 {
     private const byte OpAdd = 0;
     private const byte OpRemove = 1;
@@ -93,6 +94,37 @@ public class SyncBag<T> : ConflictingSyncElement, IEnumerable<T>
         OnChanged?.Invoke(this);
         UnblockModification();
         EndModification();
+    }
+
+    // PERSISTENCE - a DataTreeList of the entries (value types via the coder). Without this the base
+    // class's throwing stub ran, Worker.Save swallowed it as "no coder for this member", and every bag
+    // in every save came back empty with nothing logged. -xlinka
+    public override DataTreeNode Save(SaveControl control)
+    {
+        var list = new DataTreeList();
+        foreach (var item in this)
+            list.Add(DataTreeCoder.Encode(item));
+        return list;
+    }
+
+    public override void Load(DataTreeNode node, LoadControl control)
+    {
+        if (node is not DataTreeList list)
+            return;
+        Clear();
+        foreach (var child in list.Children)
+            Add(DataTreeCoder.Decode<T>(child));
+    }
+
+    // Entries are raw values with no sync member of their own, so the generic duplication walk cannot
+    // reach them - without this a duplicated bag comes out empty.
+    public void CopyFromSource(ISyncMember source, Action<ISyncMember, ISyncMember> copyChild)
+    {
+        if (source is not SyncBag<T> other || ReferenceEquals(other, this))
+            return;
+        Clear();
+        foreach (var item in other._items)
+            Add(item);
     }
 
     protected override void InternalEncodeFull(BinaryWriter writer, BinaryMessageBatch outboundMessage)

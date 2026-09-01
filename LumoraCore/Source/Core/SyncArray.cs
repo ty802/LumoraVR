@@ -13,7 +13,7 @@ namespace Lumora.Core;
 
 // Stores values in a flat T[] buffer - no per-element heap allocation. Supports full and sparse-delta
 // network encoding via SyncCoder. Use this instead of SyncFieldList<T> for primitives: 25x less memory.
-public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
+public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>, ISyncMemberCopy
 {
     private const int DefaultCapacity = 4;
     private const byte ModeFullSnapshot = 0;
@@ -203,6 +203,17 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>
     }
 
     public bool Contains(T item) => IndexOf(item) >= 0;
+
+    // Elements are raw values with no sync member of their own, so nothing the generic duplication walk
+    // knows about reaches them - without this a duplicated array comes out empty.
+    public virtual void CopyFromSource(ISyncMember source, Action<ISyncMember, ISyncMember> copyChild)
+    {
+        if (source is not SyncArray<T> other || ReferenceEquals(other, this))
+            return;
+        Clear();
+        for (int i = 0; i < other._count; i++)
+            Add(other._items[i]);
+    }
 
     private void EnsureCapacity(int needed)
     {

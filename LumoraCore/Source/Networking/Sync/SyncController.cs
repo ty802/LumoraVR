@@ -16,6 +16,12 @@ public class SyncController
 	private List<SyncElement> dirtySyncElements;
 	private readonly object _dirtyLock = new object();
 
+	// Scratch buffers for the sync loop, which is the only caller of the methods that use them and always
+	// runs on one thread. Cleared per use, kept so the per-tick copies stop allocating. -xlinka
+	private readonly List<SyncElement> _dirtyScratch = new List<SyncElement>();
+	private readonly MemoryStream _streamScratch = new MemoryStream();
+	private readonly BinaryWriter _streamScratchWriter;
+
 	public World Owner { get; private set; }
 
 	public SyncController(World owner)
@@ -23,13 +29,16 @@ public class SyncController
 		Owner = owner;
 		syncElements = new Dictionary<RefID, SyncElement>();
 		dirtySyncElements = new List<SyncElement>();
+		_streamScratchWriter = new BinaryWriter(_streamScratch);
 	}
 
 	public void RegisterSyncElement(SyncElement element)
 	{
 		syncElements.Add(element.ReferenceID, element);
 
-		if (element.Parent is Slot parentSlot && element is SyncField<string> sf)
+		// Guarded up front: this runs for every sync member ever created, and even the type probes
+		// plus the interpolated string add up to real join-time cost when debug is off. -xlinka
+		if (LumoraLogger.EnableDebug && element.Parent is Slot parentSlot && element is SyncField<string> sf)
 		{
 			var memberName = ((ISyncMember)sf).Name;
 			if (memberName == "Name")
@@ -63,24 +72,29 @@ public class SyncController
 		}
 	}
 
-	public DeltaBatch CollectDeltaMessages()
+	// Null when nothing is dirty: an idle tick used to build (and immediately dispose) a batch, and a
+	// DeltaBatch carries a MemoryStream and a BinaryWriter. That is per tick, per world, forever. -xlinka
+	public DeltaBatch? CollectDeltaMessages()
 	{
-		DeltaBatch deltaBatch = new DeltaBatch(Owner.StateVersion, Owner.SyncTick);
-		List<SyncElement> elementsToSend;
+		var elementsToSend = _dirtyScratch;
 		lock (_dirtyLock)
 		{
 			if (dirtySyncElements.Count == 0)
 			{
-				return deltaBatch;
+				return null;
 			}
 
-			elementsToSend = new List<SyncElement>(dirtySyncElements);
+			elementsToSend.Clear();
+			elementsToSend.AddRange(dirtySyncElements);
 			dirtySyncElements.Clear();
 		}
 
+		DeltaBatch deltaBatch = new DeltaBatch(Owner.StateVersion, Owner.SyncTick);
 		elementsToSend.Sort((SyncElement a, SyncElement b) => a.ReferenceID.CompareTo(b.ReferenceID));
-		foreach (SyncElement dirtySyncElement in elementsToSend)
+		for (int i = 0; i < elementsToSend.Count; i++)
 		{
+			var dirtySyncElement = elementsToSend[i];
+
 			// Skip invalid or disposed elements - they'll be retried once valid
 			if (!dirtySyncElement.IsValid || dirtySyncElement.IsDisposed)
 			{
@@ -109,6 +123,7 @@ public class SyncController
 			}
 		}
 
+		elementsToSend.Clear();
 		return deltaBatch;
 	}
 
@@ -123,7 +138,9 @@ public class SyncController
 		var list = new List<SyncElement>(elements);
 		list.Sort((SyncElement a, SyncElement b) => a.ReferenceID.CompareTo(b.ReferenceID));
 
-		LumoraLogger.Debug($"SyncController.EncodeFullBatch: Encoding {list.Count} sync elements");
+		bool debugLog = LumoraLogger.EnableDebug;
+		if (debugLog)
+			LumoraLogger.Debug($"SyncController.EncodeFullBatch: Encoding {list.Count} sync elements");
 		int slotFieldCount = 0, componentFieldCount = 0, otherCount = 0;
 
 		foreach (SyncElement element in list)
@@ -141,7 +158,7 @@ public class SyncController
 			if (element.Parent is Slot parentSlot)
 			{
 				slotFieldCount++;
-				if (element is SyncField<string> sf)
+				if (debugLog && element is SyncField<string> sf)
 				{
 					var memberName = ((ISyncMember)sf).Name;
 					if (memberName == "Name")
@@ -168,7 +185,8 @@ public class SyncController
 			}
 		}
 
-		LumoraLogger.Debug($"SyncController.EncodeFullBatch: Summary - SlotFields={slotFieldCount}, ComponentFields={componentFieldCount}, Other={otherCount}");
+		if (debugLog)
+			LumoraLogger.Debug($"SyncController.EncodeFullBatch: Summary - SlotFields={slotFieldCount}, ComponentFields={componentFieldCount}, Other={otherCount}");
 
 		return fullBatch;
 	}
@@ -184,6 +202,23 @@ public class SyncController
 
 	public void ValidateDeltaMessages(DeltaBatch batch)
 	{
+		// Scoped for the whole pass so a validator can ask what ELSE this batch carries. The grab rule needs
+		// it: a pickup authors the holder claim and the reparent as one batch, and every record is judged
+		// before any is decoded, so the reparent has to be able to see the claim sitting next to it. Cleared
+		// in a finally - a stale batch here would let the next pass read a disposed stream. -xlinka
+		Owner.ValidatingBatch = batch;
+		try
+		{
+			ValidateDeltaRecords(batch);
+		}
+		finally
+		{
+			Owner.ValidatingBatch = null;
+		}
+	}
+
+	private void ValidateDeltaRecords(DeltaBatch batch)
+	{
 		List<ValidationGroup.Rule> list = new List<ValidationGroup.Rule>();
 		List<ValidationGroup> list2 = new List<ValidationGroup>();
 		for (int i = 0; i < batch.DataRecordCount; i++)
@@ -192,7 +227,21 @@ public class SyncController
 			if (syncElements.TryGetValue(dataRecord.TargetID, out var value))
 			{
 				BinaryReader reader = batch.SeekDataRecord(i);
-				MessageValidity messageValidity = value.Validate(batch, reader, list);
+				MessageValidity messageValidity;
+				try
+				{
+					messageValidity = value.Validate(batch, reader, list);
+				}
+				catch (Exception ex)
+				{
+					// A validator reads the inbound record to decide, so a truncated or hostile record can
+					// make it throw. That must cost the sender its one record, not the whole batch and
+					// everyone else's changes in it. Treat it as a conflict: the record is dropped and the
+					// authority answers with its own current value. -xlinka
+					messageValidity = MessageValidity.Conflict;
+					list.Clear();
+					LumoraLogger.Debug($"SyncController.ValidateDeltaMessages: {value.GetType().Name} RefID={dataRecord.TargetID} validator threw, refusing record - {ex.Message}");
+				}
 				if (messageValidity != MessageValidity.Valid)
 				{
 					batch.InvalidateDataRecord(i, messageValidity == MessageValidity.Conflict);
@@ -306,7 +355,7 @@ public class SyncController
 			{
 				value.DecodeFull(reader, message);
 
-				if (value.Parent is Slot parentSlot && value is SyncField<string> sf)
+				if (LumoraLogger.EnableDebug && value.Parent is Slot parentSlot && value is SyncField<string> sf)
 				{
 					var memberName = ((ISyncMember)sf).Name;
 					if (memberName == "Name")
@@ -318,7 +367,8 @@ public class SyncController
 			return true;
 		}
 
-		LumoraLogger.Debug($"SyncController.DecodeBinaryMessage: Element not found for RefID={dataRecord.TargetID}");
+		if (LumoraLogger.EnableDebug)
+			LumoraLogger.Debug($"SyncController.DecodeBinaryMessage: Element not found for RefID={dataRecord.TargetID}");
 		return false;
 	}
 
@@ -345,8 +395,13 @@ public class SyncController
 		foreach (var group in localUser.StreamGroupManager.Groups)
 		{
 			bool hasData = false;
-			using var dataStream = new MemoryStream();
-			using var writer = new BinaryWriter(dataStream);
+			// One scratch stream for every group, every tick. It used to be a fresh MemoryStream +
+			// BinaryWriter per group, copied into the message through CopyTo (which rents its own 80KB
+			// buffer). Now the encoded bytes go straight from the scratch buffer into the message. -xlinka
+			var dataStream = _streamScratch;
+			var writer = _streamScratchWriter;
+			dataStream.SetLength(0);
+			dataStream.Position = 0;
 
 			foreach (var stream in group.Streams)
 			{
@@ -377,13 +432,19 @@ public class SyncController
 					StreamGroup = group.GroupIndex
 				};
 
-				dataStream.Position = 0;
+				writer.Flush();
+				int length = (int)dataStream.Length;
 				var msgData = message.GetData();
-				dataStream.CopyTo(msgData);
+				if (dataStream.TryGetBuffer(out var buffer))
+					msgData.Write(buffer.Array!, buffer.Offset, length);
+				else
+					msgData.Write(dataStream.ToArray(), 0, length);
 
 				messages.Add(message);
 			}
 		}
+
+		_streamScratch.SetLength(0);
 	}
 
 	private int _appliedStreamCount;
@@ -469,6 +530,10 @@ public class SyncController
 		{
 			dirtySyncElements.Clear();
 		}
+		_dirtyScratch.Clear();
+		// Left undisposed on purpose: the sync thread can still be mid-GatherStreams when a world tears
+		// down, and an ObjectDisposedException there is worse than letting the GC take a MemoryStream.
+		_streamScratch.SetLength(0);
 	}
 }
 

@@ -83,6 +83,7 @@ public abstract class ConflictingSyncElement : SyncElement
     {
         IsHostOnly = true;
         DirectAccessOnly = true;
+        MarkInboundRules();
     }
 
     public void MarkDirectAccessOnly()
@@ -100,8 +101,12 @@ public abstract class ConflictingSyncElement : SyncElement
 
         if (World?.IsAuthority == true)
         {
-            if (IsHostOnly)
-                return MessageValidity.Conflict;
+            // Per-member rules first: they are the specific reason a write is illegal, and running them
+            // ahead of the ordering check means a hostile record is refused on its own merits rather
+            // than accidentally passing because it happened to arrive with a newer tick. -xlinka
+            var ruled = RunInboundRules(inboundMessage, reader, rules);
+            if (ruled != MessageValidity.Valid)
+                return ruled;
 
             bool messageNewer;
             if (inboundMessage.SenderUser != LastModifyingUser)
@@ -135,6 +140,24 @@ public abstract class ConflictingSyncElement : SyncElement
             return MessageValidity.Conflict;
 
         return MessageValidity.Valid;
+    }
+
+    // Host-only members refuse every remote write. Expressed as an inbound rule rather than an inline
+    // branch so the shared path carries exactly one member-specific check, and so a subclass that adds
+    // its own rules composes with this one instead of racing it.
+    protected override MessageValidity ValidateInboundWrite(
+        BinaryMessageBatch inboundMessage, BinaryReader reader, List<ValidationGroup.Rule> rules)
+    {
+        if (!IsHostOnly)
+            return MessageValidity.Valid;
+
+        // Worth reporting, and worth the highest weight there is: these members are identity, allocation
+        // bytes and permission config. A correct client never sends one, so a peer that does is not
+        // confused about the rules, it is testing them. -xlinka
+        World?.DataModelPermissions?.ReportDenial(
+            inboundMessage?.SenderUser, DataModelDenialKind.HostOnly, $"host-only member {Name}");
+
+        return MessageValidity.Conflict;
     }
 
     public override void Invalidate()

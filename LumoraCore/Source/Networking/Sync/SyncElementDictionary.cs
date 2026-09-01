@@ -9,6 +9,7 @@ using System.Linq;
 using Lumora.Core;
 using Lumora.Core.Logging;
 using Lumora.Core.Networking;
+using Lumora.Core.Persistence;
 
 namespace Lumora.Core.Networking.Sync;
 
@@ -27,7 +28,7 @@ public interface ISyncDictionary
 }
 
 // For a dictionary of plain value types use SyncValueDictionary.
-public class SyncElementDictionary<K, T> : ConflictingSyncElement, IEnumerable<KeyValuePair<K, T>>, ISyncDictionary
+public class SyncElementDictionary<K, T> : ConflictingSyncElement, IEnumerable<KeyValuePair<K, T>>, ISyncDictionary, ISyncMemberCopy
     where K : notnull
     where T : SyncElement, new()
 {
@@ -405,6 +406,63 @@ public class SyncElementDictionary<K, T> : ConflictingSyncElement, IEnumerable<K
         {
             Logger.Error($"Exception running BeforeClear. On Element:\n{this.ParentHierarchyToString()}\nException:\n{ex}");
         }
+    }
+
+    // PERSISTENCE
+    // Same shape as the object dictionary's: a list of { Key, Value } entries, so the two keyed
+    // collections read the same in a file and one can be swapped for the other without a format change.
+    // Without these the base class throws NotSupportedException the first time anything holding one is
+    // saved, which is a trap that only springs once someone declares a member of this type. -xlinka
+
+    public override DataTreeNode Save(SaveControl control)
+    {
+        var list = new DataTreeList();
+        foreach (var kvp in _elements)
+        {
+            if (kvp.Value is SyncElement { IsPersistent: false })
+                continue;
+            var entry = new DataTreeDictionary();
+            entry.Add("Key", DataTreeCoder.Encode(kvp.Key));
+            entry.Add("Value", kvp.Value.Save(control));
+            list.Add(entry);
+        }
+        return list;
+    }
+
+    public override void Load(DataTreeNode node, LoadControl control)
+    {
+        if (node is not DataTreeList list)
+            return;
+
+        Clear();
+
+        foreach (var child in list.Children)
+        {
+            if (child is not DataTreeDictionary entry)
+                continue;
+            if (entry.TryGetNode("Key") is not { } keyNode || entry.TryGetNode("Value") is not { } valueNode)
+                continue;
+
+            var key = DataTreeCoder.Decode<K>(keyNode);
+            // A file with the same key twice would throw out of the element add and take the whole
+            // load down with it; the first one written wins instead.
+            if (_elements.ContainsKey(key))
+                continue;
+
+            Add(key).Load(valueNode, control);
+        }
+    }
+
+    // Entries live in a plain dictionary rather than an element list, so the generic duplication walk
+    // has no elements to enumerate and a cloned member comes out empty without this.
+    public void CopyFromSource(ISyncMember source, Action<ISyncMember, ISyncMember> copyChild)
+    {
+        if (source is not SyncElementDictionary<K, T> other || ReferenceEquals(other, this))
+            return;
+
+        Clear();
+        foreach (var kvp in other._elements)
+            copyChild(kvp.Value, Add(kvp.Key));
     }
 
     protected override void InternalEncodeFull(BinaryWriter writer, BinaryMessageBatch outboundMessage)

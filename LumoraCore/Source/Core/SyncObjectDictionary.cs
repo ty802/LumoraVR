@@ -1,6 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System;
 using System.Collections.Generic;
 using System.IO;
 using Lumora.Core.Networking.Sync;
@@ -23,7 +24,7 @@ public class SyncObjectDictionary<TKey, TValue> : SyncList<SyncObjectDictionary<
     /// One key/value pair. A composite element whose key field and value element each sync and persist
     /// themselves; the container carries no payload of its own (same idiom as other composite elements).
     /// </summary>
-    public sealed class Entry : SyncElement
+    public sealed class Entry : SyncElement, ISyncMemberCopy
     {
         public override SyncMemberType MemberType => SyncMemberType.Object;
 
@@ -62,6 +63,17 @@ public class SyncObjectDictionary<TKey, TValue> : SyncList<SyncObjectDictionary<
         }
 
         public override object? GetValueAsObject() => Key.Value;
+
+        // A composite element is neither a field nor a list, so the generic duplication walk has nothing
+        // to set on it and the clone's entries come back blank. Route both halves back through the
+        // caller so a reference value still defers to the transfer phase.
+        public void CopyFromSource(ISyncMember source, Action<ISyncMember, ISyncMember> copyChild)
+        {
+            if (source is not Entry other || ReferenceEquals(other, this))
+                return;
+            copyChild(other.Key, Key);
+            copyChild(other.Value, Value);
+        }
     }
 
     /// <summary>Get the value for a key, or create a new value element if the key is absent.</summary>

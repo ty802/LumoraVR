@@ -19,6 +19,11 @@ public abstract class BinaryMessageBatch : SyncMessage
     private List<DataRecord> _dataRecords = new();
     private int _currentRecordIndex = -1;
 
+    // Encode() output sizing: a RefID plus a 7-bit length per record, and the fixed batch header. Slack on
+    // purpose - overshooting the capacity costs nothing, undershooting costs a grow-and-copy.
+    private const int RecordHeaderAllowance = 16;
+    private const int BatchHeaderAllowance = 48;
+
     public int DataRecordCount => _dataRecords.Count;
 
     public override abstract MessageType MessageType { get; }
@@ -175,7 +180,16 @@ public abstract class BinaryMessageBatch : SyncMessage
     // rather than letting two builds trade unreadable frames. -xlinka
     public override byte[] Encode()
     {
-        using var output = new MemoryStream();
+        // Sized up front from the record payload plus a per-record header allowance, so a big batch does
+        // not grow-and-copy its way through the output stream; record bytes are then written straight out
+        // of this batch's own buffer instead of through a byte[] allocated per record. -xlinka
+        int payloadSize = 0;
+        for (int i = 0; i < _dataRecords.Count; i++)
+        {
+            payloadSize += _dataRecords[i].EndOffset - _dataRecords[i].StartOffset;
+        }
+
+        using var output = new MemoryStream(payloadSize + _dataRecords.Count * RecordHeaderAllowance + BatchHeaderAllowance);
         using var writer = new BinaryWriter(output);
 
         writer.Write((byte)MessageType);
@@ -191,7 +205,9 @@ public abstract class BinaryMessageBatch : SyncMessage
         writer.Write7BitEncoded((ulong)_dataRecords.Count);
 
         // Write each record: [RefID][DataLength][Data]
-        _stream.Position = 0;
+        if (!_stream.TryGetBuffer(out var source))
+            source = new ArraySegment<byte>(_stream.ToArray());
+
         for (int i = 0; i < _dataRecords.Count; i++)
         {
             var record = _dataRecords[i];
@@ -199,11 +215,7 @@ public abstract class BinaryMessageBatch : SyncMessage
 
             writer.WriteRefID(record.TargetID);
             writer.Write7BitEncoded((ulong)dataSize);
-
-            _stream.Position = record.StartOffset;
-            var buffer = new byte[dataSize];
-            _stream.Read(buffer, 0, dataSize);
-            writer.Write(buffer);
+            writer.Write(source.Array!, source.Offset + record.StartOffset, dataSize);
         }
 
         return output.ToArray();

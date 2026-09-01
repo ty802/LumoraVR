@@ -9,11 +9,14 @@ using Lumora.Core;
 
 namespace Lumora.Core.Networking.Sync;
 
-public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, ISyncMember
+public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, ISyncMember, ILinkable
 {
     protected int _flags;
 
     private int _modificationLevel;
+
+    private ILinkRef? _directLink;
+    private ILinkRef? _inheritedLink;
 
     protected World _world = null!;
     protected RefID _referenceID;
@@ -86,7 +89,8 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
         // A base-class flag landing on one of those reads back as another class's state, which is a
         // very quiet way to break every field in the engine. Keep this map current. -xlinka
         ValueCameFromData = 18,
-        // 19+ available for derived classes
+        HasInboundRules = 19,
+        // 20+ available for derived classes
     }
 
     public World World
@@ -163,6 +167,12 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
     public bool ModificationBlocked { get => GetFlag((int)InternalFlags.ModificationBlocked); protected set => SetFlag((int)InternalFlags.ModificationBlocked, value); }
     public bool DriveErrorLogged { get => GetFlag((int)InternalFlags.DriveErrorLogged); protected set => SetFlag((int)InternalFlags.DriveErrorLogged, value); }
 
+    // Set by a member that declares an inbound rule (see ValidateInboundWrite). It is the whole cost of
+    // the seam for every member that has no rules: one bit test, no virtual call, no allocation.
+    public bool HasInboundRules { get => GetFlag((int)InternalFlags.HasInboundRules); private set => SetFlag((int)InternalFlags.HasInboundRules, value); }
+
+    protected void MarkInboundRules() => HasInboundRules = true;
+
     // Whether this member's value was handed to it by a save or by a peer, rather than being whatever
     // the owning worker constructed it with.
     //
@@ -180,18 +190,96 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
 
     public virtual bool IsValid => true;
 
-    // The link currently held on this element, or null when it carries none. Overridden by the
-    // element types that actually have link machinery (fields).
+    // LINKING
     //
-    // A METHOD on purpose: SyncField must expose ActiveLink PUBLICLY to satisfy ILinkable,
+    // Link storage lives on the BASE element, not on SyncField. Fields were the only drivable members
+    // for a long time and the machinery grew there, which quietly meant a list, a dictionary or an
+    // array could never be driven - a whole class of driver components had nowhere to point. Every gate
+    // that acts on a drive (outbound sync suppression, inbound delta ignore, IsBlockedByDrive) was
+    // already sitting down here reading through ResolveActiveLink, so moving the two references up is
+    // the entire widening: any member type is now a legal drive target and all three gates cover it
+    // without a line of per-type code. -xlinka
+    //
+    // ResolveActiveLink stays a METHOD: SyncField must expose ActiveLink PUBLICLY to satisfy ILinkable,
     // and C# won't let a public property override a protected one, so the old code declared
     // `public new ILinkRef? ActiveLink` - which HID the base member instead of overriding it. Every
     // drive gate down here then kept binding to the base's always-null property, so all three of
     // them were silently dead for every field in the engine: driven fields still generated outbound
     // deltas, still accepted inbound ones, and IsBlockedByDrive never fired. Routing the gates
-    // through a virtual method that the public property forwards to is what keeps them honest, and
-    // no `new` can quietly detach them again. -xlinka
-    protected virtual ILinkRef? ResolveActiveLink() => null;
+    // through a method that the public property forwards to is what keeps them honest, and no `new`
+    // can quietly detach them again. -xlinka
+    protected virtual ILinkRef? ResolveActiveLink() => _inheritedLink ?? _directLink;
+
+    public ILinkRef? ActiveLink => ResolveActiveLink();
+
+    public ILinkRef? DirectLink => _directLink;
+
+    public ILinkRef? InheritedLink => _inheritedLink;
+
+    public virtual IEnumerable<ILinkable>? LinkableChildren => null;
+
+    public virtual void Link(ILinkRef link)
+    {
+        _directLink = link;
+        if (ReferenceEquals(link, ResolveActiveLink()))
+        {
+            UpdateLinkHierarchy(link);
+        }
+        OnLinkStateChanged();
+    }
+
+    public virtual void InheritLink(ILinkRef link)
+    {
+        _inheritedLink = link;
+        UpdateLinkHierarchy(link);
+        OnLinkStateChanged();
+    }
+
+    public virtual void ReleaseLink(ILinkRef link)
+    {
+        if (ReferenceEquals(_directLink, link))
+        {
+            _directLink = null;
+            UpdateLinkHierarchy(link);
+            OnLinkStateChanged();
+        }
+    }
+
+    public virtual void ReleaseInheritedLink(ILinkRef link)
+    {
+        if (!ReferenceEquals(_inheritedLink, link))
+            throw new InvalidOperationException("The link being released isn't the one currently inherited");
+
+        _inheritedLink = null;
+        UpdateLinkHierarchy(link);
+        OnLinkStateChanged();
+    }
+
+    protected void UpdateLinkHierarchy(ILinkRef changedLink)
+    {
+        if (IsDisposed)
+            return;
+
+        if (changedLink.WasLinkGranted && changedLink.IsDriving)
+        {
+            // The drive that was controlling this member is going away. Register it so the sync loop
+            // re-broadcasts our real current value to peers - while driven we suppressed deltas, so
+            // they're holding the last driven value and won't otherwise hear that it's free again.
+            // Register first (while we can still confirm the link was granted+driving), then invalidate.
+            // ReleaseLink/ReleaseInheritedLink already null the link before we get here, so IsDriven is
+            // false by now, which is exactly what the drain wants to confirm. -xlinka
+            World?.LinkManager?.DriveReleased(this);
+            Invalidate();
+        }
+
+        // No sync member type reports linkable children today, so there is no hierarchy to walk here.
+    }
+
+    // Change notification for the link itself; the element types that carry a Changed event fire it here.
+    protected virtual void OnLinkStateChanged()
+    {
+        WasChanged = true;
+    }
 
     public bool IsLinked => ResolveActiveLink() != null;
 
@@ -623,6 +711,30 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
         return MessageValidity.Valid;
     }
 
+    // Per-member rule consulted by the AUTHORITY before a remote write is applied - the one place a
+    // member type gets to say "this particular write is illegal from the wire" without every such check
+    // being hand-rolled into the shared validate path.
+    //
+    // Only reached when the member declared rules (MarkInboundRules), so a plain field pays a bit test
+    // and nothing else. The reader is positioned at the start of the inbound record and may be read
+    // freely: the decode path re-seeks the record before applying it. Rules added to `rules` are
+    // cross-record conditions resolved by ValidationGroup after every record has been looked at, which
+    // is how a write that is only legal alongside another record in the SAME batch gets expressed.
+    //
+    // Return Conflict to refuse: the record is dropped and the authority answers with its own current
+    // value, the same correction path every other refused write uses. NEVER throw - see
+    // SyncController.ValidateDeltaMessages, which catches anyway rather than let one hostile record kill
+    // a whole batch. -xlinka
+    protected virtual MessageValidity ValidateInboundWrite(
+        BinaryMessageBatch inboundMessage, BinaryReader reader, List<ValidationGroup.Rule> rules)
+        => MessageValidity.Valid;
+
+    // Entry point for the shared validate path; sealed to the flag so the virtual call never happens for
+    // a rule-less member.
+    protected MessageValidity RunInboundRules(
+        BinaryMessageBatch inboundMessage, BinaryReader reader, List<ValidationGroup.Rule> rules)
+        => HasInboundRules ? ValidateInboundWrite(inboundMessage, reader, rules) : MessageValidity.Valid;
+
     public virtual void Invalidate()
     {
         InvalidateSyncElement();
@@ -710,6 +822,8 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
         World?.ReferenceController?.UnregisterObject(this);
         World?.SyncController?.UnregisterSyncElement(this);
 
+        _directLink = null;
+        _inheritedLink = null;
         IsDisposed = true;
         _parent = null;
         World = null!;

@@ -17,7 +17,7 @@ namespace Lumora.Core;
 /// Use this instead of wrapping individual Sync<T> fields for keyed collections.
 /// Values are stored inline; for keyed collections of sub-elements use SyncElementDictionary.
 /// </summary>
-public class SyncValueDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<KeyValuePair<TKey, TValue>>
+public class SyncValueDictionary<TKey, TValue> : ConflictingSyncElement, IEnumerable<KeyValuePair<TKey, TValue>>, ISyncMemberCopy
     where TKey : notnull
 {
     private const byte OpSet = 0;
@@ -171,6 +171,17 @@ public class SyncValueDictionary<TKey, TValue> : ConflictingSyncElement, IEnumer
         OnChanged?.Invoke(this);
         UnblockModification();
         EndModification();
+    }
+
+    // Entries are raw key/value pairs with no sync member of their own, so the generic duplication walk
+    // cannot reach them - without this a duplicated dictionary comes out empty.
+    public void CopyFromSource(ISyncMember source, Action<ISyncMember, ISyncMember> copyChild)
+    {
+        if (source is not SyncValueDictionary<TKey, TValue> other || ReferenceEquals(other, this))
+            return;
+        Clear();
+        foreach (var pair in other._dict)
+            Add(pair.Key, pair.Value);
     }
 
     private void SetKey(TKey key, TValue value)

@@ -16,9 +16,6 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
 
     public Func<T, IField<T>, T>? LocalFilter;
 
-    private ILinkRef? _directLink;
-    private ILinkRef? _inheritedLink;
-
     // Flag check mask for hook bypass: init(5) + hookcallback(10) + loading(9)
     private const int HOOK_CHECK_FLAGS = 0x620;
 
@@ -95,77 +92,14 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
 
     #region Linking
 
-    // IsLinked / IsDriven / IsHooked live on SyncElement and read through ResolveActiveLink, so the
-    // base class's drive gates (sync suppression, inbound-delta ignore, IsBlockedByDrive) and this
-    // public ILinkable surface can never disagree about whether the field is driven. -xlinka
+    // The link storage, the ILinkable surface and UpdateLinkHierarchy all live on SyncElement so every
+    // member type is drivable, not just fields. All this adds is the Changed event a field carries.
+    // -xlinka
 
-    public ILinkRef? ActiveLink => _inheritedLink ?? _directLink;
-
-    protected override ILinkRef? ResolveActiveLink() => _inheritedLink ?? _directLink;
-
-    public ILinkRef? DirectLink => _directLink;
-
-    public ILinkRef? InheritedLink => _inheritedLink;
-
-    public IEnumerable<ILinkable>? LinkableChildren => null;
-
-    ILinkRef? ILinkable.ActiveLink => ActiveLink;
-
-    public void Link(ILinkRef link)
+    protected override void OnLinkStateChanged()
     {
-        _directLink = link;
-        if (link == ActiveLink)
-        {
-            UpdateLinkHierarchy(link);
-        }
+        base.OnLinkStateChanged();
         SyncElementChanged();
-    }
-
-    public void InheritLink(ILinkRef link)
-    {
-        _inheritedLink = link;
-        UpdateLinkHierarchy(link);
-        SyncElementChanged();
-    }
-
-    public void ReleaseLink(ILinkRef link)
-    {
-        if (_directLink == link)
-        {
-            _directLink = null;
-            UpdateLinkHierarchy(link);
-            SyncElementChanged();
-        }
-    }
-
-    public void ReleaseInheritedLink(ILinkRef link)
-    {
-        if (_inheritedLink != link)
-            throw new InvalidOperationException("The link being released isn't the one currently inherited");
-
-        _inheritedLink = null;
-        UpdateLinkHierarchy(link);
-        SyncElementChanged();
-    }
-
-    protected void UpdateLinkHierarchy(ILinkRef changedLink)
-    {
-        if (IsDisposed)
-            return;
-
-        if (changedLink.WasLinkGranted && changedLink.IsDriving)
-        {
-            // The drive that was controlling this field is going away. Register it so the sync loop
-            // re-broadcasts our real current value to peers - while driven we suppressed deltas, so
-            // they're holding the last driven value and won't otherwise hear that it's free again.
-            // Register first (while we can still confirm the link was granted+driving), then invalidate.
-            // ReleaseLink/ReleaseInheritedLink already null the link before we get here, so IsDriven is
-            // false by now, which is exactly what the drain wants to confirm. -xlinka
-            World?.LinkManager?.DriveReleased(this);
-            Invalidate();
-        }
-
-        // Fields don't have linkable children
     }
 
     #endregion
@@ -324,8 +258,6 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
     {
         OnValueChange = null;
         Changed = null;
-        _directLink = null;
-        _inheritedLink = null;
         base.Dispose();
     }
 

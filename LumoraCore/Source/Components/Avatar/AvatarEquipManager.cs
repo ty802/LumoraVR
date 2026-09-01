@@ -4,7 +4,6 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
-using Helio.UI;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Input;
@@ -45,10 +44,19 @@ public class AvatarEquipManager : UserRootComponent
     [OldName("NameTagBackground")]
     public readonly Sync<color> BadgeBackground = new();
 
-    // Auto-composed name badge (mesh text + assigner + position/face
-    // components). Suppressed when an equipped avatar carries its own
-    // NameBadgeDriver.
+    // The trim ring drawn around the plate. This is the supporter-reward surface: one authored colour
+    // that every peer draws, so whatever grants a tier writes it HERE and the plate follows. Additive
+    // and name-keyed like every other member, so a save written before it existed loads the quiet
+    // neutral below rather than a colour nobody picked. -xlinka
+    public readonly Sync<color> BadgeRim = new();
+
+    // Whether this user gets the built-in nameplate. NameplateManager reads it live and hides itself
+    // when it goes false or when an equipped avatar brings its own NameBadgeDriver.
     public readonly Sync<bool> AutoAddNameBadge = new();
+
+    // Handle on the REPLICATED name badge the old inline builder made. Kept only so a session or save
+    // carrying one can be cleaned up: the plate is composed locally per peer now and nothing new is ever
+    // written here. -xlinka
     private readonly SyncRef<Slot> _autoNameBadge = new();
 
     public readonly SyncRefList<Slot> AvailableAvatars;
@@ -68,6 +76,7 @@ public class AvatarEquipManager : UserRootComponent
         BadgeColor.Value = color.White;
         BadgeOutline.Value = color.Black;
         BadgeBackground.Value = new color(0f, 0f, 0f, 0.6f);
+        BadgeRim.Value = new color(0.14f, 0.15f, 0.19f, 0.85f);
         AutoAddNameBadge.Value = true;
         BadgeText.OnChanged += _ => UpdateBadges();
         BadgeColor.OnChanged += _ => UpdateBadges();
@@ -86,71 +95,112 @@ public class AvatarEquipManager : UserRootComponent
         }
     }
 
-    // Compose the default badge: mesh text + assigner above the user's head,
-    // each peer billboarding it locally. An equipped avatar that brings its
-    // own assigner replaces the auto badge.
-    private void EnsureNameBadge()
+    // Compose the built-in nameplate for this user.
+    //
+    // Runs on EVERY peer, not just the authority: the plate and everything under it is local, so each
+    // machine builds its own out of state that already replicated. There is nothing here for the
+    // authority to hand anybody. -xlinka
+    private void EnsureNameplate()
     {
-        if (World?.IsAuthority != true || Slot == null)
+        if (Slot == null || World == null)
             return;
 
-        if (!AutoAddNameBadge.Value)
+        TrackDisplayName();
+        DestroyLegacyBadge();
+
+        var existing = Slot.FindChild(NameplateManager.RootSlotName, recursive: false);
+        if (existing != null && !existing.IsDestroyed)
         {
-            _autoNameBadge.Target?.Destroy();
+            if (existing.GetComponent<NameplateManager>() != null)
+                return;
+            // A stray root with no manager on it: a half-built plate from a torn-down equip, or an
+            // orphan of the same name out of an old tree. Take the name back.
+            existing.Destroy();
+        }
+
+        var root = Slot.AddLocalSlot(NameplateManager.RootSlotName);
+        root.Persistent.Value = false;
+        root.AttachComponent<NameplateManager>();
+    }
+
+    // The old inline builder put a REPLICATED "Name Badge" slot under this one. Nothing writes that
+    // shape any more, so anything still carrying it - a save from before the plate went local, or a
+    // session where one peer is older - gets it taken away rather than ending up with two names over
+    // one head. Authority only: destroying a replicated slot is a mutation, and on an observer it would
+    // be refused by the gate anyway.
+    private void DestroyLegacyBadge()
+    {
+        if (World?.IsAuthority != true)
+            return;
+
+        var tracked = _autoNameBadge.Target;
+        if (tracked != null && !tracked.IsDestroyed)
+            tracked.Destroy();
+        if (_autoNameBadge.Target != null)
             _autoNameBadge.Target = null!;
-            return;
-        }
 
-        bool hasCustom = false;
-        foreach (var assigner in Slot.GetComponentsInChildren<NameBadgeDriver>())
+        foreach (var child in Slot.Children)
         {
-            if (assigner.Slot != _autoNameBadge.Target)
-            {
-                hasCustom = true;
-                break;
-            }
+            if (child == null || child.IsDestroyed || child.IsLocalElement)
+                continue;
+            if (child.SlotName.Value != LegacyBadgeSlotName)
+                continue;
+            if (child.GetComponent<NameBadgeDriver>() == null)
+                continue;
+            child.Destroy();
+            break;
         }
+    }
 
-        if (hasCustom)
+    private const string LegacyBadgeSlotName = "Name Badge";
+
+    private User _nameSource = null!;
+    private Action<IChangeable> _nameChanged = null!;
+
+    // BadgeText is the replicated display-name channel every badge and plate reads, seeded from the
+    // account name at spawn. Keep it ON that name, or a rename mid-session never reaches anybody's plate
+    // and the room keeps calling you what you were called an hour ago. Authority only: it is a synced
+    // field and a guest's write would be refused anyway. -xlinka
+    private void TrackDisplayName()
+    {
+        var user = UserRoot.Target?.ActiveUser ?? Slot?.ActiveUserRoot?.ActiveUser;
+        if (ReferenceEquals(user, _nameSource))
         {
-            _autoNameBadge.Target?.Destroy();
-            _autoNameBadge.Target = null!;
+            PushDisplayName();
             return;
         }
 
-        if (_autoNameBadge.Target != null && !_autoNameBadge.Target.IsDestroyed)
+        UntrackDisplayName();
+        if (user == null || user.IsDestroyed)
             return;
 
-        var badge = Slot.AddSlot("Name Badge");
-        badge.Persistent.Value = false;
+        _nameSource = user;
+        _nameChanged = _ => PushDisplayName();
+        user.UserName.Changed += _nameChanged;
+        PushDisplayName();
+    }
 
-        var fontProvider = badge.AttachComponent<Assets.FontProvider>();
-        fontProvider.URL.Value = new Uri("res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf");
+    private void PushDisplayName()
+    {
+        if (World?.IsAuthority != true || _nameSource == null || _nameSource.IsDestroyed)
+            return;
+        var name = _nameSource.UserName.Value ?? string.Empty;
+        if (BadgeText.Value != name)
+            BadgeText.Value = name;
+    }
 
-        var text = badge.AttachComponent<TextRenderer>();
-        text.Size.Value = 0.07f;
-        text.Font.Target = fontProvider;
-        // Center on the above-head origin (PositionAtUser anchors here); default is Left/Top,
-        // which pushes the name down-right of the head instead of sitting centered above it.
-        text.HorizontalAlign.Value = TextHorizontalAlignment.Center;
-        text.VerticalAlign.Value = TextVerticalAlignment.Middle;
+    private void UntrackDisplayName()
+    {
+        if (_nameSource != null && !_nameSource.IsDestroyed && _nameChanged != null)
+            _nameSource.UserName.Changed -= _nameChanged;
+        _nameSource = null!;
+        _nameChanged = null!;
+    }
 
-        var assignerNew = badge.AttachComponent<NameBadgeDriver>();
-        assignerNew.LabelTargets.Add(text);
-
-        // Readable outline around the name (a dilated coverage ring on our text atlas). The
-        // outline COLOR comes from BadgeOutline via the assigner on UpdateBadges; thickness
-        // is a fixed visual in atlas texels.
-        text.OutlineThickness.Value = 2.5f;
-
-        // Sit clearly above the head, not on it. Anchored at the tracking head
-        // (PositionAtUser -> UserRoot.HeadSlot); 0.35 up clears the head visual.
-        var position = badge.AttachComponent<PositionAtUser>();
-        position.VerticalOffset.Value = 0.35f;
-        badge.AttachComponent<FaceLocalUser>();
-
-        _autoNameBadge.Target = badge;
-        UpdateBadges();
+    public override void OnDestroy()
+    {
+        UntrackDisplayName();
+        base.OnDestroy();
     }
 
     public override void OnInit()
@@ -170,7 +220,7 @@ public class AvatarEquipManager : UserRootComponent
         // attach), the fill is a no-op and EquipDefaultAvatar can re-trigger
         // it later. - xlinka
         FillEmptySockets();
-        EnsureNameBadge();
+        EnsureNameplate();
     }
 
     public bool Equip(Slot target, bool isManualEquip = false, bool forceDestroyOld = false, bool isFillingEmptySlot = false)
@@ -284,7 +334,7 @@ public class AvatarEquipManager : UserRootComponent
             FillEmptySockets(objectSlots);
         }
 
-        EnsureNameBadge();
+        EnsureNameplate();
 
         Logger.Log($"AvatarEquipManager: Equipped {pairs.Count} object(s) from '{target.SlotName.Value}'");
         OnAvatarChanged?.Invoke(target);

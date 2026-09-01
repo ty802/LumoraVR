@@ -87,6 +87,14 @@ public class Seat : Component, ICustomInspectorUI
     // used by SeatRestoreMode.Reference
     public readonly SyncRef<Slot> RestoreReference;
 
+    // EXIT
+
+    // On by default because sitting SUPPRESSES locomotion, so a seat with no way out is a trap: the
+    // user cannot walk, cannot jump, and unless the builder happened to bolt a SeatReleaseOnMove onto
+    // the same slot there is no input left that means "stand up". Jump is the one control everybody
+    // already reaches for. Builders who want a ride nobody can leave mid-flight turn it off. -xlinka
+    public readonly Sync<bool> ReleaseOnJump;
+
     // FILTERS
 
     // ignored when no owner can be resolved
@@ -143,6 +151,7 @@ public class Seat : Component, ICustomInspectorUI
         RestoreMode = new Sync<SeatRestoreMode>(this, SeatRestoreMode.SeatRelative);
         RestoreNode = new Sync<UserRoot.UserNode>(this, UserRoot.UserNode.Root);
         RestoreReference = new SyncRef<Slot>(this);
+        ReleaseOnJump = new Sync<bool>(this, true);
 
         OwnerOnly = new Sync<bool>(this, false);
         AllowedUsers = new SyncRefList<User>(this);
@@ -164,6 +173,11 @@ public class Seat : Component, ICustomInspectorUI
     private Slot _attachedSpace = null!;
     private int _verdictAtSit;
     private int _arbitrationCountdown;
+    private float _jumpGrace;
+
+    // The jump that walked you into the seat is usually still held on the frame you land in it, so the
+    // first half second of a sit ignores the button. Same window SeatReleaseOnMove uses.
+    private const float JumpGracePeriod = 0.5f;
 
     // The authority rules a few times a second rather than every frame: the derived scan is a walk of
     // the user list per seat, and a hundred-millisecond wait to learn you lost a race nobody else was
@@ -233,8 +247,36 @@ public class Seat : Component, ICustomInspectorUI
         if (!_seatedLocally)
             return;
 
+        if (CheckJumpRelease(delta))
+            return;
+
         Stay?.Invoke(this, _seatedUser);
         StayAction.Target?.Invoke(this, _seatedUser);
+    }
+
+    // Reads the raw action rather than a locomotion module, for the same reason SeatReleaseOnMove does:
+    // sitting mutes the locomotion set, so anything routed through the movement path would be listening
+    // to a channel this seat already silenced and nobody would ever get up. Returns true when it let go,
+    // so the caller stops before firing Stay at a user who is already standing.
+    //
+    // SeatReleaseOnMove on the same slot is not a conflict: whichever fires first releases, and the
+    // second Release lands on an empty seat and returns early.
+    private bool CheckJumpRelease(float delta)
+    {
+        if (!ReleaseOnJump.Value)
+            return false;
+
+        if (_jumpGrace > 0f)
+        {
+            _jumpGrace -= delta;
+            return false;
+        }
+
+        if (!LocomotionInputHelper.ReadJump(Engine.Current?.InputInterface!))
+            return false;
+
+        Release();
+        return true;
     }
 
     // AUTHORITY
@@ -386,9 +428,11 @@ public class Seat : Component, ICustomInspectorUI
             userRoot.SetGlobalPosition(PositionNode.Value, positionTarget.GlobalPosition);
 
         SuspendLocomotion(userRoot, true);
+        AdoptRootYaw(userRoot);
 
         _seatedLocally = true;
         _seatedUser = user;
+        _jumpGrace = JumpGracePeriod;
 
         // Rule immediately when we ARE the authority, so a single-peer world never waits on the poll.
         if (World?.IsAuthority == true)
@@ -482,6 +526,7 @@ public class Seat : Component, ICustomInspectorUI
                 LevelRoot(rootSlot, float3.Up);
 
             SuspendLocomotion(userRoot!, false);
+            AdoptRootYaw(userRoot!);
         }
 
         _restoreSpace.Clear();
@@ -550,10 +595,15 @@ public class Seat : Component, ICustomInspectorUI
         rootSlot.LocalScale.Value = float3.One * scale;
     }
 
-    // Locomotion goes quiet while seated: the character stops simulating (gravity would drag a rig
-    // that is now parented to a moving seat) and every module bails on the shared suppression flag,
-    // which is the same channel the context menu uses to borrow the sticks. Tracked head and hands
-    // keep working - only locomotion INPUT is off, not the body. - xlinka
+    // MOVEMENT goes quiet while seated, and nothing else. The character stops simulating (gravity would
+    // drag a rig that is now parented to a moving seat) and the locomotion modules park their translation
+    // on the movement flag.
+    //
+    // This used to raise the whole desktop suppression flag, which is what a modal dialog raises when it
+    // wants the mouse and the keyboard to itself. Sitting down took mouse look, snap turn and blink with
+    // it, so a seated user could not even look around - and with locomotion muted, jump was the only way
+    // out of the chair. The narrow flag stops you walking away and leaves looking, turning and aiming
+    // exactly as they were. -xlinka
     private void SuspendLocomotion(UserRoot userRoot, bool suspend)
     {
         if (userRoot == null)
@@ -565,7 +615,16 @@ public class Seat : Component, ICustomInspectorUI
             character?.SetMovementDirection(float3.Zero);
 
         var inputState = userRoot.Slot?.GetComponent<UserInputState>();
-        inputState?.SetDesktopInputSuppressed(this, suspend);
+        inputState?.SetMovementSuppressed(this, suspend);
+    }
+
+    // The seat poses the rig once, on sit, and once more on release - it does NOT re-pin per frame, which
+    // is what lets a turn made while seated stay made. Desktop look is the catch: it rewrites the root's
+    // yaw from its own accumulator every frame, so the pose has to be handed to that accumulator or it is
+    // gone by the next update. -xlinka
+    private static void AdoptRootYaw(UserRoot userRoot)
+    {
+        userRoot?.Slot?.GetComponent<LocomotionController>()?.SyncYawFromRoot();
     }
 
     // The rig hangs off the seat space, and Slot.Destroy takes children down before components, so a

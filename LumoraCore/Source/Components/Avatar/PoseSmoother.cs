@@ -11,7 +11,7 @@ namespace Lumora.Core.Components.Avatar;
 // AvatarSocket for Hips/LeftFoot/RightFoot since those nodes jitter
 // visibly without smoothing. Head and hands stay pass-through so
 // controller-direct input doesn't gain latency. - xlinka
-[ComponentCategory("Users/Avatar/Filters")]
+[ComponentCategory("Users/Avatar")]
 public class PoseSmoother : Component, IPoseFilter
 {
     // Lerp rate per second toward the target. <= 0 means pass through.

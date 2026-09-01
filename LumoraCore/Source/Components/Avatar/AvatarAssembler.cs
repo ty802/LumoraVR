@@ -132,6 +132,11 @@ public class AvatarAssembler : Component, IAvatarAssembler, IAvatarSocketFiller
             characterController.HeadReference.Target = headSlot;
         }
 
+        // Head and hands as dynamic-bone colliders, so this user's body can push other people's hair
+        // and tails around. Costs nothing until a chain in the world asks for player collision, and
+        // carries this user's own "keep my body out of other people's bones" toggle. -xlinka
+        userSlot.AttachComponent<DynamicBonePlayerColliders>();
+
         if (SetupLocomotion.Value)
             userSlot.AttachComponent<LocomotionController>();
 
@@ -141,8 +146,8 @@ public class AvatarAssembler : Component, IAvatarAssembler, IAvatarSocketFiller
         var avatarSlot = userSlot.AddSlot("Avatar");
         var avatarManager = avatarSlot.AttachComponent<AvatarEquipManager>();
         avatarManager.UserRoot.Target = userRoot;
-        // Name badge is composed by AvatarEquipManager (mesh text + assigner)  -
-        // the manager just needs the display data and the toggle.
+        // The nameplate is composed per peer by NameplateManager under a local slot the equip manager
+        // puts up. Nothing about it replicates, so all the scaffold hands over is the toggle.
         avatarManager.AutoAddNameBadge.Value = SetupNameplate.Value;
         if (user != null)
             avatarManager.BadgeText.Value = user.UserName.Value ?? string.Empty;

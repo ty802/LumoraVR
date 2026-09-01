@@ -6,10 +6,14 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Avatar;
 
-// Tiny coordinator that pushes the user's display data (AvatarEquipManager
-// NameTag* fields) into referenced text renderers. The visual itself is
-// ordinary mesh text - there is no dedicated nameplate render path. Custom
-// avatars can carry their own assigner, which suppresses the auto badge. - xlinka
+// The CUSTOM-AVATAR nameplate path: an avatar that wants to draw its own name brings one of these and
+// points it at its own text renderers, and NameplateManager stands down for that user (it looks for one
+// of these on the avatar tree and hides itself when it finds one).
+//
+// The built-in plate does not use this. It is composed locally per peer and reads the same
+// AvatarEquipManager fields directly, so nothing here is on the path of an ordinary user. What this does
+// have that the built-in plate does not is REPLICATED writes: the targets are synced text on the
+// authored avatar, so only the authority pushes and every other peer receives the result. -xlinka
 [ComponentCategory("Users/Avatar")]
 public class NameBadgeDriver : Component, IAvatarEquipReceiver
 {

@@ -49,6 +49,10 @@ public sealed class ParticleSimulation : IDisposable
     private int _moveCount;
     private int[] _emitCounts = System.Array.Empty<int>();
 
+    private readonly Action<int> _chunkJob;
+    private int _jobCount;
+    private float _jobDelta;
+
     private bool _moduleOrderDirty = true;
     private bool _chunksParallelSafe = true;
     private float _fixedStepAccumulator;
@@ -72,6 +76,7 @@ public sealed class ParticleSimulation : IDisposable
         _seed = seed;
         Random = new SeededRandom(seed);
         SubEmission = new SubEmissionManager(this);
+        _chunkJob = RunChunkJob;
     }
 
     public int ParticleCount { get; private set; }
@@ -149,6 +154,8 @@ public sealed class ParticleSimulation : IDisposable
         module.Attach(this);
         module.InsertionIndex = _insertionCounter++;
         _modules.Add(module);
+        if (ParticleCount > 0)
+            module.BackfillExistingParticles(ParticleCount);
         MarkModuleOrderDirty();
     }
 
@@ -364,12 +371,21 @@ public sealed class ParticleSimulation : IDisposable
             return;
         }
 
+        // Chunk bounds go through fields and the delegate is built once, rather than closing over the
+        // locals. A closure here would be hoisted to the top of the method by the compiler and
+        // allocated on EVERY step, including the inline path that never reaches the scheduler - 32
+        // bytes a frame for a branch that was not taken, forever, on every particle system in the
+        // world. -xlinka
+        _jobCount = count;
+        _jobDelta = deltaTime;
         int chunks = (count + ParticlesPerChunk - 1) / ParticlesPerChunk;
-        scheduler!.Schedule(index =>
-        {
-            int offset = index * ParticlesPerChunk;
-            RunChunk(offset, System.Math.Min(ParticlesPerChunk, count - offset), deltaTime);
-        }, chunks);
+        scheduler!.Schedule(_chunkJob, chunks);
+    }
+
+    private void RunChunkJob(int index)
+    {
+        int offset = index * ParticlesPerChunk;
+        RunChunk(offset, System.Math.Min(ParticlesPerChunk, _jobCount - offset), _jobDelta);
     }
 
     private void RunChunk(int offset, int count, float deltaTime)
@@ -651,10 +667,18 @@ public sealed class ParticleSimulation : IDisposable
             seeds[i] = Random.NextUInt();
     }
 
-    // Cache the inverted lifetime, prime the state columns, seed the render columns from the starting
-    // values, then run the two newborn passes so private module columns catch up.
+    // The first newborn pass runs BEFORE the lifetime state and the render columns are seeded, because
+    // the initializers scale the STARTING columns (size, colour, lifetime, rotation) and everything
+    // seeded here has to read the scaled values. Seeding first left a size initializer with no visible
+    // effect once the built-in envelope was off (particles rendered at the raw 1 m base) and made every
+    // lifetime initializer a no-op: remaining life and the inverted lifetime were cached from the
+    // unscaled base, so particles died on the emitter's default. Nothing in the first pass reads the
+    // render or state columns; the second pass is where private module columns copy from starting.
     private void FinishNewParticles(int index, int count)
     {
+        for (int i = 0; i < _initOrdered.Count; i++)
+            _initOrdered[i].InitializeNewParticles(index, count);
+
         var lifetimes = _starting.Lifetimes.Slice(index, count);
         var inverted = _starting.InvertedLifetimes.Slice(index, count);
         var remaining = _state.Lifetimes.Slice(index, count);
@@ -678,8 +702,6 @@ public sealed class ParticleSimulation : IDisposable
         _starting.Sizes.Slice(index, count).CopyTo(_render.Sizes.Slice(index, count));
         _starting.Colors.Slice(index, count).CopyTo(_render.Colors.Slice(index, count));
 
-        for (int i = 0; i < _initOrdered.Count; i++)
-            _initOrdered[i].InitializeNewParticles(index, count);
         for (int i = 0; i < _initOrdered.Count; i++)
             _initOrdered[i].NewParticlesInitialized(index, count);
     }

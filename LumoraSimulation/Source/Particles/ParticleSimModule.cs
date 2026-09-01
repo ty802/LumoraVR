@@ -175,6 +175,20 @@ public abstract class ParticleSimModule : IDisposable
     // Second newborn pass, after every module has done its InitializeNewParticles.
     public virtual void NewParticlesInitialized(int index, int count) { }
 
+    // A module added to a simulation that already has live particles must size its per-particle
+    // columns to the existing population or its first SimulateChunk slices out of range - and late
+    // adds are the NORMAL case, not the odd one: a wrapper's live-apply rebind re-creates its sim
+    // module mid-life. The default runs BOTH newborn passes over the existing population (some modules
+    // split their columns across the two, and skipping the second leaves them misaligned forever);
+    // side effects like a fresh trails module giving live particles trails are exactly what attaching
+    // the module should mean. Value initializers override this to nothing: a late-attached initializer
+    // only affects future births, it does not rewrite live values. -xlinka
+    public virtual void BackfillExistingParticles(int count)
+    {
+        InitializeNewParticles(0, count);
+        NewParticlesInitialized(0, count);
+    }
+
     // Particles about to be compacted away. Indices are still valid for this call only.
     public virtual void ParticlesDying(ReadOnlySpan<int> dyingIndexes) { }
 

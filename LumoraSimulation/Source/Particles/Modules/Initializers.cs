@@ -26,6 +26,8 @@ public abstract class ParticleValueInitializer<T> : ParticleSimModule where T : 
 
     protected abstract void InitializeValues(Span<T> data);
 
+    public override void BackfillExistingParticles(int count) { }
+
     public override void SimulateChunk(int offset, int count, float deltaTime) { }
 }
 

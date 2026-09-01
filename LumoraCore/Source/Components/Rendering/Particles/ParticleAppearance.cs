@@ -58,27 +58,8 @@ public sealed class ParticleColorGradient : ParticleModuleBase
 
     internal override void PushParameters(ParticleSimModule module)
     {
-        RebuildGradient();
+        ParticleCurveHelper.RebuildGradient(Times, Colors, _gradient, ref _lastRevision);
         ((ColorOverLifetimeGradient)module).Gradient = _gradient;
-    }
-
-    // Rebuild only when a stop actually changed. The check is a cheap hash of the two lists rather
-    // than a change event, because a gradient is edited by hand a few times and then read every frame
-    // forever - the read path is what has to be free. -xlinka
-    private void RebuildGradient()
-    {
-        int count = Times.Count < Colors.Count ? Times.Count : Colors.Count;
-        int revision = count;
-        for (int i = 0; i < count; i++)
-            revision = revision * 31 + Times[i].GetHashCode() * 17 + Colors[i].GetHashCode();
-        if (revision == _lastRevision)
-            return;
-        _lastRevision = revision;
-
-        var keys = new ColorGradientKey[count];
-        for (int i = 0; i < count; i++)
-            keys[i] = new ColorGradientKey(Times[i], Colors[i]);
-        _gradient.SetKeys(keys);
     }
 }
 
@@ -130,7 +111,11 @@ public sealed class ParticleSizeCurve : ParticleModuleBase
     }
 }
 
-// Shared rebuild for the scalar-curve modules; see ParticleColorGradient for why it hashes.
+// Shared rebuild for the curve and gradient modules.
+//
+// Rebuilds only when a key actually changed, and detects that with a cheap hash of the two lists
+// rather than a change event: a ramp is edited by hand a few times and then read every frame forever,
+// so it is the READ path that has to be free. -xlinka
 internal static class ParticleCurveHelper
 {
     public static void Rebuild(SyncFieldList<float> times, SyncFieldList<float> values, FloatCurve curve, ref int lastRevision)
@@ -147,6 +132,22 @@ internal static class ParticleCurveHelper
         for (int i = 0; i < count; i++)
             keys[i] = new FloatCurveKey(times[i], values[i]);
         curve.SetKeys(keys);
+    }
+
+    public static void RebuildGradient(SyncFieldList<float> times, SyncFieldList<colorHDR> colors, ColorGradient gradient, ref int lastRevision)
+    {
+        int count = times.Count < colors.Count ? times.Count : colors.Count;
+        int revision = count;
+        for (int i = 0; i < count; i++)
+            revision = revision * 31 + times[i].GetHashCode() * 17 + colors[i].GetHashCode();
+        if (revision == lastRevision)
+            return;
+        lastRevision = revision;
+
+        var keys = new ColorGradientKey[count];
+        for (int i = 0; i < count; i++)
+            keys[i] = new ColorGradientKey(times[i], colors[i]);
+        gradient.SetKeys(keys);
     }
 }
 

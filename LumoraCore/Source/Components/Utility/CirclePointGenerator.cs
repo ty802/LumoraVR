@@ -10,7 +10,7 @@ namespace Lumora.Core.Components;
 /// Generates points on this slot's local XZ plane, uniformly inside a circle (or on its edge when
 /// Shell is set).
 /// </summary>
-[ComponentCategory("Transform/Point Generators")]
+[ComponentCategory("Utility/Transforms")]
 public class CirclePointGenerator : Component, IPointGenerator
 {
     public readonly Sync<float> Radius;

@@ -35,8 +35,10 @@ public class TimeSine : Component
     {
         if (!Target.IsLinkValid)
             return;
-        double angle = UtilityClock.Seconds(World) * Speed.Value + Phase.Value;
-        float unit = (MathF.Sin((float)angle) + 1f) * 0.5f;
+        // Reduce in double before the cast: the clock is wall-clock anchored, and a float holding tens of
+        // billions of seconds cannot tell one frame from the next, so the sine would sit still.
+        double angle = (UtilityClock.Seconds(World) * Speed.Value + Phase.Value) % (2.0 * System.Math.PI);
+        float unit = (float)((System.Math.Sin(angle) + 1.0) * 0.5);
         Target.SetValue(Min.Value + (Max.Value - Min.Value) * unit);
     }
 }
@@ -70,14 +72,22 @@ public class TimeInteger : Component
         if (!Target.IsLinkValid)
             return;
 
-        int count = (int)(UtilityClock.Seconds(World) * Scale.Value);
+        // The clock is wall-clock anchored, so the raw count is in the tens of billions and does not fit
+        // an int; wrap in long and only then narrow.
+        long raw = (long)System.Math.Floor(UtilityClock.Seconds(World) * Scale.Value);
         int repeat = Repeat.Value;
+        int count;
         if (repeat > 0)
         {
-            bool descending = PingPong.Value && SelectionIndex.Wrap(count, repeat * 2) >= repeat;
-            count = SelectionIndex.Wrap(count, repeat);
+            long twice = repeat * 2L;
+            bool descending = PingPong.Value && ((raw % twice) + twice) % twice >= repeat;
+            count = (int)(((raw % repeat) + repeat) % repeat);
             if (descending)
                 count = repeat - 1 - count;
+        }
+        else
+        {
+            count = (int)System.Math.Clamp(raw, int.MinValue, int.MaxValue);
         }
         Target.SetValue(count);
     }

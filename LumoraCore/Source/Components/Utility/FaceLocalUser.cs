@@ -19,14 +19,28 @@ public class FaceLocalUser : Component
         if (parent == null)
             return;
 
-        var viewerHead = World?.LocalUser?.Root?.HeadSlot;
-        if (viewerHead == null || viewerHead.IsDestroyed)
-            return;
+        // The point of view is the CAMERA, not the avatar's head: with a freecam or third person the
+        // head stays put while the eye orbits, and a billboard aimed at the head shows that eye its
+        // back. Head stays the fallback (VR and plain first person, where the two coincide). -xlinka
+        float3 viewPoint;
+        var input = Engine.Current?.InputInterface;
+        if (input != null && UserInputState.FocusedExternalCameraActive
+            && World?.Focus == World.WorldFocus.Focused)
+        {
+            viewPoint = input.DesktopCameraPosition;
+        }
+        else
+        {
+            var viewerHead = World?.LocalUser?.Root?.HeadSlot;
+            if (viewerHead == null || viewerHead.IsDestroyed)
+                return;
+            viewPoint = viewerHead.GlobalPosition;
+        }
 
         // Yaw-only: the readable front of quad/canvas content is its +Z side, so point local +Z at the
         // viewer without tipping. Shared with FaceUser so both get the hand-built basis that avoids
         // floatQ.LookRotation's inverted result.
-        if (!Utility.UserFacing.TryLookRotation(Slot!.GlobalPosition, viewerHead.GlobalPosition,
+        if (!Utility.UserFacing.TryLookRotation(Slot!.GlobalPosition, viewPoint,
                 float3.Up, yawOnly: true, out var global))
             return;
 

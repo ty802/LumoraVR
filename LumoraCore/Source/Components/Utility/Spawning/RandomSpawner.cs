@@ -59,6 +59,10 @@ public sealed class SpawnEntry : SyncElement
 //
 // Templates are duplicated, never moved, and the clone is activated on the way out so a template can
 // sit disabled next to the spawner without showing up in the world.
+//
+// MaxAlive caps the pile. A repeating spawner with no cap is a slow leak that ends as a floor of a
+// thousand beads, so the spawner keeps its own clones in Spawned and retires the OLDEST one whenever a
+// new spawn would push it over. Zero keeps the old unlimited behaviour. -xlinka
 [ComponentCategory("Utility/Spawning")]
 public class RandomSpawner : Component
 {
@@ -78,6 +82,13 @@ public class RandomSpawner : Component
     // In seconds.
     public readonly Sync<float> MaxInterval;
 
+    // How many clones this spawner is allowed to keep alive at once. Zero is unlimited.
+    public readonly Sync<int> MaxAlive;
+
+    // Every clone this spawner still owns, oldest first. Entries whose slot died some other way read
+    // back null and get swept on the next spawn.
+    public readonly SyncRefList<Slot> Spawned;
+
     private double _nextSpawn;
     private readonly Random _random = new();
 
@@ -89,6 +100,8 @@ public class RandomSpawner : Component
         Repeat = new Sync<bool>(this, false);
         MinInterval = new Sync<float>(this, 1f);
         MaxInterval = new Sync<float>(this, 5f);
+        MaxAlive = new Sync<int>(this, 0);
+        Spawned = new SyncRefList<Slot>(this);
     }
 
     public SpawnEntry AddTemplate(Slot? template, float weight = 1f)
@@ -115,13 +128,43 @@ public class RandomSpawner : Component
             return null;
 
         var parent = SpawnParent.Target ?? Slot?.Parent ?? World.RootSlot;
+
+        // Trim BEFORE the duplicate so the cap is a ceiling on what exists rather than on what existed
+        // last frame, and so a cap of one never briefly holds two.
+        EnforceCap();
+
         var clone = template.Duplicate(parent);
         if (clone == null)
             return null;
 
         clone.GlobalPosition = point;
         clone.ActiveSelf.Value = true;
+        Spawned.Add(clone);
         return clone;
+    }
+
+    // The tracked slot IS the destroy root here, so this deliberately does not run the entry through
+    // DestroyRootMarker.FindRoot. That helper answers "a delete button somewhere inside this prop, what
+    // did the builder mean" by walking UP for the nearest marker, and a spawner walking up from its own
+    // clone would escalate straight past it into whatever scene slot it was spawned under. The spawner
+    // created the clone and already knows exactly what it owns. -xlinka
+    private void EnforceCap()
+    {
+        // A clone can die by any route (a delete tool, its parent going down), and the reference reads
+        // back null once it does. Sweep those first or the cap counts ghosts and stops spawning.
+        Spawned.RemoveAll(reference => reference.Target == null);
+
+        int cap = MaxAlive.Value;
+        if (cap <= 0)
+            return;
+
+        while (Spawned.Count >= cap)
+        {
+            var oldest = Spawned[0];
+            Spawned.RemoveAt(0);
+            if (oldest != null && !oldest.IsDestroyed && !oldest.IsRootSlot)
+                oldest.Destroy();
+        }
     }
 
     public override void OnUpdate(float delta)

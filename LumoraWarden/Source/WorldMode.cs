@@ -36,4 +36,28 @@ public static class WorldModePolicy
 
     // Whether users may still bring and handle their own items in this mode.
     public static bool AllowsOwnItems(WorldMode mode) => mode != WorldMode.Event;
+
+    // The CEILING a mode puts on a capability domain, binding every role including the host. This is the
+    // same floor SocialLockFloor expresses, said per domain: config toggles resolve first and this is
+    // applied once afterwards, so a host toggle can restrict below it and can never raise past it. Adding
+    // a domain means answering it here, or the mode stops constraining it. -xlinka
+    public static bool ModeAllows(WorldMode mode, PermissionDomain domain) => domain switch
+    {
+        // Bringing your own items. Frozen worlds still allow it; an event does not.
+        PermissionDomain.Spawn => AllowsOwnItems(mode),
+
+        // Build tools, inspectors, dev gear. The whole point of a non-Builder world is that these are
+        // gone, and gone for the host too.
+        PermissionDomain.ToolUse => mode == WorldMode.Builder,
+
+        // Interacting with what is already there is what a social world IS.
+        PermissionDomain.Touch => true,
+
+        // Taking a copy is not editing, so the freeze does not reach it. Ownership, the per-role toggles
+        // and the protection marker are what gate these.
+        PermissionDomain.SaveCopy => true,
+        PermissionDomain.Export => true,
+
+        _ => false
+    };
 }

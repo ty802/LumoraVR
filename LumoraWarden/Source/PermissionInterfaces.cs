@@ -41,6 +41,35 @@ public interface IPermissionActor
     // The element everything this user structurally owns hangs under (their user root's slot).
     // Null before the body is built.
     IPermissionTarget? RootElement { get; }
+
+    // DURABLE IDENTITY, for persisted role assignments and the denial ledger. Both are host-authored:
+    // the joiner sends them once during the handshake and the host owns the members afterwards, so a
+    // client cannot rewrite either to inherit someone else's role or shed its own denial score.
+    // MachineKey is always there; AccountKey only once an account proved itself, and it is the better
+    // one to key on when present because it survives a machine change. -xlinka
+    string? MachineKey { get; }
+
+    string? AccountKey { get; }
+}
+
+// Attached to an object to say it may not be copied off by people who do not own it. The datamodel
+// carries the marker; whether it binds is decided here.
+public interface IPermissionCopyProtection
+{
+    bool BlocksSaveCopy { get; }
+
+    bool BlocksExport { get; }
+}
+
+// Where a denial escalation lands. Warden knows nothing about connections or ban lists, so the engine
+// hands it these three and the adapter does the actual disconnecting.
+public interface IPermissionEnforcement
+{
+    void WarnHost(IPermissionActor actor, double score, string summary);
+
+    void Kick(IPermissionActor actor, string reason);
+
+    void TempBan(IPermissionActor actor, string reason);
 }
 
 // An element the gate can be asked about. Every member is a FACT about the element, never a decision -
@@ -69,6 +98,10 @@ public interface IPermissionTarget
     // Whether this element sits at or under the actor's own root.
     bool IsUnderActorRoot(IPermissionActor actor);
 
+    // The nearest copy-protection marker at or above this element, or null. Only ever read on the copy
+    // path (an explicit user action), so the walk it costs never lands on a per-write path.
+    IPermissionCopyProtection? CopyProtection { get; }
+
     // Human-readable path, for denial logging only.
     string HierarchyPath { get; }
 }
@@ -83,7 +116,8 @@ public interface IPermissionGrabSurface
     // Whether it may be taken out of another user's hands.
     bool AllowsSteal { get; }
 
-    // The user recorded as holding it right now, or null.
+    // The user recorded as holding it right now, or null. On the authority this is always the PRE-batch
+    // holder, because validation runs before any record in the batch is decoded.
     IPermissionActor? CurrentHolder { get; }
 
     // Classify a write against this surface as part of the grab protocol, or not.
@@ -106,6 +140,13 @@ public interface IPermissionWorldFacts
     // The flat world element registry. Exposed so the gate can tell a user's own-byte REGISTRATION
     // (allowed) from an own-byte add onto a host-owned per-element collection (denied).
     IPermissionTarget? SlotRegistry { get; }
+
+    // Whether the delta batch the authority is validating right now ALSO carries a record that would make
+    // this actor the holder of that surface. A grab is authored as several records in one batch and every
+    // one of them is validated before any is applied, so at the moment the reparent is judged the holder
+    // ref still reads pre-grab - without this, a legitimate pickup would be refused for not already
+    // holding the thing it is picking up. False when no batch is being validated. -xlinka
+    bool BatchClaimsGrab(IPermissionGrabSurface surface, IPermissionActor actor);
 }
 
 // A pluggable decision that runs before roles. Abstain to defer to the built-in policy. Rules run
@@ -113,5 +154,7 @@ public interface IPermissionWorldFacts
 // trust as much as the gate itself. -xlinka
 public interface IPermissionRule
 {
-    PermissionResult Evaluate(in PermissionRequest request, out string? reason);
+    // actor is the RESOLVED actor (request.Actor, else the ambient scope, else the local actor), so a
+    // rule never has to repeat the engine's resolution order or guess inside an EnterActor scope.
+    PermissionResult Evaluate(in PermissionRequest request, IPermissionActor actor, out string? reason);
 }

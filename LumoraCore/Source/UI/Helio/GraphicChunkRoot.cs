@@ -7,6 +7,7 @@ using Lumora.Core.Math;
 namespace Helio.UI;
 
 [HideInInspector]
+[ComponentCategory("UI/Helio")]
 public sealed class GraphicChunkRoot : UIComputeComponent
 {
     // 0 = normal UI. a value > 0 reserves a render-priority band ABOVE all normal chunks so a

@@ -5,15 +5,12 @@ using System.Collections.Generic;
 
 namespace Helio.UI.Layout;
 
-/// <summary>
-/// Pure 2D bin-packing for the widget grid, in cell coordinates:
-/// seed a 1x1 at the cursor, try the widget's preferred cell sizes, otherwise grow the seed
-/// outward (up/right/down/left) into the largest collision-free rect and fit a preferred size inside it.
-/// No engine/Godot dependencies, so it's unit-testable on its own. -xlinka
-/// </summary>
+// Pure 2D bin-packing for the widget grid, in cell coordinates: seed a 1x1 at the cursor, try the
+// widget's preferred cell sizes, otherwise grow the seed outward (up/right/down/left) into the largest
+// collision-free rect and fit a preferred size inside it. No engine dependencies, so it is
+// unit-testable on its own. -xlinka
 public static class WidgetGridPlacement
 {
-    /// <summary>True if <paramref name="rect"/> overlaps any already-placed rect.</summary>
     public static bool IntersectsAny(in GridRect rect, IReadOnlyList<GridRect> occupied)
     {
         for (int i = 0; i < occupied.Count; i++)
@@ -25,12 +22,9 @@ public static class WidgetGridPlacement
         return false;
     }
 
-    /// <summary>
-    /// Find a collision-free placement for a widget near <paramref name="cursorX"/>/<paramref name="cursorY"/>
-    /// (cell coords). Tries each preferred size (largest-first is the caller's responsibility), else grows a
-    /// 1x1 seed into the biggest free rect and fits the best preferred size in it. Returns null if even a 1x1
-    /// at the cursor collides (the grid is full there).
-    /// </summary>
+    // Collision-free placement for a widget near the cursor cell. Tries each preferred size (largest
+    // first is the caller's job), else grows a 1x1 seed into the biggest free rect and fits the best
+    // preferred size in it. Null when even a 1x1 at the cursor collides.
     public static GridRect? FindPlacement(
         int cursorX, int cursorY,
         int gridWidth, int gridHeight,
@@ -48,7 +42,6 @@ public static class WidgetGridPlacement
         if (IntersectsAny(in seed, occupied))
             return null;
 
-        // 1) Try each preferred size, centered on the cursor and clamped into the grid.
         if (preferredSizes != null)
         {
             for (int i = 0; i < preferredSizes.Count; i++)
@@ -62,18 +55,8 @@ public static class WidgetGridPlacement
             }
         }
 
-        // 2) Grow the 1x1 seed outward into the maximal collision-free rect around the cursor.
-        var rect = seed;
-        bool up = true, right = true, down = true, left = true;
-        while (up || right || down || left)
-        {
-            if (up) up = TryGrowUp(ref rect, gridHeight, occupied);
-            if (right) right = TryGrowRight(ref rect, gridWidth, occupied);
-            if (down) down = TryGrowDown(ref rect, occupied);
-            if (left) left = TryGrowLeft(ref rect, occupied);
-        }
+        var rect = GrowFree(seed, gridWidth, gridHeight, occupied);
 
-        // 3) Fit the biggest preferred size that fits inside the free rect (kept near the cursor).
         if (preferredSizes != null)
         {
             for (int i = 0; i < preferredSizes.Count; i++)
@@ -84,14 +67,29 @@ public static class WidgetGridPlacement
             }
         }
 
-        // 4) Nothing preferred fits - take the free rect clamped to the widget's minimum.
         int fw = Clamp(minWidth < 1 ? 1 : minWidth, 1, rect.Width);
         int fh = Clamp(minHeight < 1 ? 1 : minHeight, 1, rect.Height);
         return FitWithin(rect, fw, fh, cursorX, cursorY);
     }
 
+    // Grow a free seed rect outward one cell at a time in every direction until each side is stopped
+    // by an edge or another widget. The result is the free area a carried widget can negotiate into.
+    public static GridRect GrowFree(GridRect seed, int gridWidth, int gridHeight, IReadOnlyList<GridRect> occupied)
+    {
+        var rect = seed;
+        bool up = true, right = true, down = true, left = true;
+        while (up || right || down || left)
+        {
+            if (up) up = TryGrowUp(ref rect, gridHeight, occupied);
+            if (right) right = TryGrowRight(ref rect, gridWidth, occupied);
+            if (down) down = TryGrowDown(ref rect, occupied);
+            if (left) left = TryGrowLeft(ref rect, occupied);
+        }
+        return rect;
+    }
+
     // Place a w x h rect inside `free`, positioned to contain the cursor where possible, clamped to `free`.
-    private static GridRect FitWithin(in GridRect free, int w, int h, int cursorX, int cursorY)
+    public static GridRect FitWithin(in GridRect free, int w, int h, int cursorX, int cursorY)
     {
         int x = Clamp(cursorX - w / 2, free.X, free.Right - w);
         int y = Clamp(cursorY - h / 2, free.Y, free.Top - h);
@@ -99,7 +97,7 @@ public static class WidgetGridPlacement
     }
 
     // Center a w x h rect on the cursor, clamped into the [0,grid) canvas.
-    private static GridRect CenterClamp(int cursorX, int cursorY, int w, int h, int gridWidth, int gridHeight)
+    public static GridRect CenterClamp(int cursorX, int cursorY, int w, int h, int gridWidth, int gridHeight)
     {
         int x = Clamp(cursorX - w / 2, 0, gridWidth - w);
         int y = Clamp(cursorY - h / 2, 0, gridHeight - h);
@@ -142,11 +140,9 @@ public static class WidgetGridPlacement
         return true;
     }
 
-    /// <summary>
-    /// Scan the grid for the first free cell that fits a 1x1 (then the widget can grow), starting at
-    /// <paramref name="startX"/>/<paramref name="startY"/> and walking in <paramref name="stepX"/>/<paramref name="stepY"/>.
-    /// Used to auto-place a newly added widget when no explicit cell is given. Returns null if the grid is full.
-    /// </summary>
+    // Scan the grid for the first cell a placement succeeds at, starting at (startX, startY) and walking
+    // row-first or column-first. Used to auto-place a newly added widget when no explicit cell is given.
+    // Null if the grid is full.
     public static GridRect? FindInsertion(
         int startX, int startY, int gridWidth, int gridHeight,
         IReadOnlyList<(int w, int h)> preferredSizes, int minWidth, int minHeight,
@@ -170,12 +166,8 @@ public static class WidgetGridPlacement
         return null;
     }
 
-    /// <summary>
-    /// Place a widget at a user-forced cell size (drag-to-resize), anchored at its current top-left
-    /// (<paramref name="originX"/>/<paramref name="originY"/>). Clamps the forced WxH into the grid and
-    /// returns it if collision-free, otherwise shrinks it toward 1x1 until it fits (or null if even 1x1
-    /// at the origin collides). -xlinka
-    /// </summary>
+    // Place a widget at a forced cell size anchored at its top-left, shrinking toward 1x1 until it is
+    // collision-free (null if even 1x1 at the origin collides).
     public static GridRect? FitForcedSize(
         int originX, int originY,
         int gridWidth, int gridHeight,

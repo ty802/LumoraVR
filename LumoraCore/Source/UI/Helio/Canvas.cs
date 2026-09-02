@@ -1,4 +1,4 @@
-
+﻿
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
@@ -16,6 +16,7 @@ using Lumora.Core.Math;
 namespace Helio.UI;
 
 // root of a UI tree. attach to a slot to make it (and descendants) a UI subtree. - xlinka
+[ComponentCategory("UI/Helio")]
 public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSecondaryTarget
 {
     private sealed class PointerState
@@ -64,6 +65,18 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     // Opt-in: size a BoxCollider on the canvas slot to the aggregated UI bounds, for physical/grab
     // interaction against the surface. Off by default - leaves hit-testing on the existing raycast path. -xlinka
     public readonly Sync<bool> SizeCollider = new();
+
+    // Metres past which this canvas stops drawing. 0 = draws at any distance, which is the default and what
+    // a dashboard held in front of your face wants. A panel standing in a world is a different thing: nobody
+    // reads 15 px text from forty metres away, but the chunks are still meshed, sorted and drawn, and a
+    // showcase world with two dozen panels in it pays for all of them from the far side of the map. The
+    // distance goes on every chunk renderer this canvas owns, including the ones built later, and the
+    // renderer does the test Godot was already doing for frustum culling. -xlinka
+    public readonly Sync<float> MaxViewDistance = new();
+
+    // Dissolve band in front of the cut, so a panel fades out over the last three metres rather than
+    // popping off as you walk backwards.
+    public const float ViewDistanceFadeMargin = 3f;
 
     // Global kill-switch for GPU stencil masking (per-Mask opt-in via Mask.StencilMasking). On by default;
     // set false to force every mask back to the rectangular clip path. -xlinka
@@ -368,6 +381,54 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     }
 
     public RectTransform? RootRectTransform => _rootRect;
+
+    // Cheap spatial reject for the pointer scan. Every hit area in the canvas is its RectTransform's
+    // LocalComputeRect (Graphic/InteractionElement/InteractionBlock all test that rect), so a point outside
+    // the union of every active rect cannot hit anything and the whole recursive scan can be skipped.
+    // Refreshed once per layout cycle in UpdateCanvasBounds. -xlinka
+    private const float HitBoundsMinMargin = 32f;
+    private Rect _hitBounds;
+    private bool _hitBoundsValid;
+    private bool _hitBoundsStale = true;
+
+    private bool PointCouldHit(in float2 localPoint)
+    {
+        // Refreshed here rather than on every layout pass. A scoped chunk relayout moves rects without
+        // running the whole-canvas pass, so the bounds have to be able to go stale; recomputing them at
+        // the point something actually asks means a canvas nobody is pointing at never pays the walk.
+        if (_hitBoundsStale)
+            RefreshHitBounds();
+        return !_hitBoundsValid || _hitBounds.Contains(localPoint);
+    }
+
+    private void RefreshHitBounds()
+    {
+        _hitBoundsStale = false;
+        if (_rootRect == null)
+        {
+            _hitBoundsValid = false;
+            return;
+        }
+
+        _rootRect.UpdateBounds();
+        var b = _rootRect.BoundingRect;
+        if (b.IsEmpty)
+        {
+            _hitBoundsValid = false;
+            return;
+        }
+
+        // Margin, not a tight fit. Content under a scrolling mask is tested in content space with the
+        // scroll displacement taken back off, so a hit point can sit slightly outside the raw union of
+        // unscrolled rects. Missing a canvas by metres is what this filter is for; anything near the
+        // edge falls through to the real scan. -xlinka
+        float mx = MathF.Max(b.width * 0.25f, HitBoundsMinMargin);
+        float my = MathF.Max(b.height * 0.25f, HitBoundsMinMargin);
+        _hitBounds = Rect.FromMinMax(
+            new float2(b.Min.x - mx, b.Min.y - my),
+            new float2(b.Max.x + mx, b.Max.y + my));
+        _hitBoundsValid = true;
+    }
     public GraphicChunkRoot? ChunkRoot => _chunkRoot;
     public GraphicsChunk? RootChunk => _rootChunk;
     public int InteractionTargetPriority => 1000;
@@ -391,17 +452,29 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         hit = default;
         var source = GetInteractionSource(laser);
         int pointerId = GetPointerId(laser);
-        if (!TryHitTest(rayOrigin, rayDirection, source, pointerId, out var uiHit, GetInteractionActor(laser)))
+
+        // Range and bounds are checked BEFORE the subtree scan, not after. The old order built the ray
+        // context, walked every slot in the canvas, and only then threw the result away for being out of
+        // the laser's reach - so every canvas in the world whose plane the ray crossed paid a full scan,
+        // per hand, per frame. -xlinka
+        if (!TryRayToCanvasPoint(rayOrigin, rayDirection, out var context, source, pointerId, GetInteractionActor(laser)))
         {
             return false;
         }
 
-        if (uiHit.Context.Distance > maxDistance)
+        if (context.Distance > maxDistance || !PointCouldHit(context.LocalPoint))
         {
             return false;
         }
 
-        hit = new LaserPointerHit(uiHit.Context.Distance, uiHit.Context.WorldPoint);
+        var candidate = default(HitCandidate);
+        ScanHitSlot(Slot, in context, ref candidate, null, float2.Zero);
+        if (candidate.Interactable == null)
+        {
+            return false;
+        }
+
+        hit = new LaserPointerHit(context.Distance, context.WorldPoint);
         return true;
     }
 
@@ -529,6 +602,11 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             return false;
         }
 
+        if (!PointCouldHit(context.LocalPoint))
+        {
+            return false;
+        }
+
         var candidate = default(HitCandidate);
         ScanHitSlot(Slot, in context, ref candidate, null, float2.Zero);
         if (candidate.Interactable == null)
@@ -554,8 +632,14 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             return;
         }
 
+        // Skip the scan, NOT the context: a pointer that presses inside and drags off the panel keeps
+        // driving its pressed element below, so this must fall through with hovered = null rather than
+        // clearing the pointer outright. Out of bounds the scan could only have returned null anyway. -xlinka
         var candidate = default(HitCandidate);
-        ScanHitSlot(Slot, in context, ref candidate, null, float2.Zero);
+        if (PointCouldHit(context.LocalPoint))
+        {
+            ScanHitSlot(Slot, in context, ref candidate, null, float2.Zero);
+        }
         var hovered = candidate.Interactable;
         int key = PointerKey(source, pointerId);
 
@@ -572,6 +656,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             state.Hovered = hovered;
             state.Hovered?.NotifyHoverEnter(in context);
         }
+        state.Hovered?.NotifyHoverMove(in context);
 
         if (isPressed && !state.IsPressed)
         {
@@ -662,6 +747,52 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         return DispatchSecondary(state.Hovered, in state.LastContext);
     }
 
+    // Grab-action entry points for pointers. A pointer asks the canvas before it grabs anything physical:
+    // the element under it (or an ancestor up to a SearchBlock) that implements IUIGrabbable can hand out a
+    // grabbable of its own, which is how a widget leaves the grid. Dropping mirrors it: a receiver under the
+    // pointer takes the held items and the pointer keeps them out of the world. Both read the pointer's last
+    // hover so the caller does not raycast twice. -xlinka
+    public IGrabbable? TryGrab(UIInteractionSource source, int pointerId)
+    {
+        int key = PointerKey(source, pointerId);
+        if (!_pointers.TryGetValue(key, out var state) || state.Hovered == null)
+        {
+            return null;
+        }
+
+        foreach (var receiver in GetInteractionReceivers<IUIGrabbable>(state.Hovered))
+        {
+            var item = receiver.TryGrab(in state.LastContext);
+            if (item != null)
+            {
+                return item;
+            }
+        }
+        return null;
+    }
+
+    public bool TryReceive(IReadOnlyList<IGrabbable> items, UIInteractionSource source, int pointerId)
+    {
+        if (items == null || items.Count == 0)
+        {
+            return false;
+        }
+        int key = PointerKey(source, pointerId);
+        if (!_pointers.TryGetValue(key, out var state) || state.Hovered == null)
+        {
+            return false;
+        }
+
+        foreach (var receiver in GetInteractionReceivers<IUIGrabReceiver>(state.Hovered))
+        {
+            if (receiver.TryReceive(items, in state.LastContext))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public void ClearPointer(UIInteractionSource source, int pointerId, User? actor = null)
     {
         int key = PointerKey(source, pointerId);
@@ -689,10 +820,44 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         return null;
     }
 
+    public override void OnAwake()
+    {
+        base.OnAwake();
+        MaxViewDistance.OnChanged += _ => PushViewDistanceToChunks();
+    }
+
     public override void OnStart()
     {
         base.OnStart();
         EnsureRoot();
+    }
+
+    // Chunks are created and disposed all through a canvas's life, so the distance is stored on the canvas
+    // and stamped onto each renderer as it appears (GraphicsChunk.EnsureComponents calls this) rather than
+    // pushed once. Setting the sync back to 0 comes through here too and hands every chunk its unbounded
+    // range back. -xlinka
+    internal void ApplyViewDistance(MeshRenderer renderer)
+    {
+        if (renderer == null || renderer.IsDestroyed)
+            return;
+        float distance = MathF.Max(0f, MaxViewDistance.Value);
+        float margin = distance > 0f ? ViewDistanceFadeMargin : 0f;
+        if (renderer.MaxViewDistance == distance && renderer.ViewDistanceFadeMargin == margin)
+            return;
+        renderer.MaxViewDistance = distance;
+        renderer.ViewDistanceFadeMargin = margin;
+        renderer.MarkChangeDirty();
+    }
+
+    private void PushViewDistanceToChunks()
+    {
+        if (_rootChunk?.MeshRenderer != null)
+            ApplyViewDistance(_rootChunk.MeshRenderer);
+        foreach (var pair in _chunkMap)
+        {
+            if (pair.Value.MeshRenderer != null)
+                ApplyViewDistance(pair.Value.MeshRenderer);
+        }
     }
 
     public override void OnEnabled()
@@ -773,6 +938,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             foreach (var root in _layoutDirtyChunks)
                 RelayoutChunkSubtree(root);
             _layoutDirtyChunks.Clear();
+            _hitBoundsStale = true;
         }
 
         // Capture + clear the root/chunk dirt BEFORE the prepare pass (but AFTER the layout branch,
@@ -1668,9 +1834,12 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         }
     }
 
-    // Re-lay-out the subtree under a chunk root, keeping the chunk root's own rect (its parent
-    // didn't change, so its rect is unchanged). Mirrors ComputeRects for the children only, so the
-    // parent's child list is untouched - used for scoped layout of self-contained changes.
+    // Re-lay-out the subtree under a chunk root. The root's own rect is kept unless the root ITSELF
+    // moved: a chunk root whose anchors or offsets changed (a Home widget re-sizing its own cell
+    // footprint) is re-anchored against its parent first, or the new offsets would sit in the sync
+    // members forever while the computed rect stayed where the last full pass put it. Only when the
+    // parent runs no layout controller: under a layout the controller owns the rect, not the anchors.
+    // Mirrors ComputeRects for the children only, so the parent's child list is untouched. -xlinka
     private void RelayoutChunkSubtree(GraphicChunkRoot root)
     {
         var slot = root.Slot;
@@ -1679,6 +1848,14 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         var rect = slot.GetComponent<RectTransform>();
         if (rect == null)
             return;
+
+        var parent = rect.RectParent;
+        if (parent != null && (rect.DataModelFlags & RectTransform.DataModelFlag.RectChanged) != 0
+            && !SlotRunsLayout(parent.Slot))
+        {
+            rect.SetLocalComputeRect(ComputeRect(rect, parent));
+            rect.ClearDataModelFlags(RectTransform.DataModelFlag.RectChanged);
+        }
 
         // Re-measure this subtree's metrics before re-arranging it (scoped path mirror of the full pump).
         MeasureRects(slot);
@@ -1729,10 +1906,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     // cheap hit-test reject); it never touches scroll/layout output, so the scroll fix is unaffected. -xlinka
     private void UpdateCanvasBounds()
     {
-        // Only walk the tree when something actually consumes the bounds (the collider). Bounds has no other
-        // default consumer (the optional hit-test reject isn't wired), so running the full recursive walk on
-        // every dashboard rebuild was pure cost - and it touches clean/cached subtrees the layout pass skips,
-        // which is a place a stale child reference can bite. Gate it behind its consumer. -xlinka
+        _hitBoundsStale = true;
         if (_rootRect == null || !SizeCollider.Value || _uiCollider == null) return;
         _rootRect.UpdateBounds();
         var b = _rootRect.BoundingRect;
@@ -1839,6 +2013,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
         // Index iteration (not foreach) so this per-frame, per-slot scan doesn't allocate an enumerator on
         // the IReadOnlyList each call. -xlinka
         var comps = slot.Components;
+        bool captured = false;
         for (int ci = 0; ci < comps.Count; ci++)
         {
             switch (comps[ci])
@@ -1846,10 +2021,21 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
                 case InteractionBlock block when block.BlocksPoint(point):
                     candidate = HitCandidate.Blocked;
                     break;
+                case IUIInteractionCapture capture when capture.CanInteract && capture.IsPointInside(point) && capture.CapturesSubtree(in context):
+                    candidate = new HitCandidate(capture);
+                    captured = true;
+                    break;
                 case IUIInteractable interactable when interactable.CanInteract && interactable.IsPointInside(point):
                     candidate = new HitCandidate(interactable);
                     break;
             }
+        }
+
+        // A capturing element owns everything below its slot: the widget grid in edit mode takes the
+        // pointer over the whole widget, buttons and fields inside it never see it. -xlinka
+        if (captured)
+        {
+            return;
         }
 
         var nextClip = clipRect;
@@ -2080,7 +2266,9 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
                 }
             }
 
-            rd.QueueGraphic(graphic, effectiveClip, effectiveRiding, stencil);
+            // Measure here, on the main thread, while the rect tree is walkable - the worker can only read
+            // what the queue carries, and the chunk needs this box to batch surfaces. -xlinka
+            rd.QueueGraphic(graphic, effectiveClip, effectiveRiding, stencil, graphic.MeasureBounds());
         }
     }
 

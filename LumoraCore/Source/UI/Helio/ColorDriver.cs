@@ -7,6 +7,7 @@ using Lumora.Core.Math;
 
 namespace Helio.UI;
 
+[ComponentCategory("UI/Helio")]
 public sealed class ColorDriver : Component
 {
     public readonly SyncRef<InteractionElement> Interaction;

@@ -20,6 +20,14 @@ public abstract class Graphic : UIComputeComponent
     // did before. Default false so a new graphic is never silently left unclipped. -xlinka
     public virtual bool TrimsGeometryToClip => false;
 
+    // Canvas-local box this graphic's geometry stays inside, or null when we can't say. The chunk batcher
+    // uses it to work out whether two graphics on the same material can share a surface without changing
+    // what covers what, so it MUST be a superset of what ComputeGraphic emits - too big only costs a draw
+    // call, too small puts things behind each other. Null is the honest answer for anything that draws
+    // outside its rect (a ring sized by radius, a plotted line with thickness) and gets the old behaviour:
+    // a surface of its own. Called on the main thread after PrepareCompute, so snapshots are current. -xlinka
+    public virtual Rect? MeasureBounds() => null;
+
     public abstract void ComputeGraphic(GraphicsChunk.RenderData renderData);
 
     public abstract bool IsPointInside(in float2 point);

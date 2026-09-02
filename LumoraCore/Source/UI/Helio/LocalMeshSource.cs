@@ -1,11 +1,13 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using Lumora.Core;
 using Lumora.Core.Components.Meshes;
 using Lumora.Core.Phos;
 
 namespace Helio.UI;
 
+[ComponentCategory("Hidden")]
 public sealed class LocalMeshSource : ProceduralMesh
 {
     private PhosMesh? _source;

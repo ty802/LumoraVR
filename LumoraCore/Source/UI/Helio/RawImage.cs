@@ -8,6 +8,7 @@ using Lumora.Core.Phos;
 
 namespace Helio.UI;
 
+[ComponentCategory("UI/Helio/Graphics")]
 public sealed class RawImage : Graphic
 {
     public readonly AssetRef<TextureAsset> Texture;
@@ -42,6 +43,9 @@ public sealed class RawImage : Graphic
 
     // Trims its quads to RenderData.GeometryClipRect, so it can carry a clip window that rides the chunk.
     public override bool TrimsGeometryToClip => true;
+
+    // One quad, the rect itself. Preserve-aspect insets it and the clip trim only takes area away. -xlinka
+    public override Rect? MeasureBounds() => RectTransform?.LocalComputeRect;
 
     protected override void FlagChanges(RectTransform rect)
     {

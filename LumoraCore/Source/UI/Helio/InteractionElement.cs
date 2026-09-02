@@ -8,6 +8,7 @@ using Lumora.Core.Math;
 
 namespace Helio.UI;
 
+[ComponentCategory("UI/Helio/Interaction")]
 public class InteractionElement : UIComponent, IUIInteractable
 {
     public readonly Sync<bool> Interactable;
@@ -21,6 +22,7 @@ public class InteractionElement : UIComponent, IUIInteractable
 
     public event Action<UIInteractionContext>? HoverEntered;
     public event Action<UIInteractionContext>? HoverExited;
+    public event Action<UIInteractionContext>? HoverMoved;
     public event Action<UIInteractionContext>? Pressed;
     public event Action<UIInteractionContext>? Dragged;
     public event Action<UIInteractionContext>? Released;
@@ -35,6 +37,13 @@ public class InteractionElement : UIComponent, IUIInteractable
     }
 
     public bool CanInteract => !IsDestroyed && Enabled.Value && Interactable.Value && Slot != null && Slot.IsActive;
+
+    // Is a pointer DOWN on this element right now. The press/submit events are edges - they answer "was
+    // this clicked", never "is the finger still on it" - and a key that repeats while you hold it has to
+    // ask the second question every frame. The state itself was already here for the tint driver; this
+    // just stops every caller reaching into the sync field and getting a stale answer off a dead
+    // element. -xlinka
+    public bool IsPressedNow => !IsDestroyed && IsPressed.Value;
     public InteractionState CurrentInteractionState
     {
         get
@@ -109,6 +118,14 @@ public class InteractionElement : UIComponent, IUIInteractable
         HoverExited?.Invoke(context);
     }
 
+    public void NotifyHoverMove(in UIInteractionContext context)
+    {
+        if (IsDestroyed || !CanInteract) return;
+        using var actorScope = EnterInteractionActor(in context);
+        OnHoverMove(in context);
+        HoverMoved?.Invoke(context);
+    }
+
     public void NotifyPress(in UIInteractionContext context)
     {
         using var actorScope = EnterInteractionActor(in context);
@@ -147,6 +164,7 @@ public class InteractionElement : UIComponent, IUIInteractable
 
     protected virtual void OnHoverEnter(in UIInteractionContext context) { }
     protected virtual void OnHoverExit(in UIInteractionContext context) { }
+    protected virtual void OnHoverMove(in UIInteractionContext context) { }
     protected virtual void OnPress(in UIInteractionContext context) { }
     protected virtual void OnDrag(in UIInteractionContext context) { }
     protected virtual void OnRelease(in UIInteractionContext context) { }

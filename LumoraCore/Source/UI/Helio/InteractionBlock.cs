@@ -6,6 +6,7 @@ using Lumora.Core.Math;
 
 namespace Helio.UI;
 
+[ComponentCategory("UI/Helio")]
 public sealed class InteractionBlock : UIComponent
 {
     public readonly Sync<bool> Blocks;

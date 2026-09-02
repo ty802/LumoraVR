@@ -21,6 +21,7 @@ namespace Helio.UI.Layout;
 // go quiet so clip_offset holds. A section collapsing in place (count unchanged, height shrinks) leaves a little
 // slack until the next structural change - deliberate. -xlinka
 [SingleInstancePerSlot]
+[ComponentCategory("UI/Helio/Layout")]
 public class ScrollContentSizer : Component
 {
     private const float MinContentHeight = 1f;

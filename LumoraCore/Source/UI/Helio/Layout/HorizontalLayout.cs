@@ -8,6 +8,7 @@ using Lumora.Core.Math;
 namespace Helio.UI.Layout;
 
 // arranges children left-to-right within the layout's rect.
+[ComponentCategory("UI/Helio/Layout")]
 public class HorizontalLayout : LayoutController
 {
     public readonly Sync<float> Spacing;

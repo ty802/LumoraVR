@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using Helio.UI.Layout;
 using Lumora.Core;
 using Lumora.Core.Assets;
+using Lumora.Core.Localization;
 using Lumora.Core.Math;
 
 namespace Helio.UI;
@@ -452,6 +453,12 @@ public class UIBuilder
         return text;
     }
 
+    // Translatable text. A raw string still binds the string overload above (identity conversion beats
+    // the implicit one), so no existing call site changes behaviour; a keyed value registers itself and
+    // re-resolves on a language switch.
+    public Text Text(in LocaleText content, float? size = null, color? color = null)
+        => LocaleTextRegistry.Bind(Text(content.Resolve(), size, color), in content);
+
     public Button Button(string label, Action<Button, UIInteractionContext>? clicked = null, color? background = null)
     {
         Next("Button");
@@ -466,6 +473,13 @@ public class UIBuilder
         text.VerticalAlignment.Value = TextVerticalAlignment.Middle;
         Fill(text.RectTransform!);
         NestOut();
+        return button;
+    }
+
+    public Button Button(in LocaleText label, Action<Button, UIInteractionContext>? clicked = null, color? background = null)
+    {
+        var button = Button(label.Resolve(), clicked, background);
+        LocaleTextRegistry.Bind(button.Slot.FindChild("Text", recursive: false)?.GetComponent<Text>(), in label);
         return button;
     }
 
@@ -666,6 +680,135 @@ public class UIBuilder
         pad.SetAction(changed);
 
         return pad;
+    }
+
+    // Editable text field. TextInput resolves a DIRECT child slot literally called "Text" and drives
+    // that Text component's content, and it writes the caret and selection indices onto the same
+    // component - there is no separate caret slot to build. The child name is load-bearing: rename it
+    // and the field goes blank and untypable with no error anywhere. -xlinka
+    public TextInput TextInput(string initial = "", string placeholder = "", Action<TextInput, string>? changed = null,
+        bool multiline = false, color? background = null)
+    {
+        Next("TextInput");
+        var image = Current.AttachComponent<Image>();
+        image.Tint.Value = background ?? CurrentStyle.BackgroundColor;
+        var input = Current.AttachComponent<TextInput>();
+        input.Text.Value = initial;
+        input.Placeholder.Value = placeholder;
+        input.Multiline.Value = multiline;
+
+        Nest();
+        // Next("Text") inside the Text builder is what gives the child its required name.
+        var text = Text(string.Empty, null, CurrentStyle.TextColor);
+        Fill(text.RectTransform!);
+        text.WordWrap.Value = multiline;
+        text.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
+        text.VerticalAlignment.Value = multiline ? TextVerticalAlignment.Top : TextVerticalAlignment.Middle;
+        text.CaretColor.Value = CurrentStyle.ForegroundColor;
+        text.SelectionColor.Value = new color(
+            CurrentStyle.ForegroundColor.r, CurrentStyle.ForegroundColor.g, CurrentStyle.ForegroundColor.b, 0.35f);
+        NestOut();
+
+        input.SetChangeAction(changed);
+        return input;
+    }
+
+    // Read-only fill bar. ProgressMeter looks for a direct child called "Fill" first, so the track is
+    // just this slot's own Image and the fill is that one child - two Images, no spare slots.
+    public ProgressMeter ProgressMeter(float value = 0f, color? track = null, color? fill = null)
+    {
+        Next("ProgressMeter");
+        var trackImage = Current.AttachComponent<Image>();
+        trackImage.Tint.Value = track ?? CurrentStyle.BackgroundColor;
+
+        float progress = value < 0f ? 0f : (value > 1f ? 1f : value);
+
+        var fillSlot = Current.AddSlot("Fill");
+        var fillRect = fillSlot.AttachComponent<RectTransform>();
+        fillRect.AnchorMin.Value = float2.Zero;
+        fillRect.AnchorMax.Value = new float2(progress, 1f);
+        fillRect.OffsetMin.Value = float2.Zero;
+        fillRect.OffsetMax.Value = float2.Zero;
+        var fillImage = fillSlot.AttachComponent<Image>();
+        fillImage.Tint.Value = fill ?? CurrentStyle.ForegroundColor;
+
+        var meter = Current.AttachComponent<ProgressMeter>();
+        meter.Progress.Value = progress;
+        return meter;
+    }
+
+    // Accordion row: a clickable header strip over a body that hides. The section drives the direct
+    // "Content" child's active state and the "Indicator" child's, so both names matter.
+    //
+    // The indicator is driven straight off Expanded, which means it is the OPEN marker and is gone
+    // while the section is shut - the section has one indicator drive, not a pair, so there is nothing
+    // to show a closed state with. -xlinka
+    //
+    // content comes back for the caller to nest into; it already carries a VerticalLayout.
+    public CollapsibleSection CollapsibleSection(string header, out RectTransform content, bool expanded = true,
+        color? background = null)
+    {
+        Next("CollapsibleSection");
+        var backing = Current.AttachComponent<Image>();
+        backing.Tint.Value = background ?? CurrentStyle.BackgroundColor;
+        var section = Current.AttachComponent<CollapsibleSection>();
+        section.Expanded.Value = expanded;
+
+        float headerHeight = CurrentStyle.FontSize + 14f;
+        const float indicatorWidth = 20f;
+
+        var headerSlot = Current.AddSlot("Header");
+        var headerRect = headerSlot.AttachComponent<RectTransform>();
+        headerRect.AnchorMin.Value = new float2(0f, 1f);
+        headerRect.AnchorMax.Value = new float2(1f, 1f);
+        headerRect.OffsetMin.Value = new float2(0f, -headerHeight);
+        headerRect.OffsetMax.Value = float2.Zero;
+        var headerImage = headerSlot.AttachComponent<Image>();
+        headerImage.Tint.Value = CurrentStyle.BackgroundColor;
+        // Button.OnAttach picks up the Image already on the slot for its hover/press tint, so the
+        // image goes on first.
+        var headerButton = headerSlot.AttachComponent<Button>();
+        headerButton.SetAction(section.OnHeaderPressed);
+
+        var labelSlot = headerSlot.AddSlot("Label");
+        var labelRect = labelSlot.AttachComponent<RectTransform>();
+        labelRect.AnchorMin.Value = float2.Zero;
+        labelRect.AnchorMax.Value = float2.One;
+        labelRect.OffsetMin.Value = new float2(indicatorWidth, 0f);
+        labelRect.OffsetMax.Value = float2.Zero;
+        var labelText = labelSlot.AttachComponent<Text>();
+        labelText.Content.Value = header;
+        labelText.Size.Value = CurrentStyle.FontSize;
+        labelText.Color.Value = CurrentStyle.TextColor;
+        labelText.Font.Target = CurrentStyle.Font!;
+        labelText.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
+        labelText.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+
+        var indicatorSlot = headerSlot.AddSlot("Indicator");
+        var indicatorRect = indicatorSlot.AttachComponent<RectTransform>();
+        indicatorRect.AnchorMin.Value = new float2(0f, 0f);
+        indicatorRect.AnchorMax.Value = new float2(0f, 1f);
+        indicatorRect.OffsetMin.Value = float2.Zero;
+        indicatorRect.OffsetMax.Value = new float2(indicatorWidth, 0f);
+        var indicatorText = indicatorSlot.AttachComponent<Text>();
+        indicatorText.Content.Value = "▾";
+        indicatorText.Size.Value = CurrentStyle.FontSize;
+        indicatorText.Color.Value = CurrentStyle.TextColor;
+        indicatorText.Font.Target = CurrentStyle.Font!;
+        indicatorText.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
+        indicatorText.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+        indicatorSlot.ActiveSelf.Value = expanded;
+
+        var contentSlot = Current.AddSlot("Content");
+        content = contentSlot.AttachComponent<RectTransform>();
+        content.AnchorMin.Value = float2.Zero;
+        content.AnchorMax.Value = float2.One;
+        content.OffsetMin.Value = float2.Zero;
+        content.OffsetMax.Value = new float2(0f, -headerHeight);
+        contentSlot.AttachComponent<VerticalLayout>();
+        contentSlot.ActiveSelf.Value = expanded;
+
+        return section;
     }
 
     public ScrollRect ScrollRect(out RectTransform content, float2? sensitivity = null, color? background = null,

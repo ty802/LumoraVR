@@ -10,11 +10,9 @@ using Lumora.Core.Math;
 
 namespace Helio.UI;
 
-/// <summary>
-/// Parses a minimal subset of inline rich-text markup into stripped visible text plus
-/// per-character color, style flags, size multiplier, and highlight color, so <see cref="Text"/>
-/// can render styled spans.
-/// </summary>
+// Parses a minimal subset of inline rich-text markup into stripped visible text plus
+// per-character color, style flags, size multiplier, and highlight color, so Text
+// can render styled spans.
 // Supported: <color>, <alpha>, <b>/<i>/<u>/<s>, <size=Nem|N%>, <sub>/<sup>, <mark>/<mark=color>, <nobr>,
 // <gradient=a,b>, <lowercase>/<uppercase>/<smallcaps>/<allcaps>, <br>, <noparse>...</noparse>, and <closeall>.
 // Unknown tags pass through literally. A balanced stack restores every attribute on close. -xlinka
@@ -82,9 +80,17 @@ public static class RichTextParser
         public FontMark(int index, string? name) { Index = index; Name = name; }
     }
 
+    // The base font size the <size> tag resolves against. A bare number in the tag is an absolute size in
+    // the same units as the Text's own Size, so <size=26> on 18-unit text is 1.44x, not 26x; a caller that
+    // passes no base keeps the old bare-number-is-a-multiplier reading. Thread-static because Parse is
+    // static and the shaping threads must not read each other's base.
+    [System.ThreadStatic]
+    private static float t_baseSize;
+
     public static void Parse(string? input, in color baseColor, StringBuilder text, List<color> colors, List<byte> styles, List<float> sizes, List<color> marks, List<string?> sprites,
-        List<AlignMark> alignMarks, List<LineHeightMark> lineHeightMarks, List<FontMark> fontMarks)
+        List<AlignMark> alignMarks, List<LineHeightMark> lineHeightMarks, List<FontMark> fontMarks, float baseSize = 0f)
     {
+        t_baseSize = baseSize;
         text.Clear();
         colors.Clear();
         styles.Clear();
@@ -474,11 +480,32 @@ public static class RichTextParser
             return false;
         }
 
-        string v = value.EndsWith("em") ? value.Substring(0, value.Length - 2) : value;
-        if (float.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out float a))
+        if (value.EndsWith("em"))
         {
-            factor = a;
-            relative = false; // absolute multiple of the base size
+            if (float.TryParse(value.Substring(0, value.Length - 2), NumberStyles.Float, CultureInfo.InvariantCulture, out float em))
+            {
+                factor = em;
+                relative = true;
+                return true;
+            }
+            return false;
+        }
+
+        float baseSize = t_baseSize;
+        bool offset = value.StartsWith("+") || value.StartsWith("-");
+        if (float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out float a))
+        {
+            if (baseSize > 0f)
+            {
+                // Font units: an offset adds to the base, a bare number replaces it.
+                float target = offset ? baseSize + a : a;
+                factor = MathF.Max(target, 0.01f) / baseSize;
+            }
+            else
+            {
+                factor = offset ? 1f + a : a;
+            }
+            relative = false;
             return true;
         }
         return false;

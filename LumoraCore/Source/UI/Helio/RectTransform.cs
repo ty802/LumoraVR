@@ -12,6 +12,7 @@ namespace Helio.UI;
 // one per slot in a UI tree. anchored offsets relative to parent rect; the actual rects are
 // computed by the Canvas (ComputeRects/ApplyLayout) each rebuild, and cached in LocalComputeRect.
 [SingleInstancePerSlot]
+[ComponentCategory("UI/Helio")]
 public class RectTransform : Component
 {
     [Flags]

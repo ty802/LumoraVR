@@ -6,6 +6,7 @@ using Lumora.Core;
 
 namespace Helio.UI;
 
+[ComponentCategory("UI/Helio/Interaction")]
 public sealed class Radio : InteractionElement
 {
     public readonly Sync<bool> IsChecked;

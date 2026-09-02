@@ -8,6 +8,7 @@ using Lumora.Core.Phos;
 
 namespace Helio.UI;
 
+[ComponentCategory("UI/Helio/Graphics")]
 public sealed class Image : Graphic
 {
     public readonly SyncRef<Sprite> Sprite;
@@ -49,6 +50,10 @@ public sealed class Image : Graphic
 
     // Trims its quads to RenderData.GeometryClipRect, so it can carry a clip window that rides the chunk.
     public override bool TrimsGeometryToClip => true;
+
+    // Every quad it emits is inside its rect: nine-slice cuts the rect up, preserve-aspect only shrinks it,
+    // and the clip trim only ever takes area away. -xlinka
+    public override Rect? MeasureBounds() => RectTransform?.LocalComputeRect;
 
     protected override void FlagChanges(RectTransform rect)
     {

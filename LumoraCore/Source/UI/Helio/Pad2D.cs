@@ -11,6 +11,7 @@ namespace Helio.UI;
 // [0,1] per axis. x runs 0 (left) -> 1 (right), y runs 0 (bottom) -> 1 (top),
 // so (0,0) is the bottom-left corner (LocalComputeRect is Y-up: yMin bottom,
 // yMax top). A small Handle child tracks the value via anchor drives. -xlinka
+[ComponentCategory("UI/Helio/Interaction")]
 public sealed class Pad2D : InteractionElement
 {
     public readonly Sync<float2> Value;

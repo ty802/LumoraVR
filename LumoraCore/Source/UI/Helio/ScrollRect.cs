@@ -7,6 +7,7 @@ using Lumora.Core.Math;
 
 namespace Helio.UI;
 
+[ComponentCategory("UI/Helio/Interaction")]
 public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
 {
     public readonly SyncRef<RectTransform> Content;
@@ -16,6 +17,11 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
     // AbsolutePosition. -xlinka
     public readonly Sync<float2> Scroll;
     public readonly Sync<float2> ScrollSensitivity;
+
+    // A sideways-only strip (the session strip in the world browser) has no vertical travel, so a wheel
+    // over it would do nothing at all. Set this and the wheel's y notches drive x instead. Drag and
+    // programmatic scrolling are untouched. -xlinka
+    public readonly Sync<bool> WheelScrollsHorizontal;
 
     // A RectTransform sits at its 100x100 default until the canvas runs a layout pass. Applying scroll against
     // that default (excess = content - 100) could shove the content out of the also-stale clip rect. Reject a
@@ -41,6 +47,7 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
         Content = new SyncRef<RectTransform>(this);
         Scroll = new Sync<float2>(this, float2.Zero);
         ScrollSensitivity = new Sync<float2>(this, float2.One);
+        WheelScrollsHorizontal = new Sync<bool>(this, false);
     }
 
     // normalized 0..1 scroll position (the persisted value), clamped on set
@@ -134,9 +141,20 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
         var sensitivity = ScrollSensitivity.Value;
         var abs = AbsolutePosition;
         var before = Scroll.Value;
-        AbsolutePosition = new float2(
-            abs.x - axis.x * sensitivity.x,
-            abs.y - axis.y * sensitivity.y * 24f);
+        if (WheelScrollsHorizontal.Value)
+        {
+            // Same 24-unit notch step as the vertical path, and the same sign, so a wheel-down that would
+            // scroll a list further in scrolls a strip further right.
+            AbsolutePosition = new float2(
+                abs.x - (axis.x * sensitivity.x + axis.y * sensitivity.y * 24f),
+                abs.y);
+        }
+        else
+        {
+            AbsolutePosition = new float2(
+                abs.x - axis.x * sensitivity.x,
+                abs.y - axis.y * sensitivity.y * 24f);
+        }
         return Scroll.Value != before;
     }
 

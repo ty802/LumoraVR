@@ -7,6 +7,7 @@ using Lumora.Core.Math;
 
 namespace Helio.UI;
 
+[ComponentCategory("UI/Helio/Interaction")]
 public sealed class Slider : InteractionElement
 {
     public readonly Sync<float> Value;

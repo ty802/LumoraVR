@@ -7,6 +7,7 @@ using Lumora.Core.Math;
 
 namespace Helio.UI;
 
+[ComponentCategory("UI/Helio/Interaction")]
 public class Button : InteractionElement
 {
     // Duplicable click action: a method on a world element, stored as target +

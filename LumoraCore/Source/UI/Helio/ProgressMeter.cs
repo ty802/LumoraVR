@@ -8,6 +8,7 @@ namespace Helio.UI;
 
 // non-interactive progress fill: drives a child "Fill" rect's AnchorMax.x from a 0..1 value so a
 // track shows progress. a Slider without the input.
+[ComponentCategory("UI/Helio")]
 public sealed class ProgressMeter : UIComponent
 {
     // 0..1

@@ -8,6 +8,7 @@ namespace Helio.UI;
 
 // clickable header that expands/collapses a content section (accordion row). toggles the
 // "Content" child's active state and an optional "Indicator" child.
+[ComponentCategory("UI/Helio/Interaction")]
 public sealed class CollapsibleSection : InteractionElement
 {
     public readonly Sync<bool> Expanded;
@@ -72,13 +73,25 @@ public sealed class CollapsibleSection : InteractionElement
         UpdateVisuals();
     }
 
-    protected override void OnSubmit(in UIInteractionContext context)
+    protected override void OnSubmit(in UIInteractionContext context) => Toggle();
+
+    // Flip the section and tell everyone who asked. Open to binding so a header row built out of a
+    // Button can drive it: the hit scan hands a press to the deepest interactable under the pointer,
+    // so a Button on a "Header" child takes the press and the section's own OnSubmit never sees it.
+    // -xlinka
+    [SyncMethod]
+    public void Toggle()
     {
         Expanded.Value = !Expanded.Value;
         UpdateVisuals();
         ExpandedChanged?.Invoke(this, Expanded.Value);
         ChangeAction.Target?.Invoke(this, Expanded.Value);
     }
+
+    // The header Button's action shape. Bound as a component method, so a duplicated section's header
+    // toggles the COPY rather than reaching back to the original.
+    [SyncMethod]
+    public void OnHeaderPressed(Button button, UIInteractionContext context) => Toggle();
 
     private void UpdateVisuals()
     {

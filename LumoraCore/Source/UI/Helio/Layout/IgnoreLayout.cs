@@ -6,6 +6,7 @@ using Lumora.Core;
 namespace Helio.UI.Layout;
 
 // Marker. When present on a slot, the parent layout skips this child during arrangement. - xlinka
+[ComponentCategory("UI/Helio/Layout")]
 public sealed class IgnoreLayout : UIComputeComponent
 {
     public override void PrepareCompute() { }

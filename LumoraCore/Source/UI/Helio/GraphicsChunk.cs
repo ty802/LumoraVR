@@ -23,10 +23,20 @@ public sealed class GraphicsChunk
         private readonly Dictionary<MaterialKey, AssignedMaterial> _assignedMaterials = new();
         // Captured on the main thread (prepare walk), drained on the worker (EmitQueued). The worker
         // never traverses the live slot tree - it only iterates this queue and calls ComputeGraphic,
-        // which reads each graphic's already-snapshotted state + stable LocalComputeRect. - xlinka
-        private readonly List<(Graphic Graphic, Rect? Clip, Rect? RidingClip, StencilRole Stencil)> _emitQueue = new();
+        // which reads each graphic's already-snapshotted state + stable LocalComputeRect. Bounds is the
+        // canvas-local box the graphic's geometry stays inside, measured on the main thread too. - xlinka
+        private readonly List<(Graphic Graphic, Rect? Clip, Rect? RidingClip, StencilRole Stencil, Rect? Bounds)> _emitQueue = new();
         private readonly GraphicsChunk _chunk;
-        private int _minimumSubmeshIndex;
+        // Every submesh this chunk has opened this pass, in creation order, with the box its geometry covers
+        // so far and the stencil role it was opened under. Surface order IS draw order, so both are what
+        // GetSubmesh needs to work out whether a graphic can drop back into an earlier surface. -xlinka
+        private readonly List<SubmeshSpan> _submeshSpans = new();
+        private readonly Dictionary<PhosTriangleSubmesh, int> _spanOfSubmesh = new();
+        // The graphic currently being emitted: the first span it opened, the earlier spans it reached back
+        // into, and the box it covers (null = we don't know how far it spreads). -xlinka
+        private int _graphicFirstSpan;
+        private readonly List<int> _graphicAdoptedSpans = new();
+        private Rect? _graphicBounds;
         private Rect? _clipRect;
         private Rect? _ridingClipRect;
         private StencilRole _stencilRole;
@@ -70,21 +80,30 @@ public sealed class GraphicsChunk
             Mesh.Clear();
             _requestedMaterials.Clear();
             _emitQueue.Clear();
-            _minimumSubmeshIndex = 0;
+            _submeshSpans.Clear();
+            _spanOfSubmesh.Clear();
+            _graphicFirstSpan = 0;
+            _graphicAdoptedSpans.Clear();
+            _graphicBounds = null;
             PrepareMesh();
         }
 
-        public void BeginGraphic()
+        // bounds = the canvas-local box this graphic's geometry stays inside, or null when its extent isn't
+        // known. Everything the graphic opens from here until the next BeginGraphic belongs to it. -xlinka
+        public void BeginGraphic(Rect? bounds)
         {
-            _minimumSubmeshIndex = Mesh.Submeshes.Count;
+            _graphicFirstSpan = _submeshSpans.Count;
+            _graphicAdoptedSpans.Clear();
+            _graphicBounds = bounds;
         }
 
         // MAIN: queue a prepared graphic (with its computed clip + stencil role) for the worker emit pass.
         // ridingClip is the half of the window that moves with this chunk (geometry trim only, never keyed
-        // into a material) - see GeometryClipRect.
-        public void QueueGraphic(Graphic graphic, Rect? clip, Rect? ridingClip = null, StencilRole stencil = StencilRole.None)
+        // into a material) - see GeometryClipRect. bounds comes from Graphic.MeasureBounds and has to be
+        // taken here, on the main thread, because the worker can't walk the rect tree.
+        public void QueueGraphic(Graphic graphic, Rect? clip, Rect? ridingClip = null, StencilRole stencil = StencilRole.None, Rect? bounds = null)
         {
-            _emitQueue.Add((graphic, clip, ridingClip, stencil));
+            _emitQueue.Add((graphic, clip, ridingClip, stencil, bounds));
         }
 
         // WORKER: build the geometry for every queued graphic. No slot/datamodel access (materials
@@ -94,8 +113,8 @@ public sealed class GraphicsChunk
         {
             for (int i = 0; i < _emitQueue.Count; i++)
             {
-                var (graphic, clip, ridingClip, stencil) = _emitQueue[i];
-                BeginGraphic();
+                var (graphic, clip, ridingClip, stencil, bounds) = _emitQueue[i];
+                BeginGraphic(bounds);
                 SetClipRect(clip, ridingClip);
                 _stencilRole = stencil;
                 graphic.ComputeGraphic(this);
@@ -111,6 +130,17 @@ public sealed class GraphicsChunk
         public PhosTriangleSubmesh GetSubmesh(IAssetProvider<MaterialAsset>? material, object? key, MaterialMapper? mapper)
             => GetSubmesh(new MaterialKey(material, key, mapper, _clipRect, _stencilRole));
 
+        // Batching rule. A surface is a draw call and surface order is draw order, so the old rule was simply
+        // "one surface per graphic per material" - never reach back past another graphic, and order can't
+        // possibly be wrong. That is also why the controls page opened ~500 surfaces and walked into Godot's
+        // hard 256-surface ceiling, where the extras are dropped on the floor and the labels go blank.
+        //
+        // A graphic can share an earlier surface of the same material as long as its box touches nothing that
+        // was opened AFTER that surface. Those later surfaces are the only ones that currently draw over it;
+        // if we cover none of them, moving back is invisible. Inside one surface the triangles keep emission
+        // order, so we still land on top of whatever is already in there, which is where we belong. A graphic
+        // whose extent we can't measure, or one with a different stencil role in the way, gets its own surface
+        // exactly like before. Worst case that is the old behaviour, so this never opens MORE surfaces. -xlinka
         public PhosTriangleSubmesh GetSubmesh(in MaterialKey key)
         {
             if (!_requestedMaterials.TryGetValue(key, out var submeshes))
@@ -119,18 +149,86 @@ public sealed class GraphicsChunk
                 _requestedMaterials.Add(key, submeshes);
             }
 
-            foreach (var existing in submeshes)
+            if (submeshes.Count > 0)
             {
-                if (existing.Index >= _minimumSubmeshIndex)
+                var candidate = submeshes[submeshes.Count - 1];
+                int span = _spanOfSubmesh[candidate];
+                // A surface this graphic is already writing into stays its own, whether it opened it or
+                // reached back into it. That is what the old per-graphic floor did: a graphic that emits into
+                // several materials at once (text with inline sprites, marks under glyphs) keeps hopping
+                // between them, and re-testing each hop would open a surface per hop. Its own parts are
+                // laid out not to overlap, so the order inside one graphic was never in question. -xlinka
+                if (span >= _graphicFirstSpan || _graphicAdoptedSpans.Contains(span))
                 {
-                    return existing;
+                    CoverSpan(span);
+                    return candidate;
+                }
+
+                if (CanReachBack(span))
+                {
+                    _graphicAdoptedSpans.Add(span);
+                    CoverSpan(span);
+                    return candidate;
                 }
             }
 
             var submesh = new PhosTriangleSubmesh(Mesh);
             Mesh.Submeshes.Add(submesh);
             submeshes.Add(submesh);
+            _spanOfSubmesh[submesh] = _submeshSpans.Count;
+            _submeshSpans.Add(new SubmeshSpan
+            {
+                Bounds = _graphicBounds ?? default,
+                BoundsKnown = _graphicBounds.HasValue,
+                Stencil = _stencilRole,
+            });
             return submesh;
+        }
+
+        // Everything opened after this span draws over it. Reaching back is only safe when the current
+        // graphic covers none of that and no stencil role changed on the way - a mask writer has to stay in
+        // front of the content it masks, so a role change counts as an overlap and stops us dead. -xlinka
+        private bool CanReachBack(int span)
+        {
+            if (!_graphicBounds.HasValue)
+            {
+                return false;
+            }
+
+            var bounds = _graphicBounds.Value;
+            for (int i = span + 1; i < _submeshSpans.Count; i++)
+            {
+                var later = _submeshSpans[i];
+                if (later.Stencil != _stencilRole || !later.BoundsKnown || later.Bounds.Overlaps(bounds))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        // Grow a span's box by what the current graphic just put in it. Once anything unmeasured lands in a
+        // span the box is a lie, so it stays marked unknown and nothing may reach back past it. -xlinka
+        private void CoverSpan(int index)
+        {
+            var span = _submeshSpans[index];
+            if (!span.BoundsKnown)
+            {
+                return;
+            }
+
+            if (_graphicBounds.HasValue)
+            {
+                span.Bounds = span.Bounds.Encapsulate(_graphicBounds.Value);
+            }
+            else
+            {
+                span.Bounds = default;
+                span.BoundsKnown = false;
+            }
+
+            _submeshSpans[index] = span;
         }
 
         public T AttachPropertyBlock<T>() where T : Component, IAssetProvider<MaterialPropertyBlockAsset>, new()
@@ -290,7 +388,8 @@ public sealed class GraphicsChunk
                 if (!_loggedBandExhaustion)
                 {
                     _loggedBandExhaustion = true;
-                    Logger.Warn($"[Helio] Render-priority band exhausted on chunk #{_chunk.OrderIndex} " +
+                    Logger.Warn($"[Helio] Render-priority band exhausted on chunk #{_chunk.OrderIndex} of canvas " +
+                        $"'{_chunk.Canvas?.Slot?.Name?.Value ?? "?"}' " +
                         $"(renderOnTop={renderOnTop}, overlayLevel={overlayLevel}): {materialCount} surfaces > band width " +
                         $"{bandWidth} [{lo}..{hi}]. {materialCount - bandWidth} surface(s) saturate at {hi}, so coplanar " +
                         $"z-order goes ambiguous. Reduce overlay nesting / material count, or move this canvas to unbounded render order.");
@@ -534,7 +633,19 @@ public sealed class GraphicsChunk
         private void EnsureComponents()
         {
             _chunk.MeshProvider ??= _chunk.ChunkSlot.GetComponent<LocalMeshSource>() ?? _chunk.ChunkSlot.AttachComponent<LocalMeshSource>();
-            _chunk.MeshRenderer ??= _chunk.ChunkSlot.GetComponent<MeshRenderer>() ?? _chunk.ChunkSlot.AttachComponent<MeshRenderer>();
+            if (_chunk.MeshRenderer == null)
+            {
+                _chunk.MeshRenderer = _chunk.ChunkSlot.GetComponent<MeshRenderer>() ?? _chunk.ChunkSlot.AttachComponent<MeshRenderer>();
+
+                // No UI panel has ever wanted to be in a shadow map. A chunk is a flat, unlit, mostly
+                // transparent quad and its silhouette in a cascade is either invisible or a black
+                // rectangle on the floor, but MeshRenderer defaults to casting and every chunk inherited
+                // that - so a room with twenty five canvases redrew a hundred and fifty odd chunk meshes
+                // into four sun cascades every frame for nothing. Off at creation, before the hook ever
+                // sees the renderer. -xlinka
+                _chunk.MeshRenderer.ShadowCastMode.Value = ShadowCastMode.Off;
+                _chunk.Canvas.ApplyViewDistance(_chunk.MeshRenderer);
+            }
             _chunk.MeshRenderer.Mesh.Target = _chunk.MeshProvider;
         }
 
@@ -574,6 +685,15 @@ public sealed class GraphicsChunk
         {
             Mesh.HasColors = true;
             Mesh.SetHasUV(0, true);
+        }
+
+        // One opened surface, in creation order. Bounds is the union of every graphic that landed in it, so
+        // it only ever grows; BoundsKnown goes false the moment something unmeasured lands there. -xlinka
+        private struct SubmeshSpan
+        {
+            public Rect Bounds;
+            public bool BoundsKnown;
+            public StencilRole Stencil;
         }
 
         private readonly struct MaterialRequest

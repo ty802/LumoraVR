@@ -15,6 +15,7 @@ namespace Helio.UI;
 // emits one textured quad per glyph laid out within the RectTransform rect.
 // Rich text (inline tags) is supported via RichTextParser when RichText is set.
 // TODO - xlinka: overflow modes, kerning beyond pair table
+[ComponentCategory("UI/Helio/Graphics")]
 public class Text : Graphic, ILayoutElement
 {
     public readonly Sync<string> Content;
@@ -235,7 +236,7 @@ public class Text : Graphic, ILayoutElement
         // identical to plain text; plain mode shapes Content directly.
         if (_richText)
         {
-            RichTextParser.Parse(_content, _color, _richTextBuilder, _colors, _styles, _sizes, _marks, _sprites, _alignMarks, _lineHeightMarks, _fontMarks);
+            RichTextParser.Parse(_content, _color, _richTextBuilder, _colors, _styles, _sizes, _marks, _sprites, _alignMarks, _lineHeightMarks, _fontMarks, _size);
             _shapedText = _richTextBuilder.ToString();
             _sizeArg = HasSizeVariation() ? _sizes : null; // null keeps the shaper cache for uniform text
             _nobrArg = BuildNoBreak() ? _nobr : null; // null keeps the shaper cache when nothing is nobr
@@ -302,6 +303,74 @@ public class Text : Graphic, ILayoutElement
             _rawLineHeight = _size;
 
         return default;
+    }
+
+    // Where the glyphs will actually land, worked out before anything is emitted so the chunk batcher can
+    // decide whether this label may share a surface. The rect on its own is not an answer: with wrapping off
+    // a long line runs straight past the edge, and a block taller than its rect spills out the bottom. So
+    // walk the shaped lines the way LayoutAndEmit does and take the union of the line boxes and the glyph
+    // quads. Keep this in step with LayoutAndEmit - a box smaller than what gets emitted is how you end up
+    // with a label hiding behind a panel. Runs on the main thread, after PreGraphicsCompute has shaped. -xlinka
+    public override Rect? MeasureBounds()
+    {
+        var rectTransform = RectTransform;
+        if (rectTransform == null)
+            return null;
+
+        var rect = rectTransform.LocalComputeRect;
+        var lines = _shaper.Lines;
+        if (lines.Count == 0 || string.IsNullOrEmpty(_shapedText))
+            return rect;
+
+        float blockHeight = 0f;
+        for (int i = 0; i < lines.Count; i++)
+            blockHeight += LineHeightFor(lines[i]) * lines[i].MaxSizeScale;
+
+        float top = _vAlign switch
+        {
+            TextVerticalAlignment.Middle => rect.yMin + (rect.height + blockHeight) * 0.5f,
+            TextVerticalAlignment.Bottom => rect.yMin + blockHeight,
+            _ => rect.yMax,
+        };
+
+        // Start from the rect horizontally (justify spreads to both its edges) and from the text block
+        // vertically, which is the part that can sit well inside a tall row or hang out of a short one.
+        float xMin = rect.xMin, xMax = rect.xMax;
+        float yMin = top - blockHeight, yMax = top;
+
+        for (int lineIndex = 0; lineIndex < lines.Count; lineIndex++)
+        {
+            var line = lines[lineIndex];
+            var align = LineAlign(line);
+            float penX = align == TextHorizontalAlignment.Justify ? rect.xMin : AlignLineStart(rect, line.Width, align);
+            if (penX < xMin) xMin = penX;
+            if (penX + line.Width > xMax) xMax = penX + line.Width;
+
+            float penY = top - _ascent * line.MaxSizeScale;
+            for (int i = 0; i < line.Glyphs.Count; i++)
+            {
+                var glyph = line.Glyphs[i];
+                var metrics = glyph.Metrics;
+                // Sprites sit on the baseline as-is; only real glyphs get the sub/superscript shift.
+                float baseline = glyph.Codepoint == TextShaper.SpriteGlyph ? 0f : GlyphBaseline(GlyphStyle(glyph));
+                float gx = penX + glyph.X + metrics.Offset.x;
+                float gy = penY + baseline + metrics.Offset.y;
+                if (gx < xMin) xMin = gx;
+                if (gy < yMin) yMin = gy;
+                if (gx + metrics.Size.x > xMax) xMax = gx + metrics.Size.x;
+                if (gy + metrics.Size.y > yMax) yMax = gy + metrics.Size.y;
+            }
+
+            top -= LineHeightFor(line) * line.MaxSizeScale;
+        }
+
+        // Decorations draw outside the glyph boxes: italic shears the top to the right, faux bold re-emits at
+        // an offset, underline sits under the baseline, the caret is a quad of its own, and a justified line
+        // spreads its glyphs past where the walk above put them. A quarter of the font size plus a pixel
+        // covers the lot, and plain left-aligned text (nearly all of it) pays nothing. -xlinka
+        bool loose = _richText || _caretPos >= 0 || _hAlign == TextHorizontalAlignment.Justify;
+        float pad = loose ? _size * 0.25f + 1f : 0f;
+        return Rect.FromMinMax(new float2(xMin - pad, yMin - pad), new float2(xMax + pad, yMax + pad));
     }
 
     public override void ComputeGraphic(GraphicsChunk.RenderData renderData)

@@ -13,8 +13,13 @@ namespace Helio.UI;
 // caret/selection visuals; shows Placeholder when empty and unfocused.
 // The caret + selection are REAL geometry rendered by the child Text (steady caret).
 // Only the clicked instance edits (single static focus), reading the LOCAL keyboard;
-// the value replicates through the synced Text field. Mouse-drag selection and a VR
-// on-screen keyboard are future work. -xlinka
+// the value replicates through the synced Text field. Mouse-drag selection is future work.
+//
+// The in-VR keyboard types through the public TypeString/PressBackspace/PressEnter/PressTab
+// surface below, which runs the SAME insert/delete helpers the physical keyboard does. Keep it
+// that way: a second copy of the caret and selection rules is how the two input paths end up
+// disagreeing about where the caret is. -xlinka
+[ComponentCategory("UI/Helio/Interaction")]
 public sealed class TextInput : InteractionElement
 {
     public readonly Sync<string> Text;
@@ -53,6 +58,11 @@ public sealed class TextInput : InteractionElement
     // the input currently owning the local keyboard, if any. game-input readers (menu key, tool
     // hotkeys) stand down while this is non-null.
     public static TextInput? Focused => _focused;
+
+    // Caret index into the CURRENT value, for anything drawing its own view of this field (the VR
+    // keyboard's preview strip). The child Text carries the same number in CaretPosition, but that one
+    // is masked-string relative and only written while focused.
+    public int CaretIndex => _caret;
 
     public TextInput()
     {
@@ -142,40 +152,30 @@ public sealed class TextInput : InteractionElement
             return;
 
         string value = Text.Value ?? string.Empty;
-        _caret = System.Math.Clamp(_caret, 0, value.Length);
-        if (_selStart > value.Length) _selStart = value.Length;
+        ClampCaret(value);
 
-        int max = MaxLength.Value;
         bool shift = kb.IsKeyPressed(Key.LeftShift) || kb.IsKeyPressed(Key.RightShift);
         bool changed = false;
         bool caretMoved = false;
 
+        // Ctrl+C/X/V run the SAME three methods the VR keyboard's Copy/Paste keys call. One path, so the
+        // two keyboards can never end up with different ideas of what copy means on a field. Handled
+        // before the typed-text insert and returning out of the frame: the shortcut has consumed the
+        // keystroke, and letting it fall through would type a stray character on top of the paste. -xlinka
+        if (kb.IsKeyPressed(Key.LeftControl) || kb.IsKeyPressed(Key.RightControl))
+        {
+            if (kb.IsKeyJustPressed(Key.C)) { CopySelection(); return; }
+            if (kb.IsKeyJustPressed(Key.X)) { CutSelection(); return; }
+            if (kb.IsKeyJustPressed(Key.V)) { PasteClipboard(); return; }
+        }
+
         // Typed characters: replace the selection (if any), then insert at the caret.
         string typed = kb.GetTypedText();
         if (!string.IsNullOrEmpty(typed))
-        {
-            foreach (char c in typed)
-            {
-                if (c < ' ' || c == (char)127)
-                    continue;
-                if (HasSelection())
-                {
-                    DeleteSelection(ref value);
-                    changed = true;
-                }
-                if (max > 0 && value.Length >= max)
-                    break;
-                value = value.Insert(_caret, c.ToString());
-                _caret++;
-                changed = true;
-            }
-        }
+            changed |= InsertText(ref value, typed);
 
         if (kb.IsKeyJustPressed(Key.Backspace))
-        {
-            if (HasSelection()) { DeleteSelection(ref value); changed = true; }
-            else if (_caret > 0) { value = value.Remove(_caret - 1, 1); _caret--; changed = true; }
-        }
+            changed |= DeleteBack(ref value);
         if (kb.IsKeyJustPressed(Key.Delete))
         {
             if (HasSelection()) { DeleteSelection(ref value); changed = true; }
@@ -193,23 +193,15 @@ public sealed class TextInput : InteractionElement
         if (kb.IsKeyJustPressed(Key.DownArrow)) { MoveCaret(CaretLineStep(value, _caret, up: false), shift, value.Length); caretMoved = true; }
 
         // Tab in a multi-line field indents by spaces (Tab is stripped from typed text, so handle it here).
-        if (Multiline.Value && kb.IsKeyJustPressed(Key.Tab) && (max <= 0 || value.Length < max))
-        {
-            if (HasSelection()) { DeleteSelection(ref value); }
-            value = value.Insert(_caret, "    ");
-            _caret += 4;
-            changed = true;
-        }
+        if (Multiline.Value && kb.IsKeyJustPressed(Key.Tab))
+            changed |= InsertLiteral(ref value, IndentText);
 
         bool enter = kb.IsKeyJustPressed(Key.Return) || kb.IsKeyJustPressed(Key.KeypadEnter);
         bool escape = kb.IsKeyJustPressed(Key.Escape);
 
-        if (enter && Multiline.Value && (max <= 0 || value.Length < max))
+        if (enter && Multiline.Value)
         {
-            if (HasSelection()) { DeleteSelection(ref value); }
-            value = value.Insert(_caret, "\n");
-            _caret++;
-            changed = true;
+            changed |= InsertLiteral(ref value, "\n");
             enter = false;
         }
 
@@ -260,6 +252,69 @@ public sealed class TextInput : InteractionElement
         return System.Math.Min(nextStart + column, nextEnd);
     }
 
+    // EDITING PRIMITIVES
+    // Every insert and delete in this component goes through these three, whether the keystroke came
+    // off the hardware keyboard in OnUpdate or off a VR key through the public surface further down. -xlinka
+
+    private const string IndentText = "    ";
+
+    private void ClampCaret(string value)
+    {
+        _caret = System.Math.Clamp(_caret, 0, value.Length);
+        if (_selStart > value.Length) _selStart = value.Length;
+    }
+
+    // Printable characters only: control codes and DEL are dropped, which is what keeps a stray
+    // newline out of a single-line field. Newlines and indents come in through InsertLiteral.
+    private bool InsertText(ref string value, string typed)
+    {
+        int max = MaxLength.Value;
+        bool changed = false;
+        foreach (char c in typed)
+        {
+            if (c < ' ' || c == (char)127)
+                continue;
+            if (HasSelection())
+            {
+                DeleteSelection(ref value);
+                changed = true;
+            }
+            if (max > 0 && value.Length >= max)
+                break;
+            value = value.Insert(_caret, c.ToString());
+            _caret++;
+            changed = true;
+        }
+        return changed;
+    }
+
+    // Verbatim insert for the things the printable filter would eat (newline, tab indent).
+    private bool InsertLiteral(ref string value, string literal)
+    {
+        int max = MaxLength.Value;
+        if (max > 0 && value.Length >= max)
+            return false;
+        if (HasSelection())
+            DeleteSelection(ref value);
+        value = value.Insert(_caret, literal);
+        _caret += literal.Length;
+        return true;
+    }
+
+    private bool DeleteBack(ref string value)
+    {
+        if (HasSelection())
+        {
+            DeleteSelection(ref value);
+            return true;
+        }
+        if (_caret <= 0)
+            return false;
+        value = value.Remove(_caret - 1, 1);
+        _caret--;
+        return true;
+    }
+
     private bool HasSelection() => _selStart >= 0 && _selStart != _caret;
 
     private void DeleteSelection(ref string value)
@@ -299,7 +354,211 @@ public sealed class TextInput : InteractionElement
         ChangeAction.Target?.Invoke(this, value);
     }
 
-    private void Focus()
+    // TYPING SURFACE
+    // What a virtual key press calls. Each one clamps, runs the same primitive the hardware path runs,
+    // then commits and redraws exactly as OnUpdate does - so change events, MaxLength and selection
+    // replacement behave identically no matter which keyboard you typed on. All of them stand down
+    // unless this field currently holds focus. -xlinka
+
+    private bool CanType => !IsDestroyed && IsFocused && !ReadOnly.Value;
+
+    public void TypeString(string text)
+    {
+        if (!CanType || string.IsNullOrEmpty(text))
+            return;
+        string value = Text.Value ?? string.Empty;
+        ClampCaret(value);
+        if (InsertText(ref value, text))
+            ApplyValue(value);
+        UpdateDisplay();
+    }
+
+    public void PressBackspace()
+    {
+        if (!CanType)
+            return;
+        string value = Text.Value ?? string.Empty;
+        ClampCaret(value);
+        if (DeleteBack(ref value))
+            ApplyValue(value);
+        UpdateDisplay();
+    }
+
+    // Newline in a multi-line field, submit in a single-line one - the Return key's own rule.
+    public void PressEnter()
+    {
+        if (!CanType)
+            return;
+        if (!Multiline.Value)
+        {
+            Submit();
+            return;
+        }
+        string value = Text.Value ?? string.Empty;
+        ClampCaret(value);
+        if (InsertLiteral(ref value, "\n"))
+            ApplyValue(value);
+        UpdateDisplay();
+    }
+
+    // Indent, and only in a multi-line field. Single-line Tab does nothing here because it does
+    // nothing on the hardware keyboard either; inventing a focus-hop for the virtual key would make
+    // the two keyboards behave differently on the same field. -xlinka
+    public void PressTab()
+    {
+        if (!CanType || !Multiline.Value)
+            return;
+        string value = Text.Value ?? string.Empty;
+        ClampCaret(value);
+        if (InsertLiteral(ref value, IndentText))
+            ApplyValue(value);
+        UpdateDisplay();
+    }
+
+    // Relative caret step, selection dropped. Named apart from the private absolute MoveCaret so
+    // nobody reads MoveCaret(3) as "move to index 3".
+    public void MoveCaretBy(int delta)
+    {
+        if (IsDestroyed || !IsFocused || delta == 0)
+            return;
+        string value = Text.Value ?? string.Empty;
+        ClampCaret(value);
+        MoveCaret(_caret + delta, false, value.Length);
+        UpdateDisplay();
+    }
+
+    // Same-column hop to the neighbouring line, straight off the helper the Up/Down keys run in
+    // OnUpdate. A single-line field has no neighbour, so this lands on the document edge.
+    public void MoveCaretLine(bool up)
+    {
+        if (IsDestroyed || !IsFocused)
+            return;
+        string value = Text.Value ?? string.Empty;
+        ClampCaret(value);
+        MoveCaret(CaretLineStep(value, _caret, up), false, value.Length);
+        UpdateDisplay();
+    }
+
+    // Home/End, line-relative, off the same two helpers the hardware keys use.
+    public void MoveCaretToLineEdge(bool start)
+    {
+        if (IsDestroyed || !IsFocused)
+            return;
+        string value = Text.Value ?? string.Empty;
+        ClampCaret(value);
+        MoveCaret(start ? LineStartOf(value, _caret) : LineEndOf(value, _caret), false, value.Length);
+        UpdateDisplay();
+    }
+
+    // Set the selection from code. Shift+arrow off the hardware keyboard is otherwise the ONLY thing
+    // in this component that can move the anchor, which leaves the copy/cut surface below with a main
+    // branch nothing outside OnUpdate can reach. Anchor and caret both clamp into the value; equal
+    // means no selection. -xlinka
+    public void SelectRange(int anchor, int caret)
+    {
+        if (IsDestroyed || !IsFocused)
+            return;
+        string value = Text.Value ?? string.Empty;
+        _caret = System.Math.Clamp(caret, 0, value.Length);
+        int start = System.Math.Clamp(anchor, 0, value.Length);
+        _selStart = start == _caret ? -1 : start;
+        UpdateDisplay();
+    }
+
+    // CLIPBOARD
+    // The platform clipboard is a runner-injected service, so there is nothing to reach on a headless
+    // build and every method here degrades to a no-op instead of throwing. -xlinka
+
+    // Test seam. A headless harness has no Engine, so there is no InputInterface to hang a clipboard
+    // off and no way to exercise copy/paste at all without this. Null in every real session; the
+    // platform's clipboard goes on InputInterface where the rest of the platform services live.
+    public static IClipboardText? ClipboardOverride { get; set; }
+
+    private static IClipboardText? Clipboard => ClipboardOverride ?? Engine.Current?.InputInterface?.ClipboardText;
+
+    // Whether copy/paste can do anything at all right now. The VR keyboard greys its Paste key on this.
+    public static bool ClipboardAvailable => Clipboard != null;
+
+    private string SelectedText(string value)
+    {
+        if (!HasSelection())
+            return string.Empty;
+        int s = System.Math.Clamp(_selStart < _caret ? _selStart : _caret, 0, value.Length);
+        int e = System.Math.Clamp(_selStart < _caret ? _caret : _selStart, 0, value.Length);
+        return e > s ? value.Substring(s, e - s) : string.Empty;
+    }
+
+    // The selection if there is one, the whole value if there is not - what every editor does when you
+    // hit copy without having selected anything. Returns what it put on the clipboard so a caller can
+    // see the result without reading the OS clipboard back, which is also what makes it testable.
+    public string CopySelection()
+    {
+        if (IsDestroyed || !IsFocused)
+            return string.Empty;
+        string value = Text.Value ?? string.Empty;
+        ClampCaret(value);
+        string copied = HasSelection() ? SelectedText(value) : value;
+        if (copied.Length == 0)
+            return string.Empty;
+        Clipboard?.SetText(copied);
+        return copied;
+    }
+
+    // Copy then delete, and ONLY with a selection. A bare cut that empties the whole field is one
+    // mis-hit away from losing everything you typed, and there is no undo on a text field. -xlinka
+    public string CutSelection()
+    {
+        if (!CanType || !HasSelection())
+            return string.Empty;
+        string value = Text.Value ?? string.Empty;
+        ClampCaret(value);
+        string copied = SelectedText(value);
+        if (copied.Length == 0)
+            return string.Empty;
+        Clipboard?.SetText(copied);
+        DeleteSelection(ref value);
+        ApplyValue(value);
+        UpdateDisplay();
+        return copied;
+    }
+
+    // Paste rides TypeString, so MaxLength, the selection replace and the change event behave exactly as
+    // if the text had been typed in. InsertText's printable filter drops control codes, which is what
+    // strips newlines out of a single-line field for free; a multi-line field has to put the breaks back
+    // with the same literal insert the Enter key uses, since the filter would eat those too. -xlinka
+    public bool PasteClipboard()
+    {
+        if (!CanType)
+            return false;
+        string text = Clipboard?.GetText() ?? string.Empty;
+        if (text.Length == 0)
+            return false;
+
+        if (!Multiline.Value)
+        {
+            TypeString(text);
+            return true;
+        }
+
+        string[] lines = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+        for (int i = 0; i < lines.Length; i++)
+        {
+            if (i > 0)
+            {
+                string value = Text.Value ?? string.Empty;
+                ClampCaret(value);
+                if (InsertLiteral(ref value, "\n"))
+                    ApplyValue(value);
+                UpdateDisplay();
+            }
+            TypeString(lines[i]);
+        }
+        return true;
+    }
+
+    // Take focus without a click. The pointer path goes through OnPress; anything else that needs to
+    // start a typing session (a harness, a panel handing off to a field) calls this.
+    public void Focus()
     {
         if (ReferenceEquals(_focused, this))
             return;
@@ -314,6 +573,8 @@ public sealed class TextInput : InteractionElement
         EditingStarted?.Invoke(this);
     }
 
+    // The blur path: drop focus, release the keyboard, fire FocusLost, and commit nothing. Escape,
+    // click-away and the VR keyboard's Close and Esc keys all land here.
     public void Unfocus()
     {
         bool was = ReferenceEquals(_focused, this);

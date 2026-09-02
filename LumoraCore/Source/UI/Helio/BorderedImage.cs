@@ -11,6 +11,7 @@ namespace Helio.UI;
 // One Graphic, two layers, one submesh. Emits a BorderTint rect under a Tint rect inset
 // by BorderThickness - same draw call. Replaces the Border/Fill child-slot pattern that
 // produced inconsistent rendering across multiple buttons. - xlinka
+[ComponentCategory("UI/Helio/Graphics")]
 public sealed class BorderedImage : Graphic
 {
     public readonly AssetRef<TextureAsset> Texture;
@@ -47,6 +48,9 @@ public sealed class BorderedImage : Graphic
 
     // Trims its quads to RenderData.GeometryClipRect, so it can carry a clip window that rides the chunk.
     public override bool TrimsGeometryToClip => true;
+
+    // Border layer is the rect, fill layer is inset from it. -xlinka
+    public override Rect? MeasureBounds() => RectTransform?.LocalComputeRect;
 
     protected override void FlagChanges(RectTransform rect)
     {

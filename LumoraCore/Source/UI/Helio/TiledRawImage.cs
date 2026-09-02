@@ -9,6 +9,7 @@ using Lumora.Core.Phos;
 
 namespace Helio.UI;
 
+[ComponentCategory("UI/Helio/Graphics")]
 public sealed class TiledRawImage : Graphic
 {
     public enum TileSizeBasis
@@ -50,6 +51,9 @@ public sealed class TiledRawImage : Graphic
 
     // Trims its quads to RenderData.GeometryClipRect, so it can carry a clip window that rides the chunk.
     public override bool TrimsGeometryToClip => true;
+
+    // Tiles are clamped to the rect on every edge, so the rect is the bound. -xlinka
+    public override Rect? MeasureBounds() => RectTransform?.LocalComputeRect;
 
     protected override void FlagChanges(RectTransform rect)
     {

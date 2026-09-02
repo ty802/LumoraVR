@@ -10,6 +10,7 @@ namespace Helio.UI.Layout;
 // stacks every child in the same place, each filling the layout's inner rect. metrics are the
 // MAX of the children on both axes (not the sum), so the container shrink-wraps to its largest
 // child. useful for layered content (background + foreground, overlapping panels).
+[ComponentCategory("UI/Helio/Layout")]
 public class OverlappingLayout : LayoutController
 {
     public readonly Sync<float> PaddingLeft;

@@ -7,6 +7,7 @@ namespace Helio.UI;
 
 // shows a "Tip" child slot while a sibling InteractionElement on the same slot is hovered.
 // composes with any existing interactable (Button, Checkbox, ...).
+[ComponentCategory("UI/Helio")]
 public sealed class HoverTip : UIComponent
 {
     // Drives the tip slot's active state. Declared member: the target replicates and saves.

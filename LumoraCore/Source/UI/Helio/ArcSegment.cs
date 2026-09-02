@@ -13,6 +13,7 @@ namespace Helio.UI;
 // increasing clockwise (same convention as ContextMenuPage.LayoutItems);
 // radii are canvas units measured from the rect center. Hit-testing is
 // polar, so interaction follows the arc shape exactly. - xlinka
+[ComponentCategory("UI/Helio/Graphics")]
 public sealed class ArcSegment : Graphic
 {
     public readonly Sync<float> AngleStart;
@@ -295,6 +296,7 @@ public sealed class ArcSegment : Graphic
 /// <summary>
 /// Button whose hit area follows an ArcSegment graphic on the same slot.
 /// </summary>
+[ComponentCategory("UI/Helio/Interaction")]
 public sealed class ArcButton : Button
 {
     public override bool IsPointInside(in float2 point)

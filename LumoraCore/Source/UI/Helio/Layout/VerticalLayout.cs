@@ -8,6 +8,7 @@ using Lumora.Core.Math;
 namespace Helio.UI.Layout;
 
 // arranges children top-to-bottom within the layout's rect.
+[ComponentCategory("UI/Helio/Layout")]
 public class VerticalLayout : LayoutController
 {
     public readonly Sync<float> Spacing;

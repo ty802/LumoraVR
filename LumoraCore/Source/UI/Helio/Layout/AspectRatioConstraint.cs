@@ -10,6 +10,7 @@ namespace Helio.UI.Layout;
 /// it after content-fit: one dimension is derived from the other per <see cref="Mode"/>.
 /// </summary>
 [SingleInstancePerSlot]
+[ComponentCategory("UI/Helio/Layout")]
 public class AspectRatioConstraint : UIComputeComponent
 {
     public enum AspectMode

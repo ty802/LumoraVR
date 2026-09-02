@@ -5,6 +5,7 @@ using Lumora.Core;
 
 namespace Helio.UI;
 
+[ComponentCategory("UI/Helio")]
 public sealed class Mask : UIComputeComponent
 {
     public readonly Sync<bool> ShowMaskGraphic;

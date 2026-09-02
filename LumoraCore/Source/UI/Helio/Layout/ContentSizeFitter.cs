@@ -11,6 +11,7 @@ namespace Helio.UI.Layout;
 // box, so shrink-wrap panels/lists/dropdowns/tooltips render at the wrong size and clip or strand their
 // content. Off (Disabled) per axis by default, so it changes nothing unless you opt a container in. -xlinka
 [SingleInstancePerSlot]
+[ComponentCategory("UI/Helio/Layout")]
 public class ContentSizeFitter : UIComputeComponent
 {
     public readonly Sync<SizeFit> HorizontalFit;

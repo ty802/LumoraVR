@@ -13,6 +13,7 @@ namespace Helio.UI.Layout;
 /// child; rows stack top-to-bottom. Children size to their preferred metrics,
 /// clamped to the container width.
 /// </summary>
+[ComponentCategory("UI/Helio/Layout")]
 public class WrapLayout : LayoutController
 {
     public readonly Sync<float> Spacing;       // horizontal gap between items in a row

@@ -13,6 +13,7 @@ namespace Helio.UI;
 // rounded-rectangle panel with an optional border. built as a procedural mesh (corner arcs
 // tessellated) like ArcSegment - no special shader, batches with the default UI material,
 // hit-tests to the rounded shape.
+[ComponentCategory("UI/Helio/Graphics")]
 public sealed class RoundedPanel : Graphic
 {
     public readonly Sync<color> Color;
@@ -37,6 +38,9 @@ public sealed class RoundedPanel : Graphic
 
     // Trims its quads to RenderData.GeometryClipRect, so it can carry a clip window that rides the chunk.
     public override bool TrimsGeometryToClip => true;
+
+    // The rounded rect fits inside its rect, and the outline draws on the inside of the edge. -xlinka
+    public override Rect? MeasureBounds() => RectTransform?.LocalComputeRect;
 
     protected override void FlagChanges(RectTransform rect)
     {
@@ -162,11 +166,17 @@ public sealed class RoundedPanel : Graphic
         }
 
         // Center fan (degenerate quads since the submesh only exposes AddQuadAsTriangles).
+        //
+        // Order is (center, next, current), NOT (center, current, next). The perimeter points are built
+        // counter-clockwise, so the natural fan order comes out wound the opposite way to the square
+        // path above and to every RawImage quad, and the UI shaders are cull_front: a rounded panel
+        // wound the other way is culled and draws NOTHING. That is why nothing with a corner radius
+        // showed up. -xlinka
         for (int i = 0; i < n; i++)
         {
             int a = c0 + 1 + i;
             int b = c0 + 1 + (i + 1) % n;
-            submesh.AddQuadAsTriangles(c0, a, b, b);
+            submesh.AddQuadAsTriangles(c0, b, a, a);
         }
     }
 

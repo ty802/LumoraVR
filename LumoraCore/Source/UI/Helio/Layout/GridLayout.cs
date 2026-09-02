@@ -12,6 +12,7 @@ namespace Helio.UI.Layout;
 //  - Fixed column count (default): cell size = layout rect / column count (cells stretch to fill width).
 //  - Fixed cell size (set CellSize.x > 0): cells are a fixed size and the column count is derived from
 //    the available width, wrapping top-left - the right choice for card grids that shouldn't stretch.
+[ComponentCategory("UI/Helio/Layout")]
 public class GridLayout : LayoutController
 {
     public readonly Sync<int> Columns;

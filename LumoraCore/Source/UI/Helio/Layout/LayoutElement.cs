@@ -6,6 +6,7 @@ using Lumora.Core.Math;
 
 namespace Helio.UI.Layout;
 
+[ComponentCategory("UI/Helio/Layout")]
 public sealed class LayoutElement : UIComputeComponent, ILayoutElement
 {
     /// <summary>Outer margin (x=left, y=bottom, z=right, w=top), the CSS margin. Default zero.</summary>

@@ -29,7 +29,6 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
 
     private MeshInstance3D _meshInstance = null!;
     private ArrayMesh _arrayMesh = null!;
-    private StandardMaterial3D _material = null!;
     private SkeletonHook _skeletonHook = null!;
     private Skeleton3D _skeleton = null!;
     private bool _meshApplied;
@@ -145,26 +144,29 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
     {
         if (_meshInstance == null || _arrayMesh == null) return;
 
+        // Nothing assigned is AUTHORED, not loading: no override, no loading skin, and latched so the
+        // retry loop stops asking. It used to paint a flat tan guess here, which is a claim about a
+        // material that does not exist. -xlinka
+        if (Owner.Material.Target == null)
+        {
+            _meshInstance.SetSurfaceOverrideMaterial(0, null);
+            _realMaterialApplied = true;
+            return;
+        }
+
         var materialAsset = Owner.Material.Asset;
-        if (materialAsset != null && materialAsset.GodotMaterial is Material godotMaterial)
+        bool loading = Owner.IsSurfaceLoading();
+        if (!loading && materialAsset != null && materialAsset.GodotMaterial is Material godotMaterial)
         {
             _meshInstance.SetSurfaceOverrideMaterial(0, godotMaterial);
             _realMaterialApplied = true;
         }
         else
         {
-            // Real material asset isn't loaded yet (it's created lazily once referenced + decoded). Show a neutral
-            // fallback but DON'T latch it - leave _realMaterialApplied false so the update loop keeps retrying and
-            // swaps in the real material the moment it's valid. Otherwise a textured avatar gets stuck flat-tan. -xlinka
-            if (_material == null)
-            {
-                _material = new StandardMaterial3D();
-                _material.AlbedoColor = new Color(0.8f, 0.7f, 0.6f); // Skin-like color
-                _material.Roughness = 0.8f;
-                _material.Metallic = 0.0f;
-                _material.CullMode = BaseMaterial3D.CullModeEnum.Back;
-            }
-            _meshInstance.SetSurfaceOverrideMaterial(0, _material);
+            // Assigned but still arriving (the material asset, or its textures). Wear the shared loading
+            // skin and DON'T latch it - leave _realMaterialApplied false so the arrival notification's
+            // re-drive swaps in the real material. An avatar used to get stuck in the tan. -xlinka
+            _meshInstance.SetSurfaceOverrideMaterial(0, LoadingPlaceholderMaterial.Get());
             _realMaterialApplied = false;
         }
     }
@@ -1024,11 +1026,9 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
         }
 
         _arrayMesh?.Dispose();
-        _material?.Dispose();
 
         _meshInstance = null!;
         _arrayMesh = null!;
-        _material = null!;
         _skeletonHook = null!;
         _skeleton = null!;
         _boneIndexMap.Clear();

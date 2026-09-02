@@ -190,6 +190,18 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
                 _shaderMaterial = CreateShaderMaterial("res://Shaders/Mat_OverlayFresnel.gdshader", MaterialType.OverlayFresnel);
                 break;
 
+            case MaterialType.Portal:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial("res://Shaders/Mat_Portal.gdshader", MaterialType.Portal);
+                break;
+
+            case MaterialType.Toon:
+                _usesShaderMaterial = true;
+                _shaderMaterial = CreateShaderMaterial(ToonShaderPath(Culling.Back), MaterialType.Toon);
+                _nextPassMaterial = CreateShaderMaterial("res://Shaders/Mat_ToonOutline.gdshader", MaterialType.Toon);
+                _shaderMaterial.NextPass = _nextPassMaterial;
+                break;
+
             default:
                 _usesShaderMaterial = false;
                 _standardMaterial = new StandardMaterial3D();
@@ -332,9 +344,25 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         }
         else if (_shaderMaterial != null)
         {
+            // Culling is a compile-time render_mode in gdshader, not a uniform. The toon family ships one
+            // variant per cull mode over a shared include, so it swaps shaders the way the UI unlit family
+            // does for ZTest; everything else keeps setting the parameter it has always set.
+            if (_materialType == MaterialType.Toon)
+            {
+                SwapShader(ToonShaderPath(culling));
+                return;
+            }
+
             _shaderMaterial.SetShaderParameter("cull_mode", (int)culling);
         }
     }
+
+    private static string ToonShaderPath(Culling culling) => culling switch
+    {
+        Culling.Front => "res://Shaders/Mat_ToonFrontCull.gdshader",
+        Culling.None => "res://Shaders/Mat_ToonDoubleSided.gdshader",
+        _ => "res://Shaders/Mat_Toon.gdshader"
+    };
 
     public void SetFloat(string property, float value)
     {

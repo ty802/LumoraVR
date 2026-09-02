@@ -28,6 +28,14 @@ namespace Lumora.Godot.Hooks
         // Mesh-shape bake key: the slot's global scale is baked into the vertices (the body node stays
         // at scale 1 like every other collider here), so a rebuild is needed when the source geometry,
         // the scale, or the convex flag changes - and only then, cooking a trimesh isn't free. -xlinka
+        // Last values actually pushed into the physics server, so a per-frame re-apply on a moving
+        // collider stops writing the same numbers back.
+        private bool _lastEnabled;
+        private uint _lastLayer = uint.MaxValue;
+        private uint _lastMask = uint.MaxValue;
+        private Vector3 _lastBodyPosition = new Vector3(float.NaN, float.NaN, float.NaN);
+        private Quaternion _lastBodyRotation = new Quaternion(float.NaN, float.NaN, float.NaN, float.NaN);
+
         private float3[]? _meshBakeSource;
         private int _meshBakeIndexCount;
         private Vector3 _meshBakeScale;
@@ -70,9 +78,7 @@ namespace Lumora.Godot.Hooks
             {
                 LumoraLogger.Log($"PhysicsColliderHook: Creating body for {Owner.GetType().Name} on '{Owner.Slot.SlotName.Value}'");
                 CreateBody();
-                BuildShape();
-                UpdateTransform();
-                // Don't return - continue to apply any pending changes
+                // BuildShape and UpdateTransform run below on every path; no need to do them twice.
             }
 
             bool shouldBeDynamic = Owner.Mass.Value > 0.0001f && Owner.Type.Value != ColliderType.Static;
@@ -89,20 +95,33 @@ namespace Lumora.Godot.Hooks
 
             // Enable/disable collision, scoped to this world's collision bit so bodies in different
             // worlds can never touch or answer each other's queries.
+            // A moving collider runs this every frame (its world transform event queues the apply), and
+            // every write below is a marshalled call that dirties the body in the physics server. Push
+            // only what actually changed. -xlinka
             uint worldBit = WorldHook.GetCollisionBitFor(Owner?.World);
             bool enabled = Owner?.Enabled ?? false;
-            _bodyNode!.Visible = enabled;
-            if (_bodyNode is Area3D)
+            uint layer = enabled ? worldBit : 0u;
+            // sensor only (Area3D). on physics layer for engine-side interaction, mask=0 so nothing
+            // pushes against it - xlinka
+            uint mask = _bodyNode is Area3D ? 0u : (enabled ? (worldBit | 1u) : 0u);
+
+            if (enabled != _lastEnabled)
             {
-                // sensor only. on physics layer for engine-side interaction, mask=0 so nothing pushes against it - xlinka
-                var co = (CollisionObject3D)_bodyNode;
-                co.CollisionLayer = enabled ? worldBit : 0u;
-                co.CollisionMask = 0u;
+                _bodyNode!.Visible = enabled;
+                _lastEnabled = enabled;
             }
-            else if (_bodyNode is CollisionObject3D co)
+            if (_bodyNode is CollisionObject3D collisionObject)
             {
-                co.CollisionLayer = enabled ? worldBit : 0u;
-                co.CollisionMask = enabled ? (worldBit | 1u) : 0u;
+                if (layer != _lastLayer)
+                {
+                    collisionObject.CollisionLayer = layer;
+                    _lastLayer = layer;
+                }
+                if (mask != _lastMask)
+                {
+                    collisionObject.CollisionMask = mask;
+                    _lastMask = mask;
+                }
             }
         }
 
@@ -169,7 +188,11 @@ namespace Lumora.Godot.Hooks
                     float3 size = box.Size.Value;
                     if (_shape is BoxShape3D existingBox)
                     {
-                        existingBox.Size = new Vector3(size.x, size.y, size.z);
+                        // Re-writing the same extents re-cooks the shape and wakes everything resting on
+                        // it, and a moving collider lands here every frame. Only push a real change.
+                        var boxSize = new Vector3(size.x, size.y, size.z);
+                        if (existingBox.Size != boxSize)
+                            existingBox.Size = boxSize;
                     }
                     else
                     {
@@ -180,8 +203,10 @@ namespace Lumora.Godot.Hooks
                 case CapsuleCollider capsule:
                     if (_shape is CapsuleShape3D existingCap)
                     {
-                        existingCap.Radius = capsule.Radius.Value;
-                        existingCap.Height = capsule.Height.Value;
+                        if (existingCap.Radius != capsule.Radius.Value)
+                            existingCap.Radius = capsule.Radius.Value;
+                        if (existingCap.Height != capsule.Height.Value)
+                            existingCap.Height = capsule.Height.Value;
                     }
                     else
                     {
@@ -192,7 +217,8 @@ namespace Lumora.Godot.Hooks
                 case SphereCollider sphere:
                     if (_shape is SphereShape3D existingSph)
                     {
-                        existingSph.Radius = sphere.Radius.Value;
+                        if (existingSph.Radius != sphere.Radius.Value)
+                            existingSph.Radius = sphere.Radius.Value;
                     }
                     else
                     {
@@ -203,8 +229,10 @@ namespace Lumora.Godot.Hooks
                 case CylinderCollider cylinder:
                     if (_shape is CylinderShape3D existingCyl)
                     {
-                        existingCyl.Radius = cylinder.Radius.Value;
-                        existingCyl.Height = cylinder.Height.Value;
+                        if (existingCyl.Radius != cylinder.Radius.Value)
+                            existingCyl.Radius = cylinder.Radius.Value;
+                        if (existingCyl.Height != cylinder.Height.Value)
+                            existingCyl.Height = cylinder.Height.Value;
                     }
                     else
                     {
@@ -233,7 +261,9 @@ namespace Lumora.Godot.Hooks
             }
 
             var offset = Owner.Offset.Value;
-            _collisionShape.Position = new Vector3(offset.x, offset.y, offset.z);
+            var offsetVector = new Vector3(offset.x, offset.y, offset.z);
+            if (_collisionShape.Position != offsetVector)
+                _collisionShape.Position = offsetVector;
 
             if (ShouldShowDebugForCollider())
             {
@@ -586,24 +616,46 @@ namespace Lumora.Godot.Hooks
                 return;
 
             var slotNode = slotHook?.GeneratedNode3D;
-            if (slotNode != null)
-            {
-                // Only copy position and rotation - NOT scale
-                // Shape size is already set to correct dimensions, scaling would double-apply
-                if (slotNode.IsInsideTree())
-                {
-                    _bodyNode.GlobalPosition = slotNode.GlobalPosition;
-                    _bodyNode.GlobalRotation = slotNode.GlobalRotation;
-                }
-                else
-                {
-                    var globalPos = Owner.Slot.GlobalPosition;
-                    var globalRot = Owner.Slot.GlobalRotation;
+            if (slotNode == null)
+                return;
 
-                    _bodyNode.Position = new Vector3(globalPos.x, globalPos.y, globalPos.z);
-                    _bodyNode.Quaternion = new Quaternion(globalRot.x, globalRot.y, globalRot.z, globalRot.w);
-                }
-                // Scale stays at (1,1,1) - shape size handles dimensions
+            // Only copy position and rotation - NOT scale. The shape already carries the real
+            // dimensions, so scaling here would double-apply; scale stays at (1,1,1).
+            //
+            // Guarded on the value. A collider is re-applied for plenty of reasons other than moving (a
+            // sync field, an enable, a shape edit), and a transform write on a static body re-inserts it
+            // into the broadphase and wakes whatever was resting on it. Same pose in, nothing out.
+            // -xlinka
+            bool inTree = slotNode.IsInsideTree();
+            Vector3 position;
+            Quaternion rotation;
+            if (inTree)
+            {
+                position = slotNode.GlobalPosition;
+                rotation = slotNode.GlobalBasis.GetRotationQuaternion();
+            }
+            else
+            {
+                var globalPos = Owner.Slot.GlobalPosition;
+                var globalRot = Owner.Slot.GlobalRotation;
+                position = new Vector3(globalPos.x, globalPos.y, globalPos.z);
+                rotation = new Quaternion(globalRot.x, globalRot.y, globalRot.z, globalRot.w);
+            }
+
+            if (position == _lastBodyPosition && rotation == _lastBodyRotation)
+                return;
+            _lastBodyPosition = position;
+            _lastBodyRotation = rotation;
+
+            if (inTree)
+            {
+                _bodyNode.GlobalPosition = position;
+                _bodyNode.GlobalBasis = new Basis(rotation);
+            }
+            else
+            {
+                _bodyNode.Position = position;
+                _bodyNode.Quaternion = rotation;
             }
         }
 

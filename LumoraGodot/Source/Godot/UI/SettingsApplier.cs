@@ -35,6 +35,7 @@ public partial class SettingsApplier : Node
 	private int? _appliedMaxFps;
 	private bool? _appliedFullscreen;
 	private float? _appliedRenderScale;
+	private float? _appliedMeshLodThreshold;
 	private float? _appliedMasterVolume;
 	private float? _appliedUserHeight;
 	private int? _appliedBackgroundFps;
@@ -80,6 +81,13 @@ public partial class SettingsApplier : Node
 			{
 				root.Scaling3DScale = EngineSettings.RenderScale;
 			}
+		}
+
+		if (_appliedMeshLodThreshold != EngineSettings.MeshLodThreshold)
+		{
+			_appliedMeshLodThreshold = EngineSettings.MeshLodThreshold;
+			ApplyMeshLodThreshold(GetTree()?.Root, EngineSettings.MeshLodThreshold);
+			Lumora.Core.Logging.Logger.Log($"Settings: mesh LOD threshold -> {EngineSettings.DescribeMeshLodThreshold(EngineSettings.MeshLodThreshold)}");
 		}
 
 		if (_appliedMasterVolume != EngineSettings.MasterVolume)
@@ -152,6 +160,22 @@ public partial class SettingsApplier : Node
 		}
 
 		global::Godot.Engine.MaxFps = effective;
+	}
+
+	// The threshold is a per-viewport property, and the XR sub-viewport is a different one from the
+	// window's. Walk what is in the tree rather than naming them, so a mirror or capture viewport that
+	// renders 3D gets the same setting instead of quietly staying at the project default. Viewports
+	// created after this runs inherit that project default until the next change. -xlinka
+	private static void ApplyMeshLodThreshold(Node? node, float threshold)
+	{
+		if (node == null)
+			return;
+
+		if (node is Viewport viewport)
+			viewport.MeshLodThreshold = threshold;
+
+		foreach (var child in node.GetChildren())
+			ApplyMeshLodThreshold(child, threshold);
 	}
 
 	private static bool IsVrActive()

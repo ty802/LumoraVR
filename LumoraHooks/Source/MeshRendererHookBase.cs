@@ -209,11 +209,31 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
         ApplyLodRange();
     }
 
+    public bool TryGetLargestDimension(out float size)
+    {
+        size = 0f;
+        if (meshInstance == null || meshInstance.Mesh == null)
+            return false;
+        var aabb = meshInstance.GetAabb();
+        var basis = meshInstance.GlobalTransform.Basis;
+        float scale = Mathf.Max(basis.X.Length(), Mathf.Max(basis.Y.Length(), basis.Z.Length()));
+        size = Mathf.Max(aabb.Size.X, Mathf.Max(aabb.Size.Y, aabb.Size.Z)) * scale;
+        return size > 0f;
+    }
+
     private void ApplyLodRange()
     {
-        _lodRange.ApplyTo(meshInstance);
+        // Torn down: a LOD group handing back an unbounded band on its way out can reach us after the
+        // component is gone, and there is nothing left to read a view distance off.
+        if (Owner == null)
+            return;
+
+        var effective = LodVisibilityRange.Tightest(
+            in _lodRange,
+            LodVisibilityRange.To(Owner.MaxViewDistance, Owner.ViewDistanceFadeMargin));
+        effective.ApplyTo(meshInstance);
         foreach (var inst in _perSurfaceInstances)
-            _lodRange.ApplyTo(inst);
+            effective.ApplyTo(inst);
     }
 
     // Unbounded UI ordering. When Owner.PerSurfaceOrdering is set (Helio's opt-in mode), render each surface of
@@ -322,6 +342,15 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
 
     private Material GetSurfaceMaterial(int index)
     {
+        // Assigned but still arriving: wear the loading skin rather than whatever half-state the
+        // material is in (a white untextured PBS, or nothing at all). The swap back to the real
+        // material rides the asset-arrival notification that already re-drives this hook, and the
+        // core-side latch makes sure it only happens once. -xlinka
+        if (Owner.IsSurfaceLoading(index))
+        {
+            return LoadingPlaceholderMaterial.Get();
+        }
+
         var materialAsset = GetMaterialAsset(index);
         if (materialAsset == null)
         {

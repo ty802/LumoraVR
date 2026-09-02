@@ -1,9 +1,13 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System;
 using Godot;
 using Lumora.Core;
+using Lumora.Core.Assets;
 using Lumora.Core.Math;
+using Lumora.Godot.Hooks.Particles;
+using Lumora.Simulation.Particles;
 using LumoraParticleSystem = Lumora.Core.Components.ParticleSystem;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
@@ -14,20 +18,46 @@ namespace Lumora.Godot.Hooks;
 // the finished position/size/rotation/color buffers each frame and writes the instance buffer in a single
 // upload - per-instance Set* calls cost a marshalling round-trip each, which at particle counts IS the
 // frame budget. -xlinka
+//
+// The higher tiers hang off the same pull: trail and ribbon strands become ribbons of quads under
+// StrandSurface, a flipbook's fractional frame rides the instance buffer's custom data into the shader,
+// and nominated light candidates go through ParticleLightArbiter before any of them become a real
+// OmniLight3D. Each of those is skipped entirely when the module that feeds it is not attached.
 [ImplementableHook(typeof(LumoraParticleSystem))]
-public sealed partial class ParticleSystemHook : ComponentHook<LumoraParticleSystem>
+public sealed partial class ParticleSystemHook : ComponentHook<LumoraParticleSystem>, ILodRangeTarget
 {
     private const string ShaderPath = "res://Shaders/EngineParticle.gdshader";
     private const int InstanceStride = 16; // 12 transform + 4 color
+    private const int SheetStride = 20;    // ...+ 4 custom data, carrying the flipbook frame
+
+    // Hard ceiling on real dynamic lights ONE system may promote, on top of whatever its ParticleLights
+    // asks for. A promoted candidate is a real light with a real per-light cost and the component's
+    // MaxLights is authored blind - by someone who cannot see how many other systems are in frame. This
+    // is the number that stops a world full of ember fountains from being a lighting bill. -xlinka
+    private const int MaxPromotedLights = 12;
 
     private ParticleProcessNode _processNode = null!;
     private MultiMeshInstance3D _instance = null!;
     private MultiMesh _multiMesh = null!;
     private SphereMesh _particleMesh = null!;
+    private QuadMesh _sheetMesh = null!;
     private ShaderMaterial _material = null!;
     private float[] _buffer = System.Array.Empty<float>();
     private int _capacity;
     private int _lastRenderVersion = -1;
+    private bool _useSheet;
+
+    private int _sheetColumns = -1;
+    private int _sheetRows = -1;
+    private int _sheetFrames = -1;
+    private Texture2D? _sheetTexture;
+    private bool _sheetBillboard;
+
+    private StrandSurface? _trails;
+    private StrandSurface? _ribbons;
+
+    private ParticleLightArbiter? _lights;
+    private OmniLight3D[] _lightNodes = System.Array.Empty<OmniLight3D>();
 
     public static IHook<LumoraParticleSystem> Constructor() => new ParticleSystemHook();
 
@@ -76,6 +106,42 @@ public sealed partial class ParticleSystemHook : ComponentHook<LumoraParticleSys
         _instance.Visible = Owner.Enabled.Value;
         _material.SetShaderParameter("emission_strength", Owner.EmissionStrength.Value);
         ApplyBounds();
+        ApplyLodRange();
+        ApplyLightFade();
+    }
+
+    // A LOD group or a distance cull over this slot gets to speak here like it does for any mesh, and the
+    // system's own MaxViewDistance is the other half. The engine side stops STEPPING the sim past the same
+    // distance (ParticleSystem.IsBeyondViewDistance) - this only stops the drawing, and the two have to be
+    // measured against the same number or a system fades back in holding a frozen buffer. -xlinka
+    private LodVisibilityRange _lodRange = LodVisibilityRange.Unbounded;
+
+    public void SetLodVisibilityRange(in LodVisibilityRange range)
+    {
+        if (_lodRange.Equals(range))
+            return;
+        _lodRange = range;
+        ApplyLodRange();
+    }
+
+    private void ApplyLodRange()
+    {
+        if (Owner == null || _instance == null || !GodotObject.IsInstanceValid(_instance))
+            return;
+
+        var range = EffectiveRange();
+        range.ApplyTo(_instance);
+        _trails?.ApplyLodRange(in range);
+        _ribbons?.ApplyLodRange(in range);
+    }
+
+    private LodVisibilityRange EffectiveRange()
+    {
+        float distance = System.Math.Max(0f, Owner.MaxViewDistance.Value);
+        var own = LodVisibilityRange.To(
+            distance,
+            distance > 0f ? LumoraParticleSystem.ViewDistanceFadeMargin : 0f);
+        return LodVisibilityRange.Tightest(in _lodRange, in own);
     }
 
     private void ApplyBounds()
@@ -92,15 +158,48 @@ public sealed partial class ParticleSystemHook : ComponentHook<LumoraParticleSys
 
     public override void Destroy(bool destroyingWorld)
     {
-        if (!destroyingWorld && _processNode != null && GodotObject.IsInstanceValid(_processNode))
-            _processNode.QueueFree();
+        if (!destroyingWorld)
+        {
+            _trails?.Dispose();
+            _ribbons?.Dispose();
+            if (_processNode != null && GodotObject.IsInstanceValid(_processNode))
+                _processNode.QueueFree();
+        }
+        _trails = null;
+        _ribbons = null;
+        _lights = null;
+        _lightNodes = System.Array.Empty<OmniLight3D>();
         base.Destroy(destroyingWorld);
     }
 
-    internal void PullRender()
+    internal void PullRender(float delta)
     {
         if (Owner == null || Owner.IsDestroyed || _multiMesh == null)
             return;
+
+        // Not the same question as "is the node visible": Godot's visibility range hides the mesh, but a
+        // promoted light carries no range of its own and the simulation stops publishing out here, so
+        // both of those have to be told separately.
+        bool visible = Owner.Enabled.Value && !Owner.IsBeyondViewDistance();
+
+        PullInstances();
+        PullStrands(visible);
+        PullLights(delta, visible);
+    }
+
+    private void PullInstances()
+    {
+        bool wantSheet = Owner.HasFlipbook;
+        if (wantSheet != _useSheet)
+        {
+            // Custom data changes the instance stride, so the whole buffer and the MultiMesh allocation
+            // have to be rebuilt rather than resized.
+            _useSheet = wantSheet;
+            _capacity = 0;
+            _lastRenderVersion = -1;
+        }
+        ApplySheet(wantSheet);
+
         if (Owner.RenderVersion == _lastRenderVersion)
             return;
         _lastRenderVersion = Owner.RenderVersion;
@@ -115,36 +214,41 @@ public sealed partial class ParticleSystemHook : ComponentHook<LumoraParticleSys
             return;
         }
 
+        int stride = _useSheet ? SheetStride : InstanceStride;
         if (_capacity < count)
         {
             _capacity = count;
             _multiMesh.InstanceCount = 0;
             _multiMesh.TransformFormat = MultiMesh.TransformFormatEnum.Transform3D;
             _multiMesh.UseColors = true;
+            _multiMesh.UseCustomData = _useSheet;
             _multiMesh.InstanceCount = _capacity;
-            _buffer = new float[_capacity * InstanceStride];
+            _buffer = new float[_capacity * stride];
         }
 
         // Two loops rather than one with a branch inside: the rotation path costs a quaternion-to-basis
         // per particle and most systems never spin anything, so the sim tells us whether it is even
         // integrating rotation and the common case stays a plain diagonal write. -xlinka
         if (Owner.HasRotations)
-            WriteRotatedInstances(positions, sizes, colors, Owner.RenderRotations, count);
+            WriteRotatedInstances(positions, sizes, colors, Owner.RenderRotations, count, stride);
         else
-            WriteAxisAlignedInstances(positions, sizes, colors, count);
+            WriteAxisAlignedInstances(positions, sizes, colors, count, stride);
+
+        if (_useSheet)
+            WriteSheetFrames(count, stride);
 
         for (int i = count; i < _capacity; i++)
-            System.Array.Clear(_buffer, i * InstanceStride, InstanceStride);
+            System.Array.Clear(_buffer, i * stride, stride);
 
         _multiMesh.Buffer = _buffer;
         _multiMesh.VisibleInstanceCount = count;
     }
 
-    private void WriteAxisAlignedInstances(float3[] positions, float3[] sizes, colorHDR[] colors, int count)
+    private void WriteAxisAlignedInstances(float3[] positions, float3[] sizes, colorHDR[] colors, int count, int stride)
     {
         for (int i = 0; i < count; i++)
         {
-            int o = i * InstanceStride;
+            int o = i * stride;
             var p = positions[i];
             var s = sizes[i];
             // Row-major 3x4: per-axis scale on the diagonal, position in the 4th column.
@@ -159,11 +263,11 @@ public sealed partial class ParticleSystemHook : ComponentHook<LumoraParticleSys
         }
     }
 
-    private void WriteRotatedInstances(float3[] positions, float3[] sizes, colorHDR[] colors, floatQ[] rotations, int count)
+    private void WriteRotatedInstances(float3[] positions, float3[] sizes, colorHDR[] colors, floatQ[] rotations, int count, int stride)
     {
         for (int i = 0; i < count; i++)
         {
-            int o = i * InstanceStride;
+            int o = i * stride;
             var p = positions[i];
             var s = sizes[i];
             var q = rotations[i];
@@ -194,6 +298,207 @@ public sealed partial class ParticleSystemHook : ComponentHook<LumoraParticleSys
         }
     }
 
+    private void WriteSheetFrames(int count, int stride)
+    {
+        var frames = Owner.RenderFrames;
+        int frameCount = Owner.FlipbookFrameCount;
+        int available = frames?.Length ?? 0;
+
+        for (int i = 0; i < count; i++)
+        {
+            int o = i * stride;
+            float frame = i < available ? frames![i] : 0f;
+            _buffer[o + 16] = FlipbookAtlas.Pack(frame, frameCount);
+            _buffer[o + 17] = 0f;
+            _buffer[o + 18] = 0f;
+            _buffer[o + 19] = 0f;
+        }
+    }
+
+    private void ApplySheet(bool wantSheet)
+    {
+        int columns = wantSheet ? Owner.FlipbookColumns : 1;
+        int rows = wantSheet ? Owner.FlipbookRows : 1;
+        int frames = wantSheet ? Owner.FlipbookFrameCount : 1;
+
+        Texture2D? texture = null;
+        if (Owner.Texture.Target?.Asset?.Hook is IGodotTexture hook && hook.IsValid)
+            texture = hook.GodotTexture2D;
+
+        // The quad is only swapped in for a sheet. A sphere carries the sheet round itself and reads as
+        // nothing; every effect without a flipbook keeps the mesh it has always had, which is the point.
+        // Rotation wins over billboarding when the author has asked for it, because a system running an
+        // orientation module said what it wanted the particle to face. -xlinka
+        bool billboard = wantSheet && !Owner.HasRotations;
+
+        if (columns == _sheetColumns && rows == _sheetRows && frames == _sheetFrames
+            && ReferenceEquals(texture, _sheetTexture) && billboard == _sheetBillboard)
+            return;
+
+        _sheetColumns = columns;
+        _sheetRows = rows;
+        _sheetFrames = frames;
+        _sheetTexture = texture;
+        _sheetBillboard = billboard;
+
+        if (wantSheet)
+        {
+            _sheetMesh ??= new QuadMesh { Size = new Vector2(2f, 2f) };
+            _multiMesh.Mesh = _sheetMesh;
+        }
+        else
+        {
+            _multiMesh.Mesh = _particleMesh;
+        }
+
+        _material.SetShaderParameter("flipbook_texture", texture!);
+        _material.SetShaderParameter("flipbook_sheet",
+            new Vector4(columns, rows, frames, texture != null ? 1f : 0f));
+        _material.SetShaderParameter("sheet_billboard", billboard);
+    }
+
+    private void PullStrands(bool visible)
+    {
+        var trails = Owner.TrailStrands;
+        var ribbons = Owner.RibbonStrands;
+        if (trails == null && ribbons == null && _trails == null && _ribbons == null)
+            return;
+
+        var view = ViewPosition();
+        UpdateStrand(ref _trails, trails, "ParticleTrails", visible, in view);
+        UpdateStrand(ref _ribbons, ribbons, "ParticleRibbons", visible, in view);
+    }
+
+    private void UpdateStrand(ref StrandSurface? surface, ParticleStrandOutput? output, string name, bool visible, in float3 view)
+    {
+        if (output == null)
+        {
+            surface?.Dispose();
+            surface = null;
+            return;
+        }
+
+        if (surface == null)
+        {
+            surface = new StrandSurface(_processNode, name);
+            var range = EffectiveRange();
+            surface.ApplyLodRange(in range);
+        }
+
+        surface.ApplyMaterial(Owner.EmissionStrength.Value, Owner.RenderQueue.Value, Owner.StrandTexture.Target);
+        surface.Visible = visible;
+        if (!visible)
+            return;
+
+        var parameters = StrandGeometryParams.From(output);
+        surface.Rebuild(
+            output.Positions.AsSpan(0, output.PointCount),
+            output.Colors.AsSpan(0, output.PointCount),
+            output.Widths.AsSpan(0, output.PointCount),
+            output.Strands.AsSpan(0, output.StrandCount),
+            output.StrandCount,
+            in parameters,
+            in view,
+            output.Version);
+    }
+
+    // The rendering camera's position in the system's own space, which is the space the strands are
+    // published in. Falls back to the slot origin when nothing is drawing yet (a headless host, a node
+    // not yet in the tree): a camera-facing strand still needs SOME axis to twist around and a
+    // degenerate one is worse than an arbitrary one.
+    private float3 ViewPosition()
+    {
+        if (_processNode == null || !GodotObject.IsInstanceValid(_processNode) || !_processNode.IsInsideTree())
+            return float3.Zero;
+
+        var camera = _processNode.GetViewport()?.GetCamera3D();
+        if (camera == null || !GodotObject.IsInstanceValid(camera))
+            return float3.Zero;
+
+        var local = _processNode.GlobalTransform.AffineInverse() * camera.GlobalPosition;
+        return new float3(local.X, local.Y, local.Z);
+    }
+
+    private void PullLights(float delta, bool visible)
+    {
+        int budget = System.Math.Min(Owner.MaxLightCandidates, MaxPromotedLights);
+        if (budget <= 0 && _lights == null)
+            return;
+
+        _lights ??= new ParticleLightArbiter();
+        _lights.Update(Owner.LightCandidates, Owner.LightCandidateCount, budget, delta, visible);
+        ApplyLights();
+    }
+
+    private void ApplyLights()
+    {
+        var arbiter = _lights;
+        if (arbiter == null || _processNode == null || !GodotObject.IsInstanceValid(_processNode))
+            return;
+
+        if (_lightNodes.Length < arbiter.Capacity)
+            System.Array.Resize(ref _lightNodes, arbiter.Capacity);
+
+        for (int i = 0; i < arbiter.Capacity; i++)
+        {
+            var node = _lightNodes[i];
+            if (!arbiter.IsLit(i))
+            {
+                if (node != null && GodotObject.IsInstanceValid(node))
+                    node.Visible = false;
+                continue;
+            }
+
+            if (node == null || !GodotObject.IsInstanceValid(node))
+            {
+                node = new OmniLight3D
+                {
+                    Name = $"ParticleLight{i}",
+                    // Shadow passes are what a particle light actually costs, and a spark casting a
+                    // shadow map is not what anyone attached this for. Off unless someone comes back and
+                    // makes it a real option with a real budget behind it. -xlinka
+                    ShadowEnabled = false,
+                };
+                ApplyLightFade(node);
+                _processNode.AddChild(node);
+                _lightNodes[i] = node;
+            }
+
+            ref var light = ref arbiter.Lights[i];
+            node.Position = new Vector3(light.Position.x, light.Position.y, light.Position.z);
+            node.LightColor = new Color(light.Color.r, light.Color.g, light.Color.b, 1f);
+            node.LightEnergy = light.Intensity * light.Ramp;
+            node.OmniRange = System.Math.Max(0.01f, light.Range);
+            node.Visible = true;
+        }
+    }
+
+    private void ApplyLightFade()
+    {
+        for (int i = 0; i < _lightNodes.Length; i++)
+        {
+            var node = _lightNodes[i];
+            if (node != null && GodotObject.IsInstanceValid(node))
+                ApplyLightFade(node);
+        }
+    }
+
+    // A light is not a GeometryInstance3D, so the visibility range the mesh uses does not exist on it.
+    // Distance fade is the equivalent knob, and the arbiter puts them all out past the same cut anyway.
+    private void ApplyLightFade(Light3D node)
+    {
+        float distance = System.Math.Max(0f, Owner.MaxViewDistance.Value);
+        if (distance <= 0f)
+        {
+            node.DistanceFadeEnabled = false;
+            return;
+        }
+
+        node.DistanceFadeEnabled = true;
+        node.DistanceFadeBegin = System.Math.Max(0f, distance - LumoraParticleSystem.ViewDistanceFadeMargin);
+        node.DistanceFadeLength = LumoraParticleSystem.ViewDistanceFadeMargin;
+    }
+
     // Node3D, NOT a plain Node: Godot only propagates visibility down through Node3D ancestors, so a plain
     // Node between WorldRoot and the MultiMeshInstance severs the chain - backgrounding a world (WorldRoot
     // Visible=false) then failed to hide the particles while ProcessMode still froze them, leaving frozen
@@ -206,7 +511,7 @@ public sealed partial class ParticleSystemHook : ComponentHook<LumoraParticleSys
 
         public override void _Process(double delta)
         {
-            _hook?.PullRender();
+            _hook?.PullRender((float)delta);
         }
     }
 }

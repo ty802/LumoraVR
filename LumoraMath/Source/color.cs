@@ -205,6 +205,9 @@ public struct color : IEquatable<color>
     public readonly color ToGamma() =>
         new color(ColorSpace.LinearToGamma(r), ColorSpace.LinearToGamma(g), ColorSpace.LinearToGamma(b), a);
 
+    // Same color at a different alpha. Beats spelling out new color(x.r, x.g, x.b, a) at every scrim.
+    public readonly color WithAlpha(float alpha) => new color(r, g, b, alpha);
+
     /// <summary>
     /// Converts this color from one profile to another; a no-op when the profiles match.
     /// </summary>

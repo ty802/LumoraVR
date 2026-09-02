@@ -29,6 +29,40 @@ public readonly struct LodVisibilityRange : IEquatable<LodVisibilityRange>
     // visible at every distance; what a renderer that left a LOD group goes back to
     public static readonly LodVisibilityRange Unbounded = default;
 
+    // A band that starts at the camera and stops at distance, 0 = unbounded.
+    public static LodVisibilityRange To(float distance, float fadeMargin)
+    {
+        if (distance <= 0f)
+            return Unbounded;
+        float margin = System.Math.Max(0f, fadeMargin);
+        return new LodVisibilityRange(0f, 0f, distance, margin, margin > 0f);
+    }
+
+    // The overlap of two bands. A renderer can be inside a LOD group AND carry a view distance of its own
+    // (a canvas that stops drawing itself past 40 m), and the only answer that respects both is the tighter
+    // of the two. Letting whichever spoke last win means a LOD group silently reinstates a panel someone
+    // deliberately culled, or the panel's own distance overrides the group's near band. -xlinka
+    public static LodVisibilityRange Tightest(in LodVisibilityRange a, in LodVisibilityRange b)
+    {
+        float begin = a.Begin;
+        float beginMargin = a.BeginMargin;
+        if (b.Begin > begin)
+        {
+            begin = b.Begin;
+            beginMargin = b.BeginMargin;
+        }
+
+        float end = a.End;
+        float endMargin = a.EndMargin;
+        if (end <= 0f || (b.End > 0f && b.End < end))
+        {
+            end = b.End;
+            endMargin = b.EndMargin;
+        }
+
+        return new LodVisibilityRange(begin, beginMargin, end, endMargin, a.Fade || b.Fade);
+    }
+
     public bool Equals(LodVisibilityRange other) =>
         Begin.Equals(other.Begin) && BeginMargin.Equals(other.BeginMargin)
         && End.Equals(other.End) && EndMargin.Equals(other.EndMargin) && Fade == other.Fade;
@@ -63,4 +97,13 @@ public readonly struct LodVisibilityRange : IEquatable<LodVisibilityRange>
 public interface ILodRangeTarget
 {
     void SetLodVisibilityRange(in LodVisibilityRange range);
+
+    // Largest world-space dimension of what this target draws, for size-aware banding. False means
+    // "cannot be measured", and the size-aware path treats that as exempt: the safe answer for
+    // something you cannot size is to keep drawing it.
+    bool TryGetLargestDimension(out float size)
+    {
+        size = 0f;
+        return false;
+    }
 }

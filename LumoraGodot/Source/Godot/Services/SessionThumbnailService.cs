@@ -3,12 +3,19 @@
 
 using System;
 using Godot;
-using Lumora.Core;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 using LumoraEngine = Lumora.Core.Engine;
 
 namespace Lumora.Source.Godot.Services;
 
+// Publishes a picture of the world you are HOSTING into its session metadata, so the card in
+// somebody else's world browser shows the place instead of a placeholder. Announcements carry the
+// bytes inline, which is why it is a small JPEG on a slow timer rather than a real screenshot.
+//
+// The capture itself goes through InputInterface.TryCaptureWorldView, the same seam the sidecar
+// beside a saved world uses, so there is one implementation of "read the viewport and encode it",
+// both pictures come out the same size, and neither is a picture of the dash. A build with no view
+// leaves the seam null and this quietly does nothing. -xlinka
 public partial class SessionThumbnailService : Node
 {
     [Export] public float CaptureInterval { get; set; } = 30f;
@@ -17,90 +24,38 @@ public partial class SessionThumbnailService : Node
 
     [Export] public int ThumbnailHeight { get; set; } = 144;
 
-    [Export] public float JpegQuality { get; set; } = 75f;
-
     private float _captureTimer;
-    private bool _isCapturing;
-
-    public override void _Ready()
-    {
-        LumoraLogger.Log("SessionThumbnailService: Initialized");
-    }
 
     public override void _Process(double delta)
     {
         _captureTimer += (float)delta;
-
-        if (_captureTimer >= CaptureInterval)
-        {
-            _captureTimer = 0;
-            CaptureAndUpdateThumbnail();
-        }
+        if (_captureTimer < CaptureInterval)
+            return;
+        _captureTimer = 0f;
+        CaptureAndUpdateThumbnail();
     }
 
-    public void CaptureAndUpdateThumbnail()
+    private void CaptureAndUpdateThumbnail()
     {
-        if (_isCapturing)
-            return;
-
         var world = LumoraEngine.Current?.WorldManager?.FocusedWorld;
-        if (world?.Session == null)
+        var session = world?.Session;
+        if (session == null || !world!.IsAuthority)
             return;
 
-        if (!world.IsAuthority)
+        var input = LumoraEngine.Current?.InputInterface;
+        if (input == null)
             return;
-
-        _isCapturing = true;
 
         try
         {
-            var base64 = CaptureViewportToBase64();
-            if (!string.IsNullOrEmpty(base64))
-            {
-                world.Session.UpdateMetadata(meta =>
-                {
-                    meta.ThumbnailBase64 = base64;
-                });
-                LumoraLogger.Log("SessionThumbnailService: Thumbnail updated");
-            }
+            if (!input.TryCaptureWorldView(ThumbnailWidth, ThumbnailHeight, out var jpeg) || jpeg.Length == 0)
+                return;
+            var base64 = Convert.ToBase64String(jpeg);
+            session.UpdateMetadata(meta => meta.ThumbnailBase64 = base64);
         }
         catch (Exception ex)
         {
-            LumoraLogger.Warn($"SessionThumbnailService: Capture failed - {ex.Message}");
+            LumoraLogger.Warn($"SessionThumbnailService: capture failed - {ex.Message}");
         }
-        finally
-        {
-            _isCapturing = false;
-        }
-    }
-
-    private string CaptureViewportToBase64()
-    {
-        var viewport = GetViewport();
-        if (viewport == null)
-            return null!;
-
-        var viewportTexture = viewport.GetTexture();
-        if (viewportTexture == null)
-            return null!;
-
-        var image = viewportTexture.GetImage();
-        if (image == null)
-            return null!;
-
-        image.Resize(ThumbnailWidth, ThumbnailHeight, Image.Interpolation.Bilinear);
-
-        // JPEG: smaller than PNG
-        var jpegData = image.SaveJpgToBuffer(JpegQuality / 100f);
-        if (jpegData == null || jpegData.Length == 0)
-            return null!;
-
-        return Convert.ToBase64String(jpegData);
-    }
-
-    public void CaptureNow()
-    {
-        _captureTimer = CaptureInterval; // Will trigger on next frame
     }
 }
-

@@ -264,10 +264,11 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
             AddCollidersFromSlot();
         }
 
-        _rigidBody.Mass = Owner.Mass.Value;
-        _rigidBody.GravityScale = Owner.UseGravity.Value ? 1f : 0f;
-        _rigidBody.LinearDamp = Owner.LinearDamping.Value;
-        _rigidBody.AngularDamp = Owner.AngularDamping.Value;
+        // Only push a parameter the engine does not already hold. ApplyChanges runs every frame for the
+        // simulation owner (RigidBody.OnUpdate queues it), and every one of these is a marshalled call
+        // into the physics server that also dirties the body. A room of props was paying four of them
+        // per body per frame to write the numbers back unchanged. -xlinka
+        PushParameters();
 
         // Handle kinematic mode (only after initial delay). A HELD body counts as kinematic: the
         // grabber owns the transform - leaving physics live made it overwrite the slot every frame,
@@ -309,7 +310,57 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
                 Owner.PendingTorque.z));
         }
 
+        // Throw hand-off: SET the velocity, never add. The body was kinematic a frame ago and whatever the
+        // freeze/unfreeze left on it has nothing to do with the throw. A sleeping body swallows velocity
+        // writes, so wake it first. Clamped below like any other live body.
+        if (Owner.HasPendingVelocity)
+        {
+            _rigidBody.Sleeping = false;
+            var throwLinear = Owner.PendingLinearVelocity;
+            var throwAngular = Owner.PendingAngularVelocity;
+            _rigidBody.LinearVelocity = new Vector3(throwLinear.x, throwLinear.y, throwLinear.z);
+            _rigidBody.AngularVelocity = new Vector3(throwAngular.x, throwAngular.y, throwAngular.z);
+        }
+
         Owner.ClearPendingForces();
+
+        // SLEEPING BODIES COST ONE READ. Godot has parked this body: its transform cannot change, its
+        // velocity is zero, and there is nothing to clamp. Everything below - two velocity reads, two
+        // sync writes and a transform round trip through the slot - would be answering questions whose
+        // answers cannot have changed. The one read that stays is Sleeping itself, because that is how
+        // this peer learns the body was woken by a collision it did not initiate. -xlinka
+        if (!Owner.IsKinematic.Value && !IsHeld && !_rigidBody.Freeze && _rigidBody.Sleeping)
+        {
+            Owner.IsSleeping = true;
+            if (!_wasSleeping)
+            {
+                _wasSleeping = true;
+                Owner.LinearVelocity.Value = float3.Zero;
+                Owner.AngularVelocity.Value = float3.Zero;
+                SyncTransformToSlot();
+            }
+            else
+            {
+                // A parked body still has to notice its slot being moved from outside it - a gizmo, an
+                // inspector edit, a script. The check is two cached engine-side reads and a compare; only
+                // a pose that actually changed costs a wake and a push. Without it the body would sit
+                // where it fell and snap the slot back the moment something else woke it. -xlinka
+                var slotPos = Owner.Slot.GlobalPosition;
+                var slotRot = Owner.Slot.GlobalRotation;
+                float dot = slotRot.x * _sleepSlotRot.x + slotRot.y * _sleepSlotRot.y
+                          + slotRot.z * _sleepSlotRot.z + slotRot.w * _sleepSlotRot.w;
+                if (float3.DistanceSquared(slotPos, _sleepSlotPos) > 1e-8f || System.MathF.Abs(dot) < 0.99999f)
+                {
+                    _rigidBody.Sleeping = false;
+                    _rigidBody.GlobalPosition = new Vector3(slotPos.x, slotPos.y, slotPos.z);
+                    _rigidBody.Quaternion = new Quaternion(slotRot.x, slotRot.y, slotRot.z, slotRot.w);
+                }
+            }
+            _sleepSlotPos = Owner.Slot.GlobalPosition;
+            _sleepSlotRot = Owner.Slot.GlobalRotation;
+            return;
+        }
+        _wasSleeping = false;
 
         // Velocity clamp: a released grab (kinematic freeze-mode hands the body the velocity derived from
         // the last teleport-to-hand) or a spawn/contact depenetration spike can fling a prop across the
@@ -362,6 +413,45 @@ public class RigidBodyHook : ComponentHook<LumoraRigidBody>
         }
 
         return true;
+    }
+
+    private bool _wasSleeping;
+    private float3 _sleepSlotPos;
+    private floatQ _sleepSlotRot = floatQ.Identity;
+    private float _lastMass = float.NaN;
+    private float _lastGravityScale = float.NaN;
+    private float _lastLinearDamp = float.NaN;
+    private float _lastAngularDamp = float.NaN;
+
+    private void PushParameters()
+    {
+        float mass = Owner.Mass.Value;
+        if (mass != _lastMass)
+        {
+            _rigidBody.Mass = mass;
+            _lastMass = mass;
+        }
+
+        float gravity = Owner.UseGravity.Value ? 1f : 0f;
+        if (gravity != _lastGravityScale)
+        {
+            _rigidBody.GravityScale = gravity;
+            _lastGravityScale = gravity;
+        }
+
+        float linear = Owner.LinearDamping.Value;
+        if (linear != _lastLinearDamp)
+        {
+            _rigidBody.LinearDamp = linear;
+            _lastLinearDamp = linear;
+        }
+
+        float angular = Owner.AngularDamping.Value;
+        if (angular != _lastAngularDamp)
+        {
+            _rigidBody.AngularDamp = angular;
+            _lastAngularDamp = angular;
+        }
     }
 
     // Cached lazily; a body without a Grabbable never allocates the lookup again.

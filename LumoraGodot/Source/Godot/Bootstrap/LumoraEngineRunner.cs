@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -54,6 +54,8 @@ public partial class LumoraEngineRunner : Node
 	// CORE SYSTEMS
 	private Lumora.Core.Engine _engine = null!;
 	private HeadOutput _headOutput = null!;
+	private Lumora.Source.Godot.UI.DashScreenOverlay _dashOverlay = null!;
+	private Lumora.Source.Godot.UI.WorldLoadOverlay _worldLoadOverlay = null!;
 	private SystemInfoHook _systemInfoHook = null!;
 	private InputInterface _inputInterface = null!;
 	private LoadingScreen _loadingScreen = null!;
@@ -180,6 +182,61 @@ public partial class LumoraEngineRunner : Node
 		if (result != Error.Ok)
 		{
 			LumoraLogger.Error($"DebugConsole: failed to open scene '{DebugConsoleScenePath}' ({result})");
+		}
+	}
+
+	// Two ways to run this executable as a service instead of a client, both meant for --headless:
+	//   --variant-worker=<key>     take variant jobs from the content service and compute them
+	//   --publish-builtins=<key>   push the build's own assets up by hash and write builtins.json
+	// The key is the service's worker key. Neither opens a world on its own; the engine's local home
+	// still comes up underneath, which costs little and keeps one startup path. -xlinka
+	private System.Threading.CancellationTokenSource? _serviceModes;
+
+	// --flag=value off either arg list. Godot splits what came before "--" from what came after, and a
+	// service is launched with the flag on whichever side the operator happened to use. -xlinka
+	private static string? ReadCommandLineValue(string flag)
+	{
+		foreach (var raw in OS.GetCmdlineArgs())
+		{
+			var arg = raw.Trim();
+			if (arg.StartsWith(flag + "=", System.StringComparison.OrdinalIgnoreCase))
+				return arg.Substring(flag.Length + 1).Trim('"');
+		}
+		foreach (var raw in OS.GetCmdlineUserArgs())
+		{
+			var arg = raw.Trim();
+			if (arg.StartsWith(flag + "=", System.StringComparison.OrdinalIgnoreCase))
+				return arg.Substring(flag.Length + 1).Trim('"');
+		}
+		return null;
+	}
+
+	private void StartServiceModes()
+	{
+		var client = _engine?.CDNClient;
+		if (client == null)
+			return;
+
+		var workerKey = ReadCommandLineValue("--variant-worker");
+		if (!string.IsNullOrEmpty(workerKey))
+		{
+			_serviceModes ??= new System.Threading.CancellationTokenSource();
+			var name = $"{System.Environment.MachineName}-{System.Environment.ProcessId}";
+			LumoraLogger.Log("LumoraEngineRunner: running as a variant worker");
+			_ = Task.Run(() => Lumora.Core.Assets.VariantWorker.RunAsync(client, workerKey!, name, _serviceModes.Token));
+		}
+
+		var publishKey = ReadCommandLineValue("--publish-builtins");
+		if (!string.IsNullOrEmpty(publishKey))
+		{
+			var root = _engine!.ResourceRoot;
+			LumoraLogger.Log($"LumoraEngineRunner: publishing built-in assets from {root}");
+			_ = Task.Run(async () =>
+			{
+				var (published, failed) = await Lumora.Core.Assets.BuiltinAssetRegistry.PublishAsync(client, publishKey!, root,
+					line => LumoraLogger.Log($"publish: {line}"));
+				LumoraLogger.Log($"LumoraEngineRunner: built-ins published: {published} ok, {failed} failed");
+			});
 		}
 	}
 
@@ -527,9 +584,13 @@ public partial class LumoraEngineRunner : Node
 					return;
 				}
 
-				var ctx = _xrLaunchMode == XrLaunchMode.Vr ? " (VR mode requested)" : string.Empty;
-				LumoraLogger.Warn($"XR: OpenXR Initialize() failed - falling back to screen mode{ctx}. " +
-					"Check that the active OpenXR runtime in Windows matches the headset you're using.");
+				// Without an explicit VR request a failed init just means no headset is up, which is every
+				// desktop launch; only a requested VR session that cannot start is worth a warning.
+				if (_xrLaunchMode == XrLaunchMode.Vr)
+					LumoraLogger.Warn("XR: OpenXR Initialize() failed with VR mode requested - falling back to screen mode. " +
+						"Check that the active OpenXR runtime in Windows matches the headset you're using.");
+				else
+					LumoraLogger.Log("XR: OpenXR runtime present but no headset session - screen mode.");
 				GetViewport().UseXR = false;
 				await Task.Delay(120);
 				return;
@@ -725,6 +786,16 @@ public partial class LumoraEngineRunner : Node
 
 		LumoraLogger.Log($"HeadOutput initialized with camera: {_mainCamera.Name}");
 
+		// Desktop draws the dash as a screen composite over this camera's output instead of on its
+		// world panel, so it cannot lag the view. Built once here and ticked from _Process; it
+		// decides on its own frame by frame whether to show, and hides itself outright in VR.
+		_dashOverlay = new Lumora.Source.Godot.UI.DashScreenOverlay { Name = "DashScreenOverlay" };
+		AddChild(_dashOverlay);
+
+		// Says what a world switch or a join is waiting on. Hides itself when nothing is loading.
+		_worldLoadOverlay = new Lumora.Source.Godot.UI.WorldLoadOverlay { Name = "WorldLoadOverlay" };
+		AddChild(_worldLoadOverlay);
+
 		await Task.Delay(180); // Artificial delay to show phase message
 	}
 
@@ -772,6 +843,7 @@ public partial class LumoraEngineRunner : Node
 				resourceRoot = System.IO.Path.GetDirectoryName(OS.GetExecutablePath()) ?? string.Empty;
 			}
 			_engine.ResourceRoot = resourceRoot;
+			LoadBundledLocales();
 			_engine.QuitRequested += OnQuitRequested;
 			if (VerboseInit)
 			{
@@ -799,6 +871,7 @@ public partial class LumoraEngineRunner : Node
 			await _engine.InitializeAsync();
 
 			LumoraLogger.Log("LumoraEngineRunner: Engine initialized successfully");
+			StartServiceModes();
 
 			if (VerboseInit)
 			{
@@ -890,12 +963,209 @@ public partial class LumoraEngineRunner : Node
 			_engine.LocalDB = _localDB;
 		}
 
+		// Clipboard TEXT, for the text fields. Separate service from the ClipboardImporter below, which
+		// handles the FILE/IMAGE side of the same clipboard and feeds the asset pipeline.
+		_inputInterface.ClipboardText = new GodotClipboardText();
+
+		// What the view is showing at a world point, for the color picker's eyedropper.
+		_inputInterface.ViewColorSampler = new GodotViewColorSampler(() => GetViewport()?.GetCamera3D() ?? _mainCamera);
+
+		// A JPEG of the same frame, for the session thumbnail a host publishes and the picture written
+		// beside a saved world.
+		_inputInterface.ViewCapture = new GodotViewCapture(GetViewport);
+
 		_clipboardImporter = new ClipboardImporter();
 		_clipboardImporter.Name = "ClipboardImporter";
 		AddChild(_clipboardImporter);
 		_clipboardImporter.Initialize(_localDB, null!, _mainCamera);
 		_clipboardImporter.OnAssetImported += OnClipboardAssetImported;
 		LumoraLogger.Log("ClipboardImporter: Created for paste handling");
+	}
+
+	// The OS clipboard's text, straight off DisplayServer. Wrapped in try/catch because the headless
+	// display server has no clipboard at all and throws rather than returning empty - a text field
+	// asking for a paste is not a reason to take the frame down with it. -xlinka
+	private sealed class GodotClipboardText : IClipboardText
+	{
+		public string GetText()
+		{
+			try
+			{
+				return DisplayServer.ClipboardGet() ?? string.Empty;
+			}
+			catch (Exception ex)
+			{
+				LumoraLogger.Warn($"Clipboard: read failed: {ex.Message}");
+				return string.Empty;
+			}
+		}
+
+		public void SetText(string text)
+		{
+			try
+			{
+				DisplayServer.ClipboardSet(text ?? string.Empty);
+			}
+			catch (Exception ex)
+			{
+				LumoraLogger.Warn($"Clipboard: write failed: {ex.Message}");
+			}
+		}
+	}
+
+	// The colour the local view is actually showing at a world point: project the point through the
+	// camera that is currently rendering, then read that pixel out of the viewport image. GetImage pulls
+	// the frame back off the GPU, which is a full pipeline stall - one per eyedropper click and never
+	// per frame, which is exactly how the picker uses it.
+	//
+	// Two things this cannot do anything about, both by nature of reading a COMPOSITED frame: whatever
+	// is drawn in front of the point is what comes back (the local pointer's own reticle sits right
+	// there, which is why this is the last resort behind the datamodel walk), and the alpha of a
+	// composited pixel says nothing about the surface's opacity, so it reports opaque. Headless, a
+	// point behind the eye, a point off screen and a refused readback all come back false rather than
+	// guessing. -xlinka
+	private sealed class GodotViewColorSampler : IViewColorSampler
+	{
+		private readonly Func<Camera3D?> _resolveCamera;
+
+		public GodotViewColorSampler(Func<Camera3D?> resolveCamera)
+		{
+			_resolveCamera = resolveCamera;
+		}
+
+		public bool TrySample(float3 worldPoint, out colorHDR color)
+		{
+			color = colorHDR.White;
+			try
+			{
+				var camera = _resolveCamera();
+				if (camera == null || !GodotObject.IsInstanceValid(camera) || !camera.IsInsideTree())
+				{
+					return false;
+				}
+
+				var point = new Vector3(worldPoint.x, worldPoint.y, worldPoint.z);
+				if (camera.IsPositionBehind(point))
+				{
+					return false;
+				}
+
+				var viewport = camera.GetViewport();
+				if (viewport == null)
+				{
+					return false;
+				}
+
+				var image = viewport.GetTexture()?.GetImage();
+				if (image == null || image.IsEmpty())
+				{
+					return false;
+				}
+
+				// UnprojectPosition answers in the viewport's visible rect, which is not always the
+				// backbuffer's pixel size (3D render scaling, window content scale). Normalize through
+				// the rect and re-multiply by the image, or a scaled viewport samples the wrong pixel.
+				var rect = viewport.GetVisibleRect();
+				if (rect.Size.X <= 0f || rect.Size.Y <= 0f)
+				{
+					return false;
+				}
+				var screen = camera.UnprojectPosition(point);
+				float u = screen.X / rect.Size.X;
+				float v = screen.Y / rect.Size.Y;
+				if (u < 0f || u >= 1f || v < 0f || v >= 1f)
+				{
+					return false;
+				}
+
+				int x = System.Math.Clamp((int)(u * image.GetWidth()), 0, image.GetWidth() - 1);
+				int y = System.Math.Clamp((int)(v * image.GetHeight()), 0, image.GetHeight() - 1);
+
+				// The laser's reticle is an additive quad ~10px across drawn exactly at the point being
+				// read, so the centre pixel of the composited frame is contaminated by the cursor itself.
+				// Average four pixels on a ring outside the reticle instead; any surface a pixel fallback
+				// is aimed at is far bigger than the 14px ring, and the centre is deliberately skipped.
+				const int ring = 14;
+				float r = 0f, g = 0f, b = 0f;
+				int samples = 0;
+				ReadOnlySpan<(int dx, int dy)> offsets = stackalloc (int, int)[] { (ring, ring), (-ring, ring), (ring, -ring), (-ring, -ring) };
+				foreach (var (dx, dy) in offsets)
+				{
+					int sx = x + dx, sy = y + dy;
+					if (sx < 0 || sy < 0 || sx >= image.GetWidth() || sy >= image.GetHeight())
+						continue;
+					var p = image.GetPixelv(new Vector2I(sx, sy));
+					r += p.R; g += p.G; b += p.B;
+					samples++;
+				}
+				if (samples == 0)
+				{
+					var centre = image.GetPixelv(new Vector2I(x, y));
+					color = new colorHDR(centre.R, centre.G, centre.B, 1f);
+					return true;
+				}
+				color = new colorHDR(r / samples, g / samples, b / samples, 1f);
+				return true;
+			}
+			catch (Exception ex)
+			{
+				LumoraLogger.Warn($"ViewColorSampler: read failed: {ex.Message}");
+				return false;
+			}
+		}
+	}
+
+	// A picture of what the local view is showing, encoded small. Same viewport read as the colour
+	// sampler above (and the same caveat: it is the COMPOSITED frame, so whatever is drawn in front is
+	// in the shot), resized to the caller's box and JPEG encoded.
+	//
+	// The frame comes back in whatever format the renderer is running (HDR half-float on Forward+), and
+	// the JPEG encoder only takes 8-bit, so convert before encoding or every capture comes back empty.
+	// Headless and a refused readback both return false rather than handing back a blank image. -xlinka
+	private sealed class GodotViewCapture : IViewCapture
+	{
+		private readonly Func<Viewport?> _resolveViewport;
+
+		public GodotViewCapture(Func<Viewport?> resolveViewport)
+		{
+			_resolveViewport = resolveViewport;
+		}
+
+		public bool TryCapture(int width, int height, out byte[] jpeg)
+		{
+			jpeg = Array.Empty<byte>();
+			try
+			{
+				var viewport = _resolveViewport();
+				if (viewport == null || !GodotObject.IsInstanceValid(viewport))
+					return false;
+
+				var image = viewport.GetTexture()?.GetImage();
+				if (image == null || image.IsEmpty())
+					return false;
+
+				if (width > 0 && height > 0 && (image.GetWidth() != width || image.GetHeight() != height))
+					image.Resize(width, height, Image.Interpolation.Bilinear);
+				if (image.GetFormat() != Image.Format.Rgb8)
+					image.Convert(Image.Format.Rgb8);
+
+				var data = image.SaveJpgToBuffer(JpegQuality);
+				if (data == null || data.Length == 0)
+					return false;
+
+				jpeg = data;
+				return true;
+			}
+			catch (Exception ex)
+			{
+				LumoraLogger.Warn($"ViewCapture: read failed: {ex.Message}");
+				return false;
+			}
+		}
+
+		// Thumbnails ride inside session announcements, so the bytes matter more than the last few
+		// percent of fidelity at 256x144.
+		private const float JpegQuality = 0.75f;
 	}
 
 	private void OnClipboardAssetImported(string filePath, Lumora.Core.Slot slot)
@@ -941,6 +1211,10 @@ public partial class LumoraEngineRunner : Node
 		_loadingScreen?.UpdatePhase(6);
 
 		_engineInitialized = true;
+
+		// Publishes a picture of the world you are hosting into its session metadata, so other people's
+		// world browsers show something other than a placeholder. Idle unless we are the authority.
+		AddChild(new Lumora.Source.Godot.Services.SessionThumbnailService { Name = "SessionThumbnails" });
 
 		// Instantiate the shared loading indicator now the scene tree exists. EnsureCreated was defined but never
 		// called, so neither the world-join overlay nor the new import progress ever showed. Idempotent. -xlinka
@@ -1038,6 +1312,8 @@ public partial class LumoraEngineRunner : Node
 		SendDebugNetwork(delta);
 
 		_headOutput?.UpdatePositioning(_engine);
+		_dashOverlay?.Tick(_engine);
+		_worldLoadOverlay?.Tick(_engine);
 	}
 
 	public override void _Input(InputEvent @event)
@@ -1079,6 +1355,66 @@ public partial class LumoraEngineRunner : Node
 		GodotHookRegistry.RegisterAll();
 
 		LumoraLogger.Log("Hook registration complete");
+	}
+
+	// Locale tables ship as Assets/Locale/<code>.json. In the editor they are real files and the locale
+	// manager's own scan finds them through ResourceRoot; in an export there is no such file on disk, so
+	// the bytes have to come out of the resource pack through Godot's VFS - the same split the font hook
+	// deals with. Both paths are run: the manager is additive and first-wins, so loading a table twice
+	// is a no-op rather than a duplicate. -xlinka
+	private static void LoadBundledLocales()
+	{
+		Lumora.Core.Localization.LocaleManager.Reload();
+
+		const string localeDir = "res://Assets/Locale";
+		string[] names;
+		try
+		{
+			names = DirAccess.GetFilesAt(localeDir);
+		}
+		catch (Exception ex)
+		{
+			LumoraLogger.Warn($"Locales: could not list {localeDir}: {ex.Message}");
+			return;
+		}
+		if (names == null)
+			return;
+
+		var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		foreach (var raw in names)
+		{
+			// Imported and remapped resources are listed under their sidecar name in an export.
+			var name = raw;
+			if (name.EndsWith(".import", StringComparison.OrdinalIgnoreCase))
+				name = name.Substring(0, name.Length - 7);
+			else if (name.EndsWith(".remap", StringComparison.OrdinalIgnoreCase))
+				name = name.Substring(0, name.Length - 6);
+			if (!name.EndsWith(".json", StringComparison.OrdinalIgnoreCase) || !seen.Add(name))
+				continue;
+
+			var path = localeDir + "/" + name;
+			var json = FileAccess.FileExists(path) ? FileAccess.GetFileAsString(path) : LoadImportedJson(path);
+			if (string.IsNullOrWhiteSpace(json))
+				continue;
+			Lumora.Core.Localization.LocaleManager.LoadJson(json, System.IO.Path.GetFileNameWithoutExtension(name));
+		}
+	}
+
+	// A .json under res:// gets picked up by the JSON importer, and an export then ships the imported
+	// resource with the raw file replaced by a remap - so FileAccess on the original path finds nothing.
+	// Pull the parsed data back out and re-serialize it; the locale loader wants text either way.
+	private static string? LoadImportedJson(string path)
+	{
+		try
+		{
+			var resource = ResourceLoader.Load<Json>(path);
+			return resource == null ? null : Json.Stringify(resource.Data);
+		}
+		catch (Exception ex)
+		{
+			LumoraLogger.Warn($"Locales: could not read {path}: {ex.Message}");
+			return null;
+		}
 	}
 
 	private void UpdateGodotMetrics(double delta)

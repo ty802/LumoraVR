@@ -3,6 +3,7 @@
 
 using System;
 using Godot;
+using Lumora.Core;
 
 namespace Lumora.Source.Godot.Rendering;
 
@@ -100,6 +101,9 @@ public static class ViewportQuality
             viewport.AnisotropicFilteringLevel = OS.HasFeature("android")
                 ? Viewport.AnisotropicFiltering.Anisotropy8X
                 : Viewport.AnisotropicFiltering.Anisotropy16X;
+            // Same source of truth as the desktop window: the headset viewport is a different one and
+            // would otherwise sit at the project default no matter what the user picked.
+            viewport.MeshLodThreshold = EngineSettings.MeshLodThreshold;
             viewport.VrsMode = Viewport.VrsModeEnum.Disabled;
             viewport.VrsUpdateMode = Viewport.VrsUpdateModeEnum.Disabled;
         }

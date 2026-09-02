@@ -84,12 +84,6 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
 
         _font = new FontFile();
         _ownsFont = true;
-        // Ask the raw rasterizer for MSDF as well. It may honor it (crisp) or silently emit LA8 coverage; the
-        // per-glyph check in RequestGlyph downgrades _isMsdf when it falls back, so requesting it is always safe.
-        // Set BEFORE loading so the rasterizer picks it up. -xlinka
-        _font.MultichannelSignedDistanceField = true;
-        _font.MsdfPixelRange = _msdfPixelRange;
-        _font.MsdfSize = 48;
         var error = _font.LoadDynamicFont(path);
         if (error != Error.Ok)
         {
@@ -102,6 +96,17 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
             _font = null;
             _ownsFont = false;
             GD.PrintErr($"FontAssetHook: Failed to load font '{path}' ({error})");
+        }
+        else
+        {
+            // Ask the raw rasterizer for MSDF as well. It may honor it (crisp) or silently emit LA8 coverage;
+            // the per-glyph check in RequestGlyph downgrades _isMsdf when it falls back, so requesting it is
+            // always safe. This has to happen AFTER the load: the loader resets the font's state first, so
+            // anything set before it is thrown away and the font quietly comes up as coverage at raster 96.
+            // That is how a fresh TTF with no import sidecar rendered soft next to the imported one. -xlinka
+            _font.MultichannelSignedDistanceField = true;
+            _font.MsdfPixelRange = _msdfPixelRange;
+            _font.MsdfSize = 48;
         }
 
         ConfigureMsdf();
@@ -339,8 +344,12 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
             return 0f;
         }
 
-        // Kerning is queried at _rasterSize and scaled to the display size, same path as metrics. - xlinka
-        return _font.GetKerning(0, _rasterSize, new Vector2I(left, right)).X * displaySize / _rasterSize;
+        // Kerning is queried at _rasterSize and scaled to the display size, same path as metrics, with one
+        // catch: the font server hands the pair back in 26.6 fixed point (64ths of a pixel), not pixels
+        // like the advances. Monospace fonts have no kern table so this never showed; the first
+        // proportional face kerned "Yo" by -704 units and pushed the rest of the word off the panel. -xlinka
+        var kerning = _font.GetKerning(0, _rasterSize, new Vector2I(left, right));
+        return kerning.X / 64f * displaySize / _rasterSize;
     }
 
     public override void Unload()

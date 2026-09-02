@@ -3,11 +3,14 @@
 
 using System;
 using Godot;
+using Lumora.Core;
 
 namespace Lumora.Source.Godot.UI;
 
-// Values are read directly by the corresponding subsystems each frame so changes take effect
-// immediately. Persistence is left to the settings UI.
+// Platform-side view of the interface settings. The VALUES live in EngineSettings (core): the settings
+// screen is a core component and cannot see this assembly, and two independent stores meant the mouse
+// sliders moved GodotMouseDriver but not DesktopCameraController, which read this one. Everything here
+// forwards, so there is a single source of truth and one Changed event to hang the cursor redraw off. -xlinka
 public static class InterfaceSettings
 {
     public enum ReticleStyle
@@ -18,33 +21,32 @@ public static class InterfaceSettings
         Off
     }
 
-    private static float _reticleSize = 12f;
-    private static float _reticleThickness = 2f;
-    private static Color _reticleColor = new(1f, 1f, 1f, 0.6f);
+    // Hover tint is platform-only: nothing persists or configures it yet, so it stays a local default
+    // rather than pretending to be a setting.
     private static Color _reticleHoverColor = new(0.4f, 1f, 0.4f, 0.85f);
-    private static ReticleStyle _reticleStyle = ReticleStyle.Ring;
-    private static float _mouseSensitivity = 1f;
-    private static float _mouseSmoothing = 0f;
 
     public static event Action Changed = null!;
 
+    static InterfaceSettings()
+    {
+        EngineSettings.Changed += () => Changed?.Invoke();
+    }
+
     public static float ReticleSize
     {
-        get => _reticleSize;
-        set { _reticleSize = Mathf.Clamp(value, 2f, 48f); Changed?.Invoke(); }
+        get => EngineSettings.ReticleSize;
+        set => EngineSettings.ReticleSize = value;
     }
 
     public static float ReticleThickness
     {
-        get => _reticleThickness;
-        set { _reticleThickness = Mathf.Clamp(value, 1f, 8f); Changed?.Invoke(); }
+        get => EngineSettings.ReticleThickness;
+        set => EngineSettings.ReticleThickness = value;
     }
 
-    public static Color ReticleColor
-    {
-        get => _reticleColor;
-        set { _reticleColor = value; Changed?.Invoke(); }
-    }
+    // No user-facing control yet; the drawer reads it, so it stays a constant white rather than a
+    // slider that writes nowhere.
+    public static Color ReticleColor => new(1f, 1f, 1f, 0.6f);
 
     public static Color ReticleHoverColor
     {
@@ -54,21 +56,33 @@ public static class InterfaceSettings
 
     public static ReticleStyle Style
     {
-        get => _reticleStyle;
-        set { _reticleStyle = value; Changed?.Invoke(); }
+        get => EngineSettings.ReticleStyle switch
+        {
+            EngineSettings.ReticleShape.Dot => ReticleStyle.Dot,
+            EngineSettings.ReticleShape.Crosshair => ReticleStyle.Crosshair,
+            EngineSettings.ReticleShape.Off => ReticleStyle.Off,
+            _ => ReticleStyle.Ring,
+        };
+        set => EngineSettings.ReticleStyle = value switch
+        {
+            ReticleStyle.Dot => EngineSettings.ReticleShape.Dot,
+            ReticleStyle.Crosshair => EngineSettings.ReticleShape.Crosshair,
+            ReticleStyle.Off => EngineSettings.ReticleShape.Off,
+            _ => EngineSettings.ReticleShape.Ring,
+        };
     }
 
     // 1.0 = engine default
     public static float MouseSensitivity
     {
-        get => _mouseSensitivity;
-        set { _mouseSensitivity = Mathf.Clamp(value, 0.05f, 10f); Changed?.Invoke(); }
+        get => EngineSettings.MouseSensitivity;
+        set => EngineSettings.MouseSensitivity = value;
     }
 
     // 0 = raw input, recommended at high refresh rates
     public static float MouseSmoothing
     {
-        get => _mouseSmoothing;
-        set { _mouseSmoothing = Mathf.Clamp(value, 0f, 0.95f); Changed?.Invoke(); }
+        get => EngineSettings.MouseSmoothing;
+        set => EngineSettings.MouseSmoothing = value;
     }
 }

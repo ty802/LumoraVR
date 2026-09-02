@@ -22,9 +22,8 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook, IGodotTexture
     private System.Threading.Tasks.TaskCompletionSource<bool> _uploadTcs = null!;
 
     // bumping this invalidates every cached blob
-    private const int GpuCacheVersion = 1;
-
-    private const string GpuCacheExtension = ".lvgpu";
+    // 2: compressed caches written from bottom-up rows (before the decode flip was removed) are stale.
+    private const int GpuCacheVersion = 2;
 
     public ImageTexture GodotTexture => _godotTexture;
 
@@ -209,7 +208,10 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook, IGodotTexture
             || string.IsNullOrEmpty(request.CacheKey)
             || string.IsNullOrEmpty(request.CacheDirectory))
             return null!;
-        return Path.Combine(request.CacheDirectory!, request.CacheKey + GpuCacheExtension);
+        // Extension shared with the engine side: it probes this same path to find out whether a rung
+        // is already compressed, and a private copy of the string here would silently make every
+        // probe miss. -xlinka
+        return Path.Combine(request.CacheDirectory!, request.CacheKey + TextureGpuCache.Extension);
     }
 
     private static bool TryReadCache(string path, out Image image)
@@ -276,16 +278,17 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook, IGodotTexture
 
     // MAIN-THREAD RESOURCE CREATION
 
+    // Keep the SAME texture resource for the life of the asset and push new contents through it.
+    //
+    // This is what makes a progressive load look like a texture getting sharper instead of a texture
+    // disappearing and coming back. Every material that bound this texture holds a reference to the
+    // resource object, and swapping the object out from under them leaves each one pointing at a
+    // disposed handle until something re-binds it. SetImage does not have that problem: internally it
+    // builds the new texture and swaps it in behind the same handle, so a size change (128 -> 2048)
+    // and a format change (RGBA8 -> BPTC) both land without anyone downstream noticing. Do not
+    // "optimize" this back into dispose-and-recreate. -xlinka
     private void Adopt(Image image)
     {
-        // A format change (RGBA8 -> BPTC) cannot be applied through SetImage on an existing texture,
-        // so replace the resource rather than trying to mutate it.
-        if (_godotTexture != null && _godotTexture.GetFormat() != image.GetFormat())
-        {
-            _godotTexture.Dispose();
-            _godotTexture = null!;
-        }
-
         if (_godotTexture == null)
             _godotTexture = ImageTexture.CreateFromImage(image);
         else

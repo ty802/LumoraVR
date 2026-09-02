@@ -1,81 +1,184 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System.Collections.Generic;
 using Godot;
 using Lumora.Core.Assets;
 using Lumora.Core.Phos;
 
 namespace Lumora.Godot.Hooks;
 
-/// <summary>
-/// Godot implementation of mesh asset hook.
-/// Creates and manages Godot ArrayMesh resources.
-/// </summary>
+// Godot implementation of mesh asset hook.
+// Creates and manages Godot ArrayMesh resources.
 public class MeshAssetHook : AssetHook, IMeshAssetHook
 {
     private ArrayMesh _godotMesh = null!;
+    private bool _loggedSurfaceOverflow;
+    private bool _unloaded;
+    private long _uploadSerial;
+    private long _appliedSerial;
 
-    /// <summary>
-    /// Get the Godot ArrayMesh.
-    /// </summary>
+    // RenderingServer refuses surface 257 and up (MAX_MESH_SURFACES), one engine error per rejected surface.
+    // Stop at the ceiling and say it once instead. -xlinka
+    private const int MaxGodotMeshSurfaces = 256;
+
+    // Get the Godot ArrayMesh.
     public ArrayMesh GodotMesh => _godotMesh;
 
-    /// <summary>
-    /// Whether the mesh is valid and usable.
-    /// </summary>
+    // Whether the mesh is valid and usable.
     public bool IsValid => _godotMesh != null;
 
-    /// <summary>
-    /// Upload PhosMesh data to the Godot mesh.
-    /// </summary>
+    private sealed class MeshUpload
+    {
+        public long Serial;
+        public List<global::Godot.Collections.Array> Surfaces = new();
+        public int Dropped;
+        public int SubmeshCount;
+        public MeshLodSet? Lods;
+    }
+
+    // Upload PhosMesh data to the Godot mesh.
     public void UploadMesh(PhosMesh mesh)
     {
         if (mesh == null || mesh.VertexCount == 0) return;
-        // Defer the Godot mesh build to the main thread - this is called inline from the off-main asset-load thread
-        // and AddSurfaceFromArrays touches the RenderingServer. -xlinka
-        global::Godot.Callable.From(() => BuildMesh(mesh)).CallDeferred();
+
+        var upload = BuildSurfaces(mesh);
+        if (upload == null) return;
+
+        // Everything up to here is plain array conversion, so it stays on the caller's thread; only the
+        // AddSurfaceFromArrays at the end touches the RenderingServer and has to be deferred to the main
+        // thread. A URL mesh reaches us from the asset load thread, which is where we want the LOD bake
+        // too - it costs tens of milliseconds and must never land on the frame loop. -xlinka
+        if (!ShouldBakeLods(mesh))
+        {
+            Commit(upload);
+            return;
+        }
+
+        string label = DescribeSource();
+        if (IsMainThread())
+        {
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                upload.Lods = ResolveLods(mesh, upload, label);
+                Commit(upload);
+            });
+            return;
+        }
+
+        upload.Lods = ResolveLods(mesh, upload, label);
+        Commit(upload);
     }
 
-    private void BuildMesh(PhosMesh mesh)
-    {
-        if (mesh == null || mesh.VertexCount == 0) return;
+    private void Commit(MeshUpload upload) =>
+        global::Godot.Callable.From(() => ApplyUpload(upload)).CallDeferred();
 
-        // Create new mesh if needed
+    // LOD levels are attached when a surface is created and there is no API to add them afterwards, so a
+    // "render now, swap in the levels later" split would have to clear and re-add every surface. Clearing
+    // an ArrayMesh's surfaces makes every MeshInstance3D holding it drop its per-surface material
+    // overrides, which is how you get a world that finishes loading and then turns default-grey. So the
+    // levels are resolved before the one and only build. On a cache hit that costs a file read; on a miss
+    // the mesh appears a few frames later than it would have, on a thread nobody is waiting on. -xlinka
+    private MeshLodSet? ResolveLods(PhosMesh mesh, MeshUpload upload, string label)
+    {
+        if (_unloaded) return null;
+        var directory = MeshLodCache.GetDirectory();
+        var key = MeshLodCache.BuildKey(mesh);
+        return MeshLodCache.Resolve(directory, key, upload.Surfaces, label);
+    }
+
+    private bool ShouldBakeLods(PhosMesh mesh)
+    {
+        if (!MeshLodCache.IsBakeableAsset(asset))
+            return false;
+        if (!MeshLodCache.IsBakeableGeometry(mesh, out _, out _))
+            return false;
+        // The unindexed fallback surface below has no index buffer to reduce.
+        return mesh.Submeshes.Count > 0;
+    }
+
+    private string DescribeSource() =>
+        (asset as Asset)?.AssetURL?.ToString() ?? asset?.GetType().Name ?? "mesh";
+
+    private static bool IsMainThread() => OS.GetThreadCallerId() == OS.GetMainThreadId();
+
+    // Converts the mesh to Godot surface arrays. No RenderingServer contact, so it runs wherever the
+    // caller is.
+    private MeshUpload? BuildSurfaces(PhosMesh mesh)
+    {
+        var upload = new MeshUpload
+        {
+            Serial = System.Threading.Interlocked.Increment(ref _uploadSerial),
+            SubmeshCount = mesh.Submeshes.Count,
+        };
+
+        foreach (var submesh in mesh.Submeshes)
+        {
+            if (submesh.IndexCount == 0) continue;
+
+            if (upload.Surfaces.Count >= MaxGodotMeshSurfaces)
+            {
+                upload.Dropped++;
+                continue;
+            }
+
+            var arrays = BuildSurfaceArrays(mesh, submesh);
+            if (arrays != null)
+                upload.Surfaces.Add(arrays);
+        }
+
+        // If no submeshes but we have vertex data, create a single surface
+        if (mesh.Submeshes.Count == 0 && mesh.VertexCount > 0)
+        {
+            if ((mesh.VertexCount % 3) != 0)
+            {
+                Lumora.Core.Logging.Logger.Warn($"MeshAssetHook.UploadMesh: Skipping surface - no indices and vertex count {mesh.VertexCount} is not a multiple of 3");
+                return null;
+            }
+
+            var arrays = BuildSurfaceArraysNoIndices(mesh);
+            if (arrays != null)
+                upload.Surfaces.Add(arrays);
+        }
+
+        return upload;
+    }
+
+    private void ApplyUpload(MeshUpload upload)
+    {
+        if (_unloaded) return;
+
+        // Two uploads can be in flight when one of them stopped to bake. Whichever mesh data is newest
+        // wins regardless of which finished first.
+        if (upload.Serial < _appliedSerial) return;
+        _appliedSerial = upload.Serial;
+
         if (_godotMesh == null)
         {
             _godotMesh = new ArrayMesh();
         }
         else
         {
-            // Clear existing surfaces
             _godotMesh.ClearSurfaces();
         }
 
-        // Process each submesh as a separate surface
-        foreach (var submesh in mesh.Submeshes)
+        for (int i = 0; i < upload.Surfaces.Count; i++)
         {
-            if (submesh.IndexCount == 0) continue;
-
-            var arrays = BuildSurfaceArrays(mesh, submesh);
-            if (arrays != null)
-            {
-                _godotMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
-            }
+            var lods = upload.Lods?.For(i)?.ToGodot();
+            _godotMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, upload.Surfaces[i], null, lods);
         }
 
-        // If no submeshes but we have vertex data, create a single surface
-        if (mesh.Submeshes.Count == 0 && mesh.VertexCount > 0)
+        if (upload.Dropped > 0)
         {
-            var arrays = BuildSurfaceArraysNoIndices(mesh);
-            if (arrays != null)
+            if (!_loggedSurfaceOverflow)
             {
-                if ((mesh.VertexCount % 3) != 0)
-                {
-                    Lumora.Core.Logging.Logger.Warn($"MeshAssetHook.UploadMesh: Skipping surface - no indices and vertex count {mesh.VertexCount} is not a multiple of 3");
-                    return;
-                }
-                _godotMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+                _loggedSurfaceOverflow = true;
+                Lumora.Core.Logging.Logger.Warn($"MeshAssetHook.UploadMesh: mesh has {upload.SubmeshCount} submeshes but Godot caps a mesh at {MaxGodotMeshSurfaces} surfaces - {upload.Dropped} surface(s) past the cap were dropped and will not render.");
             }
+        }
+        else
+        {
+            _loggedSurfaceOverflow = false;
         }
     }
 
@@ -254,11 +357,12 @@ public class MeshAssetHook : AssetHook, IMeshAssetHook
         return arrays;
     }
 
-    /// <summary>
-    /// Unload and dispose the Godot mesh.
-    /// </summary>
+    // Unload and dispose the Godot mesh.
     public override void Unload()
     {
+        // A bake that is still running will finish and post its apply; the flag is what stops it
+        // resurrecting a mesh for an asset that is gone.
+        _unloaded = true;
         if (_godotMesh != null)
         {
             _godotMesh.Dispose();
@@ -266,4 +370,3 @@ public class MeshAssetHook : AssetHook, IMeshAssetHook
         }
     }
 }
-

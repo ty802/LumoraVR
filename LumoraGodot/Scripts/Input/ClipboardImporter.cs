@@ -13,6 +13,7 @@ using Lumora.Core.Assets;
 using Lumora.Core.Components;
 using Lumora.Core.Components.Assets;
 using Lumora.Core.Components.Import;
+using Lumora.Core.Localization;
 using Lumora.Core.Math;
 using Lumora.Source.Godot.UI;
 using LumoraMeshes = Lumora.Core.Components.Meshes;
@@ -538,9 +539,12 @@ public partial class ClipboardImporter : Node
         // overlay. It's non-modal: the game stays interactive while it loads (freeze fix) and the user sees a
         // floating title + percent + progress bar in the world. Driven straight off the importer's progress. -xlinka
         var importWorld = slot.World;
-        ModelImportIndicator.Show(importWorld, slot, isAvatar ? "Importing Avatar" : "Importing Model");
-        var progress = new Progress<(float progress, string status)>(
-            u => ModelImportIndicator.Report(u.progress, u.status));
+        var title = isAvatar
+            ? "Import.Title.Avatar".AsLocale("Importing avatar")
+            : "Import.Title.Model".AsLocale("Importing model");
+        ModelImportIndicator.Show(importWorld, slot, title);
+        var progress = new Progress<ImportProgress>(u => ModelImportIndicator.Report(u));
+        bool finished = false;
         try
         {
             ModelImportResult result;
@@ -556,16 +560,22 @@ public partial class ClipboardImporter : Node
             }
             if (result.Success)
             {
+                ModelImportIndicator.Hide();
                 OnAssetImported?.Invoke(filePath, result.RootSlot);
             }
             else
             {
+                // The readout says why and stays up long enough to read it. Without this the plate
+                // just vanished and a failed import looked identical to a finished one. -xlinka
+                ModelImportIndicator.Fail(result.ErrorMessage);
                 GD.PrintErr($"ClipboardImporter: Model import failed: {result.ErrorMessage}");
             }
+            finished = true;
         }
         finally
         {
-            ModelImportIndicator.Hide();
+            if (!finished)
+                ModelImportIndicator.Fail(null!);
         }
     }
 

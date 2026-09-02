@@ -34,6 +34,7 @@ public sealed class LodDistanceCullHook : ComponentHook<LodDistanceCull>
 
         bool enabled = Owner.Enabled && slot.IsActive && Owner.ScaledDistance > 0f;
         float fade = Owner.ScaledFade;
+        bool sizeBased = enabled && Owner.SizeBased.Value;
         var range = enabled
             ? new LodVisibilityRange(0f, 0f, Owner.ScaledDistance, fade, fade > 0f)
             : LodVisibilityRange.Unbounded;
@@ -47,6 +48,25 @@ public sealed class LodDistanceCullHook : ComponentHook<LodDistanceCull>
                 continue;
             if (component is not IImplementable implementable || implementable.Hook is not ILodRangeTarget target)
                 continue;
+
+            if (sizeBased)
+            {
+                // Per-renderer distance from its own bounds; unmeasurable or big enough = never band.
+                if (!target.TryGetLargestDimension(out float dimension)
+                    || dimension >= Owner.SizeExempt.Value)
+                {
+                    target.SetLodVisibilityRange(LodVisibilityRange.Unbounded);
+                    current.Add(target);
+                    continue;
+                }
+
+                float distance = System.Math.Max(Owner.ScaledDistance, Owner.SizeMultiplier.Value * dimension);
+                var sized = new LodVisibilityRange(0f, 0f, distance, fade, fade > 0f);
+                target.SetLodVisibilityRange(in sized);
+                current.Add(target);
+                continue;
+            }
+
             target.SetLodVisibilityRange(in range);
             current.Add(target);
         }

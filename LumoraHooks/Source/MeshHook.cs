@@ -10,11 +10,9 @@ using System;
 
 namespace Lumora.Godot.Hooks;
 
-/// <summary>
-/// Godot hook for ProceduralMesh components.
-/// Converts PhosMesh to Godot ArrayMesh and uploads to GPU.
-/// Platform mesh hook for Godot.
-/// </summary>
+// Godot hook for ProceduralMesh components.
+// Converts PhosMesh to Godot ArrayMesh and uploads to GPU.
+// Platform mesh hook for Godot.
 #nullable enable
 [ImplementableHook(
     typeof(ProceduralMesh),
@@ -33,6 +31,13 @@ public class MeshHook : ComponentHook<ProceduralMesh>
     private bool _loggedNoVertexWarning;
     private bool _loggedBadIndexError;
     private bool _loggedNaNVertexError;
+    private bool _loggedSurfaceOverflow;
+
+    // RenderingServer refuses surface 257 and up (MAX_MESH_SURFACES). Godot's own check is an ERR_FAIL
+    // condition, so going past it prints one engine error PER SURFACE PER UPLOAD - a UI panel that rebuilds
+    // on hover turns the log into a firehose and the extra surfaces are silently gone anyway. Stop at the
+    // ceiling ourselves and say so once. -xlinka
+    private const int MaxGodotMeshSurfaces = 256;
 
     // Reused surface-array scratch buffers. A deforming mesh (soft body) re-uploads every frame; allocating
     // fresh managed arrays each time churns the GC and causes frame hitches. Reuse and only grow. -xlinka
@@ -43,9 +48,7 @@ public class MeshHook : ComponentHook<ProceduralMesh>
     private Vector2[]? _uvBuf;
     private int[]? _idxBuf;
 
-    /// <summary>
-    /// Factory method for creating mesh hooks.
-    /// </summary>
+    // Factory method for creating mesh hooks.
     public static IHook<ProceduralMesh> Constructor()
     {
         return new MeshHook();
@@ -125,12 +128,49 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         if (meshInstance != null)
         {
             bool otherRenderer = Owner.Slot?.GetComponent<Lumora.Core.Components.MeshRenderer>() != null
-                || Owner.Slot?.GetComponent<Lumora.Core.Components.SquishyBody>() != null;
+                || Owner.Slot?.GetComponent<Lumora.Core.Components.SquishyBody>() != null
+                || ChildRendersThisMesh(Owner.Slot);
             if (meshInstance.Visible != !otherRenderer)
             {
                 meshInstance.Visible = !otherRenderer;
             }
         }
+    }
+
+    // A renderer for this mesh does not have to sit on the mesh's own slot. TextRenderer keeps its
+    // MeshRenderer on a LOCAL CHILD so the label's material pool and shadow settings are its own, and
+    // the slot-level check above cannot see it. Missing it left this hook's default instance up, which
+    // is a LIT GREY StandardMaterial3D over the same glyph quads: back-face culled, so it is invisible
+    // from the readable side and a solid box behind every glyph from the other one, tinted by whatever
+    // light the world has. That is the "back of the text is boxes" bug. Direct children only, and only
+    // when the cheap same-slot test has already failed. -xlinka
+    private bool ChildRendersThisMesh(Lumora.Core.Slot? slot)
+    {
+        if (slot == null || slot.IsDestroyed)
+            return false;
+        foreach (var child in slot.Children)
+        {
+            if (RendersOwner(child))
+                return true;
+        }
+        foreach (var child in slot.LocalChildren)
+        {
+            if (RendersOwner(child))
+                return true;
+        }
+        return false;
+    }
+
+    private bool RendersOwner(Lumora.Core.Slot child)
+    {
+        if (child == null || child.IsDestroyed)
+            return false;
+        foreach (var renderer in child.GetComponents<Lumora.Core.Components.MeshRenderer>())
+        {
+            if (ReferenceEquals(renderer.Mesh.Target, Owner))
+                return true;
+        }
+        return false;
     }
 
     public override void Destroy(bool destroyingWorld)
@@ -160,9 +200,9 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         _loggedNoVertexWarning = false;
         _loggedBadIndexError = false;
         _loggedNaNVertexError = false;
+        _loggedSurfaceOverflow = false;
     }
 
-    /// <summary>
     // Godot's surface arrays must be EXACTLY the vertex/index count, so reuse only when the size matches
     // (constant for a deforming mesh) and reallocate when it changes. -xlinka
     private static void EnsureExact<T>(ref T[]? buf, int n)
@@ -171,28 +211,47 @@ public class MeshHook : ComponentHook<ProceduralMesh>
             buf = new T[n];
     }
 
-    /// Upload PhosMesh to Godot ArrayMesh.
-    /// Only uploads channels marked dirty in the upload hint.
-    /// </summary>
+    // Upload PhosMesh to Godot ArrayMesh.
+    // Only uploads channels marked dirty in the upload hint.
     private void UploadMesh(PhosMesh phosMesh, MeshUploadHint uploadHint)
     {
         if (godotMesh == null) return;
 
         godotMesh.ClearSurfaces();
 
+        int dropped = 0;
         foreach (var submesh in phosMesh.Submeshes)
         {
-            if (submesh is PhosTriangleSubmesh triangleSubmesh)
+            if (submesh is not PhosTriangleSubmesh triangleSubmesh)
             {
-                UploadTriangleSubmesh(phosMesh, triangleSubmesh, uploadHint);
+                continue;
             }
+
+            if (godotMesh.GetSurfaceCount() >= MaxGodotMeshSurfaces)
+            {
+                dropped++;
+                continue;
+            }
+
+            UploadTriangleSubmesh(phosMesh, triangleSubmesh, uploadHint);
         }
 
+        if (dropped > 0)
+        {
+            if (!_loggedSurfaceOverflow)
+            {
+                _loggedSurfaceOverflow = true;
+                Lumora.Core.Logging.Logger.Warn($"MeshHook.UploadMesh: '{Owner.Slot?.SlotName?.Value}' has {phosMesh.Submeshes.Count} submeshes but Godot caps a mesh at {MaxGodotMeshSurfaces} surfaces - {dropped} surface(s) past the cap were dropped and will not render. Split the mesh, or batch its materials.");
+            }
+        }
+        else
+        {
+            // Fits again, so let the next overflow speak up.
+            _loggedSurfaceOverflow = false;
+        }
     }
 
-    /// <summary>
-    /// Upload a triangle submesh to Godot.
-    /// </summary>
+    // Upload a triangle submesh to Godot.
     private void UploadTriangleSubmesh(PhosMesh phosMesh, PhosTriangleSubmesh submesh, MeshUploadHint uploadHint)
     {
         if (godotMesh == null) return;
@@ -357,9 +416,7 @@ public class MeshHook : ComponentHook<ProceduralMesh>
         }
     }
 
-    /// <summary>
-    /// Get the Godot MeshInstance3D node.
-    /// </summary>
+    // Get the Godot MeshInstance3D node.
     public MeshInstance3D? GetMeshInstance() => meshInstance;
 }
 

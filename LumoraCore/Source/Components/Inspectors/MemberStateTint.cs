@@ -19,6 +19,7 @@ namespace Lumora.Core.Components;
 // Graphic and each declares its own Tint, so there is no shared component type to point at. Holding
 // the field itself also means anything with a color - a border, a text - can be signalled the same
 // way without touching this. -xlinka
+[ComponentCategory("Utility/Inspectors")]
 public class MemberStateTint : Component
 {
     public readonly SyncRef<IWorldElement> TargetMember;

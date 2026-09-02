@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using Lumora.Core.Localization;
 using Lumora.Core.Networking.Sync;
 using Lumora.Core.Persistence;
 
@@ -22,7 +23,7 @@ namespace Lumora.Core.Components;
 // Members transfer by NAME with a matching value type, which is the only rule that holds across
 // unrelated types. Anything the destination declares differently keeps whatever its own attach
 // behaviour gave it, so a swap lands on sensible defaults rather than half-copied garbage. -xlinka
-public sealed class ComponentTypeSwapUndoBatch : IUndoBatch
+public sealed class ComponentTypeSwapUndoBatch : IUndoBatch, IUndoTargetQuery
 {
     private readonly World _world;
     private readonly Slot _slot;
@@ -43,7 +44,9 @@ public sealed class ComponentTypeSwapUndoBatch : IUndoBatch
     private Component? _live;
     private bool _swapped;
 
-    public string Description { get; }
+    public LocaleText LocalizedDescription { get; }
+
+    public string Description => LocalizedDescription.Resolve();
 
     private ComponentTypeSwapUndoBatch(Component source, Type toType)
     {
@@ -52,7 +55,7 @@ public sealed class ComponentTypeSwapUndoBatch : IUndoBatch
         _fromType = source.GetType();
         _toType = toType;
         _live = source;
-        Description = $"Swap {_fromType.Name} to {toType.Name}";
+        LocalizedDescription = UndoLocale.TypeSwap(_fromType.Name, toType.Name);
     }
 
     // null when the swap could not run at all, in which case nothing was changed
@@ -72,6 +75,9 @@ public sealed class ComponentTypeSwapUndoBatch : IUndoBatch
     public bool Redo() => !_swapped && Transition(_toType, forward: true);
 
     public void OnEvicted() { }
+
+    public bool ReferencesElement(IWorldElement element)
+        => element is Slot slot && UndoTargets.Touches(_slot, slot);
 
     public static bool IsAttachable(Type type)
         => typeof(Component).IsAssignableFrom(type) && !type.IsAbstract && !type.ContainsGenericParameters;

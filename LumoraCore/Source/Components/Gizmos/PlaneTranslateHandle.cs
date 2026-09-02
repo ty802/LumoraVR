@@ -8,6 +8,7 @@ namespace Lumora.Core.Components.Gizmos;
 
 // dragging slides the target in the plane PERPENDICULAR to the handle's axis (the small corner squares
 // between two arrows); the plane is frozen at grab so it doesn't chase the object it moves
+[ComponentCategory("Hidden")]
 public class PlaneTranslateHandle : TransformHandle
 {
     private float3 _planeNormal;
@@ -16,7 +17,7 @@ public class PlaneTranslateHandle : TransformHandle
     private float3 _startHit;
     private bool _valid;
 
-    protected override string DragDescription => "Move";
+    protected override Localization.LocaleText DragDescription => UndoLocale.Move;
 
     protected override void BeginDrag(Slot target, float3 rayOrigin, float3 rayDirection)
     {

@@ -11,6 +11,7 @@ namespace Lumora.Core.Components;
 // drop target on a hierarchy tree row: releasing a held SLOT reference card over the row reparents
 // that slot under the row's slot, keeping its world pose, undoably. cards for anything that isn't a
 // slot fall through untouched so the row doesn't eat drops meant for reference fields.
+[ComponentCategory("Utility/Inspectors")]
 public class SlotReparentReceiver : Component, IProxyReceiver
 {
     public readonly SyncRef<Slot> NewParent;
@@ -42,7 +43,7 @@ public class SlotReparentReceiver : Component, IProxyReceiver
             if (!ReparentGuard.CanReparent(target, parent))
                 continue;
 
-            var undo = SlotTransformUndoBatch.Begin(target, $"Reparent {target.SlotName.Value}");
+            var undo = SlotTransformUndoBatch.Begin(target, UndoLocale.Reparent(target.SlotName.Value));
             target.SetParent(parent, preserveGlobalTransform: true);
             InspectorUndo.Record(this, undo?.Commit());
 

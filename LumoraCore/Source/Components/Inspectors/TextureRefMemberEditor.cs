@@ -14,6 +14,7 @@ namespace Lumora.Core.Components;
 // live preview: press it while holding a texture card (or grip-drop one onto it) to PUT a texture
 // in, the ≡ button spawns a card to PULL the current one back out. same drop/assign plumbing as
 // RefMemberEditor, tuned for texture asset refs.
+[ComponentCategory("Utility/Inspectors")]
 public class TextureRefMemberEditor : MemberEditor, IProxyReceiver, IProxySource
 {
     private readonly SyncRef<RawImage> _preview;

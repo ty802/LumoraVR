@@ -9,6 +9,7 @@ using Lumora.Core;
 namespace Lumora.Core.Components;
 
 /// <summary>Slider editor for numeric members carrying [Range], with a live value readout.</summary>
+[ComponentCategory("Utility/Inspectors")]
 public class SliderMemberEditor : MemberEditor
 {
     public readonly Sync<float> Min;

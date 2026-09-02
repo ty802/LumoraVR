@@ -9,6 +9,7 @@ namespace Lumora.Core.Components.Gizmos;
 
 // dragging the hand toward/away from the center shrinks/grows the target proportionally - same feel as
 // the two-hand resize gesture, one-handed
+[ComponentCategory("Hidden")]
 public class ScaleHandle : TransformHandle
 {
     private const float MinFactor = 0.02f;
@@ -19,7 +20,7 @@ public class ScaleHandle : TransformHandle
     private float3 _startScale;
     private float _startDistance;
 
-    protected override string DragDescription => "Scale";
+    protected override Localization.LocaleText DragDescription => UndoLocale.Scale;
 
     protected override void BeginDrag(Slot target, float3 rayOrigin, float3 rayDirection)
     {

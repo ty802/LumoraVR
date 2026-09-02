@@ -23,6 +23,7 @@ namespace Lumora.Core.Components.Gizmos;
 // gizmo computed, which is where the target's scale is accounted for - a collider on a slot scaled to
 // a tenth has to edit ten times slower than the hand moves, or the shape runs away from the pad.
 // -xlinka
+[ComponentCategory("Hidden")]
 public class ExtentHandle : TransformHandle
 {
     public readonly SyncRef<IField<float>> FloatField;
@@ -68,7 +69,7 @@ public class ExtentHandle : TransformHandle
         ValueName = new Sync<string>(this, "Extent");
     }
 
-    protected override string DragDescription => $"Edit {ValueName.Value}";
+    protected override Localization.LocaleText DragDescription => UndoLocale.EditField(ValueName.Value);
 
     private IField? DrivenField
     {

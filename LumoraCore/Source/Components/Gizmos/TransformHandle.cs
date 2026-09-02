@@ -312,7 +312,7 @@ public abstract class TransformHandle : Component, IGrabbable, ILaserPointerTarg
 
     protected Grabber? ActiveGrabber => _grabber;
 
-    protected abstract string DragDescription { get; }
+    protected abstract Localization.LocaleText DragDescription { get; }
     protected abstract void BeginDrag(Slot target, float3 rayOrigin, float3 rayDirection);
     protected abstract void UpdateDrag(Slot target, float3 rayOrigin, float3 rayDirection);
     protected virtual void EndDrag() { }

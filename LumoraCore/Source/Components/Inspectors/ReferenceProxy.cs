@@ -118,8 +118,10 @@ public class ReferenceProxy : Component, IHeldActivatable
         if (slot == null || slot.IsDestroyed)
             return false;
 
-        var panel = SceneInspectorPanel.Spawn(World, slot);
-        if (component != null)
+        var panel = SceneInspectorPanel.OpenOrFocus(World, slot, Slot.GlobalPosition);
+        if (panel == null)
+            return false;
+        if (component != null && !SceneInspectorPanel.IsExpanded(panel.ExpandedComponents, component.ReferenceID.RawValue))
             panel.ExpandedComponents.Add(component.ReferenceID.RawValue);
         return true;
     }
@@ -231,7 +233,7 @@ public class ReferenceProxy : Component, IHeldActivatable
         slot.GlobalPosition = pos;
         slot.GlobalRotation = facing;
         // Activating a card is a world edit like any other, so it goes on the undo stack.
-        InspectorUndo.Record(this, SlotExistenceUndoBatch.Created(World, new[] { slot }, "Spawn " + name));
+        InspectorUndo.Record(this, SlotExistenceUndoBatch.Created(World, new[] { slot }, UndoLocale.SpawnNamed(name)));
         return slot;
     }
 

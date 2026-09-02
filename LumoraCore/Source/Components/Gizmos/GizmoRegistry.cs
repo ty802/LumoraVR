@@ -23,6 +23,11 @@ public static class GizmoRegistry
 
         foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
         {
+            // Only an assembly that references this one can carry the attribute, so the runtime, Godot and
+            // third-party assemblies never get walked. Steamworks.NET in particular holds explicit-layout
+            // structs the runtime refuses to load, and one such type fails GetTypes for the whole assembly.
+            if (assembly.IsDynamic || !ReferencesCore(assembly))
+                continue;
             try
             {
                 ScanAssembly(assembly);
@@ -37,10 +42,37 @@ public static class GizmoRegistry
         Logger.Log($"GizmoRegistry: Initialized with {_gizmoTypes.Count} gizmo types");
     }
 
+    private static readonly Assembly CoreAssembly = typeof(GizmoRegistry).Assembly;
+    private static readonly string CoreAssemblyName = CoreAssembly.GetName().Name!;
+
+    private static bool ReferencesCore(Assembly assembly)
+    {
+        if (ReferenceEquals(assembly, CoreAssembly))
+            return true;
+        foreach (var reference in assembly.GetReferencedAssemblies())
+        {
+            if (reference.Name == CoreAssemblyName)
+                return true;
+        }
+        return false;
+    }
+
     private static void ScanAssembly(Assembly assembly)
     {
-        foreach (var type in assembly.GetTypes())
+        Type?[] types;
+        try
         {
+            types = assembly.GetTypes();
+        }
+        catch (ReflectionTypeLoadException ex)
+        {
+            // The loadable half is still worth scanning; the nulls are the types that failed.
+            types = ex.Types;
+        }
+        foreach (var type in types)
+        {
+            if (type == null)
+                continue;
             var attr = type.GetCustomAttribute<GizmoForComponentAttribute>();
             if (attr != null)
             {

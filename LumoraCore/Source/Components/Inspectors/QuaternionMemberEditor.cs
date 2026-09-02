@@ -13,6 +13,7 @@ namespace Lumora.Core.Components;
 /// Euler-angle editor for floatQ members: yaw/pitch/roll text fields in DEGREES (floatQ.Euler takes
 /// radians; the conversion lives here so nobody types 90 and gets 90 radians).
 /// </summary>
+[ComponentCategory("Utility/Inspectors")]
 public class QuaternionMemberEditor : MemberEditor
 {
     private readonly SyncRef<TextInput> _yaw;

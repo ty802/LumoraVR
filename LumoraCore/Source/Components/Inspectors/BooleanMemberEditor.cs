@@ -7,6 +7,7 @@ using Lumora.Core;
 namespace Lumora.Core.Components;
 
 /// <summary>Checkbox editor for bool members (and bool leaves inside structs).</summary>
+[ComponentCategory("Utility/Inspectors")]
 public class BooleanMemberEditor : MemberEditor
 {
     private readonly SyncRef<Checkbox> _checkbox;

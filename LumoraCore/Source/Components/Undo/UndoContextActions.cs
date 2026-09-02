@@ -3,6 +3,7 @@
 
 using Lumora.Core.Components.Interaction;
 using Lumora.Core.Components.UI;
+using Lumora.Core.Localization;
 
 namespace Lumora.Core.Components;
 
@@ -34,7 +35,7 @@ public class UndoContextActions : ContextMenuItemSource
 
         page.AddItem(new ContextMenuItem
         {
-            Label = "Undo",
+            Label = Label(UndoLocale.Undo, undo.CanUndo ? undo.NextUndoDescription : LocaleText.Empty, undoDirection: true),
             IsEnabled = undo.CanUndo,
             FillColor = new[] { 0.32f, 0.10f, 0.10f, 0.92f },
             OnPressed = _ => undo.Undo(),
@@ -42,10 +43,24 @@ public class UndoContextActions : ContextMenuItemSource
 
         page.AddItem(new ContextMenuItem
         {
-            Label = "Redo",
+            Label = Label(UndoLocale.Redo, undo.CanRedo ? undo.NextRedoDescription : LocaleText.Empty, undoDirection: false),
             IsEnabled = undo.CanRedo,
             FillColor = new[] { 0.10f, 0.16f, 0.32f, 0.92f },
             OnPressed = _ => undo.Redo(),
         });
+    }
+
+    // A radial slice is narrow, so the step name only earns its place when it is short enough to
+    // still read at a glance; past that the bare verb is more use than a clipped sentence.
+    private const int MaxStepNameLength = 18;
+
+    private static string Label(LocaleText verb, LocaleText step, bool undoDirection)
+    {
+        if (step.IsEmpty)
+            return verb.Resolve();
+        string name = step.Resolve();
+        if (name.Length == 0 || name.Length > MaxStepNameLength)
+            return verb.Resolve();
+        return (undoDirection ? UndoLocale.UndoNamed(name) : UndoLocale.RedoNamed(name)).Resolve();
     }
 }

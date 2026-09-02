@@ -356,6 +356,7 @@ public static class WorkerInspectorBuilder
 
 // press relay carrying a synced string argument to an IInspectorActionHandler - the duplication-
 // and network-safe replacement for closure button actions in inspector lists
+[ComponentCategory("Utility/Inspectors")]
 public class InspectorButtonRelay : Component
 {
     public readonly Sync<string> Argument;

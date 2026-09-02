@@ -15,6 +15,7 @@ namespace Lumora.Core.Components.Gizmos;
 // ray-vs-ring test: a plane intersection plus one radius compare. There is no torus collision shape
 // to fall back on anyway - approximating one meant a fence of trigger boxes around the
 // circumference, eight slots per ring, and it was still a polygon. -xlinka
+[ComponentCategory("Hidden")]
 public class RotateHandle : TransformHandle
 {
     // local units, matching the torus visual
@@ -38,7 +39,7 @@ public class RotateHandle : TransformHandle
         Radius = new Sync<float>(this, 0.25f);
     }
 
-    protected override string DragDescription => "Rotate";
+    protected override Localization.LocaleText DragDescription => UndoLocale.Rotate;
 
     protected override void BeginDrag(Slot target, float3 rayOrigin, float3 rayDirection)
     {

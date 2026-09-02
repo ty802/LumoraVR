@@ -8,6 +8,7 @@ namespace Lumora.Core.Components.Gizmos;
 
 // dragging moves the target in the plane FACING the grabbing beam (frozen at grab), so it follows the
 // cursor in all three dimensions without ever jumping toward or away from the viewer
+[ComponentCategory("Hidden")]
 public class FreeTranslateHandle : TransformHandle
 {
     private float3 _planeNormal;
@@ -16,7 +17,7 @@ public class FreeTranslateHandle : TransformHandle
     private float3 _startHit;
     private bool _valid;
 
-    protected override string DragDescription => "Move";
+    protected override Localization.LocaleText DragDescription => UndoLocale.Move;
 
     protected override void BeginDrag(Slot target, float3 rayOrigin, float3 rayDirection)
     {

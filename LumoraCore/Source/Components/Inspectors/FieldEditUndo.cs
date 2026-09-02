@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core;
+using Lumora.Core.Localization;
 using Lumora.Core.Networking.Sync;
 
 namespace Lumora.Core.Components;
@@ -12,14 +13,16 @@ public sealed class FieldEditUndoBatch : IUndoBatch
     private readonly object? _before;
     private object? _after;
 
-    public string Description { get; }
+    public LocaleText LocalizedDescription { get; }
 
-    public FieldEditUndoBatch(IField field, object? before, object? after, string description)
+    public string Description => LocalizedDescription.Resolve();
+
+    public FieldEditUndoBatch(IField field, object? before, object? after, LocaleText description)
     {
         _field = field;
         _before = before;
         _after = after;
-        Description = description;
+        LocalizedDescription = description;
     }
 
     // consecutive edits of the same field merge into one step (slider drags, typing)
@@ -72,9 +75,9 @@ public static class InspectorUndo
         if (manager == null)
             return;
 
-        string name = (field as ISyncMember)?.Name ?? "field";
         if (manager.CurrentBatch is FieldEditUndoBatch merge && merge.TryMerge(field, after))
             return;
-        manager.Record(new FieldEditUndoBatch(field, before, after, $"Edit {name}"));
+        string name = (field as ISyncMember)?.Name ?? "field";
+        manager.Record(new FieldEditUndoBatch(field, before, after, UndoLocale.EditField(name)));
     }
 }

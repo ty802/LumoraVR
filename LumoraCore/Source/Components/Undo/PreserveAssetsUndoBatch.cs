@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using Lumora.Core.Localization;
 using Lumora.Core.Math;
 using Lumora.Core.Persistence;
 
@@ -26,7 +27,7 @@ namespace Lumora.Core.Components;
 //
 // Redo is not a replay of a recording, it re-runs the strip. The tree is back in its original shape
 // by then, so the operation reaches the same answer and produces a fresh set of records. -xlinka
-public sealed class PreserveAssetsUndoBatch : IUndoBatch, ISlotStripRecorder
+public sealed class PreserveAssetsUndoBatch : IUndoBatch, ISlotStripRecorder, IUndoTargetQuery
 {
     private sealed class SlotRecord
     {
@@ -59,7 +60,9 @@ public sealed class PreserveAssetsUndoBatch : IUndoBatch, ISlotStripRecorder
     private int _lost;
     private bool _performed;
 
-    public string Description => "Destroy Preserving Assets";
+    public LocaleText LocalizedDescription => UndoLocale.PreserveAssets;
+
+    public string Description => LocalizedDescription.Resolve();
 
     private PreserveAssetsUndoBatch(World world, Slot root, Slot? explicitHolder, Slot graveyard)
     {
@@ -89,6 +92,15 @@ public sealed class PreserveAssetsUndoBatch : IUndoBatch, ISlotStripRecorder
         if (!_performed)
             return false;
 
+        // The destination has to be intact before anything moves. A recorded parent that has since
+        // been destroyed means this step would rebuild the object into a hierarchy that is gone, so it
+        // refuses and the manager drops it.
+        foreach (var record in _slots)
+        {
+            if (record.Slot != null && !record.Slot.IsDestroyed && !UndoTargets.CanRestoreUnder(record.Parent))
+                return false;
+        }
+
         bool any = false;
 
         // Slots first: a component can only be re-attached to a slot that is back where it belongs,
@@ -98,7 +110,7 @@ public sealed class PreserveAssetsUndoBatch : IUndoBatch, ISlotStripRecorder
             var record = _slots[i];
             if (record.Slot == null || record.Slot.IsDestroyed)
                 continue;
-            var parent = record.Parent != null && !record.Parent.IsDestroyed ? record.Parent : _world.RootSlot;
+            var parent = record.Parent ?? _world.RootSlot;
             if (parent == null)
                 continue;
             record.Slot.SetParent(parent);
@@ -166,6 +178,21 @@ public sealed class PreserveAssetsUndoBatch : IUndoBatch, ISlotStripRecorder
         }
         _slots.Clear();
         _components.Clear();
+        _performed = false;
+    }
+
+    public bool ReferencesElement(IWorldElement element)
+    {
+        if (element is not Slot slot)
+            return false;
+        if (UndoTargets.Touches(_root, slot))
+            return true;
+        foreach (var record in _slots)
+        {
+            if (UndoTargets.Touches(record.Slot, slot) || UndoTargets.Touches(record.Parent, slot))
+                return true;
+        }
+        return false;
     }
 
     private bool Run()

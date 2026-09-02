@@ -9,6 +9,7 @@ using Lumora.Core.Math;
 namespace Lumora.Core.Components;
 
 // color/colorHDR members: float fields are addressed via leaf paths r/g/b/a on top of this editor's own path
+[ComponentCategory("Utility/Inspectors")]
 public class ColorMemberEditor : MemberEditor
 {
     private readonly SyncRef<Image> _swatch;

@@ -10,6 +10,7 @@ namespace Lumora.Core.Components.Gizmos;
 
 // dragging along the handle's axis stretches ONE component of the target's local scale by the distance
 // ratio from the gizmo center (pull the X cube twice as far out = X scale doubles)
+[ComponentCategory("Hidden")]
 public class AxisScaleHandle : TransformHandle
 {
     // 0=x, 1=y, 2=z
@@ -30,7 +31,7 @@ public class AxisScaleHandle : TransformHandle
         ScaleAxisIndex = new Sync<int>(this, 0);
     }
 
-    protected override string DragDescription => "Scale";
+    protected override Localization.LocaleText DragDescription => UndoLocale.Scale;
 
     protected override void BeginDrag(Slot target, float3 rayOrigin, float3 rayDirection)
     {

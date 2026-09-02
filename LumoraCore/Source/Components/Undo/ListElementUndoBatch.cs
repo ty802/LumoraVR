@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using Lumora.Core.Localization;
 using Lumora.Core.Networking.Sync;
 using Lumora.Core.Persistence;
 
@@ -35,7 +36,9 @@ public sealed class ListElementUndoBatch : IUndoBatch
     private DataTreeNode? _saved;
     private readonly List<RefID> _dead = new();
 
-    public string Description { get; }
+    public LocaleText LocalizedDescription { get; }
+
+    public string Description => LocalizedDescription.Resolve();
 
     private ListElementUndoBatch(ISyncList list, Op op, int index, int target, Action? onChanged)
     {
@@ -44,11 +47,11 @@ public sealed class ListElementUndoBatch : IUndoBatch
         _index = index;
         _target = target;
         _onChanged = onChanged;
-        Description = op switch
+        LocalizedDescription = op switch
         {
-            Op.Add => "Add List Element",
-            Op.Remove => "Remove List Element",
-            _ => "Reorder List",
+            Op.Add => UndoLocale.ListAdd,
+            Op.Remove => UndoLocale.ListRemove,
+            _ => UndoLocale.ListReorder,
         };
     }
 

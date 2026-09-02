@@ -8,6 +8,7 @@ using Helio.UI;
 using Helio.UI.Layout;
 using Lumora.Core;
 using Lumora.Core.Components.UI;
+using Lumora.Core.Localization;
 using Lumora.Core.Networking.Sync;
 using Lumora.Core.Math;
 
@@ -123,8 +124,34 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         _selector = new SyncRef<ComponentSelectorPanel>(this);
     }
 
-    public static SceneInspectorPanel Spawn(World world, Slot rootTarget)
+    // A slot under an ImmutableComponent is not editable content, so a panel aimed at one would be a
+    // window onto rows that all refuse. Log it rather than opening an empty-feeling panel: the person
+    // pressed something and nothing happened, and this is the only place that can say why.
+    private static bool RefuseProtected(Slot? rootTarget, string what)
     {
+        if (!ImmutableComponent.IsProtected(rootTarget))
+            return false;
+        Logging.Logger.Log($"SceneInspectorPanel: refusing to {what} on '{rootTarget!.SlotName.Value}' - protected by ImmutableComponent");
+        return true;
+    }
+
+    // Rows are SCENE content. Local-only slots are render plumbing and never appear; a protected
+    // subtree never appears either, and skipping it at the parent means none of its descendants are
+    // ever reached, let alone walked.
+    private static bool IsHiddenFromTree(Slot slot)
+        => slot.IsLocalElement || ImmutableComponent.IsProtected(slot);
+
+    // Social and Event worlds are view spaces: the authored world is frozen for everyone, host
+    // included, and the tooling stays off with no switch to bring it back. Every inspector opens
+    // through one of the three entry points below, so this one check is the whole lock. -xlinka
+    private static bool RefuseLocked(World? world)
+        => world == null || world.IsDestroyed || !world.AllowsWorldEditing;
+
+    public static SceneInspectorPanel? Spawn(World world, Slot rootTarget)
+    {
+        if (RefuseLocked(world) || RefuseProtected(rootTarget, "spawn"))
+            return null;
+
         var head = world.LocalUser?.Root?.HeadSlot;
         var panelSlot = world.RootSlot.AddSlot("Inspector");
         panelSlot.Persistent.Value = false;
@@ -160,9 +187,49 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         panelSlot.GlobalRotation = floatQ.AxisAngleRad(float3.Up, MathF.Atan2(toViewer.x, toViewer.z));
     }
 
-    // reference rows use this to open their target without losing the current view
-    public static SceneInspectorPanel SpawnAdjacent(SceneInspectorPanel origin, Slot rootTarget)
+    // Open-from-a-card entry point. Spawn() drops every panel on the same head-relative spot, so opening
+    // the same thing twice stacked two identical panels on top of each other: they z-fight (rows fading in
+    // and out), the tree lists "Inspector" once per copy, and the extras read as phantom objects because you
+    // only ever see the front one. A panel already rooted at the slot is reused and just re-selects; a new
+    // root goes beside the panel nearest the card, never onto the head spot a panel is already using. -xlinka
+    public static SceneInspectorPanel? OpenOrFocus(World world, Slot rootTarget, float3 near)
     {
+        if (RefuseLocked(world) || RefuseProtected(rootTarget, "open"))
+            return null;
+
+        SceneInspectorPanel? sameRoot = null;
+        SceneInspectorPanel? nearest = null;
+        float nearestDist = float.MaxValue;
+        foreach (var panel in world.RootSlot.GetComponentsInChildren<SceneInspectorPanel>())
+        {
+            if (panel.IsDestroyed || panel.Slot == null || panel.Slot.IsDestroyed)
+                continue;
+            if (ReferenceEquals(panel.Root.Target, rootTarget))
+            {
+                sameRoot = panel;
+                break;
+            }
+            float d = (panel.Slot.GlobalPosition - near).LengthSquared;
+            if (d < nearestDist)
+            {
+                nearestDist = d;
+                nearest = panel;
+            }
+        }
+        if (sameRoot != null)
+        {
+            sameRoot.Selected.Target = rootTarget;
+            return sameRoot;
+        }
+        return nearest != null ? SpawnAdjacent(nearest, rootTarget) : Spawn(world, rootTarget);
+    }
+
+    // reference rows use this to open their target without losing the current view
+    public static SceneInspectorPanel? SpawnAdjacent(SceneInspectorPanel origin, Slot rootTarget)
+    {
+        if (origin == null || RefuseLocked(origin.World) || RefuseProtected(rootTarget, "open beside"))
+            return null;
+
         var panelSlot = origin.Slot.Parent?.AddSlot("Inspector") ?? origin.World.RootSlot.AddSlot("Inspector");
         panelSlot.Persistent.Value = false;
         panelSlot.Tag.Value = "Developer";
@@ -235,7 +302,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         // makes the two panels feed each other rows forever (hard lockup). We only care about SCENE slots,
         // so skip anything under a Canvas (all Helio UI roots at one), plus local render plumbing and
         // anything outside the displayed root. -xlinka
-        if (slot == null || IsUiChrome(slot) || slot.IsLocalElement || !IsUnderDisplayedRoot(slot))
+        if (slot == null || IsUiChrome(slot) || IsHiddenFromTree(slot) || !IsUnderDisplayedRoot(slot))
             return;
         // Backstop for any add path that doesn't fire the parent's own child event: queue the
         // PARENT's row. A slot under a collapsed (or absent) row resolves to no row and costs nothing.
@@ -247,7 +314,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         // Same filters as OnWorldSlotAdded: local render plumbing and slots outside the displayed root
         // never appear in the tree, so their destruction must not re-tessellate it (interaction flows
         // create/destroy local slots constantly while a panel is open).
-        if (slot == null || IsUiChrome(slot) || slot.IsLocalElement || !IsUnderDisplayedRoot(slot))
+        if (slot == null || IsUiChrome(slot) || IsHiddenFromTree(slot) || !IsUnderDisplayedRoot(slot))
             return;
 
         // The displayed ROOT died: the whole panel is a husk pointing at nothing - close it. Target
@@ -518,7 +585,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         container.DestroyChildren();
         _highlightedId = Selected.Target?.ReferenceID.RawValue ?? 0;
         ClearRootNameSubscription();
-        if (root == null || root.IsDestroyed)
+        if (root == null || root.IsDestroyed || ImmutableComponent.IsProtected(root))
             return;
 
         _rootNameField = root.SlotName;
@@ -858,7 +925,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         {
             var child = row.Children[i];
             var target = child.Target;
-            if (target != null && !target.IsDestroyed && !target.IsLocalElement
+            if (target != null && !target.IsDestroyed && !IsHiddenFromTree(target)
                 && ReferenceEquals(target.Parent, row.Target))
                 continue;
             row.Children.RemoveAt(i);
@@ -888,7 +955,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         int childIndex = 0;
         foreach (var child in target.Children)
         {
-            if (!child.IsLocalElement)
+            if (!IsHiddenFromTree(child))
                 ordered.Add((child, childIndex));
             childIndex++;
         }
@@ -1271,12 +1338,13 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         container.GetComponent<ScrollContentSizer>()?.Invalidate();
     }
 
-    // Local-only children are render plumbing (canvas chunks, material caches); they never show.
+    // Local-only children are render plumbing (canvas chunks, material caches); they never show, and
+    // neither does a protected subtree.
     private static bool HasVisibleChildren(Slot slot)
     {
         foreach (var child in slot.Children)
         {
-            if (!child.IsLocalElement)
+            if (!IsHiddenFromTree(child))
                 return true;
         }
         return false;
@@ -1500,7 +1568,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         }
     }
 
-    private static bool IsExpanded(SyncFieldList<ulong> list, ulong id)
+    internal static bool IsExpanded(SyncFieldList<ulong> list, ulong id)
     {
         foreach (var value in list)
         {
@@ -1561,6 +1629,20 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
     }
 
     public void HandleInspectorAction(string argument)
+    {
+        try
+        {
+            HandleInspectorActionCore(argument);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            // The gate already logged the denial once with the actor and target. Letting it escape turned a
+            // refused click into an "Error in change application" for the whole panel.
+            Lumora.Core.Logging.Logger.Warn($"Inspector: '{argument}' refused: {ex.Message}");
+        }
+    }
+
+    private void HandleInspectorActionCore(string argument)
     {
         if (string.IsNullOrEmpty(argument))
             return;
@@ -1641,7 +1723,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
                 var selected = Selected.Target;
                 if (selected == null) return;
                 var child = selected.AddSlot("Slot");
-                RecordUndo(SlotExistenceUndoBatch.Created(World, new[] { child }, "Add Child"));
+                RecordUndo(SlotExistenceUndoBatch.Created(World, new[] { child }, UndoLocale.AddChild));
                 if (!IsExpanded(ExpandedSlots, selected.ReferenceID.RawValue))
                     ExpandedSlots.Add(selected.ReferenceID.RawValue);
                 Selected.Target = child;
@@ -1663,7 +1745,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
                 if (selected == null || selected == Root.Target) return;
                 var copy = selected.Duplicate();
                 if (copy == null) return;
-                RecordUndo(SlotExistenceUndoBatch.Created(World, new[] { copy }, "Duplicate"));
+                RecordUndo(SlotExistenceUndoBatch.Created(World, new[] { copy }, UndoLocale.Duplicate));
                 Selected.Target = copy;
                 break;
             }
@@ -1705,7 +1787,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
                 // Editors watch the field and refresh in place; no rebuild needed.
                 var selected = Selected.Target;
                 if (selected == null || selected.IsRootSlot) return;
-                var undo = SlotTransformUndoBatch.Begin(selected, "Reset Position");
+                var undo = SlotTransformUndoBatch.Begin(selected, UndoLocale.ResetPosition);
                 selected.LocalPosition.Value = float3.Zero;
                 RecordUndo(undo?.Commit());
                 return;
@@ -1714,7 +1796,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
             {
                 var selected = Selected.Target;
                 if (selected == null || selected.IsRootSlot) return;
-                var undo = SlotTransformUndoBatch.Begin(selected, "Reset Rotation");
+                var undo = SlotTransformUndoBatch.Begin(selected, UndoLocale.ResetRotation);
                 selected.LocalRotation.Value = floatQ.Identity;
                 RecordUndo(undo?.Commit());
                 return;
@@ -1723,7 +1805,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
             {
                 var selected = Selected.Target;
                 if (selected == null || selected.IsRootSlot) return;
-                var undo = SlotTransformUndoBatch.Begin(selected, "Reset Scale");
+                var undo = SlotTransformUndoBatch.Begin(selected, UndoLocale.ResetScale);
                 selected.LocalScale.Value = float3.One;
                 RecordUndo(undo?.Commit());
                 return;
@@ -1738,7 +1820,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
                 var selected = Selected.Target;
                 var head = World?.LocalUser?.Root?.HeadSlot;
                 if (selected == null || selected.IsRootSlot || head == null) return;
-                var undo = SlotTransformUndoBatch.Begin(selected, "Bring To");
+                var undo = SlotTransformUndoBatch.Begin(selected, UndoLocale.BringTo);
                 var forward = head.GlobalRotation * float3.Backward; // view forward is -Z
                 selected.GlobalPosition = head.GlobalPosition + forward * 0.6f;
                 RecordUndo(undo?.Commit());
@@ -1774,7 +1856,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
     }
 
     // Keep the object where it stands in the world while changing who owns it.
-    private void ReparentSelected(Slot? newParent, string description)
+    private void ReparentSelected(Slot? newParent, LocaleText description)
     {
         var selected = Selected.Target;
         if (selected == null || newParent == null || selected.IsRootSlot)
@@ -1799,13 +1881,16 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         wrapper.LocalRotation.Value = target.LocalRotation.Value;
         wrapper.LocalScale.Value = target.LocalScale.Value;
 
-        var created = SlotExistenceUndoBatch.Created(World, new[] { wrapper }, "Insert Parent");
-        var move = SlotTransformUndoBatch.Begin(target, "Insert Parent");
-        target.SetParent(wrapper);
-        target.LocalPosition.Value = float3.Zero;
-        target.LocalRotation.Value = floatQ.Identity;
-        target.LocalScale.Value = float3.One;
-        RecordUndo(CompositeUndoBatch.Combine("Insert Parent", created, move?.Commit()));
+        using (BeginUndoBatch(UndoLocale.InsertParent))
+        {
+            RecordUndo(SlotExistenceUndoBatch.Created(World, new[] { wrapper }, UndoLocale.InsertParent));
+            var move = SlotTransformUndoBatch.Begin(target, UndoLocale.InsertParent);
+            target.SetParent(wrapper);
+            target.LocalPosition.Value = float3.Zero;
+            target.LocalRotation.Value = floatQ.Identity;
+            target.LocalScale.Value = float3.One;
+            RecordUndo(move?.Commit());
+        }
 
         if (Root.Target == target)
             Root.Target = wrapper;
@@ -1829,10 +1914,13 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         wrapper.GlobalPosition = center;
         wrapper.GlobalRotation = target.GlobalRotation;
 
-        var created = SlotExistenceUndoBatch.Created(World, new[] { wrapper }, "Create Pivot");
-        var move = SlotTransformUndoBatch.Begin(target, "Create Pivot");
-        target.SetParent(wrapper, preserveGlobalTransform: true);
-        RecordUndo(CompositeUndoBatch.Combine("Create Pivot", created, move?.Commit()));
+        using (BeginUndoBatch(UndoLocale.CreatePivot))
+        {
+            RecordUndo(SlotExistenceUndoBatch.Created(World, new[] { wrapper }, UndoLocale.CreatePivot));
+            var move = SlotTransformUndoBatch.Begin(target, UndoLocale.CreatePivot);
+            target.SetParent(wrapper, preserveGlobalTransform: true);
+            RecordUndo(move?.Commit());
+        }
 
         if (Root.Target == target)
             Root.Target = wrapper;
@@ -1859,6 +1947,14 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
 
     private UndoManager? FindUndoManager()
         => World?.LocalUser?.Root?.Slot?.GetComponentInChildren<UndoManager>();
+
+    // Everything recorded inside the returned scope collapses into one history entry. Without a
+    // manager the scope is inert and the records fall on the floor exactly as they already did.
+    private UndoBatchScope BeginUndoBatch(LocaleText description)
+    {
+        var manager = FindUndoManager();
+        return manager != null ? manager.BeginBatch(description) : default;
+    }
 
     private void RecordUndo(IUndoBatch? batch)
     {

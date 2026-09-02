@@ -2,15 +2,14 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.Collections.Generic;
+using Lumora.Core.Localization;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Inactive non-persistent holding pen for slots whose destruction is undoable.
-/// Parking instead of destroying means undo needs no serialization round-trip;
-/// parked slots are destroyed for real when their batch leaves the history.
-/// </summary>
+// Inactive non-persistent holding pen for slots whose destruction is undoable. Parking instead of
+// destroying means undo needs no serialization round-trip; parked slots are destroyed for real when
+// their step leaves the history.
 public static class UndoGraveyard
 {
     private const string SlotName = "UndoGraveyard";
@@ -30,14 +29,34 @@ public static class UndoGraveyard
         }
         return graveyard;
     }
+
+    public static Slot? Find(World? world)
+    {
+        var graveyard = world?.RootSlot?.FindChild(SlotName, recursive: false);
+        return graveyard == null || graveyard.IsDestroyed ? null : graveyard;
+    }
+
+    // Called when a manager tears down. The pen is shared, so it only goes when the last parked slot
+    // has gone with it - and only the authority swings the axe, or every peer that saw the same user
+    // leave would send its own destroy for the same slot.
+    public static void DisposeIfEmpty(World? world)
+    {
+        if (world == null || !world.IsAuthority)
+            return;
+        var graveyard = Find(world);
+        if (graveyard != null && graveyard.Children.Count == 0 && graveyard.Components.Count == 0)
+            graveyard.Destroy();
+    }
 }
 
-/// <summary>
-/// Reversible existence change for a set of slots: Destroy (park on record, undo
-/// restores) and Duplicate/Create (undo parks, redo restores) are the two
-/// directions of the same operation.
-/// </summary>
-public sealed class SlotExistenceUndoBatch : IUndoBatch
+// Reversible existence change for a set of slots: Destroy (park on record, undo restores) and
+// Duplicate/Create (undo parks, redo restores) are the two directions of the same operation.
+//
+// Restoring is refused outright when the slot's original parent has been destroyed since. The old
+// behaviour was to fall back to the world root, which quietly resurrected a piece of a deleted
+// hierarchy at the world origin and reported success; failing instead lets the manager drop the step
+// and the eviction finishes the destroy the user asked for. -xlinka
+public sealed class SlotExistenceUndoBatch : IUndoBatch, IUndoTargetQuery
 {
     private sealed class Entry
     {
@@ -51,39 +70,39 @@ public sealed class SlotExistenceUndoBatch : IUndoBatch
 
     private readonly List<Entry> _entries = new();
     private readonly World _world;
+    private readonly bool _isDestroy;
     private bool _parked;
 
-    public string Description { get; }
+    public LocaleText LocalizedDescription { get; }
 
-    private SlotExistenceUndoBatch(World world, string description)
+    public string Description => LocalizedDescription.Resolve();
+
+    private SlotExistenceUndoBatch(World world, LocaleText description, bool isDestroy)
     {
         _world = world;
-        Description = description;
+        LocalizedDescription = description;
+        _isDestroy = isDestroy;
     }
 
-    /// <summary>Park the slots now (undoable destroy). Null if nothing could be parked.</summary>
+    // Park the slots now (undoable destroy). Null if nothing could be parked.
     public static SlotExistenceUndoBatch? Destroy(World? world, IEnumerable<Slot> slots)
     {
-        var batch = Create(world, slots, "Destroy");
+        var batch = Create(world, slots, UndoLocale.Destroy, isDestroy: true);
         if (batch == null)
             return null;
-        if (!batch.Park())
-            return null;
-        return batch;
+        return batch.Park() ? batch : null;
     }
 
-    /// <summary>Track freshly created slots (undoable duplicate/spawn).</summary>
-    public static SlotExistenceUndoBatch? Created(World? world, IEnumerable<Slot> slots, string description)
-    {
-        return Create(world, slots, description);
-    }
+    // Track freshly created slots (undoable duplicate/spawn).
+    public static SlotExistenceUndoBatch? Created(World? world, IEnumerable<Slot> slots, LocaleText description)
+        => Create(world, slots, description, isDestroy: false);
 
-    private static SlotExistenceUndoBatch? Create(World? world, IEnumerable<Slot> slots, string description)
+    private static SlotExistenceUndoBatch? Create(World? world, IEnumerable<Slot> slots, LocaleText description, bool isDestroy)
     {
         if (world == null)
             return null;
 
-        var batch = new SlotExistenceUndoBatch(world, description);
+        var batch = new SlotExistenceUndoBatch(world, description, isDestroy);
         foreach (var slot in slots)
         {
             if (slot == null || slot.IsDestroyed)
@@ -101,9 +120,21 @@ public sealed class SlotExistenceUndoBatch : IUndoBatch
         return batch._entries.Count > 0 ? batch : null;
     }
 
-    public bool Undo() => Description == "Destroy" ? Restore() : Park();
+    public bool Undo() => _isDestroy ? Restore() : Park();
 
-    public bool Redo() => Description == "Destroy" ? Park() : Restore();
+    public bool Redo() => _isDestroy ? Park() : Restore();
+
+    public bool ReferencesElement(IWorldElement element)
+    {
+        if (element is not Slot slot)
+            return false;
+        foreach (var entry in _entries)
+        {
+            if (UndoTargets.Touches(entry.Slot, slot) || UndoTargets.Touches(entry.OriginalParent, slot))
+                return true;
+        }
+        return false;
+    }
 
     private bool Park()
     {
@@ -126,15 +157,21 @@ public sealed class SlotExistenceUndoBatch : IUndoBatch
 
     private bool Restore()
     {
+        // All or nothing on the destination: a parent that has since been destroyed means this step
+        // has nowhere valid to put its slots back.
+        foreach (var entry in _entries)
+        {
+            if (!entry.Slot.IsDestroyed && !UndoTargets.CanRestoreUnder(entry.OriginalParent))
+                return false;
+        }
+
         bool any = false;
         foreach (var entry in _entries)
         {
             if (entry.Slot.IsDestroyed)
                 continue;
 
-            var parent = entry.OriginalParent != null && !entry.OriginalParent.IsDestroyed
-                ? entry.OriginalParent
-                : _world.RootSlot;
+            var parent = entry.OriginalParent ?? _world.RootSlot;
             if (parent == null)
                 continue;
 
@@ -159,17 +196,20 @@ public sealed class SlotExistenceUndoBatch : IUndoBatch
             if (!entry.Slot.IsDestroyed)
                 entry.Slot.Destroy();
         }
+        _parked = false;
     }
 }
 
-/// <summary>Reversible user scale change (Reset Scale).</summary>
+// Reversible user scale change (Reset Scale).
 public sealed class UserScaleUndoBatch : IUndoBatch
 {
     private readonly UserRoot _userRoot;
     private readonly float _before;
     private readonly float _after;
 
-    public string Description => "Scale";
+    public LocaleText LocalizedDescription => UndoLocale.Scale;
+
+    public string Description => LocalizedDescription.Resolve();
 
     public UserScaleUndoBatch(UserRoot userRoot, float before, float after)
     {
@@ -192,5 +232,19 @@ public sealed class UserScaleUndoBatch : IUndoBatch
 
     public void OnEvicted()
     {
+    }
+}
+
+// Shared rules for "can this step still put something back, and does it touch that slot".
+internal static class UndoTargets
+{
+    // A null parent means the slot sat at the top of the world, which stays restorable.
+    public static bool CanRestoreUnder(Slot? parent) => parent == null || !parent.IsDestroyed;
+
+    public static bool Touches(Slot? candidate, Slot subtreeRoot)
+    {
+        if (candidate == null)
+            return false;
+        return ReferenceEquals(candidate, subtreeRoot) || candidate.IsDescendantOf(subtreeRoot);
     }
 }

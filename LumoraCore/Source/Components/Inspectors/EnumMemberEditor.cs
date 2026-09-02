@@ -8,6 +8,7 @@ using Lumora.Core;
 namespace Lumora.Core.Components;
 
 /// <summary>&lt; name &gt; cycler for enum members.</summary>
+[ComponentCategory("Utility/Inspectors")]
 public class EnumMemberEditor : MemberEditor
 {
     private readonly SyncRef<Text> _valueText;

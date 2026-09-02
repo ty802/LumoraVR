@@ -11,6 +11,7 @@ namespace Lumora.Core.Components;
 // string members write LIVE on every keystroke; everything else commits on enter so partial
 // numeric input ("-", "1e") never writes. undo records one edit per typing session: value
 // captured on focus, recorded on focus loss.
+[ComponentCategory("Utility/Inspectors")]
 public class PrimitiveMemberEditor : MemberEditor
 {
     private readonly SyncRef<TextInput> _input;

@@ -3,6 +3,7 @@
 
 using System;
 using Lumora.Core;
+using Lumora.Core.Localization;
 using Lumora.Core.Persistence;
 
 namespace Lumora.Core.Components;
@@ -18,7 +19,7 @@ namespace Lumora.Core.Components;
 // to the destroyed one (cleared at destroy, unknowable here) and non-persistent members (the save
 // path skips them). restore attaches with runOnAttachBehavior:false - same as the world loader - so
 // OnAttach defaults don't stomp the loaded state.
-public sealed class ComponentExistenceUndoBatch : IUndoBatch
+public sealed class ComponentExistenceUndoBatch : IUndoBatch, IUndoTargetQuery
 {
     private readonly World _world;
     private readonly Slot _slot;
@@ -29,7 +30,9 @@ public sealed class ComponentExistenceUndoBatch : IUndoBatch
     private DataTreeNode? _saved;
     private Component? _live;
 
-    public string Description { get; }
+    public LocaleText LocalizedDescription { get; }
+
+    public string Description => LocalizedDescription.Resolve();
 
     private ComponentExistenceUndoBatch(World world, Slot slot, Type componentType,
         ReferenceTranslator translator, bool isDestroy, DataTreeNode? saved, Component? live)
@@ -41,7 +44,9 @@ public sealed class ComponentExistenceUndoBatch : IUndoBatch
         _isDestroy = isDestroy;
         _saved = saved;
         _live = live;
-        Description = $"{(isDestroy ? "Destroy" : "Attach")} {componentType.Name}";
+        LocalizedDescription = isDestroy
+            ? UndoLocale.DestroyComponent(componentType.Name)
+            : UndoLocale.AttachComponent(componentType.Name);
     }
 
     // snapshots the component, destroys it, and hands back the batch (null if it can't snapshot)
@@ -73,6 +78,9 @@ public sealed class ComponentExistenceUndoBatch : IUndoBatch
     public bool Redo() => _isDestroy ? SnapshotAndDestroy() : Restore();
 
     public void OnEvicted() { }
+
+    public bool ReferencesElement(IWorldElement element)
+        => element is Slot slot && UndoTargets.Touches(_slot, slot);
 
     // serializes the live component's current state (keeps edits made since the batch was made)
     private bool Snapshot()

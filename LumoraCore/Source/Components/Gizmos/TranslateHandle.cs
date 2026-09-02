@@ -8,6 +8,7 @@ namespace Lumora.Core.Components.Gizmos;
 
 // dragging slides the target along the handle's axis by how far the closest point of the laser ray
 // moved along that axis - the object tracks the beam without ever leaving the line
+[ComponentCategory("Hidden")]
 public class TranslateHandle : TransformHandle
 {
     private float3 _axis;
@@ -16,7 +17,7 @@ public class TranslateHandle : TransformHandle
     private float _startParam;
     private bool _valid;
 
-    protected override string DragDescription => "Move";
+    protected override Localization.LocaleText DragDescription => UndoLocale.Move;
 
     protected override void BeginDrag(Slot target, float3 rayOrigin, float3 rayDirection)
     {

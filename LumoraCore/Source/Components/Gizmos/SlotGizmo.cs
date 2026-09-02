@@ -9,6 +9,7 @@ using Lumora.Core.Networking.Sync;
 namespace Lumora.Core.Components.Gizmos;
 
 [GizmoForComponent(typeof(Slot))]
+[ComponentCategory("Utility/Gizmos")]
 public class SlotGizmo : ImplementableComponent, IGizmo, IGizmoDragHost
 {
     public const float BUTTON_SIZE = 0.025f;
@@ -720,9 +721,9 @@ public class SlotGizmo : ImplementableComponent, IGizmo, IGizmoDragHost
         // Undoable reset: the Reset* methods are plain writes, so wrap the pose ourselves.
         var undo = SlotTransformUndoBatch.Begin(target, mode switch
         {
-            0 => "Reset Position",
-            1 => "Reset Rotation",
-            _ => "Reset Scale",
+            0 => UndoLocale.ResetPosition,
+            1 => UndoLocale.ResetRotation,
+            _ => UndoLocale.ResetScale,
         });
         switch (mode)
         {

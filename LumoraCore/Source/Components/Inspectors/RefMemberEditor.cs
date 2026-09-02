@@ -20,6 +20,7 @@ namespace Lumora.Core.Components;
 // another without going through the tree. That deliberately shadows the row-level source (which
 // pulls the reference MEMBER itself, for wiring drives) - the row source still wins on the label half of
 // the row, since the parent walk finds the nearest source first. -xlinka
+[ComponentCategory("Utility/Inspectors")]
 public class RefMemberEditor : MemberEditor, IProxyReceiver, IProxySource
 {
     private readonly SyncRef<Text> _targetText;
@@ -115,7 +116,7 @@ public class RefMemberEditor : MemberEditor, IProxyReceiver, IProxySource
         if (slot == null || slot.IsDestroyed)
             return;
         var panel = SceneInspectorPanel.SpawnAdjacent(origin, slot);
-        if (target is Component component)
+        if (panel != null && target is Component component)
             panel.ExpandedComponents.Add(component.ReferenceID.RawValue);
     }
 

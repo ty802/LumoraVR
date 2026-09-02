@@ -46,14 +46,20 @@ public class ListMemberEditor : Component, IInspectorActionHandler
 
     private ISyncList? List => TargetList.Target as ISyncList;
 
-    // true for the flat value collections this editor renders read-only
+    // true for the flat value collections this editor renders read-only. Walks the hierarchy so a
+    // derived array (SyncGrid) is recognised too, instead of falling through to the one-line
+    // "(TypeName)" row a top-level member would otherwise get.
     public static bool IsValueCollection(ISyncMember member)
     {
-        var type = member.GetType();
-        if (!type.IsGenericType)
-            return false;
-        var definition = type.GetGenericTypeDefinition();
-        return definition == typeof(SyncArray<>) || definition == typeof(SyncValueDictionary<,>);
+        for (var type = member.GetType(); type != null; type = type.BaseType)
+        {
+            if (!type.IsGenericType)
+                continue;
+            var definition = type.GetGenericTypeDefinition();
+            if (definition == typeof(SyncArray<>) || definition == typeof(SyncValueDictionary<,>) || definition == typeof(SyncBag<>))
+                return true;
+        }
+        return false;
     }
 
     public static void Build(ISyncMember member, string name, Slot container, Slot themeContext)

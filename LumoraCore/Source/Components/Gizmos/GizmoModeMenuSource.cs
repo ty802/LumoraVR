@@ -9,6 +9,7 @@ namespace Lumora.Core.Components.Gizmos;
 // lives on the tool item's slot so the menu only collects it while the tool is actually in a hand
 // (the collector scans the user hierarchy); the active mode's item is tinted so the current state
 // reads at a glance
+[ComponentCategory("Utility/Gizmos")]
 public class GizmoModeMenuSource : ContextMenuItemSource
 {
     public readonly SyncRef<Interaction.DevToolItem> Tool;

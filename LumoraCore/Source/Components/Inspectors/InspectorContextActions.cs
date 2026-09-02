@@ -11,6 +11,7 @@ namespace Lumora.Core.Components;
 /// Adds "Inspector" to the radial menu: opens a scene inspector rooted at the dev tool's selected
 /// slot when one is picked, else at the world root.
 /// </summary>
+[ComponentCategory("Utility/Inspectors")]
 public class InspectorContextActions : ContextMenuItemSource
 {
     public override void PopulateContextMenu(ContextMenuPage page, ContextMenuContext context)

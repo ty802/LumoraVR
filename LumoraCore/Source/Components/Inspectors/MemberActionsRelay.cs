@@ -15,6 +15,7 @@ namespace Lumora.Core.Components;
 // reset the value to its default, break an incoming drive/link, and vector helpers (normalize,
 // spread one axis to all). opens as a page on the pressing user's radial context menu, so the same
 // flow works on desktop and in VR. value writes go through the inspector undo history.
+[ComponentCategory("Utility/Inspectors")]
 public class MemberActionsRelay : Component
 {
     public readonly SyncRef<IWorldElement> TargetMember;

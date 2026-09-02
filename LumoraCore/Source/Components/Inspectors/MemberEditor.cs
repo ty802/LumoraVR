@@ -97,8 +97,13 @@ public abstract class MemberEditor : Component
     // A hooked link is the passthrough escape: a hook INTERCEPTS the write and decides what to do
     // with it rather than rejecting it, so the editor stays live and lets the hook arbitrate. Same
     // rule as the datamodel's IsBlockedByDrive. -xlinka
+    //
+    // A member inside an ImmutableComponent subtree is read-only for the same reason it is not in the
+    // tree: the person is not the one who authors it. Nothing else changes - the row still shows the
+    // live value, and whatever composes it keeps writing.
     protected bool IsReadOnly
-        => TargetMember.Target is ILinkable { IsDestroyed: false, IsDriven: true, IsHooked: false };
+        => TargetMember.Target is ILinkable { IsDestroyed: false, IsDriven: true, IsHooked: false }
+           || ImmutableComponent.IsProtected(TargetMember.Target);
 
     protected object? GetMemberValue()
     {
@@ -271,9 +276,11 @@ public static class InspectorUI
         return input;
     }
 
-    public static void SectionHeader(Slot parent, string label, Slot themeContext)
+    // Returns the header ROW so a caller can hang a control off the right-hand end of it - the label
+    // takes the flexible width, so anything appended after lands hard right. -xlinka
+    public static Slot SectionHeader(Slot parent, string label, Slot themeContext)
     {
-        FixedRow(parent, "Section", 26f, out var ui, themeContext);
+        var row = FixedRow(parent, "Section", 26f, out var ui, themeContext);
         ui.PushStyle();
         ui.FlexibleWidth(1f);
         var text = ui.Text(label, FontSize - 1f, CyanColor);
@@ -289,6 +296,7 @@ public static class InspectorUI
         dividerLE.PreferredHeight.Value = 4f;
         var rule = divider.AttachComponent<Image>();
         rule.Tint.Value = new color(CyanColor.r, CyanColor.g, CyanColor.b, 0.85f);
+        return row;
     }
 
     // a bare RectTransform defaults to a 100x100 centered chunk

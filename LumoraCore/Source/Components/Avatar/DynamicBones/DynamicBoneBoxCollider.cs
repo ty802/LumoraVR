@@ -6,11 +6,9 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Oriented box a soft body / dynamic bone collides against. Unlike a movement raycast this handles
-/// RESTING and already-penetrating particles (it pushes a point out of the box's nearest face), so
-/// cloth drapes over a box and rests on top without sinking through it.
-/// </summary>
+// Oriented box a soft body / dynamic bone collides against. Unlike a movement raycast this handles
+// RESTING and already-penetrating particles (it pushes a point out of the box's nearest face), so
+// cloth drapes over a box and rests on top without sinking through it.
 [ComponentCategory("Physics/Dynamic Bones")]
 public class DynamicBoneBoxCollider : Component, IDynamicBoneCollider
 {
@@ -23,35 +21,27 @@ public class DynamicBoneBoxCollider : Component, IDynamicBoneCollider
         Offset = new Sync<float3>(this, float3.Zero);
     }
 
-    public bool ResolveParticle(ref float3 worldPosition, float particleRadius)
+    public bool TryGetShape(out DynamicBoneColliderShape shape)
     {
         if (!Enabled || Slot == null || Slot.IsDestroyed)
+        {
+            shape = default;
             return false;
+        }
 
         var gs = Slot.GlobalScale;
-        // Box in the slot's local frame; transform the particle into it.
-        float3 local = Slot.GlobalPointToLocal(worldPosition) - Offset.Value;
-        float3 half = new float3(
-            System.MathF.Abs(Size.Value.x) * 0.5f + particleRadius / System.MathF.Max(System.MathF.Abs(gs.x), 1e-4f),
-            System.MathF.Abs(Size.Value.y) * 0.5f + particleRadius / System.MathF.Max(System.MathF.Abs(gs.y), 1e-4f),
-            System.MathF.Abs(Size.Value.z) * 0.5f + particleRadius / System.MathF.Max(System.MathF.Abs(gs.z), 1e-4f));
+        var size = Size.Value;
+        var halfSize = new float3(
+            System.MathF.Abs(size.x) * 0.5f,
+            System.MathF.Abs(size.y) * 0.5f,
+            System.MathF.Abs(size.z) * 0.5f);
+        var invScale = new float3(
+            1f / System.MathF.Max(System.MathF.Abs(gs.x), 1e-4f),
+            1f / System.MathF.Max(System.MathF.Abs(gs.y), 1e-4f),
+            1f / System.MathF.Max(System.MathF.Abs(gs.z), 1e-4f));
 
-        // Outside on any axis -> not penetrating.
-        if (System.MathF.Abs(local.x) >= half.x || System.MathF.Abs(local.y) >= half.y || System.MathF.Abs(local.z) >= half.z)
-            return false;
-
-        // Inside: push out along the axis of least penetration.
-        float px = half.x - System.MathF.Abs(local.x);
-        float py = half.y - System.MathF.Abs(local.y);
-        float pz = half.z - System.MathF.Abs(local.z);
-        if (px <= py && px <= pz)
-            local.x = System.MathF.CopySign(half.x, local.x);
-        else if (py <= pz)
-            local.y = System.MathF.CopySign(half.y, local.y);
-        else
-            local.z = System.MathF.CopySign(half.z, local.z);
-
-        worldPosition = Slot.LocalPointToGlobal(local + Offset.Value);
+        shape = DynamicBoneColliderShape.FromBox(
+            Slot.LocalToWorld, Slot.WorldToLocal, Offset.Value, in halfSize, in invScale);
         return true;
     }
 }

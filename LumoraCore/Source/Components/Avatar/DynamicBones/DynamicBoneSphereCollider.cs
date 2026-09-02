@@ -6,10 +6,8 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Sphere a dynamic bone chain collides against - put these on the head, chest and hips so hair and
-/// tails don't clip through the body.
-/// </summary>
+// Sphere a dynamic bone chain collides against - put these on the head, chest and hips so hair and
+// tails don't clip through the body.
 [ComponentCategory("Physics/Dynamic Bones")]
 public class DynamicBoneSphereCollider : Component, IDynamicBoneCollider
 {
@@ -22,24 +20,18 @@ public class DynamicBoneSphereCollider : Component, IDynamicBoneCollider
         Offset = new Sync<float3>(this, float3.Zero);
     }
 
-    public bool ResolveParticle(ref float3 worldPosition, float particleRadius)
+    public bool TryGetShape(out DynamicBoneColliderShape shape)
     {
         if (!Enabled || Slot == null || Slot.IsDestroyed)
+        {
+            shape = default;
             return false;
+        }
 
-        float3 center = Slot.LocalPointToGlobal(Offset.Value);
+        float3 centre = Slot.LocalPointToGlobal(Offset.Value);
         var gs = Slot.GlobalScale;
         float radius = Radius.Value * (System.MathF.Abs(gs.x) + System.MathF.Abs(gs.y) + System.MathF.Abs(gs.z)) / 3f;
-
-        float minDist = radius + particleRadius;
-        float3 delta = worldPosition - center;
-        float distSq = delta.LengthSquared;
-        if (distSq >= minDist * minDist)
-            return false;
-
-        float dist = System.MathF.Sqrt(distSq);
-        float3 dir = dist > 1e-6f ? delta / dist : float3.Up;
-        worldPosition = center + dir * minDist;
+        shape = DynamicBoneColliderShape.FromSphere(in centre, radius);
         return true;
     }
 }

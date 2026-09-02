@@ -62,6 +62,8 @@ public class UITextMaterial : MaterialProvider, ICommonMaterial
     // (no owning provider component) without routing through an AssetRef. - xlinka
     public TextureAsset DirectTexture { get; set; } = null!;
 
+    public override bool UseLoadingPlaceholder => false;
+
     protected override MaterialType MaterialType => MaterialType.UI_Text;
 
     public colorHDR Color

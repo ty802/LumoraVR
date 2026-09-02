@@ -126,10 +126,6 @@ public class CubemapAsset : ImplementableAsset<ICubemapAssetHook>
             return;
         }
 
-        // The shared decoder flips to the bottom-up row order 2D sampling wants. Cube faces upload
-        // top-down, so flip back here rather than teaching the projector two conventions.
-        panorama = TextureVariantStore.FlipRgbaVertical(panorama, width, height);
-
         SourcePanoramaSize = (width, height);
         int faceSize = CubemapProjector.ChooseFaceSize(descriptor.FaceSize, width);
         var faces = CubemapProjector.ProjectPanorama(panorama, width, height, faceSize);

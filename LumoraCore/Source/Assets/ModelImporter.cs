@@ -106,7 +106,7 @@ public static class ModelImporter
         Slot targetSlot,
         ModelImportSettings? settings = null,
         LocalDB? localDB = null,
-        IProgress<(float progress, string status)>? progress = null)
+        IProgress<ImportProgress>? progress = null)
     {
         settings ??= new ModelImportSettings();
         var result = new ModelImportResult();
@@ -136,7 +136,7 @@ public static class ModelImporter
         string filePath,
         Slot targetSlot,
         LocalDB? localDB = null,
-        IProgress<(float progress, string status)>? progress = null)
+        IProgress<ImportProgress>? progress = null)
     {
         var settings = new ModelImportSettings
         {
@@ -158,7 +158,7 @@ public static class ModelImporter
     // Y-up, so we import straight: no axis negate, no winding flip. -xlinka
     private static async Task<ModelImportResult> ImportModelPhosAsync(
         string filePath, Slot targetSlot, ModelImportSettings settings, LocalDB? localDB,
-        IProgress<(float progress, string status)>? progress)
+        IProgress<ImportProgress>? progress)
     {
         var result = new ModelImportResult();
         try
@@ -169,7 +169,7 @@ public static class ModelImporter
             if (settings.MaxTextureSize > 0)
                 Logger.Warn($"ModelImporter: 'Max Texture Size' ({settings.MaxTextureSize}) is not enforced - no texture downscaler yet; importing at source resolution.");
 
-            progress?.Report((0.1f, "Reading model file..."));
+            progress?.Report(new ImportProgress(ImportStage.Fetching, 0.05f));
             var bytes = await System.Threading.Tasks.Task.Run(() => File.ReadAllBytes(filePath)).ConfigureAwait(false);
 
             // Record in the content-addressed local DB (dedup + networking). The MeshProvider below points at this
@@ -185,11 +185,12 @@ public static class ModelImporter
             // Force the parse onto a worker thread: it's seconds of synchronous work, and if an upstream await
             // (file read / local-DB import) ever completes synchronously the continuation would otherwise run it
             // INLINE on the main thread and freeze rendering for the whole parse. Task.Run makes off-main deterministic.
+            progress?.Report(new ImportProgress(ImportStage.Decoding, 0.15f));
             Assimp.Scene scene = await System.Threading.Tasks.Task.Run(() =>
             {
                 using var actx = new Assimp.AssimpContext();
                 using var ms = new MemoryStream(bytes, writable: false);
-                return actx.ImportFileFromStream(ms, MeshDecoder.GetAssimpPostProcessSteps(perMesh: true), hint);
+                return actx.ImportFileFromStream(ms, MeshDecoder.GetAssimpPostProcessSteps(perMesh: true, hint), hint);
             }).ConfigureAwait(false);
 
             if (scene == null || !scene.HasMeshes || scene.MeshCount == 0)
@@ -202,12 +203,22 @@ public static class ModelImporter
             // OFF-THREAD: resolve every used material's textures into local:// URIs up front. Texture
             // saves hit the local DB (file IO) and must NOT run on the world thread - so do them here, off-thread.
             // The world-thread build below only ATTACHES components from these resolved results (no IO, no await).
-            progress?.Report((0.3f, "Decoding materials..."));
             var resolvedMaterials = new Dictionary<int, ResolvedMaterial?>();
+            // Counted before the loop so the readout can say "textures 3 of 11" instead of a bare
+            // spinner - the slot count is what the user is actually waiting on here, and a model with
+            // eleven 4K maps is exactly the import that feels like a hang without it. -xlinka
+            int textureCount = CountTextureSlots(scene);
+            int texturesDone = 0;
+            progress?.Report(new ImportProgress(ImportStage.Textures, 0.20f, 0, textureCount));
             foreach (var amesh in scene.Meshes)
             {
                 if (amesh == null || resolvedMaterials.ContainsKey(amesh.MaterialIndex)) continue;
-                resolvedMaterials[amesh.MaterialIndex] = await ResolveMaterialAsync(scene, amesh.MaterialIndex, modelDir, localDB).ConfigureAwait(false);
+                var resolved = await ResolveMaterialAsync(scene, amesh.MaterialIndex, modelDir, localDB).ConfigureAwait(false);
+                resolvedMaterials[amesh.MaterialIndex] = resolved;
+                texturesDone += CountResolvedTextures(resolved);
+                progress?.Report(new ImportProgress(ImportStage.Textures,
+                    0.20f + 0.15f * (textureCount > 0 ? System.Math.Min(1f, (float)texturesDone / textureCount) : 1f),
+                    texturesDone, textureCount));
             }
 
             // OFF-THREAD, animation clips: extraction is pure CPU over the already-parsed scene and
@@ -220,7 +231,7 @@ public static class ModelImporter
             var animations = new List<(Animation.AnimationClip clip, Uri uri)>();
             if (settings.ImportAnimations && scene.HasAnimations)
             {
-                progress?.Report((0.35f, "Extracting animations..."));
+                progress?.Report(new ImportProgress(ImportStage.Animations, 0.38f));
                 var extracted = AnimationExtractor.Extract(scene);
                 if (extracted.Count > 0 && localDB == null)
                 {
@@ -248,7 +259,7 @@ public static class ModelImporter
             World world = targetSlot.World;
 
             // Chunk 1: node hierarchy (one Slot per Assimp node, with its local TRS).
-            progress?.Report((0.4f, "Building hierarchy..."));
+            progress?.Report(new ImportProgress(ImportStage.Hierarchy, 0.42f));
             Slot modelSlot = null!;
             var nameToSlot = new Dictionary<string, Slot>();
             var meshNodeSlots = new List<(Assimp.Node node, Slot slot)>();
@@ -260,14 +271,14 @@ public static class ModelImporter
             });
 
             // Chunk 2: skeleton (union of mesh bone names) + avatar rig/IK if it classifies as a biped.
-            progress?.Report((0.55f, "Building skeleton..."));
+            progress?.Report(new ImportProgress(ImportStage.Skeleton, 0.55f));
             SkeletonBuilder? skelBuilder = null;
             await OnWorldAsync(world, () => skelBuilder = BuildSkeletonAndRig(scene, modelSlot, nameToSlot, settings, result));
 
             // Chunk 3..N: per-mesh renderers - one mesh NODE per frame so each renderer's GPU build lands on its own
             // frame and the world renders between them (load-in-pieces). Prefer the content-hashed local:// URI - it
             // replicates to joiners (they gather the same bytes by hash); fall back to the file path with no local DB.
-            progress?.Report((0.7f, "Attaching renderers..."));
+            progress?.Report(new ImportProgress(ImportStage.Meshes, 0.70f, 0, meshNodeSlots.Count));
             var meshUri = !string.IsNullOrEmpty(result.LocalUri) ? new Uri(result.LocalUri) : new Uri(filePath);
             int totalMeshNodes = meshNodeSlots.Count;
             int meshNodeDone = 0;
@@ -317,7 +328,9 @@ public static class ModelImporter
                     }
                 });
                 meshNodeDone++;
-                progress?.Report((0.7f + 0.25f * (totalMeshNodes > 0 ? (float)meshNodeDone / totalMeshNodes : 1f), "Building meshes..."));
+                progress?.Report(new ImportProgress(ImportStage.Meshes,
+                    0.70f + 0.25f * (totalMeshNodes > 0 ? (float)meshNodeDone / totalMeshNodes : 1f),
+                    meshNodeDone, totalMeshNodes));
             }
 
             // Animation chunk: one provider per clip under an "Animations" holder, and - when the model has a
@@ -327,7 +340,7 @@ public static class ModelImporter
             // are track-index based, so they stay valid once the identical clip arrives through the provider.
             if (animations.Count > 0)
             {
-                progress?.Report((0.96f, "Attaching animations..."));
+                progress?.Report(new ImportProgress(ImportStage.Animations, 0.96f));
                 await OnWorldAsync(world, () =>
                 {
                     var holder = modelSlot.AddSlot("Animations");
@@ -343,7 +356,7 @@ public static class ModelImporter
                     {
                         var animator = modelSlot.AttachComponent<Animator>();
                         animator.Clip.Target = result.AnimationProviders[0];
-                        animator.WrapMode.Value = Animation.AnimationWrapMode.Loop;
+                        animator.Playback.LoopMode = PlaybackLoopMode.Loop;
                         // Left paused on purpose: import should not start something moving on its own. The
                         // bindings are live, so pressing play in the inspector is all it takes.
                         int bound = animator.AutoBind(modelSlot, animations[0].clip);
@@ -355,9 +368,12 @@ public static class ModelImporter
 
             // Final chunk: rescale to target height + center.
             if (settings.Rescale || settings.Center)
+            {
+                progress?.Report(new ImportProgress(ImportStage.Finishing, 0.98f));
                 await OnWorldAsync(world, () => ApplyModelTransform(scene, modelSlot, settings, skelBuilder));
+            }
 
-            progress?.Report((1.0f, "Import complete!"));
+            progress?.Report(new ImportProgress(ImportStage.Complete, 1f));
             result.Success = true;
             Logger.Log($"ModelImporter(Phos/Assimp): '{Path.GetFileNameWithoutExtension(filePath)}' - {scene.MeshCount} meshes, {result.SkinnedMeshes.Count} skinned");
         }
@@ -497,18 +513,8 @@ public static class ModelImporter
                 // the IK foot raycast already excludes the user's own colliders expecting these.
                 avatarIk.GenerateBodyColliders();
 
-                // Draft avatars get see-through, grabbable bone handles so you can SEE the skeleton and pose it
-                // before finalizing. Deferred a few frames so the core avatar shows first and the ~30 procedural
-                // handle meshes don't pile onto the same frame as the avatar's own mesh builds. -xlinka
-                if (settings.IsAvatarImport)
-                {
-                    var rigForHandles = rig;
-                    modelSlot.World?.RunInUpdates(10, () =>
-                    {
-                        if (rigForHandles != null && !rigForHandles.IsDestroyed)
-                            AvatarRigSetup.SetupPoseHandles(rigForHandles);
-                    });
-                }
+                // No skeleton overlay on import: an imported model is something you look at and drag the
+                // studio markers onto, and a cage of balls and shafts over it is in the way of both. -xlinka
                 Logger.Log($"ModelImporter(Phos): rigged biped avatar ({rig.Bones.Count} bones)");
             }
             else
@@ -651,6 +657,42 @@ public static class ModelImporter
         public Uri? EmissiveUri;
         public Uri? MetallicUri;
         public Uri? OcclusionUri;
+    }
+
+    // How many texture slots this scene's USED materials actually name. Counts the same slots
+    // ResolveMaterialAsync goes looking for, so the N-of-M the user reads matches the work being done.
+    private static int CountTextureSlots(Assimp.Scene scene)
+    {
+        var seen = new HashSet<int>();
+        int total = 0;
+        foreach (var amesh in scene.Meshes)
+        {
+            if (amesh == null || !seen.Add(amesh.MaterialIndex)) continue;
+            if (amesh.MaterialIndex < 0 || amesh.MaterialIndex >= scene.MaterialCount) continue;
+            var amat = scene.Materials[amesh.MaterialIndex];
+            if (amat == null) continue;
+            if (amat.HasTextureDiffuse || HasTexture(amat, Assimp.TextureType.BaseColor)) total++;
+            if (HasTexture(amat, Assimp.TextureType.Normals)) total++;
+            if (HasTexture(amat, Assimp.TextureType.Emissive)) total++;
+            if (HasTexture(amat, Assimp.TextureType.Metalness) || HasTexture(amat, Assimp.TextureType.Roughness)) total++;
+            if (HasTexture(amat, Assimp.TextureType.AmbientOcclusion) || HasTexture(amat, Assimp.TextureType.Lightmap)) total++;
+        }
+        return total;
+    }
+
+    private static bool HasTexture(Assimp.Material amat, Assimp.TextureType type)
+        => amat.GetMaterialTextureCount(type) > 0;
+
+    private static int CountResolvedTextures(ResolvedMaterial? rm)
+    {
+        if (rm == null) return 0;
+        int n = 0;
+        if (rm.AlbedoUri != null) n++;
+        if (rm.NormalUri != null) n++;
+        if (rm.EmissiveUri != null) n++;
+        if (rm.MetallicUri != null) n++;
+        if (rm.OcclusionUri != null) n++;
+        return n;
     }
 
     // Resolve an Assimp material's colors + texture URIs (OFF-thread). Textures are recorded into the

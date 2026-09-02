@@ -80,4 +80,18 @@ public class ColorGradientMaterial : MaterialProvider
         asset.SetFloat2("ClipOffset", ClipOffset.Value);
         asset.SetInt("ColorMask", (int)ColorMask.Value);
     }
+
+    // Only the two modes that actually start from a colour answer. The saturation/value square and the
+    // hue strip are every colour there is, driven off Hue and the pixel you happen to be on, so there
+    // is no "the colour of this material" to hand back. -xlinka
+    public override bool TryGetPrimaryColor(out colorHDR color)
+    {
+        if (Mode.Value is ColorGradientMode.TwoColor or ColorGradientMode.AlphaRamp)
+        {
+            color = ColorA.Value;
+            return true;
+        }
+        color = colorHDR.White;
+        return false;
+    }
 }

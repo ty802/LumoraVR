@@ -77,11 +77,50 @@ public static class MeshDecoder
     private static float4x4 ToFloat4x4(System.Numerics.Matrix4x4 m)
     {
         m = System.Numerics.Matrix4x4.Transpose(m);
-        return new float4x4(
+        return FromTransposed(m);
+    }
+
+    // A matrix already in the transposed (translation in M41..M43) convention.
+    private static float4x4 FromTransposed(System.Numerics.Matrix4x4 m) =>
+        new float4x4(
             m.M11, m.M12, m.M13, m.M14,
             m.M21, m.M22, m.M23, m.M24,
             m.M31, m.M32, m.M33, m.M34,
             m.M41, m.M42, m.M43, m.M44);
+
+    // An inverse bind that cannot be inverted is no inverse bind: every vertex it weighs collapses.
+    // Some exporters, mobile and Quest conversions above all, drop the skin cluster's transform link
+    // and hand back a matrix of zeros. -xlinka
+    private static bool IsUsableBind(System.Numerics.Matrix4x4 m)
+    {
+        var basis = new System.Numerics.Matrix4x4(
+            m.M11, m.M12, m.M13, 0f,
+            m.M21, m.M22, m.M23, 0f,
+            m.M31, m.M32, m.M33, 0f,
+            0f, 0f, 0f, 1f);
+        float det = basis.GetDeterminant();
+        return System.Math.Abs(det) > 1e-6f && !float.IsNaN(det);
+    }
+
+    // Where every named node sits in the model's own space, transposed so translation reads where
+    // Decompose and the rest of the engine expect it. The fallback inverse bind is built from this:
+    // bind = inverse(global rest), which is the definition the skinning canary checks.
+    private static Dictionary<string, System.Numerics.Matrix4x4> BuildGlobalNodeTransforms(Assimp.Node? root)
+    {
+        var map = new Dictionary<string, System.Numerics.Matrix4x4>(StringComparer.Ordinal);
+        void Walk(Assimp.Node? node, System.Numerics.Matrix4x4 parent)
+        {
+            if (node == null)
+                return;
+            var local = System.Numerics.Matrix4x4.Transpose(node.Transform);
+            var global = local * parent;
+            if (!string.IsNullOrEmpty(node.Name))
+                map[node.Name] = global;
+            for (int i = 0; i < node.ChildCount; i++)
+                Walk(node.Children[i], global);
+        }
+        Walk(root, System.Numerics.Matrix4x4.Identity);
+        return map;
     }
 
     // Weights should sum to 1 but exporters drift; renormalize so the GPU skin doesn't shrink/expand verts.
@@ -129,9 +168,12 @@ public static class MeshDecoder
                     break;
 
                 case "vt" when parts.Length >= 3:
+                    // OBJ counts V upward from the bottom left; this engine samples from the top left,
+                    // so the axis is mirrored here. The Assimp formats get the same treatment through
+                    // FlipUVs; this parser is hand written and has to do it itself. -xlinka
                     uvs.Add(new float2(
                         float.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture),
-                        float.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture)));
+                        1f - float.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture)));
                     break;
 
                 case "f" when parts.Length >= 4:
@@ -198,13 +240,17 @@ public static class MeshDecoder
         // node hierarchy + bakes world transforms into verts, which breaks skinning). meshIndex -1 = legacy
         // whole-file concatenation, keep pre-transform so a standalone static mesh still lands in place. -xlinka
         bool perMesh = meshIndex >= 0;
-        var scene = context.ImportFileFromStream(stream, GetAssimpPostProcessSteps(perMesh), extension);
+        var scene = context.ImportFileFromStream(stream, GetAssimpPostProcessSteps(perMesh, extension), extension);
         if (scene == null || !scene.HasMeshes || scene.MeshCount == 0)
             throw new InvalidOperationException($"Assimp could not decode mesh data for '{extension}'");
 
         var phosMesh = new PhosMesh();
         phosMesh.HasNormals = true;
         phosMesh.HasUV0s = true;
+
+        // Kept for bones whose exporter gave no usable inverse bind; empty walks cost nothing.
+        var globalNodeRest = BuildGlobalNodeTransforms(scene.RootNode);
+        int rebuiltBinds = 0;
 
         var allPositions = new List<float3>();
         var allNormals = new List<float3>();
@@ -375,7 +421,26 @@ public static class MeshDecoder
                     if (!boneIndexByName.TryGetValue(bname, out int bIdx))
                     {
                         var pb = phosMesh.AddBone(bname);
-                        pb.BindPose = ToFloat4x4(bone.OffsetMatrix);
+                        var offset = System.Numerics.Matrix4x4.Transpose(bone.OffsetMatrix);
+                        if (IsUsableBind(offset))
+                        {
+                            pb.BindPose = FromTransposed(offset);
+                        }
+                        else if (globalNodeRest.TryGetValue(bname, out var rest)
+                            && System.Numerics.Matrix4x4.Invert(rest, out var derived))
+                        {
+                            // Rebuild it from where the joint actually rests, so rest * bind is the
+                            // identity the skin expects instead of collapsing the vertices to a point.
+                            pb.BindPose = FromTransposed(derived);
+                            rebuiltBinds++;
+                        }
+                        else
+                        {
+                            // Nothing to derive from either. Identity at least leaves the vertices
+                            // where they are rather than folding them into the origin.
+                            pb.BindPose = float4x4.Identity;
+                            rebuiltBinds++;
+                        }
                         bIdx = phosMesh.BoneCount - 1;
                         boneIndexByName[bname] = bIdx;
                     }
@@ -484,6 +549,10 @@ public static class MeshDecoder
         }
 
         LumoraLogger.Debug($"MeshDecoder: Decoded {extension} (mesh {meshIndex}) - {allPositions.Count} verts, {allIndices.Count / 3} tris, {phosMesh.BoneCount} bones, skinned={phosMesh.HasBoneBindings}");
+        // Say it once, at the level someone reading a bug report will see: a file that needed this is
+        // a file whose exporter is at fault, and the skin only works because we rebuilt it. -xlinka
+        if (rebuiltBinds > 0)
+            LumoraLogger.Warn($"MeshDecoder: {extension} (mesh {meshIndex}) shipped {rebuiltBinds}/{phosMesh.BoneCount} bones with no usable inverse bind; rebuilt them from the rest pose.");
         return phosMesh;
     }
 
@@ -545,7 +614,21 @@ public static class MeshDecoder
 
     // Internal so the model importer parses with the EXACT same steps as the per-mesh decode - otherwise the
     // two Assimp passes could order/split meshes differently and the MeshIndex wouldn't line up. -xlinka
-    internal static PostProcessSteps GetAssimpPostProcessSteps(bool perMesh = false)
+    // Which way up a format writes its texture coordinates. glTF and its relatives put the UV origin
+    // at the TOP left, which is where this engine samples from; OBJ, FBX, Collada and the rest put it
+    // at the BOTTOM left and need V mirrored on the way in. -xlinka
+    internal static bool NeedsUVFlip(string? extension)
+    {
+        var ext = extension?.Trim().TrimStart('.').ToLowerInvariant();
+        return ext switch
+        {
+            "gltf" or "glb" or "vrm" => false,
+            null or "" => false,
+            _ => true,
+        };
+    }
+
+    internal static PostProcessSteps GetAssimpPostProcessSteps(bool perMesh = false, string? extension = null)
     {
         var steps = PostProcessSteps.Triangulate
             | PostProcessSteps.JoinIdenticalVertices
@@ -558,12 +641,15 @@ public static class MeshDecoder
             | PostProcessSteps.ImproveCacheLocality
             | PostProcessSteps.FindInvalidData
             | PostProcessSteps.ValidateDataStructure;
-            // NO FlipUVs. We upload textures unflipped (PNG row 0 -> Godot V=0) and Godot samples mesh UVs V-down
-            // (top-left origin), so Assimp's UVs already line up with our atlases - and it's the ONLY V transform in
-            // the whole engine (every other textured path writes UVs verbatim). FlipUVs (v->1-v) was a spurious
-            // extra mirror: it mapped faces to the wrong atlas row (cream paws sampled the orange-fur band). glTF
-            // UVs are top-origin too, so omitting it is correct across formats. If a bottom-origin source ever
-            // needs it, make it a per-import toggle, not always-on. -xlinka
+
+        // V origin, per format, and this is the only V transform in the engine. Textures upload
+        // unflipped (image row 0 -> V=0), so a source whose UVs count V upward has to be mirrored or
+        // its atlas rows land on the wrong faces: that is what put cream paw markings in the middle
+        // of an orange fur band. Always-on FlipUVs broke glTF the same way in the other direction,
+        // which is why it was ripped out; the answer is neither always nor never, it is the format's
+        // own convention. -xlinka
+        if (NeedsUVFlip(extension))
+            steps |= PostProcessSteps.FlipUVs;
 
         // Per-mesh (skinned) import keeps the node hierarchy (no PreTransformVertices) and caps influences to 4.
         // The legacy whole-file path pre-transforms so a standalone static mesh lands at its world position.

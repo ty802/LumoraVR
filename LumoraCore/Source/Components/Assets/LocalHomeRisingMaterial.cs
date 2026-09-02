@@ -75,4 +75,11 @@ public sealed class LocalHomeRisingMaterial : MaterialProvider
         asset.SetFloat("EmissionStrength", EmissionStrength.Value);
         asset.SetFloat("TimeScale", TimeScale.Value);
     }
+
+    // TintA is the blob colour the shader starts from; TintB is the far end of the same ramp.
+    public override bool TryGetPrimaryColor(out colorHDR color)
+    {
+        color = TintA.Value;
+        return true;
+    }
 }

@@ -15,6 +15,7 @@ namespace Lumora.Core.Assets;
 // image onto a different variant: the descriptor stops matching, the provider re-requests, and the
 // asset manager hands over the instance for the new cap. Nothing is torn down by hand and nothing
 // reloads that is already resident. -xlinka
+[ComponentCategory("Assets")]
 public class ImageProvider : StaticAssetProvider<TextureAsset>, ICustomInspectorUI
 {
     // affects compression/variant identity

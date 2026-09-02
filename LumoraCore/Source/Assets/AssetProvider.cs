@@ -256,14 +256,28 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
             assetURL = new Uri($"lumora:///{filename}");
         }
 
+        // lumora:///<hash>: a cloud asset. The local database is asked first, keyed by the hash alone
+        // (whatever machine id its record carries), because a fetched save brings its assets down
+        // there before it loads. Anything not there streams from the content service through the
+        // shared download cache. -xlinka
         if (assetURL.Scheme == "lumora")
         {
-            var filename = GetUriRelativePath(assetURL);
-            if (!string.IsNullOrEmpty(filename) && assetURL.AbsolutePath == "/")
+            var hash = Persistence.CloudAssetPacker.HashOf(assetURL.OriginalString);
+            if (string.IsNullOrEmpty(hash))
             {
-                assetURL = new Uri($"lumora:///{filename}");
+                var filename = GetUriRelativePath(assetURL);
+                if (!string.IsNullOrEmpty(filename) && assetURL.AbsolutePath == "/")
+                    assetURL = new Uri($"lumora:///{filename}");
+                return assetURL;
             }
-            return assetURL;
+            var cached = Engine.Current?.LocalDB?.GetFilePath($"local://cloud/{hash}");
+            if (!string.IsNullOrEmpty(cached) && File.Exists(cached))
+                return new Uri(cached);
+            // A hash this build shipped as one of its own files is served from the build, never fetched.
+            var builtin = BuiltinAssetRegistry.ResUriFor(hash);
+            if (builtin != null)
+                return ProcessURL(new Uri(builtin));
+            return new Uri(Lumora.Nexus.Cloud.Cdn.ServiceConfig.Current.GetContentUrl(hash));
         }
 
         if (assetURL.Scheme is "lumres" or "res")

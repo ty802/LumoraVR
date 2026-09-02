@@ -5,14 +5,10 @@ using System;
 
 namespace Lumora.Core.Assets;
 
-/// <summary>
-/// Procedural single grid-cell texture: white lines along the left and top edges
-/// over a transparent interior. Tiled (one texel-cell per grid cell) by a
-/// <see cref="Helio.UI.TiledRawImage"/> it forms continuous grid lines - each
-/// cell draws its own left/top line, which doubles as the neighbour's right/bottom
-/// edge. The lines are baked white so the consumer tints/fades them via the image
-/// (e.g. the edit-mode overlay). Sibling of <see cref="RoundedRectTextureProvider"/>.
-/// </summary>
+// Procedural single grid-cell texture: white lines along the left and top edges over a transparent
+// interior. Tiled once per grid cell by a TiledRawImage it forms continuous grid lines, each cell
+// drawing its own left/top line, which doubles as the neighbour's right/bottom edge. Baked white so
+// the consumer tints and fades it. Sibling of RoundedRectTextureProvider.
 [ComponentCategory("Assets/Textures")]
 public sealed class GridCellTextureProvider : DynamicAssetProvider<TextureAsset>
 {

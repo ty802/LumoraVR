@@ -5,7 +5,7 @@ using System;
 
 namespace Lumora.Core.Assets;
 
-public abstract class DynamicAssetProvider<A> : AssetProvider<A> where A : Asset, new()
+public abstract class DynamicAssetProvider<A> : AssetProvider<A>, IProceduralAssetProvider where A : Asset, new()
 {
     private A _asset = null!;
 

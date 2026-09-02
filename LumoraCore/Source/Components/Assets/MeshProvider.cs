@@ -9,6 +9,7 @@ namespace Lumora.Core.Assets;
 /// supplies the load options (import scale, keep-readable) as the variant descriptor, so meshes
 /// with matching options for the same URL are shared.
 /// </summary>
+[ComponentCategory("Assets")]
 public class MeshProvider : StaticAssetProvider<MeshDataAsset>
 {
     /// <summary>

@@ -46,48 +46,12 @@ public enum AnimationElementType : byte
     String = 10
 }
 
-public enum AnimationWrapMode : byte
+// Wrapping used to live here as an animation-only enum. It is Lumora.Core.PlaybackLoopMode now,
+// because a clip and a media stream and a timeline all want the same three answers and a second
+// three-case enum next to the first one is how the two drift apart.
+
+public static class KeyframeInterpolationExtensions
 {
-    // Clamp to the clip range and stay on the last frame.
-    Once = 0,
-
-    Loop = 1,
-
-    PingPong = 2
-}
-
-public static class AnimationWrap
-{
-    // Non-positive duration collapses to 0 so a keyless clip can never produce NaN.
-    public static float Wrap(float time, float duration, AnimationWrapMode mode)
-    {
-        if (!float.IsFinite(time) || duration <= 0f)
-            return 0f;
-
-        switch (mode)
-        {
-            case AnimationWrapMode.Loop:
-            {
-                float t = time % duration;
-                return t < 0f ? t + duration : t;
-            }
-            case AnimationWrapMode.PingPong:
-            {
-                float period = duration * 2f;
-                float t = time % period;
-                if (t < 0f)
-                    t += period;
-                return t <= duration ? t : period - t;
-            }
-            default:
-                return time < 0f ? 0f : (time > duration ? duration : time);
-        }
-    }
-
-    // Loop and ping-pong never finish.
-    public static bool IsFinished(float time, float duration, AnimationWrapMode mode)
-        => mode == AnimationWrapMode.Once && duration > 0f && time >= duration;
-
     public static bool RequiresTangents(this KeyframeInterpolation interpolation)
         => interpolation == KeyframeInterpolation.Cubic;
 }

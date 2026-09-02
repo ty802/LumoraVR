@@ -300,6 +300,27 @@ public sealed class CustomShaderMaterial : MaterialProvider, ICustomInspectorUI
         }
     }
 
+    // An imported shader has no albedo field for the eyedropper to read, so the only honest answer is
+    // the first vec4 the AUTHOR tagged source_color - the parser already records that as IsColor. A
+    // shader with no colour uniform at all returns false instead of handing back whichever vec4 happened
+    // to be declared first. -xlinka
+    public override bool TryGetPrimaryColor(out colorHDR color)
+    {
+        foreach (var param in Parameters)
+        {
+            if (param.Type.Value != ShaderUniformType.Vec4 || !param.IsColor.Value)
+            {
+                continue;
+            }
+            var value = param.Value.Value;
+            color = new colorHDR(value.x, value.y, value.z, value.w);
+            return true;
+        }
+
+        color = colorHDR.White;
+        return false;
+    }
+
     private readonly struct ShaderUniformParamSnapshot
     {
         private readonly ShaderUniformType _type;

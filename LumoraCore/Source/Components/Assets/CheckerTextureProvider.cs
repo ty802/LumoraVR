@@ -5,7 +5,7 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Assets;
 
-[ComponentCategory("Assets/Textures/Checker")]
+[ComponentCategory("Assets/Textures")]
 public sealed class CheckerTextureProvider : DynamicAssetProvider<TextureAsset>
 {
     public readonly Sync<int> Width;

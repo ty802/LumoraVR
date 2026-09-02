@@ -84,10 +84,10 @@ public class FaceCubemap : DynamicAssetProvider<CubemapAsset>, ICustomInspectorU
             return;
         }
 
-        // The texture pipeline stores bottom-up rows for 2D sampling; cube faces upload top-down.
+        // Decoded rows are top-down, which is the order cube faces upload in, so they go in as they are.
         var faces = new byte[6][];
         for (int i = 0; i < 6; i++)
-            faces[i] = TextureVariantStore.FlipRgbaVertical(sources[i].PixelData, size, size);
+            faces[i] = sources[i].PixelData;
 
         _status = string.Empty;
         asset.SetFaces(faces, size, GenerateMipmaps.Value);

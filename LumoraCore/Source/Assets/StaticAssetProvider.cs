@@ -11,7 +11,7 @@ namespace Lumora.Core.Assets;
 /// <see cref="IAssetRequester"/>: it resolves its URL and asks the <see cref="AssetManager"/> for
 /// the asset, which loads itself and is shared across every requester for the same URL.
 /// </summary>
-public abstract class StaticAssetProvider<A> : AssetProvider<A>, IAssetRequester
+public abstract class StaticAssetProvider<A> : AssetProvider<A>, IAssetRequester, IUrlAssetProvider
     where A : LoadableAsset, new()
 {
     public readonly Sync<Uri> URL;
@@ -30,6 +30,21 @@ public abstract class StaticAssetProvider<A> : AssetProvider<A>, IAssetRequester
 
     private static bool IsLoaded(A asset) =>
         asset.LoadState is AssetLoadState.PartiallyLoaded or AssetLoadState.FullyLoaded;
+
+    // A load that FAILED is not pending: nothing more is coming, so whoever is showing a loading skin
+    // over this has to stop. No URL is not pending either - there is nothing to wait for. -xlinka
+    public bool IsLoadPending
+    {
+        get
+        {
+            if (URL.Value == null)
+                return false;
+            var asset = _asset;
+            if (asset != null && asset.LoadState == AssetLoadState.Failed)
+                return false;
+            return !IsAssetAvailable;
+        }
+    }
 
     protected StaticAssetProvider()
     {

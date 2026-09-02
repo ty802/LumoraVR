@@ -109,7 +109,7 @@ public sealed class AnimationClip
     // Called by importers once keys are in.
     public void RecalculateDuration() => Duration = GetMaxTrackDuration();
 
-    public float Wrap(float time, AnimationWrapMode mode) => AnimationWrap.Wrap(time, Duration, mode);
+    public float Wrap(float time, PlaybackLoopMode mode) => PlaybackLoop.Wrap(time, Duration, mode);
 
     // SERIALIZATION
 

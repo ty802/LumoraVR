@@ -30,6 +30,8 @@ public class UIUnlitMaterial : MaterialProvider, ICommonMaterial
     public readonly Sync<byte> StencilWriteMask;
     public readonly Sync<byte> StencilReadMask;
 
+    public override bool UseLoadingPlaceholder => false;
+
     protected override MaterialType MaterialType => MaterialType.UI_Unlit;
 
     // Texture override that bypasses the AssetRef provider chain - used by text submeshes

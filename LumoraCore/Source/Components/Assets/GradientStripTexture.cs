@@ -10,7 +10,7 @@ namespace Lumora.Core.Assets;
 /// Procedural gradient texture: From blends to To along the chosen orientation, with an exponent
 /// shaping the falloff. Radial runs from the center outward (soft glow discs).
 /// </summary>
-[ComponentCategory("Assets/Textures/Gradient")]
+[ComponentCategory("Assets/Textures")]
 public sealed class GradientStripTexture : DynamicAssetProvider<TextureAsset>
 {
     public enum StripOrientation

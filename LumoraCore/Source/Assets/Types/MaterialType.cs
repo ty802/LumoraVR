@@ -65,7 +65,25 @@ public enum MaterialType
 
     // Overlay-band fresnel outline. Renders in the same late additive band as OverlayUnlit and
     // picks its color set from a depth-buffer occlusion test rather than the depth test.
-    OverlayFresnel
+    OverlayFresnel,
+
+    // Ramp-shaded toon workhorse. Culling is a compile-time render_mode, so the hook swaps between
+    // three shader variants for it, and the outline hull rides on the material's next pass.
+    Toon,
+
+    // World portal face: picture in an ellipse with a crystal rim (Mat_Portal.gdshader).
+    Portal,
+}
+
+// What the alpha channel of a toon surface means. Opaque throws it away, cutout tests it against the
+// cutoff and keeps the surface in the opaque silhouette, blend actually blends.
+public enum AlphaMode
+{
+    Opaque,
+
+    Cutout,
+
+    Blend
 }
 
 public enum BlendMode
@@ -146,5 +164,6 @@ public enum StencilOperation
     DecrementSaturate = 4,
     Invert = 5,
     IncrementWrap = 6,
-    DecrementWrap = 7
+    DecrementWrap = 7,
+
 }

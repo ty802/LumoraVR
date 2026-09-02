@@ -5,9 +5,7 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Assets;
 
-/// <summary>
-/// Built-in grid floor material backed by res://Shaders/GridSpaceGround.gdshader.
-/// </summary>
+// Built-in grid floor, backed by res://Shaders/GridSpaceGround.gdshader.
 [ComponentCategory("Assets/Materials")]
 public class GridSpaceGroundMaterial : MaterialProvider
 {
@@ -57,5 +55,12 @@ public class GridSpaceGroundMaterial : MaterialProvider
         asset.SetFloat("LineWidth", LineWidth.Value);
         asset.SetFloat("MajorLineWidth", MajorLineWidth.Value);
         asset.SetFloat("RadialFade", RadialFade.Value);
+    }
+
+    // The floor under your feet is the near base colour; the lines are detail on top of it.
+    public override bool TryGetPrimaryColor(out colorHDR color)
+    {
+        color = BaseNearColor.Value;
+        return true;
     }
 }

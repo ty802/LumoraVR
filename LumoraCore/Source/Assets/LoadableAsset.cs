@@ -83,6 +83,15 @@ public abstract class LoadableAsset : Asset
             return;
         }
 
+        NotifyRequestersUpdated();
+    }
+
+    // Push the current state at every requester without a state transition. A progressive load
+    // replaces its own contents more than once, and only the FIRST of those replacements is a
+    // state change (LoadStarted -> PartiallyLoaded); the rest have to be announced by hand or the
+    // consuming material keeps whatever it bound the first time. -xlinka
+    protected void NotifyRequestersUpdated()
+    {
         IAssetRequester[] snapshot;
         lock (_stateLock)
         {
@@ -91,6 +100,20 @@ public abstract class LoadableAsset : Asset
         foreach (var requester in snapshot)
         {
             requester.AssetLoadStateUpdated(this);
+        }
+    }
+
+    // Announce that usable-but-not-final contents are in place. Safe to call repeatedly: the first
+    // call moves the state, later ones just re-notify, and neither can walk the state backwards.
+    protected void ReportPartiallyLoaded()
+    {
+        if (LoadState < AssetLoadState.PartiallyLoaded)
+        {
+            SetLoadState(AssetLoadState.PartiallyLoaded);
+        }
+        else
+        {
+            NotifyRequestersUpdated();
         }
     }
 

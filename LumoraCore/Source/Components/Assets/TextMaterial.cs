@@ -8,7 +8,7 @@ namespace Lumora.Core.Assets;
 // World-space text material (nameplates, labels). Same glyph-coverage path as
 // UITextMaterial but depth-tested via the Text_Unlit shader so text occludes
 // correctly behind world geometry. - xlinka
-[ComponentCategory("Assets/Materials/Text")]
+[ComponentCategory("Assets/Materials")]
 public class TextMaterial : MaterialProvider, ICommonMaterial
 {
     public readonly AssetRef<TextureAsset> Texture;
@@ -36,6 +36,8 @@ public class TextMaterial : MaterialProvider, ICommonMaterial
     // Same DirectTexture override as UITextMaterial - binds a transient atlas
     // TextureAsset (no owning provider component) without an AssetRef. - xlinka
     public TextureAsset DirectTexture { get; set; } = null!;
+
+    public override bool UseLoadingPlaceholder => false;
 
     protected override MaterialType MaterialType => MaterialType.Text;
 

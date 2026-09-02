@@ -376,6 +376,21 @@ public class LocalDB : IDisposable
         return path != null && File.Exists(path);
     }
 
+    // The local:// address of a record this machine holds for a content hash, or null. A cloud
+    // asset that was fetched into the database is addressed this way so the variant machinery,
+    // which only knows local:// bases, can work on it. -xlinka
+    public string? UriForHash(string? hash)
+    {
+        if (string.IsNullOrEmpty(hash))
+            return null;
+        lock (_lock)
+        {
+            if (_assetRecords.TryGetValue(hash!, out var record) && File.Exists(record.FilePath))
+                return $"local://{_machineId}/{hash}";
+        }
+        return null;
+    }
+
     public string GetTempFilePath(string extension = null!)
     {
         var fileName = Guid.NewGuid().ToString("N");
@@ -436,6 +451,18 @@ public class LocalDB : IDisposable
     public string GetGpuCachePath()
     {
         var path = Path.Combine(_basePath, "GpuCache");
+        try { Directory.CreateDirectory(path); } catch { /* first use recreates it */ }
+        return path;
+    }
+
+    // Cache directory for renderer-side geometry derived from an asset's own contents - LOD index
+    // buffers, above all. Unlike GpuCache these blobs are device-independent (the simplifier is
+    // deterministic), they are just expensive: seconds of CPU for a heavy model. Keyed by a hash of
+    // the geometry itself, so the same mesh arriving under a new URL still hits. Deleting this
+    // directory only costs one re-bake per mesh. -xlinka
+    public string GetMeshCachePath()
+    {
+        var path = Path.Combine(_basePath, "MeshLod");
         try { Directory.CreateDirectory(path); } catch { /* first use recreates it */ }
         return path;
     }

@@ -16,6 +16,11 @@ namespace Lumora.Core.Assets;
 // plus the source's real dimensions name a generated blob, and if that blob exists locally or on a
 // peer it is loaded instead of the source file. The base URL is never rewritten, so a save that
 // references local://.../hash keeps working whether or not any variant was ever generated. -xlinka
+//
+// The load is progressive. TextureLoadChain turns the one requested variant into an ordered list of
+// acceptable answers, smallest first, and each one that lands is put on screen straight away; the
+// exact one supersedes it when it arrives. A swap is guarded by rank, so a small rung that comes in
+// late can never overwrite a better one that already landed.
 public class TextureAsset : ImplementableAsset<ITextureAssetHook>
 {
     private byte[] _pixelData = null!;
@@ -23,6 +28,12 @@ public class TextureAsset : ImplementableAsset<ITextureAssetHook>
     private int _width;
     private int _height;
     private bool _hasMipmaps;
+
+    // Longest edge, in pixels, of the best rung already handed to the renderer. -1 means nothing has
+    // been delivered yet. The whole guard rail against a progressive load going BACKWARDS is this
+    // number plus the check in TryClaimRank.
+    private int _deliveredRank = -1;
+    private readonly object _deliveryLock = new();
 
     public int Width => _width;
 
@@ -70,12 +81,88 @@ public class TextureAsset : ImplementableAsset<ITextureAssetHook>
     {
         var descriptor = TargetVariant as TextureVariantDescriptor ?? TextureVariantDescriptor.Default;
 
-        if (await TryLoadVariantAsync(descriptor).ConfigureAwait(false))
-            return;
+        var db = Engine?.LocalDB;
+        // A cloud texture that was fetched into the database is addressed by its local record from
+        // here on, so it gets variants like anything imported here. Its hash is kept so the server's
+        // own variants can be asked for before this machine computes any. -xlinka
+        string? cloudHash = AssetURL?.Scheme == "lumora" ? Persistence.CloudAssetPacker.HashOf(AssetURL.OriginalString) : null;
+        var baseUri = AssetURL?.Scheme == "local" ? AssetURL.OriginalString
+            : cloudHash != null ? db?.UriForHash(cloudHash) : null;
+        TextureMetadata? sourceMeta = null;
 
-        var bytes = await AssetManager.RequestGather(AssetURL).ConfigureAwait(false);
+        if (db != null && baseUri != null)
+        {
+            sourceMeta = await TextureVariantStore.TryLoadMetadataAsync(db, baseUri, AssetManager).ConfigureAwait(false);
+            if (sourceMeta == null || sourceMeta.Width <= 0)
+            {
+                // Never analyzed. Generating on the spot would put a full decode plus a stack of mip
+                // chains in front of the user, so queue it instead and load the source this time: the
+                // cap and the progressive chain start applying from the next load. This is what gives
+                // textures that never went through the image importer (a model's embedded maps,
+                // anything restored from a save) their variants.
+                TextureVariantStore.EnsureGeneratedInBackground(db, baseUri, descriptor.IsNormalMap, descriptor.GenerateMipmaps);
+                sourceMeta = null;
+            }
+        }
+
+        Task<byte[]>? prefetch = null;
+
+        if (db != null && baseUri != null && sourceMeta != null)
+        {
+            var chain = TextureLoadChain.Build(sourceMeta.Width, sourceMeta.Height, descriptor);
+            if (cloudHash != null)
+                await CloudVariants.EnsureAsync(db, baseUri, cloudHash, chain).ConfigureAwait(false);
+            var target = chain[chain.Count - 1];
+            var targetUri = ResolveReachableVariantUri(db, baseUri, target);
+            bool previews = chain.Count > 1 && !SkipPreviewRungs(db, baseUri, target, sourceMeta, descriptor);
+
+            // Peer-owned: strictly one gather at a time, small rung first. The whole point of the
+            // preview on a peer asset is to get pixels up before the big transfer finishes, and
+            // running both transfers at once just makes them share the same pipe. Locally owned: the
+            // "gather" is a disk read, nothing to contend for, so start the exact one now and let it
+            // run underneath the previews. -xlinka
+            bool peerOwned = !TextureVariantStore.IsOwnedLocally(db, baseUri);
+            if (previews && !peerOwned)
+                prefetch = StartGather(targetUri != null ? new Uri(targetUri) : AssetURL!);
+
+            if (previews)
+            {
+                bool delivered = false;
+                for (int i = 0; i < chain.Count - 1; i++)
+                    delivered |= await TryDeliverVariantAsync(db, baseUri, chain[i], sourceMeta, descriptor, null, final: false)
+                        .ConfigureAwait(false);
+
+                // Every rung was missing on an asset we own, which is what an import from before the
+                // cheap rung existed looks like. Queue a fill so the next load has something to show
+                // while it waits. Generation is deduplicated internally, so spamming this is free.
+                if (!delivered && !peerOwned)
+                    TextureVariantStore.EnsureGeneratedInBackground(db, baseUri, descriptor.IsNormalMap, descriptor.GenerateMipmaps);
+            }
+
+            if (targetUri != null
+                && await TryDeliverVariantAsync(db, baseUri, target, sourceMeta, descriptor, prefetch, final: true)
+                    .ConfigureAwait(false))
+                return;
+
+            // The exact variant turned out to be unreadable, so the source below is the answer. Any
+            // prefetch we started was aimed at the variant address and is not it; drop it and gather
+            // the source instead. When targetUri was null all along the prefetch already IS the
+            // source gather, so leave that one alone.
+            if (targetUri != null)
+                prefetch = null;
+        }
+
+        var bytes = await (prefetch ?? StartGather(AssetURL!)).ConfigureAwait(false);
         if (bytes == null || bytes.Length == 0)
         {
+            // A delivered preview is a usable texture. Failing the whole asset here would tear that
+            // back off screen to replace it with nothing, which is strictly worse than staying on the
+            // rung we already have.
+            if (_deliveredRank >= 0)
+            {
+                Logger.Warn($"TextureAsset: no source data for {AssetURL}; staying on the {_deliveredRank}px rung");
+                return;
+            }
             FailLoad($"No image data gathered for {AssetURL}");
             return;
         }
@@ -88,18 +175,25 @@ public class TextureAsset : ImplementableAsset<ITextureAssetHook>
         }
         catch (Exception ex)
         {
+            if (_deliveredRank >= 0)
+            {
+                Logger.Warn($"TextureAsset: cannot decode {AssetURL} ({ex.Message}); staying on the {_deliveredRank}px rung");
+                return;
+            }
             FailLoad($"Failed to decode image {AssetURL}: {ex.Message}");
             return;
         }
 
         if (rgba == null || width <= 0 || height <= 0)
         {
+            if (_deliveredRank >= 0)
+                return;
             FailLoad($"Failed to decode image {AssetURL}: no pixels");
             return;
         }
 
         int mipCount = descriptor.GenerateMipmaps ? TextureMetadata.FullMipCount(width, height) : 1;
-        Metadata = TextureMetadata.Analyze(
+        var metadata = TextureMetadata.Analyze(
             rgba, width, height, mipCount,
             bytes.LongLength,
             descriptor.GenerateMipmaps
@@ -107,7 +201,13 @@ public class TextureAsset : ImplementableAsset<ITextureAssetHook>
                 : (long)width * height * 4,
             TextureMetadata.DetectSRgb(bytes),
             descriptor.IsNormalMap);
-        LoadedVariant = new TextureVariantId(0, descriptor.GenerateMipmaps, descriptor.Compression);
+
+        var original = new TextureVariantId(0, descriptor.GenerateMipmaps, descriptor.Compression);
+        if (!TryClaimRank(System.Math.Max(width, height)))
+            return;
+
+        Metadata = metadata;
+        LoadedVariant = original;
 
         SetImageData(rgba, width, height, descriptor.GenerateMipmaps);
         Hook?.SetWrapMode(descriptor.WrapU, descriptor.WrapV);
@@ -121,63 +221,70 @@ public class TextureAsset : ImplementableAsset<ITextureAssetHook>
             await Hook.WaitForUploadAsync().ConfigureAwait(false);
     }
 
-    // Try to satisfy this request from a generated variant instead of the source file.
+    private Task<byte[]> StartGather(Uri url) => AssetManager.RequestGather(url);
+
+    // The address of a variant we can actually get hold of, or null if asking would be a wasted trip.
     //
-    // Two lookups, both cheap: the metadata sidecar tells us the source's real dimensions without
-    // decoding anything (and a peer can serve that sidecar), and those dimensions plus the
-    // descriptor's cap name exactly one variant blob. If the blob is not reachable we fall through
-    // to the source, so this is always an optimization and never a failure mode.
-    //
-    // What this deliberately does NOT do is progressive swap-up (show the 256 immediately, replace
-    // it when the 1024 lands). The blocker is not the fetch layer, which handles a second request
-    // fine; it is that a loaded asset has no re-load path. LoadSelf runs once, gated on the Created
-    // state, and the load-complete notification fires once. Making an asset swap its own contents
-    // after it has reported FullyLoaded means reopening that state machine for every asset type,
-    // not just textures, and the failure mode if it is done carelessly is the white-body race
-    // coming back. Deferred on purpose, not overlooked. Changing the QUALITY SETTING does swap
-    // variants, because that produces a different descriptor and therefore a different asset
-    // instance, which needs none of that machinery. -xlinka
-    private async Task<bool> TryLoadVariantAsync(TextureVariantDescriptor descriptor)
+    // Held locally: straight read. Owned by a peer: worth asking for, because a variant is exactly
+    // what we want crossing the wire instead of a full-resolution original, and a peer that hasn't
+    // generated it answers "not available" and we fall through. Owned by US and missing: nobody else
+    // has it either. The original is never a "variant" address - that is the base URI. -xlinka
+    private string? ResolveReachableVariantUri(LocalDB db, string baseUri, TextureVariantId id)
     {
-        if (descriptor.MaxSize <= 0 || AssetURL == null || AssetURL.Scheme != "local")
-            return false;
-
-        var db = Engine?.LocalDB;
-        if (db == null)
-            return false;
-
-        var baseUri = AssetURL.OriginalString;
-        var sourceMeta = await TextureVariantStore.TryLoadMetadataAsync(db, baseUri, AssetManager).ConfigureAwait(false);
-        if (sourceMeta == null || sourceMeta.Width <= 0)
-        {
-            // Never analyzed. Generating on the spot would put a full decode plus four mip chains in
-            // front of the user, so queue it instead and load the source this time: the cap starts
-            // applying from the next load. This is what gives textures that never went through the
-            // image importer (a model's embedded maps, anything restored from a save) their variants.
-            TextureVariantStore.EnsureGeneratedInBackground(db, baseUri, descriptor.IsNormalMap, descriptor.GenerateMipmaps);
-            return false;
-        }
-
-        var id = descriptor.ResolveVariant(sourceMeta.Width, sourceMeta.Height);
         if (id.IsOriginal)
+            return null;
+
+        var uri = TextureVariantStore.GetVariantUri(baseUri, id);
+        if (uri == null)
+            return null;
+
+        if (db.Exists(uri))
+            return uri;
+
+        if (TextureVariantStore.IsOwnedLocally(db, baseUri) || Engine?.ActiveSessionTransferer == null)
+            return null;
+
+        return uri;
+    }
+
+    // Skip the cheap rungs entirely when the exact one is already compressed and sitting in the GPU
+    // cache. On a revisit that path is a file read plus one upload, so previews would only buy a
+    // flicker of blur and an extra upload nobody asked for. -xlinka
+    private bool SkipPreviewRungs(LocalDB db, string baseUri, TextureVariantId target, TextureMetadata sourceMeta, TextureVariantDescriptor descriptor)
+    {
+        if (descriptor.Compression != TextureCompressionKind.Block)
             return false;
 
-        var variantUri = TextureVariantStore.GetVariantUri(baseUri, id);
+        var (width, height) = target.ResolveSize(sourceMeta.Width, sourceMeta.Height);
+        int mipCount = descriptor.GenerateMipmaps ? TextureMetadata.FullMipCount(width, height) : 1;
+        return TextureGpuCache.IsCached(db, baseUri, target, width, height, mipCount);
+    }
+
+    // Fetch one rung and put it on screen. gather is a transfer already in flight for this rung's
+    // address, or null to start one here.
+    private async Task<bool> TryDeliverVariantAsync(
+        LocalDB db,
+        string baseUri,
+        TextureVariantId id,
+        TextureMetadata sourceMeta,
+        TextureVariantDescriptor descriptor,
+        Task<byte[]>? gather,
+        bool final)
+    {
+        var variantUri = gather != null ? TextureVariantStore.GetVariantUri(baseUri, id) : ResolveReachableVariantUri(db, baseUri, id);
         if (variantUri == null)
             return false;
 
-        // Held locally: straight read. Owned by a peer: worth asking for, because a variant is
-        // exactly what we want crossing the wire instead of a full-resolution original, and a peer
-        // that hasn't generated it answers "not available" and we fall through to the source. Owned
-        // by US and missing: nobody else has it either, so don't waste a round trip. -xlinka
-        bool local = db.Exists(variantUri);
-        if (!local && (TextureVariantStore.IsOwnedLocally(db, baseUri) || Engine?.ActiveSessionTransferer == null))
+        // Nothing to gain from a rung that is no better than what is already up.
+        int rank = TextureLoadChain.Rank(id, System.Math.Max(sourceMeta.Width, sourceMeta.Height));
+        if (rank <= _deliveredRank)
             return false;
 
+        bool local = db.Exists(variantUri);
         byte[]? blob;
         try
         {
-            blob = await AssetManager.RequestGather(new Uri(variantUri)).ConfigureAwait(false);
+            blob = await (gather ?? StartGather(new Uri(variantUri))).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -188,7 +295,7 @@ public class TextureAsset : ImplementableAsset<ITextureAssetHook>
         var data = TextureVariantStore.Decode(blob);
         if (data == null)
         {
-            if (blob != null)
+            if (blob != null && final)
                 Logger.Warn($"TextureAsset: variant {id.Identifier} of {baseUri} is unreadable; using the source");
             return false;
         }
@@ -201,6 +308,9 @@ public class TextureAsset : ImplementableAsset<ITextureAssetHook>
             await db.SaveDerivedAssetAsync(baseUri, id.Identifier, blob, TextureVariantStore.VariantExtension)
                 .ConfigureAwait(false);
         }
+
+        if (!TryClaimRank(rank))
+            return false;
 
         Metadata = new TextureMetadata
         {
@@ -222,7 +332,27 @@ public class TextureAsset : ImplementableAsset<ITextureAssetHook>
 
         if (Hook != null)
             await Hook.WaitForUploadAsync().ConfigureAwait(false);
+
+        // Only after the GPU texture exists, for the same reason the final rung waits: a requester
+        // told to re-bind while the hook is still invalid binds nothing and never comes back.
+        if (!final)
+            ReportPartiallyLoaded();
+
         return true;
+    }
+
+    // Claim the right to replace the contents at this quality. Losing the claim means something
+    // better already landed - a late preview must never overwrite it, so the caller drops its
+    // payload on the floor and leaves the good one alone.
+    private bool TryClaimRank(int rank)
+    {
+        lock (_deliveryLock)
+        {
+            if (rank <= _deliveredRank)
+                return false;
+            _deliveredRank = rank;
+            return true;
+        }
     }
 
     // Expects RGBA8, 4 bytes per pixel.
@@ -284,7 +414,9 @@ public class TextureAsset : ImplementableAsset<ITextureAssetHook>
             var db = Engine?.LocalDB;
             if (db != null)
             {
-                cacheKey = BuildCacheKey(AssetURL.OriginalString, LoadedVariant, metadata);
+                cacheKey = TextureGpuCache.BuildKey(
+                    AssetURL.OriginalString, LoadedVariant,
+                    metadata.Width, metadata.Height, metadata.MipCount);
                 cacheDirectory = db.GetGpuCachePath();
             }
         }
@@ -303,17 +435,6 @@ public class TextureAsset : ImplementableAsset<ITextureAssetHook>
             CacheDirectory = cacheDirectory,
             Report = ReportUploaded,
         });
-    }
-
-    // Hash the identity of the pixels (URI + variant) and the dimensions, so a cache file can never
-    // be read back for a different image. Dimensions are in the key because a procedural resize
-    // reuses the same URI.
-    private static string BuildCacheKey(string uri, TextureVariantId? variant, TextureMetadata metadata)
-    {
-        string identity = $"{uri}|{variant?.Identifier ?? "src"}|{metadata.Width}x{metadata.Height}|{metadata.MipCount}";
-        using var sha = System.Security.Cryptography.SHA256.Create();
-        var hash = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(identity));
-        return Convert.ToHexString(hash, 0, 16).ToLowerInvariant();
     }
 
     // This is the only way GpuFormat is ever set, which is why the VRAM figures downstream are measurements and
@@ -344,6 +465,8 @@ public class TextureAsset : ImplementableAsset<ITextureAssetHook>
         _hasMipmaps = false;
         Metadata = null;
         LoadedVariant = null;
+        lock (_deliveryLock)
+            _deliveredRank = -1;
         base.Unload();
     }
 }

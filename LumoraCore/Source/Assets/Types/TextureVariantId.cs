@@ -35,7 +35,14 @@ public readonly struct TextureVariantId : IEquatable<TextureVariantId>
     // simply never requested again.
     public const int CurrentVersion = 1;
 
-    public static readonly int[] SizeBuckets = { 2048, 1024, 512, 256 };
+    // Descending. 128 is not a quality setting anyone picks; it exists so a progressive load always
+    // has one rung that costs almost nothing to fetch and upload. Adding it is additive - the
+    // identifier format did not change, so every blob already on disk stays addressable and a
+    // regeneration pass just fills in the one that is missing. -xlinka
+    public static readonly int[] SizeBuckets = { 2048, 1024, 512, 256, 128 };
+
+    // The rung that always exists for any source big enough to have variants at all.
+    public const int PreviewSize = 128;
 
     // 0 means no cap, i.e. the source resolution.
     public int MaxSize { get; }
@@ -101,12 +108,16 @@ public readonly struct TextureVariantId : IEquatable<TextureVariantId>
     // generating it would either duplicate the original or upscale it - both a waste of disk and a
     // quality loss. A source already within the smallest bucket generates nothing and is served
     // from its own URI. -xlinka
+    //
+    // Emitted smallest first so a generation pass that is still running has already written the
+    // cheap rung by the time a load comes looking for one.
     public static List<TextureVariantId> PlanFor(int width, int height, bool mipmaps, TextureCompressionKind compression)
     {
         var plan = new List<TextureVariantId>();
         int longest = System.Math.Max(width, height);
-        foreach (int bucket in SizeBuckets)
+        for (int i = SizeBuckets.Length - 1; i >= 0; i--)
         {
+            int bucket = SizeBuckets[i];
             if (bucket < longest)
                 plan.Add(new TextureVariantId(bucket, mipmaps, compression));
         }

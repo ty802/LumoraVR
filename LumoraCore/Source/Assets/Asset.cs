@@ -39,7 +39,33 @@ public abstract class Asset : IAsset
     public int Version { get; protected set; }
     public object Owner { get; protected set; } = null!;
     public AssetType AssetType { get; protected set; }
-    public AssetLoadState LoadState { get; protected set; }
+    // How many assets in this process are between "load started" and "loaded" right now. Read by the
+    // in-world load readout and the Debug screen; kept here so every asset type counts the same way
+    // without knowing anything about who is watching. -xlinka
+    private static int _loadingCount;
+    public static int LoadingCount => System.Threading.Volatile.Read(ref _loadingCount);
+
+    private static bool IsInFlight(AssetLoadState state)
+        => state == AssetLoadState.LoadStarted || state == AssetLoadState.PartiallyLoaded;
+
+    private AssetLoadState _loadState;
+    public AssetLoadState LoadState
+    {
+        get => _loadState;
+        protected set
+        {
+            if (_loadState == value)
+                return;
+            bool was = IsInFlight(_loadState);
+            bool now = IsInFlight(value);
+            _loadState = value;
+            if (was != now)
+            {
+                if (now) System.Threading.Interlocked.Increment(ref _loadingCount);
+                else System.Threading.Interlocked.Decrement(ref _loadingCount);
+            }
+        }
+    }
     public Uri AssetURL { get; private set; } = null!;
 
     // Assets reach engine services through this, not the global Engine.Current.

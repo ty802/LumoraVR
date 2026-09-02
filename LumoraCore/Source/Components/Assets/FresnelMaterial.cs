@@ -5,10 +5,7 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Assets;
 
-/// <summary>
-/// Material with Fresnel effect - color changes based on viewing angle.
-/// Used for debug rig visualization and special effects.
-/// </summary>
+// Fresnel: the colour swings with the viewing angle. Debug rig visualisation and special effects.
 [ComponentCategory("Assets/Materials")]
 public class FresnelMaterial : MaterialProvider
 {
@@ -39,5 +36,12 @@ public class FresnelMaterial : MaterialProvider
         asset.SetColor("EmissiveColor", FarColor.Value);
         asset.SetFloat("Metallic", 0.0f);
         asset.SetFloat("Smoothness", 0.8f);
+    }
+
+    // NearColor is what this lands on the albedo, so it is the one the surface reads as.
+    public override bool TryGetPrimaryColor(out colorHDR color)
+    {
+        color = NearColor.Value;
+        return true;
     }
 }

@@ -65,7 +65,7 @@ public static class AssetHelper
         { ".cube", AssetClass.Volume },
 
         // Shader
-        { ".gdshader", AssetClass.Shader }, { ".glsl", AssetClass.Shader },
+        { ".gdshader", AssetClass.Shader }, { ".lumshader", AssetClass.Shader }, { ".glsl", AssetClass.Shader },
         { ".hlsl", AssetClass.Shader }, { ".shader", AssetClass.Shader },
     };
 

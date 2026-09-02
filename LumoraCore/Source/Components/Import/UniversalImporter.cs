@@ -81,7 +81,9 @@ public static class UniversalImporter
         var unsupported = new List<string>();
         foreach (var file in files)
         {
-            if (string.Equals(Path.GetExtension(file), ".gdshader", StringComparison.OrdinalIgnoreCase))
+            var extension = Path.GetExtension(file);
+            if (string.Equals(extension, ".gdshader", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(extension, Lumora.Core.Assets.ShaderBundle.Extension, StringComparison.OrdinalIgnoreCase))
                 supported.Add(file);
             else
                 unsupported.Add(file);
@@ -127,16 +129,40 @@ public static class UniversalImporter
         foreach (var file in supported)
         {
             var offset = GridOffset(ref index, rowSize);
-            _ = ImportShaderOrbAsync(file, world, position + rotation * offset, rotation);
+            var spawnAt = position + rotation * offset;
+            world.StartTask(() => ImportShaderOrbAsync(file, world, spawnAt, rotation));
         }
     }
 
     private static async System.Threading.Tasks.Task ImportShaderOrbAsync(string path, World world, float3 position, floatQ rotation)
     {
+        await WorldContext.ToBackground();
+
+        // Every shader is stored as a .lumshader bundle: the text, the includes it pulls in from
+        // beside it, and a manifest with the sandbox verdict and the uniforms. A bundle handed in
+        // directly is kept as it is. That one file is the record the cloud carries when a world or an
+        // object using the shader is saved. -xlinka
+        byte[] bundle;
         string source;
         try
         {
-            source = await File.ReadAllTextAsync(path).ConfigureAwait(false);
+            var bytes = await File.ReadAllBytesAsync(path);
+            if (Lumora.Core.Assets.ShaderBundle.IsBundle(bytes))
+            {
+                if (!Lumora.Core.Assets.ShaderBundle.TryOpen(bytes, out _, out source))
+                {
+                    Logger.Warn($"UniversalImporter: '{Path.GetFileName(path)}' is not a shader bundle this build can open.");
+                    return;
+                }
+                bundle = bytes;
+            }
+            else
+            {
+                var text = System.Text.Encoding.UTF8.GetString(bytes);
+                var includes = Lumora.Core.Assets.ShaderBundle.CollectIncludes(text, Path.GetDirectoryName(path));
+                source = Lumora.Core.Assets.ShaderBundle.Inline(text, includes);
+                bundle = Lumora.Core.Assets.ShaderBundle.Build(Path.GetFileNameWithoutExtension(path), text, includes);
+            }
         }
         catch (Exception ex)
         {
@@ -163,7 +189,7 @@ public static class UniversalImporter
         string uri;
         try
         {
-            uri = await localDb.ImportLocalAssetAsync(path).ConfigureAwait(false);
+            uri = await localDb.SaveAssetAsync(bundle, Lumora.Core.Assets.ShaderBundle.Extension);
         }
         catch (Exception ex)
         {
@@ -171,42 +197,41 @@ public static class UniversalImporter
             return;
         }
 
-        // Datamodel writes happen on the world's update thread.
-        world.RunSynchronously(() =>
-        {
-            var slot = world.RootSlot.AddSlot(Path.GetFileNameWithoutExtension(path));
-            slot.GlobalPosition = position;
-            slot.GlobalRotation = rotation;
-            slot.AttachComponent<Grabbable>();
+        // Datamodel writes happen on the world's update thread. Everything below this line is back on it.
+        await WorldContext.ToWorld();
 
-            var mesh = slot.AttachComponent<SphereMesh>();
-            mesh.Radius.Value = 0.18f;
-            mesh.Segments.Value = 32;
-            mesh.Rings.Value = 16;
-            mesh.UVScale.Value = new float2(5f, 2.5f);
+        var slot = world.RootSlot.AddSlot(Path.GetFileNameWithoutExtension(path));
+        slot.GlobalPosition = position;
+        slot.GlobalRotation = rotation;
+        slot.AttachComponent<Grabbable>();
 
-            var collider = slot.AttachComponent<SphereCollider>();
-            collider.Radius.Value = mesh.Radius.Value;
-            collider.Type.Value = ColliderType.Trigger;
+        var mesh = slot.AttachComponent<SphereMesh>();
+        mesh.Radius.Value = 0.18f;
+        mesh.Segments.Value = 32;
+        mesh.Rings.Value = 16;
+        mesh.UVScale.Value = new float2(5f, 2.5f);
 
-            var provider = slot.AttachComponent<Lumora.Core.Components.Assets.ShaderSourceProvider>();
-            provider.URL.Value = new Uri(uri);
+        var collider = slot.AttachComponent<SphereCollider>();
+        collider.Radius.Value = mesh.Radius.Value;
+        collider.Type.Value = ColliderType.Trigger;
 
-            var material = slot.AttachComponent<Lumora.Core.Components.Assets.CustomShaderMaterial>();
-            material.Shader.Target = provider;
+        var provider = slot.AttachComponent<Lumora.Core.Components.Assets.ShaderSourceProvider>();
+        provider.URL.Value = new Uri(uri);
 
-            var renderer = slot.AttachComponent<MeshRenderer>();
-            renderer.Mesh.Target = mesh;
-            renderer.Material.Target = material;
+        var material = slot.AttachComponent<Lumora.Core.Components.Assets.CustomShaderMaterial>();
+        material.Shader.Target = provider;
 
-            // Open the focused material panel half a meter to the orb's right so tuning can start
-            // immediately, facing the same way the orb spawned.
-            MaterialInspectorPanel.Spawn(world, material, position + rotation * new float3(0.5f, 0f, 0f), rotation);
+        var renderer = slot.AttachComponent<MeshRenderer>();
+        renderer.Mesh.Target = mesh;
+        renderer.Material.Target = material;
 
-            Lumora.Core.Components.InspectorUndo.Record(world,
-                Lumora.Core.Components.SlotExistenceUndoBatch.Created(world, new[] { slot }, "Import Shader"));
-            Logger.Log($"UniversalImporter: shader orb '{slot.SlotName.Value}' created ({uri}).");
-        });
+        // Open the focused material panel half a meter to the orb's right so tuning can start
+        // immediately, facing the same way the orb spawned.
+        MaterialInspectorPanel.Spawn(world, material, position + rotation * new float3(0.5f, 0f, 0f), rotation);
+
+        Lumora.Core.Components.InspectorUndo.Record(world,
+            Lumora.Core.Components.SlotExistenceUndoBatch.Created(world, new[] { slot }, Lumora.Core.Components.UndoLocale.ImportShader));
+        Logger.Log($"UniversalImporter: shader orb '{slot.SlotName.Value}' created ({uri}).");
     }
 
     public static float3 GridOffset(ref int index, int rowSize)

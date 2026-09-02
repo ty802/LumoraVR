@@ -3,53 +3,86 @@
 
 using System;
 using Lumora.Core;
+using Lumora.Core.Components.Avatar;
+using Lumora.Core.Components.Import;
+using Lumora.Core.Localization;
 using Lumora.Core.Math;
-using Lumora.Core.Assets;
-using Lumora.Core.Components.Assets;
+using Helio.UI;
 using LumoraMeshes = Lumora.Core.Components.Meshes;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// In-world 3D model-import progress indicator. Import/load progress is shown IN the world (a floating readout),
-/// not as a flat screen overlay: a title + status/percent text and
-/// a determinate progress bar that float in front of the user and follow their view, driven by the importer's
-/// progress callback, and self-destructing a beat after the import finishes.
-///
-/// Threading: Show/Hide marshal onto the world thread (they touch the data model); Report only writes volatile
-/// fields (it's called from the off-thread import), and OnUpdate (world thread) applies them to the visuals - same
-/// pattern SessionJoinIndicator uses to poll its progress. -xlinka
-/// </summary>
+// The readout that floats over an import while it happens.
+//
+// This is the IN-WORLD half, and it starts after the import dialog is done: the dialog asks what you
+// want, this says how it is going. It wears the same plate the nameplates do - rounded panel, rim,
+// centred label, billboarded at the viewer - because a second floating-text style in the same world
+// would just look like a bug.
+//
+// Everything about it is local. Local slot, non-persistent, no sync generation: the person who dropped
+// the file is the only one who needs a progress bar for it, and the model itself is what everybody
+// else sees arrive.
+//
+// Threading: Show/Hide/Fail marshal onto the world thread (they touch the data model). Report only
+// writes volatile fields, because it is called from the importer's background stages; OnUpdate reads
+// them back on the world thread and writes the visuals only when they actually changed. -xlinka
+[ComponentCategory("Assets/Import")]
 public class ModelImportIndicator : Component
 {
-    public readonly SyncRef<Slot> Visual;
+    public readonly SyncRef<Slot> Plate;
     public readonly SyncRef<TextRenderer> TitleText;
     public readonly SyncRef<TextRenderer> StatusText;
     public readonly SyncRef<Slot> ProgressFill;
-    // The slot the model imports into - we float above it (robust: the model spawns in view). -xlinka
+    // The slot the model imports into. Floating over it means the readout is wherever the model is
+    // about to appear, which is in front of the user by construction. -xlinka
     public readonly SyncRef<Slot> Anchor;
 
-    // Half the bar's width (the fill quad is BarHalfWidth*2 wide, centered, then left-anchored via scale+offset).
-    private const float BarHalfWidth = 0.32f;
+    private const float PanelWidth = 0.52f;
+    private const float PanelHeight = 0.20f;
+    private const float PanelCornerRadius = 0.022f;
+    private const float RimWidth = 0.006f;
+    private const float PanelDepth = -0.002f;
+    private const float BarWidth = 0.44f;
+    private const float BarHeight = 0.022f;
+    private const float BarHalfWidth = BarWidth * 0.5f;
 
-    // Written by Report() from the (off-thread) importer, read+applied by OnUpdate() on the world thread.
-    private volatile float _progress;
-    private volatile string _status = "Preparing...";
+    private const float AnchorHeight = 1.9f;
+    private const float LingerOnDone = 0.6f;
+    private const float LingerOnFail = 4f;
+
+    private static readonly color PanelColor = new color(0.07f, 0.08f, 0.11f, 0.88f);
+    private static readonly color RimColor = new color(0.30f, 0.55f, 0.95f, 0.95f);
+    private static readonly color FailRimColor = new color(0.90f, 0.32f, 0.30f, 0.95f);
+    private static readonly color BarTrackColor = new color(0.16f, 0.17f, 0.21f, 0.95f);
+    private static readonly color BarFillColor = new color(0.32f, 0.68f, 1f, 1f);
+    private static readonly color FailFillColor = new color(0.90f, 0.32f, 0.30f, 1f);
+    private static readonly color StatusColor = new color(0.78f, 0.84f, 0.94f, 1f);
+
+    // Written from the importer's threads, read on the world thread. Reference writes are atomic and
+    // the readout is allowed to be one frame behind, so there is no lock here on purpose.
+    private volatile string _statusText = string.Empty;
     private volatile bool _done;
-    private string _title = "Importing";
+    private volatile bool _failed;
+    private float _progress;
 
-    private float _doneTimer;
-    private float _lastApplied = -1f;
-    private string _lastStatus = null!;
+    private LocaleText _title;
+    private float _lingerTimer;
+    private float _appliedProgress = -1f;
+    private string _appliedStatus = null!;
+    private bool _appliedFailState;
     private bool _placed;
 
-    // One import at a time (sequential), so a single current indicator is enough - mirrors the screen-space one.
+    private LumoraMeshes.RoundedQuadMesh? _panelMesh;
+    private LumoraMeshes.RoundedQuadRingMesh? _rimMesh;
+    private LumoraMeshes.RoundedQuadMesh? _fillMesh;
+
+    // Imports run one at a time, so one live indicator is all there is to track.
     private static ModelImportIndicator _current = null!;
 
     public ModelImportIndicator()
     {
-        Visual = new SyncRef<Slot>(this);
+        Plate = new SyncRef<Slot>(this);
         TitleText = new SyncRef<TextRenderer>(this);
         StatusText = new SyncRef<TextRenderer>(this);
         ProgressFill = new SyncRef<Slot>(this);
@@ -59,167 +92,186 @@ public class ModelImportIndicator : Component
     public override void OnInit()
     {
         base.OnInit();
-
-        // Build the visual hierarchy in OnInit (not OnAwake) - OnAwake runs inside the RefID allocation soft-block
-        // and would log a warning per allocation (see SessionJoinIndicator). -xlinka
-        Visual.Target = Slot.AddSlot("ImportIndicatorVisual");
-
-        var font = Visual.Target.AttachComponent<FontProvider>();
-        font.URL.Value = new Uri("res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf");
-
-        // Title line
-        var titleSlot = Visual.Target.AddSlot("Title");
-        titleSlot.LocalPosition.Value = new float3(0f, 0.085f, 0f);
-        var titleR = titleSlot.AttachComponent<TextRenderer>();
-        titleR.Text.Value = _title;
-        titleR.Size.Value = 0.09f;
-        titleR.Color.Value = color.White;
-        titleR.Font.Target = font;
-        TitleText.Target = titleR;
-
-        // Status / percent line
-        var statusSlot = Visual.Target.AddSlot("Status");
-        statusSlot.LocalPosition.Value = new float3(0f, -0.01f, 0f);
-        var statusR = statusSlot.AttachComponent<TextRenderer>();
-        statusR.Text.Value = "Preparing...";
-        statusR.Size.Value = 0.05f;
-        statusR.Color.Value = new color(0.8f, 0.86f, 0.95f, 1f);
-        statusR.Font.Target = font;
-        StatusText.Target = statusR;
-
-        // Progress bar background (opaque, so no transparency sorting to worry about)
-        var barBg = Visual.Target.AddSlot("BarBg");
-        barBg.LocalPosition.Value = new float3(0f, -0.105f, 0f);
-        var bgMesh = barBg.AttachComponent<LumoraMeshes.QuadMesh>();
-        bgMesh.Size.Value = new float2(BarHalfWidth * 2f + 0.02f, 0.055f);
-        bgMesh.DualSided.Value = true;
-        var bgRenderer = barBg.AttachComponent<MeshRenderer>();
-        bgRenderer.Mesh.Target = bgMesh;
-        var bgMat = barBg.AttachComponent<UnlitMaterial>();
-        bgMat.Color = new colorHDR(0.10f, 0.10f, 0.13f, 1f);
-        bgRenderer.Material.Target = bgMat;
-
-        // Progress bar fill - left-anchored: a centered quad shifted + x-scaled by progress in OnUpdate.
-        var fill = barBg.AddSlot("BarFill");
-        fill.LocalPosition.Value = new float3(-BarHalfWidth, 0f, 0.002f);
-        fill.LocalScale.Value = new float3(0.0001f, 1f, 1f);
-        var fillMesh = fill.AttachComponent<LumoraMeshes.QuadMesh>();
-        fillMesh.Size.Value = new float2(BarHalfWidth * 2f, 0.045f);
-        fillMesh.DualSided.Value = true;
-        var fillRenderer = fill.AttachComponent<MeshRenderer>();
-        fillRenderer.Mesh.Target = fillMesh;
-        var fillMat = fill.AttachComponent<UnlitMaterial>();
-        fillMat.Color = new colorHDR(0.25f, 0.72f, 1f, 1f);
-        fillRenderer.Material.Target = fillMat;
-        ProgressFill.Target = fill;
-
+        Compose();
         InitializeNewSyncMembers();
-
         UpdatePosition();
+    }
 
-        LumoraLogger.Log("ModelImportIndicator: created in-world indicator");
+    private void Compose()
+    {
+        if (Slot == null || World == null)
+            return;
+
+        // The plate theme is a per-world local singleton (one font, one vertex-coloured unlit material).
+        // Borrowing it means an import readout costs no font provider and no second material.
+        var theme = NameplateTheme.For(World);
+
+        var plate = Slot.AddLocalSlot("Plate");
+        plate.Persistent.Value = false;
+        plate.AttachComponent<FaceLocalUser>();
+        Plate.Target = plate;
+
+        var rim = plate.AddSlot("Rim");
+        rim.LocalPosition.Value = new float3(0f, 0f, PanelDepth);
+        _rimMesh = rim.AttachComponent<LumoraMeshes.RoundedQuadRingMesh>();
+        _rimMesh.Size.Value = new float2(PanelWidth, PanelHeight);
+        _rimMesh.CornerRadius.Value = PanelCornerRadius;
+        _rimMesh.RimWidth.Value = RimWidth;
+        _rimMesh.Color = RimColor;
+        AttachRenderer(rim, _rimMesh, theme);
+
+        var panel = plate.AddSlot("Panel");
+        panel.LocalPosition.Value = new float3(0f, 0f, PanelDepth);
+        _panelMesh = panel.AttachComponent<LumoraMeshes.RoundedQuadMesh>();
+        _panelMesh.Size.Value = new float2(PanelWidth, PanelHeight);
+        _panelMesh.CornerRadius.Value = PanelCornerRadius;
+        _panelMesh.Color = PanelColor;
+        AttachRenderer(panel, _panelMesh, theme);
+
+        var title = plate.AddSlot("Title");
+        title.LocalPosition.Value = new float3(0f, 0.048f, 0f);
+        var titleRenderer = title.AttachComponent<TextRenderer>();
+        if (theme?.Font != null)
+            titleRenderer.Font.Target = theme.Font;
+        titleRenderer.Size.Value = 0.042f;
+        titleRenderer.Color.Value = color.White;
+        titleRenderer.HorizontalAlign.Value = TextHorizontalAlignment.Center;
+        titleRenderer.VerticalAlign.Value = TextVerticalAlignment.Middle;
+        titleRenderer.OutlineThickness.Value = 1.2f;
+        titleRenderer.Text.Value = _title.IsEmpty ? string.Empty : _title.Resolve();
+        TitleText.Target = titleRenderer;
+
+        var status = plate.AddSlot("Status");
+        status.LocalPosition.Value = new float3(0f, -0.004f, 0f);
+        var statusRenderer = status.AttachComponent<TextRenderer>();
+        if (theme?.Font != null)
+            statusRenderer.Font.Target = theme.Font;
+        statusRenderer.Size.Value = 0.028f;
+        statusRenderer.Color.Value = StatusColor;
+        statusRenderer.HorizontalAlign.Value = TextHorizontalAlignment.Center;
+        statusRenderer.VerticalAlign.Value = TextVerticalAlignment.Middle;
+        statusRenderer.Text.Value = string.Empty;
+        StatusText.Target = statusRenderer;
+
+        var track = plate.AddSlot("BarTrack");
+        track.LocalPosition.Value = new float3(0f, -0.055f, 0f);
+        var trackMesh = track.AttachComponent<LumoraMeshes.RoundedQuadMesh>();
+        trackMesh.Size.Value = new float2(BarWidth, BarHeight);
+        trackMesh.CornerRadius.Value = BarHeight * 0.5f;
+        trackMesh.Color = BarTrackColor;
+        AttachRenderer(track, trackMesh, theme);
+
+        // Left-anchored fill: a centred quad shifted left by half its missing width and x-scaled by the
+        // fraction, so it grows from the left edge without re-meshing anything per update.
+        var fill = track.AddSlot("BarFill");
+        fill.LocalPosition.Value = new float3(-BarHalfWidth, 0f, 0.001f);
+        fill.LocalScale.Value = new float3(0.0001f, 1f, 1f);
+        _fillMesh = fill.AttachComponent<LumoraMeshes.RoundedQuadMesh>();
+        _fillMesh.Size.Value = new float2(BarWidth, BarHeight * 0.72f);
+        _fillMesh.CornerRadius.Value = BarHeight * 0.36f;
+        _fillMesh.Color = BarFillColor;
+        AttachRenderer(fill, _fillMesh, theme);
+        ProgressFill.Target = fill;
+    }
+
+    private static void AttachRenderer(Slot slot, LumoraMeshes.ProceduralMesh mesh, NameplateTheme? theme)
+    {
+        var renderer = slot.AttachComponent<MeshRenderer>();
+        renderer.Mesh.Target = mesh;
+        if (theme?.PlateMaterial != null)
+            renderer.Material.Target = theme.PlateMaterial;
+        // A floating readout has no business darkening the floor under it.
+        renderer.ShadowCastMode.Value = ShadowCastMode.Off;
     }
 
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
 
-        // Follow the user's view.
         UpdatePosition(delta);
+        ApplyState();
 
-        // Apply progress that Report() stashed (off-thread). Only touch the data model when it actually changed.
-        float p = System.Math.Clamp(_progress, 0f, 1f);
-        string s = _status ?? string.Empty;
-        if (System.Math.Abs(p - _lastApplied) > 0.004f || s != _lastStatus)
+        if (_done || _failed)
         {
-            _lastApplied = p;
-            _lastStatus = s;
-
-            if (StatusText.Target != null)
-                StatusText.Target.Text.Value = $"{s}   {(int)(p * 100f)}%";
-
-            if (ProgressFill.Target != null)
-            {
-                ProgressFill.Target.LocalScale.Value = new float3(System.Math.Max(0.0001f, p), 1f, 1f);
-                ProgressFill.Target.LocalPosition.Value = new float3(BarHalfWidth * (p - 1f), 0f, 0.002f);
-            }
-        }
-
-        if (_done)
-        {
-            _doneTimer += delta;
-            if (_doneTimer >= 0.35f)
-                Slot.Destroy();
+            _lingerTimer += delta;
+            if (_lingerTimer >= (_failed ? LingerOnFail : LingerOnDone))
+                Slot?.Destroy();
         }
     }
 
-    /// <summary>
-    /// Float the indicator in front of the LOCAL USER's head and face them. Uses the in-world head slot
-    /// (World.LocalUser.Root.HeadSlot) which is correct for BOTH desktop and VR - the raw VR HeadDevice is only a
-    /// fallback (it reports untracked on desktop, which is why the indicator was snapping to the world origin). -xlinka
-    /// </summary>
+    private void ApplyState()
+    {
+        float progress = _failed ? _appliedProgress : System.Math.Clamp(_progress, 0f, 1f);
+        string status = _statusText ?? string.Empty;
+        bool failState = _failed;
+
+        if (failState != _appliedFailState)
+        {
+            _appliedFailState = failState;
+            if (_rimMesh != null && !_rimMesh.IsDestroyed)
+                _rimMesh.Color = failState ? FailRimColor : RimColor;
+            if (_fillMesh != null && !_fillMesh.IsDestroyed)
+                _fillMesh.Color = failState ? FailFillColor : BarFillColor;
+        }
+
+        if (!ReferenceEquals(status, _appliedStatus) && status != _appliedStatus)
+        {
+            _appliedStatus = status;
+            if (StatusText.Target != null && !StatusText.Target.IsDestroyed)
+                StatusText.Target.Text.Value = status;
+        }
+
+        // A hundredth of the bar is well under a pixel at any sane distance; below that the write is
+        // pure sync churn on a slot transform.
+        if (System.Math.Abs(progress - _appliedProgress) > 0.005f)
+        {
+            _appliedProgress = progress;
+            var fill = ProgressFill.Target;
+            if (fill != null && !fill.IsDestroyed)
+            {
+                float scale = System.Math.Max(0.0001f, progress);
+                fill.LocalScale.Value = new float3(scale, 1f, 1f);
+                fill.LocalPosition.Value = new float3(BarHalfWidth * (progress - 1f), 0f, 0.001f);
+            }
+        }
+    }
+
     private void UpdatePosition(float delta = 0f)
     {
-        try
+        var anchor = Anchor.Target;
+        var head = World?.LocalUser?.Root?.HeadSlot;
+
+        float3 target;
+        if (anchor != null && !anchor.IsDestroyed)
         {
-            var head = World?.LocalUser?.Root?.HeadSlot;
-            var anchor = Anchor.Target;
-
-            float3 targetPosition;
-            float3 facePos;
-
-            if (anchor != null)
-            {
-                // PRIMARY: float above the imported model. The model is spawned in front of the user (in view), so
-                // this is reliable even when the local-user head slot isn't resolving (which is why a head-only
-                // approach left the indicator stranded at the world origin). -xlinka
-                targetPosition = anchor.GlobalPosition + float3.Up * 1.9f;
-                facePos = head?.GlobalPosition ?? (targetPosition - float3.Forward);
-            }
-            else if (head != null)
-            {
-                var hp = head.GlobalPosition;
-                targetPosition = hp + (head.GlobalRotation * float3.Forward) * 1.1f + float3.Up * 0.18f;
-                facePos = hp;
-            }
-            else
-            {
-                return; // nothing to anchor to yet - retry next frame, do NOT snap to the origin
-            }
-
-            // Face the user with a level yaw (floatQ.LookRotation is broken for facing - see FaceLocalUser). -xlinka
-            var toUser = facePos - targetPosition;
-            toUser.y = 0f;
-            floatQ targetRotation = toUser.LengthSquared > 0.001f
-                ? floatQ.AxisAngle(float3.Up, MathF.Atan2(toUser.x, toUser.z))
-                : floatQ.Identity;
-
-            // Snap into place the first valid frame, then smoothly follow so it never animates in from the origin.
-            if (delta > 0f && _placed)
-            {
-                Slot.GlobalPosition = float3.Lerp(Slot.GlobalPosition, targetPosition, delta * 6f);
-                Slot.GlobalRotation = floatQ.Slerp(Slot.GlobalRotation, targetRotation, delta * 8f);
-            }
-            else
-            {
-                Slot.GlobalPosition = targetPosition;
-                Slot.GlobalRotation = targetRotation;
-                if (!_placed)
-                    LumoraLogger.Log($"ModelImportIndicator: placed at {targetPosition} (anchor={anchor != null}, head={head != null})");
-                _placed = true;
-            }
+            target = anchor.GlobalPosition + float3.Up * AnchorHeight;
         }
-        catch (Exception ex)
+        else if (head != null && !head.IsDestroyed)
         {
-            LumoraLogger.Error($"ModelImportIndicator: position error: {ex.Message}");
+            target = head.GlobalPosition + (head.GlobalRotation * float3.Forward) * 1.1f + float3.Up * 0.18f;
         }
+        else
+        {
+            // Nothing to hang off yet. Retry next frame rather than snapping to the world origin, which
+            // is what "just place it somewhere" looks like from inside the world. -xlinka
+            return;
+        }
+
+        if (Slot == null || Slot.IsDestroyed)
+            return;
+
+        // Facing is FaceLocalUser's job on the plate child; this only carries position, so the readout
+        // does not fight the billboard.
+        if (delta > 0f && _placed)
+            Slot.GlobalPosition = float3.Lerp(Slot.GlobalPosition, target, System.Math.Min(1f, delta * 6f));
+        else
+            Slot.GlobalPosition = target;
+        _placed = true;
     }
 
-    // --- Static API (call from anywhere / any thread) ---
+    // STATIC API - safe from any thread
 
-    /// <summary>Spawn the in-world indicator for an import. <paramref name="anchor"/> is the slot the model imports
-    /// into - the indicator floats above it (so it's reliably in view).</summary>
-    public static void Show(World world, Slot anchor, string title)
+    public static void Show(World world, Slot anchor, LocaleText title)
     {
         if (world == null)
             return;
@@ -228,18 +280,19 @@ public class ModelImportIndicator : Component
         {
             try
             {
-                var prev = _current;
-                if (prev != null && !prev.IsDestroyed)
-                    prev.Slot?.Destroy();
+                var previous = _current;
+                if (previous != null && !previous.IsDestroyed)
+                    previous.Slot?.Destroy();
 
-                var slot = world.AddSlot("ModelImportIndicator");
-                var ind = slot.AttachComponent<ModelImportIndicator>();
-                ind._title = title;
-                if (ind.TitleText.Target != null)
-                    ind.TitleText.Target.Text.Value = title;
-                if (anchor != null)
-                    ind.Anchor.Target = anchor;
-                _current = ind;
+                var slot = world.RootSlot.AddLocalSlot("Import Indicator");
+                slot.Persistent.Value = false;
+                var indicator = slot.AttachComponent<ModelImportIndicator>();
+                indicator._title = title;
+                if (indicator.TitleText.Target != null && !title.IsEmpty)
+                    indicator.TitleText.Target.Text.Value = title.Resolve();
+                if (anchor != null && !anchor.IsDestroyed)
+                    indicator.Anchor.Target = anchor;
+                _current = indicator;
             }
             catch (Exception ex)
             {
@@ -248,29 +301,52 @@ public class ModelImportIndicator : Component
         });
     }
 
-    /// <summary>Update progress (0..1) + status. Thread-safe; applied on the world thread by OnUpdate.</summary>
-    public static void Report(float progress, string status)
+    public static void Report(in ImportProgress progress)
     {
-        var c = _current;
-        if (c == null || c.IsDestroyed)
+        var indicator = _current;
+        if (indicator == null || indicator.IsDestroyed)
             return;
-        c._progress = progress;
-        if (status != null)
-            c._status = status;
+
+        if (progress.Fraction >= 0f)
+            indicator._progress = progress.Fraction;
+
+        var text = progress.Describe();
+        indicator._statusText = text.IsEmpty ? string.Empty : text.Resolve();
     }
 
-    /// <summary>Finish: the indicator fades out + self-destructs shortly after.</summary>
+    // Finished cleanly: the bar completes and the plate goes away a beat later, so the eye gets to see
+    // it land instead of the readout just blinking out.
     public static void Hide()
     {
-        var c = _current;
+        var indicator = _current;
         _current = null!;
-        if (c != null && !c.IsDestroyed)
-            c._done = true;
+        if (indicator == null || indicator.IsDestroyed)
+            return;
+        indicator._progress = 1f;
+        var done = new ImportProgress(ImportStage.Complete, 1f).Describe();
+        indicator._statusText = done.Resolve();
+        indicator._done = true;
+    }
+
+    // Failed: say WHY, in the world, for long enough to read, then go. A silent disappearance is
+    // indistinguishable from the import having worked and the model being somewhere else. -xlinka
+    public static void Fail(string reason)
+    {
+        var indicator = _current;
+        _current = null!;
+        if (indicator == null || indicator.IsDestroyed)
+            return;
+
+        var label = string.IsNullOrWhiteSpace(reason)
+            ? "Import.Failed".AsLocale("Import failed")
+            : "Import.FailedReason".AsLocale("Import failed: {0}", reason);
+        indicator._statusText = label.Resolve();
+        indicator._failed = true;
     }
 
     public override void OnDestroy()
     {
-        if (_current == this)
+        if (ReferenceEquals(_current, this))
             _current = null!;
         base.OnDestroy();
     }

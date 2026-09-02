@@ -42,6 +42,24 @@ public abstract class ImportDialog : Component
     // ref points across separate World instances. - xlinka
     public static System.Uri? DefaultFontUrl { get; set; }
 
+    // Where the font comes from, in order: the URL the dashboard registers at startup, then whatever
+    // FontProvider the dialog's own world already carries.
+    //
+    // The startup URL is null in anything that comes up without the dashboard - a headless run, a world
+    // template that spawns a dialog itself - and text with no font renders NOTHING at all, so the dialog
+    // would be a blank frame with invisible buttons. Borrowing the URL rather than the provider keeps the
+    // per-dialog provider rule intact: no ref points at somebody else's slot, so a dialog outliving the
+    // slot it borrowed from is not a thing. -xlinka
+    public static Uri? ResolveFontUrl(World? world)
+    {
+        if (DefaultFontUrl != null)
+            return DefaultFontUrl;
+
+        var provider = world?.RootSlot?.GetComponentInChildren<FontProvider>();
+        var url = provider?.URL?.Value;
+        return url;
+    }
+
     public readonly List<string> Paths = new();
 
     // World where the import's resulting slot/components are spawned. The dialog
@@ -101,12 +119,13 @@ public abstract class ImportDialog : Component
         // Create a per-dialog FontProvider in this dialog's own world (so the
         // PanelShell.Font.Target ref doesn't cross worlds, which SyncRef rejects
         // even when one of the worlds is the userspace overlay). - xlinka
-        if (DefaultFontUrl != null)
+        var fontUrl = ResolveFontUrl(World);
+        if (fontUrl != null)
         {
             var fontSlot = Slot.AddSlot("DialogFont");
             _fontProvider = fontSlot.AttachComponent<FontProvider>();
-            _fontProvider.URL.Value = DefaultFontUrl;
-            _fontProvider.FallbackURLs.Add(DefaultFontUrl);
+            _fontProvider.URL.Value = fontUrl;
+            _fontProvider.FallbackURLs.Add(fontUrl);
             _panel.Font.Target = _fontProvider;
         }
 

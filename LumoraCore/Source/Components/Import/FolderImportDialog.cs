@@ -57,12 +57,13 @@ public sealed class FolderImportDialog : Component
         _panel.Title.Value = "Folder Import";
         _panel.Size.Value = canvasSize;
 
-        if (ImportDialog.DefaultFontUrl != null)
+        var fontUrl = ImportDialog.ResolveFontUrl(World);
+        if (fontUrl != null)
         {
             var fontSlot = Slot.AddSlot("DialogFont");
             _fontProvider = fontSlot.AttachComponent<FontProvider>();
-            _fontProvider.URL.Value = ImportDialog.DefaultFontUrl;
-            _fontProvider.FallbackURLs.Add(ImportDialog.DefaultFontUrl);
+            _fontProvider.URL.Value = fontUrl;
+            _fontProvider.FallbackURLs.Add(fontUrl);
             _panel.Font.Target = _fontProvider;
         }
 

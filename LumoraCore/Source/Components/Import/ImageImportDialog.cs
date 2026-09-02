@@ -91,28 +91,34 @@ public sealed class ImageImportDialog : ImportDialog
         // see it, not to find out they also have to go turn the old one off.
         skybox.MakeActive();
 
-        _ = AssignPanoramaAsync(target, cubemap, file);
+        AssignPanorama(cubemap, file);
         Slot.Destroy();
     }
 
     // The copy into local storage is I/O, so it cannot happen on the world thread; the URL write has
     // to go back onto it. Everything after that is the ordinary asset path - the cubemap gathers,
     // projects and uploads itself, and the sky hook picks it up when it reports loaded.
-    private static async Task AssignPanoramaAsync(World world, StaticCubemap cubemap, string file)
+    //
+    // The cubemap owns the task, so it needs no destroyed check of its own: if someone deletes the
+    // skybox while the file is still copying, the hop back to the world cancels the task instead of
+    // resuming into it. This dialog is NOT the owner - it destroys itself on the next line. -xlinka
+    private static void AssignPanorama(StaticCubemap cubemap, string file)
     {
-        string uri = file;
-        var db = Engine.Current?.LocalDB;
-        if (db != null)
+        cubemap.StartTask(async () =>
         {
-            var imported = await db.ImportLocalAssetAsync(file, LocalDB.ImportLocation.Copy).ConfigureAwait(false);
-            if (!string.IsNullOrEmpty(imported))
-                uri = imported;
-        }
+            await WorldContext.ToBackground();
 
-        world.RunSynchronously(() =>
-        {
-            if (!cubemap.IsDestroyed)
-                cubemap.URL.Value = new Uri(uri);
+            string uri = file;
+            var db = Engine.Current?.LocalDB;
+            if (db != null)
+            {
+                var imported = await db.ImportLocalAssetAsync(file, LocalDB.ImportLocation.Copy);
+                if (!string.IsNullOrEmpty(imported))
+                    uri = imported;
+            }
+
+            await WorldContext.ToWorld();
+            cubemap.URL.Value = new Uri(uri);
         });
     }
 }

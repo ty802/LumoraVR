@@ -10,11 +10,18 @@ public sealed class TurnSubmodule
 {
     public enum Mode { Snap, Smooth }
 
-    public Mode TurnMode { get; set; } = Mode.Snap;
-    public float SnapAngle { get; set; } = 45f * 3.14159265f / 180f;
+    private const float DegToRad = 3.14159265f / 180f;
+
+    // Mode, snap step and smooth rate are COMFORT settings, so they come from the user's own
+    // preferences rather than from whoever built the module - read live, so the settings screen
+    // applies without respawning locomotion. Everything below is in radians; the settings are in
+    // degrees because that is what a person picks. -xlinka
+    public Mode TurnMode => EngineSettings.TurnMode == EngineSettings.TurnStyle.Smooth ? Mode.Smooth : Mode.Snap;
+    public float SnapAngle => EngineSettings.SnapTurnAngle * DegToRad;
+    public float SmoothTurnSpeed => EngineSettings.SmoothTurnSpeed * DegToRad;
+
     public float SnapActivateThreshold { get; set; } = 0.8f;
     public float SnapResetThreshold { get; set; } = 0.5f;
-    public float SmoothTurnSpeed { get; set; } = 90f * 3.14159265f / 180f;
     public float SmoothDeadzone { get; set; } = 0.15f;
 
     private LocomotionController _controller = null!;

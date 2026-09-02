@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -12,7 +12,7 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components.Interaction;
 
-[ComponentCategory("XR/Interaction")]
+[ComponentCategory("Users")]
 [DefaultUpdateOrder(-900)]
 public sealed class InteractionLaser : Component
 {
@@ -687,7 +687,13 @@ public sealed class InteractionLaser : Component
 
         bool exclusive = _exclusiveRoot != null && !_exclusiveRoot.IsDestroyed;
 
+        // One cast, two consumers. The blocking distance and the shape-hit target resolve are the same ray
+        // with the same arguments; casting it twice doubled the physics cost of every hand every frame,
+        // and each cast can re-issue itself up to RaycastSkipLimit times through filtered hits. -xlinka
+        _castHitValid = false;
         float blockingDistance = maxDist;
+        _colliderHitSlot = null;
+        _colliderHitPoint = float3.Zero;
         if (!exclusive && TryFindNearestColliderHitDistance(origin, direction, maxDist, out float colliderHitDistance))
         {
             blockingDistance = colliderHitDistance;
@@ -1184,6 +1190,9 @@ public sealed class InteractionLaser : Component
         return ControllerSide.Value == Chirality.Left ? 1 : 2;
     }
 
+    // The id this laser hovers canvases under, so a grab or a drop can address the same pointer state.
+    public int PointerId => GetPointerId();
+
     internal void NotifyActivatedByTool(IInteractionTarget target, float3 point)
     {
         Activated?.Invoke(target, point);
@@ -1389,7 +1398,7 @@ public sealed class InteractionLaser : Component
         // its body/mesh - sphere-testing the target at its slot origin misses the body entirely. The physics ray
         // hits the real collision shape (mesh colliders included) and we walk up to the owning interaction target.
         // This is what makes a big avatar grabbable/equippable anywhere on its body. -xlinka
-        if (TryPhysicsRaycast(origin, direction, maxDist, out var shapeHit) &&
+        if (CastRayCached(origin, direction, maxDist, out var shapeHit) &&
             shapeHit.Distance <= blockingDistance && shapeHit.Slot != null)
         {
             var ctarget = FindInteractionTargetInParents(shapeHit.Slot);
@@ -1618,14 +1627,54 @@ public sealed class InteractionLaser : Component
             resolvedOrigin.z + direction.z * startOffset);
     }
 
+    // The physics hit's slot and point survive the cast so a sampler can read plain scenery: the
+    // interaction hit list only carries interaction targets, and a ground plate or a bare prop is
+    // exactly the thing an eyedropper gets pointed at. -xlinka
+    private Slot? _colliderHitSlot;
+    private float3 _colliderHitPoint;
+
+    public Slot? CurrentColliderHitSlot => _colliderHitSlot;
+    public float3 CurrentColliderHitPoint => _colliderHitPoint;
+
     private bool TryFindNearestColliderHitDistance(float3 origin, float3 direction, float maxDistance, out float hitDistance)
     {
         hitDistance = maxDistance;
-        if (!TryPhysicsRaycast(origin, direction, maxDistance, out var hit))
+        if (!CastRayCached(origin, direction, maxDistance, out var hit))
             return false;
 
         hitDistance = hit.Distance;
+        _colliderHitSlot = hit.Slot;
+        _colliderHitPoint = hit.Point;
         return true;
+    }
+
+    // Per-cast memo for the world ray. Reset at the top of CastAndUpdate; both consumers inside one frame's
+    // cast share the result. Keyed on the ray so a caller passing different arguments re-casts. -xlinka
+    private bool _castHitValid;
+    private bool _castHitFound;
+    private PhysicsRaycastHit _castHit;
+    private float3 _castHitOrigin;
+    private float3 _castHitDirection;
+    private float _castHitMaxDistance;
+
+    private bool CastRayCached(float3 origin, float3 direction, float maxDistance, out PhysicsRaycastHit hit)
+    {
+        if (_castHitValid &&
+            _castHitOrigin == origin &&
+            _castHitDirection == direction &&
+            _castHitMaxDistance == maxDistance)
+        {
+            hit = _castHit;
+            return _castHitFound;
+        }
+
+        _castHitFound = TryPhysicsRaycast(origin, direction, maxDistance, out _castHit);
+        _castHitOrigin = origin;
+        _castHitDirection = direction;
+        _castHitMaxDistance = maxDistance;
+        _castHitValid = true;
+        hit = _castHit;
+        return _castHitFound;
     }
 
     // Shape-accurate ray cast against the world's real physics space (delegated to the platform). Replaces the

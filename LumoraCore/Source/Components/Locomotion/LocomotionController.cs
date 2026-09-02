@@ -138,6 +138,17 @@ public class LocomotionController : Component
     private const float MinUserScale = 0.05f;
     private const float MaxUserScale = 20f;
 
+    // The engine's own sanity limits first, then the role's. Role bounds are only ever a NARROWING of
+    // the engine range - a role configured wider than the engine allows does not get to widen it - so
+    // the order matters: clamp to the engine range, hand that to the gate, and take what comes back.
+    // An unbounded role is a no-op in there and gets the engine range unchanged. -xlinka
+    public float ClampUserScale(float requested)
+    {
+        float scale = System.Math.Clamp(requested, MinUserScale, MaxUserScale);
+        var permissions = World?.DataModelPermissions;
+        return permissions == null ? scale : permissions.ClampScale(World!.LocalUser, scale);
+    }
+
     private void HandleDesktopScaling()
     {
         if (_inputInterface == null || _inputInterface.IsVRActive)
@@ -153,7 +164,7 @@ public class LocomotionController : Component
             return;
 
         float factor = MathF.Pow(1.12f, scroll);
-        _userRoot.GlobalScale = System.Math.Clamp(_userRoot.GlobalScale * factor, MinUserScale, MaxUserScale);
+        _userRoot.GlobalScale = ClampUserScale(_userRoot.GlobalScale * factor);
     }
 
     private bool TryInitializeLocalUser()
@@ -315,7 +326,7 @@ public class LocomotionController : Component
         // Release/recapture the cursor. The action's own edge replaces the local was-pressed latch,
         // and because it lives in the locomotion set it stays quiet while the dashboard is up - the
         // same key closes the dash there instead of also unlocking the mouse behind it.
-        if (_inputInterface.Actions?.Locomotion.ToggleMouseCapture.Pressed == true)
+        if (_inputInterface?.Actions?.Locomotion.ToggleMouseCapture.Pressed == true)
         {
             _mouseCaptured = !_mouseCaptured;
             _inputState?.SetMouseCaptureRequested(_mouseCaptured);
@@ -364,6 +375,20 @@ public class LocomotionController : Component
             Slot.GlobalRotation = rotation;
     }
 
+    // Desktop look yaws the ROOT, and it has to pivot on the head exactly like a stick turn does - same
+    // rotate, same anchor - so the head stays put and the hands and body come round with it. Writing the
+    // rotation straight onto the root spins the rig about the root ORIGIN instead, which is only the same
+    // point for as long as the head sits directly above it. -xlinka
+    private void SetRootRotationAroundHead(floatQ rotation)
+    {
+        if (_userRoot == null)
+        {
+            SetRootRotation(rotation);
+            return;
+        }
+        _userRoot.RotateAroundHead((rotation * Slot.GlobalRotation.Inverse).Normalized);
+    }
+
     private void UpdateHead()
     {
         if (_userRoot?.HeadSlot == null)
@@ -392,7 +417,7 @@ public class LocomotionController : Component
         var currentBodyRot = Slot.GlobalRotation;
         float bodyDot = floatQ.Dot(newBodyRot, currentBodyRot);
         if (1.0f - (bodyDot < 0 ? -bodyDot : bodyDot) > ROT_THRESHOLD)
-            SetRootRotation(newBodyRot);
+            SetRootRotationAroundHead(newBodyRot);
 
         var newHeadRot = floatQ.FromEuler(new float3(_pitch, 0, 0));
         var currentHeadRot = _userRoot.HeadSlot.LocalRotation.Value;
@@ -517,6 +542,18 @@ public class LocomotionController : Component
         }
 
         SetRootRotation((floatQ.AxisAngle(float3.Up, deltaYaw) * Slot.GlobalRotation).Normalized);
+    }
+
+    // Take the heading the root is ACTUALLY carrying as the new accumulator value.
+    //
+    // Desktop look owns the root's yaw: UpdateHead writes _yaw onto it every frame. Anything that poses
+    // the rig from outside - a seat turning you to face the way the chair faces, a scripted placement -
+    // therefore lasts exactly one frame unless it lands here too, because the next update writes the old
+    // yaw straight back over it. Snap turns keep composing on top afterwards, since they add to the same
+    // accumulator. -xlinka
+    public void SyncYawFromRoot()
+    {
+        _yaw = Slot.GlobalRotation.ToEuler().y;
     }
 
     public void GetMovementBasis(out float3 forward, out float3 right)

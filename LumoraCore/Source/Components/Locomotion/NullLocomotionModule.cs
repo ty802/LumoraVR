@@ -5,6 +5,7 @@ namespace Lumora.Core.Components;
 
 // Always-eligible fallback. Used when permissions deny everything else or
 // the user manually cycles through to "no locomotion". - xlinka
+[ComponentCategory("Users/Locomotion")]
 public class NullLocomotionModule : LocomotionModule
 {
     public override string DisplayName => "None";

@@ -10,6 +10,7 @@ namespace Lumora.Core.Components;
 // up/down. Space/C add explicit world-vertical, Shift sprints. No character
 // controller involvement - the rig is moved straight, same model as the
 // reference Noclip module. - xlinka
+[ComponentCategory("Users/Locomotion")]
 public class NoclipLocomotion : SmoothLocomotionBase
 {
     public override string DisplayName => "Noclip";
@@ -41,9 +42,15 @@ public class NoclipLocomotion : SmoothLocomotionBase
         if (Owner == null || userRoot == null)
             return;
 
-        var state = Owner.InputState;
-        if ((state?.FreeCamActive ?? false) || (state?.DesktopInputSuppressed ?? false))
+        if (InputBlocked)
             return;
+
+        // Seated: no flying out of the chair, but the turn axis still answers.
+        if (MovementBlocked)
+        {
+            Turn.Update(LocomotionInputHelper.ReadTurnAxis(InputInterface), delta);
+            return;
+        }
 
         var rawAxis = LocomotionInputHelper.ReadMovementAxis(InputInterface);
         var axis = LocomotionInputHelper.ApplyDeadzone(rawAxis, MovementDeadzone);

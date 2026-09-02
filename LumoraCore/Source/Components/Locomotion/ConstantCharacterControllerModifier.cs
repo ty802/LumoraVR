@@ -7,7 +7,7 @@ using Lumora.Core.Math;
 namespace Lumora.Core.Components;
 
 /// <summary>Surface modifier with a constant value, regardless of contact point.</summary>
-[ComponentCategory("Locomotion/Modifiers")]
+[ComponentCategory("Users/Locomotion/Modifiers")]
 public class ConstantCharacterControllerModifier : CharacterControllerModifier
 {
     public readonly Sync<float> Value;

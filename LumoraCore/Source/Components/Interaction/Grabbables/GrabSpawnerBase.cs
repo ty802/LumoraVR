@@ -84,6 +84,12 @@ public abstract class GrabSpawnerBase : Component
         if (!world.AllowsItemSpawning)
             return "spawning is off in this world";
 
+        // The mode ceiling above and the ROLE cap here are two different questions, and both bind. The
+        // mode answer stands even with the gate switched off (a local world runs with it off), so it
+        // stays where it is rather than being folded into the domain query. -xlinka
+        if (world.DataModelPermissions?.AllowsDomain(world.LocalUser, DataModelPermissionDomain.Spawn) == false)
+            return "you may not spawn items in this world";
+
         var template = Template.Target;
         if (template == null || template.IsDestroyed)
             return "no template";
@@ -166,7 +172,7 @@ public abstract class GrabSpawnerBase : Component
         mark.Source.Target = this;
         mark.Instance.Target = copy;
 
-        InspectorUndo.Record(this, SlotExistenceUndoBatch.Created(world, new[] { copy }, "Spawn"));
+        InspectorUndo.Record(this, SlotExistenceUndoBatch.Created(world, new[] { copy }, UndoLocale.Spawn));
         return grabbable;
     }
 

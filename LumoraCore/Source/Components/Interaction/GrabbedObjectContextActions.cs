@@ -49,11 +49,18 @@ public class GrabbedObjectContextActions : ContextMenuItemSource
             OnPressed = _ => DuplicateGrabbed(grabber),
         });
 
+        // Asked here rather than only in the handler so the refusal is something the user can SEE:
+        // the radial menu has already closed by the time an action runs, and a button that quietly
+        // does nothing reads as a broken button.
+        bool canSave = AnySaveableGrabbed(grabber, out var saveRefusal);
         page.AddItem(new ContextMenuItem
         {
-            Label = "Save to Inventory",
-            FillColor = new[] { 0.12f, 0.18f, 0.30f, 0.92f },
-            OnPressed = _ => SaveGrabbedToInventory(grabber),
+            Label = canSave ? "Save to Inventory" : saveRefusal ?? "Save Blocked",
+            IsEnabled = canSave,
+            FillColor = canSave
+                ? new[] { 0.12f, 0.18f, 0.30f, 0.92f }
+                : new[] { 0.22f, 0.16f, 0.16f, 0.92f },
+            OnPressed = canSave ? _ => SaveGrabbedToInventory(grabber) : null,
         });
 
         // Equip on avatar: if a held object is an (unworn) avatar, offer to wear it from the held-object menu.
@@ -85,6 +92,7 @@ public class GrabbedObjectContextActions : ContextMenuItemSource
 
     private void SaveGrabbedToInventory(Grabber grabber)
     {
+        var actor = World?.LocalUser;
         foreach (var slot in CollectGrabbedSlots(grabber))
         {
             if (slot.IsDestroyed)
@@ -97,8 +105,55 @@ public class GrabbedObjectContextActions : ContextMenuItemSource
                 Logging.Logger.Log($"Save to Inventory refused for '{slot.Name}': marked not saveable.");
                 continue;
             }
-            Inventory.SaveItem(slot, slot.Name);
+            // This one IS the boundary. Holding something is not owning it: a grab parents the object
+            // under your hand, which reads as ownership everywhere else, so the copy question has to be
+            // asked of the gate rather than of where the thing currently hangs. -xlinka
+            if (!ItemProtection.AllowsSaveCopy(slot, actor, out var reason))
+            {
+                Logging.Logger.Log($"Save to Inventory refused for '{slot.Name}': {reason ?? "not allowed"}.");
+                continue;
+            }
+            // Packed here on the world thread, uploaded off it; the answer only goes to the log because
+            // the radial menu that asked is already gone. Lands at the inventory root. -xlinka
+            var name = slot.Name;
+            _ = Inventory.SaveItemAsync(slot, name, null).ContinueWith(t =>
+            {
+                var result = t.Status == System.Threading.Tasks.TaskStatus.RanToCompletion
+                    ? t.Result
+                    : InventoryResult.Failure(t.Exception?.GetBaseException().Message ?? "upload failed");
+                Logging.Logger.Log($"Save to Inventory '{name}': {result.Message}");
+            });
         }
+    }
+
+    // Whether anything in the hand can actually be filed away, and a short label for why not when
+    // nothing can. A mixed hand stays enabled and the handler skips the pieces it may not take.
+    private bool AnySaveableGrabbed(Grabber grabber, out string? refusal)
+    {
+        refusal = null;
+        var actor = World?.LocalUser;
+        bool marked = false;
+        bool denied = false;
+
+        foreach (var slot in CollectGrabbedSlots(grabber))
+        {
+            if (slot.IsDestroyed)
+                continue;
+            if (GrabSaveBlock.BlocksInventorySave(slot))
+            {
+                marked = true;
+                continue;
+            }
+            if (!ItemProtection.AllowsSaveCopy(slot, actor, out _))
+            {
+                denied = true;
+                continue;
+            }
+            return true;
+        }
+
+        refusal = denied ? "Protected" : marked ? "Not Saveable" : null;
+        return false;
     }
 
     private void DestroyGrabbed(Grabber grabber)
@@ -138,7 +193,7 @@ public class GrabbedObjectContextActions : ContextMenuItemSource
                 duplicates.Add(copy);
         }
 
-        var batch = SlotExistenceUndoBatch.Created(World, duplicates, "Duplicate");
+        var batch = SlotExistenceUndoBatch.Created(World, duplicates, UndoLocale.Duplicate);
         if (batch != null)
             FindUndoManager()?.Record(batch);
     }

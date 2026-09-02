@@ -9,7 +9,7 @@ namespace Lumora.Core.Components;
 // A blocked hit STOPS the arc rather than passing through it: a no-go volume you can arc over is not
 // a no-go volume. Put a LandingSurface deeper inside a blocked branch to carve an allowed pad out of
 // it - the surface tag is checked first. - xlinka
-[ComponentCategory("Locomotion/Tagging")]
+[ComponentCategory("Users/Locomotion/Tagging")]
 [SingleInstancePerSlot]
 public sealed class LandingBlock : Component
 {

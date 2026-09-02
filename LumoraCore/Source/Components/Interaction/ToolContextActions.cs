@@ -6,7 +6,7 @@ using Lumora.Core.Input;
 
 namespace Lumora.Core.Components.Interaction;
 
-// Contributes the "Dequip Tool" action when the hand that summoned the menu
+// Contributes the "Unequip Tool" action when the hand that summoned the menu
 // has a tool item equipped. - xlinka
 [ComponentCategory("Interaction")]
 public class ToolContextActions : ContextMenuItemSource
@@ -39,15 +39,14 @@ public class ToolContextActions : ContextMenuItemSource
         if ((item == null || item.IsDestroyed) && !holdingSomething)
             return;
 
-        // Shares the submenu the gizmo mode items use, so equip/dequip sit with the rest of the tool's
-        // actions instead of on the root ring.
-        page = page.GetOrAddSubPage(Gizmos.GizmoModeMenuSource.ToolSubmenuLabel, Gizmos.GizmoModeMenuSource.ToolSubmenuFill);
-
+        // Equip and unequip stay on the ROOT ring. They are the one thing you always want reachable
+        // with a tool in hand, and burying them one level down under "Tool Actions" next to the mode
+        // switches meant two clicks to put a tool away. The per-tool actions still nest. -xlinka
         if (item != null && !item.IsDestroyed)
         {
             page.AddItem(new ContextMenuItem
             {
-                Label = "Dequip Tool",
+                Label = "Unequip Tool",
                 FillColor = new[] { 0.30f, 0.22f, 0.12f, 0.92f },
                 OnPressed = _ => hand.EquipToolItem(null),
             });

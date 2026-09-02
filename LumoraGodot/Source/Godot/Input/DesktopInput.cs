@@ -180,10 +180,14 @@ public partial class DesktopInput : Node3D
         if (_cursorDot == null)
             return;
 
-        // No screen-space reticle anywhere: in the world the laser's in-world
-        // cursor is the pointer, and over the dash overlay the OS mouse cursor
-        // is already visible.
-        _cursorDot.Visible = false;
+        // In the world the laser's in-world cursor is the pointer. Over the composited dash it is
+        // not: the overlay draws above the 3D cursor and the OS cursor is not reliably shown while
+        // the game window owns the mouse, so the screen reticle takes over there. Its layer (101)
+        // sits one above the dash overlay (100). -xlinka
+        bool overDash = Lumora.Core.Engine.Current?.InputInterface is { IsVRActive: false, IsDashboardOpen: true };
+        _cursorDot.Visible = overDash;
+        if (overDash)
+            _cursorDot.Position = _cursorDot.GetViewport().GetMousePosition() - _cursorDot.Size / 2f;
     }
 
     private void UpdateInteractionRay()

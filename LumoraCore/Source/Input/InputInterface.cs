@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -64,6 +64,48 @@ public class InputInterface : IDisposable
     public float UserHeight { get; set; } = DEFAULT_USER_HEIGHT;
 
     public bool IsDashboardOpen { get; set; }
+
+    // The platform's clipboard text service, assigned by the runner alongside the other platform
+    // services. Null on a platform that has no clipboard (or before the runner has wired one), and
+    // every caller has to cope with that rather than assume - the VR keyboard greys its Paste key out
+    // on exactly this check. -xlinka
+    public IClipboardText? ClipboardText { get; set; }
+
+    // The platform's "what colour is the view showing there" service, assigned by the runner alongside
+    // the other platform services. Null on a platform with no view (headless), which is why the
+    // eyedropper treats a failed read as "no answer" rather than a bug. -xlinka
+    public IViewColorSampler? ViewColorSampler { get; set; }
+
+    // The platform's "give me a picture of what the view is showing" service, assigned by the runner
+    // alongside the other platform services. Null on a platform with no view (headless), so a session
+    // thumbnail or a saved world's sidecar is simply not written rather than the save failing. -xlinka
+    public IViewCapture? ViewCapture { get; set; }
+
+    // The last picture taken with nothing drawn over the world. On desktop the dash composites onto
+    // the same viewport the capture reads, so a capture taken while it is open is a picture of the
+    // dash, and both pictures people actually want (the session thumbnail, the sidecar beside a save)
+    // used to come out that way because saving happens FROM the dash. Callers go through this: a fresh
+    // read while the dash is closed, otherwise the newest clean one. Size is whatever the last clean
+    // read asked for; both callers ask for the same 256x144. -xlinka
+    private byte[]? _lastWorldView;
+
+    public bool TryCaptureWorldView(int width, int height, out byte[] jpeg)
+    {
+        jpeg = System.Array.Empty<byte>();
+        var capture = ViewCapture;
+        if (capture == null)
+            return false;
+        if (!IsDashboardOpen && capture.TryCapture(width, height, out var fresh) && fresh != null && fresh.Length > 0)
+        {
+            _lastWorldView = fresh;
+            jpeg = fresh;
+            return true;
+        }
+        if (_lastWorldView == null || _lastWorldView.Length == 0)
+            return false;
+        jpeg = _lastWorldView;
+        return true;
+    }
 
     // Desktop free-cursor ray, pushed by the platform layer each frame while the
     // OS cursor is unlocked (dash open). World space. The interaction laser uses
@@ -195,17 +237,18 @@ public class InputInterface : IDisposable
         }
     }
 
-    // Called before XR sampling and after output/root updates so raw device poses and transformed poses agree
-    // on the same user root.
+    // Points the tracking space at the focused local user's root. It BINDS the slot rather than copying its
+    // transform: the root moves during the frame (turn, walk, teleport) and every world-space device pose
+    // read after that has to come out of where the rig actually is, not where it was at the frame boundary.
+    // Still called at the frame edges so a world switch re-points it. -xlinka
     public bool SyncTrackingSpaceToFocusedLocalUser()
     {
         UserRoot root = _engine?.WorldManager?.FocusedWorld?.LocalUser?.Root!;
         if (root == null || root.IsDestroyed || root.Slot == null)
             return false;
 
-        GlobalTrackingSpace.Position = root.Slot.GlobalPosition;
-        GlobalTrackingSpace.Rotation = root.Slot.GlobalRotation;
-        GlobalTrackingSpace.Scale = root.GlobalScale;
+        if (!ReferenceEquals(GlobalTrackingSpace.Space, root.Slot))
+            GlobalTrackingSpace.Space = root.Slot;
         return true;
     }
 
@@ -749,6 +792,9 @@ public class InputInterface : IDisposable
         _keyboardDriver = null!;
         _mouseDriver = null!;
         _gamepadDriver = null!;
+        ClipboardText = null;
+        ViewColorSampler = null;
+        ViewCapture = null;
         Actions = null!;
         Mouse = null!;
         Keyboard = null!;

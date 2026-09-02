@@ -62,6 +62,11 @@ public abstract class ToolItem : Component
 
     public virtual bool IsInUse => ActiveTool?.PrimaryHeld == true;
 
+    // Whether this user may take the item into a hand at all. Base items are ordinary props and say
+    // yes; the build tools answer the permission gate. Asked by the hand before it equips, so a
+    // refusal is a tool that will not be picked up rather than one that throws on first press.
+    public virtual bool AllowsEquip(User? user) => true;
+
     public override void OnAttach()
     {
         base.OnAttach();

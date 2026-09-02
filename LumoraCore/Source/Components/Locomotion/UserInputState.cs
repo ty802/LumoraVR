@@ -83,6 +83,54 @@ public class UserInputState : Component
         }
     }
 
+    // The narrow half of the suppression above: TRANSLATION is off, everything else stays live.
+    //
+    // A seat used to borrow the whole desktop channel, which is the channel a modal dialog takes when it
+    // wants the mouse and the keyboard. Sitting down therefore killed mouse look, snap turn and blink along
+    // with walking, and a seated user could not even turn their head. Movement gets its own requester set:
+    // the locomotion modules read both, the look and turn paths read only the desktop one, so a seat stops
+    // you walking away and nothing else. -xlinka
+    private readonly object _movementLock = new();
+    private readonly HashSet<object> _movementRequests = new();
+
+    public bool MovementSuppressed
+    {
+        get
+        {
+            lock (_movementLock)
+                return _movementRequests.Count > 0;
+        }
+    }
+
+    // Whoever is holding movement down, so a module can negotiate with it rather than just giving up -
+    // blink stands a seated user up and then hops. Null when nothing is holding.
+    public object? MovementSuppressedBy
+    {
+        get
+        {
+            lock (_movementLock)
+            {
+                foreach (var requester in _movementRequests)
+                    return requester;
+                return null;
+            }
+        }
+    }
+
+    public void SetMovementSuppressed(object requester, bool value)
+    {
+        if (requester == null)
+            return;
+
+        lock (_movementLock)
+        {
+            if (value)
+                _movementRequests.Add(requester);
+            else
+                _movementRequests.Remove(requester);
+        }
+    }
+
     // Same multi-requester shape as the suppression set: raised by a hand tool while it is carrying something
     // on its laser, where the wheel pushes that object nearer or further. The third-person orbit reads it and
     // leaves the wheel alone, so reeling a held object in doesn't zoom the camera on the same notch. -xlinka
@@ -116,6 +164,8 @@ public class UserInputState : Component
     {
         lock (_suppressionLock)
             _suppressionRequests.Clear();
+        lock (_movementLock)
+            _movementRequests.Clear();
         lock (_wheelCaptureLock)
             _wheelCaptureRequests.Clear();
 

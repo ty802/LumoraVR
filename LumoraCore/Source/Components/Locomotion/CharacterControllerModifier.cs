@@ -26,7 +26,7 @@ public enum CharacterControllerParameter
 /// The character hook consumes TractionSpeed, TractionJumpSpeed and MaximumTractionSlope; the other
 /// parameters are accepted for content compatibility but have no engine effect yet. -xlinka
 /// </summary>
-[ComponentCategory("Locomotion/Modifiers")]
+[ComponentCategory("Users/Locomotion/Modifiers")]
 public abstract class CharacterControllerModifier : Component
 {
     public enum Mode

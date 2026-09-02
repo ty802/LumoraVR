@@ -9,7 +9,7 @@ namespace Lumora.Core.Components;
 // item per registered module, current one highlighted. Runs on the peer
 // opening the menu; activation goes through the controller's permission
 // check. - xlinka
-[ComponentCategory("Locomotion")]
+[ComponentCategory("Users/Locomotion")]
 public class LocomotionContextActions : ContextMenuItemSource
 {
     public override void PopulateContextMenu(ContextMenuPage page, ContextMenuContext context)

@@ -16,6 +16,25 @@ public abstract class LocomotionModule : Component
 
     public bool IsActive => Owner != null && Owner.ActiveModule == this;
 
+    // Two different silences, and a module has to tell them apart.
+    //
+    // InputBlocked is the loud one: free-cam, an open context menu, a text field with the keyboard. The
+    // user is not driving their body at all, so a module does nothing whatsoever.
+    //
+    // MovementBlocked adds the narrow one: a seat. Translation is off, but the user is still sitting there
+    // looking around, so turn keeps being serviced and blink still gets to aim (it stands them up when the
+    // hop commits). -xlinka
+    protected bool InputBlocked
+    {
+        get
+        {
+            var state = Owner?.InputState;
+            return (state?.FreeCamActive ?? false) || (state?.DesktopInputSuppressed ?? false);
+        }
+    }
+
+    protected bool MovementBlocked => InputBlocked || (Owner?.InputState?.MovementSuppressed ?? false);
+
     // True when this module is eligible right now (e.g. VR-only when VR is live,
     // or permission-gated). The controller skips modules that return false.
     public virtual bool CanActivate() => true;

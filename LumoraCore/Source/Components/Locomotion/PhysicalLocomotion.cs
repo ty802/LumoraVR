@@ -11,6 +11,7 @@ namespace Lumora.Core.Components;
 // from TurnSubmodule (active only when a stick is present, desktop just gets
 // nothing on that axis because mouse-look already handles yaw).
 // - xlinka
+[ComponentCategory("Users/Locomotion")]
 public class PhysicalLocomotion : SmoothLocomotionBase
 {
     public override string DisplayName => "Walk";
@@ -49,11 +50,18 @@ public class PhysicalLocomotion : SmoothLocomotionBase
         if (Owner == null || _characterController == null || !_characterController.IsReady)
             return;
 
-        var state = Owner.InputState;
-        bool suppressed = (state?.FreeCamActive ?? false) || (state?.DesktopInputSuppressed ?? false);
-        if (suppressed)
+        if (InputBlocked)
         {
             _characterController.SetMovementDirection(float3.Zero);
+            return;
+        }
+
+        // Seated. The legs are parked but the user can still turn where they sit, so the turn axis keeps
+        // being serviced and jump is left alone - jump is how the seat lets go.
+        if (MovementBlocked)
+        {
+            _characterController.SetMovementDirection(float3.Zero);
+            ApplyTurn(delta);
             return;
         }
 

@@ -135,7 +135,8 @@ public sealed class HandTool : Tool
         else if (!vrActive && inputInterface?.IsDashboardOpen == true)
             exclusiveRoot = UI.UserspaceDashboard.LocalInstance?.SurfaceSlot;
         _laser.SetExclusiveRoot(exclusiveRoot);
-        bool uiPress = _primaryHeld && (menuVisible || !IsHoldingObjectsWithLaser);
+        bool uiPress = _primaryHeld && (menuVisible || !IsHoldingObjectsWithLaser)
+            && EyedropperFor(_laser) == null;
         bool carryingOnLaser = IsHoldingObjectsWithLaser && !menuVisible;
         // Damp the aim only while something is actually riding the laser. A bare pointer wants to be
         // pixel-exact, and while the menu is open the mouse IS the pointer.
@@ -177,6 +178,8 @@ public sealed class HandTool : Tool
     }
 
     private bool _suppressHolderRelease;
+
+    private ToolItem? _refusedEquip;
 
     private void EnsureRig()
     {
@@ -229,6 +232,20 @@ public sealed class HandTool : Tool
         {
             return;
         }
+
+        // Putting a tool DOWN is never gated - a role losing ToolUse mid-session must not be left
+        // holding something it cannot let go of. EnsureRig re-offers the holder's item every frame, so
+        // the refusal is logged once per item or the console fills up. -xlinka
+        if (item != null && !item.AllowsEquip(World?.LocalUser))
+        {
+            if (!ReferenceEquals(_refusedEquip, item))
+            {
+                _refusedEquip = item;
+                Logging.Logger.Log($"{item.GetType().Name} not equipped: tools are not available to you in this world.");
+            }
+            return;
+        }
+        _refusedEquip = null;
 
         if (previous != null)
         {
@@ -317,6 +334,14 @@ public sealed class HandTool : Tool
             return null;
         }
 
+        // Asked again at the press and not only at the equip: a role can be changed, or the world
+        // locked, while the thing is already in your hand. A press by someone who has lost the right
+        // to use it does nothing at all rather than reaching the tool's own handler.
+        if (!toolItem.AllowsEquip(World?.LocalUser))
+        {
+            return null;
+        }
+
         return toolItem;
     }
 
@@ -332,6 +357,25 @@ public sealed class HandTool : Tool
 
     private void ProcessPrimary(InteractionLaser laser)
     {
+        // A press while this hand's menu is up is a menu press and nothing else. The canvas already
+        // receives it (uiPress stays true with the menu open so held-object actions are clickable), so
+        // letting the chain below run too meant "Destroy" on a held reference card first activated the
+        // card - it opened its inspector and spent itself - and Destroy then found an empty hand. -xlinka
+        if (_primaryHeld && !_prevPrimaryHeld && IsContextMenuOpenByThisHand())
+        {
+            _prevPrimaryHeld = _primaryHeld;
+            return;
+        }
+
+        // An armed color picker owns the next world press outright, ahead of the tool, the held object
+        // and the hit target - the whole point of the mode is that the click means "sample that", not
+        // whatever it would otherwise have meant.
+        if (_primaryHeld && !_prevPrimaryHeld && TryEyedropperPress(laser))
+        {
+            _prevPrimaryHeld = _primaryHeld;
+            return;
+        }
+
         if (_primaryHeld && !_prevPrimaryHeld)
         {
             var toolItem = GetUsableToolItem();
@@ -388,6 +432,70 @@ public sealed class HandTool : Tool
         _prevPrimaryHeld = _primaryHeld;
     }
 
+    // Eyedropper. While a color picker is armed the next world press samples what the beam is on and
+    // goes no further - not to the tool, not to the held object, and not to a canvas under the pointer
+    // (see uiPress): clicking somebody else's panel to sample its color must not also press the button
+    // you happened to aim at.
+    //
+    // The armed panel's OWN surface is the exception, on both paths. Its Cancel, its Save and the Pick
+    // toggle itself all have to stay clickable, or arming the mode is a trap you cannot get out of.
+    // Returns the panel that owns this press, or null when the press is nobody's business. -xlinka
+    private static ColorPickerPanel? EyedropperFor(InteractionLaser laser)
+    {
+        var sampler = ColorPickerPanel.ActiveSampler;
+        if (sampler == null || sampler.IsDestroyed || !sampler.IsSampling)
+        {
+            return null;
+        }
+
+        var hitSlot = laser.CurrentHitSlot;
+        var panelSlot = sampler.Slot;
+        if (hitSlot != null && panelSlot != null && !panelSlot.IsDestroyed
+            && (ReferenceEquals(hitSlot, panelSlot) || hitSlot.IsDescendantOf(panelSlot)))
+        {
+            return null;
+        }
+        return sampler;
+    }
+
+    // A miss leaves the picker's value alone but still ends the mode: a press that did nothing visible
+    // and left you armed reads as broken.
+    private static bool TryEyedropperPress(InteractionLaser laser)
+    {
+        if (EyedropperFor(laser) is not { } sampler)
+        {
+            return false;
+        }
+
+        // Interaction hits only cover interaction targets; plain scenery stops the beam at its
+        // collider, whose slot and point the laser now keeps, so the material walk works on a ground
+        // plate too. The pixel fallback only remains for things with no collider at all. -xlinka
+        var hitSlot = laser.CurrentHitSlot ?? laser.CurrentColliderHitSlot;
+        float3 point = laser.CurrentHitSlot != null ? laser.CurrentHitPoint
+            : laser.CurrentColliderHitSlot != null ? laser.CurrentColliderHitPoint
+            : laser.HasAimPoint ? laser.AimPoint : laser.CurrentHitPoint;
+
+        if (ColorSampling.TrySample(hitSlot, point, out var sampled))
+        {
+            sampler.ApplySampledColor(sampled);
+        }
+        sampler.DisarmSampling();
+        return true;
+    }
+
+    // Cancel works wherever the beam is pointing, the picker's own panel included - the secondary is not
+    // a click on anything, it is "get me out of this mode".
+    private static bool TryCancelEyedropper()
+    {
+        var sampler = ColorPickerPanel.ActiveSampler;
+        if (sampler == null || sampler.IsDestroyed || !sampler.IsSampling)
+        {
+            return false;
+        }
+        sampler.DisarmSampling();
+        return true;
+    }
+
     // Offer the primary press to any held object that wants to run its own action instead of aligning
     // (a reference card opens its target). Snapshot the hold list first: a claimer may remove itself
     // from the hand mid-iteration. Returns true when one consumed the press. -xlinka
@@ -416,6 +524,16 @@ public sealed class HandTool : Tool
     {
         if (_secondaryHeld && !_prevSecondaryHeld)
         {
+            // Secondary is this tool's "back out of whatever mode you are in", so it cancels an armed
+            // eyedropper before anything else looks at the press. Escape is not the cancel here: it is
+            // already the mouse-capture toggle AND the dashboard toggle, and stealing it would make
+            // arming the picker break both. -xlinka
+            if (TryCancelEyedropper())
+            {
+                _prevSecondaryHeld = _secondaryHeld;
+                return;
+            }
+
             // While our menu is open, the button closes it before any tool
             // gets a say - otherwise an equipped tool would eat the press and
             // the menu could never be dismissed.

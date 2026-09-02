@@ -63,6 +63,11 @@ public sealed class DevToolItem : ToolItem, ILaserHitClassifier
     // hard lock is the host-authoritative permission floor, which denies the edits regardless.
     private bool EditingDisabled => World != null && !World.AllowsWorldEditing;
 
+    // The dev tool IS the dev gear the ToolUse domain is about, so it answers the same question the
+    // build tools do: no right to use tools, no picking this one up and no press once it is in hand.
+    public override bool AllowsEquip(User? user)
+        => World?.DataModelPermissions?.AllowsDomain(user, DataModelPermissionDomain.ToolUse) != false;
+
     // HIT FILTER: while this tool is the one pointing, editor chrome comes forward through whatever is
     // in front of it. The handles ask for that themselves (a bare hand can drag them with no tool
     // equipped), so what this adds is the rest of the rig - the base gizmo interaction shapes and
@@ -227,6 +232,13 @@ public sealed class DevToolItem : ToolItem, ILaserHitClassifier
         }
 
         if (IsInActiveToolHierarchy(hitSlot))
+        {
+            return null;
+        }
+
+        // Same answer as pointing at the sky: no selection, so no gizmo is minted over something the
+        // person cannot edit anyway.
+        if (ImmutableComponent.IsProtected(hitSlot))
         {
             return null;
         }

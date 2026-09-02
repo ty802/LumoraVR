@@ -20,6 +20,7 @@ namespace Lumora.Core.Components;
 // The arc is a real integration, not a drawn curve: the same stepper feeds both the raycast walk and
 // the visual, so what you see IS what gets tested. Anything else drifts the moment drag or gravity is
 // retuned and you get a beam that lands somewhere the hop does not. - xlinka
+[ComponentCategory("Users/Locomotion")]
 public class BlinkLocomotion : SmoothLocomotionBase, ICustomInspectorUI
 {
     // in the order the classifier resolves it
@@ -183,11 +184,11 @@ public class BlinkLocomotion : SmoothLocomotionBase, ICustomInspectorUI
         if (Owner == null || userRoot == null || !userRoot.IsLocalUserRoot)
             return;
 
-        var state = Owner.InputState;
-        if ((state?.FreeCamActive ?? false) || (state?.DesktopInputSuppressed ?? false))
+        if (InputBlocked)
         {
-            // Something else owns the sticks right now (a seat, the context menu, freecam). Drop the
-            // aim rather than committing a hop the user never asked for.
+            // Something else owns the sticks right now (the context menu, freecam). Drop the aim rather
+            // than committing a hop the user never asked for. A SEAT is not one of these: a seated user
+            // aims normally and the hop stands them up on commit.
             EndAim();
             return;
         }
@@ -693,6 +694,11 @@ public class BlinkLocomotion : SmoothLocomotionBase, ICustomInspectorUI
         if (!_landingValid || _aimLerp < 1f)
             return;
 
+        // Standing up first, not after: the seat owns the rig's parent and pose while the user is in it,
+        // so a teleport that fired before the release would be undone by the restore. Aiming alone never
+        // gets here, so looking around the room from a chair does not throw you out of it. -xlinka
+        StandUpForHop();
+
         var userRoot = Owner?.UserRoot;
         var character = Owner?.CharacterController;
         if (userRoot?.Slot == null)
@@ -720,12 +726,21 @@ public class BlinkLocomotion : SmoothLocomotionBase, ICustomInspectorUI
         return delta - _up * float3.Dot(delta, _up);
     }
 
+    // A backstep is a hop with the target picked for you, so it leaves a seat the same way one does.
+    private void StandUpForHop()
+    {
+        if (Owner?.InputState?.MovementSuppressedBy is Avatar.Seat seat && !seat.IsDestroyed)
+            seat.Release();
+    }
+
     // shortened by whatever is behind the user
     public void PerformBackstep()
     {
         var userRoot = Owner?.UserRoot;
         if (userRoot?.Slot == null || !userRoot.IsLocalUserRoot)
             return;
+
+        StandUpForHop();
 
         float scale = MathF.Max(userRoot.GlobalScale, 0.001f);
         float3 up = userRoot.Slot.Up;

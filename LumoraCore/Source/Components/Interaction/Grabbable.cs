@@ -3,6 +3,7 @@
 
 using System;
 using Lumora.Core.Components.Interaction;
+using Lumora.Core.Math;
 using Lumora.Warden;
 
 namespace Lumora.Core.Components;
@@ -13,8 +14,15 @@ namespace Lumora.Core.Components;
 // when two users reach for the same thing the host's accepted write is what everyone ends up seeing,
 // and the loser drops it on their next check. parent under the grabber's holder slot on grab; restore
 // on release. - xlinka
+// The one member every grab surface has: the reference that records who holds it. The authority's
+// in-batch claim check reads it through this seam so props and bone chains answer the same way.
+public interface IGrabHolderSurface
+{
+    RefID GrabHolderRefId { get; }
+}
+
 [ComponentCategory("Interaction")]
-public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface
+public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface, IGrabHolderSurface
 {
     public readonly Sync<bool> AllowGrab = new();
     public readonly Sync<bool> FollowRotation = new();
@@ -36,6 +44,23 @@ public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface
     // avatar: no grabbing into a live user hierarchy. - xlinka
     public readonly Sync<bool> BlockWhenWorn = new();
 
+    // THROW TUNABLES
+    // KeepMomentum off is the old behaviour: let go and it stops dead. ThrowMultiplier scales the linear AND
+    // the spin together, so a prop can be tuned to leave the hand faster than the hand actually moved.
+    // MaxThrowSpeed is in m/s and is applied by whichever peer simulates the body, not by the sender. - xlinka
+    public readonly Sync<bool> KeepMomentum = new();
+    public readonly Sync<float> ThrowMultiplier = new();
+    public readonly Sync<float> MaxThrowSpeed = new();
+
+    // The hand-off itself, in world units. The releasing hand writes these as part of the grab protocol (so a
+    // guest can throw a prop it doesn't own), and every peer reads them when the holder clears - only the one
+    // that simulates the body acts on them. Not persisted: a saved world has no throw in flight. - xlinka
+    [NonPersistent]
+    public readonly Sync<float3> ReleaseLinearVelocity = new();
+
+    [NonPersistent]
+    public readonly Sync<float3> ReleaseAngularVelocity = new();
+
     // The replicated holder. Null target == not held. All peers read who holds this from here. - xlinka
     public readonly SyncRef<Grabber> GrabberRef = new();
 
@@ -45,6 +70,9 @@ public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface
 
     // The last holder we saw locally, so we can spot a steal (the ref changing out from under us). Local. - xlinka
     private Grabber? _lastKnownHolder;
+
+    // Whether the release about to happen came through a hand that measured a throw. Local to the releaser. - xlinka
+    private bool _momentumStaged;
 
     public bool IsGrabbed => GrabberRef.Target != null;
     public Grabber? Grabber => GrabberRef.Target;
@@ -60,11 +88,15 @@ public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface
 
     IPermissionActor? IPermissionGrabSurface.CurrentHolder => GrabberRef.Target?.OwningUser;
 
+    RefID IGrabHolderSurface.GrabHolderRefId => GrabberRef.ReferenceID;
+
     GrabWriteKind IPermissionGrabSurface.ClassifyGrabWrite(IPermissionTarget? member)
     {
         if (ReferenceEquals(member, GrabberRef))
             return GrabWriteKind.HolderRef;
-        if (ReferenceEquals(member, LastParentRef))
+        if (ReferenceEquals(member, LastParentRef)
+            || ReferenceEquals(member, ReleaseLinearVelocity)
+            || ReferenceEquals(member, ReleaseAngularVelocity))
             return GrabWriteKind.GrabState;
         return GrabWriteKind.None;
     }
@@ -115,6 +147,11 @@ public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface
         AllowSteal.Value = false;
         DropOnDisable.Value = true;
         BlockWhenWorn.Value = false;
+        KeepMomentum.Value = true;
+        ThrowMultiplier.Value = 1f;
+        // Matches the hard cap the physics side enforces on any live body, so the tunable is the one that
+        // actually decides the throw until someone lowers it. - xlinka
+        MaxThrowSpeed.Value = 8f;
     }
 
     public override void OnDisabled()
@@ -190,6 +227,11 @@ public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface
         // to yank the object out of the new holder's hands with a stale release. - xlinka
         if (!ReferenceEquals(GrabberRef.Target, grabber)) return;
 
+        // A release that didn't come through a hand (disable, steal cleanup, teardown) carries no throw. Wipe
+        // the staged values or every peer replays the last one. - xlinka
+        if (!_momentumStaged) WriteReleaseMomentum(float3.Zero, float3.Zero);
+        _momentumStaged = false;
+
         var restoreParent = LastParentRef.Target;
 
         using (World?.DataModelPermissions?.EnterSystemBypass())
@@ -220,6 +262,14 @@ public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface
 
         if (ReferenceEquals(oldHolder, newHolder)) return;
 
+        // Let go. Deferred one update on purpose: the release arrives as a delta batch and there is no
+        // guarantee the velocity fields decode before the holder ref that triggers this. One update later
+        // the whole batch has landed, on every peer, including the one that did the releasing. - xlinka
+        if (oldHolder != null && newHolder == null)
+        {
+            RunInUpdates(1, ApplyReleaseMomentum);
+        }
+
         // The holder flipped to someone else while WE were holding it = the host handed it off (a
         // steal). Drop our local hold and let go so the hand and any holder-driven UI release. A normal
         // release sets the holder to null and is already handled in Release(), so we skip that here to
@@ -235,5 +285,69 @@ public sealed class Grabbable : Component, IGrabbable, IPermissionGrabSurface
     {
         var owner = grabber.OwningUser;
         return owner != null && ReferenceEquals(owner, World?.LocalUser);
+    }
+
+    // THROW HAND-OFF
+    // The measuring happens in the hand (Grabber keeps a rolling window of the held object's world pose).
+    // This end applies the tunables, publishes the result, and - one update later, on every peer - feeds it
+    // to the body. Only the peer that simulates the body acts; everyone else's write is a no-op. - xlinka
+
+    internal void StageReleaseMomentum(float3 linear, float3 angular)
+    {
+        if (!KeepMomentum.Value)
+        {
+            linear = float3.Zero;
+            angular = float3.Zero;
+        }
+        else
+        {
+            float multiplier = ThrowMultiplier.Value;
+            linear *= multiplier;
+            angular *= multiplier;
+        }
+
+        WriteReleaseMomentum(linear, angular);
+        _momentumStaged = true;
+    }
+
+    private void WriteReleaseMomentum(float3 linear, float3 angular)
+    {
+        if (ReleaseLinearVelocity.Value == linear && ReleaseAngularVelocity.Value == angular) return;
+
+        using (World?.DataModelPermissions?.EnterSystemBypass())
+        {
+            ReleaseLinearVelocity.Value = linear;
+            ReleaseAngularVelocity.Value = angular;
+        }
+    }
+
+    private void ApplyReleaseMomentum()
+    {
+        if (IsDestroyed || IsGrabbed || !KeepMomentum.Value) return;
+
+        var linear = ReleaseLinearVelocity.Value;
+        var angular = ReleaseAngularVelocity.Value;
+        if (linear == float3.Zero && angular == float3.Zero) return;
+
+        var body = FindMomentumBody();
+        if (body == null || body.IsDestroyed || !body.Enabled.Value || body.IsKinematic.Value) return;
+
+        // Clamped HERE, by the peer that owns the simulation, not by the sender. A peer that publishes a
+        // silly number gets it cut down on arrival, and the physics side still caps anything that gets past
+        // a generous MaxThrowSpeed. - xlinka
+        float max = MaxThrowSpeed.Value;
+        if (max > 0f && linear.LengthSquared > max * max) linear = linear.Normalized * max;
+
+        body.SetVelocities(linear, angular);
+    }
+
+    // The body normally sits on the grabbable's own slot; a compound prop can put the Grabbable on the root
+    // and the body on the part carrying the collider. Deliberately never looks upward: by the time this runs
+    // the object is back under its restore parent, so up is the rest of the world. - xlinka
+    private RigidBody? FindMomentumBody()
+    {
+        var slot = Slot;
+        if (slot == null || slot.IsRemoved) return null;
+        return slot.GetComponent<RigidBody>() ?? slot.GetComponentInChildren<RigidBody>(includeSelf: false);
     }
 }

@@ -38,7 +38,17 @@ public static class ReparentGuard
         // Blocks sit ABOVE what they protect (a socket parents its item, a marked root parents its
         // subtree), so the walk starts at the target and climbs. The target itself is included: a
         // block on the very slot being moved is the shortest way to pin one object.
-        for (var slot = target; slot != null && !slot.IsDestroyed; slot = slot.Parent)
+        //
+        // The DESTINATION lineage is walked too. A block is allowed to refuse a destination rather
+        // than the move, which is what a protected subtree needs to say - "nothing comes in here" -
+        // and a walk that only ever climbed from the target could never ask it. Blocks that only care
+        // about their own item see a target that is not theirs and wave it through. -xlinka
+        return AskBlocks(target, target, newParent) && AskBlocks(newParent, target, newParent);
+    }
+
+    private static bool AskBlocks(Slot from, Slot target, Slot newParent)
+    {
+        for (var slot = from; slot != null && !slot.IsDestroyed; slot = slot.Parent)
         {
             foreach (var block in slot.GetComponentsImplementing<IReparentBlock>())
             {

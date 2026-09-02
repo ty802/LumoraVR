@@ -110,7 +110,7 @@ public class GrabParenter : GrabEventBehaviour, ICustomInspectorUI
             return;
         }
 
-        var undo = SlotTransformUndoBatch.Begin(moved, $"File {moved.SlotName.Value}");
+        var undo = SlotTransformUndoBatch.Begin(moved, UndoLocale.File(moved.SlotName.Value));
         moved.SetParent(parent, KeepGlobalTransform.Value);
         InspectorUndo.Record(this, undo?.Commit());
         _lastOutcome = $"filed under {parent.SlotName.Value}";

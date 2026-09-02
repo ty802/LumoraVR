@@ -11,7 +11,7 @@ namespace Lumora.Core.Components;
 // standable without shipping a flat collider for it. Put it on geometry you WANT people to arrive on,
 // not on scenery that merely happens to be walkable - untagged geometry still passes on slope alone.
 // - xlinka
-[ComponentCategory("Locomotion/Tagging")]
+[ComponentCategory("Users/Locomotion/Tagging")]
 [SingleInstancePerSlot]
 public sealed class LandingSurface : Component
 {

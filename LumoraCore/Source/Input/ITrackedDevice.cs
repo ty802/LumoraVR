@@ -61,26 +61,67 @@ public interface ITrackedDevice : IInputDevice
     floatQ BodyNodeRotationOffset { get; }
 }
 
-/// <summary>
-/// Tracking space for coordinate transformation.
-/// </summary>
+// The space raw tracked poses are expressed THROUGH, on its way to world space: the local user's root.
+//
+// Bound to the root SLOT, not snapshotted off it. The root moves inside a frame - a turn rotates it about
+// the head partway through the update, walking moves it, a teleport jumps it - and anything that asks a
+// device for its world pose after that has to get it out of the space the rig is actually standing in. A
+// snapshot taken at the frame boundary answers with the pre-turn heading for the rest of the frame, which
+// is how a hand ends up drawn behind the body it belongs to. Slot globals are cached, so reading live
+// costs a dirty-flag check. -xlinka
 public class TrackingSpace
 {
-    public float3 Position { get; set; } = float3.Zero;
-    public floatQ Rotation { get; set; } = floatQ.Identity;
-    public float Scale { get; set; } = 1f;
+    private Slot? _space;
+    private float3 _position = float3.Zero;
+    private floatQ _rotation = floatQ.Identity;
+    private float _scale = 1f;
 
-    /// <summary>
-    /// Transform a position from tracking space to world space.
-    /// </summary>
+    public Slot? Space
+    {
+        get => _space != null && !_space.IsDestroyed ? _space : null;
+        set => _space = value;
+    }
+
+    // Each live read leaves its answer behind, so losing the root (world switch, teardown) parks devices
+    // where they last were instead of snapping them to the world origin.
+    public float3 Position
+    {
+        get
+        {
+            var space = Space;
+            if (space != null) _position = space.GlobalPosition;
+            return _position;
+        }
+        set { _space = null; _position = value; }
+    }
+
+    public floatQ Rotation
+    {
+        get
+        {
+            var space = Space;
+            if (space != null) _rotation = space.GlobalRotation;
+            return _rotation;
+        }
+        set { _space = null; _rotation = value; }
+    }
+
+    public float Scale
+    {
+        get
+        {
+            var space = Space;
+            if (space != null) _scale = space.GlobalScale.x;
+            return _scale;
+        }
+        set { _space = null; _scale = value; }
+    }
+
     public float3 Transform(float3 position)
     {
         return Position + Rotation * (position * Scale);
     }
 
-    /// <summary>
-    /// Transform a rotation from tracking space to world space.
-    /// </summary>
     public floatQ Transform(floatQ rotation)
     {
         return Rotation * rotation;

@@ -57,6 +57,20 @@ public class Grabber : Component
     private float3 _scaleStartScale;
     private SlotTransformUndoBatch? _scaleUndo;
 
+    // THROW HAND-OFF: while something is held we keep a short rolling window of its world pose, so letting go
+    // can hand the physics body the motion the object actually had instead of dropping it dead. Sampled per
+    // held object rather than off the hand, so the desktop push/pull (which slides the object along the
+    // holder) and any in-hand alignment show up in the throw exactly like controller motion does. - xlinka
+    private readonly Dictionary<IGrabbable, MotionWindow> _motion = new();
+
+    // A scale assist on the other hand means the pair was resizing, not aiming a spin. The holder still
+    // throws, but the angular hand-off is dropped: stretching rolls the wrist around the object and that
+    // reads as a fast tumble nobody asked for. Remembered briefly so letting go of the assist an instant
+    // before the hold still counts. - xlinka
+    private const float ScaleAssistMemory = 0.25f;
+    private IGrabbable? _scaleAssistedTarget;
+    private double _scaleAssistedStamp;
+
     public bool TryGrab(IGrabbable target) => TryGrab(target, out _);
 
     // Same grab, but reporting WHICH object ended up in the hand. Grab is allowed to hand the grip to
@@ -93,6 +107,8 @@ public class Grabber : Component
         if (!isHeld) return false;
 
         if (!_grabbed.Contains(grabbed)) _grabbed.Add(grabbed);
+        // Fresh window per hold: whatever the object was doing before the hand closed on it is not a throw.
+        _motion[grabbed] = new MotionWindow();
         held = grabbed;
         return true;
     }
@@ -176,7 +192,10 @@ public class Grabber : Component
         {
             var g = _grabbed[i];
             if (g == null || (g is Component c && c.IsDestroyed) || !ReferenceEquals(g.Grabber, this))
+            {
+                if (g != null) _motion.Remove(g);
                 _grabbed.RemoveAt(i);
+            }
         }
     }
 
@@ -184,7 +203,9 @@ public class Grabber : Component
     {
         if (target == null) return;
         if (!_grabbed.Remove(target)) return;
+        StageReleaseMomentum(target);
         target.Release(this);
+        _motion.Remove(target);
     }
 
     // A Scalable object THIS user already holds in the OTHER hand: grabbing it with this hand is the
@@ -206,11 +227,86 @@ public class Grabber : Component
         if (_scaleStartDistance < MinScaleGrabDistance)
             _scaleStartDistance = MinScaleGrabDistance;
         _scaleStartScale = slot.LocalScale.Value;
-        _scaleUndo = SlotTransformUndoBatch.Begin(slot, "Scale");
+        _scaleUndo = SlotTransformUndoBatch.Begin(slot, UndoLocale.Scale);
+        partner.NoteScaleAssist(target);
         return true;
     }
 
+    // The assisting hand tells the holder its throw is part of a resize. Both grabbers are the same user's,
+    // so this stays local state - nothing about the stretch needs replicating beyond the scale writes. - xlinka
+    public void NoteScaleAssist(IGrabbable target)
+    {
+        _scaleAssistedTarget = target;
+        _scaleAssistedStamp = World?.Time.TotalTime ?? 0d;
+    }
+
     public override void OnUpdate(float delta)
+    {
+        SampleHeldMotion();
+        UpdateScaleAssist();
+    }
+
+    private void SampleHeldMotion()
+    {
+        // Also the only guaranteed per-frame prune of the window map: an object destroyed or stolen out of
+        // the hand leaves its entry behind otherwise. - xlinka
+        CleanupGrabbed();
+        if (_grabbed.Count == 0) return;
+
+        // Only the hand's own peer ever releases it, so no other peer needs a window.
+        var owner = OwningUser;
+        if (owner != null && !ReferenceEquals(owner, World?.LocalUser)) return;
+
+        var clock = World?.Time;
+        if (clock == null) return;
+
+        double now = clock.TotalTime;
+        for (int i = 0; i < _grabbed.Count; i++)
+        {
+            var g = _grabbed[i];
+            var slot = (g as Component)?.Slot;
+            if (slot == null || slot.IsRemoved) continue;
+
+            if (!_motion.TryGetValue(g, out var window))
+            {
+                window = new MotionWindow();
+                _motion[g] = window;
+            }
+            window.Sample(now, slot.GlobalPosition, slot.GlobalRotation);
+        }
+    }
+
+    // Measure the hold and hand the numbers to the grabbable BEFORE it lets go, so the velocity and the
+    // holder clear ride the same delta batch with the velocity first. - xlinka
+    private void StageReleaseMomentum(IGrabbable target)
+    {
+        // Only the full Grabbable carries the throw tunables and the replicated hand-off fields. The other
+        // IGrabbable implementations (spawners, gizmo handles) are never physics bodies. - xlinka
+        if (target is not Grabbable grabbable || grabbable.IsDestroyed) return;
+
+        float3 linear = float3.Zero;
+        float3 angular = float3.Zero;
+
+        var clock = World?.Time;
+        if (clock != null && _motion.TryGetValue(target, out var window))
+        {
+            var slot = grabbable.Slot;
+            if (slot != null && !slot.IsRemoved)
+                window.Sample(clock.TotalTime, slot.GlobalPosition, slot.GlobalRotation);
+
+            window.Evaluate(out linear, out angular);
+
+            if (ReferenceEquals(_scaleAssistedTarget, target)
+                && clock.TotalTime - _scaleAssistedStamp < ScaleAssistMemory)
+            {
+                angular = float3.Zero;
+            }
+        }
+
+        grabbable.StageReleaseMomentum(linear, angular);
+    }
+
+    private void UpdateScaleAssist()
     {
         if (_scaleTarget == null)
             return;
@@ -228,6 +324,9 @@ public class Grabber : Component
         if (factor < MinScaleFactor) factor = MinScaleFactor;
         if (factor > MaxScaleFactor) factor = MaxScaleFactor;
         slot.LocalScale.Value = _scaleStartScale * factor;
+
+        // Keep the holder's "this is a resize" stamp fresh for as long as the stretch runs.
+        _scalePartner.NoteScaleAssist(_scaleTarget);
     }
 
     private float HandDistanceTo(Grabber partner)
@@ -255,9 +354,11 @@ public class Grabber : Component
         var released = new List<IGrabbable>(_grabbed);
         for (int i = _grabbed.Count - 1; i >= 0; i--)
         {
+            StageReleaseMomentum(_grabbed[i]);
             _grabbed[i].Release(this);
         }
         _grabbed.Clear();
+        _motion.Clear();
         InformOfReleasedObjects(released);
         ResetHolderTransform();
     }
@@ -345,5 +446,153 @@ public class Grabber : Component
     {
         ReleaseAll();
         base.OnDestroy();
+    }
+
+    // Rolling world-pose window for one held object. Fixed ring, no allocation per frame.
+    //
+    // Release velocity is NOT the last frame's delta. The frame you let go on is the worst frame to trust:
+    // the button press comes with a hand jerk, and a stutter right there either stalls the object (throw dies)
+    // or teleports it (throw launches). So we average the pairwise velocities across the window, weighted by
+    // how long each pair covered, after throwing out any pair whose speed sits nowhere near the window
+    // median. Consistent motion has a median equal to the real speed, so trimming costs nothing when nothing
+    // went wrong and eats exactly the one bad frame when something did. - xlinka
+    private sealed class MotionWindow
+    {
+        private const int Capacity = 8;
+        private const float WindowSeconds = 0.12f;
+        private const float MinStep = 1e-5f;
+
+        private readonly double[] _time = new double[Capacity];
+        private readonly float3[] _position = new float3[Capacity];
+        private readonly floatQ[] _rotation = new floatQ[Capacity];
+        private int _count;
+        private int _next;
+
+        public void Sample(double time, in float3 position, in floatQ rotation)
+        {
+            // A release lands in the same frame as that frame's update sample; a zero-length pair would be a
+            // divide by nothing.
+            if (_count > 0 && time - _time[(_next - 1 + Capacity) % Capacity] < MinStep) return;
+
+            _time[_next] = time;
+            _position[_next] = position;
+            _rotation[_next] = rotation;
+            _next = (_next + 1) % Capacity;
+            if (_count < Capacity) _count++;
+        }
+
+        public bool Evaluate(out float3 linear, out float3 angular)
+        {
+            linear = float3.Zero;
+            angular = float3.Zero;
+            if (_count < 2) return false;
+
+            int oldest = (_next - _count + Capacity) % Capacity;
+            double newest = _time[(_next - 1 + Capacity) % Capacity];
+
+            Span<float3> linears = stackalloc float3[Capacity];
+            Span<float3> angulars = stackalloc float3[Capacity];
+            Span<float> spans = stackalloc float[Capacity];
+            int pairs = 0;
+
+            for (int i = 0; i < _count - 1; i++)
+            {
+                int a = (oldest + i) % Capacity;
+                int b = (oldest + i + 1) % Capacity;
+                if (newest - _time[a] > WindowSeconds) continue;
+
+                float dt = (float)(_time[b] - _time[a]);
+                if (dt < MinStep) continue;
+
+                linears[pairs] = (_position[b] - _position[a]) / dt;
+                angulars[pairs] = AngularStep(_rotation[a], _rotation[b], dt);
+                spans[pairs] = dt;
+                pairs++;
+            }
+
+            if (pairs == 0) return false;
+
+            linear = TrimmedAverage(linears, spans, pairs);
+            angular = TrimmedAverage(angulars, spans, pairs);
+            return true;
+        }
+
+        private static float3 TrimmedAverage(Span<float3> values, Span<float> weights, int count)
+        {
+            if (count == 1) return values[0];
+
+            float3 sum = float3.Zero;
+            float total = 0f;
+
+            // Under four pairs there is no median worth trusting, so take the lot.
+            if (count >= 4)
+            {
+                float median = MedianMagnitude(values, count);
+                // The absolute slack keeps a slow, near-still hold from trimming itself to nothing.
+                float low = median * 0.35f - 0.25f;
+                float high = median * 2.5f + 0.25f;
+
+                for (int i = 0; i < count; i++)
+                {
+                    float magnitude = values[i].Length;
+                    if (magnitude < low || magnitude > high) continue;
+                    sum += values[i] * weights[i];
+                    total += weights[i];
+                }
+            }
+
+            if (total <= 0f)
+            {
+                sum = float3.Zero;
+                for (int i = 0; i < count; i++)
+                {
+                    sum += values[i] * weights[i];
+                    total += weights[i];
+                }
+            }
+
+            return total > 0f ? sum / total : float3.Zero;
+        }
+
+        private static float MedianMagnitude(Span<float3> values, int count)
+        {
+            Span<float> magnitudes = stackalloc float[Capacity];
+            for (int i = 0; i < count; i++) magnitudes[i] = values[i].Length;
+
+            for (int i = 1; i < count; i++)
+            {
+                float key = magnitudes[i];
+                int j = i - 1;
+                while (j >= 0 && magnitudes[j] > key)
+                {
+                    magnitudes[j + 1] = magnitudes[j];
+                    j--;
+                }
+                magnitudes[j + 1] = key;
+            }
+
+            return (count & 1) == 1
+                ? magnitudes[count / 2]
+                : (magnitudes[count / 2 - 1] + magnitudes[count / 2]) * 0.5f;
+        }
+
+        // Axis times radians per second, in world space.
+        private static float3 AngularStep(floatQ from, floatQ to, float dt)
+        {
+            // Double cover: without this a small spin one way reads as a nearly full turn the other.
+            if (floatQ.Dot(from, to) < 0f) to = new floatQ(-to.x, -to.y, -to.z, -to.w);
+
+            var delta = (to * from.Inverse).Normalized;
+            float w = delta.w;
+            if (w > 1f) w = 1f;
+            else if (w < -1f) w = -1f;
+
+            float angle = 2f * MathF.Acos(w);
+            var axis = new float3(delta.x, delta.y, delta.z);
+            float length = axis.Length;
+            if (length < 1e-6f || angle < 1e-6f) return float3.Zero;
+
+            return axis * (angle / (length * dt));
+        }
     }
 }

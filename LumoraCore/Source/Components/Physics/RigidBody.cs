@@ -169,10 +169,45 @@ public class RigidBody : ImplementableComponent
         PendingTorque += torque;
     }
 
+    // Exact velocity hand-off, for a throw. An impulse is the wrong tool here: it would need the mass divided
+    // back out, and it stacks on top of whatever the body already carries - and a body coming off a held
+    // (kinematic) frame carries junk from being teleported around by the hand. A release wants the measured
+    // velocity, verbatim. Owner only, same as the force methods. -xlinka
+    // Hard ceiling on a velocity handed over from outside the simulation. Everything upstream of this is
+    // negotiable: the throw tunable that clamps a release is itself a replicated field, and a peer that
+    // forges the tunable and the velocity together gets both numbers it asked for. This is the one place
+    // both have to pass through, on every peer including the host, so a spoofed magnitude cannot leave the
+    // machine that made it up. Generous enough that no real throw ever reaches it. -xlinka
+    public const float MaxTransferSpeed = 64f;
+    public const float MaxTransferSpin = 64f;
+
+    public void SetVelocities(float3 linear, float3 angular)
+    {
+        if (!IsSimulationOwner)
+            return;
+
+        PendingLinearVelocity = Bound(linear, MaxTransferSpeed);
+        PendingAngularVelocity = Bound(angular, MaxTransferSpin);
+        HasPendingVelocity = true;
+        RunApplyChanges();
+    }
+
+    private static float3 Bound(float3 value, float limit)
+    {
+        float lengthSquared = value.LengthSquared;
+        if (!float.IsFinite(lengthSquared))
+            return float3.Zero;
+        return lengthSquared > limit * limit ? value.Normalized * limit : value;
+    }
+
     // Pending forces (consumed by hook each frame)
     public float3 PendingForce;
     public float3 PendingImpulse;
     public float3 PendingTorque;
+
+    public float3 PendingLinearVelocity;
+    public float3 PendingAngularVelocity;
+    public bool HasPendingVelocity;
 
     // called by the hook after applying pending forces
     public void ClearPendingForces()
@@ -180,6 +215,9 @@ public class RigidBody : ImplementableComponent
         PendingForce = float3.Zero;
         PendingImpulse = float3.Zero;
         PendingTorque = float3.Zero;
+        PendingLinearVelocity = float3.Zero;
+        PendingAngularVelocity = float3.Zero;
+        HasPendingVelocity = false;
     }
 }
 

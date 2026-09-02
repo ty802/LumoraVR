@@ -78,6 +78,16 @@ public class SquishyBody : Component, IInputUpdateReceiver, ISoftBodySpace, ISof
     // costs a raycast per moving particle per frame
     public readonly Sync<bool> CollideWithWorld;
 
+    // Metres from the local user's head past which this body drops iterations and eventually stops
+    // simulating. Zero never pauses. Measured from the head rather than the camera node because that
+    // is what the renderer's own visibility range is measured from, same as particles and bones.
+    //
+    // Dropping iterations is safe to do on a curve because the solver corrects stiffness for the
+    // iteration count: the same Stiffness setting means the same stiffness at 8 iterations and at 2,
+    // so the LOD costs accuracy of the constraint solve, not the look of the fabric. -xlinka
+    [Group("Simulation")]
+    public readonly Sync<float> MaxViewDistance;
+
     // The simulation itself lives in LumoraSimulation. This component owns one solver, feeds it the
     // topology and the tunables, and answers its two questions: where is the anchor space, and what did
     // this particle just hit. Nothing about the maths lives here any more. -xlinka
@@ -121,6 +131,7 @@ public class SquishyBody : Component, IInputUpdateReceiver, ISoftBodySpace, ISof
         Colliders = new SyncRefList<IDynamicBoneCollider>(this);
         GroundY = new Sync<float>(this, float.NaN);
         CollideWithWorld = new Sync<bool>(this, false);
+        MaxViewDistance = new Sync<float>(this, 0f);
     }
 
     public override void OnStart()
@@ -154,15 +165,145 @@ public class SquishyBody : Component, IInputUpdateReceiver, ISoftBodySpace, ISof
         if (!_built)
             return;
 
+        // Not while the world is still building. IsLoading covers PendingHookCreations, which means
+        // platform bodies are still being made - including the box this sheet is supposed to land on.
+        // Stepping through that window drops the cloth through a collider that does not exist yet and
+        // leaves it on the floor, which is exactly what "it clips through the cube" was. Hold the pose
+        // the author placed until there is a world to fall into. -xlinka
+        if (World?.IsLoading == true)
+        {
+            _solver.ResetVelocities();
+            return;
+        }
+
+        if (IsBeyondViewDistance())
+        {
+            // Nothing is written and nothing is uploaded: the garment holds its last pose, which at that
+            // range is a still frame nobody can tell from a settled one.
+            _paused = true;
+            return;
+        }
+        if (_paused)
+        {
+            // Back in range. The anchor may be anywhere by now, so start from the rest shape instead of
+            // from wherever the body was parked - see SoftBodySolver.ResetToRest.
+            _paused = false;
+            _solver.ResetToRest(this);
+            _uploadedLocal = null;
+        }
+
+        SnapshotColliders();
         _perturbedThisFrame = CheckPerturbed();
         // Fully at rest and nothing can have disturbed it -> skip the sim AND the mesh upload entirely.
         if (!_solver.IsAwake && !_perturbedThisFrame)
             return;
 
         PushSolverParameters();
-        float dt = World?.Time.SmoothDelta ?? (1f / 60f);
-        _solver.Step(dt, World?.Time.TotalTime ?? 0.0, this, this);
+        var budget = SoftBodyBudget.For(World);
+        _solver.Iterations = ScaleIterations(IterationsForDistance(), budget);
+
+        // CLAMPED delta, and never one big step. SmoothDelta is an average of the RAW frame time with no
+        // ceiling on it, so one world-load hitch drags it to a fifth of a second and stays there for a
+        // while: gravity then moves every particle further in a single step than the box it is meant to
+        // land on is thick, and the sheet goes straight through and ends up on the floor. The clock
+        // already publishes a clamped Delta for exactly this ("what simulation code wants"); substepping
+        // on top keeps one slow frame from tunnelling through anything. -xlinka
+        float dt = World?.Time.Delta ?? (1f / 60f);
+        double now = World?.Time.TotalTime ?? 0.0;
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        int steps = (int)MathF.Ceiling(dt / MaxSubstep);
+        if (steps < 1)
+            steps = 1;
+        else if (steps > MaxSubsteps)
+            steps = MaxSubsteps;
+        float sub = dt / steps;
+        for (int i = 0; i < steps; i++)
+            _solver.Step(sub, now, this, this);
         WriteBack();
+        budget?.Report(World?.Time.UpdateIndex ?? 0UL,
+            (System.Diagnostics.Stopwatch.GetTimestamp() - start) * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
+    }
+
+    // Longest slice the solver is allowed to integrate in one go, and the cap on how many of them one
+    // frame may pay for. Past the cap the body simply runs slow rather than eating the frame.
+    private const float MaxSubstep = 1f / 60f;
+    private const int MaxSubsteps = 4;
+
+    private static int ScaleIterations(int iterations, SoftBodyBudget? budget)
+    {
+        if (budget == null || budget.IterationScale >= 1f)
+            return iterations;
+        return System.Math.Max(1, (int)MathF.Round(iterations * budget.IterationScale));
+    }
+
+    // DISTANCE GATING
+    //
+    // Two levers off one field. Past MaxViewDistance the body stops stepping entirely; approaching it,
+    // the constraint iteration count falls off toward a quarter of the configured value. The iteration
+    // ramp is the one that matters in a busy room: a garment nobody is looking straight at still moves,
+    // it just solves its constraints less exactly, and because the solver corrects stiffness for the
+    // iteration count that costs no visible stiffness change. -xlinka
+
+    private bool _paused;
+    private Slot? _localHead;
+    private double _nextHeadScan = double.NegativeInfinity;
+
+    // Keep simulating a little past the stated distance: the renderer has a fade band of its own and a
+    // garment that froze inside it would be visibly still.
+    private const float ViewDistanceFadeMargin = 3f;
+
+    // How often the local head is re-resolved when it is missing. The body-node lookup behind it builds
+    // a predicate to search the user's component registry, and that predicate is garbage no per-frame
+    // path may make.
+    private const double HeadScanInterval = 1.0;
+
+    private bool TryGetHeadDistance(out float distance)
+    {
+        distance = 0f;
+        if (_localHead == null || _localHead.IsDestroyed)
+        {
+            _localHead = null;
+            double now = World?.Time.TotalTime ?? 0d;
+            if (now < _nextHeadScan)
+                return false;
+            _nextHeadScan = now + HeadScanInterval;
+
+            var head = World?.LocalUser?.Root?.HeadSlot;
+            if (head == null || head.IsDestroyed)
+                return false;
+            _localHead = head;
+        }
+
+        distance = (Slot.GlobalPosition - _localHead.GlobalPosition).Length;
+        return true;
+    }
+
+    private bool IsBeyondViewDistance()
+    {
+        float max = MaxViewDistance.Value;
+        if (max <= 0f || !TryGetHeadDistance(out float distance))
+            return false;
+
+        // Tighter to come back than to leave, so a body sitting exactly on the line does not pause and
+        // reseed itself every other frame.
+        float cutoff = (max + ViewDistanceFadeMargin) * (_paused ? 0.95f : 1f);
+        return distance > cutoff;
+    }
+
+    private int IterationsForDistance()
+    {
+        int full = System.Math.Clamp(Iterations.Value, 1, 32);
+        float max = MaxViewDistance.Value;
+        if (max <= 0f || !TryGetHeadDistance(out float distance))
+            return full;
+
+        float near = max * 0.35f;
+        if (distance <= near)
+            return full;
+
+        int floor = System.Math.Max(1, full / 4);
+        float t = System.Math.Clamp((distance - near) / MathF.Max(max - near, 1e-3f), 0f, 1f);
+        return System.Math.Max(floor, (int)MathF.Round(full + (floor - full) * t));
     }
 
     // Did anything that can move this body change since last frame? Its own slot transform (pinned
@@ -190,7 +331,9 @@ public class SquishyBody : Component, IInputUpdateReceiver, ISoftBodySpace, ISof
         _lastSlotPos = pos;
         _lastSlotRot = rot;
 
-        int count = Colliders.Count;
+        // Collider movement is read off the snapshot taken this frame, so a sleeping body pays one
+        // world-space resolve per collider and not one per collider per particle.
+        int count = _shapeCount;
         if (_lastColliderPos == null || _lastColliderPos.Length != count)
         {
             _lastColliderPos = new float3[count];
@@ -198,8 +341,7 @@ public class SquishyBody : Component, IInputUpdateReceiver, ISoftBodySpace, ISof
         }
         for (int i = 0; i < count; i++)
         {
-            var slot = (Colliders[i] as Component)?.Slot;
-            float3 cp = (slot != null && !slot.IsDestroyed) ? slot.GlobalPosition : float3.Zero;
+            float3 cp = _shapes[i].BoundsMin;
             if (float3.DistanceSquared(cp, _lastColliderPos[i]) > 1e-8f)
                 moved = true;
             _lastColliderPos[i] = cp;
@@ -372,12 +514,80 @@ public class SquishyBody : Component, IInputUpdateReceiver, ISoftBodySpace, ISof
             hit = true;
         }
 
-        foreach (var collider in Colliders)
+        var shapes = _shapes;
+        for (int i = 0; i < _shapeCount; i++)
         {
-            if (collider != null && collider.ResolveParticle(ref position, radius))
+            if (shapes[i].Resolve(ref position, radius))
                 hit = true;
         }
         return hit;
+    }
+
+    // COLLIDER SNAPSHOT
+    //
+    // This is called once per free particle per step - six hundred times for a garment - and it used to
+    // walk the collider list and ask each one to resolve, which meant re-reading that collider's slot
+    // world matrix and global scale six hundred times a frame for an answer that cannot change mid-step.
+    // Freeze them once and the inner loop is arithmetic over a flat array. The body's own bounds throw
+    // out anything it cannot reach before the particle loop ever sees it. -xlinka
+    private DynamicBoneColliderShape[] _shapes = Array.Empty<DynamicBoneColliderShape>();
+    private int _shapeCount;
+
+    // Slack on the body's bounds when culling, in metres: a particle's per-step travel is capped at a
+    // couple of edge lengths and a collider is something a person swings.
+    private const float BroadphaseMotionMargin = 0.25f;
+
+    private void SnapshotColliders()
+    {
+        _shapeCount = 0;
+        var bones = CollideWithWorld.Value ? DynamicBoneManager.For(World) : null;
+        bones?.EnsurePlayerColliders();
+        int players = bones?.PlayerColliderCount ?? 0;
+        int count = Colliders.Count + players;
+        if (count == 0)
+            return;
+        if (_shapes.Length < count)
+            _shapes = new DynamicBoneColliderShape[System.Math.Max(count, 4)];
+
+        float radius = MathF.Max(ParticleRadius.Value, 0f);
+        _solver.ComputeBounds(radius, out var centre, out var size);
+        var half = size * 0.5f;
+        var min = centre - half;
+        var max = centre + half;
+        float margin = _solver.AverageEdgeLength * 2f + BroadphaseMotionMargin;
+
+        foreach (var collider in Colliders)
+        {
+            if (collider == null || !collider.TryGetShape(out var shape))
+                continue;
+            if (!shape.BoundsOverlap(in min, in max, margin))
+                continue;
+            _shapes[_shapeCount++] = shape;
+        }
+
+        // PEOPLE.
+        //
+        // A worn avatar's colliders are deliberately Trigger, so the hook makes them Area3D sensors that
+        // cannot shove their wearer's own character controller around. That also makes them invisible to
+        // every physics query this body runs - ResolveSphere says "solids only" in as many words - so a
+        // person could walk straight through a curtain and it would not notice.
+        //
+        // The bone manager already gathers every user's head and hands once a frame, in exactly the shape
+        // type this snapshot holds, with the replicated AffectOthersBones toggle honoured at the source.
+        // Reading that costs nothing and inherits the privacy answer. The alternative, letting these
+        // queries see triggers, would also hand us every grab sensor and image plane in the world and
+        // would ignore that toggle entirely. -xlinka
+        if (bones == null)
+            return;
+
+        var playerShapes = bones.PlayerColliders;
+        for (int i = 0; i < players && _shapeCount < _shapes.Length; i++)
+        {
+            var shape = playerShapes[i];
+            if (!shape.BoundsOverlap(in min, in max, margin))
+                continue;
+            _shapes[_shapeCount++] = shape;
+        }
     }
 
     private void WriteBack()

@@ -12,7 +12,7 @@ namespace Lumora.Core.Components;
 /// against this slot's collider bounds a few times a second, and the synced list carries everyone's
 /// self-reported state. The host prunes entries for users who leave. -xlinka
 /// </summary>
-[ComponentCategory("Physics/Utility")]
+[ComponentCategory("Physics")]
 public class ColliderUserTracker : Component
 {
     /// <summary>Users currently inside. Each user's own peer manages its entry.</summary>

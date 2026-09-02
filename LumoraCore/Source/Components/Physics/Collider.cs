@@ -9,10 +9,8 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Base class for all physics colliders.
-/// Standard collider component pattern.
-/// </summary>
+// Base class for every physics collider. The platform hook builds the real collision shape from the
+// typed sync fields; this side owns the data model and the registry entry.
 [ComponentCategory("Physics/Colliders")]
 public abstract class Collider : ImplementableComponent
 {
@@ -31,14 +29,10 @@ public abstract class Collider : ImplementableComponent
     private bool _ownerSearchComplete = false;
     private int _updatesSinceAwake = 0;
 
-    /// <summary>
-    /// The owner component that manages this collider (e.g., CharacterController).
-    /// </summary>
+    // The component that manages this collider, e.g. a CharacterController.
     public IColliderOwner ColliderOwner => _owner;
 
-    /// <summary>
-    /// Local bounds offset after post-processing by owner.
-    /// </summary>
+    // Local bounds offset after the owner has post-processed it.
     public float3 LocalBoundsOffset
     {
         get
@@ -139,19 +133,39 @@ public abstract class Collider : ImplementableComponent
                     LumoraLogger.Log($"Collider: No owner found after {_updatesSinceAwake} updates, creating standalone static body");
                 }
             }
-        }
 
+            if (_ownerSearchComplete)
+                DropOffTheUpdateDispatch();
+        }
     }
+
+    // The owner search is the ONLY thing this component wanted a per-frame update for, and it finishes
+    // in four frames. Everything after that is event driven: sync fields queue the hook, and the world
+    // transform event covers moving. A world like Scratch carries hundreds of colliders, and leaving
+    // them all on the dispatch means hundreds of virtual calls a frame to run a branch that is already
+    // false. Deferred by one update because the removal happens from inside the dispatch's own loop.
+    // -xlinka
+    private void DropOffTheUpdateDispatch()
+    {
+        if (_droppedFromUpdates)
+            return;
+        _droppedFromUpdates = true;
+        World?.RunInUpdates(1, () =>
+        {
+            if (!IsDestroyed)
+                World?.UpdateManager?.UnregisterFromUpdates(this);
+        });
+    }
+
+    private bool _droppedFromUpdates;
 
     private void OnSlotTransformChanged(Slot _) => RunApplyChanges();
 
     // ABSTRACT METHODS
 
-    /// <summary>
-    /// Shape-tight local bounding box for this collider, centered on <see cref="Offset"/>.
-    /// The platform hook builds the actual collision shape from the typed sync fields, so this
-    /// is purely the engine-side query used for culling, fitting, and overlap pre-tests.
-    /// </summary>
+    // Shape-tight local bounding box, centred on Offset. The platform hook builds the actual collision
+    // shape from the typed sync fields, so this is purely the engine-side answer used for culling,
+    // fitting and overlap pre-tests.
     public abstract BoundingBox GetLocalBounds();
 
     // CLEANUP

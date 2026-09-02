@@ -122,6 +122,28 @@ public sealed class SoftBodySolver
     // Forget the accumulated velocity, so the next step starts from rest without a launch.
     public void ResetVelocities() => _wasSimulating = false;
 
+    // Put every particle back on its rest position through the anchor, at rest. Used when a body
+    // resumes after a gap it sat out - a distance pause, a disabled frame, a world that was in the
+    // background. Carrying on from the stored pose would be a teleport: the anchor may be fifty metres
+    // and a minute away by now, and the pins would snap to it while the free particles tried to catch
+    // up from wherever they were parked, which reads as the garment being fired at its owner. -xlinka
+    public void ResetToRest(ISoftBodySpace space)
+    {
+        var particles = _particles;
+        if (particles == null)
+            return;
+
+        for (int i = 0; i < particles.Length; i++)
+        {
+            var world = space.LocalPointToGlobal(particles[i].RestLocal);
+            particles[i].Pos = world;
+            particles[i].Prev = world;
+        }
+        _shapeRotation = floatQ.Identity;
+        _wasSimulating = false;
+        IsAwake = true;
+    }
+
     // BUILD
 
     // Build the constraint sets from a triangle mesh. Vertices above pinAboveLocalY in anchor-local

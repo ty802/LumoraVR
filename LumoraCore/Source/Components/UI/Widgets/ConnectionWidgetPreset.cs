@@ -8,6 +8,7 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.UI;
 
+[ComponentCategory("Hidden")]
 public sealed class ConnectionWidgetPreset : WidgetPreset
 {
     public readonly AssetRef<FontSet> Font;
@@ -15,10 +16,11 @@ public sealed class ConnectionWidgetPreset : WidgetPreset
     public readonly Sync<color> DotColor;
     public readonly Sync<color> LabelColor;
 
-    // Status colors. Green = connected/solo (working), amber = no session yet, grey = offline.
-    private static readonly color ConnectedDot = new color(0.30f, 0.80f, 0.50f, 1f);
-    private static readonly color SoloDot = new color(0.40f, 0.66f, 0.92f, 1f);
-    private static readonly color OfflineDot = new color(0.55f, 0.55f, 0.60f, 1f);
+    // Status colors. Green = other people are here, violet = a session with only you in it, muted
+    // grey = no session at all.
+    private static readonly color ConnectedDot = DashTheme.Positive;
+    private static readonly color SoloDot = DashTheme.Accent;
+    private static readonly color OfflineDot = DashTheme.TextMuted;
 
     // Live elements rebuilt by Build(); driven each update from the real session state.
     private Image? _dotImage;
@@ -29,7 +31,7 @@ public sealed class ConnectionWidgetPreset : WidgetPreset
         Font = new AssetRef<FontSet>(this);
         StatusText = new Sync<string>(this, "Offline");
         DotColor = new Sync<color>(this, OfflineDot);
-        LabelColor = new Sync<color>(this, new color(0.60f, 0.60f, 0.66f, 1f));
+        LabelColor = new Sync<color>(this, DashTheme.TextMuted);
     }
 
     protected override void Build(Widget widget, Slot root)
@@ -50,8 +52,8 @@ public sealed class ConnectionWidgetPreset : WidgetPreset
         }
 
         var builder = new UIBuilder(root);
-        builder.Font(Font.Target).FontSize(12f);
-        _text = builder.Text(StatusText.Value, 12f, LabelColor.Value);
+        builder.Font(Font.Target).FontSize(DashTheme.FontSmall);
+        _text = builder.Text(StatusText.Value, DashTheme.FontSmall, LabelColor.Value);
         _text.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
         _text.VerticalAlignment.Value = TextVerticalAlignment.Middle;
         var rect = _text.RectTransform;

@@ -13,12 +13,16 @@ public abstract class TextWidgetPreset : WidgetPreset
     public readonly AssetRef<FontSet> Font;
     public readonly Sync<float> TextSize;
     public readonly Sync<color> TextColor;
+    // Centered reads right for a pill that hugs its number; a label pinned to the edge of the status
+    // bar wants to align with that edge instead. -xlinka
+    public readonly Sync<TextHorizontalAlignment> Alignment;
 
     protected TextWidgetPreset()
     {
         Font = new AssetRef<FontSet>(this);
         TextSize = new Sync<float>(this, 18f);
         TextColor = new Sync<color>(this, new color(0.85f, 0.90f, 0.95f, 1f));
+        Alignment = new Sync<TextHorizontalAlignment>(this, TextHorizontalAlignment.Center);
         MinSize.Value = new float2(90f, 40f);
         PreferredSize.Value = new float2(120f, 44f);
         MaxSize.Value = new float2(260f, 64f);
@@ -30,7 +34,7 @@ public abstract class TextWidgetPreset : WidgetPreset
         BuildBackground(root);
         builder.Font(Font.Target).FontSize(TextSize.Value);
         var text = builder.Text(string.Empty, TextSize.Value, TextColor.Value);
-        text.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
+        text.HorizontalAlignment.Value = Alignment.Value;
         text.VerticalAlignment.Value = TextVerticalAlignment.Middle;
         var rect = text.RectTransform;
         if (rect != null)

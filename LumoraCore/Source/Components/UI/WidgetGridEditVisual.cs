@@ -8,31 +8,43 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.UI;
 
-/// <summary>
-/// Edit-mode grid overlay for a <see cref="WidgetGrid"/>: a tiled grid-line
-/// texture that fades in while the grid's <see cref="WidgetGrid.EditMode"/> is on,
-/// so you can see the cells you're placing widgets into. Tiled one texel-cell per
-/// grid cell (<see cref="WidgetGrid.CellSize"/>). Renders behind widget content.
-/// </summary>
+// Edit-mode overlay for a WidgetGrid: faint cell lines that fade in while editing, plus three
+// highlights the grid computes each frame: the cell under the pointer, the widget the pointer would
+// pick up, and where a carried widget would land (green fits, red blocked). The lines sit behind the
+// widgets, the highlights above them. Hairline alphas are low on purpose: the blend is linear, so a
+// value a compositor would call subtle reads as a slab here. -xlinka
+[ComponentCategory("Hidden")]
 public sealed class WidgetGridEditVisual : UIComponent
 {
     private const float AnimSpeed = 4f;
-    private static readonly color GridTint = new color(1f, 1f, 1f, 0.72f);
+    private const float GridAlpha = 0.12f;
+    private static readonly color CursorColor = new color(1f, 0.85f, 0.2f, 0.3f);
+    private static readonly color HoverColor = new color(0.2f, 0.85f, 1f, 0.25f);
+    private static readonly color FitsColor = new color(0.25f, 1f, 0.45f, 0.3f);
+    private static readonly color BlockedColor = new color(1f, 0.3f, 0.3f, 0.3f);
 
     public readonly SyncRef<WidgetGrid> Grid;
     public readonly AssetRef<TextureAsset> CellTexture;
 
     private TiledRawImage? _tiles;
     private RectTransform? _tilesRect;
-    private Image? _preview;
-    private RectTransform? _previewRect;
     private GridCellTextureProvider? _ownTexture;
+    private Image? _cursor;
+    private Image? _hover;
+    private Image? _preview;
     private float _showLerp;
 
     public WidgetGridEditVisual()
     {
         Grid = new SyncRef<WidgetGrid>(this);
         CellTexture = new AssetRef<TextureAsset>(this);
+    }
+
+    public static WidgetGridEditVisual Setup(WidgetGrid grid)
+    {
+        var visual = grid.Slot.GetComponent<WidgetGridEditVisual>() ?? grid.Slot.AttachComponent<WidgetGridEditVisual>();
+        visual.Grid.Target = grid;
+        return visual;
     }
 
     public override void OnUpdate(float delta)
@@ -43,102 +55,77 @@ public sealed class WidgetGridEditVisual : UIComponent
         bool edit = grid != null && !grid.IsDestroyed && grid.EditMode.Value;
         _showLerp = System.Math.Clamp(_showLerp + (edit ? delta : -delta) * AnimSpeed, 0f, 1f);
 
-        // The drag/resize destination preview runs every frame (independent of the grid-line fade).
-        UpdatePreview(grid, edit);
+        UpdateTiles(grid);
 
+        _cursor ??= Overlay("EditCursor", 1600L);
+        _hover ??= Overlay("EditHover", 1500L);
+        _preview ??= Overlay("EditPreview", 1550L);
+        Show(_cursor, grid, edit ? grid!.CursorRect : null, CursorColor);
+        Show(_hover, grid, edit ? grid!.HoverRect : null, HoverColor);
+        Show(_preview, grid, edit ? grid!.PreviewRect : null, grid != null && grid.PreviewValid ? FitsColor : BlockedColor);
+    }
+
+    private void UpdateTiles(WidgetGrid? grid)
+    {
         EnsureTiles();
         if (_tiles == null || _tiles.IsDestroyed)
             return;
 
-        if (_showLerp <= 0.001f)
+        if (_showLerp <= 0.001f || grid == null)
         {
             _tiles.Enabled.Value = false;
             return;
         }
-
         _tiles.Enabled.Value = true;
 
-        if (grid != null)
+        // Tile at the cell pitch and start half a gap before the first cell, so every line runs down
+        // the middle of a gap instead of along a cell's edge. The texture is one texel per pixel of
+        // pitch, which keeps its one-texel line at one pixel. -xlinka
+        var pitch = grid.Pitch;
+        var half = grid.Spacing.Value * 0.5f;
+        _tiles.TileSize.Value = pitch;
+        if (_ownTexture != null && !_ownTexture.IsDestroyed)
         {
-            // Tile at the full cell PITCH (cell + spacing) so lines land on real cell boundaries, and
-            // inset the overlay to where cells actually start (padding + centering), matching CellAt /
-            // ArrangeWidgets - otherwise the lines drift away from the drop cells. -xlinka
-            var cell = grid.EffectiveCellSize;
-            var spacing = grid.Spacing.Value;
-            _tiles.TileSize.Value = new float2(cell.x + spacing.x, cell.y + spacing.y);
-
-            if (_tilesRect != null && !_tilesRect.IsDestroyed)
-            {
-                var pad = grid.Padding.Value;
-                var center = grid.CenteringOffset;
-                _tilesRect.OffsetMin.Value = new float2(pad.x + center.x, pad.y + center.y);
-                _tilesRect.OffsetMax.Value = new float2(-(pad.x + center.x), -(pad.y + center.y));
-            }
+            int texels = System.Math.Clamp((int)System.MathF.Round(pitch.x), 8, 256);
+            if (_ownTexture.Size.Value != texels)
+                _ownTexture.Size.Value = texels;
         }
 
-        var tint = GridTint;
-        tint.a *= _showLerp;
-        _tiles.Tint.Value = tint;
-    }
-
-    // Draw the drag/resize destination preview (green = will place, red = blocked) at the cell rect the
-    // active handle stashed on the grid. Hidden when not editing or no drag is in progress. -xlinka
-    private void UpdatePreview(WidgetGrid? grid, bool edit)
-    {
-        EnsurePreview();
-        if (_preview == null || _preview.IsDestroyed || _previewRect == null)
-            return;
-
-        var pr = grid?.DragPreviewRect;
-        if (!edit || grid == null || pr == null)
+        if (_tilesRect != null && !_tilesRect.IsDestroyed)
         {
-            _preview.Enabled.Value = false;
-            return;
+            var inset = grid.Padding.Value + grid.CenteringOffset - half;
+            _tilesRect.OffsetMin.Value = inset;
+            _tilesRect.OffsetMax.Value = -inset;
         }
 
-        var rect = pr.Value;
-        var cell = grid.EffectiveCellSize;
-        var spacing = grid.Spacing.Value;
-        var pad = grid.Padding.Value;
-        var center = grid.CenteringOffset;
-
-        // Same cell -> pixel mapping as WidgetGrid.ArrangeWidgets, so the preview lands exactly on cells.
-        float width = rect.Width * cell.x + (rect.Width - 1) * spacing.x;
-        float height = rect.Height * cell.y + (rect.Height - 1) * spacing.y;
-        float xMin = pad.x + center.x + rect.X * (cell.x + spacing.x);
-        float yMax = -(pad.y + center.y + rect.Y * (cell.y + spacing.y));
-
-        _previewRect.AnchorMin.Value = new float2(0f, 1f);
-        _previewRect.AnchorMax.Value = new float2(0f, 1f);
-        _previewRect.OffsetMin.Value = new float2(xMin, yMax - height);
-        _previewRect.OffsetMax.Value = new float2(xMin + width, yMax);
-
-        _preview.Tint.Value = grid.DragPreviewValid
-            ? new color(0.25f, 1f, 0.45f, 0.35f)  // green - will place here
-            : new color(1f, 0.3f, 0.3f, 0.35f);   // red - blocked
-        _preview.Enabled.Value = true;
+        _tiles.Tint.Value = new color(1f, 1f, 1f, GridAlpha * _showLerp);
     }
 
-    private void EnsurePreview()
+    private Image Overlay(string name, long order)
     {
-        if (_preview != null && !_preview.IsDestroyed)
+        var slot = Slot.FindChild(name, recursive: false) ?? Slot.AddSlot(name);
+        slot.OrderOffset.Value = order;
+        _ = slot.GetComponent<RectTransform>() ?? slot.AttachComponent<RectTransform>();
+        var image = slot.GetComponent<Image>() ?? slot.AttachComponent<Image>();
+        image.Enabled.Value = false;
+        return image;
+    }
+
+    private static void Show(Image image, WidgetGrid? grid, Rect? rect, in color tint)
+    {
+        if (image.IsDestroyed)
             return;
-
-        var slot = Slot.FindChild("DragPreview", recursive: false) ?? Slot.AddSlot("DragPreview");
-        slot.OrderOffset.Value = 1500L; // above grid lines + widget content
-
-        _previewRect = slot.GetComponent<RectTransform>() ?? slot.AttachComponent<RectTransform>();
-
-        _preview = slot.GetComponent<Image>() ?? slot.AttachComponent<Image>();
-        _preview.Enabled.Value = false;
-    }
-
-    /// <summary>Attach the edit overlay to a grid.</summary>
-    public static WidgetGridEditVisual Setup(WidgetGrid grid)
-    {
-        var visual = grid.Slot.GetComponent<WidgetGridEditVisual>() ?? grid.Slot.AttachComponent<WidgetGridEditVisual>();
-        visual.Grid.Target = grid;
-        return visual;
+        if (grid == null || rect == null)
+        {
+            image.Enabled.Value = false;
+            return;
+        }
+        var transform = image.RectTransform ?? image.Slot.GetComponent<RectTransform>();
+        if (transform != null)
+            WidgetGrid.ApplyTopDown(transform, rect.Value);
+        if (image.Tint.Value != tint)
+            image.Tint.Value = tint;
+        image.Enabled.Value = true;
     }
 
     private void EnsureTiles()
@@ -147,8 +134,7 @@ public sealed class WidgetGridEditVisual : UIComponent
             return;
 
         var slot = Slot.FindChild("EditGrid", recursive: false) ?? Slot.AddSlot("EditGrid");
-        // Behind the widgets (which are later children / default order).
-        slot.OrderOffset.Value = -1000L;
+        slot.OrderOffset.Value = -1000L; // behind the widgets
 
         var rect = slot.GetComponent<RectTransform>() ?? slot.AttachComponent<RectTransform>();
         rect.AnchorMin.Value = float2.Zero;

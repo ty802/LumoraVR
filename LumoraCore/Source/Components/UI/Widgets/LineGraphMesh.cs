@@ -9,6 +9,7 @@ using Lumora.Core.Phos;
 
 namespace Lumora.Core.Components.UI;
 
+[ComponentCategory("UI/Helio/Graphics")]
 public sealed class LineGraphMesh : Graphic
 {
     public readonly SyncRef<ValueGraphRecorder> Recorder;

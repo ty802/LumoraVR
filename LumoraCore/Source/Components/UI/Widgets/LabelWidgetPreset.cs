@@ -6,6 +6,7 @@ using Lumora.Core;
 
 namespace Lumora.Core.Components.UI;
 
+[ComponentCategory("Hidden")]
 public sealed class LabelWidgetPreset : TextWidgetPreset
 {
     public readonly Sync<string> LabelText;

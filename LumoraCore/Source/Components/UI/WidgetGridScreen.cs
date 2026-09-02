@@ -6,6 +6,7 @@ using Lumora.Core;
 
 namespace Lumora.Core.Components.UI;
 
+[ComponentCategory("Hidden")]
 public class WidgetGridScreen : DashboardScreen
 {
     private WidgetGrid? _grid;

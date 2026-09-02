@@ -12,14 +12,30 @@ namespace Lumora.Core.Components.UI;
 
 // live read-out of the active session's networking and in-flight asset transfers, with per-asset
 // progress. Two sub-tabs - Network and Assets - refreshed a few times a second while visible.
-public sealed class DebugScreen : WidgetScreen
+[ComponentCategory("Hidden")]
+public sealed class DebugScreen : WidgetScreen, ITabbedScreen
 {
+    // The capture harness raises a named tab; nothing in the dash calls this.
+    public bool ShowTab(string name)
+    {
+        for (int i = 0; i < _tabs.Count; i++)
+        {
+            if (!string.Equals(_tabs[i].name, name, StringComparison.OrdinalIgnoreCase))
+                continue;
+            SelectTab(i);
+            return true;
+        }
+        return false;
+    }
+
     private const float TabBarHeight = 44f;
     private const float RefreshInterval = 0.25f;
 
-    private static readonly color TabActiveFill = new color(0.45f, 0.38f, 0.80f, 0.90f);
+    // Opaque blend, not the translucent AccentSoft: over the panel that wash lands DARKER than a
+    // plain Surface tab, so the selected tab would read as the recessed one. -xlinka
+    private static readonly color TabActiveFill = color.Lerp(DashTheme.Surface, DashTheme.Accent, 0.30f);
 
-    private readonly List<(Slot page, BorderedImage tab)> _tabs = new();
+    private readonly List<(Slot page, BorderedImage tab, string name)> _tabs = new();
     private int _activeTab;
     private float _refreshAccum;
 
@@ -74,7 +90,7 @@ public sealed class DebugScreen : WidgetScreen
 
         var button = tabSlot.AttachComponent<Button>();
         button.Clicked += (_, _) => SelectTab(index);
-        AddFillLabel(tabSlot, name, 18f, TextPrimary);
+        AddFillLabel(tabSlot, name, DashTheme.FontBody, TextPrimary, SemiboldFont);
 
         var page = contentHost.AddSlot(name);
         var pageRect = page.AttachComponent<RectTransform>();
@@ -91,15 +107,16 @@ public sealed class DebugScreen : WidgetScreen
         infoRect.OffsetMin.Value = float2.Zero;
         infoRect.OffsetMax.Value = float2.Zero;
         var text = info.AttachComponent<Text>();
-        text.Font.Target = _dashboard?.Font.Target!;
-        text.Size.Value = 14f;
-        text.Color.Value = TextPrimary;
+        // Fixed width here on purpose: these are columns of numbers that have to line up. -xlinka
+        text.Font.Target = _dashboard?.FontMono.Target ?? _dashboard?.Font.Target!;
+        text.Size.Value = DashTheme.FontSmall;
+        text.Color.Value = DashTheme.TextDim;
         text.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
         text.VerticalAlignment.Value = TextVerticalAlignment.Top;
         text.WordWrap.Value = true;
         text.Content.Value = "…";
 
-        _tabs.Add((page, background));
+        _tabs.Add((page, background, name));
         return text;
     }
 
@@ -108,7 +125,7 @@ public sealed class DebugScreen : WidgetScreen
         _activeTab = index;
         for (int i = 0; i < _tabs.Count; i++)
         {
-            var (page, tab) = _tabs[i];
+            var (page, tab, _) = _tabs[i];
             if (page != null && !page.IsDestroyed)
                 page.ActiveSelf.Value = i == index;
             if (tab != null && !tab.IsDestroyed)
@@ -177,26 +194,53 @@ public sealed class DebugScreen : WidgetScreen
         return sb.ToString();
     }
 
+    // Two sources, one page: what is moving between this client and the content service, and what is
+    // moving between this client and its peers in a session. Assets in flight covers both, plus the
+    // decode and upload that follows a transfer. -xlinka
     private static string BuildAssetsInfo()
     {
+        var sb = new StringBuilder();
+        int loading = Lumora.Core.Assets.Asset.LoadingCount;
+        sb.AppendLine($"Assets loading: {loading}");
+
+        var cloud = Lumora.Nexus.Cloud.Cdn.TransferRegistry.Snapshot();
+        var totals = Lumora.Nexus.Cloud.Cdn.TransferRegistry.Totals();
+        sb.AppendLine($"Cloud: {totals.downloads} down / {totals.uploads} up"
+            + (totals.remainingBytes > 0 ? $"  {FormatBytes(totals.remainingBytes)} left" : string.Empty)
+            + $"  (done {Lumora.Nexus.Cloud.Cdn.TransferRegistry.CompletedDownloads} down / {Lumora.Nexus.Cloud.Cdn.TransferRegistry.CompletedUploads} up)");
+        foreach (var entry in cloud)
+        {
+            string arrow = entry.IsUpload ? "up  " : "down";
+            float fraction = (float)entry.Fraction;
+            int pct = (int)(System.Math.Clamp(fraction, 0f, 1f) * 100f);
+            string size = entry.TotalBytes > 0
+                ? $"({FormatBytes(entry.TransferredBytes)}/{FormatBytes(entry.TotalBytes)})"
+                : "(size unknown)";
+            sb.AppendLine($"{arrow} {ShortHash(entry.Hash)}  [{Bar(fraction)}] {pct}%  {size}");
+        }
+
         var transferer = Engine.Current?.ActiveSessionTransferer;
         if (transferer == null)
-            return "Not connected to a session.";
+        {
+            sb.AppendLine("Peers: not in a session.");
+            return sb.ToString();
+        }
 
         var transfers = transferer.GetActiveTransfers();
-        if (transfers.Count == 0)
-            return "No active asset transfers.";
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"Active transfers: {transfers.Count}");
+        sb.AppendLine($"Peers: {transfers.Count} active"
+            + $"  jobs {transferer.UploadJobCount} up / {transferer.DownloadJobCount} down"
+            + $"  pending {transferer.PendingAssetRequestCount}");
         foreach (var t in transfers)
         {
-            string arrow = t.IsUpload ? "up" : "down";
+            string arrow = t.IsUpload ? "up  " : "down";
             int pct = (int)(System.Math.Clamp(t.Fraction, 0f, 1f) * 100f);
             sb.AppendLine($"{arrow} {ShortName(t.Uri)}  [{Bar(t.Fraction)}] {pct}%  ({FormatBytes(t.Transferred)}/{FormatBytes(t.Total)})");
         }
         return sb.ToString();
     }
+
+    private static string ShortHash(string hash)
+        => string.IsNullOrEmpty(hash) ? "?" : hash.Length > 14 ? hash.Substring(0, 14) : hash;
 
     private static string ShortName(Uri uri)
     {

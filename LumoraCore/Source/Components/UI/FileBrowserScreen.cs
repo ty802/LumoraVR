@@ -9,35 +9,47 @@ using Helio.UI.Layout;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Components.Assets;
+using Lumora.Core.Components.UI.Worlds;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.UI;
 
+[ComponentCategory("Hidden")]
 public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
 {
     private const int GridColumns = 8;
-    private const float CardHeight = 64f;
+    // A square-ish tile: the picture area on top (a folder shape, or a badge with the file's type),
+    // the name under it.
+    private const float CardHeight = 112f;
+    private const float TileArtHeight = 62f;
     private const float CardSpacing = 6f;
     private const float ContentPad = 6f;
     // Extra rows built above/below the viewport so a fast scroll doesn't flash a blank row before the recycle
     // catches up. Higher = smoother but more live draw surfaces. - xlinka
     private const int BufferRows = 2;
 
-    private static readonly color FolderColor = new color(0.95f, 0.78f, 0.28f, 0.40f);
-    private static readonly color FileColor = new color(0.40f, 0.46f, 0.62f, 0.40f);
-    private static readonly color RowBorder = new color(0.52f, 0.46f, 0.82f, 0.35f);
-    private static readonly color ViewportFill = new color(0.16f, 0.15f, 0.24f, 0.30f);
-    private static readonly color BarFill = new color(0.16f, 0.15f, 0.24f, 0.45f);
-    private static readonly color ToolFill = new color(0.22f, 0.20f, 0.34f, 0.55f);
-    private static readonly color TextPrimary = new color(0.93f, 0.93f, 0.97f, 1f);
-    private static readonly color TextDim = new color(0.70f, 0.70f, 0.78f, 1f);
-    private static readonly color ScrollHandleColor = new color(0.55f, 0.50f, 0.85f, 0.90f);
+    // Cards are tinted by file type and those tints are translucent washes over the viewport, so the
+    // folder tint keeps its alpha: opaque amber turns a folder card into a road sign. -xlinka
+    private static readonly color FolderColor =
+        new color(DashTheme.Warning.r, DashTheme.Warning.g, DashTheme.Warning.b, 0.40f);
+    private static readonly color FileColor = DashTheme.Surface;
+    private static readonly color RowBorder = DashTheme.Outline;
+    private static readonly color ViewportFill = DashTheme.Field;
+    private static readonly color BarFill = DashTheme.Surface;
+    private static readonly color ToolFill = DashTheme.Surface;
+    private static readonly color TextPrimary = DashTheme.Text;
+    private static readonly color TextDim = DashTheme.TextDim;
+    private static readonly color ScrollHandleColor = DashTheme.Accent;
 
     private const float LaidOutViewportFloor = 100f;
+
+    private const double DoublePressSeconds = 0.45;
 
     private string _currentPath = string.Empty;
     private string? _selectedPath;
     private string _search = string.Empty;
+    private DateTime _lastPress;
+    private string? _lastPressPath;
     private Text? _pathLabel;
     private Text? _statusLabel;
     private Text? _searchLabel;
@@ -96,6 +108,10 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         public RectTransform Rect = null!;
         public BorderedImage Bg = null!;
         public Text Label = null!;
+        public Slot FolderArt = null!;
+        public Slot BadgeSlot = null!;
+        public RoundedPanel Badge = null!;
+        public Text BadgeLabel = null!;
         public string Path = string.Empty;
         public bool IsDirectory;
         public color BaseColor;
@@ -122,9 +138,8 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         v.ForceExpandHeight.Value = false;
 
         BuildToolbar(root, font, rounded);
-        BuildSearchBar(root, font, rounded);
         BuildViewport(root, font, rounded);
-        BuildStatusBar(root, font, rounded);
+        BuildStatusLine(root, font);
         BuildNewFolderModal(root, font, rounded);
 
         string initial;
@@ -176,27 +191,27 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         _pathLabel.VerticalAlignment.Value = TextVerticalAlignment.Middle;
         FillRect(_pathLabel.RectTransform!, 14f, 14f, 0f, 0f);
 
-        AddToolButton(toolbar, "Refresh", Refresh, font, rounded, 90f);
-        AddToolButton(toolbar, "+ Folder", OpenNewFolderDialog, font, rounded, 110f);
-        AddToolButton(toolbar, "Open Folder", OpenFolderHere, font, rounded, 120f);
-    }
-
-    private void BuildSearchBar(Slot root, IAssetProvider<FontSet>? font, RoundedRectTextureProvider? rounded)
-    {
-        var bar = root.AddSlot("Search");
-        bar.AttachComponent<RectTransform>();
-        var le = bar.AttachComponent<LayoutElement>();
-        le.MinHeight.Value = 36f;
-        le.PreferredHeight.Value = 36f;
-        var bg = bar.AttachComponent<BorderedImage>();
-        ApplyRounded(bg, BarFill, RowBorder, rounded);
-
-        var b = new UIBuilder(bar);
-        b.Font(font).FontSize(13f);
-        _searchLabel = b.Text("Search… (type to filter)", 13f, TextDim);
+        // The search well sits in the same row as everything else; typing anywhere on this screen
+        // goes into it, so it needs no focus press.
+        var well = toolbar.AddSlot("Search");
+        well.AttachComponent<RectTransform>();
+        var wellLE = well.AttachComponent<LayoutElement>();
+        wellLE.MinWidth.Value = 200f;
+        wellLE.PreferredWidth.Value = 200f;
+        wellLE.MinHeight.Value = 40f;
+        wellLE.PreferredHeight.Value = 40f;
+        var wellBg = well.AttachComponent<BorderedImage>();
+        ApplyRounded(wellBg, DashTheme.Field, RowBorder, rounded);
+        var wb = new UIBuilder(well);
+        wb.Font(font).FontSize(13f);
+        _searchLabel = wb.Text("Type to search", 13f, TextDim);
         _searchLabel.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
         _searchLabel.VerticalAlignment.Value = TextVerticalAlignment.Middle;
         FillRect(_searchLabel.RectTransform!, 14f, 14f, 0f, 0f);
+
+        AddToolButton(toolbar, "Refresh", Refresh, font, rounded, 84f);
+        AddToolButton(toolbar, "+ Folder", OpenNewFolderDialog, font, rounded, 96f);
+        AddToolButton(toolbar, "Open folder", OpenFolderHere, font, rounded, 110f);
     }
 
     private void BuildViewport(Slot root, IAssetProvider<FontSet>? font, RoundedRectTextureProvider? rounded)
@@ -354,33 +369,21 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         _scrollHandle.OffsetMin.Value = new float2(2f, -(offset + handleHeight));
     }
 
-    private void BuildStatusBar(Slot root, IAssetProvider<FontSet>? font, RoundedRectTextureProvider? rounded)
+    // A line of text under the grid: what is selected, or what went wrong. No controls live here;
+    // the one row at the top holds every button.
+    private void BuildStatusLine(Slot root, IAssetProvider<FontSet>? font)
     {
         var status = root.AddSlot("Status");
         status.AttachComponent<RectTransform>();
         var le = status.AttachComponent<LayoutElement>();
-        le.MinHeight.Value = 40f;
-        le.PreferredHeight.Value = 40f;
-        var h = status.AttachComponent<HorizontalLayout>();
-        h.Spacing.Value = 6f;
-        h.ForceExpandHeight.Value = true;
-
-        var infoSlot = status.AddSlot("Info");
-        infoSlot.AttachComponent<RectTransform>();
-        var infoLE = infoSlot.AttachComponent<LayoutElement>();
-        infoLE.FlexibleWidth.Value = 1f;
-        infoLE.MinHeight.Value = 40f;
-        infoLE.PreferredHeight.Value = 40f;
-        var infoBg = infoSlot.AttachComponent<BorderedImage>();
-        ApplyRounded(infoBg, BarFill, RowBorder, rounded);
-        var ib = new UIBuilder(infoSlot);
+        le.MinHeight.Value = 24f;
+        le.PreferredHeight.Value = 24f;
+        var ib = new UIBuilder(status);
         ib.Font(font).FontSize(13f);
-        _statusLabel = ib.Text("Select a file…", 13f, TextDim);
+        _statusLabel = ib.Text("Press a file to select it, press it twice to import it.", 13f, TextDim);
         _statusLabel.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
         _statusLabel.VerticalAlignment.Value = TextVerticalAlignment.Middle;
-        FillRect(_statusLabel.RectTransform!, 14f, 14f, 0f, 0f);
-
-        AddToolButton(status, "Import", Import, font, rounded, 96f);
+        FillRect(_statusLabel.RectTransform!, 4f, 4f, 0f, 0f);
     }
 
     private static void AddToolButton(Slot parent, string label, Action onClick, IAssetProvider<FontSet>? font, RoundedRectTextureProvider? rounded, float width)
@@ -410,14 +413,20 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         FillRect(t.RectTransform!, 0f, 0f, 0f, 0f);
         var btn = slot.AttachComponent<Button>();
         btn.Clicked += (_, _) => onClick();
-        btn.AddColorDriver(img.Tint, ToolFill, InteractionColorMode.Direct);
+        // DisabledColor too: the screen builds while its slot is inactive, and a driver's first Apply
+        // in that state paints the disabled grey and never revisits it. -xlinka
+        var toolDriver = btn.AddColorDriver(img.Tint, ToolFill, InteractionColorMode.Direct);
+        toolDriver.HighlightColor.Value = DashTheme.SurfaceHover;
+        toolDriver.PressedColor.Value = DashTheme.SurfacePressed;
+        toolDriver.DisabledColor.Value = ToolFill;
+        toolDriver.Apply();
     }
 
     private static void ApplyRounded(BorderedImage img, color tint, color border, RoundedRectTextureProvider? rounded)
     {
         img.Tint.Value = tint;
         img.BorderTint.Value = border;
-        img.BorderThickness.Value = 2f;
+        img.BorderThickness.Value = DashTheme.OutlineWidth;
         if (rounded != null)
         {
             img.Texture.Target = rounded;
@@ -442,7 +451,7 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         if (_pathLabel != null) _pathLabel.Content.Value = path;
         if (_statusLabel != null)
         {
-            _statusLabel.Content.Value = "Select a file…";
+            _statusLabel.Content.Value = "Press a file to select it, press it twice to import it.";
             _statusLabel.Color.Value = TextDim;
         }
         Refresh();
@@ -457,7 +466,7 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         {
             if (text.Length == 0)
             {
-                _searchLabel.Content.Value = "Search… (type to filter)";
+                _searchLabel.Content.Value = "Type to search";
                 _searchLabel.Color.Value = TextDim;
             }
             else
@@ -655,22 +664,85 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
             card.Bg = slot.AttachComponent<BorderedImage>();
             ApplyRounded(card.Bg, FileColor, RowBorder, _rounded);
 
-            var nameBuilder = new UIBuilder(slot);
+            // The folder shape, the same one the inventory draws: a tab over a body in the folder tint.
+            card.FolderArt = slot.AddSlot("Folder");
+            var folderRect = card.FolderArt.AttachComponent<RectTransform>();
+            folderRect.AnchorMin.Value = new float2(0.5f, 1f);
+            folderRect.AnchorMax.Value = new float2(0.5f, 1f);
+            folderRect.OffsetMin.Value = new float2(-26f, -TileArtHeight + 10f);
+            folderRect.OffsetMax.Value = new float2(26f, -10f);
+            var folderBody = card.FolderArt.AddSlot("Body");
+            var bodyRect = folderBody.AttachComponent<RectTransform>();
+            bodyRect.AnchorMin.Value = float2.Zero;
+            bodyRect.AnchorMax.Value = float2.One;
+            bodyRect.OffsetMin.Value = float2.Zero;
+            bodyRect.OffsetMax.Value = new float2(0f, -9f);
+            BrowserParts.Panel(folderBody, new color(FolderColor.r, FolderColor.g, FolderColor.b, 0.85f), 5f);
+            var folderTab = card.FolderArt.AddSlot("Tab");
+            var tabRect = folderTab.AttachComponent<RectTransform>();
+            tabRect.AnchorMin.Value = new float2(0f, 1f);
+            tabRect.AnchorMax.Value = new float2(0f, 1f);
+            tabRect.OffsetMin.Value = new float2(0f, -9f);
+            tabRect.OffsetMax.Value = new float2(22f, 0f);
+            BrowserParts.Panel(folderTab, FolderColor, 3f);
+
+            // A file's badge: its type, on the class colour the old flat cards were washed with.
+            card.BadgeSlot = slot.AddSlot("Badge");
+            var badgeRect = card.BadgeSlot.AttachComponent<RectTransform>();
+            badgeRect.AnchorMin.Value = new float2(0.5f, 1f);
+            badgeRect.AnchorMax.Value = new float2(0.5f, 1f);
+            badgeRect.OffsetMin.Value = new float2(-28f, -TileArtHeight + 12f);
+            badgeRect.OffsetMax.Value = new float2(28f, -12f);
+            card.Badge = BrowserParts.Panel(card.BadgeSlot, FileColor, 8f);
+            var badgeBuilder = new UIBuilder(card.BadgeSlot);
+            badgeBuilder.Font(_font).FontSize(12f);
+            card.BadgeLabel = badgeBuilder.Text(string.Empty, 12f, TextPrimary);
+            card.BadgeLabel.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
+            card.BadgeLabel.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+            FillRect(card.BadgeLabel.RectTransform!, 2f, 2f, 2f, 2f);
+
+            var nameSlot = slot.AddSlot("Name");
+            var nameRect = nameSlot.AttachComponent<RectTransform>();
+            nameRect.AnchorMin.Value = new float2(0f, 0f);
+            nameRect.AnchorMax.Value = new float2(1f, 0f);
+            nameRect.OffsetMin.Value = new float2(6f, 4f);
+            nameRect.OffsetMax.Value = new float2(-6f, CardHeight - TileArtHeight - 2f);
+            var nameBuilder = new UIBuilder(nameSlot);
             nameBuilder.Font(_font).FontSize(11f);
             card.Label = nameBuilder.Text(string.Empty, 11f, TextPrimary);
             card.Label.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
             card.Label.VerticalAlignment.Value = TextVerticalAlignment.Middle;
             card.Label.WordWrap.Value = true;
-            FillRect(card.Label.RectTransform!, 4f, 4f, 4f, 4f);
+            FillRect(card.Label.RectTransform!, 0f, 0f, 0f, 0f);
 
             // Handler reads the card's LIVE path/type, not a captured value, because the card is recycled to a
             // different entry as you scroll. - xlinka
+            // A folder opens on one press. A file selects on one press and imports on a second press
+            // within the double press window, the same rule the inventory uses. -xlinka
             var captured = card;
             var btn = slot.AttachComponent<Button>();
             btn.Clicked += (_, _) =>
             {
-                if (captured.IsDirectory) NavigateTo(captured.Path);
-                else Select(captured);
+                if (captured.IsDirectory)
+                {
+                    NavigateTo(captured.Path);
+                    return;
+                }
+                var now = DateTime.UtcNow;
+                bool second = _lastPressPath != null
+                    && string.Equals(_lastPressPath, captured.Path, StringComparison.OrdinalIgnoreCase)
+                    && (now - _lastPress).TotalSeconds <= DoublePressSeconds;
+                _lastPress = now;
+                _lastPressPath = captured.Path;
+                if (second)
+                {
+                    _lastPressPath = null;
+                    Select(captured);
+                    if (World != null)
+                        SpawnImport(captured.Path);
+                    return;
+                }
+                Select(captured);
             };
 
             _pool.Add(card);
@@ -682,9 +754,23 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         card.EntryIndex = entryIndex;
         card.Path = entry.Path;
         card.IsDirectory = entry.IsDirectory;
-        card.BaseColor = entry.IsDirectory ? FolderColor : GetFileClassColor(entry.Path);
+        card.BaseColor = FileColor;
         card.Label.Content.Value = TruncateLabel(entry.Name);
         card.Bg.Tint.Value = entry.Path == _selectedPath ? Highlight(card.BaseColor) : card.BaseColor;
+
+        bool folder = entry.IsDirectory;
+        if (card.FolderArt.ActiveSelf.Value != folder)
+            card.FolderArt.ActiveSelf.Value = folder;
+        if (card.BadgeSlot.ActiveSelf.Value == folder)
+            card.BadgeSlot.ActiveSelf.Value = !folder;
+        if (!folder)
+        {
+            var wash = GetFileClassColor(entry.Path);
+            bool known = wash.a < 0.99f;
+            card.Badge.Color.Value = known ? new color(wash.r, wash.g, wash.b, 0.85f) : DashTheme.Field;
+            card.BadgeLabel.Content.Value = TypeLabel(entry.Path);
+            card.BadgeLabel.Color.Value = known ? DashTheme.Backdrop : TextDim;
+        }
 
         float x = ContentPad + col * (cardW + CardSpacing);
         float y = ContentPad + row * (CardHeight + CardSpacing);
@@ -720,13 +806,6 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
                 _statusLabel.Content.Value = Path.GetFileName(card.Path) ?? card.Path;
             }
         }
-    }
-
-    private void Import()
-    {
-        if (string.IsNullOrEmpty(_selectedPath)) return;
-        if (World == null) return;
-        SpawnImport(_selectedPath);
     }
 
     private void OpenFolderHere()
@@ -787,7 +866,7 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         var panelBg = panel.AttachComponent<BorderedImage>();
         panelBg.Tint.Value = new color(0.10f, 0.09f, 0.16f, 1f);
         panelBg.BorderTint.Value = new color(0.62f, 0.56f, 0.92f, 0.95f);
-        panelBg.BorderThickness.Value = 2f;
+        panelBg.BorderThickness.Value = DashTheme.OutlineWidth;
         if (rounded != null)
         {
             panelBg.Texture.Target = rounded;
@@ -999,9 +1078,19 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
 
     private static string TruncateLabel(string label)
     {
-        const int Max = 16;
+        const int Max = 30;
         if (label.Length <= Max) return label;
         return label.Substring(0, Max - 1) + "…";
+    }
+
+    // The badge's word: the extension in capitals, or FILE when there is none.
+    private static string TypeLabel(string path)
+    {
+        string ext = Path.GetExtension(path);
+        if (string.IsNullOrEmpty(ext) || ext.Length < 2)
+            return "FILE";
+        ext = ext.Substring(1).ToUpperInvariant();
+        return ext.Length > 5 ? ext.Substring(0, 5) : ext;
     }
 
     private static string FormatBytes(long bytes)

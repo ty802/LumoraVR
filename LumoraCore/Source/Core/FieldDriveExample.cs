@@ -16,6 +16,7 @@ public class FieldDriveExample
 {
     // The shape every driver should have: declared links, a default target assigned only when nothing
     // already named one, and a push per update.
+    [ComponentCategory("Hidden")]
     public class IKDriverComponent : Component
     {
         // Declared members. Discovered by WorkerInitializer, initialized with the component.

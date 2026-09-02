@@ -55,15 +55,8 @@ public class RefIDAllocator
             byte userByte;
             if (_freedUserBytes.Count > 0)
             {
-                // Reuse a byte from someone who left. NOTE: recycled bytes currently restart at
-                // position 1 (NOT above the prior owner's high-water mark). Seeding from
-                // _latestUserPosition was tried and reverted: the joiner mishandles the grant's
-                // AllocationIDStart as a position when it's actually a PACKED RefID (see the join
-                // handshake), so a meaningful (high) seed gets re-packed and compounds ~256x per
-                // recycle -> 56-bit position overflow after a few reuses of the same byte. The
-                // recycle collision this would guard against is already covered by PurgeUserByte on
-                // leave. Wire the high-water seed only AFTER fixing AllocationIDStart packed-vs-position
-                // on the joiner. -xlinka
+                // Reuse a byte from someone who left; ResumePosition below starts the range past
+                // whatever they minted rather than replaying their positions.
                 userByte = _freedUserBytes.Min;
                 _freedUserBytes.Remove(userByte);
             }
@@ -78,7 +71,9 @@ public class RefIDAllocator
                 userByte = _nextUserByte++;
             }
 
-            var range = RefIDRange.ForUserByte(userByte);
+            var range = new RefIDRange(
+                RefID.Construct(userByte, ResumePosition(userByte)),
+                RefID.GetRangeEndExclusive(userByte));
 
             if (user != null)
             {
@@ -89,6 +84,38 @@ public class RefIDAllocator
 
             return range;
         }
+    }
+
+    // Where a (re)joiner on this byte starts. A fresh byte starts at 1; a recycled one starts past
+    // everything its previous occupant registered, plus the block the joiner allocates client side
+    // (RefIDConstants.USER_JOIN_HEADROOM) so the next reuse clears that too.
+    //
+    // The high-water mark comes from the reference controller, not from this class: a joiner mints its
+    // own IDs on its own machine and the host only ever sees them as registrations. Growth is LINEAR in
+    // reuses - the position is carried as a position and never re-packed - which is the part the old
+    // packed-vs-position confusion in the join handler got wrong. -xlinka
+    private ulong ResumePosition(byte userByte)
+    {
+        ulong seen = System.Math.Max(
+            _world.ReferenceController?.GetLatestPosition(userByte) ?? 0UL,
+            _latestUserPosition[userByte]);
+
+        if (seen <= 1)
+        {
+            return 1;
+        }
+
+        ulong resume = seen + 1;
+        // 2^56 positions per byte: reaching this needs a session that recycled the same byte for
+        // longer than any session runs. Clamping beats wrapping into IDs already handed out.
+        if (resume > RefID.MaxPosition - RefIDConstants.USER_JOIN_HEADROOM)
+        {
+            LumoraLogger.Warn($"RefIDAllocator: user byte {userByte} is out of position space, restarting it at 1.");
+            resume = 1;
+        }
+
+        _latestUserPosition[userByte] = resume;
+        return resume;
     }
 
     /// <summary>

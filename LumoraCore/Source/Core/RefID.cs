@@ -483,6 +483,12 @@ public static class RefIDConstants
     /// </summary>
     public const ulong IDS_PER_DOMAIN = RefID.MaxPosition;
 
+    // Positions the HOST reserves at the start of a user's range for the User object it builds there
+    // and that object's own synced members. The joiner starts allocating above this block, so the two
+    // sides never mint the same ID for different things. Both ends read the same constant - a joiner
+    // that picked its own number would collide the moment the User grew a member. -xlinka
+    public const ulong USER_JOIN_HEADROOM = 4096;
+
     /// <summary>
     /// Check if a user byte is valid for user allocation.
     /// </summary>

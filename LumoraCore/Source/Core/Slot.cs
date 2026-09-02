@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -157,9 +157,15 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
 
     bool IPermissionGrabSurface.AllowsGrab => GetComponent<Components.Grabbable>()?.AllowGrab.Value == true;
 
-    bool IPermissionGrabSurface.AllowsSteal => false;
+    // Forwarded to the grabbable rather than answered here. These used to be hard-coded false/null, which
+    // read as "unstealable and held by nobody" for every transform write in the engine - fine while the
+    // gate let any user pose any grabbable, and wrong the moment it started asking who is holding it.
+    // The slot is where the pose and parent writes LAND, but the grabbable is where the answer lives. -xlinka
+    bool IPermissionGrabSurface.AllowsSteal
+        => (GetComponent<Components.Grabbable>() as IPermissionGrabSurface)?.AllowsSteal ?? false;
 
-    IPermissionActor? IPermissionGrabSurface.CurrentHolder => null;
+    IPermissionActor? IPermissionGrabSurface.CurrentHolder
+        => (GetComponent<Components.Grabbable>() as IPermissionGrabSurface)?.CurrentHolder;
 
     GrabWriteKind IPermissionGrabSurface.ClassifyGrabWrite(IPermissionTarget? member)
     {
@@ -463,6 +469,65 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             GlobalRotation = globalRot;
             GlobalScale = globalScale;
         }
+    }
+
+    // Guarded reparent for tooling: answers instead of throwing. Every refusal SetParent makes silently
+    // (removed slot, self-parent, a parent that is one of our own descendants, the init-phase rule) is
+    // decided here first so the caller learns which way it went, and the permission gate is asked BEFORE
+    // anything moves - a denial leaves this slot exactly where it was, still attached, never orphaned.
+    //
+    // A true reparent is one write to the synced parent reference, so there is no half-applied state to
+    // unwind: either the reference takes the new value or it keeps the old one. Callers that hand-rolled
+    // their own cycle refusal (the glue tool's ancestor walk) should come through here instead. -xlinka
+    public bool TrySetParent(Slot newParent, bool preserveGlobalTransform = true)
+    {
+        if (IsRemoved || IsDestroyed)
+            return false;
+
+        newParent ??= World?.RootSlot!;
+        if (newParent == null || newParent.IsRemoved || newParent.IsDestroyed)
+            return false;
+
+        if (ReferenceEquals(newParent, this) || newParent.IsDescendantOf(this))
+            return false;
+
+        if (ReferenceEquals(_parent, newParent))
+            return true; // already there, nothing refused
+
+        if (IsInInitPhase && !newParent.IsInInitPhase)
+            return false;
+
+        if (!AuthorizeStructuralChange(World, DataModelPermissionAction.ReferenceWrite,
+                DataModelPermissionSurface.Slot, this, _parent, throwOnError: false))
+        {
+            return false;
+        }
+
+        try
+        {
+            SetParent(newParent, preserveGlobalTransform);
+        }
+        catch (Exception ex)
+        {
+            Logging.Logger.Warn($"Slot.TrySetParent: '{Name?.Value}' -> '{newParent.Name?.Value}' refused: {ex.Message}");
+            return false;
+        }
+
+        return ReferenceEquals(_parent, newParent);
+    }
+
+    // How many parents up it is from here to root, or -1 when root is not above this slot at all. Depth
+    // measures the same thing against the world root; this measures it against any slot you name.
+    public int ComputeHierarchyDepth(Slot root)
+    {
+        int depth = 0;
+        var current = this;
+        while (current != null && !ReferenceEquals(current, root))
+        {
+            depth++;
+            current = current._parent;
+        }
+        return current == null ? -1 : depth;
     }
 
     #endregion
@@ -1087,6 +1152,67 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         LocalScale.Value = float3.One;
     }
 
+    // TRANSFORM BY ANOTHER
+    // "Where would this slot end up if the OTHER slot moved to a given pose and dragged this one along?"
+    // Take this slot's pose expressed in the other's space right now, then re-plant it against the virtual
+    // pose. The other slot is not touched, and this slot does not become its child - only the resulting
+    // world pose is handed over (or applied). Placing a grabbed object relative to a snap target and
+    // previewing a drag both want exactly this. -xlinka
+    //
+    // Worked in decomposed TRS rather than through matrices on purpose: this transform model IS a TRS
+    // triple, so composing matrices only to decompose them back would lose to shear the moment a
+    // non-uniform scale sat under a rotation, and would round-trip every exact value. -xlinka
+
+    public void GetTransformedByAnother(Slot other, in float3 globalPosition, in floatQ globalRotation,
+        in float3 globalScale, out float3 position, out floatQ rotation, out float3 scale)
+    {
+        if (other == null)
+        {
+            position = GlobalPosition;
+            rotation = GlobalRotation;
+            scale = GlobalScale;
+            return;
+        }
+
+        var otherRotation = other.GlobalRotation;
+        var otherScale = NonZero(other.GlobalScale);
+        var inverseOtherRotation = otherRotation.Inverse;
+
+        var relativePosition = (inverseOtherRotation * (GlobalPosition - other.GlobalPosition)) / otherScale;
+        var relativeRotation = inverseOtherRotation * GlobalRotation;
+        var relativeScale = GlobalScale / otherScale;
+
+        position = globalPosition + globalRotation * (globalScale * relativePosition);
+        rotation = globalRotation * relativeRotation;
+        scale = globalScale * relativeScale;
+    }
+
+    public float4x4 GetTransformedByAnother(Slot other, in float3 globalPosition, in floatQ globalRotation,
+        in float3 globalScale)
+    {
+        GetTransformedByAnother(other, in globalPosition, in globalRotation, in globalScale,
+            out var position, out var rotation, out var scale);
+        return float4x4.TRS(position, rotation, scale);
+    }
+
+    public void TransformByAnother(Slot other, in float3 globalPosition, in floatQ globalRotation,
+        in float3 globalScale)
+    {
+        if (other == null)
+            return;
+
+        GetTransformedByAnother(other, in globalPosition, in globalRotation, in globalScale,
+            out var position, out var rotation, out var scale);
+        SetGlobalTransform(position, rotation, scale);
+    }
+
+    // A zero on any axis makes the relative transform undefined. Substituting 1 keeps a flattened slot
+    // from turning the whole result into NaN, which is the failure people actually notice.
+    private static float3 NonZero(in float3 value) => new float3(
+        value.x == 0f ? 1f : value.x,
+        value.y == 0f ? 1f : value.y,
+        value.z == 0f ? 1f : value.z);
+
     #endregion
 
     #region Constructor & Initialization
@@ -1397,6 +1523,37 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     private void InitializeHook()
     {
         if (World == null) return;
+        if (World.HookTypes.GetHookType(typeof(Slot)) == null) return;
+
+        // Inside a load scope the platform node is BUILT LATER, in budgeted bites, while the world is
+        // still held pre-Running. Queued in initialize order, which is parent-before-child, so a child's
+        // node never looks for a parent node that does not exist yet. -xlinka
+        if (World.DeferHookCreation)
+        {
+            World.QueueHookCreation(CreateHook);
+            return;
+        }
+
+        CreateHook();
+    }
+
+    // A component's hook wants its slot's platform node the moment it starts. Inside a load scope that
+    // node is queued rather than built, and in a world that is ALREADY RUNNING the component's startup
+    // can reach it before the drain does - so pull it forward, ancestors first, because a node still
+    // has to be parented under one that exists. The queued creation then no-ops on the Hook != null
+    // guard below. Pure-transform slots (most of a big graph) are untouched and keep spreading. -xlinka
+    internal void EnsureHookCreated()
+    {
+        if (Hook != null || IsDestroyed || _isRemoved || World == null)
+            return;
+        _parent?.EnsureHookCreated();
+        CreateHook();
+    }
+
+    private void CreateHook()
+    {
+        if (IsDestroyed || _isRemoved || World == null || Hook != null)
+            return;
 
         Type hookType = World.HookTypes.GetHookType(typeof(Slot));
         if (hookType == null) return;
@@ -1849,7 +2006,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         {
             foreach (var entry in componentList.Children)
             {
-                var (typeName, data) = WorkerSaveLoad.ExtractWorker(entry);
+                var (typeName, data) = WorkerSaveLoad.ExtractWorker(entry, control);
                 var type = WorkerManager.GetType(typeName);
                 if (type == null || !typeof(Component).IsAssignableFrom(type))
                 {
@@ -1882,6 +2039,37 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             return;
         foreach (var child in EnumerateAllChildren())
             child.GenerateHierarchy(set);
+    }
+
+    // DEPENDENCIES
+    // What this subtree points AT that does not live inside it. Both walks are transitive - a collected
+    // dependency is itself scanned, since an asset can reference another asset and a referenced slot can
+    // reference a third. This is the same collection the graph save runs; exposed so duplication, a
+    // "would this travel intact?" check, or an inventory pack can ask the question without saving.
+    //
+    // Two shapes because callers want two different answers. The SLOT walk answers "what else has to come
+    // with this for a full deep copy" and returns the outermost slot of each dependency subtree; the ASSET
+    // walk answers "what has to come with this to still LOOK right" and returns the individual provider
+    // components. References pointing INTO the subtree are not dependencies and are never listed. -xlinka
+
+    public List<Slot> CollectDependencies(bool includeNonPersistent = false)
+    {
+        var rootHierarchy = new HashSet<Slot>();
+        GenerateHierarchy(rootHierarchy);
+
+        var output = new List<Slot>();
+        CollectDependencySlots(rootHierarchy, new HashSet<Slot>(), output, includeNonPersistent);
+        return output;
+    }
+
+    public List<Component> CollectAssetDependencies(bool includeNonPersistent = false)
+    {
+        var rootHierarchy = new HashSet<Slot>();
+        GenerateHierarchy(rootHierarchy);
+
+        var output = new List<Component>();
+        CollectAssetDependencies(rootHierarchy, new HashSet<Component>(), output, includeNonPersistent);
+        return output;
     }
 
     // References that point outside the subtree (and its collected dependencies) are nulled so the graph stands
@@ -2041,9 +2229,17 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
     private static void ScanForDependencySlots(Worker worker, HashSet<Slot> rootHierarchy,
         HashSet<Slot> dependencyHierarchy, List<Slot> output, Queue<Slot> toScan, bool saveNonPersistent)
     {
+        // A slot's own parent is not something it DEPENDS on - it is where it currently happens to hang,
+        // and a loaded graph gets re-parented by whoever loads it. Following it would make the subtree
+        // root's parent a dependency, and since a dependency drags its whole subtree along, one slot's
+        // parent ref would pull in the entire world. -xlinka
+        var parentRef = (worker as Slot)?.ParentSlotRef;
+
         for (int i = 0; i < worker.SyncMemberCount; i++)
         {
             if (worker.GetSyncMember(i) is not ISyncRef syncRef)
+                continue;
+            if (parentRef != null && ReferenceEquals(syncRef, parentRef))
                 continue;
             var target = syncRef.Target;
             if (target == null || target.IsDestroyed)
@@ -2080,6 +2276,16 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         refTranslator ??= new ReferenceTranslator();
         var control = new LoadControl(World, refTranslator);
 
+        // A big item lands as one frame of platform-node construction, which is the spawn spike. Past the
+        // threshold the nodes get COLLECTED instead and the world builds them in budgeted bites from its
+        // own update, so a full room drops in over a few frames instead of one stall. Small spawns are
+        // left strictly alone: a prop is fully built by the time this returns, which is what every
+        // spawn-then-configure caller in the codebase assumes. -xlinka
+        bool deferred = World.State == World.WorldState.Running
+            && CountSavedSlots(node) >= DeferredSpawnSlotThreshold;
+        if (deferred)
+            World.BeginDeferredHookCreation();
+
         try
         {
             if (node.TryGetDictionary("TypeVersions") is { } typeVersions)
@@ -2107,7 +2313,7 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
                 var host = assetsRoot ?? World.RootSlot.AddSlot(Name + " - Assets");
                 foreach (var entry in assetList.Children)
                 {
-                    var (typeName, data) = WorkerSaveLoad.ExtractWorker(entry);
+                    var (typeName, data) = WorkerSaveLoad.ExtractWorker(entry, control);
                     var type = WorkerManager.GetType(typeName);
                     if (type == null || !typeof(Component).IsAssignableFrom(type))
                     {
@@ -2122,7 +2328,45 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
         finally
         {
             control.FinishLoad();
+            if (deferred)
+                World.EndDeferredHookCreation();
         }
+    }
+
+    // Slots big enough that building every platform node inline is a visible hitch. Tuned to sit well
+    // above anything the spawn-inline paths (and their probes) rely on and well below a real prop. -xlinka
+    public const int DeferredSpawnSlotThreshold = 96;
+
+    // Counts the slots a saved graph will produce, without loading it: the object node plus every
+    // descendant in its Children lists. Cheap - it walks the parsed tree, it does not build anything.
+    public static int CountSavedSlots(DataTreeDictionary node)
+    {
+        var objectNode = node.TryGetNode("Object") as DataTreeDictionary;
+        int total = objectNode != null ? CountSlotSubtree(objectNode) : 0;
+
+        if (node.TryGetList("Dependencies") is { } dependencies)
+        {
+            foreach (var entry in dependencies.Children)
+            {
+                if (entry is DataTreeDictionary dependency)
+                    total += CountSlotSubtree(dependency);
+            }
+        }
+        return total;
+    }
+
+    private static int CountSlotSubtree(DataTreeDictionary slotNode)
+    {
+        int total = 1;
+        if (slotNode.TryGetList("Children") is { } children)
+        {
+            foreach (var child in children.Children)
+            {
+                if (child is DataTreeDictionary childDictionary)
+                    total += CountSlotSubtree(childDictionary);
+            }
+        }
+        return total;
     }
 
     // Set encrypt to store it AES-GCM encrypted at rest (inventory items / saved objects).
@@ -2144,26 +2388,24 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
             throw new InvalidDataException("File does not contain a saved object graph.");
     }
 
-    // Asynchronously load a graph from a local file: the bytes are read off-thread, then the actual load is
-    // marshaled back onto the world update thread (data-model mutations must happen there).
+    // Asynchronously load a graph from a local file: the bytes are read and decrypted off-thread, then the
+    // load itself runs on the world update thread (data-model mutations must happen there). Awaitable from
+    // anywhere - it opens its own context rather than needing a world task around it.
+    //
+    // This slot owns the context, so there is no destroyed check on the far side: a slot deleted while the
+    // file is still being read cancels the load on the way back instead of loading into a corpse. The
+    // caller sees that as a cancelled task rather than a silent no-op. -xlinka
     public async Task LoadObjectAsync(string path, Slot? assetsRoot = null, ReferenceTranslator? refTranslator = null)
     {
-        var bytes = await File.ReadAllBytesAsync(path).ConfigureAwait(false);
+        WorldContext.Enter(World, this);
+        await WorldContext.ToBackground();
+
+        var bytes = await File.ReadAllBytesAsync(path);
         var node = DataTreeConverter.LoadFromBytes(LocalEncryption.Decrypt(bytes));
-        var completion = new TaskCompletionSource();
-        RunSynchronously(() =>
-        {
-            try
-            {
-                if (!IsDestroyed && node is DataTreeDictionary dictionary)
-                    LoadObject(dictionary, assetsRoot, refTranslator);
-            }
-            finally
-            {
-                completion.SetResult();
-            }
-        });
-        await completion.Task.ConfigureAwait(false);
+
+        await WorldContext.ToWorld();
+        if (node is DataTreeDictionary dictionary)
+            LoadObject(dictionary, assetsRoot, refTranslator);
     }
 
     #endregion
@@ -2829,6 +3071,14 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
                     CopySyncMemberValue(sourceElement, targetElement, elementMap, deferredRefs);
                 }
             }
+            return;
+        }
+
+        // Flat value collections and composite entries have no Value property and no elements to walk,
+        // so they copy themselves; the callback keeps nested references on the deferred path.
+        if (source is ISyncMemberCopy && target is ISyncMemberCopy targetCopy)
+        {
+            targetCopy.CopyFromSource(source, (s, t) => CopySyncMemberValue(s, t, elementMap, deferredRefs));
             return;
         }
 

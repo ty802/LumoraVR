@@ -18,6 +18,8 @@ public static class ComponentLibrary
         public readonly List<Type> Types = new();
     }
 
+    public const string HiddenCategory = "Hidden";
+
     private static CategoryNode? _root;
     private static readonly object _buildLock = new();
 
@@ -65,6 +67,13 @@ public static class ComponentLibrary
                     continue;
 
                 string category = type.GetCustomAttribute<ComponentCategoryAttribute>()?.Category ?? "Uncategorized";
+
+                // "Hidden" is a component that exists for the engine's own use and has no business
+                // being attachable from the browser - a save-file placeholder, say. Everything else
+                // without a category still lands in Uncategorized. -xlinka
+                if (category == HiddenCategory)
+                    continue;
+
                 var node = root;
                 foreach (var part in category.Split('/', StringSplitOptions.RemoveEmptyEntries))
                 {

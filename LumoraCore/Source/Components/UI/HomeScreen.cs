@@ -2,8 +2,10 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections.Generic;
 using Helio.UI;
 using Helio.UI.Layout;
+using Lumora.Core.Components.Import;
 using Lumora.Core.Math;
 using Lumora.Core.Networking.Session;
 using Lumora.Core.Templates;
@@ -11,16 +13,29 @@ using Lumora.Nexus.Cloud;
 
 namespace Lumora.Core.Components.UI;
 
-// widget grid of quick actions and toggles. each item is a widget placed by grid cell; turning on
-// Edit Widgets reveals the grid lines and lets you drag them. "Create New World" is a widget that
-// opens a menu overlay on click and closes it once you host.
-public sealed class HomeScreen : WidgetScreen
+// The home dash: a grid of widgets, not a screen of inline cards. Everything on it is a WidgetPreset, so
+// every one of them can be dragged off onto its own panel in the world and dropped back on the top bar,
+// which is the whole point of the grid. The account tile owns the top-left corner with the actions running
+// down under it, the two view toggles sit top-right with the session directory below them, and the middle
+// is deliberately empty: that is where a popped-out widget lands when you put it back. -xlinka
+[ComponentCategory("Hidden")]
+public sealed class HomeScreen : WidgetScreen, IDashboardKeyInput
 {
-    private static readonly color CreateFill = new color(0.28f, 0.60f, 0.40f, 0.95f);
-    private static readonly color WidgetFill = new color(0.20f, 0.19f, 0.30f, 0.92f);
-    private static readonly color ToggleOnFill = new color(0.28f, 0.52f, 0.42f, 0.95f);
-    private static readonly color OverlayFill = new color(0.10f, 0.10f, 0.16f, 0.98f);
-    private static readonly color AvatarFill = new color(0.45f, 0.34f, 0.62f, 0.95f);
+    // A fixed cell count, not a fixed cell size: the dash width follows the display aspect, so cells that
+    // stretch keep the right-hand column against the right edge instead of leaving a growing gutter.
+    // 64 across and 27 down comes out at about 15 px cells on the 16:9 dash, fine enough that a widget
+    // put down by hand lands close to where it was let go instead of snapping half a card away. -xlinka
+    private const int Columns = 64;
+    private const int Rows = 27;
+
+    private const int CardWidth = 13;
+    private const int CardHeight = 3;
+    private const int RightColumn = Columns - CardWidth;
+    private const int AccountWidth = 20;
+    private const int AccountHeight = 7;
+
+    private static readonly color OverlayFill = DashTheme.Panel;
+    private static readonly color ScrimFill = new color(0.02f, 0.02f, 0.05f, 0.62f);
 
     private string _template = "LocalHome";
     private SessionVisibility _visibility = SessionVisibility.Private;
@@ -30,6 +45,39 @@ public sealed class HomeScreen : WidgetScreen
     private Slot? _createOverlay;
     private Slot? _createBackdrop;
     private bool _createOpen;
+    private AccountWidgetPreset? _account;
+
+    // HOST FOR
+    // Same model the Worlds create page carries: 0 is Nobody and the dialog is what it has always been,
+    // anything above indexes _hostGroups and swaps the access radios for the two tiers a group world can
+    // be on. Fetched when the dialog opens and kept for the life of the screen; it names a pill and
+    // decides nothing, because the door reads the HOST's roster. -xlinka
+    private readonly List<HostGroupOption> _hostGroups = new();
+    private int _hostGroupIndex;
+    private bool _groupMembersOnly = true;
+    private bool _hostGroupsFetching;
+    private bool _hostGroupsLoaded;
+    private Slot? _hostForSection;
+    private Text? _hostForLabel;
+    private Slot? _visibilityStack;
+    private Slot? _groupAccessStack;
+
+
+    // The account tile's sign-in dialog is the only thing here that takes typed input, and only while the
+    // tile is docked on this screen: key routing is per dash screen, so a popped-out card gets nothing.
+    // The tile can be dragged off and dropped back, and that builds a brand new preset, so the one cached
+    // at build time goes stale: re-find it rather than leaving the keyboard and the modal wired to a
+    // corpse. -xlinka
+    private AccountWidgetPreset? Account
+    {
+        get
+        {
+            if (_account != null && !_account.IsDestroyed)
+                return _account;
+            _account = Slot.GetComponentInChildren<AccountWidgetPreset>();
+            return _account != null && !_account.IsDestroyed ? _account : null;
+        }
+    }
 
     protected override void BuildContent(UIBuilder builder)
     {
@@ -40,108 +88,76 @@ public sealed class HomeScreen : WidgetScreen
         var root = builder.Current;
         _ = root.GetComponent<RectTransform>() ?? root.AttachComponent<RectTransform>();
 
-        // The home screen IS a widget grid (each item below is a widget placed by
-        // cell). The edit overlay + drag handles come from WidgetGrid itself.
-        // Dense ~64px cells; widgets span several cells. Tight 4px
-        // spacing so the grid reads as fine lines, not big blocks. -xlinka
         var grid = root.AttachComponent<WidgetGrid>();
-        grid.CellSize.Value = new float2(64f, 64f);
+        grid.FixedColumns.Value = Columns;
+        grid.FixedRows.Value = Rows;
         grid.Spacing.Value = new float2(4f, 4f);
-        grid.Padding.Value = new float2(8f, 8f);
+        grid.Padding.Value = new float2(DashTheme.Inset, DashTheme.Inset);
+        grid.PlacedStyler = preset => _dashboard?.StyleDroppedWidget(preset);
 
-        AddButtonWidget(root, "+ Create New World", CreateFill, 0, 0, 6, 1, ToggleCreateMenu);
-        AddToggleWidget(root, "Freeform Dash", 0, 1, 6, 1,
-            () => UserspaceDashboard.LocalInstance?.Freeform.Value ?? false,
-            v => UserspaceDashboard.LocalInstance?.SetFreeform(v));
-        AddToggleWidget(root, "Edit Widgets", 0, 2, 6, 1,
-            () => WidgetPanel.EditMode,
-            v => WidgetPanel.EditMode = v);
-        AddButtonWidget(root, "Avatar Studio", AvatarFill, 0, 3, 6, 1, OpenAvatarStudio);
+        _account = AddWidget<AccountWidgetPreset>(root, "Account", 0, 0, AccountWidth, AccountHeight);
+
+        // The action cards sit at the BOTTOM of the left column, the width of the account tile above
+        // them, so the column reads as two blocks with the empty middle between: the tile you sign in
+        // with, and the things you do. Stacked from the floor up, so Paste being absent never leaves a
+        // hole. -xlinka
+        int row = Rows - CardHeight;
+        // No platform clipboard bridge means a paste can never do anything, so the card does not exist
+        // rather than sitting there greyed out forever.
+        if (ImportHandlers.Clipboard != null)
+        {
+            AddWidget<PasteWidgetPreset>(root, "Paste", 0, row, AccountWidth, CardHeight);
+            row -= CardHeight;
+        }
+        AddWidget<AvatarStudioWidgetPreset>(root, "AvatarStudio", 0, row, AccountWidth, CardHeight);
+        row -= CardHeight;
+        AddWidget<NewWorldWidgetPreset>(root, "NewWorld", 0, row, AccountWidth, CardHeight);
+
+        AddWidget<FreeformDashWidgetPreset>(root, "FreeformDash", RightColumn, 0, CardWidth, CardHeight);
+        AddWidget<EditWidgetsWidgetPreset>(root, "EditWidgets", RightColumn, CardHeight, CardWidth, CardHeight);
+
+        // Placed at its open height against the bottom row. From here the card owns its own footprint: it
+        // collapses to a title row when the services are unreachable, off the top edge, so the bottom of
+        // the card stays on this row either way.
+        AddWidget<DirectoryWidgetPreset>(root, "Directory", RightColumn, Rows - 7, CardWidth, 7);
 
         BuildCreateOverlay(root);
     }
 
-    private void OpenAvatarStudio()
-    {
-        // Spawn the in-world creator tool in front of you in the FOCUSED world, and toggle - remove it
-        // if one's already up.
-        var world = Lumora.Core.Engine.Current?.WorldManager?.FocusedWorld;
-        if (world?.RootSlot == null)
-            return;
-
-        var existing = world.RootSlot.GetComponentInChildren<Lumora.Core.Components.Avatar.AvatarStudio>();
-        if (existing != null && !existing.IsDestroyed)
-        {
-            existing.Slot.Destroy();
-            return;
-        }
-
-        float3 position;
-        floatQ rotation;
-        var userRoot = world.LocalUser?.Root;
-        if (userRoot?.HeadSlot != null)
-        {
-            // -Z (Backward) is the view direction in our head convention; +Z is behind the user.
-            position = userRoot.HeadPosition + userRoot.HeadRotation * (float3.Backward * 1.25f);
-            rotation = userRoot.HeadRotation;
-        }
-        else
-        {
-            position = new float3(0f, 1f, 1.25f);
-            rotation = floatQ.Identity;
-        }
-
-        var slot = world.RootSlot.AddSlot("Avatar Studio");
-        slot.GlobalPosition = position;
-        slot.GlobalRotation = rotation;
-        slot.AttachComponent<Lumora.Core.Components.Avatar.AvatarStudio>();
-    }
-
-    // WIDGETS
-
-    private Slot AddWidgetSlot(Slot grid, string name, color fill, int gx, int gy, int gw, int gh)
+    private T AddWidget<T>(Slot grid, string name, int x, int y, int width, int height)
+        where T : HomeWidgetPreset, new()
     {
         var slot = grid.AddSlot(name);
+        // Its own chunk: a widget that repaints on its own clock (the directory poll, a focused field)
+        // re-meshes itself instead of the whole screen.
         slot.AttachComponent<GraphicChunkRoot>();
-        var widget = slot.AttachComponent<Widget>();
-        widget.GridX.Value = gx;
-        widget.GridY.Value = gy;
-        widget.GridWidth.Value = gw;
-        widget.GridHeight.Value = gh;
-        ApplyRoundedPanel(slot, fill, RowBorder);
-        return slot;
+        var preset = slot.AttachComponent<T>();
+        preset.GridX.Value = x;
+        preset.GridY.Value = y;
+        preset.GridWidth.Value = width;
+        preset.GridHeight.Value = height;
+        return preset;
     }
 
-    private void AddButtonWidget(Slot grid, string label, color fill, int gx, int gy, int gw, int gh, Action onClick)
-    {
-        var slot = AddWidgetSlot(grid, label, fill, gx, gy, gw, gh);
-        slot.AttachComponent<Button>().Clicked += (_, _) => onClick();
-        AddFillLabel(slot, label, 16f, TextPrimary);
-    }
+    // KEY INPUT
 
-    private void AddToggleWidget(Slot grid, string label, int gx, int gy, int gw, int gh, Func<bool> get, Action<bool> set)
-    {
-        var slot = AddWidgetSlot(grid, label, WidgetFill, gx, gy, gw, gh);
-        var background = slot.GetComponent<BorderedImage>();
-        Text? text = null;
+    public bool ConsumeChar(char c) => Account?.ConsumeChar(c) ?? false;
 
-        void Refresh()
+    public bool ConsumeBackspace() => Account?.ConsumeBackspace() ?? false;
+
+    public bool ConsumeEnter() => Account?.ConsumeEnter() ?? false;
+
+    public bool ConsumeEscape()
+    {
+        if (Account?.ConsumeEscape() == true)
+            return true;
+        // Escape out of the create dialog before it falls through to closing the dash.
+        if (_createOpen)
         {
-            bool on = get();
-            if (text != null && !text.IsDestroyed)
-                text.Content.Value = $"{label}: {(on ? "On" : "Off")}";
-            if (background != null && !background.IsDestroyed)
-                background.Tint.Value = on ? ToggleOnFill : WidgetFill;
+            CloseCreateMenu();
+            return true;
         }
-
-        slot.AttachComponent<Button>().Clicked += (_, _) =>
-        {
-            set(!get());
-            Refresh();
-            MarkDirty();
-        };
-        text = AddFillLabel(slot, label, 16f, TextPrimary);
-        Refresh();
+        return false;
     }
 
     // CREATE-WORLD MENU OVERLAY
@@ -171,7 +187,7 @@ public sealed class HomeScreen : WidgetScreen
         // dash's own render texture). A screen-read blur would sample the session world (sky/sun), not
         // the transparent dash UI, so it just pulled the world in - a dim is the right modal scrim.
         var backImage = _createBackdrop.AttachComponent<Image>();
-        backImage.Tint.Value = new color(0.02f, 0.02f, 0.05f, 0.62f);
+        backImage.Tint.Value = ScrimFill;
         _createBackdrop.AttachComponent<Button>().Clicked += (_, ctx) =>
         {
             // Dismiss only when the click lands OUTSIDE the dialog panel, so clicks on the panel or
@@ -195,7 +211,7 @@ public sealed class HomeScreen : WidgetScreen
         _createOverlay.OrderOffset.Value = 10000L; // draw above the backdrop
         // OverlayLevel 2: the panel background band, above the backdrop (1) and all normal UI.
         _createOverlay.AttachComponent<GraphicChunkRoot>().OverlayLevel = 2;
-        ApplyRoundedPanel(_createOverlay, OverlayFill, RowBorder);
+        ApplyCard(_createOverlay, OverlayFill, DashTheme.OutlineStrong, DashTheme.RadiusPanel);
         // Absorb clicks on the panel background so they don't fall through to the backdrop (dismiss).
         _createOverlay.AttachComponent<Button>();
 
@@ -208,7 +224,7 @@ public sealed class HomeScreen : WidgetScreen
         col.ForceExpandWidth.Value = true;
         col.ForceExpandHeight.Value = false;
 
-        Header(_createOverlay, "New World");
+        DialogTitle(_createOverlay, "New World");
 
         // Two-column body so the (otherwise tall) options fit without scrolling, and the dialog reads
         // wider. The body fills the space between the title and the action row; columns top-align.
@@ -244,15 +260,41 @@ public sealed class HomeScreen : WidgetScreen
         SliderRow(right, "Max Users", 1f, 64f, _maxUsers,
             v => { _maxUsers = (int)MathF.Round(v); return _maxUsers.ToString(); });
 
+        // HOST FOR sits above the access rows and only appears when the caller actually has a group they
+        // may host for; signed out, or in no such group, the dialog is exactly what it was.
+        _hostForSection = right.AddSlot("HostFor");
+        _hostForSection.AttachComponent<RectTransform>();
+        var hostForColumn = _hostForSection.AttachComponent<VerticalLayout>();
+        hostForColumn.Spacing.Value = 6f;
+        hostForColumn.ForceExpandWidth.Value = true;
+        hostForColumn.ForceExpandHeight.Value = false;
+        Header(_hostForSection, HostForGroups.Label.Resolve());
+        _hostForLabel = CycleRow(_hostForSection, HostForGroups.Label.Resolve(),
+            HostForGroups.Nobody.Resolve(), CycleHostGroup);
+        _hostForSection.ActiveSelf.Value = false;
+
         Header(right, "Who Can Join");
+
+        _visibilityStack = AddStack(right, "Visibility");
         foreach (SessionVisibility visibility in Enum.GetValues<SessionVisibility>())
         {
             var captured = visibility;
-            RadioRow(right, "home-access", PrettyVisibility(visibility), visibility == _visibility,
+            RadioRow(_visibilityStack, "home-access", PrettyVisibility(visibility), visibility == _visibility,
                 () => _visibility = captured);
         }
 
-        ButtonRow(_createOverlay, "Create & Host", CreateFill, OnCreate);
+        // Members only or anyone, and nothing else. Group+ would be the same world as members only while
+        // there are no contacts, so it is not offered. -xlinka
+        _groupAccessStack = AddStack(right, "GroupVisibility");
+        foreach (bool membersOnly in new[] { true, false })
+        {
+            var captured = membersOnly;
+            RadioRow(_groupAccessStack, "home-group-access", GroupAccessLabel(membersOnly),
+                membersOnly == _groupMembersOnly, () => _groupMembersOnly = captured);
+        }
+        _groupAccessStack.ActiveSelf.Value = false;
+
+        ButtonRow(_createOverlay, "Create & Host", DashTheme.Accent, OnCreate);
         AddInfoRow(_createOverlay, "Pick a template, then create & host.", TextDim, out var statusText);
         _status = statusText;
 
@@ -303,14 +345,31 @@ public sealed class HomeScreen : WidgetScreen
     {
         base.OnHide();
         CloseCreateMenu();
+        Account?.CloseSignInDialog();
     }
 
-    private void ToggleCreateMenu() => SetCreateMenuOpen(!_createOpen);
+    // Entry point for the New World widget, which can be sitting on a panel in the world rather than on
+    // this screen.
+    public void OpenCreateMenu() => SetCreateMenuOpen(true);
+
+    // Entry point for the account tile's Login / Register pill. Both modals hang off the same dashboard
+    // slot with the same backdrop, so two of them up at once is two dims deep and a panel behind a panel.
+    // This screen raised both, so this screen is the one that keeps them apart. -xlinka
+    public void OpenSignIn()
+    {
+        SetCreateMenuOpen(false);
+        Account?.OpenSignInDialog();
+    }
 
     private void CloseCreateMenu() => SetCreateMenuOpen(false);
 
     private void SetCreateMenuOpen(bool open)
     {
+        if (open)
+        {
+            Account?.CloseSignInDialog();
+            EnsureHostGroups();
+        }
         _createOpen = open;
         if (_createOverlay != null && !_createOverlay.IsDestroyed)
             _createOverlay.ActiveSelf.Value = open;
@@ -328,15 +387,23 @@ public sealed class HomeScreen : WidgetScreen
             return;
         }
 
-        var name = PrettyTemplate(_template);
+        // This dialog has no name well, so the name is the template's - or the group's, when the world is
+        // being hosted for one. -xlinka
+        var picked = SelectedHostGroup;
+        var name = picked.HasValue && picked.Value.Name.Length > 0
+            ? HostForGroups.DefaultWorldName(picked.Value.Name).Resolve()
+            : PrettyTemplate(_template);
         // Clamp to the modes this world allows (a published world may be e.g. social-only).
         var mode = WorldTemplates.DefaultMode(_template);
         foreach (var allowed in WorldTemplates.AllowedModes(_template))
         {
             if (allowed == _mode) { mode = _mode; break; }
         }
+        var hosting = picked.HasValue
+            ? new GroupHosting(picked.Value.Id, picked.Value.Tag, _groupMembersOnly)
+            : null;
         SetStatus($"Hosting '{name}'…");
-        var world = manager.HostNewWorld(_template, name, _visibility, _maxUsers, mode);
+        var world = manager.HostNewWorld(_template, name, _visibility, _maxUsers, mode, hosting);
         SetStatus(world != null ? $"Now hosting '{name}' ({PrettyMode(mode)})." : "Failed to host world.");
 
         // Click Host -> the dialog + backdrop close (you drop into the new world).
@@ -373,22 +440,124 @@ public sealed class HomeScreen : WidgetScreen
         _ => mode.ToString(),
     };
 
-    // ROW COMPOSITES (used inside the overlay; build on the shared WidgetScreen helpers)
+    // HOST FOR
 
-    private Slot Header(Slot parent, string title)
+    private HostGroupOption? SelectedHostGroup
+        => _hostGroupIndex > 0 && _hostGroupIndex <= _hostGroups.Count ? _hostGroups[_hostGroupIndex - 1] : null;
+
+    private static string GroupAccessLabel(bool membersOnly)
+        => (membersOnly ? HostForGroups.Members : HostForGroups.Public).Resolve();
+
+    // 0 is Nobody, then one step per group, wrapping. A radio per group would grow the dialog by however
+    // many groups somebody is in.
+    private void CycleHostGroup()
     {
-        var row = parent.AddSlot(title + "Hdr");
-        row.AttachComponent<RectTransform>();
-        SetFixedHeight(row, 26f);
-        var label = AddFillLabel(row, title, 17f, SectionTitleColor);
-        label.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
-        return row;
+        if (_hostGroups.Count == 0)
+            return;
+        _hostGroupIndex = (_hostGroupIndex + 1) % (_hostGroups.Count + 1);
+        ApplyHostForRow();
+        MarkDirty();
     }
 
+    private void ApplyHostForRow()
+    {
+        if (_hostGroups.Count == 0)
+            _hostGroupIndex = 0;
+
+        var picked = SelectedHostGroup;
+        if (_hostForSection != null && !_hostForSection.IsDestroyed)
+            _hostForSection.ActiveSelf.Value = _hostGroups.Count > 0;
+        if (_hostForLabel != null && !_hostForLabel.IsDestroyed)
+        {
+            _hostForLabel.Content.Value = picked.HasValue ? picked.Value.Name : HostForGroups.Nobody.Resolve();
+            _hostForLabel.Color.Value = picked.HasValue ? TextPrimary : TextDim;
+        }
+        if (_visibilityStack != null && !_visibilityStack.IsDestroyed)
+            _visibilityStack.ActiveSelf.Value = !picked.HasValue;
+        if (_groupAccessStack != null && !_groupAccessStack.IsDestroyed)
+            _groupAccessStack.ActiveSelf.Value = picked.HasValue;
+    }
+
+    private void EnsureHostGroups()
+    {
+        if (_hostGroupsFetching || _hostGroupsLoaded || !HostForGroups.SignedIn)
+            return;
+
+        _hostGroupsFetching = true;
+        StartTask(async () =>
+        {
+            var options = await HostForGroups.FetchAsync();
+            await WorldContext.ToWorld();
+            _hostGroupsFetching = false;
+            if (IsDestroyed)
+                return;
+            _hostGroupsLoaded = true;
+            _hostGroups.Clear();
+            for (int i = 0; i < options.Count; i++)
+                _hostGroups.Add(options[i]);
+            _hostGroupIndex = 0;
+            ApplyHostForRow();
+            MarkDirty();
+        });
+    }
+
+    // ROW COMPOSITES (used inside the overlay; build on the shared WidgetScreen helpers)
+
+    private void Header(Slot parent, string title) => AddSectionLabel(parent, title);
+
+    // A bare vertical stack inside a column, so a whole set of rows can be shown or hidden at once.
+    private static Slot AddStack(Slot parent, string name)
+    {
+        var stack = parent.AddSlot(name);
+        stack.AttachComponent<RectTransform>();
+        var layout = stack.AttachComponent<VerticalLayout>();
+        layout.Spacing.Value = 6f;
+        layout.ForceExpandWidth.Value = true;
+        layout.ForceExpandHeight.Value = false;
+        return stack;
+    }
+
+    // A row whose right-hand cell is a pill you press to step through the answers. Everything else in
+    // this dialog is a radio, but "one of the groups you are in, or none" is not a fixed set. -xlinka
+    private Text CycleRow(Slot parent, string name, string initial, Action onPress)
+    {
+        var row = BeginRow(parent, name);
+        var b = RowBuilder(row);
+        b.MinWidth(110f).FlexibleWidth(1f);
+        AddRowLabel(b, name, DashTheme.FontBody, TextPrimary, TextHorizontalAlignment.Left);
+
+        var cell = row.AddSlot("Value");
+        cell.AttachComponent<RectTransform>();
+        var element = cell.AttachComponent<LayoutElement>();
+        element.MinWidth.Value = 190f;
+        element.PreferredWidth.Value = 190f;
+        element.FlexibleWidth.Value = 0f;
+        element.FlexibleHeight.Value = 1f;
+        var panel = ApplyRoundedPanel(cell, DashTheme.Surface, RowBorder);
+        var button = cell.AttachComponent<Button>();
+        button.Clicked += (_, _) => onPress();
+        DriveCardStates(button, panel, DashTheme.Surface, DashTheme.SurfaceHover, DashTheme.SurfacePressed);
+        var text = AddFillLabel(cell, initial, DashTheme.FontBody, TextDim, SemiboldFont);
+        return text;
+    }
+
+    private void DialogTitle(Slot parent, string title)
+    {
+        var row = parent.AddSlot(title + "Title");
+        row.AttachComponent<RectTransform>();
+        SetFixedHeight(row, 34f);
+        var label = AddFillLabel(row, title, DashTheme.FontTitle, DashTheme.Text, BoldFont);
+        label.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
+    }
+
+    // Status line under the action, not a row: it is a sentence, and boxing it made the dialog read
+    // as one more list item. -xlinka
     private Slot AddInfoRow(Slot parent, string text, color textColor, out Text label)
     {
-        var row = BeginRow(parent, "Info");
-        label = AddFillLabel(row, text, 15f, textColor);
+        var row = parent.AddSlot("Info");
+        row.AttachComponent<RectTransform>();
+        SetFixedHeight(row, 24f);
+        label = AddFillLabel(row, text, DashTheme.FontSmall, textColor);
         label.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
         return row;
     }
@@ -398,7 +567,7 @@ public sealed class HomeScreen : WidgetScreen
         var row = BeginRow(parent, label);
         var b = RowBuilder(row);
         b.MinWidth(180f).FlexibleWidth(1f);
-        AddRowLabel(b, label, 15f, TextPrimary, TextHorizontalAlignment.Left);
+        AddRowLabel(b, label, DashTheme.FontBody, TextPrimary, TextHorizontalAlignment.Left);
         b.MinWidth(26f).PreferredWidth(26f).FlexibleWidth(0f);
         b.Radio(group, isChecked, (_, on) => { if (on) onSelect(); });
         return row;
@@ -410,7 +579,7 @@ public sealed class HomeScreen : WidgetScreen
         var b = RowBuilder(row);
 
         b.MinWidth(150f).PreferredWidth(150f).FlexibleWidth(0f);
-        AddRowLabel(b, label, 15f, TextPrimary, TextHorizontalAlignment.Left);
+        AddRowLabel(b, label, DashTheme.FontBody, TextPrimary, TextHorizontalAlignment.Left);
 
         Text? valueText = null;
         b.MinWidth(120f).PreferredWidth(240f).FlexibleWidth(1f);
@@ -422,7 +591,7 @@ public sealed class HomeScreen : WidgetScreen
         });
 
         b.MinWidth(70f).PreferredWidth(70f).FlexibleWidth(0f);
-        valueText = AddRowLabel(b, applyAndFormat(value), 15f, TextDim, TextHorizontalAlignment.Right);
+        valueText = AddRowLabel(b, applyAndFormat(value), DashTheme.FontBody, TextDim, TextHorizontalAlignment.Right);
         return row;
     }
 
@@ -432,9 +601,11 @@ public sealed class HomeScreen : WidgetScreen
         row.AttachComponent<RectTransform>();
         row.AttachComponent<GraphicChunkRoot>();
         SetFixedHeight(row, 40f);
-        ApplyRoundedPanel(row, fill, RowBorder);
-        row.AttachComponent<Button>().Clicked += (_, _) => onClick();
-        AddFillLabel(row, label, 16f, TextPrimary);
+        var panel = ApplyCard(row, fill, new color(0f, 0f, 0f, 0f), DashTheme.RadiusControl);
+        var button = row.AttachComponent<Button>();
+        button.Clicked += (_, _) => onClick();
+        DriveCardStates(button, panel, fill, DashTheme.AccentHover, DashTheme.AccentPressed);
+        AddFillLabel(row, label, DashTheme.FontBody, OnFill(fill), SemiboldFont);
         return row;
     }
 }

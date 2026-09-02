@@ -140,6 +140,8 @@ public class Engine : IDisposable
     public LumoraClient? CDNClient { get; private set; }
     public ContentCache? ContentCache { get; private set; }
 
+    private Action<Lumora.Nexus.Cloud.Cdn.RepresentedGroupInfo?>? _representedGroupChanged;
+
     public LocalDB? LocalDB { get; set; }
 
     // Set automatically when a session is created or joined; cleared on dispose. AssetFetcher uses this to pull
@@ -341,6 +343,15 @@ public class Engine : IDisposable
                 WorldLoadingService = new WorldLoadingService(this);
             }, cancellationToken);
 
+            // Wearing a different group has to show up on the nametag in every world this machine is in,
+            // not just the one that happened to be focused when the button was pressed. Hooked here rather
+            // than in the cloud client because the client knows nothing about worlds. -xlinka
+            if (CDNClient != null)
+            {
+                _representedGroupChanged = OnRepresentedGroupChanged;
+                CDNClient.RepresentedGroupChanged += _representedGroupChanged;
+            }
+
             LumoraLogger.Log("Post-initialization setup...");
             ProcessStartupArguments();
 
@@ -435,22 +446,24 @@ public class Engine : IDisposable
         }
 
         // Load the saved home if one exists (build it into a blank world so the template's default
-        // content isn't duplicated); otherwise build the default from the LocalHome template.
+        // content isn't duplicated); otherwise build the default from the LocalHome template. The save's
+        // read, decrypt, decompress and parse run on a task so startup doesn't freeze on them; only the
+        // tree integration happens on the world thread, once the parse lands. -xlinka
         var savePath = LocalHomeSavePath;
-        bool hasSave = File.Exists(savePath);
-        string template = hasSave ? "" : "LocalHome";
-        Action<World>? init = hasSave
-            ? w =>
-            {
-                if (!WorldStorage.LoadFromFile(w, savePath))
+        var world = File.Exists(savePath)
+            ? WorldManager?.StartSessionDeferred(
+                "LocalHome", (ushort)_localHomePort.Value, GetHostUserName(), "",
+                SessionVisibility.Private, 16,
+                () => WorldStorage.ReadTree(savePath),
+                (w, tree) =>
                 {
-                    LumoraLogger.Warn("Engine: LocalHome save failed to load; falling back to template.");
-                    WorldTemplates.ApplyTemplate(w, "LocalHome");
-                }
-            }
-            : null!;
-
-        var world = WorldManager?.StartSession("LocalHome", (ushort)_localHomePort.Value, GetHostUserName(), template, init!);
+                    if (!WorldStorage.IntegrateTree(w, tree, savePath))
+                    {
+                        LumoraLogger.Warn("Engine: LocalHome save failed to load; falling back to template.");
+                        WorldTemplates.ApplyTemplate(w, "LocalHome");
+                    }
+                })
+            : WorldManager?.StartSession("LocalHome", (ushort)_localHomePort.Value, GetHostUserName(), "LocalHome", null!);
         if (world == null)
         {
             LumoraLogger.Error("Engine: Failed to start LocalHome session.");
@@ -480,6 +493,30 @@ public class Engine : IDisposable
     private string GetHostUserName()
     {
         return Environment.MachineName;
+    }
+
+    // Fires off the cloud client's thread, so every write goes through the owning world's own queue. Only
+    // the LOCAL user of each world gets touched: everyone else's card arrives as a delta from the peer that
+    // owns that account. -xlinka
+    private void OnRepresentedGroupChanged(Lumora.Nexus.Cloud.Cdn.RepresentedGroupInfo? group)
+    {
+        var manager = WorldManager;
+        if (manager == null)
+            return;
+
+        var worlds = manager.Worlds;
+        for (int i = 0; i < worlds.Count; i++)
+        {
+            var world = worlds[i];
+            if (world == null || world.IsDestroyed)
+                continue;
+            world.RunSynchronously(() =>
+            {
+                var user = world.LocalUser;
+                if (user != null && !user.IsDestroyed)
+                    user.ApplyRepresentedGroup(group);
+            });
+        }
     }
 
     public World GetPendingUserSpaceSetup() => _pendingUserSpaceSetup;
@@ -666,6 +703,12 @@ public class Engine : IDisposable
         LumoraLogger.Log("=====================================");
         LumoraLogger.Log("Engine Shutdown Starting...");
         LumoraLogger.Log("=====================================");
+
+        if (CDNClient != null && _representedGroupChanged != null)
+        {
+            CDNClient.RepresentedGroupChanged -= _representedGroupChanged;
+            _representedGroupChanged = null;
+        }
 
         // Dispose in reverse initialization order
         DisposeSubsystem("WorldManager", () => { WorldManager?.Dispose(); WorldManager = null!; });

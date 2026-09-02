@@ -37,9 +37,17 @@ public abstract class Component : ComponentBase<Component>
 
     public virtual void OnUpdate(float delta) { }
 
-    public virtual void OnFixedUpdate(float fixedDelta) { }
-
     public virtual void OnLateUpdate(float delta) { }
+
+    public void InternalRunLateUpdate(float delta)
+    {
+        if (IsDestroyed || !Enabled.Value || !CanRunUpdates)
+        {
+            return;
+        }
+
+        OnLateUpdate(delta);
+    }
 
     public virtual void Encode(BinaryWriter writer)
     {

@@ -106,6 +106,10 @@ public interface ILinkRef : IWorldElement
     /// </summary>
     bool IsModificationAllowed { get; }
 
+    // The user the AUTHORITY credited with establishing this link's current grant, null when the link
+    // was authored locally or is not granted. Authority-side ledger only; a client never fills it in.
+    User? GrantedTo { get; }
+
     /// <summary>
     /// Release the link to the target.
     /// </summary>
@@ -116,4 +120,8 @@ public interface ILinkRef : IWorldElement
     /// Grant the link permission to the target.
     /// </summary>
     void GrantLink();
+
+    // Take the grant back without touching the reference. Arbitration-only: used when the manager hands
+    // the target to somebody else, so a displaced link stops reporting a hold it no longer has.
+    void RevokeLink();
 }

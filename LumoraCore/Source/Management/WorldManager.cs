@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -20,6 +20,14 @@ public class WorldManager : IDisposable
     private readonly List<World> _destroyWorlds = new();
     private readonly List<World> _privateOverlayWorlds = new();
     private readonly object _worldsLock = new object();
+
+    // Per-pass snapshots of _worlds. One buffer each because the passes are separate calls off the same
+    // main-loop thread (Engine.Update runs Update then the fixed steps, LateUpdate follows) and never nest,
+    // so each pass owns its buffer for the whole pass. -xlinka
+    private readonly List<World> _updateScratch = new();
+    private readonly List<World> _fixedUpdateScratch = new();
+    private readonly List<World> _lateUpdateScratch = new();
+    private readonly List<World> _pendingStartScratch = new();
 
     private World _focusedWorld = null!;
     private World _userspaceWorld = null!;
@@ -53,6 +61,27 @@ public class WorldManager : IDisposable
     public event Action<World> WorldFocused = null!;
 
     public World FocusedWorld => _focusedWorld;
+
+    // A focus request that is being HELD because its world has not finished assembling. The request
+    // stays queued rather than dropping the user into a half-built world, which is correct but silent -
+    // so the loading overlay reads this to say what everyone is waiting on. -xlinka
+    public World PendingFocusWorld => _setWorldFocus;
+
+    // The world the user is waiting on right now, if any: a held focus request first, otherwise the
+    // world they are standing in while it is still building itself. Null when nothing is loading.
+    public World LoadingWorld
+    {
+        get
+        {
+            var queued = _setWorldFocus;
+            if (queued != null && !queued.IsDestroyed && queued.IsLoading)
+                return queued;
+            var focused = _focusedWorld;
+            if (focused != null && !focused.IsDestroyed && focused.IsLoading)
+                return focused;
+            return null!;
+        }
+    }
 
     public World UserspaceWorld
     {
@@ -143,24 +172,15 @@ public class WorldManager : IDisposable
         SessionVisibility visibility,
         int maxUsers,
         Action<World> init = null!,
-        WorldMode mode = WorldMode.Builder)
+        WorldMode mode = WorldMode.Builder,
+        GroupHosting? group = null)
     {
         try
         {
             LumoraLogger.Log($"WorldManager: Starting session '{name}' on port {port} with template '{templateName}', visibility {visibility}, max {maxUsers}, mode {mode}");
 
-            var world = World.StartSession(_engine, name, port, hostUserName, visibility, maxUsers, (w) =>
-            {
-                WorldTemplates.ApplyTemplate(w, templateName);
-                init?.Invoke(w);
-                // A NEW world gets the host-picked mode; a world LOADED by init (e.g. a saved world)
-                // already has its WorldSettings (with its own mode) - don't create a second one or
-                // clobber the saved mode. Set before StartRunning so the permission preset applies.
-                if (w.RootSlot?.GetComponent<WorldSettings>() == null)
-                    w.Mode = mode;
-                // Advertise the world's mode in the session listing so the browser can tag it.
-                WorldModePermissions.StampModeTag(w.Session?.Metadata?.Tags, w.Mode);
-            });
+            var world = World.StartSession(_engine, name, port, hostUserName, visibility, maxUsers,
+                w => ApplySessionSetup(w, templateName, init, mode, group));
 
             AddWorld(world);
 
@@ -174,11 +194,94 @@ public class WorldManager : IDisposable
         }
     }
 
+    // Same as StartSession, but the world's content is prepared off-thread (a file read plus a parse, say)
+    // and integrated once it lands; the world is created up front and held pre-Running until then, so the
+    // frame keeps drawing instead of freezing for the whole load. -xlinka
+    public World StartSessionDeferred<T>(
+        string name,
+        ushort port,
+        string hostUserName,
+        string templateName,
+        SessionVisibility visibility,
+        int maxUsers,
+        Func<T> prepare,
+        Action<World, T> integrate,
+        WorldMode mode = WorldMode.Builder)
+    {
+        try
+        {
+            LumoraLogger.Log($"WorldManager: Starting session '{name}' on port {port} with template '{templateName}', visibility {visibility}, max {maxUsers}, mode {mode}");
+
+            var world = World.StartSessionDeferred(_engine, name, port, hostUserName, visibility, maxUsers, prepare,
+                (w, payload) => ApplySessionSetup(w, templateName, w2 => integrate(w2, payload), mode, null));
+
+            AddWorld(world);
+
+            LumoraLogger.Log($"WorldManager: Session '{name}' created on port {port}, waiting on its content");
+            return world;
+        }
+        catch (Exception ex)
+        {
+            LumoraLogger.Error($"WorldManager: Failed to start session '{name}': {ex}");
+            return null!;
+        }
+    }
+
+    // Template + caller init + mode stamping, in the order both start paths need: before the host user
+    // exists and before the world runs.
+    private static void ApplySessionSetup(World w, string templateName, Action<World>? init, WorldMode mode,
+        GroupHosting? group)
+    {
+        WorldTemplates.ApplyTemplate(w, templateName);
+        init?.Invoke(w);
+        // A NEW world gets the host-picked mode; a world LOADED by init (e.g. a saved world)
+        // already has its WorldSettings (with its own mode) - don't create a second one or
+        // clobber the saved mode. Set before StartRunning so the permission preset applies.
+        if (w.RootSlot?.GetComponent<WorldSettings>() == null)
+            w.Mode = mode;
+        // Advertise the world's mode in the session listing so the browser can tag it.
+        WorldModePermissions.StampModeTag(w.Session?.Metadata?.Tags, w.Mode);
+        ApplyGroupHosting(w, group);
+    }
+
+    // The group half of hosting, applied here so it lands next to the mode tag and before the world runs.
+    //
+    // AccessLevel is written PRE-RUNNING on purpose: its live handler re-advertises the session, and
+    // firing that mid-create would fight the visibility the session was started with. The session itself
+    // was started Public whichever tier this is, because members have to be able to find a members-only
+    // world before the door can refuse anybody else. -xlinka
+    private static void ApplyGroupHosting(World w, GroupHosting? group)
+    {
+        if (w == null || group == null || string.IsNullOrWhiteSpace(group.GroupId))
+            return;
+
+        var config = w.Configuration;
+        if (config == null)
+            return;
+
+        config.HostGroupId.Value = group.GroupId;
+        config.AccessLevel.Value = group.MembersOnly
+            ? World.WorldAccessLevel.GroupMembers
+            : World.WorldAccessLevel.GroupPublic;
+        GroupSessionTags.Stamp(w.Session?.Metadata?.Tags, group.GroupId, group.GroupTag);
+
+        var root = w.RootSlot;
+        if (root != null && root.GetComponent<Components.GroupHostRoster>() == null)
+            root.AttachComponent<Components.GroupHostRoster>();
+    }
+
     // Picks a free local UDP port and hosts under the machine name. Returns the new world, or null on failure.
-    public World HostNewWorld(string templateName, string worldName, SessionVisibility visibility, int maxUsers, WorldMode mode = WorldMode.Builder)
+    //
+    // A group world always registers publicly, whichever group tier it is on: the browser's Groups filter
+    // is how a member finds it and the door is what keeps everybody else out. Group+ is not offered by
+    // anything that calls this, because with no contacts system it would be the same world as members
+    // only wearing a different word. -xlinka
+    public World HostNewWorld(string templateName, string worldName, SessionVisibility visibility, int maxUsers,
+        WorldMode mode = WorldMode.Builder, GroupHosting? group = null)
     {
         ushort port = (ushort)(SimpleIpHelpers.GetAvailablePortUdp(10) ?? 6000);
-        var world = StartSession(worldName, port, Environment.MachineName, templateName, visibility, System.Math.Max(1, maxUsers), null!, mode);
+        var announced = group != null ? SessionVisibility.Public : visibility;
+        var world = StartSession(worldName, port, Environment.MachineName, templateName, announced, System.Math.Max(1, maxUsers), null!, mode, group);
         if (world != null)
             SwitchToWorld(world);
         return world!;
@@ -193,8 +296,11 @@ public class WorldManager : IDisposable
 
         var name = string.IsNullOrEmpty(worldName) ? System.IO.Path.GetFileNameWithoutExtension(path) : worldName;
         ushort port = (ushort)(SimpleIpHelpers.GetAvailablePortUdp(10) ?? 6000);
-        var world = StartSession(name, port, Environment.MachineName, "", SessionVisibility.Private,
-            16, w => Persistence.WorldStorage.LoadFromFile(w, path));
+        // Read + decompress + parse on a task, integrate on the world thread once it lands.
+        var world = StartSessionDeferred(name, port, Environment.MachineName, "", SessionVisibility.Private,
+            16,
+            () => Persistence.WorldStorage.ReadTree(path),
+            (w, tree) => Persistence.WorldStorage.IntegrateTree(w, tree, path));
         if (world != null)
             SwitchToWorld(world);
         return world!;
@@ -269,6 +375,9 @@ public class WorldManager : IDisposable
                 _worlds.Add(world);
             }
         }
+
+        // Every world gets its own load readout; it stays hidden until there is something to say.
+        Components.WorldLoadIndicator.Attach(world);
 
         try
         {
@@ -405,11 +514,36 @@ public class WorldManager : IDisposable
         if (!_initialized)
             return;
 
+        // Ahead of the focus change: a world whose content just landed finishes starting here, so the
+        // focus request queued when it was created lands on a running world in the same frame.
+        PumpPendingSessionStarts();
+
         ProcessFocusChange();
 
         ProcessDestructions();
 
         UpdateWorlds(delta);
+    }
+
+    private void PumpPendingSessionStarts()
+    {
+        var pending = _pendingStartScratch;
+        pending.Clear();
+        lock (_worldsLock)
+        {
+            for (int i = 0; i < _worlds.Count; i++)
+            {
+                if (_worlds[i].IsSessionStartPending)
+                    pending.Add(_worlds[i]);
+            }
+        }
+
+        for (int i = 0; i < pending.Count; i++)
+        {
+            pending[i].TickPendingSessionStart();
+        }
+
+        pending.Clear();
     }
 
     public void FixedUpdate(double fixedDelta)
@@ -439,6 +573,14 @@ public class WorldManager : IDisposable
             {
                 targetWorld = _worlds.Find(w => !w.IsDestroyed && w.State == World.WorldState.Running)!;
             }
+        }
+
+        // A world whose content is still being prepared off-thread has no host user yet. Hold the request
+        // until it finishes starting rather than focusing a half-built world. -xlinka
+        if (targetWorld != null && targetWorld.IsSessionStartPending)
+        {
+            _setWorldFocus = targetWorld;
+            return;
         }
 
         if (targetWorld != null && targetWorld != _focusedWorld)
@@ -528,24 +670,16 @@ public class WorldManager : IDisposable
 
     private void UpdateWorlds(double delta)
     {
-        List<World> runningWorlds = new List<World>();
-        lock (_worldsLock)
-        {
-            foreach (var world in _worlds)
-            {
-                if (world.State == World.WorldState.Running && !world.IsDestroyed)
-                {
-                    runningWorlds.Add(world);
-                }
-            }
-        }
+        var runningWorlds = _updateScratch;
+        CollectRunningWorlds(runningWorlds);
 
         // Update each world. Background worlds are throttled to BackgroundWorldTickHz (accumulate real time, run a
         // single catch-up update when the interval elapses) instead of updating every frame - this is the main
         // fix for the multi-world FPS drop. Focused/overlay worlds update every frame.
         double interval = BackgroundWorldTickHz > 0 ? 1.0 / BackgroundWorldTickHz : 0.0;
-        foreach (var world in runningWorlds)
+        for (int i = 0; i < runningWorlds.Count; i++)
         {
+            var world = runningWorlds[i];
             try
             {
                 if (IsThrottledBackgroundWorld(world))
@@ -574,24 +708,32 @@ public class WorldManager : IDisposable
         }
     }
 
-    private void FixedUpdateWorlds(double fixedDelta)
+    private void CollectRunningWorlds(List<World> output)
     {
-        List<World> runningWorlds = new List<World>();
+        output.Clear();
         lock (_worldsLock)
         {
-            foreach (var world in _worlds)
+            for (int i = 0; i < _worlds.Count; i++)
             {
+                var world = _worlds[i];
                 if (world.State == World.WorldState.Running && !world.IsDestroyed)
                 {
-                    runningWorlds.Add(world);
+                    output.Add(world);
                 }
             }
         }
+    }
+
+    private void FixedUpdateWorlds(double fixedDelta)
+    {
+        var runningWorlds = _fixedUpdateScratch;
+        CollectRunningWorlds(runningWorlds);
 
         // Fixed update each world. Throttled background worlds skip physics entirely - nothing is rendering
         // them, and they resume stepping the moment they're focused. -xlinka
-        foreach (var world in runningWorlds)
+        for (int i = 0; i < runningWorlds.Count; i++)
         {
+            var world = runningWorlds[i];
             try
             {
                 if (IsThrottledBackgroundWorld(world))
@@ -607,22 +749,14 @@ public class WorldManager : IDisposable
 
     private void LateUpdateWorlds(double delta)
     {
-        List<World> runningWorlds = new List<World>();
-        lock (_worldsLock)
-        {
-            foreach (var world in _worlds)
-            {
-                if (world.State == World.WorldState.Running && !world.IsDestroyed)
-                {
-                    runningWorlds.Add(world);
-                }
-            }
-        }
+        var runningWorlds = _lateUpdateScratch;
+        CollectRunningWorlds(runningWorlds);
 
         // Late update each world. Throttled background worlds skip late-update (cameras/render-side
         // follow-ups) - they aren't being rendered, so there's nothing to update late for them. -xlinka
-        foreach (var world in runningWorlds)
+        for (int i = 0; i < runningWorlds.Count; i++)
         {
+            var world = runningWorlds[i];
             try
             {
                 if (IsThrottledBackgroundWorld(world))

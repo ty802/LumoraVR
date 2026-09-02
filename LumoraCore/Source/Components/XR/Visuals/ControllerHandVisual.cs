@@ -12,7 +12,7 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 namespace Lumora.Core.Components;
 
 // attach to the same slot as a TrackedDevicePositioner; set HandSide before the component reaches OnStart
-[ComponentCategory("XR/Visuals")]
+[ComponentCategory("Users")]
 public sealed class ControllerHandVisual : Component
 {
     // SYNC FIELDS

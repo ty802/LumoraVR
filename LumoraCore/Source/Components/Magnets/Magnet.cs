@@ -284,7 +284,7 @@ public class Magnet : Component, ICustomInspectorUI
         var position = reference.GlobalPointToLocal(slot.GlobalPosition);
         var rotation = reference.GlobalRotation.Inverse * slot.GlobalRotation;
         var scale = reference.GlobalScaleToLocal(slot.GlobalScale);
-        _carryUndo = MagnetPlacementUndo.Begin(this, reference, in position, in rotation, in scale, socket, "Move");
+        _carryUndo = MagnetPlacementUndo.Begin(this, reference, in position, in rotation, in scale, socket, UndoLocale.Move);
     }
 
     // RELEASE

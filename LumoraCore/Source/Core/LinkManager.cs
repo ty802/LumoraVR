@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using Lumora.Core.Networking.Sync;
 
 namespace Lumora.Core;
 
@@ -120,14 +121,87 @@ public class LinkManager
             if (link.WasLinkGranted)
                 return true;
         }
-        else if (holder != null && link.IsDriving && holder.IsDriving && holder.WasLinkGranted)
+        else if (holder != null)
         {
-            return false;
+            if (link.IsDriving && holder.IsDriving && holder.WasLinkGranted)
+                return false;
+
+            // Handing the target to someone else. Let the incumbent go through the TARGET rather than
+            // overwriting the slot under it: that is what fires the released-drive re-broadcast, without
+            // which peers sit on the last value a displaced drive pushed forever. Then take the grant
+            // back, so the displaced link stops reporting a hold it does not have - it used to keep the
+            // granted flag set while the target had already moved on, and every consumer reading
+            // WasLinkGranted was reading a lie. Its reference is left where the author put it. -xlinka
+            target.ReleaseLink(holder);
+            holder.RevokeLink();
         }
 
         target.Link(link);
         link.GrantLink();
         return true;
+    }
+
+    // Authority-side check for an inbound write to a link member, run before the write is applied. The
+    // ledger it reads is the same state TryGrant arbitrates from: who holds the target, whether that hold
+    // was granted, and which user's write established it.
+    //
+    // Two ways a link write can be illegal:
+    //
+    // CLAIM. Pointing at a target another granted, driving link already holds. Refused unless the SAME
+    // batch also carries a record for that holder which points it somewhere else - that is a legitimate
+    // hand-off, authored as one change, and it has to stay legal or no component could ever move a drive.
+    // Anything else is a steal, and the reason it must die here rather than in TryGrant is that TryGrant
+    // only refuses the GRANT: the forged target stays in the link's replicated value and the request sits
+    // in the retry queue, ready to take the target the instant the real holder lets go.
+    //
+    // TEAR-DOWN. Moving or dropping a drive this link currently holds, sent by a user other than the one
+    // the authority credited with it. A drive is not a shared field: peer B pulling peer A's drive off
+    // its target is a hostile act, and last-writer-wins has nothing to say about it. Locally authored
+    // drives are credited to nobody and skip this - world content is the permission gate's business, and
+    // a builder breaking a drive in the world is an ordinary edit. -xlinka
+    public MessageValidity ValidateLinkWrite(ILinkRef link, in RefID claimed, User? sender, List<ValidationGroup.Rule> rules)
+    {
+        var world = World;
+        if (world == null || !world.IsAuthority || link == null || link.IsDestroyed)
+            return MessageValidity.Valid;
+
+        var current = link.Target;
+
+        if (link.WasLinkGranted && link.IsDriving && current != null
+            && ReferenceEquals(current.DirectLink, link)
+            && claimed != current.ReferenceID)
+        {
+            var grantee = link.GrantedTo;
+            if (grantee != null && !grantee.IsDestroyed && !ReferenceEquals(grantee, sender))
+            {
+                // Low weight on purpose: a claim that arrived a tick after someone else's is what two
+                // honest clients reaching for the same drive looks like. It counts, but barely.
+                World?.DataModelPermissions?.ReportDenial(sender, DataModelDenialKind.LinkRace, "link tear-down by a non-grantee");
+                return MessageValidity.Conflict;
+            }
+        }
+
+        if (claimed.IsNull || !link.IsDriving)
+            return MessageValidity.Valid;
+
+        if (world.ReferenceController?.GetObjectOrNull(in claimed) is not ILinkable target || target.IsDestroyed)
+            return MessageValidity.Valid;
+
+        var holder = target.DirectLink;
+        if (holder == null || ReferenceEquals(holder, link) || !holder.WasLinkGranted || !holder.IsDriving)
+            return MessageValidity.Valid;
+
+        // Contested, so the cross-record rule is worth its closure: it is only built on the rare path
+        // where a claim lands on a target somebody else is already driving. The holder must be in this
+        // batch AND its record must retarget away from what we are claiming; a batch that merely touches
+        // the holder for some unrelated reason does not buy the claimant the target. -xlinka
+        var contested = claimed;
+        rules.Add(new ValidationGroup.Rule(
+            holder.ReferenceID,
+            mustExist: true,
+            customValidation: r => new RefID(r.ReadUInt64()) != contested));
+
+        return MessageValidity.Valid;
     }
 
     // A field's granted, driving link was just released. Only matters on the authority and

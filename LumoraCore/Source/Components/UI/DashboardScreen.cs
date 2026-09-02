@@ -7,13 +7,17 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.UI;
 
+[ComponentCategory("Hidden")]
 public class DashboardScreen : UIComponent
 {
     public readonly Sync<string> Label;
     public readonly Sync<color> ActiveColor;
+    // Set on a tab that exists only to say a feature isn't here yet. The nav draws it muted so it
+    // never reads as something you can use. -xlinka
+    public readonly Sync<bool> Placeholder;
 
-    /// <summary>Color of this screen's nav-row label text. Override to make a tab stand out.</summary>
-    public virtual color NavLabelColor => new color(0.92f, 0.92f, 0.96f, 1f);
+    // Idle color of this screen's nav label. Override to make one tab stand out (Exit does).
+    public virtual color NavLabelColor => DashTheme.TextDim;
 
     private bool _built;
     private Slot? _contentSlot;
@@ -36,6 +40,7 @@ public class DashboardScreen : UIComponent
     {
         Label = new Sync<string>(this, string.Empty);
         ActiveColor = new Sync<color>(this, new color(0.28f, 0.72f, 1f, 1f));
+        Placeholder = new Sync<bool>(this, false);
     }
 
     public override void OnStart()
@@ -62,6 +67,11 @@ public class DashboardScreen : UIComponent
     {
         Slot.ActiveSelf.Value = false;
         OnHide();
+        // A modal belongs to the screen that raised it. The host sits on the dashboard, not on this
+        // screen's content, so switching tabs would otherwise leave a confirm sitting over the next
+        // screen - still wired to the thing you walked away from. Looked up rather than created: a
+        // dashboard where nobody has opened a dialog should not grow a host just from tab switching.
+        Slot.GetComponentInParents<ModalHost>()?.CloseAll();
         // Safety net for off-root overlays (canvas-root modals/backdrops). A screen with a stateful menu still
         // overrides OnHide for a clean reset; this just guarantees nothing it parented above its own content
         // survives the switch and draws over the next screen. -xlinka
@@ -76,10 +86,8 @@ public class DashboardScreen : UIComponent
         }
     }
 
-    /// <summary>
-    /// Register a slot this screen parents OUTSIDE its own content slot (a modal/backdrop on the canvas root).
-    /// HideScreen deactivates every registered overlay so it can't draw over the next screen. -xlinka
-    /// </summary>
+    // Register a slot this screen parents OUTSIDE its own content slot (a modal/backdrop on the canvas
+    // root). HideScreen deactivates every registered overlay so it can't draw over the next screen. -xlinka
     protected void RegisterOverlay(Slot overlay)
     {
         if (overlay == null)

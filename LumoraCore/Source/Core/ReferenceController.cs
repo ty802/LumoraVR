@@ -94,6 +94,14 @@ public class ReferenceController : IDisposable
     // SetOwnedStartPosition, carried forward across re-entry so an owned block always mints fresh IDs. -xlinka
     private readonly ulong[] _ownedAllocationPosition = new ulong[256];
     private ulong GetOwnedPosition(byte b) => _ownedAllocationPosition[b] == 0 ? 1UL : _ownedAllocationPosition[b];
+
+    // Highest position ever REGISTERED per byte, whoever minted it. A joiner mints its own IDs client
+    // side and they only reach us as registrations, so this is the only place that sees how far a
+    // user's byte actually got. The allocator reads it to start a recycled byte past the previous
+    // occupant instead of replaying their positions. Deliberately not cleared by PurgeUserByte:
+    // forgetting the mark is exactly what would let a rejoin collide with in-flight references to the
+    // old objects. -xlinka
+    private readonly ulong[] _latestUserPosition = new ulong[256];
     
     // Trash bin integration (for restore from trash)
     private readonly Dictionary<RefID, TrashEntry> _trashedObjects = new();
@@ -162,6 +170,11 @@ public class ReferenceController : IDisposable
         }
         
         _objects[id] = element;
+
+        ulong position = id.GetPosition();
+        byte userByte = id.GetUserByte();
+        if (position > _latestUserPosition[userByte])
+            _latestUserPosition[userByte] = position;
 
         // Process any pending requests for this ID
         if (_pendingRequests.TryGetValue(id, out var receivers))
@@ -473,6 +486,9 @@ public class ReferenceController : IDisposable
         _currentAllocation = _allocationStack.Pop();
     }
 
+    // Highest position registered so far in a user byte, or 0 when the byte has never been used.
+    public ulong GetLatestPosition(byte userByte) => _latestUserPosition[userByte];
+
     /// <summary>
     /// Seed the start position for a user's owned namespace from the join grant. Callers pass a BARE position
     /// (already GetPosition()-decoded), never a packed RefID - see the JoinGrant handler. -xlinka
@@ -614,7 +630,10 @@ public class ReferenceController : IDisposable
         _localAllocationPosition = 1;
         _localAllocationDepth = 0;
         for (int i = 0; i < _ownedAllocationPosition.Length; i++)
+        {
             _ownedAllocationPosition[i] = 1;
+            _latestUserPosition[i] = 0;
+        }
         BlockAllocations = false;
         _allocationBlockCount = 0;
         IsDecodingBatch = false;

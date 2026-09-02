@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections.Generic;
 using Helio.UI;
 using Helio.UI.Layout;
 using Lumora.Core;
@@ -15,6 +16,7 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.UI;
 
+[ComponentCategory("Hidden")]
 public class UserspaceDashboard : UIComponent
 {
     private const int CaptureHeight = 720;
@@ -45,6 +47,9 @@ public class UserspaceDashboard : UIComponent
     // Desktop is always window-projected, so freeform only affects VR.
     public readonly Sync<bool> Freeform;
     public readonly AssetRef<FontSet> Font;
+    public readonly AssetRef<FontSet> FontSemibold;
+    public readonly AssetRef<FontSet> FontBold;
+    public readonly AssetRef<FontSet> FontMono;
 
     private Slot? _renderRig;
     private Slot? _canvasSlot;
@@ -53,7 +58,12 @@ public class UserspaceDashboard : UIComponent
     private RenderTextureProvider? _renderTexture;
     private CurvedPlaneMesh? _displayMesh;
     private UIUnlitMaterial? _displayMaterial;
+    private MeshRenderer? _displayRenderer;
+    private bool _externalDisplay;
     private FontProvider? _fontProvider;
+    private FontProvider? _fontProviderSemibold;
+    private FontProvider? _fontProviderBold;
+    private FontProvider? _fontProviderMono;
     private Grabbable? _grabHandle;
     private bool _lastFreeform;
     private bool _wasOpen;
@@ -82,6 +92,9 @@ public class UserspaceDashboard : UIComponent
         FollowViewWhileOpen = new Sync<bool>(this, true);
         Freeform = new Sync<bool>(this, false);
         Font = new AssetRef<FontSet>(this);
+        FontSemibold = new AssetRef<FontSet>(this);
+        FontBold = new AssetRef<FontSet>(this);
+        FontMono = new AssetRef<FontSet>(this);
     }
 
     public override void OnStart()
@@ -435,6 +448,33 @@ public class UserspaceDashboard : UIComponent
         canvas.UpdatePointer(VrSource(laser), pointerId, worldPoint + forward * 0.5f, -forward, pressed, World?.LocalUser);
     }
 
+    public IGrabbable? TryGrabVrPointer(InteractionLaser laser, int pointerId)
+        => _canvasSlot?.GetComponent<Canvas>()?.TryGrab(VrSource(laser), pointerId);
+
+    public bool TryReceiveVrPointer(InteractionLaser laser, int pointerId, IReadOnlyList<IGrabbable> items)
+        => _canvasSlot?.GetComponent<Canvas>()?.TryReceive(items, VrSource(laser), pointerId) == true;
+
+    // Where a canvas point sits on the display surface, plus the world size of one canvas pixel there.
+    // The inverse of the portal's u/v mapping, taken flat: the curved VR surface is close enough for
+    // posing a widget that has just been lifted off it. -xlinka
+    public bool TryCanvasToSurface(in float2 canvasPoint, out float3 position, out floatQ rotation, out float metersPerPixel)
+    {
+        position = default;
+        rotation = floatQ.Identity;
+        metersPerPixel = 0f;
+        var surface = SurfaceSlot;
+        if (surface == null || _displayMesh == null || _displayMesh.IsDestroyed)
+            return false;
+        var size = _displayMesh.Size.Value;
+        position = surface.LocalPointToGlobal(new float3(
+            canvasPoint.x / _captureWidth * size.x,
+            canvasPoint.y / CaptureHeight * size.y,
+            0f));
+        rotation = surface.GlobalRotation;
+        metersPerPixel = size.y / CaptureHeight * surface.GlobalScale.y;
+        return true;
+    }
+
     public void ClearVrPointer(InteractionLaser laser, int pointerId)
     {
         var canvas = _canvasSlot?.GetComponent<Canvas>();
@@ -472,7 +512,10 @@ public class UserspaceDashboard : UIComponent
         _grabHandle.InteractionPriority.Value = -1;
     }
 
-    private static readonly Uri DefaultFontUri = new("res://Assets/Fonts/FiraCode/FiraCode-SemiBold.ttf");
+    // Lato for the dash. Fira Code stays as the fallback face so a missing font file degrades to
+    // "monospace" rather than to nothing, and so old saves that still point at it keep rendering.
+    private static readonly Uri DefaultFontUri = DashTheme.FontRegular;
+    private static readonly Uri FallbackFontUri = DashTheme.FontMono;
 
     private void EnsureFont()
     {
@@ -482,18 +525,38 @@ public class UserspaceDashboard : UIComponent
         // worlds doesn't work - SyncRef.Target rejects it. - xlinka
         ImportDialog.DefaultFontUrl ??= DefaultFontUri;
 
-        if (Font.Target != null) return;
-
-        _fontProvider ??= Slot.FindChild("UIFont", recursive: false)?.GetComponent<FontProvider>();
-        if (_fontProvider == null)
+        if (Font.Target == null)
         {
-            var fontSlot = Slot.AddSlot("UIFont");
-            _fontProvider = fontSlot.AttachComponent<FontProvider>();
-            _fontProvider.URL.Value = DefaultFontUri;
-            _fontProvider.FallbackURLs.Add(DefaultFontUri);
+            _fontProvider = EnsureFontProvider(_fontProvider, "UIFont", DefaultFontUri);
+            Font.Target = _fontProvider;
         }
+        if (FontSemibold.Target == null)
+        {
+            _fontProviderSemibold = EnsureFontProvider(_fontProviderSemibold, "UIFontSemibold", DashTheme.FontSemibold);
+            FontSemibold.Target = _fontProviderSemibold;
+        }
+        if (FontBold.Target == null)
+        {
+            _fontProviderBold = EnsureFontProvider(_fontProviderBold, "UIFontBold", DashTheme.FontBold);
+            FontBold.Target = _fontProviderBold;
+        }
+        if (FontMono.Target == null)
+        {
+            _fontProviderMono = EnsureFontProvider(_fontProviderMono, "UIFontMono", DashTheme.FontMono);
+            FontMono.Target = _fontProviderMono;
+        }
+    }
 
-        Font.Target = _fontProvider;
+    private FontProvider EnsureFontProvider(FontProvider? existing, string slotName, Uri url)
+    {
+        existing ??= Slot.FindChild(slotName, recursive: false)?.GetComponent<FontProvider>();
+        if (existing != null && !existing.IsDestroyed)
+            return existing;
+
+        var provider = Slot.AddSlot(slotName).AttachComponent<FontProvider>();
+        provider.URL.Value = url;
+        provider.FallbackURLs.Add(FallbackFontUri);
+        return provider;
     }
 
     private void BuildRenderRig()
@@ -515,6 +578,9 @@ public class UserspaceDashboard : UIComponent
         _dashboard = _canvasSlot.AttachComponent<Dashboard>();
         _dashboard.Size.Value = new float2(_captureWidth, CaptureHeight);
         _dashboard.Font.Target = Font.Target;
+        _dashboard.FontSemibold.Target = FontSemibold.Target;
+        _dashboard.FontBold.Target = FontBold.Target;
+        _dashboard.FontMono.Target = FontMono.Target;
 
         _renderTexture = _renderRig.AttachComponent<RenderTextureProvider>();
         _renderTexture.Width.Value = _captureWidth * SupersampleScale;
@@ -522,7 +588,7 @@ public class UserspaceDashboard : UIComponent
         // Opaque capture: alpha-blended UI doesn't accumulate usable alpha in a
         // transparent viewport, which made the whole dash ghostly. The slight
         // see-through look comes from the surface material tint instead.
-        _renderTexture.ClearColor.Value = new color(0.06f, 0.05f, 0.11f, 1f);
+        _renderTexture.ClearColor.Value = new color(DashTheme.Backdrop.r, DashTheme.Backdrop.g, DashTheme.Backdrop.b, 1f);
         _renderTexture.CullMask.Value = RenderLayerOverride.HiddenLayer;
         _renderTexture.OrthographicSize.Value = CaptureHeight * CanvasScale;
         _renderTexture.CameraPosition.Value = RigWorldPosition + new float3(0f, 0f, CaptureDistance);
@@ -568,8 +634,34 @@ public class UserspaceDashboard : UIComponent
         // dash in a high reserved band (offset ~24002) so nothing in the session world covers it; the laser
         // cursor sits one band above (see InteractionLaser) so the pointer stays visible on the dash. -xlinka
         renderer.SortingOrder.Value = DashSurfaceSortingOrder;
+        _displayRenderer = renderer;
+        ApplyDisplayVisibility();
 
         _surfaceSlot.AttachComponent<DashSurfacePortal>();
+    }
+
+    // Desktop composites this capture straight onto the window instead of showing it on the world
+    // panel, so while that is up the panel stops DRAWING. Everything else about the surface stays
+    // exactly as it was: the slot keeps its active state and keeps getting posed and resized every
+    // late update, because the pointer has no collider to hit - DashSurfacePortal projects the laser
+    // ray analytically onto this slot's z=0 plane and divides by this mesh's Size to get u/v. Kill
+    // the pose or the size and you kill the cursor, so only the renderer goes. VR never takes this
+    // path; there the mesh IS the display. -xlinka
+    public void SetExternalDisplay(bool external)
+    {
+        if (_externalDisplay == external)
+            return;
+        _externalDisplay = external;
+        ApplyDisplayVisibility();
+    }
+
+    private void ApplyDisplayVisibility()
+    {
+        if (_displayRenderer == null || _displayRenderer.IsDestroyed)
+            return;
+        bool draw = !_externalDisplay;
+        if (_displayRenderer.Enabled.Value != draw)
+            _displayRenderer.Enabled.Value = draw;
     }
 
     private void BuildDefaultScreens()
@@ -602,21 +694,23 @@ public class UserspaceDashboard : UIComponent
         if (_dashboard == null) return;
 
         var screen = _dashboard.AddScreen<DashboardScreen>(label + " (Soon)", accent);
+        screen.Placeholder.Value = true;
+        _dashboard.RefreshNavStyles();
         var content = screen.ContentSlot;
         if (content == null) return;
 
         var builder = new UIBuilder(content);
-        builder.Font(Font.Target).TextColor(color.White).BackgroundColor(new color(0.06f, 0.07f, 0.09f, 0.82f));
-        var layout = builder.VerticalLayout(10f, 28f);
+        builder.Font(FontBold.Target ?? Font.Target).TextColor(DashTheme.Text).BackgroundColor(DashTheme.Panel);
+        var layout = builder.VerticalLayout(DashTheme.Gap, DashTheme.Inset);
         Fill(layout.RectTransform!);
 
-        builder.FontSize(24f).MinHeight(44f).PreferredHeight(48f).FlexibleHeight(0f);
-        var heading = builder.Text($"{label} - coming soon", 24f, new color(0.62f, 0.66f, 0.74f, 1f));
+        builder.FontSize(DashTheme.FontTitle).MinHeight(44f).PreferredHeight(48f).FlexibleHeight(0f);
+        var heading = builder.Text($"{label} - coming soon", DashTheme.FontTitle, DashTheme.TextDim);
         heading.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
         heading.VerticalAlignment.Value = TextVerticalAlignment.Middle;
 
-        builder.FontSize(16f).MinHeight(60f).PreferredHeight(90f).FlexibleHeight(0f);
-        var text = builder.Text(body, 16f, new color(0.62f, 0.66f, 0.74f, 1f));
+        builder.Font(Font.Target).FontSize(DashTheme.FontBody).MinHeight(60f).PreferredHeight(90f).FlexibleHeight(0f);
+        var text = builder.Text(body, DashTheme.FontBody, DashTheme.TextMuted);
         text.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
         text.VerticalAlignment.Value = TextVerticalAlignment.Top;
 

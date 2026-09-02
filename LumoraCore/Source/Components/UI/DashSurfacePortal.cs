@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Components.Interaction;
 using Lumora.Core.Components.Meshes;
@@ -9,6 +10,7 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.UI;
 
+[ComponentCategory("Hidden")]
 public class DashSurfacePortal : Component, ILaserPointerTarget
 {
     private UserspaceDashboard? _dash;
@@ -64,6 +66,14 @@ public class DashSurfacePortal : Component, ILaserPointerTarget
     {
         Dash()?.ClearVrPointer(laser, pointerId);
     }
+
+    // The grab and the release of a laser pointing at the surface, forwarded to the dash canvas under
+    // the same pointer id its hover runs on: a widget lifts off a grid, a carried widget lands on one.
+    public IGrabbable? TryGrab(InteractionLaser laser)
+        => Dash()?.TryGrabVrPointer(laser, laser.PointerId);
+
+    public bool TryReceive(IReadOnlyList<IGrabbable> items, InteractionLaser laser)
+        => Dash()?.TryReceiveVrPointer(laser, laser.PointerId, items) == true;
 
     private UserspaceDashboard? Dash() => _dash ??= Slot.GetComponentInParents<UserspaceDashboard>();
 

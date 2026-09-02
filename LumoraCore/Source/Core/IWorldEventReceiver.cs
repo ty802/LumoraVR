@@ -32,4 +32,11 @@ public interface IWorldEventReceiver
     /// Called when the world is being destroyed.
     /// </summary>
     void OnWorldDestroy();
+
+    // Fires once a joined user's root has appeared with a head node, i.e. their body is really there.
+    // OnUserJoined only means the user record exists.
+    void OnUserSpawn(User user);
+
+    // Fires after a world save that actually reached disk, with the path it was written to.
+    void OnWorldSaved(string path);
 }

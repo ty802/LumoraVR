@@ -173,6 +173,18 @@ public abstract class ComponentBase<C> : Worker, IUpdatable, IChangeable, IIniti
         }
     }
 
+    // A reset means "back to how a fresh attach left it", and a fresh attach does NOT leave these three at
+    // their type defaults - Initialize writes them. Letting the table pass have them would disable the
+    // component and mark it non-persistent, which is not what anyone asking for a reset wants. -xlinka
+    public override int ResetMembers()
+    {
+        int reset = base.ResetMembers();
+        persistent.Value = true;
+        Enabled.Value = true;
+        updateOrder.Value = InitInfo.DefaultUpdateOrder;
+        return reset;
+    }
+
     protected override void SyncMemberChanged(IChangeable member)
     {
         OnSyncMemberChanged(member);
@@ -312,6 +324,11 @@ public abstract class ComponentBase<C> : Worker, IUpdatable, IChangeable, IIniti
             World?.UpdateManager?.RegisterForUpdates(this);
         }
 
+        if (InitInfo.HasLateUpdateMethod && this is Component lateComponent)
+        {
+            World?.UpdateManager?.RegisterForLateUpdates(lateComponent);
+        }
+
         if (InitInfo.ReceivesAnyWorldEvent)
         {
             World?.RegisterEventReceiver(this);
@@ -350,6 +367,11 @@ public abstract class ComponentBase<C> : Worker, IUpdatable, IChangeable, IIniti
         if (InitInfo.HasUpdateMethods)
         {
             World?.UpdateManager?.UnregisterFromUpdates(this);
+        }
+
+        if (InitInfo.HasLateUpdateMethod && this is Component lateComponent)
+        {
+            World?.UpdateManager?.UnregisterFromLateUpdates(lateComponent);
         }
 
         if (InitInfo.ReceivesAnyWorldEvent)
@@ -484,6 +506,14 @@ public abstract class ComponentBase<C> : Worker, IUpdatable, IChangeable, IIniti
     }
 
     public virtual void OnUserLeft(User user)
+    {
+    }
+
+    public virtual void OnUserSpawn(User user)
+    {
+    }
+
+    public virtual void OnWorldSaved(string path)
     {
     }
 }

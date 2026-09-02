@@ -1,6 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using Lumora.Core.Localization;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Magnets;
@@ -14,7 +15,7 @@ namespace Lumora.Core.Components.Magnets;
 // object back into a hand that has since moved. So this batch takes the before-pose as explicit
 // values, which the magnet reconstructs from the grabbable's recorded pre-grab parent, and the
 // whole drag plus the snap collapses into a single step. -xlinka
-public sealed class MagnetPlacementUndo : IUndoBatch
+public sealed class MagnetPlacementUndo : IUndoBatch, IUndoTargetQuery
 {
     private struct Pose
     {
@@ -31,15 +32,17 @@ public sealed class MagnetPlacementUndo : IUndoBatch
     private Pose _after;
     private MagnetSocket? _socketAfter;
 
-    public string Description { get; }
+    public LocaleText LocalizedDescription { get; }
 
-    private MagnetPlacementUndo(Slot slot, Magnet magnet, in Pose before, MagnetSocket? socketBefore, string description)
+    public string Description => LocalizedDescription.Resolve();
+
+    private MagnetPlacementUndo(Slot slot, Magnet magnet, in Pose before, MagnetSocket? socketBefore, LocaleText description)
     {
         _slot = slot;
         _magnet = magnet;
         _before = before;
         _socketBefore = socketBefore;
-        Description = description;
+        LocalizedDescription = description;
     }
 
     // Null when there is nothing to track.
@@ -50,7 +53,7 @@ public sealed class MagnetPlacementUndo : IUndoBatch
         in floatQ rotation,
         in float3 scale,
         MagnetSocket? socketBefore,
-        string description)
+        LocaleText description)
     {
         var slot = magnet?.Slot;
         if (magnet == null || slot == null || slot.IsDestroyed)
@@ -89,6 +92,15 @@ public sealed class MagnetPlacementUndo : IUndoBatch
     {
     }
 
+    public bool ReferencesElement(IWorldElement element)
+    {
+        if (element is not Slot slot)
+            return false;
+        return UndoTargets.Touches(_slot, slot)
+            || UndoTargets.Touches(_before.Parent, slot)
+            || UndoTargets.Touches(_after.Parent, slot);
+    }
+
     private static bool PoseEquals(in Pose a, in Pose b)
         => ReferenceEquals(a.Parent, b.Parent)
         && a.Position.Equals(b.Position)
@@ -99,6 +111,10 @@ public sealed class MagnetPlacementUndo : IUndoBatch
     {
         if (_slot.IsDestroyed || _magnet.IsDestroyed)
             return false;
+        // The recorded parent going away takes the whole step with it: writing the local pose under
+        // whatever parent the item has NOW would throw it somewhere nobody asked for.
+        if (!UndoTargets.CanRestoreUnder(pose.Parent))
+            return false;
 
         // Free the socket the item is leaving before anything reparents, or the socket it moves to
         // would see two occupants for an instant and refuse the claim.
@@ -106,7 +122,7 @@ public sealed class MagnetPlacementUndo : IUndoBatch
             vacate.ReleaseItem(_magnet);
 
         // Local values mean nothing under the wrong parent, so parentage first.
-        if (pose.Parent != null && !pose.Parent.IsDestroyed && !ReferenceEquals(_slot.Parent, pose.Parent))
+        if (pose.Parent != null && !ReferenceEquals(_slot.Parent, pose.Parent))
             _slot.SetParent(pose.Parent);
 
         _slot.LocalPosition.Value = pose.Position;

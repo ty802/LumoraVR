@@ -122,11 +122,32 @@ public static class GenericComponentTypes
             return null;
         try
         {
-            return definition.MakeGenericType(argument);
+            var closed = definition.MakeGenericType(argument);
+            return IsDeclaredValid(closed) ? closed : null;
         }
         catch (ArgumentException)
         {
             return null;
+        }
+    }
+
+    // Constraints cannot express "this type has arithmetic I implemented", so components that only
+    // work for some of a group say so with a static IsValidGenericType. Every generic component in the
+    // tree already declares one; until this read it, the browser offered the closed forms it says no to
+    // and a person could attach a component that could never do anything. -xlinka
+    private static bool IsDeclaredValid(Type closed)
+    {
+        var property = closed.GetProperty("IsValidGenericType",
+            BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+        if (property == null || property.PropertyType != typeof(bool))
+            return true;
+        try
+        {
+            return property.GetValue(null) is not bool valid || valid;
+        }
+        catch (TargetInvocationException)
+        {
+            return false;
         }
     }
 }

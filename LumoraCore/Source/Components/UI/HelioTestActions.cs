@@ -14,6 +14,7 @@ namespace Lumora.Core.Components.UI;
 /// are stored as element + method references and survive duplication: a cloned
 /// panel's controls drive the clone's own labels, not the original's.
 /// </summary>
+[ComponentCategory("Hidden")]
 public sealed class HelioTestActions : Component
 {
     public readonly SyncRef<PanelShell> Panel;

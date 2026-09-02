@@ -12,37 +12,29 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.UI;
 
-/// <summary>
-/// A standalone, world-space, grabbable, persistent widget. It hosts a
-/// <see cref="WidgetPreset"/>'s content on its own canvas, rendered directly in
-/// the world (no dashboard render-texture) and clickable through the laser's
-/// canvas hit test.
-///
-/// Click vs. grab is resolved by edit mode, not by where you point. The laser
-/// always selects the highest-priority target it hits, and a Canvas
-/// (priority 1000) outranks a Grabbable; so out of edit mode the canvas wins and
-/// you interact with the widget's content, and in edit mode the grab is boosted
-/// above the canvas so you can pick the panel up and place it. Toggle
-/// <see cref="EditMode"/> to switch every panel between the two.
-/// </summary>
+// A standalone, world-space, grabbable, persistent widget. It hosts a WidgetPreset's content on its own
+// canvas, rendered directly in the world (no dashboard render-texture) and clickable through the laser's
+// canvas hit test. Click vs. grab is resolved by edit mode, not by where you point. The laser always selects
+// the highest-priority target it hits, and a Canvas (priority 1000) outranks a Grabbable; so out of edit mode
+// the canvas wins and you interact with the widget's content, and in edit mode the grab is boosted above the
+// canvas so you can pick the panel up. Carry it over any widget grid and let go to put it down there. -xlinka
+[ComponentCategory("Hidden")]
 public sealed class WidgetPanel : Component
 {
-    private const float CanvasScale = 0.001f;
+    public const float CanvasScale = 0.001f;
     // Boosted above Canvas (1000) so the grab wins the whole panel in edit mode;
     // dropped below zero out of edit mode so the canvas always wins for clicks.
     private const int GrabActivePriority = 2000;
     private const int GrabIdlePriority = -1;
-    // Release this close to the dash surface (in edit mode) to dock back onto the bar.
-    private const float DockDistance = 0.35f;
 
-    /// <summary>
-    /// Local per-user UI state: when on, every panel becomes grabbable so widgets
-    /// can be repositioned. Not synced - this is a userspace editing toggle, like
-    /// the dashboard's own edit mode.
-    /// </summary>
+    // Local per-user UI state: when on, every panel becomes grabbable and every grid shows its cells so
+    // widgets can be rearranged. Not synced, this is a userspace editing toggle.
     public static bool EditMode { get; set; }
 
     public readonly Sync<float2> CanvasSize;
+    // The footprint this widget last had on a grid, tried before its preferred size when it is put back
+    // down. Zero until it has been on a grid. -xlinka
+    public readonly Sync<float2> LastPlacedSize;
     public readonly AssetRef<FontSet> Font;
 
     private Slot? _bodySlot;
@@ -53,11 +45,21 @@ public sealed class WidgetPanel : Component
     public WidgetPanel()
     {
         CanvasSize = new Sync<float2>(this, new float2(220f, 110f));
+        LastPlacedSize = new Sync<float2>(this, float2.Zero);
         Font = new AssetRef<FontSet>(this);
     }
 
-    /// <summary>The canvas slot widget content is built into.</summary>
+    // The canvas slot widget content is built into.
     public Slot? Body => _bodySlot != null && !_bodySlot.IsDestroyed ? _bodySlot : null;
+
+    public Grabbable? GrabHandle => _grab != null && !_grab.IsDestroyed ? _grab : null;
+
+    public Type? PresetType => Body?.GetComponent<WidgetPreset>()?.GetType();
+
+    // The hosted preset's Widget, which carries the size limits a grid negotiates against.
+    public Widget? ContentWidget => Body?.GetComponent<WidgetPreset>()?.EnsureBuilt();
+
+    public static WidgetPanel? From(IGrabbable? item) => (item as Component)?.Slot?.GetComponent<WidgetPanel>();
 
     public override void OnStart()
     {
@@ -72,33 +74,8 @@ public sealed class WidgetPanel : Component
             _grab.InteractionPriority.Value = EditMode ? GrabActivePriority : GrabIdlePriority;
     }
 
-    // Drop-in: release a panel near the dash surface (in edit mode) to dock its
-    // preset back onto the top bar and remove the standalone panel. Both live in
-    // userspace, so a plain proximity test against the surface is the "over the
-    // dash" check - no portal UV mapping needed.
-    private void OnReleased(IGrabbable grabbable)
-    {
-        if (!EditMode)
-            return;
-
-        var dash = UserspaceDashboard.LocalInstance;
-        var surface = dash?.SurfaceSlot;
-        if (dash == null || surface == null)
-            return;
-
-        if ((Slot.GlobalPosition - surface.GlobalPosition).Length > DockDistance)
-            return;
-
-        var presetType = Body?.GetComponent<WidgetPreset>()?.GetType();
-        if (presetType != null && dash.Dashboard?.TryDockWidget(presetType) == true)
-            Slot.Destroy();
-    }
-
-    /// <summary>
-    /// Build (or re-bind, on load) the font provider, grab, body slot and canvas.
-    /// Idempotent: re-finds existing children so a persisted panel reloads without
-    /// duplicating its subtree.
-    /// </summary>
+    // Build (or re-bind, on load) the font provider, grab, body slot and canvas. Idempotent: re-finds existing
+    // children so a persisted panel reloads without duplicating its subtree.
     public WidgetPanel EnsureBuilt()
     {
         if (_built) return this;
@@ -112,19 +89,36 @@ public sealed class WidgetPanel : Component
         _grab.FollowRotation.Value = true;
         _grab.Receivable.Value = false;
         _grab.InteractionPriority.Value = GrabIdlePriority;
-        _grab.OnLocalReleased += OnReleased;
 
         _bodySlot = Slot.FindChild("Body", recursive: false) ?? Slot.AddSlot("Body");
         _bodySlot.LocalScale.Value = float3.One * CanvasScale;
 
-        var size = CanvasSize.Value;
-        var rect = _bodySlot.GetComponent<RectTransform>() ?? _bodySlot.AttachComponent<RectTransform>();
-        rect.OffsetMin.Value = new float2(-size.x * 0.5f, -size.y * 0.5f);
-        rect.OffsetMax.Value = new float2(size.x * 0.5f, size.y * 0.5f);
+        ApplyCanvasSize(CanvasSize.Value);
 
         _ = _bodySlot.GetComponent<Canvas>() ?? _bodySlot.AttachComponent<Canvas>();
 
         return this;
+    }
+
+    // Resize the panel around its centre. Spawn calls this once the preset is on, because the default pill
+    // is sized for a clock and a card like the account form has to bring its own size or it comes out
+    // squeezed into a strip. -xlinka
+    public void ApplyCanvasSize(in float2 size)
+    {
+        if (_bodySlot == null || _bodySlot.IsDestroyed || size.x <= 0f || size.y <= 0f)
+            return;
+        CanvasSize.Value = size;
+        var rect = _bodySlot.GetComponent<RectTransform>() ?? _bodySlot.AttachComponent<RectTransform>();
+        rect.OffsetMin.Value = new float2(-size.x * 0.5f, -size.y * 0.5f);
+        rect.OffsetMax.Value = new float2(size.x * 0.5f, size.y * 0.5f);
+    }
+
+    // World size of one canvas pixel. A widget lifted off the dash keeps the size it had on the surface.
+    public void SetPixelScale(float metersPerPixel)
+    {
+        if (metersPerPixel <= 0f)
+            return;
+        Slot.GlobalScale = float3.One * (metersPerPixel / CanvasScale);
     }
 
     private void EnsureFont()
@@ -149,30 +143,23 @@ public sealed class WidgetPanel : Component
         Font.Target = _fontProvider;
     }
 
-    /// <summary>
-    /// Spawn a grabbable widget panel hosting preset <typeparamref name="T"/> in
-    /// the USERSPACE world (never the focused world) at the given pose. Userspace
-    /// renders as an overlay aligned to the local user's view, so a head-relative
-    /// pose places the panel in front of the user and pops out there - matching how
-    /// the dashboard itself is placed. Persists with userspace; enter widget edit
-    /// mode to reposition it.
-    /// </summary>
     public static WidgetPanel? Spawn<T>(float3 globalPosition, floatQ globalRotation)
         where T : WidgetPreset, new()
         => Spawn(typeof(T), globalPosition, globalRotation);
 
-    /// <summary>
-    /// Non-generic spawn used when popping a widget out of a grid: the grid only
-    /// knows the preset's runtime <see cref="Type"/>, so it re-hosts that preset
-    /// on a fresh userspace panel rather than moving the canvas subtree.
-    /// </summary>
-    public static WidgetPanel? Spawn(Type presetType, float3 globalPosition, floatQ globalRotation)
+    // Spawn a grabbable panel hosting a preset under the local userspace root at the given pose. That root
+    // is where the userspace pointer can reach: anything parented elsewhere in the userspace world is
+    // outside its exclusive root and can never be picked up again. The grid only knows the preset's
+    // runtime type, so the panel re-hosts that preset rather than moving the canvas subtree. -xlinka
+    public static WidgetPanel? Spawn(Type presetType, float3 globalPosition, floatQ globalRotation, float2? canvasSize = null)
     {
-        var world = Engine.Current?.WorldManager?.UserspaceWorld;
-        if (world?.RootSlot == null || presetType == null)
+        var root = Templates.Userspace.LocalRoot;
+        if (root == null || root.IsDestroyed)
+            root = Engine.Current?.WorldManager?.UserspaceWorld?.RootSlot;
+        if (root == null || presetType == null)
             return null;
 
-        var slot = world.RootSlot.AddSlot(presetType.Name);
+        var slot = root.AddSlot(presetType.Name);
         slot.GlobalPosition = globalPosition;
         slot.GlobalRotation = globalRotation;
 
@@ -182,6 +169,8 @@ public sealed class WidgetPanel : Component
         var preset = panel.Body!.AttachComponent(presetType);
         if (preset is TextWidgetPreset text)
             text.Font.Target = panel.Font.Target;
+        if (preset is WidgetPreset sized)
+            panel.ApplyCanvasSize(canvasSize ?? sized.PreferredSize.Value);
 
         return panel;
     }

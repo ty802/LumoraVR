@@ -195,6 +195,7 @@ public class WorkerManager
 
     // Renamed component types, old full name -> current full name, so worlds/items saved before a
     // rename still load. Add an entry here whenever a persisted component class is renamed. -xlinka
+    // Guarded by _typeCache's lock, since a rename decides which cache key a lookup lands on.
     private static readonly Dictionary<string, string> _renamedTypes = new()
     {
         ["Lumora.Core.Components.Avatar.AvatarObjectSlot"] = "Lumora.Core.Components.Avatar.AvatarSocket",
@@ -221,23 +222,60 @@ public class WorkerManager
         ["Lumora.Core.Components.Avatar.EyeTrackingStreamManager"] = "Lumora.Core.Components.Avatar.EyeStreamManager",
         ["Lumora.Core.Components.Avatar.MouthTrackingStreamManager"] = "Lumora.Core.Components.Avatar.MouthStreamManager",
         ["Lumora.Core.Components.Avatar.ExpressionDriver"] = "Lumora.Core.Components.Avatar.MouthExpressionDriver",
+        // The clock driver moved out of the UI widgets and onto the general text drivers, where it works
+        // on any string field rather than only a Helio text. Its Target changed from a plain reference to
+        // a drive, so an old save resolves the component and its format but comes back with the clock
+        // unwired; re-point it once and the save keeps it. -xlinka
+        ["Lumora.Core.Components.UI.CurrentDateTimeTextDriver"] = "Lumora.Core.Components.Utility.CurrentDateTimeTextDriver",
     };
 
-    public static Type GetType(string typename)
+    // Register a rename alias at runtime. Same contract as the table above; this is the entry point for
+    // an alias that becomes known after startup (a plugin declaring what it used to be called), and it
+    // clears any cached miss so content already refused starts resolving. -xlinka
+    public static void RegisterRenamedType(string oldTypeName, string currentTypeName)
     {
-        if (string.IsNullOrEmpty(typename))
-            return null!;
-
-        if (_renamedTypes.TryGetValue(typename, out var currentName))
-            typename = currentName;
+        if (string.IsNullOrEmpty(oldTypeName) || string.IsNullOrEmpty(currentTypeName))
+            throw new ArgumentException("A rename alias needs both names.");
 
         lock (_typeCache)
         {
+            _renamedTypes[oldTypeName] = currentTypeName;
+        }
+    }
+
+    public static Type GetType(string typename)
+    {
+        if (TryGetType(typename, out var type))
+            return type;
+
+        // A type the host used can't be resolved here. The component will be skipped on this client
+        // and its whole subtree will go missing - this is the loud signal for that. -xlinka
+        LumoraLogger.Error($"WorkerManager.GetType: UNRESOLVED TYPE '{typename}' - a host component of this type will be SKIPPED on this client (assembly not loaded or name mismatch). Joined world will be incomplete.");
+        return null!;
+    }
+
+    // Same lookup without the shouting. A save file legitimately names types this build does not have,
+    // and the persistence layer reports that once, in its own words, after deciding what to do about
+    // it - so it needs a way to ask that does not log an error per miss. -xlinka
+    public static bool TryGetType(string typename, out Type type)
+    {
+        type = null!;
+        if (string.IsNullOrEmpty(typename))
+            return false;
+
+        lock (_typeCache)
+        {
+            if (_renamedTypes.TryGetValue(typename, out var currentName))
+                typename = currentName;
+
             if (_typeCache.TryGetValue(typename, out var cached))
-                return cached;
+            {
+                type = cached;
+                return true;
+            }
         }
 
-        Type type = Type.GetType(typename)!;
+        type = Type.GetType(typename)!;
         if (type == null)
         {
             Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
@@ -249,19 +287,14 @@ public class WorkerManager
             }
         }
 
-        if (type != null)
-        {
-            lock (_typeCache)
-            {
-                _typeCache[typename] = type;
-            }
-            return type;
-        }
+        if (type == null)
+            return false;
 
-        // A type the host used can't be resolved here. The component will be skipped on this client
-        // and its whole subtree will go missing - this is the loud signal for that. -xlinka
-        LumoraLogger.Error($"WorkerManager.GetType: UNRESOLVED TYPE '{typename}' - a host component of this type will be SKIPPED on this client (assembly not loaded or name mismatch). Joined world will be incomplete.");
-        return null!;
+        lock (_typeCache)
+        {
+            _typeCache[typename] = type;
+        }
+        return true;
     }
 }
 

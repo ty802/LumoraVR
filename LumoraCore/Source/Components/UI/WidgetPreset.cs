@@ -24,6 +24,10 @@ public abstract class WidgetPreset : Component
 
     private bool _built;
 
+    // The card's own fill + hairline edge, built by EnsureBuilt. Presets that light up on hover drive
+    // this tint rather than stacking a second panel on top of it. -xlinka
+    protected BorderedImage? CardBackground { get; private set; }
+
     protected WidgetPreset()
     {
         MinSize = new Sync<float2>(this, new float2(120f, 80f));
@@ -52,6 +56,8 @@ public abstract class WidgetPreset : Component
             return widget;
         _built = true;
 
+        OnPreBuild();
+
         widget.MinSize.Value = MinSize.Value;
         widget.PreferredSize.Value = PreferredSize.Value;
         widget.MaxSize.Value = MaxSize.Value;
@@ -68,9 +74,11 @@ public abstract class WidgetPreset : Component
         bool hasBorder = BorderColor.Value.a > 0.01f;
 
         var bg = content.AttachComponent<BorderedImage>();
+        CardBackground = bg;
         bg.Tint.Value = Background.Value;
         bg.BorderTint.Value = hasBorder ? BorderColor.Value : new color(0f, 0f, 0f, 0f);
-        bg.BorderThickness.Value = hasBorder ? 3f : 0f;
+        // Hairline, not the old 3-unit slab: a widget pill is a card, and a card gets one thin edge.
+        bg.BorderThickness.Value = hasBorder ? DashTheme.OutlineWidth : 0f;
         if (BackgroundSprite.Target != null)
         {
             bg.Texture.Target = BackgroundSprite.Target;
@@ -85,12 +93,18 @@ public abstract class WidgetPreset : Component
             var rect = fillRoot.AttachComponent<RectTransform>();
             rect.AnchorMin.Value = float2.Zero;
             rect.AnchorMax.Value = float2.One;
-            rect.OffsetMin.Value = new float2(3f, 3f);
-            rect.OffsetMax.Value = new float2(-3f, -3f);
+            rect.OffsetMin.Value = new float2(DashTheme.OutlineWidth, DashTheme.OutlineWidth);
+            rect.OffsetMax.Value = new float2(-DashTheme.OutlineWidth, -DashTheme.OutlineWidth);
         }
 
         Build(widget, fillRoot);
         return widget;
+    }
+
+    // Runs once, before the sync members below are read into the card chrome: a preset that has to
+    // resolve something from its surroundings (a font, a corner sprite) does it here.
+    protected virtual void OnPreBuild()
+    {
     }
 
     protected abstract void Build(Widget widget, Slot root);

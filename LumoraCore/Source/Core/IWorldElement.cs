@@ -59,6 +59,37 @@ public interface IWorldElement : IPermissionTarget
 		_ => null
 	};
 
+	// The nearest no-copy marker at or above this element. Walks up through the component's slot and then
+	// the slot lineage, so marking a container protects everything inside it without every child carrying
+	// its own marker. Only ever asked on an explicit save/export, never on a per-write path. -xlinka
+	IPermissionCopyProtection? IPermissionTarget.CopyProtection
+	{
+		get
+		{
+			// A marker that currently blocks nothing (disabled, or both toggles off) must not shadow an
+			// enabled one further up the lineage. -xlinka
+			if (this is IPermissionCopyProtection own && (own.BlocksSaveCopy || own.BlocksExport))
+				return own;
+
+			// A member's owner is whatever it hangs off; climb until a slot turns up or the chain runs out.
+			IWorldElement? node = this;
+			for (int depth = 0; node != null && node is not Slot && depth < 8; depth++)
+				node = (node as Component)?.Slot ?? (node as SyncElement)?.Parent ?? (node as Worker)?.Parent;
+
+			var slot = node as Slot;
+			while (slot != null)
+			{
+				var marker = slot.GetComponent<Component>(c => c is IPermissionCopyProtection);
+				if (marker is IPermissionCopyProtection protection
+					&& (protection.BlocksSaveCopy || protection.BlocksExport))
+					return protection;
+				slot = slot.Parent;
+			}
+
+			return null;
+		}
+	}
+
 	// A user owns everything parented under their own UserRoot - avatar, body nodes, tools, nameplate. This is
 	// the STRUCTURAL ownership signal, and the reliable one: a user's allocation byte reads as 0 on their own
 	// client until the host-authored AllocationID syncs across, and the cached ActiveUserRoot lags a beat behind

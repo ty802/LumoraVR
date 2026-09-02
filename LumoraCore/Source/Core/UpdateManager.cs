@@ -12,17 +12,42 @@ public class UpdateManager
 {
     private World _world;
     private readonly Queue<IImplementable> _pendingHookUpdates = new Queue<IImplementable>();
+    private readonly Queue<IImplementable> _pendingSlotHookUpdates = new Queue<IImplementable>();
     private readonly HashSet<IImplementable> _queuedHookUpdates = new HashSet<IImplementable>();
     private readonly object _hookUpdatesLock = new object();
 
     private readonly HashSet<Slot> _pendingMovedSlots = new HashSet<Slot>();
     private readonly object _movedSlotsLock = new object();
+    private readonly List<Slot> _movedSlotsBatch = new List<Slot>();
+    private bool _processingMovedSlots;
     private float _currentDeltaTime = 0f;
 
     private SortedDictionary<int, List<IUpdatable>> _updateBuckets = new SortedDictionary<int, List<IUpdatable>>();
     private Queue<IUpdatable> _startupQueue = new Queue<IUpdatable>();
     private Queue<IUpdatable> _destructionQueue = new Queue<IUpdatable>();
     private SortedDictionary<int, Queue<IUpdatable>> _changeBuckets = new SortedDictionary<int, Queue<IUpdatable>>();
+    private readonly List<Component> _lateUpdatables = new List<Component>();
+    private readonly List<IUpdatable> _reDirtied = new List<IUpdatable>();
+
+    // Flat mirrors of the two sorted-bucket dictionaries. A SortedDictionary foreach allocates its
+    // traversal stack, and the per-frame loops here were the entire idle allocation floor of a world.
+    // Rebuilt only when a bucket APPEARS (buckets are never removed, only emptied). -xlinka
+    private readonly List<List<IUpdatable>> _updateBucketList = new List<List<IUpdatable>>();
+    private readonly List<Queue<IUpdatable>> _changeBucketList = new List<Queue<IUpdatable>>();
+    private bool _bucketListsDirty = true;
+
+    private void EnsureBucketLists()
+    {
+        if (!_bucketListsDirty)
+            return;
+        _bucketListsDirty = false;
+        _updateBucketList.Clear();
+        foreach (var kvp in _updateBuckets)
+            _updateBucketList.Add(kvp.Value);
+        _changeBucketList.Clear();
+        foreach (var kvp in _changeBuckets)
+            _changeBucketList.Add(kvp.Value);
+    }
 
     // Updatables whose startup threw - retried on later frames instead of dropped. A transient join-window
     // permission denial or a not-yet-synced ref shouldn't kill the component for the session. Bounded so a
@@ -61,6 +86,20 @@ public class UpdateManager
 
     public float DeltaTime => _currentDeltaTime;
 
+    // How many updatables are actually on the per-frame dispatch. The profiler shows cost by type; this
+    // shows the size of the set that cost is being paid over. -xlinka
+    public int RegisteredUpdatableCount
+    {
+        get
+        {
+            EnsureBucketLists();
+            int n = 0;
+            for (int b = 0; b < _updateBucketList.Count; b++)
+                n += _updateBucketList[b].Count;
+            return n;
+        }
+    }
+
     // Runs before the first update.
     public void RegisterForStartup(IUpdatable updatable)
     {
@@ -80,10 +119,52 @@ public class UpdateManager
         {
             bucket = new List<IUpdatable>();
             _updateBuckets[order] = bucket;
+            _bucketListsDirty = true;
         }
-        if (!bucket.Contains(updatable))
+        // No duplicate scan: registration happens once per component (startup), and UpdateBucketChanged
+        // removes before re-adding. The old Contains made every load O(n^2) in the order-0 bucket. -xlinka
+        bucket.Add(updatable);
+    }
+
+    public void RegisterForLateUpdates(Component component)
+    {
+        if (component == null || component.IsDestroyed)
+            return;
+
+        _lateUpdatables.Add(component);
+    }
+
+    public void UnregisterFromLateUpdates(Component component)
+    {
+        if (component == null)
+            return;
+
+        _lateUpdatables.Remove(component);
+    }
+
+    // Only components that actually override OnLateUpdate land in this list (WorkerInitializer detects the
+    // override), so this replaces a whole-tree walk that visited every component for a handful of overriders.
+    public void RunLateUpdates(float delta)
+    {
+        for (int i = 0; i < _lateUpdatables.Count; i++)
         {
-            bucket.Add(updatable);
+            var component = _lateUpdatables[i];
+            if (component.IsDestroyed)
+                continue;
+
+            try
+            {
+                CurrentlyUpdating = component;
+                component.InternalRunLateUpdate(delta);
+            }
+            catch (Exception ex)
+            {
+                Logging.Logger.Error($"UpdateManager: Error in late update for {component}: {ex.Message}");
+            }
+            finally
+            {
+                CurrentlyUpdating = null!;
+            }
         }
     }
 
@@ -125,6 +206,7 @@ public class UpdateManager
         {
             queue = new Queue<IUpdatable>();
             _changeBuckets[order] = queue;
+            _bucketListsDirty = true;
         }
         queue.Enqueue(updatable);
     }
@@ -145,20 +227,70 @@ public class UpdateManager
             {
                 if (_queuedHookUpdates.Add(component))
                 {
-                    _pendingHookUpdates.Enqueue(component);
+                    // Slots go to their own always-drained queue: a slot hook is the transform flush.
+                    if (component is Slot)
+                        _pendingSlotHookUpdates.Enqueue(component);
+                    else
+                        _pendingHookUpdates.Enqueue(component);
                 }
             }
         }
     }
 
+    // Same shape as the world's startup-drain budget: a big queue only exists when a load or join just
+    // integrated a whole tree, and draining every OnStart in the first Running frame is the last chunk
+    // of the load spike. While that initial backlog exists the drain takes a time-boxed bite per frame
+    // (the floor keeps small worlds and the harnesses draining in one go); once the queue first comes up
+    // empty the flag clears for good and a mid-session attach starts the same frame it always did. The
+    // retry machinery already tolerates an OnStart seeing a not-yet-started sibling. -xlinka
+    private const double StartupBudgetMs = 4.0;
+    private const int StartupMinBites = 64;
+    private bool _startupBacklog = true;
+
+    // Same reasoning as the world's synchronous-action drain: the one-way startup flag only covers the
+    // world's FIRST batch. A big object spawn dropped into a world that has been running for an hour
+    // queues just as many startups at once, and running them all in one update is the spike. Any queue
+    // that turns up this large gets budgeted until it is empty, whenever it happens. -xlinka
+    private const int StartupBurstThreshold = 256;
+    private bool _startupBurst;
+
     public void RunStartups()
     {
+        if (_startupQueue.Count >= StartupBurstThreshold)
+            _startupBurst = true;
+        else if (_startupQueue.Count == 0)
+            _startupBurst = false;
+
+        if (!_startupBacklog && !_startupBurst)
+        {
+            while (_startupQueue.Count > 0)
+            {
+                var updatable = _startupQueue.Dequeue();
+                if (updatable.IsDestroyed) continue;
+                TryStartup(updatable, isRetry: false);
+            }
+            return;
+        }
+
+        long started = Stopwatch.GetTimestamp();
+        int ran = 0;
         while (_startupQueue.Count > 0)
         {
             var updatable = _startupQueue.Dequeue();
             if (updatable.IsDestroyed) continue;
             TryStartup(updatable, isRetry: false);
+
+            ran++;
+            if (ran < StartupMinBites)
+                continue;
+
+            double elapsedMs = (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
+            if (elapsedMs >= StartupBudgetMs)
+                return;
         }
+
+        _startupBacklog = false;
+        _startupBurst = false;
     }
 
     // Re-attempt updatables whose startup previously threw. Drops one only when it finally starts, is
@@ -230,9 +362,10 @@ public class UpdateManager
             _profBySlot.Clear();
         }
 
-        foreach (var kvp in _updateBuckets)
+        EnsureBucketLists();
+        for (int b = 0; b < _updateBucketList.Count; b++)
         {
-            var bucket = kvp.Value;
+            var bucket = _updateBucketList[b];
             for (int i = 0; i < bucket.Count; i++)
             {
                 var updatable = bucket[i];
@@ -313,29 +446,48 @@ public class UpdateManager
     {
         _changeUpdateIndex++;
 
-        foreach (var kvp in _changeBuckets)
+        EnsureBucketLists();
+        for (int b = 0; b < _changeBucketList.Count; b++)
         {
-            var queue = kvp.Value;
+            var queue = _changeBucketList[b];
             while (queue.Count > 0)
             {
                 var updatable = queue.Dequeue();
-                if (!updatable.IsDestroyed && updatable.IsChangeDirty)
+                if (updatable.IsDestroyed || !updatable.IsChangeDirty)
+                    continue;
+
+                // Already ran this cycle: OnChanges re-dirtied it (directly or via a write loop between
+                // two components). Running it again now can spin the drain forever; it stays dirty and
+                // gets its turn next cycle instead. -xlinka
+                if (updatable.LastChangeUpdateIndex == _changeUpdateIndex)
                 {
-                    try
-                    {
-                        CurrentlyUpdating = updatable;
-                        updatable.InternalRunApplyChanges(_changeUpdateIndex);
-                    }
-                    catch (Exception ex)
-                    {
-                        Logging.Logger.Error($"UpdateManager: Error in change application for {updatable}: {ex.Message}");
-                    }
-                    finally
-                    {
-                        CurrentlyUpdating = null!;
-                    }
+                    _reDirtied.Add(updatable);
+                    continue;
+                }
+
+                try
+                {
+                    CurrentlyUpdating = updatable;
+                    updatable.InternalRunApplyChanges(_changeUpdateIndex);
+                }
+                catch (Exception ex)
+                {
+                    Logging.Logger.Error($"UpdateManager: Error in change application for {updatable}: {ex.Message}");
+                }
+                finally
+                {
+                    CurrentlyUpdating = null!;
                 }
             }
+        }
+
+        if (_reDirtied.Count > 0)
+        {
+            for (int i = 0; i < _reDirtied.Count; i++)
+            {
+                RegisterForChanges(_reDirtied[i]);
+            }
+            _reDirtied.Clear();
         }
     }
 
@@ -396,6 +548,42 @@ public class UpdateManager
         long startTicks = System.Diagnostics.Stopwatch.GetTimestamp();
         double ticksToMs = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
         _hookMsByType.Clear();
+
+        // Slot hooks are the transform/visibility flush and cost microseconds each. The render camera
+        // reads the engine's fresh head pose every frame, so any slot flush left behind by the budget
+        // shows up as the world trailing the view - the dash sliding away in a fall, a dragged panel
+        // rubber-banding. They drain completely every pass, ahead of and outside the budget; the budget
+        // keeps governing the hooks that are actually expensive (mesh builds, canvas chunks). -xlinka
+        while (true)
+        {
+            IImplementable slotFlush;
+            lock (_hookUpdatesLock)
+            {
+                if (_pendingSlotHookUpdates.Count == 0)
+                    break;
+                slotFlush = _pendingSlotHookUpdates.Dequeue();
+                _queuedHookUpdates.Remove(slotFlush);
+            }
+
+            if (slotFlush == null || slotFlush.IsDestroyed ||
+                (slotFlush is Worker removedWorker && removedWorker.IsRemoved) || slotFlush.Hook == null)
+            {
+                continue;
+            }
+
+            long slotStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            try
+            {
+                slotFlush.Hook.ApplyChanges();
+            }
+            catch (Exception ex)
+            {
+                Logging.Logger.Error($"UpdateManager: Error in hook update for {slotFlush}: {ex}");
+            }
+            var slotHookType = slotFlush.Hook.GetType();
+            _hookMsByType[slotHookType] = (_hookMsByType.TryGetValue(slotHookType, out var slotPrior) ? slotPrior : 0.0)
+                + (System.Diagnostics.Stopwatch.GetTimestamp() - slotStart) * ticksToMs;
+        }
 
         while (true)
         {
@@ -468,32 +656,50 @@ public class UpdateManager
     // Returns the number fired.
     public int ProcessMovedSlots()
     {
-        List<Slot> batch;
+        // Reused batch buffer. A handler is free to move more slots (they queue for the next pass), but a
+        // handler that fires a nested pass gets a throwaway list so it can't trample the outer iteration.
+        bool outer = !_processingMovedSlots;
+        List<Slot> batch = outer ? _movedSlotsBatch : new List<Slot>();
+
         lock (_movedSlotsLock)
         {
             if (_pendingMovedSlots.Count == 0)
                 return 0;
-            batch = new List<Slot>(_pendingMovedSlots);
+            batch.Clear();
+            batch.AddRange(_pendingMovedSlots);
             _pendingMovedSlots.Clear();
         }
 
         // Parents before children, so a child handler reading parent state sees it updated.
         batch.Sort((a, b) => a.Depth.CompareTo(b.Depth));
 
-        foreach (var slot in batch)
+        _processingMovedSlots = true;
+        try
         {
-            if (slot == null || slot.IsDestroyed)
-                continue;
-            try
+            for (int i = 0; i < batch.Count; i++)
             {
-                slot.FireWorldTransformChanged();
+                var slot = batch[i];
+                if (slot == null || slot.IsDestroyed)
+                    continue;
+                try
+                {
+                    slot.FireWorldTransformChanged();
+                }
+                catch (Exception ex)
+                {
+                    Logging.Logger.Error($"UpdateManager: Error in moved event for {slot}: {ex}");
+                }
             }
-            catch (Exception ex)
+            return batch.Count;
+        }
+        finally
+        {
+            if (outer)
             {
-                Logging.Logger.Error($"UpdateManager: Error in moved event for {slot}: {ex}");
+                _processingMovedSlots = false;
+                _movedSlotsBatch.Clear();
             }
         }
-        return batch.Count;
     }
 
     public void Clear()
@@ -501,12 +707,14 @@ public class UpdateManager
         lock (_hookUpdatesLock)
         {
             _pendingHookUpdates.Clear();
+            _pendingSlotHookUpdates.Clear();
             _queuedHookUpdates.Clear();
         }
         lock (_movedSlotsLock)
         {
             _pendingMovedSlots.Clear();
         }
+        _movedSlotsBatch.Clear();
         _updateBuckets.Clear();
         _startupQueue.Clear();
         _failedStartups.Clear();

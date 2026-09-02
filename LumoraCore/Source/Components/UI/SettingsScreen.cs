@@ -5,691 +5,455 @@ using System;
 using System.Collections.Generic;
 using Helio.UI;
 using Helio.UI.Layout;
+using Helio.UI.Listing;
 using Lumora.Core.Input;
 using Lumora.Core.Input.Actions;
+using Lumora.Core.Localization;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.UI;
 
-// category sidebar on the left, grouped section cards on the right, backed by EngineSettings
-// (persisted; the platform layer applies vsync/window/audio). rows are chunk-isolated so slider
-// drags only re-render their own row.
+// Category rail on the left, entry list on the right, both driven by listing sources over
+// EngineSettings. The entry list is VIRTUALIZED: the Controls page alone is ~50 rows of six cells
+// each, which as eagerly-built rows blew past the per-chunk surface band and re-tessellated the whole
+// page on every hover. Now only what the viewport can see exists.
+//
+// Switching category swaps the entry view's path. Nothing around it is rebuilt: the rail, the panel
+// and the title are chrome that outlive the selection, and the rows themselves are recycled.
+//
+// A setting appears in exactly ONE place, and no category shares a name with a section in another one.
+// General used to hold both an "Interface" section and a "Dashboard" section while an Interface
+// category sat below it in the rail, so there was no way to guess where anything lived.
+//
+// Every entry here writes a setting a subsystem actually reads. If you cannot point at the consumer,
+// it does not go on this screen. -xlinka
+[ComponentCategory("Hidden")]
 public sealed class SettingsScreen : DashboardScreen
 {
-    private const float RowHeight = 40f;
-    private const float RowSpacing = 6f;
-    private const float SectionTitleHeight = 30f;
-    private const float SectionPad = 14f;
-    private const float CornerRadius = 12f;
-    private const float SidebarWidth = 190f;
+    private const string KindBinding = "binding";
+    private const string KindLocomotion = "locomotion";
+    private const string KindNavCategory = "nav";
 
-    private static readonly color CardFill = new color(0.14f, 0.13f, 0.21f, 0.96f);
-    private static readonly color CardBorder = new color(0.52f, 0.46f, 0.82f, 0.50f);
-    private static readonly color RowFill = new color(0.20f, 0.19f, 0.30f, 0.85f);
-    private static readonly color RowBorder = new color(0.40f, 0.36f, 0.62f, 0.35f);
-    private static readonly color CategoryFill = new color(0.22f, 0.20f, 0.34f, 0.70f);
-    private static readonly color CategoryActiveFill = new color(0.45f, 0.38f, 0.80f, 0.90f);
-    private static readonly color AccentColor = new color(0.62f, 0.55f, 0.95f, 1f);
-    private static readonly color TextPrimary = new color(0.93f, 0.93f, 0.97f, 1f);
-    private static readonly color TextDim = new color(0.72f, 0.72f, 0.80f, 1f);
-    private static readonly color SectionTitleColor = new color(0.80f, 0.76f, 0.97f, 1f);
-    private static readonly color SegmentDisabledFill = new color(0.16f, 0.15f, 0.20f, 0.55f);
-    private static readonly color TextDisabled = new color(0.50f, 0.50f, 0.56f, 1f);
+    // One poll drives every live row on the screen: the locomotion strip, the pad status, the last
+    // input readout and the binding cells. It also catches settings changed from somewhere else (a Home
+    // widget, code applying a value). Cheap because every template write is equality-gated, so a tick
+    // where nothing moved costs no re-mesh.
+    private const float RefreshInterval = 0.1f;
 
     private Dashboard? _dashboard;
-    private readonly List<(Slot content, BorderedImage buttonBackground)> _categories = new();
+    private readonly SettingsFonts _fonts = new();
+    private ListingStyle _style = new ListingStyle();
+    private ListingStyle _sidebarStyle = new ListingStyle();
+    private readonly ListingItemSource _categories = new();
+    private readonly ListingItemSource _entries = new();
+    private ListingView? _sidebarView;
+    private ListingView? _entryView;
+    private Text? _title;
+    private ListingItem? _activeItem;
+    private string _activeCategory = string.Empty;
+    private float _refreshAccum;
+    private LocaleText _controlsStatus = "Settings.Controls.Hint".AsLocale("Click a binding to rebind it. Escape cancels.");
+    private bool _localeHooked;
 
-    // LOCOMOTION ROW - live mirror of LocomotionController.ActiveModule; see LocomotionRow below.
-    private Slot? _locomotionStrip;
-    private readonly List<(Slot buttonSlot, BorderedImage background, Text label, LocomotionModule module)> _locomotionSegments = new();
-    private LocomotionModule? _locomotionLastActive;
-    private float _locomotionRefreshAccum;
-    private const float LocomotionRefreshInterval = 0.25f;
-
-    // CONTROLS PAGE - see BuildControlsPage.
-    private const float BindLabelWidth = 168f;
-    private const float BindDesktopWidth = 152f;
-    private const float BindPadWidth = 116f;
-    private const float BindVRWidth = 132f;
-    private const float BindButtonWidth = 46f;
-    private const float ControlsRowSpacing = 8f;
-
-    private static readonly InputDeviceKind[] DesktopDevices = { InputDeviceKind.Keyboard, InputDeviceKind.Mouse };
-    private static readonly InputDeviceKind[] PadDevices = { InputDeviceKind.Gamepad };
-    private static readonly InputDeviceKind[] VRDevices = { InputDeviceKind.VRController };
-
-    private readonly List<(InputAction action, InputDeviceKind[] devices, Text label)> _bindingCells = new();
-    private Slot? _controlsPage;
-    private RectTransform? _controlsContentRect;
-    private Text? _padStatusText;
-    private Text? _lastInputText;
-    private Text? _controlsStatusText;
-    private float _controlsRefreshAccum;
-    private const float ControlsRefreshInterval = 0.1f;
+    // BUILD
 
     protected override void BuildContent(UIBuilder builder)
     {
         _dashboard = Slot.GetComponentInParents<Dashboard>();
-        _categories.Clear();
+        _fonts.Regular = _dashboard?.Font.Target;
+        _fonts.Semibold = _dashboard?.FontSemibold.Target;
+        _fonts.Bold = _dashboard?.FontBold.Target;
 
-        // FileBrowser-style structure: layout components attached directly to
-        // filling slots; every layout child carries an explicit LayoutElement.
+        // RoundedSprite is deliberately left null. Rows paint a procedural RoundedPanel now, so nothing
+        // on this screen wants the nine-slice border sprite the old cards were built from.
+        _style = new ListingStyle
+        {
+            Font = _fonts.Body,
+            Accent = DashTheme.Accent,
+            RowHeight = SettingsMetrics.RowHeight,
+            RowSpacing = DashTheme.Gap,
+        };
+        _sidebarStyle = new ListingStyle
+        {
+            Font = _fonts.Medium,
+            Accent = DashTheme.Accent,
+            RowHeight = SettingsMetrics.NavHeight,
+            RowSpacing = SettingsMetrics.NavSpacing,
+        };
+
         var root = builder.Current;
         var split = root.AttachComponent<HorizontalLayout>();
-        split.Spacing.Value = 14f;
-        split.PaddingLeft.Value = 16f;
-        split.PaddingRight.Value = 16f;
-        split.PaddingTop.Value = 16f;
-        split.PaddingBottom.Value = 16f;
+        split.Spacing.Value = DashTheme.GapLarge;
+        split.PaddingLeft.Value = DashTheme.GapLarge;
+        split.PaddingRight.Value = DashTheme.GapLarge;
+        split.PaddingTop.Value = DashTheme.GapLarge;
+        split.PaddingBottom.Value = DashTheme.GapLarge;
         split.ForceExpandWidth.Value = false;
         split.ForceExpandHeight.Value = true;
 
-        var sidebar = BuildSidebar(root);
-        var contentHost = BuildContentHost(root);
+        BuildCategories();
+        BuildEntries();
 
-        BuildCategory(sidebar, contentHost, "Input", page =>
+        // The rail is bare: no card, no outline. The items are words, and only the current one carries
+        // a wash. Its first item lines up with the title beside it.
+        var railHost = AddColumn(root, "Sidebar", SettingsMetrics.SidebarWidth);
+        float railTop = (SettingsMetrics.TitleHeight - SettingsMetrics.NavHeight) * 0.5f;
+        var railViewport = SettingsUI.Fill(railHost, "Viewport", 0f, DashTheme.Gap, 0f, railTop);
+        var railTemplates = new ListingTemplateMapper { DefaultHeight = SettingsMetrics.NavHeight };
+        railTemplates.MapKind(KindNavCategory, new SettingsNavTemplate(_fonts, PickCategory));
+        _sidebarView = ListingView.Attach(railViewport, _sidebarStyle, railTemplates, _categories);
+
+        // No panel fill of its own. The dash already hands every screen a panel to sit on, and a second
+        // one in the same tone inside it is a box drawn around nothing. The rows carry the surface.
+        var entryHost = AddColumn(root, "Entries", 0f);
+        _title = SettingsUI.Label(entryHost, "Title", _fonts.Strong, DashTheme.FontTitle, DashTheme.Text,
+            TextHorizontalAlignment.Left, new float2(0f, 1f), new float2(1f, 1f),
+            new float2(DashTheme.Inset, -SettingsMetrics.TitleHeight), new float2(-DashTheme.Inset, 0f));
+        var entryViewport = SettingsUI.Fill(entryHost, "Viewport",
+            SettingsMetrics.PanelInset, SettingsMetrics.PanelInset,
+            SettingsMetrics.PanelInset, SettingsMetrics.TitleHeight);
+        _entryView = ListingView.Attach(entryViewport, _style, BuildEntryTemplates(), _entries);
+
+        var first = _categories.ItemsAt(string.Empty);
+        PickCategory(first.Count > 0 ? first[0] : null);
+
+        LocaleManager.Changed += OnLocaleChanged;
+        _localeHooked = true;
+    }
+
+    public override void OnDestroy()
+    {
+        if (_localeHooked)
         {
-            var locomotion = BeginSection(page, "Locomotion", rowCount: 1);
-            LocomotionRow(locomotion);
+            LocaleManager.Changed -= OnLocaleChanged;
+            _localeHooked = false;
+        }
+        base.OnDestroy();
+    }
 
-            var mouse = BeginSection(page, "Mouse", rowCount: 2);
-            SliderRow(mouse, "Sensitivity", 0.1f, 5f, EngineSettings.MouseSensitivity,
-                v => { EngineSettings.MouseSensitivity = v; return $"{EngineSettings.MouseSensitivity:0.00}x"; });
-            SliderRow(mouse, "Smoothing", 0f, 0.9f, EngineSettings.MouseSmoothing,
-                v => { EngineSettings.MouseSmoothing = v; return EngineSettings.MouseSmoothing <= 0.001f ? "Off" : $"{EngineSettings.MouseSmoothing:0.00}"; });
+    // Every label on this screen is read out of a listing item at bind time, so the only thing a
+    // language switch has to do here is ask both views to rebind. Nothing is rebuilt: the rail keeps
+    // its selection, the entry list keeps its scroll, and the template writes are equality-gated so the
+    // rows whose text did not change do not re-mesh. -xlinka
+    private void OnLocaleChanged()
+    {
+        if (IsDestroyed)
+            return;
+        _sidebarView?.RefreshValues();
+        _entryView?.RefreshValues();
+        if (_title != null && _activeItem != null)
+            ListingStyle.SetText(_title, _activeItem.Label);
+        MarkDirty();
+    }
 
-            var movement = BeginSection(page, "Movement", rowCount: 1);
-            SliderRow(movement, "Noclip Speed", 1f, 30f, EngineSettings.NoclipSpeed,
-                v => { EngineSettings.NoclipSpeed = v; return $"{EngineSettings.NoclipSpeed:0.#} m/s"; });
-        });
+    private ListingTemplateMapper BuildEntryTemplates()
+    {
+        var labels = new SettingsLabelTemplate(_fonts);
+        var mapper = new ListingTemplateMapper { DefaultHeight = SettingsMetrics.RowHeight };
+        mapper.Map<ListingHeader>(new SettingsSectionTemplate(_fonts));
+        mapper.Map<ListingToggle>(new SettingsToggleTemplate(_fonts));
+        mapper.Map<ListingSlider>(new SettingsSliderTemplate(_fonts));
+        mapper.Map<ListingChoice>(new SettingsChoiceTemplate(_fonts));
+        mapper.Map<ListingAction>(new SettingsActionTemplate(_fonts));
+        mapper.Map<ListingLabel>(labels);
+        mapper.Fallback(labels);
+        mapper.MapKind(KindBinding, new SettingsBindingTemplate(_fonts, this));
+        mapper.MapKind(KindLocomotion, new SettingsLocomotionTemplate(_fonts, this));
+        return mapper;
+    }
 
-        BuildCategory(sidebar, contentHost, "Controls", BuildControlsPage);
-
-        BuildCategory(sidebar, contentHost, "Audio", page =>
+    private static Slot AddColumn(Slot root, string name, float fixedWidth)
+    {
+        var column = root.AddSlot(name);
+        column.AttachComponent<RectTransform>();
+        var element = column.AttachComponent<LayoutElement>();
+        if (fixedWidth > 0f)
         {
-            var section = BeginSection(page, "Volume", rowCount: 1);
-            SliderRow(section, "Master Volume", 0f, 1f, EngineSettings.MasterVolume,
-                v => { EngineSettings.MasterVolume = v; return $"{EngineSettings.MasterVolume * 100f:0}%"; });
-        });
-
-        BuildCategory(sidebar, contentHost, "Avatar", page =>
+            element.MinWidth.Value = fixedWidth;
+            element.PreferredWidth.Value = fixedWidth;
+            element.FlexibleWidth.Value = 0f;
+        }
+        else
         {
-            var section = BeginSection(page, "Calibration", rowCount: 1);
-            // Your standing/eye height. The avatar auto-rescales so its eyes sit at this height (live).
-            SliderRow(section, "Height", 0.5f, 2.5f, EngineSettings.UserHeight,
-                v => { EngineSettings.UserHeight = v; return $"{EngineSettings.UserHeight:0.00} m"; });
-        });
+            element.FlexibleWidth.Value = 1f;
+        }
+        element.FlexibleHeight.Value = 1f;
+        return column;
+    }
 
-        BuildCategory(sidebar, contentHost, "Video", page =>
-        {
-            var display = BeginSection(page, "Display", rowCount: 4);
-            ToggleRow(display, "VSync", EngineSettings.VSync, v => EngineSettings.VSync = v);
-            ToggleRow(display, "Fullscreen", EngineSettings.Fullscreen, v => EngineSettings.Fullscreen = v);
-            SliderRow(display, "FPS Limit", 0f, 240f, EngineSettings.MaxFps,
-                v =>
-                {
-                    int fps = (int)MathF.Round(v / 10f) * 10;
-                    EngineSettings.MaxFps = fps;
-                    return EngineSettings.MaxFps == 0 ? "Off" : EngineSettings.MaxFps.ToString();
-                });
-            // Caps the loop while the window is unfocused or minimized (vsync stops throttling there); 0 = Off. -xlinka
-            SliderRow(display, "Background FPS", 0f, 120f, EngineSettings.BackgroundFps,
-                v =>
-                {
-                    int fps = (int)MathF.Round(v / 10f) * 10;
-                    EngineSettings.BackgroundFps = fps;
-                    return EngineSettings.BackgroundFps == 0 ? "Off" : EngineSettings.BackgroundFps.ToString();
-                });
+    private void BuildCategories()
+    {
+        _categories.ClearAll();
+        AddCategory("general", "Settings.Category.General".AsLocale("General"));
+        AddCategory("graphics", "Settings.Category.Graphics".AsLocale("Graphics"));
+        AddCategory("movement", "Settings.Category.Movement".AsLocale("Movement"));
+        AddCategory("controls", "Settings.Category.Controls".AsLocale("Controls"));
+        AddCategory("interface", "Settings.Category.Interface".AsLocale("Interface"));
+    }
 
-            var quality = BeginSection(page, "Quality", rowCount: 4);
-            SliderRow(quality, "Render Scale", 0.5f, 1.5f, EngineSettings.RenderScale,
-                v =>
-                {
-                    // Snap to 5% steps so the viewport isn't re-allocated per pixel of drag.
-                    EngineSettings.RenderScale = MathF.Round(v * 20f) / 20f;
-                    return $"{EngineSettings.RenderScale * 100f:0}%";
-                });
-            // Caps how large a loaded texture is allowed to get. Applies live: providers re-resolve
-            // onto the variant for the new cap without a reload. Driven as a slider over the
-            // generated buckets (index, not pixels) so a drag can only land on a size that actually
-            // has a variant behind it. -xlinka
-            SliderRow(quality, "Max Texture Size", 0f, EngineSettings.TextureSizeOptions.Length - 1,
-                TextureSizeIndex(EngineSettings.MaxTextureSize),
-                v =>
-                {
-                    int index = System.Math.Clamp((int)MathF.Round(v), 0, EngineSettings.TextureSizeOptions.Length - 1);
-                    EngineSettings.MaxTextureSize = EngineSettings.TextureSizeOptions[index];
-                    return EngineSettings.DescribeTextureSize(EngineSettings.MaxTextureSize);
-                });
-            // Off makes every reflection probe stop rendering, which removes its cost rather than
-            // dimming it: a probe is six scene renders per bake. Applies live through the probe hooks. -xlinka
-            ToggleRow(quality, "Reflections", EngineSettings.ReflectionsEnabled,
-                v => EngineSettings.ReflectionsEnabled = v);
-            // Multiplier on every LOD switch distance. Above 1 holds detailed levels further out. -xlinka
-            SliderRow(quality, "LOD Bias", 0.25f, 4f, EngineSettings.LodBias,
-                v =>
-                {
-                    EngineSettings.LodBias = MathF.Round(v * 20f) / 20f;
-                    return $"{EngineSettings.LodBias:0.00}x";
-                });
-        });
+    private void AddCategory(string key, LocaleText label)
+        => _categories.AddRoot(new ListingCustom(key, KindNavCategory, label));
 
-        BuildCategory(sidebar, contentHost, "Network", page =>
-        {
-            var sync = BeginSection(page, "Synchronization", rowCount: 1);
-            // Sync send/process rate. Applies live to the active session; higher = smoother replication
-            // at more bandwidth/CPU. Snapped to 5 Hz steps. -xlinka
-            SliderRow(sync, "Tick Rate", 10f, 120f, EngineSettings.NetworkTickRate,
-                v =>
-                {
-                    int hz = (int)MathF.Round(v / 5f) * 5;
-                    EngineSettings.NetworkTickRate = hz;
-                    return $"{EngineSettings.NetworkTickRate} Hz";
-                });
-        });
+    private void PickCategory(ListingItem? item)
+    {
+        if (item == null)
+            return;
+        // Leaving Controls mid-rebind must not strand the listener: while it waits every action set is
+        // gated off, so an abandoned capture reads as input having died.
+        CancelPendingRebind();
+        _activeItem = item;
+        _activeCategory = item.Key;
+        if (_sidebarView != null)
+            _sidebarView.SelectedKey = item.Key;
+        // Swaps the listing's items only. The rail, the panel and the title are chrome and stay put.
+        _entryView?.SetPath(item.Key);
+        if (_title != null)
+            ListingStyle.SetText(_title, item.Label);
+        MarkDirty();
+    }
 
-        BuildCategory(sidebar, contentHost, "Dashboard", page =>
-        {
-            var placement = BeginSection(page, "Placement", rowCount: 1);
-            // Freeform leaves the panel where you put it (grab to move) instead of
-            // pinning it in front of your view. VR only; desktop is window-projected.
-            ToggleRow(placement, "Freeform (place & stay)",
-                UserspaceDashboard.LocalInstance?.Freeform.Value ?? false,
-                v => UserspaceDashboard.LocalInstance?.SetFreeform(v));
+    // ENTRIES
+    //
+    // Everything below is wired to a real consumer. Where a value is only meaningful in one mode
+    // (snap angle vs smooth speed), the other row goes non-interactive rather than disappearing, so
+    // the page does not reflow under your hand.
 
-            var widgets = BeginSection(page, "Widgets", rowCount: 1);
-            // Edit mode boosts every spawned widget panel's grab above its canvas so
-            // you can pick it up and place it; off, the canvas takes clicks again.
-            ToggleRow(widgets, "Edit Widgets (grab to move)",
-                WidgetPanel.EditMode,
-                v => WidgetPanel.EditMode = v);
-        });
+    private void BuildEntries()
+    {
+        _entries.ClearAll();
+        BuildGeneral();
+        BuildGraphics();
+        BuildMovement();
+        BuildControls();
+        BuildInterface();
+    }
 
-        SelectCategory(0);
+    private void BuildGeneral()
+    {
+        const string path = "general";
+        Header(path, "You", "Settings.General.Section.You".AsLocale("You"));
+        // Drives the avatar auto-rescale: SettingsApplier feeds it to InputInterface.UserHeight and
+        // AvatarIK re-scales so the eyes land at this height.
+        Slider(path, "height", "Settings.General.Height".AsLocale("Height"), 0.5f, 2.5f, 0.01f,
+            () => EngineSettings.UserHeight, v => EngineSettings.UserHeight = v, v => $"{v:0.00} m");
+
+        Header(path, "Audio", "Settings.General.Section.Audio".AsLocale("Audio"));
+        Slider(path, "volume", "Settings.General.MasterVolume".AsLocale("Master Volume"), 0f, 1f, 0.01f,
+            () => EngineSettings.MasterVolume, v => EngineSettings.MasterVolume = v, v => $"{v * 100f:0}%");
+    }
+
+    private void BuildGraphics()
+    {
+        const string path = "graphics";
+        Header(path, "Display", "Settings.Graphics.Section.Display".AsLocale("Display"));
+        Toggle(path, "vsync", "Settings.Graphics.VSync".AsLocale("VSync"), () => EngineSettings.VSync, v => EngineSettings.VSync = v);
+        Toggle(path, "fullscreen", "Settings.Graphics.Fullscreen".AsLocale("Fullscreen"), () => EngineSettings.Fullscreen, v => EngineSettings.Fullscreen = v);
+        Slider(path, "fps", "Settings.Graphics.FpsLimit".AsLocale("FPS Limit"), 0f, 240f, 10f,
+            () => EngineSettings.MaxFps, v => EngineSettings.MaxFps = (int)v,
+            v => v <= 0f ? "Off" : $"{(int)v}");
+        // Caps the loop while the window is unfocused or minimized (vsync stops throttling there).
+        Slider(path, "bgfps", "Settings.Graphics.BackgroundFps".AsLocale("Background FPS"), 0f, 120f, 10f,
+            () => EngineSettings.BackgroundFps, v => EngineSettings.BackgroundFps = (int)v,
+            v => v <= 0f ? "Off" : $"{(int)v}");
+        // 5% steps so the viewport is not re-allocated per pixel of drag.
+        Slider(path, "renderscale", "Settings.Graphics.RenderScale".AsLocale("Render Scale"), 0.5f, 1.5f, 0.05f,
+            () => EngineSettings.RenderScale, v => EngineSettings.RenderScale = v, v => $"{v * 100f:0}%");
+
+        Header(path, "Quality", "Settings.Graphics.Section.Quality".AsLocale("Quality"));
+        // Driven as an index over the generated buckets, not pixels: a drag can only land on a size
+        // that actually has a variant behind it. Providers re-resolve live onto the new cap.
+        Slider(path, "texturesize", "Settings.Graphics.MaxTextureSize".AsLocale("Max Texture Size"), 0f, EngineSettings.TextureSizeOptions.Length - 1, 1f,
+            () => TextureSizeIndex(EngineSettings.MaxTextureSize),
+            v =>
+            {
+                int index = System.Math.Clamp((int)MathF.Round(v), 0, EngineSettings.TextureSizeOptions.Length - 1);
+                EngineSettings.MaxTextureSize = EngineSettings.TextureSizeOptions[index];
+            },
+            v => EngineSettings.DescribeTextureSize(
+                EngineSettings.TextureSizeOptions[System.Math.Clamp((int)MathF.Round(v), 0, EngineSettings.TextureSizeOptions.Length - 1)]));
+        // Off makes every probe stop rendering, which removes its cost rather than dimming it: a probe
+        // in Always mode is six scene renders per bake.
+        Toggle(path, "reflections", "Settings.Graphics.Reflections".AsLocale("Reflections"),
+            () => EngineSettings.ReflectionsEnabled, v => EngineSettings.ReflectionsEnabled = v);
+        // Multiplier on every LOD switch distance. Above 1 holds detailed levels further out.
+        Slider(path, "lodbias", "Settings.Graphics.LodBias".AsLocale("LOD Bias"), 0.25f, 4f, 0.05f,
+            () => EngineSettings.LodBias, v => EngineSettings.LodBias = v, v => $"{v:0.00}x");
+        // Screen-space error an imported mesh is allowed to show before the renderer drops it to a
+        // cheaper level of itself. This never removes an object, only triangles.
+        Slider(path, "meshlod", "Settings.Graphics.MeshDetail".AsLocale("Mesh Detail"), 0f, 8f, 0.5f,
+            () => EngineSettings.MeshLodThreshold, v => EngineSettings.MeshLodThreshold = v,
+            EngineSettings.DescribeMeshLodThreshold);
+        // Multiplier on every directional light's cascade range - the cheapest real cut on the shadow
+        // pass, and it works on worlds whose lights someone else authored.
+        Slider(path, "shadowdistance", "Settings.Graphics.ShadowDistance".AsLocale("Shadow Distance"), 0.25f, 4f, 0.05f,
+            () => EngineSettings.ShadowDistanceScale, v => EngineSettings.ShadowDistanceScale = v, v => $"{v:0.00}x");
+    }
+
+    private void BuildMovement()
+    {
+        const string path = "movement";
+        Header(path, "Look", "Settings.Movement.Section.Look".AsLocale("Look"));
+        Slider(path, "mousesens", "Settings.Movement.MouseSensitivity".AsLocale("Mouse Sensitivity"), 0.1f, 5f, 0.01f,
+            () => EngineSettings.MouseSensitivity, v => EngineSettings.MouseSensitivity = v, v => $"{v:0.00}x");
+        Slider(path, "mousesmooth", "Settings.Movement.MouseSmoothing".AsLocale("Mouse Smoothing"), 0f, 0.9f, 0.01f,
+            () => EngineSettings.MouseSmoothing, v => EngineSettings.MouseSmoothing = v,
+            v => v <= 0.001f ? "Off" : $"{v:0.00}");
+
+        Header(path, "Locomotion", "Settings.Movement.Section.Locomotion".AsLocale("Locomotion"));
+        _entries.Add(path, new ListingCustom("locomotion", KindLocomotion, "Settings.Movement.Mode".AsLocale("Mode")));
+        Slider(path, "noclip", "Settings.Movement.NoclipSpeed".AsLocale("Noclip Speed"), 1f, 30f, 0.5f,
+            () => EngineSettings.NoclipSpeed, v => EngineSettings.NoclipSpeed = v, v => $"{v:0.#} m/s");
+
+        Header(path, "Turning", "Settings.Movement.Section.Turning".AsLocale("Turning"));
+        _entries.Add(path, ListingChoice.FromEnum<EngineSettings.TurnStyle>("turnmode", "Settings.Movement.TurnStyle".AsLocale("Turn Style"),
+            () => EngineSettings.TurnMode, v => EngineSettings.TurnMode = v));
+        // Only one of these two does anything at a time; the idle one greys out instead of vanishing so
+        // the list does not reflow while you are reading it.
+        var snap = Slider(path, "snapangle", "Settings.Movement.SnapAngle".AsLocale("Snap Angle"), 10f, 90f, 5f,
+            () => EngineSettings.SnapTurnAngle, v => EngineSettings.SnapTurnAngle = v, v => $"{v:0}°");
+        snap.Tag = EngineSettings.TurnStyle.Snap;
+        var smooth = Slider(path, "smoothspeed", "Settings.Movement.SmoothTurnSpeed".AsLocale("Smooth Turn Speed"), 30f, 360f, 5f,
+            () => EngineSettings.SmoothTurnSpeed, v => EngineSettings.SmoothTurnSpeed = v, v => $"{v:0}°/s");
+        smooth.Tag = EngineSettings.TurnStyle.Smooth;
+    }
+
+    // Everything that shapes what you look at, in one place: the language the interface speaks, the
+    // desktop cursor, and the dashboard's own placement. Language and the dashboard toggles used to sit
+    // under General, which left this category holding a single reticle group and no reason to exist.
+    private void BuildInterface()
+    {
+        const string path = "interface";
+        // The one setting in this category with nothing to group it with, so it leads the page rather
+        // than sitting under a section header repeating its own name.
+        _entries.Add(path, BuildLanguageChoice());
+
+        Header(path, "Reticle", "Settings.Interface.Section.Reticle".AsLocale("Reticle"));
+        // The desktop cursor drawer reads these through InterfaceSettings, which forwards to the same
+        // fields, so a change repaints the cursor on the next frame.
+        _entries.Add(path, ListingChoice.FromEnum<EngineSettings.ReticleShape>("reticlestyle", "Settings.Interface.ReticleStyle".AsLocale("Style"),
+            () => EngineSettings.ReticleStyle, v => EngineSettings.ReticleStyle = v));
+        var size = Slider(path, "reticlesize", "Settings.Interface.ReticleSize".AsLocale("Size"), 2f, 48f, 1f,
+            () => EngineSettings.ReticleSize, v => EngineSettings.ReticleSize = v, v => $"{v:0} px");
+        size.Tag = "reticle";
+        var thickness = Slider(path, "reticlethickness", "Settings.Interface.ReticleThickness".AsLocale("Thickness"), 1f, 8f, 0.5f,
+            () => EngineSettings.ReticleThickness, v => EngineSettings.ReticleThickness = v, v => $"{v:0.#} px");
+        thickness.Tag = "reticle";
+
+        Header(path, "Dashboard", "Settings.Interface.Section.Dashboard".AsLocale("Dashboard"));
+        // Freeform leaves the panel where you put it instead of pinning it in front of your view. VR
+        // only; desktop is window-projected.
+        Toggle(path, "freeform", "Settings.Interface.Freeform".AsLocale("Freeform"),
+            () => UserspaceDashboard.LocalInstance?.Freeform.Value ?? false,
+            v => UserspaceDashboard.LocalInstance?.SetFreeform(v),
+            "Settings.Interface.Freeform.Hint".AsLocale("Stays where you put it"));
+        // Edit mode boosts every spawned widget panel's grab above its canvas so you can pick it up;
+        // off, the canvas takes clicks again.
+        Toggle(path, "editwidgets", "Settings.Interface.EditWidgets".AsLocale("Edit Widgets"),
+            () => WidgetPanel.EditMode, v => WidgetPanel.EditMode = v,
+            "Settings.Interface.EditWidgets.Hint".AsLocale("Grab widgets to move them"));
     }
 
     // CONTROLS
     //
-    // Generated from the action map rather than hand-listed: a set added in code shows up here with
-    // its bindings and its rebind buttons, and nothing has to be kept in step by hand.
+    // Generated from the action map rather than hand-listed: a set added in code shows up here with its
+    // bindings and its rebind buttons, and nothing has to be kept in step by hand.
     //
-    // Keyboard and mouse share one column because they share one desk - a rebind there takes
-    // whichever of the two you reach for, and clearing it clears both. Bindings save the moment they
-    // change rather than on exit; a remap you cannot undo because you remapped the key that reaches
-    // this screen is a trap. -xlinka
-    private void BuildControlsPage(Slot page)
+    // Keyboard and mouse share one column because they share one desk - a rebind there takes whichever
+    // of the two you reach for, and clearing it clears both. Bindings save the moment they change
+    // rather than on exit; a remap you cannot undo because you remapped the key that reaches this
+    // screen is a trap. -xlinka
+    private void BuildControls()
     {
-        _controlsPage = page;
-        _bindingCells.Clear();
-
+        const string path = "controls";
         var map = Engine.Current?.InputInterface?.Actions;
 
-        BuildControlsHeader(page, map);
+        Header(path, "Devices", "Settings.Controls.Section.Devices".AsLocale("Devices"));
+        _entries.Add(path, new ListingLabel("pad", "Settings.Controls.Gamepad".AsLocale("Gamepad"), DescribePad));
+        _entries.Add(path, new ListingLabel("lastinput", "Settings.Controls.LastInput".AsLocale("Last input"), DescribeLastInput));
+        _entries.Add(path, new ListingAction("resetall", "Settings.Controls.ResetAll".AsLocale("Every control back to stock"))
+        {
+            Invoke = ResetAllBindings,
+            ButtonLabel = "Settings.Controls.ResetAllButton".AsLocale("Reset All"),
+            Destructive = true,
+        });
+        _entries.Add(path, new ListingLabel("status", "Settings.Controls.Status".AsLocale("Status"), () => _controlsStatus.Resolve()));
 
         if (map == null)
             return;
 
-        var area = page.AddSlot("Bindings");
-        area.AttachComponent<RectTransform>();
-        var areaElement = area.AttachComponent<LayoutElement>();
-        areaElement.FlexibleWidth.Value = 1f;
-        areaElement.FlexibleHeight.Value = 1f;
-        areaElement.MinHeight.Value = 200f;
-        area.AttachComponent<Mask>();
-        var scroll = area.AttachComponent<ScrollRect>();
-        scroll.ScrollSensitivity.Value = new float2(1f, 1f);
-
-        var content = area.AddSlot("Content");
-        _controlsContentRect = content.AttachComponent<RectTransform>();
-        if (Canvas.ScrollRenderOffset)
-            content.AttachComponent<GraphicChunkRoot>();
-        _controlsContentRect.AnchorMin.Value = new float2(0f, 1f);
-        _controlsContentRect.AnchorMax.Value = new float2(1f, 1f);
-        _controlsContentRect.OffsetMin.Value = new float2(0f, -100f);
-        _controlsContentRect.OffsetMax.Value = float2.Zero;
-        var stack = content.AttachComponent<VerticalLayout>();
-        stack.Spacing.Value = 12f;
-        stack.ForceExpandWidth.Value = true;
-        stack.ForceExpandHeight.Value = false;
-        scroll.Content.Target = _controlsContentRect;
-
-        float total = 0f;
         foreach (var set in map.Sets)
         {
-            var rows = new List<InputAction>();
+            bool wroteHeader = false;
             foreach (var action in set.Actions)
             {
-                if (action.Rebindable)
-                    rows.Add(action);
-            }
-            if (rows.Count == 0)
-                continue;
-
-            var section = BeginSection(content, set.Label, rows.Count);
-            foreach (var action in rows)
-                BindingRow(section, action);
-
-            total += SectionPad * 2f + SectionTitleHeight + rows.Count * (RowHeight + RowSpacing) + 12f;
-        }
-
-        _controlsContentRect.OffsetMin.Value = new float2(0f, -total);
-        RefreshBindingCells();
-    }
-
-    private void BuildControlsHeader(Slot page, InputBindingMap? map)
-    {
-        var card = page.AddSlot("Devices");
-        card.AttachComponent<RectTransform>();
-        SetFixedHeight(card, SectionPad * 2f + SectionTitleHeight + 2f * (RowHeight + RowSpacing));
-        ApplyRoundedPanel(card, CardFill, CardBorder);
-
-        var v = card.AttachComponent<VerticalLayout>();
-        v.Spacing.Value = RowSpacing;
-        v.PaddingLeft.Value = SectionPad;
-        v.PaddingRight.Value = SectionPad;
-        v.PaddingTop.Value = SectionPad;
-        v.PaddingBottom.Value = SectionPad;
-        v.ForceExpandWidth.Value = true;
-        v.ForceExpandHeight.Value = false;
-
-        var titleSlot = card.AddSlot("Title");
-        titleSlot.AttachComponent<RectTransform>();
-        SetFixedHeight(titleSlot, SectionTitleHeight);
-        var titleText = titleSlot.AttachComponent<Text>();
-        titleText.Content.Value = "Devices";
-        titleText.Font.Target = _dashboard?.Font.Target!;
-        titleText.Size.Value = 20f;
-        titleText.Color.Value = SectionTitleColor;
-        titleText.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
-        titleText.VerticalAlignment.Value = TextVerticalAlignment.Middle;
-
-        var deviceRow = BeginControlRow(card, "DeviceRow");
-        var db = RowBuilder(deviceRow);
-        db.MinWidth(260f).PreferredWidth(260f).FlexibleWidth(0f);
-        _padStatusText = AddRowLabel(db, DescribePad(), 16f, TextPrimary, TextHorizontalAlignment.Left);
-        db.MinWidth(200f).FlexibleWidth(1f);
-        _lastInputText = AddRowLabel(db, "Last input: -", 16f, TextDim, TextHorizontalAlignment.Left);
-        db.MinWidth(110f).PreferredWidth(110f).FlexibleWidth(0f);
-        db.Button("Reset All", (_, _) => ResetAllBindings(), CategoryFill);
-
-        var statusRow = BeginControlRow(card, "StatusRow");
-        var sb = RowBuilder(statusRow);
-        sb.MinWidth(200f).FlexibleWidth(1f);
-        _controlsStatusText = AddRowLabel(
-            sb,
-            map == null ? "Input is not ready yet." : "Click a binding to rebind it. Escape cancels.",
-            15f, TextDim, TextHorizontalAlignment.Left);
-    }
-
-    private void BindingRow(Slot section, InputAction action)
-    {
-        var row = BeginControlRow(section, action.Name);
-        var b = RowBuilder(row);
-
-        b.MinWidth(BindLabelWidth).PreferredWidth(BindLabelWidth).FlexibleWidth(0f);
-        AddRowLabel(b, action.Label, 16f, TextPrimary, TextHorizontalAlignment.Left);
-
-        AddBindingCell(row, action, DesktopDevices, BindDesktopWidth);
-        AddBindingCell(row, action, PadDevices, BindPadWidth);
-        AddBindingCell(row, action, VRDevices, BindVRWidth);
-
-        var tail = RowBuilder(row);
-        tail.MinWidth(BindButtonWidth).PreferredWidth(BindButtonWidth).FlexibleWidth(0f);
-        tail.Button("X", (_, _) => ClearAllBindings(action), SegmentDisabledFill);
-        tail.MinWidth(BindButtonWidth + 12f).PreferredWidth(BindButtonWidth + 12f).FlexibleWidth(0f);
-        tail.Button("Reset", (_, _) => ResetBinding(action), CategoryFill);
-    }
-
-    private void AddBindingCell(Slot row, InputAction action, InputDeviceKind[] devices, float width)
-    {
-        var b = RowBuilder(row);
-        b.MinWidth(width).PreferredWidth(width).FlexibleWidth(0f);
-        var button = b.Button(action.DescribeBindings(devices), (_, _) => BeginRebind(action, devices), RowFill);
-        var label = button.Slot.GetComponentInChildren<Text>();
-        if (label != null)
-        {
-            label.Size.Value = 15f;
-            _bindingCells.Add((action, devices, label));
-        }
-    }
-
-    // Narrower gutters than an ordinary settings row: six cells have to fit across, and the binding
-    // text is what needs the room.
-    private Slot BeginControlRow(Slot section, string name)
-    {
-        var row = BeginRow(section, name);
-        var layout = row.GetComponent<HorizontalLayout>();
-        if (layout != null)
-        {
-            layout.Spacing.Value = ControlsRowSpacing;
-            layout.PaddingLeft.Value = 10f;
-            layout.PaddingRight.Value = 10f;
-        }
-        return row;
-    }
-
-    private void BeginRebind(InputAction action, InputDeviceKind[] devices)
-    {
-        var map = Engine.Current?.InputInterface?.Actions;
-        if (map == null)
-            return;
-        map.ClearCapture();
-        map.BeginCapture(action, devices);
-        SetControlsStatus($"Press a control for \"{action.Label}\"... (Escape cancels)");
-        RefreshBindingCells();
-    }
-
-    private void ClearAllBindings(InputAction action)
-    {
-        var map = Engine.Current?.InputInterface?.Actions;
-        if (map == null)
-            return;
-        map.ClearBindings(action, InputDeviceKind.Keyboard, InputDeviceKind.Mouse, InputDeviceKind.Gamepad, InputDeviceKind.VRController);
-        PersistBindings();
-        SetControlsStatus($"Cleared every binding for \"{action.Label}\".");
-        RefreshBindingCells();
-    }
-
-    private void ResetBinding(InputAction action)
-    {
-        var map = Engine.Current?.InputInterface?.Actions;
-        if (map == null)
-            return;
-        map.ResetToDefaults(action);
-        PersistBindings();
-        SetControlsStatus($"Restored the stock binding for \"{action.Label}\".");
-        RefreshBindingCells();
-    }
-
-    private void ResetAllBindings()
-    {
-        var map = Engine.Current?.InputInterface?.Actions;
-        if (map == null)
-            return;
-        map.ResetAllToDefaults();
-        PersistBindings();
-        SetControlsStatus("Every control is back to stock.");
-        RefreshBindingCells();
-    }
-
-    private static void PersistBindings() => Engine.Current?.InputInterface?.SaveBindingOverrides();
-
-    private void CancelPendingRebind()
-    {
-        var map = Engine.Current?.InputInterface?.Actions;
-        if (map == null || map.CaptureStatus != InputBindingMap.CaptureState.Listening)
-            return;
-        map.ClearCapture();
-        SetControlsStatus("Rebind cancelled.");
-        RefreshBindingCells();
-    }
-
-    private void SetControlsStatus(string text)
-    {
-        if (_controlsStatusText != null && !_controlsStatusText.IsDestroyed)
-            _controlsStatusText.Content.Value = text;
-    }
-
-    private static string DescribePad()
-    {
-        var input = Engine.Current?.InputInterface;
-        var pad = input?.Gamepad;
-        if (pad == null || !pad.IsConnected)
-            return "Gamepad: none connected";
-        int count = input?.GetGamepadDriver()?.ConnectedPadCount ?? 1;
-        return count > 1
-            ? $"Gamepad: {pad.DeviceName} (+{count - 1} idle)"
-            : $"Gamepad: {pad.DeviceName}";
-    }
-
-    private void RefreshBindingCells()
-    {
-        var map = Engine.Current?.InputInterface?.Actions;
-        bool listening = map?.CaptureStatus == InputBindingMap.CaptureState.Listening;
-
-        foreach (var (action, devices, label) in _bindingCells)
-        {
-            if (label == null || label.IsDestroyed)
-                continue;
-
-            bool waiting = listening && ReferenceEquals(map!.CaptureTarget, action) && SameDevices(map.CaptureDevices, devices);
-            if (waiting)
-            {
-                label.Content.Value = "Press...";
-                label.Color.Value = AccentColor;
-                continue;
-            }
-
-            label.Content.Value = action.DescribeBindings(devices);
-            label.Color.Value = action.HasBindingFor(devices) ? TextPrimary : TextDisabled;
-        }
-
-        _dashboard?.Slot.GetComponent<Canvas>()?.MarkDirty();
-    }
-
-    private static bool SameDevices(IReadOnlyList<InputDeviceKind> a, InputDeviceKind[] b)
-    {
-        if (a.Count != b.Length)
-            return false;
-        for (int i = 0; i < b.Length; i++)
-        {
-            if (a[i] != b[i])
-                return false;
-        }
-        return true;
-    }
-
-    // Polls the map's listener rather than driving it: the capture itself happens inside the input
-    // pass, where the raw devices live, so all this has to do is notice when it finished.
-    private void UpdateControlsPage(float delta)
-    {
-        if (_controlsPage == null || _controlsPage.IsDestroyed || !_controlsPage.ActiveSelf.Value)
-            return;
-
-        var map = Engine.Current?.InputInterface?.Actions;
-        if (map == null)
-            return;
-
-        switch (map.CaptureStatus)
-        {
-            case InputBindingMap.CaptureState.Captured:
-                var bound = map.CaptureConflicts;
-                if (bound.Count > 0)
+                if (!action.Rebindable)
+                    continue;
+                if (!wroteHeader)
                 {
-                    var names = new List<string>(bound.Count);
-                    foreach (var conflict in bound)
-                        names.Add(conflict.Label);
-                    SetControlsStatus($"Bound. Also used by: {string.Join(", ", names)}.");
+                    // Set labels come out of the action map, which is code-owned rather than translated.
+                    Header(path, set.Label, set.Label);
+                    wroteHeader = true;
                 }
-                else
+                _entries.Add(path, new ListingCustom("bind." + set.Label + "." + action.Name, KindBinding, action.Label)
                 {
-                    SetControlsStatus("Bound.");
-                }
-                map.ClearCapture();
-                PersistBindings();
-                RefreshBindingCells();
-                return;
-
-            case InputBindingMap.CaptureState.Cancelled:
-                map.ClearCapture();
-                SetControlsStatus("Rebind cancelled.");
-                RefreshBindingCells();
-                return;
-        }
-
-        _controlsRefreshAccum += delta;
-        if (_controlsRefreshAccum < ControlsRefreshInterval)
-            return;
-        _controlsRefreshAccum = 0f;
-
-        if (_padStatusText != null && !_padStatusText.IsDestroyed)
-        {
-            var padText = DescribePad();
-            if (_padStatusText.Content.Value != padText)
-            {
-                _padStatusText.Content.Value = padText;
-                _dashboard?.Slot.GetComponent<Canvas>()?.MarkDirty();
-            }
-        }
-
-        if (_lastInputText != null && !_lastInputText.IsDestroyed)
-        {
-            var last = map.LastActivatedControl;
-            var lastText = "Last input: " + (last.IsValid ? last.Describe() : "-");
-            if (_lastInputText.Content.Value != lastText)
-            {
-                _lastInputText.Content.Value = lastText;
-                _dashboard?.Slot.GetComponent<Canvas>()?.MarkDirty();
+                    Tag = action,
+                });
             }
         }
     }
 
-    // LAYOUT SCAFFOLDING
+    // ENTRY HELPERS
 
-    private Slot BuildSidebar(Slot root)
-    {
-        var sidebar = root.AddSlot("Sidebar");
-        sidebar.AttachComponent<RectTransform>();
-        var element = sidebar.AttachComponent<LayoutElement>();
-        element.MinWidth.Value = SidebarWidth;
-        element.PreferredWidth.Value = SidebarWidth;
-        element.FlexibleWidth.Value = 0f;
-        element.FlexibleHeight.Value = 1f;
+    // Keyed on an id, not on the label: an item key has to hold still when the interface language
+    // changes, or every row in the list reads as brand new to the reconcile the moment somebody
+    // switches. -xlinka
+    private void Header(string path, string id, LocaleText label)
+        => _entries.Add(path, new ListingHeader(path + ".h." + id, label));
 
-        ApplyRoundedPanel(sidebar, CardFill, CardBorder);
+    // hint is the second line under the label, for a setting whose name alone does not say what it
+    // does. It replaces the parenthetical that used to be stuffed into the label itself and wrapped it
+    // onto two lines.
+    private ListingToggle Toggle(string path, string key, LocaleText label, Func<bool> read, Action<bool> write,
+        LocaleText hint = default)
+        => _entries.Add(path, new ListingToggle(key, label) { Read = read, Write = write, DetailText = hint });
 
-        var v = sidebar.AttachComponent<VerticalLayout>();
-        v.Spacing.Value = 6f;
-        v.PaddingLeft.Value = 10f;
-        v.PaddingRight.Value = 10f;
-        v.PaddingTop.Value = 12f;
-        v.PaddingBottom.Value = 12f;
-        v.ForceExpandWidth.Value = true;
-        v.ForceExpandHeight.Value = false;
-
-        return sidebar;
-    }
-
-    private static Slot BuildContentHost(Slot root)
-    {
-        var host = root.AddSlot("Content");
-        host.AttachComponent<RectTransform>();
-        var element = host.AttachComponent<LayoutElement>();
-        element.FlexibleWidth.Value = 1f;
-        element.FlexibleHeight.Value = 1f;
-        return host;
-    }
-
-    private void BuildCategory(Slot sidebar, Slot contentHost, string name, Action<Slot> buildPage)
-    {
-        int index = _categories.Count;
-
-        var buttonSlot = sidebar.AddSlot(name);
-        buttonSlot.AttachComponent<RectTransform>();
-        SetFixedHeight(buttonSlot, 42f);
-        var background = buttonSlot.AttachComponent<BorderedImage>();
-        background.Tint.Value = CategoryFill;
-        background.BorderTint.Value = RowBorder;
-        var roundedSprite = _dashboard?.RoundedSprite;
-        if (roundedSprite != null)
+    private ListingSlider Slider(string path, string key, LocaleText label, float min, float max, float step,
+        Func<float> read, Action<float> write, Func<float, string> format)
+        => _entries.Add(path, new ListingSlider(key, label)
         {
-            background.Texture.Target = roundedSprite;
-            background.NineSlice.Value = true;
-            background.Borders.Value = new float4(CornerRadius, CornerRadius, CornerRadius, CornerRadius);
-        }
+            Min = min,
+            Max = max,
+            Step = step,
+            Read = read,
+            Write = write,
+            Format = format,
+        });
 
-        var button = buttonSlot.AttachComponent<Button>();
-        button.Clicked += (_, _) => SelectCategory(index);
-
-        var labelSlot = buttonSlot.AddSlot("Label");
-        var labelRect = labelSlot.AttachComponent<RectTransform>();
-        labelRect.AnchorMin.Value = float2.Zero;
-        labelRect.AnchorMax.Value = float2.One;
-        labelRect.OffsetMin.Value = float2.Zero;
-        labelRect.OffsetMax.Value = float2.Zero;
-        var label = labelSlot.AttachComponent<Text>();
-        label.Content.Value = name;
-        label.Font.Target = _dashboard?.Font.Target!;
-        label.Size.Value = 18f;
-        label.Color.Value = TextPrimary;
-        label.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
-        label.VerticalAlignment.Value = TextVerticalAlignment.Middle;
-
-        // Page filling the host; toggled by SelectCategory. Offsets must be
-        // zeroed - default RectTransform offsets are +/-50, which would make the
-        // page 100px larger than the host and overflow the panel.
-        var page = contentHost.AddSlot(name);
-        var pageRect = page.AttachComponent<RectTransform>();
-        pageRect.AnchorMin.Value = float2.Zero;
-        pageRect.AnchorMax.Value = float2.One;
-        pageRect.OffsetMin.Value = float2.Zero;
-        pageRect.OffsetMax.Value = float2.Zero;
-        page.ActiveSelf.Value = false;
-
-        var v = page.AttachComponent<VerticalLayout>();
-        v.Spacing.Value = 12f;
-        v.ForceExpandWidth.Value = true;
-        v.ForceExpandHeight.Value = false;
-
-        _categories.Add((page, background));
-        buildPage(page);
-    }
-
-    private void SelectCategory(int index)
+    // The strip lists whatever locale tables actually loaded, in their own language, plus the generated
+    // pseudo locale. Nothing is offered that has no table behind it: a language you can pick and that
+    // then changes nothing is the exact kind of placebo setting this screen does not carry. -xlinka
+    private static ListingChoice BuildLanguageChoice()
     {
-        // Leaving the Controls page mid-rebind must not strand the listener: while it waits, every
-        // action set is gated off, so an abandoned rebind would look like input had died.
-        CancelPendingRebind();
-
-        for (int i = 0; i < _categories.Count; i++)
+        var available = LocaleManager.Available;
+        var codes = new List<string>(available.Count);
+        var names = new List<string>(available.Count);
+        for (int i = 0; i < available.Count; i++)
         {
-            var (content, buttonBackground) = _categories[i];
-            if (content != null && !content.IsDestroyed)
-                content.ActiveSelf.Value = i == index;
-            if (buttonBackground != null && !buttonBackground.IsDestroyed)
-                buttonBackground.Tint.Value = i == index ? CategoryActiveFill : CategoryFill;
+            codes.Add(available[i].Code);
+            names.Add(available[i].NativeName);
         }
-
-        // Activating a page doesn't dirty the canvas by itself, leaving its
-        // chunks unrendered until something else (hover) does.
-        _dashboard?.Slot.GetComponent<Canvas>()?.MarkDirty();
+        return new ListingChoice("language", "Settings.Interface.Language".AsLocale("Language"))
+        {
+            Options = names,
+            Read = () => LocaleManager.IndexOf(LocaleManager.CurrentLocale),
+            Write = index =>
+            {
+                if (index >= 0 && index < codes.Count)
+                    LocaleManager.SetLocale(codes[index]);
+            },
+        };
     }
 
-    // SECTIONS AND ROWS
-
-    private Slot BeginSection(Slot page, string title, int rowCount)
-    {
-        float height = SectionPad * 2f + SectionTitleHeight + rowCount * (RowHeight + RowSpacing);
-
-        var card = page.AddSlot(title);
-        card.AttachComponent<RectTransform>();
-        SetFixedHeight(card, height);
-        ApplyRoundedPanel(card, CardFill, CardBorder);
-
-        var v = card.AttachComponent<VerticalLayout>();
-        v.Spacing.Value = RowSpacing;
-        v.PaddingLeft.Value = SectionPad;
-        v.PaddingRight.Value = SectionPad;
-        v.PaddingTop.Value = SectionPad;
-        v.PaddingBottom.Value = SectionPad;
-        v.ForceExpandWidth.Value = true;
-        v.ForceExpandHeight.Value = false;
-
-        var titleSlot = card.AddSlot("Title");
-        titleSlot.AttachComponent<RectTransform>();
-        SetFixedHeight(titleSlot, SectionTitleHeight);
-        var titleText = titleSlot.AttachComponent<Text>();
-        titleText.Content.Value = title;
-        titleText.Font.Target = _dashboard?.Font.Target!;
-        titleText.Size.Value = 20f;
-        titleText.Color.Value = SectionTitleColor;
-        titleText.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
-        titleText.VerticalAlignment.Value = TextVerticalAlignment.Middle;
-
-        return card;
-    }
-
-    // Position of a texture cap within the generated buckets, for the slider's initial value.
     private static int TextureSizeIndex(int size)
     {
         var options = EngineSettings.TextureSizeOptions;
@@ -701,209 +465,15 @@ public sealed class SettingsScreen : DashboardScreen
         return 0;
     }
 
-    private void SliderRow(Slot section, string label, float min, float max, float value, Func<float, string> applyAndFormat)
-    {
-        var row = BeginRow(section, label);
-        var b = RowBuilder(row);
-
-        b.MinWidth(240f).PreferredWidth(240f).FlexibleWidth(0f);
-        AddRowLabel(b, label, 18f, TextPrimary, TextHorizontalAlignment.Left);
-
-        Text? valueText = null;
-        var slider = b.Slider(value, min, max, (_, v) =>
-        {
-            var formatted = applyAndFormat(v);
-            if (valueText != null && !valueText.IsDestroyed)
-                valueText.Content.Value = formatted;
-        });
-        // Slider() hard-sets a fixed 96px width (FlexibleWidth=0); override so the
-        // track fills the row cell instead of rendering as a short stub.
-        var sliderLayout = slider.Slot.GetComponent<LayoutElement>() ?? slider.Slot.AttachComponent<LayoutElement>();
-        sliderLayout.MinWidth.Value = 120f;
-        sliderLayout.PreferredWidth.Value = 240f;
-        sliderLayout.FlexibleWidth.Value = 1f;
-
-        b.MinWidth(100f).PreferredWidth(100f).FlexibleWidth(0f);
-        valueText = AddRowLabel(b, applyAndFormat(value), 16f, TextDim, TextHorizontalAlignment.Right);
-    }
-
-    private void ToggleRow(Slot section, string label, bool value, Action<bool> apply)
-    {
-        var row = BeginRow(section, label);
-        var b = RowBuilder(row);
-
-        b.MinWidth(240f).PreferredWidth(240f).FlexibleWidth(0f);
-        AddRowLabel(b, label, 18f, TextPrimary, TextHorizontalAlignment.Left);
-
-        Text? stateText = null;
-        b.MinWidth(28f).PreferredWidth(28f).FlexibleWidth(0f);
-        b.Checkbox(value, (_, isChecked) =>
-        {
-            apply(isChecked);
-            if (stateText != null && !stateText.IsDestroyed)
-                stateText.Content.Value = isChecked ? "On" : "Off";
-        });
-
-        b.MinWidth(100f).FlexibleWidth(1f);
-        stateText = AddRowLabel(b, value ? "On" : "Off", 16f, TextDim, TextHorizontalAlignment.Left);
-    }
-
-    // Segmented row - one button per module registered on the local user's LocomotionController,
-    // current one highlighted. Selecting activates it immediately (the same call the radial context
-    // menu makes) and remembers it as the spawn preference. A module the world's permission gate
-    // currently denies (e.g. Noclip in a locked world) stays visible but non-interactive rather than
-    // disappearing, matching how the radial menu itself never hides a module. Built lazily: the
-    // controller may not exist yet the first time this screen is opened (dashboard opened before the
-    // avatar finished spawning), so the strip re-populates itself once one shows up. -xlinka
-    private void LocomotionRow(Slot section)
-    {
-        var row = BeginRow(section, "Locomotion");
-        var b = RowBuilder(row);
-
-        b.MinWidth(240f).PreferredWidth(240f).FlexibleWidth(0f);
-        AddRowLabel(b, "Mode", 18f, TextPrimary, TextHorizontalAlignment.Left);
-
-        var strip = row.AddSlot("Segments");
-        strip.AttachComponent<RectTransform>();
-        var stripElement = strip.AttachComponent<LayoutElement>();
-        stripElement.MinWidth.Value = 160f;
-        stripElement.FlexibleWidth.Value = 1f;
-        stripElement.FlexibleHeight.Value = 1f;
-        var stripLayout = strip.AttachComponent<HorizontalLayout>();
-        stripLayout.Spacing.Value = 8f;
-        stripLayout.ForceExpandWidth.Value = true;
-        stripLayout.ForceExpandHeight.Value = true;
-
-        _locomotionStrip = strip;
-        RebuildLocomotionSegments();
-    }
-
-    private void RebuildLocomotionSegments()
-    {
-        if (_locomotionStrip == null || _locomotionStrip.IsDestroyed)
-            return;
-
-        _locomotionStrip.DestroyChildren();
-        _locomotionSegments.Clear();
-
-        var locomotion = GetLocalLocomotionController();
-        if (locomotion == null)
-            return;
-
-        foreach (var module in locomotion.Modules)
-        {
-            if (module == null || module.IsDestroyed)
-                continue;
-            // Matches the radial menu's own filter (LocomotionContextActions): the "no locomotion"
-            // fallback is an implementation detail, not something a user picks.
-            if (string.IsNullOrEmpty(module.DisplayName) || module.DisplayName == "None")
-                continue;
-
-            var captured = module;
-            var buttonSlot = _locomotionStrip.AddSlot(module.DisplayName);
-            buttonSlot.AttachComponent<RectTransform>();
-            var buttonElement = buttonSlot.AttachComponent<LayoutElement>();
-            buttonElement.MinWidth.Value = 70f;
-            buttonElement.FlexibleWidth.Value = 1f;
-            buttonElement.FlexibleHeight.Value = 1f;
-
-            var background = buttonSlot.AttachComponent<BorderedImage>();
-            background.BorderTint.Value = RowBorder;
-            var roundedSprite = _dashboard?.RoundedSprite;
-            if (roundedSprite != null)
-            {
-                background.Texture.Target = roundedSprite;
-                background.NineSlice.Value = true;
-                background.Borders.Value = new float4(CornerRadius, CornerRadius, CornerRadius, CornerRadius);
-            }
-
-            var button = buttonSlot.AttachComponent<Button>();
-            button.Clicked += (_, _) => SelectLocomotionModule(captured);
-
-            var labelSlot = buttonSlot.AddSlot("Label");
-            var labelRect = labelSlot.AttachComponent<RectTransform>();
-            labelRect.AnchorMin.Value = float2.Zero;
-            labelRect.AnchorMax.Value = float2.One;
-            labelRect.OffsetMin.Value = float2.Zero;
-            labelRect.OffsetMax.Value = float2.Zero;
-            var label = labelSlot.AttachComponent<Text>();
-            label.Content.Value = module.DisplayName;
-            label.Font.Target = _dashboard?.Font.Target!;
-            label.Size.Value = 16f;
-            label.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
-            label.VerticalAlignment.Value = TextVerticalAlignment.Middle;
-
-            _locomotionSegments.Add((buttonSlot, background, label, captured));
-        }
-
-        RefreshLocomotionSegments(locomotion);
-        Slot.GetComponentInParents<Canvas>()?.MarkLayoutDirty();
-    }
-
-    private void SelectLocomotionModule(LocomotionModule module)
-    {
-        var locomotion = GetLocalLocomotionController();
-        if (locomotion == null || !locomotion.IsModuleUsable(module))
-            return;
-        locomotion.ActivateModule(module);
-        // A deliberate pick from Settings is a standing preference for future spawns, not just this
-        // session - unlike the radial menu, which only ever changes the live module.
-        EngineSettings.PreferredLocomotion = module.DisplayName;
-        RefreshLocomotionSegments(locomotion);
-    }
-
-    // Repaints the segment highlight/enabled state from the controller's current ActiveModule; does not
-    // touch layout. Called on selection, on show, and from the periodic OnUpdate poll so a switch made
-    // through the radial context menu shows up here too.
-    private void RefreshLocomotionSegments(LocomotionController? locomotion)
-    {
-        locomotion ??= GetLocalLocomotionController();
-        _locomotionLastActive = locomotion?.ActiveModule;
-
-        if (_locomotionSegments.Count == 0)
-            return;
-
-        for (int i = 0; i < _locomotionSegments.Count; i++)
-        {
-            var (buttonSlot, background, label, module) = _locomotionSegments[i];
-            if (buttonSlot == null || buttonSlot.IsDestroyed)
-                continue;
-
-            bool usable = locomotion != null && locomotion.IsModuleUsable(module);
-            bool active = usable && locomotion != null && ReferenceEquals(locomotion.ActiveModule, module);
-
-            var button = buttonSlot.GetComponent<Button>();
-            if (button != null)
-                button.Interactable.Value = usable;
-            if (background != null && !background.IsDestroyed)
-                background.Tint.Value = !usable ? SegmentDisabledFill : active ? CategoryActiveFill : CategoryFill;
-            if (label != null && !label.IsDestroyed)
-                label.Color.Value = !usable ? TextDisabled : TextPrimary;
-        }
-
-        _dashboard?.Slot.GetComponent<Canvas>()?.MarkDirty();
-    }
-
-    private LocomotionController? GetLocalLocomotionController()
-    {
-        var userRoot = World?.LocalUser?.Root;
-        if (userRoot == null)
-            return null;
-        return userRoot.GetRegisteredComponent<LocomotionController>() ?? userRoot.Slot?.GetComponent<LocomotionController>();
-    }
+    // LIVE STATE
 
     protected override void OnShow()
     {
         base.OnShow();
-        // The controller might not have existed the first time this screen was built (dashboard opened
-        // before the avatar finished spawning); catch up now rather than showing an empty strip forever.
-        if (_locomotionSegments.Count == 0)
-            RebuildLocomotionSegments();
-        else
-            RefreshLocomotionSegments(null);
-
-        // A pad plugged in, or a rebind made elsewhere, while this screen sat closed.
-        RefreshBindingCells();
+        // A pad plugged in, a rebind made elsewhere, or an avatar that finished spawning while this
+        // screen sat closed.
+        _entryView?.RefreshValues();
+        MarkDirty();
     }
 
     protected override void OnHide()
@@ -918,81 +488,159 @@ public sealed class SettingsScreen : DashboardScreen
         if (!Slot.ActiveSelf.Value)
             return;
 
-        UpdateControlsPage(delta);
+        PumpRebindCapture();
 
-        if (_locomotionSegments.Count == 0)
+        _refreshAccum += delta;
+        if (_refreshAccum < RefreshInterval)
             return;
+        _refreshAccum = 0f;
 
-        _locomotionRefreshAccum += delta;
-        if (_locomotionRefreshAccum < LocomotionRefreshInterval)
-            return;
-        _locomotionRefreshAccum = 0f;
-
-        var locomotion = GetLocalLocomotionController();
-        if (!ReferenceEquals(locomotion?.ActiveModule, _locomotionLastActive))
-            RefreshLocomotionSegments(locomotion);
+        ApplyTurnModeGating();
+        _entryView?.RefreshValues();
     }
 
-    private Slot BeginRow(Slot section, string name)
+    // Snap angle and smooth speed each only mean something in their own mode. Flipping Interactable
+    // here (rather than rebuilding the page) keeps the row where it is and just greys it.
+    private void ApplyTurnModeGating()
     {
-        var row = section.AddSlot(name);
-        row.AttachComponent<RectTransform>();
-        SetFixedHeight(row, RowHeight);
-
-        // No per-row GraphicChunkRoot: the settings screen renders as one root
-        // chunk (like the file browser). Per-row chunks only mattered for
-        // continuous-update widgets (live widgets keep theirs); here they caused
-        // lazily-built rows to stay invisible until a stray dirty event, and
-        // slider drags are occasional so a root rebuild is fine.
-        ApplyRoundedPanel(row, RowFill, RowBorder);
-
-        var h = row.AttachComponent<HorizontalLayout>();
-        h.Spacing.Value = 14f;
-        h.PaddingLeft.Value = 12f;
-        h.PaddingRight.Value = 12f;
-        h.ForceExpandWidth.Value = false;
-        h.ForceExpandHeight.Value = true;
-
-        return row;
-    }
-
-    private UIBuilder RowBuilder(Slot row)
-    {
-        var b = new UIBuilder(row);
-        b.Font(_dashboard?.Font.Target)
-            .TextColor(TextPrimary)
-            .ForegroundColor(AccentColor)
-            .RoundedSprite(_dashboard?.RoundedSprite);
-        return b;
-    }
-
-    private static Text AddRowLabel(UIBuilder builder, string content, float size, color textColor, TextHorizontalAlignment alignment)
-    {
-        var text = builder.Text(content, size, textColor);
-        text.HorizontalAlignment.Value = alignment;
-        text.VerticalAlignment.Value = TextVerticalAlignment.Middle;
-        return text;
-    }
-
-    private void ApplyRoundedPanel(Slot slot, color fill, color border)
-    {
-        var image = slot.AttachComponent<BorderedImage>();
-        image.Tint.Value = fill;
-        image.BorderTint.Value = border;
-        var rounded = _dashboard?.RoundedSprite;
-        if (rounded != null)
+        var items = _entries.ItemsAt("movement");
+        for (int i = 0; i < items.Count; i++)
         {
-            image.Texture.Target = rounded;
-            image.NineSlice.Value = true;
-            image.Borders.Value = new float4(CornerRadius, CornerRadius, CornerRadius, CornerRadius);
+            if (items[i].Tag is EngineSettings.TurnStyle style)
+                items[i].Interactable = EngineSettings.TurnMode == style;
         }
     }
 
-    private static void SetFixedHeight(Slot slot, float height)
+    // Polls the map's listener rather than driving it: the capture itself happens inside the input
+    // pass, where the raw devices live, so all this has to do is notice when it finished.
+    private void PumpRebindCapture()
     {
-        var element = slot.GetComponent<LayoutElement>() ?? slot.AttachComponent<LayoutElement>();
-        element.MinHeight.Value = height;
-        element.PreferredHeight.Value = height;
-        element.FlexibleHeight.Value = 0f;
+        if (_activeCategory != "controls")
+            return;
+        var map = Engine.Current?.InputInterface?.Actions;
+        if (map == null)
+            return;
+
+        switch (map.CaptureStatus)
+        {
+            case InputBindingMap.CaptureState.Captured:
+                var bound = map.CaptureConflicts;
+                if (bound.Count > 0)
+                {
+                    var names = new List<string>(bound.Count);
+                    foreach (var conflict in bound)
+                        names.Add(conflict.Label);
+                    _controlsStatus = "Settings.Controls.BoundConflicts"
+                        .AsLocale("Bound. Also used by: {0}.", string.Join(", ", names));
+                }
+                else
+                {
+                    _controlsStatus = "Settings.Controls.Bound".AsLocale("Bound.");
+                }
+                map.ClearCapture();
+                PersistBindings();
+                _entryView?.RefreshValues();
+                break;
+
+            case InputBindingMap.CaptureState.Cancelled:
+                map.ClearCapture();
+                _controlsStatus = "Settings.Controls.RebindCancelled".AsLocale("Rebind cancelled.");
+                _entryView?.RefreshValues();
+                break;
+        }
     }
+
+    internal void BeginRebind(InputAction action, InputDeviceKind[] devices)
+    {
+        var map = Engine.Current?.InputInterface?.Actions;
+        if (map == null)
+            return;
+        map.ClearCapture();
+        map.BeginCapture(action, devices);
+        _controlsStatus = "Settings.Controls.PressControl"
+            .AsLocale("Press a control for \"{0}\"... (Escape cancels)", action.Label);
+        _entryView?.RefreshValues();
+    }
+
+    internal void ClearAllBindings(InputAction action)
+    {
+        var map = Engine.Current?.InputInterface?.Actions;
+        if (map == null)
+            return;
+        map.ClearBindings(action, InputDeviceKind.Keyboard, InputDeviceKind.Mouse, InputDeviceKind.Gamepad, InputDeviceKind.VRController);
+        PersistBindings();
+        _controlsStatus = "Settings.Controls.Cleared".AsLocale("Cleared every binding for \"{0}\".", action.Label);
+        _entryView?.RefreshValues();
+    }
+
+    internal void ResetBinding(InputAction action)
+    {
+        var map = Engine.Current?.InputInterface?.Actions;
+        if (map == null)
+            return;
+        map.ResetToDefaults(action);
+        PersistBindings();
+        _controlsStatus = "Settings.Controls.Restored".AsLocale("Restored the stock binding for \"{0}\".", action.Label);
+        _entryView?.RefreshValues();
+    }
+
+    private void ResetAllBindings()
+    {
+        var map = Engine.Current?.InputInterface?.Actions;
+        if (map == null)
+            return;
+        map.ResetAllToDefaults();
+        PersistBindings();
+        _controlsStatus = "Settings.Controls.AllReset".AsLocale("Every control is back to stock.");
+        _entryView?.RefreshValues();
+    }
+
+    private static void PersistBindings() => Engine.Current?.InputInterface?.SaveBindingOverrides();
+
+    private void CancelPendingRebind()
+    {
+        var map = Engine.Current?.InputInterface?.Actions;
+        if (map == null || map.CaptureStatus != InputBindingMap.CaptureState.Listening)
+            return;
+        map.ClearCapture();
+        _controlsStatus = "Settings.Controls.RebindCancelled".AsLocale("Rebind cancelled.");
+    }
+
+    private static string DescribePad()
+    {
+        var input = Engine.Current?.InputInterface;
+        var pad = input?.Gamepad;
+        if (pad == null || !pad.IsConnected)
+            return "none connected";
+        int count = input?.GetGamepadDriver()?.ConnectedPadCount ?? 1;
+        return count > 1 ? $"{pad.DeviceName} (+{count - 1} idle)" : pad.DeviceName;
+    }
+
+    private static string DescribeLastInput()
+    {
+        var map = Engine.Current?.InputInterface?.Actions;
+        var last = map?.LastActivatedControl;
+        return last.HasValue && last.Value.IsValid ? last.Value.Describe() : "-";
+    }
+
+    internal LocomotionController? GetLocalLocomotionController()
+    {
+        var userRoot = World?.LocalUser?.Root;
+        if (userRoot == null)
+            return null;
+        return userRoot.GetRegisteredComponent<LocomotionController>() ?? userRoot.Slot?.GetComponent<LocomotionController>();
+    }
+
+    internal void SelectLocomotionModule(LocomotionModule module)
+    {
+        var locomotion = GetLocalLocomotionController();
+        if (locomotion == null || !locomotion.IsModuleUsable(module))
+            return;
+        locomotion.ActivateModule(module);
+        // A deliberate pick from Settings is a standing preference for future spawns, not just this
+        // session - unlike the radial menu, which only ever changes the live module.
+        EngineSettings.PreferredLocomotion = module.DisplayName;
+    }
+
+    private void MarkDirty() => _dashboard?.Slot.GetComponent<Canvas>()?.MarkDirty();
 }

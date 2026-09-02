@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -78,6 +78,9 @@ public abstract class ImplementableComponent<C> : Component, IImplementable<C> w
         {
             if (Hook != null)
             {
+                // Its slot's platform node may still be sitting in a load scope's queue; a component
+                // hook asks for that node in Initialize, so make sure it exists first.
+                Slot?.EnsureHookCreated();
                 Hook.Initialize();
                 _hookReady = true;
                 // Flush any state written before startup into the hook.

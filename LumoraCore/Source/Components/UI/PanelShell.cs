@@ -11,6 +11,7 @@ using Lumora.Core.Persistence;
 
 namespace Lumora.Core.Components.UI;
 
+[ComponentCategory("UI")]
 public class PanelShell : UIComponent
 {
     public readonly Sync<string> Title;

@@ -7,6 +7,7 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.UI;
 
+[ComponentCategory("Hidden")]
 public class Widget : UIComponent
 {
     public readonly Sync<float2> MinSize;
@@ -19,27 +20,21 @@ public class Widget : UIComponent
     public readonly Sync<int> GridWidth;
     public readonly Sync<int> GridHeight;
 
-    /// <summary>
-    /// Smallest cell footprint this widget will accept when the grid is too tight for its full
-    /// GridWidth x GridHeight. The grid tries the full size first and shrinks toward this minimum to
-    /// fit, instead of failing to place. Defaults to 1x1. -xlinka
-    /// </summary>
+    // Smallest cell footprint this widget will accept when the grid is too tight for its full GridWidth x
+    // GridHeight. The grid tries the full size first and shrinks toward this minimum to fit, instead of
+    // failing to place. Defaults to 1x1. -xlinka
     public readonly Sync<int> MinGridWidth;
     public readonly Sync<int> MinGridHeight;
 
-    /// <summary>
-    /// Authored "intended" cell footprint, captured the first time the widget is placed so that
-    /// shrink-to-fit never permanently destroys it - the widget can grow back to this size when room
-    /// opens up again. 0 means "not captured yet; treat GridWidth/GridHeight as authored". -xlinka
-    /// </summary>
+    // Authored "intended" cell footprint, captured the first time the widget is placed so that shrink-to-fit
+    // never permanently destroys it - the widget can grow back to this size when room opens up again. 0 means
+    // "not captured yet; treat GridWidth/GridHeight as authored". -xlinka
     public readonly Sync<int> PreferredGridWidth;
     public readonly Sync<int> PreferredGridHeight;
 
-    /// <summary>
-    /// Prioritized list of acceptable width:height aspect ratios. When non-empty, FitSize picks the
-    /// ratio that yields the largest box inside the offered area; empty falls back to the single
-    /// AspectRatio (or no constraint). -xlinka
-    /// </summary>
+    // Prioritized list of acceptable width:height aspect ratios. When non-empty, FitSize picks the ratio that
+    // yields the largest box inside the offered area; empty falls back to the single AspectRatio (or no
+    // constraint). -xlinka
     public readonly SyncFieldList<float2> AllowedAspectRatios;
 
     public Widget()
@@ -66,11 +61,9 @@ public class Widget : UIComponent
         EnsureRect();
     }
 
-    /// <summary>
-    /// Negotiate an offered size into this widget's allowed bounds: reject if below Min, clamp to Max, and
-    /// if AspectRatio (w/h) is set, fit the largest box of that ratio inside the offered area. Returns null
-    /// when the offer can't satisfy the minimum. -xlinka
-    /// </summary>
+    // Negotiate an offered size into this widget's allowed bounds: reject if below Min, clamp to Max, and if
+    // AspectRatio (w/h) is set, fit the largest box of that ratio inside the offered area. Returns null when
+    // the offer can't satisfy the minimum. -xlinka
     public float2? FitSize(float2 offered)
     {
         var min = MinSize.Value;

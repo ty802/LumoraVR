@@ -7,7 +7,7 @@ namespace Lumora.Core.Components;
 /// Marker component for object root detection.
 /// Attach to a slot to mark it as the root of a logical object.
 /// </summary>
-[ComponentCategory("Internal")]
+[ComponentCategory("Utility")]
 public class ObjectRoot : Component
 {
     /// <summary>

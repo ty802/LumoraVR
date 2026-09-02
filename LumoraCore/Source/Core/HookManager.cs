@@ -50,7 +50,13 @@ public class HookManager : IDisposable
     {
         if (!CanCurrentThreadModify)
         {
-            throw new Exception($"Modifications from non-locking thread disallowed! Current lock: {Lock}");
+            // Name the world and both threads. This check runs on the world being WRITTEN TO, which is
+            // not always the world whose update is running: something in world A reaching into world B
+            // while B's own thread holds B lands here, and reads identically to a plain threading fault
+            // unless the message says which world refused and who was holding it. -xlinka
+            throw new Exception($"Modifications from non-locking thread disallowed! Current lock: {Lock} on world " +
+                $"'{Owner?.Name ?? "?"}', held by thread {_lockingThread?.ManagedThreadId.ToString() ?? "none"}, " +
+                $"current thread {Environment.CurrentManagedThreadId}");
         }
     }
 

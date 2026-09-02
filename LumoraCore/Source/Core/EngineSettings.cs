@@ -168,16 +168,100 @@ public static class EngineSettings
         set => SetValue(ref _lodBias, System.Math.Clamp(value, 0.25f, 4f));
     }
 
-    // NETWORK
-
-    // Sync send/process rate in Hz - how fast the session sync thread generates deltas and drains its
-    // queues. Higher is smoother replication at the cost of bandwidth/CPU. Applies live to the active
-    // session (SyncRate reads this).
-    private static int _networkTickRate = 70;
-    public static int NetworkTickRate
+    // Screen-space error, in pixels, the renderer accepts before a mesh drops to a cheaper level of
+    // itself. Imported meshes carry a continuous chain of index-reduced levels, so this is trading
+    // triangles against a difference measured in fractions of a pixel: nothing vanishes, and the
+    // coarsest level holds however far away it gets. 0 pins every mesh to full detail. Applied to the
+    // live viewports on change; new viewports inherit the project default. -xlinka
+    private static float _meshLodThreshold = 2f;
+    public static float MeshLodThreshold
     {
-        get => _networkTickRate;
-        set => SetValue(ref _networkTickRate, System.Math.Clamp(value, 10, 120));
+        get => _meshLodThreshold;
+        set => SetValue(ref _meshLodThreshold, value <= 0f ? 0f : System.Math.Clamp(value, 0.5f, 8f));
+    }
+
+    public static string DescribeMeshLodThreshold(float value) =>
+        value <= 0f ? "Full" : $"{value:0.#} px";
+
+    // There is deliberately no network tick rate here. The sync rate is a property of the SESSION, not
+    // of the machine looking at it: a guest turning it down does not make the host send less, it just
+    // desyncs that guest. It lives on WorldSettings, host-only, and the Session screen edits it. -xlinka
+
+    // COMFORT
+
+    public enum TurnStyle
+    {
+        Snap,
+        Smooth,
+    }
+
+    // How the stick turns you. Read live by TurnSubmodule, which every smooth locomotion module owns.
+    private static TurnStyle _turnMode = TurnStyle.Snap;
+    public static TurnStyle TurnMode
+    {
+        get => _turnMode;
+        set => SetEnum(ref _turnMode, value);
+    }
+
+    // Degrees per snap flick. Small angles are smoother but cost more flicks per turn; large ones are
+    // the comfort option.
+    private static float _snapTurnAngle = 45f;
+    public static float SnapTurnAngle
+    {
+        get => _snapTurnAngle;
+        set => SetValue(ref _snapTurnAngle, System.Math.Clamp(value, 10f, 90f));
+    }
+
+    // Degrees per second while the stick is held, in Smooth mode.
+    private static float _smoothTurnSpeed = 90f;
+    public static float SmoothTurnSpeed
+    {
+        get => _smoothTurnSpeed;
+        set => SetValue(ref _smoothTurnSpeed, System.Math.Clamp(value, 30f, 360f));
+    }
+
+    // INTERFACE
+
+    public enum ReticleShape
+    {
+        Ring,
+        Dot,
+        Crosshair,
+        Off,
+    }
+
+    // Desktop cursor. The platform layer's cursor drawer reads these through InterfaceSettings, which
+    // is a thin mirror over this so the Core settings UI can reach it at all (Core cannot see the
+    // platform assembly). -xlinka
+    private static ReticleShape _reticleStyle = ReticleShape.Ring;
+    public static ReticleShape ReticleStyle
+    {
+        get => _reticleStyle;
+        set => SetEnum(ref _reticleStyle, value);
+    }
+
+    private static float _reticleSize = 12f;
+    public static float ReticleSize
+    {
+        get => _reticleSize;
+        set => SetValue(ref _reticleSize, System.Math.Clamp(value, 2f, 48f));
+    }
+
+    private static float _reticleThickness = 2f;
+    public static float ReticleThickness
+    {
+        get => _reticleThickness;
+        set => SetValue(ref _reticleThickness, System.Math.Clamp(value, 1f, 8f));
+    }
+
+    // Multiplier on every directional light's shadow distance. Below 1 shrinks the cascade range,
+    // which is the cheapest real win on the shadow pass; above 1 buys distant shadows back. Applied
+    // by the light hooks on change, same shape as LodBias.
+    private static float _shadowDistanceScale = 1f;
+    public static float ShadowDistanceScale
+    {
+        get => _shadowDistanceScale;
+        set => SetValue(ref _shadowDistanceScale, System.Math.Clamp(value, 0.25f, 4f));
     }
 
     // PERSISTENCE - values live-apply for preview; they are written to the shared binary config
@@ -197,7 +281,14 @@ public static class EngineSettings
     private const string KeyMaxTextureSize = "Engine.Video.MaxTextureSize";
     private const string KeyReflectionsEnabled = "Engine.Video.ReflectionsEnabled";
     private const string KeyLodBias = "Engine.Video.LodBias";
-    private const string KeyNetworkTickRate = "Engine.Network.TickRate";
+    private const string KeyMeshLodThreshold = "Engine.Video.MeshLodThreshold";
+    private const string KeyShadowDistanceScale = "Engine.Video.ShadowDistanceScale";
+    private const string KeyTurnMode = "Engine.Comfort.TurnMode";
+    private const string KeySnapTurnAngle = "Engine.Comfort.SnapTurnAngle";
+    private const string KeySmoothTurnSpeed = "Engine.Comfort.SmoothTurnSpeed";
+    private const string KeyReticleStyle = "Engine.Interface.ReticleStyle";
+    private const string KeyReticleSize = "Engine.Interface.ReticleSize";
+    private const string KeyReticleThickness = "Engine.Interface.ReticleThickness";
 
     public static void Load()
     {
@@ -223,7 +314,15 @@ public static class EngineSettings
             _maxTextureSize = SnapTextureSize(Settings.ReadValue(KeyMaxTextureSize, _maxTextureSize));
             _reflectionsEnabled = Settings.ReadValue(KeyReflectionsEnabled, _reflectionsEnabled);
             _lodBias = System.Math.Clamp(Settings.ReadValue(KeyLodBias, _lodBias), 0.25f, 4f);
-            _networkTickRate = System.Math.Clamp(Settings.ReadValue(KeyNetworkTickRate, _networkTickRate), 10, 120);
+            float meshLod = Settings.ReadValue(KeyMeshLodThreshold, _meshLodThreshold);
+            _meshLodThreshold = meshLod <= 0f ? 0f : System.Math.Clamp(meshLod, 0.5f, 8f);
+            _shadowDistanceScale = System.Math.Clamp(Settings.ReadValue(KeyShadowDistanceScale, _shadowDistanceScale), 0.25f, 4f);
+            _turnMode = ReadEnum(KeyTurnMode, _turnMode);
+            _snapTurnAngle = System.Math.Clamp(Settings.ReadValue(KeySnapTurnAngle, _snapTurnAngle), 10f, 90f);
+            _smoothTurnSpeed = System.Math.Clamp(Settings.ReadValue(KeySmoothTurnSpeed, _smoothTurnSpeed), 30f, 360f);
+            _reticleStyle = ReadEnum(KeyReticleStyle, _reticleStyle);
+            _reticleSize = System.Math.Clamp(Settings.ReadValue(KeyReticleSize, _reticleSize), 2f, 48f);
+            _reticleThickness = System.Math.Clamp(Settings.ReadValue(KeyReticleThickness, _reticleThickness), 1f, 8f);
             Changed?.Invoke();
         }
         catch (Exception ex)
@@ -256,7 +355,14 @@ public static class EngineSettings
             Settings.WriteValue(KeyMaxTextureSize, _maxTextureSize);
             Settings.WriteValue(KeyReflectionsEnabled, _reflectionsEnabled);
             Settings.WriteValue(KeyLodBias, _lodBias);
-            Settings.WriteValue(KeyNetworkTickRate, _networkTickRate);
+            Settings.WriteValue(KeyMeshLodThreshold, _meshLodThreshold);
+            Settings.WriteValue(KeyShadowDistanceScale, _shadowDistanceScale);
+            Settings.WriteValue(KeyTurnMode, _turnMode.ToString());
+            Settings.WriteValue(KeySnapTurnAngle, _snapTurnAngle);
+            Settings.WriteValue(KeySmoothTurnSpeed, _smoothTurnSpeed);
+            Settings.WriteValue(KeyReticleStyle, _reticleStyle.ToString());
+            Settings.WriteValue(KeyReticleSize, _reticleSize);
+            Settings.WriteValue(KeyReticleThickness, _reticleThickness);
         }
         catch (Exception ex)
         {
@@ -266,9 +372,24 @@ public static class EngineSettings
         _dirty = false;
     }
 
+    // Enums persist by NAME: an int would silently re-point at a different option the day someone
+    // inserts a value in the middle of the enum.
+    private static T ReadEnum<T>(string key, T fallback) where T : struct, Enum
+        => Enum.TryParse<T>(Settings.ReadValue(key, fallback.ToString()), ignoreCase: true, out var parsed) ? parsed : fallback;
+
     private static void SetValue<T>(ref T field, T value) where T : IEquatable<T>
     {
         if (field.Equals(value))
+            return;
+        field = value;
+        _dirty = true;
+        Changed?.Invoke();
+    }
+
+    // Enums do not satisfy IEquatable<T>, so they need their own gate rather than the generic one.
+    private static void SetEnum<T>(ref T field, T value) where T : struct, Enum
+    {
+        if (System.Collections.Generic.EqualityComparer<T>.Default.Equals(field, value))
             return;
         field = value;
         _dirty = true;

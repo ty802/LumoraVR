@@ -5,48 +5,47 @@ using System;
 using System.Collections.Generic;
 using Helio.UI;
 using Helio.UI.Layout;
+using Helio.UI.Listing;
+using Lumora.Core.Localization;
 using Lumora.Core.Math;
 using Lumora.Core.Persistence;
 
 namespace Lumora.Core.Components.UI;
 
-/// <summary>
-/// Dashboard Session screen with top sub-tabs (Settings / Users / Permissions) for the focused
-/// world. Settings binds the world configuration; Users lists the world's users; Permissions
-/// (built out later) edits roles/capabilities backed by the hard host-authoritative datamodel gate.
-/// </summary>
-public sealed class SessionScreen : WidgetScreen
+// Dashboard Session screen with top sub-tabs (Settings / Users / Permissions) for the focused world.
+// Settings binds the world configuration; Users lists the world's users; Permissions edits roles,
+// capability caps and the escalation policy backed by the hard host-authoritative datamodel gate, and
+// lives on the virtualized Listing system rather than eager rows (see SessionPermissionsPanel).
+[ComponentCategory("Hidden")]
+public sealed class SessionScreen : WidgetScreen, ITabbedScreen
 {
     private const float TabBarHeight = 44f;
 
-    private static readonly color TabActiveFill = new color(0.45f, 0.38f, 0.80f, 0.90f);
-    private static readonly color SaveFill = new color(0.28f, 0.60f, 0.40f, 0.95f);
-    private static readonly color KickFill = new color(0.70f, 0.24f, 0.28f, 0.95f);
+    // Opaque blend, not the translucent AccentSoft: over the panel that wash lands DARKER than a
+    // plain Surface tab, so the selected tab would read as the recessed one. -xlinka
+    private static readonly color TabActiveFill = color.Lerp(DashTheme.Surface, DashTheme.Accent, 0.30f);
+    private static readonly color SaveFill = DashTheme.Accent;
+    private static readonly color KickFill = DashTheme.Negative;
 
-    private readonly List<(Slot page, BorderedImage tab)> _tabs = new();
+    private readonly List<(Slot page, BorderedImage tab, string name)> _tabs = new();
 
     // Settings scroll machinery (the form is taller than the panel).
     private ScrollRect? _scroll;
     private RectTransform? _viewportRect;
     private RectTransform? _contentRect;
-    private Slot? _scrollTrack;
-    private RectTransform? _scrollHandle;
+    private DashScrollbar? _settingsBar;
     private Slot? _leftColumn;
     private Slot? _rightColumn;
-    private float _handlePressY;
-    private float _handlePressScroll;
-    private int _scrollHandleRetries;
 
-    // A freshly-built viewport sits at the RectTransform default (100x100) until the canvas runs a
-    // layout pass. Sizing the scrollbar off that 100px makes maxScroll = content - 100 (huge) with a
-    // tiny thumb, so the short form scrolls out of view into empty space. This sentinel rejects the
-    // un-laid-out rect; the real viewport is ~424, so legitimate sizes are never refused. -xlinka
-    private const float LaidOutViewportFloor = 100f;
     private readonly List<SettingsSection> _sections = new();
     private Slot? _settingsPage;
     private Slot? _usersPage;
     private Slot? _permissionsPage;
     private FocusManager? _focusManager;
+    private SessionPermissionsPanel? _permissionsPanel;
+    private bool _localeHooked;
+
+    public SessionPermissionsPanel? PermissionsPanel => _permissionsPanel;
 
     private World? FocusedWorld => Lumora.Core.Engine.Current?.WorldManager?.FocusedWorld;
 
@@ -67,7 +66,7 @@ public sealed class SessionScreen : WidgetScreen
         // the screen never stays stuck on the world it was first built for.
         RebuildForFocusedWorld();
         // Layout computes the rects after the screen is shown; size the scrollbar then.
-        World.RunInUpdates(2, UpdateScrollHandle);
+        World.RunInUpdates(2, RefreshScrollbars);
     }
 
     public override void OnDestroy()
@@ -77,7 +76,34 @@ public sealed class SessionScreen : WidgetScreen
             _focusManager.OnFocusedWorldChanged -= HandleFocusedWorldChanged;
             _focusManager = null;
         }
+        if (_localeHooked)
+        {
+            LocaleManager.Changed -= OnLocaleChanged;
+            _localeHooked = false;
+        }
+        // Unhooks the permission config's Changed handlers; leaving them attached would keep a dead screen
+        // rebinding rows on every host edit.
+        _permissionsPanel?.Detach();
+        _permissionsPanel = null;
         base.OnDestroy();
+    }
+
+    // Only the Permissions tab needs a tick: it polls for roster changes and re-reads the live denial
+    // scores, both of which no event reaches us for.
+    public override void OnUpdate(float delta)
+    {
+        base.OnUpdate(delta);
+        if (!Slot.ActiveSelf.Value || _permissionsPage == null || !_permissionsPage.ActiveSelf.Value)
+            return;
+        _permissionsPanel?.Tick(delta);
+    }
+
+    private void OnLocaleChanged()
+    {
+        if (IsDestroyed)
+            return;
+        _permissionsPanel?.OnLocaleChanged();
+        MarkDirty();
     }
 
     // Re-point all three tabs at the currently focused world.
@@ -182,15 +208,29 @@ public sealed class SessionScreen : WidgetScreen
         pageLayout.ForceExpandWidth.Value = true;
         pageLayout.ForceExpandHeight.Value = false;
 
-        _tabs.Add((page, background));
+        _tabs.Add((page, background, name));
         buildPage(page);
+    }
+
+    // Named entry for anything outside the screen that needs a tab up, the capture harness included.
+    public bool ShowTab(string name)
+    {
+        for (int i = 0; i < _tabs.Count; i++)
+        {
+            if (string.Equals(_tabs[i].name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                SelectTab(i);
+                return true;
+            }
+        }
+        return false;
     }
 
     private void SelectTab(int index)
     {
         for (int i = 0; i < _tabs.Count; i++)
         {
-            var (page, tab) = _tabs[i];
+            var (page, tab, _) = _tabs[i];
             if (page != null && !page.IsDestroyed)
                 page.ActiveSelf.Value = i == index;
             if (tab != null && !tab.IsDestroyed)
@@ -214,7 +254,6 @@ public sealed class SessionScreen : WidgetScreen
             return;
         page.DestroyChildren();
         _sections.Clear();
-        _scrollHandleRetries = 0; // fresh build: restart the wait-for-layout retry budget
 
         var world = FocusedWorld;
         if (world == null)
@@ -259,7 +298,6 @@ public sealed class SessionScreen : WidgetScreen
         viewport.AttachComponent<Mask>();
         _scroll = viewport.AttachComponent<ScrollRect>();
         _scroll.ScrollSensitivity.Value = new float2(1f, 1f);
-        _scroll.ScrollChanged += (_, _) => UpdateScrollHandle();
 
         var content = viewport.AddSlot("Content");
         _contentRect = content.AttachComponent<RectTransform>();
@@ -285,7 +323,8 @@ public sealed class SessionScreen : WidgetScreen
         _leftColumn = AddColumn(content);
         _rightColumn = AddColumn(content);
 
-        BuildScrollbar(area);
+        _settingsBar = DashScrollbar.InColumn(area);
+        _settingsBar.Bind(_scroll, _viewportRect, _contentRect, () => _dashboard?.Slot.GetComponent<Canvas>()?.MarkDirty());
 
         // LEFT: identity, basics, world save options.
         var worldBody = AddSection(_leftColumn, "World");
@@ -337,13 +376,31 @@ public sealed class SessionScreen : WidgetScreen
                 config.AutoSaveInterval.Value = MathF.Round(v / 30f) * 30f;
                 return config.AutoSaveInterval.Value <= 0f ? "Off" : $"{config.AutoSaveInterval.Value:0}s";
             });
+        // Tick rate is the SESSION's, not the machine's: it used to sit in per-client settings, where a
+        // guest lowering it only starved their own loop. The field is MarkHostOnly, so a guest's write is
+        // refused at the authority whatever the UI does - this just stops offering the control. -xlinka
+        int tickRate = config.NetworkTickRate.Value <= 0 ? WorldSettings.DefaultTickRate : config.NetworkTickRate.Value;
+        if (world.IsAuthority)
+        {
+            SliderRow(sessionBody, "Tick Rate", WorldSettings.MinTickRate, WorldSettings.MaxTickRate, tickRate,
+                v =>
+                {
+                    config.NetworkTickRate.Value = System.Math.Clamp(
+                        (int)MathF.Round(v / 5f) * 5, WorldSettings.MinTickRate, WorldSettings.MaxTickRate);
+                    return $"{config.NetworkTickRate.Value} Hz";
+                });
+        }
+        else
+        {
+            AddRow(sessionBody, $"Tick Rate: {tickRate} Hz (set by the host)");
+        }
         ToggleRow(sessionBody, "Cleanup Assets", config.CleanupUnusedAssets.Value, v => config.CleanupUnusedAssets.Value = v);
         SliderRow(sessionBody, "Cleanup Every (s)", 30f, 1800f, config.AssetCleanupInterval.Value,
             v => { config.AssetCleanupInterval.Value = MathF.Round(v / 30f) * 30f; return $"{config.AssetCleanupInterval.Value:0}s"; });
 
         RecomputeContentHeight();
         // Size/position the scrollbar once layout has computed the rects.
-        World.RunInUpdates(2, UpdateScrollHandle);
+        World.RunInUpdates(2, RefreshScrollbars);
     }
 
     private static Slot AddColumn(Slot parent)
@@ -408,114 +465,18 @@ public sealed class SessionScreen : WidgetScreen
         if (_scroll != null)
             _scroll.NormalizedPosition = float2.Zero;
         // The rects only update on the next rebuild, so size the handle a frame later.
-        World.RunInUpdates(1, UpdateScrollHandle);
+        World.RunInUpdates(1, RefreshScrollbars);
         _dashboard?.Slot.GetComponent<Canvas>()?.MarkDirty();
     }
 
     // SCROLLBAR
+    // Both tabs drive a DashScrollbar; there is no bar code left on this screen beyond pointing them at
+    // their own scroll and refreshing them when a layout pass has had a chance to run.
 
-    private void BuildScrollbar(Slot area)
+    private void RefreshScrollbars()
     {
-        var track = area.AddSlot("Scrollbar");
-        _scrollTrack = track;
-        track.AttachComponent<RectTransform>();
-        var trackElement = track.AttachComponent<LayoutElement>();
-        trackElement.MinWidth.Value = 18f;
-        trackElement.PreferredWidth.Value = 18f;
-        trackElement.FlexibleWidth.Value = 0f;
-        trackElement.FlexibleHeight.Value = 1f;
-        ApplyRoundedPanel(track, TabFill, RowBorder);
-
-        var handleSlot = track.AddSlot("Handle");
-        _scrollHandle = handleSlot.AttachComponent<RectTransform>();
-        _scrollHandle.AnchorMin.Value = new float2(0f, 1f);
-        _scrollHandle.AnchorMax.Value = new float2(1f, 1f);
-        _scrollHandle.OffsetMin.Value = new float2(2f, -60f);
-        _scrollHandle.OffsetMax.Value = new float2(-2f, 0f);
-        ApplyRoundedPanel(handleSlot, AccentColor, color.Transparent);
-
-        // The handle itself is the draggable element (classic scrollbar feel); the
-        // viewport's ScrollRect already handles drag-on-content and the mouse wheel.
-        var interaction = handleSlot.AttachComponent<InteractionElement>();
-        interaction.Pressed += OnHandlePress;
-        interaction.Dragged += OnHandleDrag;
-    }
-
-    private void OnHandlePress(UIInteractionContext context)
-    {
-        _handlePressY = context.LocalPoint.y;
-        _handlePressScroll = _scroll?.AbsolutePosition.y ?? 0f;
-    }
-
-    private void OnHandleDrag(UIInteractionContext context)
-    {
-        if (_scroll == null || _viewportRect == null || _contentRect == null)
-            return;
-        float viewportHeight = _viewportRect.LocalComputeRect.height;
-        float contentHeight = _contentRect.LocalComputeRect.height;
-        // Ignore drags before the viewport is laid out - the 100px default would compute a bogus,
-        // huge scroll range and fling the form off-screen. -xlinka
-        if (viewportHeight <= LaidOutViewportFloor || contentHeight <= 0f)
-            return;
-        float maxScroll = MathF.Max(0f, contentHeight - viewportHeight);
-        if (maxScroll <= 0f)
-            return;
-        float handleHeight = MathF.Max(30f, viewportHeight * (viewportHeight / contentHeight));
-        float travel = viewportHeight - handleHeight;
-        if (travel <= 0f)
-            return;
-        // Dragging the handle down (local Y decreases) scrolls the content down.
-        float deltaY = context.LocalPoint.y - _handlePressY;
-        float scrolled = _handlePressScroll - deltaY * (maxScroll / travel);
-        _scroll.AbsolutePosition = new float2(0f, Clamp(scrolled, 0f, maxScroll));
-        UpdateScrollHandle();
-        _dashboard?.Slot.GetComponent<Canvas>()?.MarkDirty();
-    }
-
-    private void UpdateScrollHandle()
-    {
-        if (_scroll == null || _scrollTrack == null || _scrollHandle == null
-            || _viewportRect == null || _contentRect == null)
-            return;
-        float viewportHeight = _viewportRect.LocalComputeRect.height;
-        if (viewportHeight <= LaidOutViewportFloor)
-        {
-            // Layout hasn't produced the real viewport rect yet (still the 100px default). Retrying
-            // next frame, bounded so a genuinely tiny/broken panel can't churn forever.
-            if (_scrollHandleRetries++ < 30)
-                World?.RunInUpdates(1, UpdateScrollHandle);
-            return;
-        }
-        _scrollHandleRetries = 0;
-
-        // The ContentSizeFitter owns the content height, and ScrollRect.ApplyScroll clamps the scroll to
-        // that same rect - so reading it here keeps the handle, the scroll clamp, and the real content in
-        // perfect agreement (one source of truth, no racing pin). -xlinka
-        float contentHeight = _contentRect.LocalComputeRect.height;
-        if (contentHeight <= 0f)
-        {
-            if (_scrollHandleRetries++ < 30)
-                World?.RunInUpdates(1, UpdateScrollHandle);
-            return;
-        }
-
-        float maxScroll = MathF.Max(0f, contentHeight - viewportHeight);
-        if (maxScroll <= 0.5f)
-        {
-            _scrollTrack.ActiveSelf.Value = false; // everything fits; no scrollbar
-            if (_scroll.NormalizedPosition.y != 0f)
-                _scroll.NormalizedPosition = float2.Zero; // drop any stale scroll so the form sits at the top
-            return;
-        }
-        _scrollTrack.ActiveSelf.Value = true;
-        // Clamp any existing scroll to the (possibly reduced) real range so it can't rest past the bottom.
-        if (_scroll.AbsolutePosition.y > maxScroll)
-            _scroll.AbsolutePosition = new float2(0f, maxScroll);
-        float handleHeight = MathF.Max(30f, viewportHeight * (viewportHeight / contentHeight));
-        float fraction = Clamp(_scroll.AbsolutePosition.y / maxScroll, 0f, 1f);
-        float offset = fraction * (viewportHeight - handleHeight);
-        _scrollHandle.OffsetMax.Value = new float2(-2f, -offset);
-        _scrollHandle.OffsetMin.Value = new float2(2f, -(offset + handleHeight));
+        _settingsBar?.Refresh();
+        _permissionsPanel?.RefreshScrollbar();
     }
 
     // Size each expanded section body to its rows (collapsed bodies are hidden), then
@@ -565,9 +526,6 @@ public sealed class SessionScreen : WidgetScreen
             total += spacing * (count - 1);
         return total;
     }
-
-    private static float Clamp(float value, float min, float max)
-        => value < min ? min : (value > max ? max : value);
 
     // A row (with the same pill as the others, for consistency) with the label on the left
     // and a radio on the right; radios sharing a group are mutually exclusive.
@@ -636,15 +594,6 @@ public sealed class SessionScreen : WidgetScreen
         });
     }
 
-    // Resolve where a non-home world saves: a stable file named after the world, in the same
-    // directory as the local home. (The home itself keeps its own fixed plain path.)
-    private static string SavedWorldPath(World world)
-    {
-        var directory = System.IO.Path.GetDirectoryName(Lumora.Core.Engine.LocalHomeSavePath) ?? ".";
-        var safe = SafeFileName(WorldDisplayName(world));
-        return System.IO.Path.Combine(directory, safe + ".lworld");
-    }
-
     // Strip characters that aren't valid in a file name; fall back to a neutral default if empty.
     private static string SafeFileName(string name)
     {
@@ -672,24 +621,46 @@ public sealed class SessionScreen : WidgetScreen
 
     // Save Changes: write the world back over its own file. The local home goes to its fixed plain
     // path; any other hosted/loaded world goes to a stable file named after it (encrypted at rest).
+    // Save Changes: the local home writes back over its own file, the one save that stays on this
+    // machine because it IS this machine's home. Any other world goes up to the cloud inventory under
+    // its own name. -xlinka
     private void SaveFocusedWorld(World world, Text label)
     {
-        bool ok = world.Name == "LocalHome"
-            ? WorldStorage.SaveToFile(world, Lumora.Core.Engine.LocalHomeSavePath)
-            : WorldStorage.SaveToFile(world, SavedWorldPath(world), encrypt: true);
-        ShowSaveFeedback(label, "Save Changes", ok);
+        if (world.Name == "LocalHome")
+        {
+            ShowSaveFeedback(label, "Save Changes", world.SaveToFile(Lumora.Core.Engine.LocalHomeSavePath));
+            return;
+        }
+        UploadWorld(world, WorldDisplayName(world), label, "Save Changes");
     }
 
-    // Save As Copy: write an independent, timestamped file so the current world is left untouched.
-    // The home is copied plain (it round-trips through the home loader); any other world is encrypted.
+    // Save As Copy: a new, stamped item in the cloud inventory, the current world left untouched. The
+    // home is allowed here too; a copy of it is a saved world like any other.
     private void SaveWorldCopy(World world, Text label)
     {
-        var directory = System.IO.Path.GetDirectoryName(Lumora.Core.Engine.LocalHomeSavePath) ?? ".";
-        bool isHome = world.Name == "LocalHome";
-        var stem = isHome ? "home" : SafeFileName(WorldDisplayName(world));
-        var name = $"{stem}_{DateTime.Now:yyyyMMdd_HHmmss}.lworld";
-        bool ok = WorldStorage.SaveToFile(world, System.IO.Path.Combine(directory, name), encrypt: !isHome);
-        ShowSaveFeedback(label, "Save As Copy…", ok);
+        var stem = world.Name == "LocalHome" ? "Home" : WorldDisplayName(world);
+        UploadWorld(world, $"{stem} {DateTime.Now:yyyy-MM-dd HH.mm}", label, "Save As Copy…");
+    }
+
+    private void UploadWorld(World world, string name, Text label, string original)
+    {
+        if (!Lumora.Core.Inventory.IsSignedIn)
+        {
+            ShowSaveFeedback(label, original, false);
+            return;
+        }
+        if (!label.IsDestroyed)
+            label.Content.Value = "Uploading…";
+        var task = Lumora.Core.Inventory.SaveWorldAsync(world, name, null);
+        _ = task.ContinueWith(t =>
+        {
+            bool ok = t.Status == System.Threading.Tasks.TaskStatus.RanToCompletion && t.Result.Ok;
+            var message = t.Status == System.Threading.Tasks.TaskStatus.RanToCompletion
+                ? t.Result.Message
+                : t.Exception?.GetBaseException().Message ?? "upload failed";
+            Logging.Logger.Log($"Save world '{name}': {message}");
+            World?.RunSynchronously(() => ShowSaveFeedback(label, original, ok));
+        });
     }
 
     // USERS PAGE - live list of session users; the host (authority) can change roles and kick.
@@ -759,7 +730,12 @@ public sealed class SessionScreen : WidgetScreen
         {
             AddInlineButton(row, role.Name, TabFill, () =>
             {
-                permissions.SetUserRole(user, NextAssignableRole(WorldModePermissions.AssignableRoles(permissions, world.Mode), role));
+                var next = NextAssignableRole(WorldModePermissions.AssignableRoles(permissions, world.Mode), role);
+                // Both halves, same as the Permissions panel: the config is the durable, REPLICATED
+                // assignment (guests' UIs and nameplates read it); the gate override is what takes
+                // effect this instant. Writing only the override left every guest blind to the change.
+                world.PermissionConfig?.SetRole(user, next.Name);
+                permissions.SetUserRole(user, next);
                 RebuildUsersList();
             });
             AddInlineButton(row, user.IsMuted.Value ? "Muted" : "Mute", user.IsMuted.Value ? AccentColor : TabFill, () =>
@@ -826,95 +802,56 @@ public sealed class SessionScreen : WidgetScreen
     private void AddInlineButton(Slot row, string label, color fill, Action onClick)
         => AddInlineButton(row, label, fill, 70f, onClick);
 
-    // PERMISSIONS PAGE - default role per access class (a defaults grid) plus
-    // per-user overrides. Roles are presets over the HARD gate; host-authoritative, deny-at-source.
+    // PERMISSIONS PAGE - who is here and what role they hold, one matrix of what each role can do, and
+    // what happens when someone keeps getting refused. Roles are presets over the HARD gate; the host
+    // decides and the sync layer refuses everyone else whatever the UI drew. Built once onto the Listing
+    // system and REBOUND from there: the slots are not torn down per refresh, only the item set is.
 
     private void BuildPermissionsPage(Slot page)
     {
         _permissionsPage = page;
+
+        // House palette, not the ListingStyle defaults. Those are raw literals that never went through the
+        // theme's sRGB decode, so they land about two stops brighter than they read - that is where the
+        // pale lavender rows came from. RoundedSprite stays null: the permission rows paint procedural
+        // rounded panels, so nothing on this page wants the nine-slice border sprite. -xlinka
+        var style = new ListingStyle
+        {
+            Font = _dashboard?.Font.Target,
+            CornerRadius = DashTheme.RadiusControl,
+            RowHeight = SettingsMetrics.RowHeight,
+            RowSpacing = DashTheme.Gap,
+            RowFill = DashTheme.Surface,
+            RowBorder = DashTheme.Outline,
+            RowSelectedFill = DashTheme.SurfaceHover,
+            ControlFill = DashTheme.Surface,
+            NeutralFill = DashTheme.Surface,
+            AccentFill = DashTheme.Accent,
+            WarningFill = DashTheme.Negative,
+            DisabledFill = DashTheme.Field,
+            Accent = DashTheme.Accent,
+            TextPrimary = DashTheme.Text,
+            TextDim = DashTheme.TextDim,
+            TextDisabled = DashTheme.TextMuted,
+            HeaderText = DashTheme.TextMuted,
+        };
+
+        _permissionsPanel = new SessionPermissionsPanel();
+        _permissionsPanel.Attach(page, style);
+
+        if (!_localeHooked)
+        {
+            LocaleManager.Changed += OnLocaleChanged;
+            _localeHooked = true;
+        }
+
         RebuildPermissions();
     }
 
     private void RebuildPermissions()
     {
-        var page = _permissionsPage;
-        if (page == null)
-            return;
-        page.DestroyChildren();
-
-        var world = FocusedWorld;
-        if (world == null)
-        {
-            AddRow(page, "No focused world.");
-            return;
-        }
-        var permissions = world.DataModelPermissions;
-
-        AddRow(page, world.IsAuthority
-            ? $"{WorldDisplayName(world)} - default role per user class (host-authoritative, denied at source)."
-            : $"{WorldDisplayName(world)} - permissions are controlled by the host.");
-
-        // In Social/Event worlds the authored world is frozen for everyone (incl. host); only the
-        // Moderator / User / Spectator roles apply, and editing the world is locked regardless of role.
-        if (world.Mode != WorldMode.Builder)
-            AddRow(page, $"This is a {world.Mode} world - world editing is locked; roles cover moderation + your own items only.");
-
-        foreach (DataModelAccessClass accessClass in Enum.GetValues<DataModelAccessClass>())
-            DefaultRoleRow(page, world, permissions, accessClass);
-
-        var overrides = BeginRow(page, "Overrides");
-        var b = RowBuilder(overrides);
-        b.MinWidth(200f).FlexibleWidth(1f);
-        AddRowLabel(b, $"Per-User Overrides: {permissions.UserOverrideCount}", 15f, TextDim, TextHorizontalAlignment.Left);
-        if (world.IsAuthority && permissions.UserOverrideCount > 0)
-        {
-            AddInlineButton(overrides, "Clear", KickFill, () =>
-            {
-                permissions.ClearUserOverrides();
-                RebuildPermissions();
-                RebuildUsersList();
-            });
-        }
-
+        _permissionsPanel?.Bind(FocusedWorld);
         _dashboard?.Slot.GetComponent<Canvas>()?.MarkDirty();
-    }
-
-    private void DefaultRoleRow(Slot page, World world, DataModelPermissionController permissions, DataModelAccessClass accessClass)
-    {
-        var row = BeginRow(page, "Default" + accessClass);
-        var b = RowBuilder(row);
-        b.MinWidth(150f).PreferredWidth(150f).FlexibleWidth(0f);
-        AddRowLabel(b, $"Default {accessClass}", 15f, TextPrimary, TextHorizontalAlignment.Left);
-
-        var current = permissions.GetDefaultRole(accessClass);
-        foreach (var role in WorldModePermissions.AssignableRoles(permissions, world.Mode))
-        {
-            var captured = role;
-            AddRoleButton(row, role.Name, role == current, world.IsAuthority, () =>
-            {
-                permissions.SetDefaultRole(accessClass, captured);
-                RebuildPermissions();
-            });
-        }
-    }
-
-    // A role cell in the defaults grid; highlighted when it's the selected role for that row.
-    private void AddRoleButton(Slot row, string label, bool selected, bool interactive, Action onClick)
-    {
-        var cell = row.AddSlot(label);
-        cell.AttachComponent<RectTransform>();
-        var element = cell.AttachComponent<LayoutElement>();
-        element.MinWidth.Value = 92f;
-        element.PreferredWidth.Value = 92f;
-        element.FlexibleWidth.Value = 0f;
-        element.FlexibleHeight.Value = 1f;
-        ApplyRoundedPanel(cell, selected ? AccentColor : TabFill, RowBorder);
-        if (interactive)
-        {
-            var button = cell.AttachComponent<Button>();
-            button.Clicked += (_, _) => onClick();
-        }
-        AddFillLabel(cell, label, 13f, selected ? TextPrimary : TextDim);
     }
 
     // ROW / WIDGET HELPERS

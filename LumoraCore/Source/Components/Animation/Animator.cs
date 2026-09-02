@@ -7,46 +7,30 @@ using Helio.UI;
 using Lumora.Core.Assets;
 using Lumora.Core.Assets.Animation;
 using Lumora.Core.Math;
+using Lumora.Core.Persistence;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
 // Plays one animation clip, writing every bound channel through a drive each update.
 //
-// SYNC MODEL - derived, not streamed. The playhead is NOT a synced float advanced by an authority.
-// Two synced values describe playback instead: an ANCHOR (a wall-clock instant plus the clip position
-// at that instant) and a rate (Speed, Playing). Every peer computes
-// position = anchorPosition + (now - anchorInstant) * speed, wrapped. Nothing moves per frame, so a
-// clip costs sync traffic only when someone presses play, pauses, scrubs or changes speed - and a
-// peer that joins an hour in computes the identical frame from the same two numbers instead of
-// waiting for the next playhead packet. A streamed playhead would cost a float per animator per frame
-// and still leave joiners on frame zero until the first update arrived.
+// SYNC MODEL - derived, not streamed, and none of it lives here any more: Playback is a SyncPlayback,
+// which owns the anchor, the speed, the loop mode and the playing flag as one member and answers the
+// position from the session clock. That member's header has the reasoning. What this component adds
+// is the LENGTH - the clip's duration, which is not state because the clip itself replicates and
+// every peer's copy of this component reads the same number off it.
 //
-// The anchor instant comes from the SESSION clock, not the world clock. World.Time starts at zero when
-// each peer opens the world, so the same TotalTime is a different real instant on every machine and an
-// anchor written in it would decode to a different frame per peer. World.SessionClock is the
-// authority's reading with this peer's measured offset folded in, so an anchor written on one machine
-// decodes to the same frame on all of them, to within the offset estimate rather than to within
-// however far apart their wall clocks happen to be. The timeline keeps wall-clock magnitude, so anchors
-// written before the session clock existed still decode correctly. Playback is tight enough for a body
-// animation; it is still NOT sample-accurate audio sync. Only NowSeconds and the anchor
-// writes know where the time comes from. -xlinka
+// It used to be five loose Sync fields (Playing, Speed, WrapMode, AnchorPosition, AnchorTicks). They
+// still load: see Load below. -xlinka
+// Version 1 is the consolidated Playback member. A file that stamps nothing is the loose-member shape,
+// and TypeMigrations rewrites it on the way in.
+[SaveTypeVersion(1)]
 [ComponentCategory("Animation")]
 public class Animator : Component, ICustomInspectorUI
 {
     public readonly AssetRef<AnimationAsset> Clip;
 
-    public readonly Sync<bool> Playing;
-
-    // negative plays backwards
-    public readonly Sync<float> Speed;
-
-    public readonly Sync<AnimationWrapMode> WrapMode;
-
-    // seconds, at the instant named by AnchorTicks
-    public readonly Sync<float> AnchorPosition;
-
-    public readonly Sync<long> AnchorTicks;
+    public readonly SyncPlayback Playback;
 
     // one entry per bound channel
     public readonly SyncList<AnimationBinding> Bindings;
@@ -73,11 +57,7 @@ public class Animator : Component, ICustomInspectorUI
     public Animator()
     {
         Clip = new AssetRef<AnimationAsset>(this);
-        Playing = new Sync<bool>(this, false);
-        Speed = new Sync<float>(this, 1f);
-        WrapMode = new Sync<AnimationWrapMode>(this, AnimationWrapMode.Loop);
-        AnchorPosition = new Sync<float>(this, 0f);
-        AnchorTicks = new Sync<long>(this, 0L);
+        Playback = new SyncPlayback();
         Bindings = new SyncList<AnimationBinding>();
     }
 
@@ -91,53 +71,45 @@ public class Animator : Component, ICustomInspectorUI
     // target destroyed, or never bound
     public int UnboundTrackCount => _unboundCount;
 
-    private double NowSeconds => World?.SessionClock.SessionSeconds
-        ?? DateTime.UtcNow.Ticks / (double)TimeSpan.TicksPerSecond;
-
-    // stored as ticks so it survives a save at full precision
-    private long NowTicks => (long)(NowSeconds * TimeSpan.TicksPerSecond);
-
-    // wrapped into the clip; setting it re-anchors so a scrub replicates as two numbers, not a stream
+    // wrapped into the clip
     public float Position
     {
-        get => AnimationWrap.Wrap(RawPosition, Duration, WrapMode.Value);
-        set => Reanchor(value, Playing.Value);
+        get => Playback.Position;
+        set => Playback.Seek(value);
     }
 
     // unwrapped; used to tell whether a non-looping clip has run out
-    public float RawPosition
+    public float RawPosition => Playback.RawPosition;
+
+    public bool IsFinished => Playback.IsFinished;
+
+    public PlaybackLoopMode WrapMode
     {
-        get
-        {
-            if (!Playing.Value || AnchorTicks.Value == 0L)
-            {
-                return AnchorPosition.Value;
-            }
-            double elapsed = NowSeconds - AnchorTicks.Value / (double)TimeSpan.TicksPerSecond;
-            return AnchorPosition.Value + (float)(elapsed * Speed.Value);
-        }
+        get => Playback.LoopMode;
+        set => Playback.LoopMode = value;
     }
 
-    public bool IsFinished => AnimationWrap.IsFinished(RawPosition, Duration, WrapMode.Value);
-
-    public void Play() => Reanchor(Position, true);
-
-    public void Pause() => Reanchor(Position, false);
-
-    public void Stop() => Reanchor(0f, false);
-
-    public void Restart() => Reanchor(0f, true);
-
-    public void Reanchor(float position, bool playing)
+    // negative plays backwards
+    public float Speed
     {
-        if (!float.IsFinite(position))
-        {
-            position = 0f;
-        }
-        AnchorPosition.Value = position;
-        AnchorTicks.Value = NowTicks;
-        Playing.Value = playing;
+        get => Playback.Speed;
+        set => Playback.Speed = value;
     }
+
+    [SyncMethod]
+    public void Play() => Playback.Resume();
+
+    [SyncMethod]
+    public void Pause() => Playback.Pause();
+
+    [SyncMethod]
+    public void Stop() => Playback.Stop();
+
+    [SyncMethod]
+    public void Restart() => Playback.Play();
+
+    [SyncMethod]
+    public void TogglePlayback() => Playback.TogglePlayback();
 
     public override void OnAwake()
     {
@@ -148,17 +120,6 @@ public class Animator : Component, ICustomInspectorUI
         Clip.OnValueChange += _ => _bindersValid = false;
         Bindings.ElementsAdded += (_, _, _) => _bindersValid = false;
         Bindings.ElementsRemoved += (_, _, _) => _bindersValid = false;
-
-        // Speed changes must re-anchor or the playhead jumps: the old anchor's elapsed time would be
-        // replayed at the new rate. Re-anchoring at the current position keeps the frame continuous.
-        Speed.OnChanged += _ =>
-        {
-            if (Playing.Value)
-            {
-                AnchorPosition.Value = Position;
-                AnchorTicks.Value = NowTicks;
-            }
-        };
     }
 
     public override void OnUpdate(float delta)
@@ -168,8 +129,14 @@ public class Animator : Component, ICustomInspectorUI
         var clip = CurrentClip;
         if (clip == null || clip.TrackCount == 0)
         {
+            Playback.Length = -1f;
             return;
         }
+
+        // Pushed every frame rather than off a clip-changed event: the asset behind Clip can be
+        // rebuilt in place (an importer finishing, a reload) without the ref ever moving, and a stale
+        // length silently wraps every sample to the wrong frame.
+        Playback.Length = clip.Duration;
 
         // A different clip instance invalidates the table even when the ref never moved.
         if (!ReferenceEquals(clip, _boundClip))
@@ -186,11 +153,42 @@ public class Animator : Component, ICustomInspectorUI
             return;
         }
 
-        float time = Position;
+        float time = Playback.Position;
         for (int i = 0; i < _binders.Count; i++)
         {
             _binders[i].Apply(time);
         }
+    }
+
+    // LEGACY SAVES
+    // Playback used to be five loose members. A save written then still names them, and Worker.Load
+    // walks members that EXIST, so those keys would be dropped on the floor without this.
+    //
+    // The old anchor is not carried across even though its timeline is the same shape: it names an
+    // instant on a clock that has moved on by however long the file sat on disk, so honouring it would
+    // fast-forward the clip by that much. The saved position is what the file actually meant, and
+    // re-anchoring it to now is what SyncPlayback's own load does with its own format. -xlinka
+    public override void Load(DataTreeNode node, LoadControl control)
+    {
+        base.Load(node, control);
+
+        if (node is not DataTreeDictionary dictionary || dictionary.TryGetNode("Playback") != null)
+        {
+            return;
+        }
+
+        var positionNode = dictionary.TryGetNode("AnchorPosition");
+        var playingNode = dictionary.TryGetNode("Playing");
+        if (positionNode == null && playingNode == null)
+        {
+            return;
+        }
+
+        Playback.SetLoadedState(
+            dictionary.ExtractOrDefault("Playing", false),
+            SyncPlayback.ParseLoopMode(dictionary.TryGetNode("WrapMode"), PlaybackLoopMode.Loop),
+            dictionary.ExtractOrDefault("AnchorPosition", 0f),
+            dictionary.ExtractOrDefault("Speed", 1f));
     }
 
     // BINDING
@@ -471,8 +469,9 @@ public class Animator : Component, ICustomInspectorUI
         {
             AddStatRow(ui, "Unbound", $"{_unboundCount} not resolved");
         }
-        AddStatRow(ui, "Position", $"{Position:0.###} s");
-        AddStatRow(ui, "State", Playing.Value ? $"playing x{Speed.Value:0.##}" : "paused");
+        AddStatRow(ui, "Position", $"{Playback.Position:0.###} s");
+        AddStatRow(ui, "Loop", Playback.LoopMode.ToString());
+        AddStatRow(ui, "State", Playback.IsPlaying ? $"playing x{Playback.Speed:0.##}" : "paused");
     }
 
     private static void AddStatRow(UIBuilder ui, string label, string value)

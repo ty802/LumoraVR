@@ -9,6 +9,7 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.UI;
 
+[ComponentCategory("UI")]
 public class WizardForm : UIComponent
 {
     public readonly Sync<float> SlideDuration;

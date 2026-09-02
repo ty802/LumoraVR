@@ -17,6 +17,11 @@ public abstract class Worker : IWorker
 {
     protected readonly WorkerInitInfo InitInfo;
 
+    // Every sync member of this instance, in member-index order, snapshotted once at init. The init passes,
+    // the change hookup, save/load enumeration and every per-frame GetSyncMember read this instead of
+    // reflecting the field back out. Empty until InitializeWorker fills it. -xlinka
+    private ISyncMember[] _syncMemberTable = Array.Empty<ISyncMember>();
+
     public World World { get; private set; } = null!;
     public IWorldElement? Parent { get; private set; }
 
@@ -52,9 +57,17 @@ public abstract class Worker : IWorker
         }
     }
 
+    // Reads the table built at init. Before init (a detached worker being inspected, say) the table is
+    // empty and the compiled accessor reads the field live, which is what the reflected read used to do.
     public virtual ISyncMember GetSyncMember(int index)
     {
-        return (InitInfo.SyncMemberFields[index].GetValue(this) as ISyncMember) ?? null!;
+        var table = _syncMemberTable;
+        if (index < table.Length)
+        {
+            return table[index];
+        }
+
+        return InitInfo.SyncMemberGetters[index](this);
     }
 
     public FieldInfo GetSyncMemberFieldInfo(int index)
@@ -97,7 +110,18 @@ public abstract class Worker : IWorker
 
     public Task DelaySeconds(float seconds) => World?.DelaySeconds(seconds) ?? Task.CompletedTask;
 
-    public void StartTask(Func<Task> task) => World?.StartTask(task);
+    // The task runs with this worker as its lifetime owner: inside it, await WorldContext.ToWorld(),
+    // ToBackground() or NextUpdate() to move between the world thread and the pool, and the moment this
+    // worker (or its world) is gone the next world-bound switch cancels the task instead of resuming
+    // into something destroyed. Use StartGlobalTask for work that has to finish regardless.
+    public void StartTask(Func<Task> task) => WorldContext.Start(World, this, task);
+
+    // Same, with an argument, so a task that only needs one captured value costs no closure.
+    public void StartTask<T>(Func<T, Task> task, T argument) => WorldContext.Start(World, this, task, argument);
+
+    // Outlives this worker, dies with the world. For work that must run to the end - flushing a write,
+    // finishing an upload - even though the component that kicked it off is already gone.
+    public void StartGlobalTask(Func<Task> task) => WorldContext.Start(World, null, task);
 
     public void StartCoroutine(IEnumerator routine) => World?.StartCoroutine(routine);
 
@@ -168,6 +192,180 @@ public abstract class Worker : IWorker
         if (source is ISyncRef sourceRef && destination is ISyncRef destinationRef)
             return destinationRef.TargetType.IsAssignableFrom(sourceRef.TargetType);
         return true;
+    }
+
+    // RESET
+    // Put every writable field member back to what a freshly constructed worker of this type carries.
+    // "Type default" means the field initializer's value with any [DefaultValue] applied on top, taken
+    // once from a detached instance and cached - reading it off the type is the only way to recover a
+    // default that a field's constructor supplied, since nothing else records it.
+    //
+    // Reference members are CLEARED rather than assigned null through the box, because a reference has a
+    // RefID to drop as well as a resolved target. Members a drive owns are skipped: writing them would
+    // be overwritten on the next grant anyway. Collections and delegates are left alone - they have no
+    // single value to restore, and a caller wanting them emptied should say so explicitly. -xlinka
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, object?[]> _typeDefaults = new();
+
+    public virtual int ResetMembers()
+    {
+        var defaults = GetTypeDefaults(GetType(), InitInfo);
+        int reset = 0;
+
+        for (int i = 0; i < SyncMemberCount; i++)
+        {
+            var member = GetSyncMember(i);
+            if (member is not IField field || !field.CanWrite)
+                continue;
+            if (member is SyncElement { IsBlockedByDrive: true })
+                continue;
+
+            try
+            {
+                if (member is ISyncRef syncRef)
+                {
+                    syncRef.Clear();
+                }
+                else
+                {
+                    field.BoxedValue = defaults[i]!;
+                }
+                reset++;
+            }
+            catch (Exception ex)
+            {
+                LumoraLogger.Warn($"ResetMembers: member '{GetSyncMemberName(i)}' on {WorkerTypeName} failed: {ex.Message}");
+            }
+        }
+
+        return reset;
+    }
+
+    private static object?[] GetTypeDefaults(Type workerType, WorkerInitInfo info)
+    {
+        if (_typeDefaults.TryGetValue(workerType, out var cached))
+            return cached;
+
+        var defaults = new object?[info.SyncMemberFields.Length];
+        Worker? probe = null;
+        try
+        {
+            probe = Activator.CreateInstance(workerType) as Worker;
+        }
+        catch (Exception)
+        {
+            // A type that cannot be built detached still gets sensible defaults below.
+        }
+
+        for (int i = 0; i < defaults.Length; i++)
+        {
+            if (info.DefaultValues[i] != null)
+            {
+                defaults[i] = info.DefaultValues[i];
+                continue;
+            }
+
+            object? value = null;
+            if (probe != null)
+            {
+                try
+                {
+                    value = (info.SyncMemberGetters[i](probe) as IField)?.BoxedValue;
+                }
+                catch (Exception)
+                {
+                    value = null;
+                }
+            }
+
+            if (value == null)
+            {
+                var valueType = (info.SyncMemberGetters[i](probe!) as IField)?.ValueType;
+                value = valueType is { IsValueType: true } ? Activator.CreateInstance(valueType) : null;
+            }
+
+            defaults[i] = value;
+        }
+
+        _typeDefaults.TryAdd(workerType, defaults);
+        return defaults;
+    }
+
+    // PERMISSION GATE
+    // Structural component operations decide up front instead of discovering a refusal halfway through:
+    // a denied move that already copied, or a denied remove-all that already destroyed three of five, is
+    // worse than one that never started. The per-member writes underneath stay gated regardless - this is
+    // the atomicity guard, not the enforcement. -xlinka
+    protected static bool AuthorizeStructuralChange(
+        World? world,
+        DataModelPermissionAction action,
+        DataModelPermissionSurface surface,
+        IWorldElement? target,
+        IWorldElement? parent,
+        bool throwOnError = true)
+    {
+        var permissions = world?.DataModelPermissions;
+        if (permissions == null)
+            return true;
+
+        var request = new DataModelPermissionRequest(
+            world, null, target, parent, target, surface, action, isNetwork: false);
+
+        if (permissions.Authorize(request, out var reason))
+            return true;
+
+        if (throwOnError)
+            throw new UnauthorizedAccessException(reason ?? "datamodel mutation denied");
+
+        return false;
+    }
+
+    // Pairs a source worker's sync members with a target's, structurally, so a caller re-aiming
+    // references at the copy can move the ones pointing at an INNER member too - a drive aimed at a
+    // field, a binding holding a list element. Mirrors GetReferencedObjects' shape: lists pair by index,
+    // nested sync objects pair by member index, and a shape mismatch stops that branch instead of
+    // pairing unrelated elements. -xlinka
+    public static void MapMembersOnto(Worker source, Worker target, Dictionary<RefID, IWorldElement> map)
+    {
+        if (source == null || target == null || map == null || source.GetType() != target.GetType())
+            return;
+
+        map[source.ReferenceID] = target;
+        int count = System.Math.Min(source.SyncMemberCount, target.SyncMemberCount);
+        for (int i = 0; i < count; i++)
+        {
+            MapMemberPair(source.GetSyncMember(i), target.GetSyncMember(i), map);
+        }
+    }
+
+    private static void MapMemberPair(ISyncMember? source, ISyncMember? target, Dictionary<RefID, IWorldElement> map)
+    {
+        if (source == null || target == null)
+            return;
+
+        if (target is IWorldElement targetElement)
+            map[source.ReferenceID] = targetElement;
+
+        if (source is ISyncList sourceList && target is ISyncList targetList)
+        {
+            if (sourceList.Count != targetList.Count)
+                return;
+            for (int i = 0; i < sourceList.Count; i++)
+            {
+                MapMemberPair(sourceList.GetElement(i), targetList.GetElement(i), map);
+            }
+        }
+        else if (source is ISyncObject sourceObject && target is ISyncObject targetObject)
+        {
+            var sourceMembers = sourceObject.SyncMembers;
+            var targetMembers = targetObject.SyncMembers;
+            if (sourceMembers == null || targetMembers == null || sourceMembers.Count != targetMembers.Count)
+                return;
+            for (int i = 0; i < sourceMembers.Count; i++)
+            {
+                MapMemberPair(sourceMembers[i], targetMembers[i], map);
+            }
+        }
     }
 
     // PERSISTENCE
@@ -421,7 +619,7 @@ public abstract class Worker : IWorker
         for (int i = 0; i < SyncMemberCount; i++)
         {
             var field = InitInfo.SyncMemberFields[i];
-            var member = field.GetValue(this) as ISyncMember;
+            var member = InitInfo.SyncMemberGetters[i](this);
             if (member == null)
             {
                 member = Activator.CreateInstance(field.FieldType) as ISyncMember;
@@ -444,6 +642,21 @@ public abstract class Worker : IWorker
                 }
             }
         }
+    }
+
+    // Runs once, straight after InitializeSyncMembers has guaranteed every field holds an instance. The
+    // fields are readonly and nothing rewrites them afterwards, so this snapshot stays correct for the
+    // life of the worker.
+    private void BuildSyncMemberTable()
+    {
+        var getters = InitInfo.SyncMemberGetters;
+        var table = new ISyncMember[getters.Length];
+        for (int i = 0; i < getters.Length; i++)
+        {
+            table[i] = getters[i](this);
+        }
+
+        _syncMemberTable = table;
     }
 
     protected virtual void InitializeSyncMemberDefaults()
@@ -496,6 +709,7 @@ public abstract class Worker : IWorker
             Parent = parent;
 
             InitializeSyncMembers();
+            BuildSyncMemberTable();
             AssignSyncMemberMetadata();
 
             ReferenceID = World.ReferenceController.AllocateID();

@@ -83,6 +83,20 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
     public readonly Sync<float> UploadSpeed = new();
     public readonly Sync<ulong> DownloadedBytes = new();
     public readonly Sync<ulong> UploadedBytes = new();
+
+    // THE GROUP THIS USER IS WEARING
+    //
+    // Written by the user themself (not the host): the account service is the authority on who is in which
+    // group, and the client that owns the account is the only peer that can read its own profile. So these
+    // are ordinary replicated fields, filled from the cloud client's represented group and re-filled when
+    // the wearer changes it. A guest carries empty strings and a clear colour, which is what the nametag
+    // reads as "no card". -xlinka
+    public readonly Sync<string> GroupId = new();
+    public readonly Sync<string> GroupTag = new();
+    public readonly Sync<string> GroupName = new();
+    public readonly Sync<string> GroupIconHash = new();
+    public readonly Sync<string> GroupRole = new();
+    public readonly Sync<Math.color> GroupColor = new();
     public readonly UserStreamStorage userStreams = new();
     public readonly Sync<uint> streamConfiguration = new();
 
@@ -114,6 +128,64 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
     string? IPermissionActor.DisplayName => UserName?.Value ?? ReferenceID.ToString();
 
     IPermissionTarget? IPermissionActor.RootElement => Root?.Slot;
+
+    // Durable identity for persisted role assignments and the denial ledger. Both members are MarkHostOnly
+    // (see InitializeFromCollection), so what the gate reads here is what the HOST wrote during the
+    // handshake - a client cannot rewrite either to inherit someone else's role or to shed its own denial
+    // score by reconnecting. AccountId is empty until an account proved itself; MachineID always has a
+    // value. -xlinka
+    string? IPermissionActor.MachineKey => MachineID?.Value;
+
+    string? IPermissionActor.AccountKey => AccountId?.Value;
+
+    // Push the wearer's group card onto the replicated fields. Null clears them, which is also what a
+    // signed-out or guest user carries. Every write is equality-gated: a Sync field has no gate of its own
+    // and this runs on every world the local user is in whenever the cloud client re-reads the profile, so
+    // an ungated apply would push six deltas per world for a card that never moved. -xlinka
+    public void ApplyRepresentedGroup(Nexus.Cloud.Cdn.RepresentedGroupInfo? group)
+    {
+        SetIfChanged(GroupId, group?.Id ?? string.Empty);
+        SetIfChanged(GroupTag, group?.Tag ?? string.Empty);
+        SetIfChanged(GroupName, group?.Name ?? string.Empty);
+        SetIfChanged(GroupIconHash, group?.IconHash ?? string.Empty);
+        SetIfChanged(GroupRole, group?.Role ?? string.Empty);
+
+        var tint = ParseGroupColor(group?.Color);
+        if (!GroupColor.Value.Equals(tint))
+            GroupColor.Value = tint;
+    }
+
+    private static void SetIfChanged(Sync<string> field, string value)
+    {
+        if (field.Value != value)
+            field.Value = value;
+    }
+
+    // "#RRGGBB" as the service stores it. Anything unparseable is a clear colour, which the nametag reads
+    // as "fall back to the plate's own panel tint" rather than painting a card in whatever the garbage
+    // happened to decode to.
+    private static Math.color ParseGroupColor(string? hex)
+    {
+        if (string.IsNullOrEmpty(hex))
+            return default;
+        var span = hex.AsSpan();
+        if (span.Length > 0 && span[0] == '#')
+            span = span.Slice(1);
+        if (span.Length != 6 && span.Length != 8)
+            return default;
+        if (!int.TryParse(span.Slice(0, 2), System.Globalization.NumberStyles.HexNumber, null, out int r)
+            || !int.TryParse(span.Slice(2, 2), System.Globalization.NumberStyles.HexNumber, null, out int g)
+            || !int.TryParse(span.Slice(4, 2), System.Globalization.NumberStyles.HexNumber, null, out int b))
+        {
+            return default;
+        }
+        int a = 255;
+        if (span.Length == 8 && !int.TryParse(span.Slice(6, 2), System.Globalization.NumberStyles.HexNumber, null, out a))
+            a = 255;
+        // Written in sRGB the way a colour picker hands it over, decoded once here so everything downstream
+        // gets a linear value.
+        return new Math.color(r / 255f, g / 255f, b / 255f, a / 255f).ToLinear();
+    }
 
     public void Destroy()
     {

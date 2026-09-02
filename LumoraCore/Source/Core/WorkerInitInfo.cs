@@ -4,12 +4,19 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using Lumora.Core.Networking.Sync;
 
 namespace Lumora.Core;
 
 public sealed class WorkerInitInfo
 {
     public FieldInfo[] SyncMemberFields = null!;
+
+    // One compiled reader per sync-member field, in the same order as SyncMemberFields. Built once per
+    // type; a worker snapshots them into its own table at init so the per-frame and per-load paths never
+    // touch reflection again. -xlinka
+    public Func<Worker, ISyncMember>[] SyncMemberGetters = null!;
+
     public MethodInfo[] ListedMethods = null!;
     public Dictionary<string, int> ListedMethodNameToIndex = null!;
     public bool[] SyncMemberNonpersistent = null!;
@@ -21,6 +28,7 @@ public sealed class WorkerInitInfo
     public object[] DefaultValues = null!;
     public Type ConnectorType = null!;
     public bool HasUpdateMethods;
+    public bool HasLateUpdateMethod;
     public bool HasAudioUpdateMethod;
     public bool HasAudioConfigurationChangedMethod;
     public bool HasLinkedMethod;

@@ -5,6 +5,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Reflection;
 using Lumora.Core.Networking.Sync;
 
@@ -43,6 +44,7 @@ internal static class WorkerInitializer
         GatherWorkerFields(workerType, fields);
 
         info.SyncMemberFields = fields.ToArray();
+        info.SyncMemberGetters = BuildSyncMemberGetters(info.SyncMemberFields);
         info.SyncMemberNames = new string[info.SyncMemberFields.Length];
         info.SyncMemberNonpersistent = new bool[info.SyncMemberFields.Length];
         info.SyncMemberNondrivable = new bool[info.SyncMemberFields.Length];
@@ -102,14 +104,22 @@ internal static class WorkerInitializer
         if (typeof(ComponentBase<>).IsAssignableFromGeneric(workerType))
         {
             var methodOrigin = workerType.FindGenericBaseClass(typeof(ComponentBase<>));
-            var hasUpdateMethods = workerType.OverridesMethod("OnCommonUpdate", methodOrigin) |
+            bool isComponent = typeof(Component).IsAssignableFrom(workerType);
+
+            // The origin for OnCommonUpdate depends on which branch of the hierarchy we are on. Component
+            // overrides OnCommonUpdate purely as plumbing to forward into OnUpdate, so measuring that
+            // override against ComponentBase<> answers "true" for EVERY component in the engine and puts
+            // all of them on the per-frame dispatch - thousands of no-op InternalRunUpdate calls whose only
+            // effect is to call two empty virtuals. For a component the real question is whether it
+            // overrides PAST Component. -xlinka
+            var commonOrigin = isComponent ? typeof(Component) : methodOrigin;
+            var hasUpdateMethods = workerType.OverridesMethod("OnCommonUpdate", commonOrigin) |
                                    workerType.OverridesMethod("OnBehaviorUpdate", methodOrigin);
 
-            if (typeof(Component).IsAssignableFrom(workerType))
+            if (isComponent)
             {
-                hasUpdateMethods |= workerType.OverridesMethod("OnUpdate", typeof(Component)) |
-                                    workerType.OverridesMethod("OnFixedUpdate", typeof(Component)) |
-                                    workerType.OverridesMethod("OnLateUpdate", typeof(Component));
+                hasUpdateMethods |= workerType.OverridesMethod("OnUpdate", typeof(Component));
+                info.HasLateUpdateMethod = workerType.OverridesMethod("OnLateUpdate", typeof(Component));
             }
 
             info.HasUpdateMethods = hasUpdateMethods;
@@ -169,6 +179,36 @@ internal static class WorkerInitializer
                 methods[method.Name] = method;
             }
         }
+    }
+
+    // FieldInfo.GetValue costs a boxed reflection call every time, and a worker's members are read in
+    // several passes at init and again on every save, duplicate and join. One compiled delegate per field
+    // per type turns those into a plain field load. Discovery is untouched: same fields, same order, this
+    // only changes how they are READ. -xlinka
+    private static Func<Worker, ISyncMember>[] BuildSyncMemberGetters(FieldInfo[] fields)
+    {
+        var getters = new Func<Worker, ISyncMember>[fields.Length];
+
+        for (int i = 0; i < fields.Length; i++)
+        {
+            var field = fields[i];
+            try
+            {
+                var worker = Expression.Parameter(typeof(Worker), "worker");
+                var access = Expression.Field(Expression.Convert(worker, field.DeclaringType!), field);
+                getters[i] = Expression.Lambda<Func<Worker, ISyncMember>>(
+                    Expression.Convert(access, typeof(ISyncMember)), worker).Compile();
+            }
+            catch (Exception)
+            {
+                // No runtime IL generation (a fully AOT'd target would be the case): fall back to the
+                // reflected read. Slower, identical result.
+                var reflected = field;
+                getters[i] = w => (reflected.GetValue(w) as ISyncMember)!;
+            }
+        }
+
+        return getters;
     }
 
     private static void GatherWorkerFields(Type workerType, List<FieldInfo> fields)

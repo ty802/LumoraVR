@@ -16,6 +16,7 @@ public enum SwapDirection
     Back,
 }
 
+[ComponentCategory("UI")]
 public class SwapPanel : UIComponent
 {
     public readonly Sync<float> Duration;

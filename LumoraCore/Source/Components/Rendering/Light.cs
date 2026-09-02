@@ -8,70 +8,63 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Emits light in the scene.
-/// </summary>
+// Emits light in the scene.
 [ComponentCategory("Rendering")]
-public class Light : ImplementableComponent
+public class Light : ImplementableComponent, IPrimaryColorSource
 {
-    /// <summary>
-    /// Type of light (Point, Directional, Spot)
-    /// </summary>
+    // Point, Directional or Spot
     public readonly Sync<LightType> Type = new();
 
-    /// <summary>
-    /// Light color (RGB)
-    /// </summary>
     public readonly Sync<color> LightColor = new();
 
-    /// <summary>
-    /// Light intensity (brightness multiplier)
-    /// </summary>
+    // brightness multiplier
     public readonly Sync<float> Intensity = new();
 
-    /// <summary>
-    /// Range of the light (for Point and Spot lights)
-    /// </summary>
+    // Point and Spot only
     public readonly Sync<float> Range = new();
 
-    /// <summary>
-    /// Spot angle in degrees (for Spot lights)
-    /// </summary>
+    // degrees, Spot only
     public readonly Sync<float> SpotAngle = new();
 
-    /// <summary>
-    /// Shadow casting mode
-    /// </summary>
     public readonly Sync<ShadowType> Shadows = new();
 
-    /// <summary>
-    /// Shadow strength (0-1)
-    /// </summary>
+    // 0-1
     public readonly Sync<float> ShadowStrength = new();
 
-    /// <summary>
-    /// Shadow bias to prevent acne
-    /// </summary>
+    // keeps surfaces from shadowing themselves
     public readonly Sync<float> ShadowBias = new();
 
-    /// <summary>
-    /// Shadow normal bias
-    /// </summary>
     public readonly Sync<float> ShadowNormalBias = new();
 
-    /// <summary>
-    /// Shadow near plane distance
-    /// </summary>
     public readonly Sync<float> ShadowNearPlane = new();
 
-    /// <summary>
-    /// Cookie texture that masks/projects this light; null = no cookie.
-    /// </summary>
+    // Metres from the camera that a DIRECTIONAL light bothers to shadow, and the single biggest knob on
+    // what a sun costs. The renderer draws every caster inside this radius into the cascades once per
+    // cascade, so leaving it at the platform default of a hundred metres means a showcase world hands the
+    // whole map to the sun four times a frame to get shadows you cannot see past the third area. Sixty is
+    // a room and its surroundings; drop it further for an indoor world, raise it for a landscape where the
+    // far hills are supposed to shade each other. Ignored by point and spot lights, which are bounded by
+    // their own Range. -xlinka
+    public readonly Sync<float> ShadowMaxDistance = new();
+
+    // How many cascades a directional light splits ShadowMaxDistance into. Four is the best-looking and
+    // the most expensive; Two halves the passes and is usually indistinguishable once the max distance is
+    // sane, because the near cascade no longer has to cover the whole world. Orthogonal is one pass, sharp
+    // near and mushy far. -xlinka
+    public readonly Sync<ShadowSplitMode> ShadowSplits = new();
+
+    // Fade a point or spot light out as the viewer walks away from it, in metres: nothing happens until
+    // DistanceFadeBegin, then it dissolves over DistanceFadeLength and stops being submitted at all. 0
+    // length turns the whole thing off, which is the default. This is what makes a room full of little
+    // lamps affordable - each one is only doing work while somebody is near enough to see it. Directional
+    // lights ignore it: they have no position to be far from. -xlinka
+    public readonly Sync<float> DistanceFadeBegin = new();
+    public readonly Sync<float> DistanceFadeLength = new();
+
+    // masks/projects this light; null = no cookie
     public readonly AssetRef<TextureAsset> Cookie = new();
 
-    /// <summary>
-    /// Cookie size for directional lights
-    /// </summary>
+    // directional lights only
     public readonly Sync<float> CookieSize = new();
 
     public override void OnInit()
@@ -80,17 +73,21 @@ public class Light : ImplementableComponent
 
         // LightType.Point is value 0 - C# default, but set for clarity
         // Type.Value = LightType.Point; // skip, it's enum 0
-        LightColor.Value       = new color(1f, 1f, 1f, 1f);
-        Intensity.Value        = 1f;
-        Range.Value            = 10f;
-        SpotAngle.Value        = 30f;
-        Shadows.Value          = ShadowType.Hard;
-        ShadowStrength.Value   = 1f;
-        ShadowBias.Value       = 0.05f;
-        ShadowNormalBias.Value = 0.4f;
-        ShadowNearPlane.Value  = 0.2f;
+        LightColor.Value        = new color(1f, 1f, 1f, 1f);
+        Intensity.Value         = 1f;
+        Range.Value             = 10f;
+        SpotAngle.Value         = 30f;
+        Shadows.Value           = ShadowType.Hard;
+        ShadowStrength.Value    = 1f;
+        ShadowBias.Value        = 0.05f;
+        ShadowNormalBias.Value  = 0.4f;
+        ShadowNearPlane.Value   = 0.2f;
+        ShadowMaxDistance.Value = 60f;
+        ShadowSplits.Value      = ShadowSplitMode.Four;
+        DistanceFadeBegin.Value = 0f;
+        DistanceFadeLength.Value = 0f;
         // Cookie = default (C# default null, skip)
-        CookieSize.Value       = 10f;
+        CookieSize.Value        = 10f;
     }
 
     public override void OnStart()
@@ -102,11 +99,17 @@ public class Light : ImplementableComponent
     {
         base.OnUpdate(delta);
     }
+
+    // The picked colour is the LightColor as authored, NOT multiplied by Intensity: intensity is a
+    // brightness knob on the same hue, and folding it in means eyedropping a dim lamp hands you black.
+    // -xlinka
+    public bool TryGetPrimaryColor(out colorHDR color)
+    {
+        color = LightColor.Value;
+        return true;
+    }
 }
 
-/// <summary>
-/// Light types.
-/// </summary>
 public enum LightType
 {
     Point,        // Omni-directional point light
@@ -114,12 +117,17 @@ public enum LightType
     Spot          // Spot light with cone
 }
 
-/// <summary>
-/// Shadow types.
-/// </summary>
 public enum ShadowType
 {
     None,    // No shadows
     Hard,    // Hard shadows (no filtering)
     Soft     // Soft shadows (PCF filtering)
+}
+
+// Cascade count for a directional light's shadow, cheapest first.
+public enum ShadowSplitMode
+{
+    Orthogonal,  // one cascade
+    Two,         // two cascades
+    Four         // four cascades
 }

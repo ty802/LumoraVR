@@ -23,6 +23,22 @@ public class LodDistanceCull : ImplementableComponent
 
     public readonly Sync<bool> IgnoreScale;
 
+    // SIZE-AWARE MODE. A flat band in metres is blind to what it is culling: a mountain and a mug get
+    // the same leash, and the mountain vanishing off the horizon is exactly what a platform must never
+    // do to scenery. With SizeBased on, each renderer's cull distance is derived from its OWN bounds -
+    // SizeMultiplier x its largest dimension, floored by MaxDistance - and anything whose largest
+    // dimension reaches SizeExempt gets no band at all. 100x size ~ culling at half a percent of
+    // screen height at a 90 degree FOV: a 1 m prop leaves at 100 m, a 4 m structure effectively never
+    // does. Targets whose bounds cannot be measured are treated as exempt, because the safe answer for
+    // something you cannot size is to keep drawing it. -xlinka
+    public readonly Sync<bool> SizeBased;
+
+    // Largest-dimension threshold, metres: at or above this, never band.
+    public readonly Sync<float> SizeExempt;
+
+    // Cull distance per metre of largest dimension.
+    public readonly Sync<float> SizeMultiplier;
+
     // the hook is the only listener
     public event System.Action? BandInvalidated;
 
@@ -33,6 +49,9 @@ public class LodDistanceCull : ImplementableComponent
         MaxDistance = new Sync<float>(this, 50f);
         FadeMargin = new Sync<float>(this, 0f);
         IgnoreScale = new Sync<bool>(this, false);
+        SizeBased = new Sync<bool>(this, false);
+        SizeExempt = new Sync<float>(this, 2f);
+        SizeMultiplier = new Sync<float>(this, 100f);
     }
 
     public override void OnStart()

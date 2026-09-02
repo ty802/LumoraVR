@@ -96,8 +96,10 @@ void fragment() {
 
 		if (outline_thickness > 0.0) {
 			// Outline = a second edge pushed outward by thickness texels. One atlas texel is 1/pixel_range in
-			// distance-field units, so shift the 0.5 threshold out by that much and take the ring. - xlinka
-			float offset = outline_thickness / max(pixel_range, 0.0001);
+			// distance-field units, so shift the 0.5 threshold out by that much and take the ring. The shift is
+			// CAPPED below the field's representable range: past ~0.35 the threshold drops under the sd floor
+			// outside the glyph and the "ring" becomes the entire quad - a nameplate row of solid boxes. -xlinka
+			float offset = min(outline_thickness / max(pixel_range, 0.0001), 0.35);
 			float outer = clamp(screen_range * (sd - (0.5 - offset)) + 0.5, 0.0, 1.0);
 			float face_a = out_color.a * face;
 			float out_a = outline_color.a * outer;

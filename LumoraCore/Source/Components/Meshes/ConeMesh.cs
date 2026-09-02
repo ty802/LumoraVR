@@ -11,6 +11,7 @@ namespace Lumora.Core.Components.Meshes;
 /// Procedural cone (conical-frustum) mesh component. Generates cone geometry from RadiusBase,
 /// RadiusTop, Height and Segments. RadiusTop = 0 gives a true cone tapering to a point.
 /// </summary>
+[ComponentCategory("Assets/Procedural Meshes")]
 public class ConeMesh : ProceduralMesh
 {
     // Sync Fields

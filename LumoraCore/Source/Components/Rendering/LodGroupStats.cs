@@ -45,6 +45,7 @@ public static class LodGroupStats
 // motion nobody can follow; it is a distance and a band comparison, so the work itself is nothing -
 // the rate is about the reading, not the cost
 [HideInInspector]
+[ComponentCategory("Utility/Inspectors")]
 public class LodGroupLevelReadout : Component
 {
     private const double Interval = 0.25;

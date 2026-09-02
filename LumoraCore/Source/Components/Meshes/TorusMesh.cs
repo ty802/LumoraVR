@@ -7,6 +7,7 @@ using Lumora.Core.Phos;
 namespace Lumora.Core.Components.Meshes;
 
 // The ring lies flat in the local XZ plane around the local Y axis, so it reads as a rotation ring by default
+[ComponentCategory("Assets/Procedural Meshes")]
 public class TorusMesh : ProceduralMesh
 {
     // Sync Fields

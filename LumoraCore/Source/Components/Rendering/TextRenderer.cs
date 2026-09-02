@@ -1,6 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System;
 using System.Collections.Generic;
 using Lumora.Core.Assets;
 using Lumora.Core.Components.Meshes;
@@ -10,9 +11,7 @@ using Helio.UI;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Renders text in 3D space (nameplates, labels, indicators).
-/// </summary>
+// Text in the world: nameplates, labels, indicators.
 // Text is engine-generated geometry, not a platform widget: glyph quads are
 // emitted into the PhosMesh (shared TextShaper + font atlas pipeline, same as
 // Helio UI text) and rendered through the standard MeshRenderer/material
@@ -20,42 +19,40 @@ namespace Lumora.Core.Components;
 // "text" exists - it uploads a mesh like any other. Each peer builds its own
 // local renderer slot; only the sync fields replicate. - xlinka
 [ComponentCategory("Rendering")]
-public class TextRenderer : ProceduralMesh
+public class TextRenderer : ProceduralMesh, IPrimaryColorSource
 {
-    /// <summary>
-    /// The text to render. Newlines start new lines; size is line height in meters.
-    /// </summary>
+    // Newlines start new lines. There is no wrap here, only the breaks you type.
     public readonly Sync<string> Text;
 
-    /// <summary>
-    /// Line height in meters.
-    /// </summary>
+    // line height in metres
     public readonly Sync<float> Size;
 
-    /// <summary>
-    /// Vertex color applied to all glyphs.
-    /// </summary>
+    // vertex colour on every glyph
     public readonly Sync<color> Color;
 
-    /// <summary>
-    /// Font set used for shaping and the glyph atlas.
-    /// </summary>
+    // Shaping and the glyph atlas both come from here. With no font this renders NOTHING.
     public readonly AssetRef<FontSet> Font;
 
     public readonly Sync<TextHorizontalAlignment> HorizontalAlign;
     public readonly Sync<TextVerticalAlignment> VerticalAlign;
     public readonly Sync<float> LineSpacing;
 
-    /// <summary>Glyph outline color (forwarded to the text material). Transparent = no outline.</summary>
+    // forwarded to the text material; transparent = no outline
     public readonly Sync<colorHDR> OutlineColor;
 
-    /// <summary>Glyph outline thickness in atlas texels (0 = none). Used for readable floating text.</summary>
+    // atlas texels, 0 = none; what makes floating text readable over anything
     public readonly Sync<float> OutlineThickness;
 
-    /// <summary>
-    /// Local-space size (width, height) of the laid-out text in meters, computed during meshing.
-    /// Zero when there's no text/font. Useful for fitting a background panel to the text.
-    /// </summary>
+    // Metres past which this label stops drawing. 0 = draws at any distance, which is what a nameplate
+    // wants. A sign bolted to a wall does not: the glyphs are sub-pixel long before you run out of world
+    // to walk backwards into, and every one of them is still a mesh being drawn. Goes onto the child
+    // renderer as a Godot visibility range with a fade band, so it dissolves rather than pops. -xlinka
+    public readonly Sync<float> MaxViewDistance;
+
+    public const float ViewDistanceFadeMargin = 3f;
+
+    // Width and height of the laid-out text in metres, local space, filled in during meshing. Zero with no
+    // text or no font. Fit a backing panel to this rather than guessing at a size.
     public float2 RenderedSize { get; private set; }
 
     private readonly TextShaper _shaper = new();
@@ -100,6 +97,7 @@ public class TextRenderer : ProceduralMesh
         LineSpacing = new Sync<float>(this, 1f);
         OutlineColor = new Sync<colorHDR>(this, new colorHDR(0f, 0f, 0f, 0f));
         OutlineThickness = new Sync<float>(this, 0f);
+        MaxViewDistance = new Sync<float>(this, 0f);
     }
 
     public override void OnAwake()
@@ -114,6 +112,7 @@ public class TextRenderer : ProceduralMesh
         // Outline is a material parameter, not geometry - forward to the material, don't re-mesh.
         OutlineColor.OnChanged += _ => ApplyOutline();
         OutlineThickness.OnChanged += _ => ApplyOutline();
+        MaxViewDistance.OnChanged += _ => ApplyViewDistance();
     }
 
     // Outline is a material parameter shared by every atlas material, so push it to the
@@ -170,6 +169,25 @@ public class TextRenderer : ProceduralMesh
         _materialPool.Clear();
         _materialPool.Add(_material);
         ApplyOutline();
+
+        // A label is a flat sheet of glyph quads with an alpha-cut texture on it. In a shadow cascade that
+        // is either nothing at all or a solid black rectangle where the text should be, and either way it
+        // is a second pass over every glyph in the world for a silhouette nobody wants. -xlinka
+        _renderer.ShadowCastMode.Value = ShadowCastMode.Off;
+        ApplyViewDistance();
+    }
+
+    private void ApplyViewDistance()
+    {
+        if (_renderer == null || _renderer.IsDestroyed)
+            return;
+        float distance = MathF.Max(0f, MaxViewDistance.Value);
+        float margin = distance > 0f ? ViewDistanceFadeMargin : 0f;
+        if (_renderer.MaxViewDistance == distance && _renderer.ViewDistanceFadeMargin == margin)
+            return;
+        _renderer.MaxViewDistance = distance;
+        _renderer.ViewDistanceFadeMargin = margin;
+        _renderer.MarkChangeDirty();
     }
 
     protected override void PrepareAssetUpdateData()
@@ -356,11 +374,18 @@ public class TextRenderer : ProceduralMesh
         _regenAtlases.Clear();
     }
 
-    /// <summary>
-    /// Set the text content.
-    /// </summary>
+    // set the text content
     public void SetText(string text)
     {
         Text.Value = text ?? string.Empty;
+    }
+
+    // The glyph colour is baked into the mesh's vertex colours, so the TextMaterial on the child
+    // renderer slot is a white passthrough and reading THAT would hand back white for every label.
+    // This field is the one that carries the colour. -xlinka
+    public bool TryGetPrimaryColor(out colorHDR color)
+    {
+        color = Color.Value;
+        return true;
     }
 }

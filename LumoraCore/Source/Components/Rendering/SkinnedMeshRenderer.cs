@@ -226,6 +226,13 @@ public class SkinnedMeshRenderer : ImplementableComponent
 
     public readonly AssetRef<MaterialAsset> Material = new();
 
+    private readonly LoadingSurfaceLatch _loadingSurfaces = new();
+
+    // Same contract as MeshRenderer.IsSurfaceLoading - one surface here, so one slot in the latch. An
+    // avatar arrives mesh-first and textures-later, which is exactly the case this covers. -xlinka
+    public bool IsSurfaceLoading(int surfaceIndex = 0)
+        => surfaceIndex == 0 && _loadingSurfaces.IsLoading(0, Material.Target);
+
     public readonly Sync<bool> UpdateWhenOffscreen = new();
 
     public readonly Sync<SkinQuality> Quality = new();

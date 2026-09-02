@@ -8,19 +8,17 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components;
 
-/// <summary>
-/// Glowing ground circle: an additive soft disc on the floor plus an open ring cylinder whose glow
-/// fades with height. The classic spawn-point marker. Builds its visuals as child slots on attach
-/// and re-applies Radius/Height/Color to them on change.
-/// </summary>
-[ComponentCategory("Rendering/Visuals")]
-public class GlowCircle : Component
+// Glowing ground circle: an additive soft disc on the floor plus an open ring cylinder whose glow
+// fades with height. The classic spawn-point marker. Builds its visuals as child slots on attach and
+// re-applies Radius/Height/Color to them on change.
+[ComponentCategory("Rendering")]
+public class GlowCircle : Component, IPrimaryColorSource
 {
     public readonly Sync<float> Radius;
     public readonly Sync<float> Height;
-    /// <summary>Tint of the ground disc.</summary>
+    // tint of the ground disc
     public readonly Sync<colorHDR> Color;
-    /// <summary>Tint of the vertical ring.</summary>
+    // tint of the vertical ring
     public readonly Sync<colorHDR> RingColor;
 
     private readonly SyncRef<QuadMesh> _discMesh;
@@ -132,5 +130,12 @@ public class GlowCircle : Component
             discMat.TintColor.Value = tint;
         if (_ringMaterial.Target is { } ringMat)
             ringMat.TintColor.Value = RingColor.Value;
+    }
+
+    // The disc is the marker; the ring is trim that usually rides the same colour anyway.
+    public bool TryGetPrimaryColor(out colorHDR color)
+    {
+        color = Color.Value;
+        return true;
     }
 }

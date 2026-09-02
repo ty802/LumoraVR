@@ -11,6 +11,7 @@ namespace Lumora.Core.Components.Meshes;
 /// Procedural quad mesh component.
 /// Generates quad geometry with support for dual-sided rendering and per-vertex colors.
 /// </summary>
+[ComponentCategory("Assets/Procedural Meshes")]
 public class QuadMesh : ProceduralMesh
 {
     // Sync Fields

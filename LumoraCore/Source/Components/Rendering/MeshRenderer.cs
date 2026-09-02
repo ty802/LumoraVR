@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -96,6 +96,14 @@ public class MeshRenderer : ImplementableComponent
     // scroll-participating chunks; zero for normal meshes. -xlinka
     public float ExtraCullMargin { get; set; }
 
+    // Distance in metres past which the hook stops drawing this renderer, 0 = draws at any distance, with
+    // ViewDistanceFadeMargin as the dissolve band in front of the cut. Pushed in by whatever owns the
+    // renderer rather than authored on it: a Canvas culling its chunk meshes, a TextRenderer culling the
+    // child renderer it built for a sign. The hook folds it into the same Godot visibility range a LodGroup
+    // uses and keeps the tighter of the two, so the two systems can't undo each other. -xlinka
+    public float MaxViewDistance { get; set; }
+    public float ViewDistanceFadeMargin { get; set; }
+
     public bool MaterialsChanged { get; set; }
     public bool MaterialPropertyBlocksChanged { get; set; }
     public bool SurfaceRenderPrioritiesChanged { get; set; }
@@ -145,6 +153,25 @@ public class MeshRenderer : ImplementableComponent
 
             return Materials.GetElement(0);
         }
+    }
+
+    private readonly LoadingSurfaceLatch _loadingSurfaces = new();
+
+    // True while this surface's material is a thing that IS coming but has not arrived - so the hook
+    // paints the loading skin over it instead of whatever half-state the material is in. A surface with
+    // NO material assigned is authored, not loading, and answers false: an untextured mesh is somebody's
+    // intent, not a gap. Purely event-driven - the arrival notification that lands the texture already
+    // re-drives the renderer, so nothing here runs per frame. -xlinka
+    public bool IsSurfaceLoading(int surfaceIndex)
+    {
+        int count = Materials.Count;
+        if (count == 0 || surfaceIndex < 0)
+            return false;
+
+        // Same clamp the hook uses to pick a material for a surface, so the answer lines up with the
+        // material that surface actually gets.
+        int index = surfaceIndex < count ? surfaceIndex : count - 1;
+        return _loadingSurfaces.IsLoading(index, Materials.GetElement(index).Target);
     }
 
     public MeshRenderer()

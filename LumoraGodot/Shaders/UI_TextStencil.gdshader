@@ -78,7 +78,7 @@ void fragment() {
 		float face_edge = 0.5 - face_dilate;
 		float face = clamp((sd - face_edge) / spread + 0.5, 0.0, 1.0);
 		if (outline_thickness > 0.0) {
-			float outer = clamp((sd - (face_edge - outline_thickness)) / spread + 0.5, 0.0, 1.0);
+			float outer = clamp((sd - (face_edge - min(outline_thickness, 0.45))) / spread + 0.5, 0.0, 1.0);
 			float face_a = out_color.a * face;
 			float ring_a = outline_color.a * outer;
 			float comb_a = max(face_a, ring_a);

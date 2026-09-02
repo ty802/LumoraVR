@@ -10,6 +10,7 @@ namespace Lumora.Core.Components.Meshes;
 /// Procedural box mesh component.
 /// Generates box geometry based on Size and UVScale properties.
 /// </summary>
+[ComponentCategory("Assets/Procedural Meshes")]
 public class BoxMesh : ProceduralMesh
 {
     // Sync Fields

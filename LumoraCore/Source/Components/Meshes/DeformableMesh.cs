@@ -11,6 +11,7 @@ namespace Lumora.Core.Components.Meshes;
 /// set once via SetGeometry; UpdatePositions pushes new positions and re-uploads. Normals recompute
 /// from the current positions so lighting follows the deformation.
 /// </summary>
+[ComponentCategory("Assets/Procedural Meshes")]
 public class DeformableMesh : ProceduralMesh
 {
     private float3[] _positions = System.Array.Empty<float3>();

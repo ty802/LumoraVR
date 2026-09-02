@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using Helio.UI;
+using Lumora.Core.Assets;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
 using Lumora.Simulation.Particles;
@@ -58,9 +59,31 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
     public readonly Sync<colorHDR> StartColor = new();
     public readonly Sync<colorHDR> EndColor = new();
     public readonly Sync<float> EmissionStrength = new();
+
+    // Sheet for the billboards. With a ParticleFlipbook attached this is the grid it steps through;
+    // without one the whole image modulates every particle. Untextured is the default and additive
+    // white dots are what most of these effects want.
+    public readonly AssetRef<TextureAsset> Texture = new();
+
+    // Separate image for the trail/ribbon ribbons, because a streak's texture is almost never the
+    // sprite its particle is drawn with, and UVMode/TileLength mean nothing without one.
+    public readonly AssetRef<TextureAsset> StrandTexture = new();
+
     [Group("Advanced")]
     public readonly Sync<int> Seed = new();
     public readonly Sync<int> RenderQueue = new();
+
+    // Metres past which this system stops, in both senses. The hook stops drawing the MultiMesh, and the
+    // sim below stops stepping, because a particle system is the one renderer that keeps costing CPU while
+    // it is off screen: the buffer is rebuilt and re-uploaded every frame whether or not anything ends up
+    // on your display. Twelve fountains in a showcase world is twelve thousand particles being integrated
+    // for a fountain you cannot see from where you are standing. 0 = never stops, which is the default and
+    // is right for anything meant to be visible across a whole map. -xlinka
+    public readonly Sync<float> MaxViewDistance = new();
+
+    // Distance the renderer dissolves the system over before the cut. The sim keeps running through the
+    // whole fade band and only stops past it, so a system never freezes while it is still on screen.
+    public const float ViewDistanceFadeMargin = 3f;
 
     // seconds; 0 runs one variable step per frame. Fixing it keeps the effect consistent across frame
     // rates and keeps peers on the same seed in step instead of diverging
@@ -109,6 +132,13 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
     private SizeColorEnvelope? _envelope;
     private DiscSprayEmitter? _builtinEmitter;
 
+    // The high-end tier, resolved when bindings change. Null means nothing of that kind is attached
+    // and the renderer skips that pass entirely.
+    private ParticleTrailsModule? _trails;
+    private ParticleRibbonsModule? _ribbons;
+    private ParticleFlipbookModule? _flipbook;
+    private ParticleLightsModule? _lights;
+
     private readonly List<ParticleEmitterBase> _emitters = new();
     private readonly List<ParticleModuleBase> _modules = new();
     private bool _bindingsDirty = true;
@@ -122,6 +152,8 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
     private static readonly float3[] EmptyFloat3 = System.Array.Empty<float3>();
     private static readonly floatQ[] EmptyFloatQ = System.Array.Empty<floatQ>();
     private static readonly colorHDR[] EmptyColor = System.Array.Empty<colorHDR>();
+    private static readonly float[] EmptyFloat = System.Array.Empty<float>();
+    private static readonly ParticleLightCandidate[] EmptyLights = System.Array.Empty<ParticleLightCandidate>();
 
     public int ParticleCount => _sim?.ParticleCount ?? 0;
 
@@ -145,6 +177,34 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
 
     // true once something actually rotates particles; the hook skips the math otherwise
     public bool HasRotations => _rotationSim != null || _hasRotationOutput;
+
+    // Strand geometry for the current frame, or null when no trail/ribbon module is attached. Points
+    // are CONTROL points in this system's slot-local space; expand them through StrandSmoother.
+    public ParticleStrandOutput? TrailStrands => _trails?.Output;
+
+    public ParticleStrandOutput? RibbonStrands => _ribbons?.Output;
+
+    // Fractional sheet frame per particle. Valid entries are [0, ParticleCount). Empty when no
+    // flipbook is attached.
+    public float[] RenderFrames => _flipbook?.FrameArray ?? EmptyFloat;
+
+    public bool HasFlipbook => _flipbook != null;
+
+    public int FlipbookColumns => _flipbook?.ResolvedColumns ?? 1;
+
+    public int FlipbookRows => _flipbook?.ResolvedRows ?? 1;
+
+    public int FlipbookFrameCount => _flipbook?.ResolvedFrameCount ?? 1;
+
+    // Particles nominated as light sources this frame, sorted by rank descending. Valid entries are
+    // [0, LightCandidateCount). See ParticleLightsModule for the hysteresis the renderer owes this.
+    public ParticleLightCandidate[] LightCandidates => _lights?.Candidates ?? EmptyLights;
+
+    public int LightCandidateCount => _lights?.CandidateCount ?? 0;
+
+    // What the author asked for, not what turned up this frame. The renderer sizes its light pool off
+    // this so the pool does not resize every time the candidate list breathes.
+    public int MaxLightCandidates => _lights?.MaxLights ?? 0;
 
     public override void OnInit()
     {
@@ -171,6 +231,7 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
         Seed.Value = System.Random.Shared.Next(1, int.MaxValue);
         RenderQueue.Value = 60;
         FixedTimeStep.Value = 0f;
+        MaxViewDistance.Value = 0f;
     }
 
     public override void OnStart()
@@ -203,10 +264,20 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
         _bindingsDirty = true;
     }
 
+    // Detaching has to tear the SIMULATION side down here and now. The component is gone from the list
+    // the moment this returns, so the destroyed-component sweep in SyncBindings will never see it
+    // again - leave the sim object attached and it keeps running, and keeps costing, with the last
+    // parameters it was ever pushed. -xlinka
     internal void UnregisterEmitter(ParticleEmitterBase emitter)
     {
-        if (_emitters.Remove(emitter))
-            _bindingsDirty = true;
+        if (!_emitters.Remove(emitter))
+            return;
+        if (emitter.SimEmitter != null)
+        {
+            _sim?.RemoveEmitter(emitter.SimEmitter);
+            emitter.SimEmitter = null;
+        }
+        _bindingsDirty = true;
     }
 
     internal void RegisterModule(ParticleModuleBase module)
@@ -219,8 +290,14 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
 
     internal void UnregisterModule(ParticleModuleBase module)
     {
-        if (_modules.Remove(module))
-            _bindingsDirty = true;
+        if (!_modules.Remove(module))
+            return;
+        if (module.SimModule != null)
+        {
+            _sim?.RemoveModule(module.SimModule);
+            module.SimModule = null;
+        }
+        _bindingsDirty = true;
     }
 
     // created on first update; null before that and after destruction
@@ -237,6 +314,9 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
         // nobody can see (the render node is frozen while backgrounded anyway). Skip it; the sim resumes
         // from its frozen state when the world is focused again. - xlinka
         if (World?.Focus == World.WorldFocus.Background)
+            return;
+
+        if (IsBeyondViewDistance())
             return;
 
         EnsureSimulation();
@@ -259,6 +339,30 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
 
         sim.Update(dt);
         RenderVersion = sim.RenderVersion;
+    }
+
+    // Distance is measured from the local user's HEAD, not the camera node, because that is the thing the
+    // renderer's visibility range is measured from too and the two have to agree or a system pops back on
+    // holding a frozen puff of particles from wherever it was when it stopped. No head means no answer, and
+    // no answer means keep simulating: a world still building its user, or a headless host, must not have
+    // its effects silently switched off.
+    //
+    // Public because the light pool has to ask it as well. A dynamic light is not a mesh and carries no
+    // visibility range of its own, so nothing culls it: without this, a system past its distance stops
+    // simulating and leaves its promoted lights burning on the last positions it managed to publish.
+    // -xlinka
+    public bool IsBeyondViewDistance()
+    {
+        float distance = MaxViewDistance.Value;
+        if (distance <= 0f)
+            return false;
+
+        var head = World?.LocalUser?.Root?.HeadSlot;
+        if (head == null || head.IsDestroyed)
+            return false;
+
+        float cutoff = distance + ViewDistanceFadeMargin;
+        return (Slot.GlobalPosition - head.GlobalPosition).LengthSquared > cutoff * cutoff;
     }
 
     private void EnsureSimulation()
@@ -339,11 +443,34 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
         bool appearanceOverridden = false;
         bool needsRotation = false;
         _hasRotationOutput = false;
+        _trails = null;
+        _ribbons = null;
+        _flipbook = null;
+        _lights = null;
         for (int i = 0; i < _modules.Count; i++)
         {
-            appearanceOverridden |= _modules[i].OverridesAppearance;
-            needsRotation |= _modules[i].RequiresRotationSimulation;
-            _hasRotationOutput |= _modules[i].ProducesRotation;
+            var component = _modules[i];
+            appearanceOverridden |= component.OverridesAppearance;
+            needsRotation |= component.RequiresRotationSimulation;
+            _hasRotationOutput |= component.ProducesRotation;
+
+            // Resolved here rather than scanned per frame: these are what the render hook reaches for
+            // every frame, and only a component attach or detach can change the answer.
+            switch (component.SimModule)
+            {
+                case ParticleTrailsModule trails:
+                    _trails = trails;
+                    break;
+                case ParticleRibbonsModule ribbons:
+                    _ribbons = ribbons;
+                    break;
+                case ParticleFlipbookModule flipbook:
+                    _flipbook = flipbook;
+                    break;
+                case ParticleLightsModule lights:
+                    _lights = lights;
+                    break;
+            }
         }
         _envelope!.Enabled = !appearanceOverridden;
 
@@ -483,6 +610,14 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
         InspectorStats.AddRow(ui, "Threading", MultiThreaded.Value ? "parallel chunks" : "inline");
         InspectorStats.AddRow(ui, "Rotation", _rotationSim != null ? "integrated"
             : _hasRotationOutput ? "set at birth" : "off");
+        if (_trails != null)
+            InspectorStats.AddRow(ui, "Trails", $"{_trails.Output.StrandCount} live, {_trails.Output.PointCount} points");
+        if (_ribbons != null)
+            InspectorStats.AddRow(ui, "Ribbons", $"{_ribbons.Output.StrandCount} live, {_ribbons.Output.PointCount} points");
+        if (_flipbook != null)
+            InspectorStats.AddRow(ui, "Flipbook", $"{FlipbookColumns}x{FlipbookRows}, {FlipbookFrameCount} frames");
+        if (_lights != null)
+            InspectorStats.AddRow(ui, "Light candidates", $"{_lights.CandidateCount} / {_lights.MaxLights}");
         if (World != null && WorldBudgets.TryGetValue(World, out var budget))
             InspectorStats.AddRow(ui, "World budget", $"{budget.Total} / {MaxParticlesPerWorld} across {budget.SystemCount} systems");
     }

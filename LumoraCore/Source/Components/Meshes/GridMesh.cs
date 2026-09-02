@@ -9,6 +9,7 @@ namespace Lumora.Core.Components.Meshes;
 /// <summary>
 /// Subdivided plane (grid) on the local XY plane. Segments control the cloth/soft-body resolution.
 /// </summary>
+[ComponentCategory("Assets/Procedural Meshes")]
 public class GridMesh : ProceduralMesh
 {
     public readonly Sync<float2> Size;

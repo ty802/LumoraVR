@@ -6,6 +6,7 @@ using Lumora.Core.Phos;
 namespace Lumora.Core.Components.Meshes;
 
 // a cylinder shaft along +Y from the origin with a cone tip on top; total length = ShaftLength + TipLength
+[ComponentCategory("Assets/Procedural Meshes")]
 public class ArrowMesh : ProceduralMesh
 {
     // Sync Fields

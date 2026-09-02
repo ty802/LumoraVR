@@ -10,6 +10,7 @@ namespace Lumora.Core.Components.Meshes;
 /// Procedural cylinder mesh component.
 /// Generates cylinder geometry based on Radius, Height, and Segments properties.
 /// </summary>
+[ComponentCategory("Assets/Procedural Meshes")]
 public class CylinderMesh : ProceduralMesh
 {
     // Sync Fields

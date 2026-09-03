@@ -52,7 +52,8 @@ public sealed class TextureVariantData
 public static class TextureVariantStore
 {
     private const uint Magic = 0x5854564C; // "LVTX" little-endian
-    private const ushort ContainerVersion = 1;
+    // 2: rows are stored top-down; version 1 variants were built from flipped rows and must not be reused.
+    private const ushort ContainerVersion = 2;
     private const ushort FlagLz4 = 1 << 0;
 
     public const string VariantExtension = ".lvtex";
@@ -71,7 +72,11 @@ public static class TextureVariantStore
     // DECODE
 
     // Every path that turns file bytes into pixels goes through here so the base texture and its variants can
-    // never disagree about which way up the rows are.
+    // never disagree about which way up the rows are. Rows stay TOP-DOWN, the decoder's own order: the
+    // renderer samples V=0 at row 0, mesh UVs are top-origin (see MeshDecoder, no FlipUVs), the glyph atlas
+    // and every procedural texture upload top-down, and the UI puts V=0 on the top edge of a quad. The
+    // flip that used to live here turned every loaded picture upside down in the world browser and on
+    // any model whose UVs were right. Cubemap faces take these rows as they are too. -xlinka
     public static byte[]? DecodeRgba(byte[] encoded, out int width, out int height)
     {
         width = 0;
@@ -83,23 +88,7 @@ public static class TextureVariantStore
         var result = ImageResult.FromStream(stream, ColorComponents.RedGreenBlueAlpha);
         width = result.Width;
         height = result.Height;
-        return FlipRgbaVertical(result.Data, width, height);
-    }
-
-    // The decoder produces top-down rows; the renderer's UV origin is bottom-up, so flip.
-    public static byte[] FlipRgbaVertical(byte[] rgba, int width, int height)
-    {
-        if (rgba == null || width <= 0 || height <= 0)
-            return rgba!;
-
-        int stride = width * 4;
-        if (rgba.Length < (long)stride * height)
-            return rgba;
-
-        var flipped = new byte[rgba.Length];
-        for (int y = 0; y < height; y++)
-            Buffer.BlockCopy(rgba, y * stride, flipped, (height - 1 - y) * stride, stride);
-        return flipped;
+        return result.Data;
     }
 
     // RESAMPLING

@@ -36,6 +36,40 @@ public static class AvatarRigSetup
         (BodyNode.RightLowerLeg, BodyNode.RightFoot),
     };
 
+    // Every finger joint, in the order its chain runs, so each one can point at the next. Fingers are
+    // not part of the required biped, so a rig without them simply has none of these bones and nothing
+    // is drawn. Until there is a hand model to check against, these small balls are how you see whether
+    // a rig's fingers line up with the fingers on the mesh. -xlinka
+    private static readonly (BodyNode bone, BodyNode child)[] FingerSegments = BuildFingerSegments();
+
+    private static (BodyNode, BodyNode)[] BuildFingerSegments()
+    {
+        var chains = new[]
+        {
+            (BodyNode.LeftThumb_Metacarpal, BodyNode.LeftThumb_Tip),
+            (BodyNode.LeftIndexFinger_Metacarpal, BodyNode.LeftIndexFinger_Tip),
+            (BodyNode.LeftMiddleFinger_Metacarpal, BodyNode.LeftMiddleFinger_Tip),
+            (BodyNode.LeftRingFinger_Metacarpal, BodyNode.LeftRingFinger_Tip),
+            (BodyNode.LeftPinky_Metacarpal, BodyNode.LeftPinky_Tip),
+            (BodyNode.RightThumb_Metacarpal, BodyNode.RightThumb_Tip),
+            (BodyNode.RightIndexFinger_Metacarpal, BodyNode.RightIndexFinger_Tip),
+            (BodyNode.RightMiddleFinger_Metacarpal, BodyNode.RightMiddleFinger_Tip),
+            (BodyNode.RightRingFinger_Metacarpal, BodyNode.RightRingFinger_Tip),
+            (BodyNode.RightPinky_Metacarpal, BodyNode.RightPinky_Tip),
+        };
+        var pairs = new List<(BodyNode, BodyNode)>();
+        foreach (var (start, end) in chains)
+            for (var node = start; node < end; node++)
+                pairs.Add((node, node + 1));
+        return pairs.ToArray();
+    }
+
+    // A joint ball sized to the bone it sits on: a knee and a knuckle should not be the same size, and
+    // one fixed radius turned a hand into a clump. Clamped so a tiny bone still has something you can
+    // see and grab, and a long one does not grow a beach ball. -xlinka
+    private static float JointRadius(float boneLength)
+        => System.Math.Clamp(boneLength * 0.16f, 0.006f, 0.03f);
+
     /// <summary>Attach grab + visual handles to each minimal-biped bone. Idempotent. Returns the count added.</summary>
     public static int SetupPoseHandles(HumanoidRig rig)
     {
@@ -48,29 +82,52 @@ public static class AvatarRigSetup
 
         int count = 0;
         foreach (var node in HumanoidRig.RequiredBones)
-        {
-            var bone = rig.TryGetBone(node);
-            if (bone == null || bone.IsDestroyed)
-                continue;
+            count += AddHandle(rig, node, childOf, finger: false) ? 1 : 0;
 
-            // Grab + pose: a small collider (smaller than the laser's grab-hover radius so it doesn't
-            // block the grab) and a Grabbable on the bone slot - grabbing reparents the bone to the
-            // hand, so the limb follows on release.
-            if (bone.GetComponent<Grabbable>() == null)
-            {
-                bone.AttachComponent<SphereCollider>().Radius.Value = 0.04f;
-                var grab = bone.AttachComponent<Grabbable>();
-                grab.FollowRotation.Value = true;
-                grab.GrabPriority.Value = 5;        // beat a whole-model grab when hovering a bone
-                grab.InteractionPriority.Value = 5;
-            }
+        var fingerChildOf = new Dictionary<BodyNode, BodyNode>();
+        foreach (var segment in FingerSegments)
+            fingerChildOf[segment.bone] = segment.child;
+        foreach (var node in fingerChildOf.Keys)
+            count += AddHandle(rig, node, fingerChildOf, finger: true) ? 1 : 0;
 
-            if (bone.FindChild(HandleName, recursive: false) == null)
-                AddBoneVisual(rig, bone, node, childOf);
-
-            count++;
-        }
         return count;
+    }
+
+    private static bool AddHandle(HumanoidRig rig, BodyNode node, Dictionary<BodyNode, BodyNode> childOf, bool finger)
+    {
+        var bone = rig.TryGetBone(node);
+        if (bone == null || bone.IsDestroyed)
+            return false;
+
+        float radius = JointRadius(BoneLength(rig, bone, node, childOf));
+
+        // Grab + pose: the collider matches the ball you can see, so what you aim at is what you get.
+        // A finger sits inside its hand's reach, so it outranks the hand: hovering a knuckle should
+        // pose that knuckle rather than swing the whole arm. -xlinka
+        if (bone.GetComponent<Grabbable>() == null)
+        {
+            bone.AttachComponent<SphereCollider>().Radius.Value = radius;
+            var grab = bone.AttachComponent<Grabbable>();
+            grab.FollowRotation.Value = true;
+            grab.GrabPriority.Value = finger ? 6 : 5;        // beat a whole-model grab when hovering a bone
+            grab.InteractionPriority.Value = finger ? 6 : 5;
+        }
+
+        if (bone.FindChild(HandleName, recursive: false) == null)
+            AddBoneVisual(rig, bone, node, childOf, radius);
+
+        return true;
+    }
+
+    private static float BoneLength(HumanoidRig rig, Slot bone, BodyNode node, Dictionary<BodyNode, BodyNode> childOf)
+    {
+        if (!childOf.TryGetValue(node, out var childNode))
+            return 0.12f;
+        var child = rig.TryGetBone(childNode);
+        if (child == null || child.IsDestroyed)
+            return 0.12f;
+        float length = bone.GlobalPointToLocal(child.GlobalPosition).Length;
+        return length > 0.0005f ? length : 0.12f;
     }
 
     /// <summary>Remove the grab + visual handles (called when finalizing the avatar).</summary>
@@ -79,7 +136,13 @@ public static class AvatarRigSetup
         if (rig == null || rig.IsDestroyed)
             return;
 
-        foreach (var node in HumanoidRig.RequiredBones)
+        var nodes = new List<BodyNode>(HumanoidRig.RequiredBones);
+        foreach (var segment in FingerSegments)
+        {
+            nodes.Add(segment.bone);
+            nodes.Add(segment.child);
+        }
+        foreach (var node in nodes)
         {
             var bone = rig.TryGetBone(node);
             if (bone == null || bone.IsDestroyed)
@@ -92,7 +155,7 @@ public static class AvatarRigSetup
 
     // A see-through bone: a ball at the joint (so the skeleton reads as connected - knees, elbows, etc.)
     // plus a shaft cylinder to the child joint. Overlay material, so it all shows through the skin.
-    private static void AddBoneVisual(HumanoidRig rig, Slot bone, BodyNode node, Dictionary<BodyNode, BodyNode> childOf)
+    private static void AddBoneVisual(HumanoidRig rig, Slot bone, BodyNode node, Dictionary<BodyNode, BodyNode> childOf, float radius)
     {
         var handle = bone.AddSlot(HandleName);   // sits at the bone origin = the joint
 
@@ -105,9 +168,9 @@ public static class AvatarRigSetup
 
         // Joint ball.
         var joint = handle.AttachComponent<LumoraMeshes.SphereMesh>();
-        joint.Radius.Value = 0.028f;
-        joint.Segments.Value = 12;
-        joint.Rings.Value = 8;
+        joint.Radius.Value = radius;
+        joint.Segments.Value = radius < 0.012f ? 8 : 12;
+        joint.Rings.Value = radius < 0.012f ? 6 : 8;
         var jointRenderer = handle.AttachComponent<MeshRenderer>();
         jointRenderer.Mesh.Target = joint;
         jointRenderer.Material.Target = material;
@@ -126,7 +189,8 @@ public static class AvatarRigSetup
         shaft.LocalPosition.Value = tipLocal * 0.5f;
         shaft.LocalRotation.Value = FabrikSolver.FromToRotation(float3.Up, tipLocal.Normalized);
         var cylinder = shaft.AttachComponent<LumoraMeshes.CylinderMesh>();
-        cylinder.Radius.Value = 0.018f;
+        // Thinner than the ball, so joints read as joints and the shaft as the bone between them.
+        cylinder.Radius.Value = radius * 0.55f;
         cylinder.Height.Value = length;
         cylinder.Segments.Value = 8;
         var shaftRenderer = shaft.AttachComponent<MeshRenderer>();

@@ -157,7 +157,7 @@ public sealed class BackendSessionDirectoryQuery : IDisposable
         if (!_reportedFailure)
         {
             _reportedFailure = true;
-            LumoraLogger.Warn($"BackendSessionDirectoryQuery: Session directory unavailable ({reason}); listing local sessions only");
+            LumoraLogger.Log($"BackendSessionDirectoryQuery: Session directory unavailable ({reason}); listing local sessions only");
         }
 
         OnResults?.Invoke(Array.Empty<SessionListingDto>());

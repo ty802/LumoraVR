@@ -65,11 +65,14 @@ public class Session : IDisposable
         set => _sessionServerPort = value;
     }
 
-    // Read from config key Network.BackendDirectory.Url; falls back to a plain-http localhost URL for local dev
-    // only. Deployments must configure an https URL - do not ship the http fallback.
+    // Read from config key Network.BackendDirectory.Url. The fallback follows the SERVICE CONFIG rather
+    // than a hardcoded localhost: everything else in the client already talks to the configured API host,
+    // and a directory client that quietly points somewhere else means a shipped build registers with a
+    // dev box that is not there and nobody's session is ever listed. -xlinka
     public static string BackendSessionDirectoryUrl
     {
-        get => _backendSessionDirectoryUrl ??= Settings.ReadValue(KeyBackendUrl, "http://localhost:5178/api");
+        get => _backendSessionDirectoryUrl ??= Settings.ReadValue(KeyBackendUrl,
+            Lumora.Nexus.Cloud.Cdn.ServiceConfig.Current.ApiBase.TrimEnd('/') + "/api");
         set => _backendSessionDirectoryUrl = value;
     }
 

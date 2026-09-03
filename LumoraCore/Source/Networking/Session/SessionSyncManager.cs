@@ -192,9 +192,17 @@ public class SessionSyncManager : IDisposable
     public Session Session { get; private set; }
     public World World => (Session?.World) ?? null!;
 
-    // Sync send/process rate in Hz, sourced live from user settings so changing the tick rate applies to
-    // the running session immediately (the sync loop reads this each idle wait). Clamped 10-120 there. -xlinka
-    public int SyncRate => EngineSettings.NetworkTickRate;
+    // Sync send/process rate in Hz. Owned by the SESSION (WorldSettings.NetworkTickRate, host-only), not
+    // by the local machine: the host sets it and it replicates, so every peer's loop runs at the same
+    // rate. Cached in a volatile int because the sync loop reads it off-thread before it takes the data
+    // model lock - resolving the component from there would race a main-thread attach. -xlinka
+    private volatile int _syncRate = WorldSettings.DefaultTickRate;
+    public int SyncRate => _syncRate;
+
+    internal void SetSyncRate(int rate)
+    {
+        _syncRate = System.Math.Clamp(rate, WorldSettings.MinTickRate, WorldSettings.MaxTickRate);
+    }
 
     public SessionSyncManager(Session session)
     {
@@ -205,6 +213,14 @@ public class SessionSyncManager : IDisposable
     {
         if (_syncThread != null)
             throw new InvalidOperationException("Sync threads already started");
+
+        // Seed from the world's configured rate before the loop exists. WorldSettings.OnStart pushes it
+        // too, but a world whose settings started before the session did would otherwise leave the loop
+        // on the default until the host next touched the slider. Main thread here, so the plain
+        // GetComponent is safe. -xlinka
+        int configured = World?.RootSlot?.GetComponent<WorldSettings>()?.NetworkTickRate.Value ?? 0;
+        if (configured > 0)
+            SetSyncRate(configured);
 
         _running = true;
 
@@ -489,10 +505,11 @@ public class SessionSyncManager : IDisposable
 
                 DEBUG_SyncLoopStage = SyncLoopStage.GeneratingDeltaBatch;
 
+                // Null on an idle tick - nothing was dirty, so no batch was built at all.
                 var deltaBatch = World.SyncController.CollectDeltaMessages();
-                LastGeneratedDeltaChanges = deltaBatch.DataRecordCount;
+                LastGeneratedDeltaChanges = deltaBatch?.DataRecordCount ?? 0;
 
-                if (deltaBatch.DataRecordCount > 0)
+                if (deltaBatch != null && deltaBatch.DataRecordCount > 0)
                 {
                     if (World.IsAuthority)
                     {
@@ -539,7 +556,7 @@ public class SessionSyncManager : IDisposable
                 }
                 else
                 {
-                    deltaBatch.Dispose();
+                    deltaBatch?.Dispose();
                 }
 
                 DEBUG_SyncLoopStage = SyncLoopStage.GeneratingCorrections;
@@ -2261,11 +2278,20 @@ public class SessionSyncManager : IDisposable
                 // InteractionLaser/HandTool/ControllerHandVisual/LocomotionController build at OnStart) into the
                 // joining user's OWN byte. Without this they allocate in authority byte 0 and collide with the
                 // host's objects there -> "Exception during initializing Worker of type Slot" and the laser/hands/
-                // locomotion never build. AllocationIDStart is the high start-of-range value the host reserved for
-                // us, so using it as the start position keeps us safely above the User object + its own synced
-                // members (which sit at low positions in this byte). Seed the owned-block high-water to match. -xlinka
+                // locomotion never build.
+                //
+                // AllocationIDStart is a PACKED RefID (the start of the range the host reserved for us), so its
+                // POSITION is what an allocation context wants - the raw value is that position shifted up by a
+                // byte plus the byte itself. Feeding the raw value in "worked" only because a fresh byte packs to
+                // ~256 and that happened to clear the User object; once the host started resuming a recycled byte
+                // above its previous high-water mark, the same mistake would re-pack a real position and multiply
+                // it by 256 on every reuse, overflowing the 56-bit position space in a handful of rejoins.
+                //
+                // Add the shared headroom the host reserves for the User object it builds at the range start and
+                // that object's own members, then seed the owned-block high-water to match. -xlinka
                 var userByte = assignedRefID.GetUserByte();
-                var startPos = grantData.AllocationIDStart > 0 ? grantData.AllocationIDStart : 1UL;
+                var grantedStart = new RefID(grantData.AllocationIDStart);
+                var startPos = System.Math.Max(grantedStart.GetPosition(), 1UL) + RefIDConstants.USER_JOIN_HEADROOM;
                 World.ReferenceController.SetAllocationContext(userByte, startPos);
                 World.ReferenceController.SetOwnedStartPosition(userByte, startPos);
                 LumoraLogger.Log($"[lnl] Scoped allocation to user namespace: byte={userByte}, startPos={startPos}");

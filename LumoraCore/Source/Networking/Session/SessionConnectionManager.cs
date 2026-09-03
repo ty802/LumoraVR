@@ -624,6 +624,12 @@ public class SessionConnectionManager : IDisposable
         user.UserName.Value = !string.IsNullOrEmpty(userName) ? userName : $"Guest {userRefID.GetUserByte()}";
         user.MachineID.Value = machineId ?? "";
         user.AccountId.Value = accountId ?? ""; // verified platform account id, empty for guests. -xlinka
+        // No group card from here. The host cannot read somebody else's profile, and stamping its OWN
+        // represented group on every joiner would put the host's tag over every head in the room. The
+        // joining client fills its own fields from its own account once it claims its local user
+        // (World.SetLocalUser), so a joiner starts with nothing and the card arrives with the first delta.
+        // -xlinka
+        user.ApplyRepresentedGroup(null);
         user.IsSilenced.Value = forceSilenced; // platform mute/spectator ban forces silence on entry. -xlinka
         user.AllocationIDStart.Value = (ulong)allocStart;
         user.AllocationIDEnd.Value = (ulong)allocEnd;
@@ -875,12 +881,33 @@ public class SessionConnectionManager : IDisposable
                     return;
                 }
 
+                // The group door, on the VERIFIED id and nowhere earlier. ValidateJoinRequest runs before
+                // anyone has proved anything, so a group check there would be keyed on a name the joiner
+                // typed. -xlinka
+                var groupRefusal = CheckGroupDoor(verifiedAccountId);
+                if (groupRefusal != null)
+                {
+                    LumoraLogger.Warn($"[lnl] HandleJoinAuthenticate: {connection.Identifier} (account '{verifiedAccountId}') refused by the group door - {groupRefusal}");
+                    SendJoinReject(connection, groupRefusal);
+                    return;
+                }
+
                 LumoraLogger.Log($"[lnl] HandleJoinAuthenticate: {connection.Identifier} authenticated (account='{verifiedAccountId}', silenced={forceSilenced}) - granting");
                 world.RunSynchronously(() => SendJoinGrant(conn, req.UserName, req.MachineID, verifiedAccountId, forceSilenced));
                 return;
             }
 
             // Guest path: no await happened, so we're still on the sync/message thread, grant inline. -xlinka
+            // A guest carries no account, so a members-only group world has nothing to check them against
+            // and the answer is no. A group-public one lets them in like anyone else.
+            var guestRefusal = CheckGroupDoor(string.Empty);
+            if (guestRefusal != null)
+            {
+                LumoraLogger.Warn($"[lnl] HandleJoinAuthenticate: {connection.Identifier} (guest) refused by the group door - {guestRefusal}");
+                SendJoinReject(connection, guestRefusal);
+                return;
+            }
+
             LumoraLogger.Log($"[lnl] HandleJoinAuthenticate: {connection.Identifier} authenticated (guest) - granting");
             SendJoinGrant(connection, pending.Request.UserName, pending.Request.MachineID, "");
         }
@@ -891,6 +918,46 @@ public class SessionConnectionManager : IDisposable
             LumoraLogger.Error($"[lnl] HandleJoinAuthenticate: unexpected error for {connection.Identifier} ({ex.GetBaseException().Message}) - rejecting");
             SendJoinReject(connection, "Authentication error");
         }
+    }
+
+    // THE GROUP DOOR
+    //
+    // Runs on a VERIFIED account id, or on an empty string for a guest, and answers a refusal sentence or
+    // null. Both facts it reads are the host's own: HostGroupId is host-only on WorldSettings, and the
+    // roster came off the host's fetch through the permission gate. Nothing the joiner sent about itself
+    // is consulted, so there is no claim a client can make that opens this.
+    //
+    // Order matters. A group ban refuses whatever tier the world is on, because being banned from the
+    // group is about the person and not about this world's access setting. Membership is only asked once
+    // the world is actually members-only. And an empty roster - the first seconds of a session, or a
+    // fetch that has never succeeded - refuses, which is the whole point of holding it empty.
+    //
+    // The host never reaches here: this is the joining side of the handshake and the host does not join
+    // its own session. -xlinka
+    private string? CheckGroupDoor(string verifiedAccountId)
+    {
+        var world = World;
+        var config = world?.Configuration;
+        string groupId = config?.HostGroupId.Value ?? string.Empty;
+        if (world == null || config == null || string.IsNullOrEmpty(groupId))
+            return null;
+
+        var permissions = world.DataModelPermissions;
+        bool haveAccount = !string.IsNullOrEmpty(verifiedAccountId);
+
+        if (permissions != null && haveAccount && permissions.IsGroupBanned(verifiedAccountId))
+            return "You are banned from this group's worlds";
+
+        if (config.AccessLevel.Value != Lumora.Core.World.WorldAccessLevel.GroupMembers)
+            return null;
+
+        if (permissions != null && haveAccount && permissions.IsGroupMember(verifiedAccountId))
+            return null;
+
+        // The short tag if the host published one, else the id: a refusal that names nothing tells the
+        // person nothing about which door they are standing at.
+        GroupSessionTags.TryRead(world.Session?.Metadata?.Tags, out _, out var shortTag);
+        return $"This world is for members of {(shortTag.Length > 0 ? shortTag : groupId)}";
     }
 
     // Verify a joiner's CLAIMED account: fetch the public key that account published to the cloud for the
@@ -961,6 +1028,35 @@ public class SessionConnectionManager : IDisposable
     {
         World.RemoveUser(user);
         user.Dispose();
+    }
+
+    // Cut a peer off and take their user down with them. Host only; the host cannot remove itself. Used by
+    // the permission gate's violation escalation, which decides WHETHER someone goes and leaves the HOW
+    // here - the gate has no idea what a connection is, by design. Closing the socket is the part that
+    // matters: dropping the user without it leaves the peer connected and re-authoring itself back in.
+    // -xlinka
+    public void DisconnectUser(User user, string reason)
+    {
+        if (user == null || World == null || !World.IsAuthority || user.IsHost)
+            return;
+
+        LumoraLogger.Warn($"[lnl] Disconnecting '{user.UserName.Value}': {reason}");
+
+        IConnection? connection = null;
+        lock (_lock)
+        {
+            if (_userToConnection.TryGetValue(user, out var found))
+            {
+                connection = found;
+                _userToConnection.Remove(user);
+                _connectionToUser.Remove(found);
+            }
+        }
+
+        try { connection?.Close(); }
+        catch (Exception ex) { LumoraLogger.Debug($"[lnl] DisconnectUser: closing the connection threw ({ex.Message})"); }
+
+        RemoveUser(user);
     }
 
     private void OnConnectionDataReceived(IConnection connection, byte[] data, int length)

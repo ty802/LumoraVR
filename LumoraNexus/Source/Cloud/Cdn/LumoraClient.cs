@@ -66,19 +66,21 @@ public sealed class LumoraClient : IDisposable
 
         var apiHandler = new HttpClientHandler
         {
-            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
+            AutomaticDecompression = DecompressionMethods.All
         };
         _api = new HttpClient(apiHandler) { Timeout = ApiTimeout };
         _api.DefaultRequestHeaders.UserAgent.Add(userAgent);
+        _api.DefaultRequestHeaders.AcceptEncoding.Add(new StringWithQualityHeaderValue("br"));
         _api.DefaultRequestHeaders.AcceptEncoding.Add(new StringWithQualityHeaderValue("gzip"));
         _api.DefaultRequestHeaders.AcceptEncoding.Add(new StringWithQualityHeaderValue("deflate"));
 
         var contentHandler = new HttpClientHandler
         {
-            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
+            AutomaticDecompression = DecompressionMethods.All
         };
         _content = new HttpClient(contentHandler) { Timeout = ContentTimeout };
         _content.DefaultRequestHeaders.UserAgent.Add(userAgent);
+        _content.DefaultRequestHeaders.AcceptEncoding.Add(new StringWithQualityHeaderValue("br"));
         _content.DefaultRequestHeaders.AcceptEncoding.Add(new StringWithQualityHeaderValue("gzip"));
 
         _json = new JsonSerializerOptions
@@ -167,6 +169,9 @@ public sealed class LumoraClient : IDisposable
         _accountUserId = null;
         _accountSessionId = null;
         _api.DefaultRequestHeaders.Authorization = null;
+        // Signing out takes the group card off this machine's nametag immediately rather than leaving the
+        // last account's group hanging over whoever plays next. -xlinka
+        SetRepresentedGroup(null);
         SignedOut?.Invoke();
     }
 
@@ -210,6 +215,10 @@ public sealed class LumoraClient : IDisposable
             _accountUserId = null;
             _accountSessionId = null;
         }
+
+        // Pick up the group this account wears, so the very first world we join already carries the card.
+        // Deliberately outside the try above: a failure here is not a reason to throw the account key away.
+        try { await RefreshRepresentedGroupAsync(); } catch { /* no card is a fine outcome */ }
     }
 
     // DER SubjectPublicKeyInfo bytes; null if there's no key or the call fails
@@ -312,7 +321,7 @@ public sealed class LumoraClient : IDisposable
         if (id.Failed || id.Data == null)
             return ApiResponse<InventoryResponse>.Fail(id.Status, id.Message);
 
-        return await GetAsync<InventoryResponse>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{id.Data}");
+        return await GetAsync<InventoryResponse>($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}");
     }
 
     public async Task<ApiResponse<List<AssetRef>>> GetInventoryByType(AssetType type)
@@ -329,7 +338,7 @@ public sealed class LumoraClient : IDisposable
             _ => "props"
         };
 
-        return await GetAsync<List<AssetRef>>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{id.Data}/{typePath}");
+        return await GetAsync<List<AssetRef>>($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/{typePath}");
     }
 
     public async Task<ApiResponse<List<UserFolder>>> GetFolders()
@@ -338,7 +347,7 @@ public sealed class LumoraClient : IDisposable
         if (id.Failed || id.Data == null)
             return ApiResponse<List<UserFolder>>.Fail(id.Status, id.Message);
 
-        return await GetAsync<List<UserFolder>>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{id.Data}/folders");
+        return await GetAsync<List<UserFolder>>($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/folders");
     }
 
     public async Task<ApiResponse<UserFolder>> GetFolder(string folderId)
@@ -347,7 +356,7 @@ public sealed class LumoraClient : IDisposable
         if (id.Failed || id.Data == null)
             return ApiResponse<UserFolder>.Fail(id.Status, id.Message);
 
-        return await GetAsync<UserFolder>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{id.Data}/folders/{folderId}");
+        return await GetAsync<UserFolder>($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/folders/{folderId}");
     }
 
     public async Task<ApiResponse<List<AssetInfo>>> GetUserAssets()
@@ -356,7 +365,7 @@ public sealed class LumoraClient : IDisposable
         if (id.Failed || id.Data == null)
             return ApiResponse<List<AssetInfo>>.Fail(id.Status, id.Message);
 
-        return await GetAsync<List<AssetInfo>>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{id.Data}/assets");
+        return await GetAsync<List<AssetInfo>>($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/assets");
     }
 
     public async Task<ApiResponse<UserQuotaResponse>> GetQuota()
@@ -365,7 +374,7 @@ public sealed class LumoraClient : IDisposable
         if (id.Failed || id.Data == null)
             return ApiResponse<UserQuotaResponse>.Fail(id.Status, id.Message);
 
-        return await GetAsync<UserQuotaResponse>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{id.Data}/quota");
+        return await GetAsync<UserQuotaResponse>($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/quota");
     }
 
     public async Task<ApiResponse<UserFolder>> CreateFolder(string name, string? parentFolderId = null)
@@ -375,7 +384,7 @@ public sealed class LumoraClient : IDisposable
             return ApiResponse<UserFolder>.Fail(id.Status, id.Message);
 
         var payload = new { Name = name, ParentFolderId = parentFolderId };
-        return await PostAsync<UserFolder>($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{id.Data}/folders", payload);
+        return await PostAsync<UserFolder>($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/folders", payload);
     }
 
     public async Task<ApiResponse> AddAsset(string assetId)
@@ -384,7 +393,7 @@ public sealed class LumoraClient : IDisposable
         if (id.Failed || id.Data == null)
             return ApiResponse.Fail(id.Status, id.Message);
 
-        return await PostAsync($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{id.Data}/assets/{assetId}", null);
+        return await PostAsync($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/assets/{assetId}", null);
     }
 
     public async Task<ApiResponse> MoveAsset(string assetId, string? sourceFolderId, string targetFolderId)
@@ -394,7 +403,7 @@ public sealed class LumoraClient : IDisposable
             return ApiResponse.Fail(id.Status, id.Message);
 
         var payload = new { SourceFolderId = sourceFolderId, TargetFolderId = targetFolderId };
-        return await PostAsync($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{id.Data}/assets/{assetId}/move", payload);
+        return await PostAsync($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/assets/{assetId}/move", payload);
     }
 
     public async Task<ApiResponse> UpdateAsset(string assetId, AssetRef assetRef)
@@ -403,7 +412,7 @@ public sealed class LumoraClient : IDisposable
         if (id.Failed || id.Data == null)
             return ApiResponse.Fail(id.Status, id.Message);
 
-        return await PutAsync($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{id.Data}/assets/{assetId}", assetRef);
+        return await PutAsync($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/assets/{assetId}", assetRef);
     }
 
     public async Task<ApiResponse> RemoveAsset(string assetId)
@@ -412,7 +421,207 @@ public sealed class LumoraClient : IDisposable
         if (id.Failed || id.Data == null)
             return ApiResponse.Fail(id.Status, id.Message);
 
-        return await DeleteAsync($"{ServiceConfig.Current.ApiBase}/api/inventory/users/{id.Data}/assets/{assetId}");
+        return await DeleteAsync($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/assets/{assetId}");
+    }
+
+    // The folder browsing shape the inventory screen works with: one folder's direct children, or a
+    // search across the whole tree. "root" names the top of the inventory.
+    public const string InventoryRoot = "root";
+
+    public async Task<ApiResponse<FolderContents>> GetFolderContents(string? folderId)
+    {
+        var id = await ResolveUserIdAsync();
+        if (id.Failed || id.Data == null)
+            return ApiResponse<FolderContents>.Fail(id.Status, id.Message);
+        var folder = string.IsNullOrEmpty(folderId) ? InventoryRoot : folderId;
+        return await GetAsync<FolderContents>($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/folders/{folder}/contents");
+    }
+
+    public async Task<ApiResponse<FolderContents>> SearchInventory(string query)
+    {
+        var id = await ResolveUserIdAsync();
+        if (id.Failed || id.Data == null)
+            return ApiResponse<FolderContents>.Fail(id.Status, id.Message);
+        return await GetAsync<FolderContents>($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/search?q={Uri.EscapeDataString(query)}");
+    }
+
+    // A blob already in the content store becomes an inventory item in one call. kind: Avatar | Object | World.
+    public async Task<ApiResponse<AssetRef>> AddInventoryItem(string hash, string name, string kind, string? folderId,
+        string? thumbnailHash, long sizeBytes, string? mode = null, List<string>? tags = null, List<AssetManifestEntry>? manifest = null)
+    {
+        var id = await ResolveUserIdAsync();
+        if (id.Failed || id.Data == null)
+            return ApiResponse<AssetRef>.Fail(id.Status, id.Message);
+        var payload = new
+        {
+            Hash = hash,
+            Name = name,
+            Kind = kind,
+            FolderId = string.IsNullOrEmpty(folderId) || folderId == InventoryRoot ? null : folderId,
+            ThumbnailHash = thumbnailHash,
+            Tags = tags,
+            SizeBytes = sizeBytes,
+            Mode = mode,
+            Manifest = manifest,
+        };
+        return await PostAsync<AssetRef>($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/items", payload);
+    }
+
+    public async Task<ApiResponse> RenameInventoryItem(string assetId, string name)
+    {
+        var id = await ResolveUserIdAsync();
+        if (id.Failed || id.Data == null)
+            return ApiResponse.Fail(id.Status, id.Message);
+        var result = await PatchAsync<AssetRef>($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/items/{assetId}", new { Name = name });
+        return result.Success ? ApiResponse.Ok() : ApiResponse.Fail(result.Status, result.Message);
+    }
+
+    public async Task<ApiResponse> DeleteInventoryItem(string assetId)
+    {
+        var id = await ResolveUserIdAsync();
+        if (id.Failed || id.Data == null)
+            return ApiResponse.Fail(id.Status, id.Message);
+        return await DeleteAsync($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/items/{assetId}");
+    }
+
+    public async Task<ApiResponse> RenameFolder(string folderId, string name)
+    {
+        var id = await ResolveUserIdAsync();
+        if (id.Failed || id.Data == null)
+            return ApiResponse.Fail(id.Status, id.Message);
+        return await PostAsync($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/folders/{folderId}/rename", new { Name = name });
+    }
+
+    public async Task<ApiResponse> MoveFolder(string folderId, string? targetFolderId)
+    {
+        var id = await ResolveUserIdAsync();
+        if (id.Failed || id.Data == null)
+            return ApiResponse.Fail(id.Status, id.Message);
+        var target = string.IsNullOrEmpty(targetFolderId) || targetFolderId == InventoryRoot ? null : targetFolderId;
+        return await PostAsync($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/folders/{folderId}/move", new { TargetFolderId = target });
+    }
+
+    public async Task<ApiResponse> DeleteFolder(string folderId)
+    {
+        var id = await ResolveUserIdAsync();
+        if (id.Failed || id.Data == null)
+            return ApiResponse.Fail(id.Status, id.Message);
+        return await DeleteAsync($"{ServiceConfig.Current.ContentBase}/api/inventory/users/{id.Data}/folders/{folderId}");
+    }
+
+    // Moving an item into the root: the move route wants the root named, and the service calls it "root".
+    public Task<ApiResponse> MoveItemToFolder(string assetId, string? sourceFolderId, string? targetFolderId)
+        => MoveAsset(assetId,
+            string.IsNullOrEmpty(sourceFolderId) || sourceFolderId == InventoryRoot ? null : sourceFolderId,
+            string.IsNullOrEmpty(targetFolderId) ? InventoryRoot : targetFolderId);
+
+    #endregion
+
+    #region Variants
+
+    public const string WorkerKeyHeader = "X-Lumora-Worker-Key";
+
+    // What the service knows about one variant of one blob. Asking is what queues it, so a first ask
+    // comes back Pending and a later one Ready. Skipped means the variant does not apply to that
+    // source and the original is the answer. -xlinka
+    public async Task<ApiResponse<VariantState>> GetVariantState(string hash, string variantId)
+    {
+        if (!Connectivity.IsOnline)
+            return ApiResponse<VariantState>.Fail(HttpStatusCode.ServiceUnavailable, "Offline");
+        try
+        {
+            using var response = await _content.GetAsync($"{ServiceConfig.Current.ContentBase}/api/variants/{hash}/{variantId}");
+            if (response.StatusCode == HttpStatusCode.NoContent)
+                return ApiResponse<VariantState>.Ok(new VariantState { VariantId = variantId, State = "Skipped" });
+            var body = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode && response.StatusCode != HttpStatusCode.Accepted)
+                return ApiResponse<VariantState>.Fail(response.StatusCode, ErrorMessage(body));
+            var state = JsonSerializer.Deserialize<VariantState>(body, _json) ?? new VariantState { VariantId = variantId };
+            return ApiResponse<VariantState>.Ok(state);
+        }
+        catch (Exception ex)
+        {
+            return ApiResponse<VariantState>.Fail(HttpStatusCode.ServiceUnavailable, ex.Message);
+        }
+    }
+
+    // WORKER SIDE: a shared key instead of an account.
+
+    public async Task<ApiResponse<VariantJob>> WorkerNextVariant(string workerKey, string workerName)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post,
+                $"{ServiceConfig.Current.ContentBase}/api/variants/queue/next?worker={Uri.EscapeDataString(workerName)}");
+            request.Headers.Add(WorkerKeyHeader, workerKey);
+            using var response = await _content.SendAsync(request);
+            if (response.StatusCode == HttpStatusCode.NoContent)
+                return ApiResponse<VariantJob>.Ok(null!);
+            var body = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode)
+                return ApiResponse<VariantJob>.Fail(response.StatusCode, ErrorMessage(body));
+            return ApiResponse<VariantJob>.Ok(JsonSerializer.Deserialize<VariantJob>(body, _json)!);
+        }
+        catch (Exception ex)
+        {
+            return ApiResponse<VariantJob>.Fail(HttpStatusCode.ServiceUnavailable, ex.Message);
+        }
+    }
+
+    // bytes null with skipped = true when the variant does not apply; bytes null with an error when
+    // it could not be made.
+    public async Task<ApiResponse> WorkerFinishVariant(string workerKey, string hash, string variantId, byte[]? bytes, bool skipped = false, string? error = null)
+    {
+        try
+        {
+            var url = $"{ServiceConfig.Current.ContentBase}/api/variants/{hash}/{variantId}/finish";
+            if (skipped)
+                url += "?skipped=true";
+            else if (!string.IsNullOrEmpty(error))
+                url += "?error=" + Uri.EscapeDataString(error!);
+            using var request = new HttpRequestMessage(HttpMethod.Post, url);
+            request.Headers.Add(WorkerKeyHeader, workerKey);
+            if (bytes != null && !skipped && string.IsNullOrEmpty(error))
+            {
+                request.Content = new ByteArrayContent(bytes);
+                request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+            }
+            using var response = await _content.SendAsync(request);
+            if (response.IsSuccessStatusCode)
+                return ApiResponse.Ok();
+            return ApiResponse.Fail(response.StatusCode, ErrorMessage(await response.Content.ReadAsStringAsync()));
+        }
+        catch (Exception ex)
+        {
+            return ApiResponse.Fail(HttpStatusCode.ServiceUnavailable, ex.Message);
+        }
+    }
+
+    // A raw blob into the store under the system owner, by worker key. The publisher uses it for the
+    // engine's built-in assets.
+    public async Task<ApiResponse<string>> WorkerStoreBlob(string workerKey, byte[] bytes, string extension)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post,
+                $"{ServiceConfig.Current.ContentBase}/api/variants/blob?extension={Uri.EscapeDataString(extension)}");
+            request.Headers.Add(WorkerKeyHeader, workerKey);
+            request.Content = new ByteArrayContent(bytes);
+            request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+            using var response = await _content.SendAsync(request);
+            var body = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode)
+                return ApiResponse<string>.Fail(response.StatusCode, ErrorMessage(body));
+            using var doc = JsonDocument.Parse(body);
+            var hash = doc.RootElement.TryGetProperty("hash", out var h) ? h.GetString() : null;
+            return string.IsNullOrEmpty(hash)
+                ? ApiResponse<string>.Fail(HttpStatusCode.InternalServerError, "No hash in the answer")
+                : ApiResponse<string>.Ok(hash!);
+        }
+        catch (Exception ex)
+        {
+            return ApiResponse<string>.Fail(HttpStatusCode.ServiceUnavailable, ex.Message);
+        }
     }
 
     #endregion
@@ -444,9 +653,11 @@ public sealed class LumoraClient : IDisposable
         return await PostAsync<GroupInfo>($"{ServiceConfig.Current.ApiBase}/api/groups", payload);
     }
 
-    // public groups join directly; private groups file a request instead
-    public Task<ApiResponse> JoinGroup(string groupId)
-        => PostAsync($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/join", null);
+    // Public joins outright, private files a request, hidden needs an invite. An invite to either lets the
+    // caller straight in, so the answer says which of the two happened rather than the page guessing from
+    // the group's visibility. Accepting an invite IS this call. -xlinka
+    public Task<ApiResponse<GroupJoinResult>> JoinGroup(string groupId)
+        => PostAsync<GroupJoinResult>($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/join", null);
 
     // owners must transfer or delete the group instead of leaving
     public Task<ApiResponse> LeaveGroup(string groupId)
@@ -455,7 +666,8 @@ public sealed class LumoraClient : IDisposable
     public Task<ApiResponse<List<GroupMemberInfo>>> GetGroupMembers(string groupId)
         => GetAsync<List<GroupMemberInfo>>($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/members");
 
-    // owner/admin only; role: Moderator | Builder | EventHost | Member
+    // Admin+; role is one rung below the caller: Moderator | Builder | Member (the Owner may also set Admin).
+    // Owner is not settable here, transfer is its own route.
     public Task<ApiResponse> SetGroupRole(string groupId, string userId, string role)
         => PostAsync($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/members/{userId}/role", new { Role = role });
 
@@ -483,12 +695,143 @@ public sealed class LumoraClient : IDisposable
     public Task<ApiResponse> DeleteGroup(string groupId)
         => DeleteAsync($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}");
 
+    // Admin+. Send only what changed: every field is optional server-side and a null is left alone, so a
+    // patch built from the edit form never has to carry the values nobody touched. -xlinka
+    public Task<ApiResponse<GroupInfo>> UpdateGroup(string groupId, GroupPatch patch)
+        => PatchAsync<GroupInfo>($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}", patch);
+
+    // Admin+
+    public Task<ApiResponse<List<GroupBanInfo>>> GetGroupBans(string groupId)
+        => GetAsync<List<GroupBanInfo>>($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/bans");
+
+    // Admin+; also drops the membership, the join request and any invite in the same call
+    public Task<ApiResponse> BanGroupMember(string groupId, string userId, string? reason = null)
+        => PostAsync($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/bans/{userId}", new { Reason = reason ?? "" });
+
+    // Admin+
+    public Task<ApiResponse> UnbanGroupMember(string groupId, string userId)
+        => DeleteAsync($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/bans/{userId}");
+
+    // Admin+; the sum of every slice has to stay inside the pool or this comes back 409
+    public Task<ApiResponse> SetGroupMemberStorage(string groupId, string userId, long bytes)
+        => PutAsync($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/members/{userId}/storage", new { Bytes = bytes });
+
+    // moderator+ only
+    public Task<ApiResponse<List<GroupInviteInfo>>> GetGroupInvites(string groupId)
+        => GetAsync<List<GroupInviteInfo>>($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/invites");
+
+    // moderator+ only
+    public Task<ApiResponse> InviteToGroup(string groupId, string userId)
+        => PostAsync($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/invites/{userId}", null);
+
+    // Moderator+ withdrawing someone else's, or the invited user declining their own.
+    public Task<ApiResponse> WithdrawGroupInvite(string groupId, string userId)
+        => DeleteAsync($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/invites/{userId}");
+
+    // A different shape from a group's own invite list: this one is about the groups, that one is about
+    // the people.
+    public Task<ApiResponse<List<GroupInviteSummary>>> GetMyGroupInvites()
+        => GetAsync<List<GroupInviteSummary>>($"{ServiceConfig.Current.ApiBase}/api/groups/invites/mine");
+
+    // members only; upcoming drops the ones that already ended
+    public Task<ApiResponse<List<GroupEventInfo>>> GetGroupEvents(string groupId, bool upcoming = true)
+        => GetAsync<List<GroupEventInfo>>($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/events?upcoming={(upcoming ? "true" : "false")}");
+
+    // builder+ only
+    public Task<ApiResponse<GroupEventInfo>> CreateGroupEvent(string groupId, string title, string description,
+        string worldName, DateTime startsAt, DateTime? endsAt = null)
+    {
+        var payload = new
+        {
+            Title = title,
+            Description = description,
+            WorldName = worldName,
+            StartsAt = startsAt,
+            EndsAt = endsAt,
+        };
+        return PostAsync<GroupEventInfo>($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/events", payload);
+    }
+
+    // the event's host, or moderator+
+    public Task<ApiResponse> DeleteGroupEvent(string groupId, string eventId)
+        => DeleteAsync($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/events/{eventId}");
+
+    // members only, newest first
+    public Task<ApiResponse<List<GroupAnnouncementInfo>>> GetGroupAnnouncements(string groupId, int take = 25)
+        => GetAsync<List<GroupAnnouncementInfo>>($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/announcements?take={take}");
+
+    // builder+ only
+    public Task<ApiResponse<GroupAnnouncementInfo>> PostGroupAnnouncement(string groupId, string text)
+        => PostAsync<GroupAnnouncementInfo>($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/announcements", new { Text = text });
+
+    // the author, or moderator+
+    public Task<ApiResponse> DeleteGroupAnnouncement(string groupId, string announcementId)
+        => DeleteAsync($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/announcements/{announcementId}");
+
+    // REPRESENTATION
+    //
+    // The group a user wears. The account service stores one id per account; what the nametag needs is the
+    // resolved card (tag, colour, icon, the wearer's role), and the only place that comes back assembled is
+    // the caller's own public profile - so a successful represent call is followed by a profile read rather
+    // than by guessing the card from whatever list row was on screen. -xlinka
+
+    public RepresentedGroupInfo? RepresentedGroup { get; private set; }
+
+    public event Action<RepresentedGroupInfo?>? RepresentedGroupChanged;
+
+    // member only
+    public async Task<ApiResponse> RepresentGroup(string groupId)
+    {
+        if (!IsAuthenticated)
+            return ApiResponse.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+        var result = await PutAsync($"{ServiceConfig.Current.ApiBase}/api/groups/{groupId}/represent", null);
+        if (result.Success)
+            await RefreshRepresentedGroupAsync();
+        return result;
+    }
+
+    public async Task<ApiResponse> ClearRepresentedGroup()
+    {
+        if (!IsAuthenticated)
+            return ApiResponse.Fail(HttpStatusCode.Unauthorized, "Not authenticated");
+        var result = await DeleteAsync($"{ServiceConfig.Current.ApiBase}/api/groups/represent");
+        if (result.Success)
+            await RefreshRepresentedGroupAsync();
+        return result;
+    }
+
+    // Re-read the card off our own public profile. Best effort: a failed read leaves the last known card
+    // alone rather than blanking somebody's nametag because one request timed out.
+    public async Task RefreshRepresentedGroupAsync()
+    {
+        var id = await ResolveUserIdAsync();
+        if (id.Failed || string.IsNullOrEmpty(id.Data))
+            return;
+
+        var me = await GetPublicUser(id.Data!);
+        if (me.Failed || me.Data == null)
+            return;
+
+        SetRepresentedGroup(me.Data.RepresentedGroup);
+    }
+
+    private void SetRepresentedGroup(RepresentedGroupInfo? group)
+    {
+        var current = RepresentedGroup;
+        if (current == null && group == null)
+            return;
+        if (current != null && group != null && current == group)
+            return; // records compare by value, so an unchanged profile read raises nothing
+        RepresentedGroup = group;
+        RepresentedGroupChanged?.Invoke(group);
+    }
+
     #endregion
 
     #region Content
 
     public Task<ApiResponse<ContentInfo>> GetContentInfo(string hash)
-        => GetAsync<ContentInfo>($"{ServiceConfig.Current.ApiBase}/content/{hash}");
+        => GetAsync<ContentInfo>($"{ServiceConfig.Current.ContentBase}/content/{hash}");
 
     public async Task<bool> ContentExists(string hash)
     {
@@ -523,7 +866,7 @@ public sealed class LumoraClient : IDisposable
 
             if (!response.IsSuccessStatusCode)
             {
-                ReportProgress(progress, state with { State = TransferState.Error });
+                ReportDownload(progress, state with { State = TransferState.Error });
                 return ApiResponse<byte[]>.Fail(response.StatusCode);
             }
 
@@ -546,10 +889,10 @@ public sealed class LumoraClient : IDisposable
                 {
                     await buffer.WriteAsync(chunk.AsMemory(0, read), ct);
                     received += read;
-                    ReportProgress(progress, state with { TransferredBytes = received });
+                    ReportDownload(progress, state with { TransferredBytes = received });
                 }
 
-                ReportProgress(progress, state with { TransferredBytes = received, State = TransferState.Completed });
+                ReportDownload(progress, state with { TransferredBytes = received, State = TransferState.Completed });
                 return ApiResponse<byte[]>.Ok(buffer.ToArray());
             }
             finally
@@ -559,18 +902,18 @@ public sealed class LumoraClient : IDisposable
         }
         catch (OperationCanceledException)
         {
-            ReportProgress(progress, state with { State = TransferState.Cancelled });
+            ReportDownload(progress, state with { State = TransferState.Cancelled });
             return ApiResponse<byte[]>.Fail(HttpStatusCode.RequestTimeout, "Cancelled");
         }
         catch (HttpRequestException)
         {
             Connectivity.ReportFailure();
-            ReportProgress(progress, state with { State = TransferState.Error });
+            ReportDownload(progress, state with { State = TransferState.Error });
             return ApiResponse<byte[]>.Fail(HttpStatusCode.ServiceUnavailable, "Network error");
         }
         catch (Exception ex)
         {
-            ReportProgress(progress, state with { State = TransferState.Error });
+            ReportDownload(progress, state with { State = TransferState.Error });
             return ApiResponse<byte[]>.FromException(ex);
         }
     }
@@ -619,13 +962,13 @@ public sealed class LumoraClient : IDisposable
                 var existing = await GetContentInfo(hash);
                 if (existing.Success)
                 {
-                    ReportProgress(progress, state with { TransferredBytes = state.TotalBytes, State = TransferState.Completed });
+                    ReportUpload(progress, state with { TransferredBytes = state.TotalBytes, State = TransferState.Completed });
                     return existing;
                 }
             }
 
             var initPayload = new { Hash = hash, ContentType = mimeType, Extension = extension, Size = stream.Length };
-            var initResult = await PostAsync<UploadHandle>($"{ServiceConfig.Current.ApiBase}/content/upload/begin", initPayload);
+            var initResult = await PostAsync<UploadHandle>($"{ServiceConfig.Current.ContentBase}/content/upload/begin", initPayload);
 
             if (!initResult.Success || initResult.Data == null)
                 return ApiResponse<ContentInfo>.Fail(initResult.Status, initResult.Message);
@@ -634,7 +977,7 @@ public sealed class LumoraClient : IDisposable
             var chunkSize = handle.ChunkSize > 0 ? handle.ChunkSize : DefaultChunkSize;
 
             state = state with { State = TransferState.Active };
-            ReportProgress(progress, state);
+            ReportUpload(progress, state);
 
             var chunks = new List<(int Index, byte[] Data)>();
             var buffer = ArrayPool<byte>.Shared.Rent(chunkSize);
@@ -672,13 +1015,13 @@ public sealed class LumoraClient : IDisposable
                         using var chunkContent = new ByteArrayContent(chunkData);
                         chunkContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
 
-                        var chunkUrl = $"{ServiceConfig.Current.ApiBase}/content/upload/{handle.Id}/chunk/{index}";
+                        var chunkUrl = $"{ServiceConfig.Current.ContentBase}/content/upload/{handle.Id}/chunk/{index}";
                         using var chunkResponse = await _api.PutAsync(chunkUrl, chunkContent, ct);
 
                         if (chunkResponse.IsSuccessStatusCode)
                         {
                             Interlocked.Add(ref transferred, chunkData.Length);
-                            ReportProgress(progress, state with { TransferredBytes = Interlocked.Read(ref transferred) });
+                            ReportUpload(progress, state with { TransferredBytes = Interlocked.Read(ref transferred) });
                             return true;
                         }
                         return false;
@@ -695,15 +1038,15 @@ public sealed class LumoraClient : IDisposable
             var results = await Task.WhenAll(uploadTasks);
             if (Array.Exists(results, r => !r))
             {
-                ReportProgress(progress, state with { State = TransferState.Error });
+                ReportUpload(progress, state with { State = TransferState.Error });
                 return ApiResponse<ContentInfo>.Fail(HttpStatusCode.InternalServerError, "Chunk upload failed");
             }
 
             Connectivity.ReportSuccess();
 
-            var finishResult = await PostAsync<ContentInfo>($"{ServiceConfig.Current.ApiBase}/content/upload/{handle.Id}/finish", null);
+            var finishResult = await PostAsync<ContentInfo>($"{ServiceConfig.Current.ContentBase}/content/upload/{handle.Id}/finish", null);
 
-            ReportProgress(progress, state with
+            ReportUpload(progress, state with
             {
                 TransferredBytes = stream.Length,
                 State = finishResult.Success ? TransferState.Completed : TransferState.Error
@@ -713,18 +1056,18 @@ public sealed class LumoraClient : IDisposable
         }
         catch (OperationCanceledException)
         {
-            ReportProgress(progress, state with { State = TransferState.Cancelled });
+            ReportUpload(progress, state with { State = TransferState.Cancelled });
             return ApiResponse<ContentInfo>.Fail(HttpStatusCode.RequestTimeout, "Cancelled");
         }
         catch (HttpRequestException)
         {
             Connectivity.ReportFailure();
-            ReportProgress(progress, state with { State = TransferState.Error });
+            ReportUpload(progress, state with { State = TransferState.Error });
             return ApiResponse<ContentInfo>.Fail(HttpStatusCode.ServiceUnavailable, "Network error");
         }
         catch (Exception ex)
         {
-            ReportProgress(progress, state with { State = TransferState.Error });
+            ReportUpload(progress, state with { State = TransferState.Error });
             return ApiResponse<ContentInfo>.FromException(ex);
         }
     }
@@ -742,11 +1085,13 @@ public sealed class LumoraClient : IDisposable
         {
             using var response = await _api.GetAsync(url);
             Connectivity.ReportSuccess();
+            var body = await response.Content.ReadAsStringAsync();
             return new ApiResponse
             {
                 Success = response.IsSuccessStatusCode,
                 Status = response.StatusCode,
-                RawBody = await response.Content.ReadAsStringAsync()
+                RawBody = body,
+                Message = response.IsSuccessStatusCode ? null : ErrorMessage(body)
             };
         }
         catch (HttpRequestException)
@@ -772,7 +1117,13 @@ public sealed class LumoraClient : IDisposable
 
             var body = await response.Content.ReadAsStringAsync();
             if (!response.IsSuccessStatusCode)
-                return ApiResponse<T>.Fail(response.StatusCode, body);
+                return ApiResponse<T>.Fail(response.StatusCode, ErrorMessage(body));
+
+            // A route that answers "done" with no payload (204, or a 200 with an empty body) is a success,
+            // not a parse failure: deserialising an empty string throws and used to come back as a 500.
+            // -xlinka
+            if (string.IsNullOrWhiteSpace(body))
+                return ApiResponse<T>.Ok(default!);
 
             var data = JsonSerializer.Deserialize<T>(body, _json);
             return ApiResponse<T>.Ok(data!);
@@ -798,11 +1149,13 @@ public sealed class LumoraClient : IDisposable
             using var content = CreateJsonContent(payload);
             using var response = await _api.PostAsync(url, content);
             Connectivity.ReportSuccess();
+            var body = await response.Content.ReadAsStringAsync();
             return new ApiResponse
             {
                 Success = response.IsSuccessStatusCode,
                 Status = response.StatusCode,
-                RawBody = await response.Content.ReadAsStringAsync()
+                RawBody = body,
+                Message = response.IsSuccessStatusCode ? null : ErrorMessage(body)
             };
         }
         catch (HttpRequestException)
@@ -829,7 +1182,13 @@ public sealed class LumoraClient : IDisposable
 
             var body = await response.Content.ReadAsStringAsync();
             if (!response.IsSuccessStatusCode)
-                return ApiResponse<T>.Fail(response.StatusCode, body);
+                return ApiResponse<T>.Fail(response.StatusCode, ErrorMessage(body));
+
+            // A route that answers "done" with no payload (204, or a 200 with an empty body) is a success,
+            // not a parse failure: deserialising an empty string throws and used to come back as a 500.
+            // -xlinka
+            if (string.IsNullOrWhiteSpace(body))
+                return ApiResponse<T>.Ok(default!);
 
             var data = JsonSerializer.Deserialize<T>(body, _json);
             return ApiResponse<T>.Ok(data!);
@@ -854,11 +1213,13 @@ public sealed class LumoraClient : IDisposable
         {
             using var response = await _api.DeleteAsync(url);
             Connectivity.ReportSuccess();
+            var body = await response.Content.ReadAsStringAsync();
             return new ApiResponse
             {
                 Success = response.IsSuccessStatusCode,
                 Status = response.StatusCode,
-                RawBody = await response.Content.ReadAsStringAsync()
+                RawBody = body,
+                Message = response.IsSuccessStatusCode ? null : ErrorMessage(body)
             };
         }
         catch (HttpRequestException)
@@ -882,11 +1243,13 @@ public sealed class LumoraClient : IDisposable
             using var content = CreateJsonContent(payload);
             using var response = await _api.PutAsync(url, content);
             Connectivity.ReportSuccess();
+            var body = await response.Content.ReadAsStringAsync();
             return new ApiResponse
             {
                 Success = response.IsSuccessStatusCode,
                 Status = response.StatusCode,
-                RawBody = await response.Content.ReadAsStringAsync()
+                RawBody = body,
+                Message = response.IsSuccessStatusCode ? null : ErrorMessage(body)
             };
         }
         catch (HttpRequestException)
@@ -898,6 +1261,69 @@ public sealed class LumoraClient : IDisposable
         {
             return ApiResponse.FromException(ex);
         }
+    }
+
+    private async Task<ApiResponse<T>> PatchAsync<T>(string url, object? payload)
+    {
+        if (!Connectivity.IsOnline)
+            return ApiResponse<T>.Fail(HttpStatusCode.ServiceUnavailable, "Offline");
+
+        try
+        {
+            using var content = CreateJsonContent(payload);
+            using var response = await _api.PatchAsync(url, content);
+            Connectivity.ReportSuccess();
+
+            var body = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode)
+                return ApiResponse<T>.Fail(response.StatusCode, ErrorMessage(body));
+
+            // A route that answers "done" with no payload (204, or a 200 with an empty body) is a success,
+            // not a parse failure: deserialising an empty string throws and used to come back as a 500.
+            // -xlinka
+            if (string.IsNullOrWhiteSpace(body))
+                return ApiResponse<T>.Ok(default!);
+
+            var data = JsonSerializer.Deserialize<T>(body, _json);
+            return ApiResponse<T>.Ok(data!);
+        }
+        catch (HttpRequestException)
+        {
+            Connectivity.ReportFailure();
+            return ApiResponse<T>.Fail(HttpStatusCode.ServiceUnavailable, "Network error");
+        }
+        catch (Exception ex)
+        {
+            return ApiResponse<T>.FromException(ex);
+        }
+    }
+
+    // The service answers a refusal with { "message": "..." }. Handing that raw at a screen puts JSON in
+    // front of a player, so it gets unwrapped here once instead of at every call site. Anything that is not
+    // that shape comes back as it was. -xlinka
+    private static string? ErrorMessage(string? body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return null;
+        var trimmed = body!.TrimStart();
+        if (trimmed.Length == 0 || trimmed[0] != '{')
+            return body;
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            if (document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty("message", out var message)
+                && message.ValueKind == JsonValueKind.String)
+            {
+                var text = message.GetString();
+                return string.IsNullOrWhiteSpace(text) ? body : text;
+            }
+        }
+        catch (JsonException)
+        {
+            // not JSON after all
+        }
+        return body;
     }
 
     private HttpContent CreateJsonContent(object? payload)
@@ -924,8 +1350,19 @@ public sealed class LumoraClient : IDisposable
         return content;
     }
 
-    private static void ReportProgress(IProgress<TransferProgress>? progress, TransferProgress state)
-        => progress?.Report(state);
+    // Every step goes to the caller's reporter when it gave one, and to the registry always, so the
+    // Debug screen and the in-world readout see every transfer without anyone wiring them up. -xlinka
+    private static void ReportDownload(IProgress<TransferProgress>? progress, TransferProgress state)
+    {
+        TransferRegistry.Report(state, upload: false);
+        progress?.Report(state);
+    }
+
+    private static void ReportUpload(IProgress<TransferProgress>? progress, TransferProgress state)
+    {
+        TransferRegistry.Report(state, upload: true);
+        progress?.Report(state);
+    }
 
     #endregion
 }

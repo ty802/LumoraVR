@@ -51,10 +51,15 @@ public class UserScaleContextActions : ContextMenuItemSource
             OnPressed = _ =>
             {
                 float before = userRoot.GlobalScale;
-                userRoot.GlobalScale = DefaultScale;
+                // Through the same clamp the gesture uses. A role whose bounds do not include 1 gets
+                // the nearest scale it is allowed rather than a reset that snaps straight back.
+                var locomotion = userRoot.GetRegisteredComponent<LocomotionController>()
+                                 ?? userRoot.Slot?.GetComponent<LocomotionController>();
+                float target = locomotion?.ClampUserScale(DefaultScale) ?? DefaultScale;
+                userRoot.GlobalScale = target;
                 var undo = Slot?.GetComponent<UndoManager>()
                            ?? Slot?.ActiveUserRoot?.Slot?.GetComponentInChildren<UndoManager>();
-                undo?.Record(new UserScaleUndoBatch(userRoot, before, DefaultScale));
+                undo?.Record(new UserScaleUndoBatch(userRoot, before, target));
             },
         });
     }

@@ -14,6 +14,7 @@ namespace Lumora.Core.Components;
 /// 3D loading indicator that appears during session joining.
 /// Tracks a target world's joining progress and displays it as 3D text in front of the user.
 /// </summary>
+[ComponentCategory("Network")]
 public class SessionJoinIndicator : Component
 {
     /// <summary>

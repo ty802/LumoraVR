@@ -24,6 +24,10 @@ public static class Connectivity
     public static int FailureThreshold { get; set; } = 3;
     public static string PingUrl { get; set; } = "https://api.lumoravr.com/health";
 
+    // Round trip of the last successful health check, in milliseconds; -1 until one has succeeded.
+    // The dash shows it as the ping to the services.
+    public static int LastLatencyMs { get; private set; } = -1;
+
     public static bool IsOnline
     {
         get
@@ -97,10 +101,12 @@ public static class Connectivity
             }
 
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            var watch = System.Diagnostics.Stopwatch.StartNew();
             using var response = await client.GetAsync(PingUrl);
 
             if (response.IsSuccessStatusCode)
             {
+                LastLatencyMs = (int)watch.ElapsedMilliseconds;
                 SetOnline();
                 return true;
             }

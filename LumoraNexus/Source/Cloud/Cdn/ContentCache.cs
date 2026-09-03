@@ -221,17 +221,23 @@ public sealed class ContentCache : IDisposable
     {
         try
         {
+            // This path does not go through LumoraClient, so it announces itself: otherwise a texture
+            // streaming straight off a URL would be invisible to the Debug screen and the world's
+            // load readout. -xlinka
+            TransferRegistry.BeginDownload(hash);
             using var http = new HttpClient();
             var bytes = await http.GetByteArrayAsync(uri, ct);
 
             Store(hash, bytes, persisted: false);
             await Persist(hash, bytes);
 
+            TransferRegistry.EndDownload(hash, ok: true);
             ContentReady?.Invoke(hash);
             return bytes;
         }
         catch
         {
+            TransferRegistry.EndDownload(hash, ok: false);
             return null;
         }
     }

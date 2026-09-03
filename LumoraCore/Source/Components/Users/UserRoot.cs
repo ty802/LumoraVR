@@ -182,19 +182,60 @@ public class UserRoot : Component
         }
     }
 
-    // keeps the head world position fixed, matching VR comfort expectations for snap and smooth turning
+    private TransformStreamDriver _rootStreamDriver = null!;
+
+    // A TransformStreamDriver sharing the root slot means the Root stream is the transport for the root
+    // transform. Turning has to write SILENTLY then, or the same rotation goes out over the stream AND the
+    // delta channel and the two arrive a frame apart. Re-checks until the driver is found (it is attached
+    // during the avatar build), then caches. Same rule the character controller hook follows when it writes
+    // walking motion onto this slot. -xlinka
+    private bool RootIsStreamed()
+    {
+        if (_rootStreamDriver == null || _rootStreamDriver.IsDestroyed)
+            _rootStreamDriver = Slot?.GetComponent<TransformStreamDriver>()!;
+        return _rootStreamDriver != null && !_rootStreamDriver.IsDestroyed;
+    }
+
+    private void WriteRootRotation(floatQ rotation)
+    {
+        if (RootIsStreamed())
+            Slot.SetGlobalRotationSilently(rotation);
+        else
+            Slot.GlobalRotation = rotation;
+    }
+
+    private void WriteRootPosition(float3 position)
+    {
+        if (RootIsStreamed())
+            Slot.SetGlobalPositionSilently(position);
+        else
+            Slot.GlobalPosition = position;
+    }
+
+    // Below a hundredth of a millimetre the pivot correction is float noise, and paying it every frame
+    // would put a transform write (and a hook update) on the root for every frame of mouse look.
+    private const float PivotCorrectionSq = 1e-10f;
+
+    // Rotate the WHOLE rig and keep the head where it is. Everything tracked hangs off this slot in
+    // user-root space - head, controllers, hands, the avatar - so turning the root is what carries them
+    // all round together, and pinning the head is what makes it read as turning in place rather than
+    // being swung around a pole. This is the one rotate a turn goes through, snap, smooth or mouse.
     public void RotateAroundHead(floatQ deltaRotation)
     {
         if (Slot == null)
             return;
 
-        var headBefore = HeadPosition;
-        Slot.GlobalRotation = (deltaRotation * Slot.GlobalRotation).Normalized;
-        var headAfter = HeadPosition;
+        // Resolved once: desktop look comes through here every frame the mouse moves, and the body-node
+        // lookup behind HeadSlot is a registry walk. No head (rig still building) pivots on the root, which
+        // is what a plain rotation write would have done anyway.
+        var head = HeadSlot;
+        var pivot = head != null ? head.GlobalPosition : Slot.GlobalPosition;
 
-        var offset = headBefore - headAfter;
-        if (offset.LengthSquared > 0f)
-            Slot.GlobalPosition += offset;
+        WriteRootRotation((deltaRotation * Slot.GlobalRotation).Normalized);
+
+        var offset = pivot - (head != null ? head.GlobalPosition : Slot.GlobalPosition);
+        if (offset.LengthSquared > PivotCorrectionSq)
+            WriteRootPosition(Slot.GlobalPosition + offset);
     }
 
     public void RotateYawAroundHead(float yawRadians)
@@ -468,10 +509,10 @@ public class UserRoot : Component
         var delta = (rotation * current.Inverse).Normalized;
 
         var pivot = GetGlobalPosition(node);
-        Slot.GlobalRotation = (delta * Slot.GlobalRotation).Normalized;
+        WriteRootRotation((delta * Slot.GlobalRotation).Normalized);
         var moved = pivot - GetGlobalPosition(node);
-        if (moved.LengthSquared > 0f)
-            Slot.GlobalPosition += moved;
+        if (moved.LengthSquared > PivotCorrectionSq)
+            WriteRootPosition(Slot.GlobalPosition + moved);
     }
 
     public override void OnUpdate(float delta)

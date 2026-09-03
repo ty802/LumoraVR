@@ -131,10 +131,14 @@ public record GroupInfo
 {
     [JsonPropertyName("id")] public string Id { get; init; } = "";
     [JsonPropertyName("name")] public string Name { get; init; } = "";
+    // 2 to 6 characters, uppercase. The short form that rides a nametag. -xlinka
+    [JsonPropertyName("tag")] public string Tag { get; init; } = "";
     [JsonPropertyName("description")] public string Description { get; init; } = "";
     [JsonPropertyName("ownerId")] public string OwnerId { get; init; } = "";
     [JsonPropertyName("visibility")] public string Visibility { get; init; } = "Public";
     [JsonPropertyName("iconHash")] public string? IconHash { get; init; }
+    // "#RRGGBB". Drives the card chip and the nametag card fill.
+    [JsonPropertyName("color")] public string Color { get; init; } = "";
     [JsonPropertyName("storageQuotaBytes")] public long StorageQuotaBytes { get; init; }
     [JsonPropertyName("usedStorageBytes")] public long UsedStorageBytes { get; init; }
     [JsonPropertyName("memberCount")] public int MemberCount { get; init; }
@@ -143,20 +147,118 @@ public record GroupInfo
     // Storage state from the owner's billing: "Active" | "Grace" | "Locked", or null on list rows. -xlinka
     [JsonPropertyName("storageStatus")] public string? StorageStatus { get; init; }
     [JsonPropertyName("storageLockAt")] public DateTime? StorageLockAt { get; init; }
+    // The caller's own slice of the pool, 0 when not a member.
+    [JsonPropertyName("myAllocatedBytes")] public long MyAllocatedBytes { get; init; }
+    [JsonPropertyName("myUsedBytes")] public long MyUsedBytes { get; init; }
 }
 
 public record GroupMemberInfo
 {
     [JsonPropertyName("userId")] public string UserId { get; init; } = "";
+    // Carried on the member list so the page never resolves names one profile at a time. -xlinka
+    [JsonPropertyName("username")] public string Username { get; init; } = "";
     [JsonPropertyName("role")] public string Role { get; init; } = "Member";
     [JsonPropertyName("joinedAt")] public DateTime JoinedAt { get; init; }
+    [JsonPropertyName("allocatedBytes")] public long AllocatedBytes { get; init; }
+    [JsonPropertyName("usedBytes")] public long UsedBytes { get; init; }
 }
 
 // a pending join request on a private group (from GET /api/groups/{id}/requests). -xlinka
 public record GroupJoinRequestInfo
 {
     [JsonPropertyName("userId")] public string UserId { get; init; } = "";
+    [JsonPropertyName("username")] public string Username { get; init; } = "";
     [JsonPropertyName("requestedAt")] public DateTime RequestedAt { get; init; }
+}
+
+// One invite out of a group, as its moderators see it (GET /api/groups/{id}/invites). The group is
+// already on screen there, so the row is about the person.
+public record GroupInviteInfo
+{
+    [JsonPropertyName("userId")] public string UserId { get; init; } = "";
+    [JsonPropertyName("username")] public string Username { get; init; } = "";
+    [JsonPropertyName("invitedBy")] public string InvitedBy { get; init; } = "";
+    [JsonPropertyName("invitedAt")] public DateTime InvitedAt { get; init; }
+}
+
+// An invite waiting for the caller (GET /api/groups/invites/mine). The other way round: the person is
+// known and the row is about the group, so it carries just enough of one to draw a card. -xlinka
+public record GroupInviteSummary
+{
+    [JsonPropertyName("groupId")] public string GroupId { get; init; } = "";
+    [JsonPropertyName("name")] public string Name { get; init; } = "";
+    [JsonPropertyName("tag")] public string Tag { get; init; } = "";
+    [JsonPropertyName("iconHash")] public string? IconHash { get; init; }
+    [JsonPropertyName("color")] public string Color { get; init; } = "";
+    [JsonPropertyName("invitedBy")] public string InvitedBy { get; init; } = "";
+    [JsonPropertyName("invitedAt")] public DateTime InvitedAt { get; init; }
+}
+
+// What POST /api/groups/{id}/join answers with: a public group lets you in, a private one files a
+// request, and an invite to either lets you straight in. The page has to say which happened. -xlinka
+public record GroupJoinResult
+{
+    [JsonPropertyName("joined")] public bool Joined { get; init; }
+    [JsonPropertyName("requested")] public bool Requested { get; init; }
+}
+
+public record GroupEventInfo
+{
+    [JsonPropertyName("id")] public string Id { get; init; } = "";
+    [JsonPropertyName("groupId")] public string GroupId { get; init; } = "";
+    [JsonPropertyName("title")] public string Title { get; init; } = "";
+    [JsonPropertyName("description")] public string Description { get; init; } = "";
+    [JsonPropertyName("worldName")] public string WorldName { get; init; } = "";
+    [JsonPropertyName("startsAt")] public DateTime StartsAt { get; init; }
+    [JsonPropertyName("endsAt")] public DateTime? EndsAt { get; init; }
+    [JsonPropertyName("hostUserId")] public string HostUserId { get; init; } = "";
+    [JsonPropertyName("createdAt")] public DateTime CreatedAt { get; init; }
+}
+
+public record GroupAnnouncementInfo
+{
+    [JsonPropertyName("id")] public string Id { get; init; } = "";
+    [JsonPropertyName("groupId")] public string GroupId { get; init; } = "";
+    [JsonPropertyName("text")] public string Text { get; init; } = "";
+    [JsonPropertyName("authorId")] public string AuthorId { get; init; } = "";
+    [JsonPropertyName("createdAt")] public DateTime CreatedAt { get; init; }
+}
+
+public record GroupBanInfo
+{
+    [JsonPropertyName("userId")] public string UserId { get; init; } = "";
+    [JsonPropertyName("username")] public string Username { get; init; } = "";
+    [JsonPropertyName("bannedBy")] public string BannedBy { get; init; } = "";
+    [JsonPropertyName("bannedAt")] public DateTime BannedAt { get; init; }
+    [JsonPropertyName("reason")] public string Reason { get; init; } = "";
+}
+
+// The body of PATCH /api/groups/{id}. Every field is nullable and a null means "leave this one alone",
+// so the admin page sends the three things somebody edited instead of re-posting the whole group and
+// racing another admin's edit of a field it never touched. -xlinka
+public record GroupPatch
+{
+    [JsonPropertyName("name")] public string? Name { get; init; }
+    [JsonPropertyName("tag")] public string? Tag { get; init; }
+    [JsonPropertyName("description")] public string? Description { get; init; }
+    [JsonPropertyName("iconHash")] public string? IconHash { get; init; }
+    [JsonPropertyName("color")] public string? Color { get; init; }
+    [JsonPropertyName("visibility")] public string? Visibility { get; init; }
+
+    public bool IsEmpty => Name == null && Tag == null && Description == null
+        && IconHash == null && Color == null && Visibility == null;
+}
+
+// The group a user has chosen to wear, as it rides their public profile. This is what the nametag card
+// draws from, so it carries everything the card needs and nothing else. -xlinka
+public record RepresentedGroupInfo
+{
+    [JsonPropertyName("id")] public string Id { get; init; } = "";
+    [JsonPropertyName("tag")] public string Tag { get; init; } = "";
+    [JsonPropertyName("name")] public string Name { get; init; } = "";
+    [JsonPropertyName("color")] public string Color { get; init; } = "";
+    [JsonPropertyName("iconHash")] public string? IconHash { get; init; }
+    [JsonPropertyName("role")] public string Role { get; init; } = "";
 }
 
 // public view of a user incl. PLATFORM moderation ban status (from GET /api/user/{id}). NOT world bans. -xlinka
@@ -173,6 +275,8 @@ public record PublicUserInfo
     [JsonPropertyName("isPublicBanned")] public bool IsPublicBanned { get; init; }
     [JsonPropertyName("isSpectatorBanned")] public bool IsSpectatorBanned { get; init; }
     [JsonPropertyName("isMuteBanned")] public bool IsMuteBanned { get; init; }
+    // Null when the user is not wearing a group.
+    [JsonPropertyName("representedGroup")] public RepresentedGroupInfo? RepresentedGroup { get; init; }
 }
 
 public record UploadHandle
@@ -268,6 +372,56 @@ public record AssetRef
     [JsonPropertyName("tags")] public List<string> Tags { get; init; } = new();
     [JsonPropertyName("thumbnailHash")] public string? ThumbnailHash { get; init; }
     [JsonPropertyName("sizeBytes")] public long SizeBytes { get; init; }
+    // What the save was: "Avatar" | "Object" | "World", and a world's mode. Empty on rows written
+    // before the service learned to stamp them. -xlinka
+    [JsonPropertyName("kind")] public string Kind { get; init; } = "";
+    [JsonPropertyName("mode")] public string? Mode { get; init; }
+    // Search rows carry where they live; a folder listing leaves this null.
+    [JsonPropertyName("path")] public string? Path { get; init; }
+}
+
+public record VariantState
+{
+    [JsonPropertyName("variantId")] public string? VariantId { get; init; }
+    [JsonPropertyName("state")] public string State { get; init; } = "Pending";
+    [JsonPropertyName("resultHash")] public string? ResultHash { get; init; }
+    [JsonPropertyName("sizeBytes")] public long SizeBytes { get; init; }
+    public bool IsReady => State == "Ready" && !string.IsNullOrEmpty(ResultHash);
+    public bool IsSkipped => State == "Skipped";
+}
+
+public record VariantJob
+{
+    [JsonPropertyName("assetHash")] public string AssetHash { get; init; } = "";
+    [JsonPropertyName("variantId")] public string VariantId { get; init; } = "";
+    [JsonPropertyName("attempt")] public int Attempt { get; init; }
+}
+
+// One asset a save depends on, told to the service so a shared texture is stored and counted once.
+public record AssetManifestEntry
+{
+    [JsonPropertyName("hash")] public string Hash { get; init; } = "";
+    [JsonPropertyName("name")] public string Name { get; init; } = "";
+    [JsonPropertyName("extension")] public string Extension { get; init; } = "";
+    [JsonPropertyName("type")] public string Type { get; init; } = "other";
+    [JsonPropertyName("sizeBytes")] public long SizeBytes { get; init; }
+}
+
+public record FolderSummary
+{
+    [JsonPropertyName("id")] public string Id { get; init; } = "";
+    [JsonPropertyName("name")] public string Name { get; init; } = "";
+    [JsonPropertyName("itemCount")] public int ItemCount { get; init; }
+    [JsonPropertyName("folderCount")] public int FolderCount { get; init; }
+    [JsonPropertyName("createdAt")] public DateTime CreatedAt { get; init; }
+    [JsonPropertyName("path")] public string? Path { get; init; }
+}
+
+// One folder's direct children, or the rows a search found.
+public record FolderContents
+{
+    [JsonPropertyName("folders")] public List<FolderSummary> Folders { get; init; } = new();
+    [JsonPropertyName("items")] public List<AssetRef> Items { get; init; } = new();
 }
 
 public record UserFolder

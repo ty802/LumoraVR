@@ -11,15 +11,15 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Templates
 {
-    /// <summary>
-    /// Manages userspace world creation and setup.
-    /// </summary>
+    // Userspace is the private overlay world every panel that follows the user lives in: the dash, the
+    // pointer rig, the virtual keyboard.
     public static class Userspace
     {
-        /// <summary>
-        /// Setup the userspace world for the engine.
-        /// Userspace is a private overlay world for UI and settings.
-        /// </summary>
+        // The slot every userspace panel hangs off. Pointers restrict themselves to this subtree while
+        // any of those panels is up, which is what keeps the world behind them unclickable while both
+        // the dash and the keyboard stay hittable. Null until the world is built. -xlinka
+        public static Slot? LocalRoot { get; private set; }
+
         public static World SetupUserspace(Engine engine)
         {
             Logger.Log("Userspace: Setting up userspace world");
@@ -31,6 +31,7 @@ namespace Lumora.Core.Templates
 
                 // Create root structure
                 var userspaceRoot = w.RootSlot.AddSlot("UserspaceRoot");
+                LocalRoot = userspaceRoot;
 
                 // Userspace dashboard root. UserspaceDashboard owns the open
                 // state and positions the Helio dash surface in front of the
@@ -38,6 +39,14 @@ namespace Lumora.Core.Templates
                 var dashboardSlot = userspaceRoot.AddSlot("UserspaceDashboard");
                 var dashboard = dashboardSlot.AttachComponent<UserspaceDashboard>();
                 dashboard.Close();
+
+                // The virtual keyboard, parked inactive. It watches the focused text field itself and
+                // puts itself in front of you in VR when one appears, so nothing has to open it. It sits
+                // beside the dash rather than inside it because the field being typed into is just as
+                // often on a world panel or an inspector. -xlinka
+                var keyboardSlot = userspaceRoot.AddSlot("Virtual Keyboard");
+                keyboardSlot.ActiveSelf.Value = false;
+                keyboardSlot.AttachComponent<VrKeyboard>();
 
                 // The radial context menu lives per-user in the game world
                 // (built by AvatarAssembler, opened by HandTool). Items
@@ -116,6 +125,11 @@ namespace Lumora.Core.Templates
 
             var pointer = controller.AttachComponent<UserspacePointer>();
             pointer.Side.Value = side;
+
+            // A hand that can point can also pick up userspace items (the keyboard); the pointer
+            // drives it off the grab action, and the dash itself refuses grabs so only things that
+            // opt in ride the hand.
+            controller.AttachComponent<Grabber>();
         }
     }
 }

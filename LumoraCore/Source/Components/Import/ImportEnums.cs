@@ -12,3 +12,29 @@ public enum ModelMaterialType
     Lit,
     Unlit,
 }
+
+// How the two eyes are packed into one frame. A stereo video is one texture: half of it is the left
+// eye and half is the right, and which half is which is not written down anywhere in the file, so the
+// importer has to be told. Custom is for a layout the player sets up by hand afterwards. -xlinka
+public enum StereoLayout
+{
+    None,
+    Horizontal_LR,
+    Vertical_LR,
+    Horizontal_RL,
+    Vertical_RL,
+    Custom,
+}
+
+// The surface the frame is mapped onto. Flat is a screen; the two spheres are equirectangular, full
+// or front half.
+public enum VideoProjection
+{
+    Flat,
+    Sphere360,
+    Sphere180,
+}
+
+// What the video dialog decided, handed to whichever handler the platform registered. Stream is set
+// when the source is a URL: nothing is downloaded first, the decoder pulls as it plays.
+public sealed record VideoImportOptions(bool Stream, StereoLayout Layout, VideoProjection Projection);

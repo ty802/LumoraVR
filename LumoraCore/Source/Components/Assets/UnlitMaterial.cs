@@ -15,6 +15,22 @@ public class UnlitMaterial : MaterialProvider, ICommonMaterial
 
     public readonly Sync<float2> TextureOffset;
 
+    // STEREO TEXTURE TRANSFORM
+
+    // A stereo frame is one picture with an eye in each half, so each eye needs its own window into it.
+    // While this is on the per-eye pair REPLACES TextureScale/TextureOffset instead of stacking with it,
+    // so there is one transform in play rather than two that quietly multiply. On a flat screen the view
+    // index is always 0, which means a desktop user sees the left eye. -xlinka
+    public readonly Sync<bool> StereoTextureTransform;
+
+    public readonly Sync<float2> LeftEyeTextureScale;
+
+    public readonly Sync<float2> LeftEyeTextureOffset;
+
+    public readonly Sync<float2> RightEyeTextureScale;
+
+    public readonly Sync<float2> RightEyeTextureOffset;
+
     // COLOR AND TEXTURE
 
     public readonly Sync<colorHDR> TintColor;
@@ -56,6 +72,12 @@ public class UnlitMaterial : MaterialProvider, ICommonMaterial
         TextureScale = new Sync<float2>(this, float2.One);
         TextureOffset = new Sync<float2>(this, float2.Zero);
 
+        StereoTextureTransform = new Sync<bool>(this, false);
+        LeftEyeTextureScale = new Sync<float2>(this, float2.One);
+        LeftEyeTextureOffset = new Sync<float2>(this, float2.Zero);
+        RightEyeTextureScale = new Sync<float2>(this, float2.One);
+        RightEyeTextureOffset = new Sync<float2>(this, float2.Zero);
+
         TintColor = new Sync<colorHDR>(this, colorHDR.White);
         Texture = new AssetRef<TextureAsset>(this);
         UseVertexColor = new Sync<bool>(this, false);
@@ -80,6 +102,12 @@ public class UnlitMaterial : MaterialProvider, ICommonMaterial
 
         asset.SetFloat2("TextureScale", TextureScale.Value);
         asset.SetFloat2("TextureOffset", TextureOffset.Value);
+
+        asset.SetBool("StereoTextureTransform", StereoTextureTransform.Value);
+        asset.SetFloat2("LeftEyeTextureScale", LeftEyeTextureScale.Value);
+        asset.SetFloat2("LeftEyeTextureOffset", LeftEyeTextureOffset.Value);
+        asset.SetFloat2("RightEyeTextureScale", RightEyeTextureScale.Value);
+        asset.SetFloat2("RightEyeTextureOffset", RightEyeTextureOffset.Value);
 
         asset.SetColor("TintColor", TintColor.Value);
         asset.SetTexture("Texture", textureAsset!);

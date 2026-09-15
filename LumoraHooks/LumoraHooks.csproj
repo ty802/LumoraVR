@@ -15,4 +15,9 @@
   <ItemGroup>
     <ProjectReference Include="..\LumoraCore\LumoraCore.csproj" />
   </ItemGroup>
+  <!-- Desktop video decoding. The mobile builds have no libvlc binary, so the package and the backend
+       that uses it are both compiled out there (LibVlcBackend.cs is behind GODOT_PC). -xlinka -->
+  <ItemGroup Condition="'$(GodotTargetPlatform)' != 'android' And '$(GodotTargetPlatform)' != 'ios'">
+    <PackageReference Include="LibVLCSharp" Version="3.10.1" />
+  </ItemGroup>
 </Project>

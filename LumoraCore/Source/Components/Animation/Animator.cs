@@ -7,6 +7,7 @@ using Helio.UI;
 using Lumora.Core.Assets;
 using Lumora.Core.Assets.Animation;
 using Lumora.Core.Math;
+using Lumora.Core.Media;
 using Lumora.Core.Persistence;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
@@ -26,7 +27,7 @@ namespace Lumora.Core.Components;
 // and TypeMigrations rewrites it on the way in.
 [SaveTypeVersion(1)]
 [ComponentCategory("Animation")]
-public class Animator : Component, ICustomInspectorUI
+public class Animator : Component, ICustomInspectorUI, IPlayable
 {
     public readonly AssetRef<AnimationAsset> Clip;
 
@@ -95,6 +96,34 @@ public class Animator : Component, ICustomInspectorUI
         get => Playback.Speed;
         set => Playback.Speed = value;
     }
+
+    // TRANSPORT SEAM
+    //
+    // The same buttons, seekers and drivers that run a video run this. Where the two vocabularies
+    // disagree the interface wins EXPLICITLY rather than the public method changing meaning under the
+    // inspector: Play here has always meant "carry on" and the interface's Play means "from the top",
+    // which is Restart. A clip is never a stream, so ClipLength is always a real number. -xlinka
+    double IPlayable.ClipLength => Duration;
+
+    bool IPlayable.IsStreaming => false;
+
+    bool IPlayable.IsPlaying => Playback.IsPlaying;
+
+    float IPlayable.NormalizedPosition
+    {
+        get => Playback.NormalizedPosition;
+        set => Playback.NormalizedPosition = value;
+    }
+
+    bool IPlayable.Loop
+    {
+        get => Playback.LoopMode != PlaybackLoopMode.Once;
+        set => Playback.LoopMode = value ? PlaybackLoopMode.Loop : PlaybackLoopMode.Once;
+    }
+
+    void IPlayable.Play() => Playback.Play();
+
+    void IPlayable.Resume() => Playback.Resume();
 
     [SyncMethod]
     public void Play() => Playback.Resume();

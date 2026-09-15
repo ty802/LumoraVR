@@ -24,9 +24,10 @@ internal sealed class LoadingSkinWatch
     private Dictionary<int, ulong>? _since;
     private HashSet<int>? _reported;
 
-    public void Clear(int surface)
+    public void Clear(int surface, string? owner = null)
     {
-        _since?.Remove(surface);
+        if (_since != null && _since.Remove(surface, out ulong since))
+            LumoraLogger.Log($"Loading skin off: '{owner}' surface {surface} after {(Time.GetTicksMsec() - since)}ms");
     }
 
     public void Note(int surface, IAssetProvider? provider, string? owner)

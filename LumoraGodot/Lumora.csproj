@@ -10,7 +10,22 @@
     <PackageReference Include="Steamworks.NET" Version="2024.8.0" Condition="'$(GodotTargetPlatform)' != 'android' And '$(GodotTargetPlatform)' != 'ios'" />
     <PackageReference Include="LiteNetLib" Version="2.0.2" />
     <PackageReference Include="Wasmtime" Version="22.0.0" />
+    <!-- libvlc natives for the desktop video backend. The Windows package drops libvlc/win-x64 next to
+         the assemblies; Linux uses the system libvlc, so there is no package for it. -xlinka -->
+    <PackageReference Include="LibVLCSharp" Version="3.10.1" Condition="'$(GodotTargetPlatform)' != 'android' And '$(GodotTargetPlatform)' != 'ios'" />
+    <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.23.1" Condition="'$(GodotTargetPlatform)' != 'android' And '$(GodotTargetPlatform)' != 'ios'" />
   </ItemGroup>
+  <!-- The libvlc package ships x64, x86 and arm64 side by side, 284 MB of natives of which an export
+       can only ever load one set. Everything but the architecture being built is switched off; the
+       package's own targets only fill these in when they are still empty. -xlinka -->
+  <PropertyGroup Condition="'$(GodotTargetPlatform)' != 'android' And '$(GodotTargetPlatform)' != 'ios'">
+    <VlcWindowsX86Enabled>false</VlcWindowsX86Enabled>
+    <VlcWindowsArm64Enabled>false</VlcWindowsArm64Enabled>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != '' And $(RuntimeIdentifier.Contains('arm64'))">
+    <VlcWindowsArm64Enabled>true</VlcWindowsArm64Enabled>
+    <VlcWindowsX64Enabled>false</VlcWindowsX64Enabled>
+  </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\LumoraCore\LumoraCore.csproj" />
     <ProjectReference Include="..\LumoraHooks\LumoraHooks.csproj" />

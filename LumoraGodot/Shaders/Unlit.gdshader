@@ -12,12 +12,27 @@ uniform bool use_vertex_color = false;
 uniform bool alpha_clip = false;
 uniform float alpha_cutoff : hint_range(0.0, 1.0) = 0.5;
 
-void vertex() {
-	UV = UV * uv_scale + uv_offset;
-}
+// A stereo frame holds both eyes in one picture, so each eye gets its own window into the texture.
+// The pair REPLACES uv_scale/uv_offset while it is on: one transform, not two that multiply. -xlinka
+uniform bool stereo_texture_transform = false;
+uniform vec2 left_eye_texture_scale = vec2(1.0);
+uniform vec2 left_eye_texture_offset = vec2(0.0);
+uniform vec2 right_eye_texture_scale = vec2(1.0);
+uniform vec2 right_eye_texture_offset = vec2(0.0);
 
 void fragment() {
-	vec4 tex = use_albedo_texture ? texture(albedo_texture, UV) : vec4(1.0);
+	// The eye split has to be a fragment decision because VIEW_INDEX is per view. Moving the plain
+	// transform down here with it costs nothing: an affine UV map interpolates to the same numbers
+	// whether it is applied per vertex or per pixel. Outside multiview VIEW_INDEX is 0, so a flat
+	// screen shows the left eye. -xlinka
+	vec2 uv = UV * uv_scale + uv_offset;
+	if (stereo_texture_transform) {
+		uv = VIEW_INDEX == 0
+			? UV * left_eye_texture_scale + left_eye_texture_offset
+			: UV * right_eye_texture_scale + right_eye_texture_offset;
+	}
+
+	vec4 tex = use_albedo_texture ? texture(albedo_texture, uv) : vec4(1.0);
 	vec4 out_color = albedo_color * tex;
 
 	if (use_vertex_color) {

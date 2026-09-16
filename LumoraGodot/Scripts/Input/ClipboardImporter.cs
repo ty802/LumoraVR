@@ -24,6 +24,13 @@ public partial class ClipboardImporter : Node
 {
     private static readonly HashSet<string> ClipboardModelExtensions = new(ModelImporter.SupportedExtensions, StringComparer.OrdinalIgnoreCase);
 
+    // The same live-media schemes AssetHelper knows, spelled as prefixes because a pasted string is
+    // classified before anything tries to parse it as a URI.
+    private static readonly string[] StreamingUrlPrefixes =
+    {
+        "rtsp://", "rtmp://", "rtp://", "mms://", "srt://", "udp://",
+    };
+
     // Windows clipboard P/Invoke for file drops
     private const uint CF_HDROP = 15;
 
@@ -122,12 +129,14 @@ public partial class ClipboardImporter : Node
     {
         ImportHandlers.Image = new ImageHandler(this);
         ImportHandlers.Model = new ModelHandler(this);
+        ImportHandlers.Video = new VideoHandler(this);
+        ImportHandlers.Audio = new AudioHandler(this);
         ImportHandlers.Raw = new RawFileHandler(this);
         // Bridge the real OS clipboard into the core's world-side Ctrl+V trigger
         // (Lumora.Core.Components.ClipboardImporter). That core component owns the
         // keystroke now, so this node no longer self-triggers paste in _Input. - xlinka
         ImportHandlers.Clipboard = new ClipboardBridge(this);
-        GD.Print("ClipboardImporter: Registered Image/Model/Raw import + clipboard bridge");
+        GD.Print("ClipboardImporter: Registered Image/Model/Video/Audio/Raw import + clipboard bridge");
     }
 
     private sealed class ClipboardBridge : IClipboardPasteHandler
@@ -178,6 +187,22 @@ public partial class ClipboardImporter : Node
                 SetupIK = isAvatar,
             };
         }
+    }
+
+    private sealed class VideoHandler : IVideoImportHandler
+    {
+        private readonly ClipboardImporter _owner;
+        public VideoHandler(ClipboardImporter owner) { _owner = owner; }
+        public Task ImportAsync(Slot slot, string source, VideoImportOptions options)
+            => _owner.PopulateVideoSlotAsync(slot, source, options);
+    }
+
+    private sealed class AudioHandler : IAudioImportHandler
+    {
+        private readonly ClipboardImporter _owner;
+        public AudioHandler(ClipboardImporter owner) { _owner = owner; }
+        public Task ImportAsync(Slot slot, string source)
+            => _owner.PopulateAudioSlotAsync(slot, source);
     }
 
     private sealed class RawFileHandler : IRawFileImportHandler
@@ -340,6 +365,14 @@ public partial class ClipboardImporter : Node
             content.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
         {
             return ClipboardContentType.Url;
+        }
+
+        // Live media protocols. There is no file behind one of these, so pasting one used to land in
+        // the text branch and become a floating string instead of a stream. -xlinka
+        foreach (var scheme in StreamingUrlPrefixes)
+        {
+            if (content.StartsWith(scheme, StringComparison.OrdinalIgnoreCase))
+                return ClipboardContentType.Url;
         }
 
         return ClipboardContentType.Text;
@@ -510,6 +543,99 @@ public partial class ClipboardImporter : Node
         OnAssetImported?.Invoke(filePath, imageSlot);
 
         QueueTextureVariants(localUri, imageProvider.IsNormalMap.Value);
+    }
+
+    // A video is never downloaded first: the player streams a URL as it plays, and a local file is
+    // copied into the local store the way an image is so that the ADDRESS travels and the other peers
+    // can fetch it. A path handed straight to the provider would only ever play on this machine.
+    // - xlinka
+    public async Task PopulateVideoSlotAsync(Slot videoSlot, string source, VideoImportOptions options)
+    {
+        if (videoSlot == null || videoSlot.IsDestroyed)
+        {
+            GD.PrintErr($"ClipboardImporter: video import target for {source} is gone");
+            return;
+        }
+
+        GD.Print($"ClipboardImporter: Populating video slot: {source} ({options.Projection}/{options.Layout})");
+
+        Uri.TryCreate(source, UriKind.Absolute, out var parsed);
+        bool isLocalFile = parsed == null || parsed.IsFile;
+
+        string localUri = null!;
+        if (isLocalFile && _localDB != null)
+        {
+            var path = parsed != null && parsed.IsFile ? parsed.LocalPath : source;
+            if (File.Exists(path))
+            {
+                localUri = await _localDB.ImportLocalAssetAsync(path, LocalDB.ImportLocation.Copy);
+            }
+        }
+
+        if (videoSlot.IsDestroyed)
+            return;
+
+        var player = videoSlot.AttachComponent<Lumora.Core.Components.Media.VideoPlayer>();
+        player.Projection.Value = options.Projection;
+        player.StereoLayout.Value = options.Layout;
+
+        if (!string.IsNullOrEmpty(localUri))
+        {
+            player.SetSource(new Uri(localUri), stream: false);
+        }
+        else if (parsed != null && !isLocalFile)
+        {
+            player.SetSource(parsed, options.Stream);
+        }
+        else
+        {
+            player.SetSource(source);
+        }
+
+        GD.Print($"ClipboardImporter: Video populated from {localUri ?? source}");
+        OnAssetImported?.Invoke(source, videoSlot);
+    }
+
+    // A clip is copied into the local store the way an image is, so the ADDRESS travels and the other
+    // peers can fetch the bytes by hash. A path handed straight to the provider would only ever make a
+    // sound on this machine. Nothing autoplays: a folder of sound files dropped into a room all
+    // starting at once is not an import, it is an accident. -xlinka
+    public async Task PopulateAudioSlotAsync(Slot audioSlot, string source)
+    {
+        if (audioSlot == null || audioSlot.IsDestroyed)
+        {
+            GD.PrintErr($"ClipboardImporter: audio import target for {source} is gone");
+            return;
+        }
+
+        GD.Print($"ClipboardImporter: Populating audio slot: {source}");
+
+        Uri.TryCreate(source, UriKind.Absolute, out var parsed);
+        bool isLocalFile = parsed == null || parsed.IsFile;
+
+        string localUri = null!;
+        if (isLocalFile && _localDB != null)
+        {
+            var path = parsed != null && parsed.IsFile ? parsed.LocalPath : source;
+            if (File.Exists(path))
+            {
+                localUri = await _localDB.ImportLocalAssetAsync(path, LocalDB.ImportLocation.Copy);
+            }
+        }
+
+        if (audioSlot.IsDestroyed)
+            return;
+
+        var player = audioSlot.AttachComponent<Lumora.Core.Components.Media.AudioPlayer>();
+        if (!string.IsNullOrEmpty(localUri))
+            player.SetSource(new Uri(localUri));
+        else if (parsed != null)
+            player.SetSource(parsed);
+        else
+            player.SetSource(source);
+
+        GD.Print($"ClipboardImporter: Audio populated from {localUri ?? source}");
+        OnAssetImported?.Invoke(source, audioSlot);
     }
 
     // Deliberately not awaited. Decoding a large image and filtering four mip chains off it is
@@ -727,6 +853,25 @@ public partial class ClipboardImporter : Node
     private async Task HandleUrl(string url)
     {
         GD.Print($"ClipboardImporter: Handling URL: {url}");
+
+        // A video link is PLAYED, not fetched. A service page has no file behind it at all, a live
+        // protocol has no end to download, and a two hour mp4 would be a two gigabyte wait before the
+        // first frame. Straight to the dialog, same placement a dropped file gets. -xlinka
+        Uri.TryCreate(url, UriKind.Absolute, out var parsed);
+        if (AssetHelper.IsVideoStreamingService(parsed)
+            || AssetHelper.IsStreamingProtocol(parsed)
+            || AssetHelper.IdentifyClass(url) == AssetClass.Video)
+        {
+            var videoWorld = _engine?.WorldManager?.FocusedWorld;
+            if (videoWorld == null)
+            {
+                GD.PrintErr("ClipboardImporter: No focused world for video URL");
+                return;
+            }
+            var (videoPos, videoRot) = GetSpawnPose();
+            UniversalImporter.Import(url, videoWorld, videoPos, videoRot);
+            return;
+        }
 
         var extension = GetExtensionFromUrl(url);
 

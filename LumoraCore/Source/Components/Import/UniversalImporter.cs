@@ -39,6 +39,9 @@ public static class UniversalImporter
             case AssetClass.Video:
                 SpawnVideoDialog(list, world, position, rotation, silent);
                 break;
+            case AssetClass.Audio:
+                SpawnAudioItems(list, world, position, rotation);
+                break;
             // PointCloud and the rest have no import pipeline yet. PointCloud in particular
             // can NOT go through the model dialog - its extensions aren't in ModelImporter's
             // supported set and it throws. Route every unsupported class to an honest notice
@@ -54,7 +57,6 @@ public static class UniversalImporter
             case AssetClass.PointCloud:
             case AssetClass.Unknown:
             case AssetClass.Document:
-            case AssetClass.Audio:
             case AssetClass.Font:
             case AssetClass.Subtitle:
             case AssetClass.Animation:
@@ -69,6 +71,8 @@ public static class UniversalImporter
         }
     }
 
+    // path may be an http(s) link or a stream address rather than a file: a video plays from either,
+    // and AssetHelper.IdentifyClass reads a URL as a URL instead of running Path.GetExtension over it.
     public static void Import(string path, World world, float3 position, floatQ rotation, bool silent = false, bool rawFile = false)
     {
         var cls = rawFile ? AssetClass.Unknown : AssetHelper.IdentifyClass(path);
@@ -329,6 +333,39 @@ public static class UniversalImporter
             dialog.AutoScale.Value = true;
             dialog.RunImport();
         }
+    }
+
+    // No dialog. A video has to be asked about because a stereo 360 clip is just a wide picture until
+    // somebody says otherwise; a sound file has nothing of the kind to decide, so asking would be a
+    // page with one button on it. The handler is what knows how to store and spawn it, and its absence
+    // is the honest unsupported notice rather than a dead item. -xlinka
+    private static void SpawnAudioItems(List<string> files, World world, float3 position, floatQ rotation)
+    {
+        var handler = ImportHandlers.Audio;
+        if (handler == null)
+        {
+            Logger.Warn($"UniversalImporter: no audio pipeline - {files.Count} file(s) not imported.");
+            SpawnUnsupportedDialog(AssetClass.Audio, files, world, position, rotation);
+            return;
+        }
+
+        int rowSize = (int)System.Math.Max(1, System.Math.Ceiling(System.Math.Sqrt(files.Count)));
+        int index = 0;
+        foreach (var file in files)
+        {
+            var offset = GridOffset(ref index, rowSize);
+            var slot = world.RootSlot.AddSlot(NameFor(file));
+            slot.GlobalPosition = position + rotation * offset;
+            slot.GlobalRotation = rotation;
+            slot.GlobalScale = float3.One;
+            _ = handler.ImportAsync(slot, file);
+        }
+    }
+
+    private static string NameFor(string source)
+    {
+        var name = Path.GetFileName(source);
+        return string.IsNullOrEmpty(name) ? source : name;
     }
 
     private static void SpawnVideoDialog(List<string> files, World world, float3 position, floatQ rotation, bool silent)

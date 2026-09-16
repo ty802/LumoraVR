@@ -80,6 +80,7 @@ public static class NameplateBadgeRegistry
     {
         Register(new HostBadgeSource());
         Register(new RoleBadgeSource());
+        Register(new VoiceBadgeSource());
     }
 
     public static void Register(INameplateBadgeSource source)
@@ -162,7 +163,7 @@ public static class NameplateBadgeRegistry
 }
 
 // SHIPPING SOURCES
-// Two, and only the two that have a real signal behind them. A badge that cannot be derived from
+// Three, and only the three that have a real signal behind them. A badge that cannot be derived from
 // replicated state or from the gate is a badge that lies on somebody's plate.
 
 public static class NameplateBadgeColors
@@ -174,6 +175,11 @@ public static class NameplateBadgeColors
     public static readonly color Guest = new color(0.78f, 0.78f, 0.84f, 1f);
     public static readonly color Spectator = new color(0.6f, 0.6f, 0.66f, 1f);
     public static readonly color Ink = new color(0.06f, 0.07f, 0.09f, 1f);
+
+    public static readonly color Muted = new color(0.94f, 0.33f, 0.42f, 1f);
+    public static readonly color Whisper = new color(0.55f, 0.62f, 0.78f, 1f);
+    public static readonly color Shout = new color(0.96f, 0.71f, 0.29f, 1f);
+    public static readonly color Broadcast = new color(0.80f, 0.45f, 0.95f, 1f);
 
     public static color ForRole(string? roleName) => roleName switch
     {
@@ -247,4 +253,45 @@ internal sealed class RoleBadgeSource : INameplateBadgeSource
 
     private static string Initial(string? roleName)
         => string.IsNullOrEmpty(roleName) ? "?" : roleName!.Substring(0, 1).ToUpperInvariant();
+}
+
+
+// How loud this person is, and whether anything is coming out at all. Reads the same three answers the
+// audio path acts on, so the plate cannot claim someone is talking while the mixer is discarding them.
+// The muted chip wins over the mode chip: which mode a silenced person picked is not what a viewer
+// needs to know. Local mutes (this viewer blocking them) deliberately do NOT show here - that is your
+// setting on your machine, not a fact about them. -xlinka
+internal sealed class VoiceBadgeSource : INameplateBadgeSource
+{
+    public void CollectBadges(in NameplateBadgeContext context, List<NameplateBadge> output)
+    {
+        var user = context.User;
+        if (user == null || user.IsDestroyed)
+            return;
+
+        if (user.ActiveVoiceMode == Lumora.Core.Audio.VoiceMode.Mute
+            || user.IsMuted.Value || user.IsSilenced.Value)
+        {
+            output.Add(new NameplateBadge("voice", "M", NameplateBadgeColors.Muted,
+                NameplateBadgeColors.Ink, 2));
+            return;
+        }
+
+        // Normal is what everyone is by default, and a chip on every head is noise, not information.
+        switch (user.ActiveVoiceMode)
+        {
+            case Lumora.Core.Audio.VoiceMode.Whisper:
+                output.Add(new NameplateBadge("voice", "W", NameplateBadgeColors.Whisper,
+                    NameplateBadgeColors.Ink, 2));
+                break;
+            case Lumora.Core.Audio.VoiceMode.Shout:
+                output.Add(new NameplateBadge("voice", "S", NameplateBadgeColors.Shout,
+                    NameplateBadgeColors.Ink, 2));
+                break;
+            case Lumora.Core.Audio.VoiceMode.Broadcast:
+                output.Add(new NameplateBadge("voice", "B", NameplateBadgeColors.Broadcast,
+                    NameplateBadgeColors.Ink, 2));
+                break;
+        }
+    }
 }

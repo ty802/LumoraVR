@@ -64,7 +64,30 @@ public static class SettingsCatalog
     public static readonly SettingRange MouseSmoothing = new(0f, 0.95f, 0.01f);
     public static readonly SettingRange NoclipSpeed = new(1f, 30f, 0.5f);
     public static readonly SettingRange UserHeight = new(0.5f, 2.5f, 0.01f);
-    public static readonly SettingRange MasterVolume = new(0f, 1f, 0.01f);
+    // One shape for every volume: a normalized gain in 5% steps. Finer than that is a step nobody can
+    // hear and a slider nobody can land on.
+    public static readonly SettingRange MasterVolume = new(0f, 1f, 0.05f);
+    public static readonly SettingRange SoundEffectVolume = new(0f, 1f, 0.05f);
+    public static readonly SettingRange MultimediaVolume = new(0f, 1f, 0.05f);
+    public static readonly SettingRange VoiceVolume = new(0f, 1f, 0.05f);
+    public static readonly SettingRange UIVolume = new(0f, 1f, 0.05f);
+
+    // What the world drops to while you are whispering, and what a whisperer's own ears drop the rest
+    // of the room to. Same 5% shape as every other gain.
+    public static readonly SettingRange WhisperAttenuationVolume = new(0f, 1f, 0.05f);
+
+    // Bitrate an in-world audio stream opens at, in kbit/s. The floor is the lowest the codec will take
+    // seriously and the ceiling is well past transparent for stereo, so this is a bandwidth lever rather
+    // than a quality one.
+    public static readonly SettingRange DefaultStreamBitrateKbps = new(2f, 500f, 1f);
+
+    // Voice capture. The gate threshold is a peak amplitude, not a decibel figure, because that is
+    // what the filter measures; the times are seconds.
+    public static readonly SettingRange NoiseGateThreshold = new(0f, 0.5f, 0.005f);
+    public static readonly SettingRange NoiseGateAttack = new(0.001f, 0.2f, 0.001f);
+    public static readonly SettingRange NoiseGateHold = new(0f, 2f, 0.05f);
+    public static readonly SettingRange NoiseGateRelease = new(0.01f, 2f, 0.05f);
+    public static readonly SettingRange NormalizationThreshold = new(0.02f, 1f, 0.02f);
     public static readonly SettingRange RenderScale = new(0.5f, 2f, 0.05f);
     public static readonly SettingRange Upscaler = new(0f, 2f);
     public static readonly SettingRange LodBias = new(0.25f, 4f, 0.05f);
@@ -80,4 +103,9 @@ public static class SettingsCatalog
     public static readonly SettingRange MeshLodThreshold = new(0f, 8f, 0.5f, 0.5f);
 
     public static readonly SettingRange ReticleThickness = new(1f, 8f, 0.5f);
+
+    // The tallest format the video service resolver is allowed to ask for. A 4k link decodes at four
+    // times the cost of 1080p and a wall panel is not four times bigger, so this is a real lever rather
+    // than a quality preference.
+    public static readonly SettingRange VideoMaxHeight = new(360f, 2160f, 120f);
 }

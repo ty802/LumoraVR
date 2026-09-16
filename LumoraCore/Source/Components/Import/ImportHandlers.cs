@@ -44,9 +44,18 @@ public interface IModelImportHandler
     Task ImportAsync(Slot slot, string path, ModelImportRequest request);
 }
 
+// source is a file path OR a URL - a video plays from either, so the handler is never handed a path
+// that had to be downloaded first.
 public interface IVideoImportHandler
 {
-    Task ImportAsync(Slot slot, string path);
+    Task ImportAsync(Slot slot, string source, VideoImportOptions options);
+}
+
+// A decoded clip rather than a stream: source is a file path this machine can read, which the handler
+// copies into the local store so the ADDRESS travels and the other peers can fetch the bytes.
+public interface IAudioImportHandler
+{
+    Task ImportAsync(Slot slot, string source);
 }
 
 public interface IRawFileImportHandler
@@ -73,6 +82,7 @@ public static class ImportHandlers
     public static IImageImportHandler? Image { get; set; }
     public static IModelImportHandler? Model { get; set; }
     public static IVideoImportHandler? Video { get; set; }
+    public static IAudioImportHandler? Audio { get; set; }
     public static IRawFileImportHandler? Raw { get; set; }
 
     // Platform clipboard bridge. Null until the platform layer registers it. - xlinka

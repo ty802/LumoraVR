@@ -277,7 +277,12 @@ public class SkinnedMeshRenderer : ImplementableComponent
     // set by the hook when binding is complete
     public bool HookBindingComplete { get; set; }
 
-    private void OnMaterialsChanged(SyncAssetList<MaterialAsset> list) => MaterialsChanged = true;
+    // Same rule as the other lists above: the element's arrival only reaches us here, so queue the apply.
+    private void OnMaterialsChanged(SyncAssetList<MaterialAsset> list)
+    {
+        MaterialsChanged = true;
+        RunApplyChanges();
+    }
 
     private SkeletonBuilder? _watchedSkeleton;
 

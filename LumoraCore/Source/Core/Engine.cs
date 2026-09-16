@@ -137,6 +137,9 @@ public class Engine : IDisposable
     public GlobalCoroutineManager CoroutineManager { get; private set; } = null!;
     public EngineMixerManager AudioManager { get; private set; } = null!;
 
+    // The mixer everything audible goes through. The platform gives it a device after init.
+    public Lumora.Core.Audio.AudioSystem AudioSystem { get; private set; } = null!;
+
     public LumoraClient? CDNClient { get; private set; }
     public ContentCache? ContentCache { get; private set; }
 
@@ -331,6 +334,7 @@ public class Engine : IDisposable
                 await Task.CompletedTask;
             }, cancellationToken);
 
+            AudioSystem = new Lumora.Core.Audio.AudioSystem();
             AudioManager = new();
             foreach (string name in new string[] { "Music", "Effects", "Voice" })
             {
@@ -635,6 +639,10 @@ public class Engine : IDisposable
             CoroutineManager?.Update((float)delta);
             double msCoroutines = Lap();
 
+            // Before the worlds: an output folds the group volumes into its own gain while it builds
+            // its parameters, so those numbers have to be this frame's.
+            AudioSystem?.Update();
+
             WorldManager?.Update(delta);
             double msWorlds = Lap();
 
@@ -765,6 +773,7 @@ public class Engine : IDisposable
 
         // Dispose in reverse initialization order
         DisposeSubsystem("WorldManager", () => { WorldManager?.Dispose(); WorldManager = null!; });
+        DisposeSubsystem("AudioSystem", () => { AudioSystem?.Dispose(); AudioSystem = null!; });
         DisposeSubsystem("AudioManager", () => { AudioManager.Dispose(); });
         DisposeSubsystem("ContentCache", () => { ContentCache?.Dispose(); ContentCache = null; CDNClient?.Dispose(); CDNClient = null; });
         DisposeSubsystem("AssetManager", () => { AssetManager?.Dispose(); AssetManager = null!; });

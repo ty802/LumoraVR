@@ -13,6 +13,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LumoraMath", "..\LumoraMath
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LumoraSimulation", "..\LumoraSimulation\LumoraSimulation.csproj", "{B7E4A1C2-9D3F-4E58-A6B1-3C5D8F2E7A04}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LumoraAudio", "..\LumoraAudio\LumoraAudio.csproj", "{A2D6C4E8-5B1F-4C7A-9E3D-6F8B2A4C1D57}"
+EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LumoraWarden", "..\LumoraWarden\LumoraWarden.csproj", "{6F1A7C24-4B90-4D17-9E3A-2A8B5C0D71E6}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LumoraNexus", "..\LumoraNexus\LumoraNexus.csproj", "{8296EDFF-44F0-42DE-BD03-F9CAF83A22EF}"
@@ -54,6 +56,12 @@ Global
 		{B7E4A1C2-9D3F-4E58-A6B1-3C5D8F2E7A04}.ExportDebug|Any CPU.Build.0 = Release|Any CPU
 		{B7E4A1C2-9D3F-4E58-A6B1-3C5D8F2E7A04}.ExportRelease|Any CPU.ActiveCfg = Release|Any CPU
 		{B7E4A1C2-9D3F-4E58-A6B1-3C5D8F2E7A04}.ExportRelease|Any CPU.Build.0 = Release|Any CPU
+		{A2D6C4E8-5B1F-4C7A-9E3D-6F8B2A4C1D57}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A2D6C4E8-5B1F-4C7A-9E3D-6F8B2A4C1D57}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A2D6C4E8-5B1F-4C7A-9E3D-6F8B2A4C1D57}.ExportDebug|Any CPU.ActiveCfg = Release|Any CPU
+		{A2D6C4E8-5B1F-4C7A-9E3D-6F8B2A4C1D57}.ExportDebug|Any CPU.Build.0 = Release|Any CPU
+		{A2D6C4E8-5B1F-4C7A-9E3D-6F8B2A4C1D57}.ExportRelease|Any CPU.ActiveCfg = Release|Any CPU
+		{A2D6C4E8-5B1F-4C7A-9E3D-6F8B2A4C1D57}.ExportRelease|Any CPU.Build.0 = Release|Any CPU
 		{6F1A7C24-4B90-4D17-9E3A-2A8B5C0D71E6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{6F1A7C24-4B90-4D17-9E3A-2A8B5C0D71E6}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{6F1A7C24-4B90-4D17-9E3A-2A8B5C0D71E6}.ExportDebug|Any CPU.ActiveCfg = Release|Any CPU

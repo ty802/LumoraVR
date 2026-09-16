@@ -72,6 +72,7 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
     public readonly Sync<bool> IsPresent = new();
     public readonly Sync<bool> IsSilenced = new();
     public readonly Sync<bool> IsMuted = new();
+    public readonly Sync<Audio.VoiceMode> voiceMode = new(Audio.VoiceMode.Normal);
     public readonly Sync<bool> VRActive = new();
     public readonly Sync<bool> PresentInWorld = new();
     public readonly Sync<bool> PresentInHeadset = new();
@@ -218,6 +219,135 @@ public class User : ContainerWorker<UserComponent>, ISyncObject, IDisposable, IP
     public uint StreamConfigurationVersion => streamConfiguration.Value;
 
     public bool IsLocal => World?.LocalUser == this;
+
+    #region Voice
+
+    // VOICE STATE
+    //
+    // Three layers, and they are deliberately not the same kind of thing:
+    //
+    //   voiceMode          replicated, the mode this person CHOSE. Everyone agrees on it.
+    //   LocalVoiceModeOverride  local only, never replicated: how THIS machine decides to hear them.
+    //   MaxAllowedVoiceMode     derived, recomputed every world frame from the VoicePermission
+    //                           components in scope. Not stored, so a permission that goes away takes
+    //                           its cap with it instead of leaving a stale ceiling behind.
+    //
+    // ActiveVoiceMode is what the avatar's output actually plays, and it folds the three together. The
+    // one asymmetry worth stating: a local override can only ever make someone QUIETER when they chose
+    // Mute or Whisper, because being able to locally promote a whisper to a shout would hand every
+    // listener a way to hear what was said quietly on purpose. -xlinka
+
+    public Audio.VoiceMode VoiceMode
+    {
+        get => voiceMode.Value;
+        set
+        {
+            if (!IsAuthority && World?.LocalUser != this)
+                throw new InvalidOperationException("Only the user or the authority can change a voice mode");
+            voiceMode.Value = value;
+        }
+    }
+
+    public Audio.VoiceMode? LocalVoiceModeOverride { get; set; }
+
+    public Audio.VoiceMode ActiveVoiceMode
+    {
+        get
+        {
+            if (LocalVoiceModeOverride == Audio.VoiceMode.Mute || IsMuted.Value)
+                return Audio.VoiceMode.Mute;
+
+            var mode = voiceMode.Value;
+            if (mode == Audio.VoiceMode.Mute || mode == Audio.VoiceMode.Whisper)
+                return mode;
+
+            return LocalVoiceModeOverride ?? mode;
+        }
+    }
+
+    private Audio.VoiceMode _maxAllowedVoiceMode = Audio.VoiceMode.Broadcast;
+
+    public Audio.VoiceMode MaxAllowedVoiceMode => _maxAllowedVoiceMode;
+
+    internal void SetMaxAllowedVoiceMode(Audio.VoiceMode mode) => _maxAllowedVoiceMode = mode;
+
+    // Metres from this user's head to the local user's ear, or infinity when either end is unknown.
+    // Written once a frame by WorldAudioManager off its own LastPrimaryEarPosition rather than computed
+    // per reader: half a dozen things want this number and none of them should be walking a user root
+    // for it. -xlinka
+    public float DistanceToLocalUserHead { get; private set; } = float.PositiveInfinity;
+
+    internal void SetDistanceToLocalUserHead(float distance) => DistanceToLocalUserHead = distance;
+
+    // The key everything local-and-per-user hangs off. An account id follows a person between machines,
+    // so it wins; a session UserID is next; a machine id is the last resort a guest always has.
+    private string StableAudioKey
+    {
+        get
+        {
+            var account = AccountId?.Value;
+            if (!string.IsNullOrEmpty(account))
+                return account;
+            var id = UserID?.Value;
+            if (!string.IsNullOrEmpty(id))
+                return id;
+            return MachineID?.Value ?? string.Empty;
+        }
+    }
+
+    private string MachineAudioKey => MachineID?.Value ?? string.Empty;
+
+    // How loud this person is FOR ME. Host silencing is absolute and short-circuits it; everything else
+    // is a per-category gain on the audio system, written under both the stable key and the machine key
+    // so a user who signs in mid-session keeps the level I already set for them.
+    public float LocalVolume
+    {
+        get
+        {
+            if (IsSilenced.Value)
+                return 0f;
+
+            var system = Engine.Current?.AudioSystem;
+            if (system == null)
+                return 1f;
+
+            if (system.TryGetCategoryVolume(StableAudioKey, out float volume))
+                return volume;
+            if (system.TryGetCategoryVolume(MachineAudioKey, out volume))
+                return volume;
+            return 1f;
+        }
+        set
+        {
+            var system = Engine.Current?.AudioSystem;
+            if (system == null)
+                return;
+            system.SetCategoryVolume(StableAudioKey, value);
+            system.SetCategoryVolume(MachineAudioKey, value);
+        }
+    }
+
+    public bool IsAudioLocallyBlocked
+    {
+        get
+        {
+            var system = Engine.Current?.AudioSystem;
+            if (system == null)
+                return false;
+            return system.IsAudioBlocked(StableAudioKey) || system.IsAudioBlocked(MachineAudioKey);
+        }
+    }
+
+    public void SetAudioLocallyBlocked(bool blocked)
+    {
+        var system = Engine.Current?.AudioSystem;
+        if (system == null)
+            return;
+        system.SetAudioBlocked(StableAudioKey, blocked);
+        system.SetAudioBlocked(MachineAudioKey, blocked);
+    }
+
+    #endregion
 
     private Components.UserRoot _root = null!;
     public readonly SyncRef<Components.UserRoot> UserRootRef = new();

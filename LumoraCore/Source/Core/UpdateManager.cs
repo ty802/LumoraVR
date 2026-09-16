@@ -413,6 +413,45 @@ public class UpdateManager
         }
     }
 
+    // THE STREAM TICK
+    //
+    // A stream is not a component and is on nothing's update dispatch, so Stream.Update was dead code
+    // across the whole engine until this pass existed: every ValueStream that asked for interpolation
+    // was sitting on a queue of data points nothing ever walked, and a ReferenceStream never resolved
+    // the target it had received. This runs once a frame, before the components, so a component that
+    // reads a stream reads this frame's value rather than last frame's. -xlinka
+    private readonly List<User> _streamUsers = new List<User>();
+
+    public void UpdateStreams()
+    {
+        var world = _world;
+        if (world == null)
+            return;
+
+        world.GetAllUsers(_streamUsers);
+        for (int i = 0; i < _streamUsers.Count; i++)
+        {
+            var user = _streamUsers[i];
+            if (user == null || user.IsDisposed)
+                continue;
+
+            foreach (var stream in user.Streams)
+            {
+                if (stream == null || stream.IsDestroyed)
+                    continue;
+                try
+                {
+                    stream.Update();
+                }
+                catch (Exception ex)
+                {
+                    Logging.Logger.Error($"UpdateManager: Error in stream update for {stream}: {ex.Message}");
+                }
+            }
+        }
+        _streamUsers.Clear();
+    }
+
     // Phase suffixes. Only OnUpdate goes in unsuffixed, because that is what the profiler has always
     // meant and a bare type name should keep meaning it. Everything else is tagged, so a component that
     // costs nothing per frame but two seconds on startup finally shows up as what it is. The SLOT view

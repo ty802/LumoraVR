@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -6,6 +6,12 @@ using System.Collections;
 using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Math;
+using AudioListener = Lumora.Core.Components.Audio.AudioListener;
+using AudioOutput = Lumora.Core.Components.Audio.AudioOutput;
+using AvatarAudioOutputManager = Lumora.Core.Components.Audio.AvatarAudioOutputManager;
+using AvatarVoiceInfo = Lumora.Core.Components.Audio.AvatarVoiceInfo;
+using AudioTypeGroup = Lumora.Core.Audio.AudioTypeGroup;
+using OpusStream = Lumora.Core.Networking.Streams.OpusStream;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
@@ -125,6 +131,165 @@ public class UserRoot : Component
                  Slot.FindChild(name, recursive: false) ??
                  Slot.FindChild("Avatar", recursive: false)?.FindChild(name, recursive: false))!;
         return cache!;
+    }
+
+    // AUDIO
+    //
+    // The ear rides the head slot, one per user and replicated with the rest of the scaffold, because
+    // everyone has to agree on where a user's ears are before excluding a listener from an output means
+    // anything. Only the local user's listener is ever bound to the device - see AudioListener - so the
+    // remote ones cost nothing but a registration.
+    //
+    // Built here rather than in the avatar assembler because the head slot only resolves once the body
+    // nodes have been built, which is after the assembler has run. -xlinka
+    private AudioListener _primaryListener = null!;
+
+    public AudioListener PrimaryListener
+        => _primaryListener != null && !_primaryListener.IsDestroyed ? _primaryListener : null!;
+
+    private void EnsurePrimaryListener()
+    {
+        if (_primaryListener != null && !_primaryListener.IsDestroyed)
+            return;
+        if (IsDestroyed || World == null)
+            return;
+
+        var head = HeadSlot;
+        var user = ActiveUser;
+        if (head == null || head.IsDestroyed || user == null)
+            return;
+
+        // A saved world (or a scaffold that already replicated in) brings its own; adding a second ear
+        // to the same head would mix the world twice.
+        var existing = head.GetComponent<AudioListener>();
+        if (existing != null)
+        {
+            _primaryListener = existing;
+            if (World.IsAuthority && existing.ActiveUser.Target != user)
+                existing.ActiveUser.Target = user;
+            return;
+        }
+
+        // The scaffold is the authority's to build, and this is part of it. A client attaching its own
+        // would mint one listener per peer on the same head.
+        if (!World.IsAuthority)
+            return;
+
+        var listener = head.AttachComponent<AudioListener>();
+        listener.ActiveUser.Target = user;
+        _primaryListener = listener;
+    }
+
+    // VOICE
+    //
+    // Same shape as the ear, for the same reason: everyone has to agree which stream is whose voice
+    // and where in the room it comes out before excluding anybody from it means anything.
+    //
+    // The stream itself belongs to the speaker, because only a stream's owner may create one, so a
+    // remote user's shows up here a frame or two after they join rather than the instant their root
+    // does. The scaffold is still the authority's to build; it just fills the ref when the stream
+    // arrives. -xlinka
+    public const string VoiceStreamName = "Voice";
+
+    // Above an ordinary emitter, below nothing. When the voice limit bites, the person talking to you
+    // is not the thing to drop. The local user's own output drops to 0 (highest) in the manager, which
+    // is the one emitter that must never be culled.
+    private const int VoicePriority = 200;
+
+    private UserAudioStream _voiceStream = null!;
+    private AudioOutput _voiceOutput = null!;
+    private AvatarAudioOutputManager _voiceOutputManager = null!;
+    private bool _voiceWired;
+
+    public UserAudioStream VoiceStream
+        => _voiceStream != null && !_voiceStream.IsDestroyed ? _voiceStream : null!;
+
+    private void EnsureVoiceOutput()
+    {
+        if (IsDestroyed || World == null)
+            return;
+
+        if (_voiceWired)
+        {
+            if (_voiceStream != null && !_voiceStream.IsDestroyed
+                && _voiceOutput != null && !_voiceOutput.IsDestroyed)
+            {
+                return;
+            }
+            _voiceWired = false;
+        }
+
+        var user = ActiveUser;
+        var head = HeadSlot;
+        if (user == null || head == null || head.IsDestroyed)
+            return;
+
+        // The speaker mints their own; nobody can do it on their behalf.
+        var stream = user.IsLocal
+            ? user.GetStreamOrAdd<OpusStream>(VoiceStreamName)
+            : user.GetStream<OpusStream>(s => s.Name == VoiceStreamName);
+
+        if (_voiceStream == null || _voiceStream.IsDestroyed)
+            _voiceStream = Slot.GetComponent<UserAudioStream>()!;
+        if (_voiceOutput == null || _voiceOutput.IsDestroyed)
+            _voiceOutput = head.GetComponent<AudioOutput>()!;
+
+        bool authority = World.IsAuthority;
+
+        if (_voiceStream == null || _voiceStream.IsDestroyed)
+        {
+            if (!authority)
+                return;
+            _voiceStream = Slot.AttachComponent<UserAudioStream>();
+        }
+
+        if (_voiceOutput == null || _voiceOutput.IsDestroyed)
+        {
+            if (!authority)
+                return;
+            _voiceOutput = head.AttachComponent<AudioOutput>();
+            ConfigureVoiceOutput(_voiceOutput);
+        }
+
+        if (_voiceOutputManager == null || _voiceOutputManager.IsDestroyed)
+            _voiceOutputManager = head.GetComponent<AvatarAudioOutputManager>()!;
+
+        if (!authority)
+            return;
+
+        if (stream != null && _voiceStream.Stream.Target != stream)
+            _voiceStream.Stream.Target = stream;
+
+        if (_voiceOutput.Source.Target != _voiceStream)
+            _voiceOutput.Source.Target = _voiceStream;
+
+        // Where the voice comes from, published on the root registry so a mouth visualiser or a level
+        // meter finds it without guessing at a slot name.
+        var info = GetRegisteredComponent<AvatarVoiceInfo>() ?? Slot.AttachComponent<AvatarVoiceInfo>();
+        if (info.AudioSource.Target != _voiceStream)
+            info.AudioSource.Target = _voiceStream;
+
+        // Distances, rolloff, spatialization and the exclusion are the manager's from here. They used to
+        // be a hard-coded 1..100 m written once at attach, which meant a voice had exactly one range and
+        // whisper/shout/broadcast had nowhere to land.
+        if (_voiceOutputManager == null || _voiceOutputManager.IsDestroyed)
+            _voiceOutputManager = head.AttachComponent<AvatarAudioOutputManager>();
+        if (_voiceOutputManager.AudioOutput.Target != _voiceOutput)
+            _voiceOutputManager.BindTo(_voiceOutput);
+
+        // Wired once. A remote user's stream arrives a moment after their root, so until it does the
+        // walk repeats; after that this is a pair of null checks a frame.
+        _voiceWired = stream != null && _voiceStream.Stream.Target == stream;
+    }
+
+    private static void ConfigureVoiceOutput(AudioOutput output)
+    {
+        output.AudioTypeGroup.Value = AudioTypeGroup.Voice;
+        // A head moves fast enough in VR to pitch-shift a voice audibly, and nobody wants their friend
+        // to whistle past them. The manager drives this too, but the attach-time value is what a peer
+        // hears in the frames before the drive links are granted.
+        output.DopplerLevel.Value = 0f;
+        output.Priority.Value = VoicePriority;
     }
 
     // POSITION ACCESSORS
@@ -519,6 +684,10 @@ public class UserRoot : Component
     {
         base.OnUpdate(delta);
 
+        EnsurePrimaryListener();
+        // After the ear, because the voice output has to exclude it and the list is filled once.
+        EnsureVoiceOutput();
+
         // Validate scale to prevent invalid transforms. These corrective writes run on EVERY peer (incl. an
         // observer holding a REMOTE user's root), and use the THROWING .Value/Scale setters - so a foreign-write
         // denial would throw per frame. It's engine sanitization of a body transform, not a user edit, so bypass
@@ -555,6 +724,10 @@ public class UserRoot : Component
         }
         _isRegistered = false;
 
+        _primaryListener = null!;
+        _voiceStream = null!;
+        _voiceOutput = null!;
+        _voiceWired = false;
         _cachedHeadSlot = null!;
         _cachedBodySlot = null!;
         _cachedLeftHandSlot = null!;

@@ -86,6 +86,12 @@ public static class TextureVariantStore
     // carry WebP. -xlinka
     public delegate byte[]? PlatformImageDecoder(byte[] encoded, out int width, out int height);
 
+    // For an animated source: every frame composited and stacked into one vertical strip, with how
+    // many frames it holds and how fast they play. height is the strip's height.
+    public delegate byte[]? PlatformAnimatedDecoder(byte[] encoded, out int width, out int height, out int frames, out float fps);
+
+    public static PlatformAnimatedDecoder? AnimatedDecoder { get; set; }
+
     public static PlatformImageDecoder? PlatformDecoder { get; set; }
 
     // Same shape for floating-point sources, returning RGBA half floats (8 bytes per texel). Only

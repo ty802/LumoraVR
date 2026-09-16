@@ -37,6 +37,11 @@ public class TextureAsset : ImplementableAsset<ITextureAssetHook>
 
     public int Width => _width;
 
+    // For a frame strip: how many frames are stacked down the image and how fast they play. One
+    // frame and no rate for an ordinary picture.
+    public int AnimationFrames { get; private set; } = 1;
+    public float AnimationFps { get; private set; }
+
     public int Height => _height;
 
     public byte[] PixelData => _pixelData;
@@ -182,6 +187,8 @@ public class TextureAsset : ImplementableAsset<ITextureAssetHook>
         }
 
         int width, height;
+        int animationFrames = 1;
+        float animationFps = 0f;
         byte[]? rgba;
         try
         {
@@ -190,12 +197,28 @@ public class TextureAsset : ImplementableAsset<ITextureAssetHook>
             // was standing on. -xlinka
             var decoded = await DecodeOffThread(() =>
             {
-                var pixels = TextureVariantStore.DecodeRgba(bytes, out int w, out int h);
-                return (Pixels: pixels, Width: w, Height: h);
+                int frames = 1;
+                float fps = 0f;
+                byte[]? pixels = null;
+                int w = 0, h = 0;
+                var animated = TextureVariantStore.AnimatedDecoder;
+                if (GifDecoder.IsGif(bytes))
+                    pixels = GifDecoder.DecodeStrip(bytes, out w, out h, out frames, out fps);
+                else if (animated != null && WebpStill.IsAnimated(bytes))
+                    pixels = animated(bytes, out w, out h, out frames, out fps);
+                if (pixels == null)
+                {
+                    frames = 1;
+                    fps = 0f;
+                    pixels = TextureVariantStore.DecodeRgba(bytes, out w, out h);
+                }
+                return (Pixels: pixels, Width: w, Height: h, Frames: frames, Fps: fps);
             }).ConfigureAwait(false);
             rgba = decoded.Pixels;
             width = decoded.Width;
             height = decoded.Height;
+            animationFrames = decoded.Frames;
+            animationFps = decoded.Fps;
         }
         catch (Exception ex)
         {
@@ -233,6 +256,8 @@ public class TextureAsset : ImplementableAsset<ITextureAssetHook>
         Metadata = metadata;
         LoadedVariant = original;
 
+        AnimationFrames = System.Math.Max(1, animationFrames);
+        AnimationFps = animationFps;
         SetImageData(rgba, width, height, descriptor.GenerateMipmaps);
         Hook?.SetWrapMode(descriptor.WrapU, descriptor.WrapV);
 

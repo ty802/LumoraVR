@@ -533,6 +533,14 @@ public class MaterialAssetHook : AssetHook, IMaterialAssetHook
         {
             _pendingProperties[property] = null!;
         }
+
+        // A canvas material bound to a frame strip plays it; bound to anything else it shows a still.
+        if (_materialType == MaterialType.UI_Unlit && property == "Texture")
+        {
+            int frames = texture != null && texture.AnimationFrames > 1 ? texture.AnimationFrames : 1;
+            _pendingProperties["FrameCount"] = frames;
+            _pendingProperties["FrameRate"] = texture != null && frames > 1 && texture.AnimationFps > 0f ? texture.AnimationFps : 10f;
+        }
     }
 
     public void Clear()

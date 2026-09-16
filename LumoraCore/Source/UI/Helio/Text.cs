@@ -80,7 +80,11 @@ public class Text : Graphic, ILayoutElement
     private SpriteSet? _spriteSet;
     // Sprite names resolved to (texture, uv) on the MAIN thread; the worker emit reads only this snapshot,
     // never the live slot tree (SpriteSet.Get walks child slots, which is main-thread only). -xlinka
-    private readonly Dictionary<string, (IAssetProvider<TextureAsset> texture, Rect uv)> _resolvedSprites = new();
+    private readonly Dictionary<string, (IAssetProvider<TextureAsset> texture, Rect uv, IAssetProvider<MaterialAsset>? material)> _resolvedSprites = new();
+    // Width over height of each inline sprite, per shaped character, so a wide emote is not squashed
+    // into a square; null when no sprite has a known size yet.
+    private readonly List<float> _spriteAspects = new();
+    private IReadOnlyList<float>? _spriteAspectsArg;
     private System.Collections.Generic.IReadOnlyList<float>? _sizeArg;
     private System.Collections.Generic.IReadOnlyList<bool>? _nobrArg;
     private readonly StringBuilder _richTextBuilder = new();
@@ -251,6 +255,8 @@ public class Text : Graphic, ILayoutElement
             _fontMarksArg = null;
             _sprites.Clear();
             _resolvedSprites.Clear();
+            _spriteAspects.Clear();
+            _spriteAspectsArg = null;
             _alignMarks.Clear();
             _lineHeightMarks.Clear();
             _fontMarks.Clear();
@@ -292,7 +298,7 @@ public class Text : Graphic, ILayoutElement
         // collapses/vanishes for a frame or two, which is an absolute nightmare to repro. The worker
         // only positions the already-shaped glyphs. - xlinka
         float wrapWidth = _wrap && rect.width > 0f ? rect.width : 0f;
-        _shaper.Shape(fontSet, _shapedText, _size, _wrap, wrapWidth, _sizeArg, _nobrArg, _fontMarksArg);
+        _shaper.Shape(fontSet, _shapedText, _size, _wrap, wrapWidth, _sizeArg, _nobrArg, _fontMarksArg, _spriteAspectsArg);
 
         _ascent = fontSet.GetAscent(_size);
         _rawLineHeight = fontSet.GetLineHeight(_size);
@@ -407,7 +413,7 @@ public class Text : Graphic, ILayoutElement
 
         var rect = RectTransform?.LocalComputeRect ?? default;
         float wrapWidth = _wrap && rect.width > 0f ? rect.width : 0f;
-        _shaper.Shape(fontSet, _shapedText, _size, _wrap, wrapWidth, _sizeArg, _nobrArg, _fontMarksArg);
+        _shaper.Shape(fontSet, _shapedText, _size, _wrap, wrapWidth, _sizeArg, _nobrArg, _fontMarksArg, _spriteAspectsArg);
 
         float lineHeight = fontSet.GetLineHeight(_size) * _lineSpacing;
         if (lineHeight <= 0f)
@@ -920,8 +926,45 @@ public class Text : Graphic, ILayoutElement
             var sprite = _spriteSet.Get(name);
             var tex = sprite?.Texture.Target;
             if (sprite != null && tex != null)
-                _resolvedSprites[name] = (tex, sprite.UVRect.Value);
+            {
+                var uv = sprite.UVRect.Value;
+                // A frame strip shows one frame at a time; the material moves the window along it.
+                int frames = tex.Asset?.AnimationFrames ?? 1;
+                if (frames > 1)
+                    uv = new Rect(uv.x, uv.y, uv.width, uv.height / frames);
+                _resolvedSprites[name] = (tex, uv, sprite.Material.Target);
+            }
         }
+
+        _spriteAspects.Clear();
+        bool anyAspect = false;
+        for (int i = 0; i < _sprites.Count; i++)
+        {
+            float aspect = 1f;
+            var name = _sprites[i];
+            if (!string.IsNullOrEmpty(name) && _resolvedSprites.TryGetValue(name, out var resolved))
+            {
+                var asset = resolved.texture.Asset;
+                if (asset != null && asset.Width > 0 && asset.Height > 0)
+                {
+                    float w = resolved.uv.width * asset.Width;
+                    float h = resolved.uv.height * asset.Height;
+                    if (w > 0f && h > 0f)
+                    {
+                        aspect = w / h;
+                        anyAspect = true;
+                    }
+                }
+            }
+            _spriteAspects.Add(aspect);
+        }
+        _spriteAspectsArg = anyAspect ? _spriteAspects : null;
+    }
+
+    // Re-shape on demand: a sprite's picture or material arrived after the row was laid out.
+    public void Refresh()
+    {
+        RectTransform?.MarkChangeDirty();
     }
 
     // Draw the sprite named for this placeholder glyph as a textured quad at the reserved square, from the
@@ -938,7 +981,7 @@ public class Text : Graphic, ILayoutElement
         float x0 = x + m.Offset.x;
         float y0 = y + m.Offset.y;
         var rect = Rect.FromMinMax(new float2(x0, y0), new float2(x0 + m.Size.x, y0 + m.Size.y));
-        var submesh = renderData.GetSubmesh(null, resolved.texture, GraphicsChunk.RenderData.ImageTexture);
+        var submesh = renderData.GetSubmesh(resolved.material, resolved.texture, GraphicsChunk.RenderData.ImageTexture);
         RawImage.GenerateImage(submesh.Mesh, submesh, rect, resolved.uv, null, false, in SpriteTint, clip);
     }
 

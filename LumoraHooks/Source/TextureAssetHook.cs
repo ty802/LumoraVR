@@ -518,55 +518,16 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook, IGodotTexture
         {
             // Encoded image data (PNG, JPEG, etc.) - let Godot decode it
             image = new Image();
-            var error = image.LoadPngFromBuffer(pixels);
+            var error = Lumora.Godot.Helpers.GodotImageLoader.Load(image, pixels);
 
             if (error != Error.Ok)
             {
-                error = image.LoadJpgFromBuffer(pixels);
-            }
-
-            if (error != Error.Ok)
-            {
-                error = image.LoadWebpFromBuffer(pixels);
-            }
-
-            if (error != Error.Ok)
-            {
-                error = image.LoadBmpFromBuffer(pixels);
-            }
-
-            // TGA is everywhere in model texture sets, KTX and DDS arrive already block-compressed,
-            // and SVG is listed as an importable type elsewhere in the engine. All four ship with the
-            // renderer and cost nothing to try; not calling them was the only reason they failed. -xlinka
-            if (error != Error.Ok)
-            {
-                error = image.LoadTgaFromBuffer(pixels);
-            }
-
-            if (error != Error.Ok)
-            {
-                error = image.LoadKtxFromBuffer(pixels);
-            }
-
-            if (error != Error.Ok)
-            {
-                error = image.LoadDdsFromBuffer(pixels);
-            }
-
-            // SVG last: it is text, so every binary sniffer above fails on it instantly and a real
-            // binary file never reaches the XML parser. 1.0 is the document's own size.
-            if (error != Error.Ok)
-            {
-                error = image.LoadSvgFromBuffer(pixels, 1.0f);
-            }
-
-            if (error != Error.Ok)
-            {
-                GD.PrintErr($"TextureAssetHook: Failed to decode image data");
+                image.Dispose();
+                GD.PrintErr($"TextureAssetHook: Failed to decode image data ({error})");
                 return;
             }
 
-            if (hasMipmaps)
+            if (hasMipmaps && !image.IsCompressed())
             {
                 image.GenerateMipmaps();
             }

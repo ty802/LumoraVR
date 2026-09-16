@@ -12,6 +12,10 @@ uniform bool use_albedo_texture = false;
 
 uniform vec2 uv_scale = vec2(1.0);
 uniform vec2 uv_offset = vec2(0.0);
+// A texture that is a vertical strip of frames: the quad's UV covers the first frame and the clock
+// picks which one shows, so an animated picture costs no mesh update. One frame means a still. -xlinka
+uniform int frame_count = 1;
+uniform float frame_rate = 10.0;
 uniform bool use_vertex_color = true;
 
 uniform bool alpha_clip = false;
@@ -43,7 +47,11 @@ void vertex() {
 void fragment() {
 	float clip_alpha = rect_clip ? rect_alpha(local_pos, rect) : 1.0;
 
-	vec4 tex = use_albedo_texture ? texture(albedo_texture, UV) : vec4(1.0);
+	vec2 uv = UV;
+	if (frame_count > 1) {
+		uv.y += floor(mod(TIME * frame_rate, float(frame_count))) / float(frame_count);
+	}
+	vec4 tex = use_albedo_texture ? texture(albedo_texture, uv) : vec4(1.0);
 	vec4 out_color = albedo_color * tex;
 
 	if (use_vertex_color) {

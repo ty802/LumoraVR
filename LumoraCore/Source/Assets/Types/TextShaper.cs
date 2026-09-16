@@ -67,6 +67,8 @@ public sealed class TextShaper
     private float _size;
     private bool _wrap;
     private IReadOnlyList<float>? _sizeScales;
+    private IReadOnlyList<float>? _spriteAspects;
+    private IReadOnlyList<float>? _shapedAspects;
     private IReadOnlyList<bool>? _nobr;
     // Per-run font overrides as sparse (source-index, FontSet) markers; the char at index i shapes with the last
     // marker at or before i (null Font = the default). null list = uniform (default font everywhere). -xlinka
@@ -93,7 +95,7 @@ public sealed class TextShaper
     /// input matches the cached result. Returns true if a reshape happened.
     /// </summary>
     public bool Shape(FontSet font, string content, float size, bool wrap, float maxWidth, IReadOnlyList<float>? sizeScales = null, IReadOnlyList<bool>? nobr = null,
-        IReadOnlyList<(int Index, FontSet? Font)>? fontMarks = null)
+        IReadOnlyList<(int Index, FontSet? Font)>? fontMarks = null, IReadOnlyList<float>? spriteAspects = null)
     {
         int generation = font.CacheGeneration;
         // Per-char size scales, non-breaking flags, and font runs can change behind the same list reference, so
@@ -101,10 +103,12 @@ public sealed class TextShaper
         if (sizeScales == null
             && nobr == null
             && fontMarks == null
+            && spriteAspects == null
             && _valid
             && _shapedScales == null
             && _shapedNobr == null
             && _shapedFonts == null
+            && _shapedAspects == null
             && ReferenceEquals(_shapedFont, font)
             && _shapedContent == content
             && _shapedSize == size
@@ -120,6 +124,7 @@ public sealed class TextShaper
         _sizeScales = sizeScales;
         _nobr = nobr;
         _fontMarks = fontMarks;
+        _spriteAspects = spriteAspects;
         BuildLines(font, content, maxWidth);
 
         _shapedFont = font;
@@ -131,6 +136,7 @@ public sealed class TextShaper
         _shapedScales = sizeScales;
         _shapedNobr = nobr;
         _shapedFonts = fontMarks;
+        _shapedAspects = spriteAspects;
         _valid = true;
         return true;
     }
@@ -279,9 +285,14 @@ public sealed class TextShaper
         {
             // Inline sprite: reserve a square em advance and add a placeholder glyph (no font). The renderer
             // identifies it by this codepoint and draws the sprite texture here. -xlinka
-            var spriteMetrics = new GlyphMetrics { Advance = gsize, Offset = new float2(0f, -gsize * 0.1f), Size = new float2(gsize, gsize) };
+            float aspect = 1f;
+            if (_spriteAspects != null && (uint)sourceIndex < (uint)_spriteAspects.Count)
+                aspect = _spriteAspects[sourceIndex];
+            if (!(aspect > 0.05f) || aspect > 8f) aspect = 1f;
+            float spriteWidth = gsize * aspect;
+            var spriteMetrics = new GlyphMetrics { Advance = spriteWidth, Offset = new float2(0f, -gsize * 0.1f), Size = new float2(spriteWidth, gsize) };
             target.Glyphs.Add(new PositionedGlyph(null!, codepoint, spriteMetrics, Rect.Zero, target.Width, sourceIndex));
-            target.Width += gsize;
+            target.Width += spriteWidth;
             prevCodepoint = 0;
             prevFont = null;
             return;

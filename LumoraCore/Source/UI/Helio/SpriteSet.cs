@@ -25,6 +25,14 @@ public sealed class SpriteSet : Component
             if (string.Equals(child.SlotName.Value, name, StringComparison.OrdinalIgnoreCase))
                 return child.GetComponent<Sprite>();
         }
+        // A per-peer sprite cache (chat emotes, badges) lives in local slots, which are not in Children.
+        var local = Slot.LocalChildren;
+        for (int i = 0; i < local.Count; i++)
+        {
+            var child = local[i];
+            if (string.Equals(child.SlotName.Value, name, StringComparison.OrdinalIgnoreCase))
+                return child.GetComponent<Sprite>();
+        }
         return null;
     }
 }

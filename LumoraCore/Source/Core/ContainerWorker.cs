@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using Lumora.Core.Networking.Sync;
+using LumoraLogger = Lumora.Core.Logging.Logger;
 // Aliased because this type has a Components PROPERTY, which shadows the namespace of the same name at
 // every use site inside it. -xlinka
 using IUndoBatch = Lumora.Core.Components.IUndoBatch;
@@ -235,12 +236,32 @@ public abstract class ContainerWorker<C> : Worker where C : ComponentBase<C>
         if (component == null)
             return false;
 
+        if (RefuseConfigRemoval(component))
+            return false;
+
         return componentCollection.Remove(component.ReferenceID);
     }
 
     public bool RemoveComponent(RefID id)
     {
+        if (componentCollection.TryGetValue(id, out var existing) && RefuseConfigRemoval(existing))
+            return false;
+
         return componentCollection.Remove(id);
+    }
+
+    // The world's two config components are not detachable from inside the world. Both public removal
+    // entries funnel here, and ComponentBase.Destroy funnels into the second one, so the X in an
+    // inspector, a script calling Destroy and a tool stripping a slot all hit the same refusal. -xlinka
+    private static bool RefuseConfigRemoval(object? component)
+    {
+        if (!WorldConfigLock.RefusesRemoval(component))
+            return false;
+
+        LumoraLogger.Warn(
+            $"Config lock: refused removal of {component!.GetType().Name} - the world's configuration "
+            + "components live on the world root for the session.");
+        return true;
     }
 
     public C GetComponent(Predicate<C> predicate)

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -6,6 +6,7 @@ using Helio.UI;
 using Lumora.Core;
 using Lumora.Core.Networking.Sync;
 using Lumora.Core.Math;
+using Lumora.Core.Components.UI;
 
 namespace Lumora.Core.Components;
 
@@ -101,9 +102,15 @@ public abstract class MemberEditor : Component
     // A member inside an ImmutableComponent subtree is read-only for the same reason it is not in the
     // tree: the person is not the one who authors it. Nothing else changes - the row still shows the
     // live value, and whatever composes it keeps writing.
+    //
+    // A config-locked member (the world's settings and permission config) is read-only for everybody,
+    // host included: the datamodel refuses the write anyway, and a row that swallows every edit in
+    // silence is worse than a row that says up front that it will not take one. The Session dashboard is
+    // where those are edited. -xlinka
     protected bool IsReadOnly
         => TargetMember.Target is ILinkable { IsDestroyed: false, IsDriven: true, IsHooked: false }
-           || ImmutableComponent.IsProtected(TargetMember.Target);
+           || ImmutableComponent.IsProtected(TargetMember.Target)
+           || TargetMember.Target is SyncElement { IsConfigLocked: true };
 
     protected object? GetMemberValue()
     {
@@ -165,8 +172,8 @@ public abstract class MemberEditor : Component
 
 public static class InspectorUI
 {
-    public static readonly color TextColor = new color(0.93f, 0.94f, 0.98f, 1f);
-    public static readonly color MutedColor = new color(0.64f, 0.63f, 0.74f, 1f);
+    public static readonly color TextColor = DashTheme.Text;
+    public static readonly color MutedColor = new color(0.78f, 0.77f, 0.85f, 1f);
     // slot's own persistence flag is off
     public static readonly color NonPersistentColor = new color(0.95f, 0.58f, 0.20f, 1f);
     // non-persistent only through an ancestor
@@ -178,19 +185,19 @@ public static class InspectorUI
     public static readonly color BrokenColor = new color(0.50f, 0.50f, 0.52f, 1f);
     // Section headers/dividers in inspector panels.
     public static readonly color CyanColor = new color(0.35f, 0.75f, 0.90f, 1f);
-    public static readonly color RowColor = new color(0.10f, 0.09f, 0.16f, 1f);
-    public static readonly color HeaderColor = new color(0.15f, 0.13f, 0.22f, 1f);
+    public static readonly color RowColor = DashTheme.Field;
+    public static readonly color HeaderColor = DashTheme.Surface;
     // opaque near-black backing for the hierarchy and detail panes
-    public static readonly color PaneColor = new color(0.09f, 0.08f, 0.13f, 1f);
-    public static readonly color AccentColor = new color(0.45f, 0.38f, 0.80f, 1f);
+    public static readonly color PaneColor = new color(DashTheme.Panel.r, DashTheme.Panel.g, DashTheme.Panel.b, 0.75f);
+    public static readonly color AccentColor = DashTheme.Accent;
     // row backing for the selected hierarchy entry
     public static readonly color SelectionColor = new color(0.45f, 0.38f, 0.80f, 0.60f);
     public static readonly color DangerColor = new color(0.70f, 0.24f, 0.28f, 1f);
     public static readonly color AxisXColor = new color(0.90f, 0.30f, 0.32f, 1f);
     public static readonly color AxisYColor = new color(0.36f, 0.80f, 0.42f, 1f);
     public static readonly color AxisZColor = new color(0.35f, 0.55f, 0.95f, 1f);
-    public const float RowHeight = 30f;
-    public const float FontSize = 15f;
+    public const float RowHeight = 34f;
+    public const float FontSize = 17f;
 
     // THE field-state color rule, one implementation for every editor and every widget in a member
     // row: a member that is gone reads broken gray, a driven one the drive magenta, one that is
@@ -243,6 +250,7 @@ public static class InspectorUI
     // text without a font renders nothing - the first inspector shipped with invisible content this way
     public static Lumora.Core.Components.UI.UITheme? ApplyTheme(UIBuilder ui, Slot context)
     {
+        ui.FontSize(FontSize).CornerRadius(DashTheme.RadiusControl);
         var theme = context.GetComponentInParent<Lumora.Core.Components.UI.UITheme>();
         if (theme != null)
         {
@@ -250,7 +258,7 @@ public static class InspectorUI
                 ui.Font(theme.ThemeFont);
             ui.TextColor(theme.TextPrimary.Value);
             ui.BackgroundColor(theme.ButtonFill.Value);
-            ui.RoundedSprite(theme.RoundedSprite);
+            ui.RoundedSprite(null);
         }
         return theme;
     }
@@ -261,10 +269,13 @@ public static class InspectorUI
         ui.NestInto(slot);
         var image = slot.AttachComponent<Image>();
         image.Tint.Value = RowColor;
+        image.CornerRadius.Value = DashTheme.RadiusControl;
         var input = slot.AttachComponent<TextInput>();
 
         var textSlot = slot.AddSlot("Text");
         FillParent(textSlot.AttachComponent<RectTransform>());
+        textSlot.GetComponent<RectTransform>()!.OffsetMin.Value = new float2(8f, 2f);
+        textSlot.GetComponent<RectTransform>()!.OffsetMax.Value = new float2(-8f, -2f);
         var text = textSlot.AttachComponent<Text>();
         text.Size.Value = FontSize;
         text.Color.Value = TextColor;
@@ -280,7 +291,7 @@ public static class InspectorUI
     // takes the flexible width, so anything appended after lands hard right. -xlinka
     public static Slot SectionHeader(Slot parent, string label, Slot themeContext)
     {
-        var row = FixedRow(parent, "Section", 26f, out var ui, themeContext);
+        var row = FixedRow(parent, "Section", RowHeight, out var ui, themeContext);
         ui.PushStyle();
         ui.FlexibleWidth(1f);
         var text = ui.Text(label, FontSize - 1f, CyanColor);

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -57,7 +57,9 @@ public class SyncTypeList : SyncElementList<SyncType>, IEnumerable<Type>, IEnume
 
     public void Add(Type type)
     {
-        Add().Value = type;
+        var added = Add();
+        if (added != null)
+            added.Value = type;
     }
 
     public bool AddUnique(Type type)
@@ -76,7 +78,9 @@ public class SyncTypeList : SyncElementList<SyncType>, IEnumerable<Type>, IEnume
 
     public void Insert(int index, Type type)
     {
-        Insert(index).Value = type;
+        var inserted = Insert(index);
+        if (inserted != null)
+            inserted.Value = type;
     }
 
     public int IndexOf(Type type) => FindIndex(entry => entry.Value == type);

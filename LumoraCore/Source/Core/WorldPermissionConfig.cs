@@ -143,7 +143,12 @@ public sealed class PermissionRoleCapEntry : SyncElement
 // Guests RECEIVE this (their UI needs to show who holds which role) and can never write it: MarkHostOnly
 // makes the authority refuse a guest's delta for any member outright, so the enforcement is in the sync
 // layer, not in whether the UI drew a control.
-[ComponentCategory("World")]
+//
+// NOT BROWSABLE and single-instance, for the same reason WorldSettings is: nothing in the world may
+// attach a second one, and every member also carries the config lock, so the host's own inspector
+// cannot author this either. The Session dashboard is the writer.
+[ComponentCategory(ComponentLibrary.HiddenCategory)]
+[SingleInstancePerSlot]
 public sealed class WorldPermissionConfig : Component
 {
     [Group("Roles")]
@@ -199,6 +204,7 @@ public sealed class WorldPermissionConfig : Component
     public override void OnInit()
     {
         base.OnInit();
+        using var configEdit = WorldConfigEdit.Enter();
         DefaultJoinerRole.Value = string.Empty;
         AnonymousRole.Value = string.Empty;
         VisitorRole.Value = string.Empty;
@@ -224,6 +230,10 @@ public sealed class WorldPermissionConfig : Component
             {
                 element.MarkHostOnly();
                 element.MarkNonDrivable();
+                // ... and locked against the host's OWN hands too: host-only only ever answered the wire,
+                // so until this landed anyone sitting in the host's chair could retype the role table from
+                // a scene inspector row. -xlinka
+                element.MarkConfigLocked();
             }
         }
 
@@ -262,7 +272,25 @@ public sealed class WorldPermissionConfig : Component
     public override void OnStart()
     {
         base.OnStart();
+
+        // Same rule as WorldSettings: off the world root it is a config component somebody carried in.
+        if (World != null && World.IsAuthority && WorldConfigLock.IsMisplaced(this))
+        {
+            Logging.Logger.Warn(
+                $"WorldPermissionConfig on '{Slot?.Name?.Value ?? "?"}' is not the world root - removing it.");
+            using (WorldConfigEdit.Enter())
+                Destroy();
+            return;
+        }
+
         Republish();
+    }
+
+    // The saved role table comes back through the shared Worker.Load, which writes the members directly.
+    public override void Load(DataTreeNode node, LoadControl control)
+    {
+        using var configEdit = WorldConfigEdit.Enter();
+        base.Load(node, control);
     }
 
     // Hand the gate a fresh snapshot. Cheap and rare: one rebuild per config edit, never per frame.
@@ -293,6 +321,10 @@ public sealed class WorldPermissionConfig : Component
         if (user == null || World == null || !World.IsAuthority)
             return;
 
+        // The component's own editors are a sanctioned writer, so they open the scope themselves rather
+        // than making every caller remember to. -xlinka
+        using var configEdit = WorldConfigEdit.Enter();
+
         var existing = FindAssignment(user);
         if (string.IsNullOrWhiteSpace(roleName))
         {
@@ -317,6 +349,7 @@ public sealed class WorldPermissionConfig : Component
                 return entry;
         }
 
+        using var configEdit = WorldConfigEdit.Enter();
         var added = RoleCaps.Add();
         added.Role.Value = roleName;
         return added;
@@ -332,6 +365,7 @@ public sealed class WorldPermissionConfig : Component
             {
                 element.MarkHostOnly();
                 element.MarkNonDrivable();
+                element.MarkConfigLocked();
             }
         }
     }

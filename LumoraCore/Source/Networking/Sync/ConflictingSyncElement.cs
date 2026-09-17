@@ -148,14 +148,15 @@ public abstract class ConflictingSyncElement : SyncElement
     protected override MessageValidity ValidateInboundWrite(
         BinaryMessageBatch inboundMessage, BinaryReader reader, List<ValidationGroup.Rule> rules)
     {
-        if (!IsHostOnly)
+        if (!IsHostOnly && !IsConfigLocked)
             return MessageValidity.Valid;
 
         // Worth reporting, and worth the highest weight there is: these members are identity, allocation
         // bytes and permission config. A correct client never sends one, so a peer that does is not
         // confused about the rules, it is testing them. -xlinka
         World?.DataModelPermissions?.ReportDenial(
-            inboundMessage?.SenderUser, DataModelDenialKind.HostOnly, $"host-only member {Name}");
+            inboundMessage?.SenderUser, DataModelDenialKind.HostOnly,
+            IsHostOnly ? $"host-only member {Name}" : $"config-locked member {Name}");
 
         return MessageValidity.Conflict;
     }

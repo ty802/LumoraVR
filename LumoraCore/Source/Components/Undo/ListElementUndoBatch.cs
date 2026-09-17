@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -125,8 +125,10 @@ public sealed class ListElementUndoBatch : IUndoBatch
 
     public void OnEvicted() { }
 
+    // A config-locked list refuses every structural op at the datamodel, so a batch over one is never
+    // recorded and an older one never replays. -xlinka
     private static bool IsUsable(ISyncList? list)
-        => list is SyncElement { IsDestroyed: false };
+        => list is SyncElement { IsDestroyed: false, IsConfigLocked: false };
 
     // Serialize the element in place and remember the identities it is about to lose, so their GUIDs
     // stop resolving to the dead element before anything asks for them again.

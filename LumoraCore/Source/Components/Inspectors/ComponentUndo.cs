@@ -54,6 +54,10 @@ public sealed class ComponentExistenceUndoBatch : IUndoBatch, IUndoTargetQuery
     {
         if (target == null || target.IsDestroyed || target.Slot == null || target.World == null)
             return null;
+        // Neither half of the round trip would work on a config component: the destroy is refused and a
+        // restore would re-attach a single-instance component the world already has. -xlinka
+        if (WorldConfigLock.IsConfigComponent(target))
+            return null;
 
         var translator = new ReferenceTranslator();
         var batch = new ComponentExistenceUndoBatch(target.World, target.Slot, target.GetType(),
@@ -68,6 +72,8 @@ public sealed class ComponentExistenceUndoBatch : IUndoBatch, IUndoTargetQuery
     internal static ComponentExistenceUndoBatch? CreateAttach(Component attached)
     {
         if (attached == null || attached.IsDestroyed || attached.Slot == null || attached.World == null)
+            return null;
+        if (WorldConfigLock.IsConfigComponent(attached))
             return null;
         return new ComponentExistenceUndoBatch(attached.World, attached.Slot, attached.GetType(),
             new ReferenceTranslator(), isDestroy: false, saved: null, live: attached);

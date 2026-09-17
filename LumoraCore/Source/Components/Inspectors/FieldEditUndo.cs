@@ -36,7 +36,7 @@ public sealed class FieldEditUndoBatch : IUndoBatch
 
     public bool Undo()
     {
-        if (_field is not SyncElement { IsDestroyed: false })
+        if (!IsReplayable())
             return false;
         // BoxedValue is typed non-null, but a reference-type field legitimately restores to null. -xlinka
         _field.BoxedValue = _before!;
@@ -45,11 +45,16 @@ public sealed class FieldEditUndoBatch : IUndoBatch
 
     public bool Redo()
     {
-        if (_field is not SyncElement { IsDestroyed: false })
+        if (!IsReplayable())
             return false;
         _field.BoxedValue = _after!;
         return true;
     }
+
+    // A config-locked member would swallow the write and report success, which would walk the cursor past
+    // a step that did nothing. Refusing here keeps the history honest rather than silently lossy. -xlinka
+    private bool IsReplayable()
+        => _field is SyncElement { IsDestroyed: false, IsConfigLocked: false };
 
     public void OnEvicted() { }
 }

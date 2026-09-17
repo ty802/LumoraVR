@@ -37,7 +37,7 @@ public class ComponentSelectorPanel : Component, IInspectorActionHandler
     public readonly Sync<string> GenericPath;
     private readonly Sync<string> _builtGeneric;
 
-    private const float RowHeight = 30f;
+    private const float RowHeight = InspectorUI.RowHeight;
     private const int MaxSearchResults = 120;
 
     public ComponentSelectorPanel()
@@ -94,13 +94,6 @@ public class ComponentSelectorPanel : Component, IInspectorActionHandler
     {
         base.OnAttach();
         var theme = Slot.GetOrAttachComponent<UITheme>();
-        // Same dark set as the inspector so the pair reads as one tool. -xlinka
-        theme.PanelBackground.Value = new color(0.075f, 0.07f, 0.115f, 1f);
-        theme.Header.Value = new color(0.11f, 0.10f, 0.17f, 1f);
-        theme.ButtonFill.Value = new color(0.22f, 0.20f, 0.34f, 1f);
-        theme.Accent.Value = InspectorUI.AccentColor;
-        theme.Separator.Value = new color(0.52f, 0.46f, 0.82f, 0.6f);
-        theme.Border.Value = new color(0.52f, 0.46f, 0.82f, 0.45f);
 
         var shell = Slot.GetOrAttachComponent<PanelShell>();
         shell.Title.Value = "Attach Component";
@@ -442,7 +435,9 @@ public class ComponentSelectorPanel : Component, IInspectorActionHandler
             }
 
             var swapTarget = SwapTarget.Target;
-            if (swapTarget != null && !swapTarget.IsDestroyed)
+            if (swapTarget != null && !swapTarget.IsDestroyed
+                && !WorldConfigLock.IsConfigComponentType(type)
+                && !WorldConfigLock.IsConfigComponent(swapTarget))
             {
                 var batch = ComponentTypeSwapUndoBatch.Swap(swapTarget, type);
                 if (batch != null)
@@ -453,7 +448,10 @@ public class ComponentSelectorPanel : Component, IInspectorActionHandler
             }
 
             var target = TargetSlot.Target;
-            if (target != null && type != null && typeof(Component).IsAssignableFrom(type))
+            // The browser is built from ComponentLibrary, which skips the Hidden category these two sit
+            // in, so this is the backstop for a relay argument that named the type directly. -xlinka
+            if (target != null && type != null && typeof(Component).IsAssignableFrom(type)
+                && !WorldConfigLock.IsConfigComponentType(type))
             {
                 var attached = target.AttachComponent(type);
                 ComponentUndo.RecordAttach(this, attached);

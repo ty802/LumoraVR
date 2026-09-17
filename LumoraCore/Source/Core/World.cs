@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -332,7 +332,10 @@ public class World : IPermissionWorldFacts
 			}
 			var c = Configuration;
 			if (c != null)
+			{
+				using var configEdit = WorldConfigEdit.Enter();
 				c.Mode.Value = value;
+			}
 		}
 	}
 
@@ -437,6 +440,10 @@ public class World : IPermissionWorldFacts
 
 	public UpdateManager UpdateManager => _updateManager;
 
+	// This world's ears and sounds. One AudioSpace in the engine's mixer, activated while the world is
+	// heard and left alone while it is not.
+	public Audio.WorldAudioManager Audio { get; private set; } = null!;
+
 	public User LocalUser { get; private set; } = null!;
 
 	public float TimeScale { get; set; } = 1.0f;
@@ -510,6 +517,8 @@ public class World : IPermissionWorldFacts
 
 	// On the authority it's created on first access; on a client it's null until state-synced - callers that
 	// may run client-side should null-check.
+	public IDisposable EnterConfigEdit() => WorldConfigEdit.Enter();
+
 	public WorldSettings Configuration
 	{
 		get
@@ -519,7 +528,12 @@ public class World : IPermissionWorldFacts
 				return null!;
 			var settings = root.GetComponent<WorldSettings>();
 			if (settings == null && IsAuthority)
+			{
+				// The engine's own attach of the world's config: inside the edit scope, because attaching it
+				// runs its constructor-seeded defaults through members the lock covers. -xlinka
+				using var configEdit = WorldConfigEdit.Enter();
 				settings = root.AttachComponent<WorldSettings>();
+			}
 			return settings!;
 		}
 	}
@@ -538,7 +552,10 @@ public class World : IPermissionWorldFacts
 				return null!;
 			var config = root.GetComponent<WorldPermissionConfig>();
 			if (config == null && IsAuthority)
+			{
+				using var configEdit = WorldConfigEdit.Enter();
 				config = root.AttachComponent<WorldPermissionConfig>();
+			}
 			return config!;
 		}
 	}
@@ -641,8 +658,13 @@ public class World : IPermissionWorldFacts
 		return dictionary;
 	}
 
+	// The whole load runs inside the config edit scope. The two config components install their own
+	// scope around their own Load, which covers a load that reaches them through Worker.Load; this covers
+	// the rest of the path (the root slot re-attaching them, a re-publish, the mode re-apply) in one
+	// place rather than leaving each of those to remember. -xlinka
 	public void LoadWorld(DataTreeDictionary dictionary)
 	{
+		using var configEdit = WorldConfigEdit.Enter();
 		var translator = new ReferenceTranslator();
 		var control = new LoadControl(this, translator);
 
@@ -713,6 +735,10 @@ public class World : IPermissionWorldFacts
 		_hookTypes = new HookTypeRegistry();
 		_updateManager = new UpdateManager(this);
 		_dataModelPermissions = new DataModelPermissionController(this);
+		// Names the two config components at the gate so a modified client's attach or remove aimed at
+		// them is refused by a rule that says so, not only by id arithmetic that happens to agree. -xlinka
+		_dataModelPermissions.AddRule(new WorldConfigProtectionRule(this));
+		Audio = new Audio.WorldAudioManager(this);
 
 		int length = Enum.GetValues(typeof(WorldEvent)).Length;
 		_worldEventReceivers = new List<IWorldEventReceiver>[length];
@@ -787,20 +813,24 @@ public class World : IPermissionWorldFacts
 
 		world.Initialize();
 
-		world.Configuration.MaxUsers.Value = global::System.Math.Max(1, maxUsers);
-		world.Configuration.AllowJoin.Value = true;
-		world.Configuration.IsPublic.Value = visibility == SessionVisibility.Public;
-		// Seed the access level from the hosted visibility so the Settings radio shows the right selection and
-		// later live toggles have the correct baseline. This runs before the world is Running, so the
-		// AccessLevel.OnChanged beacon handler (Running-gated) won't fire here - the initial beacon still comes
-		// from the metadata visibility below. -xlinka
-		world.Configuration.AccessLevel.Value = visibility switch
+		// World creation is an engine path, so it seeds the config inside the edit scope. -xlinka
+		using (WorldConfigEdit.Enter())
 		{
-			SessionVisibility.LAN => WorldAccessLevel.LAN,
-			SessionVisibility.Contacts => WorldAccessLevel.Contacts,
-			SessionVisibility.Public => WorldAccessLevel.Anyone,
-			_ => WorldAccessLevel.Private,
-		};
+			world.Configuration.MaxUsers.Value = global::System.Math.Max(1, maxUsers);
+			world.Configuration.AllowJoin.Value = true;
+			world.Configuration.IsPublic.Value = visibility == SessionVisibility.Public;
+			// Seed the access level from the hosted visibility so the Settings radio shows the right selection
+			// and later live toggles have the correct baseline. This runs before the world is Running, so the
+			// AccessLevel.OnChanged beacon handler (Running-gated) won't fire here - the initial beacon still
+			// comes from the metadata visibility below. -xlinka
+			world.Configuration.AccessLevel.Value = visibility switch
+			{
+				SessionVisibility.LAN => WorldAccessLevel.LAN,
+				SessionVisibility.Contacts => WorldAccessLevel.Contacts,
+				SessionVisibility.Public => WorldAccessLevel.Anyone,
+				_ => WorldAccessLevel.Private,
+			};
+		}
 
 		var metadata = new SessionMetadata
 		{
@@ -1468,6 +1498,20 @@ public class World : IPermissionWorldFacts
 		lock (_users)
 		{
 			return new List<User>(_users);
+		}
+	}
+
+	// Same snapshot into a list the caller owns. The allocating overload above is fine for a one-off UI
+	// pass and is an allocation per frame per caller for anything that runs every frame. -xlinka
+	public void GetAllUsers(List<User> target)
+	{
+		if (target == null)
+			return;
+		target.Clear();
+		lock (_users)
+		{
+			for (int i = 0; i < _users.Count; i++)
+				target.Add(_users[i]);
 		}
 	}
 
@@ -2292,6 +2336,11 @@ public class World : IPermissionWorldFacts
 
 			RunWorldEvents();
 
+			// Streams before anything reads one. A stream's own tick is where an interpolated value
+			// lands on this frame's number and where an audio ring gets resized, so a component that
+			// reads a stream in its update has to run after this, not alongside it. -xlinka
+			_updateManager?.UpdateStreams();
+
 			// Register any newly used worker types (authority only)
 			if (IsAuthority)
 			{
@@ -2540,6 +2589,10 @@ public class World : IPermissionWorldFacts
 		_updateManager?.RunStartups();
 		_updateManager?.RunStartupRetries(); // re-drive anything whose startup threw (transient join-window denials)
 		_updateManager?.RunUpdates(delta);
+
+		// After the components, because an emitter that moved itself this frame must hand the mixer
+		// where it ended up, not where it started.
+		Audio?.Update(delta);
 	}
 
 	private void ProcessDestructions()
@@ -2914,6 +2967,18 @@ public class World : IPermissionWorldFacts
 		catch (Exception ex)
 		{
 			LumoraLogger.Error($"World: Error disposing root slot: {ex.Message}");
+		}
+
+		try
+		{
+			// After the destructions above: the components unregister their own voices first, and this
+			// only has to hand the space back.
+			Audio?.Dispose();
+			Audio = null!;
+		}
+		catch (Exception ex)
+		{
+			LumoraLogger.Error($"World: Error disposing audio manager: {ex.Message}");
 		}
 
 		_users?.Clear();

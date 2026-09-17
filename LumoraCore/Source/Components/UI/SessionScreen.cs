@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -329,10 +329,11 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
         // LEFT: identity, basics, world save options.
         var worldBody = AddSection(_leftColumn, "World");
         AddRow(worldBody, $"World Name: {world.WorldName?.Value ?? world.Name}");
-        SliderRow(worldBody, "Max Users", 1f, 64f, config.MaxUsers.Value,
-            v => { config.MaxUsers.Value = (int)MathF.Round(v); return config.MaxUsers.Value.ToString(); });
-        ToggleRow(worldBody, "Mobile Friendly", config.MobileFriendly.Value, v => config.MobileFriendly.Value = v);
-        ToggleRow(worldBody, "Allow Joining", config.AllowJoin.Value, v => config.AllowJoin.Value = v);
+        ConfigSliderRow(worldBody, world, "Max Users", 1f, 64f, config.MaxUsers.Value,
+            v => { config.MaxUsers.Value = (int)MathF.Round(v); return config.MaxUsers.Value.ToString(); },
+            config.MaxUsers.Value.ToString());
+        ConfigToggleRow(worldBody, world, "Mobile Friendly", config.MobileFriendly.Value, v => config.MobileFriendly.Value = v);
+        ConfigToggleRow(worldBody, world, "Allow Joining", config.AllowJoin.Value, v => config.AllowJoin.Value = v);
         // No "Public" toggle - public-ness is just the "Anyone" access level below, not a separate flag. -xlinka
         AddRow(worldBody, $"Description: {(string.IsNullOrEmpty(config.Description.Value) ? "(none)" : config.Description.Value)}");
 
@@ -359,44 +360,48 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
                     // Host-only: changing access re-advertises the session + starts/stops the LAN beacon live
                     // (WorldSettings.AccessLevel handler). Re-render so the new selection actually shows. -xlinka
                     if (!world.IsAuthority) return;
-                    config.AccessLevel.Value = captured;
+                    EditConfig(world, () => config.AccessLevel.Value = captured);
                     RebuildSettings();
                 });
         }
 
         var sessionBody = AddSection(_rightColumn, "Session");
-        ToggleRow(sessionBody, "Edit Mode", config.EditMode.Value, v => config.EditMode.Value = v);
-        ToggleRow(sessionBody, "Auto-Kick AFK", config.AutoKickAFK.Value, v => config.AutoKickAFK.Value = v);
-        SliderRow(sessionBody, "Max AFK (min)", 1f, 120f, config.MaxAFKMinutes.Value,
-            v => { config.MaxAFKMinutes.Value = (int)MathF.Round(v); return $"{config.MaxAFKMinutes.Value} min"; });
-        ToggleRow(sessionBody, "Hide From Lists", config.HideFromSessionLists.Value, v => config.HideFromSessionLists.Value = v);
-        SliderRow(sessionBody, "Autosave (sec)", 0f, 600f, config.AutoSaveInterval.Value,
+        ConfigToggleRow(sessionBody, world, "Edit Mode", config.EditMode.Value, v => config.EditMode.Value = v);
+        ConfigToggleRow(sessionBody, world, "Auto-Kick AFK", config.AutoKickAFK.Value, v => config.AutoKickAFK.Value = v);
+        ConfigSliderRow(sessionBody, world, "Max AFK (min)", 1f, 120f, config.MaxAFKMinutes.Value,
+            v => { config.MaxAFKMinutes.Value = (int)MathF.Round(v); return $"{config.MaxAFKMinutes.Value} min"; },
+            $"{config.MaxAFKMinutes.Value} min");
+        ConfigToggleRow(sessionBody, world, "Hide From Lists", config.HideFromSessionLists.Value, v => config.HideFromSessionLists.Value = v);
+        ConfigSliderRow(sessionBody, world, "Autosave (sec)", 0f, 600f, config.AutoSaveInterval.Value,
             v =>
             {
                 config.AutoSaveInterval.Value = MathF.Round(v / 30f) * 30f;
                 return config.AutoSaveInterval.Value <= 0f ? "Off" : $"{config.AutoSaveInterval.Value:0}s";
-            });
+            },
+            config.AutoSaveInterval.Value <= 0f ? "Off" : $"{config.AutoSaveInterval.Value:0}s");
         // Tick rate is the SESSION's, not the machine's: it used to sit in per-client settings, where a
         // guest lowering it only starved their own loop. The field is MarkHostOnly, so a guest's write is
         // refused at the authority whatever the UI does - this just stops offering the control. -xlinka
         int tickRate = config.NetworkTickRate.Value <= 0 ? WorldSettings.DefaultTickRate : config.NetworkTickRate.Value;
         if (world.IsAuthority)
         {
-            SliderRow(sessionBody, "Tick Rate", WorldSettings.MinTickRate, WorldSettings.MaxTickRate, tickRate,
+            ConfigSliderRow(sessionBody, world, "Tick Rate", WorldSettings.MinTickRate, WorldSettings.MaxTickRate, tickRate,
                 v =>
                 {
                     config.NetworkTickRate.Value = System.Math.Clamp(
                         (int)MathF.Round(v / 5f) * 5, WorldSettings.MinTickRate, WorldSettings.MaxTickRate);
                     return $"{config.NetworkTickRate.Value} Hz";
-                });
+                },
+                $"{tickRate} Hz");
         }
         else
         {
             AddRow(sessionBody, $"Tick Rate: {tickRate} Hz (set by the host)");
         }
-        ToggleRow(sessionBody, "Cleanup Assets", config.CleanupUnusedAssets.Value, v => config.CleanupUnusedAssets.Value = v);
-        SliderRow(sessionBody, "Cleanup Every (s)", 30f, 1800f, config.AssetCleanupInterval.Value,
-            v => { config.AssetCleanupInterval.Value = MathF.Round(v / 30f) * 30f; return $"{config.AssetCleanupInterval.Value:0}s"; });
+        ConfigToggleRow(sessionBody, world, "Cleanup Assets", config.CleanupUnusedAssets.Value, v => config.CleanupUnusedAssets.Value = v);
+        ConfigSliderRow(sessionBody, world, "Cleanup Every (s)", 30f, 1800f, config.AssetCleanupInterval.Value,
+            v => { config.AssetCleanupInterval.Value = MathF.Round(v / 30f) * 30f; return $"{config.AssetCleanupInterval.Value:0}s"; },
+            $"{config.AssetCleanupInterval.Value:0}s");
 
         RecomputeContentHeight();
         // Size/position the scrollbar once layout has computed the rects.
@@ -435,7 +440,7 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
 
         var hb = RowBuilder(header);
         hb.MinWidth(18f).PreferredWidth(18f).FlexibleWidth(0f);
-        var chevron = AddRowLabel(hb, "▼", 15f, SectionTitleColor, TextHorizontalAlignment.Center);
+        var chevron = AddRowLabel(hb, "v", 15f, SectionTitleColor, TextHorizontalAlignment.Center);
         hb.MinWidth(100f).FlexibleWidth(1f);
         AddRowLabel(hb, title, 17f, SectionTitleColor, TextHorizontalAlignment.Left);
         var button = header.AttachComponent<Button>();
@@ -460,7 +465,7 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
     {
         section.Expanded = !section.Expanded;
         section.Body.ActiveSelf.Value = section.Expanded;
-        section.Chevron.Content.Value = section.Expanded ? "▼" : "▶";
+        section.Chevron.Content.Value = section.Expanded ? "v" : "›";
         RecomputeContentHeight();
         if (_scroll != null)
             _scroll.NormalizedPosition = float2.Zero;
@@ -551,7 +556,7 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
     }
 
     // Save row whose handler receives the button's own label Text, so it can show inline
-    // "Saved ✓" / "Save failed" feedback (then the label is restored after a moment).
+    // "Saved √" / "Save failed" feedback (then the label is restored after a moment).
     private void SaveButtonRow(Slot parent, string label, color fill, Action<Text> onClick)
     {
         var row = parent.AddSlot(label);
@@ -581,7 +586,7 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
     {
         if (label.IsDestroyed)
             return;
-        label.Content.Value = ok ? "Saved ✓" : "Save failed";
+        label.Content.Value = ok ? "Saved √" : "Save failed";
         label.Color.Value = ok ? new color(0.62f, 0.92f, 0.66f, 1f) : new color(0.95f, 0.52f, 0.54f, 1f);
         MarkDirty();
         World?.RunInSeconds(1.8f, () =>
@@ -768,7 +773,42 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
             if (user.IsLocal)
                 AddInlineButton(row, "Respawn", TabFill, () => RequestUserRespawn(world, user));
         }
+
+        if (!user.IsLocal)
+            AddLocalAudioControls(row, user);
     }
+
+    // Your ears, nobody else's. Mute / Silence above are the host's decision and replicate; these two
+    // write local state only, so turning somebody down here does not turn them down for the room and
+    // does not need the authority's permission either. -xlinka
+    private void AddLocalAudioControls(Slot row, User user)
+    {
+        var b = RowBuilder(row);
+
+        Text? volumeText = null;
+        var slider = b.Slider(user.LocalVolume, 0f, 1f, (_, v) =>
+        {
+            user.LocalVolume = v;
+            if (volumeText != null && !volumeText.IsDestroyed)
+                volumeText.Content.Value = FormatVolume(v);
+        });
+        var sliderLayout = slider.Slot.GetComponent<LayoutElement>() ?? slider.Slot.AttachComponent<LayoutElement>();
+        sliderLayout.MinWidth.Value = 96f;
+        sliderLayout.PreferredWidth.Value = 96f;
+        sliderLayout.FlexibleWidth.Value = 0f;
+
+        b.MinWidth(44f).PreferredWidth(44f).FlexibleWidth(0f);
+        volumeText = AddRowLabel(b, FormatVolume(user.LocalVolume), 14f, TextDim, TextHorizontalAlignment.Right);
+
+        bool blocked = user.IsAudioLocallyBlocked;
+        AddInlineButton(row, blocked ? "Unblock audio" : "Block audio", blocked ? KickFill : TabFill, 112f, () =>
+        {
+            user.SetAudioLocallyBlocked(!user.IsAudioLocallyBlocked);
+            RebuildUsersList();
+        });
+    }
+
+    private static string FormatVolume(float value) => $"{value * 100f:0}%";
 
     private static DataModelPermissionRole NextAssignableRole(System.Collections.Generic.IReadOnlyList<DataModelPermissionRole> roles, DataModelPermissionRole current)
     {
@@ -885,6 +925,49 @@ public sealed class SessionScreen : WidgetScreen, ITabbedScreen
 
         b.MinWidth(80f).PreferredWidth(80f).FlexibleWidth(0f);
         valueText = AddRowLabel(b, applyAndFormat(value), 15f, TextDim, TextHorizontalAlignment.Right);
+    }
+
+    // THE SANCTIONED WRITER.
+    //
+    // Every member of WorldSettings is config-locked, which means a write that does not open the world's
+    // edit scope is refused at the datamodel - by design, so an inspector row, a tool, a script or a
+    // reference card cannot author the world's settings from inside the world. This dashboard is the one
+    // surface that may, and these three helpers are the only place it does it.
+    //
+    // Host-gated as well, because the authority refuses a guest's delta for these anyway: without the
+    // gate a guest's toggle would move, write a value nobody else ever sees and desync their own view of
+    // the world until the next resync. A guest gets the value read out instead. -xlinka
+    private static void EditConfig(World world, Action apply)
+    {
+        if (world == null || world.IsDestroyed || !world.IsAuthority)
+            return;
+        using var configEdit = world.EnterConfigEdit();
+        apply();
+    }
+
+    private void ConfigToggleRow(Slot body, World world, string label, bool value, Action<bool> apply)
+    {
+        if (world.IsAuthority)
+            ToggleRow(body, label, value, v => EditConfig(world, () => apply(v)));
+        else
+            AddRow(body, $"{label}: {(value ? "On" : "Off")} (set by the host)");
+    }
+
+    private void ConfigSliderRow(Slot body, World world, string label, float min, float max, float value,
+        Func<float, string> applyAndFormat, string readOnlyText)
+    {
+        if (!world.IsAuthority)
+        {
+            AddRow(body, $"{label}: {readOnlyText} (set by the host)");
+            return;
+        }
+
+        SliderRow(body, label, min, max, value, v =>
+        {
+            string formatted = readOnlyText;
+            EditConfig(world, () => formatted = applyAndFormat(v));
+            return formatted;
+        });
     }
 
     private void ToggleRow(Slot page, string label, bool value, Action<bool> apply)

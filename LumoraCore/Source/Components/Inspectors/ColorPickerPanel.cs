@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -163,13 +163,6 @@ public class ColorPickerPanel : Component, IInspectorActionHandler
         base.OnAttach();
 
         var theme = Slot.GetOrAttachComponent<UITheme>();
-        // Same dark set as the scene and material inspectors so the panels read as one tool family.
-        theme.PanelBackground.Value = new color(0.075f, 0.07f, 0.115f, 1f);
-        theme.Header.Value = new color(0.11f, 0.10f, 0.17f, 1f);
-        theme.ButtonFill.Value = ButtonFill;
-        theme.Accent.Value = InspectorUI.AccentColor;
-        theme.Separator.Value = new color(0.52f, 0.46f, 0.82f, 0.6f);
-        theme.Border.Value = new color(0.52f, 0.46f, 0.82f, 0.45f);
 
         // One checkerboard for every alpha surface on the panel (both preview halves and every chip).
         var checker = Slot.GetOrAttachComponent<CheckerTextureProvider>();
@@ -1010,6 +1003,10 @@ public class ColorPickerPanel : Component, IInspectorActionHandler
         // pass anyway, so the picker reads it but never authors it. A HOOKED link is the passthrough
         // escape - it intercepts the write rather than rejecting it. Matches MemberEditor.IsReadOnly.
         if (field is ILinkable { IsDriven: true, IsHooked: false })
+            return;
+
+        // Same rule as MemberEditor.IsReadOnly: a config-locked member is not authored from in-world.
+        if (field is SyncElement { IsConfigLocked: true })
             return;
 
         if (!_undoCaptured)

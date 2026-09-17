@@ -53,7 +53,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
     // leaves a "+N more" marker in THAT container, instead of truncating the tree somewhere the user
     // never looked.
     private const int RowBudget = 250;
-    private const float RowHeight = 30f;
+    private const float RowHeight = InspectorUI.RowHeight;
     private const float IndentPerDepth = 18f;
     // Gap between rows. The scroll list, the node wrapper and every child container all use it, so a
     // nested row sits at exactly the pitch the flat list had.
@@ -248,14 +248,6 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         base.OnAttach();
 
         var theme = Slot.GetOrAttachComponent<UITheme>();
-        // Inspector-specific dark set over the shared theme: near-black opaque panes so dense
-        // editor rows read, with the house purple as the only accent. - xlinka
-        theme.PanelBackground.Value = new color(0.075f, 0.07f, 0.115f, 1f);
-        theme.Header.Value = new color(0.11f, 0.10f, 0.17f, 1f);
-        theme.ButtonFill.Value = new color(0.22f, 0.20f, 0.34f, 1f);
-        theme.Accent.Value = InspectorUI.AccentColor;
-        theme.Separator.Value = new color(0.52f, 0.46f, 0.82f, 0.6f);
-        theme.Border.Value = new color(0.52f, 0.46f, 0.82f, 0.45f);
 
         var shell = Slot.GetOrAttachComponent<PanelShell>();
         shell.Title.Value = "Inspector";
@@ -379,7 +371,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
     {
         for (var s = slot; s != null; s = s.Parent)
         {
-            if (s.GetComponent<Canvas>() != null)
+            if (s.GetComponent<Canvas>() != null || s.GetComponent<PanelShell>() != null)
                 return true;
         }
         return false;
@@ -430,7 +422,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         // tool) - spatial tool, spatial control. No header buttons for it here.
         headerUi.PushStyle();
         headerUi.TextColor(InspectorUI.DangerColor);
-        InspectorUI.RelayButton(headerUi, this, "destroyassets", "Destroy Keep Assets", 150f);
+        InspectorUI.RelayButton(headerUi, this, "destroyassets", "Destroy Keep Assets", 172f);
         InspectorUI.RelayButton(headerUi, this, "destroy", "Destroy", 74f);
         headerUi.PopStyle();
 
@@ -452,6 +444,8 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         leftLE.FlexibleWidth.Value = 0f;
         var leftImage = leftCol.AttachComponent<Image>();
         leftImage.Tint.Value = InspectorUI.PaneColor;
+        leftImage.CornerRadius.Value = DashTheme.RadiusCard;
+        leftCol.AttachComponent<GraphicChunkRoot>();
         var leftLayout = leftCol.AttachComponent<VerticalLayout>();
         leftLayout.Spacing.Value = 2f;
         leftLayout.PaddingLeft.Value = 4f;
@@ -481,6 +475,8 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         rightLE.MinWidth.Value = 500f;
         var rightImage = rightCol.AttachComponent<Image>();
         rightImage.Tint.Value = InspectorUI.PaneColor;
+        rightImage.CornerRadius.Value = DashTheme.RadiusCard;
+        rightCol.AttachComponent<GraphicChunkRoot>();
         var rightLayout = rightCol.AttachComponent<VerticalLayout>();
         rightLayout.Spacing.Value = 3f;
         rightLayout.PaddingLeft.Value = 4f;
@@ -509,7 +505,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
 
         var scrollUi = new UIBuilder(host);
         InspectorUI.ApplyTheme(scrollUi, Slot);
-        var scroll = scrollUi.ScrollRect(out var content, null, InspectorUI.PaneColor);
+        var scroll = scrollUi.ScrollRect(out var content, null, color.Transparent);
         InspectorUI.FillParent(scroll.Slot.GetComponent<RectTransform>()!);
 
         var contentLayout = content.Slot.AttachComponent<VerticalLayout>();
@@ -1102,6 +1098,7 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         row.RowSlot = rowSlot;
         var rowBackground = rowSlot.AttachComponent<Image>();
         rowBackground.Tint.Value = color.Transparent;
+        rowBackground.CornerRadius.Value = DashTheme.RadiusChip;
         row.Background = rowBackground;
         rowSlot.GetComponent<HorizontalLayout>()!.PaddingLeft.Value = 4f + row.Depth * IndentPerDepth;
 
@@ -1426,6 +1423,9 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         InspectorUI.RelayButton(resetUi, this, "resetrot", "Rotation", 0f);
         InspectorUI.RelayButton(resetUi, this, "resetscale", "Scale", 0f);
 
+        InspectorUI.FixedRow(container, "ResetAllRow", InspectorUI.RowHeight, out var resetAllUi, Slot);
+        InspectorUI.RelayButton(resetAllUi, this, "resetall", "Reset All", 0f);
+
         InspectorUI.FixedRow(container, "PivotRow", 34f, out var pivotUi, Slot);
         pivotUi.PushStyle();
         pivotUi.FlexibleWidth(1f);
@@ -1473,9 +1473,10 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         ulong componentId = component.ReferenceID.RawValue;
         bool expanded = IsExpanded(ExpandedComponents, componentId);
 
-        var header = InspectorUI.FixedRow(container, component.GetType().Name, 34f, out var ui, Slot);
+        var header = InspectorUI.FixedRow(container, component.GetType().Name, InspectorUI.RowHeight + 4f, out var ui, Slot);
         var headerImage = header.AttachComponent<Image>();
         headerImage.Tint.Value = InspectorUI.HeaderColor;
+        headerImage.CornerRadius.Value = DashTheme.RadiusControl;
 
         // Gripping the header pulls a card for the component.
         var headerSource = header.AttachComponent<ReferenceProxySource>();
@@ -1523,12 +1524,18 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
             ui.PopStyle();
         }
 
-        InspectorUI.RelayButton(ui, this, $"dupcomp:{componentId}", "Dup", 52f);
+        // The world's config components get neither button. Dup would mint a second copy of a
+        // single-instance component and X would try to take the world's settings off the root; both are
+        // refused at the datamodel, so the header does not offer them in the first place. -xlinka
+        if (!WorldConfigLock.IsConfigComponent(component))
+        {
+            InspectorUI.RelayButton(ui, this, $"dupcomp:{componentId}", "Dup", 52f);
 
-        ui.PushStyle();
-        ui.TextColor(InspectorUI.DangerColor);
-        InspectorUI.RelayButton(ui, this, $"remove:{componentId}", "X", 30f);
-        ui.PopStyle();
+            ui.PushStyle();
+            ui.TextColor(InspectorUI.DangerColor);
+            InspectorUI.RelayButton(ui, this, $"remove:{componentId}", "X", 30f);
+            ui.PopStyle();
+        }
 
         if (!expanded)
             return;
@@ -1678,7 +1685,8 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         if (argument.StartsWith("remove:", StringComparison.Ordinal) && ulong.TryParse(argument[7..], out ulong remId))
         {
             // Serialize-then-destroy so the X is undoable (the batch re-attaches + loads the state back).
-            if (World?.ReferenceController?.GetObjectOrNull(new RefID(remId)) is Component component)
+            if (World?.ReferenceController?.GetObjectOrNull(new RefID(remId)) is Component component
+                && !WorldConfigLock.IsConfigComponent(component))
                 ComponentUndo.RecordDestroy(this, component);
             _componentsDirty = true;
             RunApplyChangesSafe();
@@ -1698,7 +1706,8 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
         if (argument.StartsWith("dupcomp:", StringComparison.Ordinal) && ulong.TryParse(argument[8..], out ulong dupId))
         {
             if (World?.ReferenceController?.GetObjectOrNull(new RefID(dupId)) is Component source
-                && source.Slot != null && !source.Slot.IsDestroyed)
+                && source.Slot != null && !source.Slot.IsDestroyed
+                && !WorldConfigLock.IsConfigComponent(source))
             {
                 var clone = source.Slot.AttachComponent(source.GetType());
                 clone.CopyValues(source);
@@ -1806,6 +1815,17 @@ public class SceneInspectorPanel : Component, IInspectorActionHandler, IInspecto
                 var selected = Selected.Target;
                 if (selected == null || selected.IsRootSlot) return;
                 var undo = SlotTransformUndoBatch.Begin(selected, UndoLocale.ResetScale);
+                selected.LocalScale.Value = float3.One;
+                RecordUndo(undo?.Commit());
+                return;
+            }
+            case "resetall":
+            {
+                var selected = Selected.Target;
+                if (selected == null || selected.IsRootSlot) return;
+                var undo = SlotTransformUndoBatch.Begin(selected, UndoLocale.ResetTransform);
+                selected.LocalPosition.Value = float3.Zero;
+                selected.LocalRotation.Value = floatQ.Identity;
                 selected.LocalScale.Value = float3.One;
                 RecordUndo(undo?.Commit());
                 return;

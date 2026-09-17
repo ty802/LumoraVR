@@ -90,7 +90,9 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
         // very quiet way to break every field in the engine. Keep this map current. -xlinka
         ValueCameFromData = 18,
         HasInboundRules = 19,
-        // 20+ available for derived classes
+        IsConfigLocked = 20,
+        ConfigLockWarned = 21,
+        // 22+ available for derived classes
     }
 
     public World World
@@ -172,6 +174,49 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
     public bool HasInboundRules { get => GetFlag((int)InternalFlags.HasInboundRules); private set => SetFlag((int)InternalFlags.HasInboundRules, value); }
 
     protected void MarkInboundRules() => HasInboundRules = true;
+
+    // CONFIG LOCK
+    //
+    // A locked member refuses every write that comes from inside the world - the inspector, a reference
+    // card, a tool, a script, an undo step, the host's own hand - and takes one only while an ambient
+    // WorldConfigEdit scope is open. The engine's own paths are unaffected because they are the ones the
+    // existing escapes already cover: a persistence load and a network apply both run under IsLoading,
+    // and a member's constructor-seeded default lands during the init phase.
+    //
+    // MarkHostOnly answers the SAME question for the wire and nothing else; this is the half that was
+    // missing, because a host-only member is still perfectly writable by whoever is sitting in the host's
+    // chair with an inspector open. -xlinka
+    public bool IsConfigLocked { get => GetFlag((int)InternalFlags.IsConfigLocked); private set => SetFlag((int)InternalFlags.IsConfigLocked, value); }
+
+    private bool ConfigLockWarned { get => GetFlag((int)InternalFlags.ConfigLockWarned); set => SetFlag((int)InternalFlags.ConfigLockWarned, value); }
+
+    public void MarkConfigLocked()
+    {
+        IsConfigLocked = true;
+        MarkInboundRules();
+    }
+
+    // Whether a write reaching this member right now is allowed to author it. False only for a locked
+    // member with no edit scope open and none of the engine's own phases in play.
+    public bool AllowsConfigWrite
+        => !IsConfigLocked || WorldConfigEdit.IsOpen || IsLoading || IsWithinHookCallback || IsInInitPhase;
+
+    // One Warn per member per session: a refused slider drag is hundreds of writes and the first line
+    // already says everything the next three hundred would.
+    protected bool ConfigLockRefuses(string operation)
+    {
+        if (AllowsConfigWrite)
+            return false;
+
+        if (!ConfigLockWarned)
+        {
+            ConfigLockWarned = true;
+            LumoraLogger.Warn(
+                $"Config lock: refused {operation} on '{ParentHierarchyToString()}' - world configuration is "
+                + "editable only from the Session dashboard.");
+        }
+        return true;
+    }
 
     // Whether this member's value was handed to it by a save or by a peer, rather than being whatever
     // the owning worker constructed it with.
@@ -450,6 +495,11 @@ public abstract class SyncElement : IWorldElement, IDisposable, IInitializable, 
                 }
                 return false;
             }
+
+            // Never throws, whatever throwOnError says: an undo step replaying onto a locked member has
+            // to come back as "did nothing", not as an exception unwinding half a batch. -xlinka
+            if (ConfigLockRefuses("write"))
+                return false;
 
             if (!IsLoading && !IsWithinHookCallback && !IsInInitPhase &&
                 !AuthorizeDataModelMutation(

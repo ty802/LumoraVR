@@ -276,6 +276,9 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
 
     public int RemoveAll(Predicate<T> match)
     {
+        if (ConfigLockRefuses("collection remove"))
+            return 0;
+
         BeginModification();
         int count = 0;
         for (int i = _records.Count - 1; i >= 0; i--)
@@ -379,6 +382,10 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
 
     protected T InternalInsert(RefID id, int index, bool sync = true, bool change = true)
     {
+        // Checked before anything is allocated so a refusal leaves the list byte-identical. -xlinka
+        if (ConfigLockRefuses("collection add"))
+            return null!;
+
         if (!IsLoading && !IsInInitPhase)
         {
             var action = index == _records.Count ? DataModelPermissionAction.CollectionAdd : DataModelPermissionAction.CollectionInsert;
@@ -461,6 +468,9 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
         {
             throw new InvalidOperationException("Cannot remove elements during initialization phase!");
         }
+
+        if (ConfigLockRefuses("collection remove"))
+            return;
 
         if (!IsLoading)
         {
@@ -555,6 +565,9 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
 
     protected void InternalClear(bool sync = true, bool change = true, bool forceTrash = false)
     {
+        if (ConfigLockRefuses("collection clear"))
+            return;
+
         if (!IsLoading && !IsInInitPhase)
         {
             AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionClear, DataModelPermissionSurface.List);

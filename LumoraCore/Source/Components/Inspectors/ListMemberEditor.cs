@@ -46,6 +46,10 @@ public class ListMemberEditor : Component, IInspectorActionHandler
 
     private ISyncList? List => TargetList.Target as ISyncList;
 
+    // A config-locked list still renders its elements live; what goes away is every structural control.
+    // Add, remove and reorder would all be refused at the datamodel, so offering them is a lie. -xlinka
+    private bool IsLocked => TargetList.Target is SyncElement { IsConfigLocked: true };
+
     // true for the flat value collections this editor renders read-only. Walks the hierarchy so a
     // derived array (SyncGrid) is recognised too, instead of falling through to the one-line
     // "(TypeName)" row a top-level member would otherwise get.
@@ -221,10 +225,12 @@ public class ListMemberEditor : Component, IInspectorActionHandler
 
         int total = CollectionCount();
 
+        bool locked = IsLocked;
+
         if (!expanded)
         {
             BuildActionRow(body, "ShowRow", $"show {total} items", "toggle");
-            if (target is ISyncList)
+            if (target is ISyncList && !locked)
                 BuildActionRow(body, "AddRow", "Add", "add");
             return;
         }
@@ -233,10 +239,13 @@ public class ListMemberEditor : Component, IInspectorActionHandler
         {
             int shown = System.Math.Min(total, MaxRows);
             for (int i = 0; i < shown; i++)
-                BuildElementRow(body, i, list.GetElement(i));
+                BuildElementRow(body, i, list.GetElement(i), locked);
             if (total > shown)
                 BuildNoteRow(body, $"{total - shown} more...");
-            BuildActionRow(body, "AddRow", "Add", "add");
+            if (locked)
+                BuildNoteRow(body, "host-configured - edit in Session");
+            else
+                BuildActionRow(body, "AddRow", "Add", "add");
             return;
         }
 
@@ -256,7 +265,7 @@ public class ListMemberEditor : Component, IInspectorActionHandler
     }
 
     // Editable element: "i:" index, the element's editor stretched across the row, remove X.
-    private void BuildElementRow(Slot body, int index, ISyncMember element)
+    private void BuildElementRow(Slot body, int index, ISyncMember element, bool locked)
     {
         var row = InspectorUI.FixedRow(body, $"E{index}", InspectorUI.RowHeight, out var ui, Slot);
         if (element is IWorldElement elementRef)
@@ -278,10 +287,13 @@ public class ListMemberEditor : Component, IInspectorActionHandler
         ui.NestOut();
         ui.PopStyle();
 
+        if (locked)
+            return;
+
         ui.PushStyle();
         ui.TextColor(InspectorUI.AccentColor);
-        InspectorUI.RelayButton(ui, this, $"up:{index}", "▲", 24f);
-        InspectorUI.RelayButton(ui, this, $"down:{index}", "▼", 24f);
+        InspectorUI.RelayButton(ui, this, $"up:{index}", "↑", 24f);
+        InspectorUI.RelayButton(ui, this, $"down:{index}", "↓", 24f);
         ui.PopStyle();
 
         ui.PushStyle();
@@ -351,6 +363,9 @@ public class ListMemberEditor : Component, IInspectorActionHandler
             Expanded.Value = !Expanded.Value;
             return;
         }
+        // The rows are gone, so this only fires for a relay that outlived a lock arriving mid-session.
+        if (IsLocked)
+            return;
         if (argument == "add")
         {
             InspectorUndo.Record(this, ListElementUndoBatch.Add(List, out _, MarkListDirty));

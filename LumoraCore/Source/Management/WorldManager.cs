@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -259,10 +259,14 @@ public class WorldManager : IDisposable
         if (config == null)
             return;
 
-        config.HostGroupId.Value = group.GroupId;
-        config.AccessLevel.Value = group.MembersOnly
-            ? World.WorldAccessLevel.GroupMembers
-            : World.WorldAccessLevel.GroupPublic;
+        // Hosting is an engine path, so it seeds the config inside the world's edit scope. -xlinka
+        using (w.EnterConfigEdit())
+        {
+            config.HostGroupId.Value = group.GroupId;
+            config.AccessLevel.Value = group.MembersOnly
+                ? World.WorldAccessLevel.GroupMembers
+                : World.WorldAccessLevel.GroupPublic;
+        }
         GroupSessionTags.Stamp(w.Session?.Metadata?.Tags, group.GroupId, group.GroupTag);
 
         var root = w.RootSlot;

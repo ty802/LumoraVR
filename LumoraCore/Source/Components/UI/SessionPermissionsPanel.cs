@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -685,18 +685,20 @@ public sealed class SessionPermissionsPanel
 
     private void WriteRoleClass(DataModelAccessClass accessClass, string roleName)
     {
-        var config = GetWritableConfig();
-        var field = config == null ? null : RoleClassField(config, accessClass);
-        if (config == null || field == null)
-            return;
-        if (field.Value != roleName)
-            field.Value = roleName;
+        EditConfig(config =>
+        {
+            var field = RoleClassField(config, accessClass);
+            if (field == null)
+                return;
+            if (field.Value != roleName)
+                field.Value = roleName;
 
-        // The retired single default outranks every per-class answer at the gate, so the first time the
-        // host touches one of these rows it goes. Otherwise a host who set "everyone is a Spectator" last
-        // year would edit these four rows and watch nothing change. -xlinka
-        if (config.DefaultJoinerRole.Value.Length > 0)
-            config.DefaultJoinerRole.Value = string.Empty;
+            // The retired single default outranks every per-class answer at the gate, so the first time the
+            // host touches one of these rows it goes. Otherwise a host who set "everyone is a Spectator" last
+            // year would edit these four rows and watch nothing change. -xlinka
+            if (config.DefaultJoinerRole.Value.Length > 0)
+                config.DefaultJoinerRole.Value = string.Empty;
+        });
     }
 
     // Five roles times five capabilities plus two bounds each was thirty-five rows to scroll past. The
@@ -759,8 +761,9 @@ public sealed class SessionPermissionsPanel
             Write = value =>
             {
                 var entry = GetOrAddCap(roleName);
-                if (entry == null)
+                if (entry == null || entry.World == null)
                     return;
+                using var configEdit = entry.World.EnterConfigEdit();
                 if (minimum)
                     entry.MinScale.Value = value;
                 else
@@ -798,9 +801,8 @@ public sealed class SessionPermissionsPanel
             },
             Write = index =>
             {
-                var config = GetWritableConfig();
-                if (config != null && index >= 0 && index < Responses.Length)
-                    config.ViolationResponse.Value = Responses[index];
+                if (index >= 0 && index < Responses.Length)
+                    EditConfig(config => config.ViolationResponse.Value = Responses[index]);
             },
         });
 
@@ -827,12 +829,7 @@ public sealed class SessionPermissionsPanel
                 var config = _world?.PermissionConfig;
                 return config == null ? 0f : field(config).Value;
             },
-            Write = value =>
-            {
-                var config = GetWritableConfig();
-                if (config != null)
-                    field(config).Value = value;
-            },
+            Write = value => EditConfig(config => field(config).Value = value),
             Format = value => DescribeScore(value, seconds),
         });
     }
@@ -877,12 +874,13 @@ public sealed class SessionPermissionsPanel
     internal void SetCap(string roleName, DataModelPermissionDomain domain, DataModelPermissionToggle value)
     {
         var entry = GetOrAddCap(roleName);
-        if (entry == null)
+        if (entry == null || entry.World == null)
             return;
         var field = ToggleField(entry, domain);
         if (field.Value == value)
             return;
-        field.Value = value;
+        using (entry.World.EnterConfigEdit())
+            field.Value = value;
         _view?.RefreshValues();
         MarkDirty();
     }
@@ -898,17 +896,20 @@ public sealed class SessionPermissionsPanel
             return;
 
         bool changed = false;
-        foreach (var entry in config.RoleCaps)
+        using (config.World!.EnterConfigEdit())
         {
-            if (entry == null || entry.IsDestroyed)
-                continue;
-            for (int i = 0; i < Domains.Length; i++)
+            foreach (var entry in config.RoleCaps)
             {
-                var field = ToggleField(entry, Domains[i]);
-                if (field.Value == DataModelPermissionToggle.Inherit)
+                if (entry == null || entry.IsDestroyed)
                     continue;
-                field.Value = DataModelPermissionToggle.Inherit;
-                changed = true;
+                for (int i = 0; i < Domains.Length; i++)
+                {
+                    var field = ToggleField(entry, Domains[i]);
+                    if (field.Value == DataModelPermissionToggle.Inherit)
+                        continue;
+                    field.Value = DataModelPermissionToggle.Inherit;
+                    changed = true;
+                }
             }
         }
 
@@ -1079,6 +1080,21 @@ public sealed class SessionPermissionsPanel
             return null;
         var config = world.PermissionConfig;
         return config == null || config.IsDestroyed ? null : config;
+    }
+
+    // THE SANCTIONED WRITER for the permission half of the config.
+    //
+    // Every member of WorldPermissionConfig is config-locked, so a write that does not open the world's
+    // edit scope is refused at the datamodel - including one made from a scene inspector row by the host.
+    // This panel is host-gated already (GetWritableConfig), so this only adds the scope, in one place
+    // rather than at each of the six places that used to write a field directly. -xlinka
+    private void EditConfig(Action<WorldPermissionConfig> apply)
+    {
+        var config = GetWritableConfig();
+        if (config == null)
+            return;
+        using var configEdit = config.World!.EnterConfigEdit();
+        apply(config);
     }
 
     public DataModelPermissionToggle CapState(string roleName, DataModelPermissionDomain domain)

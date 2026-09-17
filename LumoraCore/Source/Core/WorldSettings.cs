@@ -1,6 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using Lumora.Core.Networking.Sync;
 using Lumora.Nexus.Cloud;
 
 namespace Lumora.Core;
@@ -9,7 +10,12 @@ namespace Lumora.Core;
 // (in the slot tree), and update live - reached via Configuration. The authority owns it; a client receives
 // it through state sync. Edit/access policy (e.g. Mode) is still enforced host-authoritatively by the
 // permission gate, not by trusting these synced values.
-[ComponentCategory("World")]
+//
+// NOT BROWSABLE and single-instance: the browser must never be able to bolt a second one onto anything,
+// and every member carries the config lock, so this component is authored by the Session dashboard and
+// by the engine's own create/load paths, by nobody else and from nowhere else. -xlinka
+[ComponentCategory(ComponentLibrary.HiddenCategory)]
+[SingleInstancePerSlot]
 public sealed class WorldSettings : Component
 {
     [Group("Access")]
@@ -55,6 +61,14 @@ public sealed class WorldSettings : Component
     [Group("Network")]
     public readonly Sync<int> NetworkTickRate = new();
 
+    // The saved values come off disk through the shared Worker.Load, which writes the members directly -
+    // so the load runs inside the edit scope rather than being refused by the lock it installs. -xlinka
+    public override void Load(Persistence.DataTreeNode node, Persistence.LoadControl control)
+    {
+        using var configEdit = WorldConfigEdit.Enter();
+        base.Load(node, control);
+    }
+
     public const int DefaultTickRate = 70;
     public const int MinTickRate = 10;
     public const int MaxTickRate = 120;
@@ -62,6 +76,7 @@ public sealed class WorldSettings : Component
     public override void OnInit()
     {
         base.OnInit();
+        using var configEdit = WorldConfigEdit.Enter();
         MaxUsers.Value = 32;
         AllowJoin.Value = true;
         IsPublic.Value = false;
@@ -85,13 +100,40 @@ public sealed class WorldSettings : Component
     public override void OnAwake()
     {
         base.OnAwake();
-        NetworkTickRate.MarkHostOnly();
-        HostGroupId.MarkHostOnly();
+
+        // The blanket, same shape as WorldPermissionConfig's. It used to be two named fields, which meant
+        // every OTHER member here - the access level, the user cap, persistence, the AFK kick - took a
+        // guest's delta and took an inspector write from anyone standing in the world. Running the sweep
+        // over the whole component is what makes a field added here next year locked by construction
+        // instead of by somebody remembering. -xlinka
+        for (int i = 0; i < SyncMemberCount; i++)
+        {
+            if (GetSyncMember(i) is ConflictingSyncElement element)
+            {
+                element.MarkHostOnly();
+                element.MarkNonDrivable();
+                element.MarkConfigLocked();
+            }
+        }
     }
 
     public override void OnStart()
     {
         base.OnStart();
+
+        // A config component that is not on the world root came in on a copied item, a pasted graph or a
+        // crafted save. It is not a second opinion about the world's settings, it is a lie told from
+        // inside an object, so it goes. -xlinka
+        if (World != null && World.IsAuthority && WorldConfigLock.IsMisplaced(this))
+        {
+            Logging.Logger.Warn(
+                $"WorldSettings on '{Slot?.Name?.Value ?? "?"}' is not the world root - removing it.");
+            using (WorldConfigEdit.Enter())
+                Destroy();
+            return;
+        }
+
+        using var configEdit = WorldConfigEdit.Enter();
 
         // A world saved before the tick rate moved here loads with a zero. Normalize it on the
         // authority so the Session screen shows a real number instead of an out-of-range 0.

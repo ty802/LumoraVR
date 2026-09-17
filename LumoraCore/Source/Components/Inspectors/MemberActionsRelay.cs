@@ -27,6 +27,11 @@ public class MemberActionsRelay : Component
 
     private IField? Field => TargetMember.Target as IField;
 
+    // A config-locked member is not authored from in-world, so reset-to-default, break-link and the
+    // vector mutators all no-op on one instead of writing at it and recording an undo step for a write
+    // the datamodel already refused. -xlinka
+    private bool IsLocked => TargetMember.Target is SyncElement { IsConfigLocked: true };
+
     private static readonly float[] ItemFill = { 0.16f, 0.15f, 0.24f, 0.92f };
     private static readonly float[] CancelFill = { 0.30f, 0.30f, 0.32f, 0.92f };
 
@@ -143,7 +148,7 @@ public class MemberActionsRelay : Component
     private void ResetToDefault()
     {
         var field = Field;
-        if (field == null || field.IsDestroyed)
+        if (field == null || field.IsDestroyed || IsLocked)
             return;
 
         object? def = null;
@@ -186,7 +191,7 @@ public class MemberActionsRelay : Component
     private void BreakLink()
     {
         var member = TargetMember.Target;
-        if (member is not ILinkable linkable || member.IsDestroyed)
+        if (member is not ILinkable linkable || member.IsDestroyed || IsLocked)
             return;
         var link = linkable.ActiveLink;
         if (link == null)
@@ -234,7 +239,7 @@ public class MemberActionsRelay : Component
     private void MutateVector(FieldInfo[] comps, Func<float[], float[]?> transform)
     {
         var field = Field;
-        if (field == null || field.IsDestroyed)
+        if (field == null || field.IsDestroyed || IsLocked)
             return;
 
         object? working = field.BoxedValue;

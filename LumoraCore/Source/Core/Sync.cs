@@ -29,7 +29,9 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
 
     public Type ValueType => typeof(T);
 
-    public virtual bool CanWrite => true;
+    // Reads false while the config lock holds, so generic UI and the "reset members" sweep skip the
+    // member instead of writing at it and being refused. -xlinka
+    public virtual bool CanWrite => AllowsConfigWrite;
 
     #endregion
 

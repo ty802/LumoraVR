@@ -8,15 +8,8 @@ using Lumora.Core.Networking.Sync;
 
 namespace Lumora.Core;
 
-/// <summary>
-/// Network-synchronized list of primitive values.
-/// Each value is wrapped in a Sync<T> field for synchronization.
-/// </summary>
 public class SyncFieldList<T> : SyncElementList<Sync<T>>, IEnumerable<T>, IEnumerable
 {
-    /// <summary>
-    /// Event fired when the list changes (add, remove, clear).
-    /// </summary>
     public event Action<SyncFieldList<T>>? OnChanged;
 
     public SyncFieldList()
@@ -26,9 +19,6 @@ public class SyncFieldList<T> : SyncElementList<Sync<T>>, IEnumerable<T>, IEnume
         ElementsRemoved += (list, idx, count) => OnChanged?.Invoke(this);
     }
 
-    /// <summary>
-    /// Create a SyncFieldList attached to a component.
-    /// </summary>
     public SyncFieldList(Component owner) : this()
     {
         if (owner?.World != null)
@@ -37,9 +27,6 @@ public class SyncFieldList<T> : SyncElementList<Sync<T>>, IEnumerable<T>, IEnume
         }
     }
 
-    /// <summary>
-    /// Enumerator that yields values instead of Sync fields.
-    /// </summary>
     public new struct Enumerator : IEnumerator<T>, IDisposable, IEnumerator
     {
         private SyncElementList<Sync<T>>.Enumerator _baseEnumerator;
@@ -69,26 +56,21 @@ public class SyncFieldList<T> : SyncElementList<Sync<T>>, IEnumerable<T>, IEnume
         }
     }
 
-    /// <summary>
-    /// Get or set value at index.
-    /// </summary>
     public new T this[int index]
     {
         get => GetElement(index).Value;
         set => GetElement(index).Value = value;
     }
 
-    /// <summary>
-    /// Add a new value to the list.
-    /// </summary>
     public void Add(T value)
     {
-        Add().Value = value;
+        // A refused add (a config-locked list) hands back nothing rather than throwing, so the
+        // convenience wrapper has to read that as "did not add" instead of dereferencing it. -xlinka
+        var added = Add();
+        if (added != null)
+            added.Value = value;
     }
 
-    /// <summary>
-    /// Add a value only if it doesn't already exist.
-    /// </summary>
     public bool AddUnique(T value)
     {
         if (IndexOf(value) < 0)
@@ -99,9 +81,6 @@ public class SyncFieldList<T> : SyncElementList<Sync<T>>, IEnumerable<T>, IEnume
         return false;
     }
 
-    /// <summary>
-    /// Add multiple values.
-    /// </summary>
     public void AddRange(IEnumerable<T> values)
     {
         foreach (T value in values)
@@ -110,25 +89,18 @@ public class SyncFieldList<T> : SyncElementList<Sync<T>>, IEnumerable<T>, IEnume
         }
     }
 
-    /// <summary>
-    /// Insert a value at index.
-    /// </summary>
     public void Insert(int index, T value)
     {
-        Insert(index).Value = value;
+        var inserted = Insert(index);
+        if (inserted != null)
+            inserted.Value = value;
     }
 
-    /// <summary>
-    /// Find index of value.
-    /// </summary>
     public int IndexOf(T value)
     {
         return FindIndex(f => SyncCoder.Equals(f.Value, value));
     }
 
-    /// <summary>
-    /// Remove first occurrence of value.
-    /// </summary>
     public void Remove(T value)
     {
         int idx = IndexOf(value);
@@ -138,17 +110,11 @@ public class SyncFieldList<T> : SyncElementList<Sync<T>>, IEnumerable<T>, IEnume
         }
     }
 
-    /// <summary>
-    /// Remove all occurrences of value.
-    /// </summary>
     public int RemoveAll(T value)
     {
         return RemoveAll(f => SyncCoder.Equals(f.Value, value));
     }
 
-    /// <summary>
-    /// Get the underlying Sync field at index.
-    /// </summary>
     public Sync<T> GetField(int index)
     {
         return GetElement(index);

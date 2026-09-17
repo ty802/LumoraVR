@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -2013,8 +2013,13 @@ public class Slot : ContainerWorker<Component>, IImplementable<IHook<Slot>>, ICh
                     Lumora.Core.Logging.Logger.Warn($"Slot.Load: unknown component type '{typeName}', skipping.");
                     continue;
                 }
+                // A world's config components are single-instance and the world root usually already has
+                // them by the time a save is read into it (touching World.Configuration attaches one).
+                // Loading into the one that is there puts the SAVED settings back, where attaching a second
+                // put them on a component nothing reads and the single-instance guard then destroys. -xlinka
+                var component = WorldConfigLock.IsConfigComponentType(type) ? GetComponent(type) : null;
                 // runOnAttachBehavior: false so the loaded state isn't overwritten by attach defaults.
-                var component = AttachComponent(type, runOnAttachBehavior: false);
+                component ??= AttachComponent(type, runOnAttachBehavior: false);
                 component.Load(data, control);
             }
         }

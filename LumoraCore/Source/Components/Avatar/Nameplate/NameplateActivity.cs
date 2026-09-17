@@ -1,6 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using Lumora.Core.Components.UI;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Avatar;
@@ -132,11 +133,13 @@ public sealed class NameplateActivityWatcher
     }
 }
 
+// Dash tokens, so the dot says the same thing in the same colour the session screen does. Colour only:
+// which state the dot is in is the watcher's answer above and nothing here touches it. -xlinka
 public static class NameplatePresenceColors
 {
-    public static readonly color Present = new color(0.34f, 0.88f, 0.45f, 1f);
-    public static readonly color Idle = new color(1f, 0.76f, 0.29f, 1f);
-    public static readonly color Away = new color(0.52f, 0.55f, 0.62f, 1f);
+    public static readonly color Present = DashTheme.Positive;
+    public static readonly color Idle = DashTheme.Warning;
+    public static readonly color Away = DashTheme.TextMuted;
 
     public static color For(NameplatePresence presence) => presence switch
     {

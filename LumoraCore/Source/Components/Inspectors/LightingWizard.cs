@@ -76,12 +76,6 @@ public sealed class LightingWizard : Component, IInspectorActionHandler
         base.OnAttach();
 
         var theme = Slot.GetOrAttachComponent<UITheme>();
-        theme.PanelBackground.Value = new color(0.075f, 0.07f, 0.115f, 1f);
-        theme.Header.Value = new color(0.11f, 0.10f, 0.17f, 1f);
-        theme.ButtonFill.Value = new color(0.22f, 0.20f, 0.34f, 1f);
-        theme.Accent.Value = InspectorUI.AccentColor;
-        theme.Separator.Value = new color(0.52f, 0.46f, 0.82f, 0.6f);
-        theme.Border.Value = new color(0.52f, 0.46f, 0.82f, 0.45f);
 
         var shell = Slot.GetOrAttachComponent<PanelShell>();
         shell.Title.Value = "Lighting";

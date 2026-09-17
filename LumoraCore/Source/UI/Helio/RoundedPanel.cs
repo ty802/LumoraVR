@@ -16,6 +16,7 @@ namespace Helio.UI;
 [ComponentCategory("UI/Helio/Graphics")]
 public sealed class RoundedPanel : Graphic
 {
+    public readonly AssetRef<MaterialAsset> Material;
     public readonly Sync<color> Color;
     public readonly Sync<color> OutlineColor;
     public readonly Sync<float> CornerRadius;
@@ -25,9 +26,11 @@ public sealed class RoundedPanel : Graphic
     private color _outlineColor;
     private float _radius;
     private float _thickness;
+    private IAssetProvider<MaterialAsset>? _material;
 
     public RoundedPanel()
     {
+        Material = new AssetRef<MaterialAsset>(this);
         Color = new Sync<color>(this, color.White);
         OutlineColor = new Sync<color>(this, new color(0.45f, 0.45f, 0.45f, 1f));
         CornerRadius = new Sync<float>(this, 8f);
@@ -53,6 +56,7 @@ public sealed class RoundedPanel : Graphic
         _outlineColor = OutlineColor.Value;
         _radius = CornerRadius.Value;
         _thickness = OutlineThickness.Value;
+        _material = Material.Target;
     }
 
     public override void ComputeGraphic(GraphicsChunk.RenderData renderData)
@@ -73,23 +77,41 @@ public sealed class RoundedPanel : Graphic
         mesh.HasColors = true;
         mesh.SetHasUV(0, true);
 
-        var submesh = renderData.GetSubmesh((IAssetProvider<MaterialAsset>?)null);
+        var submesh = renderData.GetSubmesh(_material);
 
         float t = _thickness;
         if (t > 0f && _outlineColor.a > 0f)
         {
-            // Border = outline-colored rounded rect, fill-colored rounded rect inset on top.
-            EmitRoundedRect(mesh, submesh, rect, _radius, _outlineColor);
-
             var inner = Rect.FromMinMax(
                 new float2(rect.xMin + t, rect.yMin + t),
                 new float2(rect.xMax - t, rect.yMax - t));
-            if (!inner.IsEmpty)
-                EmitRoundedRect(mesh, submesh, inner, MathF.Max(_radius - t, 0f), _color);
+            if (inner.IsEmpty)
+            {
+                EmitRoundedRect(mesh, submesh, rect, _radius, _outlineColor, clipRect);
+                return;
+            }
+
+            // A real ring: an opaque rectangle underneath the translucent fill hides the glass,
+            // wastes fill rate and can z-fight when a caller supplies a depth-writing material.
+            float radius = System.Math.Clamp(_radius, 0f, MathF.Min(rect.width, rect.height) * 0.5f);
+            float innerRadius = MathF.Max(radius - t, 0f);
+            int segments = CornerSegments(radius);
+            var outerPoints = RoundedPerimeter(rect, radius, segments);
+            var innerPoints = RoundedPerimeter(inner, innerRadius, segments);
+            for (int i = 0; i < outerPoints.Count; i++)
+            {
+                int next = (i + 1) % outerPoints.Count;
+                EmitPolygon(mesh, submesh, new List<float2>(4)
+                {
+                    outerPoints[i], outerPoints[next], innerPoints[next], innerPoints[i]
+                }, _outlineColor, clipRect);
+            }
+            if (_color.a > 0f)
+                EmitPolygon(mesh, submesh, innerPoints, _color, clipRect);
         }
-        else
+        else if (_color.a > 0f)
         {
-            EmitRoundedRect(mesh, submesh, rect, _radius, _color);
+            EmitRoundedRect(mesh, submesh, rect, _radius, _color, clipRect);
         }
     }
 
@@ -115,47 +137,57 @@ public sealed class RoundedPanel : Graphic
         return dx * dx + dy * dy <= r * r;
     }
 
-    private static void EmitRoundedRect(PhosMesh mesh, PhosTriangleSubmesh submesh, in Rect rect, float radius, in color tint)
+    internal static void EmitRoundedRect(PhosMesh mesh, PhosTriangleSubmesh submesh, in Rect rect, float radius, in color tint, Rect? clipRect = null)
     {
+        mesh.HasColors = true;
+        mesh.SetHasUV(0, true);
         float maxR = MathF.Min(rect.width, rect.height) * 0.5f;
         if (radius > maxR) radius = maxR;
         if (radius < 0f) radius = 0f;
 
         if (radius <= 0.01f)
         {
-            int q = mesh.VertexCount;
-            mesh.IncreaseVertexCount(4);
-            mesh.RawPositions[q] = new float3(rect.xMin, rect.yMax, 0f);
-            mesh.RawPositions[q + 1] = new float3(rect.xMax, rect.yMax, 0f);
-            mesh.RawPositions[q + 2] = new float3(rect.xMax, rect.yMin, 0f);
-            mesh.RawPositions[q + 3] = new float3(rect.xMin, rect.yMin, 0f);
-            for (int i = 0; i < 4; i++)
-            {
-                mesh.RawColors[q + i] = tint;
-                mesh.SetUV(0, q + i, float2.Zero);
-            }
-            submesh.AddQuadAsTriangles(q, q + 1, q + 2, q + 3);
+            RawImage.GenerateImage(mesh, submesh, rect, Rect.UnitRect, null, false, tint, clipRect);
             return;
         }
 
-        int perCorner = System.Math.Max(2, (int)MathF.Ceiling(radius / 4f));
+        EmitPolygon(mesh, submesh, RoundedPerimeter(rect, radius, CornerSegments(radius)), tint, clipRect);
+    }
 
+    private static int CornerSegments(float radius) => System.Math.Clamp((int)MathF.Ceiling(radius / 4f), 4, 32);
+
+    private static List<float2> RoundedPerimeter(in Rect rect, float radius, int perCorner)
+    {
         // Perimeter points CCW, corner arcs (straight edges are spanned by the center fan).
         var pts = new List<float2>((perCorner + 1) * 4);
         AddArc(pts, rect.xMin + radius, rect.yMin + radius, radius, 180f, 270f, perCorner); // bottom-left
         AddArc(pts, rect.xMax - radius, rect.yMin + radius, radius, 270f, 360f, perCorner); // bottom-right
         AddArc(pts, rect.xMax - radius, rect.yMax - radius, radius, 0f, 90f, perCorner);    // top-right
         AddArc(pts, rect.xMin + radius, rect.yMax - radius, radius, 90f, 180f, perCorner);  // top-left
+        return pts;
+    }
+
+    private static void EmitPolygon(PhosMesh mesh, PhosTriangleSubmesh submesh, List<float2> pts,
+        in color tint, Rect? clipRect)
+    {
+        if (clipRect is Rect clip)
+        {
+            pts = ClipEdge(pts, 0, clip.xMin, true);
+            pts = ClipEdge(pts, 0, clip.xMax, false);
+            pts = ClipEdge(pts, 1, clip.yMin, true);
+            pts = ClipEdge(pts, 1, clip.yMax, false);
+        }
 
         int n = pts.Count;
         if (n < 3) return;
 
-        float ccx = rect.xMin + rect.width * 0.5f;
-        float ccy = rect.yMin + rect.height * 0.5f;
+        var center = float2.Zero;
+        foreach (var point in pts) center += point;
+        center /= n;
 
         int c0 = mesh.VertexCount;
         mesh.IncreaseVertexCount(n + 1);
-        mesh.RawPositions[c0] = new float3(ccx, ccy, 0f);
+        mesh.RawPositions[c0] = new float3(center.x, center.y, 0f);
         mesh.RawColors[c0] = tint;
         mesh.SetUV(0, c0, float2.Zero);
         for (int i = 0; i < n; i++)
@@ -165,19 +197,40 @@ public sealed class RoundedPanel : Graphic
             mesh.SetUV(0, c0 + 1 + i, float2.Zero);
         }
 
-        // Center fan (degenerate quads since the submesh only exposes AddQuadAsTriangles).
-        //
-        // Order is (center, next, current), NOT (center, current, next). The perimeter points are built
-        // counter-clockwise, so the natural fan order comes out wound the opposite way to the square
-        // path above and to every RawImage quad, and the UI shaders are cull_front: a rounded panel
-        // wound the other way is culled and draws NOTHING. That is why nothing with a corner radius
-        // showed up. -xlinka
+        // Match RawImage and text: CCW triangles in canvas space. AddQuadAsTriangles reverses
+        // its inputs internally; AddTriangle does not. Reversing this fan would put every rounded
+        // control on the back of the canvas while its text stays on the front.
         for (int i = 0; i < n; i++)
         {
             int a = c0 + 1 + i;
             int b = c0 + 1 + (i + 1) % n;
-            submesh.AddQuadAsTriangles(c0, b, a, a);
+            submesh.AddTriangle(c0, a, b);
         }
+    }
+
+    // Clip the convex perimeter before triangulating so rounded fields obey nested scroll masks. -xlinka
+    private static List<float2> ClipEdge(List<float2> input, int axis, float edge, bool keepGreater)
+    {
+        var output = new List<float2>(input.Count + 2);
+        if (input.Count == 0) return output;
+        var previous = input[input.Count - 1];
+        float previousDistance = (axis == 0 ? previous.x : previous.y) - edge;
+        bool previousInside = keepGreater ? previousDistance >= 0f : previousDistance <= 0f;
+        foreach (var current in input)
+        {
+            float distance = (axis == 0 ? current.x : current.y) - edge;
+            bool inside = keepGreater ? distance >= 0f : distance <= 0f;
+            if (inside != previousInside)
+            {
+                float t = previousDistance / (previousDistance - distance);
+                output.Add(previous + (current - previous) * t);
+            }
+            if (inside) output.Add(current);
+            previous = current;
+            previousDistance = distance;
+            previousInside = inside;
+        }
+        return output;
     }
 
     private static void AddArc(List<float2> pts, float cx, float cy, float radius, float fromDeg, float toDeg, int steps)

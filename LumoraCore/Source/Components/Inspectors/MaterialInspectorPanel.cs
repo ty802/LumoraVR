@@ -93,13 +93,6 @@ public class MaterialInspectorPanel : Component, IInspectorActionHandler
         base.OnAttach();
 
         var theme = Slot.GetOrAttachComponent<UITheme>();
-        // Same dark set as the scene inspector so the panels read as one tool family. -xlinka
-        theme.PanelBackground.Value = new color(0.075f, 0.07f, 0.115f, 1f);
-        theme.Header.Value = new color(0.11f, 0.10f, 0.17f, 1f);
-        theme.ButtonFill.Value = new color(0.22f, 0.20f, 0.34f, 1f);
-        theme.Accent.Value = InspectorUI.AccentColor;
-        theme.Separator.Value = new color(0.52f, 0.46f, 0.82f, 0.6f);
-        theme.Border.Value = new color(0.52f, 0.46f, 0.82f, 0.45f);
 
         var shell = Slot.GetOrAttachComponent<PanelShell>();
         shell.Title.Value = "Material";
@@ -153,6 +146,7 @@ public class MaterialInspectorPanel : Component, IInspectorActionHandler
         var scrollUi = new UIBuilder(host);
         InspectorUI.ApplyTheme(scrollUi, Slot);
         var scroll = scrollUi.ScrollRect(out var content, null, InspectorUI.PaneColor);
+        scroll.Slot.GetComponent<Image>()!.CornerRadius.Value = DashTheme.RadiusCard;
         InspectorUI.FillParent(scroll.Slot.GetComponent<RectTransform>()!);
 
         var contentLayout = content.Slot.AttachComponent<VerticalLayout>();

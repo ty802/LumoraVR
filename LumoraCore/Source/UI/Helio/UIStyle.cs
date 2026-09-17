@@ -13,6 +13,7 @@ public struct UIStyle
     public color ForegroundColor;
     public color BackgroundColor;
     public float FontSize;
+    public float CornerRadius;
     public IAssetProvider<FontSet>? Font;
     public float MinHeight;
     public float MinWidth;
@@ -31,6 +32,7 @@ public struct UIStyle
         ForegroundColor = color.White,
         BackgroundColor = new color(0f, 0f, 0f, 0.7f),
         FontSize = 16f,
+        CornerRadius = 8f,
         Font = null,
         MinHeight = 0f,
         MinWidth = 0f,

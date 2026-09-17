@@ -22,28 +22,17 @@ public abstract class ImportDialog : Component
     public const float ButtonHeight = 56f;
     public const float HeaderRowHeight = 44f;
 
-    public static readonly color BackColor = new color(0.85f, 0.30f, 0.34f, 1f);
-    public static readonly color SectionTitleColor = new color(0.96f, 0.96f, 1f, 1f);
-    // BorderColor matches ButtonFill at full alpha so the border layer doesn't
-    // wash the button at glancing viewing angles: BorderedImage draws the border
-    // layer across the whole rect first, then the fill layer inset by
-    // BorderThickness. At extreme angles the 2-px inset rasterizes to sub-pixel
-    // and gets skipped, leaving only the border layer visible. If border alpha
-    // was <1 (or a different color), the panel BG would show through and the
-    // button would look transparent/desaturated. - xlinka
-    public static readonly color BorderColor = new color(0.22f, 0.20f, 0.34f, 1f);
-    public static readonly color ButtonFill = new color(0.22f, 0.20f, 0.34f, 1f);
-    public static readonly color ButtonText = new color(0.95f, 0.95f, 1f, 1f);
+    public static readonly color BackColor = DashTheme.Surface;
+    public static readonly color SectionTitleColor = DashTheme.Text;
+    public static readonly color BorderColor = DashTheme.Outline;
+    public static readonly color ButtonFill = DashTheme.Field;
+    public static readonly color ButtonText = DashTheme.Text;
 
-    // World-agnostic font URL for import dialogs. UserspaceDashboard registers
-    // its font URL into this at engine startup; each dialog instantiates its own
-    // FontProvider on its own slot (in its own world) from this URL - avoids
-    // the cross-world AssetRef.Target rejection that happens when a synced/local
-    // ref points across separate World instances. - xlinka
-    public static System.Uri? DefaultFontUrl { get; set; }
+    // Semibold is the tool-panel default; callers can still override the URL. Each dialog owns
+    // its provider in its own world so font references never cross world boundaries. -xlinka
+    public static System.Uri? DefaultFontUrl { get; set; } = DashTheme.FontSemibold;
 
-    // Where the font comes from, in order: the URL the dashboard registers at startup, then whatever
-    // FontProvider the dialog's own world already carries.
+    // Prefer the configured tool font, then any provider in the dialog's world if explicitly unset.
     //
     // The startup URL is null in anything that comes up without the dashboard - a headless run, a world
     // template that spawns a dialog itself - and text with no font renders NOTHING at all, so the dialog
@@ -71,7 +60,6 @@ public abstract class ImportDialog : Component
     private User? _importingUser;
     private PanelShell? _panel;
     private WizardForm? _wizard;
-    private RoundedRectTextureProvider? _rounded;
     private FontProvider? _fontProvider;
 
     protected World ResolveTargetWorld() => TargetWorld ?? World;
@@ -125,15 +113,9 @@ public abstract class ImportDialog : Component
             var fontSlot = Slot.AddSlot("DialogFont");
             _fontProvider = fontSlot.AttachComponent<FontProvider>();
             _fontProvider.URL.Value = fontUrl;
-            _fontProvider.FallbackURLs.Add(fontUrl);
+            _fontProvider.FallbackURLs.Add(DashTheme.FontRegular);
             _panel.Font.Target = _fontProvider;
         }
-
-        // Shared rounded-corner texture for borders on grid buttons. Reused across
-        // all BorderedImage attachments in the dialog. - xlinka
-        _rounded = Slot.AddSlot("Theme").AttachComponent<RoundedRectTextureProvider>();
-        _rounded.Size.Value = 48;
-        _rounded.Radius.Value = 12;
 
         var wizardHost = _panel.ContentSlot!.AddSlot("Wizard");
         var rect = wizardHost.AttachComponent<RectTransform>();
@@ -158,7 +140,7 @@ public abstract class ImportDialog : Component
         return ui =>
         {
             if (_fontProvider != null) ui.Font(_fontProvider);
-            ui.FontSize(14f);
+            ui.FontSize(DashTheme.FontBody).BackgroundColor(ButtonFill).TextColor(ButtonText);
             build(ui);
         };
     }
@@ -249,7 +231,7 @@ public abstract class ImportDialog : Component
 
         var bodyBuilder = new UIBuilder(body);
         if (_fontProvider != null) bodyBuilder.Font(_fontProvider);
-        bodyBuilder.FontSize(13f);
+        bodyBuilder.FontSize(DashTheme.FontBody).BackgroundColor(ButtonFill).TextColor(ButtonText);
         return bodyBuilder;
     }
 
@@ -315,15 +297,14 @@ public abstract class ImportDialog : Component
         boxBuilder.PopStyle();
 
         boxBuilder.PushStyle().FlexibleWidth(1f);
-        var t = boxBuilder.Text(label, 13f, ButtonText);
+        var t = boxBuilder.Text(label, DashTheme.FontBody, ButtonText);
         t.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
         t.VerticalAlignment.Value = TextVerticalAlignment.Middle;
         FillRect(t.RectTransform!);
         boxBuilder.PopStyle();
     }
 
-    // Build a button styled like a file browser card - BorderedImage background
-    // with rounded corners, centered label. - xlinka
+    // Procedural card corners stay sharp as the dialog is scaled in world space. -xlinka
     protected void GridButton(UIBuilder ui, string label, Action onClick, color? tint = null)
     {
         _gridButtonCount++;
@@ -335,21 +316,16 @@ public abstract class ImportDialog : Component
         le.MinHeight.Value = ButtonHeight;
         le.PreferredHeight.Value = ButtonHeight;
 
-        var bg = slot.AttachComponent<BorderedImage>();
+        var bg = slot.AttachComponent<RoundedPanel>();
         var fill = tint ?? ButtonFill;
-        bg.Tint.Value = fill;
-        bg.BorderTint.Value = BorderColor;
-        bg.BorderThickness.Value = 2f;
-        if (_rounded != null)
-        {
-            bg.Texture.Target = _rounded;
-            bg.NineSlice.Value = true;
-            bg.Borders.Value = new float4(12f, 12f, 12f, 12f);
-        }
+        bg.Color.Value = fill;
+        bg.OutlineColor.Value = BorderColor;
+        bg.OutlineThickness.Value = DashTheme.OutlineWidth;
+        bg.CornerRadius.Value = DashTheme.RadiusControl;
 
         var labelBuilder = new UIBuilder(slot);
         if (_fontProvider != null) labelBuilder.Font(_fontProvider);
-        var text = labelBuilder.Text(label, 13f, ButtonText);
+        var text = labelBuilder.Text(label, DashTheme.FontBody, ButtonText);
         text.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
         text.VerticalAlignment.Value = TextVerticalAlignment.Middle;
         text.WordWrap.Value = true;
@@ -357,7 +333,7 @@ public abstract class ImportDialog : Component
 
         var button = slot.AttachComponent<Button>();
         button.Clicked += (_, _) => { if (CanInteract) onClick(); };
-        button.AddColorDriver(bg.Tint, fill, InteractionColorMode.Direct);
+        button.AddColorDriver(bg.Color, fill, InteractionColorMode.Direct);
     }
 
     // Honest "not supported yet" page: shows a message + a Close button that just
@@ -391,27 +367,22 @@ public abstract class ImportDialog : Component
         le.PreferredWidth.Value = 64f;
         le.FlexibleWidth.Value = 0f;
 
-        var bg = slot.AttachComponent<BorderedImage>();
-        bg.Tint.Value = BackColor;
-        bg.BorderTint.Value = BorderColor;
-        bg.BorderThickness.Value = 2f;
-        if (_rounded != null)
-        {
-            bg.Texture.Target = _rounded;
-            bg.NineSlice.Value = true;
-            bg.Borders.Value = new float4(12f, 12f, 12f, 12f);
-        }
+        var bg = slot.AttachComponent<RoundedPanel>();
+        bg.Color.Value = BackColor;
+        bg.OutlineColor.Value = BorderColor;
+        bg.OutlineThickness.Value = DashTheme.OutlineWidth;
+        bg.CornerRadius.Value = DashTheme.RadiusControl;
 
         var b = new UIBuilder(slot);
         if (_fontProvider != null) b.Font(_fontProvider);
-        var t = b.Text("Back", 13f, ButtonText);
+        var t = b.Text("Back", DashTheme.FontBody, ButtonText);
         t.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
         t.VerticalAlignment.Value = TextVerticalAlignment.Middle;
         FillRect(t.RectTransform!);
 
         var button = slot.AttachComponent<Button>();
         button.Clicked += (_, _) => { if (CanInteract) _wizard?.Return(); };
-        button.AddColorDriver(bg.Tint, BackColor, InteractionColorMode.Direct);
+        button.AddColorDriver(bg.Color, BackColor, InteractionColorMode.Direct);
     }
 
     private static void FillRect(RectTransform rect, float left = 0f, float right = 0f, float top = 0f, float bottom = 0f)

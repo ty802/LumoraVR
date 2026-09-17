@@ -21,6 +21,8 @@ public sealed class Image : Graphic
     public readonly Sync<bool> PreserveAspect;
     public readonly Sync<bool> FlipHorizontal;
     public readonly Sync<bool> FlipVertical;
+    // Untextured control backgrounds share RoundedPanel's geometry while retaining tint bindings. -xlinka
+    public readonly Sync<float> CornerRadius;
 
     private IAssetProvider<TextureAsset>? _texture;
     private IAssetProvider<MaterialAsset>? _material;
@@ -31,6 +33,7 @@ public sealed class Image : Graphic
     private bool _preserveAspect;
     private bool _flipH;
     private bool _flipV;
+    private float _cornerRadius;
 
     public Image()
     {
@@ -44,6 +47,7 @@ public sealed class Image : Graphic
         PreserveAspect = new Sync<bool>(this, false);
         FlipHorizontal = new Sync<bool>(this, false);
         FlipVertical = new Sync<bool>(this, false);
+        CornerRadius = new Sync<float>(this, 0f);
     }
 
     public override bool RequiresPreGraphicsCompute => false;
@@ -72,6 +76,7 @@ public sealed class Image : Graphic
         _preserveAspect = PreserveAspect.Value;
         _flipH = FlipHorizontal.Value;
         _flipV = FlipVertical.Value;
+        _cornerRadius = CornerRadius.Value;
     }
 
     public override void ComputeGraphic(GraphicsChunk.RenderData renderData)
@@ -99,6 +104,12 @@ public sealed class Image : Graphic
 
         // Key by texture identity; the shared image block is created at submit (main).
         var submesh = renderData.GetSubmesh(_material, _texture, GraphicsChunk.RenderData.ImageTexture);
+
+        if (_texture == null && _cornerRadius > 0f)
+        {
+            RoundedPanel.EmitRoundedRect(submesh.Mesh, submesh, rect, _cornerRadius, _tint, clipRect);
+            return;
+        }
 
         if (_nineSlice)
         {

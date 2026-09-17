@@ -197,6 +197,14 @@ public class UIBuilder
         return this;
     }
 
+    public UIBuilder CornerRadius(float value)
+    {
+        var style = CurrentStyle;
+        style.CornerRadius = MathF.Max(0f, value);
+        CurrentStyle = style;
+        return this;
+    }
+
     public UIBuilder UseZeroMetrics(bool value)
     {
         var style = CurrentStyle;
@@ -429,6 +437,7 @@ public class UIBuilder
         Next("Panel");
         var image = Current.AttachComponent<Image>();
         image.Tint.Value = background ?? CurrentStyle.BackgroundColor;
+        image.CornerRadius.Value = CurrentStyle.CornerRadius;
         return image;
     }
 
@@ -464,6 +473,7 @@ public class UIBuilder
         Next("Button");
         var image = Current.AttachComponent<Image>();
         image.Tint.Value = background ?? CurrentStyle.BackgroundColor;
+        image.CornerRadius.Value = CurrentStyle.CornerRadius;
         var button = Current.AttachComponent<Button>();
         button.SetAction(clicked);
 
@@ -512,6 +522,7 @@ public class UIBuilder
         {
             var boxImage = boxSlot.AttachComponent<Image>();
             boxImage.Tint.Value = boxColor;
+            boxImage.CornerRadius.Value = MathF.Min(6f, CurrentStyle.CornerRadius);
             boxTint = boxImage.Tint;
         }
         checkbox.AddColorDriver(boxTint, boxColor);
@@ -523,9 +534,11 @@ public class UIBuilder
         checkRect.OffsetMin.Value = float2.Zero;
         checkRect.OffsetMax.Value = float2.Zero;
         var checkText = checkSlot.AttachComponent<Text>();
-        checkText.Content.Value = "✓";
+        checkText.Content.Value = "√";
         checkText.Font.Target = CurrentStyle.Font!;
-        checkText.Size.Value = 20f;
+        // The radical is 0.86em tall against a tick's ~0.72em, so 17 keeps it the same
+        // visual size inside the 24px box that the old tick had at 20. -xlinka
+        checkText.Size.Value = 17f;
         checkText.Color.Value = CurrentStyle.ForegroundColor;
         checkText.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
         checkText.VerticalAlignment.Value = TextVerticalAlignment.Middle;
@@ -692,6 +705,7 @@ public class UIBuilder
         Next("TextInput");
         var image = Current.AttachComponent<Image>();
         image.Tint.Value = background ?? CurrentStyle.BackgroundColor;
+        image.CornerRadius.Value = CurrentStyle.CornerRadius;
         var input = Current.AttachComponent<TextInput>();
         input.Text.Value = initial;
         input.Placeholder.Value = placeholder;
@@ -702,6 +716,8 @@ public class UIBuilder
         var text = Text(string.Empty, null, CurrentStyle.TextColor);
         Fill(text.RectTransform!);
         text.WordWrap.Value = multiline;
+        text.RectTransform!.OffsetMin.Value = new float2(8f, 2f);
+        text.RectTransform.OffsetMax.Value = new float2(-8f, -2f);
         text.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
         text.VerticalAlignment.Value = multiline ? TextVerticalAlignment.Top : TextVerticalAlignment.Middle;
         text.CaretColor.Value = CurrentStyle.ForegroundColor;
@@ -791,7 +807,7 @@ public class UIBuilder
         indicatorRect.OffsetMin.Value = float2.Zero;
         indicatorRect.OffsetMax.Value = new float2(indicatorWidth, 0f);
         var indicatorText = indicatorSlot.AttachComponent<Text>();
-        indicatorText.Content.Value = "▾";
+        indicatorText.Content.Value = "v";
         indicatorText.Size.Value = CurrentStyle.FontSize;
         indicatorText.Color.Value = CurrentStyle.TextColor;
         indicatorText.Font.Target = CurrentStyle.Font!;

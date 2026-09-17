@@ -8,11 +8,7 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.UI;
 
-/// <summary>
-/// Reusable UI theme: the dashboard "purple, clean, rounded" palette plus a shared rounded-rect
-/// sprite and font, so any panel can be themed consistently. Attach one next to a panel and call
-/// <see cref="ApplyTo"/>, or read its colors directly when building content.
-/// </summary>
+// Shared tool-panel palette and font. Colours use the same linear values as the dashboard. -xlinka
 [ComponentCategory("UI")]
 public sealed class UITheme : Component
 {
@@ -38,27 +34,34 @@ public sealed class UITheme : Component
 
     public UITheme()
     {
-        // Opaque + higher-contrast: an in-world panel that's translucent/too-dark reads as "barely
-        // visible". Lighter purple fills, bright text. - xlinka
-        PanelBackground = new Sync<color>(this, new color(0.16f, 0.15f, 0.24f, 1f));
-        Header = new Sync<color>(this, new color(0.34f, 0.30f, 0.52f, 1f));
-        Separator = new Sync<color>(this, new color(0.62f, 0.55f, 0.95f, 0.6f));
-        Border = new Sync<color>(this, new color(0.62f, 0.55f, 0.95f, 0.55f));
-        Accent = new Sync<color>(this, new color(0.66f, 0.58f, 0.98f, 1f));
-        ButtonFill = new Sync<color>(this, new color(0.42f, 0.38f, 0.60f, 1f));
-        ButtonText = new Sync<color>(this, new color(0.97f, 0.97f, 1f, 1f));
-        PositiveFill = new Sync<color>(this, new color(0.32f, 0.68f, 0.45f, 1f));
-        NegativeFill = new Sync<color>(this, new color(0.72f, 0.32f, 0.34f, 1f));
-        TextPrimary = new Sync<color>(this, new color(0.97f, 0.97f, 1f, 1f));
-        TextDim = new Sync<color>(this, new color(0.86f, 0.85f, 0.93f, 1f));
-        CornerRadius = new Sync<float>(this, 14f);
+        PanelBackground = new Sync<color>(this, DashTheme.GlassBackdrop);
+        Header = new Sync<color>(this, DashTheme.Surface);
+        Separator = new Sync<color>(this, DashTheme.Divider);
+        Border = new Sync<color>(this, DashTheme.OutlineStrong);
+        Accent = new Sync<color>(this, DashTheme.Accent);
+        ButtonFill = new Sync<color>(this, DashTheme.Field);
+        ButtonText = new Sync<color>(this, DashTheme.Text);
+        PositiveFill = new Sync<color>(this, DashTheme.Positive);
+        NegativeFill = new Sync<color>(this, DashTheme.Negative);
+        TextPrimary = new Sync<color>(this, DashTheme.Text);
+        TextDim = new Sync<color>(this, new color(0.78f, 0.77f, 0.85f, 1f));
+        CornerRadius = new Sync<float>(this, DashTheme.RadiusPanel);
         Font = new AssetRef<FontSet>(this);
     }
 
     /// <summary>Shared rounded-rect sprite for panel corners (created lazily on this slot).</summary>
     public RoundedRectTextureProvider RoundedSprite
     {
-        get { EnsureAssets(); return _rounded!; }
+        get
+        {
+            if (_rounded == null || _rounded.IsDestroyed)
+            {
+                _rounded = Slot.FindChildOrAdd("ThemeRounded").GetOrAttachComponent<RoundedRectTextureProvider>();
+                _rounded.Size.Value = 32;
+                _rounded.Radius.Value = 8;
+            }
+            return _rounded;
+        }
     }
 
     /// <summary>The font to use (explicit override, else the lazily-created default UI font).</summary>
@@ -69,23 +72,12 @@ public sealed class UITheme : Component
 
     private void EnsureAssets()
     {
-        if (_rounded == null || _rounded.IsDestroyed)
-        {
-            // Small texture radius (relative to size) so nine-slice rounds CLEANLY even at the small
-            // border UIBuilder buttons use (6px). The panel's larger CornerRadius nine-slice still reads
-            // as rounded; a big texture radius left buttons looking square. - xlinka
-            _rounded = Slot.AddSlot("ThemeRounded").AttachComponent<RoundedRectTextureProvider>();
-            _rounded.Size.Value = 32;
-            _rounded.Radius.Value = 8;
-        }
         if (Font.Target == null && (_font == null || _font.IsDestroyed))
         {
-            _font = Slot.AddSlot("ThemeFont").AttachComponent<FontProvider>();
-            if (ImportDialog.DefaultFontUrl != null)
-            {
-                _font.URL.Value = ImportDialog.DefaultFontUrl;
-                _font.FallbackURLs.Add(ImportDialog.DefaultFontUrl);
-            }
+            _font = Slot.FindChildOrAdd("ThemeFont").GetOrAttachComponent<FontProvider>();
+            _font.URL.Value = ImportDialog.DefaultFontUrl ?? DashTheme.FontSemibold;
+            if (_font.FallbackURLs.Count == 0)
+                _font.FallbackURLs.Add(DashTheme.FontRegular);
         }
     }
 
@@ -98,11 +90,13 @@ public sealed class UITheme : Component
         panel.BackgroundColor.Value = PanelBackground.Value;
         panel.HeaderColor.Value = Header.Value;
         panel.HeaderSeparatorColor.Value = Separator.Value;
+        panel.BorderColor.Value = Border.Value;
         panel.TextColor.Value = TextPrimary.Value;
-        panel.CloseButtonColor.Value = NegativeFill.Value;
+        panel.CloseButtonColor.Value = ButtonFill.Value;
+        panel.CloseButtonHighlightColor.Value = NegativeFill.Value;
+        panel.CloseButtonPressedColor.Value = DashTheme.SurfacePressed;
         panel.CloseIconColor.Value = TextPrimary.Value;
         panel.CornerRadius.Value = CornerRadius.Value;
-        panel.RoundedSprite.Target = RoundedSprite;
         var font = ThemeFont;
         if (font != null)
             panel.Font.Target = font;

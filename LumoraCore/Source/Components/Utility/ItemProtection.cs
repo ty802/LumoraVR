@@ -70,6 +70,15 @@ public class ItemProtection : Component, IDataModelCopyProtection, ICustomInspec
             return false;
         }
 
+        // The world root is not an item. Taking a copy of it would pack the entire session - every other
+        // user's body included - into one inventory entry, and the "item" would carry the world's
+        // settings and permission config with it. -xlinka
+        if (slot.IsRootSlot)
+        {
+            reason = "the world root is not an object you can take";
+            return false;
+        }
+
         var world = slot.World;
         var permissions = world?.DataModelPermissions;
         if (world == null || permissions == null)

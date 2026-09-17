@@ -107,6 +107,10 @@ public sealed class SlotExistenceUndoBatch : IUndoBatch, IUndoTargetQuery
         {
             if (slot == null || slot.IsDestroyed)
                 continue;
+            // Parking the root would try to reparent the world under the graveyard and switch it off.
+            // Both writes are refused, so the step would replay as nothing while reporting success. -xlinka
+            if (slot.IsRootSlot)
+                continue;
             batch._entries.Add(new Entry
             {
                 Slot = slot,

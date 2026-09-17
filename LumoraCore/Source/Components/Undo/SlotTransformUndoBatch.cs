@@ -88,6 +88,10 @@ public sealed class SlotTransformUndoBatch : IUndoBatch, IUndoTargetQuery
     {
         if (_slot == null || _slot.IsDestroyed)
             return false;
+        // The root's pose and parent are locked, so every write below would be swallowed and the step
+        // would still report success, walking the cursor past something that did nothing. -xlinka
+        if (_slot.IsRootSlot)
+            return false;
         if (!UndoTargets.CanRestoreUnder(pose.Parent))
             return false;
 

@@ -161,3 +161,62 @@ internal sealed class WorldConfigProtectionRule : IDataModelPermissionRule
     private static bool Names(IPermissionTarget? target)
         => target is IWorldElement element && WorldConfigLock.IsLocked(element);
 }
+
+// The same answer for the world root itself.
+//
+// The root's locked members are already refused by the rule above (IsLocked answers true for any
+// config-locked element, whoever owns it) and by ValidateInboundWrite. This one covers what a member
+// check cannot see: a remote request to DESTROY the root, to unregister it out of the replicated slot
+// collection, or to write its parent link. Content arriving UNDER the root is untouched - a spawn is a
+// collection add whose parent happens to be the root, and that is the ordinary case, not an attack. -xlinka
+internal sealed class WorldRootProtectionRule : IDataModelPermissionRule
+{
+    private readonly World _world;
+
+    public WorldRootProtectionRule(World world) => _world = world;
+
+    public DataModelPermissionResult Evaluate(
+        in DataModelPermissionRequest request, IPermissionActor actor, out string? reason)
+    {
+        reason = null;
+
+        if (!request.IsNetwork)
+            return DataModelPermissionResult.Abstain;
+
+        var root = _world.RootSlot;
+        if (root == null)
+            return DataModelPermissionResult.Abstain;
+
+        if (!AimsAtRoot(request, root))
+            return DataModelPermissionResult.Abstain;
+
+        reason = "the world root is fixed for the session and cannot be changed by a remote peer";
+        return DataModelPermissionResult.Deny;
+    }
+
+    private bool AimsAtRoot(in DataModelPermissionRequest request, Slot root)
+    {
+        const DataModelPermissionAction structural =
+            DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionRemove;
+
+        // The root as the subject of the write: its own destruction, or a write aimed at the slot rather
+        // than at something inside it.
+        if (ReferenceEquals(request.Target, root))
+        {
+            if ((request.Action & structural) != 0)
+                return true;
+            if (ReferenceEquals(request.Member, root.ParentSlotRef))
+                return true;
+        }
+
+        // Removing it from the replicated slot collection arrives keyed by its RefID, so the collection
+        // says nothing and the key is the whole subject.
+        if ((request.Action & structural) != 0 && request.Key is RefID key && !key.IsNull
+            && key == root.ReferenceID)
+        {
+            return true;
+        }
+
+        return false;
+    }
+}

@@ -263,7 +263,14 @@ public class PhosRoundedRect : PhosShape
         float3 position = new float3(local.x, local.y, 0f);
         float2 span = new float2(MathF.Max(uvHalf.x * 2f, 1e-6f), MathF.Max(uvHalf.y * 2f, 1e-6f));
         float u = (local.x + uvHalf.x) / span.x;
-        float v = (local.y + uvHalf.y) / span.y;
+        float fromBottom = (local.y + uvHalf.y) / span.y;
+        // V IS TOP-ORIGIN, the same rule PhosQuad follows. The renderer samples V=0 at row 0 of a
+        // decoded texture and TextureVariantStore states that outright, so V=0 belongs on the TOP
+        // edge. This ran bottom-origin, which drew every textured rounded quad upside down - the
+        // nameplate's icon chips are where it showed. The corner colours keep the bottom-origin
+        // fraction because they are named for where they sit, not for where a texture row starts.
+        // -xlinka
+        float v = 1f - fromBottom;
 
         Mesh.RawPositions[index] = Rotation * position + Position;
         Mesh.RawNormals[index] = Rotation * normal;
@@ -277,6 +284,6 @@ public class PhosRoundedRect : PhosShape
 
         var top = color.Lerp(UpperLeftColor, UpperRightColor, u);
         var bottom = color.Lerp(LowerLeftColor, LowerRightColor, u);
-        Mesh.RawColors[index] = color.Lerp(bottom, top, v);
+        Mesh.RawColors[index] = color.Lerp(bottom, top, fromBottom);
     }
 }

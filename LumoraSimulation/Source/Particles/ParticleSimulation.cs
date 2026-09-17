@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using Lumora.Core.Math;
 
 namespace Lumora.Simulation.Particles;
@@ -58,6 +59,11 @@ public sealed class ParticleSimulation : IDisposable
     private float _fixedStepAccumulator;
     private int _insertionCounter;
     private int _seed;
+
+    // 1 while a thread is inside Update, and 1 once a Dispose has started. See the gate note on
+    // Dispose.
+    private int _stepping;
+    private int _disposing;
 
     private readonly struct IncomingBatch
     {
@@ -299,31 +305,51 @@ public sealed class ParticleSimulation : IDisposable
     // SIMULATION
 
     // Advance the simulation, honouring FixedTimeStep.
+    //
+    // The whole update sits behind the stepping gate. Two things get in through it that the
+    // simulation cannot survive: a Dispose landing mid-step, which empties the module list and every
+    // module's private column while a chunk pass is still indexing them, and two threads stepping the
+    // same simulation at once, which is what a host batch holding the same system twice produces.
+    // Both read as an index off the end of an array, from a thread with no useful stack. The gate is a
+    // single compare-exchange on an uncontended field, so it costs nothing on the path that matters.
+    // -xlinka
     public void Update(float deltaTime)
     {
-        if (IsDisposed || !(deltaTime > 0f))
+        if (IsDisposed || Volatile.Read(ref _disposing) != 0 || !(deltaTime > 0f))
             return;
 
-        float fixedStep = FixedTimeStep;
-        if (fixedStep <= 0f)
-        {
-            Step(deltaTime);
+        if (Interlocked.CompareExchange(ref _stepping, 1, 0) != 0)
             return;
-        }
-
-        _fixedStepAccumulator += deltaTime;
-        int steps = 0;
-        int maxSteps = System.Math.Max(1, MaxSubSteps);
-        while (_fixedStepAccumulator >= fixedStep && steps < maxSteps)
+        try
         {
-            Step(fixedStep);
-            _fixedStepAccumulator -= fixedStep;
-            steps++;
+            if (Volatile.Read(ref _disposing) != 0)
+                return;
+
+            float fixedStep = FixedTimeStep;
+            if (fixedStep <= 0f)
+            {
+                Step(deltaTime);
+                return;
+            }
+
+            _fixedStepAccumulator += deltaTime;
+            int steps = 0;
+            int maxSteps = System.Math.Max(1, MaxSubSteps);
+            while (_fixedStepAccumulator >= fixedStep && steps < maxSteps && Volatile.Read(ref _disposing) == 0)
+            {
+                Step(fixedStep);
+                _fixedStepAccumulator -= fixedStep;
+                steps++;
+            }
+            // Drop the remainder instead of carrying a debt no future frame can pay off: a machine that
+            // cannot keep up would otherwise spend every frame further behind, at full sub-step cost.
+            if (steps >= maxSteps)
+                _fixedStepAccumulator = 0f;
         }
-        // Drop the remainder instead of carrying a debt no future frame can pay off: a machine that
-        // cannot keep up would otherwise spend every frame further behind, at full sub-step cost.
-        if (steps >= maxSteps)
-            _fixedStepAccumulator = 0f;
+        finally
+        {
+            Volatile.Write(ref _stepping, 0);
+        }
     }
 
     private void Step(float deltaTime)
@@ -720,10 +746,25 @@ public sealed class ParticleSimulation : IDisposable
         _render.TrimParticles(newCount);
     }
 
+    // Waits for a step in flight before it frees anything.
+    //
+    // It cannot deadlock against the world thread. The only caller is the component's OnDestroy, which
+    // the world runs in its destruction pass on the world thread. A parallel step is fanned out with
+    // Parallel.For, which does not return until every iteration has returned, so at any instant the
+    // world thread is either inside that call, and therefore not in here, or past it, and therefore no
+    // pool thread is inside a step. The thread spinning below is consequently never the thread holding
+    // the gate. The spin also holds no lock of its own, and a step takes nothing but its own
+    // simulation's incoming lock and sub-emission pool, neither of which this method touches, so there
+    // is no lock to invert. Worst case it waits out one step. -xlinka
     public void Dispose()
     {
-        if (IsDisposed)
+        if (IsDisposed || Interlocked.Exchange(ref _disposing, 1) != 0)
             return;
+
+        var spin = new SpinWait();
+        while (Volatile.Read(ref _stepping) != 0)
+            spin.SpinOnce();
+
         IsDisposed = true;
         for (int i = 0; i < _modules.Count; i++)
             _modules[i].Dispose();

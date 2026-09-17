@@ -32,6 +32,8 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
 
     private readonly Dictionary<int, GlyphEntry> _glyphs = new();
     private FontFile? _font;
+    // Kept so a missing glyph can name the font it was missing from. -xlinka
+    private string? _fontPath;
     // True only when WE created the FontFile (raw LoadDynamicFont). When the font came from ResourceLoader it's
     // a shared imported resource we must NOT dispose. -xlinka
     private bool _ownsFont;
@@ -51,6 +53,7 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
     {
         if (_ownsFont) _font?.Dispose();
         _font = null;
+        _fontPath = path;
         _ownsFont = false;
         _glyphs.Clear();
         ResetAtlas();
@@ -67,7 +70,7 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
         bool resExists = resPath != null && ResourceLoader.Exists(resPath);
         // DIAG (export-debug): shows the resolved path + whether the imported resource was found. Remove once
         // text is confirmed in the Linux/exported build. -xlinka
-        GD.Print($"FontAssetHook.LoadFromFile: root='{Lumora.Core.Engine.Current?.ResourceRoot}' path='{path}' " +
+        Lumora.Core.Logging.Logger.Debug($"FontAssetHook.LoadFromFile: root='{Lumora.Core.Engine.Current?.ResourceRoot}' path='{path}' " +
                  $"resPath='{resPath}' resExists={resExists} rawExists={System.IO.File.Exists(path)}");
         if (resExists)
         {
@@ -75,7 +78,7 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
             if (_font != null)
             {
                 _ownsFont = false; // shared imported resource - do not dispose it
-                GD.Print($"FontAssetHook: loaded imported FontFile from '{resPath}'");
+                Lumora.Core.Logging.Logger.Debug($"FontAssetHook: loaded imported FontFile from '{resPath}'");
                 ConfigureMsdf();
                 return;
             }
@@ -167,7 +170,7 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
             _atlasTexture.MsdfPixelRange = _msdfPixelRange;
         }
 
-        GD.Print($"FontAssetHook: MSDF intended={_msdfIntended} produced={_isMsdf} rasterSize={_rasterSize} pixelRange={_msdfPixelRange}");
+        Lumora.Core.Logging.Logger.Debug($"FontAssetHook: MSDF intended={_msdfIntended} produced={_isMsdf} rasterSize={_rasterSize} pixelRange={_msdfPixelRange}");
     }
 
     private static bool HasVaryingRgb(Image source, Rect2 sourceRect)
@@ -244,6 +247,9 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
         int glyphIndex = GetGlyphIndex(codepoint, _rasterSize);
         if (glyphIndex == 0 && codepoint != '?')
         {
+            // Text falls back to '?' for these, so without this line a missing symbol is untraceable.
+            // The _glyphs cache means it fires once per codepoint per font. -xlinka
+            Lumora.Core.Logging.Logger.Debug($"FontAssetHook: no glyph for U+{codepoint:X4} in '{_fontPath}'");
             StoreMissingGlyph(codepoint);
             return;
         }

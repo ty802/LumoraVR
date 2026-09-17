@@ -84,7 +84,7 @@ public static class ListingTemplates
             builder.MinWidth(70f).PreferredWidth(70f).FlexibleWidth(0f);
             var count = Style.Label(builder, string.Empty, Style.ValueSize, Style.TextDim, TextHorizontalAlignment.Right);
             builder.MinWidth(20f).PreferredWidth(20f).FlexibleWidth(0f);
-            Style.Label(builder, "▶", Style.ValueSize, Style.TextDim, TextHorizontalAlignment.Center);
+            Style.Label(builder, "›", Style.ValueSize, Style.TextDim, TextHorizontalAlignment.Center);
 
             var listingRow = new CategoryRow { Label = label, Count = count };
             button.Clicked += (_, _) => view.Activate(listingRow.Item);

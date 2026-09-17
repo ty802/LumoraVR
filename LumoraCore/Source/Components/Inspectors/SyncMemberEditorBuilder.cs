@@ -52,7 +52,7 @@ public static class SyncMemberEditorBuilder
             ui.FlexibleWidth(0f);
             ui.PushStyle();
             ui.TextColor(InspectorUI.MutedColor);
-            ui.Button("⋯", actions.OnActionsPressed);
+            ui.Button("…", actions.OnActionsPressed);
             ui.PopStyle();
             ui.PopStyle();
         }

@@ -119,7 +119,7 @@ public class TextureRefMemberEditor : MemberEditor, IProxyReceiver, IProxySource
         ui.PreferredWidth(28f);
         ui.FlexibleWidth(0f);
         ui.TextColor(InspectorUI.DangerColor);
-        ui.Button("∅", OnClearPressed);
+        ui.Button("Ø", OnClearPressed);
         ui.PopStyle();
     }
 

@@ -77,7 +77,7 @@ public class RefMemberEditor : MemberEditor, IProxyReceiver, IProxySource
         ui.PreferredWidth(26f);
         ui.FlexibleWidth(0f);
         ui.TextColor(InspectorUI.DangerColor);
-        ui.Button("∅", OnClearPressed);  // null the reference
+        ui.Button("Ø", OnClearPressed);  // null the reference
         ui.PopStyle();
     }
 

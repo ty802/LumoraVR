@@ -564,7 +564,7 @@ public sealed class HandTool : Tool
             : "<none>";
         string boneText = _handBone != null && !_handBone.IsDestroyed ? _handBone.GlobalPosition.ToString() : "<none>";
 
-        Logging.Logger.Log(
+        Logging.Logger.Debug(
             $"TOOLHOLD: side={Side.Value} outcome={outcome} wants={_holdWanted} synced={HoldToolInView.Value} "
             + $"item={item?.GetType().Name ?? "<null>"} holdWeight={_holdWeight:F3} ikHandWeight={_ikHandWeight:F3} "
             + $"nodeDriven={driven} nodeLocal={local} vr={Engine.Current?.InputInterface?.IsVRActive == true} "

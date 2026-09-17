@@ -330,7 +330,7 @@ public class LocomotionController : Component
         {
             _mouseCaptured = !_mouseCaptured;
             _inputState?.SetMouseCaptureRequested(_mouseCaptured);
-            LumoraLogger.Log($"[LocomotionController] Mouse capture toggled: {_mouseCaptured}");
+            Lumora.Core.Logging.Logger.Debug($"[LocomotionController] Mouse capture toggled: {_mouseCaptured}");
         }
 
         bool freeCam = _inputState?.FreeCamActive ?? false;

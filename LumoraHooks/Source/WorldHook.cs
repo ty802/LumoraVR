@@ -116,7 +116,7 @@ public class WorldHook : IWorldHook, IPhysicsQueryHook
                     else
                     {
                         node3D.Reparent(parentNode3D, false);
-                        GD.Print($"WorldHook: Reparented slot '{slot.SlotName.Value}' to parent '{slot.Parent.SlotName.Value}'");
+                        Lumora.Core.Logging.Logger.Debug($"WorldHook: Reparented slot '{slot.SlotName.Value}' to parent '{slot.Parent.SlotName.Value}'");
                     }
                 }
             }

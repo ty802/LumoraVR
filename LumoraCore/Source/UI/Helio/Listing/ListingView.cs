@@ -29,10 +29,11 @@ public sealed class ListingView : Component
     // realized set.
     private const int DefaultOverscan = 2;
     private const int PageSize = 128;
-    // A viewport still at the RectTransform 100x100 default has not been laid out; sizing the window
-    // off it realizes a handful of rows that the next pass corrects. Harmless, but do not let a zero
-    // through or the window collapses to nothing.
+    // Never let a zero viewport through or the window collapses to nothing.
     private const float MinViewportHeight = 32f;
+    // At or below this a rect is still at the RectTransform 100x100 default, so no layout pass has touched
+    // it. Same floor the ScrollRect refuses to scroll against. See ViewportHeight.
+    private const float UnlaidRectHeight = 100f;
 
     private sealed class RowHandle
     {
@@ -79,6 +80,7 @@ public sealed class ListingView : Component
     private bool _endOfData;
     private bool _itemsDirty = true;
     private bool _rebindDirty;
+    private bool _offsetsChanged = true;
     private int _firstRealized;
     private int _lastRealized = -1;
     private int _pooledCount;
@@ -296,11 +298,15 @@ public sealed class ListingView : Component
 
         PinContentHeight(ContentHeight);
 
-        if (!_rebindDirty && first == _firstRealized && last == _lastRealized)
+        // The offsets table moving is enough on its own: every live row's top edge comes out of it, so an
+        // unchanged window over a changed table still has to re-Place or the rows keep the positions the old
+        // table gave them. -xlinka
+        if (!_rebindDirty && !_offsetsChanged && first == _firstRealized && last == _lastRealized)
             return;
 
         bool rebind = _rebindDirty;
         _rebindDirty = false;
+        _offsetsChanged = false;
         _firstRealized = first;
         _lastRealized = last;
 
@@ -357,10 +363,35 @@ public sealed class ListingView : Component
         _spare.Clear();
     }
 
+    // Height of the band the viewport actually shows.
+    //
+    // A RectTransform that has not been through a layout pass still reports its 100x100 default. Sizing the
+    // window off that realizes a handful of rows and leaves the rest of a much taller viewport empty, and on a
+    // list that does not rebind every frame nothing ever comes back to widen it - the page reads as cut off a
+    // few rows in. Fall back to the nearest ancestor that HAS been laid out: over-realizing by a row or two
+    // costs nothing, under-realizing blanks the page. -xlinka
+    private float ViewportHeight()
+    {
+        float height = _viewportRect?.LocalComputeRect.height ?? 0f;
+        if (height <= UnlaidRectHeight)
+        {
+            for (var parent = _viewportRect?.RectParent; parent != null; parent = parent.RectParent)
+            {
+                float parentHeight = parent.LocalComputeRect.height;
+                if (parentHeight > height)
+                {
+                    height = parentHeight;
+                    break;
+                }
+            }
+        }
+        return MathF.Max(MinViewportHeight, height);
+    }
+
     private void ComputeWindow(out int first, out int last)
     {
         int extent = Extent;
-        float viewportHeight = MathF.Max(MinViewportHeight, _viewportRect?.LocalComputeRect.height ?? 0f);
+        float viewportHeight = ViewportHeight();
         float scrollY = _scroll?.AbsolutePosition.y ?? 0f;
         if (scrollY < 0f)
             scrollY = 0f;
@@ -426,6 +457,7 @@ public sealed class ListingView : Component
 
     private void RebuildOffsets()
     {
+        _offsetsChanged = true;
         _tops.Clear();
         int extent = Extent;
         float y = 0f;
@@ -486,6 +518,10 @@ public sealed class ListingView : Component
         var offsetMax = rect.OffsetMax.Value;
         if (offsetMax.y != 0f || offsetMax.x != 0f)
             rect.OffsetMax.Value = float2.Zero;
+        // The rect only reports this size once the canvas re-measures it, and a page-height change reaches the
+        // canvas on the SCOPED relayout path, which never re-runs the scroll pass. Hand the number over so the
+        // scroll range and the drawn offset move with the page instead of a pass later, or never. -xlinka
+        _scroll?.SetContentExtent(pinned);
     }
 
     private void BindRow(RowHandle handle, ListingItem item)

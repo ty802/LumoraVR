@@ -31,9 +31,13 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
     private float2 _pressPoint;
     private float2 _pressAbsolute;
 
-    // Live scrollable excess (content - viewport, per axis) cached each ApplyScroll so AbsolutePosition can
-    // convert pixels <-> normalized at drag/wheel time without re-reading the rects. -xlinka
+    // Last known scrollable excess (content - viewport, per axis). Only a fallback for the frames where the
+    // rects cannot be read yet; ScrollableExcess() is what everything actually uses. -xlinka
     private float2 _excess;
+
+    // Content height handed over by a virtualised list (see SetContentExtent). Negative means nobody told us
+    // and the measured content rect is the only source. -xlinka
+    private float _contentExtent = -1f;
 
     // The content's own graphic chunk. Render-offset scrolling moves THIS chunk (its mesh is baked once)
     // instead of re-tessellating, so big lists scroll cheaply. -xlinka
@@ -61,10 +65,70 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
     // live excess (a zero-excess axis keeps its value, so no divide-by-zero).
     public float2 AbsolutePosition
     {
-        get => new float2(Scroll.Value.x * _excess.x, Scroll.Value.y * _excess.y);
-        set => SetNormalized(new float2(
-            _excess.x > 0f ? Clamp01(value.x / _excess.x) : Scroll.Value.x,
-            _excess.y > 0f ? Clamp01(value.y / _excess.y) : Scroll.Value.y));
+        get
+        {
+            var excess = ScrollableExcess();
+            return new float2(Scroll.Value.x * excess.x, Scroll.Value.y * excess.y);
+        }
+        set
+        {
+            var excess = ScrollableExcess();
+            SetNormalized(new float2(
+                excess.x > 0f ? Clamp01(value.x / excess.x) : Scroll.Value.x,
+                excess.y > 0f ? Clamp01(value.y / excess.y) : Scroll.Value.y));
+        }
+    }
+
+    // A list that pins its own content height tells us the number here.
+    //
+    // It knows the page height a full frame before any layout pass can measure the rect, and it is the only
+    // writer of that rect's size, so when it has spoken it beats the measured height. Without this the range
+    // and the drawn offset both wait on a pass that a scoped relayout never runs, and a page whose height
+    // changed under a parked scroll ends up drawn at one offset while its rows were realized for another -
+    // which reads as a band of the viewport going blank. -xlinka
+    public void SetContentExtent(float height)
+    {
+        if (height < 0f)
+            height = 0f;
+        if (_contentExtent == height)
+            return;
+        _contentExtent = height;
+
+        // The same normalized position over a different range is a different PIXEL position, so the content
+        // has to be re-drawn where the freshly realized rows expect to find it.
+        var before = _excess;
+        if (ScrollableExcess() != before)
+            ApplyScrollNow();
+    }
+
+    // Scrollable excess read from the LIVE rects, not from whenever the canvas last ran a full layout pass.
+    //
+    // This number used to be written only inside ApplyScroll, which the canvas calls from the FULL layout
+    // branch alone. A virtualised list sets its page height by writing the content rect, and that write
+    // reaches the canvas on the SCOPED relayout path (the scrolled content is its own graphic chunk), which
+    // re-anchors the rect but never re-runs the scroll pass. So a page taller than the previous one kept the
+    // previous page's range - zero when you came from a page that fit - the wheel clamped against it, and
+    // nothing could break the deadlock, because a scroll that cannot move dirties no layout. -xlinka
+    private float2 ScrollableExcess()
+    {
+        var viewport = RectTransform;
+        var content = Content.Target;
+        if (viewport == null || content == null)
+            return _excess;
+
+        var viewportRect = viewport.LocalComputeRect;
+        var contentRect = content.LocalComputeRect;
+        if (viewportRect.IsEmpty || contentRect.IsEmpty)
+            return _excess;
+        // Same un-laid-out guard ApplyScroll uses - see the field doc on UnlaidViewportFloor.
+        if (viewportRect.width <= UnlaidViewportFloor || viewportRect.height <= UnlaidViewportFloor)
+            return _excess;
+
+        float contentHeight = _contentExtent >= 0f ? _contentExtent : contentRect.height;
+        _excess = new float2(
+            MathF.Max(0f, contentRect.width - viewportRect.width),
+            MathF.Max(0f, contentHeight - viewportRect.height));
+        return _excess;
     }
 
     public override void OnChanges()
@@ -180,9 +244,7 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
             return false;
         }
 
-        _excess = new float2(
-            MathF.Max(0f, contentRect.width - viewportRect.width),
-            MathF.Max(0f, contentRect.height - viewportRect.height));
+        var excess = ScrollableExcess();
 
         var norm = new float2(Clamp01(Scroll.Value.x), Clamp01(Scroll.Value.y));
         if (norm != Scroll.Value)
@@ -190,7 +252,7 @@ public sealed class ScrollRect : InteractionElement, IUIAxisActionReceiver
             Scroll.Value = norm;
         }
 
-        var absolute = new float2(norm.x * _excess.x, norm.y * _excess.y);
+        var absolute = new float2(norm.x * excess.x, norm.y * excess.y);
 
         // Position lives in the content's mesh-chunk offset, NEVER in its rect. We only store the current offset
         // here (a structural rebuild just baked the chunk); live scrolling moves it via ApplyScrollOffset. The

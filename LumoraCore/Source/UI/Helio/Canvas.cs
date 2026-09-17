@@ -51,12 +51,11 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     // world objects "show through" a sorted-on-top menu. Set before the first build (mint-time flag). -xlinka
     public readonly Sync<bool> Overlay = new();
 
-    // Canvas-wide text styling, applied to every shared text material at mint time. Thickness/dilate are in
-    // distance-field units (see UITextMaterial). Floating UI over arbitrary backgrounds (context menu,
-    // nameplates-on-canvas) wants an outline + a touch of dilate for contrast; flat panels leave it 0. -xlinka
+    // A small distance-field expansion keeps fine strokes readable at panel scale without widening
+    // the shader's screen-space antialiasing edge. Zero remains available for the original face. -xlinka
     public readonly Sync<colorHDR> TextOutlineColor = new();
     public readonly Sync<float> TextOutlineThickness = new();
-    public readonly Sync<float> TextFaceDilate = new();
+    public readonly Sync<float> TextFaceDilate = new(0.035f);
     public readonly Sync<float> TextFaceSoftness = new();
     public readonly Sync<colorHDR> TextUnderlayColor = new();
     public readonly Sync<float2> TextUnderlayOffset = new();
@@ -93,10 +92,20 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     // clip_offset to 0 (the shared source materials have ClipOffset=0) - the propagation itself works. -xlinka
     public static readonly bool ScrollRenderOffset = true;
 
-    // World-space cull margin for scroll-participating chunks: their verts are displaced in the vertex shader
-    // (clip_offset), so the baked AABB stops bounding the visible pixels and Godot frustum-culls them at
-    // glancing angles / up close. 4m covers ~8000 canvas px of scroll at the standard 0.0005 panel scale. -xlinka
-    private const float ScrolledChunkCullMargin = 4f;
+    // Cull margin every chunk gets, in CANVAS UNITS - the space the chunk mesh is actually built in.
+    //
+    // This used to be a single "4" described as four metres, and it bought nothing. The margin grows the
+    // instance's LOCAL bounding box and the node transform is applied afterwards, so on a panel at the
+    // usual 0.001 slot scale those four units were four millimetres. That mattered because every row of a
+    // list is its OWN chunk, baked at its canvas-absolute rect and then drawn somewhere else entirely by
+    // the clip_offset uniform: its cull box stays where the row would sit at scroll zero, metres from the
+    // pixels. Godot then does exactly what it is supposed to - the box leaves the frustum, the row stops
+    // drawing - which is the "rows disappear when I look at the panel from below" bug, and why the
+    // separators survived it (they live in the container's own chunk, whose box spans the whole content).
+    // The real bound on the displacement is the scroll range, which can never exceed the content's own
+    // size, so that is what ChunkCullMargin adds up. The slack on top also keeps a flat panel's box from
+    // being exactly zero-thickness. -xlinka
+    private const float ChunkCullSlack = 8f;
 
     // Per-chunk rendering: each GraphicChunkRoot below the canvas owns an independent mesh, so a
     // subtree that animates (e.g. the FPS sparkline) re-uploads only its own small mesh instead of
@@ -151,25 +160,33 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
                 material.PixelRange.Value = atlas.MsdfPixelRange;
             if (Overlay.Value)
                 material.ZTest.Value = ZTest.Always;
-            if (TextOutlineThickness.Value > 0f)
-            {
-                material.OutlineColor.Value = TextOutlineColor.Value;
-                material.OutlineThickness.Value = TextOutlineThickness.Value;
-            }
-            if (TextFaceDilate.Value != 0f)
-                material.FaceDilate.Value = TextFaceDilate.Value;
-            if (TextFaceSoftness.Value > 0f)
-                material.FaceSoftness.Value = TextFaceSoftness.Value;
-            if (TextUnderlayColor.Value.a > 0f)
-            {
-                material.UnderlayColor.Value = TextUnderlayColor.Value;
-                material.UnderlayOffset.Value = TextUnderlayOffset.Value;
-                material.UnderlaySoftness.Value = TextUnderlaySoftness.Value;
-            }
+            ApplyTextStyle(material);
             material.ForceUpdate();
             _sharedTextMaterials[atlas] = material;
         }
         return material;
+    }
+
+    private void ApplyTextStyle(UITextMaterial material)
+    {
+        material.OutlineColor.Value = TextOutlineColor.Value;
+        material.OutlineThickness.Value = TextOutlineThickness.Value;
+        material.FaceDilate.Value = TextFaceDilate.Value;
+        material.FaceSoftness.Value = TextFaceSoftness.Value;
+        material.UnderlayColor.Value = TextUnderlayColor.Value;
+        material.UnderlayOffset.Value = TextUnderlayOffset.Value;
+        material.UnderlaySoftness.Value = TextUnderlaySoftness.Value;
+    }
+
+    private void UpdateTextStyle()
+    {
+        foreach (var material in _sharedTextMaterials.Values)
+        {
+            if (material.IsDestroyed) continue;
+            ApplyTextStyle(material);
+            material.ForceUpdate();
+        }
+        _renderRequested = true;
     }
 
     // All images using the same texture share one property block -> one submesh per texture. - xlinka
@@ -824,6 +841,13 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
     {
         base.OnAwake();
         MaxViewDistance.OnChanged += _ => PushViewDistanceToChunks();
+        TextFaceDilate.OnChanged += _ => UpdateTextStyle();
+        TextFaceSoftness.OnChanged += _ => UpdateTextStyle();
+        TextOutlineColor.OnChanged += _ => UpdateTextStyle();
+        TextOutlineThickness.OnChanged += _ => UpdateTextStyle();
+        TextUnderlayColor.OnChanged += _ => UpdateTextStyle();
+        TextUnderlayOffset.OnChanged += _ => UpdateTextStyle();
+        TextUnderlaySoftness.OnChanged += _ => UpdateTextStyle();
     }
 
     public override void OnStart()
@@ -1151,6 +1175,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
                     ch.ApplyOrderToRenderer();
                 }
             }
+            ApplyCullMargin(_rootChunk, ChunkCullSlack);
             _rootChunk.SubmitChanges(_rootChunk.OrderIndex);
         }
 
@@ -1160,12 +1185,11 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             {
                 // Scroll-participating chunks (the content root and every row chunk nested under one) displace
                 // their verts in the vertex shader, so their baked AABB no longer bounds the visible pixels -
-                // grow the cull margin BEFORE submit (the per-surface instances read it as they're built) or
+                // size the cull margin BEFORE submit (the per-surface instances read it as they're built) or
                 // Godot frustum-culls them at glancing angles / up close ("panel clips when I get close"). -xlinka
                 bool scrolled = ScrollRenderOffset &&
                     (root.ScrollContent || FindScrollContentAncestor(root.Slot) != null);
-                if (scrolled && chunk.MeshRenderer != null)
-                    chunk.MeshRenderer.ExtraCullMargin = ScrolledChunkCullMargin;
+                ApplyCullMargin(chunk, ChunkCullMargin(root));
 
                 chunk.SubmitChanges(chunk.OrderIndex);
                 // Render-offset content: its materials were just (re)cloned by submit, so re-pin the clip
@@ -1225,6 +1249,53 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
                 return cr;
         }
         return null;
+    }
+
+    // How far, in canvas units, this chunk's pixels can end up from the geometry it was baked at. Every
+    // ScrollContent ancestor can slide it by at most that ancestor's own content size (you cannot scroll a
+    // list further than the list is long), and nested scrolls compose, so the sum is a true upper bound.
+    // Anything not under a scroll just gets the slack. -xlinka
+    private float ChunkCullMargin(GraphicChunkRoot root)
+    {
+        float margin = ChunkCullSlack;
+        if (!ScrollRenderOffset || root == null)
+            return margin;
+
+        var content = root.ScrollContent ? root : FindScrollContentAncestor(root.Slot);
+        while (content?.Slot != null)
+        {
+            float reach = 0f;
+            var rect = content.Slot.GetComponent<RectTransform>();
+            if (rect != null)
+            {
+                var r = rect.LocalComputeRect;
+                reach = MathF.Max(MathF.Abs(r.width), MathF.Abs(r.height));
+            }
+            // The content rect is the bound in theory, the live offset is the bound in fact, and the two
+            // disagree whenever the rect is read before the fitter has sized it (a fresh RectTransform is
+            // 100x100, and a viewport-sized rect is the height of the WINDOW, not of the list). Trusting
+            // the rect alone gives a margin smaller than the scroll, which cuts the list off part way down
+            // - exactly the symptom, just further along. Take whichever is bigger. -xlinka
+            var off = content.RenderOffset;
+            reach = MathF.Max(reach, MathF.Max(MathF.Abs(off.x), MathF.Abs(off.y)));
+            margin += reach;
+            content = FindScrollContentAncestor(content.Slot);
+        }
+        return margin;
+    }
+
+    // raiseOnly is for the live scroll path: it walks every chunk under the content each frame, and the
+    // margin only ever changes when the content RESIZES, so comparing first keeps the hot path free of
+    // change-queue traffic.
+    private static void ApplyCullMargin(GraphicsChunk chunk, float margin, bool raiseOnly = false)
+    {
+        var renderer = chunk?.MeshRenderer;
+        if (renderer == null || renderer.IsDestroyed)
+            return;
+        if (raiseOnly ? margin <= renderer.ExtraCullMargin : margin == renderer.ExtraCullMargin)
+            return;
+        renderer.ExtraCullMargin = margin;
+        renderer.MarkChangeDirty();
     }
 
     // Total scroll offset a chunk should render at: its own RenderOffset (if it IS scroll content) plus every
@@ -1333,6 +1404,13 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
             // directly, no per-material asset rebuild - this is the hot path hit every scroll frame. -xlinka
             chunk.SetClipOffset(CumulativeScrollOffset(content), persist: false);
 
+            // The cull box has to cover wherever the offset can put the pixels. It is normally the content
+            // SIZE, which does not change while you scroll, so this writes nothing on a plain scroll and
+            // costs the comparison; the live-offset floor inside it only takes over when the content rect
+            // has not been sized yet, which is the one case that must be chased per frame.
+            float cullMargin = ChunkCullMargin(content);
+            ApplyCullMargin(chunk, cullMargin, raiseOnly: true);
+
             // Rows built inside the content are their OWN chunks (per-row re-mesh perf) with their own material
             // clones - the content chunk's uniform doesn't reach them. Push the offset to every built chunk
             // nested under the scrolled content or they render frozen while the (empty) content chunk moves.
@@ -1347,6 +1425,7 @@ public class Canvas : Component, ILaserPointerTarget, ILaserAxisTarget, ILaserSe
                 if (!IsSlotDescendantOf(kv.Key.Slot, content.Slot))
                     continue;
                 nested.SetClipOffset(CumulativeScrollOffset(kv.Key), persist: false);
+                ApplyCullMargin(nested, cullMargin, raiseOnly: true);
                 // A chunk under a SECOND scroll carries an ancestor mask's displacement baked into its material
                 // window (a fixed canvas-space rect can't ride a live offset), and this move just invalidated
                 // that number - the verts follow clip_offset but the baked window doesn't. Re-mesh it. Only a

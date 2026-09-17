@@ -89,11 +89,13 @@ public class MeshRenderer : ImplementableComponent
     // GraphicsChunk when the unbounded-ordering mode is enabled; off for all normal (world) meshes. -xlinka
     public bool PerSurfaceOrdering { get; set; }
 
-    // Extra frustum-cull margin (world units) the hook applies to the mesh instance(s). Scrolled UI chunks
-    // displace their vertices in the VERTEX SHADER (clip_offset), so the instance AABB - computed from the
-    // baked, undisplaced verts - no longer bounds what's on screen; at glancing angles or up close Godot
-    // culls the instance while displaced pixels should still be visible. Set by Helio's canvas for
-    // scroll-participating chunks; zero for normal meshes. -xlinka
+    // Extra frustum-cull margin the hook applies to the mesh instance(s), in the MESH'S OWN LOCAL UNITS -
+    // the renderer grows the local bounding box by this and applies the node transform afterwards, so on a
+    // slot scaled to 0.001 a margin of 1 buys one millimetre of world, not one metre. Getting that backwards
+    // is how scrolled UI ended up with a four-millimetre margin against metres of displacement. Meshes whose
+    // vertices move in the VERTEX SHADER need it: the instance AABB is computed from the baked, undisplaced
+    // verts, so without a margin Godot culls the instance while the displaced pixels are still on screen.
+    // Set by Helio's canvas per chunk (see Canvas.ChunkCullMargin); zero for normal meshes. -xlinka
     public float ExtraCullMargin { get; set; }
 
     // Distance in metres past which the hook stops drawing this renderer, 0 = draws at any distance, with
@@ -217,19 +219,26 @@ public class MeshRenderer : ImplementableComponent
         FlagSurfacesDirty();
     }
 
+    // A list element's own change never reaches this component (SyncList does not forward element
+    // events), so a material that finishes loading inside the list only ever arrives through this
+    // callback. Raising the flag alone left the surface on its loading placeholder until something
+    // unrelated dirtied the renderer; the apply has to be queued from here, like every other list. -xlinka
     private void OnMaterialsChanged(SyncAssetList<MaterialAsset> list)
     {
         MaterialsChanged = true;
+        RunApplyChanges();
     }
 
     private void OnMaterialPropertyBlocksChanged(SyncAssetList<MaterialPropertyBlockAsset> list)
     {
         MaterialPropertyBlocksChanged = true;
+        RunApplyChanges();
     }
 
     private void OnSurfaceRenderPrioritiesChanged(SyncIntList list)
     {
         SurfaceRenderPrioritiesChanged = true;
+        RunApplyChanges();
     }
 
     public override void OnDestroy()

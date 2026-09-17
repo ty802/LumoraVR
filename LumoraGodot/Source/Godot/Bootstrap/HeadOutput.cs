@@ -31,7 +31,14 @@ public partial class HeadOutput : Node
     // CONFIGURATION
     [Export] public OutputType Type { get; set; } = OutputType.Screen;
     [Export] public float DefaultFOV { get; set; } = 90f;
-    [Export] public float NearClip { get; set; } = 0.25f; // Clips through head sphere
+    // 2 cm. This used to be 25 cm, "so the head sphere does not clip through", and that made the near
+    // plane do a job it is very bad at: a quarter of a metre is deep enough to slice a panel in half as
+    // soon as you lean into it, which is what "the inspector gets cut when I get close" was. Keeping your
+    // own head out of your own eyes belongs to LocalViewOverride (the local avatar's head renderers move
+    // onto RenderHelper.LOCAL_HEAD_LAYER, which this camera does not draw and mirrors still do), so the
+    // near plane can go back to being a near plane. The far plane is unchanged, and 0.02..1000 is still a
+    // ~1:50000 depth ratio, well inside what a 24-bit/float buffer holds. -xlinka
+    [Export] public float NearClip { get; set; } = 0.02f;
     [Export] public float FarClip { get; set; } = 1000f;
 
     // CAMERA REFERENCES

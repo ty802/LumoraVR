@@ -304,8 +304,12 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
 
             inst.SortingOffset = baseKey + i;
             // Scrolled UI chunks displace verts in the vertex shader; grow the cull bounds or Godot culls the
-            // instance at glancing angles/up close while displaced pixels should still be visible. -xlinka
-            inst.ExtraCullMargin = Owner.ExtraCullMargin;
+            // instance at glancing angles/up close while displaced pixels should still be visible. The value
+            // is in the mesh's own local units - see MeshRenderer.ExtraCullMargin. These instances render in
+            // the combined one's place, so a margin that only reached the combined instance would do nothing
+            // at all while this mode is on. -xlinka
+            if (inst.ExtraCullMargin != Owner.ExtraCullMargin)
+                inst.ExtraCullMargin = Owner.ExtraCullMargin;
             inst.Visible = enabled;
         }
 
@@ -377,7 +381,7 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
             return LoadingPlaceholderMaterial.Get();
         }
 
-        _loadingSkin.Clear(index);
+        _loadingSkin.Clear(index, Owner.Slot?.SlotName.Value);
 
         var materialAsset = GetMaterialAsset(index);
         if (materialAsset == null)

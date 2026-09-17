@@ -17,15 +17,27 @@ namespace Lumora.Godot.Hooks;
 // SlotHook.SetLocalTransformOverride so the slot stays the single writer of its own transform.
 //
 // A scale override of zero is the one case that does NOT go through the transform: it means "hide this
-// from myself", and the whole point of hiding your own head is that its shadow stays on the floor. That
-// is ShadowsOnly, not a zero scale, which would take the shadow with it.
+// from myself". A zero scale would take the shadow with it, and ShadowsOnly (what this used to do) takes
+// the object out of every local render including mirrors and in-world cameras - you end up headless in
+// your own reflection. So the renderers move onto RenderHelper.LOCAL_HEAD_LAYER instead: the eye cameras
+// are the only ones masking that bit off, lights carry no cull mask, so the head keeps its shadow, still
+// shows up in mirrors and on camera, and only your own eyes skip it. This is what keeps the head out of
+// the view now that the near plane is 2 cm. -xlinka
 [ImplementableHook(typeof(LocalViewOverride))]
 public class LocalViewOverrideHook : ComponentHook<LocalViewOverride>
 {
     private const float HideScaleEpsilon = 0.0001f;
+    // Frames we will keep coming back looking for a renderer to hide before accepting that this slot
+    // simply has none. Bounded so a LocalViewOverride on a slot with no geometry cannot re-dirty forever.
+    private const int HideRetryLimit = 240;
 
-    private bool _shadowsOnly;
+    private int _hideRetries = HideRetryLimit;
+    private bool _hiddenFromView;
     private bool _transformOverridden;
+    // What each instance's layer mask was before we moved it, so a restore puts back what was actually
+    // there rather than a guessed default (a renderer on the private/hidden band, or under a
+    // RenderLayerOverride, would otherwise come back wearing the public bit it never had).
+    private readonly System.Collections.Generic.Dictionary<Node3D, int> _priorLayers = new();
 
     public static IHook<LocalViewOverride> Constructor() => new LocalViewOverrideHook();
 
@@ -54,12 +66,12 @@ public class LocalViewOverrideHook : ComponentHook<LocalViewOverride>
         float3 scale = Owner.ScaleOverride.Value;
         bool hide = hasScale && IsEffectivelyZero(scale);
 
-        SetShadowsOnly(hide);
+        SetHiddenFromView(hide);
 
         float3? position = Owner.HasPositionOverride.Value ? Owner.PositionOverride.Value : null;
         floatQ? rotation = Owner.HasRotationOverride.Value ? Owner.RotationOverride.Value : null;
-        // A zero scale is served by ShadowsOnly above, so it must not also reach the transform - the two
-        // together would hide the mesh and its shadow.
+        // A zero scale is served by the layer swap above, so it must not also reach the transform - the two
+        // together would collapse the geometry as well as hide it, and take the shadow with it.
         float3? scaleOverride = hasScale && !hide ? scale : null;
 
         PushTransform(position, rotation, scaleOverride);
@@ -77,7 +89,7 @@ public class LocalViewOverrideHook : ComponentHook<LocalViewOverride>
 
     private void ClearAll()
     {
-        SetShadowsOnly(false);
+        SetHiddenFromView(false);
         PushTransform(null, null, null);
     }
 
@@ -94,17 +106,50 @@ public class LocalViewOverrideHook : ComponentHook<LocalViewOverride>
         _transformOverridden = wanted;
     }
 
-    private void SetShadowsOnly(bool shadowsOnly)
+    private void SetHiddenFromView(bool hidden)
     {
         // Re-applied every frame while active to catch MeshInstance3Ds created after us; the restore
         // only runs on the edge so a slot that never hid never pays for the walk.
-        if (!shadowsOnly && !_shadowsOnly)
+        if (!hidden && !_hiddenFromView)
             return;
 
-        SetMeshCastShadow(shadowsOnly
-            ? GeometryInstance3D.ShadowCastingSetting.ShadowsOnly
-            : GeometryInstance3D.ShadowCastingSetting.On);
-        _shadowsOnly = shadowsOnly;
+        var slotNode = (Owner.Slot?.Hook as SlotHook)?.GeneratedNode3D;
+        if (slotNode == null || !GodotObject.IsInstanceValid(slotNode))
+            return;
+
+        if (hidden)
+        {
+            Helpers.RenderHelper.SetHierarchyLayer(slotNode, Helpers.RenderHelper.LOCAL_HEAD_LAYER, _priorLayers);
+
+            // The renderer hook builds its MeshInstance3D on its own schedule, and on a fresh avatar it
+            // usually lands AFTER this. Nothing re-fires us when it does, so a one-shot walk would leave
+            // the head on the public layer and in your eyes - which the old 25 cm near plane used to cover
+            // up. Come back until there is actually something here to move, then stop. -xlinka
+            if (!HasVisual(slotNode) && _hideRetries-- > 0)
+                Owner?.MarkChangeDirty();
+            else
+                _hideRetries = HideRetryLimit;
+        }
+        else
+        {
+            Helpers.RenderHelper.RestoreHierarchyLayer(slotNode, _priorLayers);
+            _priorLayers.Clear();
+            _hideRetries = HideRetryLimit;
+        }
+
+        _hiddenFromView = hidden;
+    }
+
+    private static bool HasVisual(Node3D root)
+    {
+        if (root is VisualInstance3D)
+            return true;
+        foreach (var child in root.GetChildren())
+        {
+            if (child is Node3D child3D && HasVisual(child3D))
+                return true;
+        }
+        return false;
     }
 
     private static bool IsEffectivelyZero(float3 v)
@@ -112,22 +157,6 @@ public class LocalViewOverrideHook : ComponentHook<LocalViewOverride>
         return System.Math.Abs(v.x) < HideScaleEpsilon
             && System.Math.Abs(v.y) < HideScaleEpsilon
             && System.Math.Abs(v.z) < HideScaleEpsilon;
-    }
-
-    private void SetMeshCastShadow(GeometryInstance3D.ShadowCastingSetting setting)
-    {
-        if (Owner.Slot?.Hook is not SlotHook slotHook)
-            return;
-
-        var slotNode = slotHook.GeneratedNode3D;
-        if (slotNode == null || !GodotObject.IsInstanceValid(slotNode)) return;
-
-        var nodes = slotNode.FindChildren("*", "MeshInstance3D", recursive: true, owned: false);
-        foreach (var node in nodes)
-        {
-            if (node is MeshInstance3D mesh)
-                mesh.CastShadow = setting;
-        }
     }
 
     private bool IsLocalUser()

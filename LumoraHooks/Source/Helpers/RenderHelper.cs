@@ -22,17 +22,21 @@ public static class RenderHelper
     // Free-cam position marker (sphere + label). Rendered for spectators/others but culled from the
     // local view so you don't see your own marker sitting on the camera. - xlinka
     public const int FREECAM_INDICATOR_LAYER = 1 << 19;
+    // The local user's own head geometry. Culled from the eye cameras (main + XR) and from nothing else,
+    // so a mirror, a camera and every other peer still see a head while you don't see the inside of
+    // yours. Lights carry no cull mask here, so the head keeps casting its shadow. -xlinka
+    public const int LOCAL_HEAD_LAYER = 1 << 18;
 
     public const int PUBLIC_RENDER_MASK = ~(PRIVATE_LAYER | TEMP_LAYER | HIDDEN_LAYER | OVERLAY_LAYER);
     public const int PRIVATE_RENDER_MASK = ~(TEMP_LAYER | HIDDEN_LAYER | OVERLAY_LAYER);
 
-    // Bits 5..18 are unclaimed. 0-4 are the fixed bands above and 19 is the free-cam indicator, so a
-    // camera doing selective or excluded rendering borrows one of the fourteen in between and gives it
-    // back when it stops. Godot only has twenty visual layers, so this is a hard ceiling on how many
-    // cameras can be doing it at once - past that the camera renders normally rather than wrongly.
-    // -xlinka
+    // Bits 5..17 are unclaimed. 0-4 are the fixed bands above, 18 is the local head and 19 is the
+    // free-cam indicator, so a camera doing selective or excluded rendering borrows one of the thirteen
+    // in between and gives it back when it stops. Godot only has twenty visual layers, so this is a hard
+    // ceiling on how many cameras can be doing it at once - past that the camera renders normally rather
+    // than wrongly. -xlinka
     private const int SELECTIVE_FIRST_BIT = 5;
-    private const int SELECTIVE_LAST_BIT = 18;
+    private const int SELECTIVE_LAST_BIT = 17;
 
     private static readonly object _selectiveLock = new();
     private static int _selectiveBitsInUse;

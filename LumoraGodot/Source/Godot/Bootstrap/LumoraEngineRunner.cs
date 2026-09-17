@@ -113,6 +113,11 @@ public partial class LumoraEngineRunner : Node
 	// ("V-Sync mode Disabled is not available" at boot), so the present blocks on the flat display
 	// instead of the headset. With XR on the root, the frame goes to OpenXR and that wait is gone.
 	// --xr-subviewport forces the other path on standalone, --xr-root forces this one on desktop. -xlinka
+	// Root viewport on standalone only. Tried on desktop 2026-09-16: the Virtual Desktop runtime
+	// refused the root viewport's swapchain ("Failed to get swapchain images", RUNTIME_FAILURE) and
+	// the headset went dark, while the SubViewport path has always worked there. The desktop
+	// monitor therefore uses a separate mono camera; an XR texture array cannot be assigned directly
+	// to a TextureRect. XRModeManager keeps that mirror at native window resolution. -xlinka
 	private static bool UseRootViewportForXr
 		=> LaunchArgs.HasFlag("--xr-root") || (OS.HasFeature("android") && !LaunchArgs.HasFlag("--xr-subviewport"));
 	private bool _vrInitializedAtBoot;
@@ -121,6 +126,77 @@ public partial class LumoraEngineRunner : Node
 	// Fallback for image formats the engine's own decoder cannot read - WebP above all, which imported
 	// avatars use constantly. Godot decodes it here and hands back straight RGBA rows in the same
 	// top-down order everything else uses.
+	// An animated WebP as one vertical strip of composited frames. Each frame's bitstream is a still
+	// the decoder accepts; the canvas is carried between frames the way the file says (blend or
+	// replace, keep or clear), and every Nth frame is kept so the strip stays under the texture cap.
+	private static byte[]? DecodeAnimatedWithGodot(byte[] encoded, out int width, out int height, out int frames, out float fps)
+	{
+		width = 0;
+		height = 0;
+		frames = 1;
+		fps = 0f;
+		if (!Lumora.Core.Assets.WebpStill.TryExtractFrames(encoded, out int canvasWidth, out int canvasHeight, out var list) || list.Count == 0
+			|| canvasWidth <= 0 || canvasHeight <= 0)
+			return null;
+
+		const int MaxFrames = 48;
+		const int MaxStripHeight = 4096;
+		int limit = System.Math.Max(1, System.Math.Min(MaxFrames, MaxStripHeight / canvasHeight));
+		int step = System.Math.Max(1, (int)System.Math.Ceiling(list.Count / (double)limit));
+		int selected = 0;
+		for (int i = 0; i < list.Count; i += step) selected++;
+
+		var clear = new Color(0f, 0f, 0f, 0f);
+		using var canvas = Image.CreateEmpty(canvasWidth, canvasHeight, false, Image.Format.Rgba8);
+		canvas.Fill(clear);
+		using var strip = Image.CreateEmpty(canvasWidth, canvasHeight * selected, false, Image.Format.Rgba8);
+		strip.Fill(clear);
+
+		double totalMs = 0;
+		int placed = 0;
+		Rect2I previousRect = default;
+		bool previousDispose = false;
+		for (int i = 0; i < list.Count; i++)
+		{
+			var frame = list[i];
+			if (previousDispose)
+				canvas.FillRect(previousRect, clear);
+
+			using (var picture = new Image())
+			{
+				if (picture.LoadWebpFromBuffer(frame.Still) == Error.Ok)
+				{
+					if (picture.GetFormat() != Image.Format.Rgba8)
+						picture.Convert(Image.Format.Rgba8);
+					var source = new Rect2I(0, 0, picture.GetWidth(), picture.GetHeight());
+					var at = new Vector2I(frame.X, frame.Y);
+					if (frame.BlendAlpha)
+						canvas.BlendRect(picture, source, at);
+					else
+						canvas.BlitRect(picture, source, at);
+				}
+			}
+
+			previousRect = new Rect2I(frame.X, frame.Y, frame.Width, frame.Height);
+			previousDispose = frame.DisposeToBackground;
+			if (i % step == 0 && placed < selected)
+			{
+				strip.BlitRect(canvas, new Rect2I(0, 0, canvasWidth, canvasHeight), new Vector2I(0, placed * canvasHeight));
+				placed++;
+			}
+			totalMs += frame.DurationMs;
+		}
+
+		if (placed == 0)
+			return null;
+		width = canvasWidth;
+		height = canvasHeight * placed;
+		frames = placed;
+		double averageMs = totalMs / list.Count * step;
+		fps = averageMs > 0 ? (float)System.Math.Clamp(1000.0 / averageMs, 1.0, 50.0) : 10f;
+		return strip.GetData();
+	}
+
 	private static byte[]? DecodeImageWithGodot(byte[] encoded, out int width, out int height)
 	{
 		width = 0;
@@ -129,23 +205,7 @@ public partial class LumoraEngineRunner : Node
 			return null;
 
 		using var image = new Image();
-		var error = image.LoadWebpFromBuffer(encoded);
-		if (error != Error.Ok)
-			error = image.LoadPngFromBuffer(encoded);
-		if (error != Error.Ok)
-			error = image.LoadJpgFromBuffer(encoded);
-		if (error != Error.Ok)
-			error = image.LoadBmpFromBuffer(encoded);
-		if (error != Error.Ok)
-			error = image.LoadTgaFromBuffer(encoded);
-		if (error != Error.Ok)
-			error = image.LoadKtxFromBuffer(encoded);
-		if (error != Error.Ok)
-			error = image.LoadDdsFromBuffer(encoded);
-		// SVG is listed as importable and this was the only reader that never tried it. Text, so it
-		// goes last: the binary sniffers above reject it instantly. 1.0 is the document's own size.
-		if (error != Error.Ok)
-			error = image.LoadSvgFromBuffer(encoded, 1.0f);
+		var error = Lumora.Godot.Helpers.GodotImageLoader.Load(image, encoded);
 		if (error != Error.Ok)
 			return null;
 
@@ -229,6 +289,7 @@ public partial class LumoraEngineRunner : Node
 	{
 		LumoraLogger.LogToGameEngine += LogCallback;
 		Lumora.Core.Assets.TextureVariantStore.PlatformDecoder = DecodeImageWithGodot;
+		Lumora.Core.Assets.TextureVariantStore.AnimatedDecoder = DecodeAnimatedWithGodot;
 		Lumora.Core.Assets.TextureVariantStore.PlatformHdrDecoder = DecodeHdrImageWithGodot;
 		// Godot object picking logs in stereo and is not part of engine-side interaction. - xlinka
 		GetViewport().PhysicsObjectPicking = false;
@@ -332,6 +393,23 @@ public partial class LumoraEngineRunner : Node
 					line => LumoraLogger.Log($"publish: {line}"));
 				LumoraLogger.Log($"LumoraEngineRunner: built-ins published: {published} ok, {failed} failed");
 			});
+		}
+	}
+
+	// A build with no display server is a service: it has no window, no speakers and usually no sound
+	// card at all. The flag is checked as well because the driver name is only meaningful once the
+	// display server is up. -xlinka
+	private static bool IsHeadless()
+	{
+		if (LaunchArgs.HasFlag("--headless"))
+			return true;
+		try
+		{
+			return DisplayServer.GetName() == "headless";
+		}
+		catch
+		{
+			return true;
 		}
 	}
 
@@ -930,9 +1008,13 @@ public partial class LumoraEngineRunner : Node
 		// layer. Render-texture cameras opt those layers back in. - xlinka
 		// Also cull the free-cam indicator: third-person/free-cam now drive THIS camera, so its marker
 		// would otherwise sit right on the lens. It stays on its own layer for spectator/other views.
+		// The local head rides the same idea: LocalViewOverride moves the local avatar's head renderers
+		// onto LOCAL_HEAD_LAYER so these two cameras skip them, which is what lets the near plane sit at
+		// 2 cm instead of being used as a head-remover. -xlinka
 		uint hiddenAndOverlay = (uint)(Lumora.Godot.Helpers.RenderHelper.HIDDEN_LAYER
 			| Lumora.Godot.Helpers.RenderHelper.OVERLAY_LAYER
-			| Lumora.Godot.Helpers.RenderHelper.FREECAM_INDICATOR_LAYER);
+			| Lumora.Godot.Helpers.RenderHelper.FREECAM_INDICATOR_LAYER
+			| Lumora.Godot.Helpers.RenderHelper.LOCAL_HEAD_LAYER);
 		_mainCamera.CullMask &= ~hiddenAndOverlay;
 		var xrCamera = GetNodeOrNull<Camera3D>("%XRCamera3D");
 		if (xrCamera != null)
@@ -1069,6 +1151,36 @@ public partial class LumoraEngineRunner : Node
 		// Get InputInterface from Engine (it's already initialized in Engine.InitializeAsync)
 		_inputInterface = _engine.InputInterface;
 		_engine.AudioManager.Initialize(AudioMixer.GetMixer());
+
+		// A service page is not a stream URL, and only the platform layer can run the process that turns
+		// one into the other, so the core gets handed a resolver instead of owning one. -xlinka
+		Lumora.Core.Media.MediaServices.VideoServiceResolver = new Lumora.Source.Godot.Services.VideoServiceResolver();
+
+		// The mixer renders on its own thread and needs somewhere to push to. Without a display there
+		// is no device worth opening, so the simulator runs dry: time still advances, nothing is heard.
+		// -xlinka
+		var audioOutput = IsHeadless() ? null : new GodotAudioDeviceOutput();
+		_engine.AudioSystem.Initialize(audioOutput);
+#if GODOT_PC
+		Lumora.Godot.Hooks.Video.LibVlcRuntime.WarmUp();
+#endif
+
+		// The microphone. Registered, not opened: the capture input only starts the device once
+		// something actually subscribes to it, which is the local user's voice stream deciding it is
+		// not muted. A service build has nothing to capture from and nobody to send it to.
+		if (!IsHeadless())
+		{
+			var audioInput = new GodotAudioDeviceInput();
+			_engine.AudioSystem.RegisterAudioInput(new Lumora.Core.Audio.AudioInput(audioInput));
+
+			// Enumerates on construction, so the settings screen has a device list from the first time
+			// it is opened. Applying here is what makes a saved choice survive a relaunch, and it needs
+			// the settings read first: the applier node that normally does that is not built until the
+			// userspace phase, two phases after the mixer opens a device. Load is idempotent. -xlinka
+			_engine.AudioSystem.DevicePlatform = new GodotAudioDevicePlatform(audioInput, audioOutput);
+			Lumora.Core.EngineSettings.Load();
+			_engine.AudioSystem.ApplyDeviceSelection();
+		}
 
 		// Register Godot-specific builtin asset loader (reads from res:// using FileAccess)
 		Lumora.Nexus.Assets.BuiltinAssetHelper.PlatformLoader = (relativePath) =>
@@ -2241,9 +2353,16 @@ public partial class LumoraEngineRunner : Node
 		base._ExitTree();
 	}
 
+	// Not in editor runs unless asked: SteamAPI.Init is what makes the Steam client inject its overlay
+	// (gameoverlayrenderer64.dll) into the process, and that overlay has crashed editor sessions on
+	// its own (WER faulting module, 2026-09-16). Exports keep Steam; a dev run gets it with --steam. -xlinka
 	private static bool ShouldUseSteam()
 	{
-		return !OS.HasFeature("android");
+		if (OS.HasFeature("android"))
+			return false;
+		if (OS.HasFeature("editor") && !LaunchArgs.HasFlag("--steam"))
+			return false;
+		return true;
 	}
 
 	// Runs once after the engine is initialized so transports can publish

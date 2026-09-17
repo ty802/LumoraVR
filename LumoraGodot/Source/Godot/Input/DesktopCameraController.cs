@@ -36,9 +36,9 @@ public partial class DesktopCameraController : Node
     // THIRD-PERSON CAMERA COLLISION
     // The probe starts this far off the head (user-scaled) so it cannot begin inside the avatar's own
     // head geometry; the source platform uses the same 5 cm. The standoff is the source's 1 cm, but
-    // never less than the render camera's near plane: our NearClip is 0.25 m (HeadOutput.cs:34), and a
-    // wall 1 cm from the lens sits entirely inside the near plane, is not drawn, and the view looks
-    // straight through it - the pull-in would run and the wall would still vanish. -xlinka
+    // never less than the render camera's near plane (read live off HeadOutput below), because a wall
+    // closer to the lens than the near plane is not drawn and the view looks straight through it - the
+    // pull-in would run and the wall would still vanish. -xlinka
     private const float TpCollisionRayStart    = 0.05f;
     private const float TpCollisionStandoff    = 0.01f;
     private const float TpCollisionReleaseRate = 8f;   // per second, easing back OUT once the way is clear

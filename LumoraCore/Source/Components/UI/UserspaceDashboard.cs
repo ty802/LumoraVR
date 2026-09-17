@@ -801,7 +801,8 @@ public class UserspaceDashboard : UIComponent
         _dashboard?.AddScreen<SessionScreen>("Session", new color(0.25f, 0.55f, 1f, 1f));
         _dashboard?.AddScreen<SettingsScreen>("Settings", new color(1f, 0.22f, 0.28f, 1f));
         _dashboard?.AddScreen<FileBrowserScreen>("Files", new color(0.70f, 0.66f, 0.32f, 1f));
-        _dashboard?.AddScreen<DebugScreen>("Debug", new color(0.45f, 0.78f, 0.55f, 1f));
+        // Reached from the home page's Debug card, the way the reference files it, not from a tab.
+        _dashboard?.AddScreen<DebugScreen>("Debug", new color(0.45f, 0.78f, 0.55f, 1f), showInNav: false);
         _dashboard?.AddScreen<ExitScreen>("Exit", new color(1f, 0.30f, 0.32f, 1f));
     }
 

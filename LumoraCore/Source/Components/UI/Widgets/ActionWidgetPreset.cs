@@ -22,6 +22,10 @@ public abstract class ActionWidgetPreset : HomeWidgetPreset
     // Null means the action can run. Anything else is shown on the card and disables it.
     protected virtual string? Unavailable => null;
 
+    // Bundled icon name for the tile at the left of the card, or none for a plain card.
+    protected virtual string? Icon => null;
+    protected virtual color IconTint => DashTheme.Accent;
+
     protected abstract void Invoke();
 
     private Text? _title;
@@ -41,9 +45,16 @@ public abstract class ActionWidgetPreset : HomeWidgetPreset
 
     protected override void Build(Widget widget, Slot root)
     {
+        float titleLeft = Pad;
+        string? icon = Icon;
+        if (icon != null)
+        {
+            IconTileAt(root, icon, IconTint, Pad - 6f, IconTile);
+            titleLeft = IconTitleLeft;
+        }
         _title = Label(root, "Title", Title, DashTheme.FontBody, DashTheme.Text,
             TextHorizontalAlignment.Left, new float2(0f, 0f), new float2(0.62f, 1f),
-            new float2(Pad, 0f), float2.Zero, SemiboldFont);
+            new float2(titleLeft, 0f), float2.Zero, SemiboldFont);
 
         _hint = Label(root, "Hint", string.Empty, DashTheme.FontSmall, DashTheme.TextMuted,
             TextHorizontalAlignment.Right, new float2(0.62f, 0f), new float2(1f, 1f),

@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Helio.UI;
+using Lumora.Core.Audio;
 using Lumora.Core.Components.Assets;
 using Lumora.Core.Math;
 using LumoraLogger = Lumora.Core.Logging.Logger;
@@ -780,7 +781,10 @@ public class ContextMenuSystem : Component
         foreach (var (_, item) in rootItems.OrderByDescending(x => x.priority))
             page.AddItem(item);
 
-        // 2. Contextual items from ContextMenuItemSource components
+        // 2. Voice. Fixed, not a source: how loud you are carries in every world and must not depend on
+        // a component happening to be attached under the user root. -xlinka
+
+        // 3. Contextual items from ContextMenuItemSource components
         foreach (var source in CollectComponents<ContextMenuItemSource>()
                                     .OrderByDescending(s => s.Priority.Value))
         {

@@ -13,6 +13,8 @@ namespace Lumora.Core.Components.UI;
 public sealed class NewWorldWidgetPreset : ActionWidgetPreset
 {
     protected override string Title => "New World";
+    protected override string? Icon => "new-world";
+    protected override color IconTint => DashTheme.Positive;
 
     protected override bool Primary => true;
 
@@ -38,6 +40,8 @@ public sealed class NewWorldWidgetPreset : ActionWidgetPreset
 public sealed class LeaveWorldWidgetPreset : ActionWidgetPreset
 {
     protected override string Title => "Leave World";
+    protected override string? Icon => "leave";
+    protected override color IconTint => DashTheme.Negative;
 
     protected override string? Unavailable
     {
@@ -73,6 +77,8 @@ public sealed class LeaveWorldWidgetPreset : ActionWidgetPreset
 public sealed class AvatarStudioWidgetPreset : ActionWidgetPreset
 {
     protected override string Title => "Avatar Studio";
+    protected override string? Icon => "avatar";
+    protected override color IconTint => DashTheme.IconBlue;
 
     // The studio opens with or without a model in the world: finding the model is what it is for.
     // The only thing that can stop it is a world that refuses spawning at all, and that says so.
@@ -131,6 +137,8 @@ public sealed class AvatarStudioWidgetPreset : ActionWidgetPreset
 public sealed class PasteWidgetPreset : ActionWidgetPreset
 {
     protected override string Title => "Paste";
+    protected override string? Icon => "paste";
+    protected override color IconTint => DashTheme.IconTeal;
 
     protected override string? Unavailable
     {

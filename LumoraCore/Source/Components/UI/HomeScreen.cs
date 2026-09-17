@@ -32,6 +32,8 @@ public sealed class HomeScreen : WidgetScreen, IDashboardKeyInput
     private const int CardHeight = 3;
     private const int RightColumn = Columns - CardWidth;
     private const int AccountWidth = 20;
+    // Action cards are the reference's proportion: eleven of sixty-four columns, not the account tile's twenty.
+    private const int ActionWidth = 11;
     private const int AccountHeight = 7;
 
     private static readonly color OverlayFill = DashTheme.Panel;
@@ -106,15 +108,18 @@ public sealed class HomeScreen : WidgetScreen, IDashboardKeyInput
         // rather than sitting there greyed out forever.
         if (ImportHandlers.Clipboard != null)
         {
-            AddWidget<PasteWidgetPreset>(root, "Paste", 0, row, AccountWidth, CardHeight);
+            AddWidget<PasteWidgetPreset>(root, "Paste", 0, row, ActionWidth, CardHeight);
             row -= CardHeight;
         }
-        AddWidget<AvatarStudioWidgetPreset>(root, "AvatarStudio", 0, row, AccountWidth, CardHeight);
+        AddWidget<AvatarStudioWidgetPreset>(root, "AvatarStudio", 0, row, ActionWidth, CardHeight);
         row -= CardHeight;
-        AddWidget<NewWorldWidgetPreset>(root, "NewWorld", 0, row, AccountWidth, CardHeight);
+        AddWidget<StreamAudioWidgetPreset>(root, "StreamAudio", 0, row, ActionWidth, CardHeight);
+        row -= CardHeight;
+        AddWidget<NewWorldWidgetPreset>(root, "NewWorld", 0, row, ActionWidth, CardHeight);
 
         AddWidget<FreeformDashWidgetPreset>(root, "FreeformDash", RightColumn, 0, CardWidth, CardHeight);
         AddWidget<EditWidgetsWidgetPreset>(root, "EditWidgets", RightColumn, CardHeight, CardWidth, CardHeight);
+        AddWidget<OpenDebugWidgetPreset>(root, "Debug", RightColumn, CardHeight * 2, CardWidth, CardHeight);
 
         // Placed at its open height against the bottom row. From here the card owns its own footprint: it
         // collapses to a title row when the services are unreachable, off the top edge, so the bottom of

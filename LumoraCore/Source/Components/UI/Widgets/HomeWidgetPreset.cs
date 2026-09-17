@@ -17,6 +17,13 @@ namespace Lumora.Core.Components.UI;
 public abstract class HomeWidgetPreset : WidgetPreset
 {
     protected const float Pad = 14f;
+    protected const float IconTile = 34f;
+
+    // Gap between the icon tile and the title that follows it.
+    protected const float IconTitleGap = 10f;
+
+    // Left edge of the title on a card that carries a tile, so every card lines its words up.
+    protected const float IconTitleLeft = Pad - 6f + IconTile + IconTitleGap;
 
     private float _pollTimer;
 
@@ -62,6 +69,33 @@ public abstract class HomeWidgetPreset : WidgetPreset
         var dash = Dash;
         if (dash != null)
             BackgroundSprite.Target = dash.RoundedSpriteFor(CornerRadius.Value);
+    }
+
+    // The reference's coloured square with a glyph in it, at the left edge of a card. The glyph is
+    // one of the bundled line icons; the tile takes the card's own hue.
+    protected Slot IconTileAt(Slot root, string icon, in color tint, float left, float size)
+    {
+        var tile = root.AddSlot("IconTile");
+        var rect = tile.AttachComponent<RectTransform>();
+        rect.AnchorMin.Value = new float2(0f, 0.5f);
+        rect.AnchorMax.Value = new float2(0f, 0.5f);
+        rect.OffsetMin.Value = new float2(left, -size * 0.5f);
+        rect.OffsetMax.Value = new float2(left + size, size * 0.5f);
+        SettingsUI.Panel(tile, tint, color.Transparent, DashTheme.RadiusControl);
+
+        var glyph = tile.AddSlot("Glyph");
+        var glyphRect = glyph.AttachComponent<RectTransform>();
+        glyphRect.AnchorMin.Value = float2.Zero;
+        glyphRect.AnchorMax.Value = float2.One;
+        glyphRect.OffsetMin.Value = new float2(6f, 6f);
+        glyphRect.OffsetMax.Value = new float2(-6f, -6f);
+        var picture = glyph.AttachComponent<Lumora.Core.Assets.ImageProvider>();
+        picture.GenerateMipmaps.Value = false;
+        picture.URL.Value = new System.Uri("res://Assets/Textures/Icons/" + icon + ".svg");
+        var image = glyph.AttachComponent<Image>();
+        image.Texture.Target = picture;
+        image.Tint.Value = color.White;
+        return tile;
     }
 
     protected void Repaint()

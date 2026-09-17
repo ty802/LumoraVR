@@ -26,21 +26,26 @@ public sealed class DirectoryWidgetPreset : HomeWidgetPreset
     private const int CollapsedRows = 3;
     private const int ExpandedRows = 7;
 
-    // Canvas units. The donut square is the outer diameter, so the ring sits exactly inside its band and
-    // the sessions line under it clears the bottom of the ring by construction.
-    private const float OuterRadius = 40f;
-    private const float InnerRadius = 27f;
+    // Canvas units, sized for the card the Home grid actually hands this widget: thirteen cells by seven
+    // is about 242 x 128, which an 80 unit ring plus two lines under it overran at the bottom edge. The
+    // status lines are pinned to the FLOOR of the card and the ring takes the band left between them and
+    // the title, so neither can land on the other whatever height the card ends up at. -xlinka
+    private const float OuterRadius = 30f;
+    private const float InnerRadius = 20f;
     private const float DonutSize = OuterRadius * 2f;
     private const float SliceGap = 2f;
     private const float TopAngle = 270f;
 
     private const float TitleTop = 4f;
     private const float TitleHeight = 18f;
-    private const float LineHeight = 13f;
+    private const float LineHeight = 14f;
     private const float BodyTop = TitleTop + TitleHeight;
-    private const float BodyHeight = DonutSize + LineHeight * 2f;
+    private const float BodyBottom = 8f;
+    private const float StatusBandHeight = LineHeight * 2f;
+    private const float StatusBandGap = 6f;
     private const float LegendLeft = Pad + DonutSize + 10f;
-    private const float LegendRowHeight = 16f;
+    // Four platforms at this height is exactly the ring's square, so a full legend lines up with it.
+    private const float LegendRowHeight = 15f;
     private const float DotSize = 8f;
     // Right side of the title row: the status word right-aligned in a fixed column, its dot just left of
     // it, and the title given everything up to that.
@@ -112,11 +117,19 @@ public sealed class DirectoryWidgetPreset : HomeWidgetPreset
             new float2(-StatusWidth, 0f), float2.Zero);
 
         // Everything under the title hangs off one slot, so collapsing the card is a single SetActive.
-        var body = Row(root, "Body", BodyTop, BodyHeight, 0f, 0f);
+        // It stretches between the title and the card's floor rather than carrying a fixed height: the
+        // height it used to assume was taller than the card the grid gives it.
+        var body = SettingsUI.Child(root, "Body", float2.Zero, new float2(1f, 1f),
+            new float2(0f, BodyBottom), new float2(0f, -BodyTop));
         _body = body;
 
-        var donut = SettingsUI.Child(body, "Donut", new float2(0f, 1f), new float2(0f, 1f),
-            new float2(Pad, -DonutSize), new float2(Pad + DonutSize, 0f));
+        // The ring band is everything above the status lines. The ring is a fixed square centred in it
+        // with the legend beside it, so a card with a row more or less moves the band, not the ring.
+        var ringBand = SettingsUI.Child(body, "Ring", float2.Zero, new float2(1f, 1f),
+            new float2(0f, StatusBandHeight + StatusBandGap), float2.Zero);
+
+        var donut = SettingsUI.Child(ringBand, "Donut", new float2(0f, 0.5f), new float2(0f, 0.5f),
+            new float2(Pad, -DonutSize * 0.5f), new float2(Pad + DonutSize, DonutSize * 0.5f));
         for (int i = 0; i < PlatformCount; i++)
         {
             var sliceSlot = SettingsUI.Child(donut, "Slice" + i, float2.Zero, new float2(1f, 1f),
@@ -125,7 +138,7 @@ public sealed class DirectoryWidgetPreset : HomeWidgetPreset
             arc.InnerRadius.Value = InnerRadius;
             arc.OuterRadius.Value = OuterRadius;
             arc.Tint.Value = PlatformColor(i);
-            // Flat colour: an outline on a 13 unit band would be most of the band.
+            // Flat colour: an outline on a 10 unit band would be most of the band.
             arc.OutlineColor.Value = color.Transparent;
             arc.OutlineThickness.Value = 0f;
             arc.ArcLength.Value = 0f;
@@ -137,8 +150,8 @@ public sealed class DirectoryWidgetPreset : HomeWidgetPreset
             TextHorizontalAlignment.Center, float2.Zero, new float2(1f, 1f),
             float2.Zero, float2.Zero, BoldFont);
 
-        var legend = SettingsUI.Child(body, "Legend", new float2(0f, 1f), new float2(1f, 1f),
-            new float2(LegendLeft, -DonutSize), new float2(-Pad, 0f));
+        var legend = SettingsUI.Child(ringBand, "Legend", new float2(0f, 0.5f), new float2(1f, 0.5f),
+            new float2(LegendLeft, -DonutSize * 0.5f), new float2(-Pad, DonutSize * 0.5f));
         for (int i = 0; i < PlatformCount; i++)
         {
             var rowSlot = Row(legend, "Row" + i, i * LegendRowHeight, LegendRowHeight, 0f, 0f);
@@ -159,12 +172,12 @@ public sealed class DirectoryWidgetPreset : HomeWidgetPreset
             SetActive(rowSlot, false);
         }
 
-        _sessions = Label(Row(body, "Sessions", DonutSize, LineHeight, Pad, Pad), "Text", string.Empty,
-            DashTheme.FontSmall, DashTheme.TextDim, TextHorizontalAlignment.Left,
+        _sessions = Label(StatusLine(body, "Sessions", LineHeight), "Text", string.Empty,
+            DashTheme.FontSmall, DashTheme.TextMuted, TextHorizontalAlignment.Left,
             float2.Zero, new float2(1f, 1f), float2.Zero, float2.Zero);
 
-        _ping = Label(Row(body, "Ping", DonutSize + LineHeight, LineHeight, Pad, Pad), "Text", string.Empty,
-            DashTheme.FontSmall, DashTheme.TextDim, TextHorizontalAlignment.Left,
+        _ping = Label(StatusLine(body, "Ping", 0f), "Text", string.Empty,
+            DashTheme.FontSmall, DashTheme.TextMuted, TextHorizontalAlignment.Left,
             float2.Zero, new float2(1f, 1f), float2.Zero, float2.Zero);
 
         Poll();
@@ -317,6 +330,12 @@ public sealed class DirectoryWidgetPreset : HomeWidgetPreset
         changed |= SetLine(_ping, PingLine());
         return changed;
     }
+
+    // A status line measured UP from the bottom of the body. Row() measures down from the top, which put
+    // the last line wherever the ring happened to end and ran it off the card's bottom edge. -xlinka
+    private static Slot StatusLine(Slot parent, string name, float bottom)
+        => SettingsUI.Child(parent, name, float2.Zero, new float2(1f, 0f),
+            new float2(Pad, bottom), new float2(-Pad, bottom + LineHeight));
 
     private static bool SetLine(Text? text, string value)
     {

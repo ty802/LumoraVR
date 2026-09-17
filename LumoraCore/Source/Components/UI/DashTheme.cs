@@ -21,11 +21,26 @@ public static class DashTheme
     // hated. Consumers get linear values, which is also what luminance math wants. -xlinka
     private static color S(float r, float g, float b, float a = 1f) => new color(r, g, b, a).ToLinear();
 
+    // Mesh materials take their tint as sRGB and linearise it themselves, so a theme colour (stored
+    // linear) has to go back to sRGB first or it is linearised twice and comes out near black. -xlinka
+    public static colorHDR MeshTint(in color linear)
+        => new colorHDR(ToSrgb(linear.r), ToSrgb(linear.g), ToSrgb(linear.b), linear.a);
+
+    private static float ToSrgb(float c)
+    {
+        if (c <= 0f) return 0f;
+        if (c >= 1f) return 1f;
+        return c <= 0.0031308f ? c * 12.92f : 1.055f * MathF.Pow(c, 1f / 2.4f) - 0.055f;
+    }
+
     // Ground. Backdrop is the dash body behind everything; Panel is a screen's own background;
     // Surface is a card or row sitting on a panel; Field is a sunken well (inputs, image slots).
     public static readonly color Backdrop = S(0.075f, 0.071f, 0.110f, 0.97f);
     public static readonly color Panel = S(0.110f, 0.104f, 0.157f, 1f);
     public static readonly color Surface = S(0.153f, 0.145f, 0.216f, 1f);
+    // A canvas root over a glass bezel: enough panel colour to ground the cards, enough gap to
+    // let the frosted world behind it read through.
+    public static readonly color GlassBackdrop = new color(Panel.r, Panel.g, Panel.b, 0.42f);
     public static readonly color SurfaceHover = S(0.196f, 0.186f, 0.275f, 1f);
     public static readonly color SurfacePressed = S(0.235f, 0.224f, 0.325f, 1f);
     public static readonly color Field = S(0.086f, 0.082f, 0.125f, 1f);
@@ -55,6 +70,18 @@ public static class DashTheme
     public static readonly color PositiveHover = S(0.325f, 0.878f, 0.612f, 1f);
     public static readonly color Warning = S(0.961f, 0.710f, 0.290f, 1f);
     public static readonly color Negative = S(0.941f, 0.333f, 0.420f, 1f);
+
+    // Level meters. The bed is Positive taken most of the way down to the ground so a bar at rest still
+    // says which colour it moves in, and the peak marker is a step above the fill so it stays readable
+    // sitting on top of it. -xlinka
+    public static readonly color MeterTrack = S(0.055f, 0.176f, 0.125f, 1f);
+    public static readonly color MeterPeak = S(0.596f, 0.961f, 0.749f, 1f);
+
+    // Icon tiles on the home cards: one hue per kind of thing, so a column reads by colour before it
+    // reads by word, the way the reference's home page does.
+    public static readonly color IconBlue = S(0.290f, 0.520f, 0.985f, 1f);
+    public static readonly color IconTeal = S(0.145f, 0.785f, 0.745f, 1f);
+    public static readonly color IconPink = S(0.965f, 0.330f, 0.600f, 1f);
     public static readonly color NegativeHover = S(0.965f, 0.420f, 0.498f, 1f);
 
     // Platform identity, used where users are counted by the machine they are on. Blue/yellow/green read

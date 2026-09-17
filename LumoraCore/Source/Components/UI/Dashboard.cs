@@ -65,15 +65,17 @@ public class Dashboard : UIComponent
     private Slot? _screenHostSlot;
     private WidgetGrid? _widgetGrid;
 
-    // Header strip: the widget grid starts past the title, sits inset from the strip's top and bottom, and
-    // the two status widgets are three cells wide each (room for a readout and its graph).
-    private const float HeaderWidgetsStart = 440f;
+    // Header strip: the widget grid runs the full strip, inset the same amount on both sides, and the
+    // two status widgets are three cells wide each (room for a readout and its graph).
+    private const float HeaderWidgetsStart = StatusSide;
     private const float HeaderWidgetsInset = 10f;
     private const float HeaderSpacing = 4f;
     private const int HeaderWidgetWidth = 3;
     // Cells for the Leave World card on the strip: room for its label and its "You are home" note.
     private const int HeaderCardWidth = 6;
-    private Text? _title;
+    // Share of the strip the voice widget takes. Taken as a fraction rather than a cell count because
+    // the column total moves with the dash width, and voice wants a fixed proportion of the bar. -xlinka
+    private const float VoiceStripShare = 0.44f;
     private DashboardScreen? _currentScreen;
 
     public IReadOnlyList<DashboardScreen> Screens => _screens;
@@ -137,7 +139,8 @@ public class Dashboard : UIComponent
         ApplyRootSize();
     }
 
-    public T AddScreen<T>(string label, color? activeColor = null) where T : DashboardScreen, new()
+    // showInNav false keeps the screen reachable (a card can switch to it) without a tab of its own.
+    public T AddScreen<T>(string label, color? activeColor = null, bool showInNav = true) where T : DashboardScreen, new()
     {
         EnsureBuilt();
 
@@ -147,18 +150,19 @@ public class Dashboard : UIComponent
         screen.Label.Value = label;
         if (activeColor.HasValue)
             screen.ActiveColor.Value = activeColor.Value;
-        RegisterScreen(screen);
+        RegisterScreen(screen, showInNav);
         return screen;
     }
 
-    public void RegisterScreen(DashboardScreen screen)
+    public void RegisterScreen(DashboardScreen screen, bool showInNav = true)
     {
         EnsureBuilt();
 
-        if (!_navTabs.ContainsKey(screen))
+        if (!_screens.Contains(screen))
         {
             _screens.Add(screen);
-            CreateScreenButton(screen);
+            if (showInNav)
+                CreateScreenButton(screen);
         }
 
         screen.HideScreen();
@@ -177,8 +181,6 @@ public class Dashboard : UIComponent
         _currentScreen?.HideScreen();
         _currentScreen = screen;
         _currentScreen.ShowScreen();
-        if (_title != null)
-            _title.Content.Value = screen.Label.Value;
         RefreshNavStyles();
         ScreenChanged?.Invoke(_currentScreen);
     }
@@ -225,41 +227,19 @@ public class Dashboard : UIComponent
         rect.AnchorMax.Value = new float2(1f, 1f);
         rect.OffsetMin.Value = new float2(Outer, -(Outer + HeaderHeight.Value));
         rect.OffsetMax.Value = new float2(-Outer, -Outer);
-        // A bar with an edge. Floating the title and the status widgets straight on the ground left the
-        // top of the dash with no visible bounds, which reads as unfinished and is harder to aim at.
+        // A bar with an edge. Floating the status widgets straight on the ground left the top of the
+        // dash with no visible bounds, which reads as unfinished and is harder to aim at.
         AddRoundedPanel(_headerSlot, DashTheme.Panel, DashTheme.OutlineStrong, DashTheme.RadiusPanel);
 
-        BuildTitle(_headerSlot);
         BuildWidgets();
-    }
-
-    private void BuildTitle(Slot headerSlot)
-    {
-        var box = headerSlot.AddSlot("TitleBox");
-        var rect = box.AttachComponent<RectTransform>();
-        rect.AnchorMin.Value = new float2(0f, 0f);
-        rect.AnchorMax.Value = new float2(0f, 1f);
-        rect.OffsetMin.Value = new float2(DashTheme.Inset, 0f);
-        rect.OffsetMax.Value = new float2(420f, 0f);
-
-        var builder = new UIBuilder(box);
-        builder.Font(FontBold.Target ?? Font.Target);
-        _title = builder.Text(Title.Value, DashTheme.FontTitle, DashTheme.Text);
-        _title.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
-        _title.VerticalAlignment.Value = TextVerticalAlignment.Middle;
-        var titleRect = _title.RectTransform!;
-        titleRect.AnchorMin.Value = float2.Zero;
-        titleRect.AnchorMax.Value = float2.One;
-        titleRect.OffsetMin.Value = float2.Zero;
-        titleRect.OffsetMax.Value = float2.Zero;
     }
 
     private void BuildWidgets()
     {
-        // Full-width top-strip grid after the title: one row of square cells the height of the strip, as
-        // many as fit its width, so the header is the same kind of grid as Home and a widget can move
-        // between the two. A fixed count, not a derived one: the cells stretch with the width so the
-        // layout stays valid at any aspect. The status widgets sit at the rightmost columns. -xlinka
+        // Full-width top-strip grid: one row of square cells the height of the strip, as many as fit
+        // its width, so the header is the same kind of grid as Home and a widget can move between the
+        // two. A fixed count, not a derived one: the cells stretch with the width so the layout stays
+        // valid at any aspect. The status widgets sit at the rightmost columns. -xlinka
         var widgetsSlot = _headerSlot!.AddSlot("Widgets");
         var rect = widgetsSlot.AttachComponent<RectTransform>();
         rect.AnchorMin.Value = new float2(0f, 0f);
@@ -280,11 +260,21 @@ public class Dashboard : UIComponent
         _widgetGrid.Padding.Value = float2.Zero;
         _widgetGrid.PlacedStyler = StyleDroppedWidget;
 
-        AddWidget<FpsWidgetPreset>(widgetsSlot, "FpsWidget", columns - 2 * HeaderWidgetWidth);
-        AddWidget<ClockWidgetPreset>(widgetsSlot, "ClockWidget", columns - HeaderWidgetWidth);
-        // Leave World lives up here, left of the readouts: it is the one action wanted from every
-        // screen, and Home had it buried in a column of cards.
-        AddHeaderCard<LeaveWorldWidgetPreset>(widgetsSlot, "LeaveWorld", columns - 2 * HeaderWidgetWidth - HeaderCardWidth, HeaderCardWidth);
+        // Strip order, left to right: voice, FPS, clock, Leave World. Leave World is placed from the
+        // RIGHT end and the readouts stack back from it, so the exit sits in the corner every screen
+        // shares and the two pills never move relative to it. -xlinka
+        int leaveX = columns - HeaderCardWidth;
+        int clockX = leaveX - HeaderWidgetWidth;
+        int fpsX = clockX - HeaderWidgetWidth;
+
+        AddWidget<FpsWidgetPreset>(widgetsSlot, "FpsWidget", fpsX);
+        AddWidget<ClockWidgetPreset>(widgetsSlot, "ClockWidget", clockX);
+        AddHeaderCard<LeaveWorldWidgetPreset>(widgetsSlot, "LeaveWorld", leaveX, HeaderCardWidth);
+        // Voice at the far left of the strip, at its share of the bar, clipped to whatever is left
+        // before the FPS pill.
+        int voiceWidth = System.Math.Min((int)MathF.Round(columns * VoiceStripShare), fpsX - 1);
+        if (voiceWidth >= 5)
+            AddHeaderCard<VoiceWidgetPreset>(widgetsSlot, "Voice", 0, voiceWidth);
     }
 
     // A Home-style card on the header strip. Unlike the text pills above it brings its own chrome and

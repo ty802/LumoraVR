@@ -8,12 +8,8 @@ using Lumora.Core.Assets;
 
 namespace Lumora.Core.Components.Assets;
 
-/// <summary>
-/// Provides a <see cref="FontSet"/> assembled from a primary font plus fallbacks. Each font file
-/// is requested from the <see cref="AssetManager"/> as a shared, dedup'd <see cref="FontAsset"/>;
-/// this component aggregates the loaded fonts into the set it exposes - handling both per-font
-/// loading and the primary/fallback chain in one component.
-/// </summary>
+// A FontSet assembled from a primary font plus fallbacks. Each file is requested from the AssetManager
+// as a shared, dedup'd FontAsset; this aggregates the loaded ones into the set it exposes. -xlinka
 [ComponentCategory("Assets")]
 public sealed class FontProvider : AssetProvider<FontSet>, IAssetRequester
 {
@@ -113,6 +109,9 @@ public sealed class FontProvider : AssetProvider<FontSet>, IAssetRequester
 
     private void RebuildFontSet()
     {
+        // Every font's load completes on its own thread, so two of them can rebuild at once. Build AND
+        // apply under the lock: with the apply outside it the slower thread could publish the older
+        // membership last and the set would sit one font short until something else poked it. -xlinka
         var fonts = new List<FontAsset>();
         lock (_lock)
         {
@@ -124,9 +123,10 @@ public sealed class FontProvider : AssetProvider<FontSet>, IAssetRequester
                     fonts.Add(font);
                 }
             }
+
+            _fontSet.SetFonts(fonts);
         }
 
-        _fontSet.SetFonts(fonts);
         if (_fontSet.IsValid)
         {
             AssetCreated();

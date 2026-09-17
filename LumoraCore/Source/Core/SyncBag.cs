@@ -48,13 +48,27 @@ public class SyncBag<T> : ConflictingSyncElement, IEnumerable<T>, ISyncMemberCop
         if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionAdd, DataModelPermissionSurface.Bag, key: item))
             return;
         if (!BeginModification()) return;
-        _items.Add(item);
-        (_pendingOps ??= new List<BagOp>()).Add(new BagOp { Type = OpAdd, Value = item });
-        InvalidateSyncElement();
-        BlockModification();
-        OnChanged?.Invoke(this);
-        UnblockModification();
-        EndModification();
+        // OnChanged is component code and can throw; unwound by hand that throw left the bag blocked and
+        // one level deep, and refused every write to it afterwards. -xlinka
+        try
+        {
+            _items.Add(item);
+            (_pendingOps ??= new List<BagOp>()).Add(new BagOp { Type = OpAdd, Value = item });
+            InvalidateSyncElement();
+            BlockModification();
+            try
+            {
+                OnChanged?.Invoke(this);
+            }
+            finally
+            {
+                UnblockModification();
+            }
+        }
+        finally
+        {
+            EndModification();
+        }
     }
 
     public bool Remove(T item)
@@ -64,13 +78,25 @@ public class SyncBag<T> : ConflictingSyncElement, IEnumerable<T>, ISyncMemberCop
         if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionRemove, DataModelPermissionSurface.Bag, index: idx, key: item))
             return false;
         if (!BeginModification()) return false;
-        _items.RemoveAt(idx);
-        (_pendingOps ??= new List<BagOp>()).Add(new BagOp { Type = OpRemove, Value = item });
-        InvalidateSyncElement();
-        BlockModification();
-        OnChanged?.Invoke(this);
-        UnblockModification();
-        EndModification();
+        try
+        {
+            _items.RemoveAt(idx);
+            (_pendingOps ??= new List<BagOp>()).Add(new BagOp { Type = OpRemove, Value = item });
+            InvalidateSyncElement();
+            BlockModification();
+            try
+            {
+                OnChanged?.Invoke(this);
+            }
+            finally
+            {
+                UnblockModification();
+            }
+        }
+        finally
+        {
+            EndModification();
+        }
         return true;
     }
 
@@ -86,14 +112,26 @@ public class SyncBag<T> : ConflictingSyncElement, IEnumerable<T>, ISyncMemberCop
         if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionClear, DataModelPermissionSurface.Bag))
             return;
         if (!BeginModification()) return;
-        _items.Clear();
-        _pendingOps?.Clear();
-        (_pendingOps ??= new List<BagOp>()).Add(new BagOp { Type = OpClear });
-        InvalidateSyncElement();
-        BlockModification();
-        OnChanged?.Invoke(this);
-        UnblockModification();
-        EndModification();
+        try
+        {
+            _items.Clear();
+            _pendingOps?.Clear();
+            (_pendingOps ??= new List<BagOp>()).Add(new BagOp { Type = OpClear });
+            InvalidateSyncElement();
+            BlockModification();
+            try
+            {
+                OnChanged?.Invoke(this);
+            }
+            finally
+            {
+                UnblockModification();
+            }
+        }
+        finally
+        {
+            EndModification();
+        }
     }
 
     // PERSISTENCE - a DataTreeList of the entries (value types via the coder). Without this the base
@@ -141,8 +179,14 @@ public class SyncBag<T> : ConflictingSyncElement, IEnumerable<T>, ISyncMemberCop
         for (int i = 0; i < count; i++)
             _items.Add(SyncCoder.Decode<T>(reader));
         BlockModification();
-        OnChanged?.Invoke(this);
-        UnblockModification();
+        try
+        {
+            OnChanged?.Invoke(this);
+        }
+        finally
+        {
+            UnblockModification();
+        }
     }
 
     protected override void InternalEncodeDelta(BinaryWriter writer, BinaryMessageBatch outboundMessage)
@@ -196,8 +240,14 @@ public class SyncBag<T> : ConflictingSyncElement, IEnumerable<T>, ISyncMemberCop
         if (changed)
         {
             BlockModification();
-            OnChanged?.Invoke(this);
-            UnblockModification();
+            try
+            {
+                OnChanged?.Invoke(this);
+            }
+            finally
+            {
+                UnblockModification();
+            }
         }
     }
 

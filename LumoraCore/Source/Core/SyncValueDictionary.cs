@@ -64,14 +64,28 @@ public class SyncValueDictionary<TKey, TValue> : ConflictingSyncElement, IEnumer
         if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionAdd, DataModelPermissionSurface.Dictionary, key: key))
             return;
         if (!BeginModification()) return;
-        _dict.Add(key, value);
-        (_pendingOps ??= new List<DictOp>()).Add(new DictOp { Type = OpSet, Key = key, Value = value });
-        InvalidateSyncElement();
-        BlockModification();
-        OnKeyChanged?.Invoke(key, value);
-        OnChanged?.Invoke(this);
-        UnblockModification();
-        EndModification();
+        // The listeners are component code and can throw; unwound by hand that throw left the dictionary
+        // blocked and one level deep, and refused every write to it afterwards. -xlinka
+        try
+        {
+            _dict.Add(key, value);
+            (_pendingOps ??= new List<DictOp>()).Add(new DictOp { Type = OpSet, Key = key, Value = value });
+            InvalidateSyncElement();
+            BlockModification();
+            try
+            {
+                OnKeyChanged?.Invoke(key, value);
+                OnChanged?.Invoke(this);
+            }
+            finally
+            {
+                UnblockModification();
+            }
+        }
+        finally
+        {
+            EndModification();
+        }
     }
 
     public bool TryAdd(TKey key, TValue value)
@@ -87,14 +101,26 @@ public class SyncValueDictionary<TKey, TValue> : ConflictingSyncElement, IEnumer
         if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionRemove, DataModelPermissionSurface.Dictionary, key: key))
             return false;
         if (!BeginModification()) return false;
-        _dict.Remove(key);
-        (_pendingOps ??= new List<DictOp>()).Add(new DictOp { Type = OpRemove, Key = key });
-        InvalidateSyncElement();
-        BlockModification();
-        OnKeyRemoved?.Invoke(key);
-        OnChanged?.Invoke(this);
-        UnblockModification();
-        EndModification();
+        try
+        {
+            _dict.Remove(key);
+            (_pendingOps ??= new List<DictOp>()).Add(new DictOp { Type = OpRemove, Key = key });
+            InvalidateSyncElement();
+            BlockModification();
+            try
+            {
+                OnKeyRemoved?.Invoke(key);
+                OnChanged?.Invoke(this);
+            }
+            finally
+            {
+                UnblockModification();
+            }
+        }
+        finally
+        {
+            EndModification();
+        }
         return true;
     }
 
@@ -163,14 +189,26 @@ public class SyncValueDictionary<TKey, TValue> : ConflictingSyncElement, IEnumer
         if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionClear, DataModelPermissionSurface.Dictionary))
             return;
         if (!BeginModification()) return;
-        _dict.Clear();
-        _pendingOps?.Clear();
-        (_pendingOps ??= new List<DictOp>()).Add(new DictOp { Type = OpClear });
-        InvalidateSyncElement();
-        BlockModification();
-        OnChanged?.Invoke(this);
-        UnblockModification();
-        EndModification();
+        try
+        {
+            _dict.Clear();
+            _pendingOps?.Clear();
+            (_pendingOps ??= new List<DictOp>()).Add(new DictOp { Type = OpClear });
+            InvalidateSyncElement();
+            BlockModification();
+            try
+            {
+                OnChanged?.Invoke(this);
+            }
+            finally
+            {
+                UnblockModification();
+            }
+        }
+        finally
+        {
+            EndModification();
+        }
     }
 
     // Entries are raw key/value pairs with no sync member of their own, so the generic duplication walk
@@ -190,14 +228,26 @@ public class SyncValueDictionary<TKey, TValue> : ConflictingSyncElement, IEnumer
         if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | action, DataModelPermissionSurface.Dictionary, key: key))
             return;
         if (!BeginModification()) return;
-        _dict[key] = value;
-        (_pendingOps ??= new List<DictOp>()).Add(new DictOp { Type = OpSet, Key = key, Value = value });
-        InvalidateSyncElement();
-        BlockModification();
-        OnKeyChanged?.Invoke(key, value);
-        OnChanged?.Invoke(this);
-        UnblockModification();
-        EndModification();
+        try
+        {
+            _dict[key] = value;
+            (_pendingOps ??= new List<DictOp>()).Add(new DictOp { Type = OpSet, Key = key, Value = value });
+            InvalidateSyncElement();
+            BlockModification();
+            try
+            {
+                OnKeyChanged?.Invoke(key, value);
+                OnChanged?.Invoke(this);
+            }
+            finally
+            {
+                UnblockModification();
+            }
+        }
+        finally
+        {
+            EndModification();
+        }
     }
 
     protected override void InternalEncodeFull(BinaryWriter writer, BinaryMessageBatch outboundMessage)
@@ -221,8 +271,14 @@ public class SyncValueDictionary<TKey, TValue> : ConflictingSyncElement, IEnumer
             _dict[key] = value;
         }
         BlockModification();
-        OnChanged?.Invoke(this);
-        UnblockModification();
+        try
+        {
+            OnChanged?.Invoke(this);
+        }
+        finally
+        {
+            UnblockModification();
+        }
     }
 
     protected override void InternalEncodeDelta(BinaryWriter writer, BinaryMessageBatch outboundMessage)
@@ -270,8 +326,14 @@ public class SyncValueDictionary<TKey, TValue> : ConflictingSyncElement, IEnumer
                 var value = SyncCoder.Decode<TValue>(reader);
                 _dict[key] = value;
                 BlockModification();
-                OnKeyChanged?.Invoke(key, value);
-                UnblockModification();
+                try
+                {
+                    OnKeyChanged?.Invoke(key, value);
+                }
+                finally
+                {
+                    UnblockModification();
+                }
                 anyChanged = true;
             }
             else if (type == OpRemove)
@@ -279,8 +341,14 @@ public class SyncValueDictionary<TKey, TValue> : ConflictingSyncElement, IEnumer
                 var key = SyncCoder.Decode<TKey>(reader);
                 _dict.Remove(key);
                 BlockModification();
-                OnKeyRemoved?.Invoke(key);
-                UnblockModification();
+                try
+                {
+                    OnKeyRemoved?.Invoke(key);
+                }
+                finally
+                {
+                    UnblockModification();
+                }
                 anyChanged = true;
             }
             else if (type == OpClear)
@@ -292,8 +360,14 @@ public class SyncValueDictionary<TKey, TValue> : ConflictingSyncElement, IEnumer
         if (anyChanged)
         {
             BlockModification();
-            OnChanged?.Invoke(this);
-            UnblockModification();
+            try
+            {
+                OnChanged?.Invoke(this);
+            }
+            finally
+            {
+                UnblockModification();
+            }
         }
     }
 

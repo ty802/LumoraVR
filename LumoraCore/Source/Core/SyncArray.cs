@@ -56,11 +56,17 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>, ISyncMemberC
             if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionSet, DataModelPermissionSurface.Array, index: index))
                 return;
             if (!BeginModification()) return;
-            _items[index] = value;
-            if (!_structureChanged)
-                (_dirtyIndices ??= new HashSet<int>()).Add(index);
-            InvalidateSyncElement();
-            EndModification();
+            try
+            {
+                _items[index] = value;
+                if (!_structureChanged)
+                    (_dirtyIndices ??= new HashSet<int>()).Add(index);
+                InvalidateSyncElement();
+            }
+            finally
+            {
+                EndModification();
+            }
         }
     }
 
@@ -69,17 +75,33 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>, ISyncMemberC
         if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionAdd | DataModelPermissionAction.CollectionResize, DataModelPermissionSurface.Array, index: _count))
             return;
         if (!BeginModification()) return;
-        EnsureCapacity(_count + 1);
-        int idx = _count;
-        _items[_count++] = item;
-        _structureChanged = true;
-        _dirtyIndices?.Clear();
-        InvalidateSyncElement();
-        BlockModification();
-        ElementsAdded?.Invoke(this, idx, 1);
-        DataWritten?.Invoke(this, idx, 1);
-        UnblockModification();
-        EndModification();
+        // The listeners are component code (an inspector rebuilding rows, a material re-reading its
+        // parameters) and any of them can throw. Unwound by hand, the throw left the array blocked and
+        // one modification level deep, and every later write to it was refused for the rest of the
+        // session. -xlinka
+        try
+        {
+            EnsureCapacity(_count + 1);
+            int idx = _count;
+            _items[_count++] = item;
+            _structureChanged = true;
+            _dirtyIndices?.Clear();
+            InvalidateSyncElement();
+            BlockModification();
+            try
+            {
+                ElementsAdded?.Invoke(this, idx, 1);
+                DataWritten?.Invoke(this, idx, 1);
+            }
+            finally
+            {
+                UnblockModification();
+            }
+        }
+        finally
+        {
+            EndModification();
+        }
     }
 
     public void Append(T item) => Add(item);
@@ -89,23 +111,35 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>, ISyncMemberC
         if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionAdd | DataModelPermissionAction.CollectionResize, DataModelPermissionSurface.Array, index: _count))
             return;
         if (!BeginModification()) return;
-        int startIdx = _count;
-        foreach (var item in items)
+        try
         {
-            EnsureCapacity(_count + 1);
-            _items[_count++] = item;
+            int startIdx = _count;
+            foreach (var item in items)
+            {
+                EnsureCapacity(_count + 1);
+                _items[_count++] = item;
+            }
+            if (_count > startIdx)
+            {
+                _structureChanged = true;
+                _dirtyIndices?.Clear();
+                InvalidateSyncElement();
+                BlockModification();
+                try
+                {
+                    ElementsAdded?.Invoke(this, startIdx, _count - startIdx);
+                    DataWritten?.Invoke(this, startIdx, _count - startIdx);
+                }
+                finally
+                {
+                    UnblockModification();
+                }
+            }
         }
-        if (_count > startIdx)
+        finally
         {
-            _structureChanged = true;
-            _dirtyIndices?.Clear();
-            InvalidateSyncElement();
-            BlockModification();
-            ElementsAdded?.Invoke(this, startIdx, _count - startIdx);
-            DataWritten?.Invoke(this, startIdx, _count - startIdx);
-            UnblockModification();
+            EndModification();
         }
-        EndModification();
     }
 
     public void Insert(int index, T item)
@@ -114,18 +148,30 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>, ISyncMemberC
         if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionInsert | DataModelPermissionAction.CollectionResize, DataModelPermissionSurface.Array, index: index))
             return;
         if (!BeginModification()) return;
-        EnsureCapacity(_count + 1);
-        if (index < _count)
-            Array.Copy(_items, index, _items, index + 1, _count - index);
-        _items[index] = item;
-        _count++;
-        _structureChanged = true;
-        _dirtyIndices?.Clear();
-        InvalidateSyncElement();
-        BlockModification();
-        ElementsAdded?.Invoke(this, index, 1);
-        UnblockModification();
-        EndModification();
+        try
+        {
+            EnsureCapacity(_count + 1);
+            if (index < _count)
+                Array.Copy(_items, index, _items, index + 1, _count - index);
+            _items[index] = item;
+            _count++;
+            _structureChanged = true;
+            _dirtyIndices?.Clear();
+            InvalidateSyncElement();
+            BlockModification();
+            try
+            {
+                ElementsAdded?.Invoke(this, index, 1);
+            }
+            finally
+            {
+                UnblockModification();
+            }
+        }
+        finally
+        {
+            EndModification();
+        }
     }
 
     public void RemoveAt(int index)
@@ -134,17 +180,29 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>, ISyncMemberC
         if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionRemove | DataModelPermissionAction.CollectionResize, DataModelPermissionSurface.Array, index: index))
             return;
         if (!BeginModification()) return;
-        _count--;
-        if (index < _count)
-            Array.Copy(_items, index + 1, _items, index, _count - index);
-        _items[_count] = default!;
-        _structureChanged = true;
-        _dirtyIndices?.Clear();
-        InvalidateSyncElement();
-        BlockModification();
-        ElementsRemoved?.Invoke(this, index, 1);
-        UnblockModification();
-        EndModification();
+        try
+        {
+            _count--;
+            if (index < _count)
+                Array.Copy(_items, index + 1, _items, index, _count - index);
+            _items[_count] = default!;
+            _structureChanged = true;
+            _dirtyIndices?.Clear();
+            InvalidateSyncElement();
+            BlockModification();
+            try
+            {
+                ElementsRemoved?.Invoke(this, index, 1);
+            }
+            finally
+            {
+                UnblockModification();
+            }
+        }
+        finally
+        {
+            EndModification();
+        }
     }
 
     public bool Remove(T item)
@@ -179,16 +237,28 @@ public class SyncArray<T> : ConflictingSyncElement, IEnumerable<T>, ISyncMemberC
         if (!AuthorizeDataModelMutation(DataModelPermissionAction.Write | DataModelPermissionAction.CollectionClear | DataModelPermissionAction.CollectionResize, DataModelPermissionSurface.Array))
             return;
         if (!BeginModification()) return;
-        int old = _count;
-        Array.Clear(_items, 0, _count);
-        _count = 0;
-        _structureChanged = true;
-        _dirtyIndices?.Clear();
-        InvalidateSyncElement();
-        BlockModification();
-        ElementsRemoved?.Invoke(this, 0, old);
-        UnblockModification();
-        EndModification();
+        try
+        {
+            int old = _count;
+            Array.Clear(_items, 0, _count);
+            _count = 0;
+            _structureChanged = true;
+            _dirtyIndices?.Clear();
+            InvalidateSyncElement();
+            BlockModification();
+            try
+            {
+                ElementsRemoved?.Invoke(this, 0, old);
+            }
+            finally
+            {
+                UnblockModification();
+            }
+        }
+        finally
+        {
+            EndModification();
+        }
     }
 
     public int IndexOf(T item)

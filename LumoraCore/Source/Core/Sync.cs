@@ -110,7 +110,14 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
 
     protected virtual bool InternalSetValue(in T value, bool sync = true, bool change = true)
     {
-        if (BeginModification(throwOnError: false))
+        if (!BeginModification(throwOnError: false))
+            return false;
+
+        // A Changed handler is arbitrary component code and can throw: a text field's handler regenerates
+        // its mesh, and that walks the font set. When it did throw, the field was left blocked and one
+        // level deep forever, and every later write to it was refused as "modification blocked". The
+        // exception still propagates, the field just does not keep the wreckage. -xlinka
+        try
         {
             _value = value;
 
@@ -122,14 +129,22 @@ public abstract class SyncField<T> : ConflictingSyncElement, IField<T>
             if (change)
             {
                 BlockModification();
-                ValueChanged();
-                UnblockModification();
+                try
+                {
+                    ValueChanged();
+                }
+                finally
+                {
+                    UnblockModification();
+                }
             }
-
-            EndModification();
-            return true;
         }
-        return false;
+        finally
+        {
+            EndModification();
+        }
+
+        return true;
     }
 
     protected virtual void ValueChanged()

@@ -104,18 +104,13 @@ public class FieldDrive<T> : FieldHook<T>
         var controller = world.ReferenceController
             ?? throw new InvalidOperationException("World has no reference controller");
 
-        controller.LocalAllocationBlockBegin();
-        try
+        using (controller.LocalAllocationScope())
         {
             var drive = new FieldDrive<T>();
             drive.MarkNonPersistent();
             drive.Initialize(world, owner);
             drive.EndInitPhase();
             return drive;
-        }
-        finally
-        {
-            controller.LocalAllocationBlockEnd();
         }
     }
 }

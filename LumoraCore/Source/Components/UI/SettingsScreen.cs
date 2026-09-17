@@ -10,6 +10,7 @@ using Lumora.Core.Input;
 using Lumora.Core.Input.Actions;
 using Lumora.Core.Localization;
 using Lumora.Core.Math;
+using Lumora.Core.Media;
 
 namespace Lumora.Core.Components.UI;
 
@@ -33,6 +34,11 @@ public sealed class SettingsScreen : DashboardScreen
     private const string KindBinding = "binding";
     private const string KindLocomotion = "locomotion";
     private const string KindNavCategory = "nav";
+    private const string AudioPath = "audio";
+
+    // Gap between two audio rows' Order values. The device rows are torn out and re-added mid-page, so
+    // they need room to land between the fixed rows around them.
+    private const long AudioRowStep = 256;
 
     // One poll drives every live row on the screen: the locomotion strip, the pad status, the last
     // input readout and the binding cells. It also catches settings changed from somewhere else (a Home
@@ -52,6 +58,10 @@ public sealed class SettingsScreen : DashboardScreen
     private ListingItem? _activeItem;
     private string _activeCategory = string.Empty;
     private float _refreshAccum;
+    private readonly List<ListingToggle> _inputDeviceRows = new();
+    private readonly List<ListingToggle> _outputDeviceRows = new();
+    private ListingToggle? _inputDefaultToggle;
+    private ListingToggle? _outputDefaultToggle;
     private LocaleText _controlsStatus = "Settings.Controls.Hint".AsLocale("Click a binding to rebind it. Escape cancels.");
     private bool _localeHooked;
 
@@ -185,6 +195,7 @@ public sealed class SettingsScreen : DashboardScreen
     {
         _categories.ClearAll();
         AddCategory("general", "Settings.Category.General".AsLocale("General"));
+        AddCategory("audio", "Settings.Category.Audio".AsLocale("Audio"));
         AddCategory("graphics", "Settings.Category.Graphics".AsLocale("Graphics"));
         AddCategory("movement", "Settings.Category.Movement".AsLocale("Movement"));
         AddCategory("controls", "Settings.Category.Controls".AsLocale("Controls"));
@@ -222,6 +233,7 @@ public sealed class SettingsScreen : DashboardScreen
     {
         _entries.ClearAll();
         BuildGeneral();
+        BuildAudio();
         BuildGraphics();
         BuildMovement();
         BuildControls();
@@ -237,9 +249,288 @@ public sealed class SettingsScreen : DashboardScreen
         Slider(path, "height", "Settings.General.Height".AsLocale("Height"), SettingsCatalog.UserHeight,
             () => EngineSettings.UserHeight, v => EngineSettings.UserHeight = v, v => $"{v:0.00} m");
 
-        Header(path, "Audio", "Settings.General.Section.Audio".AsLocale("Audio"));
-        Slider(path, "volume", "Settings.General.MasterVolume".AsLocale("Master Volume"), SettingsCatalog.MasterVolume,
+        Header(path, "Video", "Settings.General.Section.Video".AsLocale("Video"));
+        // The cap a link is resolved at when the player itself asks for nothing in particular. Decode
+        // cost is pixels, and a panel on a wall gains nothing from 4k.
+        Slider(path, "videoheight", "Settings.General.VideoQuality".AsLocale("Video Quality"), SettingsCatalog.VideoMaxHeight,
+            () => EngineSettings.VideoMaxHeight, v => EngineSettings.VideoMaxHeight = (int)v, v => $"{(int)v}p");
+        // Nothing is read out of a browser until one is picked here. It buys age-gated and member-only
+        // links and costs handing the resolver a logged-in session, which is a decision to make on
+        // purpose rather than a default.
+        _entries.Add(path, ListingChoice.FromEnum<CookiesBrowser>("videocookies",
+            "Settings.General.VideoCookies".AsLocale("Video Cookies"),
+            () => EngineSettings.VideoCookiesBrowser, v => EngineSettings.VideoCookiesBrowser = v));
+    }
+
+    // Its own page, the way the reference files it: what you hear, what the microphone does before
+    // anyone hears it, and how your voice carries.
+    private void BuildAudio()
+    {
+        const string path = AudioPath;
+        Header(path, "Volume", "Settings.Audio.Section.Volume".AsLocale("Volume"));
+        // Master is the gain on the device the mixer renders into. The four below are group gains an
+        // AudioOutput folds in by what the sound is for, so a loud video does not have to be paid for by
+        // turning everything else down too.
+        Slider(path, "volume", "Settings.Audio.MasterVolume".AsLocale("Master Volume"), SettingsCatalog.MasterVolume,
             () => EngineSettings.MasterVolume, v => EngineSettings.MasterVolume = v, v => $"{v * 100f:0}%");
+        Slider(path, "sfxvolume", "Settings.Audio.SoundEffectVolume".AsLocale("Sound Effects"), SettingsCatalog.SoundEffectVolume,
+            () => EngineSettings.SoundEffectVolume, v => EngineSettings.SoundEffectVolume = v, v => $"{v * 100f:0}%");
+        Slider(path, "mediavolume", "Settings.Audio.MultimediaVolume".AsLocale("Multimedia"), SettingsCatalog.MultimediaVolume,
+            () => EngineSettings.MultimediaVolume, v => EngineSettings.MultimediaVolume = v, v => $"{v * 100f:0}%");
+        Slider(path, "voicevolume", "Settings.Audio.VoiceVolume".AsLocale("Voice"), SettingsCatalog.VoiceVolume,
+            () => EngineSettings.VoiceVolume, v => EngineSettings.VoiceVolume = v, v => $"{v * 100f:0}%");
+        Slider(path, "uivolume", "Settings.Audio.UIVolume".AsLocale("Interface"), SettingsCatalog.UIVolume,
+            () => EngineSettings.UIVolume, v => EngineSettings.UIVolume = v, v => $"{v * 100f:0}%");
+
+        // DEVICES. Two sections that read the same, one per direction: the system default is a standing
+        // choice that follows the machine, and turning it off pins a named device instead. Nothing here
+        // is offered that the platform did not list, so a machine with one microphone shows one.
+        Header(path, "InputDevice", "Settings.Audio.Section.InputDevice".AsLocale("Input Device"));
+        _inputDefaultToggle = Toggle(path, "inputdefault", "Settings.Audio.UseSystemInput".AsLocale("Use System Default"),
+            () => EngineSettings.AudioInputDevice.Length == 0,
+            v => UseSystemDevice(input: true, v),
+            "Settings.Audio.UseSystemInput.Hint".AsLocale("Follows whatever the machine is set to"));
+        BuildDeviceRows(input: true);
+
+        Header(path, "OutputDevice", "Settings.Audio.Section.OutputDevice".AsLocale("Output Device"));
+        _outputDefaultToggle = Toggle(path, "outputdefault", "Settings.Audio.UseSystemOutput".AsLocale("Use System Default"),
+            () => EngineSettings.AudioOutputDevice.Length == 0,
+            v => UseSystemDevice(input: false, v),
+            "Settings.Audio.UseSystemOutput.Hint".AsLocale("Follows whatever the machine is set to"));
+        BuildDeviceRows(input: false);
+        // Devices are enumerated once at boot, so anything plugged in since is not on either list until
+        // this runs. It re-applies the selection too: a device that came back gets picked up again.
+        _entries.Add(path, new ListingAction("reloaddevices",
+            "Settings.Audio.ReloadDevices".AsLocale("Look again for audio devices"))
+        {
+            Invoke = ReloadAudioDevices,
+            ButtonLabel = "Settings.Audio.ReloadDevicesButton".AsLocale("Reload"),
+        });
+
+        Header(path, "Input", "Settings.Audio.Section.Input".AsLocale("Microphone"));
+        // Microphone. Local to this machine: muting here stops anything being captured at all, which is
+        // a different thing from a host silencing somebody in a session.
+        Toggle(path, "micmute", "Settings.Audio.MicrophoneMuted".AsLocale("Mute Microphone"),
+            () => EngineSettings.MicrophoneMuted, v => EngineSettings.MicrophoneMuted = v,
+            "Settings.Audio.MicrophoneMuted.Hint".AsLocale("Nothing is captured or sent while this is on"));
+        Toggle(path, "voicenormalize", "Settings.Audio.VoiceNormalization".AsLocale("Normalize Voice"),
+            () => EngineSettings.VoiceNormalization, v => EngineSettings.VoiceNormalization = v,
+            "Settings.Audio.VoiceNormalization.Hint".AsLocale("Evens out a quiet or a loud microphone"));
+        Slider(path, "voicenormlevel", "Settings.Audio.NormalizationThreshold".AsLocale("Normalize Level"),
+            SettingsCatalog.NormalizationThreshold,
+            () => EngineSettings.NormalizationThreshold, v => EngineSettings.NormalizationThreshold = v,
+            v => $"{v * 100f:0}%");
+        // The gate cuts the room between words. It does not clean up noise carried over speech: that
+        // would be a denoiser and there is none here.
+        Slider(path, "gatethreshold", "Settings.Audio.NoiseGateThreshold".AsLocale("Noise Gate"),
+            SettingsCatalog.NoiseGateThreshold,
+            () => EngineSettings.NoiseGateThreshold, v => EngineSettings.NoiseGateThreshold = v,
+            v => v <= 0f ? "Off" : $"{v * 100f:0.0}%");
+        Slider(path, "gateattack", "Settings.Audio.NoiseGateAttack".AsLocale("Gate Attack"),
+            SettingsCatalog.NoiseGateAttack,
+            () => EngineSettings.NoiseGateAttack, v => EngineSettings.NoiseGateAttack = v,
+            v => $"{v * 1000f:0} ms");
+        Slider(path, "gatehold", "Settings.Audio.NoiseGateHold".AsLocale("Gate Hold"),
+            SettingsCatalog.NoiseGateHold,
+            () => EngineSettings.NoiseGateHold, v => EngineSettings.NoiseGateHold = v,
+            v => $"{v * 1000f:0} ms");
+        Slider(path, "gaterelease", "Settings.Audio.NoiseGateRelease".AsLocale("Gate Release"),
+            SettingsCatalog.NoiseGateRelease,
+            () => EngineSettings.NoiseGateRelease, v => EngineSettings.NoiseGateRelease = v,
+            v => $"{v * 1000f:0} ms");
+        Header(path, "Voice", "Settings.Audio.Section.Voice".AsLocale("Voice"));
+        // A whisper is not a separate channel, it is the same voice heard quieter by everyone outside
+        // the close range. This is the gain those listeners get, so 0 makes a whisper genuinely private.
+        Slider(path, "whisperattenuation", "Settings.Audio.WhisperAttenuation".AsLocale("Whisper Attenuation"),
+            SettingsCatalog.WhisperAttenuationVolume,
+            () => EngineSettings.WhisperAttenuationVolume, v => EngineSettings.WhisperAttenuationVolume = v,
+            v => $"{v * 100f:0}%");
+        // What an audio stream you START is encoded at. Costs upstream bandwidth per listener, which is
+        // why it is a choice and not a constant.
+        Slider(path, "streambitrate", "Settings.Audio.StreamBitrate".AsLocale("Stream Bitrate"),
+            SettingsCatalog.DefaultStreamBitrateKbps,
+            () => EngineSettings.DefaultStreamBitrateKbps, v => EngineSettings.DefaultStreamBitrateKbps = (int)v,
+            v => $"{v:0} kbps");
+
+        SpaceAudioRows();
+    }
+
+    // AUDIO DEVICES
+    //
+    // Both lists come from the platform seam and hold real hardware only: what the platform calls its
+    // "default" entry is the toggle above the list, not a device to pick. A machine with nothing on one
+    // side gets a single dead placeholder row rather than a header with nothing under it.
+
+    private static IReadOnlyList<string> AudioDevices(bool input)
+    {
+        var audio = Engine.Current?.AudioSystem;
+        if (audio == null)
+            return Array.Empty<string>();
+        return input ? audio.InputDeviceNames : audio.OutputDeviceNames;
+    }
+
+    private static string SavedDevice(bool input)
+        => input ? EngineSettings.AudioInputDevice : EngineSettings.AudioOutputDevice;
+
+    private static void SaveDevice(bool input, string name)
+    {
+        if (input)
+            EngineSettings.AudioInputDevice = name;
+        else
+            EngineSettings.AudioOutputDevice = name;
+    }
+
+    private static int IndexIn(IReadOnlyList<string> devices, string name)
+    {
+        if (name.Length == 0)
+            return -1;
+        for (int i = 0; i < devices.Count; i++)
+        {
+            if (string.Equals(devices[i], name, StringComparison.Ordinal))
+                return i;
+        }
+        return -1;
+    }
+
+    // A saved device the machine no longer has keeps a row at the end of its section. The preference is
+    // deliberately not cleared when a headset is unplugged - plug it back in, hit reload and it is used
+    // again - so the section has to be able to say what it is waiting for. -xlinka
+    private static bool IsSavedDeviceMissing(bool input)
+    {
+        string saved = SavedDevice(input);
+        return saved.Length > 0 && IndexIn(AudioDevices(input), saved) < 0;
+    }
+
+    // One row per device, radio semantics on a plain toggle: a row reads whether the setting names its
+    // device, and only a write of true does anything. A segmented strip could not hold names like
+    // "Microphone (2- Rode NT-USB)" without smearing the pills over each other. -xlinka
+    private void BuildDeviceRows(bool input)
+    {
+        var rows = input ? _inputDeviceRows : _outputDeviceRows;
+        for (int i = 0; i < rows.Count; i++)
+            _entries.Remove(AudioPath, rows[i].Key);
+        rows.Clear();
+
+        // Re-added rows land at the end of the path, so placement rides Order off the section's own
+        // toggle rather than insertion order. SpaceAudioRows leaves a full step of room below it.
+        long order = (input ? _inputDefaultToggle?.Order : _outputDefaultToggle?.Order) ?? 0L;
+        string prefix = input ? "indev." : "outdev.";
+
+        var devices = AudioDevices(input);
+        for (int i = 0; i < devices.Count; i++)
+            rows.Add(AddDeviceRow(prefix + i, devices[i], devices[i], input, ++order));
+
+        if (IsSavedDeviceMissing(input))
+        {
+            string saved = SavedDevice(input);
+            rows.Add(AddDeviceRow(prefix + "saved",
+                "Settings.Audio.DeviceUnplugged".AsLocale("{0} (not here)", saved), saved, input, ++order));
+        }
+
+        if (rows.Count == 0)
+        {
+            // Nothing to choose from. One dead row rather than a header with a hole under it.
+            rows.Add(_entries.Add(AudioPath, new ListingToggle(prefix + "none",
+                "Settings.Audio.SystemDefault".AsLocale("System default"))
+            {
+                Read = () => false,
+                Write = _ => { },
+                DetailText = "Settings.Audio.NoDevices".AsLocale("No devices found"),
+                Interactable = false,
+                Order = ++order,
+            }));
+        }
+    }
+
+    private ListingToggle AddDeviceRow(string key, LocaleText label, string device, bool input, long order)
+        => _entries.Add(AudioPath, new ListingToggle(key, label)
+        {
+            Read = () => string.Equals(SavedDevice(input), device, StringComparison.Ordinal),
+            // Clicking the chosen device again is ignored: unticking it would leave the section holding
+            // nothing while the system-default toggle above it still reads off.
+            Write = picked =>
+            {
+                if (picked)
+                    SelectDevice(input, device);
+            },
+            // Marks this as a real device rather than the placeholder, which never becomes interactive.
+            Tag = device,
+            Order = order,
+            // Set here as well as on the refresh tick, or a rebuilt row is live for up to one interval
+            // while the system default is still on.
+            Interactable = SavedDevice(input).Length > 0,
+        });
+
+    // Picking a device is also how the system default goes off: the setting holds a name or it holds
+    // nothing, and there is no third state to keep in step.
+    private void SelectDevice(bool input, string device)
+    {
+        if (device.Length == 0)
+            return;
+        SaveDevice(input, device);
+        // The unplugged row belongs to whatever was saved a moment ago, so the section is rebuilt rather
+        // than rebound.
+        BuildDeviceRows(input);
+        _entryView?.RefreshValues();
+    }
+
+    private void UseSystemDevice(bool input, bool useSystem)
+    {
+        if (useSystem)
+        {
+            SaveDevice(input, string.Empty);
+            BuildDeviceRows(input);
+            _entryView?.RefreshValues();
+            return;
+        }
+
+        // Turning it off has to land on a device the machine actually has, or the toggle springs back
+        // on the next tick and nothing explains why.
+        var audio = Engine.Current?.AudioSystem;
+        string name = (input ? audio?.CurrentInputDeviceName : audio?.CurrentOutputDeviceName) ?? string.Empty;
+        if (name.Length == 0)
+        {
+            var devices = AudioDevices(input);
+            if (devices.Count == 0)
+                return;
+            name = devices[0];
+        }
+
+        SelectDevice(input, name);
+    }
+
+    private void ReloadAudioDevices()
+    {
+        Engine.Current?.AudioSystem?.RefreshDevices();
+        BuildDeviceRows(input: true);
+        BuildDeviceRows(input: false);
+        _entryView?.RefreshValues();
+        MarkDirty();
+    }
+
+    // Audio rows are placed by Order rather than by when they were added, because the device rows get
+    // torn out and re-added in the middle of the page. One pass over the freshly built list hands every
+    // row a slot with room left between it and the next. -xlinka
+    private void SpaceAudioRows()
+    {
+        var items = _entries.ItemsAt(AudioPath);
+        for (int i = 0; i < items.Count; i++)
+            items[i].Order = (i + 1) * AudioRowStep;
+    }
+
+    // A device row you can click while the system default is on would be a picker that changes
+    // nothing. Flipped here rather than by rebuilding the rows, same as the turn-mode pair.
+    private void ApplyAudioDeviceGating()
+    {
+        ApplyDeviceGating(_inputDeviceRows, input: true);
+        ApplyDeviceGating(_outputDeviceRows, input: false);
+    }
+
+    private static void ApplyDeviceGating(List<ListingToggle> rows, bool input)
+    {
+        bool live = SavedDevice(input).Length > 0;
+        for (int i = 0; i < rows.Count; i++)
+            rows[i].Interactable = live && rows[i].Tag is string;
     }
 
     private void BuildGraphics()
@@ -572,6 +863,8 @@ public sealed class SettingsScreen : DashboardScreen
         base.OnShow();
         // A pad plugged in, a rebind made elsewhere, or an avatar that finished spawning while this
         // screen sat closed.
+        BuildDeviceRows(input: true);
+        BuildDeviceRows(input: false);
         _entryView?.RefreshValues();
         MarkDirty();
     }
@@ -596,6 +889,7 @@ public sealed class SettingsScreen : DashboardScreen
         _refreshAccum = 0f;
 
         ApplyTurnModeGating();
+        ApplyAudioDeviceGating();
         _entryView?.RefreshValues();
     }
 

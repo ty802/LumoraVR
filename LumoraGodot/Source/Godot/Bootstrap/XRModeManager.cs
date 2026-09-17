@@ -45,6 +45,17 @@ public partial class XRModeManager : Node
     private bool _xrAvailable = false;
     private bool _spectatorMirrorLogShown = false;
 
+    // Desktop VR mirror. The desktop camera follows the headset pose, which is a second render of the
+    // world. An XR viewport's texture cannot be drawn straight into the window (it is a two-layer
+    // array; the canvas shows black), so the second render stays, trimmed to what the window needs,
+    // and the desktop settings come back the moment VR ends. -xlinka
+    private bool _cheapMirrorApplied;
+    private Viewport.Scaling3DModeEnum _savedScalingMode;
+    private float _savedScalingScale;
+    private Viewport.Msaa _savedMsaa;
+    private Viewport.ScreenSpaceAAEnum _savedScreenSpaceAA;
+    private bool _savedTaa;
+
     private const ulong SwitchCooldownMsec = 500;
 
     // REFERENCES (provided at Initialize)
@@ -118,6 +129,9 @@ public partial class XRModeManager : Node
             SetupDesktopInput();
 
         _initialized = true;
+        // Settings may have loaded before XR detection completed. Notify on the initial mode too,
+        // so desktop frame caps and vsync are released on a VR boot, not only after an F8 switch.
+        ModeChanged?.Invoke(startingInVR);
 
         var keyHint = OS.HasFeature("editor") ? "Shift+F8 (editor)" : "F8";
         LumoraLogger.Log($"XRModeManager: Initialized. Mode={( startingInVR ? "VR" : "Desktop" )}");
@@ -483,13 +497,17 @@ public partial class XRModeManager : Node
             else
                 LumoraLogger.Warn("XRModeManager: Cannot make XR camera current - %XRCamera3D is missing.");
 
-            if (!camerasShareViewport && _mainCamera != null && GodotObject.IsInstanceValid(_mainCamera))
-                _mainCamera.MakeCurrent();
-
-            SyncDesktopMirrorCamera();
+            if (!camerasShareViewport)
+            {
+                if (_mainCamera != null && GodotObject.IsInstanceValid(_mainCamera))
+                    _mainCamera.MakeCurrent();
+                SetDesktopMirrorQuality(true);
+                SyncDesktopMirrorCamera();
+            }
         }
         else
         {
+            SetDesktopMirrorQuality(false);
             _spectatorMirrorLogShown = false;
             _vrDriver?.SetModeActive(false);
 
@@ -544,6 +562,38 @@ public partial class XRModeManager : Node
             return false;
 
         return _mainCamera.GetViewport() == _xrCamera.GetViewport();
+    }
+
+    // Preserve desktop preferences across mode changes; XR and its mirror own quality while active.
+    private void SetDesktopMirrorQuality(bool on)
+    {
+        var root = GetViewport();
+        if (root == null)
+            return;
+
+        if (on)
+        {
+            if (_cheapMirrorApplied)
+                return;
+            _savedScalingMode = root.Scaling3DMode;
+            _savedScalingScale = root.Scaling3DScale;
+            _savedMsaa = root.Msaa3D;
+            _savedScreenSpaceAA = root.ScreenSpaceAA;
+            _savedTaa = root.UseTaa;
+            ViewportQuality.ApplyDesktopMirrorDefaults(root);
+            _cheapMirrorApplied = true;
+            LumoraLogger.Log("XRModeManager: desktop mirror at full resolution with 4x MSAA, while VR is active.");
+            return;
+        }
+
+        if (!_cheapMirrorApplied)
+            return;
+        root.Scaling3DMode = _savedScalingMode;
+        root.Scaling3DScale = _savedScalingScale;
+        root.Msaa3D = _savedMsaa;
+        root.ScreenSpaceAA = _savedScreenSpaceAA;
+        root.UseTaa = _savedTaa;
+        _cheapMirrorApplied = false;
     }
 
     private void SyncDesktopMirrorCamera()

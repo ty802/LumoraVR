@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using Lumora.Core.Media;
 
 namespace Lumora.Core;
 
@@ -64,11 +65,165 @@ public static class EngineSettings
 
     // AUDIO
 
+    // The master gain sits on the mixer's device output; the four below are group gains an AudioOutput
+    // folds into its own volume by what the sound is FOR, so turning music down does not take the voice
+    // of the person talking to you with it. -xlinka
     private static float _masterVolume = 1f;
     public static float MasterVolume
     {
         get => _masterVolume;
         set => SetValue(ref _masterVolume, SettingsCatalog.MasterVolume.Clamp(value));
+    }
+
+    private static float _soundEffectVolume = 1f;
+    public static float SoundEffectVolume
+    {
+        get => _soundEffectVolume;
+        set => SetValue(ref _soundEffectVolume, SettingsCatalog.SoundEffectVolume.Clamp(value));
+    }
+
+    private static float _multimediaVolume = 1f;
+    public static float MultimediaVolume
+    {
+        get => _multimediaVolume;
+        set => SetValue(ref _multimediaVolume, SettingsCatalog.MultimediaVolume.Clamp(value));
+    }
+
+    private static float _voiceVolume = 1f;
+    public static float VoiceVolume
+    {
+        get => _voiceVolume;
+        set => SetValue(ref _voiceVolume, SettingsCatalog.VoiceVolume.Clamp(value));
+    }
+
+    private static float _uiVolume = 1f;
+    public static float UIVolume
+    {
+        get => _uiVolume;
+        set => SetValue(ref _uiVolume, SettingsCatalog.UIVolume.Clamp(value));
+    }
+
+    // Whispering is quiet in both directions: a whisperer far enough away is attenuated by this for
+    // everyone else, and the whisperer's own world is turned down by it so the person they are leaning
+    // in to is the thing they can hear.
+    private static float _whisperAttenuationVolume = 0.5f;
+    public static float WhisperAttenuationVolume
+    {
+        get => _whisperAttenuationVolume;
+        set => SetValue(ref _whisperAttenuationVolume, SettingsCatalog.WhisperAttenuationVolume.Clamp(value));
+    }
+
+    // DEVICES
+    //
+    // Empty is "use whatever the system calls default", and that is a different setting from naming the
+    // device that is default today: the system choice follows the machine when a headset is plugged in
+    // or the desk speakers are switched off, a named one stays put and goes quiet when it is unplugged.
+    // A name the machine no longer has falls back to the system default at apply time rather than
+    // leaving the engine pointed at nothing. -xlinka
+    private static string _audioInputDevice = string.Empty;
+    public static string AudioInputDevice
+    {
+        get => _audioInputDevice;
+        set => SetValue(ref _audioInputDevice, value ?? string.Empty);
+    }
+
+    private static string _audioOutputDevice = string.Empty;
+    public static string AudioOutputDevice
+    {
+        get => _audioOutputDevice;
+        set => SetValue(ref _audioOutputDevice, value ?? string.Empty);
+    }
+
+    // Opening bitrate for an in-world audio stream, kbit/s. Voice has its own, much lower, figure: this
+    // is for streaming a device into the room, which is usually music and usually stereo.
+    private static int _defaultStreamBitrateKbps = 128;
+    public static int DefaultStreamBitrateKbps
+    {
+        get => _defaultStreamBitrateKbps;
+        set => SetValue(ref _defaultStreamBitrateKbps, SettingsCatalog.DefaultStreamBitrateKbps.ClampInt(value));
+    }
+
+    // VOICE
+    //
+    // Local only: none of this replicates, because it describes this machine's microphone and nobody
+    // else's ears. The host's own silencing lives on User.IsSilenced and is a different thing entirely.
+    //
+    // There is deliberately no noise suppression setting. Suppression means a denoiser, we have no
+    // managed one, and a checkbox that turns nothing on is worse than no checkbox. The gate below is
+    // what we actually have: it cuts the room between words, it does not clean up what is said over it.
+    // -xlinka
+    private static bool _microphoneMuted;
+    public static bool MicrophoneMuted
+    {
+        get => _microphoneMuted;
+        set => SetValue(ref _microphoneMuted, value);
+    }
+
+    private static bool _voiceNormalization = true;
+    public static bool VoiceNormalization
+    {
+        get => _voiceNormalization;
+        set => SetValue(ref _voiceNormalization, value);
+    }
+
+    // Peak amplitude a captured frame has to reach before the gate counts it as speech.
+    private static float _noiseGateThreshold = 0.02f;
+    public static float NoiseGateThreshold
+    {
+        get => _noiseGateThreshold;
+        set => SetValue(ref _noiseGateThreshold, SettingsCatalog.NoiseGateThreshold.Clamp(value));
+    }
+
+    // Seconds the gate takes to open. Long enough and the first consonant of every word is gone.
+    private static float _noiseGateAttack = 0.01f;
+    public static float NoiseGateAttack
+    {
+        get => _noiseGateAttack;
+        set => SetValue(ref _noiseGateAttack, SettingsCatalog.NoiseGateAttack.Clamp(value));
+    }
+
+    // Seconds the gate stays open after the last loud frame, so a pause between words is not a hole.
+    private static float _noiseGateHold = 0.2f;
+    public static float NoiseGateHold
+    {
+        get => _noiseGateHold;
+        set => SetValue(ref _noiseGateHold, SettingsCatalog.NoiseGateHold.Clamp(value));
+    }
+
+    private static float _noiseGateRelease = 0.2f;
+    public static float NoiseGateRelease
+    {
+        get => _noiseGateRelease;
+        set => SetValue(ref _noiseGateRelease, SettingsCatalog.NoiseGateRelease.Clamp(value));
+    }
+
+    // Peak the normalizer walks the captured signal toward when it is on.
+    private static float _normalizationThreshold = 0.1f;
+    public static float NormalizationThreshold
+    {
+        get => _normalizationThreshold;
+        set => SetValue(ref _normalizationThreshold, SettingsCatalog.NormalizationThreshold.Clamp(value));
+    }
+
+    // MEDIA PLAYBACK
+
+    // Which browser's cookie jar the video service resolver may read, for age-gated or member-only
+    // links. None is the default and nothing is read at all until somebody picks one: handing a
+    // resolver your logged-in session is a decision, not a convenience.
+    private static CookiesBrowser _videoCookiesBrowser = CookiesBrowser.None;
+    public static CookiesBrowser VideoCookiesBrowser
+    {
+        get => _videoCookiesBrowser;
+        set => SetEnum(ref _videoCookiesBrowser, value);
+    }
+
+    // The default cap a video provider asks the resolver for when it has no cap of its own. Decode cost
+    // scales with pixels, and a panel on a wall does not gain anything from 4k.
+    private static int _videoMaxHeight = 1080;
+    public static int VideoMaxHeight
+    {
+        get => _videoMaxHeight;
+        set => SetValue(ref _videoMaxHeight, SettingsCatalog.VideoMaxHeight.ClampInt(value));
     }
 
     // VIDEO
@@ -399,6 +554,23 @@ public static class EngineSettings
     private const string KeyPreferredLocomotion = "Engine.Input.PreferredLocomotion";
     private const string KeyUserHeight = "Engine.Avatar.UserHeight";
     private const string KeyMasterVolume = "Engine.Audio.MasterVolume";
+    private const string KeySoundEffectVolume = "Engine.Audio.SoundEffectVolume";
+    private const string KeyMultimediaVolume = "Engine.Audio.MultimediaVolume";
+    private const string KeyVoiceVolume = "Engine.Audio.VoiceVolume";
+    private const string KeyUIVolume = "Engine.Audio.UIVolume";
+    private const string KeyWhisperAttenuationVolume = "Engine.Audio.WhisperAttenuationVolume";
+    private const string KeyDefaultStreamBitrateKbps = "Engine.Audio.DefaultStreamBitrateKbps";
+    private const string KeyAudioInputDevice = "Engine.Audio.InputDevice";
+    private const string KeyAudioOutputDevice = "Engine.Audio.OutputDevice";
+    private const string KeyMicrophoneMuted = "Engine.Audio.MicrophoneMuted";
+    private const string KeyVoiceNormalization = "Engine.Audio.VoiceNormalization";
+    private const string KeyNoiseGateThreshold = "Engine.Audio.NoiseGateThreshold";
+    private const string KeyNoiseGateAttack = "Engine.Audio.NoiseGateAttack";
+    private const string KeyNoiseGateHold = "Engine.Audio.NoiseGateHold";
+    private const string KeyNoiseGateRelease = "Engine.Audio.NoiseGateRelease";
+    private const string KeyNormalizationThreshold = "Engine.Audio.NormalizationThreshold";
+    private const string KeyVideoCookiesBrowser = "Engine.Media.VideoCookiesBrowser";
+    private const string KeyVideoMaxHeight = "Engine.Media.VideoMaxHeight";
     private const string KeyVSync = "Engine.Video.VSync";
     private const string KeyMaxFps = "Engine.Video.MaxFps";
     private const string KeyBackgroundFps = "Engine.Video.BackgroundFps";
@@ -438,6 +610,23 @@ public static class EngineSettings
             _preferredLocomotion = Settings.ReadValue(KeyPreferredLocomotion, _preferredLocomotion) ?? string.Empty;
             _userHeight = SettingsCatalog.UserHeight.Clamp(Settings.ReadValue(KeyUserHeight, _userHeight));
             _masterVolume = SettingsCatalog.MasterVolume.Clamp(Settings.ReadValue(KeyMasterVolume, _masterVolume));
+            _soundEffectVolume = SettingsCatalog.SoundEffectVolume.Clamp(Settings.ReadValue(KeySoundEffectVolume, _soundEffectVolume));
+            _multimediaVolume = SettingsCatalog.MultimediaVolume.Clamp(Settings.ReadValue(KeyMultimediaVolume, _multimediaVolume));
+            _voiceVolume = SettingsCatalog.VoiceVolume.Clamp(Settings.ReadValue(KeyVoiceVolume, _voiceVolume));
+            _uiVolume = SettingsCatalog.UIVolume.Clamp(Settings.ReadValue(KeyUIVolume, _uiVolume));
+            _whisperAttenuationVolume = SettingsCatalog.WhisperAttenuationVolume.Clamp(Settings.ReadValue(KeyWhisperAttenuationVolume, _whisperAttenuationVolume));
+            _defaultStreamBitrateKbps = SettingsCatalog.DefaultStreamBitrateKbps.ClampInt(Settings.ReadValue(KeyDefaultStreamBitrateKbps, _defaultStreamBitrateKbps));
+            _audioInputDevice = Settings.ReadValue(KeyAudioInputDevice, _audioInputDevice) ?? string.Empty;
+            _audioOutputDevice = Settings.ReadValue(KeyAudioOutputDevice, _audioOutputDevice) ?? string.Empty;
+            _microphoneMuted = Settings.ReadValue(KeyMicrophoneMuted, _microphoneMuted);
+            _voiceNormalization = Settings.ReadValue(KeyVoiceNormalization, _voiceNormalization);
+            _noiseGateThreshold = SettingsCatalog.NoiseGateThreshold.Clamp(Settings.ReadValue(KeyNoiseGateThreshold, _noiseGateThreshold));
+            _noiseGateAttack = SettingsCatalog.NoiseGateAttack.Clamp(Settings.ReadValue(KeyNoiseGateAttack, _noiseGateAttack));
+            _noiseGateHold = SettingsCatalog.NoiseGateHold.Clamp(Settings.ReadValue(KeyNoiseGateHold, _noiseGateHold));
+            _noiseGateRelease = SettingsCatalog.NoiseGateRelease.Clamp(Settings.ReadValue(KeyNoiseGateRelease, _noiseGateRelease));
+            _normalizationThreshold = SettingsCatalog.NormalizationThreshold.Clamp(Settings.ReadValue(KeyNormalizationThreshold, _normalizationThreshold));
+            _videoCookiesBrowser = ReadEnum(KeyVideoCookiesBrowser, _videoCookiesBrowser);
+            _videoMaxHeight = SettingsCatalog.VideoMaxHeight.ClampInt(Settings.ReadValue(KeyVideoMaxHeight, _videoMaxHeight));
             _vsync = Settings.ReadValue(KeyVSync, _vsync);
             int fps = Settings.ReadValue(KeyMaxFps, _maxFps);
             _maxFps = SettingsCatalog.MaxFps.ClampOptionalInt(fps);
@@ -489,6 +678,23 @@ public static class EngineSettings
             Settings.WriteValue(KeyPreferredLocomotion, _preferredLocomotion);
             Settings.WriteValue(KeyUserHeight, _userHeight);
             Settings.WriteValue(KeyMasterVolume, _masterVolume);
+            Settings.WriteValue(KeySoundEffectVolume, _soundEffectVolume);
+            Settings.WriteValue(KeyMultimediaVolume, _multimediaVolume);
+            Settings.WriteValue(KeyVoiceVolume, _voiceVolume);
+            Settings.WriteValue(KeyUIVolume, _uiVolume);
+            Settings.WriteValue(KeyWhisperAttenuationVolume, _whisperAttenuationVolume);
+            Settings.WriteValue(KeyDefaultStreamBitrateKbps, _defaultStreamBitrateKbps);
+            Settings.WriteValue(KeyAudioInputDevice, _audioInputDevice);
+            Settings.WriteValue(KeyAudioOutputDevice, _audioOutputDevice);
+            Settings.WriteValue(KeyMicrophoneMuted, _microphoneMuted);
+            Settings.WriteValue(KeyVoiceNormalization, _voiceNormalization);
+            Settings.WriteValue(KeyNoiseGateThreshold, _noiseGateThreshold);
+            Settings.WriteValue(KeyNoiseGateAttack, _noiseGateAttack);
+            Settings.WriteValue(KeyNoiseGateHold, _noiseGateHold);
+            Settings.WriteValue(KeyNoiseGateRelease, _noiseGateRelease);
+            Settings.WriteValue(KeyNormalizationThreshold, _normalizationThreshold);
+            Settings.WriteValue(KeyVideoCookiesBrowser, _videoCookiesBrowser.ToString());
+            Settings.WriteValue(KeyVideoMaxHeight, _videoMaxHeight);
             Settings.WriteValue(KeyVSync, _vsync);
             Settings.WriteValue(KeyMaxFps, _maxFps);
             Settings.WriteValue(KeyBackgroundFps, _backgroundFps);

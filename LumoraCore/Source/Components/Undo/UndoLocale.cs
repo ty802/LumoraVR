@@ -32,6 +32,7 @@ public static class UndoLocale
     public static readonly LocaleText ResetPosition = LocaleText.Keyed("Undo.Step.ResetPosition", "Reset Position");
     public static readonly LocaleText ResetRotation = LocaleText.Keyed("Undo.Step.ResetRotation", "Reset Rotation");
     public static readonly LocaleText ResetScale = LocaleText.Keyed("Undo.Step.ResetScale", "Reset Scale");
+    public static readonly LocaleText ResetTransform = LocaleText.Keyed("Undo.Step.ResetTransform", "Reset All Transforms");
     public static readonly LocaleText BringTo = LocaleText.Keyed("Undo.Step.BringTo", "Bring To");
     public static readonly LocaleText InsertParent = LocaleText.Keyed("Undo.Step.InsertParent", "Insert Parent");
     public static readonly LocaleText CreatePivot = LocaleText.Keyed("Undo.Step.CreatePivot", "Create Pivot");

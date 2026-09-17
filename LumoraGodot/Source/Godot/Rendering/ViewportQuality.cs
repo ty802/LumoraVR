@@ -9,16 +9,15 @@ namespace Lumora.Source.Godot.Rendering;
 
 public static class ViewportQuality
 {
-    private const float DesktopXrRenderTargetMultiplier = 2.0f;
-    // Standalone renders at NATIVE eye resolution, no supersample, light MSAA, no post passes.
-    //
-    // The previous values stacked 1.35x render target, 1.15x supersample, 4x MSAA, FXAA and debanding
-    // on a mobile tiler: about 90 million samples a frame on a Pico 4's Adreno 650, which ran at 1 to 2
-    // fps. Each is a reasonable desktop choice; on a tile-based mobile GPU the budget for 72-90 fps is a
-    // few million samples and MSAA 2x is the one thing that is nearly free. Sharpness on standalone
-    // comes from the panel's native density, not from oversampling it. -xlinka
+    // These multiply the runtime's recommended eye size, which already includes lens correction
+    // and the user's runtime resolution setting. 2x silently quadrupled pixel count on desktop.
+    private const float DesktopXrRenderTargetMultiplier = 1.2f;
+    // Keep the standalone eye-buffer density measured on-device; do not stack viewport scaling.
     private const float StandaloneXrRenderTargetMultiplier = 1.3f;
-    private const float DesktopXrSupersampleScale = 1.5f;
+    // 1.5x here meant 2.25x the pixels of what the runtime already asked for, under 8x MSAA and an FXAA
+    // pass on top; a 3080 Ti held 40-50 fps in a near-empty home. The runtime's recommended size is the
+    // panel already; desktop VR titles run it at 1.0-1.2x with 4x MSAA. -xlinka
+    private const float DesktopXrSupersampleScale = 1.0f;
     // No supersampling on standalone now that the swapchain itself is bigger (see the multiplier
     // above): rendering 1.2x into a small buffer was the stand-in for that, and doing both costs
     // double for a downsample the compositor undoes. -xlinka
@@ -139,11 +138,11 @@ public static class ViewportQuality
             // stops being free; 2x MSAA under 1.2x supersampling is sharper AND cheaper than 4x at 1x.
             // FXAA is a full-resolution pass and adds nothing on top of that. Debanding is a dither
             // folded into the tonemap pass, and a gradient sky in a headset bands without it. -xlinka
-            viewport.ScreenSpaceAA = standalone ? Viewport.ScreenSpaceAAEnum.Disabled : Viewport.ScreenSpaceAAEnum.Fxaa;
-            viewport.Msaa3D = standalone ? Viewport.Msaa.Msaa2X : Viewport.Msaa.Msaa8X;
+            viewport.ScreenSpaceAA = Viewport.ScreenSpaceAAEnum.Disabled;
+            viewport.Msaa3D = standalone ? Viewport.Msaa.Msaa2X : Viewport.Msaa.Msaa4X;
             viewport.UseTaa = false;
             viewport.UseDebanding = true;
-            viewport.TextureMipmapBias = standalone ? 0f : 0.25f;
+            viewport.TextureMipmapBias = 0f;
             viewport.AnisotropicFilteringLevel = standalone
                 ? Viewport.AnisotropicFiltering.Anisotropy4X
                 : Viewport.AnisotropicFiltering.Anisotropy16X;
@@ -180,6 +179,17 @@ public static class ViewportQuality
 
         viewport.Scaling3DMode = Viewport.Scaling3DModeEnum.Bilinear;
         viewport.Scaling3DScale = scale;
+    }
+
+    public static void ApplyDesktopMirrorDefaults(Viewport viewport)
+    {
+        // Render at the window's actual size. Post AA blurs small world-space UI lettering;
+        // multisampling smooths geometry while keeping the MSDF text shader's edge coverage.
+        viewport.Scaling3DMode = Viewport.Scaling3DModeEnum.Bilinear;
+        viewport.Scaling3DScale = 1f;
+        viewport.Msaa3D = Viewport.Msaa.Msaa4X;
+        viewport.ScreenSpaceAA = Viewport.ScreenSpaceAAEnum.Disabled;
+        viewport.UseTaa = false;
     }
 
     public static void ApplyAntiAliasing(Viewport viewport, int index)

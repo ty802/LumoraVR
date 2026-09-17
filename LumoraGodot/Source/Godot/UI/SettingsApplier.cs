@@ -42,7 +42,6 @@ public partial class SettingsApplier : Node
 	// ceiling so it composes with the user's Render Scale and with dynamic resolution instead of
 	// fighting them.
 	private float _resolutionScale = 1f;
-	private float? _appliedMasterVolume;
 	private float? _appliedUserHeight;
 	private int? _appliedBackgroundFps;
 	private int? _appliedTonemap;
@@ -50,6 +49,8 @@ public partial class SettingsApplier : Node
 	private float? _appliedBloom;
 	private int? _appliedAntiAliasing;
 	private int? _appliedShadowQuality;
+	private string? _appliedInputDevice;
+	private string? _appliedOutputDevice;
 
 	// When the window loses focus or is minimized the compositor stops blocking the swap, so vsync no longer throttles
 	// us and the loop free-runs (the FPS graph spikes way past the vsync rate, burning GPU for a window nobody sees).
@@ -106,9 +107,10 @@ public partial class SettingsApplier : Node
 		if (_appliedFullscreen != EngineSettings.Fullscreen)
 		{
 			_appliedFullscreen = EngineSettings.Fullscreen;
-			DisplayServer.WindowSetMode(EngineSettings.Fullscreen
-				? DisplayServer.WindowMode.Fullscreen
-				: DisplayServer.WindowMode.Windowed);
+			if (!OS.HasFeature("android"))
+				DisplayServer.WindowSetMode(EngineSettings.Fullscreen
+					? DisplayServer.WindowMode.Fullscreen
+					: DisplayServer.WindowMode.Windowed);
 			ApplyResolution();
 		}
 
@@ -160,7 +162,7 @@ public partial class SettingsApplier : Node
 		{
 			_appliedAntiAliasing = EngineSettings.AntiAliasing;
 			var viewport = GetViewport();
-			if (viewport != null)
+			if (viewport != null && !viewport.UseXR && !HeadsetOwnsFrameTiming())
 			{
 				viewport.Msaa3D = EngineSettings.AntiAliasing switch
 				{
@@ -170,13 +172,15 @@ public partial class SettingsApplier : Node
 					_ => Viewport.Msaa.Disabled,
 				};
 			}
-			Lumora.Core.Logging.Logger.Log($"Settings: anti-aliasing -> {EngineSettings.DescribeAntiAliasing(EngineSettings.AntiAliasing)}");
+			Lumora.Core.Logging.Logger.Log($"Settings: desktop anti-aliasing -> {EngineSettings.DescribeAntiAliasing(EngineSettings.AntiAliasing)}"
+				+ (HeadsetOwnsFrameTiming() ? " (VR quality profile remains active)" : string.Empty));
 		}
 
 		if (_appliedShadowQuality != EngineSettings.ShadowQuality)
 		{
 			_appliedShadowQuality = EngineSettings.ShadowQuality;
-			var quality = EngineSettings.ShadowQuality switch
+			// Desktop preferences must not replace the standalone shadow budget at boot or on Save.
+			var quality = OS.HasFeature("android") ? RenderingServer.ShadowQuality.Hard : EngineSettings.ShadowQuality switch
 			{
 				0 => RenderingServer.ShadowQuality.Hard,
 				2 => RenderingServer.ShadowQuality.SoftMedium,
@@ -185,7 +189,7 @@ public partial class SettingsApplier : Node
 			};
 			RenderingServer.PositionalSoftShadowFilterSetQuality(quality);
 			RenderingServer.DirectionalSoftShadowFilterSetQuality(quality);
-			Lumora.Core.Logging.Logger.Log($"Settings: shadow quality -> {EngineSettings.DescribeShadowQuality(EngineSettings.ShadowQuality)}");
+			Lumora.Core.Logging.Logger.Log($"Settings: shadow quality -> {(OS.HasFeature("android") ? "Hard (standalone)" : EngineSettings.DescribeShadowQuality(EngineSettings.ShadowQuality))}");
 		}
 
 		if (_appliedMeshLodThreshold != EngineSettings.MeshLodThreshold)
@@ -195,16 +199,10 @@ public partial class SettingsApplier : Node
 			Lumora.Core.Logging.Logger.Log($"Settings: mesh LOD threshold -> {EngineSettings.DescribeMeshLodThreshold(EngineSettings.MeshLodThreshold)}");
 		}
 
-		if (_appliedMasterVolume != EngineSettings.MasterVolume)
-		{
-			_appliedMasterVolume = EngineSettings.MasterVolume;
-			int masterBus = AudioServer.GetBusIndex("Master");
-			if (masterBus >= 0)
-			{
-				AudioServer.SetBusVolumeDb(masterBus, Mathf.LinearToDb(Mathf.Max(EngineSettings.MasterVolume, 0.0001f)));
-				AudioServer.SetBusMute(masterBus, EngineSettings.MasterVolume <= 0f);
-			}
-		}
+		// Master volume is the mixer's own gain now (AudioSystem folds it into the device output every
+		// frame); applying it to the platform bus as well would square it. -xlinka
+
+		ApplyAudioDevices();
 
 		if (_appliedUserHeight != EngineSettings.UserHeight)
 		{
@@ -217,9 +215,38 @@ public partial class SettingsApplier : Node
 		}
 	}
 
+	// Which microphone and which speakers. Nothing is cached until the platform seam is actually there,
+	// so a change made before the engine finished booting is applied when it is rather than being
+	// recorded as already done. -xlinka
+	private void ApplyAudioDevices()
+	{
+		var devices = Lumora.Core.Engine.Current?.AudioSystem?.DevicePlatform;
+		if (devices == null)
+			return;
+
+		if (_appliedInputDevice != EngineSettings.AudioInputDevice)
+		{
+			_appliedInputDevice = EngineSettings.AudioInputDevice;
+			devices.ApplyInput(_appliedInputDevice);
+		}
+
+		if (_appliedOutputDevice != EngineSettings.AudioOutputDevice)
+		{
+			_appliedOutputDevice = EngineSettings.AudioOutputDevice;
+			devices.ApplyOutput(_appliedOutputDevice);
+		}
+	}
+
 	private void OnXrModeChanged(bool vrActive)
 	{
-		ApplyVSync();
+		// A session can remain initialized in desktop mode. Restore current preferences, including
+		// edits made in VR, rather than leaving the cached pre-VR settings on the root viewport.
+		_appliedAntiAliasing = null;
+		_smoothedFrame = 0;
+		_sinceDecision = 0;
+		ApplyRenderScaleCeiling();
+		ApplyUpscaler();
+		Apply();
 		ApplyEffectiveFps();
 	}
 
@@ -286,6 +313,9 @@ public partial class SettingsApplier : Node
 	// rather than being upscaled with the world. -xlinka
 	private void ApplyResolution()
 	{
+		if (OS.HasFeature("android"))
+			return; // Eye resolution comes from OpenXR, never the desktop window preference.
+
 		int height = EngineSettings.ResolutionHeight;
 		var screen = DisplayServer.ScreenGetSize(DisplayServer.WindowGetCurrentScreen());
 		if (screen.Y <= 0)
@@ -320,7 +350,7 @@ public partial class SettingsApplier : Node
 	{
 		_dynamicScale = RenderScaleCeiling;
 		var root = GetTree()?.Root;
-		if (root != null && XRServer.PrimaryInterface?.IsInitialized() != true)
+		if (root != null && !root.UseXR && !HeadsetOwnsFrameTiming())
 			root.Scaling3DScale = _dynamicScale;
 	}
 
@@ -331,7 +361,7 @@ public partial class SettingsApplier : Node
 	private void ApplyUpscaler()
 	{
 		var root = GetTree()?.Root;
-		if (root == null || XRServer.PrimaryInterface?.IsInitialized() == true)
+		if (root == null || root.UseXR || HeadsetOwnsFrameTiming())
 			return;
 
 		root.Scaling3DMode = EngineSettings.Upscaler switch
@@ -371,11 +401,11 @@ public partial class SettingsApplier : Node
 			return;
 
 		// XR owns its own render target scale (see ViewportQuality); do not fight it.
-		if (XRServer.PrimaryInterface?.IsInitialized() == true)
+		if (HeadsetOwnsFrameTiming())
 			return;
 
 		var root = GetTree()?.Root;
-		if (root == null || delta <= 0.0)
+		if (root == null || root.UseXR || delta <= 0.0)
 			return;
 
 		// MEASURED render time, not the frame delta. With vsync on, delta sits exactly on the refresh
@@ -465,18 +495,19 @@ public partial class SettingsApplier : Node
 
 	// Resolves Engine.MaxFps from the user's cap and the current focus state. While unfocused (and not in VR, where the
 	// headset compositor owns frame timing) we clamp to the user's background-fps setting; a background setting of 0
-	// disables the throttle. We never raise the rate above the user's own cap - a cap of 0 means "unlimited
-	// (vsync-throttled)", which is exactly the case the background clamp rescues. -xlinka
+	// disables the throttle. In VR, OpenXR owns pacing and both desktop frame caps are suspended.
 	//
 	// The transitions are logged: a capture that ran at the background rate should say so in the log
 	// next to the settings it ran with, instead of leaving a 30 fps mystery for the profiler.
 	private void ApplyEffectiveFps()
 	{
 		int userCap = EngineSettings.MaxFps;
-		int effective = userCap;
+		bool inVr = HeadsetOwnsFrameTiming();
+		// A desktop cap of 60 must not hold a 72/90/120 Hz headset below its refresh rate.
+		int effective = inVr ? 0 : userCap;
 		bool throttled = false;
 
-		if (_background && !IsVrActive() && !ProfilingRun)
+		if (_background && !inVr && !ProfilingRun)
 		{
 			int backgroundCap = EngineSettings.BackgroundFps;
 			if (backgroundCap > 0)
@@ -495,7 +526,7 @@ public partial class SettingsApplier : Node
 				? $"Settings: window unfocused, fps capped to {effective} until focus returns"
 				: "Settings: window focused, background fps cap lifted");
 		}
-		else if (_background && !throttled && ProfilingRun && EngineSettings.BackgroundFps > 0 && !IsVrActive())
+		else if (_background && !throttled && ProfilingRun && EngineSettings.BackgroundFps > 0 && !inVr)
 		{
 			Lumora.Core.Logging.Logger.Log("Settings: window unfocused, background fps cap suspended for the profiling run");
 		}

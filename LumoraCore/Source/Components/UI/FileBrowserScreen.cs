@@ -66,6 +66,10 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
     private int _scrollHandleRetries;
 
     private bool _newFolderActive;
+    // The search well takes keystrokes whether or not it was pressed; the press only tells the VR
+    // keyboard there is a field to type into, since a screen with no focused field never shows it.
+    private bool _searchFocused;
+    private BorderedImage? _searchWell;
     private string _newFolderName = string.Empty;
     private Slot? _newFolderSlot;
     private Text? _newFolderNameText;
@@ -192,7 +196,7 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         FillRect(_pathLabel.RectTransform!, 14f, 14f, 0f, 0f);
 
         // The search well sits in the same row as everything else; typing anywhere on this screen
-        // goes into it, so it needs no focus press.
+        // goes into it, so it needs no focus press. The press it does take is for the VR keyboard.
         var well = toolbar.AddSlot("Search");
         well.AttachComponent<RectTransform>();
         var wellLE = well.AttachComponent<LayoutElement>();
@@ -202,6 +206,8 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         wellLE.PreferredHeight.Value = 40f;
         var wellBg = well.AttachComponent<BorderedImage>();
         ApplyRounded(wellBg, DashTheme.Field, RowBorder, rounded);
+        _searchWell = wellBg;
+        well.AttachComponent<Button>().Clicked += (_, _) => SetSearchFocus(!_searchFocused);
         var wb = new UIBuilder(well);
         wb.Font(font).FontSize(13f);
         _searchLabel = wb.Text("Type to search", 13f, TextDim);
@@ -1011,6 +1017,15 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
         }
     }
 
+    public bool HasFieldFocus => _newFolderActive || _searchFocused;
+
+    private void SetSearchFocus(bool focused)
+    {
+        _searchFocused = focused;
+        if (_searchWell != null && !_searchWell.IsDestroyed)
+            _searchWell.BorderTint.Value = focused ? DashTheme.Accent : RowBorder;
+    }
+
     public bool ConsumeChar(char c)
     {
         if (!_newFolderActive) return false;
@@ -1031,15 +1046,25 @@ public sealed class FileBrowserScreen : DashboardScreen, IDashboardKeyInput
 
     public bool ConsumeEnter()
     {
-        if (!_newFolderActive) return false;
-        ConfirmNewFolder();
+        if (_newFolderActive)
+        {
+            ConfirmNewFolder();
+            return true;
+        }
+        if (!_searchFocused) return false;
+        SetSearchFocus(false);
         return true;
     }
 
     public bool ConsumeEscape()
     {
-        if (!_newFolderActive) return false;
-        CloseNewFolderDialog();
+        if (_newFolderActive)
+        {
+            CloseNewFolderDialog();
+            return true;
+        }
+        if (!_searchFocused) return false;
+        SetSearchFocus(false);
         return true;
     }
 

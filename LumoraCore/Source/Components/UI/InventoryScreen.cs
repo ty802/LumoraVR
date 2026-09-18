@@ -1497,6 +1497,8 @@ public sealed class InventoryScreen : WidgetScreen, IDashboardKeyInput, ITabbedS
 
     // KEYS: the search well and the dialog's field share one route; whichever has focus takes them.
 
+    public bool HasFieldFocus => _focus == Field.Search || (_focus == Field.Dialog && _dialog != DialogKind.None);
+
     public bool ConsumeChar(char c)
     {
         if (_focus == Field.Dialog && _dialog != DialogKind.None)

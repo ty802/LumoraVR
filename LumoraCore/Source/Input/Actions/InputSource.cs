@@ -171,14 +171,17 @@ public sealed class VRControllerSource : IInputSource
         return control.Control switch
         {
             InputControlCatalog.VRTrigger => controller.TriggerPressed,
-            // Runtimes differ on whether grip reports a boolean, an axis, or both. Take either so a
-            // squeeze is a squeeze on every headset.
-            InputControlCatalog.VRGrip => controller.GripPressed || controller.GripValue > 0.5f,
+            // The latch only. The analog grip is finger curl and reads above half from a relaxed
+            // hold on a force-sensing handle, so it can never stand in for a press. -xlinka
+            InputControlCatalog.VRGrip => controller.GripPressed,
             InputControlCatalog.VRPrimary => controller.PrimaryButtonPressed,
             InputControlCatalog.VRSecondary => controller.SecondaryButtonPressed,
             InputControlCatalog.VRMenu => controller.MenuButtonPressed,
             InputControlCatalog.VRStickPress => controller.ThumbstickPressed,
             InputControlCatalog.VRStickTouch => controller.ThumbstickTouched,
+            InputControlCatalog.VRPadPress => controller.TouchpadPressed,
+            InputControlCatalog.VRMenuHold => controller.MenuHoldFired,
+            InputControlCatalog.VRMenuTap => controller.MenuTapFired,
             _ => false
         };
     }
@@ -199,10 +202,19 @@ public sealed class VRControllerSource : IInputSource
     public float2 ReadAnalog2D(in ControlRef control)
     {
         var controller = Controller;
-        if (controller == null || control.Control != InputControlCatalog.VRStick)
+        if (controller == null)
             return float2.Zero;
-        var stick = controller.ThumbstickPosition;
-        return new float2(stick.X, stick.Y);
+        switch (control.Control)
+        {
+            case InputControlCatalog.VRStick:
+                var stick = controller.ThumbstickPosition;
+                return new float2(stick.X, stick.Y);
+            case InputControlCatalog.VRPad:
+                var pad = controller.TouchpadPosition;
+                return new float2(pad.X, pad.Y);
+            default:
+                return float2.Zero;
+        }
     }
 
     public bool TryCaptureControl(out ControlRef control)
@@ -214,7 +226,7 @@ public sealed class VRControllerSource : IInputSource
 
         foreach (var id in InputControlCatalog.ControlsFor(InputDeviceKind.VRController))
         {
-            if (id == InputControlCatalog.VRStick)
+            if (id is InputControlCatalog.VRStick or InputControlCatalog.VRPad)
                 continue;
             var candidate = ControlRef.VR(_side, id);
             if (ReadDigital(candidate))
@@ -228,6 +240,12 @@ public sealed class VRControllerSource : IInputSource
         if (stickValue.X * stickValue.X + stickValue.Y * stickValue.Y > 0.64f)
         {
             control = ControlRef.VR(_side, InputControlCatalog.VRStick);
+            return true;
+        }
+        var padValue = controller.TouchpadPosition;
+        if (padValue.X * padValue.X + padValue.Y * padValue.Y > 0.64f)
+        {
+            control = ControlRef.VR(_side, InputControlCatalog.VRPad);
             return true;
         }
         return false;

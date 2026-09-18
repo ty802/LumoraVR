@@ -9,6 +9,11 @@ namespace Lumora.Core.Components.UI;
 // search. -xlinka
 public interface IDashboardKeyInput
 {
+    // Whether one of the screen's inline fields holds focus right now. The VR keyboard shows for a
+    // dash field the same way it shows for a TextInput: on the field taking focus, never on the screen
+    // merely being able to take keys. -xlinka
+    bool HasFieldFocus { get; }
+
     bool ConsumeChar(char c);
     bool ConsumeBackspace();
     bool ConsumeEnter();

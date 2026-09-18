@@ -209,6 +209,9 @@ public sealed class DigitalAction : InputAction
             return;
         }
 
+        if (InputControlCatalog.PressIsLatched(binding.Control))
+            return;
+
         float value = source.ReadAnalog(binding.Control);
         if (value != 0f && MathF.Abs(value * binding.Scale) >= PressPoint)
             _accumulator = true;

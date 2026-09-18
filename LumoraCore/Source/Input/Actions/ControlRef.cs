@@ -135,6 +135,14 @@ public static class InputControlCatalog
     public const string VRStick = "Stick";
     public const string VRStickPress = "StickPress";
     public const string VRStickTouch = "StickTouch";
+    public const string VRPad = "Pad";
+    public const string VRPadPress = "PadPress";
+
+    // The menu button's two jobs on a controller with no dedicated dash button: MenuHold fires once
+    // at full charge, MenuTap fires once on a release before the tap limit. Both are one-frame
+    // pulses, never held, and neither fires on a profile that has face buttons. -xlinka
+    public const string VRMenuHold = "MenuHold";
+    public const string VRMenuTap = "MenuTap";
 
     private static readonly Key[] _keys =
     {
@@ -168,7 +176,8 @@ public static class InputControlCatalog
 
     private static readonly string[] _vrControls =
     {
-        VRTrigger, VRGrip, VRPrimary, VRSecondary, VRMenu, VRStick, VRStickPress, VRStickTouch
+        VRTrigger, VRGrip, VRPrimary, VRSecondary, VRMenu, VRStick, VRStickPress, VRStickTouch,
+        VRPad, VRPadPress, VRMenuHold, VRMenuTap
     };
 
     // Both directions are built in one pass from one source of truth. Two separate initializers that
@@ -211,9 +220,15 @@ public static class InputControlCatalog
     {
         InputDeviceKind.Mouse => control.Control == MouseDelta,
         InputDeviceKind.Gamepad => control.Control is PadLeftStick or PadRightStick,
-        InputDeviceKind.VRController => control.Control == VRStick,
+        InputDeviceKind.VRController => control.Control is VRStick or VRPad,
         _ => false
     };
+
+    // Controls whose press is a latch with its own thresholds. A digital action bound to one reads
+    // the latch only and never falls back to cutting the analog at its press point: the grip's
+    // analog is finger curl and sits above any sane cut from a relaxed hold. -xlinka
+    public static bool PressIsLatched(in ControlRef control)
+        => control.Device == InputDeviceKind.VRController && control.Control == VRGrip;
 
     public static string Describe(in ControlRef control)
     {
@@ -266,12 +281,16 @@ public static class InputControlCatalog
                 {
                     VRTrigger => "Trigger",
                     VRGrip => "Grip",
-                    VRPrimary => "Primary",
-                    VRSecondary => "Secondary",
+                    VRPrimary => "A / X",
+                    VRSecondary => "B / Y",
                     VRMenu => "Menu",
                     VRStick => "Stick",
                     VRStickPress => "Stick Press",
                     VRStickTouch => "Stick Touch",
+                    VRPad => "Touchpad",
+                    VRPadPress => "Touchpad Press",
+                    VRMenuHold => "Menu (hold)",
+                    VRMenuTap => "Menu (tap)",
                     _ => control.Control
                 };
                 return string.IsNullOrEmpty(hand) ? name : $"{hand} {name}";

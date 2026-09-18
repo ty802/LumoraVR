@@ -106,6 +106,42 @@ public class MeshRenderer : ImplementableComponent
     public float MaxViewDistance { get; set; }
     public float ViewDistanceFadeMargin { get; set; }
 
+    // Draw-over-everything band for this viewer's own hands and lasers while the dash is up. When set,
+    // the hook writes this ABSOLUTE sorting offset on the instance in place of RenderQueue + SortingOrder
+    // and duplicates every surface material into the transparent pass at the top render priority, because
+    // an opaque-pass mesh is drawn before every transparent surface no matter what offset it carries and
+    // the dash is a transparent-pass surface. OverlayDepthTest keeps the depth test on the duplicate: the
+    // dash and the other overlay shaders write no depth, so a depth-tested hand drawn after them is never
+    // cut by them, and it keeps occluding itself; turning the test off also drops the depth write, which
+    // makes a skeleton hand draw its bones through its joints. Plain properties, never replicated: what
+    // draws over YOUR dash is a per-viewer matter. Clearing puts the asset materials and the normal offset
+    // back untouched. -xlinka
+    public const int NoOverlayOrder = int.MinValue;
+    public int OverlayOrder { get; private set; } = NoOverlayOrder;
+    public bool OverlayDepthTest { get; private set; } = true;
+    public bool OverlayOrderChanged { get; set; }
+    public bool HasOverlayOrder => OverlayOrder != NoOverlayOrder;
+
+    public void SetOverlayOrder(int order, bool depthTest = true)
+    {
+        if (OverlayOrder == order && OverlayDepthTest == depthTest)
+            return;
+        OverlayOrder = order;
+        OverlayDepthTest = depthTest;
+        OverlayOrderChanged = true;
+        RunApplyChanges();
+    }
+
+    public void ClearOverlayOrder()
+    {
+        if (OverlayOrder == NoOverlayOrder)
+            return;
+        OverlayOrder = NoOverlayOrder;
+        OverlayDepthTest = true;
+        OverlayOrderChanged = true;
+        RunApplyChanges();
+    }
+
     public bool MaterialsChanged { get; set; }
     public bool MaterialPropertyBlocksChanged { get; set; }
     public bool SurfaceRenderPrioritiesChanged { get; set; }

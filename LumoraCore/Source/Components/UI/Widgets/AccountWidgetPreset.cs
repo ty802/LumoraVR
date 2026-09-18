@@ -610,6 +610,8 @@ public sealed class AccountWidgetPreset : HomeWidgetPreset
     // KEY INPUT (routed here by HomeScreen while this widget is docked on it)
     // The dialog is modal, so while it is up it takes the keyboard whole and everything else answers false.
 
+    public bool HasFieldFocus => _dialogOpen && _focus != Focus.None;
+
     public bool ConsumeChar(char c)
     {
         if (!_dialogOpen)

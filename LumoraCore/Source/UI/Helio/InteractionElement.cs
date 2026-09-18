@@ -176,6 +176,32 @@ public class InteractionElement : UIComponent, IUIInteractable
         return world?.DataModelPermissions.EnterActor(context.Actor);
     }
 
+    public override void OnAwake()
+    {
+        base.OnAwake();
+        if (Slot != null)
+            Slot.ActiveChanged += OnSlotActiveChanged;
+    }
+
+    public override void OnDestroy()
+    {
+        if (Slot != null)
+            Slot.ActiveChanged -= OnSlotActiveChanged;
+        base.OnDestroy();
+    }
+
+    // CanInteract reads Slot.IsActive, so a driver's first Apply on anything built under a hidden panel
+    // (every dash screen, the keyboard) paints the DISABLED colour, and that grey is brighter than any
+    // dark fill: the whole panel came up looking hovered until each button was pointed at once. The
+    // active flip is the moment the state actually changes, so it re-runs the drivers. ActiveChanged is
+    // effective-active: it fires for an ancestor's flip too. -xlinka
+    private void OnSlotActiveChanged(Slot slot)
+    {
+        if (IsDestroyed)
+            return;
+        ApplyColorDrivers();
+    }
+
     public override void OnChanges()
     {
         base.OnChanges();

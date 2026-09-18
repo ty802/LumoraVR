@@ -1805,6 +1805,8 @@ public sealed class GroupsScreen : WidgetScreen, IDashboardKeyInput
         _ => 64,
     };
 
+    public bool HasFieldFocus => _focus != GroupField.None;
+
     public bool ConsumeChar(char c)
     {
         if (_focus == GroupField.None)

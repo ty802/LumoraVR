@@ -101,8 +101,8 @@ public class FaceLocalUser : Component
     }
 
     // The point of view is the CAMERA, not the avatar's head: with a freecam or third person the
-    // head stays put while the eye orbits, and a billboard aimed at the head shows that eye its
-    // back. Head stays the fallback (VR and plain first person, where the two coincide). -xlinka
+    // head stays on the body while the eye orbits, and a billboard aimed at the head shows that eye
+    // its back. Head stays the fallback (VR and plain first person, where the two coincide). -xlinka
     private static bool TryResolveViewpoint(World world, out float3 point)
     {
         var input = Engine.Current?.InputInterface;

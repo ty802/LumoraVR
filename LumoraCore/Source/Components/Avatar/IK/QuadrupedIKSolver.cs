@@ -16,14 +16,8 @@ namespace Lumora.Core.Components.Avatar.IK;
 // the wrong side of the animal. Here that state lives in a LimbChain[4] instead, which is the one
 // structural change that turns "two legs" into "any legs".
 //
-// Rotations only, with ONE exception: the pelvis root gets its position written. Writing positions on
-// the other bones shears the skinned mesh under the armature's fit scale, and a quadruped has four legs
-// to do it with, so those stay rotation-driven. The pelvis is the exception for the same reason the
-// biped writes its hips: a solver that only rotates cannot stand a body up. The animal's height above
-// the floor is whatever its hierarchy says, and a model whose origin sits at the body centre puts its
-// legs through the floor with no rotation able to fix it. The pelvis write lifts the whole skeleton to
-// its rest standing height over the ground plane, and it is a root bone, so there is no parent scale
-// between it and the armature to shear against. -xlinka
+// The body root is positioned; other joints are rotation-driven. Optional limb stretch scales
+// local segment offsets, which are restored from bind before each solve.
 //
 // Lives in LumoraCore because Sync<T>.SetValueSilently is internal, and every bone write goes through
 // it. There is no public bone-write path in the engine. -xlinka
@@ -45,7 +39,7 @@ public sealed class QuadrupedIKSolver
         public floatQ ToeRel;
         public float GroundClearance;
 
-        // The FABRIK chain is Bones[ChainStart..]. A front limb with a scapula starts at 1: the scapula
+        // The FABRIK chain is Bones[ChainStart..]. A front limb with a scapula starts at the upper leg: the scapula
         // is a girdle bone that gets a small clamped swing of its own, the way the biped's clavicle does,
         // and the chain is rooted at the humerus it carries. Everything below is sized for that chain.
         public int ChainStart;
@@ -55,6 +49,11 @@ public sealed class QuadrupedIKSolver
         public float3[] BestJoints;     // pooled best-iterate buffer for the solver
         public float[] ChainLengths;    // Lengths[ChainStart..], refreshed per solve after Stretch
         public FabrikSolver.HingeLimit[] Hinges;
+        public float[] FoldAngles;
+        public float[] PlanLengths;
+        public FabrikSolver.HingeLimit[] PlanLimits;
+        public float PlanFold;
+        public bool HasFoldPlan;
 
         // Last-solve diagnostics, read by DescribeLimbConstraints.
         public FabrikSolver.HingeSolveStats LastStats;
@@ -85,6 +84,8 @@ public sealed class QuadrupedIKSolver
         public bool HasGroundRotation;
         public floatQ GroundRotation;
         public float StepLift;
+        public bool HasSupportPosition;
+        public float3 SupportPosition;
     }
 
     public struct HeadTarget
@@ -111,8 +112,7 @@ public sealed class QuadrupedIKSolver
     public float MaxStretch = 1.06f;
     public float BendGoalWeight = 1f;
 
-    // Deepest fold the legs must be able to reach, as a fraction of the limb's extended span. Set from
-    // the component's crouch floor so the joint cone and the crouch range cannot disagree.
+    // Minimum root-to-paw span relative to the authored stance.
     public float MinLimbFoldScale = 0.35f;
 
     // How far the MESH extends below the lowest paw or toe BONE, metres at the live scale. The sole plane
@@ -224,9 +224,11 @@ public sealed class QuadrupedIKSolver
     // Which end of _spine is the hierarchy ancestor: 0 when the pelvis carries the chest (the usual
     // case), Count-1 when the rig is built the other way round.
     private int _spineRootIndex;
+    private Slot? _bodyRoot;
     private readonly List<Slot> _neck = new();
     private float3[] _spineJoints = Array.Empty<float3>();
     private float[] _spineLengths = Array.Empty<float>();
+    private FabrikSolver.JointLimit[] _spineLimits = Array.Empty<FabrikSolver.JointLimit>();
     private float3[] _neckJoints = Array.Empty<float3>();
     private float[] _neckLengths = Array.Empty<float>();
 
@@ -257,17 +259,37 @@ public sealed class QuadrupedIKSolver
         // Every Slot reference is cached ONCE here. The rig's map is a synced list underneath, so a
         // lookup is a linear scan - fine at setup, never acceptable in a per-frame path that would do
         // it a few hundred times.
-        AddChainBone(rig, QuadNode.Pelvis, _spine);
-        AddChainBone(rig, QuadNode.Spine0, _spine);
-        AddChainBone(rig, QuadNode.Spine1, _spine);
-        AddChainBone(rig, QuadNode.Spine2, _spine);
-        AddChainBone(rig, QuadNode.Spine3, _spine);
-        AddChainBone(rig, QuadNode.Chest, _spine);
+        var pelvis = rig.TryGetBone(QuadNode.Pelvis);
+        var chest = rig.TryGetBone(QuadNode.Chest);
+        if (IsAncestorOf(pelvis, chest))
+            AddHierarchyPath(pelvis!, chest!, _spine);
+        else if (IsAncestorOf(chest, pelvis))
+        {
+            AddHierarchyPath(chest!, pelvis!, _spine);
+            _spine.Reverse();
+        }
 
-        AddChainBone(rig, QuadNode.Neck0, _neck);
-        AddChainBone(rig, QuadNode.Neck1, _neck);
-        AddChainBone(rig, QuadNode.Neck2, _neck);
-        AddChainBone(rig, QuadNode.Head, _neck);
+        var spineRoot = _spine.Count > 0 ? (IsAncestorOf(pelvis, chest) ? pelvis : chest) : null;
+        var head = rig.TryGetBone(QuadNode.Head);
+        _bodyRoot = spineRoot;
+        if (spineRoot != null && head != null && !head.IsDestroyed)
+        {
+            var common = spineRoot;
+            while (common != null && common != rig.Slot && common != head && !IsAncestorOf(common, head))
+                common = common.Parent;
+            if (common != null && (common == head || IsAncestorOf(common, head)))
+            {
+                if (common != rig.Slot)
+                    _bodyRoot = common;
+                AddHierarchyPath(common, head, _neck);
+                _neck.RemoveAt(0);
+                while (_neck.Count > 0 && _spine.Contains(_neck[0]))
+                    _neck.RemoveAt(0);
+                _bones.Remove(rig.Slot);
+            }
+        }
+        if (_bodyRoot != null && spineRoot != null && _bodyRoot != spineRoot)
+            AddHierarchyPath(_bodyRoot, spineRoot, new List<Slot>());
 
         for (int i = 0; i < QuadLimb.Count; i++)
             _limbs[i] = BuildLimb(rig, (QuadLimbId)i);
@@ -276,6 +298,7 @@ public sealed class QuadrupedIKSolver
         // this solver runs; claiming it here would mean two systems writing the same bones every frame.
         _spineJoints = new float3[System.Math.Max(_spine.Count, 2)];
         _spineLengths = new float[System.Math.Max(_spine.Count - 1, 1)];
+        _spineLimits = new FabrikSolver.JointLimit[_spineLengths.Length];
         _neckJoints = new float3[System.Math.Max(_neck.Count, 2)];
         _neckLengths = new float[System.Math.Max(_neck.Count - 1, 1)];
 
@@ -298,14 +321,20 @@ public sealed class QuadrupedIKSolver
         ReadPose();
     }
 
-    private void AddChainBone(QuadrupedRig rig, QuadNode node, List<Slot> chain)
+    private void AddHierarchyPath(Slot root, Slot end, List<Slot> chain)
     {
-        var bone = rig.TryGetBone(node);
-        if (bone == null || bone.IsDestroyed)
-            return;
-        chain.Add(bone);
-        if (!_bones.Contains(bone))
-            _bones.Add(bone);
+        int start = chain.Count;
+        for (var bone = end; bone != null; bone = bone.Parent)
+        {
+            if (bone == root && start > 0 && chain[start - 1] == root)
+                break;
+            chain.Add(bone);
+            if (!_bones.Contains(bone))
+                _bones.Add(bone);
+            if (bone == root)
+                break;
+        }
+        chain.Reverse(start, chain.Count - start);
     }
 
     // NO <NOIK> FILTERING ANYWHERE IN HERE. The tag means the opposite of what it means on a person.
@@ -337,7 +366,10 @@ public sealed class QuadrupedIKSolver
                 continue;
             if (bones.Count == 0 && s == QuadLimb.SegScapula)
                 firstIsScapula = true;
-            bones.Add(bone);
+            if (bones.Count == 0)
+                bones.Add(bone);
+            else if (bone != bones[^1] && IsAncestorOf(bones[^1], bone))
+                AddHierarchyPath(bones[^1], bone, bones);
         }
 
         if (bones.Count < 3)
@@ -349,6 +381,9 @@ public sealed class QuadrupedIKSolver
             chain.BestJoints = Array.Empty<float3>();
             chain.ChainLengths = Array.Empty<float>();
             chain.Hinges = Array.Empty<FabrikSolver.HingeLimit>();
+            chain.FoldAngles = Array.Empty<float>();
+            chain.PlanLengths = Array.Empty<float>();
+            chain.PlanLimits = Array.Empty<FabrikSolver.HingeLimit>();
             return chain;
         }
 
@@ -358,12 +393,16 @@ public sealed class QuadrupedIKSolver
 
         // The scapula is split off only when there is still a real chain (3+ bones) below it. A limb
         // that is scapula + upper + paw has no elbow to fold and needs every bone it has.
-        chain.ChainStart = firstIsScapula && bones.Count >= 4 ? 1 : 0;
+        int upperIndex = bones.IndexOf(rig.TryGetLimbBone(id, QuadLimb.SegUpper));
+        chain.ChainStart = firstIsScapula && upperIndex > 0 && bones.Count - upperIndex >= 3 ? upperIndex : 0;
         int chainCount = bones.Count - chain.ChainStart;
         chain.Joints = new float3[chainCount];
         chain.BestJoints = new float3[chainCount];
         chain.ChainLengths = new float[chainCount - 1];
         chain.Hinges = new FabrikSolver.HingeLimit[chainCount - 1];
+        chain.FoldAngles = new float[chainCount - 1];
+        chain.PlanLengths = new float[chainCount - 1];
+        chain.PlanLimits = new FabrikSolver.HingeLimit[chainCount - 1];
 
         var toe = rig.TryGetLimbBone(id, QuadLimb.SegToe);
         if (toe != null && !toe.IsDestroyed)
@@ -440,7 +479,16 @@ public sealed class QuadrupedIKSolver
             _restRot[bone] = bone.GlobalRotation;
         }
 
-        CaptureChainDirections(_spine);
+        int step = _spineRootIndex == 0 ? 1 : -1;
+        for (int i = _spineRootIndex; i >= 0 && i < _spine.Count; i += step)
+        {
+            int next = i + step;
+            float3 dir = next >= 0 && next < _spine.Count
+                ? _spine[next].GlobalPosition - _spine[i].GlobalPosition
+                : _spine[i].GlobalPosition - _spine[i - step].GlobalPosition;
+            if (dir.LengthSquared > 1e-8f)
+                _restDir[_spine[i]] = dir.Normalized;
+        }
         CaptureChainDirections(_neck);
 
         // Body forward, geometric. Never read off a bone rotation - the authored hips rotation is
@@ -462,8 +510,8 @@ public sealed class QuadrupedIKSolver
             RestChestHeight = RestChestPosition.y;
             // Body length is the GIRDLE SEPARATION, not the spine chain's end-to-end distance.
             //
-            // The spine chain is assembled by name (Pelvis, Spine0..3, Chest) and on a real avatar that
-            // came out measuring a VERTICAL stack: the armature root is called "Hips" but physically sits
+            // A name-based spine chain can measure a vertical stack: the armature root may be called
+            // "Hips" but physically sit
             // at the withers, with "Chest" 0.41 directly above it, so the animal's "length" read 0.228
             // while its own legs measured 1.2 to 1.4. Every gait distance scales off this number, so a
             // fox got roughly a fifth of the stride, step height and step threshold it needed and the
@@ -477,7 +525,19 @@ public sealed class QuadrupedIKSolver
             if (RestBodyLength < 0.05f)
                 RestBodyLength = float3.Distance(RestPelvisPosition, RestChestPosition);
             for (int i = 0; i < _spine.Count - 1; i++)
-                _spineLengths[i] = float3.Distance(_spine[i].GlobalPosition, _spine[i + 1].GlobalPosition);
+            {
+                _spineLengths[i] = float3.Distance(_spine[SpineIndex(i)].GlobalPosition, _spine[SpineIndex(i + 1)].GlobalPosition);
+                float bend = MathF.Max(MaxSpineBendPerJoint * (1f - System.Math.Clamp(SpineStiffness, 0f, 1f) * 0.5f), 0.01f);
+                if (i > 0)
+                {
+                    float3 previous = _spine[SpineIndex(i)].GlobalPosition - _spine[SpineIndex(i - 1)].GlobalPosition;
+                    float3 next = _spine[SpineIndex(i + 1)].GlobalPosition - _spine[SpineIndex(i)].GlobalPosition;
+                    // The bend allowance starts at the authored curve, not at an artificially straight spine.
+                    if (previous.LengthSquared > 1e-10f && next.LengthSquared > 1e-10f)
+                        bend += MathF.Acos(System.Math.Clamp(float3.Dot(previous.Normalized, next.Normalized), -1f, 1f));
+                }
+                _spineLimits[i] = FabrikSolver.JointLimit.Cone(bend);
+            }
         }
         for (int i = 0; i < _neck.Count - 1; i++)
             _neckLengths[i] = float3.Distance(_neck[i].GlobalPosition, _neck[i + 1].GlobalPosition);
@@ -503,16 +563,18 @@ public sealed class QuadrupedIKSolver
         if (_restSoleY == float.MaxValue)
             _restSoleY = 0f;
 
-        // Clearance is the paw BONE's height above the MESH sole: its authored height over the lowest bone
-        // plus whatever pad the mesh carries below that bone. The component adds this to every ground
-        // point it hands us, so with SoleOffset at zero and a paw modelled below its own bone the animal
-        // floated by exactly the pad thickness, on all four legs, forever. -xlinka
+        // Each paw measures its own pad height; a saved mid-stride pose must not raise its target.
         for (int i = 0; i < QuadLimb.Count; i++)
         {
             CaptureLimbRest(ref _limbs[i]);
-            PawGroundClearance[i] = _limbs[i].Bones != null && _limbs[i].Bones.Length > 0
-                ? MathF.Max(0f, _limbs[i].Bones[^1].GlobalPosition.y - _restSoleY) + SoleOffset
-                : 0f;
+            ref var limb = ref _limbs[i];
+            PawGroundClearance[i] = 0f;
+            if (limb.Bones != null && limb.Bones.Length > 0)
+            {
+                float pawY = limb.Bones[^1].GlobalPosition.y;
+                float soleY = limb.Toe is { IsDestroyed: false } ? MathF.Min(pawY, limb.Toe.GlobalPosition.y) : pawY;
+                PawGroundClearance[i] = pawY - soleY + SoleOffset;
+            }
         }
     }
 
@@ -601,12 +663,14 @@ public sealed class QuadrupedIKSolver
         // Bend plane from the joint that sticks out furthest from the root->end line. On a multi-bend
         // leg that is the joint that actually defines the plane; taking the middle one by index can land
         // on a nearly-colinear joint and produce a normal made of rounding error.
-        float3 limbDir = rootToEnd.Normalized;
+        float3 chainOrigin = limb.RestOffsets[limb.ChainStart];
+        float3 chainReach = rootToEnd - chainOrigin;
+        float3 limbDir = chainReach.Normalized;
         float3 bestBend = float3.Zero;
         float bestDist = 0f;
-        for (int i = 1; i < limb.Bones.Length - 1; i++)
+        for (int i = limb.ChainStart + 1; i < limb.Bones.Length - 1; i++)
         {
-            float3 offset = limb.RestOffsets[i];
+            float3 offset = limb.RestOffsets[i] - chainOrigin;
             float3 perpendicular = offset - limbDir * float3.Dot(offset, limbDir);
             float d = perpendicular.Length;
             if (d > bestDist)
@@ -616,11 +680,11 @@ public sealed class QuadrupedIKSolver
             }
         }
 
-        float3 normal = float3.Cross(rootToEnd, bestBend);
+        float3 normal = float3.Cross(chainReach, bestBend);
         if (normal.LengthSquared < 1e-10f)
-            normal = float3.Cross(rootToEnd, float3.Up);
+            normal = float3.Cross(chainReach, float3.Up);
         if (normal.LengthSquared < 1e-10f)
-            normal = float3.Cross(rootToEnd, float3.Right);
+            normal = float3.Cross(chainReach, float3.Right);
         if (normal.LengthSquared < 1e-10f)
             return;
 
@@ -669,7 +733,8 @@ public sealed class QuadrupedIKSolver
         var hinges = limb.Hinges;
         float3 nrm = limb.RestPlaneNormal;
 
-        float fold = System.Math.Clamp(MinLimbFoldScale, 0.05f, 1f);
+        float restReachRatio = limb.ChainRestRootToEnd.Length / MathF.Max(limb.ChainLength, 1e-6f);
+        float fold = System.Math.Clamp(MinLimbFoldScale * restReachRatio, 0.05f, 1f);
         float minDeflection = MathF.Max(0f, HingeMinDeflectionRadians);
         float extendCap = MathF.Max(0f, HingeExtendRadians);
         const float MaxTotalFold = 2.8f;     // ~160 degrees: a joint cannot fold onto itself
@@ -783,6 +848,98 @@ public sealed class QuadrupedIKSolver
 
     // SOLVE
 
+    // Cache one legal deep fold and interpolate its angles from rest. Folding every hinge by the
+    // same amount can trap alternating knee/hock bends in a local minimum and cause a visible snap.
+    private void EnsureFoldPlan(ref LimbChain limb)
+    {
+        int count = limb.ChainLengths.Length;
+        bool changed = !limb.HasFoldPlan || MathF.Abs(limb.PlanFold - MinLimbFoldScale) > 1e-5f;
+        for (int i = 0; i < count && !changed; i++)
+        {
+            var current = limb.Hinges[i];
+            var previous = limb.PlanLimits[i];
+            changed = MathF.Abs(limb.ChainLengths[i] / limb.ChainLength - limb.PlanLengths[i]) > 1e-4f
+                      || MathF.Abs(current.Rest - previous.Rest) > 1e-4f
+                      || MathF.Abs(current.Min - previous.Min) > 1e-4f
+                      || MathF.Abs(current.Max - previous.Max) > 1e-4f;
+        }
+        if (!changed)
+            return;
+
+        var normal = limb.RestPlaneNormal;
+        var joints = limb.Joints;
+        var origin = limb.RestOffsets[limb.ChainStart];
+        for (int i = 0; i < joints.Length; i++)
+        {
+            float3 offset = limb.RestOffsets[limb.ChainStart + i] - origin;
+            joints[i] = offset - normal * float3.Dot(offset, normal);
+        }
+        float3 goal = limb.ChainRestRootToEnd * System.Math.Clamp(MinLimbFoldScale, 0.05f, 1f);
+        var shoulder = limb.Hinges[0];
+        limb.Hinges[0] = default;
+        FabrikSolver.SeedPlanarFold(joints, limb.ChainLengths, limb.Hinges, float3.Zero, goal, normal, false, float3.Zero);
+        FabrikSolver.SolveHingeChain(joints, limb.ChainLengths, goal, normal, limb.Hinges,
+            false, float3.Zero, limb.BestJoints, out _, endPinMaxError: 0f);
+        limb.Hinges[0] = shoulder;
+        for (int i = 0; i < count; i++)
+        {
+            limb.FoldAngles[i] = i == 0 ? 0f : FabrikSolver.SignedAngle(
+                (joints[i] - joints[i - 1]).Normalized, (joints[i + 1] - joints[i]).Normalized, normal);
+            limb.PlanLengths[i] = limb.ChainLengths[i] / limb.ChainLength;
+            limb.PlanLimits[i] = limb.Hinges[i];
+        }
+        limb.PlanFold = MinLimbFoldScale;
+        limb.HasFoldPlan = true;
+    }
+
+    private void SeedLimbPose(ref LimbChain limb, float3 root, float3 goal, float3 normal)
+    {
+        EnsureFoldPlan(ref limb);
+        float3 reach = goal - root;
+        float distance = reach.Length;
+        float3 direction = reach.Normalized;
+        float restSpan = BuildLimbPose(ref limb, root, direction, normal, 0f, true);
+        bool folding = distance < restSpan;
+        float lo = 0f, hi = 1f;
+        for (int i = 0; i < 16; i++)
+        {
+            float mid = (lo + hi) * 0.5f;
+            float span = BuildLimbPose(ref limb, root, direction, normal, mid, folding);
+            if (folding ? span > distance : span < distance)
+                lo = mid;
+            else
+                hi = mid;
+        }
+        float blend = (lo + hi) * 0.5f;
+        BuildLimbPose(ref limb, root, direction, normal, blend, folding);
+        var joints = limb.Joints;
+        floatQ aim = FabrikSolver.FromToRotation(joints[^1] - root, reach, normal);
+        for (int i = 1; i < joints.Length; i++)
+            joints[i] = root + aim * (joints[i] - root);
+        limb.LastFoldSeed = 0f;
+        for (int i = 1; i < limb.Hinges.Length; i++)
+            limb.LastFoldSeed = MathF.Max(limb.LastFoldSeed,
+                MathF.Abs(limb.Hinges[i].Rest - (folding ? limb.FoldAngles[i] : limb.Hinges[i].ExtendLimit)) * blend);
+    }
+
+    private static float BuildLimbPose(ref LimbChain limb, float3 root, float3 direction, float3 normal, float blend, bool folding)
+    {
+        var joints = limb.Joints;
+        joints[0] = root;
+        for (int i = 0; i < limb.ChainLengths.Length; i++)
+        {
+            if (i > 0)
+            {
+                var hinge = limb.Hinges[i];
+                float endAngle = folding ? limb.FoldAngles[i] : hinge.ExtendLimit;
+                float angle = hinge.Rest + (endAngle - hinge.Rest) * blend;
+                direction = FabrikSolver.RotateInPlane(direction, normal, angle);
+            }
+            joints[i + 1] = joints[i] + direction * limb.ChainLengths[i];
+        }
+        return float3.Distance(root, joints[^1]);
+    }
+
     // Reset to the bind pose and re-measure it. Split out of Solve so the component can build its
     // targets FROM the rest measurements of this frame - stand heights, sole plane, girdle positions -
     // instead of from last frame's solved pose. Solve calls it itself when nobody has.
@@ -810,102 +967,110 @@ public sealed class QuadrupedIKSolver
         {
             pelvisTarget = chassis.PelvisPosition + LocomotionOffset;
             chestTarget = chassis.ChestPosition + LocomotionOffset;
+            pelvisTarget = LimitCrouchHeight(pelvisTarget, false, paws);
+            chestTarget = LimitCrouchHeight(chestTarget, true, paws);
 
-            // The one position write, and it has to land on whichever end of the spine is the ANCESTOR.
-            //
-            // This wrote _spine[0] on the assumption that the pelvis is the chain root, which is true of
-            // a rig built pelvis-first. It is not universal: a real avatar's animal spine runs the other
-            // way in the hierarchy - Chest is the ancestor, Spine.001 hangs off it, and the hips are the
-            // deepest LEAF. Writing the leaf there moved the tail end and left the body where it was, so
-            // the chassis had no effect on anything a person could see. Move whichever end actually
-            // carries the others, and aim it at that end's own target. -xlinka
+            // Move the common body ancestor so separate head and spine branches stay together.
             bool pelvisIsRoot = _spineRootIndex == 0;
-            WriteGlobalPosition(_spine[_spineRootIndex], pelvisIsRoot ? pelvisTarget : chestTarget);
+            var bodyRoot = _bodyRoot ?? _spine[_spineRootIndex];
+            float3 shift = (pelvisIsRoot ? pelvisTarget : chestTarget) - _spine[_spineRootIndex].GlobalPosition;
+            WriteGlobalPosition(bodyRoot, bodyRoot.GlobalPosition + shift);
         }
 
         SolveSpineBeam(pelvisTarget, chestTarget, chassis);
 
-        if (head.Valid && _neck.Count >= 2)
-            SolveNeck(head.Position, head.Rotation, head.PositionWeight);
+        if (head.Valid && _neck.Count > 0)
+        {
+            SolveNeck(head.Position, head.PositionWeight);
+            WriteHeadFacing(_neck[^1], head.Rotation, head.RotationWeight);
+        }
 
         for (int i = 0; i < QuadLimb.Count; i++)
             SolveLimb(ref _limbs[i], paws[i]);
     }
 
-    // The body as a beam between two girdles.
-    //
-    // Both ends are pinned - the front girdle by the front pair, the rear girdle by the rear pair - so
-    // this is the both-ends-pinned reconcile rather than a reach. Pitch is not computed anywhere: it
-    // falls out of the two ends sitting at different heights, which is what a real animal walking
-    // uphill does. -xlinka
+    // Unequal segment lengths impose a minimum reach even at maximum flexion. Keep the body above
+    // that limit using planted support positions, so lifting a paw does not lift or tilt the body.
+    private float3 LimitCrouchHeight(float3 anchor, bool front, LimbTarget[] paws)
+    {
+        var bodyBone = front ? _spine[^1] : _spine[0];
+        for (int i = 0; i < QuadLimb.Count; i++)
+        {
+            ref var limb = ref _limbs[i];
+            ref var target = ref paws[i];
+            if (QuadLimb.IsFront((QuadLimbId)i) != front || !limb.RestValid
+                || !target.Valid || !target.GroundAlign || target.PositionWeight <= 1e-4f)
+                continue;
+            EnsureFoldPlan(ref limb);
+            float3 direction = limb.ChainRestRootToEnd.Normalized;
+            float minimum = BuildLimbPose(ref limb, float3.Zero, direction, limb.RestPlaneNormal, 1f, true);
+            float3 offset = limb.Bones[limb.ChainStart].GlobalPosition - bodyBone.GlobalPosition;
+            float3 support = target.HasSupportPosition ? target.SupportPosition : target.Position;
+            float3 horizontal = anchor + offset - support;
+            horizontal.y = 0f;
+            float height = MathF.Sqrt(MathF.Max(minimum * minimum - horizontal.LengthSquared, 0f));
+            anchor.y = MathF.Max(anchor.y, support.y + height - offset.y);
+        }
+        return anchor;
+    }
+
+    private int SpineIndex(int index) => _spineRootIndex == 0 ? index : _spine.Count - 1 - index;
+
     private void SolveSpineBeam(float3 pelvisTarget, float3 chestTarget, in ChassisTarget chassis)
     {
         int n = _spine.Count;
         if (n < 2)
             return;
 
-        if (n == 2)
-        {
-            ApplySpineSwing(_spine[0], chestTarget - pelvisTarget, _curBodyForward);
-            return;
-        }
+        float3 rootTarget = _spineRootIndex == 0 ? pelvisTarget : chestTarget;
+        float3 endTarget = _spineRootIndex == 0 ? chestTarget : pelvisTarget;
+        float3 root = _spine[SpineIndex(0)].GlobalPosition;
+        float3 restSpan = _spine[SpineIndex(n - 1)].GlobalPosition - root;
+        float3 targetSpan = endTarget - rootTarget;
+        floatQ turn = FabrikSolver.FromToRotation(restSpan, targetSpan, float3.Up);
+        for (int i = 0; i < n; i++)
+            _spineJoints[i] = rootTarget + turn * (_spine[SpineIndex(i)].GlobalPosition - root);
+
+        // Seed from the authored curve in the target frame, then preserve every segment length.
+        // The root-to-leaf pass is also the order in which rotations must reach the skeleton.
+        FabrikSolver.SolveChain(_spineJoints, _spineLengths, endTarget, _spineLimits, _curBodyForward, iterations: 10,
+            tolerance: MathF.Max(RestBodyLength * 0.0001f, 0.00001f));
+
+        float rearRoll = chassis.Valid ? System.Math.Clamp(chassis.RearRoll, -MaxBodyRoll, MaxBodyRoll) : 0f;
+        float frontRoll = chassis.Valid ? System.Math.Clamp(chassis.FrontRoll, -MaxBodyRoll, MaxBodyRoll) : 0f;
+        float3 beamForward = chestTarget - pelvisTarget;
+        if (beamForward.LengthSquared < 1e-8f)
+            beamForward = _curBodyForward;
+        beamForward = beamForward.Normalized;
 
         for (int i = 0; i < n; i++)
-            _spineJoints[i] = _spine[i].GlobalPosition;
-
-        FabrikSolver.ReconcilePinnedEnds(_spineJoints, _spineLengths, pelvisTarget, chestTarget, iterations: 3);
-
-        // Stiffness pulls the solved chain back toward the straight line between the pinned ends, so a
-        // long spine does not sag into a hammock between the girdles.
-        if (SpineStiffness > 1e-3f)
         {
-            for (int i = 1; i < n - 1; i++)
-            {
-                float t = (float)i / (n - 1);
-                float3 straight = float3.Lerp(pelvisTarget, chestTarget, t);
-                _spineJoints[i] = float3.Lerp(_spineJoints[i], straight, System.Math.Clamp(SpineStiffness, 0f, 1f) * 0.5f);
-            }
-            FabrikSolver.ReconcilePinnedEnds(_spineJoints, _spineLengths, pelvisTarget, chestTarget, iterations: 1);
-        }
-
-        // Roll blends rear girdle to front along the beam, so a body crossing uneven ground banks
-        // through its length instead of hinging at one joint.
-        float rearRoll = System.Math.Clamp(chassis.RearRoll, -MaxBodyRoll, MaxBodyRoll);
-        float frontRoll = System.Math.Clamp(chassis.FrontRoll, -MaxBodyRoll, MaxBodyRoll);
-
-        for (int i = 0; i < n - 1; i++)
-        {
-            float3 dir = _spineJoints[i + 1] - _spineJoints[i];
-            if (dir.LengthSquared < 1e-10f)
-                continue;
-
-            float3 rolledForward = _curBodyForward;
-            if (chassis.Valid && (MathF.Abs(frontRoll) > 1e-4f || MathF.Abs(rearRoll) > 1e-4f))
-            {
-                float t = (float)i / MathF.Max(n - 1, 1);
-                float roll = rearRoll + (frontRoll - rearRoll) * t;
-                float3 axis = dir.Normalized;
-                rolledForward = floatQ.AxisAngleRad(axis, roll) * _curBodyForward;
-            }
-
-            ApplySpineSwing(_spine[i], dir, rolledForward);
+            int index = SpineIndex(i);
+            float3 dir = i < n - 1
+                ? _spineJoints[i + 1] - _spineJoints[i]
+                : _spineJoints[i] - _spineJoints[i - 1];
+            float t = (float)index / (n - 1);
+            float roll = rearRoll + (frontRoll - rearRoll) * t;
+            float3 up = floatQ.AxisAngleRad(beamForward, roll) * float3.Up;
+            ApplySpineSwing(_spine[index], dir, up);
         }
     }
-
-    private void SolveNeck(float3 headPos, in floatQ lookRotation, float positionWeight)
+    private void SolveNeck(float3 headPos, float positionWeight)
     {
         int n = _neck.Count;
         if (n < 2)
             return;
 
-        var headBone = _neck[^1];
+        positionWeight = System.Math.Clamp(positionWeight, 0f, 1f);
+        if (positionWeight <= 1e-4f)
+            return;
 
         if (n == 2)
         {
-            float3 dir = headPos - _neck[0].GlobalPosition;
+            float3 target = float3.Lerp(_neck[1].GlobalPosition, headPos, positionWeight);
+            float3 dir = target - _neck[0].GlobalPosition;
             if (dir.LengthSquared > 1e-10f && positionWeight > 1e-3f)
                 ApplySwing(_neck[0], dir);
-            WriteHeadFacing(headBone, lookRotation);
             return;
         }
 
@@ -933,7 +1098,6 @@ public sealed class QuadrupedIKSolver
                 ApplySwing(_neck[i], dir);
         }
 
-        WriteHeadFacing(headBone, lookRotation);
     }
 
     // THE DIGITIGRADE LIMB SOLVE
@@ -951,18 +1115,24 @@ public sealed class QuadrupedIKSolver
     private void SolveLimb(ref LimbChain limb, in LimbTarget target)
     {
         if (!limb.RestValid || limb.Bones == null || limb.Bones.Length < 3 || !target.Valid)
+        {
             return;
+        }
 
         var paw = limb.Bones[^1];
         int start = limb.ChainStart;
         float3 limbRoot = limb.Bones[0].GlobalPosition;
+        float weight = System.Math.Clamp(target.PositionWeight, 0f, 1f);
+        if (weight <= 1e-4f)
+        {
+            ApplyPawTarget(ref limb, target);
+            return;
+        }
 
         // The rest paw position is carried on the LIVE root, not read back from ReadPose: the pelvis
         // write above moved every limb root after the rest pose was measured, and a stale rest end
         // would blend a partial weight toward where the paw was before the body stood up.
-        float3 restEnd = limbRoot + limb.RestOffsets[^1];
-
-        float weight = System.Math.Clamp(target.PositionWeight, 0f, 1f);
+        float3 restEnd = paw.GlobalPosition;
         float3 goal = float3.Lerp(restEnd, target.Position, weight);
 
         // Girdle bone first, chain root second. The scapula takes a small clamped share of the swing
@@ -1049,8 +1219,7 @@ public sealed class QuadrupedIKSolver
 
         // Fold or straighten the seed to the target's span first; the iterative solve only polishes.
         // See SeedPlanarFold for why a crouch cannot be left to the iterations.
-        limb.LastFoldSeed = FabrikSolver.SeedPlanarFold(
-            joints, limb.ChainLengths, limb.Hinges, root, goal, planeNormal, hasRootReference, rootReference);
+        SeedLimbPose(ref limb, root, goal, planeNormal);
 
         FabrikSolver.SolveHingeChain(
             joints, limb.ChainLengths, goal, planeNormal, limb.Hinges,
@@ -1092,20 +1261,30 @@ public sealed class QuadrupedIKSolver
         {
             float3 dir = joints[i + 1] - joints[i];
             if (dir.LengthSquared > 1e-10f)
+            {
                 ApplySwing(limb.Bones[start + i], dir);
+            }
         }
 
-        // Paw orientation from the TARGET's ground frame, never from where the chain ended up. Then the
-        // toe rides it.
+        ApplyPawTarget(ref limb, target);
+    }
+
+    private void ApplyPawTarget(ref LimbChain limb, in LimbTarget target)
+    {
+        var paw = limb.Bones[^1];
+        float weight = System.Math.Clamp(target.RotationWeight, 0f, 1f);
+        if (weight <= 1e-4f)
+            return;
+
         if (_restRot.TryGetValue(paw, out var restPawRot))
         {
             if (target.GroundAlign)
             {
-                WriteGlobalRotation(paw, GroundPawRotation(restPawRot, target));
+                WriteGlobalRotation(paw, floatQ.Slerp(paw.GlobalRotation, GroundPawRotation(restPawRot, target), weight).Normalized);
             }
-            else if (target.RotationWeight > 1e-3f)
+            else
             {
-                WriteGlobalRotation(paw, floatQ.Slerp(restPawRot, target.Rotation, System.Math.Clamp(target.RotationWeight, 0f, 1f)).Normalized);
+                WriteGlobalRotation(paw, floatQ.Slerp(paw.GlobalRotation, target.Rotation, weight).Normalized);
             }
         }
 
@@ -1122,11 +1301,12 @@ public sealed class QuadrupedIKSolver
     {
         var scapula = limb.Bones[0];
         float3 scapPos = scapula.GlobalPosition;
-        float3 liveDir = limb.Bones[1].GlobalPosition - scapPos;
-        float len = limb.Lengths[0];
+        var upper = limb.Bones[limb.ChainStart];
+        float3 liveDir = upper.GlobalPosition - scapPos;
+        float len = liveDir.Length;
         solvedDir = liveDir.LengthSquared > 1e-10f ? liveDir.Normalized : float3.Zero;
         if (solvedDir.LengthSquared < 0.5f || len < 1e-6f)
-            return limb.Bones[1].GlobalPosition;
+            return upper.GlobalPosition;
 
         float3 nrm = limb.RestPlaneNormal;
         float3 restReach = limb.RestRootToEnd - nrm * float3.Dot(limb.RestRootToEnd, nrm);
@@ -1152,7 +1332,8 @@ public sealed class QuadrupedIKSolver
             }
         }
 
-        return scapPos + solvedDir * len;
+        solvedDir = upper.GlobalPosition - limb.Bones[limb.ChainStart - 1].GlobalPosition;
+        return upper.GlobalPosition;
     }
 
     // Plane normal of a seed that a bend hint has rotated: from the joint that sticks out furthest from
@@ -1201,6 +1382,9 @@ public sealed class QuadrupedIKSolver
         {
             if (i >= start)
             {
+                var child = limb.Bones[i + 1];
+                // Local offsets preserve the armature's scale; BeginFrame restores the bind lengths.
+                child.LocalPosition.SetValueSilently(child.LocalPosition.Value * scale, change: true);
                 limb.Lengths[i] *= scale;
                 limb.ChainLength += limb.Lengths[i];
             }
@@ -1264,14 +1448,11 @@ public sealed class QuadrupedIKSolver
         WriteGlobalRotation(toe, toeRot);
     }
 
-    // Aim the head along the look while trusting the authored head pose: a yaw from the rest body
-    // forward about world up, plus a pitch about the look's right axis, applied on top of the captured
-    // rest rotation. No bone axis is consulted, because assuming the snout sits on a particular local
-    // axis twists the head sideways on any rig that disagrees - and a fox's snout convention is
-    // whatever the artist felt like.
-    private void WriteHeadFacing(Slot head, in floatQ lookRotation)
+    // Clamp view yaw relative to the body while preserving the head's authored axes and headset tilt.
+    private void WriteHeadFacing(Slot head, in floatQ lookRotation, float rotationWeight)
     {
-        if (head == null || head.IsDestroyed)
+        rotationWeight = System.Math.Clamp(rotationWeight, 0f, 1f);
+        if (head == null || head.IsDestroyed || rotationWeight <= 1e-4f)
             return;
         if (!_restRot.TryGetValue(head, out var restRot))
         {
@@ -1293,20 +1474,16 @@ public sealed class QuadrupedIKSolver
             lookFlat = _curBodyForward;
         lookFlat = lookFlat.LengthSquared > 1e-6f ? lookFlat.Normalized : _restBodyForward;
 
-        float yawDelta = WrapPi(
-            MathF.Atan2(lookFlat.x, lookFlat.z) - MathF.Atan2(_restBodyForward.x, _restBodyForward.z));
-        yawDelta = System.Math.Clamp(yawDelta, -MaxHeadYaw, MaxHeadYaw);
-        floatQ aim = floatQ.AxisAngleRad(float3.Up, yawDelta);
-
-        float pitch = MathF.Asin(System.Math.Clamp(look.y, -1f, 1f));
-        if (MathF.Abs(pitch) > 1e-4f)
-        {
-            float3 right = float3.Cross(lookFlat, float3.Up);
-            if (right.LengthSquared > 1e-8f)
-                aim = floatQ.AxisAngleRad(right.Normalized, pitch) * aim;
-        }
-
-        WriteGlobalRotation(head, aim * restRot);
+        float3 bodyFlat = _curBodyForward;
+        bodyFlat.y = 0f;
+        bodyFlat = bodyFlat.LengthSquared > 1e-6f ? bodyFlat.Normalized : _restBodyForward;
+        float bodyYaw = MathF.Atan2(bodyFlat.x, bodyFlat.z);
+        float lookYaw = MathF.Atan2(lookFlat.x, lookFlat.z);
+        float relativeYaw = System.Math.Clamp(WrapPi(lookYaw - bodyYaw), -MaxHeadYaw, MaxHeadYaw);
+        float yawCorrection = WrapPi(bodyYaw + relativeYaw - lookYaw);
+        floatQ constrainedLook = floatQ.AxisAngleRad(float3.Up, yawCorrection) * lookRotation;
+        floatQ aim = FabrikSolver.ViewRotationDelta(_restBodyForward, constrainedLook);
+        WriteGlobalRotation(head, floatQ.Slerp(head.GlobalRotation, aim * restRot, rotationWeight).Normalized);
     }
 
     private void ApplySwing(Slot bone, float3 solvedDir)
@@ -1320,61 +1497,30 @@ public sealed class QuadrupedIKSolver
         WriteGlobalRotation(bone, swing * restRot);
     }
 
-    // Spine variant: align the length axis to the solved direction, then twist about that axis so the
-    // bone keeps its AUTHORED offset from the body forward. Twisting a bone's local -Z onto the body
-    // assumes belly-on--Z and wrings an arbitrary-convention spine sideways.
-    private void ApplySpineSwing(Slot bone, float3 solvedDir, float3 bodyForward)
+    // Body up remains perpendicular to a horizontal spine and gives its twist a stable axis.
+    private void ApplySpineSwing(Slot bone, float3 solvedDir, float3 bodyUp)
     {
         if (bone == null || solvedDir.LengthSquared < 1e-8f)
             return;
         if (!_restDir.TryGetValue(bone, out var restDir) || !_restRot.TryGetValue(bone, out var restRot))
             return;
 
-        floatQ swing = FabrikSolver.FromToRotation(restDir, solvedDir);
+        floatQ swing = FabrikSolver.FromToRotation(restDir, solvedDir, _restBodyUp);
         floatQ swung = swing * restRot;
-
-        if (bodyForward.LengthSquared > 1e-6f)
+        float3 axis = solvedDir.Normalized;
+        float3 transported = swing * _restBodyUp;
+        float3 current = transported - axis * float3.Dot(transported, axis);
+        float3 goal = bodyUp - axis * float3.Dot(bodyUp, axis);
+        if (current.LengthSquared > 0.05f && goal.LengthSquared > 0.05f)
         {
-            float3 axis = solvedDir.Normalized;
-
-            // Twist reference must be PERPENDICULAR to the spine, and on a quadruped forward is not.
-            //
-            // This aligned the transported rest FORWARD with the live forward, projected onto the plane
-            // across the spine. A biped's spine stands across its forward, so that projection is a
-            // healthy unit-ish vector. A quadruped's spine RUNS ALONG its forward: the projection is a
-            // sliver of rounding error, its direction is noise, and the 1e-6 guard let a millimetre of
-            // it through. Measured: rest pelvis roll -0.8 degrees, post-solve -63, chest -80, one hip
-            // 17 cm below the other on a level floor, every frame. Use whichever of forward and up is
-            // more across the spine, transporting the REST copy of it so the swing keeps the authored
-            // twist rather than snapping to world up. Nearly the whole spine of a standing animal ends
-            // up on the up branch; a rearing or climbing one crosses to forward. -xlinka
-            float3 restRef = _restBodyForward;
-            float3 liveRef = bodyForward;
-            if (MathF.Abs(float3.Dot(axis, bodyForward.Normalized)) > 0.7f)
-            {
-                restRef = _restBodyUp;
-                liveRef = float3.Up;
-            }
-
-            float3 transported = swing * restRef;
-            float3 current = transported - axis * float3.Dot(transported, axis);
-            float3 goal = liveRef - axis * float3.Dot(liveRef, axis);
-            if (current.LengthSquared > 0.05f && goal.LengthSquared > 0.05f)
-            {
-                current = current.Normalized;
-                goal = goal.Normalized;
-                float angle = MathF.Acos(System.Math.Clamp(float3.Dot(current, goal), -1f, 1f));
-                if (float3.Dot(float3.Cross(current, goal), axis) < 0f)
-                    angle = -angle;
-                if (MathF.Abs(angle) > 1e-4f)
-                    swung = floatQ.AxisAngleRad(axis, angle) * swung;
-            }
+            current = current.Normalized;
+            goal = goal.Normalized;
+            float angle = MathF.Atan2(float3.Dot(float3.Cross(current, goal), axis), float3.Dot(current, goal));
+            swung = floatQ.AxisAngleRad(axis, angle) * swung;
         }
-
         WriteGlobalRotation(bone, swung);
     }
-
-    // The epsilon guard matters: without it every bone writes every frame and the change flood alone
+    // Avoid notifying transform listeners when the rotation has not changed.
     private static void WriteGlobalRotation(Slot bone, in floatQ rotation)
     {
         if (bone == null || bone.IsDestroyed)
@@ -1387,7 +1533,7 @@ public sealed class QuadrupedIKSolver
             bone.LocalRotation.SetValueSilently(local, change: true);
     }
 
-    // Pelvis only. See the header for why this is the single bone that gets a position.
+    // Only the common body root receives a global position.
     private static void WriteGlobalPosition(Slot bone, in float3 position)
     {
         if (bone == null || bone.IsDestroyed)

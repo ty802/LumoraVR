@@ -17,8 +17,8 @@ namespace Lumora.Core.Components.Avatar;
 // double-send every bone every frame and fight the remote peer's own
 // computation. - xlinka
 [ComponentCategory("Users/Avatar")]
-[DefaultUpdateOrder(-7500)]
-public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable, IInputUpdateReceiver
+[DefaultUpdateOrder(500)]
+public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable
 {
     public readonly Sync<BodyNode> Node = new();
 
@@ -26,6 +26,7 @@ public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable, IInputUpda
     [OldName("EquipOrderPriority_")]
     public readonly Sync<int> EquipPriority_ = new();
 
+    // Retained for saved avatars; poses now refresh after movement in the component update.
     public readonly Sync<bool> RunAfterInputUpdate = new();
 
     public readonly SyncFieldList<BodyNode> ConflictingNodes_ = new();
@@ -47,7 +48,6 @@ public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable, IInputUpda
     protected readonly FieldDrive<float3> _scale = new() { LocalValueOnly = true };
     protected readonly FieldDrive<bool> _active = new() { LocalValueOnly = true };
 
-    private bool _isRegistered;
 
     // IAvatarEquippable implementation
     BodyNode IAvatarEquippable.Node => Node.Value;
@@ -73,13 +73,8 @@ public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable, IInputUpda
     public override void OnStart()
     {
         base.OnStart();
-
-        var input = Engine.Current?.InputInterface;
-        if (input != null)
-        {
-            input.RegisterInputEventReceiver(this);
-            _isRegistered = true;
-        }
+        if (UpdateOrder >= -7500 && UpdateOrder < -5000)
+            UpdateOrder += 8000;
 
         EnsureCorrectUpdateOrder();
         RefreshDriveLinks();
@@ -96,13 +91,6 @@ public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable, IInputUpda
 
     public override void OnDestroy()
     {
-        if (_isRegistered)
-        {
-            var input = Engine.Current?.InputInterface;
-            input?.UnregisterInputEventReceiver(this);
-            _isRegistered = false;
-        }
-
         ReleaseDriveLinks();
         AllowedEquipUser = null!;
         base.OnDestroy();
@@ -260,19 +248,11 @@ public class AvatarPoseDriver : UserRootComponent, IAvatarEquippable, IInputUpda
             field.Value = value;
     }
 
-    public void BeforeInputUpdate()
+    public override void OnUpdate(float delta)
     {
-        if (!RunAfterInputUpdate.Value)
-        {
-            RunUpdate();
-        }
+        base.OnUpdate(delta);
+        using var bypass = World?.DataModelPermissions?.EnterSystemBypass();
+        RunUpdate();
     }
 
-    public void AfterInputUpdate()
-    {
-        if (RunAfterInputUpdate.Value)
-        {
-            RunUpdate();
-        }
-    }
 }

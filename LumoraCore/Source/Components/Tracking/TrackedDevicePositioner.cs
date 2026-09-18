@@ -228,8 +228,7 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
         }
     }
 
-    // body node slots are children of the user root, so this writes local pose directly; world-space
-    // consumers should read ITrackedDevice.Position/Rotation instead
+    // Convert tracked poses into this node's parent frame before publishing its transform stream.
     public void BeforeInputUpdate()
     {
         var device = TrackedDevice;
@@ -258,6 +257,13 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
             {
                 pos = device.RawPosition;
                 rot = device.RawRotation;
+                // Body-node slots and extra trackers can have different parents. Resolve both
+                // through the same avatar tracking space before writing their local transforms.
+                if (device.TrackingSpace != null && Slot.Parent is { } parent)
+                {
+                    pos = parent.GlobalPointToLocal(device.Position);
+                    rot = parent.GlobalRotationToLocal(device.Rotation);
+                }
             }
             else
             {
@@ -394,4 +400,3 @@ public class TrackedDevicePositioner : UserRootComponent, IInputUpdateReceiver
         return rot;
     }
 }
-

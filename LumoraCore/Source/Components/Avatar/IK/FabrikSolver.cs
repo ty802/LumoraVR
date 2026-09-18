@@ -24,6 +24,15 @@ public static class FabrikSolver
     // unstable bend axis you get exactly at full extension.
     private const float MaxReachFraction = 0.999f;
 
+    public static floatQ ViewRotationDelta(float3 restForward, floatQ viewRotation)
+    {
+        restForward.y = 0f;
+        if (restForward.LengthSquared < 1e-8f)
+            restForward = float3.Backward;
+        floatQ restView = FromToRotation(float3.Backward, restForward.Normalized, float3.Up);
+        return (viewRotation * restView.Inverse).Normalized;
+    }
+
     // Solve an N-joint chain. joints[0] is the anchored root, joints[^1] is
     // the end effector pulled toward target. lengths[i] is the rest distance
     // between joints[i] and joints[i+1] (length == joints.Length - 1).
@@ -649,6 +658,96 @@ public static class FabrikSolver
         if (bestErr < float.MaxValue)
             Array.Copy(best, joints, n);
 
+        // Unequal links can need one hinge to unfold while another folds. A uniform flex
+        // nudge cannot escape that stall; refine each hinge independently within its range.
+        if (planar && bestErr > tolerance && bestErr < float.MaxValue)
+        {
+            if (stats.Stalled)
+            {
+                for (int joint = n - 2; joint >= 1; joint--)
+                {
+                    if (!limits[joint].Active)
+                        continue;
+                    for (int sample = 0; sample <= 8; sample++)
+                    {
+                        Array.Copy(best, joints, n);
+                        float3 pivot = joints[joint];
+                        float3 incoming = pivot - joints[joint - 1];
+                        float3 outgoing = joints[joint + 1] - pivot;
+                        if (incoming.LengthSquared < 1e-12f || outgoing.LengthSquared < 1e-12f)
+                            continue;
+                        float current = SignedAngle(incoming.Normalized, outgoing.Normalized, normal);
+                        float candidate = limits[joint].Min + (limits[joint].Max - limits[joint].Min) * (sample / 8f);
+                        floatQ rotation = floatQ.AxisAngleRad(normal, candidate - current);
+                        for (int child = joint + 1; child < n; child++)
+                            joints[child] = pivot + rotation * (joints[child] - pivot);
+
+                        float3 end = joints[n - 1] - root;
+                        float3 goal = target - root;
+                        if (end.LengthSquared < 1e-12f || goal.LengthSquared < 1e-12f)
+                            continue;
+                        float aim = SignedAngle(end.Normalized, goal.Normalized, normal);
+                        if (useRootRef)
+                        {
+                            float rootAngle = SignedAngle(rootRef, (joints[1] - root).Normalized, normal);
+                            aim = System.Math.Clamp(rootAngle + aim, limits[0].Min, limits[0].Max) - rootAngle;
+                        }
+                        rotation = floatQ.AxisAngleRad(normal, aim);
+                        for (int child = 1; child < n; child++)
+                            joints[child] = root + rotation * (joints[child] - root);
+                        float error = float3.Distance(joints[n - 1], target);
+                        if (error < bestErr)
+                        {
+                            bestErr = error;
+                            Array.Copy(joints, best, n);
+                        }
+                    }
+                }
+                Array.Copy(best, joints, n);
+            }
+            for (int pass = 0; pass < 24; pass++)
+            {
+                float previous = bestErr;
+                for (int joint = n - 2; joint >= 0; joint--)
+                {
+                    float3 pivot = joints[joint];
+                    float3 end = joints[n - 1] - pivot;
+                    float3 goal = target - pivot;
+                    if (end.LengthSquared < 1e-12f || goal.LengthSquared < 1e-12f)
+                        continue;
+                    float angle = SignedAngle(end.Normalized, goal.Normalized, normal);
+                    if (limits[joint].Active && (joint > 0 || useRootRef))
+                    {
+                        float3 incoming = joint > 0 ? joints[joint] - joints[joint - 1] : rootRef;
+                        float3 outgoing = joints[joint + 1] - pivot;
+                        if (incoming.LengthSquared < 1e-12f || outgoing.LengthSquared < 1e-12f)
+                            continue;
+                        float current = SignedAngle(incoming.Normalized, outgoing.Normalized, normal);
+                        angle = System.Math.Clamp(current + angle, limits[joint].Min, limits[joint].Max) - current;
+                    }
+                    if (MathF.Abs(angle) < 1e-7f)
+                        continue;
+                    floatQ rotation = floatQ.AxisAngleRad(normal, angle);
+                    for (int child = joint + 1; child < n; child++)
+                        joints[child] = pivot + rotation * (joints[child] - pivot);
+                }
+
+                float error = float3.Distance(joints[n - 1], target);
+                stats.Iterations++;
+                if (error < bestErr)
+                {
+                    bestErr = error;
+                    Array.Copy(joints, best, n);
+                }
+                if (bestErr <= tolerance || previous - bestErr <= tolerance * 0.01f)
+                    break;
+            }
+            Array.Copy(best, joints, n);
+            stats.EndError = bestErr;
+            stats.Converged = bestErr <= tolerance;
+            stats.Stalled = !stats.Converged;
+        }
+
         // End-pin: the end goes exactly to the target, lengths are re-satisfied walking back toward the
         // root, and the root is NOT moved. Whatever cannot be absorbed by rotation sits in the root
         // segment's length. The caller writes rotations from these directions, so a length error there
@@ -955,6 +1054,69 @@ public static class FabrikSolver
         float midEndLen = midToEnd.Length;
         if (midEndLen > Epsilon)
             end = mid + midToEnd / midEndLen * lowerLength;
+    }
+
+    // Analytic two-bone solve with the bend given as a DIRECTION (bendIsPoint false) or a POINT (true). The
+    // mid joint sits by the law of cosines on the root->target axis, offset perpendicular to it toward the bend
+    // rejected against the axis. Out of reach, or folded past what the two lengths allow, the mid joint lies
+    // along the axis (behind the root when the target sits inside the length difference and the upper bone is
+    // the shorter) and the end goes as far toward the target as the lower length reaches. fallbackBend is only
+    // read when the bend lies along the axis. -xlinka
+    public static void SolveTwoBoneBend(
+        float3 root,
+        float3 target,
+        float upperLength,
+        float lowerLength,
+        float3 bend,
+        bool bendIsPoint,
+        float3 fallbackBend,
+        out float3 mid,
+        out float3 end)
+    {
+        float3 toTarget = target - root;
+        float dist = toTarget.Length;
+        float3 axis = dist > Epsilon ? toTarget / dist : float3.Down;
+
+        float denom = 2f * dist * upperLength;
+        float cosRoot = denom > Epsilon
+            ? (dist * dist + upperLength * upperLength - lowerLength * lowerLength) / denom
+            : 2f;
+
+        float3 midRel;
+        float3 endRel;
+        if (!(MathF.Abs(cosRoot) < 1f))
+        {
+            float difference = MathF.Abs(lowerLength - upperLength);
+            midRel = dist < difference && upperLength <= lowerLength
+                ? -axis * upperLength
+                : axis * upperLength;
+            float3 midToTarget = toTarget - midRel;
+            float3 midDir = midToTarget.LengthSquared > Epsilon ? midToTarget.Normalized : axis;
+            endRel = midRel + midDir * lowerLength;
+        }
+        else
+        {
+            float along = upperLength * cosRoot;
+            float across = upperLength * MathF.Sqrt(MathF.Max(0f, 1f - cosRoot * cosRoot));
+            float3 foot = axis * along;
+            float3 bendDir = bendIsPoint ? (bend - root) - foot : bend;
+            float3 perp = bendDir - axis * float3.Dot(bendDir, axis);
+            if (perp.LengthSquared < Epsilon)
+            {
+                perp = fallbackBend - axis * float3.Dot(fallbackBend, axis);
+                if (perp.LengthSquared < Epsilon)
+                {
+                    perp = float3.Cross(axis, float3.Up);
+                    if (perp.LengthSquared < Epsilon)
+                        perp = float3.Cross(axis, float3.Right);
+                }
+            }
+            midRel = foot + perp.Normalized * across;
+            endRel = toTarget;
+        }
+
+        mid = root + midRel;
+        end = root + endRel;
     }
 
     // Rotation that turns `from` onto `to`. Both should be non-zero; they get

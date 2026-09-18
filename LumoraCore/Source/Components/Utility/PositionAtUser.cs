@@ -1,6 +1,9 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System;
+using System.Collections.Generic;
+using Lumora.Core.Assets;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Components;
@@ -11,6 +14,7 @@ namespace Lumora.Core.Components;
 // duplicate the head stream every frame. Offset scales with the user so
 // plates stay above scaled avatars. - xlinka
 [ComponentCategory("Utility")]
+[DefaultUpdateOrder(3000)]
 public class PositionAtUser : Component
 {
     public readonly Sync<float> VerticalOffset = new();
@@ -25,37 +29,115 @@ public class PositionAtUser : Component
     // unrecognised avatar behaves exactly as before. -xlinka
     public readonly SyncRef<Slot> Anchor = new();
 
+    private Slot? _measuredHead;
+    private Slot? _measuredAvatar;
+    private double _nextMeshCheck;
+    private readonly List<(SkinnedMeshRenderer Renderer, MeshDataAsset? Asset, int Bones, int Vertices)> _meshes = new();
+    private readonly List<(Slot Bone, BoundingBox Bounds)> _headBounds = new();
+    private readonly List<Slot> _headBones = new();
+
     public override void OnInit()
     {
         base.OnInit();
         VerticalOffset.Value = 0.25f;
     }
 
-    private Avatar.AvatarForm? _avatarForm;
-
-    // How much bigger the worn avatar is than the user root it hangs off.
-    //
-    // The avatar fit scale lives on the AVATAR slot here, while the user root stays at 1. That is the one
-    // place this diverges from the platform it mirrors, which scales the user root itself - and anything
-    // offset from the head by a fixed distance inherits the difference. A model scaled up to match its
-    // wearer gets a head nearly twice the size while the offset stays put, and the nameplate ends up
-    // inside it. Fold the avatar's own scale back in so the offset stays proportional to the body it is
-    // sitting above. Returns 1 for an unworn or unscaled user, so nothing else moves. -xlinka
-    private float AvatarFitScale(UserRoot userRoot)
+    public override void OnStart()
     {
-        if (_avatarForm == null || _avatarForm.IsDestroyed || _avatarForm.Slot == null || _avatarForm.Slot.IsDestroyed)
-            _avatarForm = userRoot.Slot?.GetComponentInChildren<Avatar.AvatarForm>();
+        base.OnStart();
+        if (UpdateOrder == 0)
+            UpdateOrder = 3000;
+    }
 
-        var avatar = _avatarForm?.Slot;
-        if (avatar == null || avatar.IsDestroyed)
-            return 1f;
+    private float HeadTop(Slot head, Slot? avatar)
+    {
+        bool changed = head != _measuredHead || avatar != _measuredAvatar;
+        double now = World?.Time.TotalTime ?? 0;
+        if (changed || now >= _nextMeshCheck)
+        {
+            _nextMeshCheck = now + 1;
+            var meshes = avatar?.GetComponentsInChildren<SkinnedMeshRenderer>();
+            var current = new List<(SkinnedMeshRenderer Renderer, MeshDataAsset? Asset, int Bones, int Vertices)>();
+            if (meshes != null)
+                foreach (var renderer in meshes)
+                    current.Add((renderer, renderer.MeshAsset.Asset, renderer.Bones.Count, renderer.MeshAsset.Asset?.VertexCount ?? 0));
+            if (current.Count != _meshes.Count)
+                changed = true;
+            for (int i = 0; !changed && i < current.Count; i++)
+                changed = current[i] != _meshes[i];
+            if (changed)
+            {
+                _measuredHead = head;
+                _measuredAvatar = avatar;
+                _meshes.Clear();
+                _meshes.AddRange(current);
+                MeasureHead(head);
+            }
+        }
 
-        float root = userRoot.GlobalScale;
-        if (root < 1e-4f)
-            return 1f;
+        float top = head.GlobalPosition.y;
+        foreach (var bone in _headBones)
+            if (!bone.IsDestroyed && bone.IsActive)
+                top = MathF.Max(top, bone.GlobalPosition.y);
+        foreach (var entry in _headBounds)
+        {
+            if (entry.Bone.IsDestroyed || !entry.Bone.IsActive)
+                continue;
+            var bounds = entry.Bounds;
+            for (int i = 0; i < 8; i++)
+            {
+                var corner = new float3((i & 1) == 0 ? bounds.Min.x : bounds.Max.x,
+                    (i & 2) == 0 ? bounds.Min.y : bounds.Max.y,
+                    (i & 4) == 0 ? bounds.Min.z : bounds.Max.z);
+                top = MathF.Max(top, entry.Bone.LocalPointToGlobal(corner).y);
+            }
+        }
+        return top;
+    }
 
-        float fit = avatar.GlobalScale.x / root;
-        return fit > 1e-4f ? fit : 1f;
+    private void MeasureHead(Slot head)
+    {
+        _headBounds.Clear();
+        _headBones.Clear();
+        AddHeadBones(head);
+        foreach (var entry in _meshes)
+        {
+            var renderer = entry.Renderer;
+            var mesh = entry.Asset?.MeshData;
+            if (mesh == null || !mesh.HasBoneBindings)
+                continue;
+            int count = System.Math.Min(mesh.BoneCount, renderer.Bones.Count);
+            var bounds = new BoundingBox[count];
+            var included = new bool[count];
+            for (int i = 0; i < count; i++)
+            {
+                var bone = renderer.Bones[i];
+                included[i] = bone != null && !bone.IsDestroyed && (bone == head || bone.IsDescendantOf(head));
+                bounds[i].MakeEmpty();
+            }
+            for (int i = 0; i < mesh.VertexCount; i++)
+            {
+                var vertex = mesh.GetVertex(i);
+                var binding = vertex.BoneBinding;
+                for (int j = 0; j < 4; j++)
+                {
+                    int index = (int)binding.boneIndices[j];
+                    if (index < 0 || index >= count || !included[index] || binding.boneWeights[j] < 0.2f)
+                        continue;
+                    bounds[index].Encapsulate(mesh.GetBoneBindPose(index).MultiplyPoint(vertex.Position));
+                }
+            }
+            for (int i = 0; i < count; i++)
+                if (included[i] && float.IsFinite(bounds[i].Min.y))
+                    _headBounds.Add((renderer.Bones[i]!, bounds[i]));
+        }
+    }
+
+    private void AddHeadBones(Slot bone)
+    {
+        _headBones.Add(bone);
+        foreach (var child in bone.Children)
+            AddHeadBones(child);
     }
 
     public override void OnUpdate(float delta)
@@ -63,14 +145,19 @@ public class PositionAtUser : Component
         base.OnUpdate(delta);
 
         var userRoot = Slot?.ActiveUserRoot;
+        if (userRoot == null)
+            return;
         var anchor = Anchor.Target;
-        var head = anchor != null && !anchor.IsDestroyed ? anchor : userRoot?.HeadSlot;
+        var head = anchor != null && !anchor.IsDestroyed && anchor.IsActive ? anchor
+            : userRoot.GetRegisteredComponent<Avatar.AvatarEquipManager>()?.AvatarHead ?? userRoot.HeadSlot;
         var parent = Slot?.Parent;
         if (head == null || head.IsDestroyed || parent == null)
             return;
 
-        float scale = userRoot!.GlobalScale * AvatarFitScale(userRoot);
-        var target = head.GlobalPosition + float3.Up * (VerticalOffset.Value * scale);
+        float scale = MathF.Max(userRoot.GlobalScale, 0.01f);
+        var avatar = userRoot.GetRegisteredComponent<Avatar.AvatarEquipManager>()?.EquippedAvatar;
+        var target = head.GlobalPosition;
+        target.y = MathF.Max(target.y + VerticalOffset.Value * scale, HeadTop(head, avatar) + 0.12f * scale);
         var local = parent.GlobalPointToLocal(target);
 
         if ((Slot!.LocalPosition.Value - local).LengthSquared > 1e-10f)

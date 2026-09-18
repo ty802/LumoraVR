@@ -773,16 +773,58 @@ public class QuadrupedRig : Component
     private void SnapshotAuthoredPose()
     {
         _authoredPose.Clear();
+        foreach (var bone in GetPoseBones())
+            _authoredPose[bone] = (bone.LocalPosition.Value, bone.LocalRotation.Value);
+    }
+
+    // Include connecting bones up to the shared skeleton root, without claiming the avatar slot.
+    internal HashSet<Slot> GetPoseBones()
+    {
+        var mapped = new HashSet<Slot>();
         foreach (var node in Bones.Keys)
         {
             var bone = TryGetBone(node);
-            if (bone == null || bone.IsDestroyed)
-                continue;
-            _authoredPose[bone] = (bone.LocalPosition.Value, bone.LocalRotation.Value);
+            if (bone != null && !bone.IsDestroyed)
+                mapped.Add(bone);
         }
+        var result = new HashSet<Slot>(mapped);
+        Slot? common = null;
+        foreach (var bone in mapped)
+        {
+            if (common == null)
+                common = bone;
+            while (common != null)
+            {
+                bool contains = false;
+                for (var ancestor = bone; ancestor != null; ancestor = ancestor.Parent)
+                {
+                    if (ancestor != common)
+                        continue;
+                    contains = true;
+                    break;
+                }
+                if (contains)
+                    break;
+                common = common.Parent;
+            }
+        }
+        foreach (var bone in mapped)
+        {
+            if (bone == common)
+                continue;
+            for (var parent = bone.Parent; parent != null; parent = parent.Parent)
+            {
+                if (parent == Slot)
+                    break;
+                result.Add(parent);
+                if (parent == common)
+                    break;
+            }
+        }
+        return result;
     }
 
-    // Put every mapped bone back where the author had it. Skips anything still driven, because writing
+    // Restore mapped bones and their connecting hierarchy. Skips anything still driven, because writing
     // through a live link is exactly the silent no-op this whole hunt was about.
     public int RestoreAuthoredPose()
     {
@@ -916,7 +958,7 @@ public class QuadrupedRig : Component
                     axis = -axis;
             }
 
-            float3 axisRight = float3.Cross(float3.Up, axis);
+            float3 axisRight = float3.Cross(axis, float3.Up);
             if (axisRight.LengthSquared < 1e-8f)
                 continue;
             axisRight = axisRight.Normalized;

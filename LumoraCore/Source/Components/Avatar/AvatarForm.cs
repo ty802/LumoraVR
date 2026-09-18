@@ -159,7 +159,9 @@ public class AvatarForm : Component, IAvatarEquippable
             Logging.Logger.Warn("AvatarForm: no local user root to equip onto");
             return;
         }
-        var manager = userRoot.Slot.GetComponent<AvatarEquipManager>() ?? userRoot.Slot.AttachComponent<AvatarEquipManager>();
+        var manager = userRoot.GetRegisteredComponent<AvatarEquipManager>()
+                      ?? userRoot.Slot.GetComponentInChildren<AvatarEquipManager>()
+                      ?? userRoot.Slot.AttachComponent<AvatarEquipManager>();
         if (manager.UserRoot.Target == null)
             manager.UserRoot.Target = userRoot;
         manager.EquipAvatar(avatar);
@@ -192,6 +194,7 @@ public class AvatarForm : Component, IAvatarEquippable
             Slot.LocalScale.Value = sc;
 
         Owner.Target = slot.Slot.ActiveUserRoot;
+        Slot.ActiveSelf.Value = true;
         IsActive.Value = true;
     }
 

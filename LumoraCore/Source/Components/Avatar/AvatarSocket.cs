@@ -190,13 +190,14 @@ public class AvatarSocket : UserRootComponent
 
     public void Dequip(HashSet<IAvatarEquippable> dequippedObjects)
     {
-        if (Equipped?.Target == null)
+        var equipped = Equipped?.Target;
+        if (equipped == null)
             return;
 
-        dequippedObjects?.Add(Equipped.Target);
+        dequippedObjects?.Add(equipped);
 
         // Call OnDequip on all IAvatarEquipReceiver
-        ForeachObjectComponent((Equipped.Target as Component)!, (c) =>
+        ForeachObjectComponent((equipped as Component)!, (c) =>
         {
             try
             {
@@ -208,8 +209,9 @@ public class AvatarSocket : UserRootComponent
             }
         });
 
-        Equipped.Target.Dequip();
-        Equipped.Target = null!;
+        if (equipped is not Component component || !component.IsDestroyed)
+            equipped.Dequip();
+        Equipped!.Target = null!;
     }
 
     public void ForeachObjectComponent(Action<IAvatarEquipReceiver> action)

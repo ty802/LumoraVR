@@ -50,16 +50,14 @@ public class PoseSmoother : Component, IPoseFilter
         float posSpeed = PositionSmoothSpeed.Value;
         if (posSpeed > 0f)
         {
-            float t = posSpeed * dt;
-            if (t > 1f) t = 1f;
+            float t = 1f - System.MathF.Exp(-posSpeed * dt);
             position = float3.Lerp(_previousPosition, position, t);
         }
 
         float rotSpeed = RotationSmoothSpeed.Value;
         if (rotSpeed > 0f)
         {
-            float t = rotSpeed * dt;
-            if (t > 1f) t = 1f;
+            float t = 1f - System.MathF.Exp(-rotSpeed * dt);
             rotation = floatQ.Slerp(_previousRotation, rotation, t);
         }
 

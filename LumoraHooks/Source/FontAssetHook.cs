@@ -62,11 +62,10 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
         // the imported resource inside the .pck. But the engine resolved res:// to an OS DISK path
         // (ResourceRoot = GlobalizePath("res://")), which only has real files in the EDITOR - in an export that
         // dir is the exe folder and the font isn't there, so the raw read failed and text vanished. Recover the
-        // res:// path by stripping ResourceRoot (the exact value that built this path - reliable in editor AND
-        // export, unlike a GlobalizePath/LocalizePath round-trip) and load the IMPORTED FontFile from the .pck
-        // via ResourceLoader. Genuine external files (a user-imported font outside ResourceRoot) still raw-load.
-        // -xlinka
-        string? resPath = TryGetResPath(path);
+        // res:// path and load the IMPORTED FontFile from the .pck via ResourceLoader; it carries the MSDF
+        // import settings a raw load would not. Genuine external files (a user-imported font outside
+        // ResourceRoot) still raw-load. -xlinka
+        string? resPath = Lumora.Core.Engine.Current?.TryGetResourcePath(path);
         bool resExists = resPath != null && ResourceLoader.Exists(resPath);
         // DIAG (export-debug): shows the resolved path + whether the imported resource was found. Remove once
         // text is confirmed in the Linux/exported build. -xlinka
@@ -113,26 +112,6 @@ public sealed class FontAssetHook : AssetHook, IFontAssetHook
         }
 
         ConfigureMsdf();
-    }
-
-    // Map an engine resource disk path back to its res:// VFS path. The engine builds resource paths as
-    // ResourceRoot + relative (ResourceRoot == GlobalizePath("res://")), so stripping ResourceRoot recovers the
-    // relative part regardless of whether the file exists on disk - which is exactly the case in a .pck export.
-    // Returns null for paths NOT under ResourceRoot (genuine external files), which keep the raw-load path. -xlinka
-    private static string? TryGetResPath(string path)
-    {
-        var root = Lumora.Core.Engine.Current?.ResourceRoot;
-        if (string.IsNullOrEmpty(root) || string.IsNullOrEmpty(path))
-            return null;
-
-        static string Norm(string p) => p.Replace('\\', '/').TrimEnd('/');
-        var np = Norm(path);
-        var nr = Norm(root);
-        if (np.Length <= nr.Length || !np.StartsWith(nr, StringComparison.OrdinalIgnoreCase))
-            return null;
-
-        var rel = np.Substring(nr.Length).TrimStart('/');
-        return rel.Length == 0 ? null : "res://" + rel;
     }
 
     // Read MSDF intent + raster size from the loaded font. Imported fonts carry the flag from their import

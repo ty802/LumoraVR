@@ -34,6 +34,11 @@ public static class AssetFetcher
     // re-enter FetchAsset). -xlinka
     private static readonly object _lock = new();
 
+    // Installed by the platform layer. A res:// path in, the bytes its file holds in the resource pack
+    // out, or null when the pack has nothing under that path in any form. Left null there is no pack
+    // to ask (tests, tools without a platform) and a missing file is simply missing. -xlinka
+    public static Func<string, byte[]?>? ResourcePackReader { get; set; }
+
     // Calls callback with the raw bytes on the calling thread once the fetch task completes (via ProcessQueue).
     // Returns immediately; duplicate requests share a single in-flight task.
     public static void FetchAsset(string uri, Action<byte[]> callback)
@@ -117,8 +122,16 @@ public static class AssetFetcher
                         existing.callbacks.Add(callback);
                         return;
                     }
-                    // Read async so we don't block the main thread
-                    var task = Task.Run(() => File.ReadAllBytes(filePath));
+                    // ASYNC IO, NOT A POOL THREAD HOLDING A BLOCKING READ.
+                    //
+                    // Task.Run(File.ReadAllBytes) occupies a thread-pool thread for the whole read.
+                    // An import asks for well over a hundred assets at once, every one of them also
+                    // owning a pool thread for its own ProcessUpdate and another later for its decode,
+                    // and the pool only grows past its minimum at a rate of about one thread a second.
+                    // So the reads queued behind each other and the whole pipeline moved at a trickle:
+                    // measured 67 texture loads started, 34 reads finished, 13 uploaded in 44 seconds.
+                    // ReadAllBytesAsync holds no thread while the disk works. -xlinka
+                    var task = File.ReadAllBytesAsync(filePath);
                     _active[uri] = (task, [callback]);
                 }
                 return;
@@ -177,7 +190,7 @@ public static class AssetFetcher
             var u = new Uri(uri);
 
             if (u.Scheme == Uri.UriSchemeFile)
-                return File.ReadAllBytes(u.LocalPath);
+                return ReadFile(u, uri);
 
             if (u.Scheme == Uri.UriSchemeHttp || u.Scheme == Uri.UriSchemeHttps)
             {
@@ -199,5 +212,34 @@ public static class AssetFetcher
             LumoraLogger.Error($"AssetFetcher: failed to fetch '{uri}': {ex.Message}");
             return null!;
         }
+    }
+
+    // A res:// asset arrives here already resolved to a disk path under ResourceRoot. In the editor that
+    // file is real and the read is the whole story. An export has no such file: the pack holds either
+    // the raw file (a file no importer claims, or one kept as-is) or only what the importer made of it,
+    // and the platform reader gets bytes out of whichever is there. Both names go in the warning so
+    // a miss can be found from either side. -xlinka
+    private static byte[] ReadFile(Uri u, string uri)
+    {
+        var path = u.LocalPath;
+        if (File.Exists(path))
+            return File.ReadAllBytes(path);
+
+        var resPath = Engine.Current?.TryGetResourcePath(path);
+        var reader = ResourcePackReader;
+        if (resPath != null && reader != null)
+        {
+            var packed = reader(resPath);
+            if (packed != null && packed.Length > 0)
+            {
+                LumoraLogger.Debug($"AssetFetcher: '{resPath}' served from the resource pack ({packed.Length} bytes)");
+                return packed;
+            }
+        }
+
+        LumoraLogger.Warn(resPath != null
+            ? $"AssetFetcher: '{resPath}' is neither on disk at '{path}' nor in the resource pack"
+            : $"AssetFetcher: file not found: '{uri}'");
+        return null!;
     }
 }

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -6,12 +6,13 @@ using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Components.Interaction;
 using Lumora.Core.Components.Meshes;
+using Lumora.Core.Components.Touch;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.UI;
 
 [ComponentCategory("Hidden")]
-public class DashSurfacePortal : Component, ILaserPointerTarget
+public class DashSurfacePortal : Component, ILaserPointerTarget, ITouchSurface
 {
     private UserspaceDashboard? _dash;
 
@@ -74,6 +75,54 @@ public class DashSurfacePortal : Component, ILaserPointerTarget
 
     public bool TryReceive(IReadOnlyList<IGrabbable> items, InteractionLaser laser)
         => Dash()?.TryReceiveVrPointer(laser, laser.PointerId, items) == true;
+
+    // A fingertip on the display surface goes to the dash canvas the same way the laser does: the hit's
+    // unrolled coordinate divided by the surface size is the canvas u/v. The dash canvas is a render
+    // target, so the poke can never reach it directly. -xlinka
+    public bool AcceptsPhysicalTouch => true;
+
+    public bool TryTouchProject(in float3 rayOrigin, in float3 rayDirection, float rayLength, out TouchSurfaceHit hit)
+    {
+        hit = default;
+        if (Slot == null || !Slot.IsActive)
+            return false;
+        float dirLength = rayDirection.Length;
+        if (dirLength <= 0.000001f)
+            return false;
+        var direction = rayDirection / dirLength;
+        if (!TryProject(rayOrigin, direction, out var local, out var world))
+            return false;
+
+        var size = SurfaceSize();
+        if (MathF.Abs(local.x) > size.x * 0.5f || MathF.Abs(local.y) > size.y * 0.5f)
+            return false;
+
+        float distance = (world - rayOrigin).Length;
+        if (distance > rayLength)
+            return false;
+
+        float3 normal = Slot.Forward;
+        float normalLength = normal.Length;
+        normal = normalLength > 0.000001f ? normal / normalLength : float3.Forward;
+        hit = new TouchSurfaceHit(distance, world, normal, local);
+        return true;
+    }
+
+    public void UpdateTouchPointer(int pointerId, in TouchSurfaceHit hit, bool pressed, User? actor)
+    {
+        var dash = Dash();
+        if (dash == null)
+            return;
+        var size = SurfaceSize();
+        float u = hit.Local.x / size.x + 0.5f;
+        float v = 0.5f - hit.Local.y / size.y;
+        dash.UpdateTouchPointer(pointerId, new float2(u, v), pressed);
+    }
+
+    public void ClearTouchPointer(int pointerId, User? actor)
+    {
+        Dash()?.ClearTouchPointer(pointerId);
+    }
 
     private UserspaceDashboard? Dash() => _dash ??= Slot.GetComponentInParents<UserspaceDashboard>();
 

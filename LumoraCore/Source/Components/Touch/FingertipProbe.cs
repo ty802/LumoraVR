@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -37,7 +37,8 @@ public class FingertipProbe : TouchProbe
     // Tip position in the tip slot's local space.
     public readonly Sync<float3> TipOffset;
 
-    // Direction the tip pushes along, in the tip slot's local space.
+    // Direction the tip pushes along, in the tip slot's local space. -Z: a bare controller aims down its
+    // -Z like the beam does, and +Z here had the fallback tip pushing back at the wrist. -xlinka
     public readonly Sync<float3> TipAxis;
 
     private Slot? _boneCache;
@@ -55,7 +56,7 @@ public class FingertipProbe : TouchProbe
         TrackRigFingertip = new Sync<bool>(this, true);
         TipSlot = new SyncRef<Slot>(this);
         TipOffset = new Sync<float3>(this, float3.Zero);
-        TipAxis = new Sync<float3>(this, float3.Forward);
+        TipAxis = new Sync<float3>(this, float3.Backward);
     }
 
     public override TouchProbeKind Kind => TouchProbeKind.Fingertip;
@@ -75,7 +76,7 @@ public class FingertipProbe : TouchProbe
         {
             var anchor = ResolveAnchor();
             if (anchor == null)
-                return float3.Forward;
+                return float3.Backward;
 
             // A fingertip bone has no meaningful authored forward axis - importers disagree, and the
             // hand visual's joints are bare spheres with no rotation at all - so take the direction
@@ -91,7 +92,7 @@ public class FingertipProbe : TouchProbe
 
             float3 axis = anchor.LocalDirectionToGlobal(TipAxis.Value);
             float axisLength = axis.Length;
-            return axisLength > 1e-4f ? axis / axisLength : float3.Forward;
+            return axisLength > 1e-4f ? axis / axisLength : float3.Backward;
         }
     }
 

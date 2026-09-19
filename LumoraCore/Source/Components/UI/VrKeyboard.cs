@@ -1,10 +1,11 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
 using System.Collections.Generic;
 using Helio.UI;
 using Helio.UI.Layout;
+using Lumora.Core.Components.Interaction;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
 
@@ -15,12 +16,13 @@ namespace Lumora.Core.Components.UI;
 // three. Keys drive the focused TextInput through its public typing surface, so the caret, the
 // selection replace and the length clamp are the same code the hardware keyboard runs.
 //
-// Showing is driven by focus, not by a button: TextInput has no focus-changed event, so this polls
-// the single static focus each common update. That poll has to keep running while the panel is
-// HIDDEN, which is why CanRunUpdates drops the active-slot gate below - an inactive slot gets no
-// updates, and a keyboard that only wakes up while it is already visible never appears. The update
-// order puts that poll ahead of UserspacePointer (-1000), so the frame the panel appears is already
-// the frame a laser wakes for it rather than a frame of keyboard nothing can press. -xlinka
+// Showing is driven by focus, not by a button: a TextInput holding the static focus, or a dash
+// screen reporting one of its inline fields focused. Neither has a focus-changed event, so this polls
+// each common update. That poll has to keep running while the panel is HIDDEN, which is why
+// CanRunUpdates drops the active-slot gate below - an inactive slot gets no updates, and a keyboard
+// that only wakes up while it is already visible never appears. The update order puts that poll
+// ahead of UserspacePointer (-1000), so the frame the panel appears is already the frame a laser
+// wakes for it rather than a frame of keyboard nothing can press. -xlinka
 [ComponentCategory("UI")]
 [DefaultUpdateOrder(-1100)]
 public sealed class VrKeyboard : Component
@@ -61,28 +63,17 @@ public sealed class VrKeyboard : Component
     private const float EscapeKeyWidth = 44f;
     private const float CloseKeyWidth = 56f;
 
-    // Re-place the panel when it has drifted out of comfortable reach: too far, or too far around
-    // the head to read without turning. Anything inside both stays exactly where it was put.
+    // Re-place a panel WE put down when it has drifted out of comfortable reach: too far, or too far
+    // around the head to read without turning. One the user has moved by hand stays where they left
+    // it, in reach or not; that placement is theirs.
     private const float ReachDistance = 1f;
     private const float ReachAngleDegrees = 70f;
+    // Late updates after a show that keep re-docking. The dash positions itself in its own late
+    // update, after ours, so the frame it opens the surface is still where it last was.
+    private const int DockSettleFrames = 2;
 
-    // POKE. Metres, measured along the panel's own normal from the readable face.
-    // Press and release sit at different depths on purpose: one threshold means a tip resting exactly
-    // at the line machine-guns the key as the hand's tracking jitter crosses it a hundred times a
-    // second. Press deep, release shallow, and a resting hand does nothing. -xlinka
-    private const float PokePressDepth = 0.005f;
-    private const float PokeReleaseDepth = 0.002f;
-    // How far in front of the face a tip still counts as pointing at the panel (so a key lights up as
-    // the hand approaches) and how far through it before we call it a miss and let go.
-    private const float PokeHoverDistance = 0.03f;
-    private const float PokeMaxDepth = 0.06f;
-    // The synthetic ray handed to the canvas starts this far in front of the contact point and aims
-    // straight back at it, which is the shape UpdatePointer wants (see UserspaceDashboard).
-    private const float PokeRayLift = 0.5f;
-    // Lasers own pointer ids 1 and 2 (InteractionLaser.GetPointerId). Poke sits in its own range under
-    // its own source, so a hand poking a key can never stomp the pointer state of a laser aimed at it.
-    private const int PokePointerIdBase = 900;
-    private const UIInteractionSource PokeSource = UIInteractionSource.Touch;
+    // Keys are poked through the userspace hand's CanvasTouchSource like any other panel; the press,
+    // release, hover and punch-through depths it ships with are the ones this keyboard was tuned on.
 
     // One band above the dash surface (UserspaceDashboard.DashSurfaceSortingOrder) and below the
     // laser cursor bands, so the keyboard covers the dash it is typing into and the pointer still
@@ -138,6 +129,10 @@ public sealed class VrKeyboard : Component
     public readonly Sync<float> RepeatInterval;
     // How long after a shift tap a second tap still counts as a DOUBLE tap and locks caps on.
     public readonly Sync<float> ShiftHoldWindow;
+    // Seconds the panel stays up after the field it was typing into loses focus. A field that blurs
+    // and refocuses inside the window (Enter into the next field, a tap that bounces focus) keeps the
+    // keyboard where it is instead of hiding and re-showing it.
+    public readonly Sync<float> HideGrace;
 
     private readonly SyncRef<Text> _preview;
     private readonly SyncRef<VrKey> _shiftKey;
@@ -148,18 +143,20 @@ public sealed class VrKeyboard : Component
     private readonly List<VrKey> _keys = new();
     private UITheme? _theme;
     private Canvas? _canvas;
+    private Grabbable? _grab;
     private bool _built;
-    // Whether a field held focus last poll. Without it, a keyboard summoned by hand with nothing
-    // focused would hide itself on its very first update.
-    private bool _hadFocus;
+    // Whether a field has held focus since the panel came up. Without it, a keyboard summoned by
+    // hand with nothing focused would hide itself on its very first update.
+    private bool _typingSession;
+    // World time the focus went away, NaN while it is held. The hide waits HideGrace from here.
+    private double _focusLostAt = double.NaN;
+    // Whether the panel has ever been placed, and whether the user has moved it since. A panel the
+    // user moved is never re-docked; one we placed is re-docked only when it drifts out of reach.
+    private bool _placed;
+    private bool _userPlaced;
+    private int _dockFrames;
     // World time of the last shift tap, for the double-tap window.
     private double _lastShiftTap = double.NegativeInfinity;
-
-    // Per-hand poke state, indexed by PokeIndex. Whether the canvas currently holds a pointer for this
-    // hand at all, and whether that pointer is pressed.
-    private readonly bool[] _pokeActive = new bool[2];
-    private readonly bool[] _pokePressed = new bool[2];
-    private readonly Slot?[] _pokeTips = new Slot?[2];
 
     public static VrKeyboard? LocalInstance { get; private set; }
 
@@ -167,6 +164,14 @@ public sealed class VrKeyboard : Component
     public static bool LocalShown => LocalInstance is { IsDestroyed: false } keyboard && keyboard.IsShown;
 
     public bool IsShown => Slot != null && !Slot.IsDestroyed && Slot.ActiveSelf.Value;
+
+    // Held by a hand right now. Keys do nothing while this holds: a grab is a move, not a press.
+    public bool IsGrabbed => _grab is { IsDestroyed: false, IsGrabbed: true };
+
+    // Whether a text field wants the keyboard: the static TextInput focus, or a dash screen with one of
+    // its own inline fields focused. The dash being open, or its screen being ABLE to take keys, is
+    // not a field. -xlinka
+    public static bool WantsKeys => TextInput.Focused is { IsDestroyed: false } || DashFieldFocused();
 
     // The focus poll is the whole point of this component and it has to run while the panel is off.
     protected override bool CanRunUpdates => !IsDestroyed && Slot != null && !Slot.IsDestroyed;
@@ -180,6 +185,7 @@ public sealed class VrKeyboard : Component
         RepeatDelay = new Sync<float>(this, 0.45f);
         RepeatInterval = new Sync<float>(this, 0.05f);
         ShiftHoldWindow = new Sync<float>(this, 0.5f);
+        HideGrace = new Sync<float>(this, 0.3f);
         _preview = new SyncRef<Text>(this);
         _shiftKey = new SyncRef<VrKey>(this);
         _pasteKey = new SyncRef<VrKey>(this);
@@ -198,6 +204,11 @@ public sealed class VrKeyboard : Component
     {
         if (ReferenceEquals(LocalInstance, this))
             LocalInstance = null;
+        if (_grab != null)
+        {
+            _grab.OnLocalGrabbed -= OnGrabbed;
+            _grab.OnLocalReleased -= OnReleased;
+        }
         _keys.Clear();
         base.OnDestroy();
     }
@@ -207,46 +218,50 @@ public sealed class VrKeyboard : Component
         base.OnCommonUpdate();
 
         var focused = TextInput.Focused;
-        bool hasFocus = focused is { IsDestroyed: false };
 
-        // The dashboard is a SECOND reason to be up, and it is the one that was missing.
-        //
-        // Dash screens do not focus a TextInput: their inline fields take raw keystrokes through the
-        // dashboard's own feed, which until now had exactly one caller, a desktop key handler. So in a
-        // headset the keyboard never appeared for a dash field and would not have typed into it if it
-        // had, which meant you could not sign in, name a folder, rename a world or search your
-        // inventory without taking the headset off. Track the two reasons separately so dismissing one
-        // does not strand the other. -xlinka
-        bool dashWantsKeys = Engine.Current?.InputInterface?.IsVRActive == true
-                             && Engine.Current?.InputInterface?.IsDashboardOpen == true
-                             && UserspaceDashboard.LocalInstance?.CurrentScreenTakesKeys == true;
-
-        if (hasFocus)
+        // Up while a field has focus, down once it has gone; the same rule for a TextInput anywhere
+        // and for a dash screen's inline field. Dash screens do not focus a TextInput (their fields
+        // take raw keystrokes through the dashboard's feed), so they report their own field focus
+        // through IDashboardKeyInput instead. A screen that merely COULD take keys is not a reason to
+        // be up: that rule put the keyboard over every dash screen you opened. -xlinka
+        if (WantsKeys)
         {
-            _hadFocus = true;
+            _typingSession = true;
+            _focusLostAt = double.NaN;
             // Auto-show is VR-only: on desktop the hardware keyboard is right there and a panel
             // covering the view would be in the way. Show() itself stays open to anyone.
             if (!IsShown && Engine.Current?.InputInterface?.IsVRActive == true)
                 Show();
         }
-        else if (dashWantsKeys)
+        else if (_typingSession && IsShown)
         {
-            if (!IsShown)
-                Show();
-        }
-        else if (_hadFocus || _hadDashKeys)
-        {
-            _hadFocus = false;
-            if (IsShown)
+            // Not straight away: a field that blurs and refocuses within the grace (Enter moving to
+            // the next field, a tap that bounces focus) keeps the panel up rather than blinking it.
+            double now = World?.Time?.TotalTime ?? 0.0;
+            if (double.IsNaN(_focusLostAt))
+                _focusLostAt = now;
+            else if (now - _focusLostAt >= HideGrace.Value)
                 Hide();
         }
-
-        _hadDashKeys = dashWantsKeys;
+        else if (_typingSession)
+        {
+            _typingSession = false;
+            _focusLostAt = double.NaN;
+        }
 
         if (IsShown)
             UpdatePreview(focused);
+    }
 
-        UpdatePoke();
+    private static bool DashFieldFocused()
+    {
+        var input = Engine.Current?.InputInterface;
+        if (input == null || !input.IsDashboardOpen)
+            return false;
+        var dash = UserspaceDashboard.LocalInstance;
+        if (dash == null || dash.IsDestroyed || !dash.IsOpen.Value)
+            return false;
+        return dash.Dashboard?.CurrentScreen is IDashboardKeyInput keys && keys.HasFieldFocus;
     }
 
     // SHOW / HIDE
@@ -257,15 +272,22 @@ public sealed class VrKeyboard : Component
             return;
 
         // Coming up for a field that is already focused counts as the start of a typing session, so
-        // the poll knows to put the panel away again when that focus goes. Without it a field that
-        // focuses and blurs inside one frame leaves the keyboard stranded on screen. -xlinka
-        if (TextInput.Focused is { IsDestroyed: false })
-            _hadFocus = true;
+        // the poll knows to put the panel away again when that focus goes.
+        if (WantsKeys)
+        {
+            _typingSession = true;
+            _focusLostAt = double.NaN;
+        }
 
-        bool wasShown = IsShown;
         Slot.ActiveSelf.Value = true;
-        if (!wasShown || !IsWithinReach())
-            PlaceInFrontOfHead();
+        // The transform is the user's once they have moved the panel, and ours until then: the first
+        // show docks it, a later show finds it where it was left, and only a panel we placed that has
+        // drifted out of reach gets docked again. Hide/show and dash open/close never move it. -xlinka
+        if (!_placed || (!_userPlaced && !IsWithinReach()))
+        {
+            Dock();
+            _dockFrames = DockSettleFrames;
+        }
         // The clipboard service is wired at startup, before userspace exists, but a harness (or a
         // platform that hands one over late) can arrive after the panel was built.
         RefreshPasteKey();
@@ -276,12 +298,34 @@ public sealed class VrKeyboard : Component
     // saying why you cannot walk. -xlinka
     public void Hide()
     {
-        ReleasePoke(Chirality.Left);
-        ReleasePoke(Chirality.Right);
+        PokeCanvas()?.ReleaseAllPointers();
         if (Slot != null && !Slot.IsDestroyed)
             Slot.ActiveSelf.Value = false;
-        _hadFocus = false;
+        _typingSession = false;
+        _focusLostAt = double.NaN;
+        _dockFrames = 0;
         BlurFocused();
+    }
+
+    // GRAB
+    // The panel is an ordinary grabbable: the userspace pointer's laser and a hand both pick it up
+    // through the Grabber on the pointer rig, two hands stretch it, and it turns with the hand that
+    // holds it. What the keyboard adds is that a grab is never a keypress. -xlinka
+
+    private void OnGrabbed(IGrabbable item)
+    {
+        _userPlaced = true;
+        _dockFrames = 0;
+        // Whatever was down on a key when the hand closed is cancelled, not submitted, and the hands
+        // stay disarmed for poking until each tip has come back out of the panel.
+        Touch.CanvasTouchSource.DisarmAll(World);
+        PokeCanvas()?.ReleaseAllPointers();
+    }
+
+    private void OnReleased(IGrabbable item)
+    {
+        Touch.CanvasTouchSource.DisarmAll(World);
+        PokeCanvas()?.ReleaseAllPointers();
     }
 
     private static void BlurFocused()
@@ -291,10 +335,9 @@ public sealed class VrKeyboard : Component
             focused.Unfocus();
     }
 
-    // With the dash up, the keyboard hangs off its bottom edge, tilted up toward the wearer, and
-    // rides along as the dash glides: the reference platform's keyboard offset slot lives inside its
-    // dash rig for the same reason. Placing both from the head independently put the keyboard right
-    // in front of the panel it was typing into. -xlinka
+    // With the dash up, the first show hangs the keyboard off its bottom edge, tilted up toward the
+    // wearer. Placing both from the head independently put the keyboard right in front of the panel
+    // it was typing into. With no dash it goes in front of the head instead. -xlinka
     private const float DockGap = 0.06f;
     private const float DockTowardViewer = 0.18f;
     private const float DockTiltDegrees = -45f;
@@ -302,18 +345,31 @@ public sealed class VrKeyboard : Component
     public override void OnLateUpdate(float delta)
     {
         base.OnLateUpdate(delta);
-        if (!IsShown || Engine.Current?.InputInterface?.IsVRActive != true)
+        if (_dockFrames <= 0 || !IsShown || IsGrabbed)
             return;
+        _dockFrames--;
+        Dock();
+    }
+
+    private void Dock()
+    {
+        if (Slot == null || Slot.IsDestroyed)
+            return;
+        _placed = true;
 
         var dash = UserspaceDashboard.LocalInstance;
-        var surface = dash?.IsOpen.Value == true ? dash.SurfaceSlot : null;
-        if (surface == null || Slot == null || Slot.IsDestroyed)
+        var surface = dash != null && !dash.IsDestroyed && dash.IsOpen.Value ? dash.SurfaceSlot : null;
+        if (surface == null || Engine.Current?.InputInterface?.IsVRActive != true)
+        {
+            PlaceInFrontOfHead();
             return;
+        }
 
         float halfHeight = dash!.DisplayHeight.Value * 0.5f;
         var local = new float3(0f, -halfHeight - DockGap, DockTowardViewer);
         Slot.GlobalPosition = surface.LocalPointToGlobal(local);
-        Slot.GlobalRotation = surface.GlobalRotation * floatQ.AxisAngle(float3.Right, DockTiltDegrees);
+        // AxisAngle takes radians; the constant is in degrees so it reads as a tilt.
+        Slot.GlobalRotation = surface.GlobalRotation * floatQ.AxisAngleRad(float3.Right, DockTiltDegrees * (MathF.PI / 180f));
         Slot.LocalScale.Value = float3.One * PanelScale;
     }
 
@@ -378,112 +434,10 @@ public sealed class VrKeyboard : Component
     }
 
     // POKE
-    // Pushing a controller into the panel presses whatever key the tip lands on. Deliberately scoped
-    // to this component rather than built as a general Helio touch layer: the keyboard is the one
-    // surface where poking is the natural gesture, and the canvas already has a pointer API that does
-    // everything a poke needs - hover, press, release, submit-on-release. All this has to do is turn a
-    // tip position into that API's ray. -xlinka
-
-    private void UpdatePoke()
-    {
-        // Desktop has no tip to poke with: the controller slots there are parked at fixed offsets by
-        // the locomotion controller, and one of them sitting inside the panel would type forever.
-        if (!IsShown || Engine.Current?.InputInterface?.IsVRActive != true)
-        {
-            ReleasePoke(Chirality.Left);
-            ReleasePoke(Chirality.Right);
-            return;
-        }
-
-        PokeFromTip(Chirality.Left);
-        PokeFromTip(Chirality.Right);
-    }
-
-    private void PokeFromTip(Chirality side)
-    {
-        var tip = ControllerSlot(side);
-        if (tip == null)
-        {
-            ReleasePoke(side);
-            return;
-        }
-        PokeAt(side, tip.GlobalPosition);
-    }
-
-    // The tracked controller slot for a hand, resolved off the local user's root through the same
-    // body-node registry HeadSlot uses. The userspace pointer rig registers both under BodyNode
-    // LeftController/RightController (see Templates.Userspace.BuildPointerHand).
-    private Slot? ControllerSlot(Chirality side)
-    {
-        int index = PokeIndex(side);
-        var cached = _pokeTips[index];
-        if (cached != null && !cached.IsDestroyed)
-            return cached;
-
-        var root = World?.LocalUser?.Root;
-        if (root == null || root.IsDestroyed)
-            return null;
-
-        var node = side == Chirality.Left ? BodyNode.LeftController : BodyNode.RightController;
-        var slot = root.GetRegisteredComponent<TrackedDevicePositioner>(p => p.AutoBodyNode.Value == node)?.Slot;
-        _pokeTips[index] = slot != null && !slot.IsDestroyed ? slot : null;
-        return _pokeTips[index];
-    }
-
-    // Drive one hand's poke from an explicit world-space tip. The per-frame path above resolves the
-    // tracked controller and calls this; anything that wants to feed its own tip (a harness, a future
-    // finger-tracked hand) calls it directly. The controller slot's own origin IS the tip here - there
-    // is no fingertip node on the userspace rig to offset to, and inventing one would just be a
-    // constant nobody could tune. -xlinka
-    public void PokeAt(Chirality side, in float3 tipPosition)
-    {
-        var canvas = PokeCanvas();
-        if (canvas == null || Slot == null || Slot.IsDestroyed)
-        {
-            ReleasePoke(side);
-            return;
-        }
-
-        // Depth along the panel's own normal: positive once the tip is PAST the readable face. The
-        // normal is rotation-only so this stays in metres however the panel has been scaled.
-        float3 normal = Slot.Forward;
-        float depth = -float3.Dot(tipPosition - Slot.GlobalPosition, normal);
-
-        // Where on the face, in canvas units. GlobalPointToLocal takes the panel scale back off, so
-        // the bounds test is against the layout rect whatever size the user pulled the panel to.
-        float3 local = Slot.GlobalPointToLocal(tipPosition);
-        bool onFace = MathF.Abs(local.x) <= PanelWidth * 0.5f && MathF.Abs(local.y) <= PanelHeight * 0.5f;
-
-        if (!onFace || depth < -PokeHoverDistance || depth > PokeMaxDepth)
-        {
-            ReleasePoke(side);
-            return;
-        }
-
-        int index = PokeIndex(side);
-        bool pressed = _pokePressed[index] ? depth > PokeReleaseDepth : depth >= PokePressDepth;
-
-        var contact = Slot.LocalPointToGlobal(new float3(local.x, local.y, 0f));
-        canvas.UpdatePointer(PokeSource, PokePointerId(side), contact + normal * PokeRayLift, -normal, pressed,
-            World?.LocalUser);
-
-        _pokeActive[index] = true;
-        _pokePressed[index] = pressed;
-    }
-
-    // Let go of a hand's poke pointer. Goes through ClearPointer, not a pressed=false update, so a tip
-    // dragged sideways off a key CANCELS instead of typing it - the same thing a mouse does when you
-    // slide off a button before letting go. A straight withdraw still types, because that path comes
-    // through PokeAt with pressed false. -xlinka
-    public void ReleasePoke(Chirality side)
-    {
-        int index = PokeIndex(side);
-        if (!_pokeActive[index])
-            return;
-        PokeCanvas()?.ClearPointer(PokeSource, PokePointerId(side), World?.LocalUser);
-        _pokeActive[index] = false;
-        _pokePressed[index] = false;
-    }
+    // Pushing a fingertip into the panel presses whatever key it lands on. That is the general
+    // CanvasTouchSource on each userspace hand driving this canvas like any other; the one thing the
+    // keyboard adds is that a grab is never a keypress (see OnGrabbed). The holding hand's tip sits inside
+    // the panel for as long as the hold lasts, and the source skips a panel held by its own hand. -xlinka
 
     private Canvas? PokeCanvas()
     {
@@ -493,15 +447,11 @@ public sealed class VrKeyboard : Component
         return _canvas;
     }
 
-    private static int PokeIndex(Chirality side) => side == Chirality.Left ? 0 : 1;
-
-    private static int PokePointerId(Chirality side) => PokePointerIdBase + PokeIndex(side);
-
     // KEY DISPATCH
 
     public void HandleKey(VrKey key)
     {
-        if (key == null || key.IsDestroyed || IsDestroyed)
+        if (key == null || key.IsDestroyed || IsDestroyed || IsGrabbed)
             return;
 
         switch (key.Role.Value)
@@ -571,8 +521,6 @@ public sealed class VrKeyboard : Component
                 break;
         }
     }
-
-    private bool _hadDashKeys;
 
     private void FeedDashboard(VrKey key)
     {
@@ -752,14 +700,16 @@ public sealed class VrKeyboard : Component
         canvas.SortingOrder.Value = KeyboardSortingOrder;
         _canvas = canvas;
 
-        // Placement is by hand today. Nothing on the userspace pointer rig carries a Grabber yet, so
-        // this only bites once one does; until then the reposition rule in Show() is what moves the
-        // panel. Scalable so a user can size it to their reach rather than ours. -xlinka
-        var grab = Slot.GetOrAttachComponent<Grabbable>();
-        grab.AllowGrab.Value = true;
-        grab.Scalable.Value = true;
-        grab.FollowRotation.Value = true;
-        grab.Receivable.Value = false;
+        // Grabbable and scalable so a user can put it where they like and size it to their reach
+        // rather than ours; the userspace pointer rig's hands carry the Grabber that takes it.
+        _grab = Slot.GetOrAttachComponent<Grabbable>();
+        _grab.AllowGrab.Value = true;
+        _grab.Scalable.Value = true;
+        _grab.FollowRotation.Value = true;
+        _grab.Receivable.Value = false;
+        _grab.KeepMomentum.Value = false;
+        _grab.OnLocalGrabbed += OnGrabbed;
+        _grab.OnLocalReleased += OnReleased;
 
         var background = Slot.GetOrAttachComponent<BorderedImage>();
         background.Tint.Value = InspectorUI.PaneColor;

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -130,6 +130,13 @@ namespace Lumora.Core.Templates
             // drives it off the grab action, and the dash itself refuses grabs so only things that
             // opt in ride the hand.
             controller.AttachComponent<Grabber>();
+
+            // And poke them: the keyboard's keys and the dash surface take a fingertip through the
+            // same source every world canvas does. No probe on this rig, so it reads the tracked
+            // hand's index tip, or the controller when nothing feeds fingers.
+            var touch = controller.AttachComponent<Components.Touch.CanvasTouchSource>();
+            touch.Hand.Value = side;
+            touch.HandRoot.Target = controller;
         }
     }
 }

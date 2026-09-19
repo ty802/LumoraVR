@@ -160,6 +160,35 @@ public class UserInputState : Component
         }
     }
 
+    // The VR twin of the wheel capture: the stick click is the scale modifier while a hand carries on
+    // its laser, and jump sits on the same click. Raised by the carrying hand tool in VR only; the
+    // jump reader returns rest while it is up so starting a scale does not hop the user. -xlinka
+    private readonly object _stickPressCaptureLock = new();
+    private readonly HashSet<object> _stickPressCaptureRequests = new();
+
+    public bool StickPressCaptured
+    {
+        get
+        {
+            lock (_stickPressCaptureLock)
+                return _stickPressCaptureRequests.Count > 0;
+        }
+    }
+
+    public void SetStickPressCaptured(object requester, bool value)
+    {
+        if (requester == null)
+            return;
+
+        lock (_stickPressCaptureLock)
+        {
+            if (value)
+                _stickPressCaptureRequests.Add(requester);
+            else
+                _stickPressCaptureRequests.Remove(requester);
+        }
+    }
+
     public override void OnDestroy()
     {
         lock (_suppressionLock)
@@ -168,6 +197,8 @@ public class UserInputState : Component
             _movementRequests.Clear();
         lock (_wheelCaptureLock)
             _wheelCaptureRequests.Clear();
+        lock (_stickPressCaptureLock)
+            _stickPressCaptureRequests.Clear();
 
         MouseCaptureRequested = false;
         FreeCamActive = false;
@@ -194,4 +225,5 @@ public class UserInputState : Component
     public static bool FocusedDesktopInputSuppressed => ForFocusedLocalUser?.DesktopInputSuppressed ?? false;
     public static bool FocusedExternalCameraActive => ForFocusedLocalUser?.ExternalCameraActive ?? false;
     public static bool FocusedScrollWheelCaptured => ForFocusedLocalUser?.ScrollWheelCaptured ?? false;
+    public static bool FocusedStickPressCaptured => ForFocusedLocalUser?.StickPressCaptured ?? false;
 }

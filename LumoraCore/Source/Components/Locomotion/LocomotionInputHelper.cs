@@ -30,8 +30,12 @@ public static class LocomotionInputHelper
     public static float ReadVerticalAxis(InputInterface input)
         => input?.Actions?.Locomotion.Fly.Value ?? 0f;
 
+    // Rest while a VR hand carries on its laser: the stick click is that hand's scale modifier and jump
+    // sits on the same click, so a scale must not hop the user, and must not stand a seated one up. The
+    // same read serves the seat release paths, which is why the gate lives here and not in one module.
+    // Both hands' clicks feed one action, so the other stick's jump is off for the carry as well. -xlinka
     public static bool ReadJump(InputInterface input)
-        => input?.Actions?.Locomotion.Jump.Held == true;
+        => input?.Actions?.Locomotion.Jump.Held == true && !UserInputState.FocusedStickPressCaptured;
 
     public static bool ReadCrouch(InputInterface input)
         => input?.Actions?.Locomotion.Crouch.Held == true;

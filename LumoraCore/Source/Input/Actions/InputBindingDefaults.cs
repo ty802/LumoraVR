@@ -13,6 +13,11 @@ using Cat = InputControlCatalog;
 // scale, VR is still trigger/grip/secondary per hand. Anything that reads differently from the old
 // hardcoded version is a bug in this file, not a design decision.
 //
+// VR face buttons: A/X is the dash, B/Y is the tool secondary, which is also what summons the
+// context menu when no tool claims it. A controller with no face buttons folds both onto its one
+// menu button, hold for the dash and tap for the menu, through the charge on the controller. The
+// stick click is jump, and doubles as the scale modifier for a laser-held object on that hand.
+//
 // The gamepad column is new, because there was nothing to preserve there. It is laid out so a pad
 // alone can play: left stick walks, right stick turns, A jumps, RT is the tool, RB grabs, Y opens
 // the context menu, Start opens the dashboard.
@@ -169,6 +174,7 @@ public static class InputBindingDefaults
         else if (action == hand.Secondary)
         {
             action.Bind(ControlRef.VR(side, Cat.VRSecondary));
+            action.Bind(ControlRef.VR(side, Cat.VRMenuTap));
             if (desktopHand)
             {
                 action.Bind(ControlRef.Key(Key.R));
@@ -193,7 +199,11 @@ public static class InputBindingDefaults
         }
         else if (action == hand.HoldModifier)
         {
-            action.Bind(ControlRef.VR(side, Cat.VRSecondary));
+            // Stick click, not B/Y: secondary opens the context menu even mid-carry now, so B plus
+            // stick was popping the menu instead of scaling. The click reads as the trackpad click on
+            // a wand, so one binding covers every profile. Jump shares the click and is gated off in
+            // the reader while a hand carries on its laser in VR. -xlinka
+            action.Bind(ControlRef.VR(side, Cat.VRStickPress));
             if (desktopHand)
             {
                 action.Bind(ControlRef.Key(Key.LeftShift));
@@ -240,8 +250,13 @@ public static class InputBindingDefaults
         {
             action.Bind(ControlRef.Key(Key.Escape));
             action.Bind(ControlRef.Pad(Cat.PadStart));
-            action.Bind(ControlRef.VR(Chirality.Left, Cat.VRMenu));
-            action.Bind(ControlRef.VR(Chirality.Right, Cat.VRMenu));
+            // Not the raw menu button: on a controller with no face buttons a menu press is a tap or
+            // a hold, decided on release or at full charge, and a raw edge would pop the dash before
+            // the two could be told apart. -xlinka
+            action.Bind(ControlRef.VR(Chirality.Left, Cat.VRPrimary));
+            action.Bind(ControlRef.VR(Chirality.Right, Cat.VRPrimary));
+            action.Bind(ControlRef.VR(Chirality.Left, Cat.VRMenuHold));
+            action.Bind(ControlRef.VR(Chirality.Right, Cat.VRMenuHold));
         }
     }
 

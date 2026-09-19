@@ -6,63 +6,53 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Avatar;
 
-/// <summary>
-/// Blends two finger-pose sources A and B by a 0..1 weight. In wrist-local
-/// position space the blend is a straight per-node lerp of the two positions, so
-/// it composes trivially. A side is reported tracking only where both inputs track.
-/// </summary>
-// Position-space blending is exact here: each node's wrist-local point is
-// independent, so lerping the points interpolates the pose with no quaternion
-// double-cover or shortest-path concerns. A node contributes only if BOTH sources
-// supply it, so a partial source can't drag missing nodes toward the origin. The
-// result tracks a side only when both inputs track it - blending a tracked hand
-// with an untracked one would otherwise leak the untracked rest pose in. -xlinka
+// Lerp between two sources: 0 is all A, 1 is all B. The blend runs in hierarchy space so each joint
+// slerps its own bend and a half-way fist is half-curled at every knuckle instead of a straight line
+// between two tips. A side tracks only where both inputs track it. -xlinka
 [ComponentCategory("Users/Avatar/Hands")]
 public sealed class HandPoseBlend : HandPoseProcessor
 {
-    /// <summary>First source (used at weight 0).</summary>
     public readonly SyncRef<IHandPoseSourceComponent> A = null!;
 
-    /// <summary>Second source (used at weight 1).</summary>
     public readonly SyncRef<IHandPoseSourceComponent> B = null!;
 
-    /// <summary>Blend factor: 0 = all A, 1 = all B.</summary>
     public readonly Sync<float> Weight = new();
 
-    // Minimum finger nodes a side must supply to be considered usable for the blend
-    // (proximal + at least one outer joint per finger is well above this floor).
-    private const int MinNodesPerSide = 10;
+    private readonly float3[] _aPositions = HandPoseHelper.NewPositions();
+    private readonly floatQ[] _aRotations = HandPoseHelper.NewRotations();
+    private readonly float3[] _bPositions = HandPoseHelper.NewPositions();
+    private readonly floatQ[] _bRotations = HandPoseHelper.NewRotations();
 
-    protected override void Evaluate()
+    protected override void UpdatePoses()
     {
         var a = A?.Target;
         var b = B?.Target;
+        foreach (var side in HandPoseHelper.Sides)
+            Data(side).Tracking = false;
+        SetTracksMetacarpals(false);
         if (a == null || b == null)
             return;
 
-        float t = System.Math.Clamp(Weight.Value, 0f, 1f);
-        bool carriesMetacarpals = a.TracksMetacarpals && b.TracksMetacarpals;
-        SetTracksMetacarpals(carriesMetacarpals);
-
-        foreach (var side in Sides)
+        SetTracksMetacarpals(a.TracksMetacarpals && b.TracksMetacarpals);
+        foreach (var side in HandPoseHelper.Sides)
         {
-            // Both sources must report tracking AND actually carry enough nodes for
-            // the side - a source can flag tracking while providing a partial set
-            // (e.g. dropped frames). Require a sane minimum so the blend isn't run
-            // off a near-empty hand.
-            bool tracking = a.IsHandTracked(side) && b.IsHandTracked(side)
-                && CountProvidedNodes(a, side) >= MinNodesPerSide
-                && CountProvidedNodes(b, side) >= MinNodesPerSide;
-            SetTracking(side, tracking);
-            if (!tracking)
+            if (!a.IsHandTracked(side) || !b.IsHandTracked(side))
+                continue;
+            if (!HandPoseHelper.Read(a, side, _aRotations, _aPositions, out bool aPositions)
+                || !HandPoseHelper.Read(b, side, _bRotations, _bPositions, out bool bPositions))
                 continue;
 
-            foreach (var node in HandPoseNodes.NodesOf(side))
-            {
-                if (a.TryGetFingerPosition(node, out var pa) &&
-                    b.TryGetFingerPosition(node, out var pb))
-                    Set(node, float3.Lerp(pa, pb, t));
-            }
+            var data = Data(side);
+            data.HasPositions = aPositions && bPositions;
+            HandPoseHelper.ToHierarchy(aPositions ? _aPositions : null, _aRotations);
+            HandPoseHelper.ToHierarchy(bPositions ? _bPositions : null, _bRotations);
+            HandPoseHelper.Interpolate(
+                data.HasPositions ? _aPositions : null, _aRotations,
+                data.HasPositions ? _bPositions : null, _bRotations,
+                Weight.Value,
+                data.HasPositions ? data.Positions : null, data.Rotations);
+            HandPoseHelper.ToFlat(data.HasPositions ? data.Positions : null, data.Rotations);
+            data.Tracking = true;
         }
     }
 }

@@ -5,18 +5,11 @@ using Lumora.Core.Components;
 
 namespace Lumora.Core.Components.Avatar;
 
-/// <summary>
-/// Per-user record of the current finger pose source. Lives on the user root so
-/// any equipped hand can find it via the user-root registry and read whatever
-/// source is currently publishing finger data for that user.
-/// </summary>
+// Per-user record of the source publishing this user's finger data, found from any equipped hand
+// through the user-root registry. Null for a user with nothing to publish.
 [ComponentCategory("Users/Avatar/Hands")]
 public class UserHandPoseInfo : UserRootComponent
 {
-    /// <summary>
-    /// The source currently providing this user's finger data (null when none -
-    /// e.g. a desktop user, who then renders relaxed hands).
-    /// </summary>
     [OldName("FingerPoseSource")]
     public readonly SyncRef<IHandPoseSourceComponent> HandPoseSource = null!;
 }

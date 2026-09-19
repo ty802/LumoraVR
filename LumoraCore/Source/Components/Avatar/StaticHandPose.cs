@@ -7,52 +7,95 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Avatar;
 
-/// <summary>
-/// A fixed finger pose: wrist-local positions stored per finger node, served
-/// through <see cref="IHandPoseSource"/>. The building block presets fill and
-/// blends read from - it holds a pose, it doesn't compute one.
-/// </summary>
-// In-memory, local-only: a static pose is generated on each peer (e.g. by a
-// preset) rather than replicated, matching the rest of the finger pipeline where
-// every peer derives its own finger shape. A side reports tracking once any node
-// has been set for it, so an unfilled side stays untracked and the consumer keeps
-// the hand at rest instead of collapsing it toward the wrist. -xlinka
-[ComponentCategory("Users/Avatar/Hands")]
-public sealed class StaticHandPose : UserRootComponent, IHandPoseSourceComponent
+// A fixed pose held in memory: hand-space position and rotation per finger node. Not a component;
+// the presets are built as these once per process and HandPosePreset serves them from a slot. A side
+// tracks once every non-metacarpal node of that side is set, and the pose carries metacarpals only
+// when both tracked sides have all of theirs. -xlinka
+public sealed class StaticHandPose : IHandPoseSource
 {
-    private readonly Dictionary<BodyNode, float3> _positions = new();
-    private bool _leftFilled;
-    private bool _rightFilled;
-    private bool _tracksMetacarpals;
+    private readonly Dictionary<BodyNode, (float3 position, floatQ rotation)> _poses = new();
+    private bool _metadataValid;
+    private bool _hasMetacarpals;
+    private bool _hasLeft;
+    private bool _hasRight;
 
-    public bool TracksMetacarpals => _tracksMetacarpals;
-
-    public bool IsHandTracked(Chirality side)
-        => side == Chirality.Left ? _leftFilled
-         : side == Chirality.Right ? _rightFilled
-         : false;
-
-    public bool TryGetFingerPosition(BodyNode node, out float3 wristLocalPosition)
-        => _positions.TryGetValue(node, out wristLocalPosition);
-
-    /// <summary>Set one node's wrist-local position. Marks that node's side filled.</summary>
-    public void SetPosition(BodyNode node, float3 wristLocalPosition)
+    public bool TracksMetacarpals
     {
-        _positions[node] = wristLocalPosition;
-        var side = node.GetChirality();
-        if (side == Chirality.Left) _leftFilled = true;
-        else if (side == Chirality.Right) _rightFilled = true;
-
-        if (node.IsFinger() && node.GetFingerSegmentType() == FingerSegmentType.Metacarpal)
-            _tracksMetacarpals = true;
+        get
+        {
+            EnsureMetadata();
+            return _hasMetacarpals;
+        }
     }
 
-    /// <summary>Clear all stored positions and tracking state.</summary>
+    public bool IsHandTracked(Chirality side)
+    {
+        EnsureMetadata();
+        return side == Chirality.Left ? _hasLeft : side == Chirality.Right && _hasRight;
+    }
+
+    public bool TryGetFingerPosition(BodyNode node, out float3 handLocalPosition)
+    {
+        if (_poses.TryGetValue(node, out var pose))
+        {
+            handLocalPosition = pose.position;
+            return true;
+        }
+        handLocalPosition = float3.Zero;
+        return false;
+    }
+
+    public bool TryGetFingerRotation(BodyNode node, out floatQ handLocalRotation)
+    {
+        if (_poses.TryGetValue(node, out var pose))
+        {
+            handLocalRotation = pose.rotation;
+            return true;
+        }
+        handLocalRotation = floatQ.Identity;
+        return false;
+    }
+
+    public void SetPose(BodyNode node, float3 position, floatQ rotation)
+    {
+        _poses[node] = (position, rotation);
+        _metadataValid = false;
+    }
+
+    public void SetPose(Chirality side, float3[] positions, floatQ[] rotations)
+    {
+        for (int i = 0; i < HandPoseHelper.NodesPerHand; i++)
+            _poses[HandPoseHelper.NodeAt(side, i)] = (positions[i], rotations[i]);
+        _metadataValid = false;
+    }
+
     public void Clear()
     {
-        _positions.Clear();
-        _leftFilled = false;
-        _rightFilled = false;
-        _tracksMetacarpals = false;
+        _poses.Clear();
+        _metadataValid = false;
+    }
+
+    private void EnsureMetadata()
+    {
+        if (_metadataValid)
+            return;
+        _hasMetacarpals = true;
+        _hasLeft = HasSide(Chirality.Left, ref _hasMetacarpals);
+        _hasRight = HasSide(Chirality.Right, ref _hasMetacarpals);
+        _metadataValid = true;
+    }
+
+    private bool HasSide(Chirality side, ref bool metacarpals)
+    {
+        for (int i = 0; i < HandPoseHelper.NodesPerHand; i++)
+        {
+            var node = HandPoseHelper.NodeAt(side, i);
+            if (_poses.ContainsKey(node))
+                continue;
+            if (node.GetFingerSegmentType() != FingerSegmentType.Metacarpal)
+                return false;
+            metacarpals = false;
+        }
+        return true;
     }
 }

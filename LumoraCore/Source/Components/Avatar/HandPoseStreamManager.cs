@@ -7,100 +7,101 @@ using Lumora.Core.Networking.Streams;
 
 namespace Lumora.Core.Components.Avatar;
 
-/// <summary>
-/// The user's finger pose source, backed by network streams. The owning peer reads
-/// local tracking hardware and writes per-finger-node positions into a packed array
-/// stream (plus a per-side tracking flag); remote peers read those streams.
-/// Published per-user via <see cref="UserHandPoseInfo"/>.
-/// </summary>
-// Local user: serves live input directly (zero latency) AND writes the streams for
-// others. Remote users: serves the replicated, interpolated streams. When nothing
-// is tracking it reports not-tracking, so the poser rests the hand - desktop and
-// untracked remotes never get synthesized curl. - xlinka
+// The user's finger source over the network. The owner reads its live hands (the input interface's
+// hand pose source, fed by the runtime skeleton or a controller estimate) and writes the 48 hand-space
+// segment rotations plus a tracking flag per side into streams; everyone else reads those. Rotations
+// only go on the wire, as that is all the poser drives from; positions are served to the owner
+// straight off the device and come back false for remote peers, so anything blending a remote hand
+// blends rotation-only. When no device tracks a side the side reports untracked and the hand's
+// multiplexer falls through to its shaped fallback. -xlinka
 [ComponentCategory("Users/Avatar/Hands")]
+[DefaultUpdateOrder(-10000)]
 public class HandPoseStreamManager : UserRootComponent, IHandPoseSourceComponent
 {
-    private const string PositionStreamName = "Finger.Positions";
+    private const string RotationStreamName = "Finger.Rotations";
     private const string LeftTrackingName = "Finger.LeftTracking";
     private const string RightTrackingName = "Finger.RightTracking";
-    private const uint StreamPeriod = 2; // every other sync tick (~35Hz at 70Hz sync)
+    private const uint StreamPeriod = 2;
 
-    // 24 finger nodes per hand (LeftThumb_Metacarpal .. LeftPinky_Tip).
-    private const int NodesPerHand = 24;
-    private static readonly float3 RangeMin = new float3(-0.3f, -0.3f, -0.3f);
-    private static readonly float3 RangeMax = new float3(0.3f, 0.3f, 0.3f);
+    // The owner's side of TracksMetacarpals, replicated to the readers.
+    public readonly Sync<bool> Metacarpals = new();
 
-    private Float3ArrayValueStream _positions = null!;
+    // Set this to hand the owner a source directly; left null, the input interface's hands are read.
+    public IHandPoseSource? LiveSource { get; set; }
+
+    private FloatQArrayValueStream _rotations = null!;
     private BoolValueStream _leftTracking = null!;
     private BoolValueStream _rightTracking = null!;
+
+    public bool TracksMetacarpals => IsUnderLocalUser ? Live()?.TracksMetacarpals ?? false : Metacarpals.Value;
 
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
-
-        // Only the owner produces the streams; remote copies are read-only.
         if (!IsUnderLocalUser)
             return;
 
         EnsureStreams();
-        if (_positions == null || !_positions.IsLocal)
+        if (_rotations == null || !_rotations.IsLocal)
             return;
 
-        var input = Engine.Current?.InputInterface;
-        if (input == null)
-            return;
-
-        bool left = WriteSide(input, Chirality.Left);
-        bool right = WriteSide(input, Chirality.Right);
-        if (_leftTracking != null) _leftTracking.Value = left;
-        if (_rightTracking != null) _rightTracking.Value = right;
+        var live = Live();
+        bool left = WriteSide(live, Chirality.Left);
+        bool right = WriteSide(live, Chirality.Right);
+        if (_leftTracking != null && _leftTracking.Value != left)
+            _leftTracking.Value = left;
+        if (_rightTracking != null && _rightTracking.Value != right)
+            _rightTracking.Value = right;
+        if ((left || right) && live != null && Metacarpals.Value != live.TracksMetacarpals)
+            Metacarpals.Value = live.TracksMetacarpals;
     }
-
-    // Tracking hardware reports proximal-and-outward; the metacarpal devices are
-    // not tracked, so TryLivePosition returns false for them and those array slots
-    // stay at rest. Report that the metacarpals aren't carried so the consumer
-    // leaves the metacarpal bones in their authored pose instead of driving them
-    // from absent data.
-    public bool TracksMetacarpals => false;
 
     public bool IsHandTracked(Chirality side)
     {
         if (IsUnderLocalUser)
-        {
-            var input = Engine.Current?.InputInterface;
-            return input != null && LiveTracking(input, side);
-        }
+            return Live()?.IsHandTracked(side) ?? false;
 
         EnsureStreams();
         var flag = side == Chirality.Left ? _leftTracking : _rightTracking;
         return flag != null && flag.HasValidData && flag.Value;
     }
 
-    public bool TryGetFingerPosition(BodyNode node, out float3 wristLocalPosition)
+    public bool TryGetFingerPosition(BodyNode node, out float3 handLocalPosition)
     {
-        wristLocalPosition = float3.Zero;
+        handLocalPosition = float3.Zero;
+        if (!IsUnderLocalUser)
+            return false;
+        var live = Live();
+        return live != null && live.IsHandTracked(node.GetChirality())
+            && live.TryGetFingerPosition(node, out handLocalPosition);
+    }
 
+    public bool TryGetFingerRotation(BodyNode node, out floatQ handLocalRotation)
+    {
+        handLocalRotation = floatQ.Identity;
+        var side = node.GetChirality();
         if (IsUnderLocalUser)
         {
-            var input = Engine.Current?.InputInterface;
-            return input != null && TryLivePosition(input, node, out wristLocalPosition);
+            var live = Live();
+            return live != null && live.IsHandTracked(side) && live.TryGetFingerRotation(node, out handLocalRotation);
         }
 
         EnsureStreams();
-        if (_positions == null || !IsHandTracked(node.GetChirality()))
+        int index = StreamIndex(node);
+        if (_rotations == null || index < 0 || index >= _rotations.Count || !IsHandTracked(side))
             return false;
-
-        int index = NodeToIndex(node);
-        if (index < 0 || index >= _positions.Count)
+        if (!Metacarpals.Value && node.GetFingerSegmentType() == FingerSegmentType.Metacarpal
+            && node.GetFingerType() != FingerType.Thumb)
             return false;
-
-        wristLocalPosition = _positions[index];
+        handLocalRotation = _rotations[index];
         return true;
     }
 
+    private IHandPoseSource? Live() => LiveSource ?? Engine.Current?.InputInterface?.HandPoseSource;
+
     private void EnsureStreams()
     {
-        if (_positions != null)
+        if (_rotations != null)
             return;
 
         var user = Slot?.ActiveUserRoot?.ActiveUser;
@@ -109,13 +110,13 @@ public class HandPoseStreamManager : UserRootComponent, IHandPoseSourceComponent
 
         if (IsUnderLocalUser)
         {
-            _positions = user.GetStreamOrAdd<Float3ArrayValueStream>(PositionStreamName, s =>
+            _rotations = user.GetStreamOrAdd<FloatQArrayValueStream>(RotationStreamName, s =>
             {
-                s.Count = NodesPerHand * 2;
+                s.Count = HandPoseHelper.NodesPerHand * 2;
                 s.Encoding = ValueEncoding.Quantized;
                 s.FullFrameBits = 12;
-                s.FullFrameMin = RangeMin;
-                s.FullFrameMax = RangeMax;
+                s.FullFrameMin = new floatQ(-1f, -1f, -1f, -1f);
+                s.FullFrameMax = new floatQ(1f, 1f, 1f, 1f);
                 s.SetInterpolation();
                 s.SetUpdatePeriod(StreamPeriod, 0);
             });
@@ -124,67 +125,32 @@ public class HandPoseStreamManager : UserRootComponent, IHandPoseSourceComponent
         }
         else
         {
-            _positions = user.GetStream<Float3ArrayValueStream>(s => s.Name == PositionStreamName)!;
+            _rotations = user.GetStream<FloatQArrayValueStream>(s => s.Name == RotationStreamName)!;
             _leftTracking = user.GetStream<BoolValueStream>(s => s.Name == LeftTrackingName)!;
             _rightTracking = user.GetStream<BoolValueStream>(s => s.Name == RightTrackingName)!;
         }
     }
 
-    private bool WriteSide(InputInterface input, Chirality side)
+    private bool WriteSide(IHandPoseSource? live, Chirality side)
     {
-        if (!LiveTracking(input, side))
+        if (live == null || !live.IsHandTracked(side))
             return false;
 
-        int start = side == Chirality.Left
-            ? (int)BodyNode.LeftThumb_Metacarpal
-            : (int)BodyNode.RightThumb_Metacarpal;
-        int baseIndex = side == Chirality.Left ? 0 : NodesPerHand;
-
-        for (int i = 0; i < NodesPerHand; i++)
+        int baseIndex = side == Chirality.Left ? 0 : HandPoseHelper.NodesPerHand;
+        for (int i = 0; i < HandPoseHelper.NodesPerHand; i++)
         {
-            if (TryLivePosition(input, (BodyNode)(start + i), out var pos))
-                _positions[baseIndex + i] = pos;
+            _rotations[baseIndex + i] = live.TryGetFingerRotation(HandPoseHelper.NodeAt(side, i), out var rotation)
+                ? rotation
+                : floatQ.Identity;
         }
         return true;
     }
 
-    private static bool LiveTracking(InputInterface input, Chirality side)
+    private static int StreamIndex(BodyNode node)
     {
-        var wrist = input.GetBodyNode(WristNode(side));
-        if (wrist == null || !wrist.IsTracking)
-            return false;
-
-        var probe = input.GetBodyNode(FingerType.Index.ComposeFinger(FingerSegmentType.Proximal, side));
-        return probe != null && probe.IsTracking;
+        int index = node.GetFingerSegmentIndex();
+        if (index < 0)
+            return -1;
+        return node.GetChirality() == Chirality.Right ? HandPoseHelper.NodesPerHand + index : index;
     }
-
-    private static bool TryLivePosition(InputInterface input, BodyNode node, out float3 wristLocalPosition)
-    {
-        wristLocalPosition = float3.Zero;
-
-        var side = node.GetChirality();
-        var wrist = input.GetBodyNode(WristNode(side));
-        if (wrist == null || !wrist.IsTracking)
-            return false;
-
-        var device = input.GetBodyNode(node);
-        if (device == null || !device.IsTracking)
-            return false;
-
-        wristLocalPosition = wrist.RawRotation.Inverse * (device.RawPosition - wrist.RawPosition);
-        return true;
-    }
-
-    private static int NodeToIndex(BodyNode node)
-    {
-        int n = (int)node;
-        if (n >= (int)BodyNode.LeftThumb_Metacarpal && n <= (int)BodyNode.LeftPinky_Tip)
-            return n - (int)BodyNode.LeftThumb_Metacarpal;
-        if (n >= (int)BodyNode.RightThumb_Metacarpal && n <= (int)BodyNode.RightPinky_Tip)
-            return NodesPerHand + (n - (int)BodyNode.RightThumb_Metacarpal);
-        return -1;
-    }
-
-    private static BodyNode WristNode(Chirality side)
-        => side == Chirality.Left ? BodyNode.LeftController : BodyNode.RightController;
 }

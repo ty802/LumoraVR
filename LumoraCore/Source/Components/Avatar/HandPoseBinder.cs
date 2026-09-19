@@ -5,53 +5,51 @@ using Lumora.Core.Input;
 
 namespace Lumora.Core.Components.Avatar;
 
-/// <summary>
-/// On equip, links the hand model's <see cref="HandPoseDriver"/> to the user's current
-/// finger pose source (the per-user <see cref="UserHandPoseInfo"/>). Lives on
-/// the hand avatar object and reacts through the standard equip dispatch.
-/// </summary>
-// The poser also falls back to the user-root registry on its own, so this is
-// belt-and-suspenders for the common case, but it is the seam where per-hand
-// wiring (and later tip-touch / haptics) belongs. - xlinka
+// On equip, points the hand's pose graph at the wearer's published finger source (UserHandPoseInfo on
+// the user root): into the first slot of the multiplexer when the hand has one, else straight into
+// the driver. Only the authority writes the replicated refs. -xlinka
 [ComponentCategory("Users/Avatar/Hands")]
 public class HandPoseBinder : Component, IAvatarEquipReceiver
 {
-    /// <summary>The poser this assigner feeds. Resolved from the slot tree when unset.</summary>
     public readonly SyncRef<HandPoseDriver> TargetPoser = null!;
 
-    /// <summary>Which hand this assigner is for.</summary>
+    public readonly SyncRef<HandPoseMultiplexer> TargetMultiplexer = null!;
+
     public readonly Sync<Chirality> Side = new();
 
     public void OnPreEquip(AvatarSocket slot) { }
 
     public void OnEquip(AvatarSocket slot)
     {
-        // Only the authority drives the synced PoseSource ref; every other peer
-        // receives it through sync, and the poser's own registry fallback covers
-        // the gap before replication arrives.
         if (World?.IsAuthority != true)
             return;
-
-        var poser = ResolvePoser();
-        if (poser == null)
-            return;
-
         var info = slot?.Slot?.ActiveUserRoot?.GetRegisteredComponent<UserHandPoseInfo>();
-        poser.PoseSource.Target = info?.HandPoseSource.Target!;
+        Bind(info?.HandPoseSource.Target);
     }
 
     public void OnDequip(AvatarSocket slot)
     {
         if (World?.IsAuthority != true)
             return;
-
-        var poser = ResolvePoser();
-        if (poser != null)
-            poser.PoseSource.Target = null!;
+        Bind(null);
     }
 
-    private HandPoseDriver ResolvePoser()
-        => TargetPoser?.Target
-           ?? Slot?.GetComponent<HandPoseDriver>()
-           ?? Slot?.GetComponentInChildren<HandPoseDriver>()!;
+    private void Bind(IHandPoseSourceComponent? source)
+    {
+        var multiplexer = TargetMultiplexer?.Target;
+        if (multiplexer != null && !multiplexer.IsDestroyed)
+        {
+            if (multiplexer.Sources.Count == 0)
+                multiplexer.Sources.Add(source);
+            else
+                multiplexer.Sources[0] = source;
+            return;
+        }
+
+        var poser = TargetPoser?.Target
+                    ?? Slot?.GetComponent<HandPoseDriver>()
+                    ?? Slot?.GetComponentInChildren<HandPoseDriver>();
+        if (poser != null)
+            poser.PoseSource.Target = source!;
+    }
 }

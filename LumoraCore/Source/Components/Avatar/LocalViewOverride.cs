@@ -1,6 +1,7 @@
 // Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
+using System.Collections.Generic;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Avatar;
@@ -12,11 +13,15 @@ namespace Lumora.Core.Components.Avatar;
 // their own has-override flag; anything left off falls through to the slot's real transform.
 //
 // A scale override of zero is special-cased into shadows-only rendering rather than an actual zero
-// scale, because the reason you hide your own head is to stop seeing it, not to lose its shadow.
-// -xlinka
+// scale, because the reason you hide your own head is to stop seeing it, not to lose its shadow. On a
+// slot that is a BONE of a skinned mesh the geometry lives in the body's renderer, not under the bone,
+// so the hook collapses that bone for the wearer's eyes instead; CollectSkinnedRenderers below is how
+// it finds which renderers that touches. -xlinka
 [ComponentCategory("Users/Avatar")]
 public class LocalViewOverride : ImplementableComponent<IHook>
 {
+    private const float HideScaleEpsilon = 0.0001f;
+
     // which rendering context activates this override
     public readonly Sync<ViewContext> Context = new();
 
@@ -37,11 +42,73 @@ public class LocalViewOverride : ImplementableComponent<IHook>
         _userRootReg = new UserRootRegistrationTracker(this);
     }
 
+    // True when this override hides the slot from the wearer's own eyes.
+    public bool HidesFromOwnView
+        => Context.Value == ViewContext.UserView && HasScaleOverride.Value && IsEffectivelyZero(ScaleOverride.Value);
+
+    public static bool IsEffectivelyZero(in float3 v)
+    {
+        return System.Math.Abs(v.x) < HideScaleEpsilon
+            && System.Math.Abs(v.y) < HideScaleEpsilon
+            && System.Math.Abs(v.z) < HideScaleEpsilon;
+    }
+
+    public void HideFromOwnView()
+    {
+        Context.Value = ViewContext.UserView;
+        HasScaleOverride.Value = true;
+        ScaleOverride.Value = float3.Zero;
+    }
+
+    // The skinned renderers whose bone set reaches this slot or anything under it: collapsing this
+    // bone changes what they draw, nothing else is affected. Searched from the avatar root when there
+    // is one, else the user root, else the top of whatever object this slot sits in.
+    public void CollectSkinnedRenderers(List<SkinnedMeshRenderer> output)
+    {
+        var slot = Slot;
+        if (slot == null || slot.IsDestroyed)
+            return;
+        var root = slot.GetComponentInParents<AvatarForm>()?.Slot
+                   ?? slot.ActiveUserRoot?.Slot
+                   ?? TopmostUnderWorldRoot(slot);
+        if (root == null || root.IsDestroyed)
+            return;
+        FindSkinnedRenderersBoundUnder(root, slot, output);
+    }
+
+    public static void FindSkinnedRenderersBoundUnder(Slot searchRoot, Slot bone, List<SkinnedMeshRenderer> output)
+    {
+        if (searchRoot == null || bone == null)
+            return;
+        foreach (var renderer in searchRoot.GetComponentsInChildren<SkinnedMeshRenderer>())
+        {
+            if (renderer.IsDestroyed || output.Contains(renderer))
+                continue;
+            if (renderer.BindsBoneUnder(bone))
+                output.Add(renderer);
+        }
+    }
+
+    private static Slot? TopmostUnderWorldRoot(Slot slot)
+    {
+        var worldRoot = slot.World?.RootSlot;
+        var walk = slot;
+        while (walk.Parent != null && walk.Parent != worldRoot)
+            walk = walk.Parent;
+        return walk;
+    }
+
     public override void OnAwake()
     {
         base.OnAwake();
         _userRootReg.Attach();
+        // Equip reparents the avatar under the wearer; the hook gates on "is this the local user's",
+        // and nothing else re-runs it when that answer changes.
+        if (Slot != null)
+            Slot.ActiveUserRootChanged += OnActiveUserRootChanged;
     }
+
+    private void OnActiveUserRootChanged(Slot _) => RunApplyChanges();
 
     public override void OnInit()
     {
@@ -74,6 +141,8 @@ public class LocalViewOverride : ImplementableComponent<IHook>
 
     public override void OnDestroy()
     {
+        if (Slot != null)
+            Slot.ActiveUserRootChanged -= OnActiveUserRootChanged;
         _userRootReg.Detach();
         base.OnDestroy();
     }

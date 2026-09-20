@@ -93,7 +93,8 @@ public class Camera : ImplementableComponent
         FieldOfView.Value        = 60f;
         OrthographicSize.Value   = 5f;
         NearClip.Value           = 0.05f;
-        FarClip.Value            = 1000f;
+        // A kilometre cut the far side of any large world out of a mirror or a camera feed.
+        FarClip.Value            = 4096f;
         // Clear = ClearMode.Skybox (enum 0, C# default, skip)
         BackgroundColor.Value    = new color(0.2f, 0.2f, 0.2f, 1f);
         // TargetTexture = default (C# default null, skip)

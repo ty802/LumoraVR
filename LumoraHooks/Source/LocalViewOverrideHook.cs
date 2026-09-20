@@ -19,15 +19,27 @@ namespace Lumora.Godot.Hooks;
 // A scale override of zero is the one case that does NOT go through the transform: it means "hide this
 // from myself". A zero scale would take the shadow with it, and ShadowsOnly (what this used to do) takes
 // the object out of every local render including mirrors and in-world cameras - you end up headless in
-// your own reflection. So the renderers move onto RenderHelper.LOCAL_HEAD_LAYER instead: the eye cameras
-// are the only ones masking that bit off, lights carry no cull mask, so the head keeps its shadow, still
-// shows up in mirrors and on camera, and only your own eyes skip it. This is what keeps the head out of
-// the view now that the near plane is 2 cm. -xlinka
+// your own reflection. So it is done with render layers instead, two ways depending on where the
+// geometry actually lives:
+//
+//   - Renderers UNDER the slot (a placeholder head, hair parented to the head bone) move onto
+//     RenderHelper.LOCAL_HEAD_LAYER. The eye cameras are the only ones masking that bit off, lights
+//     carry no cull mask, so the piece keeps its shadow, still shows in mirrors and on camera, and only
+//     your own eyes skip it.
+//   - A skinned body has no geometry under the head bone at all; its mesh hangs off the skeleton and
+//     the head is just vertices weighted to that bone. For every SkinnedMeshRenderer whose bone set
+//     reaches this slot (found on the engine side, LocalViewOverride.CollectSkinnedRenderers) the
+//     SkinnedMeshHook keeps an EYE-VIEW TWIN: a second instance on RenderHelper.EYES_ONLY_LAYER, bound
+//     to a mirrored skeleton with this bone collapsed to zero scale, while the real instance moves onto
+//     LOCAL_HEAD_LAYER. Only the two eye cameras draw the twin, everything else draws the real one, so
+//     the wearer is headless to themselves and whole to everyone and everything else, shadow included.
+//
+// Both are gated on the first-person view: third person and free cam show the whole avatar. This is
+// what keeps the head out of the view now that the near plane is millimetres. -xlinka
 [ImplementableHook(typeof(LocalViewOverride))]
 public class LocalViewOverrideHook : ComponentHook<LocalViewOverride>
 {
-    private const float HideScaleEpsilon = 0.0001f;
-    // Frames we will keep coming back looking for a renderer to hide before accepting that this slot
+    // Frames we will keep coming back looking for something to hide before accepting that this slot
     // simply has none. Bounded so a LocalViewOverride on a slot with no geometry cannot re-dirty forever.
     private const int HideRetryLimit = 240;
 
@@ -38,6 +50,11 @@ public class LocalViewOverrideHook : ComponentHook<LocalViewOverride>
     // there rather than a guessed default (a renderer on the private/hidden band, or under a
     // RenderLayerOverride, would otherwise come back wearing the public bit it never had).
     private readonly System.Collections.Generic.Dictionary<Node3D, int> _priorLayers = new();
+
+    // The skinned hooks currently collapsing this bone for the wearer. Registered on the activation
+    // edge and re-collected during the retry window so a renderer whose hook lands late still joins.
+    private readonly System.Collections.Generic.List<SkinnedMeshHook> _collapsedRenderers = new();
+    private readonly System.Collections.Generic.List<SkinnedMeshRenderer> _rendererScratch = new();
 
     public static IHook<LocalViewOverride> Constructor() => new LocalViewOverrideHook();
 
@@ -64,9 +81,11 @@ public class LocalViewOverrideHook : ComponentHook<LocalViewOverride>
 
         bool hasScale = Owner.HasScaleOverride.Value;
         float3 scale = Owner.ScaleOverride.Value;
-        bool hide = hasScale && IsEffectivelyZero(scale);
+        bool hide = hasScale && LocalViewOverride.IsEffectivelyZero(scale);
 
         SetHiddenFromView(hide);
+        SetSkinnedCollapse(hide);
+        ScheduleRetry(hide);
 
         float3? position = Owner.HasPositionOverride.Value ? Owner.PositionOverride.Value : null;
         floatQ? rotation = Owner.HasRotationOverride.Value ? Owner.RotationOverride.Value : null;
@@ -81,6 +100,8 @@ public class LocalViewOverrideHook : ComponentHook<LocalViewOverride>
     {
         if (!destroyingWorld)
             ClearAll();
+        else
+            _collapsedRenderers.Clear();
 
         base.Destroy(destroyingWorld);
     }
@@ -90,6 +111,8 @@ public class LocalViewOverrideHook : ComponentHook<LocalViewOverride>
     private void ClearAll()
     {
         SetHiddenFromView(false);
+        SetSkinnedCollapse(false);
+        _hideRetries = HideRetryLimit;
         PushTransform(null, null, null);
     }
 
@@ -108,55 +131,73 @@ public class LocalViewOverrideHook : ComponentHook<LocalViewOverride>
 
     private void SetHiddenFromView(bool hidden)
     {
-        // Re-applied every frame while active to catch MeshInstance3Ds created after us; the restore
+        // Re-applied every pass while active to catch MeshInstance3Ds created after us; the restore
         // only runs on the edge so a slot that never hid never pays for the walk.
         if (!hidden && !_hiddenFromView)
             return;
 
         var slotNode = (Owner.Slot?.Hook as SlotHook)?.GeneratedNode3D;
         if (slotNode == null || !GodotObject.IsInstanceValid(slotNode))
+        {
+            _hiddenFromView = hidden && _hiddenFromView;
             return;
+        }
 
         if (hidden)
         {
             Helpers.RenderHelper.SetHierarchyLayer(slotNode, Helpers.RenderHelper.LOCAL_HEAD_LAYER, _priorLayers);
-
-            // The renderer hook builds its MeshInstance3D on its own schedule, and on a fresh avatar it
-            // usually lands AFTER this. Nothing re-fires us when it does, so a one-shot walk would leave
-            // the head on the public layer and in your eyes - which the old 25 cm near plane used to cover
-            // up. Come back until there is actually something here to move, then stop. -xlinka
-            if (!HasVisual(slotNode) && _hideRetries-- > 0)
-                Owner?.MarkChangeDirty();
-            else
-                _hideRetries = HideRetryLimit;
         }
         else
         {
             Helpers.RenderHelper.RestoreHierarchyLayer(slotNode, _priorLayers);
             _priorLayers.Clear();
-            _hideRetries = HideRetryLimit;
         }
 
         _hiddenFromView = hidden;
     }
 
-    private static bool HasVisual(Node3D root)
+    // Register this bone with every skinned hook whose mesh it can move, or pull it back out of all of
+    // them. Re-collected on every active pass: the engine-side list is the authority, and a hook found
+    // this time that was missing last time simply joins.
+    private void SetSkinnedCollapse(bool hidden)
     {
-        if (root is VisualInstance3D)
-            return true;
-        foreach (var child in root.GetChildren())
+        if (!hidden)
         {
-            if (child is Node3D child3D && HasVisual(child3D))
-                return true;
+            if (_collapsedRenderers.Count == 0)
+                return;
+            foreach (var hook in _collapsedRenderers)
+                hook.RemoveEyeViewCollapse(Owner);
+            _collapsedRenderers.Clear();
+            return;
         }
-        return false;
+
+        _rendererScratch.Clear();
+        Owner.CollectSkinnedRenderers(_rendererScratch);
+        foreach (var renderer in _rendererScratch)
+        {
+            if (renderer.Hook is not SkinnedMeshHook hook || _collapsedRenderers.Contains(hook))
+                continue;
+            hook.AddEyeViewCollapse(Owner);
+            _collapsedRenderers.Add(hook);
+        }
+        _rendererScratch.Clear();
     }
 
-    private static bool IsEffectivelyZero(float3 v)
+    // The renderer hooks build their instances on their own schedule, and on a fresh avatar they
+    // usually land AFTER this. Nothing re-fires us when they do, so a one-shot pass would leave the
+    // head on the public layer and in your eyes - which the old 25 cm near plane used to cover up.
+    // Come back for a bounded window so late pieces (a face mesh whose hook is a frame behind the
+    // body's) still get picked up, then stop. -xlinka
+    private void ScheduleRetry(bool hidden)
     {
-        return System.Math.Abs(v.x) < HideScaleEpsilon
-            && System.Math.Abs(v.y) < HideScaleEpsilon
-            && System.Math.Abs(v.z) < HideScaleEpsilon;
+        if (!hidden)
+        {
+            _hideRetries = HideRetryLimit;
+            return;
+        }
+
+        if (_hideRetries-- > 0)
+            Owner?.MarkChangeDirty();
     }
 
     private bool IsLocalUser()

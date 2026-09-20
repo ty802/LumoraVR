@@ -5,8 +5,10 @@ using Godot;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Components;
+using Lumora.Core.Components.Avatar;
 using Lumora.Core.Phos;
 using Lumora.Godot.Extensions;
+using Lumora.Godot.Helpers;
 using System.Collections.Generic;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
@@ -25,6 +27,8 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
             return;
         _lodRange = range;
         _lodRange.ApplyTo(_meshInstance);
+        if (_twin != null && _twin.Alive)
+            _lodRange.ApplyTo(_twin.Instance);
     }
 
     private MeshInstance3D _meshInstance = null!;
@@ -52,6 +56,20 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
 
     // Maps mesh bone index -> Godot skeleton bone index
     private Dictionary<int, int> _boneIndexMap = new Dictionary<int, int>();
+
+    // EYE-VIEW TWIN. The zero-scale UserView overrides that want one of this mesh's bones collapsed for
+    // the wearer, registered by LocalViewOverrideHook on its activation edges. While any are present
+    // and the mesh is bound, _twin is the wearer's private headless copy (EyeViewTwin) and the real
+    // instance sits on LOCAL_HEAD_LAYER so the eyes skip it. Only ever built for the local user's
+    // worn avatar - the override hook never registers for anyone else's. -xlinka
+    private readonly List<LocalViewOverride> _eyeCollapses = new List<LocalViewOverride>();
+    private EyeViewTwin? _twin;
+    // The ArrayMesh the twin instance currently holds. A mesh rebuild swaps _arrayMesh before the twin
+    // is re-mirrored, and a morph weight or material written to the twin against the old mesh is an
+    // index error per surface; this is the managed-side answer so the per-frame paths need no read.
+    private ArrayMesh? _twinMesh;
+    private uint _realLayersBeforeTwin;
+    private bool _realLayersSwapped;
 
     public override void Initialize()
     {
@@ -95,6 +113,8 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
             _skeleton = null!;
             _boneIndexMap.Clear();
             _meshApplied = false;
+            // The twin skeleton was a child of the one that just went; the rebind below regrows it.
+            DestroyEyeViewTwin(logIt: false);
         }
 
         if (!_skeletonBound || zeroMapRetry)
@@ -121,7 +141,18 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
 
         if (GodotObject.IsInstanceValid(_meshInstance))
         {
-            _meshInstance.Visible = Owner.Enabled;
+            // SLOT ACTIVE HAS TO BE ASKED FOR HERE, unlike every unskinned renderer.
+            //
+            // A slot hides by hiding its own Node3D and letting Godot's visibility cascade take the
+            // rest of the subtree with it. That works right up until TryBindToSkeleton REPARENTS this
+            // mesh instance under the Skeleton3D, which lives under the armature and not under this
+            // renderer's slot. From then on the slot hides an empty node while the mesh carries on
+            // drawing from under the skeleton - which is why switching a part off in the inspector
+            // did nothing on an avatar and worked fine on everything else. -xlinka
+            bool visible = Owner.Enabled && (Owner.Slot?.IsActive ?? false);
+            _meshInstance.Visible = visible;
+            if (_twin != null && _twin.Alive)
+                _twin.Instance.Visible = visible;
         }
 
         // Update material if changed (target reassigned), or keep retrying while the real asset is still loading
@@ -183,8 +214,13 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
             return;
 
         int weights = Owner.BlendShapeNames.Count;
+        var twin = _twin != null && _twin.Alive && ReferenceEquals(_twinMesh, _arrayMesh) ? _twin.Instance : null;
         for (int i = 0; i < n; i++)
-            _meshInstance.SetBlendShapeValue(i, i < weights ? Owner.GetEffectiveBlendShapeWeight(i) : 0f);
+        {
+            float weight = i < weights ? Owner.GetEffectiveBlendShapeWeight(i) : 0f;
+            _meshInstance.SetBlendShapeValue(i, weight);
+            twin?.SetBlendShapeValue(i, weight);
+        }
     }
 
     // Every surface gets its own material now. Painting only surface 0 left a multi-surface mesh -
@@ -213,7 +249,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
         // material that does not exist. -xlinka
         if (provider == null)
         {
-            _meshInstance!.SetSurfaceOverrideMaterial(surface, null);
+            SetSurfaceMaterial(surface, null);
             return true;
         }
 
@@ -221,7 +257,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
         bool loading = Owner.IsSurfaceLoading(surface);
         if (!loading && materialAsset != null && materialAsset.GodotMaterial is Material godotMaterial)
         {
-            _meshInstance!.SetSurfaceOverrideMaterial(surface, godotMaterial);
+            SetSurfaceMaterial(surface, godotMaterial);
             _loadingSkin.Clear(surface);
             return true;
         }
@@ -231,8 +267,15 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
         // Assigned but still arriving (the material asset, or its textures). Wear the shared loading
         // skin and DON'T latch it - leave the flag false so the arrival notification's re-drive swaps
         // in the real material. An avatar used to get stuck in the tan. -xlinka
-        _meshInstance!.SetSurfaceOverrideMaterial(surface, LoadingPlaceholderMaterial.Get());
+        SetSurfaceMaterial(surface, LoadingPlaceholderMaterial.Get());
         return false;
+    }
+
+    private void SetSurfaceMaterial(int surface, Material? material)
+    {
+        _meshInstance!.SetSurfaceOverrideMaterial(surface, material);
+        if (_twin != null && _twin.Alive && ReferenceEquals(_twinMesh, _arrayMesh))
+            _twin.Instance.SetSurfaceOverrideMaterial(surface, material);
     }
 
     private readonly LoadingSkinWatch _loadingSkin = new();
@@ -372,6 +415,8 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
         {
             Owner.HookBindingComplete = true;
         }
+
+        RefreshEyeViewTwin();
     }
 
     private void BuildBoneIndexMap()
@@ -715,6 +760,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
         ApplyMaterial();
 
         _meshApplied = true;
+        RefreshEyeViewTwin();
         RequeueWhilePlaceholderShown();
         LumoraLogger.Debug($"SkinnedMeshHook: Applied mesh with {Owner.Vertices.Count} vertices, {Owner.Indices.Count / 3} triangles");
     }
@@ -1136,12 +1182,16 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
                 using (owner.World?.DataModelPermissions?.EnterSystemBypass())
                 {
                     owner.BlendShapeNames.Clear();
-                    owner.BlendShapeWeights.Clear();
                     for (int s = 0; s < names.Length; s++)
-                    {
                         owner.BlendShapeNames.Add(names[s]);
+                    // Sized to the shape count, never cleared: the weights are data that arrive with
+                    // the component (a package carries the creator's body sliders in them, a save its
+                    // own), and they land before the mesh does. Clearing here threw every one of them
+                    // away and re-added zeros. -xlinka
+                    while (owner.BlendShapeWeights.Count > names.Length)
+                        owner.BlendShapeWeights.RemoveAt(owner.BlendShapeWeights.Count - 1);
+                    while (owner.BlendShapeWeights.Count < names.Length)
                         owner.BlendShapeWeights.Add(0f);
-                    }
                 }
                 ApplyBlendShapeWeights();
             });
@@ -1158,6 +1208,7 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
         _appliedMeshVcount = mesh.VertexCount;
         _meshApplied = true;
         Owner.HookBindingComplete = true;
+        RefreshEyeViewTwin();
 
         // HookBindingComplete above switches off the component's per-update re-drive, so from here on
         // nothing asks this hook to run again unless something else touches the renderer. If the
@@ -1182,8 +1233,29 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
                        + $"node=({_meshInstance!.GlobalPosition.X:F2},{_meshInstance.GlobalPosition.Y:F2},{_meshInstance.GlobalPosition.Z:F2}) "
                        + $"scale=({_meshInstance.Scale.X:F2},{_meshInstance.Scale.Y:F2},{_meshInstance.Scale.Z:F2}) "
                        + $"layers={_meshInstance.Layers} | "
+                       // THE GLOBAL CHAIN, not the local transform.
+                       //
+                       // scale= above is the instance's own local, which is 1 on every skinned mesh
+                       // because the instance is reparented under the Skeleton3D. What decides where
+                       // the skin actually lands is the SKELETON'S global, and a sub-rig imported from
+                       // an FBX carries a unit conversion there - the radio's is 0.012 x 0.0833. A
+                       // 400-unit bind-space mesh under a 0.001 skeleton is a 40 cm antenna; under a
+                       // 1.0 skeleton it is a disaster, and these two numbers are the difference.
+                       // -xlinka
+                       + $"skelGlobalScale=({SkeletonGlobalScale().X:F4},{SkeletonGlobalScale().Y:F4},{SkeletonGlobalScale().Z:F4}) "
+                       + $"skelGlobalPos=({SkeletonGlobalOrigin().X:F2},{SkeletonGlobalOrigin().Y:F2},{SkeletonGlobalOrigin().Z:F2}) | "
                        + $"offThreadBuild={offThreadOk}, finalize={_finalizeMs:F0}ms");
     }
+
+    private Vector3 SkeletonGlobalScale()
+        => (_skeleton != null && GodotObject.IsInstanceValid(_skeleton))
+            ? _skeleton.GlobalTransform.Basis.Scale
+            : Vector3.Zero;
+
+    private Vector3 SkeletonGlobalOrigin()
+        => (_skeleton != null && GodotObject.IsInstanceValid(_skeleton))
+            ? _skeleton.GlobalTransform.Origin
+            : Vector3.Zero;
 
     // Map every mesh bone (in the asset's bone table) to its skeleton bone BY NAME and stamp the asset's bind
     // pose, so the surface's mesh-space bone indices resolve to the right skeleton bone on the GPU. -xlinka
@@ -1259,8 +1331,167 @@ public class SkinnedMeshHook : ComponentHook<SkinnedMeshRenderer>, ILodRangeTarg
         _meshInstance.Skin = skin;
     }
 
+    // EYE-VIEW TWIN
+
+    public void AddEyeViewCollapse(LocalViewOverride view)
+    {
+        if (view == null || _eyeCollapses.Contains(view))
+            return;
+        _eyeCollapses.Add(view);
+        RefreshEyeViewTwin();
+    }
+
+    public void RemoveEyeViewCollapse(LocalViewOverride view)
+    {
+        if (view != null && _eyeCollapses.Remove(view))
+            RefreshEyeViewTwin();
+    }
+
+    // Reconcile the twin with what is wanted and what is bound. Called on every registration edge and
+    // after every bind or mesh finalize, so an override that registered before the mesh existed gets
+    // its twin the moment the mesh does.
+    private void RefreshEyeViewTwin()
+    {
+        _eyeCollapses.RemoveAll(v => v == null || v.IsDestroyed || v.Slot == null || v.Slot.IsDestroyed);
+
+        bool wanted = _eyeCollapses.Count > 0
+            && MeshInstanceAlive && SkeletonAlive && _skeletonBound && _meshApplied
+            && _arrayMesh != null && _skeletonHook != null;
+
+        if (!wanted)
+        {
+            DestroyEyeViewTwin(logIt: true);
+            return;
+        }
+
+        if (_twin != null && !_twin.Alive)
+            DestroyEyeViewTwin(logIt: false);
+
+        var collapsed = new List<int>(_eyeCollapses.Count);
+        foreach (var view in _eyeCollapses)
+        {
+            int index = _skeletonHook!.GetBoneIndex(view.Slot);
+            if (index >= 0)
+                collapsed.Add(index);
+        }
+        // A bone this skeleton does not carry (a stale registration, or the override sits on a slot the
+        // importer never made a bone) is nothing to collapse, and a twin with nothing to collapse is a
+        // second draw of the whole body for no reason.
+        if (collapsed.Count == 0)
+        {
+            DestroyEyeViewTwin(logIt: true);
+            return;
+        }
+
+        if (_twin == null && !CreateEyeViewTwin())
+            return;
+
+        _twin!.SetCollapsedBones(collapsed);
+        // Collapse now rather than on the skeleton's next pass: the twin is what the eyes draw from this
+        // frame on, and one frame of the inside of the head is exactly the flash this exists to remove.
+        _twin.FinishPoses();
+        MirrorTwinAppearance();
+    }
+
+    private bool CreateEyeViewTwin()
+    {
+        var twinSkeleton = _skeletonHook!.CreateTwinSkeleton();
+        if (twinSkeleton == null)
+            return false;
+
+        var instance = new MeshInstance3D
+        {
+            Name = "EyeViewInstance",
+            Mesh = _arrayMesh,
+            Skin = _meshInstance.Skin,
+            Layers = (uint)RenderHelper.EYES_ONLY_LAYER,
+            // The real instance keeps casting: the shadow on the floor should still have a head.
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            GIMode = GeometryInstance3D.GIModeEnum.Disabled,
+            ExtraCullMargin = _meshInstance.ExtraCullMargin,
+            Transform = Transform3D.Identity,
+        };
+        twinSkeleton.AddChild(instance);
+        instance.Skeleton = new NodePath("..");
+
+        _twin = new EyeViewTwin(twinSkeleton, instance);
+        _twinMesh = _arrayMesh;
+        _skeletonHook.RegisterTwin(_twin);
+
+        // The eyes draw the twin instead of the body: park the real instance where only they cannot see.
+        if (!_realLayersSwapped)
+        {
+            _realLayersBeforeTwin = _meshInstance.Layers;
+            _realLayersSwapped = true;
+        }
+        _meshInstance.Layers = (uint)RenderHelper.LOCAL_HEAD_LAYER;
+
+        var bones = new System.Text.StringBuilder();
+        foreach (var view in _eyeCollapses)
+        {
+            if (bones.Length > 0) bones.Append(", ");
+            bones.Append(view.Slot?.SlotName.Value);
+        }
+        LumoraLogger.Log($"LocalViewOverride: eye-view twin for '{Owner.Slot?.SlotName.Value}' collapsing '{bones}'");
+        return true;
+    }
+
+    private void DestroyEyeViewTwin(bool logIt)
+    {
+        if (_twin != null)
+        {
+            _skeletonHook?.UnregisterTwin(_twin);
+            _twin.Free();
+            if (logIt)
+                LumoraLogger.Log($"LocalViewOverride: eye-view twin for '{Owner?.Slot?.SlotName.Value}' released");
+            _twin = null;
+            _twinMesh = null;
+        }
+
+        if (_realLayersSwapped)
+        {
+            if (MeshInstanceAlive)
+                _meshInstance.Layers = _realLayersBeforeTwin;
+            _realLayersSwapped = false;
+        }
+    }
+
+    // Everything the twin shares with the real instance that is not a bone pose: mesh, skin, cull
+    // margin, materials, morph weights, LOD band, visibility. Cheap, and only runs on twin edges and
+    // mesh rebuilds; the per-frame pieces (weights, materials) write both instances where they happen.
+    private void MirrorTwinAppearance()
+    {
+        if (_twin == null || !_twin.Alive || !MeshInstanceAlive || _arrayMesh == null)
+            return;
+
+        var twin = _twin.Instance;
+        if (!ReferenceEquals(_twinMesh, _arrayMesh))
+        {
+            twin.Mesh = _arrayMesh;
+            _twinMesh = _arrayMesh;
+        }
+        var skin = _meshInstance.Skin;
+        if (twin.Skin != skin)
+            twin.Skin = skin;
+        twin.ExtraCullMargin = _meshInstance.ExtraCullMargin;
+        twin.Visible = _meshInstance.Visible;
+        _lodRange.ApplyTo(twin);
+
+        int surfaces = _arrayMesh.GetSurfaceCount();
+        for (int surface = 0; surface < surfaces; surface++)
+            twin.SetSurfaceOverrideMaterial(surface, _meshInstance.GetSurfaceOverrideMaterial(surface));
+
+        ApplyBlendShapeWeights();
+    }
+
     public override void Destroy(bool destroyingWorld)
     {
+        if (!destroyingWorld)
+            DestroyEyeViewTwin(logIt: false);
+        _eyeCollapses.Clear();
+        _twin = null;
+        _twinMesh = null;
+
         if (!destroyingWorld && _meshInstance != null && GodotObject.IsInstanceValid(_meshInstance))
         {
             _meshInstance.QueueFree();

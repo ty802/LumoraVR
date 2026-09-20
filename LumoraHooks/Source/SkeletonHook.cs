@@ -10,18 +10,23 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Godot.Hooks;
 
-/// <summary>
-/// Hook for SkeletonBuilder component -> Godot Skeleton3D.
-/// Creates and manages a Skeleton3D node with bone hierarchy.
-/// Platform skeleton hook for Godot.
-/// </summary>
+// SkeletonBuilder -> Skeleton3D. Builds the bone hierarchy once and pushes the bone slots' transforms
+// onto it every frame; the skinned mesh hooks parent their instances under the skeleton it owns.
 [ImplementableHook(typeof(SkeletonBuilder))]
 public class SkeletonHook : ComponentHook<SkeletonBuilder>
 {
     private Skeleton3D _skeleton = null!;
     private Dictionary<string, int> _boneNameToIndex = new Dictionary<string, int>();
     private Dictionary<int, Transform3D> _boneRestPoses = new Dictionary<int, Transform3D>();
+    // Bone slot -> skeleton bone index. Names can collide and get uniquified above; the slot is the
+    // one identity a caller holding a bone actually has.
+    private readonly Dictionary<Lumora.Core.Slot, int> _boneSlotToIndex = new Dictionary<Lumora.Core.Slot, int>();
     private Lumora.Core.Slot _rootBoneSlot = null!;
+
+    // Eye-view twins riding this skeleton (see EyeViewTwin). Fed inside SyncSlotsToSkeleton so they
+    // go dirty in the same update as the real bones. A twin whose nodes died with a rebuild is dropped
+    // on the next pass; its owner notices the same thing and asks for a fresh one.
+    private readonly List<EyeViewTwin> _twins = new List<EyeViewTwin>();
 
     // Each bone's parent IN THE SKELETON, which is not always its parent slot: the skeleton is built from
     // the nearest ancestor that is also a bone, so any non-bone slot in between drops out, and a bone with
@@ -75,9 +80,6 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
         }
     }
 
-    /// <summary>
-    /// Rebuild the entire Skeleton3D from component data.
-    /// </summary>
     private void RebuildSkeleton()
     {
         if (_skeleton == null)
@@ -98,6 +100,9 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
         _boneNameToIndex.Clear();
         _boneRestPoses.Clear();
         _boneParentSlot.Clear();
+        _boneSlotToIndex.Clear();
+        // Any twin was a child of the skeleton just freed.
+        _twins.Clear();
 
         // Build parent hierarchy map
         var parentMap = BuildParentMap();
@@ -172,6 +177,7 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
             // resolves to the first bone that claimed it.
             _boneNameToIndex.TryAdd(boneName, boneIndex);
             slotToGodotBone[boneSlot] = boneIndex;
+            _boneSlotToIndex[boneSlot] = boneIndex;
 
             // Parent by SLOT, not by name. The slot is the real identity; a name is a label that two
             // bones can share, and looking a parent up by a shared label picks whichever won the race.
@@ -257,13 +263,11 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
         }
     }
 
-    /// <summary>
-    /// Push the bone SLOT transforms onto the Godot Skeleton3D so the skinned mesh deforms. One-way: the
-    /// engine owns the bones. Our own IK (AvatarIK / FullBodyIKSolver) and animation write the bone slots;
-    /// the Skeleton3D is purely a skinning target. We do NOT read poses back from Godot - Godot runs no IK
-    /// here, so a read-back would just round-trip our own values (adding drift and wasted work) and let the
-    /// platform fight engine authority. -xlinka
-    /// </summary>
+    // Push the bone SLOT transforms onto the Godot Skeleton3D so the skinned mesh deforms. One-way: the
+    // engine owns the bones. Our own IK (AvatarIK / FullBodyIKSolver) and animation write the bone slots;
+    // the Skeleton3D is purely a skinning target. We do NOT read poses back from Godot - Godot runs no IK
+    // here, so a read-back would just round-trip our own values (adding drift and wasted work) and let the
+    // platform fight engine authority. -xlinka
     private void UpdateBoneTransforms()
     {
         if (_skeleton == null || Owner.BoneCount == 0)
@@ -273,13 +277,18 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
         SyncSlotsToSkeleton();
     }
 
-    /// <summary>
-    /// Copy each bone slot's local transform onto its Skeleton3D bone pose, so the GPU skinning follows the
-    /// engine-driven bones (IK, animation, manual posing alike).
-    /// </summary>
+    // Copy each bone slot's local transform onto its Skeleton3D bone pose, so the GPU skinning follows the
+    // engine-driven bones (IK, animation, manual posing alike).
     private void SyncSlotsToSkeleton()
     {
         var space = SkeletonSpaceSlot;
+
+        int twins = _twins.Count;
+        if (twins > 0)
+        {
+            _twins.RemoveAll(t => t == null || !t.Alive);
+            twins = _twins.Count;
+        }
 
         for (int i = 0; i < Owner.BoneCount; i++)
         {
@@ -317,12 +326,68 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
             }
 
             _skeleton.SetBonePose(boneIndex, pose);
+            for (int t = 0; t < twins; t++)
+                _twins[t].FollowPose(boneIndex, in pose);
         }
+
+        for (int t = 0; t < twins; t++)
+            _twins[t].FinishPoses();
     }
 
-    /// <summary>
-    /// Build a map of child slots to their parents.
-    /// </summary>
+    // A second Skeleton3D with the same bones, parents and rests, parented under the real one at
+    // identity so it shares its offset and visibility. Null until the real skeleton has bones.
+    public Skeleton3D? CreateTwinSkeleton()
+    {
+        if (_skeleton == null || !GodotObject.IsInstanceValid(_skeleton))
+            return null;
+        int count = _skeleton.GetBoneCount();
+        if (count == 0)
+            return null;
+
+        var twin = new Skeleton3D { Name = "EyeViewSkeleton" };
+        for (int i = 0; i < count; i++)
+        {
+            int added = twin.AddBone(_skeleton.GetBoneName(i));
+            if (added != i)
+            {
+                LumoraLogger.Warn($"SkeletonHook: twin bone order diverged at {i} ('{_skeleton.GetBoneName(i)}'), twin abandoned");
+                twin.QueueFree();
+                return null;
+            }
+        }
+        for (int i = 0; i < count; i++)
+        {
+            int parent = _skeleton.GetBoneParent(i);
+            if (parent >= 0)
+                twin.SetBoneParent(i, parent);
+            twin.SetBoneRest(i, _skeleton.GetBoneRest(i));
+            twin.SetBonePose(i, _skeleton.GetBonePose(i));
+        }
+        _skeleton.AddChild(twin);
+        twin.Transform = Transform3D.Identity;
+        return twin;
+    }
+
+    public void RegisterTwin(EyeViewTwin twin)
+    {
+        if (twin != null && !_twins.Contains(twin))
+            _twins.Add(twin);
+    }
+
+    public void UnregisterTwin(EyeViewTwin twin)
+    {
+        _twins.Remove(twin);
+    }
+
+    // -1 when the slot is not a bone of this skeleton.
+    public int GetBoneIndex(Lumora.Core.Slot boneSlot)
+    {
+        if (boneSlot != null && _boneSlotToIndex.TryGetValue(boneSlot, out int index))
+            return index;
+        return -1;
+    }
+
+    // Each bone slot -> its nearest ancestor that is also a bone.
     private Dictionary<Lumora.Core.Slot, Lumora.Core.Slot> BuildParentMap()
     {
         var parentMap = new Dictionary<Lumora.Core.Slot, Lumora.Core.Slot>();
@@ -349,9 +414,6 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
         return parentMap;
     }
 
-    /// <summary>
-    /// Convert Lumora float4x4 to Godot Transform3D.
-    /// </summary>
     private Transform3D ConvertToGodotTransform(float4x4 matrix)
     {
         // float4x4 uses column-major storage: c0, c1, c2, c3
@@ -370,9 +432,6 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
         return new Transform3D(basis, origin);
     }
 
-    /// <summary>
-    /// Convert Lumora slot local transform to Godot Transform3D.
-    /// </summary>
     private Transform3D ConvertSlotLocalTransform(Lumora.Core.Slot slot)
     {
         if (slot == null)
@@ -396,10 +455,8 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
         return transform;
     }
 
-    /// <summary>
-    /// A slot's global transform as a Godot Transform3D (position + rotation + scale). Used to compute the
-    /// skeleton's orientation offset relative to the model root. -xlinka
-    /// </summary>
+    // A slot's global transform as a Godot Transform3D (position + rotation + scale), for the skeleton's
+    // orientation offset relative to the model root.
     private static Transform3D SlotGlobalTransform3D(Lumora.Core.Slot slot)
     {
         var p = slot.GlobalPosition;
@@ -409,19 +466,12 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
         return new Transform3D(basis, new Vector3(p.x, p.y, p.z));
     }
 
-    /// <summary>
-    /// Get the Godot Skeleton3D instance.
-    /// Used by SkinnedMeshHook to attach meshes.
-    /// </summary>
     public Skeleton3D GetSkeleton()
     {
         return _skeleton;
     }
 
-    /// <summary>
-    /// Get the bone index for a bone name.
-    /// Returns -1 if bone not found.
-    /// </summary>
+    // -1 when no bone carries that name.
     public int GetBoneIndex(string boneName)
     {
         if (_boneNameToIndex.TryGetValue(boneName, out int index))
@@ -440,6 +490,8 @@ public class SkeletonHook : ComponentHook<SkeletonBuilder>
         _skeleton = null!;
         _boneNameToIndex.Clear();
         _boneRestPoses.Clear();
+        _boneSlotToIndex.Clear();
+        _twins.Clear();
 
         base.Destroy(destroyingWorld);
     }

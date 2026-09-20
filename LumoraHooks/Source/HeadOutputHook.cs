@@ -70,6 +70,8 @@ public class HeadOutputHook : ComponentHook<HeadOutput>
             Far = 1000f,
             PhysicsInterpolationMode = Node.PhysicsInterpolationModeEnum.Off
         };
+        // Never current, but if it ever were it is not one of the two eyes: no eyes-only twin.
+        _camera.CullMask &= ~(uint)Helpers.RenderHelper.EYES_ONLY_LAYER;
 
         Node3D targetNode = attachedNode;
         if (userRoot.HeadSlot != null && userRoot.HeadSlot.Hook != null)

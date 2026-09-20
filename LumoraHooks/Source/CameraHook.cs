@@ -99,7 +99,9 @@ public class CameraHook : ComponentHook<Camera>
     private int EffectiveCullMask()
     {
         // The authored mask never gets to show the bands that are private by construction - a camera
-        // filming into a texture other people can see must not pick up somebody's private UI.
+        // filming into a texture other people can see must not pick up somebody's private UI, and the
+        // eyes-only band (the wearer's headless twin) is masked out of PUBLIC_RENDER_MASK for the same
+        // reason: a mirror has to show the head.
         int mask = Owner.CullingMask.Value & RenderHelper.PUBLIC_RENDER_MASK;
 
         if (_selectiveLayer == 0)

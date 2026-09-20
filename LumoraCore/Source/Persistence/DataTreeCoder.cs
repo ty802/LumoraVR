@@ -7,12 +7,10 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Persistence;
 
-/// <summary>
-/// Converts individual values to and from <see cref="DataTreeNode"/>s. Primitives become a single
-/// <see cref="DataTreeValue"/>; math types decompose into a <see cref="DataTreeList"/> of components;
-/// enums save as their name. This is the per-value layer that member serialization builds on.
-/// <see cref="RefID"/>s code as their raw value here - remapping is the save/load control's job.
-/// </summary>
+// Converts individual values to and from DataTreeNodes. Primitives become a single DataTreeValue; math
+// types decompose into a DataTreeList of components; enums save as their name. This is the per-value
+// layer that member serialization builds on. RefIDs code as their raw value here - remapping is the
+// save/load control's job.
 public static class DataTreeCoder
 {
     private static readonly Dictionary<Type, Func<object, DataTreeNode>> Encoders = new();
@@ -69,6 +67,12 @@ public static class DataTreeCoder
 
         Reg(v => Components(((int4)v).x, ((int4)v).y, ((int4)v).z, ((int4)v).w),
             n => { var l = List(n); return new int4(I(l, 0), I(l, 1), I(l, 2), I(l, 3)); });
+
+        // Nullable float saves as the plain value or a null leaf (Encode already writes null for a
+        // null box, so only the decode side needs to know). An avatar's optional clip planes ride on
+        // this; without it Sync<float?> replicated fine and threw the moment the avatar was saved.
+        Reg<float?>(v => new DataTreeValue((float)v),
+            n => n is DataTreeValue { IsNull: false } leaf ? leaf.Extract<float>() : null);
     }
 
     private static int I(DataTreeList list, int index)

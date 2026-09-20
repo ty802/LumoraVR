@@ -1,0 +1,66 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+using System.Collections.Generic;
+using Godot;
+
+namespace Lumora.Godot.Hooks;
+
+// The wearer's private copy of a skinned body: a second MeshInstance3D on RenderHelper.EYES_ONLY_LAYER,
+// bound to a second Skeleton3D that mirrors the real one bone for bone and then collapses the hidden
+// bones to zero scale, so head-weighted geometry vanishes for the two eye cameras and nobody else.
+//
+// SkeletonHook owns the per-frame feed: every pose it writes to the real skeleton is written here in
+// the same loop, then FinishPoses zeroes the collapsed bones. Both skeletons go dirty in the same
+// update, so the twin never lags the body by a frame - which matters, because while a twin is active
+// the wearer sees ONLY the twin, hands included. The twin skeleton is a child of the real one with an
+// identity transform, so it inherits the orientation offset and the visibility toggle for free, and it
+// dies with the real skeleton when SkeletonHook rebuilds. -xlinka
+public sealed class EyeViewTwin
+{
+    public Skeleton3D Skeleton { get; }
+    public MeshInstance3D Instance { get; }
+
+    private readonly List<int> _collapsed = new();
+
+    public EyeViewTwin(Skeleton3D skeleton, MeshInstance3D instance)
+    {
+        Skeleton = skeleton;
+        Instance = instance;
+    }
+
+    public bool Alive
+        => Skeleton != null && GodotObject.IsInstanceValid(Skeleton)
+        && Instance != null && GodotObject.IsInstanceValid(Instance);
+
+    public IReadOnlyList<int> CollapsedBones => _collapsed;
+
+    public void SetCollapsedBones(List<int> boneIndices)
+    {
+        _collapsed.Clear();
+        foreach (int index in boneIndices)
+        {
+            if (index >= 0 && !_collapsed.Contains(index))
+                _collapsed.Add(index);
+        }
+    }
+
+    public void FollowPose(int boneIndex, in Transform3D pose)
+    {
+        Skeleton.SetBonePose(boneIndex, pose);
+    }
+
+    // Zero, not tiny: the children inherit the zero basis and land on the bone's origin, which is what
+    // takes the whole head with it rather than leaving a speck of face floating in front of the eyes.
+    public void FinishPoses()
+    {
+        for (int i = 0; i < _collapsed.Count; i++)
+            Skeleton.SetBonePoseScale(_collapsed[i], Vector3.Zero);
+    }
+
+    public void Free()
+    {
+        if (Skeleton != null && GodotObject.IsInstanceValid(Skeleton))
+            Skeleton.QueueFree();
+    }
+}

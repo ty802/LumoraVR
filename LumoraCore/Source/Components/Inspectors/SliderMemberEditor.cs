@@ -8,13 +8,14 @@ using Lumora.Core;
 
 namespace Lumora.Core.Components;
 
-/// <summary>Slider editor for numeric members carrying [Range], with a live value readout.</summary>
+// Slider for a numeric member carrying [Range], with a live readout in the range's text format.
 [ComponentCategory("Utility/Inspectors")]
 public class SliderMemberEditor : MemberEditor
 {
     public readonly Sync<float> Min;
     public readonly Sync<float> Max;
     public readonly Sync<bool> WholeNumbers;
+    public readonly Sync<string> Format;
 
     private readonly SyncRef<Slider> _slider;
     private readonly SyncRef<Text> _valueText;
@@ -24,6 +25,7 @@ public class SliderMemberEditor : MemberEditor
         Min = new Sync<float>(this, 0f);
         Max = new Sync<float>(this, 1f);
         WholeNumbers = new Sync<bool>(this, false);
+        Format = new Sync<string>(this, "");
         _slider = new SyncRef<Slider>(this);
         _valueText = new SyncRef<Text>(this);
     }
@@ -53,7 +55,11 @@ public class SliderMemberEditor : MemberEditor
             slider.Value.Value = value;
         var text = _valueText.Target;
         if (text != null && !text.IsDestroyed)
-            text.Content.Value = value.ToString(WholeNumbers.Value ? "0" : "0.###", CultureInfo.InvariantCulture);
+        {
+            string format = string.IsNullOrEmpty(Format.Value) ? (WholeNumbers.Value ? "0" : "0.###") : Format.Value;
+            try { text.Content.Value = value.ToString(format, CultureInfo.InvariantCulture); }
+            catch (FormatException) { text.Content.Value = value.ToString("0.###", CultureInfo.InvariantCulture); }
+        }
     }
 
     private float ReadFloat()

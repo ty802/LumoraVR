@@ -5,12 +5,13 @@ using System.Collections.Generic;
 using Lumora.Core;
 using Lumora.Core.Assets;
 using Lumora.Core.Math;
+using Lumora.Core.Networking.Sync;
 using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Core.Components;
 
 [ComponentCategory("Rendering")]
-public class SkinnedMeshRenderer : ImplementableComponent
+public class SkinnedMeshRenderer : ImplementableComponent, ICustomMemberNameSource
 {
     // BONE REFERENCES
 
@@ -65,7 +66,9 @@ public class SkinnedMeshRenderer : ImplementableComponent
     // true when normal morph deltas are present for every shape vertex, so the hook morphs normals too
     public bool HasBlendShapeNormals => BlendShapeVertices.Count > 0 && BlendShapeNormals.Count == BlendShapeVertices.Count;
 
-    // 0..1; driven by expression/viseme/blink drivers
+    // 0..1; driven by expression/viseme/blink drivers. The range puts a slider on every entry in the
+    // inspector, and the rows carry the shape names (see GetMemberName), one weight per mesh shape.
+    [Range(0f, 1f, "F2")]
     public readonly SyncFieldList<float> BlendShapeWeights = new();
 
     // 0 = Normalized, 1 = Relative (Godot Mesh.BlendShapeMode)
@@ -105,6 +108,40 @@ public class SkinnedMeshRenderer : ImplementableComponent
 
     public void SetBlendShapeWeight(string name, float weight)
         => SetBlendShapeWeight(GetBlendShapeIndex(name), weight);
+
+    // The weights list is one entry per mesh shape, so its rows are the shape names and nobody gets to
+    // add, remove or reorder them from the inspector: the index IS the shape.
+    public string? GetMemberName(ISyncMember element)
+    {
+        if (element is not Sync<float> weight || !ReferenceEquals(weight.Parent, BlendShapeWeights))
+            return null;
+        int index = BlendShapeWeights.IndexOfElement(weight);
+        return index >= 0 ? BlendShapeName(index) : null;
+    }
+
+    public bool OwnsCollectionShape(ISyncMember collection) => ReferenceEquals(collection, BlendShapeWeights);
+
+    // A weight edited through its own field (inspector slider, a peer's edit, a load) never passed
+    // through SetBlendShapeWeight, so the hook was never told and the mesh sat on the old value until
+    // something unrelated rebuilt it. The list only reports adds and removes; each element's own change
+    // is hooked here as it arrives. -xlinka
+    private void HookBlendShapeWeightElements(int index, int count)
+    {
+        for (int i = index; i < index + count && i < BlendShapeWeights.Count; i++)
+            BlendShapeWeights.GetElement(i).OnChanged += OnBlendShapeWeightChanged;
+    }
+
+    private void UnhookBlendShapeWeightElements(int index, int count)
+    {
+        for (int i = index; i < index + count && i < BlendShapeWeights.Count; i++)
+            BlendShapeWeights.GetElement(i).OnChanged -= OnBlendShapeWeightChanged;
+    }
+
+    private void OnBlendShapeWeightChanged(float value)
+    {
+        BlendWeightsChanged = true;
+        RunApplyChanges();
+    }
 
     // Local (non-replicated) per-frame override buffer, written by blink/viseme/expression drivers.
     // Every peer runs those drivers from replicated inputs (voice, timers), so broadcasting per-frame
@@ -173,10 +210,16 @@ public class SkinnedMeshRenderer : ImplementableComponent
     public void DriveBlendShapeWeight(string name, float weight)
         => DriveBlendShapeWeight(GetBlendShapeIndex(name), weight);
 
-    // local driver override if set, else the synced value
+    // The driver's value for a shape a driver OWNS, the synced weight for everything else. The
+    // override buffer is sized to the whole shape set the first time any driver writes, so reading it
+    // for every index handed back a zero for each shape no driver had claimed: on any avatar with a
+    // blink driver, every slider that was not a blink did nothing. Ownership is the record of who
+    // writes what, so it is the gate. -xlinka
     public float GetEffectiveBlendShapeWeight(int index)
     {
-        if (_runtimeWeights != null && index >= 0 && index < _runtimeWeights.Length)
+        if (_runtimeWeights != null && _blendShapeOwners != null
+            && index >= 0 && index < _runtimeWeights.Length && index < _blendShapeOwners.Length
+            && _blendShapeOwners[index] != null)
             return _runtimeWeights[index];
         return (index >= 0 && index < BlendShapeWeights.Count) ? BlendShapeWeights[index] : 0f;
     }
@@ -324,6 +367,9 @@ public class SkinnedMeshRenderer : ImplementableComponent
         Indices.OnChanged += (list) => { MeshDataChanged = true; RunApplyChanges(); };
         BoneIndices.OnChanged += (list) => { MeshDataChanged = true; RunApplyChanges(); };
         BoneWeights.OnChanged += (list) => { MeshDataChanged = true; RunApplyChanges(); };
+        BlendShapeWeights.ElementsAdded += (list, index, count) => HookBlendShapeWeightElements(index, count);
+        BlendShapeWeights.ElementsRemoving += (list, index, count) => UnhookBlendShapeWeightElements(index, count);
+        HookBlendShapeWeightElements(0, BlendShapeWeights.Count);
 
         LumoraLogger.Debug($"SkinnedMeshRenderer: Awake on slot '{Slot.SlotName.Value}'");
     }
@@ -455,6 +501,37 @@ public class SkinnedMeshRenderer : ImplementableComponent
         }
 
         return null!;
+    }
+
+    // Does this mesh's bone set reach the given slot or anything under it. The explicit Bones list is
+    // the authority when the import filled it; a renderer that only names a SkeletonBuilder (the model
+    // import path leaves Bones empty) answers from that skeleton's bone slots instead, which may say
+    // yes for a bone this particular mesh never weights - the cost of that is one collapse that changes
+    // nothing, not a head that stays visible. -xlinka
+    public bool BindsBoneUnder(Slot slot)
+    {
+        if (slot == null || slot.IsDestroyed)
+            return false;
+
+        if (Bones.Count > 0)
+        {
+            foreach (var bone in Bones)
+            {
+                if (bone != null && !bone.IsDestroyed && (bone == slot || bone.IsDescendantOf(slot)))
+                    return true;
+            }
+            return false;
+        }
+
+        var skeleton = Skeleton.Target;
+        if (skeleton == null || skeleton.IsDestroyed)
+            return false;
+        foreach (var bone in skeleton.BoneSlots)
+        {
+            if (bone != null && !bone.IsDestroyed && (bone == slot || bone.IsDescendantOf(slot)))
+                return true;
+        }
+        return false;
     }
 
     public Slot GetBone(int index)

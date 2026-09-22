@@ -95,35 +95,3 @@ public abstract class ToggleWidgetPreset : HomeWidgetPreset
     private string TitleFor(bool on)
         => Title + ": " + (on ? "Widget.Toggle.On".AsLocale("On") : "Widget.Toggle.Off".AsLocale("Off")).Resolve();
 }
-
-// Stop the dash snapping in front of the view every frame, so it can be placed and left there.
-[ComponentCategory("Hidden")]
-public sealed class FreeformDashWidgetPreset : ToggleWidgetPreset
-{
-    protected override string Title => "Freeform Dash";
-    protected override string? Icon => "freeform";
-    protected override color IconTint => DashTheme.Warning;
-
-    protected override bool Value
-    {
-        get => UserspaceDashboard.LocalInstance?.Freeform.Value ?? false;
-        set => UserspaceDashboard.LocalInstance?.SetFreeform(value);
-    }
-}
-
-// Show the grid lines and make every widget draggable, here and on the popped-out panels.
-[ComponentCategory("Hidden")]
-public sealed class EditWidgetsWidgetPreset : ToggleWidgetPreset
-{
-    protected override string Title => "Edit Widgets";
-    protected override string? Icon => "edit-widgets";
-    protected override color IconTint => DashTheme.Accent;
-
-    protected override bool LiveInEditMode => true;
-
-    protected override bool Value
-    {
-        get => WidgetPanel.EditMode;
-        set => WidgetPanel.EditMode = value;
-    }
-}

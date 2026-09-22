@@ -292,16 +292,3 @@ public sealed class ArcSegment : Graphic
         return relative <= _arcLength;
     }
 }
-
-/// <summary>
-/// Button whose hit area follows an ArcSegment graphic on the same slot.
-/// </summary>
-[ComponentCategory("UI/Helio/Interaction")]
-public sealed class ArcButton : Button
-{
-    public override bool IsPointInside(in float2 point)
-    {
-        var arc = Slot?.GetComponent<ArcSegment>();
-        return arc != null ? arc.IsPointInside(point) : base.IsPointInside(point);
-    }
-}

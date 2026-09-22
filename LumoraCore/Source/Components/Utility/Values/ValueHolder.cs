@@ -23,16 +23,3 @@ public class ValueHolder<T> : Component
         Value = new Sync<T>(this, SyncCoder.GetDefault<T>());
     }
 }
-
-// A bare synchronized reference with nothing attached to it. See ValueHolder.
-[ComponentCategory("Utility/Values")]
-[ComponentGenericTypes(GenericTypeGroup.WorldElements, typeof(Component))]
-public class ReferenceHolder<T> : Component where T : class, IWorldElement
-{
-    public readonly SyncRef<T> Reference;
-
-    public ReferenceHolder()
-    {
-        Reference = new SyncRef<T>(this);
-    }
-}

@@ -45,31 +45,61 @@ public class Grabber : Component
         get { CleanupGrabbed(); return _grabbed.Count > 0; }
     }
 
-    // TWO-HAND SCALING: second grip on an object this user already holds stretches it instead of
-    // stealing it. Local state - only the resulting LocalScale writes replicate. - xlinka
-    private const float MinScaleGrabDistance = 0.05f; // hands nearly touching at start would explode the ratio
+    // TWO-HAND SCALING. The second hand of the same user closing on something the first hand holds does
+    // not steal it: it becomes the SCALE REFERENCE for that hand, and from then on the first hand's holder
+    // is scaled by how far the two holders have moved apart since the gesture began. Scaling the holder
+    // rather than the object means the whole hand-load grows about the grab point, and the size lands on
+    // the object's own scale when the first hand lets go (the release bakes the holder scale in). Local
+    // state on both hands; only the holder scale writes replicate. - xlinka
+    private const float MinScaleGrabDistance = 0.05f; // holders nearly touching at start would explode the ratio
     private const float MinScaleFactor = 0.02f;
     private const float MaxScaleFactor = 50f;
 
-    private IGrabbable? _scaleTarget;
-    private Grabber? _scalePartner;
-    private float _scaleStartDistance;
-    private float3 _scaleStartScale;
-    private SlotTransformUndoBatch? _scaleUndo;
+    private Grabber? _scaleReference;
+    private float3 _baseScale;
+    private float _baseDistance;
 
-    // THROW HAND-OFF: while something is held we keep a short rolling window of its world pose, so letting go
-    // can hand the physics body the motion the object actually had instead of dropping it dead. Sampled per
-    // held object rather than off the hand, so the desktop push/pull (which slides the object along the
-    // holder) and any in-hand alignment show up in the throw exactly like controller motion does. - xlinka
-    private readonly Dictionary<IGrabbable, MotionWindow> _motion = new();
+    public bool IsScaling => _scaleReference != null;
 
-    // A scale assist on the other hand means the pair was resizing, not aiming a spin. The holder still
+    public Grabber? ScaleReference => _scaleReference;
+
+    // One record per held object: the throw window plus the holder scale the object came in under, so a
+    // release can tell a stretch that landed on the object from one that did not. - xlinka
+    private sealed class Hold
+    {
+        // THROW HAND-OFF: while something is held we keep a short rolling window of its world pose, so letting
+        // go can hand the physics body the motion the object actually had instead of dropping it dead. Sampled
+        // per held object rather than off the hand, so the desktop push/pull (which slides the object along
+        // the holder) and any in-hand alignment show up in the throw exactly like controller motion does.
+        public readonly MotionWindow Motion = new();
+        public float3 HolderScaleAtGrab = float3.One;
+    }
+
+    private readonly Dictionary<IGrabbable, Hold> _holds = new();
+
+    // A scale reference on the other hand means the pair was resizing, not aiming a spin. The holder still
     // throws, but the angular hand-off is dropped: stretching rolls the wrist around the object and that
-    // reads as a fast tumble nobody asked for. Remembered briefly so letting go of the assist an instant
+    // reads as a fast tumble nobody asked for. Remembered briefly so letting go of the reference an instant
     // before the hold still counts. - xlinka
     private const float ScaleAssistMemory = 0.25f;
-    private IGrabbable? _scaleAssistedTarget;
-    private double _scaleAssistedStamp;
+    private double _scaleAssistedStamp = double.NegativeInfinity;
+
+    // Whether a stretch may act on this hand's load: everything held has to be Scalable, and the role has
+    // to leave any room to resize at all. Bounds that meet (or cross) pin the factor to one value, which is
+    // the host saying this role does not resize. - xlinka
+    public bool CanScaleHeldObjects
+    {
+        get
+        {
+            CleanupGrabbed();
+            if (_grabbed.Count == 0) return false;
+            for (int i = 0; i < _grabbed.Count; i++)
+            {
+                if (!_grabbed[i].Scalable) return false;
+            }
+            return !RoleScaleIsPinned();
+        }
+    }
 
     public bool TryGrab(IGrabbable target) => TryGrab(target, out _);
 
@@ -77,17 +107,19 @@ public class Grabber : Component
     // something other than the thing that was aimed at - a dispenser stamps out a copy and gives you
     // that instead of moving itself - so the return value of Grab is the hold, and the target is only
     // ever the request. Callers that go on to do something with what they grabbed (in-hand alignment,
-    // tool routing) have to read it from here or they'll be working on the wrong object. - xlinka
+    // tool routing) have to read it from here or they'll be working on the wrong object. A grab that
+    // became a scale reference reports the target it is now scaling against, with IsScaling set; the
+    // object stays in the other hand. - xlinka
     public bool TryGrab(IGrabbable target, out IGrabbable? held)
     {
         held = null;
         if (target == null) return false;
 
-        // Second hand of the SAME user on a Scalable object: that's the resize gesture, not a steal.
-        // Runs before CanGrab so grab arbitration/steal rules never see it.
-        if (IsScaleAssistCandidate(target))
+        // Second hand of the SAME user on a load the other hand may scale: that's the resize gesture, not
+        // a steal. Runs before CanGrab so grab arbitration/steal rules never see it.
+        if (IsScaleReferenceCandidate(target))
         {
-            if (!BeginScaleAssist(target, target.Grabber!)) return false;
+            if (IsScaling || !BeginScaleReference(target.Grabber!)) return false;
             held = target;
             return true;
         }
@@ -107,8 +139,8 @@ public class Grabber : Component
         if (!isHeld) return false;
 
         if (!_grabbed.Contains(grabbed)) _grabbed.Add(grabbed);
-        // Fresh window per hold: whatever the object was doing before the hand closed on it is not a throw.
-        _motion[grabbed] = new MotionWindow();
+        // Fresh record per hold: whatever the object was doing before the hand closed on it is not a throw.
+        _holds[grabbed] = new Hold { HolderScaleAtGrab = holder.LocalScale.Value };
         held = grabbed;
         return true;
     }
@@ -169,7 +201,7 @@ public class Grabber : Component
 
             foreach (var g in current.GetComponentsImplementing<IGrabbable>())
             {
-                if (g.CanGrab(this) || IsScaleAssistCandidate(g)) return g;
+                if (g.CanGrab(this) || IsScaleReferenceCandidate(g)) return g;
             }
 
             current = current.Parent;
@@ -193,7 +225,7 @@ public class Grabber : Component
             var g = _grabbed[i];
             if (g == null || (g is Component c && c.IsDestroyed) || !ReferenceEquals(g.Grabber, this))
             {
-                if (g != null) _motion.Remove(g);
+                if (g != null) _holds.Remove(g);
                 _grabbed.RemoveAt(i);
             }
         }
@@ -204,46 +236,45 @@ public class Grabber : Component
         if (target == null) return;
         if (!_grabbed.Remove(target)) return;
         StageReleaseMomentum(target);
+        _holds.TryGetValue(target, out var hold);
         target.Release(this);
-        _motion.Remove(target);
+        RecordScaleUndo(target, hold);
+        _holds.Remove(target);
     }
 
-    // A Scalable object THIS user already holds in the OTHER hand: grabbing it with this hand is the
-    // two-hand resize gesture. CanGrab deliberately rejects same-user steals, so the candidate filters
-    // must accept these explicitly or the second grip never reaches TryGrab. - xlinka
-    private bool IsScaleAssistCandidate(IGrabbable target)
-        => target.Scalable && target.Grabber is { } other && !ReferenceEquals(other, this)
-           && other.OwningUser != null && ReferenceEquals(other.OwningUser, OwningUser);
+    // Something THIS user already holds in the OTHER hand, and that hand's load may be resized: grabbing
+    // it with this hand is the two-hand resize gesture. CanGrab deliberately rejects same-user steals, so
+    // the candidate filters must accept these explicitly or the second grip never reaches TryGrab. - xlinka
+    private bool IsScaleReferenceCandidate(IGrabbable target)
+        => target.Grabber is { } other && !ReferenceEquals(other, this)
+           && other.OwningUser != null && ReferenceEquals(other.OwningUser, OwningUser)
+           && other.CanScaleHeldObjects;
 
-    private bool BeginScaleAssist(IGrabbable target, Grabber partner)
+    private bool BeginScaleReference(Grabber partner)
     {
-        var slot = (target as Component)?.Slot;
-        if (slot == null || slot.IsDestroyed || Slot == null || partner.Slot == null)
+        if (partner.IsDestroyed || HolderSlot == null || partner.HolderSlot == null)
             return false;
 
-        _scaleTarget = target;
-        _scalePartner = partner;
-        _scaleStartDistance = HandDistanceTo(partner);
-        if (_scaleStartDistance < MinScaleGrabDistance)
-            _scaleStartDistance = MinScaleGrabDistance;
-        _scaleStartScale = slot.LocalScale.Value;
-        _scaleUndo = SlotTransformUndoBatch.Begin(slot, UndoLocale.Scale);
-        partner.NoteScaleAssist(target);
+        _scaleReference = partner;
+        _baseScale = partner.HolderSlot.LocalScale.Value;
+        _baseDistance = HolderDistanceTo(partner);
+        if (_baseDistance < MinScaleGrabDistance)
+            _baseDistance = MinScaleGrabDistance;
+        partner.NoteScaleAssist();
         return true;
     }
 
-    // The assisting hand tells the holder its throw is part of a resize. Both grabbers are the same user's,
+    // The reference hand tells the holder its throw is part of a resize. Both grabbers are the same user's,
     // so this stays local state - nothing about the stretch needs replicating beyond the scale writes. - xlinka
-    public void NoteScaleAssist(IGrabbable target)
+    public void NoteScaleAssist()
     {
-        _scaleAssistedTarget = target;
         _scaleAssistedStamp = World?.Time.TotalTime ?? 0d;
     }
 
     public override void OnUpdate(float delta)
     {
         SampleHeldMotion();
-        UpdateScaleAssist();
+        UpdateScaleReference();
     }
 
     private void SampleHeldMotion()
@@ -267,12 +298,12 @@ public class Grabber : Component
             var slot = (g as Component)?.Slot;
             if (slot == null || slot.IsRemoved) continue;
 
-            if (!_motion.TryGetValue(g, out var window))
+            if (!_holds.TryGetValue(g, out var hold))
             {
-                window = new MotionWindow();
-                _motion[g] = window;
+                hold = new Hold();
+                _holds[g] = hold;
             }
-            window.Sample(now, slot.GlobalPosition, slot.GlobalRotation);
+            hold.Motion.Sample(now, slot.GlobalPosition, slot.GlobalRotation);
         }
     }
 
@@ -288,77 +319,113 @@ public class Grabber : Component
         float3 angular = float3.Zero;
 
         var clock = World?.Time;
-        if (clock != null && _motion.TryGetValue(target, out var window))
+        if (clock != null && _holds.TryGetValue(target, out var hold))
         {
             var slot = grabbable.Slot;
             if (slot != null && !slot.IsRemoved)
-                window.Sample(clock.TotalTime, slot.GlobalPosition, slot.GlobalRotation);
+                hold.Motion.Sample(clock.TotalTime, slot.GlobalPosition, slot.GlobalRotation);
 
-            window.Evaluate(out linear, out angular);
+            hold.Motion.Evaluate(out linear, out angular);
 
-            if (ReferenceEquals(_scaleAssistedTarget, target)
-                && clock.TotalTime - _scaleAssistedStamp < ScaleAssistMemory)
-            {
+            if (clock.TotalTime - _scaleAssistedStamp < ScaleAssistMemory)
                 angular = float3.Zero;
-            }
         }
 
         grabbable.StageReleaseMomentum(linear, angular);
     }
 
-    private void UpdateScaleAssist()
+    private void UpdateScaleReference()
     {
-        if (_scaleTarget == null)
+        var partner = _scaleReference;
+        if (partner == null)
             return;
 
-        var slot = (_scaleTarget as Component)?.Slot;
-        // The gesture dies with either hand, the object, or the partner's hold (released or stolen).
-        if (_scalePartner?.Slot == null || Slot == null || slot == null || slot.IsDestroyed
-            || !ReferenceEquals(_scaleTarget.Grabber, _scalePartner))
+        var holder = HolderSlot;
+        // The gesture dies with either hand or with the partner's hold: released, stolen, or no longer
+        // something this role may resize.
+        if (partner.IsDestroyed || holder == null || partner.HolderSlot == null || !partner.CanScaleHeldObjects)
         {
-            EndScaleAssist();
+            EndScaleReference();
             return;
         }
 
-        float factor = HandDistanceTo(_scalePartner) / _scaleStartDistance;
-        if (factor < MinScaleFactor) factor = MinScaleFactor;
-        if (factor > MaxScaleFactor) factor = MaxScaleFactor;
-        slot.LocalScale.Value = _scaleStartScale * factor;
+        float factor = ClampScaleFactor(HolderDistanceTo(partner) / _baseDistance);
+        partner.HolderSlot.LocalScale.Value = _baseScale * factor;
 
         // Keep the holder's "this is a resize" stamp fresh for as long as the stretch runs.
-        _scalePartner.NoteScaleAssist(_scaleTarget);
+        partner.NoteScaleAssist();
     }
 
-    private float HandDistanceTo(Grabber partner)
+    private float HolderDistanceTo(Grabber partner)
+        => float3.Distance(HolderSlot!.GlobalPosition, partner.HolderSlot!.GlobalPosition);
+
+    // The hard limits keep a near-zero base distance from launching the object; the role bounds are the
+    // host's word on how far this user may resize per grab, and pinned bounds forbid it outright. - xlinka
+    private float ClampScaleFactor(float factor)
     {
-        var delta = Slot!.GlobalPosition - partner.Slot!.GlobalPosition;
-        return MathF.Sqrt(delta.LengthSquared);
+        if (factor < MinScaleFactor) factor = MinScaleFactor;
+        if (factor > MaxScaleFactor) factor = MaxScaleFactor;
+
+        var permissions = World?.DataModelPermissions;
+        if (permissions != null && permissions.TryGetScaleBounds(OwningUser, out float min, out float max))
+        {
+            if (min > 0f && factor < min) factor = min;
+            if (max > 0f && factor > max) factor = max;
+        }
+        return factor;
     }
 
-    private void EndScaleAssist()
+    private bool RoleScaleIsPinned()
     {
-        if (_scaleTarget == null)
+        var permissions = World?.DataModelPermissions;
+        if (permissions == null || !permissions.TryGetScaleBounds(OwningUser, out float min, out float max))
+            return false;
+        return min > 0f && max > 0f && min >= max;
+    }
+
+    private void EndScaleReference()
+    {
+        _scaleReference = null;
+    }
+
+    // A stretch lives on the holder until the release bakes it into the object, so this is the first
+    // moment the object's own scale carries it. One field step from the size it would have come back
+    // at to the size it did; undo after a plain hold records nothing. - xlinka
+    private void RecordScaleUndo(IGrabbable target, Hold? hold)
+    {
+        if (hold == null) return;
+        var slot = (target as Component)?.Slot;
+        if (slot == null || slot.IsDestroyed) return;
+        var holder = _holderSlot;
+        if (holder == null || holder.IsRemoved) return;
+
+        var ratio = holder.LocalScale.Value / hold.HolderScaleAtGrab;
+        if (ratio == float3.One) return;
+        if (float.IsNaN(ratio.x) || float.IsNaN(ratio.y) || float.IsNaN(ratio.z)
+            || float.IsInfinity(ratio.x) || float.IsInfinity(ratio.y) || float.IsInfinity(ratio.z))
             return;
-        _scaleTarget = null;
-        _scalePartner = null;
-        // One undo step for the whole stretch (start scale -> final scale).
-        InspectorUndo.Record(this, _scaleUndo?.Commit());
-        _scaleUndo = null;
+
+        var after = slot.LocalScale.Value;
+        var before = after / ratio;
+        InspectorUndo.Record(this, new FieldEditUndoBatch(slot.LocalScale, before, after, UndoLocale.Scale));
     }
 
     public void ReleaseAll()
     {
-        EndScaleAssist();
+        EndScaleReference();
         // Snapshot what we're letting go so the receivable ones can be offered to a drop target after
         // they've been released back to the world. - xlinka
         var released = new List<IGrabbable>(_grabbed);
         for (int i = _grabbed.Count - 1; i >= 0; i--)
         {
-            StageReleaseMomentum(_grabbed[i]);
-            _grabbed[i].Release(this);
+            var g = _grabbed[i];
+            StageReleaseMomentum(g);
+            _holds.TryGetValue(g, out var hold);
+            g.Release(this);
+            RecordScaleUndo(g, hold);
         }
         _grabbed.Clear();
-        _motion.Clear();
+        _holds.Clear();
         InformOfReleasedObjects(released);
         ResetHolderTransform();
     }

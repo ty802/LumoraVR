@@ -9,17 +9,25 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Source.Godot.Bootstrap;
 
-/// <summary>
-/// Platform-backed <see cref="ISecretSealer"/> for the vault master key, per OS:
-///  - Windows: DPAPI (CurrentUser) - the OS holds the key under the user login, not recomputable from
-///    our binary.
-///  - Linux desktop: the Secret Service (GNOME Keyring / KWallet) via the libsecret `secret-tool` CLI
-///    (process-based, so no fragile native marshaling) - the key lives in the OS keyring.
-///  - Android / headless / anything without the above: the engine's machine+user derived sealer
-///    (Android additionally relies on per-app sandbox storage). Android Keystore proper needs a JNI
-///    plugin (on-device work) - TODO, not shipped blind.
-/// A 1-byte scheme tag records which path sealed the key so unseal always matches it.
-/// </summary>
+// Platform-backed ISecretSealer for the vault master key, per OS:
+//  - Windows: DPAPI (CurrentUser) - the OS holds the key under the user login, not recomputable from
+//    our binary.
+//  - Linux desktop: the Secret Service (GNOME Keyring / KWallet) via the libsecret `secret-tool` CLI
+//    (process-based, so no fragile native marshaling) - the key lives in the OS keyring.
+//  - Android / headless / anything without the above: the engine's machine+user derived sealer
+//    (Android additionally relies on per-app sandbox storage). Android Keystore proper needs a JNI
+//    plugin (on-device work) - TODO, not shipped blind.
+// A 1-byte scheme tag records which path sealed the key so unseal always matches it.
+//
+// UNDER WINE THE FIRST BULLET IS NOT TRUE. Wine implements DPAPI, so the call succeeds and the round
+// trip works, but the master key it derives from lives in the prefix rather than in an OS account,
+// and anything that can read the prefix can unseal with it. It is obfuscation there, not custody.
+//
+// The scheme is deliberately left alone anyway: the derived sealer is also local-derived, so
+// switching buys nothing real and would put a second scheme in play for people who move between
+// Proton and a native build. What that move DOES cost is spelled out in the warning below, because a
+// vault sealed on one side genuinely cannot be opened on the other and silence about that is worse
+// than the limitation. -xlinka
 public sealed class PlatformSecretSealer : ISecretSealer
 {
     private const byte SchemeDerived = 0;
@@ -33,6 +41,7 @@ public sealed class PlatformSecretSealer : ISecretSealer
         // Inline IsWindows() (not a cached flag) so the platform analyzer sees the DPAPI guard.
         if (OperatingSystem.IsWindows())
         {
+            WarnAboutWineOnce();
             try
             {
                 return Prefix(SchemeDpapi, DpapiProtect(secret));
@@ -75,6 +84,21 @@ public sealed class PlatformSecretSealer : ISecretSealer
             default:
                 return _derived.Unseal(payload);
         }
+    }
+
+    private static bool _wineWarned;
+
+    private static void WarnAboutWineOnce()
+    {
+        if (_wineWarned || !Lumora.Core.WinePlatform.IsWine)
+            return;
+        _wineWarned = true;
+
+        LumoraLogger.Warn("PlatformSecretSealer: sealing the vault key with DPAPI under " +
+                          Lumora.Core.WinePlatform.Describe() +
+                          ". Wine's DPAPI key lives in the prefix, so this protects the key from other " +
+                          "users of this prefix and not much else, and a vault sealed here cannot be " +
+                          "opened by a native Linux build (and the other way round).");
     }
 
     private static byte[] Prefix(byte scheme, byte[] payload)

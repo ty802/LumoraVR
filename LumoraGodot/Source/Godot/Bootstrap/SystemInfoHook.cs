@@ -46,7 +46,11 @@ public partial class SystemInfoHook : Node
 
         CPUName = OS.GetProcessorName();
 
+        // Godot answers "Windows 10.0.x" inside a prefix, so a Steam Deck reports itself as a
+        // Windows PC everywhere this string is shown. Say what is really underneath.
         OSName = OS.GetName() + " " + OS.GetVersion();
+        if (Lumora.Core.WinePlatform.IsWine)
+            OSName += " [" + Lumora.Core.WinePlatform.Describe() + "]";
 
         var memInfo = OS.GetMemoryInfo();
         if (memInfo.ContainsKey("physical"))

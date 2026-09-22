@@ -176,6 +176,7 @@ public partial class ClipboardImporter : Node
                 Center = r.AutoScale,
                 TargetHeight = isAvatar ? 1.7f : 1.8f,
                 GenerateColliders = r.Colliders,
+                SolidToPeople = r.SolidToPeople,
                 Material = r.Material,
                 MakeDualSided = r.MakeDualSided,
                 ImportAlbedoColor = r.ImportAlbedoColor,

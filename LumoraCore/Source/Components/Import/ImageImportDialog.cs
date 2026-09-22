@@ -25,7 +25,7 @@ public sealed class ImageImportDialog : ImportDialog
     {
         var body = SetupSection(ui, "How should this image be imported?", backButton: false);
         SetupGrid(body);
-        GridButton(body, "Regular", RunImport);
+        GridButton(body, "Regular", RunImport, primary: true);
         GridButton(body, "As Skybox", AsSkybox);
         GridButton(body, "As Raw File", AsRawFile, BackColor);
     }

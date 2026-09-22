@@ -16,6 +16,7 @@ public sealed class ModelImportDialog : ImportDialog
     public readonly Sync<bool> AutoScale;
     public readonly Sync<ModelMaterialType> Material;
     public readonly Sync<bool> Colliders;
+    public readonly Sync<bool> SolidToPeople;
     public readonly Sync<bool> AllowGrabbable;
     public readonly Sync<bool> Scalable;
     public readonly Sync<bool> ImportAtOrigin;
@@ -31,7 +32,7 @@ public sealed class ModelImportDialog : ImportDialog
     public readonly Sync<bool> ImportAnimations;
 
     protected override string TitleText => "Model Import";
-    protected override float2 CanvasSize => new float2(420f, 640f);
+    protected override float2 CanvasSize => new float2(460f, 640f);
 
     public ModelImportDialog()
     {
@@ -39,6 +40,7 @@ public sealed class ModelImportDialog : ImportDialog
         AutoScale = new Sync<bool>(this, false);
         Material = new Sync<ModelMaterialType>(this, ModelMaterialType.Lit);
         Colliders = new Sync<bool>(this, true);
+        SolidToPeople = new Sync<bool>(this, false);
         AllowGrabbable = new Sync<bool>(this, true);
         Scalable = new Sync<bool>(this, true);
         ImportAtOrigin = new Sync<bool>(this, false);
@@ -60,6 +62,7 @@ public sealed class ModelImportDialog : ImportDialog
         Scale.Value = 1f;
         AutoScale.Value = false;
         Colliders.Value = true;
+        SolidToPeople.Value = false;
         CalculateNormals.Value = true;
         CalculateTangents.Value = true;
         ImportAlbedoColor.Value = true;
@@ -114,38 +117,35 @@ public sealed class ModelImportDialog : ImportDialog
     {
         var body = SetupSection(ui, "Finalize");
         SetupGrid(body);
-        GridButton(body, "Run Import", RunImport);
+        GridButton(body, "Import Model", RunImport, primary: true);
         GridButton(body, "Advanced", () => OpenPage(MenuCustom));
     }
 
     private void MenuCustom(UIBuilder ui)
     {
         var body = SetupSection(ui, "Advanced Settings");
-        // The body lays its children out now, so the scroll area has to ask for the leftover height.
-        // Without this it takes its preferred height, which for a scroll viewport is nothing. -xlinka
-        body.PushStyle().FlexibleHeight(1f);
-        body.ScrollRect(out _, fitVertical: false);
-        body.PopStyle();
-        body.VerticalLayout(4f, 4f);
+        var settings = ScrollContent(body);
+        SetupCheckbox(settings, AutoScale, "Auto Scale");
+        SetupCheckbox(settings, CalculateNormals, "Calculate Normals");
+        SetupCheckbox(settings, CalculateTangents, "Calculate Tangents");
+        SetupCheckbox(settings, ImportVertexColors, "Import Vertex Colors");
+        SetupCheckbox(settings, ImportAlbedoColor, "Import Albedo Color");
+        SetupCheckbox(settings, ImportEmissive, "Import Emissive");
+        SetupCheckbox(settings, Colliders, "Generate Colliders");
+        // The second half of the question the first one only half answered: a collider is for lasers,
+        // grabs and falling objects, and whether it is also a wall is a separate decision. Importing a
+        // building wants this; importing a chair does not. -xlinka
+        SetupCheckbox(settings, SolidToPeople, "Walk Into It");
+        SetupCheckbox(settings, ImportAnimations, "Import Animations");
+        SetupCheckbox(settings, MakeDualSided, "Dual Sided");
+        SetupCheckbox(settings, MakeFlatShaded, "Flat Shaded");
+        SetupCheckbox(settings, ForceNoMipMaps, "No Texture Mipmaps");
+        SetupCheckbox(settings, AllowGrabbable, "Grabbable");
+        SetupCheckbox(settings, Scalable, "Scalable");
+        SetupCheckbox(settings, ImportAtOrigin, "Position At Origin");
 
-        SetupCheckbox(body, AutoScale, "Auto Scale");
-        SetupCheckbox(body, CalculateNormals, "Calculate Normals");
-        SetupCheckbox(body, CalculateTangents, "Calculate Tangents");
-        SetupCheckbox(body, ImportVertexColors, "Import Vertex Colors");
-        SetupCheckbox(body, ImportAlbedoColor, "Import Albedo Color");
-        SetupCheckbox(body, ImportEmissive, "Import Emissive");
-        SetupCheckbox(body, Colliders, "Generate Colliders");
-        SetupCheckbox(body, ImportAnimations, "Import Animations");
-        SetupCheckbox(body, MakeDualSided, "Dual Sided");
-        SetupCheckbox(body, MakeFlatShaded, "Flat Shaded");
-        SetupCheckbox(body, ForceNoMipMaps, "No Texture Mipmaps");
-        SetupCheckbox(body, AllowGrabbable, "Grabbable");
-        SetupCheckbox(body, Scalable, "Scalable");
-        SetupCheckbox(body, ImportAtOrigin, "Position At Origin");
-
-        body.PushStyle().MinHeight(36f).PreferredHeight(36f);
-        body.Button("Run Import", (_, _) => { if (CanInteract) RunImport(); }, ButtonFill);
-        body.PopStyle();
+        SetupGrid(body);
+        GridButton(body, "Import Model", RunImport, primary: true);
     }
 
     public void RunImport()
@@ -206,6 +206,7 @@ public sealed class ModelImportDialog : ImportDialog
             AutoScale = AutoScale.Value,
             Material = Material.Value,
             Colliders = Colliders.Value,
+            SolidToPeople = SolidToPeople.Value,
             Grabbable = AllowGrabbable.Value,
             Scalable = Scalable.Value,
             ImportAtOrigin = ImportAtOrigin.Value,

@@ -18,7 +18,7 @@ public sealed class ShaderImportDialog : ImportDialog
     {
         var body = SetupSection(ui, "How should this shader be imported?", backButton: false);
         SetupGrid(body);
-        GridButton(body, "Material Orb", RunImport);
+        GridButton(body, "Material Orb", RunImport, primary: true);
         GridButton(body, "As Raw File", AsRawFile, BackColor);
     }
 

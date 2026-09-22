@@ -16,6 +16,11 @@ public sealed class ModelImportRequest
     public bool AutoScale;
     public ModelMaterialType Material = ModelMaterialType.Lit;
     public bool Colliders = true;
+
+    // Whether the generated colliders stop a walking body. Off, because an import is a prop far more
+    // often than it is a floor, and a prop you cannot walk through is a wall in the shape of a chair.
+    // On is for importing a building.
+    public bool SolidToPeople;
     public bool Grabbable = true;
     public bool Scalable = true;
     public bool ImportAtOrigin;

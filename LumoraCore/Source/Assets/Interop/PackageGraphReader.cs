@@ -43,7 +43,7 @@ public static class PackageGraphReader
     {
         header = default;
         Span<byte> buffer = stackalloc byte[9];
-        if (stream.Read(buffer) != buffer.Length)
+        if (stream.ReadAtLeast(buffer, buffer.Length, throwOnEndOfStream: false) != buffer.Length)
             return false;
         for (int i = 0; i < Tag.Length; i++)
         {
@@ -70,7 +70,7 @@ public static class PackageGraphReader
 
         byte[] document = Decompress(stream, header.Codec);
         int offset = 0;
-        var node = ReadDocument(document, ref offset);
+        var node = ReadDocument(document, ref offset, document.Length);
         return node as DataTreeDictionary
             ?? throw new InvalidDataException("Package object graph root is not a dictionary.");
     }
@@ -110,26 +110,27 @@ public static class PackageGraphReader
 
     // ---- BSON ----
     //
-    // Only the eight element types a real graph actually contains are handled. Binary, regex, dates and
-    // the other exotica have never appeared in one; if that changes the reader says which byte it choked
-    // on rather than silently skipping a subtree and producing a plausible-looking wrong scene.
+    // Preserve the primitive types used by package graphs, including BSON UTC dates. Unsupported
+    // types still fail explicitly: silently skipping a value could corrupt component data or links.
 
     private const byte TypeDouble = 0x01;
     private const byte TypeString = 0x02;
     private const byte TypeDocument = 0x03;
     private const byte TypeArray = 0x04;
     private const byte TypeBool = 0x08;
+    private const byte TypeDateTime = 0x09;
     private const byte TypeNull = 0x0A;
     private const byte TypeInt32 = 0x10;
     private const byte TypeUInt64 = 0x11;
     private const byte TypeInt64 = 0x12;
 
-    private static DataTreeNode ReadDocument(byte[] b, ref int offset)
+    private static DataTreeNode ReadDocument(byte[] b, ref int offset, int limit)
     {
         int start = offset;
+        RequireBytes(offset, 4, limit);
         int size = BinaryPrimitives.ReadInt32LittleEndian(b.AsSpan(offset, 4));
-        if (size < 5 || start + size > b.Length)
-            throw new InvalidDataException($"BSON document length {size} at {start} runs past the buffer.");
+        if (size < 5 || size > limit - start)
+            throw new InvalidDataException($"Invalid BSON document length {size} at {start}.");
         int end = start + size;
         offset += 4;
 
@@ -143,15 +144,15 @@ public static class PackageGraphReader
         while (offset < end - 1)
         {
             byte type = b[offset++];
-            string key = ReadCString(b, ref offset);
-            DataTreeNode value = ReadElement(b, ref offset, type);
+            string key = ReadCString(b, ref offset, end - 1);
+            DataTreeNode value = ReadElement(b, ref offset, type, end - 1);
             if (looksLikeArray && key != index.ToString(System.Globalization.CultureInfo.InvariantCulture))
                 looksLikeArray = false;
             index++;
             pairs.Add((key, value));
         }
 
-        if (offset >= b.Length || b[offset] != 0x00)
+        if (offset != end - 1 || b[offset] != 0x00)
             throw new InvalidDataException($"BSON document at {start} is missing its terminator.");
         offset = end;
 
@@ -169,22 +170,26 @@ public static class PackageGraphReader
         return dict;
     }
 
-    private static DataTreeNode ReadElement(byte[] b, ref int offset, byte type)
+    private static DataTreeNode ReadElement(byte[] b, ref int offset, byte type, int limit)
     {
         switch (type)
         {
             case TypeDouble:
             {
+                RequireBytes(offset, 8, limit);
                 double v = BitConverter.Int64BitsToDouble(BinaryPrimitives.ReadInt64LittleEndian(b.AsSpan(offset, 8)));
                 offset += 8;
                 return new DataTreeValue(v);
             }
             case TypeString:
             {
+                RequireBytes(offset, 4, limit);
                 int len = BinaryPrimitives.ReadInt32LittleEndian(b.AsSpan(offset, 4));
                 offset += 4;
-                if (len < 1 || offset + len > b.Length)
+                if (len < 1 || len > limit - offset)
                     throw new InvalidDataException($"BSON string length {len} at {offset} runs past the buffer.");
+                if (b[offset + len - 1] != 0)
+                    throw new InvalidDataException($"BSON string at {offset} is missing its terminator.");
                 string s = Encoding.UTF8.GetString(b, offset, len - 1);
                 offset += len;
                 // RawString keeps the leading '@' that marks a URL intact; the normal string constructor
@@ -193,29 +198,48 @@ public static class PackageGraphReader
             }
             case TypeDocument:
             case TypeArray:
-                return ReadDocument(b, ref offset);
+                return ReadDocument(b, ref offset, limit);
             case TypeBool:
             {
+                RequireBytes(offset, 1, limit);
                 bool v = b[offset] != 0;
                 offset += 1;
                 return new DataTreeValue(v);
+            }
+            case TypeDateTime:
+            {
+                RequireBytes(offset, 8, limit);
+                long milliseconds = BinaryPrimitives.ReadInt64LittleEndian(b.AsSpan(offset, 8));
+                offset += 8;
+                try
+                {
+                    // BSON dates are signed milliseconds since the Unix epoch, not .NET ticks.
+                    return new DataTreeValue(DateTimeOffset.FromUnixTimeMilliseconds(milliseconds).UtcDateTime);
+                }
+                catch (ArgumentOutOfRangeException ex)
+                {
+                    throw new InvalidDataException($"BSON UTC date {milliseconds} at {offset - 8} is outside the supported DateTime range.", ex);
+                }
             }
             case TypeNull:
                 return new DataTreeValue((IConvertible?)null);
             case TypeInt32:
             {
+                RequireBytes(offset, 4, limit);
                 int v = BinaryPrimitives.ReadInt32LittleEndian(b.AsSpan(offset, 4));
                 offset += 4;
                 return new DataTreeValue(v);
             }
             case TypeInt64:
             {
+                RequireBytes(offset, 8, limit);
                 long v = BinaryPrimitives.ReadInt64LittleEndian(b.AsSpan(offset, 8));
                 offset += 8;
                 return new DataTreeValue(v);
             }
             case TypeUInt64:
             {
+                RequireBytes(offset, 8, limit);
                 ulong v = BinaryPrimitives.ReadUInt64LittleEndian(b.AsSpan(offset, 8));
                 offset += 8;
                 return new DataTreeValue(v);
@@ -226,12 +250,18 @@ public static class PackageGraphReader
         }
     }
 
-    private static string ReadCString(byte[] b, ref int offset)
+    private static void RequireBytes(int offset, int count, int limit)
+    {
+        if (offset < 0 || count > limit - offset)
+            throw new InvalidDataException($"Truncated BSON value at offset {offset}: expected {count} bytes before {limit}.");
+    }
+
+    private static string ReadCString(byte[] b, ref int offset, int limit)
     {
         int start = offset;
-        while (offset < b.Length && b[offset] != 0x00)
+        while (offset < limit && b[offset] != 0x00)
             offset++;
-        if (offset >= b.Length)
+        if (offset >= limit)
             throw new InvalidDataException($"Unterminated BSON key at {start}.");
         string s = Encoding.UTF8.GetString(b, start, offset - start);
         offset++;

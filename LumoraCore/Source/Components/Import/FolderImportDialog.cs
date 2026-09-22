@@ -49,7 +49,7 @@ public sealed class FolderImportDialog : Component
     {
         if (_panel != null) return;
 
-        var canvasSize = new float2(280f, 540f);
+        var canvasSize = new float2(460f, 520f);
         var canvasScale = 0.5f / canvasSize.y;
         Slot.LocalScale.Value = new float3(canvasScale, canvasScale, canvasScale);
 
@@ -68,11 +68,16 @@ public sealed class FolderImportDialog : Component
         }
 
         var content = _panel.ContentSlot!;
+        var layout = content.AttachComponent<VerticalLayout>();
+        layout.PaddingLeft.Value = ImportDialog.GridPadding;
+        layout.PaddingRight.Value = ImportDialog.GridPadding;
+        layout.PaddingTop.Value = ImportDialog.GridPadding;
+        layout.PaddingBottom.Value = ImportDialog.GridPadding;
+        layout.ForceExpandHeight.Value = false;
         var ui = new UIBuilder(content);
         if (_fontProvider != null) ui.Font(_fontProvider);
-        ui.FontSize(14f);
-        ui.ScrollRect(out _, fitVertical: false);
-        ui.VerticalLayout(4f, 6f);
+        ui.FontSize(DashTheme.FontBody);
+        ui = ImportDialog.ScrollContent(ui);
 
         var importers = FolderImporter.FolderImporters;
         if (importers.Count == 0)
@@ -86,9 +91,7 @@ public sealed class FolderImportDialog : Component
         for (int i = 0; i < importers.Count; i++)
         {
             int captured = i;
-            ui.PushStyle().MinHeight(36f).PreferredHeight(36f);
-            ui.Button(importers[captured].Name, (_, _) => RunImport(captured), ImportDialog.ButtonFill);
-            ui.PopStyle();
+            ImportDialog.ActionButton(ui, importers[captured].Name, () => RunImport(captured));
         }
     }
 

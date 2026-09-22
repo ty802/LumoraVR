@@ -16,8 +16,8 @@ namespace Lumora.Core.Components.Import;
 
 public abstract class ImportDialog : Component
 {
-    public const int GridItemsPerRow = 3;
-    public const float GridItemSpacing = 8f;
+    public const int GridItemsPerRow = 2;
+    public const float GridItemSpacing = 10f;
     public const float GridPadding = 12f;
     public const float ButtonHeight = 56f;
     public const float HeaderRowHeight = 44f;
@@ -25,7 +25,7 @@ public abstract class ImportDialog : Component
     public static readonly color BackColor = DashTheme.Surface;
     public static readonly color SectionTitleColor = DashTheme.Text;
     public static readonly color BorderColor = DashTheme.Outline;
-    public static readonly color ButtonFill = DashTheme.Field;
+    public static readonly color ButtonFill = DashTheme.Surface;
     public static readonly color ButtonText = DashTheme.Text;
 
     // Semibold is the tool-panel default; callers can still override the URL. Each dialog owns
@@ -64,7 +64,7 @@ public abstract class ImportDialog : Component
 
     protected World ResolveTargetWorld() => TargetWorld ?? World;
 
-    protected virtual float2 CanvasSize => new float2(420f, 520f);
+    protected virtual float2 CanvasSize => new float2(460f, 520f);
     protected virtual string TitleText => "Import";
 
     // Target physical height of the panel in world meters. Canvas pixels are
@@ -158,7 +158,7 @@ public abstract class ImportDialog : Component
     // 100x100 centered RectTransform and squash everything inside it. - xlinka
     protected UIBuilder SetupSection(UIBuilder ui, string title, bool backButton = true)
     {
-        var page = ui.Current;
+        var page = ui.Root;
         var vLayout = page.AttachComponent<VerticalLayout>();
         vLayout.Spacing.Value = 8f;
         vLayout.PaddingLeft.Value = GridPadding;
@@ -191,7 +191,7 @@ public abstract class ImportDialog : Component
             var pBuilder = new UIBuilder(promptSlot);
             if (_fontProvider != null) pBuilder.Font(_fontProvider);
             var pText = pBuilder.Text(title, 16f, SectionTitleColor);
-            pText.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
+            pText.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
             pText.VerticalAlignment.Value = TextVerticalAlignment.Middle;
             FillRect(pText.RectTransform!);
         }
@@ -205,7 +205,7 @@ public abstract class ImportDialog : Component
             var pBuilder = new UIBuilder(promptRow);
             if (_fontProvider != null) pBuilder.Font(_fontProvider);
             var pText = pBuilder.Text(title, 16f, SectionTitleColor);
-            pText.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
+            pText.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
             pText.VerticalAlignment.Value = TextVerticalAlignment.Middle;
             FillRect(pText.RectTransform!);
         }
@@ -221,9 +221,7 @@ public abstract class ImportDialog : Component
         // the middle of the panel - which is exactly how all of these looked. The page's own
         // VerticalLayout only arranges the header and this Body slot; it does not reach inside. -xlinka
         var bodyLayout = body.AttachComponent<VerticalLayout>();
-        bodyLayout.Spacing.Value = 6f;
-        bodyLayout.PaddingLeft.Value = GridPadding;
-        bodyLayout.PaddingRight.Value = GridPadding;
+        bodyLayout.Spacing.Value = GridItemSpacing;
         bodyLayout.PaddingTop.Value = 4f;
         bodyLayout.PaddingBottom.Value = 4f;
         bodyLayout.ForceExpandWidth.Value = true;
@@ -235,34 +233,26 @@ public abstract class ImportDialog : Component
         return bodyBuilder;
     }
 
-    // The button grid gets its OWN row under the body, and the builder is pointed at it so existing
-    // `SetupGrid(body); GridButton(body, ...)` call sites keep working unchanged.
-    //
-    // It used to attach a GridLayout to the body slot itself, which meant the grid then arranged every
-    // piece of content the dialog had already added as though it were a button - text, spacers and all -
-    // packing them into three columns on top of each other. -xlinka
+    // Current is the last label/spacer produced by the builder; Root is the body container. Using
+    // Current here puts the entire grid INSIDE that label's default rect and collapses its buttons.
     protected void SetupGrid(UIBuilder ui)
     {
-        var row = ui.Current.AddSlot("Buttons");
+        var row = ui.Root.AddSlot("Buttons");
         row.AttachComponent<RectTransform>();
 
         _gridRowElement = row.AttachComponent<LayoutElement>();
+        _gridRowElement.UseZeroMetrics.Value = true;
         _gridRowElement.FlexibleHeight.Value = 0f;
         _gridButtonCount = 0;
+        _buttonGrid = row.AttachComponent<GridLayout>();
+        _buttonGrid.Spacing.Value = GridItemSpacing;
         GrowGridRow();
-
-        var grid = row.AttachComponent<GridLayout>();
-        grid.Columns.Value = GridItemsPerRow;
-        grid.Spacing.Value = GridItemSpacing;
-        grid.PaddingLeft.Value = GridPadding;
-        grid.PaddingRight.Value = GridPadding;
-        grid.PaddingTop.Value = GridPadding;
-        grid.PaddingBottom.Value = GridPadding;
 
         ui.NestInto(row);
     }
 
     private LayoutElement? _gridRowElement;
+    private GridLayout? _buttonGrid;
     private int _gridButtonCount;
 
     // The row has to be tall enough for however many buttons actually get added, which is only known
@@ -272,19 +262,21 @@ public abstract class ImportDialog : Component
         if (_gridRowElement == null)
             return;
 
-        int rows = System.Math.Max(1, (_gridButtonCount + GridItemsPerRow - 1) / GridItemsPerRow);
-        float height = rows * ButtonHeight + (rows - 1) * GridItemSpacing + GridPadding * 2f;
+        int columns = System.Math.Clamp(_gridButtonCount, 1, GridItemsPerRow);
+        if (_buttonGrid != null) _buttonGrid.Columns.Value = columns;
+        int rows = System.Math.Max(1, (_gridButtonCount + columns - 1) / columns);
+        float height = rows * ButtonHeight + (rows - 1) * GridItemSpacing;
         _gridRowElement.MinHeight.Value = height;
         _gridRowElement.PreferredHeight.Value = height;
     }
 
     protected void SetupCheckbox(UIBuilder ui, Sync<bool> field, string label)
     {
-        var row = ui.Current.AddSlot(label);
+        var row = ui.Root.AddSlot(label);
         row.AttachComponent<RectTransform>();
         var rLE = row.AttachComponent<LayoutElement>();
-        rLE.MinHeight.Value = 28f;
-        rLE.PreferredHeight.Value = 28f;
+        rLE.MinHeight.Value = 40f;
+        rLE.PreferredHeight.Value = 40f;
         var rLayout = row.AttachComponent<HorizontalLayout>();
         rLayout.Spacing.Value = 8f;
         rLayout.PaddingLeft.Value = 4f;
@@ -300,40 +292,70 @@ public abstract class ImportDialog : Component
         var t = boxBuilder.Text(label, DashTheme.FontBody, ButtonText);
         t.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
         t.VerticalAlignment.Value = TextVerticalAlignment.Middle;
-        FillRect(t.RectTransform!);
+        t.WordWrap.Value = true;
         boxBuilder.PopStyle();
     }
 
-    // Procedural card corners stay sharp as the dialog is scaled in world space. -xlinka
-    protected void GridButton(UIBuilder ui, string label, Action onClick, color? tint = null)
+    protected void GridButton(UIBuilder ui, string label, Action onClick, color? tint = null, bool primary = false)
     {
         _gridButtonCount++;
         GrowGridRow();
 
-        var slot = ui.Current.AddSlot(label);
-        slot.AttachComponent<RectTransform>();
-        var le = slot.AttachComponent<LayoutElement>();
+        ActionButton(ui, label, () => { if (CanInteract) onClick(); }, tint, primary);
+    }
+
+    // Shared by wizard pages, advanced settings, and folder import actions.
+    internal static Button ActionButton(UIBuilder ui, string label, Action onClick, color? tint = null, bool primary = false)
+    {
+        var slot = ui.Next(label);
+        var le = slot.GetComponent<LayoutElement>() ?? slot.AttachComponent<LayoutElement>();
+        le.UseZeroMetrics.Value = true;
         le.MinHeight.Value = ButtonHeight;
         le.PreferredHeight.Value = ButtonHeight;
+        le.FlexibleHeight.Value = 0f;
 
         var bg = slot.AttachComponent<RoundedPanel>();
-        var fill = tint ?? ButtonFill;
+        var fill = primary ? DashTheme.Accent : tint ?? ButtonFill;
         bg.Color.Value = fill;
-        bg.OutlineColor.Value = BorderColor;
+        bg.OutlineColor.Value = DashTheme.OutlineStrong;
         bg.OutlineThickness.Value = DashTheme.OutlineWidth;
         bg.CornerRadius.Value = DashTheme.RadiusControl;
 
-        var labelBuilder = new UIBuilder(slot);
-        if (_fontProvider != null) labelBuilder.Font(_fontProvider);
-        var text = labelBuilder.Text(label, DashTheme.FontBody, ButtonText);
+        var labelBuilder = new UIBuilder(slot).SetStyle(ui.Style);
+        var text = labelBuilder.Text(label, DashTheme.FontBody, primary ? DashTheme.OnAccent : ButtonText);
         text.HorizontalAlignment.Value = TextHorizontalAlignment.Center;
         text.VerticalAlignment.Value = TextVerticalAlignment.Middle;
         text.WordWrap.Value = true;
-        FillRect(text.RectTransform!, 6f, 6f, 4f, 4f);
+        FillRect(text.RectTransform!, 12f, 12f, 8f, 8f);
 
         var button = slot.AttachComponent<Button>();
-        button.Clicked += (_, _) => { if (CanInteract) onClick(); };
-        button.AddColorDriver(bg.Color, fill, InteractionColorMode.Direct);
+        button.Clicked += (_, _) => onClick();
+        StyleButton(button, bg, fill, primary);
+        return button;
+    }
+
+    private static void StyleButton(Button button, RoundedPanel panel, color fill, bool primary = false)
+    {
+        var driver = button.AddColorDriver(panel.Color, fill, InteractionColorMode.Direct);
+        driver.HighlightColor.Value = primary ? DashTheme.AccentHover : DashTheme.SurfaceHover;
+        driver.PressedColor.Value = primary ? DashTheme.AccentPressed : DashTheme.SurfacePressed;
+        driver.DisabledColor.Value = DashTheme.Field;
+    }
+
+    // The scrolling content owns its layout. The caller keeps its body builder for fixed actions.
+    internal static UIBuilder ScrollContent(UIBuilder ui)
+    {
+        ui.PushStyle().MinHeight(0f).PreferredHeight(0f).FlexibleHeight(1f);
+        var scroll = ui.ScrollRect(out var content, background: color.Transparent);
+        ui.PopStyle();
+        var viewport = scroll.Slot.GetComponent<LayoutElement>();
+        if (viewport != null) viewport.UseZeroMetrics.Value = true;
+        var layout = content.Slot.AttachComponent<VerticalLayout>();
+        layout.Spacing.Value = 6f;
+        layout.PaddingTop.Value = 4f;
+        layout.PaddingBottom.Value = 4f;
+        layout.ForceExpandHeight.Value = false;
+        return new UIBuilder(content.Slot).SetStyle(ui.Style);
     }
 
     // Honest "not supported yet" page: shows a message + a Close button that just
@@ -352,9 +374,8 @@ public abstract class ImportDialog : Component
             msg.WordWrap.Value = true;
             body.PopStyle();
 
-            body.PushStyle().MinHeight(36f).PreferredHeight(36f);
-            body.Button("Close", (_, _) => { if (CanInteract) Slot.Destroy(); }, ButtonFill);
-            body.PopStyle();
+            SetupGrid(body);
+            GridButton(body, "Close", () => Slot.Destroy());
         });
     }
 
@@ -363,8 +384,8 @@ public abstract class ImportDialog : Component
         var slot = parent.AddSlot("Back");
         slot.AttachComponent<RectTransform>();
         var le = slot.AttachComponent<LayoutElement>();
-        le.MinWidth.Value = 64f;
-        le.PreferredWidth.Value = 64f;
+        le.MinWidth.Value = 80f;
+        le.PreferredWidth.Value = 80f;
         le.FlexibleWidth.Value = 0f;
 
         var bg = slot.AttachComponent<RoundedPanel>();
@@ -382,7 +403,7 @@ public abstract class ImportDialog : Component
 
         var button = slot.AttachComponent<Button>();
         button.Clicked += (_, _) => { if (CanInteract) _wizard?.Return(); };
-        button.AddColorDriver(bg.Color, BackColor, InteractionColorMode.Direct);
+        StyleButton(button, bg, BackColor);
     }
 
     private static void FillRect(RectTransform rect, float left = 0f, float right = 0f, float top = 0f, float bottom = 0f)

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using Lumora.Core;
@@ -41,6 +41,10 @@ public class SeatLaserTrigger : Component, ISeatTrigger
         }
     }
 
+    // What this trigger drives. A default interface member is only reachable through the interface,
+    // and everything in here talks to the anchor rather than the chair, so it is named on the class.
+    public IAvatarAnchor? Anchor => Seat;
+
     public override void OnStart()
     {
         base.OnStart();
@@ -75,35 +79,62 @@ public class SeatLaserTrigger : Component, ISeatTrigger
             return;
 
         if (_rayTarget != null && !_rayTarget.IsDestroyed)
+        {
             _rayTarget.Activated -= OnActivated;
+            _rayTarget.HoverEntered -= OnHoverEntered;
+            _rayTarget.HoverExited -= OnHoverExited;
+        }
 
         _rayTarget = target;
         _rayTarget.Activated += OnActivated;
+        _rayTarget.HoverEntered += OnHoverEntered;
+        _rayTarget.HoverExited += OnHoverExited;
     }
 
+    // Aimed at, so it lights up - but only if this user could actually use it. A taken chair that
+    // glows invitingly is worse than one that does not, because the press it invites does nothing.
+    private void OnHoverEntered()
+    {
+        var anchor = Anchor;
+        if (anchor == null)
+            return;
+        var localUser = World?.LocalUser;
+        anchor.Highlight = localUser != null
+            && (anchor.AnchoredUser == localUser ? AllowRelease.Value : AllowSit.Value && anchor.CanAnchor(localUser));
+    }
+
+    private void OnHoverExited()
+    {
+        var anchor = Anchor;
+        if (anchor != null)
+            anchor.Highlight = false;
+    }
+
+    // Written against the anchor, not the chair: the same trigger drives a vehicle or a bed without
+    // knowing it is one. -xlinka
     private void OnActivated(float3 point)
     {
-        var seat = Seat;
-        if (seat == null)
+        var anchor = Anchor;
+        if (anchor == null)
             return;
 
         var localUser = World?.LocalUser;
         if (localUser == null)
             return;
 
-        if (seat.IsLocalUserSeated)
+        if (anchor.AnchoredUser == localUser)
         {
             if (AllowRelease.Value)
-                seat.Release();
+                anchor.Release();
             return;
         }
 
-        // Somebody else's seat: the press does nothing rather than kicking them out of it.
-        if (seat.IsOccupied)
+        // Somebody else is in it: the press does nothing rather than turfing them out.
+        if (anchor.IsOccupied)
             return;
 
         if (AllowSit.Value)
-            seat.TrySit(localUser);
+            anchor.Anchor(localUser);
     }
 
     bool ISeatTrigger.TrySit(User user)
@@ -120,8 +151,18 @@ public class SeatLaserTrigger : Component, ISeatTrigger
 
     public override void OnDestroy()
     {
+        // The highlight is local state on the anchor; leaving it lit because the trigger went away
+        // would strand a glowing chair nobody is pointing at.
+        var anchor = Anchor;
+        if (anchor != null)
+            anchor.Highlight = false;
+
         if (_rayTarget != null && !_rayTarget.IsDestroyed)
+        {
+            _rayTarget.HoverEntered -= OnHoverEntered;
+            _rayTarget.HoverExited -= OnHoverExited;
             _rayTarget.Activated -= OnActivated;
+        }
         _rayTarget = null!;
         base.OnDestroy();
     }

@@ -7,85 +7,23 @@ namespace Lumora.Core.Components.Utility;
 
 // Shared plumbing for the components that do something when a button is pressed.
 //
-// A Helio button carries ONE press action, a SyncDelegate naming a world element and a method. That is
-// what makes an action survive duplication and a save, and it is also why several of these cannot each
-// hold the button. So one of them claims the delegate and fans the press out to the rest: on a press,
-// the holder runs every enabled button action sitting on its own slot or on the button's slot. Put the
-// actions on either of those two slots and they all fire.
+// Attach one to a button's slot and it fires on every press of that button. That is the whole
+// contract; there is no wiring step and nothing to point at anything.
 //
-// The claim is re-checked each frame instead of only at start. The holder can be destroyed, the button
-// can be retargeted, and the delegate can be rebound by something else - none of those raise a change
-// event on the components that are waiting to take over, so a one-shot bind leaves a button that has
-// silently stopped doing anything. The check is a couple of reference compares. -xlinka
+// It used to be considerably more than that. A button carries ONE press action - a SyncDelegate, so
+// that an action survives duplication and a save - and several of these could not each hold it, so
+// they elected a holder and the holder fanned the press back out to the others. The election had to be
+// re-checked every frame on every button action in the world, because a holder can be destroyed and a
+// delegate can be rebound and neither raises a change event; and it needed a rule about not stealing a
+// delegate somebody else had deliberately wired. All of that existed to work around a button that
+// could only talk to one thing. Now it talks to its slot, and none of it is needed. -xlinka
 //
 // The press runs on the peer whose user pressed it. Writes from there replicate like any other
 // datamodel edit, and are refused the same way if that user lacks permission.
-public abstract class ButtonAction : Component
+public abstract class ButtonAction : Component, IButtonPressReceiver
 {
-    // Defaults to a button on this slot.
-    public readonly SyncRef<Button> SourceButton;
-
-    protected ButtonAction()
-    {
-        SourceButton = new SyncRef<Button>(this);
-    }
-
-    public override void OnAttach()
-    {
-        base.OnAttach();
-        if (SourceButton.Target == null)
-            SourceButton.Target = Slot.GetComponent<Button>();
-    }
-
-    public override void OnUpdate(float delta)
-    {
-        // Only the authority claims. The delegate is a replicated field, so the host's write reaches
-        // every peer and they all resolve to the same holder. Letting clients claim too would put every
-        // peer in a permission-denied write loop over a field one of them already owns.
-        if (World?.IsAuthority != true)
-            return;
-
-        var button = SourceButton.Target;
-        if (button == null || button.IsDestroyed)
-            return;
-
-        var holder = ((ISyncRef)button.PressAction).RawTarget as ButtonAction;
-        if (holder != null && !holder.IsDestroyed && holder.SourceButton.Target == button)
-            return;
-
-        // Nothing usable is holding the delegate. Take it, unless something that is not a button action
-        // has it - that is a deliberately wired action and stealing it would break whatever set it.
-        if (button.PressAction.Target != null && holder == null)
-            return;
-
-        button.SetAction(OnButtonPressed);
-    }
-
-    // Bound as the button's action by whichever action claims it.
-    [SyncMethod]
-    public void OnButtonPressed(Button button, UIInteractionContext context)
-    {
-        var actor = context.Actor;
-        Dispatch(Slot, button, actor);
-        var buttonSlot = button?.Slot;
-        // A component belongs to exactly one slot, so two distinct slots cannot yield the same action
-        // twice and nothing has to be de-duplicated.
-        if (buttonSlot != null && buttonSlot != Slot)
-            Dispatch(buttonSlot, button!, actor);
-    }
-
-    private static void Dispatch(Slot? slot, Button button, User? actor)
-    {
-        if (slot == null || slot.IsDestroyed)
-            return;
-
-        foreach (var action in slot.GetComponents<ButtonAction>())
-        {
-            if (action.IsDestroyed || !action.Enabled.Value || action.SourceButton.Target != button)
-                continue;
-            action.Pressed(actor);
-        }
-    }
+    public void OnButtonPressed(Button button, in UIInteractionContext context)
+        => Pressed(context.Actor);
 
     // Runs on the pressing user's peer.
     protected abstract void Pressed(User? actor);

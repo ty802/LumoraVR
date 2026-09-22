@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System.Collections.Generic;
@@ -20,11 +20,25 @@ public sealed class ModalDialogRelay : Component
 {
     internal ModalHost? Host;
     internal readonly List<Button> Options = new();
+    internal readonly List<Button> Choices = new();
+    internal readonly List<BorderedImage> ChoicePanels = new();
     internal TextInput? PromptInput;
 
     public string PromptText => PromptInput != null && !PromptInput.IsDestroyed
         ? PromptInput.Text.Value ?? string.Empty
         : string.Empty;
+
+    // A row in a pick list. Selects, does not close: a list exists to be looked at.
+    [SyncMethod]
+    public void OnChoicePressed(Button button, UIInteractionContext context)
+    {
+        if (Host == null || Host.IsDestroyed || button == null)
+            return;
+        int index = Choices.IndexOf(button);
+        if (index < 0)
+            return;
+        Host.SelectChoice(index);
+    }
 
     [SyncMethod]
     public void OnOptionPressed(Button button, UIInteractionContext context)

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -34,6 +34,10 @@ public sealed class ModalHost : UIComponent
     private const float TitleHeight = 40f;
     private const float MessageHeight = 72f;
     private const float PromptHeight = 40f;
+    private const float ChoiceHeight = 46f;
+    private const float ChoiceSpacing = 6f;
+    // Past this the list scrolls rather than growing a dialog taller than the screen.
+    private const int MaxVisibleChoices = 7;
     private const float ButtonsHeight = 52f;
     private const float CornerRadius = DashTheme.RadiusCard;
 
@@ -174,7 +178,7 @@ public sealed class ModalHost : UIComponent
             RestoreFocus();
 
         // The callback runs LAST so it is free to open another dialog on a host that is already idle.
-        request.Completed?.Invoke(new ModalResult(index, text));
+        request.Completed?.Invoke(new ModalResult(index, text, request.SelectedChoice));
         Closed?.Invoke(this, invoker);
     }
 
@@ -206,7 +210,7 @@ public sealed class ModalHost : UIComponent
         RestoreFocus();
         for (int i = pending.Count - 1; i >= 0; i--)
         {
-            pending[i].Completed?.Invoke(new ModalResult(pending[i].CancelIndex, string.Empty));
+            pending[i].Completed?.Invoke(new ModalResult(pending[i].CancelIndex, string.Empty, -1));
             Closed?.Invoke(this, pending[i].Invoker);
         }
     }
@@ -293,12 +297,120 @@ public sealed class ModalHost : UIComponent
         AddLabel(_panel, "Title", request.Title, 26f, TextPrimary, TitleHeight, font);
         AddLabel(_panel, "Message", request.Message, 17f, TextDim, MessageHeight, font, wrap: true);
 
+        if (request.Choices.Count > 0)
+            BuildChoices(_panel, request, font, rounded);
+
         if (request.Prompt)
             BuildPrompt(_panel, request, font);
 
         BuildButtons(_panel, request, font, rounded);
 
         MarkDirty();
+    }
+
+    // The pick list. One row per choice, the selected one lit, scrolling once there are more than a
+    // screenful. Pressing a row selects it and tells the caller straight away; it does not close the
+    // dialog, because the point of a list is to look at it before committing. -xlinka
+    private void BuildChoices(Slot panel, ModalRequest request, IAssetProvider<FontSet>? font,
+        IAssetProvider<TextureAsset>? rounded)
+    {
+        int visible = System.Math.Min(request.Choices.Count, MaxVisibleChoices);
+        float height = visible * ChoiceHeight + (visible - 1) * ChoiceSpacing;
+
+        var host = panel.AddSlot("Choices");
+        host.AttachComponent<RectTransform>();
+        SetFixedHeight(host, height);
+
+        Slot listRoot = host;
+        if (request.Choices.Count > visible)
+        {
+            // The builder's own scroller, which carries the content sizing the working scrollers use.
+            var builder = new UIBuilder(host);
+            builder.ScrollRect(out var content, background: new color(0f, 0f, 0f, 0f));
+            Fill(builder.Current.GetComponent<RectTransform>()!);
+            listRoot = content.Slot;
+        }
+
+        var column = listRoot.AttachComponent<VerticalLayout>();
+        column.Spacing.Value = ChoiceSpacing;
+        column.ForceExpandWidth.Value = true;
+        column.ForceExpandHeight.Value = false;
+
+        for (int i = 0; i < request.Choices.Count; i++)
+        {
+            var choice = request.Choices[i];
+            var row = listRoot.AddSlot("Choice");
+            row.AttachComponent<RectTransform>();
+            SetFixedHeight(row, ChoiceHeight);
+
+            bool selected = i == request.SelectedChoice;
+            var image = RoundedPanel(row, selected ? AccentFill : NeutralFill, PanelBorder, rounded);
+
+            var button = row.AttachComponent<Button>();
+            button.SetAction(_relay!.OnChoicePressed);
+            _relay.Choices.Add(button);
+            _relay.ChoicePanels.Add(image);
+
+            // Name on the left, what kind of thing it is on the right, so the two read as one line
+            // rather than as two competing labels.
+            AddChoiceLabel(row, choice.Label, 17f, TextPrimary, font, TextHorizontalAlignment.Left,
+                new float2(0f, 0f), new float2(0.68f, 1f), new float2(14f, 0f), float2.Zero);
+            if (!string.IsNullOrEmpty(choice.Detail.Resolve()))
+                AddChoiceLabel(row, choice.Detail, 14f, TextDim, font, TextHorizontalAlignment.Right,
+                    new float2(0.68f, 0f), new float2(1f, 1f), float2.Zero, new float2(-14f, 0f));
+        }
+    }
+
+    private static Text AddChoiceLabel(Slot parent, LocaleText text, float size, color tint,
+        IAssetProvider<FontSet>? font, TextHorizontalAlignment align,
+        float2 anchorMin, float2 anchorMax, float2 offsetMin, float2 offsetMax)
+    {
+        var slot = parent.AddSlot("Label");
+        var rect = slot.AttachComponent<RectTransform>();
+        rect.AnchorMin.Value = anchorMin;
+        rect.AnchorMax.Value = anchorMax;
+        rect.OffsetMin.Value = offsetMin;
+        rect.OffsetMax.Value = offsetMax;
+
+        var label = slot.AttachComponent<Text>();
+        label.Content.Value = text.Resolve();
+        label.Size.Value = size;
+        label.Color.Value = tint;
+        label.HorizontalAlignment.Value = align;
+        label.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+        if (font != null)
+            label.Font.Target = font;
+        return label;
+    }
+
+    // A row was pressed: light it, unlight the rest, and tell whoever opened the dialog.
+    internal void SelectChoice(int index)
+    {
+        var request = Current;
+        if (request == null || index < 0 || index >= request.Choices.Count)
+            return;
+        request.SelectedChoice = index;
+
+        var panels = _relay?.ChoicePanels;
+        if (panels != null)
+        {
+            for (int i = 0; i < panels.Count; i++)
+            {
+                var panel = panels[i];
+                if (panel == null || panel.IsDestroyed)
+                    continue;
+                panel.Tint.Value = i == index ? AccentFill : NeutralFill;
+            }
+        }
+
+        try
+        {
+            request.ChoiceChanged?.Invoke(index);
+        }
+        catch (Exception ex)
+        {
+            Logging.Logger.Error($"ModalHost: a choice handler threw: {ex.Message}");
+        }
     }
 
     private void BuildPrompt(Slot panel, ModalRequest request, IAssetProvider<FontSet>? font)
@@ -365,6 +477,11 @@ public sealed class ModalHost : UIComponent
         float height = SidePadding * 2f + TitleHeight + MessageHeight + ButtonsHeight + RowSpacing * 2f;
         if (request.Prompt)
             height += PromptHeight + RowSpacing;
+        if (request.Choices.Count > 0)
+        {
+            int visible = System.Math.Min(request.Choices.Count, MaxVisibleChoices);
+            height += visible * ChoiceHeight + (visible - 1) * ChoiceSpacing + RowSpacing;
+        }
         return height;
     }
 
@@ -415,7 +532,7 @@ public sealed class ModalHost : UIComponent
         return LocaleTextRegistry.Bind(text, in content);
     }
 
-    private static void RoundedPanel(Slot slot, color fill, color border, IAssetProvider<TextureAsset>? rounded)
+    private static BorderedImage RoundedPanel(Slot slot, color fill, color border, IAssetProvider<TextureAsset>? rounded)
     {
         var image = slot.GetComponent<BorderedImage>() ?? slot.AttachComponent<BorderedImage>();
         image.Tint.Value = fill;
@@ -426,6 +543,7 @@ public sealed class ModalHost : UIComponent
             image.NineSlice.Value = true;
             image.Borders.Value = new float4(CornerRadius, CornerRadius, CornerRadius, CornerRadius);
         }
+        return image;
     }
 
     private static void SetFixedHeight(Slot slot, float height)

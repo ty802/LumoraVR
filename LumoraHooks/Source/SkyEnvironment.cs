@@ -21,6 +21,28 @@ namespace Lumora.Godot.Hooks;
 // the bootstrap environment comes back when nothing claims at all. -xlinka
 public static class SkyEnvironment
 {
+    // The user's post stack, one record so every environment gets the same write. Tonemap indexes
+    // EngineSettings.TonemapOptions (which is the renderer's own enum order). AmbientOcclusion is the
+    // 0..1 strength the settings expose; 0 is off. Contrast and Saturation are 1 for untouched.
+    public struct PostSettings
+    {
+        public int Tonemap;
+        public float WhitePoint;
+        public float Bloom;
+        public float AmbientOcclusion;
+        public bool ScreenSpaceReflections;
+        public bool ScreenSpaceIndirectLighting;
+        public float Contrast;
+        public float Saturation;
+    }
+
+    // What ApplyPostSettings last wrote, for an environment built later (a sky claim, a camera) so it
+    // starts from the same stack instead of the scene file's.
+    public static PostSettings CurrentPost { get; private set; } = new()
+    {
+        Tonemap = 4, WhitePoint = 6f, Bloom = 0.5f, AmbientOcclusion = 1f, Contrast = 1f, Saturation = 1f,
+    };
+
     // loses to anything that carries a cubemap
     public const int GradientPriority = 0;
 
@@ -33,7 +55,7 @@ public static class SkyEnvironment
         public World World = null!;
         public int Priority;
         public long Sequence;
-        public global::Godot.Environment Environment = null!;
+        public global::Godot.Environment? Environment;
     }
 
     private static readonly List<Claim> _claims = new();
@@ -78,11 +100,34 @@ public static class SkyEnvironment
     // to be written to each copy, because a duplicate stopped tracking its source the moment it was
     // made. Applied to every claim rather than only the winner so switching worlds cannot reveal a
     // stale environment. -xlinka
-    public static void ApplyPostSettings(int tonemap, float whitePoint, float bloom, Node anyNodeInTree)
+    private static bool _postApplied;
+
+    public static void ApplyPostSettings(in PostSettings settings, Node anyNodeInTree)
     {
         EnsureNode(anyNodeInTree);
+        CurrentPost = settings;
+        _postApplied = true;
 
-        var mapper = tonemap switch
+        if (_bootstrap != null && GodotObject.IsInstanceValid(_bootstrap))
+            WritePost(_bootstrap, in settings);
+
+        lock (_lock)
+        {
+            foreach (var claim in _claims)
+            {
+                if (claim.Environment != null && GodotObject.IsInstanceValid(claim.Environment))
+                    WritePost(claim.Environment, in settings);
+            }
+        }
+    }
+
+    // The current stack onto an environment somebody else owns (an offscreen camera's).
+    public static void WritePost(global::Godot.Environment environment)
+        => WritePost(environment, CurrentPost);
+
+    private static void WritePost(global::Godot.Environment environment, in PostSettings settings)
+    {
+        environment.TonemapMode = settings.Tonemap switch
         {
             0 => global::Godot.Environment.ToneMapper.Linear,
             1 => global::Godot.Environment.ToneMapper.Reinhardt,
@@ -90,24 +135,15 @@ public static class SkyEnvironment
             3 => global::Godot.Environment.ToneMapper.Aces,
             _ => global::Godot.Environment.ToneMapper.Agx,
         };
+        environment.TonemapWhite = settings.WhitePoint;
+        // AgX does not read TonemapWhite at all. It has its own white, and the engine default for it is
+        // 16.29, the very top of the range and the flattest the curve gets. Every build since the
+        // tonemap work shipped has been running the default tonemapper at that white while the White
+        // Point slider wrote a property it never looked at, which is most of why the view read as
+        // washed out. Both are written so the slider means the same thing whichever curve is up. -xlinka
+        bool agx = environment.TonemapMode == global::Godot.Environment.ToneMapper.Agx;
+        environment.TonemapAgxWhite = System.MathF.Max(settings.WhitePoint, 2f);
 
-        if (_bootstrap != null && GodotObject.IsInstanceValid(_bootstrap))
-            Write(_bootstrap, mapper, whitePoint, bloom);
-
-        lock (_lock)
-        {
-            foreach (var claim in _claims)
-            {
-                if (claim.Environment != null && GodotObject.IsInstanceValid(claim.Environment))
-                    Write(claim.Environment, mapper, whitePoint, bloom);
-            }
-        }
-    }
-
-    private static void Write(global::Godot.Environment environment, global::Godot.Environment.ToneMapper mapper, float whitePoint, float bloom)
-    {
-        environment.TonemapMode = mapper;
-        environment.TonemapWhite = whitePoint;
         // Zero turns the pass OFF rather than running it at no strength: a glow pass costs its blur
         // chain whether or not anything is bright enough to feed it.
         //
@@ -116,14 +152,101 @@ public static class SkyEnvironment
         // environment and glow came straight back: measured 270 ms of GPU per frame at 1504x1504 on
         // a Pico 4 with the bloom chain running. Worlds keep their bloom on desktop. -xlinka
         bool standalone = OS.HasFeature("android");
-        environment.GlowEnabled = !standalone && bloom > 0.001f;
-        environment.GlowIntensity = bloom;
+        environment.GlowEnabled = !standalone && settings.Bloom > 0.001f;
+        environment.GlowIntensity = settings.Bloom;
+
+        // Screen-space ambient occlusion. The strength maps the 0..1 setting onto the renderer's
+        // scale where 2 is its own default; the rest is shaped for a broad, soft falloff rather than a
+        // tight dark crease, with the radius held at a metre, which is where contact shadow under feet
+        // and in corners lives. LightAffect lets a little of it into directly lit surfaces, so the
+        // occlusion darkens lit floors too, and that is what reads as grounded. Forward+ only; the
+        // mobile renderer has no such pass and the property is inert there. -xlinka
+        // The renderer's occlusion only darkens AMBIENT light unless LightAffect lets it into direct
+        // light, and a sunlit open floor has almost no ambient to darken, so at the engine default the
+        // pass is on and invisible. Occlusion that darkens lit floors as well is what reads as
+        // grounded. The photoreal guides for this engine use these numbers: intensity 3, and both
+        // affects at 1 "for full-scene plasticity". The slider scales all three together, so half
+        // strength is half the crease and half the reach into lit surfaces, not a strong crease that
+        // stops at the shadow line. -xlinka
+        bool ao = !standalone && settings.AmbientOcclusion > 0.001f;
+        environment.SsaoEnabled = ao;
+        if (ao)
+        {
+            float strength = System.Math.Clamp(settings.AmbientOcclusion, 0f, 1f);
+            environment.SsaoRadius = 1f;
+            environment.SsaoIntensity = strength * 3f;
+            environment.SsaoPower = 1.5f;
+            environment.SsaoDetail = 0.5f;
+            environment.SsaoHorizon = 0.06f;
+            environment.SsaoSharpness = 0.98f;
+            environment.SsaoLightAffect = strength;
+            environment.SsaoAOChannelAffect = strength;
+        }
+
+        // Indirect lighting at the renderer's defaults (5 m radius, intensity 1): a switch, since the
+        // engine's guide treats it as on-or-off alongside the occlusion.
+        environment.SsilEnabled = !standalone && settings.ScreenSpaceIndirectLighting;
+
+        // Screen-space reflections at the renderer's own defaults; the setting is a switch.
+        environment.SsrEnabled = !standalone && settings.ScreenSpaceReflections;
+
+        // Contrast. AgX carries a contrast term inside its own curve (engine default 1.25, range 1..2)
+        // which the engine docs prefer over the post-tonemap adjustment: it shapes the curve instead of
+        // stretching finished pixels, so it does not clip. The setting is a multiplier on the default
+        // look, so 1.0 leaves the curve exactly as shipped; whatever the native range cannot take (a
+        // setting under 0.8, or over 1.6) goes through the adjustment pass as the residual. Other
+        // tonemappers have no such term and take the whole setting in the adjustment pass. -xlinka
+        float adjustmentContrast = settings.Contrast;
+        if (agx)
+        {
+            float native = 1.25f * settings.Contrast;
+            environment.TonemapAgxContrast = System.Math.Clamp(native, 1f, 2f);
+            adjustmentContrast = native < 1f ? native : native > 2f ? native / 2f : 1f;
+        }
+        else
+        {
+            environment.TonemapAgxContrast = 1.25f;
+        }
+
+        // The adjustment pass runs inside the tonemap pass, so it is free when on and skipped when it
+        // has nothing to do.
+        bool adjust = System.MathF.Abs(adjustmentContrast - 1f) > 0.001f || System.MathF.Abs(settings.Saturation - 1f) > 0.001f;
+        environment.AdjustmentEnabled = adjust;
+        environment.AdjustmentBrightness = 1f;
+        environment.AdjustmentContrast = adjustmentContrast;
+        environment.AdjustmentSaturation = settings.Saturation;
+    }
+
+    // What the main view is actually rendering through, against what was just written. The scene's
+    // WorldEnvironment hands its resource to the root viewport's World3D; if those two ever disagree
+    // every setting above lands on a resource nothing draws, and the only symptom is "nothing
+    // changed". One line per apply, read back from the resource, not from what we meant to write.
+    public static string DescribeRendering(Node anyNodeInTree)
+    {
+        var root = anyNodeInTree?.GetTree()?.Root;
+        var rendering = root?.World3D?.Environment;
+        var installed = _node != null && GodotObject.IsInstanceValid(_node) ? _node.Environment : null;
+        if (rendering == null)
+            return "rendering env=none";
+        string match = installed == null ? "no WorldEnvironment node"
+            : ReferenceEquals(rendering, installed) ? "matches WorldEnvironment"
+            : "DIFFERS from WorldEnvironment";
+        return $"rendering env={rendering.GetRid().Id} ({match}) tonemap={rendering.TonemapMode} agxWhite={rendering.TonemapAgxWhite:0.##} "
+             + $"agxContrast={rendering.TonemapAgxContrast:0.##} ssao={rendering.SsaoEnabled} (intensity {rendering.SsaoIntensity:0.##}, light {rendering.SsaoLightAffect:0.##}) "
+             + $"ssil={rendering.SsilEnabled} ssr={rendering.SsrEnabled} glow={rendering.GlowEnabled} adjust={rendering.AdjustmentEnabled} "
+             + $"(contrast {rendering.AdjustmentContrast:0.##}, saturation {rendering.AdjustmentSaturation:0.##}) "
+             + $"method={RenderingServer.GetCurrentRenderingMethod()}";
     }
 
     // re-claiming with the same owner replaces its environment
     public static void Claimed(object owner, World world, int priority, global::Godot.Environment environment, Node anyNodeInTree)
     {
         EnsureNode(anyNodeInTree);
+
+        // A claim built from a bootstrap duplicate taken before the settings ever ran would carry the
+        // scene file's stack. Stamp the live one on the way in; a handful of property writes.
+        if (_postApplied && environment != null && GodotObject.IsInstanceValid(environment))
+            WritePost(environment, CurrentPost);
 
         lock (_lock)
         {

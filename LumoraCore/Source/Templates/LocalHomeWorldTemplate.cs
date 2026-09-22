@@ -40,7 +40,9 @@ internal sealed class LocalHomeWorldTemplate : WorldTemplateDefinition
         var dirLight = lightSlot.AttachComponent<Light>();
         dirLight.Type.Value = LightType.Directional;
         dirLight.LightColor.Value = new color(1f, 0.96f, 0.84f, 1f);
-        dirLight.Intensity.Value = 1.2f;
+        // Tuned while Bootstrap.tscn's own half-energy sun was still shining into every world; that
+        // one is off now, so the world's sun carries what it used to add. -xlinka
+        dirLight.Intensity.Value = 1.7f;
         dirLight.Shadows.Value = ShadowType.Soft;
 
         var skySlot = world.RootSlot.AddSlot("GradientSkybox");

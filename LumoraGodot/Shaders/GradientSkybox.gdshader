@@ -18,7 +18,10 @@ void sky() {
     vec3 sky_col = mix(lower, top_color.rgb, smoothstep(0.42, 1.0, height));
 
     float sun_dot = clamp(dot(view_dir, sun_dir), 0.0, 1.0);
-    float disc = smoothstep(cos(sun_size), 1.0, sun_dot);
+    // The disc is for the eye only. The radiance cubemap feeds ambient and reflections, and a disc
+    // in it mirrors onto every glossy floor as a hard hotspot, which is why reflections from this
+    // sky used to be switched off entirely. The soft glow stays: it is the sky's warmth.
+    float disc = AT_CUBEMAP_PASS ? 0.0 : smoothstep(cos(sun_size), 1.0, sun_dot);
     float glow = pow(sun_dot, sun_glow_power * 0.22) * 0.18;
 
     COLOR = sky_col + sun_color.rgb * (disc + glow) * sun_intensity;

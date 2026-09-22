@@ -61,11 +61,13 @@ public sealed class GradientSkyboxHook : ComponentHook<GradientSkybox>
         }
         _environment.BackgroundMode = global::Godot.Environment.BGMode.Sky;
         _environment.Sky = _sky;
-        // Sky still drives ambient color, but reflections are explicitly killed so the bright sun disc
-        // inside the shader doesn't mirror onto glossy floors as a hard hotspot. Specular highlights
-        // come only from real lights and reflection probes, not from this sky. - xlinka
+        // Sky drives ambient AND reflections. Reflections used to be switched off because the sun
+        // disc mirrored onto glossy floors as a hard hotspot, which left every gradient-sky world
+        // with no specular environment at all: metals read as grey plastic, glossy floors as matte,
+        // and every avatar material went flat. The shader now leaves the disc out of the cubemap
+        // pass, so the reflection carries the gradient and the soft glow but never the disc. -xlinka
         _environment.AmbientLightSource = global::Godot.Environment.AmbientSource.Sky;
-        _environment.ReflectedLightSource = global::Godot.Environment.ReflectionSource.Disabled;
+        _environment.ReflectedLightSource = global::Godot.Environment.ReflectionSource.Sky;
 
         ApplyChanges();
     }

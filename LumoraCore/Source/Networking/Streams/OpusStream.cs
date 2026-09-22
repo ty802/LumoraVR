@@ -25,6 +25,12 @@ public class OpusStream : EncodedAudioStream
     public readonly Sync<OpusFrameDuration> FrameDuration = new();
     public readonly Sync<int> Channels = new();
 
+    // What this stream carries. Replicated, because the DECODER does not need it but every peer
+    // rebuilds the encoder from the same members and the inspector should read the same thing
+    // everywhere. Voice is the default: a user's microphone is by far the common case, and a stream
+    // that never says otherwise should behave exactly as it always has. -xlinka
+    public readonly Sync<OpusContent> Content = new();
+
     private OpusVoiceEncoder? _encoder;
     private OpusVoiceDecoder? _decoder;
 
@@ -34,6 +40,7 @@ public class OpusStream : EncodedAudioStream
     private volatile int _bitRate = DefaultBitRate;
     private OpusFrameDuration _frameDuration = OpusFrameDuration.Ms20;
     private volatile int _channels = 1;
+    private OpusContent _content = OpusContent.Voice;
 
     protected override int MaxPacketBytes => OpusVoiceEncoder.MaxPacketBytes;
 
@@ -43,6 +50,7 @@ public class OpusStream : EncodedAudioStream
         BitRate.Value = DefaultBitRate;
         FrameDuration.Value = OpusFrameDuration.Ms20;
         Channels.Value = 1;
+        Content.Value = OpusContent.Voice;
     }
 
     protected override void OnWorldUpdate()
@@ -56,8 +64,12 @@ public class OpusStream : EncodedAudioStream
             _frameDuration = duration;
             // The frame size is baked into the encoder, so a duration change is a rebuild. The decoder
             // does not care: the packet carries its own duration and only concealment needs the number.
-            _encoder?.Dispose();
-            _encoder = null;
+            // Under the codec lock because the encode worker may be inside the encoder right now.
+            lock (CodecLock)
+            {
+                _encoder?.Dispose();
+                _encoder = null;
+            }
         }
 
         int channels = Channels.Value == 2 ? 2 : 1;
@@ -65,14 +77,30 @@ public class OpusStream : EncodedAudioStream
         {
             _channels = channels;
             // Channel count is baked into BOTH codecs, so this one is a full reset on either side.
-            ResetCodecs();
+            lock (CodecLock)
+                ResetCodecs();
+        }
+
+        var content = Content.Value;
+        if (content != _content)
+        {
+            _content = content;
+            // Application type and FEC are constructor-time on the encoder; the decoder is agnostic.
+            lock (CodecLock)
+            {
+                _encoder?.Dispose();
+                _encoder = null;
+            }
         }
 
         FrameSizeSamples = _frameDuration.FrameSize();
 
-        var encoder = _encoder;
-        if (encoder != null)
-            encoder.Bitrate = _bitRate;
+        lock (CodecLock)
+        {
+            var encoder = _encoder;
+            if (encoder != null)
+                encoder.Bitrate = _bitRate;
+        }
     }
 
     protected override int EncodeFrame(ReadOnlySpan<StereoSample> frame, Span<byte> packet)
@@ -158,7 +186,7 @@ public class OpusStream : EncodedAudioStream
 
         try
         {
-            _encoder = new OpusVoiceEncoder(_channels, _bitRate, _frameDuration, Engine.IsMobilePlatform);
+            _encoder = new OpusVoiceEncoder(_channels, _bitRate, _frameDuration, Engine.IsMobilePlatform, _content);
         }
         catch (Exception ex)
         {

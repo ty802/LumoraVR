@@ -36,6 +36,10 @@ public static class AudioStreamSpawner
 
         // Stereo, because what goes into this is a device and not a mouth.
         stream.Channels.Value = 2;
+        // A spawned stream is somebody sharing what their machine is playing. Stereo at 128 kbit was
+        // already right; the codec was still in speech mode underneath it, which is what made shared
+        // music sound thin and smeared however high the bitrate went. -xlinka
+        stream.Content.Value = Lumora.Audio.OpusContent.Music;
         stream.BitRate.Value = SettingsCatalog.DefaultStreamBitrateKbps.ClampInt(bitrate) * 1000;
 
         float3 position;
@@ -57,6 +61,19 @@ public static class AudioStreamSpawner
         slot.GlobalPosition = position;
         slot.GlobalRotation = rotation;
 
+        // An item, like everything else somebody puts in a room: it has a root, it has a name, and a
+        // hand can take hold of it and move it. It had none of that, so it sat wherever it spawned and
+        // could not be picked up or put anywhere. -xlinka
+        var root = slot.GetOrAttachComponent<ObjectRoot>();
+        root.ObjectName.Value = input != null
+            ? $"{localUser.UserName.Value} - {input.Name}"
+            : $"{localUser.UserName.Value} Audio Stream";
+
+        var grab = slot.GetOrAttachComponent<Lumora.Core.Components.Grabbable>();
+        grab.AllowGrab.Value = true;
+        grab.Scalable.Value = true;
+
+        string controllerDeviceName = string.Empty;
         var source = slot.AttachComponent<UserAudioStream>();
         source.Stream.Target = stream;
         // Raw, not filtered: the gate and the normalizer are shaped for speech.
@@ -64,10 +81,12 @@ public static class AudioStreamSpawner
         // Not a voice, so the microphone mute and the host's silencing do not reach it.
         source.IsVoiceCapture.Value = false;
         source.PreferredInput = input;
+        controllerDeviceName = input?.Name ?? string.Empty;
 
         var controller = slot.AttachComponent<AudioStreamController>();
         controller.Stream.Target = stream;
         controller.Source.Target = source;
+        controller.DeviceName.Value = controllerDeviceName;
         controller.BuildUI(slot);
         return controller;
     }

@@ -83,17 +83,26 @@ public static class SettingsCatalog
 
     // Voice capture. The gate threshold is a peak amplitude, not a decibel figure, because that is
     // what the filter measures; the times are seconds.
-    public static readonly SettingRange NoiseGateThreshold = new(0f, 0.5f, 0.005f);
-    public static readonly SettingRange NoiseGateAttack = new(0.001f, 0.2f, 0.001f);
-    public static readonly SettingRange NoiseGateHold = new(0f, 2f, 0.05f);
-    public static readonly SettingRange NoiseGateRelease = new(0.01f, 2f, 0.05f);
-    public static readonly SettingRange NormalizationThreshold = new(0.02f, 1f, 0.02f);
+    // The band a voice gate works in, which is a fifth of a second at the outside. These used to run
+    // to half an amplitude and to two whole seconds, so the part of the slider that does anything was
+    // its first tenth and every drag overshot it. -xlinka
+    public static readonly SettingRange NoiseGateThreshold = new(0f, 0.2f, 0.002f);
+    public static readonly SettingRange NoiseGateAttack = new(0f, 0.2f, 0.002f);
+    public static readonly SettingRange NoiseGateHold = new(0f, 0.2f, 0.002f);
+    public static readonly SettingRange NoiseGateRelease = new(0f, 0.2f, 0.002f);
+    public static readonly SettingRange NormalizationThreshold = new(0.01f, 0.2f, 0.002f);
     public static readonly SettingRange RenderScale = new(0.5f, 2f, 0.05f);
     public static readonly SettingRange Upscaler = new(0f, 2f);
     public static readonly SettingRange LodBias = new(0.25f, 4f, 0.05f);
     public static readonly SettingRange ShadowDistanceScale = new(0.25f, 4f, 0.05f);
     public static readonly SettingRange Exposure = new(1f, 16f, 0.5f);
     public static readonly SettingRange Bloom = new(0f, 2f, 0.05f);
+    // Off at 0. The renderer takes the strength on a wider scale; the applier maps it.
+    public static readonly SettingRange AmbientOcclusion = new(0f, 1f, 0.05f);
+    // 1 is the untouched image on both. Contrast past 1.5 crushes the shadows the tonemapper just
+    // saved, and saturation at 0 is a legitimate greyscale.
+    public static readonly SettingRange Contrast = new(0.5f, 1.5f, 0.05f);
+    public static readonly SettingRange Saturation = new(0f, 2f, 0.05f);
     public static readonly SettingRange SnapTurnAngle = new(10f, 90f, 5f);
     public static readonly SettingRange SmoothTurnSpeed = new(30f, 360f, 5f);
     public static readonly SettingRange ReticleSize = new(2f, 48f, 1f);

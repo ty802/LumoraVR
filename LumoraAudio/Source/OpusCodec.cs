@@ -39,6 +39,18 @@ public static class OpusFrameDurations
     };
 }
 
+// What the stream carries, which is what the codec needs to know to be any good at it.
+//
+// Every stream used to encode as VOICE whatever it was: a 128 kbit stereo music stream went through
+// the speech path, which spends its bits on intelligibility and applies speech-shaped processing.
+// Music through it is the smeared, papery sound people describe as "the stream is broken". The codec
+// has a general-audio mode for exactly this. -xlinka
+public enum OpusContent
+{
+    Voice,
+    Music,
+}
+
 public sealed class OpusVoiceEncoder : IDisposable
 {
     public const int SampleRate = 48000;
@@ -54,15 +66,27 @@ public sealed class OpusVoiceEncoder : IDisposable
     private int _bitrate;
 
     public OpusVoiceEncoder(int channels, int bitrate, OpusFrameDuration frameDuration, bool lowComplexity)
+        : this(channels, bitrate, frameDuration, lowComplexity, OpusContent.Voice)
+    {
+    }
+
+    public OpusVoiceEncoder(int channels, int bitrate, OpusFrameDuration frameDuration, bool lowComplexity, OpusContent content)
     {
         if (channels != 1 && channels != 2)
             throw new ArgumentOutOfRangeException(nameof(channels), "Opus encodes 1 or 2 channels.");
 
         Channels = channels;
         FrameDuration = frameDuration;
+        Content = content;
 
-        var encoder = OpusCodecFactory.CreateEncoder(SampleRate, channels, OpusApplication.OPUS_APPLICATION_VOIP, null);
-        encoder.SignalType = OpusSignal.OPUS_SIGNAL_VOICE;
+        bool music = content == OpusContent.Music;
+        var encoder = OpusCodecFactory.CreateEncoder(SampleRate, channels,
+            music ? OpusApplication.OPUS_APPLICATION_AUDIO : OpusApplication.OPUS_APPLICATION_VOIP, null);
+        encoder.SignalType = music ? OpusSignal.OPUS_SIGNAL_MUSIC : OpusSignal.OPUS_SIGNAL_VOICE;
+        // Forward error correction is a voice trade: it spends bitrate re-describing the previous
+        // frame so a lost packet is recoverable, which is worth it for speech and wasted on music,
+        // where a dropped 20 ms is inaudible and the bits buy real bandwidth instead.
+        encoder.UseInbandFEC = !music;
         // The managed encoder is the most expensive thing on the capture path, and complexity is the
         // one knob that trades CPU for quality directly. Standalone hardware cannot pay for 10.
         encoder.Complexity = lowComplexity ? 2 : 10;
@@ -72,6 +96,8 @@ public sealed class OpusVoiceEncoder : IDisposable
     }
 
     public int Channels { get; }
+
+    public OpusContent Content { get; }
 
     public OpusFrameDuration FrameDuration { get; }
 

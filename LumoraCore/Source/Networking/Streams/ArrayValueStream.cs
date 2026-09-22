@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -260,6 +260,13 @@ public class ArrayValueStream<T> : ImplicitStream
         _dataPoints.Clear();
         base.Dispose();
     }
+}
+
+// A run of plain floats. Viseme weights are fifteen of them and want quantizing to a few bits each,
+// which is what this exists for: at ten bits a frame of mouth shape is under twenty bytes. -xlinka
+public class FloatArrayValueStream : ArrayValueStream<float>
+{
+    protected override float InterpolateElement(float a, float b, float lerp) => a + (b - a) * lerp;
 }
 
 public class Float3ArrayValueStream : ArrayValueStream<float3>

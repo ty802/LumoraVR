@@ -34,6 +34,10 @@ public sealed class AudioStreamController : Component
 
     public readonly Sync<float> PanelWidth;
 
+    // Which device is going out. Replicated, because everybody in the room should be able to see what
+    // they are listening to rather than only the person who started it.
+    public readonly Sync<string> DeviceName;
+
     private const float CanvasWidth = 900f;
     private const float CanvasHeight = 160f;
 
@@ -61,6 +65,8 @@ public sealed class AudioStreamController : Component
     private float _meterLevel;
     private float _labelPoll;
     private float _lastPanelWidth = -1f;
+    private Slot? _waveformSlot;
+    private Meshes.AudioWaveformMesh? _waveformMesh;
     private bool _wired;
     private bool _toggleStateKnown;
     private bool _lastSpatial;
@@ -72,6 +78,7 @@ public sealed class AudioStreamController : Component
         AudioOutput = new SyncRef<Lumora.Core.Components.Audio.AudioOutput>(this);
         Source = new SyncRef<UserAudioStream>(this);
         PanelWidth = new Sync<float>(this, 0.6f);
+        DeviceName = new Sync<string>(this, string.Empty);
     }
 
     public User? Owner => Stream.Target?.Owner;
@@ -116,6 +123,7 @@ public sealed class AudioStreamController : Component
         BuildFont(root);
         BuildPlate(root);
         BuildControls(root, output);
+        BuildWaveform(root, output);
 
         _wired = true;
         UpdateSurfaces();
@@ -142,10 +150,8 @@ public sealed class AudioStreamController : Component
         _plateMesh.CornerSegments.Value = 4;
         _plateMesh.DualSided.Value = false;
 
-        var material = _plateSlot.GetOrAttachComponent<UnlitMaterial>();
-        material.TintColor.Value = ToHDR(DashTheme.Panel);
-        material.Culling.Value = Culling.None;
-        material.BlendMode.Value = BlendMode.Opaque;
+        // Glass, like every other panel body. An opaque slab reads as a placeholder next to them.
+        var material = DashGlass.Attach(_plateSlot);
 
         var renderer = _plateSlot.GetOrAttachComponent<MeshRenderer>();
         renderer.Mesh.Target = _plateMesh;
@@ -153,6 +159,30 @@ public sealed class AudioStreamController : Component
         renderer.ShadowCastMode.Value = ShadowCastMode.Off;
 
         _plateCollider = _plateSlot.GetOrAttachComponent<BoxCollider>();
+    }
+
+    // The same live trace the audio player wears, for the same reason: a stream that is running and a
+    // stream that has gone quiet look identical otherwise, and the level meter only says how loud.
+    private void BuildWaveform(Slot root, Lumora.Core.Components.Audio.AudioOutput output)
+    {
+        _waveformSlot = root.FindChildOrAdd("Waveform");
+        _waveformSlot.LocalPosition.Value = new float3(0f, 0f, -PlateDepth * 0.4f);
+
+        _waveformMesh = _waveformSlot.GetOrAttachComponent<Meshes.AudioWaveformMesh>();
+        _waveformMesh.Source.Target = output;
+        _waveformMesh.Style.Value = Meshes.WaveformStyle.Spectrum;
+        _waveformMesh.Resolution.Value = 96;
+        _waveformMesh.Smoothing.Value = 0.4f;
+
+        var material = _waveformSlot.GetOrAttachComponent<UnlitMaterial>();
+        material.TintColor.Value = ToHDR(DashTheme.Accent);
+        material.Culling.Value = Culling.None;
+        material.BlendMode.Value = BlendMode.Alpha;
+
+        var renderer = _waveformSlot.GetOrAttachComponent<MeshRenderer>();
+        renderer.Mesh.Target = _waveformMesh;
+        renderer.Material.Target = material;
+        renderer.ShadowCastMode.Value = ShadowCastMode.Off;
     }
 
     private void BuildControls(Slot root, Lumora.Core.Components.Audio.AudioOutput output)
@@ -165,11 +195,22 @@ public sealed class AudioStreamController : Component
         rect.OffsetMax.Value = new float2(CanvasWidth * 0.5f, CanvasHeight * 0.5f);
         _controlsSlot.GetOrAttachComponent<Canvas>();
 
-        var background = _controlsSlot.GetOrAttachComponent<Image>();
-        background.Tint.Value = DashTheme.Backdrop;
+        // THE HOUSE BACKDROP, not a flat image: rounded, glass-tinted, outlined, the same one every
+        // other panel in the product wears.
+        var background = _controlsSlot.GetComponent<RoundedPanel>() ?? _controlsSlot.AttachComponent<RoundedPanel>();
+        background.Color.Value = DashTheme.GlassBackdrop;
+        background.CornerRadius.Value = DashTheme.RadiusPanel;
+        background.OutlineColor.Value = DashTheme.OutlineStrong;
+        background.OutlineThickness.Value = DashTheme.OutlineWidth;
 
         var content = _controlsSlot.FindChildOrAdd("Content");
         FillRect(content);
+        // ITS OWN CHUNK, and this is what made the panel a black rectangle with nothing on it. The
+        // canvas root carries the backdrop; without a chunk of its own the content is batched into
+        // the root's chunk and drawn underneath the very thing it is supposed to sit on, so every
+        // button, label and meter went behind an opaque panel. The video player hit this and fixed it
+        // there; these two were built from the pattern that predates it. -xlinka
+        content.GetOrAttachComponent<GraphicChunkRoot>();
         if (content.ChildCount > 0)
             return;
 
@@ -394,6 +435,13 @@ public sealed class AudioStreamController : Component
 
         if (_plateCollider != null && !_plateCollider.IsDestroyed)
             _plateCollider.Size.SetValueSilently(new float3(width + PlateMargin * 2f, height + PlateMargin * 2f, 0.02f));
+
+        if (_waveformMesh != null && !_waveformMesh.IsDestroyed)
+        {
+            _waveformMesh.Width.SetValueSilently(width * 0.94f);
+            _waveformMesh.Height.SetValueSilently(height * 0.40f);
+            _waveformMesh.Thickness.SetValueSilently(System.Math.Max(height * 0.012f, 0.0015f));
+        }
     }
 
     private void UpdateLabels()
@@ -402,10 +450,14 @@ public sealed class AudioStreamController : Component
         SetText(_titleLabel, owner == null ? "Audio Stream" : $"{owner.UserName.Value}'s Stream");
 
         var stream = Stream.Target;
+        string device = DeviceName.Value ?? string.Empty;
         if (stream is OpusStream opus)
         {
             string channels = opus.Channels.Value == 2 ? "stereo" : "mono";
-            SetText(_statusLabel, $"{opus.BitRate.Value / 1000} kbps {channels}");
+            string detail = $"{opus.BitRate.Value / 1000} kbps {channels}";
+            // The device is the useful half of this line: two streams in a room are told apart by what
+            // they are carrying, not by their bitrate.
+            SetText(_statusLabel, device.Length > 0 ? $"{device} - {detail}" : detail);
         }
         else
         {
@@ -451,6 +503,8 @@ public sealed class AudioStreamController : Component
 
         _plateMesh = _plateSlot?.GetComponent<RoundedQuadMesh>();
         _plateCollider = _plateSlot?.GetComponent<BoxCollider>();
+        _waveformSlot = Slot.FindChild("Waveform", recursive: false);
+        _waveformMesh = _waveformSlot?.GetComponent<Meshes.AudioWaveformMesh>();
         _font = Slot.FindChild("Font", recursive: false)?.GetComponent<FontProvider>();
 
         _titleLabel = FindText("TitleLabel");

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -45,12 +45,50 @@ public abstract class EncodedAudioStream : AudioStream
     private int _packetIndex;
     private bool _encodePositionValid;
 
+    // ENCODING DOES NOT BELONG ON THE SYNC THREAD.
+    //
+    // It used to run inside Encode, which is called by the sync loop while it is building the tick's
+    // outbound message - the same thread, and the same moment, that encodes the delta for the entire
+    // datamodel. A stereo frame at full complexity is real arithmetic, and paying for it there means
+    // every voice in the room adds its codec time to the interval between one tick being sent and the
+    // next, which arrives at the other end as jitter on everything, not just on audio.
+    //
+    // So frames are encoded on a pool thread as they finish, and the sync thread's job shrinks to
+    // copying ready bytes into the writer. One encode is ever in flight; the flag is the whole
+    // scheduling policy, because a second one could only produce packets out of order. -xlinka
+    private readonly System.Collections.Concurrent.ConcurrentQueue<EncodedPacket> _ready = new();
+    private readonly System.Collections.Concurrent.ConcurrentQueue<byte[]> _bufferPool = new();
+    private int _encodeInFlight;
+    private volatile int _readyCount;
+    private volatile bool _encodeStopped;
+
+    // The codec is one object and cannot be inside two threads at once. This guards every use of it
+    // and every rebuild of it, which is the pool thread encoding against the world thread swapping a
+    // bitrate or a channel count underneath.
+    protected readonly object CodecLock = new();
+
+    private readonly struct EncodedPacket
+    {
+        public readonly int Index;
+        public readonly byte[] Data;
+        public readonly int Length;
+
+        public EncodedPacket(int index, byte[] data, int length)
+        {
+            Index = index;
+            Data = data;
+            Length = length;
+        }
+    }
+
     // Receiver side.
     private int _expectedIndex;
     private bool _hasExpectedIndex;
 
     private byte[] _packetScratch = Array.Empty<byte>();
     private StereoSample[] _frameScratch = Array.Empty<StereoSample>();
+    // Owned by the encode worker alone, which is why it is not the one above.
+    private StereoSample[] _encodeFrameScratch = Array.Empty<StereoSample>();
     private StereoSample[] _decodeScratch = Array.Empty<StereoSample>();
 
     // Mirror of MinimumVolume, because the gate is applied on the capture thread.
@@ -89,6 +127,115 @@ public abstract class EncodedAudioStream : AudioStream
             return;
 
         PutSamples(samples);
+
+        // Captured on this thread, encoded on another, sent on a third. The trigger is here because
+        // this is the moment new audio exists and nothing else has to poll for it.
+        TriggerEncode();
+    }
+
+    // Kick a pool thread if one is not already working. Cheap enough to call on every captured block:
+    // the common case is a single interlocked compare that finds an encode already running.
+    private void TriggerEncode()
+    {
+        if (!IsLocal || !HasWholeFrame)
+            return;
+        if (System.Threading.Interlocked.CompareExchange(ref _encodeInFlight, 1, 0) != 0)
+            return;
+
+        System.Threading.ThreadPool.UnsafeQueueUserWorkItem(static state => ((EncodedAudioStream)state!).RunEncode(), this);
+    }
+
+    private bool HasWholeFrame
+    {
+        get
+        {
+            int frameSize = FrameSizeSamples;
+            if (frameSize <= 0 || !_encodePositionValid)
+                return false;
+            return WriteHead - _encodePosition >= frameSize;
+        }
+    }
+
+    // POOL THREAD.
+    private void RunEncode()
+    {
+        try
+        {
+            int guard = 0;
+            while (IsLocal && !_encodeStopped && HasWholeFrame && guard++ < MaxFramesPerEncode * 4)
+            {
+                // Anything already waiting to be sent is a backlog, and adding to it only makes the
+                // voice arrive later. Stop and let the sync thread catch up.
+                if (_readyCount >= MaxFramesPerEncode)
+                    break;
+
+                int frameSize = FrameSizeSamples;
+                if (frameSize <= 0)
+                    break;
+
+                long oldest = OldestAvailableSample;
+                if (_encodePosition < oldest)
+                    _encodePosition = oldest;
+
+                // Behind by more than anybody wants to hear: skip forward rather than ship a backlog.
+                long pendingFrames = (WriteHead - _encodePosition) / frameSize;
+                if (pendingFrames > MaxFramesPerEncode)
+                    _encodePosition += (pendingFrames - MaxFramesPerEncode) * frameSize;
+
+                EnsureCapacity(ref _encodeFrameScratch, frameSize);
+                var frame = _encodeFrameScratch.AsSpan(0, frameSize);
+                int taken = TakeSamples(frame, ref _encodePosition);
+                if (taken < frameSize)
+                    frame.Slice(taken).Clear();
+
+                var buffer = RentBuffer();
+                int length = 0;
+                try
+                {
+                    lock (CodecLock)
+                        length = EncodeFrame(frame, buffer);
+                }
+                catch (Exception ex)
+                {
+                    Logging.Logger.Warn($"EncodedAudioStream: encode failed, dropping a frame: {ex.Message}");
+                    length = 0;
+                }
+
+                if (length < 0 || length > buffer.Length)
+                    length = 0;
+
+                // Queued even when it failed: the receiver sees the index, sees no payload and counts
+                // one lost frame, rather than losing sync with everything after it.
+                _ready.Enqueue(new EncodedPacket(_packetIndex++, buffer, length));
+                System.Threading.Interlocked.Increment(ref _readyCount);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logging.Logger.Error($"EncodedAudioStream: the encode worker threw: {ex}");
+        }
+        finally
+        {
+            System.Threading.Volatile.Write(ref _encodeInFlight, 0);
+            // A block that arrived while this was finishing would have seen the flag set and gone
+            // home, so check once more rather than wait for the next one.
+            if (HasWholeFrame && _readyCount < MaxFramesPerEncode)
+                TriggerEncode();
+        }
+    }
+
+    private byte[] RentBuffer()
+    {
+        if (_bufferPool.TryDequeue(out var buffer) && buffer.Length >= MaxPacketBytes)
+            return buffer;
+        return new byte[MaxPacketBytes];
+    }
+
+    private void ReturnBuffer(byte[] buffer)
+    {
+        // A handful is plenty: the queue is bounded at MaxFramesPerEncode.
+        if (_bufferPool.Count < MaxFramesPerEncode * 2)
+            _bufferPool.Enqueue(buffer);
     }
 
     private bool HasPartialFrame
@@ -109,7 +256,15 @@ public abstract class EncodedAudioStream : AudioStream
     {
         _encodePosition = WriteHead;
         _encodePositionValid = true;
-        ResetCodecs();
+        // Whatever was encoded and not yet sent is the tail of what was being said when the voice
+        // went off, and sending it after the fact is the bug this exists to prevent.
+        while (_ready.TryDequeue(out var stale))
+        {
+            System.Threading.Interlocked.Decrement(ref _readyCount);
+            ReturnBuffer(stale.Data);
+        }
+        lock (CodecLock)
+            ResetCodecs();
     }
 
     // SYNC THREAD. The send point, asked once per tick per stream: is there a whole frame waiting.
@@ -130,73 +285,59 @@ public abstract class EncodedAudioStream : AudioStream
             return false;
         }
 
-        return head - _encodePosition >= frameSize;
+        // A packet already encoded is a packet to send. Captured-but-not-yet-encoded audio counts
+        // too, but only to get a worker started: the send itself carries whatever is ready by then.
+        if (_readyCount > 0)
+            return true;
+
+        if (head - _encodePosition >= frameSize)
+        {
+            TriggerEncode();
+            return false;
+        }
+
+        return false;
     }
 
-    // SYNC THREAD
+    // SYNC THREAD. Nothing but a copy: the packets were built on a pool thread while this one was
+    // busy with the rest of the tick.
     public override void Encode(BinaryWriter writer)
     {
-        int frameSize = FrameSizeSamples;
-        long head = WriteHead;
-
         if (!_encodePositionValid)
         {
-            _encodePosition = head;
+            _encodePosition = WriteHead;
             _encodePositionValid = true;
         }
 
-        long oldest = OldestAvailableSample;
-        if (_encodePosition < oldest)
-            _encodePosition = oldest;
-
-        int frames = frameSize > 0 ? (int)((head - _encodePosition) / frameSize) : 0;
-        if (frames <= 0)
+        int count = System.Math.Min(_readyCount, MaxFramesPerEncode);
+        if (count <= 0)
         {
             writer.Write7BitEncodedInt(0);
+            // Audio arrived but nothing has encoded it yet: the worker may have finished between the
+            // send check and here, so make sure one is on its way rather than wait for a capture
+            // block that might not come for a while.
+            TriggerEncode();
             return;
         }
 
-        if (frames > MaxFramesPerEncode)
+        writer.Write7BitEncodedInt(count);
+
+        for (int i = 0; i < count; i++)
         {
-            // Behind by more than anybody wants to hear: skip forward instead of shipping a backlog.
-            _encodePosition += (long)(frames - MaxFramesPerEncode) * frameSize;
-            frames = MaxFramesPerEncode;
+            if (!_ready.TryDequeue(out var packet))
+                break;
+            System.Threading.Interlocked.Decrement(ref _readyCount);
+
+            writer.Write7BitEncodedInt(packet.Index);
+            writer.Write7BitEncodedInt(packet.Length);
+            if (packet.Length > 0)
+                writer.Write(packet.Data, 0, packet.Length);
+
+            ReturnBuffer(packet.Data);
         }
 
-        EnsureCapacity(ref _frameScratch, frameSize);
-        EnsureCapacity(ref _packetScratch, MaxPacketBytes);
-
-        writer.Write7BitEncodedInt(frames);
-
-        for (int i = 0; i < frames; i++)
-        {
-            var frame = _frameScratch.AsSpan(0, frameSize);
-            int taken = TakeSamples(frame, ref _encodePosition);
-            if (taken < frameSize)
-                frame.Slice(taken).Clear();
-
-            int length = 0;
-            try
-            {
-                length = EncodeFrame(frame, _packetScratch);
-            }
-            catch (Exception ex)
-            {
-                Logging.Logger.Warn($"EncodedAudioStream: encode failed, dropping a frame: {ex.Message}");
-            }
-
-            if (length < 0 || length > _packetScratch.Length)
-                length = 0;
-
-            writer.Write7BitEncodedInt(_packetIndex);
-            writer.Write7BitEncodedInt(length);
-            if (length > 0)
-                writer.Write(_packetScratch, 0, length);
-
-            // Counted even for a frame that failed to encode: the receiver sees the index, sees no
-            // payload, and treats it as one lost frame rather than losing sync with everything after.
-            _packetIndex++;
-        }
+        // More audio may have landed while this ran.
+        TriggerEncode();
     }
 
     // SYNC THREAD. Must consume exactly what Encode wrote: several streams share one message and the
@@ -318,7 +459,13 @@ public abstract class EncodedAudioStream : AudioStream
 
     public override void Dispose()
     {
-        ResetCodecs();
+        // The encode worker holds a reference to this stream, so it is told to stop before the codec
+        // under it is torn down. Under the lock for the same reason: it may be inside the encoder now.
+        _encodeStopped = true;
+        while (_ready.TryDequeue(out _))
+            System.Threading.Interlocked.Decrement(ref _readyCount);
+        lock (CodecLock)
+            ResetCodecs();
         base.Dispose();
     }
 }

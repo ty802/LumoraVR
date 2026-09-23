@@ -128,7 +128,42 @@ public abstract class MaterialProvider : DynamicAssetProvider<MaterialAsset>, IP
         }
         Lumora.Core.Logging.Logger.Debug($"MaterialProvider.UpdateAsset: [{GetType().Name}] Calling ApplyChanges");
         asset.ApplyChanges(_assetUpdatedCallback);
+
+        // COME BACK FOR A TEXTURE THAT IS ASSIGNED BUT NOT YET ON THE GPU.
+        //
+        // The asset reaching FullyLoaded is what re-drove us; the hook's upload can land a frame or
+        // more AFTER that, so the pass above wrote a null over a texture that really is there and no
+        // further notification was coming. Bounded, because a texture that never uploads must not
+        // keep a material re-applying forever. -xlinka
+        if (asset.HasTexturesStillArriving && _textureWaits < MaxTextureWaits)
+        {
+            _textureWaits++;
+            MarkChangeDirty();
+        }
+        else if (!asset.HasTexturesStillArriving)
+        {
+            _textureWaits = 0;
+        }
+        else if (!_gaveUpLogged)
+        {
+            // GIVING UP QUIETLY IS WHY THIS COST A DAY. The wait is bounded so a texture that never
+            // uploads cannot re-apply a material forever, which is right, but running the bound out
+            // left a prop rendering its flat albedo tint with nothing anywhere saying so. On a white
+            // tint that is pixel-identical to a texture that was never assigned, so every look at it
+            // starts by re-litigating whether the texture loaded at all. It did. Say so. -xlinka
+            _gaveUpLogged = true;
+            Lumora.Core.Logging.Logger.Warn(
+                $"MaterialProvider: [{GetType().Name}] on '{Slot?.SlotName.Value}' gave up after "
+              + $"{MaxTextureWaits} waits with {asset.TexturesStillArriving} still not on the GPU; "
+              + "those surfaces are drawing the flat albedo tint instead of their texture.");
+        }
     }
+
+    // Generous: a big texture decoding behind a queue of others can take a while, and the cost of one
+    // extra material apply is nothing next to a prop that stays untextured for the session.
+    private const int MaxTextureWaits = 900;
+    private int _textureWaits;
+    private bool _gaveUpLogged;
 
     protected abstract void UpdateMaterial(MaterialAsset asset);
 

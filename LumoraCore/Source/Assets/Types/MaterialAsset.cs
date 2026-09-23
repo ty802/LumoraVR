@@ -52,6 +52,11 @@ public class MaterialAsset : DynamicImplementableAsset<IMaterialAssetHook>
         Version++;
     }
 
+    // True while a texture that IS assigned has not reached the GPU yet. See MaterialProvider.
+    public bool HasTexturesStillArriving => Hook?.HasTexturesStillArriving ?? false;
+
+    public string TexturesStillArriving => Hook?.TexturesStillArriving ?? string.Empty;
+
     public void SetColor(string property, colorHDR value)
     {
         Hook?.SetColor(property, value);

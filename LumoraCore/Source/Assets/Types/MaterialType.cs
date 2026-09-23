@@ -83,6 +83,27 @@ public enum MaterialType
     // reflectance COLOUR, not a metalness, and reading one as the other inverts the surface. Ported
     // from Unity's built-in Standard (Specular setup), MIT, (c) 2016 Unity Technologies.
     PBS_Specular,
+
+    // Metallic PBS whose albedo and emission are each picked from FOUR colours by a mask texture's
+    // RGBA channels, normalised by the channel total. Its metallic map packs metalness in red and
+    // smoothness in ALPHA, unlike every other PBS material here.
+    PBS_ColorMask,
+
+    // A colour matrix over what is BEHIND the surface: tinted visors, night-vision lenses. Unlit and
+    // screen-reading, so it belongs late in the transparent band.
+    ChannelMatrix,
+
+    // View-angle colour swing. It has no shader of its own and approximates the effect through a
+    // StandardMaterial3D's albedo and emission, which is why it needs a type at all: it used to borrow
+    // PBS_Metallic purely because THAT meant StandardMaterial3D. The moment PBS_Metallic became a real
+    // shader, every Fresnel in the world started rendering through a metallic shader that has no idea
+    // what a Fresnel is. Appended rather than inserted, because these values are positional. -xlinka
+    Fresnel,
+
+    // A planar reflection sampled in SCREEN projection. The texture is a render of the world from the
+    // viewer's eye reflected across the surface's plane, so a fragment reads it at its own screen
+    // position rather than by UV. Unlit: the reflected world is already lit. -xlinka
+    Reflection,
 }
 
 // What the alpha channel of a toon surface means. Opaque throws it away, cutout tests it against the

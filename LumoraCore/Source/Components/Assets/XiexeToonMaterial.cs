@@ -62,7 +62,7 @@ public class XiexeToonMaterial : MaterialProvider, ICommonMaterial
     public readonly Sync<float> Metallic;
     public readonly Sync<float> Glossiness;
     public readonly Sync<float> Reflectivity;
-    // Their packing, not glTF's: metallic in R, smoothness in A.
+    // Not glTF's packing: metallic in R, smoothness in A.
     public readonly AssetRef<TextureAsset> MetallicGlossMap;
 
     // MATCAP / EMISSION / OCCLUSION
@@ -248,8 +248,8 @@ public class XiexeToonMaterial : MaterialProvider, ICommonMaterial
         // block that reads as a fat outline rather than as a line.
         //
         // A drawn character outline is a millimetre or two, so that is the ceiling. Anything over it is
-        // reported once with the authored number, because a value this far out means the source scale is
-        // different from ours and the log is what tells us by how much. -xlinka
+        // reported once with the authored number, because a value this far out means a different unit
+        // scale and the log is what tells us by how much. -xlinka
         float authoredOutline = OutlineWidth.Value;
         float outline = System.Math.Clamp(authoredOutline, 0f, MaxOutlineMetres);
         if (authoredOutline > MaxOutlineMetres && !_warnedOutlineWidth)

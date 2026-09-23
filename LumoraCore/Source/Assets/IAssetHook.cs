@@ -144,6 +144,14 @@ public interface IMeshAssetHook : IAssetHook
 
 public interface IMaterialAssetHook : IAssetHook
 {
+    // True while a texture that IS assigned has not reached the GPU yet, so the material is currently
+    // showing a null in its place and needs to be re-applied once it has.
+    bool HasTexturesStillArriving { get; }
+
+    // The property names behind that bool, comma separated, for the warning when the wait runs out.
+    // Knowing a material gave up is half an answer; knowing it gave up on AlbedoTexture is the whole one.
+    string TexturesStillArriving { get; }
+
     void SetMaterialType(MaterialType type);
 
     void SetBlendMode(BlendMode mode);

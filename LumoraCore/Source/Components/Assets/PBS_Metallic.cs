@@ -106,6 +106,31 @@ public class PBS_Metallic : MaterialProvider, ICommonMaterial
     /// </summary>
     public readonly Sync<int> RenderQueue;
 
+    // DETAIL LAYER
+    //
+    // A second albedo and normal pair sampled at their own tiling, multiplied over the base. It is
+    // what puts fabric weave or skin pores on a surface whose main texture cannot afford the
+    // resolution, and every import that used one arrived flat without it.
+    public readonly Sync<float2> DetailTextureScale;
+    public readonly Sync<float2> DetailTextureOffset;
+    public readonly AssetRef<TextureAsset> DetailAlbedoTexture;
+    public readonly AssetRef<TextureAsset> DetailNormalMap;
+    public readonly Sync<float> DetailNormalScale;
+
+    // PARALLAX
+    //
+    // A height map that offsets the UV by the view angle, so bricks and panel gaps keep their depth
+    // when you look across them instead of sliding flat.
+    public readonly AssetRef<TextureAsset> HeightMap;
+    public readonly Sync<float> HeightScale;
+
+    // DEPTH BIAS
+    //
+    // Pushes this surface toward or away from the camera in depth only. Decals and layered clothing
+    // use it to sit on another surface without z-fighting.
+    public readonly Sync<float> OffsetFactor;
+    public readonly Sync<float> OffsetUnits;
+
     protected override MaterialType MaterialType => MaterialType.PBS_Metallic;
 
     // ICommonMaterial IMPLEMENTATION
@@ -154,6 +179,21 @@ public class PBS_Metallic : MaterialProvider, ICommonMaterial
         AlphaCutoff = new Sync<float>(this, 0.5f);
         Culling = new Sync<Culling>(this, Assets.Culling.Back);
         RenderQueue = new Sync<int>(this, -1);
+
+        // Detail. Scale 1 and no texture is the same as no detail layer at all.
+        DetailTextureScale = new Sync<float2>(this, float2.One);
+        DetailTextureOffset = new Sync<float2>(this, float2.Zero);
+        DetailAlbedoTexture = new AssetRef<TextureAsset>(this);
+        DetailNormalMap = new AssetRef<TextureAsset>(this);
+        DetailNormalScale = new Sync<float>(this, 1.0f);
+
+        // Parallax
+        HeightMap = new AssetRef<TextureAsset>(this);
+        HeightScale = new Sync<float>(this, 0.02f);
+
+        // Depth bias. Zero is no bias.
+        OffsetFactor = new Sync<float>(this, 0f);
+        OffsetUnits = new Sync<float>(this, 0f);
     }
 
     protected override void UpdateMaterial(MaterialAsset asset)
@@ -187,5 +227,20 @@ public class PBS_Metallic : MaterialProvider, ICommonMaterial
 
         // Occlusion
         asset.SetTexture("OcclusionMap", OcclusionMap.Asset);
+
+        // Detail
+        asset.SetFloat2("DetailTextureScale", DetailTextureScale.Value);
+        asset.SetFloat2("DetailTextureOffset", DetailTextureOffset.Value);
+        asset.SetTexture("DetailAlbedoTexture", DetailAlbedoTexture.Asset);
+        asset.SetTexture("DetailNormalMap", DetailNormalMap.Asset);
+        asset.SetFloat("DetailNormalScale", DetailNormalScale.Value);
+
+        // Parallax
+        asset.SetTexture("HeightMap", HeightMap.Asset);
+        asset.SetFloat("HeightScale", HeightScale.Value);
+
+        // Depth bias
+        asset.SetFloat("OffsetFactor", OffsetFactor.Value);
+        asset.SetFloat("OffsetUnits", OffsetUnits.Value);
     }
 }

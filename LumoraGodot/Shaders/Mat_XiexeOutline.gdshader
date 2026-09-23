@@ -18,7 +18,16 @@ uniform sampler2D outline_mask : filter_linear_mipmap_anisotropic, repeat_enable
 uniform bool use_outline_mask = false;
 
 void vertex() {
-	VERTEX += normalize(NORMAL) * outline_width;
+	vec3 view_pos = (MODELVIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	vec3 view_normal = normalize(MODELVIEW_NORMAL_MATRIX * NORMAL);
+	float authored_width = outline_width * length((MODELVIEW_MATRIX * vec4(normalize(NORMAL), 0.0)).xyz);
+	float pixel_size = 2.0 * max(-view_pos.z, 0.01) / (abs(PROJECTION_MATRIX[1][1]) * VIEWPORT_SIZE.y);
+	float width = min(authored_width, min(0.002, 1.5 * pixel_size));
+	if (use_outline_mask) {
+		width *= textureLod(outline_mask, UV, 0.0).r;
+	}
+	view_pos += view_normal * width;
+	POSITION = PROJECTION_MATRIX * vec4(view_pos, 1.0);
 }
 
 void fragment() {

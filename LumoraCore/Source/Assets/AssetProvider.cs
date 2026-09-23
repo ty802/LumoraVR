@@ -137,6 +137,8 @@ public abstract class AssetProvider<A> : Component, IAssetProvider<A> where A : 
         DispatchNotification(GetSendAssetUpdatedDelegate());
     }
 
+    public void NotifyAssetUpdated() => AssetUpdated();
+
     protected void AssetRemoved()
     {
         if (IsDestroyed || references.Count == 0) return;

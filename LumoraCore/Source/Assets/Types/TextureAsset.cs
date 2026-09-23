@@ -87,8 +87,36 @@ public class TextureAsset : ImplementableAsset<ITextureAssetHook>
     public int MsdfPixelRange { get; set; } = 8;
 
     // URL (static) instances only; procedural instances set data through SetImageData.
+    // WHERE A TEXTURE LOAD ACTUALLY ENDS.
+    //
+    // This method has several ways out and all but one are silent, so a texture that never reaches
+    // the GPU looks exactly like one nobody asked for. Every exit names itself; an "enter" with no
+    // matching exit is a load that HUNG, and that is the one shape no amount of after-the-fact
+    // inspection can tell you about. Capped so a long session is not drowned. -xlinka
+    private static int _traceCount;
+
+    private long _traceStart;
+
+    private void TraceLoad(string stage)
+    {
+        // Elapsed since this texture's own enter, so a slow stage names itself instead of being
+        // inferred from how many lines never showed up.
+        if (_traceStart == 0)
+            _traceStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        long ms = (System.Diagnostics.Stopwatch.GetTimestamp() - _traceStart) * 1000 / System.Diagnostics.Stopwatch.Frequency;
+
+        // The cap is STATIC and the engine loads a few hundred UI textures before anything is
+        // imported, so a low one is spent long before the interesting textures arrive - which is
+        // exactly how a trace that was working produced not one line. -xlinka
+        if (System.Threading.Interlocked.Increment(ref _traceCount) > 2500)
+            return;
+        var url = AssetURL?.OriginalString ?? "?";
+        Logger.Log($"TextureAsset[{(url.Length > 14 ? url.Substring(url.Length - 14) : url)}] +{ms}ms {stage}");
+    }
+
     protected override async Task LoadSelf()
     {
+        TraceLoad("enter");
         var descriptor = TargetVariant as TextureVariantDescriptor ?? TextureVariantDescriptor.Default;
 
         var db = Engine?.LocalDB;
@@ -102,7 +130,11 @@ public class TextureAsset : ImplementableAsset<ITextureAssetHook>
 
         if (db != null && baseUri != null)
         {
+            // The one await before the source gather, and the only step meshes do not have. If the
+            // trace stops between these two lines, this is where it stops.
+            TraceLoad("asking for metadata");
             sourceMeta = await TextureVariantStore.TryLoadMetadataAsync(db, baseUri, AssetManager).ConfigureAwait(false);
+            TraceLoad($"metadata {(sourceMeta == null ? "none" : sourceMeta.Width + "x" + sourceMeta.Height)}");
             if (sourceMeta == null || sourceMeta.Width <= 0)
             {
                 // Never analyzed. Generating on the spot would put a full decode plus a stack of mip
@@ -150,10 +182,14 @@ public class TextureAsset : ImplementableAsset<ITextureAssetHook>
                     TextureVariantStore.EnsureGeneratedInBackground(db, baseUri, descriptor.IsNormalMap, descriptor.GenerateMipmaps);
             }
 
+            TraceLoad($"variant path previews={previews} targetUri={targetUri != null}");
             if (targetUri != null
                 && await TryDeliverVariantAsync(db, baseUri, target, sourceMeta, descriptor, prefetch, final: true)
                     .ConfigureAwait(false))
+            {
+                TraceLoad("exit: delivered variant");
                 return;
+            }
 
             // The exact variant turned out to be unreadable, so the source below is the answer. Any
             // prefetch we started was aimed at the variant address and is not it; drop it and gather
@@ -163,7 +199,9 @@ public class TextureAsset : ImplementableAsset<ITextureAssetHook>
                 prefetch = null;
         }
 
+        TraceLoad("gathering source");
         var bytes = await (prefetch ?? StartGather(AssetURL!)).ConfigureAwait(false);
+        TraceLoad($"gathered {(bytes?.Length ?? -1)} bytes");
         if (bytes == null || bytes.Length == 0)
         {
             // A delivered preview is a usable texture. Failing the whole asset here would tear that
@@ -266,8 +304,10 @@ public class TextureAsset : ImplementableAsset<ITextureAssetHook>
         // load-complete notification would fire while Hook.IsValid is still false, the consuming material would bind
         // a null albedo, and nothing re-binds it (white body). Awaiting the upload makes that notification fire when
         // the texture is genuinely usable: the asset isn't marked loaded until the GPU upload completes. -xlinka
+        TraceLoad($"decoded {width}x{height}, awaiting GPU upload (hook={Hook != null})");
         if (Hook != null)
             await Hook.WaitForUploadAsync().ConfigureAwait(false);
+        TraceLoad("exit: uploaded");
     }
 
     // Floating-point sources: decode to half, keep the full range all the way to the renderer. No

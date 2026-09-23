@@ -62,6 +62,11 @@ public interface IAssetProvider : IWorldElement
     /// </summary>
     void SendAssetUpdated();
 
+    // Re-notify every reference because the BACKING changed under an asset that was already reported
+    // loaded. The load-complete notification fires when the DATA is ready; a GPU upload lands after it
+    // and nothing was telling anyone. See TextureAssetHook. -xlinka
+    void NotifyAssetUpdated();
+
     /// <summary>
     /// Internal: Send asset removed event to all references.
     /// </summary>

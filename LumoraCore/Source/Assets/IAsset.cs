@@ -16,6 +16,10 @@ public interface IAsset
     /// Request a write lock on the asset with a callback.
     /// The callback is invoked when the lock is acquired.
     /// </summary>
+    // The hook finished putting this asset somewhere the renderer can actually read it. Everything
+    // holding a reference re-reads. -xlinka
+    void NotifyBackingReady();
+
     void RequestWriteLock(object lockObject, Action<IAsset> callback);
 
     /// <summary>

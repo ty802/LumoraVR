@@ -3,6 +3,7 @@
 
 using Helio.UI;
 using Lumora.Core.Math;
+using Lumora.Core.Components.Meshes;
 
 namespace Lumora.Core.Components;
 
@@ -27,11 +28,11 @@ public enum ProbeAmbientMode
 
 // Default is ProbeUpdateMode.Once and that default is the whole cost story: a bake is
 // six scene renders, so Always is six renders EVERY FRAME on top of the ordinary one. Anything that
-// changes occasionally wants Once plus a Rebake when it changes; Always is for a
-// mirror in a room where things are genuinely moving all the time, and even then only up close.
+// changes occasionally wants Once plus a Rebake when it changes; Always captures moving scenery.
+// Planar mirrors use CameraPortal instead of this cubemap approximation.
 // -xlinka
 [ComponentCategory("Rendering")]
-public class ReflectionProbe : ImplementableComponent, ICustomInspectorUI
+public class ReflectionProbe : ImplementableComponent, ICustomInspectorUI, IInspectorActionHandler
 {
     // local units, centred on the slot
     public readonly Sync<float3> Size;
@@ -79,6 +80,11 @@ public class ReflectionProbe : ImplementableComponent, ICustomInspectorUI
     [HideInInspector]
     public readonly Sync<int> BakeGeneration;
 
+    // A chrome ball at the capture point. A probe has nothing to look at, so whether it captured the
+    // room, the sky, or a grey nothing is invisible until some glossy surface happens to sit inside
+    // it; this puts that surface where the capture was taken. Local, so it is neither saved nor sent.
+    public readonly Sync<bool> DebugVisual;
+
     public ReflectionProbe()
     {
         Size = new Sync<float3>(this, new float3(10f, 10f, 10f));
@@ -95,6 +101,70 @@ public class ReflectionProbe : ImplementableComponent, ICustomInspectorUI
         AmbientColor = new Sync<color>(this, new color(0f, 0f, 0f, 1f));
         AmbientEnergy = new Sync<float>(this, 1f);
         BakeGeneration = new Sync<int>(this, 0);
+        DebugVisual = new Sync<bool>(this, false);
+    }
+
+    private const string DebugSphereName = "ProbeDebugSphere";
+
+    public override void OnChanges()
+    {
+        base.OnChanges();
+        SyncDebugVisual();
+    }
+
+    private void SyncDebugVisual()
+    {
+        if (Slot == null || Slot.IsDestroyed)
+            return;
+        var existing = Slot.FindChild(DebugSphereName, recursive: false);
+        if (!DebugVisual.Value)
+        {
+            existing?.Destroy();
+            return;
+        }
+        if (existing == null || existing.IsDestroyed)
+        {
+            existing = Slot.AddLocalSlot(DebugSphereName);
+            var mesh = existing.AttachComponent<SphereMesh>();
+            mesh.Radius.Value = 0.15f;
+            mesh.Segments.Value = 64;
+            mesh.Rings.Value = 32;
+            // Fully metallic and fully smooth: nothing of its own to show, only what the probe fed it.
+            var material = existing.AttachComponent<Lumora.Core.Assets.PBS_Metallic>();
+            material.AlbedoColor.Value = colorHDR.White;
+            material.Metallic.Value = 1f;
+            material.Smoothness.Value = 1f;
+            var renderer = existing.AttachComponent<MeshRenderer>();
+            renderer.Mesh.Target = mesh;
+            renderer.Material.Target = material;
+            renderer.ShadowCastMode.Value = ShadowCastMode.Off;
+            // The preview receives probe lighting but must never appear in any capture.
+            existing.AttachComponent<RenderLayerOverride>().Layer.Value = 1 << 2;
+        }
+        existing.LocalPosition.Value = OriginOffset.Value;
+    }
+
+    public void HandleInspectorAction(string argument)
+    {
+        switch (argument)
+        {
+            case "rebake":
+                Rebake();
+                break;
+            case "debug":
+                DebugVisual.Value = !DebugVisual.Value;
+                break;
+            case "live":
+                UpdateMode.Value = UpdateMode.Value == ProbeUpdateMode.Always
+                    ? ProbeUpdateMode.Once : ProbeUpdateMode.Always;
+                break;
+        }
+    }
+
+    public override void OnDestroy()
+    {
+        Slot?.FindChild(DebugSphereName, recursive: false)?.Destroy();
+        base.OnDestroy();
     }
 
     // a Once probe holds the room as it looked when it first came up, so anything that moves the
@@ -145,5 +215,9 @@ public class ReflectionProbe : ImplementableComponent, ICustomInspectorUI
         InspectorStats.AddRow(ui, "Cost", UpdateMode.Value == ProbeUpdateMode.Always
             ? "six scene renders per frame"
             : $"six scene renders per bake, {BakeGeneration.Value} requested");
+        InspectorUI.RelayButton(ui, this, "rebake", "Rebake now", 0f);
+        InspectorUI.RelayButton(ui, this, "live", UpdateMode.Value == ProbeUpdateMode.Always
+            ? "Live scene capture: on" : "Live scene capture: off", 0f);
+        InspectorUI.RelayButton(ui, this, "debug", DebugVisual.Value ? "Hide chrome ball" : "Show chrome ball", 0f);
     }
 }

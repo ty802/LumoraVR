@@ -12,6 +12,13 @@ public static class RenderHelper
 {
     public static Action<Camera3D> RegisterCamera = null!;
 
+    // THE CAMERA THE LOCAL PERSON IS LOOKING THROUGH RIGHT NOW. In VR that is the XRCamera3D, which lives
+    // in the XR viewport, not the one the world root sits under - so a hook that asks its own viewport
+    // for the current camera gets the desktop mirror camera in VR and builds its picture from the wrong
+    // eye. The bootstrap owns the mode switch and sets this; a mirror asks here. Null until the
+    // bootstrap has a camera to offer. -xlinka
+    public static Func<Camera3D?>? ViewerCamera;
+
     // Render layer bit assignments. Bit 0 (layer 1) is the default "public" layer.
     // Cameras can mask layers via VisualInstance3D.Layers / Camera3D.CullMask.
     public const int PUBLIC_LAYER = 1 << 0;
@@ -26,17 +33,24 @@ public static class RenderHelper
     // so a mirror, a camera and every other peer still see a head while you don't see the inside of
     // yours. Lights carry no cull mask here, so the head keeps casting its shadow. -xlinka
     public const int LOCAL_HEAD_LAYER = 1 << 18;
+    // The opposite band: drawn by the eye cameras and by NOTHING else. A skinned body whose head bone
+    // is hidden from the wearer gets a second instance here with that bone collapsed, while the real
+    // instance moves onto LOCAL_HEAD_LAYER, so the wearer sees the headless twin and everything else
+    // (mirrors, in-world cameras, probes, other peers) sees the real one. Every camera built anywhere
+    // but the two eyes has to mask this bit off; the two render masks below already do. -xlinka
+    public const int EYES_ONLY_LAYER = 1 << 17;
+    public const int MIRROR_LAYER = Lumora.Core.Components.RenderLayerOverride.MirrorLayer;
 
-    public const int PUBLIC_RENDER_MASK = ~(PRIVATE_LAYER | TEMP_LAYER | HIDDEN_LAYER | OVERLAY_LAYER);
-    public const int PRIVATE_RENDER_MASK = ~(TEMP_LAYER | HIDDEN_LAYER | OVERLAY_LAYER);
+    public const int PUBLIC_RENDER_MASK = ~(PRIVATE_LAYER | TEMP_LAYER | HIDDEN_LAYER | OVERLAY_LAYER | EYES_ONLY_LAYER);
+    public const int PRIVATE_RENDER_MASK = ~(TEMP_LAYER | HIDDEN_LAYER | OVERLAY_LAYER | EYES_ONLY_LAYER);
 
-    // Bits 5..17 are unclaimed. 0-4 are the fixed bands above, 18 is the local head and 19 is the
-    // free-cam indicator, so a camera doing selective or excluded rendering borrows one of the thirteen
-    // in between and gives it back when it stops. Godot only has twenty visual layers, so this is a hard
-    // ceiling on how many cameras can be doing it at once - past that the camera renders normally rather
-    // than wrongly. -xlinka
+    // Bits 5..15 are unclaimed. 16 is reserved for mirrors, 17 for the eyes-only twin, 18 for the local
+    // head and 19 for the free-cam indicator, so a camera doing selective or excluded rendering borrows
+    // one of the eleven in between and gives it back when it stops. Godot only has twenty visual layers,
+    // so this is a hard ceiling on how many cameras can be doing it at once - past that the camera
+    // renders normally rather than wrongly. -xlinka
     private const int SELECTIVE_FIRST_BIT = 5;
-    private const int SELECTIVE_LAST_BIT = 17;
+    private const int SELECTIVE_LAST_BIT = 15;
 
     private static readonly object _selectiveLock = new();
     private static int _selectiveBitsInUse;
@@ -102,8 +116,8 @@ public static class RenderHelper
 
     // Move a subtree off the public band and onto a camera's own bit, so that camera can mask it out.
     // The private/temp/hidden/overlay bits are left alone - they carry meaning nothing here is entitled
-    // to throw away - and every other camera's mask already includes bits 5..18, so the subtree stays
-    // visible everywhere else.
+    // to throw away - and every other camera's mask already includes bits 5..16 and 18, so the subtree
+    // stays visible everywhere else.
     public static void SwapPublicLayerForBit(Node3D root, int bit)
     {
         if (root == null || !GodotObject.IsInstanceValid(root) || bit == 0)

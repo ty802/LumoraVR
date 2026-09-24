@@ -1,6 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
-// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
-
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 using Lumora.Core.Math;
 using Lumora.Core.Networking.Sync;
 
@@ -9,22 +7,21 @@ namespace Lumora.Core.Components;
 [ComponentCategory("Physics")]
 public class RespawnPlane : ImplementableComponent
 {
-    // X/Z dimensions
     public readonly Sync<float2> Size = null!;
-
     public readonly Sync<bool> UseBounds = null!;
-
     public readonly Sync<float> Height = null!;
-
     public readonly Sync<color> VisualColor = null!;
-
     public readonly Sync<color> DebugColor = null!;
-
     public readonly Sync<bool> ShowVisual = null!;
-
     public readonly Sync<bool> ShowDebug = null!;
-
     public readonly Sync<float3> UserRespawnPosition = null!;
+
+    // Four checks a second. Something under the plane is still under it a quarter second later, and
+    // nothing here needs to be per frame. It used to ride the hook's ApplyChanges every frame and walk
+    // the entire slot tree while it was at it: 40 ms a frame on a world with one imported avatar in
+    // it. Now it asks the registry, which knows every RespawnData without looking. -xlinka
+    private const double CheckInterval = 0.25;
+    private double _nextCheck;
 
     public override void OnAwake()
     {
@@ -59,8 +56,11 @@ public class RespawnPlane : ImplementableComponent
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
-        // Trigger hook update every frame to check for fallen objects
-        RunApplyChanges();
+        double now = World?.Time.TotalTime ?? 0.0;
+        if (now < _nextCheck)
+            return;
+        _nextCheck = now + CheckInterval;
+        CheckFallen();
     }
 
     private void ApplyHeight()
@@ -72,11 +72,80 @@ public class RespawnPlane : ImplementableComponent
         }
     }
 
-    // called by the hook when an object enters the plane
+    private void CheckFallen()
+    {
+        var world = World;
+        if (world == null)
+            return;
+        float3 planePos = Slot.GlobalPosition;
+        float2 half = Size.Value * 0.5f;
+        bool useBounds = UseBounds.Value;
+        // Each client puts its own user back; a remote user's root is not ours to move.
+        var local = world.LocalUser;
+        var localRoot = local?.Root?.Slot;
+        if (localRoot != null && !localRoot.IsDestroyed && IsBelow(localRoot.GlobalPosition, planePos, half, useBounds))
+            TeleportUser(local!, UserRespawnPosition.Value);
+        var registry = RespawnRegistry.For(world);
+        if (registry == null)
+            return;
+        var items = registry.Items;
+        for (int i = 0; i < items.Count; i++)
+        {
+            var data = items[i];
+            var slot = data?.Slot;
+            if (slot == null || slot.IsDestroyed)
+                continue;
+            if (!IsBelow(slot.GlobalPosition, planePos, half, useBounds))
+                continue;
+            ResetToOrigin(slot, data!);
+        }
+    }
+
+    private static bool IsBelow(in float3 pos, in float3 planePos, in float2 half, bool useBounds)
+    {
+        if (pos.y >= planePos.y)
+            return false;
+        if (!useBounds)
+            return true;
+        return pos.x >= planePos.x - half.x && pos.x <= planePos.x + half.x
+            && pos.z >= planePos.z - half.y && pos.z <= planePos.z + half.y;
+    }
+
+    private static void TeleportUser(User user, float3 spawnPos)
+    {
+        var userRoot = user.Root;
+        if (userRoot == null)
+            return;
+        var controller = userRoot.Slot.GetComponent<CharacterController>();
+        if (controller != null)
+            controller.Teleport(spawnPos);
+        else
+            userRoot.Slot.GlobalPosition = spawnPos;
+        Logging.Logger.Log($"RespawnPlane: Teleported user '{userRoot.ActiveUser?.UserName?.Value ?? "Unknown"}' to spawn");
+    }
+
+    private static void ResetToOrigin(Slot slot, RespawnData data)
+    {
+        var originalPos = data.OriginalPosition.Value;
+        var originalRot = data.OriginalRotation.Value;
+        var rigidBody = slot.GetComponent<RigidBody>();
+        // A simulated body is put back by whoever simulates it; anyone else would only fight the
+        // owner's pose for a frame.
+        if (rigidBody != null && !rigidBody.IsSimulationOwner)
+            return;
+        Logging.Logger.Log($"RespawnPlane: Reset '{slot.SlotName.Value}' from {slot.GlobalPosition} to {originalPos}");
+        if (rigidBody != null)
+        {
+            rigidBody.Teleport(originalPos, originalRot);
+            return;
+        }
+        slot.GlobalPosition = originalPos;
+        slot.GlobalRotation = originalRot;
+    }
+
     public void OnObjectEntered(Slot objectSlot)
     {
         if (objectSlot == null || objectSlot.IsDestroyed) return;
-
         var userRoot = objectSlot.GetComponentInParents<UserRoot>();
         if (userRoot != null)
         {
@@ -85,40 +154,8 @@ public class RespawnPlane : ImplementableComponent
             Logging.Logger.Log($"RespawnPlane: Teleported user '{userRoot.ActiveUser?.UserName?.Value ?? "Unknown"}' to spawn");
             return;
         }
-
         var respawnData = objectSlot.GetComponent<RespawnData>();
         if (respawnData != null)
-        {
-            objectSlot.GlobalPosition = respawnData.OriginalPosition.Value;
-            objectSlot.GlobalRotation = respawnData.OriginalRotation.Value;
-
-            var rigidBody = objectSlot.GetComponent<RigidBody>();
-            if (rigidBody != null)
-            {
-                rigidBody.LinearVelocity.Value = float3.Zero;
-                rigidBody.AngularVelocity.Value = float3.Zero;
-            }
-
-            Logging.Logger.Log($"RespawnPlane: Reset '{objectSlot.SlotName.Value}' to original position");
-        }
-    }
-}
-
-// attach to objects that should respawn when hitting the RespawnPlane
-[ComponentCategory("Physics")]
-public class RespawnData : Component
-{
-    public readonly Sync<float3> OriginalPosition = null!;
-    public readonly Sync<floatQ> OriginalRotation = null!;
-
-    public override void OnAwake()
-    {
-        base.OnAwake();
-    }
-
-    public void StoreCurrentPosition()
-    {
-        OriginalPosition.Value = Slot.GlobalPosition;
-        OriginalRotation.Value = Slot.GlobalRotation;
+            ResetToOrigin(objectSlot, respawnData);
     }
 }

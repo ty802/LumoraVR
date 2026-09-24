@@ -5,15 +5,12 @@ using Godot;
 using Lumora.Core;
 using Lumora.Core.Components;
 using Lumora.Core.Math;
-using LumoraLogger = Lumora.Core.Logging.Logger;
 
 namespace Lumora.Godot.Hooks;
 
 [ImplementableHook(typeof(RespawnPlane))]
 public class RespawnPlaneHook : ComponentHook<RespawnPlane>
 {
-    private float3 _planePos;
-    private float2 _halfSize;
     private MeshInstance3D _visualMesh = null!;
     private PlaneMesh _planeMesh = null!;
     private StandardMaterial3D _visualMaterial = null!;
@@ -31,21 +28,13 @@ public class RespawnPlaneHook : ComponentHook<RespawnPlane>
     {
         base.Initialize();
         CreateVisuals();
-        UpdateBounds();
         UpdateVisuals();
     }
 
-    private void UpdateBounds()
-    {
-        _planePos = Owner.Slot.GlobalPosition;
-        _halfSize = Owner.Size.Value * 0.5f;
-    }
 
     public override void ApplyChanges()
     {
-        UpdateBounds();
         UpdateVisuals();
-        CheckForFallenObjects();
     }
 
     private void CreateVisuals()
@@ -114,87 +103,6 @@ public class RespawnPlaneHook : ComponentHook<RespawnPlane>
         }
     }
 
-    private bool IsInBounds(float3 pos)
-    {
-        if (pos.y >= _planePos.y)
-            return false;
-
-        if (!Owner.UseBounds.Value)
-            return true;
-
-        return pos.x >= _planePos.x - _halfSize.x && pos.x <= _planePos.x + _halfSize.x &&
-               pos.z >= _planePos.z - _halfSize.y && pos.z <= _planePos.z + _halfSize.y;
-    }
-
-    private void CheckForFallenObjects()
-    {
-        var world = Owner?.World;
-        if (world == null) return;
-
-        foreach (var user in world.GetAllUsers())
-        {
-            if (user?.Root?.Slot == null) continue;
-
-            var userPos = user.Root.Slot.GlobalPosition;
-            if (IsInBounds(userPos))
-            {
-                var spawnPos = Owner!.UserRespawnPosition.Value;
-                TeleportUser(user, spawnPos);
-            }
-        }
-
-        CheckSlotAndChildren(world.RootSlot);
-    }
-
-    private void CheckSlotAndChildren(Slot slot)
-    {
-        if (slot == null || slot.IsDestroyed) return;
-
-        RespawnData respawnData = null!;
-        foreach (var data in slot.GetComponents<RespawnData>())
-        {
-            respawnData = data;
-        }
-        if (respawnData != null)
-        {
-            var slotPos = slot.GlobalPosition;
-            if (IsInBounds(slotPos))
-            {
-                var originalPos = respawnData.OriginalPosition.Value;
-                var originalRot = respawnData.OriginalRotation.Value;
-                LumoraLogger.Log($"RespawnPlaneHook: Reset '{slot.SlotName.Value}' from {slotPos} to {originalPos} (rot={originalRot})");
-
-                slot.GlobalPosition = originalPos;
-                slot.GlobalRotation = originalRot;
-
-                var rigidBody = slot.GetComponent<RigidBody>();
-                if (rigidBody != null)
-                {
-                    rigidBody.LinearVelocity.Value = float3.Zero;
-                    rigidBody.AngularVelocity.Value = float3.Zero;
-
-                    if (rigidBody.Hook is RigidBodyHook rbHook && rbHook.GodotRigidBody != null &&
-                        GodotObject.IsInstanceValid(rbHook.GodotRigidBody))
-                    {
-                        rbHook.GodotRigidBody.GlobalPosition = new Vector3(
-                            originalPos.x,
-                            originalPos.y,
-                            originalPos.z);
-                        rbHook.GodotRigidBody.Quaternion = new Quaternion(originalRot.x, originalRot.y, originalRot.z, originalRot.w);
-                        rbHook.GodotRigidBody.LinearVelocity = Vector3.Zero;
-                        rbHook.GodotRigidBody.AngularVelocity = Vector3.Zero;
-                    }
-                }
-
-            }
-        }
-
-        foreach (var child in slot.Children)
-        {
-            CheckSlotAndChildren(child);
-        }
-    }
-
     public override void Destroy(bool destroyingWorld)
     {
         if (!destroyingWorld)
@@ -214,23 +122,6 @@ public class RespawnPlaneHook : ComponentHook<RespawnPlane>
         _hasDebugSize = false;
 
         base.Destroy(destroyingWorld);
-    }
-
-    private static void TeleportUser(User user, float3 spawnPos)
-    {
-        var userRoot = user?.Root;
-        if (userRoot == null)
-            return;
-
-        var controller = userRoot.Slot.GetComponent<CharacterController>();
-        if (controller != null)
-        {
-            controller.Teleport(spawnPos);
-        }
-        else
-        {
-            userRoot.Slot.GlobalPosition = spawnPos;
-        }
     }
 
     private static ArrayMesh? BuildPlaneWireMesh(Vector2 size)

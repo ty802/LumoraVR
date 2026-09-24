@@ -371,11 +371,43 @@ public class UpdateManager
         }
     }
 
+    // SLOW FRAME ATTRIBUTION. The phase totals say WHICH phase blew the frame and nothing about who.
+    // Timing every updatable every frame costs two clock reads apiece, so it is armed only after a
+    // slow frame and stays armed for a short run: stalls come in bursts, and the next one in the burst
+    // gets a name in the log instead of a phase. -xlinka
+    private int _attributionFramesLeft;
+    private IUpdatable? _worstUpdate;
+    private long _worstUpdateTicks;
+    private IUpdatable? _worstChange;
+    private long _worstChangeTicks;
+    public void ArmAttribution(int frames) => _attributionFramesLeft = System.Math.Max(_attributionFramesLeft, frames);
+    public void BeginFrameAttribution()
+    {
+        if (_attributionFramesLeft > 0)
+            _attributionFramesLeft--;
+        _worstUpdate = null;
+        _worstUpdateTicks = 0;
+        _worstChange = null;
+        _worstChangeTicks = 0;
+    }
+    public string DescribeUpdateCost() => Describe(_worstUpdate, _worstUpdateTicks);
+    public string DescribeChangeCost() => Describe(_worstChange, _worstChangeTicks);
+    private static string Describe(IUpdatable? who, long ticks)
+    {
+        if (who == null)
+            return "";
+        double ms = ticks * 1000.0 / Stopwatch.Frequency;
+        if (ms < 0.5)
+            return "";
+        string slot = (who as Component)?.Slot?.SlotName?.Value ?? "";
+        return slot.Length > 0 ? $"{who.GetType().Name} {ms:F0}ms on '{slot}'" : $"{who.GetType().Name} {ms:F0}ms";
+    }
     public void RunUpdates(float deltaTime)
     {
         _currentDeltaTime = deltaTime;
 
         bool prof = ProfilingEnabled;
+        bool attribute = _attributionFramesLeft > 0;
 
         EnsureBucketLists();
         for (int b = 0; b < _updateBucketList.Count; b++)
@@ -389,11 +421,18 @@ public class UpdateManager
                     try
                     {
                         CurrentlyUpdating = updatable;
-                        if (prof)
+                        if (prof || attribute)
                         {
                             long start = Stopwatch.GetTimestamp();
                             updatable.InternalRunUpdate();
-                            RecordProfile(updatable, Stopwatch.GetTimestamp() - start);
+                            long ticks = Stopwatch.GetTimestamp() - start;
+                            if (prof)
+                                RecordProfile(updatable, ticks);
+                            if (attribute && ticks > _worstUpdateTicks)
+                            {
+                                _worstUpdateTicks = ticks;
+                                _worstUpdate = updatable;
+                            }
                         }
                         else
                         {
@@ -508,6 +547,8 @@ public class UpdateManager
     public void RunChangeApplications()
     {
         _changeUpdateIndex++;
+        bool prof = ProfilingEnabled;
+        bool attribute = _attributionFramesLeft > 0;
 
         EnsureBucketLists();
         for (int b = 0; b < _changeBucketList.Count; b++)
@@ -531,11 +572,18 @@ public class UpdateManager
                 try
                 {
                     CurrentlyUpdating = updatable;
-                    if (ProfilingEnabled)
+                    if (prof || attribute)
                     {
                         long start = Stopwatch.GetTimestamp();
                         updatable.InternalRunApplyChanges(_changeUpdateIndex);
-                        RecordProfile(updatable, Stopwatch.GetTimestamp() - start, PhaseChanges);
+                        long ticks = Stopwatch.GetTimestamp() - start;
+                        if (prof)
+                            RecordProfile(updatable, ticks, PhaseChanges);
+                        if (attribute && ticks > _worstChangeTicks)
+                        {
+                            _worstChangeTicks = ticks;
+                            _worstChange = updatable;
+                        }
                     }
                     else
                     {

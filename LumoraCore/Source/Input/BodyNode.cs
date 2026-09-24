@@ -261,13 +261,40 @@ public static class BodyNodeExtensions
         // Thumb has 4 segments (no intermediate)
         if (fingerIndex < 4)
         {
-            return (FingerSegmentType)fingerIndex;
+            // Distal and tip follow proximal directly in BodyNode, while FingerSegmentType
+            // reserves an intermediate entry. Keep this the inverse of ComposeFinger.
+            return (FingerSegmentType)(fingerIndex >= 2 ? fingerIndex + 1 : fingerIndex);
         }
 
         // Other fingers have 5 segments
         int segmentInFinger = (fingerIndex - 4) % 5;
         return (FingerSegmentType)segmentInFinger;
     }
+
+    // Position of a finger node inside one hand's 24-node run (Thumb_Metacarpal .. Pinky_Tip), -1 otherwise.
+    public static int GetFingerSegmentIndex(this BodyNode node)
+    {
+        if (node >= BodyNode.LEFT_FINGER_START && node <= BodyNode.LEFT_FINGER_END)
+            return (int)node - (int)BodyNode.LEFT_FINGER_START;
+        if (node >= BodyNode.RIGHT_FINGER_START && node <= BodyNode.RIGHT_FINGER_END)
+            return (int)node - (int)BodyNode.RIGHT_FINGER_START;
+        return -1;
+    }
+
+    public static bool IsValidFinger(this FingerType finger, FingerSegmentType segment)
+        => finger != FingerType.Thumb || segment != FingerSegmentType.Intermediate;
+
+    public static BodyNode FirstFingerNode(this Chirality chirality)
+        => chirality == Chirality.Right ? BodyNode.RIGHT_FINGER_START : BodyNode.LEFT_FINGER_START;
+
+    public static BodyNode PalmNode(this Chirality chirality)
+        => chirality == Chirality.Right ? BodyNode.RightPalm : BodyNode.LeftPalm;
+
+    public static BodyNode HandNode(this Chirality chirality)
+        => chirality == Chirality.Right ? BodyNode.RightHand : BodyNode.LeftHand;
+
+    public static BodyNode ControllerNode(this Chirality chirality)
+        => chirality == Chirality.Right ? BodyNode.RightController : BodyNode.LeftController;
 
     /// <summary>
     /// Compose a finger body node from finger type, segment type, and chirality.

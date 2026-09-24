@@ -2,102 +2,78 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
-using System.Collections.Generic;
-using Lumora.Core;
-using Lumora.Core.Components;
 using Lumora.Core.Components.Interaction;
 using Lumora.Core.Input;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Avatar;
 
-// Retarget approach: a convention-robust direction-aim swing rather than a
-// LookRotation-based coordinate compensation (floatQ.LookRotation returns the
-// inverse here and Godot is right-handed, so that path would invert). Each
-// finger segment is aimed at the next using a shortest-arc swing: we capture, in
-// the wrist's local frame, each bone's rest rotation and its rest
-// direction-to-next, then at runtime swing that rest direction onto the
-// source-provided direction. The cost is no finger twist (fingers barely twist,
-// so this reads fine).
+// Drives one hand's finger bones from an IHandPoseSource.
 //
-// Bone drives are LocalValueOnly: every peer computes finger pose itself, so no
-// finger data goes on the wire. An untracked hand takes the idle preset, or the
-// tool grip while its HandTool holds something (both replicated as state, not as
-// finger data), and the authored rest only when it has neither. - xlinka
+// A source speaks hand space (see IHandPoseSource); a rig's finger bones point their axes wherever
+// the modeller left them. The bridge is measured, not authored: the hand's forward, right and up are
+// taken off the rig (wrist to knuckles, outermost knuckle to outermost knuckle, and their cross), and
+// every bone gets a compensation rotation that turns its own frame (chain direction to the next joint,
+// hand up carried into the bone) into the canonical segment frame. Each frame the bone's local
+// rotation is then the source rotation carried from hand space into the bone's parent space, times
+// that compensation, so the bone's chain direction lands exactly where the source says the segment
+// points. Computed once at bind and again whenever the rig's bones change.
+//
+// Bone drives are local and LocalValueOnly: every peer discovers the same bones off the same rig and
+// computes the same values from the same replicated source, so nothing about the bones goes on the
+// wire. The tool grip is ours: while this hand's HandTool holds something the grip blend's weight is
+// eased to one, and the multiplexer in front of this driver picks the blend whenever nothing is
+// tracking the fingers. -xlinka
 [ComponentCategory("Users/Avatar/Hands")]
 public class HandPoseDriver : UserRootComponent
 {
     public readonly Sync<Chirality> Side = new();
 
-    // falls back to the user-root UserHandPoseInfo when null
     public readonly SyncRef<IHandPoseSourceComponent> PoseSource = null!;
 
-    // used only when nothing is tracking; live VR finger tracking still wins whenever it's actually tracking
-    public readonly SyncRef<IHandPoseSourceComponent> IdlePose = null!;
-
-    // resolved from the rig when unset
+    // Wrist bone; resolved from the rig when unset.
     public readonly SyncRef<Slot> HandRoot = null!;
 
-    // The visibly-curling joints, proximal outward. Thumb has no intermediate.
-    // Tip is included only as an aim target for the distal bone.
-    private static readonly FingerType[] AllFingers =
-    {
-        FingerType.Thumb, FingerType.Index, FingerType.Middle, FingerType.Ring, FingerType.Pinky,
-    };
+    // Whether the four finger metacarpals follow the source. Off, or when the rig's metacarpals sit at
+    // the wrist as stubs, or when the source has no metacarpal data, they stay at rest. The thumb's
+    // metacarpal is its first real joint and always follows.
+    public readonly Sync<bool> PoseMetacarpals = new(true);
 
-    private static readonly FingerSegmentType[] ThumbSegments =
-    {
-        FingerSegmentType.Proximal, FingerSegmentType.Distal, FingerSegmentType.Tip,
-    };
+    // The idle-to-fist blend this hand's tool grip rides on; its weight is driven from here.
+    public readonly SyncRef<HandPoseBlend> GripBlend = null!;
 
-    private static readonly FingerSegmentType[] FingerSegments =
-    {
-        FingerSegmentType.Proximal, FingerSegmentType.Intermediate, FingerSegmentType.Distal, FingerSegmentType.Tip,
-    };
-
-    private sealed class SegmentDrive
+    private sealed class Segment
     {
         public Slot Bone = null!;
         public BodyNode Node;
-        public BodyNode NextNode;
         public FieldDrive<floatQ> Drive = null!;
         public floatQ RestLocalRotation;
-        public floatQ RestRotWrist;
-        public float3 RestDirWrist;        // (this -> next)
+        public floatQ Compensation = floatQ.Identity;
     }
 
-    private readonly List<List<SegmentDrive>> _fingers = new();
-    private Slot _wrist = null!;
-    private bool _assigned;
-    private bool _handReset;
+    private sealed class Finger
+    {
+        public readonly Segment?[] Segments = new Segment?[4];
 
-    // TOOL GRIP
-    //
-    // Nothing tracks a desktop hand's fingers, so the only thing that can shape them is the tool: a
-    // hand with a tool in it curls round the handle, and lets go when the tool goes away. The source
-    // platform does not have this exact step - there, desktop fingers ride the locomotion animation's
-    // relaxed preset and the TOOL is moved into the curl by its grip-pose alignment - but it has no
-    // hand-shaped preset either, and an open idle hand with a tool floating in front of it is what the
-    // screenshots showed. So: a handle grip, eased in on equip and out on dequip.
-    //
-    // Driven off the hand's HandTool.ActiveToolItem, which replicates, so every peer curls the same
-    // hand with no extra sync. Ordered BELOW live finger tracking: a source that is actually tracking
-    // this side always wins, so VR hands with finger data keep their real shape and only the untracked
-    // case (desktop, or a controller with no finger tracking) takes the grip. -xlinka
-    private HandTool? _handTool;
-    private double _nextHandToolScan = double.NegativeInfinity;
-    private float _gripWeight;
-    private static readonly float[] GripCurl = { 0.45f, 0.42f, 0.55f, 0.58f, 0.60f };
-    private static Dictionary<BodyNode, float3>? _gripLeft;
-    private static Dictionary<BodyNode, float3>? _gripRight;
-    private readonly GripPose _gripPose = new();
-    private readonly BlendedPose _blendPose = new();
+        public Segment? this[FingerSegmentType type]
+            => (int)type < Segments.Length ? Segments[(int)type] : null;
 
-    // 1/s ease on the grip, matching HandTool's hold blend so the fingers close as the arm comes up.
-    private const float GripBlendRate = 12f;
+        public Segment? Proximal => Segments[(int)FingerSegmentType.Proximal];
 
-    // What the hand is doing right now, for HandTool's TOOLHOLD trace: which source shaped it, how far
-    // into the grip it is, and whether it ever bound to finger bones at all.
+        public Segment? Farthest
+        {
+            get
+            {
+                for (int i = Segments.Length - 1; i >= 0; i--)
+                    if (Segments[i] != null)
+                        return Segments[i];
+                return null;
+            }
+        }
+
+        public bool IsValid => Proximal != null && !ReferenceEquals(Farthest, Proximal);
+    }
+
     public enum PoseState
     {
         Unassigned,
@@ -107,19 +83,47 @@ public class HandPoseDriver : UserRootComponent
         Tracked,
     }
 
+    private readonly Finger[] _fingers = { new(), new(), new(), new(), new() };
+    private HumanoidRig? _rig;
+    private Slot? _handRoot;
+    private bool _assigned;
+    private Slot? _warnedHandRoot;
+    private bool _handReset;
+    private bool _rigMetacarpals = true;
+    private double _nextBindCheck = double.NegativeInfinity;
+    private double _nextAssignAttempt = double.NegativeInfinity;
+    private float3 _handForward = float3.Forward;
+    private float3 _handUp = float3.Up;
+    private float3 _handRight = float3.Right;
+
+    private HandTool? _handTool;
+    private double _nextHandToolScan = double.NegativeInfinity;
+    private float _gripWeight;
+    private FieldDrive<float>? _gripDrive;
+    private const float GripBlendRate = 12f;
+
     public PoseState CurrentState { get; private set; }
     public float GripWeight => _gripWeight;
     public bool IsAssigned => _assigned;
-    public float3 PoseBasisForward => _poseBasisZ;
-    public float3 PoseBasisBack => _poseBasisY;
+    public bool RigMetacarpals => _rigMetacarpals;
+    public float3 HandForward => _handForward;
+    public float3 HandUp => _handUp;
+    public float3 HandRight => _handRight;
+    public Slot? CurrentHandRoot => _handRoot;
+
+    public floatQ? CompensationOf(BodyNode node)
+        => _fingers[(int)node.GetFingerType()][node.GetFingerSegmentType()]?.Compensation;
 
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
 
+        if (_assigned && BindingStale())
+            ReleaseDrives();
         if (!_assigned)
         {
-            TryAssign();
+            if ((World?.Time.TotalTime ?? 0.0) >= _nextAssignAttempt)
+                TryAssign();
             if (!_assigned)
             {
                 CurrentState = PoseState.Unassigned;
@@ -128,27 +132,397 @@ public class HandPoseDriver : UserRootComponent
         }
 
         UpdateGripWeight(delta);
+        DrivePose();
+    }
 
-        var source = ResolveSource(Side.Value, out var state, out float restBlend);
-        if (source == null || !source.IsHandTracked(Side.Value))
+    public override void OnDestroy()
+    {
+        ReleaseDrives();
+        _gripDrive?.Dispose();
+        _gripDrive = null;
+        base.OnDestroy();
+    }
+
+    // BINDING
+
+    private void TryAssign()
+    {
+        var rig = Slot?.GetComponentInParent<HumanoidRig>() ?? Slot?.GetComponentInChildren<HumanoidRig>();
+        if (rig == null || rig.IsDestroyed)
+            return;
+
+        // A quadruped keeps its HumanoidRig, so this would find paw digits and fight the quadruped
+        // solver for them. The equip path no longer attaches one of these to a quadruped; this covers
+        // the ones that arrive already attached inside an imported avatar. -xlinka
+        var quadruped = Slot?.GetComponentInParent<QuadrupedRig>() ?? Slot?.GetComponentInChildren<QuadrupedRig>();
+        if (quadruped != null && !quadruped.IsDestroyed)
+            return;
+
+        var side = Side.Value;
+        if (!rig.HasMinimalHand(side))
+            return;
+
+        var handRoot = HandRoot?.Target ?? rig.TryGetBone(side.HandNode());
+        if (handRoot == null || handRoot.IsDestroyed)
+            return;
+
+        _rig = rig;
+        _handRoot = handRoot;
+        foreach (var finger in HandPoseHelper.Fingers)
+            AssignFinger(rig, finger, side);
+
+        if (!ComputeCoordinateCompensation())
         {
-            // Untracked (no live source and no fallback): park the hand in its authored pose once.
-            CurrentState = PoseState.Rest;
-            if (!_handReset)
+            ReleaseDrives();
+            _nextAssignAttempt = (World?.Time.TotalTime ?? 0.0) + 1.0;
+            return;
+        }
+        _assigned = true;
+        _handReset = false;
+    }
+
+    private void AssignFinger(HumanoidRig rig, FingerType finger, Chirality side)
+    {
+        var slots = _fingers[(int)finger].Segments;
+        for (var type = FingerSegmentType.Metacarpal; type <= FingerSegmentType.Distal; type++)
+        {
+            slots[(int)type] = null;
+            if (!finger.IsValidFinger(type))
+                continue;
+            var node = finger.ComposeFinger(type, side);
+            var bone = rig.TryGetBone(node);
+            if (bone == null || bone.IsDestroyed)
+                continue;
+
+            var drive = FieldDrive<floatQ>.CreateLocal(this);
+            drive.LocalValueOnly = true;
+            drive.DriveTarget(bone.LocalRotation);
+            slots[(int)type] = new Segment
             {
-                ResetToRest();
-                _handReset = true;
+                Bone = bone,
+                Node = node,
+                Drive = drive,
+                RestLocalRotation = bone.LocalRotation.Value,
+            };
+        }
+    }
+
+    // A bound bone gone, or the rig now naming a different slot for one of the nodes, means rebind.
+    // The slot comparison is a walk over the rig's bone map, so it runs once a second.
+    private bool BindingStale()
+    {
+        if (_rig == null || _rig.IsDestroyed || _handRoot == null || _handRoot.IsDestroyed)
+            return true;
+        var wanted = HandRoot?.Target ?? _rig.TryGetBone(Side.Value.HandNode());
+        if (!ReferenceEquals(wanted, _handRoot))
+            return true;
+
+        foreach (var finger in _fingers)
+            foreach (var segment in finger.Segments)
+                if (segment != null && (segment.Bone.IsDestroyed || !segment.Drive.IsLinkValid))
+                    return true;
+
+        double now = World?.Time.TotalTime ?? 0.0;
+        if (now < _nextBindCheck)
+            return false;
+        _nextBindCheck = now + 1.0;
+
+        var side = Side.Value;
+        foreach (var fingerType in HandPoseHelper.Fingers)
+        {
+            var finger = _fingers[(int)fingerType];
+            for (var type = FingerSegmentType.Metacarpal; type <= FingerSegmentType.Distal; type++)
+            {
+                if (!fingerType.IsValidFinger(type))
+                    continue;
+                var bone = _rig.TryGetBone(fingerType.ComposeFinger(type, side));
+                if (!ReferenceEquals(bone, finger[type]?.Bone))
+                    return true;
             }
+        }
+        return false;
+    }
+
+    // Bones go back to their authored rotation on the way out, so a rebind measures the rig at rest
+    // and not in whatever pose it was holding.
+    private void ReleaseDrives()
+    {
+        foreach (var finger in _fingers)
+        {
+            for (int i = 0; i < finger.Segments.Length; i++)
+            {
+                var segment = finger.Segments[i];
+                if (segment == null)
+                    continue;
+                if (segment.Drive.IsLinkValid && !segment.Bone.IsDestroyed)
+                    segment.Drive.SetValue(segment.RestLocalRotation);
+                segment.Drive.Dispose();
+                finger.Segments[i] = null;
+            }
+        }
+        _rig = null;
+        _handRoot = null;
+        _assigned = false;
+        _handReset = false;
+    }
+
+    // COMPENSATION
+
+    private Finger? LeftMostFinger => Side.Value == Chirality.Right ? FirstValid(FingerType.Index, FingerType.Pinky) : FirstValid(FingerType.Pinky, FingerType.Index);
+
+    private Finger? RightMostFinger => Side.Value == Chirality.Right ? FirstValid(FingerType.Pinky, FingerType.Index) : FirstValid(FingerType.Index, FingerType.Pinky);
+
+    private Finger? FirstValid(FingerType from, FingerType to)
+    {
+        int step = to >= from ? 1 : -1;
+        for (int f = (int)from; ; f += step)
+        {
+            if (_fingers[f].IsValid)
+                return _fingers[f];
+            if (f == (int)to)
+                return null;
+        }
+    }
+
+    private bool ComputeCoordinateCompensation()
+    {
+        var handRoot = _handRoot;
+        if (handRoot == null)
+            return false;
+        var leftMost = LeftMostFinger;
+        var rightMost = RightMostFinger;
+        if (leftMost == null || ReferenceEquals(leftMost, rightMost))
+        {
+            // Once per hand, not once per retry: the retry runs every second for as long as the avatar
+            // is worn, and a warning a second per hand is how a session log turned into 292 MB of stack
+            // traces. The hand is still retried, silently, in case the rig grows fingers. -xlinka
+            if (!ReferenceEquals(_warnedHandRoot, handRoot))
+            {
+                _warnedHandRoot = handRoot;
+                Logging.Logger.Warn($"HandPoseDriver: {Side.Value} hand on '{handRoot.SlotName.Value}' has fewer than two fingers with two segments; not posing it");
+            }
+            return false;
+        }
+
+        float3 forward = float3.Zero;
+        for (var type = FingerType.Index; type <= FingerType.Pinky; type++)
+        {
+            var finger = _fingers[(int)type];
+            if (finger.IsValid)
+                forward += finger.Proximal!.Bone.GlobalPosition - handRoot.GlobalPosition;
+        }
+        forward = forward.Normalized;
+        float3 right = (rightMost!.Proximal!.Bone.GlobalPosition - leftMost.Proximal!.Bone.GlobalPosition).Normalized;
+        // Right-handed cross order, so up comes out of the back of the hand.
+        float3 up = float3.Cross(right, forward);
+
+        _handForward = handRoot.GlobalDirectionToLocal(forward).Normalized;
+        _handUp = handRoot.GlobalDirectionToLocal(up).Normalized;
+        _handRight = handRoot.GlobalDirectionToLocal(right).Normalized;
+        if (_handForward.LengthSquared < 0.5f || _handUp.LengthSquared < 0.5f)
+            return false;
+
+        bool isLeft = Side.Value == Chirality.Left;
+        foreach (var fingerType in HandPoseHelper.Fingers)
+        {
+            foreach (var segment in _fingers[(int)fingerType].Segments)
+                if (segment != null)
+                    ComputeCoordinateCompensation(segment, handRoot, fingerType == FingerType.Thumb, isLeft);
+        }
+
+        // Metacarpals that sit at least a proximal segment's length out from the wrist are real bones
+        // worth posing; ones parked at the wrist are stubs and posing them fans the palm.
+        int count = 0;
+        float distance = 0f;
+        for (var type = FingerType.Index; type <= FingerType.Pinky; type++)
+        {
+            var metacarpal = _fingers[(int)type][FingerSegmentType.Metacarpal];
+            if (metacarpal == null)
+                continue;
+            distance += float3.Distance(handRoot.GlobalPosition, metacarpal.Bone.GlobalPosition);
+            count++;
+        }
+        _rigMetacarpals = true;
+        if (count > 0)
+        {
+            distance /= count;
+            var reference = isLeft ? rightMost : leftMost;
+            Slot? first = null;
+            Slot? second = null;
+            for (var type = FingerSegmentType.Proximal; type <= FingerSegmentType.Distal; type++)
+            {
+                var segment = reference[type];
+                if (segment == null)
+                    continue;
+                if (first != null)
+                {
+                    second = segment.Bone;
+                    break;
+                }
+                first = segment.Bone;
+            }
+            if (first != null && second != null)
+                _rigMetacarpals = distance >= float3.Distance(first.GlobalPosition, second.GlobalPosition);
+        }
+
+        Logging.Logger.Log($"HandPoseDriver: {Side.Value} bound on '{handRoot.SlotName.Value}' forward={_handForward} up={_handUp} right={_handRight} metacarpals={_rigMetacarpals}");
+        return true;
+    }
+
+    // The bone's own forward is the direction to the next joint down the chain, falling back to the
+    // direction in from the joint above when there is no next joint, or when the next one is a tip
+    // helper that points somewhere else. The hand's axes are carried into the bone, swung so the hand
+    // forward lies on the bone forward, and the compensation is the inverse of the frame they make:
+    // it takes the bone's frame onto the canonical segment frame. The thumb keys its up off the hand's
+    // right axis (mirrored per side) because its nail faces sideways, not up. -xlinka
+    private void ComputeCoordinateCompensation(Segment segment, Slot handRoot, bool isThumb, bool isLeft)
+    {
+        var bone = segment.Bone;
+        float3 chain = float3.Zero;
+        bool tipNamed = false;
+
+        var next = Neighbor(bone, downward: true);
+        if (next != null)
+        {
+            string name = next.SlotName.Value?.ToLowerInvariant() ?? string.Empty;
+            tipNamed = name.Contains("end") || name.Contains("tip");
+            chain = next.GlobalPosition - bone.GlobalPosition;
+        }
+
+        var previous = Neighbor(bone, downward: false) ?? handRoot;
+        float3 fromParent = bone.GlobalPosition - previous.GlobalPosition;
+        if (chain.LengthSquared < 1e-10f
+            || (tipNamed && float3.Dot(fromParent.Normalized, chain.Normalized) < 0.5f))
+        {
+            chain = fromParent;
+        }
+
+        float3 self = bone.GlobalDirectionToLocal(chain).Normalized;
+        float3 forward = bone.SpaceDirectionToLocal(_handForward, handRoot).Normalized;
+        float3 up = bone.SpaceDirectionToLocal(_handUp, handRoot).Normalized;
+        float3 right = bone.SpaceDirectionToLocal(_handRight, handRoot).Normalized;
+
+        floatQ swing = HandPoseHelper.FromToRotation(forward, self);
+        forward = swing * forward;
+        up = swing * up;
+        right = swing * right;
+
+        float3 frameUp = isThumb ? (isLeft ? right : -right) : up;
+        segment.Compensation = HandPoseHelper.FrameRotation(forward, frameUp).Inverse;
+    }
+
+    private static Slot? Neighbor(Slot start, bool downward)
+    {
+        var slot = start;
+        do
+        {
+            slot = downward ? NextChainSegment(slot) : slot.Parent;
+            if (slot == null)
+                return null;
+        }
+        while (!IsValidSegment(slot));
+        return slot;
+    }
+
+    // Zero-length bones and collider slots are not chain segments.
+    private static bool IsValidSegment(Slot slot)
+    {
+        if (slot == null || slot.IsDestroyed)
+            return false;
+        if (slot.LocalPosition.Value.LengthSquared <= 1e-5f)
+            return false;
+        return slot.GetComponent<CapsuleCollider>() == null;
+    }
+
+    // The single child that continues the chain: leaf collider slots do not count, and a lone child
+    // of any kind does when nothing else is there.
+    private static Slot? NextChainSegment(Slot root)
+    {
+        Slot? candidate = null;
+        int candidates = 0;
+        foreach (var child in root.Children)
+        {
+            if (child.GetComponent<CapsuleCollider>() == null || child.Children.Count != 0)
+            {
+                candidate = child;
+                candidates++;
+            }
+        }
+        if (candidates == 0 && root.Children.Count == 1)
+            return root.Children[0];
+        return candidates == 1 ? candidate : null;
+    }
+
+    // DRIVING
+
+    private void DrivePose()
+    {
+        var handRoot = _handRoot;
+        var source = PoseSource?.Target;
+        var side = Side.Value;
+        if (handRoot == null || source == null || !source.IsHandTracked(side))
+        {
+            CurrentState = PoseState.Rest;
+            if (_handReset)
+                return;
+            ResetToRest();
+            _handReset = true;
             return;
         }
 
-        CurrentState = state;
         _handReset = false;
-        DrivePose(source, restBlend);
+        CurrentState = StateOf(source, side);
+        floatQ handSpace = HandPoseHelper.FrameRotation(_handForward, _handUp);
+        bool metacarpals = PoseMetacarpals.Value && _rigMetacarpals && source.TracksMetacarpals;
+
+        foreach (var fingerType in HandPoseHelper.Fingers)
+        {
+            var finger = _fingers[(int)fingerType];
+            for (var type = FingerSegmentType.Metacarpal; type <= FingerSegmentType.Distal; type++)
+            {
+                var segment = finger[type];
+                if (segment == null || !segment.Drive.IsLinkValid)
+                    continue;
+
+                if (type == FingerSegmentType.Metacarpal && fingerType != FingerType.Thumb && !metacarpals)
+                {
+                    segment.Drive.SetValue(segment.RestLocalRotation);
+                    continue;
+                }
+                if (!source.TryGetFingerRotation(segment.Node, out var rotation))
+                {
+                    segment.Drive.SetValue(segment.RestLocalRotation);
+                    continue;
+                }
+
+                var parent = segment.Bone.Parent ?? handRoot;
+                floatQ inParent = parent.SpaceRotationToLocal(handSpace * rotation, handRoot);
+                segment.Drive.SetValue((inParent * segment.Compensation).Normalized);
+            }
+        }
     }
 
-    // Grip wanted = this side's HandTool has an item in it. Found by a throttled walk of the user root
-    // (the same way AvatarIK finds its tools) and cached until it dies.
+    private void ResetToRest()
+    {
+        foreach (var finger in _fingers)
+            foreach (var segment in finger.Segments)
+                if (segment != null && segment.Drive.IsLinkValid)
+                    segment.Drive.SetValue(segment.RestLocalRotation);
+    }
+
+    private PoseState StateOf(IHandPoseSource source, Chirality side)
+    {
+        var active = source is HandPoseMultiplexer multiplexer ? multiplexer.ActiveSource(side) : source;
+        var grip = GripBlend?.Target;
+        if (grip != null && ReferenceEquals(active, grip))
+            return _gripWeight > 0f ? PoseState.Grip : PoseState.Idle;
+        return PoseState.Tracked;
+    }
+
+    // TOOL GRIP
+
+    // Grip wanted = this side's HandTool has an item in it. ActiveToolItem replicates, so every peer
+    // eases the same weight; the write into the blend is local for that reason.
     private void UpdateGripWeight(float delta)
     {
         bool wanted = false;
@@ -163,6 +537,25 @@ public class HandPoseDriver : UserRootComponent
             _gripWeight = 0f;
         else if (_gripWeight > 0.999f)
             _gripWeight = 1f;
+
+        var blend = GripBlend?.Target;
+        if (blend == null || blend.IsDestroyed)
+        {
+            if (_gripDrive != null)
+            {
+                _gripDrive.Dispose();
+                _gripDrive = null;
+            }
+            return;
+        }
+        if (_gripDrive == null || !ReferenceEquals(_gripDrive.Field, blend.Weight))
+        {
+            _gripDrive?.Dispose();
+            _gripDrive = FieldDrive<float>.CreateLocal(this);
+            _gripDrive.LocalValueOnly = true;
+            _gripDrive.DriveTarget(blend.Weight);
+        }
+        _gripDrive.SetValue(_gripWeight);
     }
 
     private HandTool? ResolveHandTool()
@@ -182,394 +575,5 @@ public class HandPoseDriver : UserRootComponent
         var side = Side.Value;
         _handTool = rootSlot.GetComponentInChildren<HandTool>(t => t.Side.Value == side);
         return _handTool;
-    }
-
-    public override void OnDestroy()
-    {
-        ReleaseDrives();
-        base.OnDestroy();
-    }
-
-    // Pick the source for one hand. Order: the explicit PoseSource (the equip assigner copies the user-root
-    // VR stream here), else the user-root source directly - either, when actually tracking this side, beats
-    // everything else so live VR finger tracking always wins. Then the tool grip, blended over the idle
-    // fallback (or over the authored rest when there is no idle preset - restBlend says how far off rest
-    // the caller should take the result). Then the idle preset alone, which gives the hand a real relaxed
-    // shape instead of the authored bind pose.
-    private IHandPoseSource ResolveSource(Chirality side, out PoseState state, out float restBlend)
-    {
-        restBlend = 1f;
-        var primary = PoseSource?.Target
-                      ?? Slot?.ActiveUserRoot?.GetRegisteredComponent<UserHandPoseInfo>()?.HandPoseSource?.Target;
-        if (primary != null && primary.IsHandTracked(side))
-        {
-            state = PoseState.Tracked;
-            return primary;
-        }
-
-        var idle = IdlePose?.Target;
-        if (_gripWeight > 0f)
-        {
-            state = PoseState.Grip;
-            _gripPose.Positions = GripPositions(side);
-            if (idle != null && idle.IsHandTracked(side))
-            {
-                _blendPose.Set(idle, _gripPose, _gripWeight);
-                return _blendPose;
-            }
-            // No idle shape to leave from: the caller eases from the authored rest instead.
-            restBlend = _gripWeight;
-            return _gripPose;
-        }
-
-        if (idle != null)
-        {
-            state = PoseState.Idle;
-            return idle;
-        }
-
-        // No idle fallback: keep the prior behavior of returning the primary source directly (it may be
-        // present but momentarily not tracking, or absent - the caller then rests the hand).
-        state = PoseState.Rest;
-        return primary!;
-    }
-
-    // A handle grip in the pose model's canonical frame, built once per side and shared by every hand
-    // in the process: the model is deterministic and the drives are local, so there is nothing per-user
-    // in it. Index a touch straighter than the rest (it is the trigger finger), thumb wrapped over.
-    private static Dictionary<BodyNode, float3> GripPositions(Chirality side)
-    {
-        var cache = side == Chirality.Left ? _gripLeft : _gripRight;
-        if (cache != null)
-            return cache;
-
-        var built = new Dictionary<BodyNode, float3>();
-        for (int f = 0; f < HandPoseNodes.Fingers.Length; f++)
-        {
-            var finger = HandPoseNodes.Fingers[f];
-            HandPoseModel.GenerateFinger(finger, side, GripCurl[f], 0f, (node, pos) => built[node] = pos);
-        }
-        if (side == Chirality.Left)
-            _gripLeft = built;
-        else
-            _gripRight = built;
-        return built;
-    }
-
-    private sealed class GripPose : IHandPoseSource
-    {
-        public Dictionary<BodyNode, float3>? Positions;
-        public bool TracksMetacarpals => true;
-        public bool IsHandTracked(Chirality side) => Positions != null;
-        public bool TryGetFingerPosition(BodyNode node, out float3 wristLocalPosition)
-        {
-            wristLocalPosition = float3.Zero;
-            return Positions != null && Positions.TryGetValue(node, out wristLocalPosition);
-        }
-    }
-
-    // Position-space lerp between two sources. The consumer only reads directions between consecutive
-    // nodes, so lerping node positions is a clean curl blend for the small shape change idle -> grip
-    // covers (no segment passes through zero length on that path).
-    private sealed class BlendedPose : IHandPoseSource
-    {
-        private IHandPoseSource _a = null!;
-        private IHandPoseSource _b = null!;
-        private float _t;
-
-        public void Set(IHandPoseSource a, IHandPoseSource b, float t)
-        {
-            _a = a;
-            _b = b;
-            _t = t;
-        }
-
-        public bool TracksMetacarpals => _a.TracksMetacarpals && _b.TracksMetacarpals;
-        public bool IsHandTracked(Chirality side) => _a.IsHandTracked(side) && _b.IsHandTracked(side);
-
-        public bool TryGetFingerPosition(BodyNode node, out float3 wristLocalPosition)
-        {
-            wristLocalPosition = float3.Zero;
-            bool hasA = _a.TryGetFingerPosition(node, out var pa);
-            bool hasB = _b.TryGetFingerPosition(node, out var pb);
-            if (!hasA && !hasB)
-                return false;
-            if (!hasA)
-            {
-                wristLocalPosition = pb;
-                return true;
-            }
-            if (!hasB)
-            {
-                wristLocalPosition = pa;
-                return true;
-            }
-            wristLocalPosition = float3.Lerp(pa, pb, _t);
-            return true;
-        }
-    }
-
-    // Bind to the rig's finger bones and capture the rest calibration. Retried
-    // each frame until the avatar's rig is built and its hand has fingers.
-    private void TryAssign()
-    {
-        var rig = Slot?.GetComponentInParent<HumanoidRig>() ?? Slot?.GetComponentInChildren<HumanoidRig>();
-        if (rig == null)
-            return;
-
-        // Not on four legs.
-        //
-        // A quadruped keeps its HumanoidRig - that is how it reached the quadruped solver in the first
-        // place - so this still finds finger bones and happily curls them to whatever the wearer's
-        // controller fingers are doing. On a fox those "fingers" are the front paw digits, and the
-        // quadruped solver is at the same time trying to plant that paw on the ground. Two things
-        // writing the same bones in the same phase, which is the exact fight TryAttachFor documents
-        // for AvatarIK. The equip path no longer ATTACHES one of these to a quadruped; this covers the
-        // ones that arrive already attached inside an imported avatar. -xlinka
-        var quadruped = Slot?.GetComponentInParent<QuadrupedRig>() ?? Slot?.GetComponentInChildren<QuadrupedRig>();
-        if (quadruped != null && !quadruped.IsDestroyed)
-            return;
-
-        var side = Side.Value;
-        bool hasFingers = side == Chirality.Left ? rig.HasLeftFingerBones : rig.HasRightFingerBones;
-        if (!hasFingers)
-            return;
-
-        var wrist = HandRoot?.Target
-                    ?? rig.TryGetBone(side == Chirality.Left ? BodyNode.LeftHand : BodyNode.RightHand);
-        if (wrist == null)
-            return;
-
-        ReleaseDrives();
-        _wrist = wrist;
-        _fingers.Clear();
-        MeasurePoseBasis(rig, side, wrist);
-
-        foreach (var finger in AllFingers)
-        {
-            var chain = BuildChain(rig, finger, side, wrist);
-            if (chain.Count > 0)
-                _fingers.Add(chain);
-        }
-
-        _assigned = _fingers.Count > 0;
-    }
-
-    // The hand frame this rig actually uses, in wrist-local space.
-    //
-    // The pose model works in a CANONICAL frame - fingers along +Z, back of the hand toward +Y - and
-    // hands back wrist-local positions in it. Nothing was checking whether the rig agreed, and a rig
-    // that disagrees gets every curl delivered as a swing in the wrong plane: fingers splay open
-    // instead of closing. Measured on a real avatar this one's fingers run along +Y with the back of
-    // the hand toward +Z, a quarter turn out, which is exactly what a splayed paw looks like.
-    //
-    // A rig that already matches the canonical frame measures the identity here and nothing changes.
-    // -xlinka
-    private float3 _poseBasisX = float3.Right;
-    private float3 _poseBasisY = float3.Up;
-    private float3 _poseBasisZ = float3.Forward;
-
-    private void MeasurePoseBasis(HumanoidRig rig, Chirality side, Slot wrist)
-    {
-        _poseBasisX = float3.Right;
-        _poseBasisY = float3.Up;
-        _poseBasisZ = float3.Forward;
-
-        var middle = rig.TryGetBone(FingerType.Middle.ComposeFinger(FingerSegmentType.Proximal, side));
-        var thumb = rig.TryGetBone(FingerType.Thumb.ComposeFinger(FingerSegmentType.Proximal, side));
-        if (middle == null || middle.IsDestroyed || thumb == null || thumb.IsDestroyed)
-            return;
-
-        var fingers = wrist.GlobalPointToLocal(middle.GlobalPosition);
-        var toThumb = wrist.GlobalPointToLocal(thumb.GlobalPosition);
-        if (fingers.LengthSquared < 1e-8f || toThumb.LengthSquared < 1e-8f)
-            return;
-
-        var forward = fingers.Normalized;
-
-        // The sign is PER SIDE, and it is the right hand that takes the plain cross.
-        //
-        // A cross product is a pseudovector: mirror both inputs and it flips. The two hands are mirror
-        // images, so the same formula lands on opposite anatomical sides of each - and bone frames do
-        // not cancel that, because a bone frame is a proper rotation and the cross commutes with it.
-        // Checked on Chiki's rig from the AvatarIK[bones] dump: right hand hanging at the side, fingers
-        // down, thumb forward, Cross(fingers, toThumb) came out +X = lateral = the BACK of that hand;
-        // left hand pointing forward, thumb up, the same cross came out +X = medial = the PALM. The
-        // source platform's hand poser encodes the same thing by picking its "right" vector from a
-        // per-side finger order (index->pinky on one hand, pinky->index on the other) before crossing.
-        //
-        // Negating both, as this did, put the right hand's Y on the palm: every curl went toward the
-        // back of the hand and the splay came out mirrored, which is the hyperextended, fanned-open
-        // "stop" hand in the tool-hold screenshots. -xlinka
-        var back = float3.Cross(forward, toThumb.Normalized);
-        if (side == Chirality.Left)
-            back = -back;
-        if (back.LengthSquared < 1e-8f)
-            return;
-        back = back.Normalized;
-
-        var across = float3.Cross(back, forward);
-        if (across.LengthSquared < 1e-8f)
-            return;
-
-        _poseBasisZ = forward;
-        _poseBasisY = back;
-        _poseBasisX = across.Normalized;
-
-        Logging.Logger.Log(
-            $"HandPoseDriver: {side} basis in '{wrist.SlotName.Value}' space fingers={forward} back={back} "
-            + $"thumbSide={_poseBasisX} (toThumb={toThumb.Normalized})");
-    }
-
-    private List<SegmentDrive> BuildChain(HumanoidRig rig, FingerType finger, Chirality side, Slot wrist)
-    {
-        var segTypes = finger == FingerType.Thumb ? ThumbSegments : FingerSegments;
-
-        var bones = new List<(Slot bone, BodyNode node, float3 posWrist, floatQ rotWrist, floatQ local)>();
-        foreach (var seg in segTypes)
-        {
-            var node = finger.ComposeFinger(seg, side);
-            var bone = rig.TryGetBone(node);
-            if (bone == null)
-                continue;
-
-            bones.Add((
-                bone,
-                node,
-                wrist.GlobalPointToLocal(bone.GlobalPosition),
-                wrist.GlobalRotationToLocal(bone.GlobalRotation),
-                bone.LocalRotation.Value));
-        }
-
-        var chain = new List<SegmentDrive>();
-        for (int i = 0; i < bones.Count - 1; i++)
-        {
-            var a = bones[i];
-            var b = bones[i + 1];
-
-            var dir = b.posWrist - a.posWrist;
-            if (dir.LengthSquared < 1e-10f)
-                continue;
-
-            // Detached local drives, NOT members: how many finger segments exist and which bones they
-            // land on is discovered from whatever rig this peer built, so replicating the links would put
-            // every peer's rig discovery on the wire to fight over. Each peer drives its own copy of the
-            // same bones from the same replicated hand-pose source instead. -xlinka
-            var drive = FieldDrive<floatQ>.CreateLocal(this);
-            drive.LocalValueOnly = true;
-            drive.DriveTarget(a.bone.LocalRotation);
-
-            chain.Add(new SegmentDrive
-            {
-                Bone = a.bone,
-                Node = a.node,
-                NextNode = b.node,
-                Drive = drive,
-                RestLocalRotation = a.local,
-                RestRotWrist = a.rotWrist,
-                RestDirWrist = dir.Normalized,
-            });
-        }
-
-        return chain;
-    }
-
-    // restBlend < 1 eases the whole hand off its authored rest toward the source (the grip coming in on
-    // a hand that has no idle preset to leave from); 1 is the plain source.
-    private void DrivePose(IHandPoseSource source, float restBlend = 1f)
-    {
-        if (_wrist == null || _wrist.IsDestroyed)
-            return;
-
-        bool tracksMetacarpals = source.TracksMetacarpals;
-        bool blendFromRest = restBlend < 0.999f;
-
-        foreach (var chain in _fingers)
-        {
-            foreach (var seg in chain)
-            {
-                if (!seg.Drive.IsLinkValid)
-                    continue;
-
-                // When the source has no metacarpal data, leave any segment whose
-                // aim involves a metacarpal node at its authored rest - driving it
-                // from absent/stale data would splay the palm. (The default segment
-                // chains start at Proximal, so this normally no-ops; it guards
-                // sources that do publish metacarpals against this one not.)
-                if (!tracksMetacarpals &&
-                    (IsMetacarpal(seg.Node) || IsMetacarpal(seg.NextNode)))
-                {
-                    seg.Drive.SetValue(seg.RestLocalRotation);
-                    continue;
-                }
-
-                if (!source.TryGetFingerPosition(seg.Node, out var pA) ||
-                    !source.TryGetFingerPosition(seg.NextNode, out var pB))
-                {
-                    seg.Drive.SetValue(seg.RestLocalRotation);
-                    continue;
-                }
-
-                // Canonical -> this rig's measured hand frame. Linear, so mapping the difference is the
-                // same as mapping both endpoints.
-                var raw = pB - pA;
-                var desired = _poseBasisX * raw.x + _poseBasisY * raw.y + _poseBasisZ * raw.z;
-                if (desired.LengthSquared < 1e-10f)
-                {
-                    seg.Drive.SetValue(seg.RestLocalRotation);
-                    continue;
-                }
-
-                // Swing the bone's rest direction onto the source direction, both
-                // in wrist space, then carry the result back through the (current)
-                // wrist world rotation into the bone's parent-local space.
-                var newRotWrist = FromTo(seg.RestDirWrist, desired.Normalized) * seg.RestRotWrist;
-                var worldRot = _wrist.LocalRotationToGlobal(newRotWrist);
-                var parent = seg.Bone.Parent;
-                var local = parent != null ? parent.GlobalRotationToLocal(worldRot) : worldRot;
-                if (blendFromRest)
-                    local = floatQ.Slerp(seg.RestLocalRotation, local, restBlend).Normalized;
-                seg.Drive.SetValue(local);
-            }
-        }
-    }
-
-    private void ResetToRest()
-    {
-        foreach (var chain in _fingers)
-            foreach (var seg in chain)
-                if (seg.Drive.IsLinkValid)
-                    seg.Drive.SetValue(seg.RestLocalRotation);
-    }
-
-    private void ReleaseDrives()
-    {
-        foreach (var chain in _fingers)
-            foreach (var seg in chain)
-                seg.Drive?.Dispose();
-        _fingers.Clear();
-        _assigned = false;
-        _handReset = false;
-    }
-
-    private static bool IsMetacarpal(BodyNode node)
-        => node.IsFinger() && node.GetFingerSegmentType() == FingerSegmentType.Metacarpal;
-
-    // Shortest-arc rotation taking unit vector `from` onto unit vector `to`.
-    private static floatQ FromTo(float3 from, float3 to)
-    {
-        float d = float3.Dot(from, to);
-        if (d >= 0.99999f)
-            return floatQ.Identity;
-        if (d <= -0.99999f)
-        {
-            var axis = float3.Cross(float3.Up, from);
-            if (axis.LengthSquared < 1e-6f)
-                axis = float3.Cross(float3.Right, from);
-            return floatQ.AxisAngleRad(axis.Normalized, MathF.PI);
-        }
-        var c = float3.Cross(from, to).Normalized;
-        float angle = MathF.Acos(System.Math.Clamp(d, -1f, 1f));
-        return floatQ.AxisAngleRad(c, angle);
     }
 }

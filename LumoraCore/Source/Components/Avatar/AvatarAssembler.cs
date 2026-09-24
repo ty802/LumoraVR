@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -89,6 +89,7 @@ public class AvatarAssembler : Component, IAvatarAssembler, IAvatarSocketFiller
         var userSlot = userRoot.Slot;
 
         var bodyNodes = userSlot.AddSlot("Body Nodes");
+        userRoot.TrackingSpaceRoot.Target = bodyNodes;
         var headSlot = BuildHeadNode(bodyNodes, user);
         BuildControllerNode(bodyNodes, user, Chirality.Left);
         BuildControllerNode(bodyNodes, user, Chirality.Right);
@@ -250,6 +251,14 @@ public class AvatarAssembler : Component, IAvatarAssembler, IAvatarSocketFiller
         remote.Hand.Value = side;
         if (user != null)
             remote.Owner.Target = user;
+
+        // The same fingertip against Helio panels: hover, press and release on whatever key or button
+        // the finger goes through, off the probe's tip above.
+        var canvasTouch = probeSlot.AttachComponent<Touch.CanvasTouchSource>();
+        canvasTouch.Hand.Value = side;
+        canvasTouch.HandRoot.Target = controller;
+        if (user != null)
+            canvasTouch.Owner.Target = user;
     }
 
     private const string TouchProbeSlotName = "Touch Probes";
@@ -307,6 +316,18 @@ public class AvatarAssembler : Component, IAvatarAssembler, IAvatarSocketFiller
         hand.LocalRotation.Value = HandGripRotationOffset.Value;
         var handObjectSlot = hand.AttachComponent<AvatarSocket>();
         handObjectSlot.Node.Value = handNode;
+
+        var handTracking = hand.AttachComponent<HandTrackingDriver>();
+        handTracking.Side.Value = side;
+        handTracking.PositionOffset.Value = HandGripPositionOffset.Value;
+        handTracking.RotationOffset.Value = HandGripRotationOffset.Value;
+        if (user != null)
+        {
+            var handStream = hand.AttachComponent<TransformStreamDriver>();
+            user.GetTrackingStreams(handNode, out var handPosStream, out var handRotStream);
+            handStream.PositionStream.Target = handPosStream;
+            handStream.RotationStream.Target = handRotStream;
+        }
 
         // The HandTool rig is NOT built here anymore - it's owner-built in BuildOwnedEquipment so each user
         // owns its own equipment in its own byte. -xlinka

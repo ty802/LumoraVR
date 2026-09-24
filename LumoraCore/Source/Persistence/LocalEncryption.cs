@@ -125,8 +125,7 @@ public static class LocalEncryption
     }
 
     private static string KeyPath()
-        => Path.Combine(Lumora.Core.Persistence.PathResolver.LocalPath,
-            "LumoraVR", "vault.key");
+        => Lumora.Core.Persistence.PathResolver.Resolve("vault.key");
 }
 
 /// <summary>Seals/unseals the master key at rest. Implement with an OS keystore for stronger protection.</summary>

@@ -594,8 +594,7 @@ public class LocalDB : IDisposable
 
     private string GetDefaultBasePath()
     {
-        var appData = Lumora.Core.Persistence.PathResolver.LocalPath;
-        return Path.Combine(appData, "LumoraVR", "LocalDB");
+        return Lumora.Core.Persistence.PathResolver.Resolve("LocalDB");
     }
 
     private string GetAssetCachePath() => Path.Combine(_basePath, "Assets");
@@ -740,10 +739,22 @@ public class LocalDB : IDisposable
 
             lock (_lock)
             {
+                string assetDir = GetAssetCachePath();
                 foreach (var record in records)
                 {
-                    if (!string.IsNullOrEmpty(record.Hash))
-                        _assetRecords[record.Hash] = record;
+                    if (string.IsNullOrEmpty(record.Hash))
+                        continue;
+                    // Records carry absolute paths and the database folder can move (the data folder was
+                    // consolidated once already), so a path outside the current asset folder is re-rooted
+                    // by file name instead of left dangling. -xlinka
+                    if (!string.IsNullOrEmpty(record.FilePath)
+                        && !record.FilePath.StartsWith(assetDir, StringComparison.OrdinalIgnoreCase))
+                    {
+                        string rerooted = Path.Combine(assetDir, Path.GetFileName(record.FilePath));
+                        if (File.Exists(rerooted))
+                            record.FilePath = rerooted;
+                    }
+                    _assetRecords[record.Hash] = record;
                 }
             }
 

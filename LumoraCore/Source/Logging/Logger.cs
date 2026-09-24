@@ -3,8 +3,8 @@
 
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Environment = System.Environment;
@@ -13,8 +13,12 @@ namespace Lumora.Core.Logging
 {
     public static class Logger
     {
-        private static readonly string LogDirectory;
-        private static readonly string LogFile;
+        private const int KeepLogFiles = 10;
+
+        private static string? _logFile;
+        private static bool _fileResolved;
+        private static readonly object _fileLock = new();
+        private static readonly DateTime _started = DateTime.UtcNow;
         private static readonly ConcurrentQueue<string> _logQueue = new();
         private static readonly AutoResetEvent _logEvent = new(false);
         private static readonly CancellationTokenSource _cancellationTokenSource = new();
@@ -22,16 +26,19 @@ namespace Lumora.Core.Logging
         public static event GameEngineLogProxy? LogToGameEngine;
         static Logger()
         {
-            LogDirectory = ResolveLogDirectory();
-            LogFile = string.IsNullOrWhiteSpace(LogDirectory)
-                ? string.Empty
-                : Path.Combine(LogDirectory, $"log_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.txt");
-
-            // Start the background logging task
             Task.Run(() => ProcessLogQueue(_cancellationTokenSource.Token));
         }
 
         public static event Action<LogLevel, string, string> OnLogWritten = null!;
+
+        // This session's file, inside the one data folder. Resolved on the first flush rather than in
+        // the static constructor, so the folder the bootstrap pins is the one that wins even when
+        // something logs before the bootstrap has run. -xlinka
+        public static string LogFile
+        {
+            get { lock (_fileLock) { ResolveFile(); return _logFile ?? string.Empty; } }
+        }
+        public static string LogDirectory => Persistence.PathResolver.LogsPath;
 
         // Flip to true when actively diagnosing - Debug calls are firehose and choke
         // the console/file otherwise. Several call sites also read this to skip building expensive
@@ -72,10 +79,113 @@ namespace Lumora.Core.Logging
             };
         }
 
+        // REPEAT SUPPRESSION. A line that fires every frame is not information, it is a denial of
+        // service on the log: the file balloons (one warning per second per hand left a 292 MB engine
+        // log behind, every line of it a stack trace), the console window chokes, and the one line that
+        // matters is buried. The same text more than RepeatThreshold times inside RepeatWindow is
+        // dropped until the window lapses, then one summary says how many went. Keyed on the exact
+        // text, so two hands alternating the same complaint count as two spammers, not none. -xlinka
+        private const int RepeatThreshold = 5;
+        private static readonly TimeSpan RepeatWindow = TimeSpan.FromSeconds(10);
+        private const int RepeatTableCap = 512;
+        private sealed class RepeatEntry
+        {
+            public DateTime WindowStart;
+            public int Count;
+            public int Dropped;
+            public LogLevel Level;
+        }
+        private static readonly Dictionary<string, RepeatEntry> _repeats = new();
+        private static readonly object _repeatLock = new();
+
         private static void WriteLog(LogLevel level, string message)
         {
             if (Severity(level) < Severity(MinimumLevel)) return;
-            string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            DateTime now = DateTime.Now;
+            string? summary = null;
+            lock (_repeatLock)
+            {
+                if (_repeats.TryGetValue(message, out var entry))
+                {
+                    if (now - entry.WindowStart > RepeatWindow)
+                    {
+                        if (entry.Dropped > 0)
+                            summary = Summary(message, entry, now);
+                        entry.WindowStart = now;
+                        entry.Count = 1;
+                        entry.Dropped = 0;
+                        entry.Level = level;
+                    }
+                    else
+                    {
+                        entry.Count++;
+                        if (entry.Count > RepeatThreshold)
+                        {
+                            entry.Dropped++;
+                            return;
+                        }
+                    }
+                }
+                else
+                {
+                    if (_repeats.Count >= RepeatTableCap)
+                        PruneRepeats(now);
+                    _repeats[message] = new RepeatEntry { WindowStart = now, Count = 1, Level = level };
+                }
+            }
+            if (summary != null)
+                Emit(level, now, summary);
+            Emit(level, now, message);
+        }
+
+        private static string Summary(string message, RepeatEntry entry, DateTime now)
+            => $"{message} (repeated {entry.Dropped} more times in the last {(now - entry.WindowStart).TotalSeconds:F0}s, dropped)";
+
+        // Entries whose window lapsed with drops still owed get their summary here, so a spammer that
+        // simply stops still leaves a count behind. Runs on the flush thread.
+        private static void SweepRepeats()
+        {
+            DateTime now = DateTime.Now;
+            List<(LogLevel level, string text)>? due = null;
+            lock (_repeatLock)
+            {
+                List<string>? expired = null;
+                foreach (var pair in _repeats)
+                {
+                    if (now - pair.Value.WindowStart <= RepeatWindow)
+                        continue;
+                    if (pair.Value.Dropped > 0)
+                        (due ??= new()).Add((pair.Value.Level, Summary(pair.Key, pair.Value, now)));
+                    (expired ??= new()).Add(pair.Key);
+                }
+                if (expired != null)
+                    foreach (var key in expired)
+                        _repeats.Remove(key);
+            }
+            if (due == null)
+                return;
+            foreach (var (level, text) in due)
+                Emit(level, now, text);
+        }
+
+        private static void PruneRepeats(DateTime now)
+        {
+            List<string>? expired = null;
+            foreach (var pair in _repeats)
+            {
+                if (now - pair.Value.WindowStart > RepeatWindow)
+                    (expired ??= new()).Add(pair.Key);
+            }
+            if (expired != null)
+                foreach (var key in expired)
+                    _repeats.Remove(key);
+            if (_repeats.Count >= RepeatTableCap)
+                _repeats.Clear();
+        }
+
+        private static void Emit(LogLevel level, DateTime now, string message)
+        {
+            string timestamp = now.ToString("yyyy-MM-dd HH:mm:ss");
             string logEntry = $"[{timestamp}] [{level}] {message}";
             _logQueue.Enqueue(logEntry);
             _logEvent.Set();
@@ -97,6 +207,12 @@ namespace Lumora.Core.Logging
                 try
                 {
                     _logEvent.WaitOne(TimeSpan.FromSeconds(10)); // Wait for either a timeout or a new log entry
+                    SweepRepeats();
+                    // The bootstrap pins the data folder within the first frames. Until it has, hold the
+                    // queue rather than commit the file to the fallback folder; after a few seconds
+                    // assume there is no bootstrap (a harness, a tool) and write where the default says.
+                    if (!Persistence.PathResolver.IsInitialized && DateTime.UtcNow - _started < TimeSpan.FromSeconds(3))
+                        continue;
                     FlushLogQueue();
                 }
                 catch (Exception ex)
@@ -109,7 +225,13 @@ namespace Lumora.Core.Logging
         private static void FlushLogQueue()
         {
             if (_logQueue.IsEmpty) return;
-            if (string.IsNullOrWhiteSpace(LogFile))
+            string? file;
+            lock (_fileLock)
+            {
+                ResolveFile();
+                file = _logFile;
+            }
+            if (string.IsNullOrWhiteSpace(file))
             {
                 while (_logQueue.TryDequeue(out _)) { }
                 return;
@@ -117,7 +239,7 @@ namespace Lumora.Core.Logging
 
             try
             {
-                using var writer = new StreamWriter(LogFile, append: true);
+                using var writer = new StreamWriter(file, append: true);
                 while (_logQueue.TryDequeue(out var logEntry))
                 {
                     writer.WriteLine(logEntry);
@@ -133,40 +255,57 @@ namespace Lumora.Core.Logging
             }
         }
 
-        private static string ResolveLogDirectory()
+        private static void ResolveFile()
         {
-            foreach (var basePath in GetCandidateBasePaths())
+            if (_fileResolved)
+                return;
+            _fileResolved = true;
+            foreach (var directory in CandidateDirectories())
             {
-                if (string.IsNullOrWhiteSpace(basePath))
+                if (string.IsNullOrWhiteSpace(directory))
                     continue;
-
                 try
                 {
-                    var logDirectory = Path.Combine(basePath, "LumoraVR", "logs");
-                    Directory.CreateDirectory(logDirectory);
-                    return logDirectory;
+                    Directory.CreateDirectory(directory);
+                    _logFile = Path.Combine(directory, $"lumora_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.log");
+                    PruneOldLogs(directory);
+                    return;
                 }
                 catch
                 {
                     // Try the next candidate. Logging must never block startup.
                 }
             }
-
-            return string.Empty;
+            _logFile = null;
         }
 
-        private static string[] GetCandidateBasePaths()
+        private static IEnumerable<string> CandidateDirectories()
         {
-            return new[]
+            yield return Persistence.PathResolver.LogsPath;
+            yield return Path.Combine(Path.GetTempPath(), Persistence.PathResolver.FolderName, "logs");
+        }
+
+        // Sessions are cheap to start and nobody deletes logs by hand: keep the newest few.
+        private static void PruneOldLogs(string directory)
+        {
+            try
             {
-                Lumora.Core.Persistence.PathResolver.LocalPath,
-                Path.GetTempPath()
-            };
+                var files = Directory.GetFiles(directory, "lumora_*.log");
+                if (files.Length <= KeepLogFiles)
+                    return;
+                Array.Sort(files, StringComparer.Ordinal);
+                for (int i = 0; i < files.Length - KeepLogFiles; i++)
+                {
+                    try { File.Delete(files[i]); } catch { }
+                }
+            }
+            catch { }
         }
 
         public static void Shutdown()
         {
             _cancellationTokenSource.Cancel();
+            SweepRepeats();
             FlushLogQueue(); // Ensure any remaining logs are written
         }
 

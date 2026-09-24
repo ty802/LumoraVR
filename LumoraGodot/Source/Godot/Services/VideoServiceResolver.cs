@@ -291,7 +291,7 @@ public sealed class VideoServiceResolver : IVideoServiceResolver
 
         try
         {
-            string dir = ProjectSettings.GlobalizePath("user://cache/hls");
+            string dir = ProjectSettings.GlobalizePath("user://Cache/hls");
             Directory.CreateDirectory(dir);
             SweepOldMasters(dir);
 

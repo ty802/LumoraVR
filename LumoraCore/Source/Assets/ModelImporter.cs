@@ -27,6 +27,9 @@ public class ModelImportSettings
 
     public bool GenerateColliders { get; set; } = false;
 
+    // Whether those colliders stop a walking body. See the attach site for why this is separate.
+    public bool SolidToPeople { get; set; }
+
     public bool SetupIK { get; set; } = true;
 
     public bool Center { get; set; } = true;
@@ -518,8 +521,19 @@ public static class ModelImporter
 
                             // Optional collision geometry off the same mesh provider (skinned meshes are skipped:
                             // their geometry deforms, so a static collider wouldn't track it).
+                            //
+                            // NOT something you walk into. An imported model is a thing somebody put in
+                            // the room - a chair, a statue, a prop - and every one of them used to be a
+                            // wall in its own shape, so importing furniture built a maze. The collider
+                            // is still here and still solid to lasers, grabs, touches and falling
+                            // physics objects; it just does not stop a person. Tick CharacterCollider on
+                            // it to make an imported mesh part of the floor plan. -xlinka
                             if (settings.GenerateColliders)
-                                meshSlot.AttachComponent<MeshCollider>().Mesh.Target = provider;
+                            {
+                                var collider = meshSlot.AttachComponent<MeshCollider>();
+                                collider.Mesh.Target = provider;
+                                collider.CharacterCollider.Value = settings.SolidToPeople;
+                            }
                         }
                     }
                 });
@@ -696,11 +710,14 @@ public static class ModelImporter
             {
                 if (modelSlot.GetComponent<AvatarForm>() == null)
                     modelSlot.AttachComponent<AvatarForm>();
+                AvatarCalibration.EnsureHeadViewOverride(modelSlot, rig);
             }
             else if (rig.IsHumanoid)
             {
                 if (modelSlot.GetComponent<AvatarForm>() == null)
                     modelSlot.AttachComponent<AvatarForm>();
+                // Same default the package path applies: the wearer never sees their own head from inside.
+                AvatarCalibration.EnsureHeadViewOverride(modelSlot, rig);
                 var avatarIk = modelSlot.GetComponent<AvatarIK>() ?? modelSlot.AttachComponent<AvatarIK>();
                 avatarIk.Skeleton.Target = skelBuilder;
                 avatarIk.Rig.Target = rig;
@@ -1133,7 +1150,7 @@ public static class ModelImporter
                     if (!string.IsNullOrEmpty(uri)) return new Uri(uri);
                 }
                 // No local DB - fall back to a temp file so the texture at least loads on this machine.
-                string dir = Path.Combine(Path.GetTempPath(), "lumora_textures");
+                string dir = Lumora.Core.Persistence.PathResolver.Resolve("tmp", "textures");
                 Directory.CreateDirectory(dir);
                 string tmp = Path.Combine(dir, $"tex_{(uint)path.GetHashCode():x8}.{fmt}");
                 if (!File.Exists(tmp))

@@ -153,6 +153,29 @@ public class Engine : IDisposable
 
     public string ResourceRoot { get; set; } = null!;
 
+    // A disk path under ResourceRoot back to its res:// form, the reverse of how a res:// URL is
+    // resolved. It works whether or not the file exists, and that is the point: in an export the
+    // path was built on a root that holds no such file, and the res:// form is the only address the
+    // resource pack answers to. Null for a path outside the root, which is a genuine external file.
+    // -xlinka
+    public string? TryGetResourcePath(string? diskPath)
+    {
+        var root = ResourceRoot;
+        if (string.IsNullOrEmpty(root) || string.IsNullOrEmpty(diskPath))
+            return null;
+
+        static string Norm(string p) => p.Replace('\\', '/').TrimEnd('/');
+        var path = Norm(diskPath);
+        var prefix = Norm(root);
+        if (path.Length <= prefix.Length + 1
+            || !path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            || path[prefix.Length] != '/')
+            return null;
+
+        var relative = path.Substring(prefix.Length + 1);
+        return relative.Length == 0 ? null : "res://" + relative;
+    }
+
     public event Action<EngineState> OnStateChanged = null!;
 
     public event Action<double> OnPreUpdate = null!;
@@ -195,6 +218,16 @@ public class Engine : IDisposable
     public static Lumora.Core.Platform CurrentPlatform { get; set; } = Lumora.Core.Platform.Windows;
 
     public static bool IsMobilePlatform => CurrentPlatform == Lumora.Core.Platform.Android;
+
+    // Running on Wine or Proton, which reports itself as Windows in every other way. CurrentPlatform
+    // stays Windows on purpose, because the Win32 API this process is built against really is what it
+    // is talking to; this is the separate question of whether the MACHINE underneath is one. See
+    // WinePlatform for what changes on the answer.
+    public static bool IsWine => WinePlatform.IsWine;
+
+    public static bool IsProton => WinePlatform.IsProton;
+
+    public static string? WineVersion => WinePlatform.Version;
 
     public static bool IsEditor { get; set; } = false;
 
@@ -329,7 +362,7 @@ public class Engine : IDisposable
             {
                 var deviceId = Environment.MachineName;
                 CDNClient = new LumoraClient(deviceId, "LumoraVR", EngineVersion.VersionString);
-                var cachePath = Path.Combine(Lumora.Core.Persistence.PathResolver.CachePath, "LumoraVR", "Cache");
+                var cachePath = Lumora.Core.Persistence.PathResolver.Resolve("Cache");
                 ContentCache = new ContentCache(CDNClient, cachePath);
                 await Task.CompletedTask;
             }, cancellationToken);
@@ -443,9 +476,7 @@ public class Engine : IDisposable
 
     #region Local Home Management
 
-    public static string LocalHomeSavePath => Path.Combine(
-        Lumora.Core.Persistence.PathResolver.RoamingPath,
-        "LumoraVR", "home.lworld");
+    public static string LocalHomeSavePath => Lumora.Core.Persistence.PathResolver.Resolve("home.lworld");
 
     private void StartLocalHome()
     {

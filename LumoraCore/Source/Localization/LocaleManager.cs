@@ -270,7 +270,7 @@ public static class LocaleManager
         string? user = null;
         try
         {
-            user = Path.Combine(Persistence.PathResolver.RoamingPath, "LumoraVR", LocaleFolder);
+            user = Persistence.PathResolver.Resolve(LocaleFolder);
         }
         catch
         {

@@ -157,6 +157,5 @@ public sealed class MachineIdentity
     }
 
     private static string KeyPath()
-        => Path.Combine(Lumora.Core.Persistence.PathResolver.LocalPath,
-            "LumoraVR", "machine_identity.key");
+        => Lumora.Core.Persistence.PathResolver.Resolve("machine_identity.key");
 }

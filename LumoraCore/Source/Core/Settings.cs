@@ -22,9 +22,7 @@ public static class Settings
     private static readonly object _lock = new();
     private static Dictionary<string, string>? _values;
 
-    private static string StorePath => Path.Combine(
-        Lumora.Core.Persistence.PathResolver.RoamingPath,
-        "LumoraVR", "config.dat");
+    private static string StorePath => Lumora.Core.Persistence.PathResolver.Resolve("config.dat");
 
     public static void WriteValue(string key, string value)
     {

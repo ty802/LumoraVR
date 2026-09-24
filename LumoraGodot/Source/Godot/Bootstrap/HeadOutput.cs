@@ -31,15 +31,27 @@ public partial class HeadOutput : Node
     // CONFIGURATION
     [Export] public OutputType Type { get; set; } = OutputType.Screen;
     [Export] public float DefaultFOV { get; set; } = 90f;
-    // 2 cm. This used to be 25 cm, "so the head sphere does not clip through", and that made the near
-    // plane do a job it is very bad at: a quarter of a metre is deep enough to slice a panel in half as
-    // soon as you lean into it, which is what "the inspector gets cut when I get close" was. Keeping your
-    // own head out of your own eyes belongs to LocalViewOverride (the local avatar's head renderers move
-    // onto RenderHelper.LOCAL_HEAD_LAYER, which this camera does not draw and mirrors still do), so the
-    // near plane can go back to being a near plane. The far plane is unchanged, and 0.02..1000 is still a
-    // ~1:50000 depth ratio, well inside what a 24-bit/float buffer holds. -xlinka
-    [Export] public float NearClip { get; set; } = 0.02f;
-    [Export] public float FarClip { get; set; } = 1000f;
+
+    // 5 mm at user scale 1, and 4 km. The near plane used to be 25 cm "so the head sphere does not clip
+    // through", then 2 cm, and both were the near plane doing a job it is bad at: anything you lean into
+    // gets sliced. Keeping your own head out of your own eyes belongs to LocalViewOverride (the local
+    // avatar's head goes onto RenderHelper.LOCAL_HEAD_LAYER, or is collapsed on an eyes-only twin for a
+    // skinned body), so the near plane can be what an eye actually wants. It scales with the user: a
+    // 10x giant gets 5 cm and a 0.1x mouse gets half a millimetre, so leaning into a wall cuts at the
+    // same apparent distance whatever size you are. The worn avatar can override either plane through
+    // AvatarRenderSettings; the floors keep a bad value from producing a degenerate projection. 0.005 to
+    // 4096 is a ~1:800000 depth ratio, comfortably inside the reversed-Z float depth buffer Forward+
+    // and Mobile use; the GL path's 24-bit buffer gets coarser far out, which is the trade a 4 km far
+    // plane makes there. -xlinka
+    public const float DefaultNearClip = 0.005f;
+    public const float DefaultFarClip = 4096f;
+    private const float MinNearClip = 0.001f;
+    private const float MinFarClip = 0.5f;
+
+    // The planes last resolved from the local user's scale and avatar; read back by anything that wants
+    // to know what the eyes are using.
+    public float NearClip { get; private set; } = DefaultNearClip;
+    public float FarClip { get; private set; } = DefaultFarClip;
 
     // CAMERA REFERENCES
     private Camera3D _camera = null!;
@@ -63,6 +75,22 @@ public partial class HeadOutput : Node
     private float _appliedNear;
     private float _appliedFar;
     private float _appliedFov;
+
+    // View transition. A camera mode switch (first person, orbit, free cam) used to put the camera at
+    // the new mode's pose on the very next frame: 3.5 m in one step out of the head and back. The pose
+    // the camera had when the switch happened is kept here and faded into whatever the current mode
+    // wants over the same smoother-step window the head drive uses, so the two arrive together. The
+    // old pose rides on the head's POSITION (walking during the blend carries it along) but keeps its
+    // own rotation, because the root can turn under the head at the end of a blend and a root-relative
+    // pose would swing 3 m sideways with it. -xlinka
+    private const float ViewTransitionSeconds = Lumora.Core.Components.DesktopHeadSimulation.TransitionSeconds;
+    private bool _viewTransitionActive;
+    private float _viewTransition = 1f;
+    private Vector3 _viewFromOffset;
+    private Quaternion _viewFromRotation = Quaternion.Identity;
+    private bool _viewFromAnchored;
+
+    public bool IsViewTransitioning => _viewTransitionActive;
 
     public Vector3 CameraPosition => _camera?.GlobalPosition ?? Vector3.Zero;
 
@@ -176,7 +204,7 @@ public partial class HeadOutput : Node
         camera.Far = FarClip;
 
         if (setFov)
-            camera.Fov = DefaultFOV;
+            camera.Fov = Mathf.Clamp(DefaultFOV, 1f, 179f);
     }
 
     // Camera positioning from the focused world, once per frame after the engine update.
@@ -189,6 +217,7 @@ public partial class HeadOutput : Node
         if (focusedWorld == null)
             return;
 
+        ResolveClipPlanes(focusedWorld);
         UpdateCameraSettings();
 
         if (Type == OutputType.VR)
@@ -202,8 +231,30 @@ public partial class HeadOutput : Node
         // Screen360 and Static have no positioning path yet.
     }
 
-    // Clip planes and FOV. Defaults until a RenderSettings component exists to read from; written
-    // only when the value or the camera object changed.
+    // One read per frame: the local root's scale and whatever AvatarRenderSettings the worn avatar
+    // registered on it. Both are cached datamodel values, so this costs a few null checks.
+    private void ResolveClipPlanes(World world)
+    {
+        float userScale = 1f;
+        var root = world.LocalUser?.Root;
+        if (root != null && !root.IsDestroyed && root.Slot != null)
+        {
+            float scale = root.Slot.GlobalScale.x;
+            if (scale > 0f && float.IsFinite(scale))
+                userScale = scale;
+        }
+
+        var settings = world.LocalUserRenderSettings;
+        float near = (settings?.NearClip ?? DefaultNearClip) * userScale;
+        float far = settings?.FarClip ?? DefaultFarClip;
+
+        NearClip = Mathf.Max(MinNearClip, near);
+        FarClip = Mathf.Max(MinFarClip, far);
+        if (FarClip <= NearClip)
+            FarClip = NearClip + 1f;
+    }
+
+    // Clip planes and FOV, written only when the value or the camera object changed.
     private void UpdateCameraSettings()
     {
         bool sameCamera = ReferenceEquals(_settingsCamera, _camera);
@@ -222,27 +273,31 @@ public partial class HeadOutput : Node
 
         if (Type == OutputType.Screen && (!sameCamera || _appliedFov != DefaultFOV))
         {
-            _camera.Fov = DefaultFOV;
+            _camera.Fov = Mathf.Clamp(DefaultFOV, 1f, 179f);
             _appliedFov = DefaultFOV;
         }
 
         _settingsCamera = _camera;
     }
 
-    // The VR camera is tracked by OpenXR; the XR origin follows the local user's root so HMD and
-    // controllers land on the avatar's transforms.
+    // The XR camera and device poses share the avatar-adjusted tracking origin.
     private void UpdateVRPositioning(World world)
     {
         if (world.LocalUser == null)
             return;
 
-        var userRootSlot = world.LocalUser.Root?.Slot;
+        var userRootSlot = world.LocalUser.Root?.TrackingSpaceSlot;
         if (_xrOrigin != null)
         {
             if (userRootSlot != null)
             {
                 var originPosition = userRootSlot.GlobalPosition.ToGodot();
-                var originRotation = new Basis(userRootSlot.GlobalRotation.ToGodot());
+                // The origin scales with the tracking space on purpose; a scale that has collapsed or is
+                // not a number would squash the eye cameras flat and the renderer refuses the frame.
+                var originScale = userRootSlot.GlobalScale.ToGodot();
+                if (!originScale.IsFinite() || originScale.X <= 1e-5f || originScale.Y <= 1e-5f || originScale.Z <= 1e-5f)
+                    originScale = Vector3.One;
+                var originRotation = new Basis(userRootSlot.GlobalRotation.ToGodot()).Scaled(originScale);
                 _xrOrigin.GlobalTransform = new Transform3D(originRotation, originPosition);
             }
             else
@@ -258,40 +313,80 @@ public partial class HeadOutput : Node
     // Screen cameras are user-controlled or follow the first-person view.
     private void UpdateScreenPositioning(World world)
     {
-        // Publish whether the camera is overridden (3rd-person / free-cam) so the userspace dashboard knows it
-        // can't simply lock to the local head pose this frame. -xlinka
-        Lumora.Core.Engine.Current?.InputInterface?.SetDesktopCameraOverride(_hasPositionOverride || _hasRotationOverride);
+        var userRoot = world.LocalUser?.Root;
+        bool hasHead = userRoot != null && !userRoot.IsDestroyed && userRoot.Slot != null;
+        Vector3 headPosition = hasHead ? userRoot!.HeadPosition.ToGodot() : new Vector3(0, 1.6f, 0);
 
-        if (_hasPositionOverride)
+        Vector3 targetPosition = _hasPositionOverride ? _overridePosition : headPosition;
+        Quaternion targetRotation = _hasRotationOverride
+            ? _overrideRotation
+            : hasHead ? userRoot!.HeadRotation.ToGodot() : _camera.GlobalTransform.Basis.GetRotationQuaternion();
+
+        if (_viewTransitionActive)
         {
-            _camera.GlobalPosition = _overridePosition;
+            // A zero delta (node outside a tree) would park the camera off the head for good.
+            float dt = (float)GetProcessDeltaTime();
+            if (!(dt > 0f)) dt = 1f / 60f;
+            _viewTransition = Mathf.Min(_viewTransition + dt / ViewTransitionSeconds, 1f);
+            float blend = SmootherStep(_viewTransition);
+            Vector3 fromPosition = _viewFromAnchored ? headPosition + _viewFromOffset : _viewFromOffset;
+            targetPosition = fromPosition.Lerp(targetPosition, blend);
+            targetRotation = _viewFromRotation.Slerp(targetRotation, blend).Normalized();
+            if (_viewTransition >= 1f)
+                _viewTransitionActive = false;
+        }
+
+        // Publish whether the camera is off the head (3rd-person / free-cam, or still flying back to it) so
+        // the userspace dashboard knows it can't simply lock to the local head pose this frame. -xlinka
+        Lumora.Core.Engine.Current?.InputInterface?.SetDesktopCameraOverride(
+            _hasPositionOverride || _hasRotationOverride || _viewTransitionActive);
+
+        // A pose that is not a number, or a rotation collapsed to zero, would leave the camera with a
+        // NaN basis and the frame black. The previous pose is the better frame. -xlinka
+        if (!targetPosition.IsFinite() || !IsUsableRotation(targetRotation))
+            return;
+        _camera.GlobalTransform = new Transform3D(new Basis(targetRotation), targetPosition);
+    }
+
+    // Start fading the camera from where it is now into whatever the current mode asks for. Called at
+    // the moment of a mode switch, before the new mode has written its first override.
+    private static bool IsUsableRotation(in Quaternion rotation)
+        => float.IsFinite(rotation.X) && float.IsFinite(rotation.Y) && float.IsFinite(rotation.Z)
+            && float.IsFinite(rotation.W) && rotation.LengthSquared() > 1e-8f;
+    public void BeginViewTransition()
+    {
+        if (_camera == null || Type != OutputType.Screen)
+            return;
+
+        var fromPosition = _camera.GlobalPosition;
+        _viewFromRotation = _camera.GlobalTransform.Basis.GetRotationQuaternion().Normalized();
+
+        var userRoot = Lumora.Core.Engine.Current?.WorldManager?.FocusedWorld?.LocalUser?.Root;
+        if (userRoot != null && !userRoot.IsDestroyed && userRoot.Slot != null)
+        {
+            _viewFromOffset = fromPosition - userRoot.HeadPosition.ToGodot();
+            _viewFromAnchored = true;
         }
         else
         {
-            if (world.LocalUser?.Root != null)
-            {
-                var userRoot = world.LocalUser.Root;
-                _camera.GlobalPosition = userRoot.HeadPosition.ToGodot();
-            }
-            else
-            {
-                _camera.GlobalPosition = new Vector3(0, 1.6f, 0);
-            }
+            _viewFromOffset = fromPosition;
+            _viewFromAnchored = false;
         }
 
-        if (_hasRotationOverride)
-        {
-            _camera.GlobalTransform = new Transform3D(new Basis(_overrideRotation), _camera.GlobalPosition);
-        }
-        else
-        {
-            if (world.LocalUser?.Root != null)
-            {
-                var userRoot = world.LocalUser.Root;
-                var rotation = userRoot.HeadRotation;
-                _camera.GlobalTransform = new Transform3D(new Basis(rotation.ToGodot()), _camera.GlobalPosition);
-            }
-        }
+        _viewTransition = 0f;
+        _viewTransitionActive = true;
+    }
+
+    public void CancelViewTransition()
+    {
+        _viewTransitionActive = false;
+        _viewTransition = 1f;
+    }
+
+    private static float SmootherStep(float t)
+    {
+        t = Mathf.Clamp(t, 0f, 1f);
+        return t * t * t * (t * (t * 6f - 15f) + 10f);
     }
 
     // Custom camera control (photo mode, cinematic cameras, third-person, free-cam).

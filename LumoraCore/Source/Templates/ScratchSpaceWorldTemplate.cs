@@ -116,10 +116,10 @@ internal sealed class ScratchSpaceWorldTemplate : WorldTemplateDefinition
     private const float PropViewFloor = 60f;
     private const float PropFadeMargin = 4f;
 
-    // SIZE-AWARE, not a blanket band: scenery must never vanish off the horizon - the platform's rule
-    // is that only small clutter earns an automatic leash (100x its own size, floored at 60m), anything
-    // structural draws forever, and the flat frame savings come from shadow range and the per-kind
-    // sign/panel/particle bounds instead. -xlinka
+    // SIZE-AWARE, not a blanket band: scenery must never vanish off the horizon. Only small clutter
+    // earns an automatic leash (100x its own size, floored at 60m), anything structural draws forever,
+    // and the flat frame savings come from shadow range and the per-kind sign/panel/particle bounds
+    // instead. -xlinka
     private static void BoundAreaProps(World world)
     {
         foreach (var area in world.RootSlot.Children)
@@ -226,7 +226,8 @@ internal sealed class ScratchSpaceWorldTemplate : WorldTemplateDefinition
         var dirLight = lightSlot.AttachComponent<Light>();
         dirLight.Type.Value = LightType.Directional;
         dirLight.LightColor.Value = new color(1.00f, 0.91f, 0.82f, 1f);
-        dirLight.Intensity.Value = 1.0f;
+        // Tuned under the stray bootstrap sun (see LocalHomeWorldTemplate); carries its share now.
+        dirLight.Intensity.Value = 1.5f;
         dirLight.Shadows.Value = ShadowType.Soft;
         // The world is a hundred metres of ground plate with eleven areas parked around the origin, and
         // the sun's default reach is the whole of it, four cascades deep. Nothing past forty metres is

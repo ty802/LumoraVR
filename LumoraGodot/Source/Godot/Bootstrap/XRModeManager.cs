@@ -16,7 +16,7 @@ namespace Lumora.Source.Godot.Bootstrap;
 // Hot-swaps between Desktop and VR rendering/input modes at runtime (F8 in exported builds; on
 // launch it auto-detects a connected headset via OpenXR and starts in VR if one is found). From
 // the Godot Editor use Shift+F8 - the editor consumes bare F8/F9 as its own Stop/Pause shortcuts.
-// The manager owns the desktop overlay nodes (cursor / camera controller) and flips XR viewport
+// The manager owns the desktop overlay nodes (cursor / camera controller) and switches input
 // ownership when toggling; VR input flows through InputInterface drivers directly, no extra
 // provider node needed. Rendering follows a split-camera pattern: the desktop camera never has XR
 // enabled, the XR camera only drives VR, and mode changes are queued across frame boundaries so
@@ -92,8 +92,11 @@ public partial class XRModeManager : Node
         InputInterface     inputInterface,
         Camera3D           mainCamera,
         GodotVRDriver      vrDriver,
-        bool               startingInVR)
+        bool               startingInVR,
+        bool               allowAutoVr = true)
     {
+        // --desktop is a decision, not a fallback: never drag someone into VR who asked to stay flat.
+        _autoVrAllowed = allowAutoVr;
         _engine         = engine;
         _headOutput     = headOutput;
         _inputInterface = inputInterface;
@@ -110,15 +113,8 @@ public partial class XRModeManager : Node
         var sceneRoot = GetTree()?.CurrentScene;
         _xrOrigin = sceneRoot?.GetNodeOrNull<XROrigin3D>("%XROrigin3D")!;
         _xrCamera = sceneRoot?.GetNodeOrNull<XRCamera3D>("%XRCamera3D")!;
-        _xrViewport = ResolveXRViewport(sceneRoot);
+        _xrViewport = XRViewportLayout.Ensure(sceneRoot ?? this, GetViewport(), IsStandalone);
 
-        if (startingInVR)
-        {
-            ViewportQuality.ConfigureOpenXRAfterInitialize(
-                XRServer.FindInterface("OpenXR") as OpenXRInterface,
-                _xrViewport,
-                LumoraLogger.Log);
-        }
         ApplyRenderingMode(startingInVR);
         _headOutput?.NotifyVRActiveChanged(startingInVR);
         _headOutput?.SwitchOutputType(startingInVR ? HeadOutput.OutputType.VR : HeadOutput.OutputType.Screen);
@@ -195,6 +191,105 @@ public partial class XRModeManager : Node
 
         if (IsVRActive)
             SyncDesktopMirrorCamera();
+        else
+            WatchForHeadset(delta);
+    }
+
+    // A HEADSET THAT ARRIVES AFTER LAUNCH GETS PICKED UP WITHOUT A KEYBOARD.
+    //
+    // F9 already covers this, and F9 is useless in the one case that needs it most. Streaming over
+    // Steam Link or Virtual Desktop, the order is always: start the game, put the headset on,
+    // connect. By the time the link is up the person is inside a headset looking at nothing, with the
+    // keyboard on a desk they cannot see, and the only way back into VR is a key they cannot press.
+    // The same is true of starting SteamVR after the game, which is most of the time.
+    //
+    // Gated on a VR server process actually running, so a machine with no VR on it never probes at
+    // all and the log stays clean. Only ever enters VR from a session that was NOT up and just came
+    // up, so pressing F8 to sit on the desktop on purpose is never overruled. -xlinka
+    private const float HeadsetProbeIntervalSeconds = 4f;
+    private float _headsetProbeTimer;
+    private bool _autoVrAllowed = true;
+    private bool _autoVrFailureLogged;
+
+    private static readonly string[] VrServerProcessNames =
+    {
+        "vrserver",                  // SteamVR, including everything Steam Link streams into
+        "vrmonitor",
+        "VirtualDesktop.Streamer",
+        "OVRServer_x64",             // Oculus / Meta PC runtime
+        "monado-service",
+    };
+
+    private void WatchForHeadset(double delta)
+    {
+        if (!_autoVrAllowed || _switching || _toggleQueued)
+            return;
+
+        _headsetProbeTimer += (float)delta;
+        if (_headsetProbeTimer < HeadsetProbeIntervalSeconds)
+            return;
+        _headsetProbeTimer = 0f;
+
+        var xrInterface = XRServer.FindInterface("OpenXR");
+        if (xrInterface == null || xrInterface.IsInitialized())
+            return;
+
+        if (!AnyVrServerRunning())
+            return;
+
+        var openXRInterface = xrInterface as OpenXRInterface;
+        ViewportQuality.ConfigureOpenXRBeforeInitialize(openXRInterface);
+
+        bool ok;
+        try { ok = xrInterface.Initialize(); }
+        catch { ok = false; }
+
+        if (!ok)
+        {
+            if (!_autoVrFailureLogged)
+            {
+                _autoVrFailureLogged = true;
+                LumoraLogger.Log("XRModeManager: a VR runtime is running but still reports no headset; " +
+                                 "watching for one. " + OpenXRRuntimeReport.DiagnoseNoHeadset());
+            }
+            return;
+        }
+
+        // The active runtime can have been switched while we sat here, so the cached read goes.
+        OpenXRRuntimeReport.Invalidate();
+        _autoVrFailureLogged = false;
+        LumoraLogger.Log("XRModeManager: a headset appeared after launch; entering VR.");
+        SwitchToVR();
+    }
+
+    private static bool AnyVrServerRunning()
+    {
+        // INSIDE A PREFIX THIS QUESTION CANNOT BE ANSWERED. Process.GetProcessesByName sees the Wine
+        // process list, and SteamVR under Proton is a native Linux process that was never in it - so
+        // the gate reads "no VR anywhere" forever and the watch above never fires, which is exactly
+        // the audience most likely to need it. Probe unconditionally there and accept the cost: a
+        // failing Initialize() every four seconds against a runtime that is not there. -xlinka
+        if (Lumora.Core.WinePlatform.IsWine)
+            return true;
+
+        foreach (var name in VrServerProcessNames)
+        {
+            System.Diagnostics.Process[] found;
+            try { found = System.Diagnostics.Process.GetProcessesByName(name); }
+            catch { continue; }
+
+            try
+            {
+                if (found.Length > 0)
+                    return true;
+            }
+            finally
+            {
+                foreach (var process in found)
+                    process.Dispose();
+            }
+        }
+        return false;
     }
 
 
@@ -404,7 +499,6 @@ public partial class XRModeManager : Node
             await WaitProcessFrames(1);
 
             ApplyRenderingMode(true);
-            ViewportQuality.ConfigureOpenXRAfterInitialize(openXRInterface, ResolveXRViewport(GetTree()?.CurrentScene), LumoraLogger.Log);
             _headOutput?.NotifyVRActiveChanged(true);
             _headOutput?.SwitchOutputType(HeadOutput.OutputType.VR);
             await WaitProcessFrames(1);
@@ -463,21 +557,16 @@ public partial class XRModeManager : Node
         var rootViewport = GetViewport();
         var xrViewport = ResolveXRViewport(GetTree()?.CurrentScene);
 
-        if (rootViewport != null && rootViewport != xrViewport)
-            rootViewport.UseXR = false;
-
-        var keepXRViewportEnabled = vrActive && IsOpenXRSessionActive();
-
-        if (xrViewport != null)
+        if (rootViewport != null)
         {
-            if (keepXRViewportEnabled)
-                ViewportQuality.ApplyXrViewportDefaults(xrViewport);
-
-            xrViewport.UseXR = keepXRViewportEnabled;
-        }
-        else if (rootViewport != null)
-        {
-            rootViewport.UseXR = keepXRViewportEnabled;
+            xrViewport ??= rootViewport;
+            bool sessionActive = IsOpenXRSessionActive();
+            // Configure only when attaching a session. Reapplying quality setters to a live headset
+            // also recreates render buffers, even when the viewport remains stereo. -xlinka
+            if (sessionActive && (vrActive || xrViewport != rootViewport) && !xrViewport.UseXR)
+                ViewportQuality.ConfigureOpenXRAfterInitialize(
+                    XRServer.FindInterface("OpenXR") as OpenXRInterface, xrViewport, LumoraLogger.Log);
+            XRViewportLayout.ApplySessionState(rootViewport, xrViewport, sessionActive, vrActive);
         }
 
         if (_xrOrigin != null && GodotObject.IsInstanceValid(_xrOrigin))
@@ -613,7 +702,8 @@ public partial class XRModeManager : Node
         _mainCamera.GlobalTransform = _xrCamera.GlobalTransform;
         _mainCamera.Near = _xrCamera.Near;
         _mainCamera.Far = _xrCamera.Far;
-        _mainCamera.Fov = _xrCamera.Fov;
+        if (float.IsFinite(_xrCamera.Fov))
+            _mainCamera.Fov = Mathf.Clamp(_xrCamera.Fov, 1f, 179f);
 
         if (!_mainCamera.Current)
             _mainCamera.MakeCurrent();

@@ -42,7 +42,8 @@ internal sealed class GridSpaceWorldTemplate : WorldTemplateDefinition
         var dirLight = lightSlot.AttachComponent<Light>();
         dirLight.Type.Value = LightType.Directional;
         dirLight.LightColor.Value = new color(1.00f, 0.78f, 0.55f, 1f);
-        dirLight.Intensity.Value = 1.4f;
+        // Tuned under the stray bootstrap sun (see LocalHomeWorldTemplate); carries its share now.
+        dirLight.Intensity.Value = 1.9f;
         dirLight.Shadows.Value = ShadowType.Soft;
 
         // Morning-sunrise sky: deep cool dawn-blue overhead, a wide warm
@@ -100,7 +101,7 @@ internal sealed class GridSpaceWorldTemplate : WorldTemplateDefinition
         groundCollider.Size.Value = groundMesh.Size.Value;
         groundCollider.Offset.Value = new float3(0f, -groundMesh.Size.Value.y * 0.5f, 0f);
 
-        // Grabbable preview sphere. A satin dielectric with the platform's own fresnel, so it shows
+        // Grabbable preview sphere. A satin dielectric with the PBS shader's own fresnel, so it shows
         // the sky and the sun the way a material ball should, instead of wearing the floor's planar
         // grid with a seam. -xlinka
         var orbSlot = world.RootSlot.AddSlot("MaterialOrb");
@@ -120,5 +121,15 @@ internal sealed class GridSpaceWorldTemplate : WorldTemplateDefinition
         var orbRenderer = orbSlot.AttachComponent<MeshRenderer>();
         orbRenderer.Mesh.Target = orbMesh;
         orbRenderer.Material.Target = orbMaterial;
+
+        // Stand-height glass beside the spawn circle; controls overlay its upper corner.
+        MirrorPanel.Spawn(world.RootSlot, new float3(0f, 1.65f, 4.7f),
+            float3.Backward, new float2(2.6f, 2.2f));
+        var probeSlot = world.RootSlot.AddSlot("Spawn reflections");
+        probeSlot.LocalPosition.Value = new float3(0f, 1.5f, 0f);
+        var probe = probeSlot.AttachComponent<ReflectionProbe>();
+        probe.Size.Value = new float3(20f, 8f, 20f);
+        probe.MaxDistance.Value = 40f;
+        probe.UpdateMode.Value = ProbeUpdateMode.Always;
     }
 }

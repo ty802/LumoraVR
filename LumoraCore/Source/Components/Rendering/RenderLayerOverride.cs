@@ -7,6 +7,8 @@ namespace Lumora.Core.Components;
 public class RenderLayerOverride : ImplementableComponent<IHook>
 {
     public const int HiddenLayer = 1 << 3;
+    public const int MirrorLayer = 1 << 16;
+    public const int EyesOnlyLayer = 1 << 17;
 
     public readonly Sync<int> Layer = new();
 

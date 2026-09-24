@@ -10,7 +10,7 @@ using LumoraLogger = Lumora.Core.Logging.Logger;
 namespace Lumora.Godot.Hooks;
 
 [ImplementableHook(typeof(RenderTexture))]
-public class RenderTextureHook : AssetHook, IRenderTextureAssetHook, IGodotTexture
+public class RenderTextureHook : AssetHook, IRenderTextureAssetHook, IStereoGodotTexture
 {
     private SubViewport _viewport = null!;
     private Camera3D _camera = null!;
@@ -57,11 +57,31 @@ public class RenderTextureHook : AssetHook, IRenderTextureAssetHook, IGodotTextu
         }
     }
 
-    public Texture2D? GodotTexture2D => _viewport != null && GodotObject.IsInstanceValid(_viewport)
-        ? _viewport.GetTexture()
-        : null;
+    // A CameraPortal rendering into this texture brings its own viewports - one per eye - and hands
+    // their textures here. While it does, this hook's own viewport stays parked: the asset is the same
+    // asset every material bound, it just draws from somewhere else. The portal owns those pictures
+    // and clears them when it goes. -xlinka
+    private Texture2D? _portalLeft;
+    private Texture2D? _portalRight;
 
-    public bool IsValid => _viewport != null && GodotObject.IsInstanceValid(_viewport) && _viewport.IsInsideTree();
+    public Texture2D? GodotTexture2D => _portalLeft
+        ?? (_viewport != null && GodotObject.IsInstanceValid(_viewport) ? _viewport.GetTexture() : null);
+
+    public Texture2D? RightEyeTexture2D => _portalRight;
+
+    public bool IsValid => _portalLeft != null
+        || (_viewport != null && GodotObject.IsInstanceValid(_viewport) && _viewport.IsInsideTree());
+
+    public void SetPortalTextures(Texture2D? left, Texture2D? right)
+    {
+        _portalLeft = left;
+        _portalRight = right;
+        if (_viewport == null || !GodotObject.IsInstanceValid(_viewport))
+            return;
+        _viewport.RenderTargetUpdateMode = left != null
+            ? SubViewport.UpdateMode.Disabled
+            : (_renderEnabled ? SubViewport.UpdateMode.Once : SubViewport.UpdateMode.Disabled);
+    }
 
     public void Configure(
         int width,
@@ -147,6 +167,8 @@ public class RenderTextureHook : AssetHook, IRenderTextureAssetHook, IGodotTextu
 
         if (_cullMask != 0)
             _camera.CullMask = _cullMask;
+        // Never the eyes-only band: that is the wearer's headless twin, and this camera is not an eye.
+        _camera.CullMask &= ~(uint)Helpers.RenderHelper.EYES_ONLY_LAYER;
         _camera.Projection = Camera3D.ProjectionType.Orthogonal;
         _camera.Size = _orthoSize;
         _camera.Near = 0.01f;
@@ -159,13 +181,13 @@ public class RenderTextureHook : AssetHook, IRenderTextureAssetHook, IGodotTextu
     private void ApplyCameraOverride(Lumora.Core.Assets.RenderCameraParameters p)
     {
         _camera.Projection = p.Perspective ? Camera3D.ProjectionType.Perspective : Camera3D.ProjectionType.Orthogonal;
-        _camera.Fov = p.FieldOfView;
+        _camera.Fov = float.IsFinite(p.FieldOfView) ? Mathf.Clamp(p.FieldOfView, 1f, 179f) : 75f;
         _camera.Size = p.OrthographicSize <= 0f ? 1f : p.OrthographicSize;
         _camera.Near = System.Math.Max(0.001f, p.NearClip);
         _camera.Far = System.Math.Max(_camera.Near + 0.001f, p.FarClip);
         _camera.Position = new Vector3(p.Position.x, p.Position.y, p.Position.z);
         _camera.Quaternion = new Quaternion(p.Rotation.x, p.Rotation.y, p.Rotation.z, p.Rotation.w);
-        _camera.CullMask = unchecked((uint)p.CullMask);
+        _camera.CullMask = unchecked((uint)p.CullMask) & ~(uint)Helpers.RenderHelper.EYES_ONLY_LAYER;
 
         _viewport.Msaa3D = p.Msaa ? Viewport.Msaa.Msaa2X : Viewport.Msaa.Disabled;
         _viewport.UseOcclusionCulling = p.OcclusionCulling;
@@ -212,13 +234,21 @@ public class RenderTextureHook : AssetHook, IRenderTextureAssetHook, IGodotTextu
             env.BackgroundColor = new Color(0f, 0f, 0f, 0f);
         }
 
-        env.TonemapMode = p.PostProcessing
-            ? global::Godot.Environment.ToneMapper.Agx
-            : global::Godot.Environment.ToneMapper.Linear;
-        env.GlowEnabled = p.PostProcessing;
-        env.SsaoEnabled = false;
+        // Post on means the user's stack, the same one the view gets: a photo should look like the
+        // world it was taken in. Off is a raw linear read of the scene.
+        if (p.PostProcessing)
+        {
+            SkyEnvironment.WritePost(env);
+        }
+        else
+        {
+            env.TonemapMode = global::Godot.Environment.ToneMapper.Linear;
+            env.GlowEnabled = false;
+            env.SsaoEnabled = false;
+            env.SsrEnabled = false;
+            env.AdjustmentEnabled = false;
+        }
         env.SsilEnabled = false;
-        env.SsrEnabled = false;
 
         return env;
     }

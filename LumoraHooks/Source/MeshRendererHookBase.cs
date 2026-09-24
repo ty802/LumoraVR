@@ -130,6 +130,48 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
                 {
                     AssignMesh(MeshRenderer, godotMesh);
                 }
+
+                // COME BACK UNTIL THE MESH ACTUALLY ARRIVES.
+                //
+                // An imported mesh decodes off-thread and uploads on a later frame, so the first apply
+                // asks a MeshProvider for geometry that is not there yet and gets null. ApplyChanges is
+                // queue-driven and an asset finishing its decode dirties NOTHING, so that null was
+                // final: the renderer sat with an empty MeshInstance3D for the rest of the session.
+                // Skinned meshes have carried their own requeue for a while, which is why an imported
+                // avatar showed its body and its hair and none of its props - every one of those is a
+                // plain MeshRenderer.
+                //
+                // Bounded, because a genuinely broken asset must not spin forever. The cap is loose
+                // enough that no honest decode reaches it, and hitting it says so once. -xlinka
+                if (godotMesh == null && Owner.Mesh.Target != null && Owner is { IsDestroyed: false })
+                {
+                    // A FRAME COUNT WAS THE WRONG CLOCK. Sixty meshes decoding at once take longer
+                    // than ten seconds, so the cap fired on a load that was progressing perfectly well
+                    // and the prop then only appeared if something unrelated happened to re-dirty the
+                    // hook. The provider already knows whether anything is still coming - ask it, and
+                    // only start counting against the cap once it says no. -xlinka
+                    bool stillArriving = Owner.Mesh.Target is MeshProvider pending && pending.IsLoadPending;
+
+                    if (stillArriving || _meshWaitFrames < MeshWaitFrameLimit)
+                    {
+                        if (!stillArriving)
+                            _meshWaitFrames++;
+                        Owner.MarkChangeDirty();
+                    }
+                    else if (!_meshWaitGaveUp)
+                    {
+                        _meshWaitGaveUp = true;
+                        LumoraLogger.Warn($"MeshRendererHook '{Owner.Slot?.SlotName.Value}': mesh "
+                                        + $"{Owner.Mesh.Target.GetType().Name} never produced geometry after "
+                                        + $"{MeshWaitFrameLimit} frames with nothing still loading; "
+                                        + "the renderer stays empty.");
+                    }
+                }
+                else if (godotMesh != null)
+                {
+                    _meshWaitFrames = 0;
+                    _meshWaitGaveUp = false;
+                }
             }
 
             ApplyBoundsOverride();
@@ -141,7 +183,11 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
             // showing up at all. On an imported avatar whose material reference failed to wire, that blob
             // follows the wearer into every world and looks like a bug in something else entirely.
             // Drawing nothing is the honest result of having nothing to draw it with. -xlinka
-            bool enabled = Owner.Enabled && Owner.Materials.Count > 0;
+            // COUNT is not the question, CONTENT is. A material list can now carry empty slots on
+            // purpose - the importer leaves one where a material failed to build so the surfaces after
+            // it keep their index - and a list of nothing but holes still draws the grey default this
+            // check exists to prevent.
+            bool enabled = Owner.Enabled && HasAnyMaterial();
             if (meshInstance != null && meshInstance.Visible != enabled)
             {
                 meshInstance.Visible = enabled;
@@ -172,7 +218,9 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
             bool surfacePrioritiesChanged = Owner.SurfaceRenderPrioritiesChanged
                 || AnyChanged(Owner.SurfaceRenderPriorities);
             bool surfaceAssignmentsChanged = Owner.SurfaceAssignmentsChanged || meshWasChanged;
-            bool materialsChanged = materialRefsChanged || surfacePrioritiesChanged || surfaceAssignmentsChanged;
+            bool overlayChanged = Owner.OverlayOrderChanged;
+            bool materialsChanged = materialRefsChanged || surfacePrioritiesChanged || surfaceAssignmentsChanged
+                || overlayChanged;
 
             if (materialsChanged)
             {
@@ -180,6 +228,7 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
                 Owner.MaterialPropertyBlocksChanged = false;
                 Owner.SurfaceRenderPrioritiesChanged = false;
                 Owner.SurfaceAssignmentsChanged = false;
+                Owner.OverlayOrderChanged = false;
                 ApplyMaterials();
                 if (!renderQueueApplied)
                     ApplyRenderQueue();
@@ -187,11 +236,43 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
 
             SyncPerSurfaceInstances();
             ApplyLodRange();
+            ReportOnce();
         }
         else
         {
+            // SILENCE IS NOT AN ANSWER. This branch tears the renderer down and used to say nothing at
+            // all, so a renderer that never got past the gate was indistinguishable from one that was
+            // never created - and that is exactly the state every imported prop was in. -xlinka
+            ReportMissing();
             CleanupRenderer(destroyingWorld: false);
         }
+    }
+
+    private int _missingApplies;
+    private bool _missingReported;
+
+    // Named after a short grace, not on the first pass: a mesh reference is wired in a second pass
+    // after the components are built, so "no mesh yet" is normal for the first few frames and only
+    // means something once it has stopped being temporary.
+    private void ReportMissing()
+    {
+        if (_missingReported || _reported)
+            return;
+        if (++_missingApplies < MissingGraceApplies)
+        {
+            // Keep coming back, or the counter never advances: nothing else re-drives a hook that
+            // took the empty branch, which is the same trap the mesh wait above was in.
+            if (Owner is { IsDestroyed: false })
+                Owner.MarkChangeDirty();
+            return;
+        }
+
+        _missingReported = true;
+        var target = Owner.Mesh.Target;
+        LumoraLogger.Warn($"MeshRendererHook '{Owner.Slot?.SlotName.Value}': NO RENDERER after "
+                        + $"{MissingGraceApplies} applies - Mesh.Target={(target == null ? "null" : target.GetType().Name)}, "
+                        + $"assetAvailable={IsMeshAssetAvailable()}, materials={Owner.Materials.Count}, "
+                        + $"enabled={Owner.Enabled}, slotActive={Owner.Slot?.IsActive}");
     }
 
     // LOD plumbing. A LodGroup decides the band; this only makes sure every instance the hook owns
@@ -297,7 +378,7 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
             var srcMat = GetSurfaceMaterial(i);
             if (srcMat != null)
             {
-                var mat = (Material)srcMat.Duplicate();
+                var mat = CloneMaterial(srcMat);
                 mat.RenderPriority = 0;
                 inst.SetSurfaceOverrideMaterial(0, mat);
             }
@@ -324,6 +405,10 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
     // Set by GetSurfaceMaterial whenever it hands back the placeholder, read once per apply.
     private bool _surfaceStillLoading;
 
+    private System.Collections.Generic.Dictionary<Material, Material> _overlayClones = new();
+    private System.Collections.Generic.Dictionary<Material, Material> _overlayClonesUsed = new();
+    private bool _overlayClonesDepthTest;
+
     protected virtual void ApplyMaterials()
     {
         if (meshInstance == null) return;
@@ -331,10 +416,31 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
         int count = GetSurfaceCount();
 
         _surfaceStillLoading = false;
+        bool overlay = Owner.HasOverlayOrder;
+        // One overlay clone per source material, kept while the source stays the same. An apply used to
+        // clone every surface every time it ran, and a text renderer or a scrolling list applies every
+        // frame, so the dash was minting materials at frame rate for nothing. -xlinka
+        if (!overlay || Owner.OverlayDepthTest != _overlayClonesDepthTest)
+        {
+            _overlayClones.Clear();
+            _overlayClonesDepthTest = Owner.OverlayDepthTest;
+        }
         for (int i = 0; i < count; i++)
         {
-            meshInstance.SetSurfaceOverrideMaterial(i, GetSurfaceMaterial(i));
+            var material = GetSurfaceMaterial(i);
+            if (overlay && material != null)
+            {
+                if (!_overlayClones.TryGetValue(material, out var clone))
+                    clone = ToOverlayMaterial(material, Owner.OverlayDepthTest);
+                _overlayClonesUsed[material] = clone;
+                material = clone;
+            }
+            meshInstance.SetSurfaceOverrideMaterial(i, material);
         }
+        // Only the sources this apply touched survive, so a renderer that swaps materials cannot grow
+        // the cache without bound.
+        (_overlayClones, _overlayClonesUsed) = (_overlayClonesUsed, _overlayClones);
+        _overlayClonesUsed.Clear();
 
         // Come back until the real material lands.
         //
@@ -365,6 +471,67 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
     }
 
     private int _uiDiagLogged;
+
+    // The overlay band is decided per instance, so the ASSET material is never touched: a duplicate takes
+    // the pass and priority changes and is dropped again when the band clears. A native material moves to
+    // the transparent pass with the depth write kept, which is what lets its offset order it against the
+    // dash. A shader material carries its pass in the shader source, so it only takes the priority: one
+    // that already blends (the laser family) orders correctly, an opaque one stays where its shader put
+    // it. -xlinka
+    private static Material ToOverlayMaterial(Material source, bool depthTest)
+    {
+        if (source == null)
+            return null!;
+
+        var duplicate = CloneMaterial(source);
+        if (duplicate is StandardMaterial3D standard)
+        {
+            if (standard.Transparency == BaseMaterial3D.TransparencyEnum.Disabled)
+                standard.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+            standard.DepthDrawMode = BaseMaterial3D.DepthDrawModeEnum.Always;
+            standard.NoDepthTest = !depthTest;
+        }
+        duplicate.RenderPriority = 127;
+        return duplicate;
+    }
+
+    // NEVER Resource.Duplicate() A SHADER MATERIAL ON THIS ENGINE BUILD.
+    //
+    // Godot 4.7-dev4 carries upstream 110287, which makes ShaderMaterial's property-list pass push a
+    // default at the material for every uniform it has no cached value for (an unassigned sampler2D
+    // on any of our UI or text shaders). Duplicate() runs that pass on a material whose RID is not
+    // there to receive it, and the server prints "Parameter material is null" once per uniform, per
+    // duplicate, per apply: a thousand lines a minute with the dash open. Upstream reverted it in
+    // 118373 for dev5. A clone built by hand never enters that pass: same shader, the uniforms that
+    // were set copied across, the unset ones left to the shader's own defaults exactly as before.
+    // Everything else still duplicates; nothing in BaseMaterial3D takes that path. -xlinka
+    protected static Material CloneMaterial(Material source)
+    {
+        if (source is not ShaderMaterial shaderMaterial)
+            return (Material)source.Duplicate();
+
+        var clone = new ShaderMaterial
+        {
+            Shader = shaderMaterial.Shader,
+            RenderPriority = shaderMaterial.RenderPriority,
+            NextPass = shaderMaterial.NextPass,
+        };
+        var shader = shaderMaterial.Shader;
+        if (shader == null)
+            return clone;
+
+        foreach (var entry in shader.GetShaderUniformList())
+        {
+            var info = entry.AsGodotDictionary();
+            if (!info.TryGetValue("name", out var nameVariant))
+                continue;
+            var name = nameVariant.AsStringName();
+            var value = shaderMaterial.GetShaderParameter(name);
+            if (value.VariantType != Variant.Type.Nil)
+                clone.SetShaderParameter(name, value);
+        }
+        return clone;
+    }
 
     private readonly LoadingSkinWatch _loadingSkin = new();
 
@@ -418,6 +585,126 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
 
         MaterialPropertyApplicator.ApplyGodotRenderPriority(material, priority);
         return material;
+    }
+
+    // Roughly ten seconds at 60 Hz. A local decode lands in a handful of frames; a peer transfer can
+    // take longer, and waiting is free compared with the object never appearing.
+    private const int MeshWaitFrameLimit = 600;
+
+    private const int MaxPushAttempts = 3;
+    private int _pushAttempts;
+
+    // Holds one MeshProvider loaded on this renderer's behalf. Swapped when the renderer is pointed at
+    // a different mesh, dropped when the hook goes away.
+    private sealed class ProviderPin : Lumora.Core.Assets.IAssetRef
+    {
+        private Lumora.Core.Assets.IAssetProvider _target = null!;
+
+        public Lumora.Core.Assets.IAssetProvider Target
+        {
+            get => _target;
+            set => _target = value;
+        }
+
+        // The renderer re-reads the provider every apply and is re-driven by its own requeue, so there
+        // is nothing to do on the notification itself.
+        public void AssetUpdated() { }
+    }
+
+    private ProviderPin? _providerPin;
+    private MeshProvider? _pinnedProvider;
+
+    private void PinProvider(MeshProvider provider)
+    {
+        if (ReferenceEquals(_pinnedProvider, provider))
+            return;
+
+        ReleaseProviderPin();
+
+        _providerPin = new ProviderPin { Target = provider };
+        _pinnedProvider = provider;
+        provider.ReferenceSet(_providerPin);
+    }
+
+    private void ReleaseProviderPin()
+    {
+        if (_providerPin != null && _pinnedProvider is { IsDestroyed: false })
+            _pinnedProvider.ReferenceFreed(_providerPin);
+        _providerPin = null;
+        _pinnedProvider = null;
+    }
+
+    // Two seconds at 60 Hz: long past any reference-resolution pass, short enough to be in the log
+    // before anyone goes looking.
+    private const int MissingGraceApplies = 120;
+    private int _meshWaitFrames;
+    private bool _meshWaitGaveUp;
+
+    // ONE LINE PER UNSKINNED RENDERER, once, the first time it has a mesh.
+    //
+    // The skinned hook has had this for a while and it is how every skinning problem since has been
+    // found; the plain one had nothing, so a mesh that simply did not appear left no trace at all and
+    // the only honest answer to "where is it" was a shrug. Everything here is something that makes a
+    // renderer invisible while every field you can reach from the datamodel still reads correct:
+    // hidden, no surfaces, an empty or holed material list, bounds the culler throws away, a node
+    // parked somewhere other than where the slot is, a degenerate or enormous scale, or a layer the
+    // camera does not draw. -xlinka
+    private bool _reported;
+
+    private void ReportOnce()
+    {
+        if (_reported)
+            return;
+
+        if (meshInstance == null || !GodotObject.IsInstanceValid(meshInstance) || meshInstance.Mesh == null)
+            return;
+
+        _reported = true;
+
+        var aabb = meshInstance.GetAabb();
+        int surfaces = meshInstance.Mesh.GetSurfaceCount();
+
+        int filled = 0;
+        for (int i = 0; i < Owner.Materials.Count; i++)
+        {
+            if (Owner.Materials.GetElement(i)?.Target != null)
+                filled++;
+        }
+
+        string report = ($"MeshRendererHook '{Owner.Slot?.SlotName.Value}': {surfaces} surface(s) | "
+                       + $"visible={meshInstance.Visible} enabled={Owner.Enabled} "
+                       + $"materials={filled}/{Owner.Materials.Count} "
+                       + $"aabb=({aabb.Size.X:F2},{aabb.Size.Y:F2},{aabb.Size.Z:F2}) "
+                       + $"at ({aabb.Position.X:F2},{aabb.Position.Y:F2},{aabb.Position.Z:F2}) | "
+                       + $"node=({meshInstance.GlobalPosition.X:F2},{meshInstance.GlobalPosition.Y:F2},{meshInstance.GlobalPosition.Z:F2}) "
+                       + $"scale=({meshInstance.Scale.X:F3},{meshInstance.Scale.Y:F3},{meshInstance.Scale.Z:F3}) "
+                       + $"layers={meshInstance.Layers} "
+                       // The slot's own global, so a node sitting somewhere the slot is not shows up as
+                       // the two disagreeing rather than as one suspicious number.
+                       + $"slot=({Owner.Slot?.GlobalPosition.x ?? 0f:F2},{Owner.Slot?.GlobalPosition.y ?? 0f:F2},{Owner.Slot?.GlobalPosition.z ?? 0f:F2}) "
+                       + $"slotActive={Owner.Slot?.IsActive}");
+        // Only a renderer that looks like it might not draw earns a line at Log level. A healthy one
+        // still gets the same line at Debug, so the dump is there when you turn it on and absent from
+        // the hundreds of lines a dashboard or an import would otherwise print. -xlinka
+        bool suspicious = !meshInstance.Visible || !Owner.Enabled || surfaces == 0
+            || filled < Owner.Materials.Count || aabb.Size == Vector3.Zero
+            || Owner.Slot == null || !Owner.Slot.IsActive
+            || meshInstance.Scale.X == 0f || meshInstance.Scale.Y == 0f || meshInstance.Scale.Z == 0f;
+        if (suspicious)
+            LumoraLogger.Log(report);
+        else
+            LumoraLogger.Debug(report);
+    }
+
+    // At least one slot in the list actually has a material in it.
+    private bool HasAnyMaterial()
+    {
+        for (int i = 0; i < Owner.Materials.Count; i++)
+        {
+            if (Owner.Materials.GetElement(i)?.Target != null)
+                return true;
+        }
+        return false;
     }
 
     private MaterialAsset GetMaterialAsset(int index)
@@ -483,6 +770,10 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
 
     public override void Destroy(bool destroyingWorld)
     {
+        // A world going down is tearing everything out anyway; touching providers on the way past
+        // would only be a chance to trip over something already gone.
+        if (!destroyingWorld)
+            ReleaseProviderPin();
         CleanupRenderer(destroyingWorld);
         meshInstance = null!;
         MeshRenderer = default!;
@@ -538,8 +829,44 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
         // this, MeshProvider meshes never rendered and spammed "Unsupported mesh component type MeshProvider". -xlinka
         if (meshComponent is MeshProvider meshProvider)
         {
-            if (meshProvider.Asset?.Hook is MeshAssetHook meshAssetHook && meshAssetHook.IsValid)
-                return meshAssetHook.GodotMesh;
+            // NOBODY WAS EVER ASKING THIS PROVIDER TO LOAD.
+            //
+            // StaticAssetProvider.OnUrlChanged only starts a load `if (AssetReferenceCount > 0)`, and
+            // the count comes from AssetRef members registering themselves. SkinnedMeshRenderer holds
+            // its geometry through `AssetRef<MeshDataAsset> MeshAsset`, so it refcounts and loads;
+            // MeshRenderer holds a plain `SyncRef<Component> Mesh`, which refcounts nothing. So an
+            // unskinned renderer pointed at a MeshProvider sat forever in front of an asset that had
+            // never been asked to exist - which is why every prop on an imported avatar was invisible
+            // while everything skinned came through.
+            //
+            // Taking the reference here rather than adding an AssetRef member to MeshRenderer, because
+            // a new sync member would change the component's saved shape for every world already on
+            // disk. This pin costs one object per renderer and is released with the hook. -xlinka
+            PinProvider(meshProvider);
+
+            if (meshProvider.Asset?.Hook is MeshAssetHook meshAssetHook)
+            {
+                // THE UPLOAD IS FIRE-AND-FORGET AND CAN MISS. MeshDataAsset.SetMeshData pushes its
+                // geometry into the hook only `if (Hook != null)` at that instant, never retries, and
+                // bumps a Version nobody is watching. An asset that decoded before its hook was ready
+                // therefore holds perfectly good geometry that the hook has never seen - and since the
+                // hook's ArrayMesh is the ONLY path an unskinned renderer has, the object never
+                // appears. Skinned meshes are immune because they read the PhosMesh themselves.
+                //
+                // That is the whole reason an imported avatar showed its body and none of its props.
+                // Push it now rather than waiting for a second upload that is not coming. -xlinka
+                // A few attempts, not six hundred: the upload defers to the main thread, so re-issuing
+                // it every frame of the wait would queue the same mesh over and over for a hook that
+                // has already been told.
+                if (!meshAssetHook.IsValid && meshProvider.Asset.MeshData != null && _pushAttempts < MaxPushAttempts)
+                {
+                    _pushAttempts++;
+                    meshAssetHook.UploadMesh(meshProvider.Asset.MeshData);
+                }
+
+                if (meshAssetHook.IsValid)
+                    return meshAssetHook.GodotMesh;
+            }
             // Asset still decoding/uploading (the ArrayMesh builds deferred on the main thread) - not an error;
             // the renderer re-applies when the asset finishes.
             LumoraLogger.Debug("MeshRendererHookBase: MeshProvider mesh asset/hook not ready yet");
@@ -559,6 +886,12 @@ public abstract class MeshRendererHookBase<T, U> : ComponentHook<T>, ILodRangeTa
     {
         if (meshInstance == null)
         {
+            return;
+        }
+
+        if (Owner.HasOverlayOrder)
+        {
+            meshInstance.SortingOffset = Owner.OverlayOrder;
             return;
         }
 

@@ -160,7 +160,7 @@ public abstract class TransformHandle : Component, IGrabbable, ILaserPointerTarg
     }
 
     // a ray starting inside the box hits at parameter 0, which is what a hand already through a handle should get
-    protected static bool RayBox(in float3 origin, in float3 direction, in float3 min, in float3 max, out float param)
+    protected internal static bool RayBox(in float3 origin, in float3 direction, in float3 min, in float3 max, out float param)
     {
         param = 0f;
         float near = 0f;

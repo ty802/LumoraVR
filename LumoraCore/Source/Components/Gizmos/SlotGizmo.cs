@@ -34,6 +34,11 @@ public class SlotGizmo : ImplementableComponent, IGizmo, IGizmoDragHost
     // 0=translate, 1=rotate, 2=scale
     public readonly Sync<int> ActiveMode = null!;
 
+    // The owner's preference chooses the shared handle layout. Other users do not overwrite it
+    // with their own preference when observing or interacting with this selection.
+    [NonPersistent]
+    public readonly Sync<EngineSettings.GizmoControlStyle> ControlStyle = null!;
+
     public readonly SyncRef<Component> LinkedInspector = null!;
 
     public event Action<int> OnModeChanged = null!;
@@ -63,6 +68,7 @@ public class SlotGizmo : ImplementableComponent, IGizmo, IGizmoDragHost
         IsFolded.OnChanged += OnFoldedChanged;
         IsLocalSpace.OnChanged += OnLocalSpaceChanged;
         ActiveMode.OnChanged += OnActiveModeChanged;
+        ControlStyle.OnChanged += _ => ApplyControlStyle();
     }
 
     public override void OnInit()
@@ -113,6 +119,7 @@ public class SlotGizmo : ImplementableComponent, IGizmo, IGizmoDragHost
 
         _buildsChrome = true;
         Owner.Target = owner!;
+        UpdateControlPreference();
         BuildHandles(targetSlot);
         TargetSlotRef.Target = targetSlot;
         HandleTargetChanged();
@@ -166,6 +173,7 @@ public class SlotGizmo : ImplementableComponent, IGizmo, IGizmoDragHost
     private Slot? _rotateGroup;
     private Slot? _scaleGroup;
     private readonly List<TransformHandle> _handles = new();
+    private GizmoModeToolbar? _modeToolbar;
 
     // Sized to read comfortably at 1m: 0.15 total arrow, 0.25 ring, 0.05 cube.
     private const float ArrowShaftRadius = 0.007f;
@@ -186,7 +194,10 @@ public class SlotGizmo : ImplementableComponent, IGizmo, IGizmoDragHost
         _draggingHandles = System.Math.Max(0, dragging ? previous + 1 : previous - 1);
         // Only the 0 <-> 1 crossing changes what is drawn, so that is the only time the hook hears.
         if ((previous > 0) != (_draggingHandles > 0))
+        {
+            UpdateModeToolbarVisibility();
             NotifyChanged();
+        }
     }
 
     private void BuildHandles(Slot? target)
@@ -205,8 +216,7 @@ public class SlotGizmo : ImplementableComponent, IGizmo, IGizmoDragHost
         var zMat = chrome?.GetMaterial(World, GizmoMaterialKind.AxisZ);
         var centerMat = chrome?.GetMaterial(World, GizmoMaterialKind.Center);
 
-        // One MODE visible at a time (translate / rotate / scale) - showing all three at once reads as
-        // clutter; ActiveMode gates the groups in ApplyChromeVisibility.
+        // Separate groups let the normal modes show one operation and All Gizmo show all three.
         _translateGroup = root.AddSlot("Translate");
         _rotateGroup = root.AddSlot("Rotate");
         _scaleGroup = root.AddSlot("Scale");
@@ -238,12 +248,14 @@ public class SlotGizmo : ImplementableComponent, IGizmo, IGizmoDragHost
         BuildAxisScaleCube(_scaleGroup, target, "X", 0, xAxis, yToX, xMat);
         BuildAxisScaleCube(_scaleGroup, target, "Y", 1, yAxis, floatQ.Identity, yMat);
         BuildAxisScaleCube(_scaleGroup, target, "Z", 2, zAxis, yToZ, zMat);
+        ApplyControlStyle();
     }
 
     private static void AttachVisual(Slot slot, Meshes.ProceduralMesh mesh, Lumora.Core.Assets.OverlayUnlitMaterial? material)
     {
         var renderer = slot.AttachComponent<MeshRenderer>();
         renderer.Mesh.Target = mesh;
+        renderer.ShadowCastMode.Value = ShadowCastMode.Off;
         if (material != null)
             renderer.Material.Target = material;
     }
@@ -401,6 +413,7 @@ public class SlotGizmo : ImplementableComponent, IGizmo, IGizmoDragHost
         // it still needs to know whether there is a box on screen (the bounds clock asks).
         bool visible = Active.Value && !IsFolded.Value;
         _chromeVisible = visible;
+        UpdateModeToolbarVisibility();
 
         var root = _handlesRoot;
         if (root == null || root.IsRemoved)
@@ -409,17 +422,70 @@ public class SlotGizmo : ImplementableComponent, IGizmo, IGizmoDragHost
         if (root.ActiveSelf.Value != visible)
             root.ActiveSelf.Value = visible;
 
-        // One mode at a time: 0=translate, 1=rotate, 2=scale.
+        // All Gizmo selects the operation by grabbing its handle, with no mode switch.
         int mode = ActiveMode.Value;
-        SetGroupActive(_translateGroup, visible && mode == 0);
-        SetGroupActive(_rotateGroup, visible && mode == 1);
-        SetGroupActive(_scaleGroup, visible && mode == 2);
+        bool all = ControlStyle.Value == EngineSettings.GizmoControlStyle.AllGizmo;
+        SetGroupActive(_translateGroup, visible && (all || mode == 0));
+        SetGroupActive(_rotateGroup, visible && (all || mode == 1));
+        SetGroupActive(_scaleGroup, visible && (all || mode == 2));
     }
 
     private static void SetGroupActive(Slot? group, bool active)
     {
         if (group != null && !group.IsRemoved && group.ActiveSelf.Value != active)
             group.ActiveSelf.Value = active;
+    }
+
+    private void UpdateModeToolbarVisibility()
+    {
+        if (ControlStyle.Value == EngineSettings.GizmoControlStyle.Cubes && _modeToolbar == null)
+        {
+            var toolbar = Slot.AddLocalSlot("Mode controls");
+            toolbar.Persistent.Value = false;
+            _modeToolbar = toolbar.AttachComponent<GizmoModeToolbar>();
+            _modeToolbar.Setup(this);
+        }
+        if (_modeToolbar is { IsDestroyed: false })
+            SetGroupActive(_modeToolbar.Slot, ControlStyle.Value == EngineSettings.GizmoControlStyle.Cubes
+                && Active.Value && !IsFolded.Value && !IsInteracting);
+    }
+
+    private void UpdateControlPreference()
+    {
+        if (!IsInteracting && Owner.Target == World?.LocalUser
+            && ControlStyle.Value != EngineSettings.GizmoControls)
+            ControlStyle.Value = EngineSettings.GizmoControls;
+    }
+
+    private void ApplyControlStyle()
+    {
+        // In the combined layout the axis cubes sit beyond the arrows and rotation rings.
+        // The uniform-scale cube has its own corner, leaving the centre free for translation.
+        // Change the geometry and its pick box together, including when returning to a single mode.
+        bool all = ControlStyle.Value == EngineSettings.GizmoControlStyle.AllGizmo;
+        foreach (var handle in _handles)
+        {
+            if (handle is AxisScaleHandle)
+            {
+                var cube = handle.Slot.FindChild("Cube", recursive: false);
+                var connector = handle.Slot.FindChild("Connector", recursive: false);
+                float end = all ? .30f : .15f;
+                float start = all ? .18f : 0f;
+                if (cube != null) cube.LocalPosition.Value = new float3(0, end, 0);
+                if (connector != null)
+                {
+                    connector.LocalPosition.Value = new float3(0, (start + end) * .5f, 0);
+                    var mesh = connector.GetComponent<Meshes.CylinderMesh>();
+                    if (mesh != null) mesh.Height.Value = end - start;
+                }
+                handle.SetPickBox(new float3(0, end, 0), float3.One * .04f);
+            }
+            else if (handle is ScaleHandle)
+            {
+                handle.Slot.LocalPosition.Value = all ? float3.One * -.09f : float3.Zero;
+            }
+        }
+        ApplyChromeVisibility();
     }
 
     // CONSTANT APPARENT SIZE: scale = max(user scale, viewer distance), so editor chrome stays usable
@@ -539,6 +605,7 @@ public class SlotGizmo : ImplementableComponent, IGizmo, IGizmoDragHost
             NotifyChanged();
         }
         SyncBoundsTransform();
+        _modeToolbar?.UpdatePlacement();
     }
 
     private static bool SameBox(in BoundingBox a, in BoundingBox b)
@@ -685,6 +752,7 @@ public class SlotGizmo : ImplementableComponent, IGizmo, IGizmoDragHost
         Slot.GlobalPosition = target.GlobalPosition;
         Slot.GlobalRotation = IsLocalSpace.Value ? target.GlobalRotation : floatQ.Identity;
         SyncBoundsTransform();
+        _modeToolbar?.UpdatePlacement();
     }
 
     // Re-selecting the ALREADY-ACTIVE mode within this window resets that transform (tap Translate
@@ -824,6 +892,7 @@ public class SlotGizmo : ImplementableComponent, IGizmo, IGizmoDragHost
         }
 
         Owner.Target = owner!;
+        UpdateControlPreference();
         Active.Value = true;
         IsFolded.Value = false;
         LinkedInspector.Target = null!;
@@ -852,6 +921,8 @@ public class SlotGizmo : ImplementableComponent, IGizmo, IGizmoDragHost
     public override void OnStart()
     {
         base.OnStart();
+        UpdateControlPreference();
+        UpdateModeToolbarVisibility();
         // A gizmo that arrived over the wire never ran Setup: its target ref may already be resolved,
         // and its chrome slots may still be in flight.
         HandleTargetChanged();
@@ -880,6 +951,7 @@ public class SlotGizmo : ImplementableComponent, IGizmo, IGizmoDragHost
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
+        UpdateControlPreference();
 
         // The gizmo dies with its target. OnPrepareDestroy covers the normal path; this catches a slot
         // pulled out from under us without one. A null watch is a parked rig or a ref that has not

@@ -12,8 +12,7 @@ namespace Lumora.Godot.Hooks.Gizmos;
 #nullable enable
 
 // Renders the SlotGizmo's frame chrome: the cyan bounds wireframe and the name label. The
-// manipulation handles are ENGINE content built by SlotGizmo itself; there is no in-world toolbar
-// (mode switching comes from UI actions, not floating orbs).
+// manipulation handles and the translucent mode cubes are engine content built by SlotGizmo.
 //
 // Draws only, it does not measure. The box arrives already computed in the target's own local
 // space and cached engine-side, and it hangs off a slot whose transform mirrors the target, so

@@ -11,20 +11,19 @@ using Lumora.Core.Networking.Sync;
 namespace Lumora.Core.Components;
 
 // Editor for SyncRef members: a compact square-button cluster then the target readout stretched
-// across the remaining row. Cluster: pull the target's reference card, open the target in a new
-// inspector window, then (after the wide target button) clear. Pressing the target button assigns
-// a held ReferenceProxy card when the presser holds one, otherwise selects the target in this
-// panel. Grip-releasing a card over the row assigns too (type-checked either way).
-// The whole editor area is also a PULL source for the CURRENT TARGET: gripping the readout hands
-// you a card for whatever the reference points at, so a target can be dragged from one field into
-// another without going through the tree. That deliberately shadows the row-level source (which
-// pulls the reference MEMBER itself, for wiring drives) - the row source still wins on the label half of
-// the row, since the parent walk finds the nearest source first. -xlinka
+// across the remaining row. Cluster: pull the target's reference card, open the target as a tab in
+// this panel, then (after the wide target button) clear. Pressing the target button assigns a held
+// ReferenceProxy card when the presser holds one, otherwise selects the target in this panel.
+// Grip-releasing a card over the row assigns too (type-checked either way).
+// The ≡ button is the one PULL spot for the CURRENT TARGET, by press or by the grab action, so a target
+// can be dragged from one field into another without going through the tree. Nothing else on the editor
+// hands out a card: when the whole readout did, a squeeze while pressing it pulled one every time. -xlinka
 [ComponentCategory("Utility/Inspectors")]
 public class RefMemberEditor : MemberEditor, IProxyReceiver, IProxySource
 {
     private readonly SyncRef<Text> _targetText;
     private readonly SyncRef<IField<color>> _targetTint;
+    private readonly SyncRef<Slot> _pullArea = new();
 
     public RefMemberEditor()
     {
@@ -43,8 +42,8 @@ public class RefMemberEditor : MemberEditor, IProxyReceiver, IProxySource
         ui.FlexibleWidth(0f);
         ui.PushStyle();
         ui.TextColor(InspectorUI.AccentColor);
-        ui.Button("≡", OnPullPressed);   // pull the target's card
-        ui.Button("↑", OnOpenPressed);   // open in a new inspector window
+        _pullArea.Target = ui.Button("≡", OnPullPressed).Slot;
+        ui.Button("↑", OnOpenPressed);   // open as a tab
         ui.PopStyle();
         ui.PopStyle();
 
@@ -99,24 +98,25 @@ public class RefMemberEditor : MemberEditor, IProxyReceiver, IProxySource
     public IGrabbable? TryCreateProxy(Grabber grabber, in float3 spawnPoint)
     {
         var target = Ref?.Target;
-        if (target == null || target.IsDestroyed || World == null)
+        if (target == null || target.IsDestroyed || World == null || !ReferenceProxySource.ContainsPoint(_pullArea.Target, spawnPoint))
             return null;
         return ReferenceProxy.Spawn(World, target, spawnPoint);
     }
 
-    // opens a second inspector window beside this one; a component target comes pre-expanded
+    // opens the target as a tab in this panel; a component target comes pre-expanded
     [SyncMethod]
     public void OnOpenPressed(Button button, UIInteractionContext context)
     {
-        var origin = Slot.GetComponentInParent<SceneInspectorPanel>();
-        if (origin == null)
+        var panel = Slot.GetComponentInParent<SceneInspectorPanel>();
+        if (panel == null)
             return;
         var target = Ref?.Target;
         var slot = target as Slot ?? (target as Component)?.Slot;
         if (slot == null || slot.IsDestroyed)
             return;
-        var panel = SceneInspectorPanel.SpawnAdjacent(origin, slot);
-        if (panel != null && target is Component component)
+        panel.OpenTab(slot);
+        if (target is Component component
+            && !SceneInspectorPanel.IsExpanded(panel.ExpandedComponents, component.ReferenceID.RawValue))
             panel.ExpandedComponents.Add(component.ReferenceID.RawValue);
     }
 
@@ -178,8 +178,8 @@ public class RefMemberEditor : MemberEditor, IProxyReceiver, IProxySource
             ? $" on {component.GetType().Name} on {slot?.SlotName.Value}"
             : slot != null ? $" on {slot.SlotName.Value}" : "";
 
-        string name = target is ISyncMember member && !string.IsNullOrEmpty(member.Name)
-            ? member.Name!
+        string name = target is ISyncMember member
+            ? InspectorUI.MemberDisplayName(member)
             : target.GetType().Name;
 
         return $"{name}{where} ({target.ReferenceID})";

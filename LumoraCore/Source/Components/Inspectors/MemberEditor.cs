@@ -199,6 +199,32 @@ public static class InspectorUI
     public const float RowHeight = 34f;
     public const float FontSize = 17f;
 
+    // The name a member reads as on a card, a ref readout or a list row. A collection element has
+    // no name of its own (its member name is its type), so the owning worker gets first say through
+    // ICustomMemberNameSource (a blend shape weight names itself after the mesh's shape), then a
+    // list element falls back to "List[i]", then anything else to the member name. -xlinka
+    public static string MemberDisplayName(ISyncMember member)
+    {
+        if (member is SyncElement element)
+        {
+            IWorldElement? node = element.Parent;
+            while (node is SyncElement parentElement)
+                node = parentElement.Parent;
+            if (node is ICustomMemberNameSource source && source.GetMemberName(member) is { Length: > 0 } custom)
+                return custom;
+
+            if (element.Parent is ISyncList list && element.Parent is ISyncMember listMember)
+            {
+                for (int i = 0; i < list.Count; i++)
+                {
+                    if (ReferenceEquals(list.GetElement(i), member))
+                        return $"{listMember.Name}[{i}]";
+                }
+            }
+        }
+        return string.IsNullOrEmpty(member.Name) ? member.GetType().Name : member.Name!;
+    }
+
     // THE field-state color rule, one implementation for every editor and every widget in a member
     // row: a member that is gone reads broken gray, a driven one the drive magenta, one that is
     // merely linked (something holds it but nothing writes it) cyan, anything else the caller's
@@ -354,6 +380,7 @@ public static class InspectorUI
             ui.BackgroundColor(tint);
             var button = ui.Button("", null!);
             button.SetAction(pullSource.OnPullPressed);
+            pullSource.GrabArea.Target = button.Slot;
             ui.PopStyle();
         }
         else

@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections;
+using System.Reflection;
 using Helio.UI;
 using Helio.UI.Layout;
 using Lumora.Core;
@@ -15,9 +16,14 @@ namespace Lumora.Core.Components;
 // compact row per element (index, the element's editor stretched across the row, remove X), then a
 // full-width Add row. small lists always show their elements; past 20 the section starts as a
 // single centered "show N items" row so huge lists cost nothing until asked for, and rendering caps
-// at 100 rows with an "N more" note. element-bearing lists are fully editable; flat value
+// at 512 rows with an "N more" note. element-bearing lists are fully editable; flat value
 // collections (SyncArray, SyncValueDictionary) render read-only since their entries are raw values,
 // not sync members.
+//
+// The list's own declaration reaches every element: a [Range] on the list field puts a slider on each
+// entry. A worker that names its elements (ICustomMemberNameSource) gets the name in place of the
+// index, and when it owns the list's shape as well the structural controls go away, so eighty blend
+// shape weights read as eighty named sliders and nothing else. -xlinka
 [ComponentCategory("Utility/Inspectors")]
 public class ListMemberEditor : Component, IInspectorActionHandler
 {
@@ -27,7 +33,10 @@ public class ListMemberEditor : Component, IInspectorActionHandler
 
     private readonly SyncRef<Slot> _body;
 
-    private const int MaxRows = 100;
+    // Only reached by a list the person has already unfolded past the auto-collapse, so the cost is
+    // asked for. 100 cut a face's blend shapes in half: a real avatar carries 100-300 of them, and a
+    // slider that never renders is a shape nobody can set. -xlinka
+    private const int MaxRows = 512;
     // Lists at or under this size always render inline; only bigger ones start folded.
     private const int AutoCollapseThreshold = 20;
 
@@ -45,6 +54,29 @@ public class ListMemberEditor : Component, IInspectorActionHandler
     }
 
     private ISyncList? List => TargetList.Target as ISyncList;
+
+    // The list's declaring field, so the elements inherit its editor attributes. Resolved live from
+    // the owning worker's member table by identity, never by name.
+    private FieldInfo? ResolveFieldInfo()
+    {
+        if (TargetList.Target is not SyncElement element || element.Parent is not Worker worker)
+            return null;
+        for (int i = 0; i < worker.SyncMemberCount; i++)
+        {
+            if (ReferenceEquals(worker.GetSyncMember(i), element))
+                return worker.GetSyncMemberFieldInfo(i);
+        }
+        return null;
+    }
+
+    // The worker this list belongs to, when it names its elements.
+    private ICustomMemberNameSource? ResolveNameSource()
+    {
+        IWorldElement? node = (TargetList.Target as SyncElement)?.Parent;
+        while (node is SyncElement element)
+            node = element.Parent;
+        return node as ICustomMemberNameSource;
+    }
 
     // A config-locked list still renders its elements live; what goes away is every structural control.
     // Add, remove and reorder would all be refused at the datamodel, so offering them is a lie. -xlinka
@@ -84,7 +116,7 @@ public class ListMemberEditor : Component, IInspectorActionHandler
         editor.TargetList.Target = listElement;
         editor.MemberName.Value = name;
 
-        // Label row: just the centered name, tinted by kind. Grip still pulls the list member.
+        // Label row: just the centered name, tinted by kind. The chip pulls the list member.
         var header = InspectorUI.FixedRow(wrapper, "Header", InspectorUI.RowHeight, out var ui, themeContext);
         var headerSource = header.AttachComponent<ReferenceProxySource>();
         headerSource.Target.Target = listElement;
@@ -226,11 +258,14 @@ public class ListMemberEditor : Component, IInspectorActionHandler
         int total = CollectionCount();
 
         bool locked = IsLocked;
+        var names = ResolveNameSource();
+        bool fixedShape = target is ISyncMember collection && names?.OwnsCollectionShape(collection) == true;
+        var fieldInfo = ResolveFieldInfo();
 
         if (!expanded)
         {
             BuildActionRow(body, "ShowRow", $"show {total} items", "toggle");
-            if (target is ISyncList && !locked)
+            if (target is ISyncList && !locked && !fixedShape)
                 BuildActionRow(body, "AddRow", "Add", "add");
             return;
         }
@@ -239,12 +274,15 @@ public class ListMemberEditor : Component, IInspectorActionHandler
         {
             int shown = System.Math.Min(total, MaxRows);
             for (int i = 0; i < shown; i++)
-                BuildElementRow(body, i, list.GetElement(i), locked);
+            {
+                var element = list.GetElement(i);
+                BuildElementRow(body, i, element, locked || fixedShape, fieldInfo, names?.GetMemberName(element));
+            }
             if (total > shown)
                 BuildNoteRow(body, $"{total - shown} more...");
             if (locked)
                 BuildNoteRow(body, "host-configured - edit in Session");
-            else
+            else if (!fixedShape)
                 BuildActionRow(body, "AddRow", "Add", "add");
             return;
         }
@@ -264,17 +302,21 @@ public class ListMemberEditor : Component, IInspectorActionHandler
         }
     }
 
-    // Editable element: "i:" index, the element's editor stretched across the row, remove X.
-    private void BuildElementRow(Slot body, int index, ISyncMember element, bool locked)
+    // Editable element: "i:" index (or the owner's name for it), the element's editor stretched
+    // across the row, remove X. fixedControls drops the reorder and remove buttons: a locked list
+    // refuses them at the datamodel, a fixed-shape list has nothing sensible for them to do.
+    private void BuildElementRow(Slot body, int index, ISyncMember element, bool fixedControls, FieldInfo? fieldInfo, string? name)
     {
         var row = InspectorUI.FixedRow(body, $"E{index}", InspectorUI.RowHeight, out var ui, Slot);
+        var label = string.IsNullOrEmpty(name) ? BuildIndexLabel(ui, index) : BuildNameLabel(ui, name);
+        // The label is the element's pull spot: plain text, so a press on the editor beside it never
+        // hands out a card.
         if (element is IWorldElement elementRef)
         {
             var source = row.AttachComponent<ReferenceProxySource>();
             source.Target.Target = elementRef;
+            source.GrabArea.Target = label;
         }
-
-        BuildIndexLabel(ui, index);
 
         ui.PushStyle();
         ui.FlexibleWidth(1f);
@@ -283,11 +325,11 @@ public class ListMemberEditor : Component, IInspectorActionHandler
         areaLayout.Spacing.Value = 4f;
         areaLayout.ForceExpandHeight.Value = true;
         ui.NestInto(editorArea);
-        SyncMemberEditorBuilder.BuildEditor(element, null, ui, editorArea);
+        SyncMemberEditorBuilder.BuildEditor(element, fieldInfo, ui, editorArea);
         ui.NestOut();
         ui.PopStyle();
 
-        if (locked)
+        if (fixedControls)
             return;
 
         ui.PushStyle();
@@ -318,7 +360,22 @@ public class ListMemberEditor : Component, IInspectorActionHandler
         ui.PopStyle();
     }
 
-    private static void BuildIndexLabel(UIBuilder ui, int index)
+    // Same fixed label column as a member row, so the sliders line up with the rows above and below.
+    private static Slot BuildNameLabel(UIBuilder ui, string name)
+    {
+        ui.PushStyle();
+        ui.MinWidth(150f);
+        ui.PreferredWidth(190f);
+        ui.FlexibleWidth(0f);
+        var label = ui.Text($"{name}:", InspectorUI.FontSize, InspectorUI.MutedColor);
+        InspectorUI.FillParent(label.RectTransform!);
+        label.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
+        label.VerticalAlignment.Value = TextVerticalAlignment.Middle;
+        ui.PopStyle();
+        return label.Slot;
+    }
+
+    private static Slot BuildIndexLabel(UIBuilder ui, int index)
     {
         ui.PushStyle();
         ui.MinWidth(34f);
@@ -329,6 +386,7 @@ public class ListMemberEditor : Component, IInspectorActionHandler
         indexLabel.HorizontalAlignment.Value = TextHorizontalAlignment.Right;
         indexLabel.VerticalAlignment.Value = TextVerticalAlignment.Middle;
         ui.PopStyle();
+        return indexLabel.Slot;
     }
 
     // Full-width single-action rows: "Add" and the folded "show N items".
@@ -363,8 +421,9 @@ public class ListMemberEditor : Component, IInspectorActionHandler
             Expanded.Value = !Expanded.Value;
             return;
         }
-        // The rows are gone, so this only fires for a relay that outlived a lock arriving mid-session.
-        if (IsLocked)
+        // The rows are gone, so this only fires for a relay that outlived a lock arriving mid-session,
+        // or one built before the owner started naming the list.
+        if (IsLocked || (TargetList.Target is ISyncMember collection && ResolveNameSource()?.OwnsCollectionShape(collection) == true))
             return;
         if (argument == "add")
         {

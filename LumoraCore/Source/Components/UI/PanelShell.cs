@@ -44,11 +44,18 @@ public class PanelShell : UIComponent
     private Grabbable? _grabbable;
     private RectTransform? _rootRect;
     private RoundedPanel? _background;
+    private Slot? _canvasSlot;
     private RectTransform? _canvasRect;
     private RoundedQuadMesh? _glassMesh;
     private Slot? _glassSlot;
     private const float GlassMargin = 12f;
     private const float GlassDepth = 6f;
+    // Nested chunks all pack into the top of one render-priority band, so a chunk with more surfaces
+    // reaches further down it - and the title-bar row, sitting on the header's own background chunk, had
+    // every image and clipped label drawn UNDER that background: only one text surface won the tie. The
+    // title and close button only showed because their surface counts happened to line up. Everything on
+    // the bar gets a reserved band above it instead. -xlinka
+    private const int HeaderChunkOverlayLevel = 3;
     private Slot? _headerSlot;
     private RectTransform? _headerRect;
     private RoundedPanel? _headerPanel;
@@ -56,8 +63,11 @@ public class PanelShell : UIComponent
     private Slot? _separatorSlot;
     private RectTransform? _separatorRect;
     private Image? _separatorImage;
+    private Slot? _titleSlot;
     private RectTransform? _titleRect;
     private Text? _titleText;
+    private Slot? _headerContentSlot;
+    private RectTransform? _headerContentRect;
     private Slot? _closeSlot;
     private RectTransform? _closeRect;
     private Button? _closeButton;
@@ -136,6 +146,40 @@ public class PanelShell : UIComponent
         control.OnLoaded(EnsureBuilt);
     }
 
+    // A row in the title bar for panels that put their own controls up there (tabs, tool toggles). The
+    // title text hides while it exists and the row stops short of the close button. -xlinka
+    public Slot EnsureHeaderContent()
+    {
+        EnsureBuilt();
+        if (_headerContentSlot == null || _headerContentSlot.IsDestroyed)
+        {
+            _headerContentSlot = _headerSlot!.FindChildOrAdd("HeaderContent");
+            _headerContentRect = _headerContentSlot.GetOrAttachComponent<RectTransform>();
+            _headerContentSlot.GetOrAttachComponent<GraphicChunkRoot>();
+        }
+        UpdateVisualState();
+        return _headerContentSlot;
+    }
+
+    // The level is local state, not synced, so every peer sets it for itself from the visual refresh
+    // (which runs on start and on every change). A chunk the canvas already built keeps its old band
+    // until it is re-meshed, hence the dirty.
+    private void LiftHeaderChunks()
+    {
+        LiftChunk(_titleSlot);
+        LiftChunk(_closeSlot);
+        LiftChunk(_headerContentSlot);
+    }
+
+    private static void LiftChunk(Slot? slot)
+    {
+        var chunk = slot != null && !slot.IsDestroyed ? slot.GetComponent<GraphicChunkRoot>() : null;
+        if (chunk == null || chunk.OverlayLevel == HeaderChunkOverlayLevel)
+            return;
+        chunk.OverlayLevel = HeaderChunkOverlayLevel;
+        slot!.GetComponent<RectTransform>()?.MarkChangeDirty();
+    }
+
     public UIBuilder CreateContentBuilder()
     {
         EnsureBuilt();
@@ -188,6 +232,7 @@ public class PanelShell : UIComponent
         // The glass mesh and canvas share a parent, so grabbing/scaling moves both without the
         // canvas layout or graphic batching taking ownership of the glass. -xlinka
         var canvasSlot = Slot.FindChildOrAdd("PanelCanvas");
+        _canvasSlot = canvasSlot;
         _canvasRect = canvasSlot.GetOrAttachComponent<RectTransform>();
         canvasSlot.GetOrAttachComponent<Canvas>();
         _background = canvasSlot.GetOrAttachComponent<RoundedPanel>();
@@ -228,9 +273,13 @@ public class PanelShell : UIComponent
         _headerGrabSurface = _headerSlot.GetOrAttachComponent<InteractionElement>();
 
         var titleSlot = _headerSlot.FindChildOrAdd("Title");
+        _titleSlot = titleSlot;
         _titleRect = titleSlot.GetOrAttachComponent<RectTransform>();
         _titleText = titleSlot.GetOrAttachComponent<Text>();
         titleSlot.GetOrAttachComponent<GraphicChunkRoot>();
+
+        _headerContentSlot = _headerSlot.FindChild("HeaderContent", recursive: false);
+        _headerContentRect = _headerContentSlot?.GetComponent<RectTransform>();
 
         _separatorSlot = _headerSlot.FindChildOrAdd("Separator");
         _separatorRect = _separatorSlot.GetOrAttachComponent<RectTransform>();
@@ -252,7 +301,20 @@ public class PanelShell : UIComponent
 
         _rootRect ??= RectTransform ?? Slot.GetComponent<RectTransform>() ?? Slot.AttachComponent<RectTransform>();
         SetCenteredRect(_rootRect, Size.Value);
-        if (_canvasRect != null) SetCenteredRect(_canvasRect, Size.Value);
+        // Canvas space is pinned at the panel's TOP-LEFT and the canvas slot is shifted so the panel still
+        // centres on its own slot. Centred canvas space meant every resize moved every rect, so the whole
+        // panel re-meshed and, until it had, drew its old meshes half a resize off (the "everything goes
+        // wonky while stretching" mess). Now a resize from the bottom-right leaves everything hanging off the
+        // top-left exactly where its baked mesh already is. -xlinka
+        if (_canvasRect != null && !_canvasRect.IsDestroyed)
+        {
+            Set(_canvasRect.AnchorMin, new float2(0.5f, 0.5f));
+            Set(_canvasRect.AnchorMax, new float2(0.5f, 0.5f));
+            Set(_canvasRect.OffsetMin, new float2(0f, -Size.Value.y));
+            Set(_canvasRect.OffsetMax, new float2(Size.Value.x, 0f));
+        }
+        if (_canvasSlot != null && !_canvasSlot.IsDestroyed)
+            Set(_canvasSlot.LocalPosition, new float3(Size.Value.x * -0.5f, Size.Value.y * 0.5f, 0f));
         if (_glassMesh != null && !_glassMesh.IsDestroyed)
         {
             Set(_glassMesh.Size, Size.Value + new float2(GlassMargin * 2f, GlassMargin * 2f));
@@ -323,6 +385,27 @@ public class PanelShell : UIComponent
             Set(_titleRect.OffsetMax, new float2(ShowCloseButton.Value ? -closeWidth : -Padding.Value, 0f));
         }
 
+        // A peer that did not build the panel can receive the row after start.
+        if (_headerContentSlot == null && _headerSlot != null && !_headerSlot.IsDestroyed)
+        {
+            _headerContentSlot = _headerSlot.FindChild("HeaderContent", recursive: false);
+            _headerContentRect = _headerContentSlot?.GetComponent<RectTransform>();
+        }
+        bool customHeader = _headerContentSlot != null && !_headerContentSlot.IsDestroyed;
+        if (_titleSlot != null && !_titleSlot.IsDestroyed)
+            Set(_titleSlot.ActiveSelf, !customHeader);
+
+        // Same band as the close button, so anything built in here lines up with it.
+        if (customHeader && _headerContentRect != null && !_headerContentRect.IsDestroyed)
+        {
+            float barHeight = MathF.Max(0f, HeaderHeight.Value - Padding.Value);
+            float inset = MathF.Max(0f, MathF.Min(CloseButtonPadding.Value, barHeight * 0.45f));
+            Set(_headerContentRect.AnchorMin, float2.Zero);
+            Set(_headerContentRect.AnchorMax, float2.One);
+            Set(_headerContentRect.OffsetMin, new float2(inset, inset));
+            Set(_headerContentRect.OffsetMax, new float2(ShowCloseButton.Value ? -barHeight : -inset, -inset));
+        }
+
         if (_titleText != null && !_titleText.IsDestroyed)
         {
             Set(_titleText.Content, Title.Value);
@@ -342,6 +425,7 @@ public class PanelShell : UIComponent
         {
             DestroyCloseButton();
         }
+        LiftHeaderChunks();
 
         if (_contentRect != null && !_contentRect.IsDestroyed)
         {

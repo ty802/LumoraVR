@@ -242,6 +242,18 @@ public abstract class ContainerWorker<C> : Worker where C : ComponentBase<C>
         return componentCollection.Remove(component.ReferenceID);
     }
 
+    // Takes a component off here only, without sending the removal: the effect of a destroy that every
+    // peer applies from the same records, or a component this peer may not remove while tearing down its
+    // own slot, which the authority's copy of the destroy takes away everywhere else. -xlinka
+    internal void RemoveComponentWithoutSync(C component)
+    {
+        if (component != null)
+            componentCollection.RemoveWithoutSync(component.ReferenceID);
+    }
+
+    internal bool MayRemoveComponent(C component)
+        => component != null && componentCollection.MayRemove(component.ReferenceID);
+
     public bool RemoveComponent(RefID id)
     {
         if (componentCollection.TryGetValue(id, out var existing) && RefuseConfigRemoval(existing))
@@ -296,17 +308,13 @@ public abstract class ContainerWorker<C> : Worker where C : ComponentBase<C>
         if (component == null)
             return;
 
-        if (IsLocalElement)
+        // The add runs the component's whole Initialize, OnAwake and OnInit inside this scope, and any of
+        // those can throw. Without the scope that throw skipped the end of the local block and left the
+        // controller minting LOCAL ids for the rest of the session. -xlinka
+        using (World.ReferenceController.ElementAllocationScope(RefID.Null, IsLocalElement))
         {
-            World.ReferenceController.LocalAllocationBlockBegin();
-        }
-
-        var key = World.ReferenceController.PeekID();
-        componentCollection.Add(key, component, isNewlyCreated: true);
-
-        if (IsLocalElement)
-        {
-            World.ReferenceController.LocalAllocationBlockEnd();
+            var key = World.ReferenceController.PeekID();
+            componentCollection.Add(key, component, isNewlyCreated: true);
         }
 
         beforeAttach?.Invoke(component);
@@ -318,35 +326,45 @@ public abstract class ContainerWorker<C> : Worker where C : ComponentBase<C>
 
     private void OnComponentAdded(ReplicatedDictionary<RefID, C> collection, RefID idStart, C component, bool isNew)
     {
-        World.ReferenceController.AllocationBlockBegin(idStart);
         bool wasInInitPhase = IsInInitPhase;
         try
         {
-            IsInInitPhase = true;
-            component.Initialize(this, isNew);
-            childInitializables.Add(component);
-            if (!wasInInitPhase)
+            using (World.ReferenceController.AllocationScopeAt(idStart))
             {
-                EndInitPhase();
+                IsInInitPhase = true;
+                component.Initialize(this, isNew);
+                childInitializables.Add(component);
+                if (!wasInInitPhase)
+                {
+                    EndInitPhase();
+                }
             }
         }
-        finally
+        catch
         {
-            World.ReferenceController.AllocationBlockEnd();
+            // A component that threw out of Initialize must not leave its container stuck in the init
+            // phase: every sync member on it reads IsInInitPhase to decide whether a write is authored
+            // or replayed, so a stuck container silently stops replicating. The half-built component is
+            // dropped from the init list for the same reason. -xlinka
+            IsInInitPhase = wasInInitPhase;
+            childInitializables.Remove(component);
+            throw;
         }
 
         // Keep sync members in loading state until their values
         // are decoded from network. This prevents them from being marked dirty
         // if the world transitions to Running before all values are decoded.
         // For clients, ALL network-created elements need this (regardless of isNew flag,
-        // which indicates whether the HOST created it newly).
-        if (!World.IsAuthority)
+        // which indicates whether the HOST created it newly). Only network-created ones: the collection
+        // is loading exactly while it decodes. A component the client attached itself used to land here
+        // too, and since only a decode clears the flag, none of its members ever sent a change. -xlinka
+        if (!World.IsAuthority && collection.IsLoading)
         {
             foreach (var member in component.SyncMembers)
             {
                 if (member is Networking.Sync.SyncElement syncElement)
                 {
-                    syncElement.IsLoading = true;
+                    World.SyncController.HoldLoading(syncElement);
                 }
             }
         }

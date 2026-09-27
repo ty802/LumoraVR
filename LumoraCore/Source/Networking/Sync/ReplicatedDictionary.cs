@@ -177,6 +177,23 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
         return InternalRemove(key, sync: true, triggerChanged: true);
     }
 
+    // A removal this peer applies without sending: the effect of a destroy every peer applies from the
+    // same records, where sending it again would only echo.
+    internal bool RemoveWithoutSync(TKey key)
+    {
+        return InternalRemove(key, sync: false, triggerChanged: true);
+    }
+
+    // Whether the current actor may remove this key, asked the way Remove asks it, without removing.
+    internal bool MayRemove(TKey key)
+    {
+        return AuthorizeDataModelMutation(
+            DataModelPermissionAction.Write | DataModelPermissionAction.Destroy | DataModelPermissionAction.CollectionRemove,
+            DataModelPermissionSurface.ReplicatedDictionary,
+            key: key,
+            throwOnError: false);
+    }
+
     /// <summary>
     /// Remove all elements.
     /// </summary>
@@ -458,6 +475,11 @@ public abstract class ReplicatedDictionary<TKey, TValue> : SyncElement, IEnumera
                 _ = reader.ReadBoolean();
                 TKey key = DecodeKey(reader);
                 SkipElement(reader);
+
+                if (key is RefID id && !IsCreatableBySender(syncMessage.SenderUser, id))
+                {
+                    return MessageValidity.Conflict;
+                }
 
                 if (!AuthorizeDataModelMutation(
                         DataModelPermissionAction.Write | DataModelPermissionAction.Create | DataModelPermissionAction.CollectionAdd | DataModelPermissionAction.Replicate,

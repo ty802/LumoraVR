@@ -70,11 +70,16 @@ public class ReplicatedUserCollection : ReplicatedObjectCollection<User>
         // Keep sync members in loading state until their values
         // are decoded from FullBatch. This prevents them from being marked dirty
         // if the world transitions to Running before all values are decoded.
-        foreach (var member in user.SyncMembers)
+        // Only a user that arrived by decode: the host adds its own users locally, and marking those
+        // left every user record on the host loading forever, so a mute it set never replicated. -xlinka
+        if (dict.IsLoading)
         {
-            if (member is SyncElement syncElement)
+            foreach (var member in user.SyncMembers)
             {
-                syncElement.IsLoading = true;
+                if (member is SyncElement syncElement)
+                {
+                    World.SyncController.HoldLoading(syncElement);
+                }
             }
         }
 

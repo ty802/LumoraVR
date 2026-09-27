@@ -2,6 +2,7 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using Lumora.Core.Networking;
 using Lumora.Core.Networking.Sync;
@@ -142,25 +143,11 @@ public class SyncVariant : ConflictingSyncElement, ISyncMemberCopy
 
     private SyncElement InternalCreateElement(RefID id, Type elementType, bool sync = true, bool change = true)
     {
-        if (id != RefID.Null)
+        SyncElement element;
+        using (World.ReferenceController.ElementAllocationScope(id, IsLocalElement))
         {
-            World.ReferenceController.AllocationBlockBegin(id);
-        }
-        else if (IsLocalElement)
-        {
-            World.ReferenceController.LocalAllocationBlockBegin();
-        }
-
-        var element = (SyncElement)Activator.CreateInstance(elementType)!;
-        element.Initialize(World, this);
-
-        if (id != RefID.Null)
-        {
-            World.ReferenceController.AllocationBlockEnd();
-        }
-        else if (IsLocalElement)
-        {
-            World.ReferenceController.LocalAllocationBlockEnd();
+            element = (SyncElement)Activator.CreateInstance(elementType)!;
+            element.Initialize(World, this);
         }
 
         InternalSetElement(element, sync, change);
@@ -282,6 +269,34 @@ public class SyncVariant : ConflictingSyncElement, ISyncMemberCopy
     protected override void InternalDecodeDelta(BinaryReader reader, BinaryMessageBatch inboundMessage)
     {
         InternalDecodeFull(reader, inboundMessage);
+    }
+
+    // A remote swap builds the new child at the id the record names, so that id has to be in the
+    // sender's byte. Clearing, or naming the child already held, creates nothing. -xlinka
+    public override MessageValidity Validate(BinaryMessageBatch syncMessage, BinaryReader reader, List<ValidationGroup.Rule> rules)
+    {
+        var validity = base.Validate(syncMessage, reader, rules);
+        if (validity != MessageValidity.Valid || World?.IsAuthority != true)
+            return validity;
+
+        long position = reader.BaseStream.CanSeek ? reader.BaseStream.Position : -1;
+        try
+        {
+            var id = new RefID(reader.Read7BitEncoded());
+            if (id == RefID.Null || (_element != null && id == _element.ReferenceID))
+                return MessageValidity.Valid;
+
+            return IsCreatableBySender(syncMessage.SenderUser, id) ? MessageValidity.Valid : MessageValidity.Conflict;
+        }
+        catch
+        {
+            return MessageValidity.Conflict;
+        }
+        finally
+        {
+            if (position >= 0)
+                reader.BaseStream.Position = position;
+        }
     }
 
     protected override void InternalClearDirty()

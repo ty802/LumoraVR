@@ -280,16 +280,24 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
             return 0;
 
         BeginModification();
+        // The predicate and the removal path are both caller code; a throw out of either used to leave the
+        // list one modification level deep for good, and every later write to it was refused. -xlinka
         int count = 0;
-        for (int i = _records.Count - 1; i >= 0; i--)
+        try
         {
-            if (match(_records[i].Node))
+            for (int i = _records.Count - 1; i >= 0; i--)
             {
-                InternalRemove(i);
-                count++;
+                if (match(_records[i].Node))
+                {
+                    InternalRemove(i);
+                    count++;
+                }
             }
         }
-        EndModification();
+        finally
+        {
+            EndModification();
+        }
         return count;
     }
 
@@ -394,72 +402,74 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
 
         BeginModification();
 
-        if (id != RefID.Null)
+        T node;
+        try
         {
-            World.ReferenceController.AllocationBlockBegin(id);
-        }
-        else if (IsLocalElement)
-        {
-            World.ReferenceController.LocalAllocationBlockBegin();
-        }
+            using (World.ReferenceController.ElementAllocationScope(id, IsLocalElement))
+            {
+                node = new T();
+                node.Initialize(World, this);
+            }
 
-        T node = new T();
-        node.Initialize(World, this);
-
-        if (id != RefID.Null)
-        {
-            World.ReferenceController.AllocationBlockEnd();
+            InternalInsertNode(node, index, sync, change);
         }
-        else if (IsLocalElement)
+        finally
         {
-            World.ReferenceController.LocalAllocationBlockEnd();
+            EndModification();
         }
-
-        InternalInsertNode(node, index, sync, change);
-        EndModification();
         return node;
     }
 
     protected void InternalInsertNode(T node, int index, bool sync = true, bool change = true)
     {
         BeginModification();
-        var record = new NodeRecord { Node = node };
-
-        if (IsInInitPhase)
+        try
         {
-            if (node is IInitializable initializable)
+            var record = new NodeRecord { Node = node };
+
+            if (IsInInitPhase)
             {
-                RegisterNewInitializable(initializable);
+                if (node is IInitializable initializable)
+                {
+                    RegisterNewInitializable(initializable);
+                }
+            }
+            else
+            {
+                if (node.IsInInitPhase)
+                {
+                    node.EndInitPhase();
+                }
+                if (sync && GenerateSyncData)
+                {
+                    CaptureDeltaBase(_records.Count);
+                    var deltaRecords = GetDeltaRecords();
+                    record.IsDirty = true;
+                    record.DeltaRecordIndex = deltaRecords.Count;
+                    var delta = index != _records.Count ? DeltaRecord.Insert(record, index) : DeltaRecord.Add(record, index);
+                    deltaRecords.Add(delta);
+                    InvalidateSyncElement();
+                }
+            }
+
+            _records.Insert(index, record);
+            BlockModification();
+            try
+            {
+                if (change)
+                {
+                    SendElementsAdded(index);
+                }
+            }
+            finally
+            {
+                UnblockModification();
             }
         }
-        else
+        finally
         {
-            if (node.IsInInitPhase)
-            {
-                node.EndInitPhase();
-            }
-            if (sync && GenerateSyncData)
-            {
-                CaptureDeltaBase(_records.Count);
-                var deltaRecords = GetDeltaRecords();
-                record.IsDirty = true;
-                record.DeltaRecordIndex = deltaRecords.Count;
-                var delta = index != _records.Count ? DeltaRecord.Insert(record, index) : DeltaRecord.Add(record, index);
-                deltaRecords.Add(delta);
-                InvalidateSyncElement();
-            }
+            EndModification();
         }
-
-        _records.Insert(index, record);
-        BlockModification();
-
-        if (change)
-        {
-            SendElementsAdded(index);
-        }
-
-        UnblockModification();
-        EndModification();
     }
 
     protected void InternalRemove(int index, bool sync = true, bool change = true)
@@ -478,89 +488,93 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
         }
 
         BeginModification();
-
-        // Before the removal: the base count is what the receiver must be holding to make sense of the
-        // index ops in this batch, not what we are left with afterwards.
-        if (sync && GenerateSyncData)
+        try
         {
-            CaptureDeltaBase(_records.Count);
-        }
-
-        if (change)
-        {
-            BlockModification();
-            SendElementsRemoving(index);
-            UnblockModification();
-        }
-
-        var record = _records[index];
-        _records.RemoveAt(index);
-        bool moveToTrash = false;
-
-        if (sync && GenerateSyncData)
-        {
-            if (record.IsDirty)
+            // Before the removal: the base count is what the receiver must be holding to make sense of the
+            // index ops in this batch, not what we are left with afterwards.
+            if (sync && GenerateSyncData)
             {
-                var deltaRecords = GetDeltaRecords();
-                int currentIndex = deltaRecords[record.DeltaRecordIndex].Index;
+                CaptureDeltaBase(_records.Count);
+            }
 
-                for (int i = record.DeltaRecordIndex + 1; i < deltaRecords.Count; i++)
+            if (change)
+            {
+                BlockModification();
+                SendElementsRemoving(index);
+                UnblockModification();
+            }
+
+            var record = _records[index];
+            _records.RemoveAt(index);
+            bool moveToTrash = false;
+
+            if (sync && GenerateSyncData)
+            {
+                if (record.IsDirty)
                 {
-                    var delta = deltaRecords[i];
-                    switch (delta.Message)
-                    {
-                        case DeltaMessage.Add:
-                        case DeltaMessage.Insert:
-                            if (delta.Index <= currentIndex)
-                            {
-                                currentIndex++;
-                            }
-                            else
-                            {
-                                deltaRecords[i] = delta.ShiftIndex();
-                            }
-                            break;
-                        case DeltaMessage.Remove:
-                            if (delta.Index <= currentIndex)
-                            {
-                                currentIndex--;
-                            }
-                            else
-                            {
-                                deltaRecords[i] = delta.ShiftIndex();
-                            }
-                            break;
-                    }
-                }
+                    var deltaRecords = GetDeltaRecords();
+                    int currentIndex = deltaRecords[record.DeltaRecordIndex].Index;
 
-                deltaRecords[record.DeltaRecordIndex] = DeltaRecord.Empty();
+                    for (int i = record.DeltaRecordIndex + 1; i < deltaRecords.Count; i++)
+                    {
+                        var delta = deltaRecords[i];
+                        switch (delta.Message)
+                        {
+                            case DeltaMessage.Add:
+                            case DeltaMessage.Insert:
+                                if (delta.Index <= currentIndex)
+                                {
+                                    currentIndex++;
+                                }
+                                else
+                                {
+                                    deltaRecords[i] = delta.ShiftIndex();
+                                }
+                                break;
+                            case DeltaMessage.Remove:
+                                if (delta.Index <= currentIndex)
+                                {
+                                    currentIndex--;
+                                }
+                                else
+                                {
+                                    deltaRecords[i] = delta.ShiftIndex();
+                                }
+                                break;
+                        }
+                    }
+
+                    deltaRecords[record.DeltaRecordIndex] = DeltaRecord.Empty();
+                    record.Node.Dispose();
+                }
+                else
+                {
+                    GetDeltaRecords().Add(DeltaRecord.Remove(index));
+                    moveToTrash = true;
+                }
+                InvalidateSyncElement();
+            }
+
+            if (change)
+            {
+                BlockModification();
+                SendElementsRemoved(index);
+                UnblockModification();
+            }
+
+            if (moveToTrash)
+            {
+                World.ReferenceController.MoveToTrash((record.Node as IWorldElement)!, World.SyncTick);
+            }
+            else if (!record.IsDirty)
+            {
                 record.Node.Dispose();
             }
-            else
-            {
-                GetDeltaRecords().Add(DeltaRecord.Remove(index));
-                moveToTrash = true;
-            }
-            InvalidateSyncElement();
         }
-
-        if (change)
+        finally
         {
-            BlockModification();
-            SendElementsRemoved(index);
-            UnblockModification();
+            EndModification();
         }
-
-        if (moveToTrash)
-        {
-            World.ReferenceController.MoveToTrash((record.Node as IWorldElement)!, World.SyncTick);
-        }
-        else if (!record.IsDirty)
-        {
-            record.Node.Dispose();
-        }
-
-        EndModification();
     }
 
     protected void InternalClear(bool sync = true, bool change = true, bool forceTrash = false)
@@ -574,58 +588,67 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
         }
 
         BeginModification();
+        try
+        {
+            if (_records.Count == 0)
+            {
+                return;
+            }
 
-        if (_records.Count == 0)
+            int count = _records.Count;
+
+            if (sync && GenerateSyncData)
+            {
+                CaptureDeltaBase(count);
+            }
+
+            if (change)
+            {
+                BlockModification();
+                SendElementsRemoving(0, count);
+                UnblockModification();
+            }
+
+            foreach (var record in _records)
+            {
+                if (sync || forceTrash)
+                {
+                    World.ReferenceController.MoveToTrash((record.Node as IWorldElement)!, World.SyncTick);
+                }
+                else
+                {
+                    record.Node.Dispose();
+                }
+            }
+
+            _records.Clear();
+
+            if (sync && GenerateSyncData)
+            {
+                var deltaRecords = GetDeltaRecords();
+                deltaRecords.Clear();
+                deltaRecords.Add(DeltaRecord.Clear());
+                InvalidateSyncElement();
+            }
+
+            if (change)
+            {
+                BlockModification();
+                try
+                {
+                    SendElementsRemoved(0, count);
+                    _genListCleared?.Invoke(this);
+                }
+                finally
+                {
+                    UnblockModification();
+                }
+            }
+        }
+        finally
         {
             EndModification();
-            return;
         }
-
-        int count = _records.Count;
-
-        if (sync && GenerateSyncData)
-        {
-            CaptureDeltaBase(count);
-        }
-
-        if (change)
-        {
-            BlockModification();
-            SendElementsRemoving(0, count);
-            UnblockModification();
-        }
-
-        foreach (var record in _records)
-        {
-            if (sync || forceTrash)
-            {
-                World.ReferenceController.MoveToTrash((record.Node as IWorldElement)!, World.SyncTick);
-            }
-            else
-            {
-                record.Node.Dispose();
-            }
-        }
-
-        _records.Clear();
-
-        if (sync && GenerateSyncData)
-        {
-            var deltaRecords = GetDeltaRecords();
-            deltaRecords.Clear();
-            deltaRecords.Add(DeltaRecord.Clear());
-            InvalidateSyncElement();
-        }
-
-        if (change)
-        {
-            BlockModification();
-            SendElementsRemoved(0, count);
-            _genListCleared?.Invoke(this);
-            UnblockModification();
-        }
-
-        EndModification();
     }
 
     protected void SendElementsAdded(int index, int count = 1)
@@ -804,6 +827,10 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
                         }
                         break;
                     case DeltaMessage.Add:
+                        if (!IsCreatableBySender(syncMessage.SenderUser, record.Id))
+                        {
+                            return MessageValidity.Conflict;
+                        }
                         if (!AuthorizeDataModelMutation(
                                 DataModelPermissionAction.Write | DataModelPermissionAction.Create | DataModelPermissionAction.CollectionAdd | DataModelPermissionAction.Replicate,
                                 DataModelPermissionSurface.List,
@@ -817,6 +844,10 @@ public abstract class SyncElementList<T> : ConflictingSyncElement, ISyncList whe
                         break;
                     case DeltaMessage.Insert:
                         if (record.Index < 0 || record.Index > _records.Count)
+                        {
+                            return MessageValidity.Conflict;
+                        }
+                        if (!IsCreatableBySender(syncMessage.SenderUser, record.Id))
                         {
                             return MessageValidity.Conflict;
                         }

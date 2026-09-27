@@ -177,74 +177,71 @@ public class SyncElementDictionary<K, T> : ConflictingSyncElement, IEnumerable<K
         }
 
         BeginModification();
-
-        if (_elements.ContainsKey(key))
+        // A duplicate key throws from inside the block, and element Initialize can throw too; unwound by
+        // hand either one left the dictionary a modification level deep for good. -xlinka
+        try
         {
-            throw new ArgumentException($"The dictionary already contains key: {key}");
-        }
+            if (_elements.ContainsKey(key))
+            {
+                throw new ArgumentException($"The dictionary already contains key: {key}");
+            }
 
-        if (id.HasValue)
-        {
-            World.ReferenceController.AllocationBlockBegin(id.Value);
-        }
-        else if (IsLocalElement)
-        {
-            World.ReferenceController.LocalAllocationBlockBegin();
-        }
+            T element;
+            using (World.ReferenceController.ElementAllocationScope(id ?? RefID.Null, IsLocalElement))
+            {
+                element = new T();
+                element.Initialize(World, this);
+            }
 
-        T element = new T();
-        element.Initialize(World, this);
-
-        if (id.HasValue)
-        {
-            World.ReferenceController.AllocationBlockEnd();
+            InternalAddNode(element, key, sync, change);
+            return element;
         }
-        else if (IsLocalElement)
+        finally
         {
-            World.ReferenceController.LocalAllocationBlockEnd();
+            EndModification();
         }
-
-        InternalAddNode(element, key, sync, change);
-        EndModification();
-        return element;
     }
 
     private void InternalAddNode(T element, K key, bool sync = true, bool change = true)
     {
         BeginModification();
-
-        if (_elements.ContainsKey(key))
+        try
         {
-            throw new ArgumentException($"SyncElementDictionary already contains given key: {key}, Element: {_elements[key]}");
-        }
-
-        _elements.Add(key, element);
-
-        if (IsInInitPhase)
-        {
-            RegisterNewInitializable(element);
-        }
-        else
-        {
-            if (element.IsInInitPhase)
+            if (_elements.ContainsKey(key))
             {
-                element.EndInitPhase();
+                throw new ArgumentException($"SyncElementDictionary already contains given key: {key}, Element: {_elements[key]}");
             }
-            if (sync && GenerateSyncData)
+
+            _elements.Add(key, element);
+
+            if (IsInInitPhase)
             {
-                GetAddedElements().Add(key, element);
-                InvalidateSyncElement();
+                RegisterNewInitializable(element);
+            }
+            else
+            {
+                if (element.IsInInitPhase)
+                {
+                    element.EndInitPhase();
+                }
+                if (sync && GenerateSyncData)
+                {
+                    GetAddedElements().Add(key, element);
+                    InvalidateSyncElement();
+                }
+            }
+
+            if (change)
+            {
+                BlockModification();
+                RunElementAdded(key, element);
+                UnblockModification();
             }
         }
-
-        if (change)
+        finally
         {
-            BlockModification();
-            RunElementAdded(key, element);
-            UnblockModification();
+            EndModification();
         }
-
-        EndModification();
     }
 
     private bool InternalRemove(K key, bool sync = true, bool change = true)
@@ -263,44 +260,48 @@ public class SyncElementDictionary<K, T> : ConflictingSyncElement, IEnumerable<K
         }
 
         BeginModification();
-
-        if (_elements.TryGetValue(key, out var element))
+        try
         {
-            bool moveToTrash = false;
-            _elements.Remove(key);
-
-            if (sync && GenerateSyncData)
+            if (_elements.TryGetValue(key, out var element))
             {
-                if (!GetAddedElements().Remove(key))
+                bool moveToTrash = false;
+                _elements.Remove(key);
+
+                if (sync && GenerateSyncData)
                 {
-                    GetRemovedElements().Add(key);
-                    moveToTrash = true;
+                    if (!GetAddedElements().Remove(key))
+                    {
+                        GetRemovedElements().Add(key);
+                        moveToTrash = true;
+                    }
+                    InvalidateSyncElement();
                 }
-                InvalidateSyncElement();
+
+                if (change)
+                {
+                    BlockModification();
+                    RunElementRemoved(key, element);
+                    UnblockModification();
+                }
+
+                if (moveToTrash)
+                {
+                    World.ReferenceController.MoveToTrash(element, World.SyncTick);
+                }
+                else
+                {
+                    element.Dispose();
+                }
+
+                return true;
             }
 
-            if (change)
-            {
-                BlockModification();
-                RunElementRemoved(key, element);
-                UnblockModification();
-            }
-
-            if (moveToTrash)
-            {
-                World.ReferenceController.MoveToTrash(element, World.SyncTick);
-            }
-            else
-            {
-                element.Dispose();
-            }
-
-            EndModification();
-            return true;
+            return false;
         }
-
-        EndModification();
-        return false;
+        finally
+        {
+            EndModification();
+        }
     }
 
     private void InternalClear(bool sync = true, bool change = true, bool forceTrash = false)
@@ -318,46 +319,50 @@ public class SyncElementDictionary<K, T> : ConflictingSyncElement, IEnumerable<K
         }
 
         BeginModification();
-
-        if (change)
+        try
         {
-            BlockModification();
-            RunBeforeClear();
-            UnblockModification();
-        }
-
-        foreach (var kvp in _elements)
-        {
-            if (sync || forceTrash)
+            if (change)
             {
-                World.ReferenceController.MoveToTrash(kvp.Value, World.SyncTick);
+                BlockModification();
+                RunBeforeClear();
+                UnblockModification();
             }
-            else
+
+            foreach (var kvp in _elements)
             {
-                kvp.Value.Dispose();
+                if (sync || forceTrash)
+                {
+                    World.ReferenceController.MoveToTrash(kvp.Value, World.SyncTick);
+                }
+                else
+                {
+                    kvp.Value.Dispose();
+                }
+            }
+
+            _elements.Clear();
+
+            if (sync && GenerateSyncData)
+            {
+                _removedElements?.Clear();
+                _removedElements = null!;
+                _addedElements?.Clear();
+                _addedElements = null!;
+                _wasCleared = true;
+                InvalidateSyncElement();
+            }
+
+            if (change)
+            {
+                BlockModification();
+                RunCleared();
+                UnblockModification();
             }
         }
-
-        _elements.Clear();
-
-        if (sync && GenerateSyncData)
+        finally
         {
-            _removedElements?.Clear();
-            _removedElements = null!;
-            _addedElements?.Clear();
-            _addedElements = null!;
-            _wasCleared = true;
-            InvalidateSyncElement();
+            EndModification();
         }
-
-        if (change)
-        {
-            BlockModification();
-            RunCleared();
-            UnblockModification();
-        }
-
-        EndModification();
     }
 
     private void RunElementAdded(K key, T element)
@@ -652,7 +657,11 @@ public class SyncElementDictionary<K, T> : ConflictingSyncElement, IEnumerable<K
             for (ulong i = 0; i < addCount; i++)
             {
                 K key = SyncCoder.Decode<K>(reader);
-                _ = new RefID(reader.Read7BitEncoded() + (ulong)offset);
+                var id = new RefID(reader.Read7BitEncoded() + (ulong)offset);
+                if (!IsCreatableBySender(syncMessage.SenderUser, id))
+                {
+                    return MessageValidity.Conflict;
+                }
                 if (!AuthorizeDataModelMutation(
                         DataModelPermissionAction.Write | DataModelPermissionAction.Create | DataModelPermissionAction.CollectionAdd | DataModelPermissionAction.Replicate,
                         DataModelPermissionSurface.Dictionary,

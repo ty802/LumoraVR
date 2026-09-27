@@ -147,6 +147,13 @@ public abstract class BinaryMessageBatch : SyncMessage
         return _dataRecords[index].IsProcessed;
     }
 
+    public void MarkDataRecordValidated(int index)
+    {
+        var record = _dataRecords[index];
+        record.Validated = true;
+        _dataRecords[index] = record;
+    }
+
     public void InvalidateDataRecord(int index, bool conflict)
     {
         var record = _dataRecords[index];
@@ -298,6 +305,9 @@ public struct DataRecord
 	public int EndOffset;
 	public MessageValidity Validity;
 	public bool IsProcessed;
+	// Set once the authority has judged the record. A record whose target did not exist yet at that
+	// point is still unjudged and must be judged before it decodes. -xlinka
+	public bool Validated;
 }
 
 public enum MessageType : byte

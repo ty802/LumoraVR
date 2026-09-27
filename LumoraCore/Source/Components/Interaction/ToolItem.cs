@@ -28,7 +28,15 @@ public abstract class ToolItem : Component
     // to say where the thing being held actually is in the world; null means "the tool's own slot".
     public virtual Slot? HeldVisual => null;
 
-    public virtual float3 TipForward => TipReference.Target?.Forward ?? Slot.Forward;
+    // The direction the tip points, world space. A tool docked in the holder aims down its local -Z like
+    // the beam and the holder frame do (DefaultLocalTip is Backward * 0.075 on every laser tool), so the
+    // reference slot's Backward is its forward here, not its Forward. -xlinka
+    public virtual float3 TipForward => TipReference.Target?.Backward ?? Slot.Backward;
+
+    // Whether the hand should start its beam at this tool's Tip along TipForward rather than at its own
+    // raw tip ahead of the holder. Laser tools carry one by default; a laser tool that wants the raw tip
+    // overrides this to false.
+    public virtual bool HasTipReference => UsesLaser;
 
     public virtual float3 LocalTip
     {
@@ -70,6 +78,13 @@ public abstract class ToolItem : Component
     // yes; the build tools answer the permission gate. Asked by the hand before it equips, so a
     // refusal is a tool that will not be picked up rather than one that throws on first press.
     public virtual bool AllowsEquip(User? user) => true;
+
+    // The item's side of an equip, asked by the host of the sender for the same reason as the hand's.
+    public override void OnAwake()
+    {
+        base.OnAwake();
+        OverrideActiveTool.CheckRemoteSets((user, _, _) => AllowsEquip(user));
+    }
 
     public override void OnAttach()
     {

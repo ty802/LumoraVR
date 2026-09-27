@@ -2,7 +2,10 @@
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Runtime.CompilerServices;
+using Lumora.Core.Networking.Sync;
 using Lumora.Core.Persistence;
 
 namespace Lumora.Core;
@@ -66,6 +69,49 @@ public class SyncRef<T> : SyncField<RefID>, ISyncRef<T>, ISyncRef, IWorldElement
         get => GetFlag(PreassignedFlag);
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         set => SetFlag(PreassignedFlag, value);
+    }
+
+    // A question the owner has the authority put to every remote write that points this reference at
+    // something: who sent it, the id it names, and the element behind that id (null when that is not
+    // here yet). For a member whose setting is itself a privilege, equipping or moving out into the world
+    // being the cases, which owning the member says nothing about. Clearing never asks. -xlinka
+    private Func<User?, RefID, T?, bool>? _remoteSetCheck;
+
+    public void CheckRemoteSets(Func<User?, RefID, T?, bool> check)
+    {
+        _remoteSetCheck = check;
+        MarkInboundRules();
+    }
+
+    protected override MessageValidity ValidateInboundWrite(
+        BinaryMessageBatch inboundMessage, BinaryReader reader, List<ValidationGroup.Rule> rules)
+    {
+        var validity = base.ValidateInboundWrite(inboundMessage, reader, rules);
+        if (validity != MessageValidity.Valid || _remoteSetCheck == null)
+            return validity;
+
+        // Put back where it was: a subclass reads the same value after this returns.
+        long position = reader.BaseStream.CanSeek ? reader.BaseStream.Position : -1;
+        RefID claimed;
+        try
+        {
+            claimed = new RefID(reader.ReadUInt64());
+        }
+        finally
+        {
+            if (position >= 0)
+                reader.BaseStream.Position = position;
+        }
+
+        if (claimed.IsNull)
+            return MessageValidity.Valid;
+
+        var sender = inboundMessage?.SenderUser;
+        if (_remoteSetCheck(sender, claimed, World?.ReferenceController?.GetObjectOrNull(in claimed) as T))
+            return MessageValidity.Valid;
+
+        World?.DataModelPermissions?.ReportDenial(sender, DataModelDenialKind.ForeignWrite, $"remote set of {Name} refused");
+        return MessageValidity.Conflict;
     }
 
     public ReferenceState State

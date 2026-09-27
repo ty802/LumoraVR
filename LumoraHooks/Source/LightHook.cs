@@ -52,6 +52,22 @@ public class LightHook : NodeBackedComponentHook<Light, Light3D>
         });
     }
 
+    // RANGE HAS TO MEAN RANGE.
+    //
+    // Godot's point falloff is window(d / range) * pow(d, -attenuation), and it ships attenuation at 1,
+    // so there is an inverse-DISTANCE term on top of the range window. That term is unbounded as you
+    // approach the light and it has nothing to do with the range: a 0.2 m lamp is multiplied by about
+    // 10 at 10 cm and 50 at 2 cm, so an 0.6-intensity pendant glow blows out a whole torso while the
+    // authored numbers look completely reasonable in the log.
+    //
+    // A light's Range means a falloff NORMALISED over the range - 1 at the centre, 0 at the edge, no
+    // unbounded term anywhere. Attenuation 0 drops pow(d, 0) to 1 and leaves exactly that window,
+    // which is the falloff the content was authored for.
+    //
+    // This moves every light in the engine, not just imported ones, and that is the point: they were
+    // all being read through a curve nothing authored against. -xlinka
+    private const float NormalizedFalloff = 0f;
+
     protected override void SyncProperties()
     {
         if (Owner.Type.GetWasChangedAndClear())
@@ -91,12 +107,23 @@ public class LightHook : NodeBackedComponentHook<Light, Light3D>
         else if (light is OmniLight3D omni)
         {
             omni.OmniRange = Owner.Range.Value;
+            omni.OmniAttenuation = NormalizedFalloff;
             ApplyDistanceFade(omni);
         }
         else if (light is SpotLight3D spot)
         {
             spot.SpotRange = Owner.Range.Value;
-            spot.SpotAngle = Owner.SpotAngle.Value;
+            spot.SpotAttenuation = NormalizedFalloff;
+
+            // HALF OF IT. Godot's spot_angle is measured from the cone's axis and tops out at 90;
+            // SpotAngle is the FULL cone and goes to 179. Handing the full angle straight over
+            // doubles the cone, which spreads the same energy across roughly four times the area of
+            // wall and reads as a light far brighter than the one that was authored.
+            //
+            // The default is a 60 degree full cone. A default of 30 papered over the conversion in the
+            // one place it happened to be visible, while every imported and every hand-built spot
+            // stayed twice as wide. -xlinka
+            spot.SpotAngle = System.Math.Clamp(Owner.SpotAngle.Value * 0.5f, 0.01f, 90f);
             ApplyDistanceFade(spot);
         }
 
@@ -124,18 +151,14 @@ public class LightHook : NodeBackedComponentHook<Light, Light3D>
         light.ShadowEnabled = wantsShadow;
         light.ShadowOpacity = shadowOpacity;
 
-        // Soft was a no-op: both cases set the same flag and nothing ever wrote a blur. The softness of
-        // a shadow in Godot is the light's own size (its angular diameter for a directional), so that
-        // is what has to differ between the two.
-        if (wantsShadow)
-        {
-            bool soft = Owner.Shadows.Value == ShadowType.Soft;
-            if (light is DirectionalLight3D directionalSoft)
-                directionalSoft.LightAngularDistance = soft ? 1.0f : 0f;
-            else
-                light.LightSize = soft ? 0.2f : 0f;
-            light.ShadowBlur = soft ? 1.5f : 1f;
-        }
+        // ShadowType.Soft means PCF-filtered edges. Giving every light an invented physical size
+        // enabled PCSS instead, spreading its sparse samples across a wide penumbra. With MSAA and
+        // no temporal accumulation that pattern stays visible as dots on close-up avatars.
+        // Keep the source punctual and use the shadow filter for softness; a hard light collapses
+        // the filter radius. Write these even with shadows off so mode switches clear old values.
+        light.LightAngularDistance = 0f;
+        light.LightSize = 0f;
+        light.ShadowBlur = Owner.Shadows.Value == ShadowType.Soft ? 1f : 0f;
         light.ShadowBias = Owner.ShadowBias.Value;
         light.ShadowNormalBias = Owner.ShadowNormalBias.Value;
         light.Visible = Owner.Enabled.Value;

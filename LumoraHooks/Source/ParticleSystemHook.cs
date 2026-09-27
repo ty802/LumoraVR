@@ -206,7 +206,8 @@ public sealed partial class ParticleSystemHook : ComponentHook<LumoraParticleSys
         // leans on that: a swap mesh like a wet-mode variant ships with its root slot Active=false and the
         // whole subtree - renderers, emitters, particle systems - is simply not meant to be there. Reading
         // only the component's own Enabled renders content the file explicitly turned off. -xlinka
-        _instance.Visible = Owner.Enabled.Value && (Owner.Slot?.IsActive ?? false);
+        // RenderParticles off is a ribbons-only system: it simulates and emits, and draws no sprite.
+        _instance.Visible = Owner.RenderParticles.Value && Owner.Enabled.Value && (Owner.Slot?.IsActive ?? false);
         ApplyBlendMode();
         ApplyAuthoredMaterial();
         _material.SetShaderParameter("emission_strength", Owner.EmissionStrength.Value);
@@ -285,7 +286,7 @@ public sealed partial class ParticleSystemHook : ComponentHook<LumoraParticleSys
         // Not the same question as "is the node visible": Godot's visibility range hides the mesh, but a
         // promoted light carries no range of its own and the simulation stops publishing out here, so
         // both of those have to be told separately.
-        bool visible = Owner.Enabled.Value && (Owner.Slot?.IsActive ?? false) && !Owner.IsBeyondViewDistance();
+        bool visible = Owner.RenderParticles.Value && Owner.Enabled.Value && (Owner.Slot?.IsActive ?? false) && !Owner.IsBeyondViewDistance();
 
         PullInstances();
         PullStrands(visible);
@@ -432,8 +433,8 @@ public sealed partial class ParticleSystemHook : ComponentHook<LumoraParticleSys
 
         // An authored per-particle MESH beats everything below it.
         //
-        // The source platform lets a style draw an arbitrary mesh per particle, and most effects on a real
-        // avatar do exactly that - splashes, drips, debris. There is nowhere for that to land in a
+        // A style can draw an arbitrary mesh per particle, and most effects on a real avatar do
+        // exactly that - splashes, drips, debris. There is nowhere for that to land in a
         // billboard-or-sphere renderer, so all of them came out as balls. When one is set, hand it
         // straight to the MultiMesh; the sprite path below is what everything else still uses. -xlinka
         var authoredMesh = ResolveParticleMesh();

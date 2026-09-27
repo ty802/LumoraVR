@@ -88,7 +88,7 @@ public class Light : ImplementableComponent, IPrimaryColorSource
         LightColor.Value        = new color(1f, 1f, 1f, 1f);
         Intensity.Value         = 1f;
         Range.Value             = 10f;
-        SpotAngle.Value         = 30f;
+        SpotAngle.Value         = 60f;   // FULL cone; the hook halves it for Godot
         Shadows.Value           = ShadowType.Hard;
         ShadowStrength.Value    = 1f;
         ShadowFadeDistance.Value = 0f;

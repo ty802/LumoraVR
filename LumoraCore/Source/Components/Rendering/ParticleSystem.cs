@@ -28,7 +28,7 @@ namespace Lumora.Core.Components;
 // With no emitter components attached the system falls back to its built-in disc spray driven by the
 // fields below, so the original single-component setups keep working untouched. -xlinka
 [ComponentCategory("Rendering")]
-[DefaultUpdateOrder(-3000)] // after IK/soft bodies; emitters on animated slots see final poses
+[DefaultUpdateOrder(3000)]
 public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceiver, ICustomInspectorUI
 {
     // ceiling on one system, whatever MaxParticles asks for
@@ -66,10 +66,9 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
     // white dots are what most of these effects want.
     // Draw this MESH per particle instead of the built-in billboard/sphere.
     //
-    // The platform this imports from does not have one particle look: a style names a renderer, and that
-    // renderer either billboards a sprite or draws an arbitrary mesh per particle. Splashes, drips and
-    // debris are all the second kind, and without somewhere to put that mesh every one of them arrived as
-    // a ball. Unset keeps the existing behaviour exactly.
+    // Imported particles come in two looks: a billboarded sprite, or an arbitrary mesh per particle.
+    // Splashes, drips and debris are all the second kind, and without somewhere to put that mesh every one
+    // of them arrived as a ball. Unset keeps the existing behaviour exactly.
     //
     // Two references for one mesh, and they are not redundant - they carry the two ways a mesh can exist.
     //
@@ -85,12 +84,10 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
 
     // Draw with THIS material rather than the engine particle shader.
     //
-    // The platform this imports from has no particle shader at all: a style names a renderer, the renderer
-    // names an ordinary material, and the particles are drawn with it like any other geometry. Ours grew
-    // the other way round, from one fixed additive shader outward, which is fine for sparks and wrong for
-    // everything an artist actually authored - a drip is a coloured mesh, not a glowing sprite. When a
-    // material is set it is used as-is; when it is not, the built-in shader still runs, so nothing that
-    // works today changes. -xlinka
+    // Imported particles are drawn with an ordinary material, like any other geometry. The built-in shader
+    // is made for glowing sprites, which is fine for sparks and wrong for everything an artist actually
+    // authored - a drip is a coloured mesh, not a glowing sprite. When a material is set it is used as-is;
+    // when it is not, the built-in shader still runs, so nothing that works today changes. -xlinka
     public readonly AssetRef<MaterialAsset> Material = new();
 
     // How these particles blend with what is behind them.
@@ -102,6 +99,14 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
     public readonly Sync<Lumora.Core.Assets.BlendMode> BlendMode = new();
 
     public readonly AssetRef<TextureAsset> Texture = new();
+
+    // Whether the per-particle sprite is drawn at all.
+    //
+    // Off makes the system simulate and emit exactly as before while drawing NOTHING per particle,
+    // which is the only way to express an effect whose entire look is its trails or ribbons: a streak
+    // from each eye, a comet tail, a whip. With no way to say it, such a system falls back to the
+    // default billboard and the trail you wanted arrives wearing a string of white beads. -xlinka
+    public readonly Sync<bool> RenderParticles = new();
 
     // Separate image for the trail/ribbon ribbons, because a streak's texture is almost never the
     // sprite its particle is drawn with, and UVMode/TileLength mean nothing without one.
@@ -156,6 +161,7 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
         private readonly List<ParticleSystem> _pending = new();
         private readonly Action _flush;
         private readonly Action<int> _stepOne;
+        private ParticleSystem[] _running = System.Array.Empty<ParticleSystem>();
         private ulong _frame = ulong.MaxValue;
         private bool _scheduled;
 
@@ -174,12 +180,22 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
             if (_scheduled && frame != _frame && _pending.Count > 0)
                 Flush();
             _frame = frame;
-            _pending.Add(system);
+            if (!_pending.Contains(system))
+                _pending.Add(system);
             if (!_scheduled)
             {
                 _scheduled = true;
                 _world.RunSynchronously(_flush);
             }
+        }
+
+        // A system leaving takes itself off the list. Without this the batch keeps a strong reference
+        // to a destroyed component for the life of the world and, worse, hands it to the next flush,
+        // where a step can be in flight on a pool thread at the moment the component's OnDestroy frees
+        // its simulation. -xlinka
+        public void Remove(ParticleSystem system)
+        {
+            _pending.Remove(system);
         }
 
         private void Flush()
@@ -188,24 +204,49 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
             int count = _pending.Count;
             if (count == 0)
                 return;
-            if (count >= 2 && ParallelSystemStepping)
-            {
-                Parallel.For(0, count, _stepOne);
-            }
-            else
-            {
-                for (int i = 0; i < count; i++)
-                    StepOne(i);
-            }
+
+            // Take the list out of the batch before stepping any of it. The loop then reads a private
+            // array that nothing can shorten under it, so a system destroyed while the flush is running
+            // can never shift the indices the loop is walking.
+            if (_running.Length < count)
+                _running = new ParticleSystem[System.Math.Max(count, 8)];
+            _pending.CopyTo(_running, 0);
             _pending.Clear();
+
+            // A world past Running is being torn down, and the pass that frees every simulation is a
+            // few steps behind this drain on the same thread. Fanning a step onto the pool here buys a
+            // frame of particles nobody will ever see, at the price of racing that teardown.
+            if (_world.IsDisposed || _world.IsDestroyed || _world.State != World.WorldState.Running)
+            {
+                System.Array.Clear(_running, 0, count);
+                return;
+            }
+
+            try
+            {
+                if (count >= 2 && ParallelSystemStepping)
+                {
+                    Parallel.For(0, count, _stepOne);
+                }
+                else
+                {
+                    for (int i = 0; i < count; i++)
+                        StepOne(i);
+                }
+            }
+            finally
+            {
+                System.Array.Clear(_running, 0, count);
+            }
         }
 
-        private void StepOne(int index) => _pending[index].RunQueuedStep();
+        private void StepOne(int index) => _running[index]?.RunQueuedStep();
     }
 
     private WorldStepBatch? _stepBatch;
     private World? _stepBatchWorld;
     private float _queuedDelta;
+    private bool _stepErrorLogged;
 
     private sealed class WorldParticleBudget
     {
@@ -320,6 +361,7 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
     {
         base.OnInit();
 
+        RenderParticles.Value = true;
         MaxParticles.Value = 360;
         EmissionRate.Value = 18f;
         BurstCount.Value = 5;
@@ -347,6 +389,8 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
     public override void OnStart()
     {
         base.OnStart();
+        if (UpdateOrder == -3000)
+            UpdateOrder = 3000;
 
         // Pointing at a mesh has to POKE that mesh, because the mesh is what has to react.
         //
@@ -376,6 +420,10 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
     {
         if (_registered)
             Engine.Current?.InputInterface?.UnregisterInputEventReceiver(this);
+        // Off the batch before the simulation goes, not after.
+        _stepBatch?.Remove(this);
+        _stepBatch = null;
+        _stepBatchWorld = null;
         if (World != null && WorldBudgets.TryGetValue(World, out var budget))
             budget.Release(this);
         _sim?.Dispose();
@@ -497,7 +545,15 @@ public sealed class ParticleSystem : ImplementableComponent, IInputUpdateReceive
         }
         catch (Exception ex)
         {
-            Logging.Logger.Error($"ParticleSystem: simulation step failed: {ex.Message}");
+            // The whole exception, once. This runs on a pool thread with nothing above it but the
+            // scheduler, so the message on its own names neither the array nor the module that indexed
+            // it, and a step that fails once fails every frame after - the message alone, repeated, is
+            // a log flood that says nothing. -xlinka
+            if (!_stepErrorLogged)
+            {
+                _stepErrorLogged = true;
+                Logging.Logger.Error($"ParticleSystem: simulation step failed (RefID {ReferenceID}): {ex}");
+            }
         }
     }
 

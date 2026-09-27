@@ -19,6 +19,19 @@ public abstract class Collider : ImplementableComponent
     public readonly Sync<float3> Offset;
     public readonly Sync<ColliderType> Type;
     public readonly Sync<float> Mass;
+    // Does a walking body stop against this, or pass through it?
+    //
+    // This existed, replicated, appeared in the inspector and was read by NOTHING. Every collider in
+    // a world went onto one collision bit and the character's capsule masked that same bit, so a
+    // walking body stopped against every collider in the world without exception - including the
+    // mesh colliders the importer hangs off an imported model, which is why importing a chair gave
+    // you a chair-shaped wall. The flag that was supposed to decide it had never been wired.
+    //
+    // It is true by default on purpose. There are seventy-six places in this codebase that attach a
+    // collider, most of them floors, walls and props in the world templates, and a false default would
+    // drop everybody through the ground until all seventy-six were audited. So the default keeps every
+    // existing collider behaving exactly as it does now, and the model importer - the one place that was
+    // demonstrably wrong - turns it off for the geometry it generates. -xlinka
     public readonly Sync<bool> CharacterCollider;
     public readonly Sync<bool> IgnoreRaycasts;
 
@@ -50,7 +63,7 @@ public abstract class Collider : ImplementableComponent
         Offset = new Sync<float3>(this, float3.Zero);
         Type = new Sync<ColliderType>(this, ColliderType.Static);
         Mass = new Sync<float>(this, 1.0f);
-        CharacterCollider = new Sync<bool>(this, false);
+        CharacterCollider = new Sync<bool>(this, true);
         IgnoreRaycasts = new Sync<bool>(this, false);
     }
 

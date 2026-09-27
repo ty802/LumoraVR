@@ -29,6 +29,7 @@ public sealed class PermissionRoleCap
     public PermissionToggle Export;
     public PermissionToggle ToolUse;
     public PermissionToggle Touch;
+    public PermissionToggle Script;
     public float MinScale;
     public float MaxScale;
 }

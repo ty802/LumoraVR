@@ -74,12 +74,13 @@ public sealed class PermissionRoleCapEntry : SyncElement
     public readonly Sync<DataModelPermissionToggle> Touch = new();
     public readonly Sync<float> MinScale = new();
     public readonly Sync<float> MaxScale = new();
+    public readonly Sync<DataModelPermissionToggle> Script = new();
 
     public override void Initialize(World world, IWorldElement? parent)
     {
         base.Initialize(world, parent);
         SyncMemberDiscovery.DiscoverAndInitializeSyncMembers(this, world, this);
-        WorldPermissionConfig.LockToHost(Role, Spawn, SaveCopy, Export, ToolUse, Touch, MinScale, MaxScale);
+        WorldPermissionConfig.LockToHost(Role, Spawn, SaveCopy, Export, ToolUse, Touch, MinScale, MaxScale, Script);
     }
 
     protected override void InternalEncodeFull(BinaryWriter writer, BinaryMessageBatch outboundMessage) { }
@@ -99,6 +100,7 @@ public sealed class PermissionRoleCapEntry : SyncElement
         dictionary.Add("Touch", Touch.Save(control));
         dictionary.Add("MinScale", MinScale.Save(control));
         dictionary.Add("MaxScale", MaxScale.Save(control));
+        dictionary.Add("Script", Script.Save(control));
         return dictionary;
     }
 
@@ -114,6 +116,7 @@ public sealed class PermissionRoleCapEntry : SyncElement
         LoadMember(dictionary, "Touch", Touch, control);
         LoadMember(dictionary, "MinScale", MinScale, control);
         LoadMember(dictionary, "MaxScale", MaxScale, control);
+        LoadMember(dictionary, "Script", Script, control);
     }
 
     private static void LoadMember(DataTreeDictionary dictionary, string name, SyncElement member, LoadControl control)
@@ -125,7 +128,7 @@ public sealed class PermissionRoleCapEntry : SyncElement
     public override object? GetValueAsObject() => Role.Value;
 
     internal void OnAnyChange(Action handler)
-        => WorldPermissionConfig.Subscribe(handler, Role, Spawn, SaveCopy, Export, ToolUse, Touch, MinScale, MaxScale);
+        => WorldPermissionConfig.Subscribe(handler, Role, Spawn, SaveCopy, Export, ToolUse, Touch, MinScale, MaxScale, Script);
 }
 
 // The host's permission configuration for this world, as replicated, persisted DATA. It decides nothing:

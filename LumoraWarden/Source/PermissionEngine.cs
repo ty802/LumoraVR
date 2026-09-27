@@ -81,16 +81,18 @@ public sealed class PermissionEngine
         public readonly bool Export;
         public readonly bool ToolUse;
         public readonly bool Touch;
+        public readonly bool Script;
         public readonly float MinScale;
         public readonly float MaxScale;
 
-        public DomainCaps(bool spawn, bool saveCopy, bool export, bool toolUse, bool touch, float minScale = 0f, float maxScale = 0f)
+        public DomainCaps(bool spawn, bool saveCopy, bool export, bool toolUse, bool touch, bool script, float minScale = 0f, float maxScale = 0f)
         {
             Spawn = spawn;
             SaveCopy = saveCopy;
             Export = export;
             ToolUse = toolUse;
             Touch = touch;
+            Script = script;
             MinScale = minScale;
             MaxScale = maxScale;
         }
@@ -102,6 +104,7 @@ public sealed class PermissionEngine
             PermissionDomain.Export => Export,
             PermissionDomain.ToolUse => ToolUse,
             PermissionDomain.Touch => Touch,
+            PermissionDomain.Script => Script,
             _ => false
         };
 
@@ -111,6 +114,7 @@ public sealed class PermissionEngine
             Resolve(Export, cap.Export),
             Resolve(ToolUse, cap.ToolUse),
             Resolve(Touch, cap.Touch),
+            Resolve(Script, cap.Script),
             cap.MinScale > 0f ? cap.MinScale : MinScale,
             cap.MaxScale > 0f ? cap.MaxScale : MaxScale);
 
@@ -275,12 +279,14 @@ public sealed class PermissionEngine
         // are written tight: a role gets a domain here only if it would be strange for it NOT to have it.
         // Export is the one that stays off by default even for people who can build, because taking
         // content off the machine is a different ask from editing it in place. -xlinka
-        _compiledCaps[HostRole] = new DomainCaps(true, true, true, true, true);
-        _compiledCaps[AdminRole] = new DomainCaps(true, true, true, true, true);
-        _compiledCaps[BuilderRole] = new DomainCaps(true, true, true, true, true);
-        _compiledCaps[ModeratorRole] = new DomainCaps(true, true, false, true, true);
-        _compiledCaps[GuestRole] = new DomainCaps(true, true, false, false, true);
-        _compiledCaps[SpectatorRole] = new DomainCaps(false, false, false, false, true);
+        // Script sits with the build rights: a script is something a user builds, and a host who wants
+        // guests scripting grants it per role. -xlinka
+        _compiledCaps[HostRole] = new DomainCaps(true, true, true, true, true, true);
+        _compiledCaps[AdminRole] = new DomainCaps(true, true, true, true, true, true);
+        _compiledCaps[BuilderRole] = new DomainCaps(true, true, true, true, true, true);
+        _compiledCaps[ModeratorRole] = new DomainCaps(true, true, false, true, true, false);
+        _compiledCaps[GuestRole] = new DomainCaps(true, true, false, false, true, false);
+        _compiledCaps[SpectatorRole] = new DomainCaps(false, false, false, false, true, false);
 
         RebuildResolvedCaps();
     }
@@ -314,7 +320,7 @@ public sealed class PermissionEngine
             {
                 if (cap == null || string.IsNullOrEmpty(cap.RoleName) || !_rolesByName.ContainsKey(cap.RoleName!))
                     continue;
-                _toggles[cap.RoleName!] = new[] { cap.Spawn, cap.SaveCopy, cap.Export, cap.ToolUse, cap.Touch };
+                _toggles[cap.RoleName!] = new[] { cap.Spawn, cap.SaveCopy, cap.Export, cap.ToolUse, cap.Touch, cap.Script };
             }
 
             // A default that names an unknown or non-assignable role is discarded rather than guessed at:
@@ -522,6 +528,25 @@ public sealed class PermissionEngine
             return s_inertScope;
 
         return new AuthoredContentScope(armed: true);
+    }
+
+    // Whether the calling thread is inside a scope that opens the gate: a system bypass or an authored
+    // content scope. A script runtime refuses to start a call inside one, or the script would run with
+    // the scope's rights instead of its author's.
+    public static bool IsGateOpenOnThisThread => s_systemBypassDepth.Value > 0 || s_authoredContentDepth.Value > 0;
+
+    // Whether anything on the ownership chain reads as a user's: under their root, which covers what
+    // they wear and what they are holding. The authority mints user roots, so authority-authored alone
+    // does not make something the world's.
+    private static bool BelongsToAUser(IPermissionTarget? target)
+    {
+        for (int depth = 0; target != null && depth < 8; depth++)
+        {
+            if (target.StructuralOwner != null)
+                return true;
+            target = target.OwnershipParent;
+        }
+        return false;
     }
 
     // Whether this element was minted by the authority, walking the ownership chain the way OwnsIdStrong
@@ -809,7 +834,34 @@ public sealed class PermissionEngine
             }
         }
 
+        // World scripts act for the world, so ownership and roles have nothing to say about them. The one
+        // question is whether the target is the world's own content and no user is holding or wearing it.
+        // Above the freeze on purpose: the world's authored logic has to keep working in a frozen world,
+        // the same reasoning as EnterAuthoredContentScope. Copy and export are never theirs to ask for.
+        // The slot registry is world content itself, so there the key is what counts: a world script adds
+        // and removes world slots only, never a user's. -xlinka
+        if (actor.IsWorldContent)
+        {
+            const PermissionAction worldScriptActions =
+                PermissionAction.Mutation | PermissionAction.Read | PermissionAction.CollectionEnumerate;
+            var reached = request.Target ?? request.Parent;
+            bool worldKey = !ReferenceEquals(request.Target, world.SlotRegistry)
+                || (request.Action & PermissionAction.Mutation) == 0
+                || (_ids.TryGetElementId(request.Key, out var registryKey) && _ids.IsAuthority(registryKey));
+            if (world.IsAuthority
+                && (request.Action & ~worldScriptActions) == 0
+                && IsAuthorityAuthored(reached)
+                && !BelongsToAUser(reached)
+                && worldKey)
+            {
+                return true;
+            }
+            reason = "a world script may only change world content";
+            return Deny(request, reason, PermissionDenialKind.ForeignWrite);
+        }
+
         var role = GetRole(actor);
+        var question = RoleQuestion(request.Action);
         bool ownsTarget = OwnsTarget(actor, request.Target) ||
                           OwnsTarget(actor, request.Parent);
 
@@ -825,11 +877,16 @@ public sealed class PermissionEngine
         // byte). We must NOT relax those here, or a guest could bolt live components onto host geometry. The
         // registry is the only flat (null-parent) collection a guest legitimately writes; user streams go via
         // Parent=own-user and users are host-managed. -xlinka
-        if (!ownsTarget &&
-            (request.Action & (PermissionAction.CollectionAdd | PermissionAction.CollectionInsert)) != 0 &&
+        //
+        // Removals too: a registry removal keyed in the actor's byte is the actor destroying a slot it
+        // minted. Without this a guest could register its own things and never delete them again, every
+        // destroy of its own slot refused and the local destroy throwing half way. The key is the slot's id,
+        // which a grab never changes, so this is the strong kind of ownership as well. -xlinka
+        bool ownsRegistryKey = ReferenceEquals(request.Target, world.SlotRegistry) &&
             _ids.TryGetElementId(request.Key, out var keyId) &&
-            OwnsId(actor, keyId) &&
-            ReferenceEquals(request.Target, world.SlotRegistry))
+            OwnsId(actor, keyId);
+        if (!ownsTarget && ownsRegistryKey &&
+            (request.Action & (PermissionAction.CollectionAdd | PermissionAction.CollectionInsert | PermissionAction.CollectionRemove)) != 0)
         {
             ownsTarget = true;
         }
@@ -897,7 +954,7 @@ public sealed class PermissionEngine
             && !OwnsIdStrong(actor, request.Target) && !OwnsIdStrong(actor, request.Parent))
         {
             ownsTarget = false;
-            if (!role.Allows(request.Action, ownsTarget))
+            if (!role.Allows(question, ownsTarget))
             {
                 reason = "editing a held object requires ownership, not just holding it";
                 return Deny(request, reason, PermissionDenialKind.ForeignWrite);
@@ -915,7 +972,8 @@ public sealed class PermissionEngine
         if ((request.Action & DestructiveActions) != 0 && ownsTarget)
         {
             bool ownsTargetStrong = OwnsIdStrong(actor, request.Target) ||
-                                    OwnsIdStrong(actor, request.Parent);
+                                    OwnsIdStrong(actor, request.Parent) ||
+                                    ownsRegistryKey;
             if (!ownsTargetStrong)
             {
                 // Strip the grab-flip signal and ask the role the real question, as if the actor were not
@@ -923,7 +981,7 @@ public sealed class PermissionEngine
                 // component off something in its own hand was refused, then allowed the moment it let go. A
                 // guest holding host content still fails, because its role cannot destroy foreign objects.
                 ownsTarget = false;
-                if (!role.Allows(request.Action, ownsTarget))
+                if (!role.Allows(question, ownsTarget))
                 {
                     reason = "destroying a held object requires ownership, not just holding it";
                     return Deny(request, reason, PermissionDenialKind.Ownership);
@@ -931,7 +989,7 @@ public sealed class PermissionEngine
             }
         }
 
-        if (role.Allows(request.Action, ownsTarget))
+        if (role.Allows(question, ownsTarget))
         {
             return true;
         }
@@ -1184,6 +1242,11 @@ public sealed class PermissionEngine
     {
         grabTraffic = false;
 
+        // Holding takes a hand, and hands hang under a body. An actor with none, a script among them,
+        // gets no grab allowance and answers the ordinary ownership question like any other edit. -xlinka
+        if (actor.RootElement == null)
+            return false;
+
         var member = request.Member;
         if (member == null)
             return false;
@@ -1245,6 +1308,28 @@ public sealed class PermissionEngine
         PermissionAction.Destroy |
         PermissionAction.CollectionRemove |
         PermissionAction.CollectionClear;
+
+    private const PermissionAction StructuralActions =
+        PermissionAction.Create |
+        PermissionAction.Destroy |
+        PermissionAction.CollectionAdd |
+        PermissionAction.CollectionInsert |
+        PermissionAction.CollectionRemove |
+        PermissionAction.CollectionClear |
+        PermissionAction.CollectionResize;
+
+    // What a role mask is asked. Replicate only says the request came over the wire, and no foreign mask
+    // carries it, so every remote foreign write was refused even for a role granted it. A structural op
+    // also carries Write because it changes the collection, which made the moderator's foreign remove and
+    // destroy unreachable: its mask has Destroy and Remove but not Write. The op itself is the question.
+    // CollectionSet keeps Write, it is an edit. -xlinka
+    private static PermissionAction RoleQuestion(PermissionAction action)
+    {
+        var question = action & ~PermissionAction.Replicate;
+        if ((question & StructuralActions) != 0)
+            question &= ~PermissionAction.Write;
+        return question == 0 ? action : question;
+    }
 
     // STRONG ownership: only the real per-byte signal (and self), never the grab-flippable structural one. A
     // grab reparents the object under the grabber's root, which flips the structural owner to the grabber - so

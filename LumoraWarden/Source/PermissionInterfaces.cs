@@ -50,6 +50,10 @@ public interface IPermissionActor
     string? MachineKey { get; }
 
     string? AccountKey { get; }
+
+    // A script the world itself carries: authored by the authority, acting for no user. It may change
+    // the world's own content and nothing else, in every world mode. False for every user.
+    bool IsWorldContent => false;
 }
 
 // Attached to an object to say it may not be copied off by people who do not own it. The datamodel

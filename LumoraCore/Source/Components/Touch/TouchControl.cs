@@ -138,6 +138,12 @@ public abstract class TouchControl : Component, ITouchTarget, IInteractionTarget
     // Lets one component claim an action off any control without a type switch per control.
     public virtual SyncDelegate<TouchAction>? ResponseSlot(TouchResponse response) => null;
 
+    // Runtime code that follows what this control does without being part of its saved wiring, a script
+    // host being the case. Raised after the bound actions, on whichever peer runs the reaction, which for
+    // a relayed touch is the authority. A listener must not act inline: it runs inside the control's own
+    // scope, so it queues its work for later. -xlinka
+    public event Action<TouchControl, TouchResponse, TouchContact>? Responded;
+
     // Whether this control's reaction is the TOUCHER's own business rather than the world's, in which
     // case it stays on the toucher's peer instead of being relayed to the authority. The default is
     // false: a control's state and its authored actions belong to whoever owns the control, and on
@@ -242,6 +248,25 @@ public abstract class TouchControl : Component, ITouchTarget, IInteractionTarget
         catch (Exception ex)
         {
             Logging.Logger.Error($"Touch control {ParentHierarchyToString()} local handler threw: {ex}");
+        }
+
+        var responded = Responded;
+        if (responded == null)
+            return;
+
+        foreach (TouchResponse response in Enum.GetValues<TouchResponse>())
+        {
+            if (!ReferenceEquals(ResponseSlot(response), slot))
+                continue;
+            try
+            {
+                responded(this, response, boundContact);
+            }
+            catch (Exception ex)
+            {
+                Logging.Logger.Error($"Touch control {ParentHierarchyToString()} listener threw: {ex}");
+            }
+            break;
         }
     }
 }

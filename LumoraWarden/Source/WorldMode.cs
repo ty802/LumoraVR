@@ -53,6 +53,9 @@ public static class WorldModePolicy
         // Interacting with what is already there is what a social world IS.
         PermissionDomain.Touch => true,
 
+        // A user's script rides on a user's object, so it goes wherever their own items may go.
+        PermissionDomain.Script => AllowsOwnItems(mode),
+
         // Taking a copy is not editing, so the freeze does not reach it. Ownership, the per-role toggles
         // and the protection marker are what gate these.
         PermissionDomain.SaveCopy => true,

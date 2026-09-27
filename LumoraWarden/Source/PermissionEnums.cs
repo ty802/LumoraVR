@@ -57,7 +57,10 @@ public enum PermissionDomain
     SaveCopy,
     Export,
     ToolUse,
-    Touch
+    Touch,
+
+    // Running a script a user authored. The world's own scripts are world content and never ask.
+    Script
 }
 
 // What a refused write was actually trying to do. The weights behind these decide whether a peer is

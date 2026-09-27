@@ -93,12 +93,16 @@ public sealed class DataModelPermissionController
     // it, so the same carrier can be refilled instead of allocating a fresh graph per config edit.
     private readonly PermissionPolicy _policy = new();
 
+    private readonly World _world;
+
     public DataModelPermissionController(World world)
     {
         if (world == null)
         {
             throw new ArgumentNullException(nameof(world));
         }
+
+        _world = world;
 
         _engine = new PermissionEngine(world, RefIDPermissionIdSpace.Instance)
         {
@@ -141,13 +145,25 @@ public sealed class DataModelPermissionController
 
     public DataModelPermissionRole GetDefaultRole(DataModelAccessClass accessClass) => _engine.GetDefaultRole(accessClass);
 
-    public void SetDefaultRole(DataModelAccessClass accessClass, DataModelPermissionRole role) => _engine.SetDefaultRole(accessClass, role);
+    public void SetDefaultRole(DataModelAccessClass accessClass, DataModelPermissionRole role)
+    {
+        _engine.SetDefaultRole(accessClass, role);
+        RightsChanged();
+    }
 
     public int UserOverrideCount => _engine.UserOverrideCount;
 
-    public void ClearUserOverrides() => _engine.ClearUserOverrides();
+    public void ClearUserOverrides()
+    {
+        _engine.ClearUserOverrides();
+        RightsChanged();
+    }
 
     public IDisposable EnterActor(User? actor) => _engine.EnterActor(actor);
+
+    // For an actor that is not a live User: a script principal, which carries its author's identity and
+    // byte but never the author's root or host status.
+    public IDisposable EnterActor(IPermissionActor? actor) => _engine.EnterActor(actor);
 
     public IDisposable EnterSystemBypass() => _engine.EnterSystemBypass();
 
@@ -164,9 +180,17 @@ public sealed class DataModelPermissionController
 
     public void ClearRules() => _engine.ClearRules();
 
-    public void SetUserRole(User user, DataModelPermissionRole role) => _engine.SetUserRole(user, role);
+    public void SetUserRole(User user, DataModelPermissionRole role)
+    {
+        _engine.SetUserRole(user, role);
+        RightsChanged();
+    }
 
-    public void ClearUserRole(User user) => _engine.ClearUserRole(user);
+    public void ClearUserRole(User user)
+    {
+        _engine.ClearUserRole(user);
+        RightsChanged();
+    }
 
     public DataModelPermissionRole GetRole(User? user) => _engine.GetRole(user);
 
@@ -194,7 +218,18 @@ public sealed class DataModelPermissionController
     public int GroupRosterCount => _engine.GroupRosterCount;
 
     // The Social/Event lock floor plus the default role per access class.
-    public void ApplyMode(WorldMode mode) => _engine.ApplyMode(mode);
+    public void ApplyMode(WorldMode mode)
+    {
+        _engine.ApplyMode(mode);
+        RightsChanged();
+    }
+
+    // Whatever a role change takes away, it takes from grants made while it allowed them too.
+    internal void RightsChanged()
+    {
+        _world.LinkManager?.ScheduleGrantRecheck();
+        _world.ScriptsIfAny?.ScheduleRecheck();
+    }
 
     public DataModelPermissionRole? FindRole(string? name) => _engine.FindRole(name);
 
@@ -218,6 +253,7 @@ public sealed class DataModelPermissionController
         {
             PushDefaultRoles(null);
             _engine.ApplyPolicy(_policy);
+            RightsChanged();
             return;
         }
 
@@ -247,6 +283,7 @@ public sealed class DataModelPermissionController
                 Export = entry.Export.Value,
                 ToolUse = entry.ToolUse.Value,
                 Touch = entry.Touch.Value,
+                Script = entry.Script.Value,
                 MinScale = entry.MinScale.Value,
                 MaxScale = entry.MaxScale.Value
             });
@@ -274,6 +311,7 @@ public sealed class DataModelPermissionController
         _policy.Escalation = escalation;
 
         _engine.ApplyPolicy(_policy);
+        RightsChanged();
     }
 
     // Who gets which role on arrival, per access class, pushed at the gate as the host typed it.

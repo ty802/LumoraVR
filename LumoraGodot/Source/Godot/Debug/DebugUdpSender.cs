@@ -228,6 +228,7 @@ public class DebugUdpSender : IDisposable
         }
 
         sb.Append('|').Append(SanitizeField(f.PerfReport ?? string.Empty));
+        N(f.ScriptsMs);
 
         Send(sb.ToString());
     }
@@ -249,7 +250,7 @@ public class DebugUdpSender : IDisposable
     public struct FramePacket
     {
         public double CpuFrameMs;
-        public double WorldTotalMs, SyncMs, PreMs, CompMs, ChangeMs, HooksMs, EndMs, LateMs;
+        public double WorldTotalMs, SyncMs, PreMs, CompMs, ChangeMs, HooksMs, EndMs, LateMs, ScriptsMs;
         public double RenderCpuMs, RenderGpuMs, FrameSetupCpuMs;
         public double EngineInputMs, EngineCoroutinesMs, EngineFixedMs, EngineAssetsMs;
         public double HostNetworkMs, HostEngineMs, HostTailMs;

@@ -30,7 +30,7 @@ public partial class DebugWindow
     private const int MaxFrameSamples = 5000;
 
     // Bump whenever the FRAM layout changes. Mismatch is reported, never guessed at.
-    private const int FrameFieldCount = 43;
+    private const int FrameFieldCount = 44;
     private bool _warnedFrameLayout;
 
     private readonly List<FrameSample> _frameSamples = new();
@@ -80,6 +80,7 @@ public partial class DebugWindow
         public double HooksMs;
         public double EndMs;
         public double LateMs;
+        public double ScriptsMs;
         public double RenderCpuMs;
         public double RenderGpuMs;
         public double FrameSetupCpuMs;
@@ -293,6 +294,7 @@ public partial class DebugWindow
             DriverAllocationCount = ParseL(parts[38]),
             DriverTotalMemBytes = ParseL(parts[39]),
             PerfReport = parts[42],
+            ScriptsMs = ParseD(parts[43]),
         };
 
         foreach (var row in parts[41].Split(';', StringSplitOptions.RemoveEmptyEntries))
@@ -503,9 +505,9 @@ public partial class DebugWindow
             }
         }
 
-        double worst = System.Math.Max(sample.SyncMs, System.Math.Max(sample.PreMs,
+        double worst = System.Math.Max(sample.SyncMs, System.Math.Max(sample.PreMs, System.Math.Max(sample.ScriptsMs,
             System.Math.Max(sample.CompMs, System.Math.Max(sample.ChangeMs,
-            System.Math.Max(sample.HooksMs, System.Math.Max(sample.EndMs, sample.LateMs))))));
+            System.Math.Max(sample.HooksMs, System.Math.Max(sample.EndMs, sample.LateMs)))))));
 
         // Named for what is ACTUALLY in it. Every IInputUpdateReceiver - particles, cloth, dynamic bones,
         // IK - is queued by the input pass and drains here, so a scene heavy on simulation shows up in
@@ -513,6 +515,7 @@ public partial class DebugWindow
         // component list breaks it down by type, suffixed "(input)".
         Row("sync (queued input work: particles, cloth, bones, IK + transport)", sample.SyncMs, sample.SyncMs >= worst);
         Row("pre (assets, events, input, coroutines)", sample.PreMs, sample.PreMs >= worst);
+        Row("scripts (queued events + per-frame updates)", sample.ScriptsMs, sample.ScriptsMs >= worst);
         Row("comp (component OnUpdate)", sample.CompMs, sample.CompMs >= worst);
         Row("change (OnChanges drain)", sample.ChangeMs, sample.ChangeMs >= worst);
         Row("hooks (engine flush, budgeted)", sample.HooksMs, sample.HooksMs >= worst);
@@ -624,7 +627,7 @@ public partial class DebugWindow
     private string BuildFrameCsv()
     {
         var sb = new StringBuilder(_frameSamples.Count * 160);
-        sb.AppendLine("sample,time_s,process_delta_ms,world_total_ms,sync_ms,pre_ms,comp_ms,change_ms,"
+        sb.AppendLine("sample,time_s,process_delta_ms,world_total_ms,sync_ms,pre_ms,scripts_ms,comp_ms,change_ms,"
             + "hooks_ms,end_ms,late_ms,render_cpu_ms,render_gpu_ms,frame_setup_cpu_ms,"
             + "engine_input_ms,engine_coroutines_ms,engine_fixed_ms,engine_assets_ms,"
             + "host_network_ms,host_engine_ms,host_tail_ms,godot_and_vsync_ms,"
@@ -651,6 +654,7 @@ public partial class DebugWindow
             sb.Append(F(s.WorldTotalMs)).Append(',');
             sb.Append(F(s.SyncMs)).Append(',');
             sb.Append(F(s.PreMs)).Append(',');
+            sb.Append(F(s.ScriptsMs)).Append(',');
             sb.Append(F(s.CompMs)).Append(',');
             sb.Append(F(s.ChangeMs)).Append(',');
             sb.Append(F(s.HooksMs)).Append(',');

@@ -71,8 +71,8 @@ public abstract class HomeWidgetPreset : WidgetPreset
             BackgroundSprite.Target = dash.RoundedSpriteFor(CornerRadius.Value);
     }
 
-    // The reference's coloured square with a glyph in it, at the left edge of a card. The glyph is
-    // one of the bundled line icons; the tile takes the card's own hue.
+    // A coloured square with a glyph in it, at the left edge of a card. The glyph is one of the bundled
+    // line icons; the tile takes the card's own hue.
     protected Slot IconTileAt(Slot root, string icon, in color tint, float left, float size)
     {
         var tile = root.AddSlot("IconTile");

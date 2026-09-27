@@ -78,7 +78,7 @@ public static class DashTheme
     public static readonly color MeterPeak = S(0.596f, 0.961f, 0.749f, 1f);
 
     // Icon tiles on the home cards: one hue per kind of thing, so a column reads by colour before it
-    // reads by word, the way the reference's home page does.
+    // reads by word.
     public static readonly color IconBlue = S(0.290f, 0.520f, 0.985f, 1f);
     public static readonly color IconTeal = S(0.145f, 0.785f, 0.745f, 1f);
     public static readonly color IconPink = S(0.965f, 0.330f, 0.600f, 1f);

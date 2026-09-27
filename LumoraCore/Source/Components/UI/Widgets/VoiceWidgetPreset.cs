@@ -10,9 +10,9 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.UI;
 
-// The voice strip on the dash's top bar: mute and the four ranges you can talk at, one row, the
-// way the reference keeps it beside the clock so it is one glance from every screen. The active
-// range is lit in its own colour; mute is lit red; a range the host does not allow is greyed. -xlinka
+// The voice strip on the dash's top bar: mute and the four ranges you can talk at, one row, one
+// glance from every screen. The active range is lit in its own colour; mute is lit red; a range the
+// host does not allow is greyed. -xlinka
 [ComponentCategory("Hidden")]
 public sealed class VoiceWidgetPreset : HomeWidgetPreset
 {
@@ -92,8 +92,8 @@ public sealed class VoiceWidgetPreset : HomeWidgetPreset
         }
         ui.PopStyle();
 
-        // The microphone's level beside the switches, the way the reference shows you are being heard:
-        // one continuous bar taking every unit the switches did not.
+        // The microphone's level beside the switches, so you can see you are being heard: one continuous
+        // bar taking every unit the switches did not.
         ui.PushStyle().MinWidth(MeterMinWidth).PreferredWidth(MeterMinWidth).FlexibleWidth(1f);
         var meter = ui.Empty("Meter");
         ui.PopStyle();

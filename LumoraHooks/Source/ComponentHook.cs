@@ -16,7 +16,7 @@ public abstract class ComponentHook<D, C> : Hook<D> where D : ImplementableCompo
 {
     protected SlotHook slotHook { get; private set; } = null!;
 
-    // Godot equivalent of GameObject
+    // The slot's Node3D, shared by every component hook on the slot.
     protected Node3D attachedNode { get; private set; } = null!;
 
     public override void Initialize()

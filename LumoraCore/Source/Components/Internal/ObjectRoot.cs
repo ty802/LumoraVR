@@ -34,7 +34,7 @@ public class ObjectRoot : Component
     {
         base.OnInit();
 
-        // ObjectName = string.Empty (C# default null is close enough for Sync<string>, but original used string.Empty)
+        // ObjectName = string.Empty (C# default null is close enough for Sync<string>, but empty is kept)
         ObjectName.Value  = string.Empty;
         Grabbable.Value   = true;
         Duplicatable.Value = true;

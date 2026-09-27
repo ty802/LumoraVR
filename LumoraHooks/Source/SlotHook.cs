@@ -145,7 +145,7 @@ public class SlotHook : Hook<Slot>, ISlotHook
 		SetData();
 	}
 
-	// Godot forbids empty node names (some engines allow them). During load a child slot is created
+	// Godot forbids empty node names. During load a child slot is created
 	// before its name member decodes, so fall back to a non-empty default instead of erroring.
 	private static string SafeNodeName(string? name)
 		=> string.IsNullOrWhiteSpace(name) ? "Slot" : name;

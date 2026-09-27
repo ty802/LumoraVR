@@ -325,7 +325,7 @@ public static class RichTextParser
         _ => 0,
     };
 
-    // Reference uses percent (150 -> 1.5). Accept a bare multiplier too (1.5 -> 1.5): treat values >= 3 as percent.
+    // Line height is a percent (150 -> 1.5). Accept a bare multiplier too (1.5 -> 1.5): treat values >= 3 as percent.
     private static float ParseLineHeight(string value)
     {
         if (!float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out float n) || n <= 0f)

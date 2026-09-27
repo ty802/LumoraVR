@@ -6,8 +6,8 @@ using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.UI;
 
-// The debug screen as a home card, the way the reference files it: a tool you open on purpose from
-// the home page, not a tab standing beside Worlds and Settings on every screen.
+// The debug screen as a home card: a tool you open on purpose from the home page, not a tab standing
+// beside Worlds and Settings on every screen.
 [ComponentCategory("Hidden")]
 public sealed class OpenDebugWidgetPreset : ActionWidgetPreset
 {

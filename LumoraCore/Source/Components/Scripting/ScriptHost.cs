@@ -1,0 +1,976 @@
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
+
+using System;
+using System.Collections.Generic;
+using Helio.UI;
+using Lumora.Core.Assets;
+using Lumora.Core.Components.Assets;
+using Lumora.Core.Math;
+using Lumora.Core.Networking.Sync;
+using Lumora.Core.Scripting;
+using Lumora.Script;
+using LumoraLogger = Lumora.Core.Logging.Logger;
+
+namespace Lumora.Core.Components.Scripting;
+
+// Runs a script on the object it sits on.
+//
+// Graph points at the packed graph. Bindings are the world objects the graph reaches, by position: the
+// graph names binding n, never a RefID, so duplicating, saving and loading the object remaps them like
+// any other reference. Only the graph travels; the authority compiles its own module from it.
+//
+// A Shared script runs on the authority AS ITS AUTHOR: the world itself for a world-built object, else
+// the user whose byte minted this component, pinned by identity when the component wakes. It never
+// runs as anyone else. If that author leaves, the script stops for good, even if the byte later
+// belongs to someone new. A user's script also needs the Script domain on their role.
+//
+// What decides what a user's script does has to be the author's own doing: the graph reference, the
+// provider behind it and its URL, and every binding. Someone else allowed to edit this component could
+// otherwise hand the author's rights a graph or a target of their own, so an edit by anyone else stops
+// the script until the author writes it again. Packing someone else's script makes a new host that
+// runs as whoever packed it.
+//
+// Presses reach On Pressed from a touch control on the same slot, which already relays to the
+// authority, and from a UI button on the same slot, which fires on the presser's peer and is carried
+// over by the presser's ScriptPressRelay.
+//
+// Status is written by the authority for everyone's inspector and is host-only on the wire.
+//
+// A Local script runs on every machine, the host's included, as its author, for whoever is at each. The
+// host still decides whether it may run at all, with the same checks a Shared script gets, and says so
+// in LocalApproval: the hash of the graph every machine may run, or nothing. Each machine then runs that
+// graph once it has it, and keeps how it is going in LocalStatus, for its own inspector only. A machine
+// that cannot compile the graph says it needs a newer build. What a Local script may change is in
+// ScriptWrites; a Shared script of the same author reaches it through the inbox.
+//
+// Graphs compile on a worker. Until the compile lands the host keeps whatever it was running, and the
+// scheduler brings it back here in the script phase once it has. -xlinka
+[ComponentCategory("Utility/Scripting")]
+public sealed class ScriptHost : Component, IButtonPressReceiver, ICustomInspectorUI, IInspectorActionHandler
+{
+    public readonly AssetRef<ScriptGraphAsset> Graph = new();
+    public readonly SyncRefList<IWorldElement> Bindings = new();
+    public readonly Sync<ScriptMode> Mode = new();
+    public readonly Sync<string> Status = new();
+
+    // Host-only and never saved: the host's say on a Local script, and what a Shared script of the same
+    // author last sent it. The count comes last, so its change arrives with the text and number.
+    [NonPersistent]
+    public readonly Sync<string> LocalApproval = new();
+    [NonPersistent]
+    public readonly Sync<string> InboxMessage = new();
+    [NonPersistent]
+    public readonly Sync<float> InboxValue = new();
+    [NonPersistent]
+    public readonly Sync<int> Inbox = new();
+
+    // Host-only and never saved: what the Shared script costs on the host, milliseconds a frame over the
+    // last second and its compile there. Written only while a panel on another machine asks for them.
+    [NonPersistent]
+    public readonly Sync<float> HostMs = new();
+    [NonPersistent]
+    public readonly Sync<float> HostCompileMs = new();
+
+    // Host-only and never saved: what the Shared script keeps here for every machine to read, by name.
+    // A fresh start clears it; a live graph swap keeps it.
+    [NonPersistent]
+    public readonly SyncList<ScriptSyncedValue> Synced = new();
+
+    private ScriptHostRuntime? _runtime;
+    private ScriptGraph? _runningGraph;
+    private ScriptPrincipal? _pinned;
+
+    // Set once, for good: why this host has no author it may run as.
+    private string? _orphaned;
+
+    // What the running script is doing, and its last fault since it started, which stays on the status
+    // however often the host decides again that it should keep running.
+    private string _running = string.Empty;
+    private string? _lastFault;
+
+    public bool IsRunning => _runtime is { CanRun: true };
+
+    private ScriptHostRuntime? _localRuntime;
+    private int _seenInbox;
+
+    // The compile this host is waiting on, Shared or Local, by graph hash.
+    private System.Threading.Tasks.Task<CompileResult>? _compiling;
+    private string? _compilingHash;
+
+    // How the Local script is doing on this machine, for this machine's inspector.
+    public string LocalStatus { get; private set; } = string.Empty;
+
+    public bool IsRunningHere => _localRuntime is { CanRun: true };
+
+    // Refusals the running script has met at the gate, and the last of them, here and for a Local script
+    // on this machine.
+    public int Refusals => _runtime?.Runner.Context.RefusalCount ?? 0;
+
+    public string? LastRefusal => _runtime?.Runner.Context.LastRefusal;
+
+    public string? LastRefusalHere => _localRuntime?.Runner.Context.LastRefusal;
+
+    // The Shared runtime on the host, the Local one on this machine, for the diagnostics panel.
+    internal ScriptHostRuntime? SharedRuntime => _runtime;
+
+    internal ScriptHostRuntime? LocalRuntime => _localRuntime;
+
+    public override void OnAwake()
+    {
+        base.OnAwake();
+        Status.MarkHostOnly();
+        LocalApproval.MarkHostOnly();
+        InboxMessage.MarkHostOnly();
+        InboxValue.MarkHostOnly();
+        Inbox.MarkHostOnly();
+        HostMs.MarkHostOnly();
+        HostCompileMs.MarkHostOnly();
+        Synced.MarkHostOnly();
+
+        // Pinned here: on the authority a user's component wakes while its sender is still in the world.
+        if (World?.IsAuthority == true)
+            Pin();
+    }
+
+    public override void OnStart()
+    {
+        base.OnStart();
+        // Every machine keeps its hosts with the scheduler: a Local script runs everywhere.
+        World?.Scripts.Register(this);
+    }
+
+    public override void OnChanges()
+    {
+        base.OnChanges();
+        Reconcile();
+        TakeInbox();
+    }
+
+    public override void OnDestroy()
+    {
+        World?.ScriptsIfAny?.Unregister(this);
+        StopRuntime();
+        StopLocal(string.Empty);
+        KeepClipsWarm(false);
+        base.OnDestroy();
+    }
+
+    // While the script may run, the clips it is bound to stay loaded on every machine. See ScriptClipWarmer.
+    private void KeepClipsWarm(bool running)
+    {
+        var slot = Slot;
+        if (slot == null || slot.IsDestroyed || World is not { IsAuthority: true } world)
+            return;
+        ScriptClipWarmer? warmer = null;
+        foreach (var existing in slot.GetComponents<ScriptClipWarmer>())
+        {
+            if (ReferenceEquals(existing.Host.Target, this))
+                warmer = existing;
+        }
+        var clips = new List<IAssetProvider<AudioClip>>();
+        for (int i = 0; running && i < Bindings.Count; i++)
+        {
+            if (Bindings[i] is IAssetProvider<AudioClip> clip and Component { IsDestroyed: false, IsLocalElement: false } && !clips.Contains(clip))
+                clips.Add(clip);
+        }
+        if (clips.Count == 0 && warmer == null)
+            return;
+
+        using (world.DataModelPermissions?.EnterSystemBypass())
+        {
+            if (clips.Count == 0)
+            {
+                warmer!.Destroy();
+                return;
+            }
+            if (warmer == null)
+            {
+                warmer = slot.AttachComponent<ScriptClipWarmer>();
+                warmer.Persistent = false;
+                warmer.Host.Target = this;
+            }
+            bool same = warmer.Clips.Count == clips.Count;
+            for (int i = 0; same && i < clips.Count; i++)
+                same = ReferenceEquals(warmer.Clips[i], clips[i]);
+            if (!same)
+            {
+                warmer.Clips.Clear();
+                foreach (var clip in clips)
+                    warmer.Clips.Add(clip);
+            }
+        }
+    }
+
+    // Raised on the authority only, which is the only place a Shared script runs.
+    public override void OnUserJoined(User user)
+    {
+        base.OnUserJoined(user);
+        if (_runtime is { CanRun: true } runtime && runtime.Runner.Instance.Handles(typeof(UserJoined)))
+            runtime.Enqueue(runner => runner.Raise(new UserJoined(user)));
+    }
+
+    public override void OnUserLeft(User user)
+    {
+        base.OnUserLeft(user);
+        if (_runtime is { CanRun: true } runtime && runtime.Runner.Instance.Handles(typeof(UserLeft)))
+            runtime.Enqueue(runner => runner.Raise(new UserLeft(user)));
+    }
+
+    public void OnButtonPressed(Button button, in UIInteractionContext context)
+    {
+        var world = World;
+        if (world == null || IsDestroyed)
+            return;
+        // A Local script hears the press on the machine it was made on, at once.
+        if (Mode.Value == ScriptMode.Local)
+        {
+            if (_localRuntime is { CanRun: true } local && button.CanInteract
+                && world.DataModelPermissions?.AllowsDomain(context.Actor ?? world.LocalUser, DataModelPermissionDomain.Touch) != false)
+                local.EnqueuePress(context.Actor ?? world.LocalUser, context.WorldPoint);
+            return;
+        }
+        if (world.IsAuthority)
+            PressFrom(context.Actor, context.WorldPoint);
+        else
+            ScriptPressRelay.For(world)?.Publish(this, context.WorldPoint);
+    }
+
+    // Built with the inspector section, so it reads as of opening it.
+    public void BuildInspectorBody(UIBuilder ui)
+    {
+        InspectorStats.AddRow(ui, "Status", string.IsNullOrEmpty(Status.Value) ? "not started" : Status.Value);
+        if (Mode.Value == ScriptMode.Local)
+            InspectorStats.AddRow(ui, "Here", string.IsNullOrEmpty(LocalStatus) ? "not started" : LocalStatus);
+        if ((Mode.Value == ScriptMode.Local ? LastRefusalHere : LastRefusal) is { } refused)
+            InspectorStats.AddRow(ui, "Last refused", refused);
+        if (Synced.Count > 0)
+        {
+            InspectorStats.AddRow(ui, "Synced", Synced.Count == 1 ? "1 value" : $"{Synced.Count} values");
+            int rows = 0;
+            foreach (var entry in Synced)
+            {
+                if (++rows > MaxSyncedRows)
+                    break;
+                string text = entry.Value.Value ?? string.Empty;
+                InspectorStats.AddRow(ui, entry.Key.Value ?? string.Empty, text.Length > 40 ? text[..37] + "..." : text);
+            }
+        }
+        var space = ScriptGraphEditing.FindSpace(this);
+        int nodes = 0;
+        if (space != null)
+        {
+            foreach (var _ in space.Nodes)
+                nodes++;
+        }
+        InspectorStats.AddRow(ui, "Graph", space != null ? $"open for editing, {nodes} nodes" : Graph.Target == null ? "none yet" : "packed");
+        InspectorUI.RelayButton(ui, this, "edit", "Edit graph", 0f);
+        if (space != null)
+            InspectorUI.RelayButton(ui, this, "pack", "Pack", 0f);
+        // A group never packed has no graph or bindings to take on; packing it is what makes it run.
+        if (Status.Value?.Contains("someone else") == true && Graph.Target != null)
+            InspectorUI.RelayButton(ui, this, "adopt", "Run these changes as mine", 0f);
+    }
+
+    // On the machine of whoever pressed, so each of these acts as them.
+    public void HandleInspectorAction(string argument)
+    {
+        switch (argument)
+        {
+            case "edit":
+                ScriptGraphEditing.Unpack(this, out _);
+                break;
+            case "pack":
+                if (ScriptGraphEditing.FindSpace(this) is { } space)
+                    _ = ScriptGraphEditing.PackAsync(space);
+                break;
+            case "adopt":
+                RunEditsAsAuthor();
+                break;
+        }
+    }
+
+    // A press the authority takes: the slot still has a live button, and the presser may interact here.
+    // A press on one of this script's Call nodes, by the one who pressed it. The button only exists on
+    // the open graph's card, so a press is only taken while the graph is open here.
+    internal void CallFrom(User? caller, string nodeId)
+    {
+        if (_runtime is not { CanRun: true } runtime || string.IsNullOrEmpty(nodeId))
+            return;
+        if (ScriptGraphEditing.FindSpace(this) is not { Slot.IsActive: true })
+            return;
+        if (World?.DataModelPermissions?.AllowsDomain(caller, DataModelPermissionDomain.Touch) == false)
+            return;
+        runtime.EnqueueCall(caller, nodeId);
+    }
+
+    // Something a relay on a watched object passed on: a panel button press, a beam coming or going, a
+    // beam click. The runtime checks the object is one this script listens to.
+    internal void SourceEventFrom(User? user, Slot source, ScriptSourceKind kind, in float3 point)
+    {
+        if (_runtime is { CanRun: true } runtime && source != null && !source.IsDestroyed)
+            runtime.Sources.Relay(user, source, kind, point);
+    }
+
+    // The same, with the text typed or the thing dropped that some kinds carry.
+    internal void SourceEventFrom(User? user, Slot source, ScriptSourceKind kind, in float3 point, string? text, Slot? other)
+    {
+        if (_runtime is { CanRun: true } runtime && source != null && !source.IsDestroyed)
+            runtime.Sources.Relay(user, source, kind, point, text, other);
+    }
+
+    // On the machine where a Call node's button was pressed: the authority runs it, anyone else carries
+    // the press there.
+    public static void Call(ScriptGraphNode node)
+    {
+        var world = node?.World;
+        if (node == null || world == null || node.IsDestroyed || node.Space?.Host.Target is not { IsDestroyed: false } host)
+            return;
+        string id = node.NodeId.Value ?? string.Empty;
+        if (world.IsAuthority)
+            host.CallFrom(world.LocalUser, id);
+        else
+            ScriptPressRelay.For(world)?.PublishCall(host, id);
+    }
+
+    internal void PressFrom(User? presser, in float3 point)
+    {
+        if (_runtime is not { CanRun: true } runtime)
+            return;
+        var button = Slot?.GetComponent<Button>();
+        if (button == null || !button.CanInteract)
+            return;
+        if (World?.DataModelPermissions?.AllowsDomain(presser, DataModelPermissionDomain.Touch) == false)
+            return;
+        runtime.EnqueuePress(presser, point);
+    }
+
+    // Decides again whether the script should run, and with what. Cheap when nothing changed.
+    internal void Reconcile()
+    {
+        var world = World;
+        if (world == null || IsDestroyed)
+            return;
+        if (world.IsAuthority)
+        {
+            ReconcileShared(world);
+            KeepClipsWarm(IsRunning || !string.IsNullOrEmpty(LocalApproval.Value));
+        }
+        ReconcileLocal();
+    }
+
+    private void ReconcileShared(World world)
+    {
+        if (!Enabled.Value)
+        {
+            Halt("disabled");
+            return;
+        }
+        if (!MayRun(world, out var why))
+        {
+            Halt(why);
+            return;
+        }
+
+        // An open graph runs as it stands once it checks clean, when every edit in it is the author's own.
+        // While it is being checked the script keeps what it has, and with problems it keeps the last good
+        // graph. Someone else's edits wait for a pack: a script runs as one person. One with nothing in it
+        // that could ever run gets no runtime at all, so it holds no memory either.
+        string? packedNote = null;
+        var space = ScriptGraphEditing.FindSpace(this);
+        if (space != null && space.Slot.IsActive)
+        {
+            if (!space.IsChecked)
+                return;
+            if (space.HasProblems || space.LastBuild == null)
+            {
+                SetStatus(_runtime != null ? "running the last good graph; the open one has problems" : "the open graph has problems");
+                return;
+            }
+            if (_pinned!.IsWorldContent || !HasForeignWork(space))
+            {
+                if (!HasWork(space.LastCompile))
+                {
+                    Halt(NothingToRun);
+                    return;
+                }
+                var live = space.LastBuild;
+                var liveBindings = new object?[live.Bindings.Count];
+                for (int i = 0; i < liveBindings.Length; i++)
+                    liveBindings[i] = live.Bindings[i];
+                RunOrApprove(live.Graph, liveBindings, "running the open graph");
+                return;
+            }
+            packedNote = Graph.Target == null
+                ? "not running until packed: it has someone else's work in it, and a script runs as one person"
+                : "the open graph has someone else's edits, which run once its author packs it";
+        }
+
+        if (!_pinned!.IsWorldContent && ForeignEdit(_pinned.Author) is string edited)
+        {
+            Halt(edited);
+            return;
+        }
+
+        // No graph at all stops the script. A graph on its way keeps the last one running until it lands.
+        if (Graph.Target == null || Graph.Target is IUrlAssetProvider { SourceUrl: null })
+        {
+            Halt(packedNote ?? "no graph");
+            return;
+        }
+        var asset = Graph.Asset;
+        var graph = Graph.IsAssetAvailable ? asset?.Graph : null;
+        if (graph == null)
+        {
+            if (((Graph.Target as IUrlAssetProvider)?.LoadFailure ?? asset?.LoadError) is string error)
+                Halt("graph does not load: " + error);
+            else if (_runtime == null)
+                SetStatus("waiting for its graph");
+            return;
+        }
+
+        var bindings = new object?[Bindings.Count];
+        for (int i = 0; i < bindings.Length; i++)
+            bindings[i] = Bindings[i];
+        RunOrApprove(graph, bindings, packedNote == null ? "running" : "running the packed graph; " + packedNote);
+    }
+
+    private void Run(ScriptGraph graph, object?[] bindings, string status)
+    {
+        if (_runtime != null && SameGraph(graph) && SameBindings(_runtime.Bindings, bindings))
+        {
+            _running = status;
+            SetStatus(RunningStatus());
+            return;
+        }
+        Start(graph, bindings, _pinned!, status);
+    }
+
+    // Anything in the open graph that someone other than the author made or last changed: a node, a value,
+    // a wire. Moving a node is not a change to what it does.
+    private bool HasForeignWork(ScriptGraphSpace space)
+    {
+        byte owner = ReferenceID.GetUserByte();
+        var author = _pinned?.Author;
+        foreach (var node in space.Nodes)
+        {
+            if (node.ReferenceID.GetUserByte() != owner || WrittenByOther(node.NodeType, author) || WrittenByOther(node.Signature, author)
+                || WrittenByOther(node.Version, author) || WrittenByOther(node.NodeId, author))
+                return true;
+            foreach (var value in node.Values)
+            {
+                if (value.ReferenceID.GetUserByte() != owner || WrittenByOther(value.Port, author) || WrittenByOther(value.Json, author)
+                    || WrittenByOther(value.Reference, author))
+                    return true;
+            }
+            foreach (var wire in node.Inputs)
+            {
+                if (ForeignWire(wire, owner, author))
+                    return true;
+            }
+            foreach (var wire in node.Exits)
+            {
+                if (ForeignWire(wire, owner, author))
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    private static bool ForeignWire(ScriptGraphWire wire, byte owner, User? author)
+        => wire.ReferenceID.GetUserByte() != owner || WrittenByOther(wire.Port, author) || WrittenByOther(wire.Node, author)
+            || WrittenByOther(wire.NodePort, author);
+
+    private const string NothingToRun = "nothing to run yet: the open graph has no event";
+
+    // Anything a graph would ever do: an event that starts it, or a Display that works its value out alone.
+    // A Pulse, and a Display fed by an event, only ever show what an event did.
+    private static bool HasWork(CompileResult? compiled)
+    {
+        if (compiled == null || compiled.Events.Count > 0)
+            return true;
+        foreach (var display in compiled.Displays)
+        {
+            if (display.Refreshed)
+                return true;
+        }
+        return false;
+    }
+
+    private bool MayRun(World world, out string why)
+    {
+        why = string.Empty;
+        // Only a host that woke before its world was the authority gets here unpinned.
+        if (_pinned == null && _orphaned == null)
+            Pin();
+        if (_orphaned == null && !_pinned!.IsStillAuthorIn(world))
+            _orphaned = AuthorLeft;
+        if (_orphaned != null)
+        {
+            why = _orphaned;
+            return false;
+        }
+        if (!_pinned!.IsWorldContent
+            && world.DataModelPermissions?.AllowsDomain(_pinned.Author, DataModelPermissionDomain.Script) != true)
+        {
+            why = "its author's role may not run scripts here";
+            return false;
+        }
+        return true;
+    }
+
+    // A null writer is a value that came with the element itself, from its creator or a load.
+    private string? ForeignEdit(User? author)
+    {
+        byte owner = ReferenceID.GetUserByte();
+        if (Foreign(Graph, author))
+            return "its graph was changed by someone else";
+        if (Graph.Target is Component provider)
+        {
+            if (provider.ReferenceID.GetUserByte() != owner)
+                return "its graph belongs to someone else";
+            if (provider is ScriptGraphProvider graphProvider && Foreign(graphProvider.URL, author))
+                return "its graph was changed by someone else";
+        }
+        for (int i = 0; i < Bindings.Count; i++)
+        {
+            var binding = Bindings.GetElement(i);
+            if (binding.ReferenceID.GetUserByte() != owner || Foreign(binding, author))
+                return "its bindings were changed by someone else";
+        }
+        return null;
+    }
+
+    // Someone else changed this script; its author, on their own machine, takes the change as theirs. A
+    // value written again unchanged never leaves the machine, so the graph moves to a fresh provider of the
+    // author's own with the same URL, and the bindings are minted again by the author.
+    public bool RunEditsAsAuthor()
+    {
+        var world = World;
+        var local = world?.LocalUser;
+        if (world == null || local == null || IsDestroyed || local.AllocationID.Value != ReferenceID.GetUserByte())
+            return false;
+
+        if (Graph.Target is ScriptGraphProvider old)
+        {
+            var fresh = Slot.AttachComponent<ScriptGraphProvider>();
+            fresh.URL.Value = old.URL.Value;
+            Graph.Target = fresh;
+            if (ReferenceEquals(old.Slot, Slot) && old.ReferenceID.GetUserByte() == ReferenceID.GetUserByte())
+                old.Destroy();
+        }
+        ScriptBindingsUndo.Assign(Bindings, ScriptBindingsUndo.Snapshot(Bindings), rebuild: true);
+        return true;
+    }
+
+    private static bool WrittenByOther(ConflictingSyncElement member, User? author)
+        => member.LastModifyingUser is { } writer && !ReferenceEquals(writer, author);
+
+    // Written by someone else. What the host set up here for the script of the author that packed this one is
+    // the author's doing, for as long as it holds what the host wrote.
+    private bool Foreign(ConflictingSyncElement member, User? author)
+        => WrittenByOther(member, author) && World?.ScriptsIfAny?.SetUpForAuthor(this, member) != true;
+
+    private const string AuthorLeft = "its author left";
+
+    private const int MaxSyncedRows = 8;
+
+    private void Pin()
+    {
+        _pinned = ScriptPrincipal.ForElement(this);
+        if (_pinned == null)
+            _orphaned = "its author is not in the world";
+    }
+
+    private bool SameGraph(ScriptGraph graph)
+        => ReferenceEquals(graph, _runningGraph) || _runtime!.GraphHash == graph.ComputeHash();
+
+    private void Start(ScriptGraph graph, object?[] bindings, ScriptPrincipal principal, string status)
+    {
+        if (CompiledNow(graph, out bool cached) is not { } compiled)
+        {
+            if (_runtime == null)
+                SetStatus("compiling");
+            return;
+        }
+        var previous = _runtime;
+        ScriptHostRuntime next;
+        try
+        {
+            next = ScriptHostRuntime.Start(this, compiled, cached, bindings, principal, previous);
+        }
+        catch (Exception ex)
+        {
+            if (ex is not (ScriptLinkException or ScriptLimitException or Lumora.Wasm.WasmException))
+                LumoraLogger.Warn($"ScriptHost {ReferenceID}: script failed to start: {ex}");
+
+            // A new graph that fails leaves the last good one running.
+            if (previous is { CanRun: true })
+            {
+                SetStatus("new graph refused, still running the last one: " + ex.Message);
+            }
+            else
+            {
+                StopRuntime();
+                SetStatus(ex.Message);
+            }
+            return;
+        }
+
+        _runtime = next;
+        _runningGraph = graph;
+        // Asked before the old one goes: a disposed runtime never reads as running, and a live swap would
+        // then look like a fresh start.
+        bool swapped = previous is { CanRun: true };
+        if (swapped)
+        {
+            next.Runner.Instance.AdoptStoredValues(previous!.Runner.Instance);
+            next.Runner.Instance.AdoptFlowState(previous.Runner.Instance);
+        }
+        previous?.Dispose();
+        if (!swapped)
+        {
+            ClearSynced();
+            if (next.Runner.Instance.Handles(typeof(ScriptStarted)))
+                next.Enqueue(runner => runner.Raise(new ScriptStarted()));
+        }
+        _running = status;
+        _lastFault = null;
+        SetStatus(RunningStatus());
+    }
+
+    private string RunningStatus() => _lastFault == null ? _running : $"{_running}, last fault: {_lastFault}";
+
+    // The graph's compile when it can be had now: from the cache, or from the worker this host waited on.
+    // Null while it is on a worker.
+    private CompileResult? CompiledNow(ScriptGraph graph, out bool cached)
+    {
+        cached = false;
+        string hash = graph.ComputeHash();
+        if (_compiling != null && _compilingHash == hash)
+        {
+            if (!_compiling.IsCompleted)
+                return null;
+            var landed = _compiling.Result;
+            _compiling = null;
+            _compilingHash = null;
+            return landed;
+        }
+        if (ScriptEnvironment.TryGetCached(hash, out var hit))
+        {
+            cached = true;
+            return hit;
+        }
+        _compilingHash = hash;
+        _compiling = ScriptEnvironment.CompileAsync(graph, hash);
+        World.Scripts.AwaitCompile(this, _compiling);
+        return null;
+    }
+
+    private void Halt(string status)
+    {
+        StopRuntime();
+        SetApproval(string.Empty);
+        SetStatus(status);
+    }
+
+    // What a Shared script would run, a Local one is approved to run on every machine instead.
+    private void RunOrApprove(ScriptGraph graph, object?[] bindings, string status)
+    {
+        if (Mode.Value == ScriptMode.Local)
+        {
+            StopRuntime();
+            SetApproval(graph.ComputeHash());
+            SetStatus("on every machine: " + status);
+            return;
+        }
+        SetApproval(string.Empty);
+        Run(graph, bindings, status);
+    }
+
+    private void SetApproval(string hash)
+    {
+        var world = World;
+        if (world == null || !world.IsAuthority || LocalApproval.Value == hash)
+            return;
+        using (world.DataModelPermissions?.EnterSystemBypass())
+            LocalApproval.Value = hash;
+    }
+
+    // On every machine: runs the graph the host approved once this machine has it, as the author.
+    private void ReconcileLocal()
+    {
+        string approved = LocalApproval.Value ?? string.Empty;
+        if (Mode.Value != ScriptMode.Local || !Enabled.Value)
+        {
+            StopLocal(string.Empty);
+            return;
+        }
+        if (approved.Length == 0)
+        {
+            StopLocal(string.IsNullOrEmpty(Status.Value) ? "waiting for the host" : "not running: " + Status.Value);
+            return;
+        }
+        var principal = ScriptPrincipal.ForElement(this);
+        if (principal == null)
+        {
+            StopLocal("its author is not here");
+            return;
+        }
+
+        ScriptGraph? graph = null;
+        object?[]? bindings = null;
+        var space = ScriptGraphEditing.FindSpace(this);
+        if (space is { IsChecked: true, HasProblems: false, LastBuild: { } build } && build.Graph.ComputeHash() == approved)
+        {
+            graph = build.Graph;
+            bindings = new object?[build.Bindings.Count];
+            for (int i = 0; i < bindings.Length; i++)
+                bindings[i] = build.Bindings[i];
+        }
+        else if (Graph.IsAssetAvailable && Graph.Asset?.Graph is { } packed && packed.ComputeHash() == approved)
+        {
+            graph = packed;
+            bindings = new object?[Bindings.Count];
+            for (int i = 0; i < bindings.Length; i++)
+                bindings[i] = Bindings[i];
+        }
+        if (graph == null || bindings == null)
+        {
+            if (_localRuntime == null)
+                LocalStatus = "waiting for the graph";
+            return;
+        }
+        if (_localRuntime is { } running && running.GraphHash == approved && SameBindings(running.Bindings, bindings)
+            && running.Principal.AuthorKey == principal.AuthorKey)
+            return;
+        StartLocal(graph, bindings, principal);
+    }
+
+    private void StartLocal(ScriptGraph graph, object?[] bindings, ScriptPrincipal principal)
+    {
+        if (CompiledNow(graph, out bool cached) is not { } compiled)
+        {
+            if (_localRuntime == null)
+                LocalStatus = "compiling here";
+            return;
+        }
+        if (!compiled.Success)
+        {
+            foreach (var error in compiled.Errors)
+            {
+                if (error.NeedsNewerBuild)
+                {
+                    StopLocal("this machine needs a newer build to run it: " + error.Message);
+                    return;
+                }
+            }
+            StopLocal("cannot run here: " + string.Join("; ", compiled.Errors));
+            return;
+        }
+
+        var previous = _localRuntime;
+        ScriptHostRuntime next;
+        try
+        {
+            next = ScriptHostRuntime.Start(this, compiled, cached, bindings, principal, previous, local: true);
+        }
+        catch (Exception ex)
+        {
+            if (ex is not (ScriptLinkException or ScriptLimitException or Lumora.Wasm.WasmException))
+                LumoraLogger.Warn($"ScriptHost {ReferenceID}: Local script failed to start: {ex}");
+            if (previous is { CanRun: true })
+                LocalStatus = "new graph refused here, still running the last one: " + ex.Message;
+            else
+                StopLocal(ex.Message);
+            return;
+        }
+
+        _localRuntime = next;
+        _seenInbox = Inbox.Value;
+        bool swapped = previous is { CanRun: true };
+        if (swapped)
+        {
+            next.Runner.Instance.AdoptStoredValues(previous!.Runner.Instance);
+            next.Runner.Instance.AdoptFlowState(previous.Runner.Instance);
+        }
+        previous?.Dispose();
+        if (!swapped && next.Runner.Instance.Handles(typeof(ScriptStarted)))
+            next.Enqueue(runner => runner.Raise(new ScriptStarted()));
+        LocalStatus = "running here";
+    }
+
+    private void StopLocal(string status)
+    {
+        var runtime = _localRuntime;
+        _localRuntime = null;
+        runtime?.Dispose();
+        LocalStatus = status;
+    }
+
+    // A message from a Shared script of the same author, on the authority, for every machine's copy of
+    // this Local script. Messages sent in the same frame arrive as the last of them.
+    internal void Post(string message, float value)
+    {
+        var world = World;
+        if (world == null || !world.IsAuthority || IsDestroyed)
+            return;
+        using (world.DataModelPermissions?.EnterSystemBypass())
+        {
+            InboxMessage.Value = message;
+            InboxValue.Value = value;
+            Inbox.Value = unchecked(Inbox.Value + 1);
+        }
+    }
+
+    // On the host, from this host's Shared script: one synced value set, added when the name is new. True
+    // when it was added.
+    internal bool WriteSynced(string name, string type, string text)
+    {
+        var world = World;
+        if (world == null || !world.IsAuthority || IsDestroyed)
+            return false;
+        var entry = FindSynced(name);
+        bool added = entry == null;
+        using (world.DataModelPermissions?.EnterSystemBypass())
+        {
+            if (entry == null)
+            {
+                entry = Synced.Add();
+                entry.Key.Value = name;
+            }
+            if (entry.Type.Value != type)
+                entry.Type.Value = type;
+            if (entry.Value.Value != text)
+                entry.Value.Value = text;
+        }
+        return added;
+    }
+
+    internal void RemoveSynced(string name)
+    {
+        var world = World;
+        if (world == null || !world.IsAuthority || IsDestroyed || FindSynced(name) is not { } entry)
+            return;
+        using (world.DataModelPermissions?.EnterSystemBypass())
+            Synced.Remove(entry);
+    }
+
+    private void ClearSynced()
+    {
+        var world = World;
+        if (world == null || !world.IsAuthority || Synced.Count == 0)
+            return;
+        using (world.DataModelPermissions?.EnterSystemBypass())
+            Synced.Clear();
+    }
+
+    public bool TryReadSynced<T>(string name, out T value)
+    {
+        if (FindSynced(name) is { } entry)
+            return entry.TryRead(out value);
+        value = default!;
+        return false;
+    }
+
+    public ScriptSyncedValue? FindSynced(string name)
+    {
+        foreach (var entry in Synced)
+        {
+            if (string.Equals(entry.Key.Value, name, StringComparison.Ordinal))
+                return entry;
+        }
+        return null;
+    }
+
+    // A message from a script of the same author to this Shared script, on the authority.
+    internal void Receive(string message, float value, User? from)
+    {
+        if (_runtime is { CanRun: true } runtime)
+            runtime.EnqueueMessage(message, value, from);
+    }
+
+    private void TakeInbox()
+    {
+        int inbox = Inbox.Value;
+        if (inbox == _seenInbox)
+            return;
+        _seenInbox = inbox;
+        if (_localRuntime is { CanRun: true } local)
+            local.EnqueueMessage(InboxMessage.Value ?? string.Empty, InboxValue.Value, null);
+    }
+
+    private void StopRuntime()
+    {
+        var runtime = _runtime;
+        _runtime = null;
+        _runningGraph = null;
+        runtime?.Dispose();
+    }
+
+    internal void RuntimeStopped(ScriptHostRuntime runtime, string reason)
+    {
+        if (ReferenceEquals(runtime, _localRuntime))
+        {
+            StopLocal(reason);
+            return;
+        }
+        if (!ReferenceEquals(runtime, _runtime))
+            return;
+        if (World == null || !runtime.Principal.IsStillAuthorIn(World))
+            _orphaned ??= AuthorLeft;
+        Halt(_orphaned ?? reason);
+    }
+
+    internal void RuntimeFaulted(ScriptHostRuntime runtime, string reason)
+    {
+        if (ReferenceEquals(runtime, _localRuntime))
+            LocalStatus = "running here, last fault: " + reason;
+        else if (ReferenceEquals(runtime, _runtime))
+        {
+            _lastFault = reason;
+            SetStatus(RunningStatus());
+        }
+    }
+
+    // On the host, while a panel elsewhere is watching: the Shared script's cost here, only when it moved.
+    internal void PublishCost()
+    {
+        var world = World;
+        if (world == null || !world.IsAuthority || IsDestroyed)
+            return;
+        var stats = _runtime?.Stats;
+        float ms = stats == null ? 0f : MathF.Round((float)stats.MsPerFrame, 3);
+        float compile = stats == null ? 0f : MathF.Round((float)stats.CompileMs, 1);
+        if (HostMs.Value == ms && HostCompileMs.Value == compile)
+            return;
+        using (world.DataModelPermissions?.EnterSystemBypass())
+        {
+            HostMs.Value = ms;
+            HostCompileMs.Value = compile;
+        }
+    }
+
+    // Engine bookkeeping on what may be a user's component, so it takes the system scope a frozen world
+    // would otherwise refuse the authority.
+    private void SetStatus(string text)
+    {
+        var world = World;
+        if (world == null || Status.Value == text)
+            return;
+        using (world.DataModelPermissions?.EnterSystemBypass())
+            Status.Value = text;
+    }
+
+    private static bool SameBindings(IReadOnlyList<object?> running, object?[] current)
+    {
+        if (running.Count != current.Length)
+            return false;
+        for (int i = 0; i < current.Length; i++)
+        {
+            if (!ReferenceEquals(running[i], current[i]))
+                return false;
+        }
+        return true;
+    }
+}

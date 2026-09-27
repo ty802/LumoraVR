@@ -9,7 +9,6 @@
     <PackageReference Include="DiscordRichPresence" Version="1.2.1.24" />
     <PackageReference Include="Steamworks.NET" Version="2024.8.0" Condition="'$(GodotTargetPlatform)' != 'android' And '$(GodotTargetPlatform)' != 'ios'" />
     <PackageReference Include="LiteNetLib" Version="2.0.2" />
-    <PackageReference Include="Wasmtime" Version="22.0.0" />
     <!-- libvlc natives for the desktop video backend. The Windows package drops libvlc/win-x64 next to
          the assemblies; Linux uses the system libvlc, so there is no package for it. -xlinka -->
     <PackageReference Include="LibVLCSharp" Version="3.10.1" Condition="'$(GodotTargetPlatform)' != 'android' And '$(GodotTargetPlatform)' != 'ios'" />

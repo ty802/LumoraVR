@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <LangVersion>13</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>Lumora.Script</RootNamespace>
+    <AssemblyName>LumoraScript</AssemblyName>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Description>LumoraScript - Loom node graphs: the graph document, the node authoring API, the node registry and the graph to WebAssembly compiler. Knows nothing about the datamodel.</Description>
+    <Company>Lumora Project</Company>
+    <Product>LumoraScript</Product>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <!-- The engine and the math types, nothing else. Datamodel types reach the compiler only as handle
+       types LumoraCore registers, so a graph compiles and runs headless with no world loaded. -xlinka -->
+  <ItemGroup>
+    <ProjectReference Include="..\LumoraWasm\LumoraWasm.csproj" />
+    <ProjectReference Include="..\LumoraMath\LumoraMath.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <LangVersion>13</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>Lumora.Wasm</RootNamespace>
+    <AssemblyName>LumoraWasm</AssemblyName>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Description>LumoraWasm - Sandboxed WebAssembly engine: decoder, validator, translator and a fuel-metered interpreter. Leaf assembly, references nothing.</Description>
+    <Company>Lumora Project</Company>
+    <Product>LumoraWasm</Product>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <!-- Keep this list EMPTY. The engine runs code nobody trusts, so it sees the rest of Lumora only
+       through the host functions it is handed at link time; a reference back into the engine would
+       be a second door out of the sandbox. Pure managed code, no unsafe blocks, no native libraries,
+       so the same DLL runs on desktop, Quest and Pico. -xlinka -->
+  <ItemGroup />
+</Project>

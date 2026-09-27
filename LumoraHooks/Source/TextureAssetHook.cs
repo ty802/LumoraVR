@@ -41,11 +41,27 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook, IGodotTexture
         // TCS completes when that deferred build has run, so LoadSelf can wait for the GPU texture to truly exist
         // before reporting the asset loaded (else a material binds a null albedo in the gap = white body). -xlinka
         var tcs = NewUploadTcs();
+        System.Threading.Interlocked.Increment(ref _uploadsQueued);
         global::Godot.Callable.From(() =>
         {
             try { BuildTexture(pixels, width, height, hasMipmaps); }
-            finally { tcs.TrySetResult(true); }
+            finally
+            {
+                System.Threading.Interlocked.Increment(ref _uploadsBuilt);
+                tcs.TrySetResult(true);
+            }
         }).CallDeferred();
+
+        // QUEUED VERSUS BUILT, because the whole texture pipeline hangs off this one deferred call.
+        // LoadSelf waits on that TCS before it reports the asset loaded, so if the deferred build is
+        // not running, every texture in the session sits at "still loading" forever and every material
+        // that wanted one binds a null - and nothing anywhere says so. Two counters make the gap
+        // visible instead of leaving it to be inferred from a white model. -xlinka
+        int queued = System.Threading.Volatile.Read(ref _uploadsQueued);
+        if (queued <= 3 || queued % 25 == 0)
+        {
+            LumoraLogger.Log($"TextureAssetHook: GPU uploads queued={queued} built={System.Threading.Volatile.Read(ref _uploadsBuilt)}");
+        }
     }
 
     // Compression runs OFF the main thread. BPTC on a 2048-square chain is hundreds of milliseconds
@@ -58,9 +74,17 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook, IGodotTexture
     {
         var levels = request.MipLevels;
         if (levels == null || levels.Length == 0 || request.Width <= 0 || request.Height <= 0)
+        {
+            // Returns WITHOUT queuing a TCS, so WaitForUploadAsync then completes instantly over a
+            // hook that has no texture: the asset reports itself loaded and every material binds a
+            // null albedo. Silent until now.
+            LumoraLogger.Warn($"TextureAssetHook.UploadTexture: refused - levels={(levels?.Length ?? -1)} "
+                            + $"size={request.Width}x{request.Height}; no GPU texture will exist.");
             return;
+        }
 
         var tcs = NewUploadTcs();
+        System.Threading.Interlocked.Increment(ref _uploadsQueued);
         System.Threading.Tasks.Task.Run(() =>
         {
             Image image = null!;
@@ -81,20 +105,55 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook, IGodotTexture
                     {
                         Adopt(image);
                         ReportUpload(request, image);
+
+                        // THE GPU TEXTURE EXISTS ONLY AS OF THIS LINE. Every material that asked for it
+                        // before now was handed a null and wrote that null into its Godot material, and
+                        // the load-complete notification it was waiting on had already fired, back when
+                        // the DATA finished decoding. Nothing else is coming, so a prop kept a white
+                        // albedo for the session while the log insisted the texture was loaded. It was.
+                        // It just was not HERE yet. Tell the references now that it is. -xlinka
+                        asset?.NotifyBackingReady();
                     }
                 }
                 catch (Exception ex)
                 {
                     LumoraLogger.Error($"TextureAssetHook: failed to build texture: {ex.Message}");
                 }
-                finally { tcs.TrySetResult(true); }
+                finally
+                {
+                    int built = System.Threading.Interlocked.Increment(ref _uploadsBuilt);
+                    int queued = System.Threading.Volatile.Read(ref _uploadsQueued);
+                    if (built <= 3 || built % 25 == 0 || queued - built > 20)
+                        LumoraLogger.Log($"TextureAssetHook: GPU uploads queued={queued} built={built} valid={IsValid}");
+                    tcs.TrySetResult(true);
+                }
             }).CallDeferred();
         });
     }
 
     // completes once the deferred BuildTexture has run (the GPU texture exists) -xlinka
+    private static int _uploadsQueued;
+    private static int _uploadsBuilt;
+
     public System.Threading.Tasks.Task WaitForUploadAsync()
-        => _uploadTcs?.Task ?? System.Threading.Tasks.Task.CompletedTask;
+    {
+        var tcs = _uploadTcs;
+        if (tcs != null)
+            return tcs.Task;
+
+        // No upload was ever queued, so this returns "done" over a hook that has no texture. The
+        // asset then reports itself loaded, the material binds a null albedo, and the object is white
+        // for the rest of the session - the exact failure the await here exists to prevent.
+        if (!_warnedNoUpload)
+        {
+            _warnedNoUpload = true;
+            LumoraLogger.Warn("TextureAssetHook.WaitForUploadAsync: nothing was ever queued for this "
+                            + "texture, so the wait returns immediately over a hook with no GPU texture.");
+        }
+        return System.Threading.Tasks.Task.CompletedTask;
+    }
+
+    private bool _warnedNoUpload;
 
     private System.Threading.Tasks.TaskCompletionSource<bool> NewUploadTcs()
     {
@@ -246,21 +305,20 @@ public class TextureAssetHook : AssetHook, ITextureAssetHook, IGodotTexture
     // One thing to try, in the order the plan lists them.
     private readonly record struct CompressAttempt(Image.CompressMode Mode, Image.UsedChannels Channels);
 
-    // THE FORMAT DECISION, from the same five inputs the source platform reads: device, HDR, alpha,
-    // normal map, and colour profile (which only picks the compress-source hint here, since the
-    // runtime encoders do not branch on it).
+    // THE FORMAT DECISION, from five inputs: device, HDR, alpha, normal map, and colour profile
+    // (which only picks the compress-source hint here, since the runtime encoders do not branch on
+    // it).
     //
-    // Desktop: BC1 for opaque colour (4 bpp, the source platform's choice), BC7 where alpha or a
-    // normal map needs the extra channel (8 bpp, the same bytes as the source platform's BC3 and
-    // BC3nm at strictly higher quality), BC6H for HDR. Normal maps keep three channels rather than
-    // taking Godot's RG-only route because our material shaders sample normal.rgb; an RG block
-    // would hand them a zero blue.
+    // Desktop: BC1 for opaque colour (4 bpp), BC7 where alpha or a normal map needs the extra
+    // channel (8 bpp, the same bytes as BC3 and BC3nm at strictly higher quality), BC6H for HDR.
+    // Normal maps keep three channels rather than taking Godot's RG-only route because our material
+    // shaders sample normal.rgb; an RG block would hand them a zero blue.
     //
     // Mobile: ETC2 RGB8 for opaque colour (4 bpp, the floor both GLES3 and Vulkan guarantee), ASTC
     // 4x4 where alpha or a normal map needs it (8 bpp, the same bytes as ETC2 RGBA8 at better
-    // quality) with ETC2 RGBA8 behind it, and HDR stays uncompressed half float, which is what the
-    // source platform ships on Android too. ASTC 8x8 is deliberately not used: it is 2 bpp and
-    // below the ETC2 floor in quality, and Godot exposes no block size between the two.
+    // quality) with ETC2 RGBA8 behind it, and HDR stays uncompressed half float. ASTC 8x8 is
+    // deliberately not used: it is 2 bpp and below the ETC2 floor in quality, and Godot exposes no
+    // block size between the two.
     //
     // HDR never enters an LDR block format. If BC6H is not on offer the texture stays RGBAH and
     // pays full price rather than lose its range. -xlinka

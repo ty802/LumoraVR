@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -26,16 +26,17 @@ public class UserspaceDashboard : UIComponent
     // 1 on a standalone headset. A ViewportTexture has no mipmaps, so every pixel of minification is
     // aliasing, and a 2560x1440 capture shown at ~1100 eye-buffer pixels tall on a Pico was being
     // sampled at more than 2:1: text turned to noise. 1280x720 there is close to 1:1 with the panel's
-    // footprint, which is also what the reference platform renders its own dash at on Android. -xlinka
+    // footprint. -xlinka
     private static int SupersampleScale => Engine.IsMobilePlatform ? 1 : 2;
     private const float CanvasScale = 0.001f;
     private const float CaptureDistance = 1f;
 
     // Reserved high render band for the dash display surface. Draw order is SortingOffset = material
     // RenderQueue + renderer SortingOrder (uncapped). World UI/lasers/context menus sit at ~4000-10000, so
-    // 20000 keeps the dash above all of them; the laser cursor sits one band above (InteractionLaser) so the
-    // pointer stays visible on the dash. -xlinka
-    private const int DashSurfaceSortingOrder = 20000;
+    // 20000 keeps the dash above all of them; the local user's lasers and hands lift into the bands above
+    // it while it is open (UserspaceRenderBands) so the pointer and the hand holding it stay visible on the
+    // dash. -xlinka
+    private const int DashSurfaceSortingOrder = UserspaceRenderBands.DashSurfaceSortingOrder;
     private static readonly float3 RigWorldPosition = new float3(0f, 1000f, 0f);
 
     private int _captureWidth = 1280;
@@ -71,13 +72,12 @@ public class UserspaceDashboard : UIComponent
     private Grabbable? _grabHandle;
     private bool _lastFreeform;
 
-    // Lazy follow, the way the reference platform's dash rig does it. The anchor is the head position
-    // with a yaw-only rotation; it stays put while the wearer looks around and only starts gliding
-    // toward the head once they have walked ActivationDistance or turned ActivationAngle away, then
-    // settles once within the deactivation thresholds. Pitch is never followed. Pinning the panel to
-    // the full head pose every frame (the old behaviour) read as jitter in a headset: the engine's head
-    // sample is a frame behind the pose the eye actually renders with, so a head-locked panel swims
-    // against the world by exactly that lag. -xlinka
+    // Lazy follow. The anchor is the head position with a yaw-only rotation; it stays put while the
+    // wearer looks around and only starts gliding toward the head once they have walked
+    // ActivationDistance or turned ActivationAngle away, then settles once within the deactivation
+    // thresholds. Pitch is never followed. Pinning the panel to the full head pose every frame (the old
+    // behaviour) read as jitter in a headset: the engine's head sample is a frame behind the pose the eye
+    // actually renders with, so a head-locked panel swims against the world by exactly that lag. -xlinka
     private const float FollowPositionSpeed = 3f;
     private const float FollowRotationSpeed = 3f;
     private const float FollowActivationDistance = 0.75f;
@@ -111,8 +111,8 @@ public class UserspaceDashboard : UIComponent
     {
         IsOpen = new Sync<bool>(this, false);
         // Closer and taller than before (was 1.2 m / 0.85 m). The panel's angular size is what makes
-        // text readable in a headset, and this puts it at roughly the reference platform's proportions:
-        // ~60 degrees tall instead of ~40. Desktop ignores both (it fits the window). -xlinka
+        // text readable in a headset, and this puts it at ~60 degrees tall instead of ~40. Desktop
+        // ignores both (it fits the window). -xlinka
         Distance = new Sync<float>(this, 0.85f);
         VerticalOffset = new Sync<float>(this, 0.05f);
         DisplayHeight = new Sync<float>(this, 1.0f);
@@ -555,6 +555,22 @@ public class UserspaceDashboard : UIComponent
 
     public void UpdateVrPointer(InteractionLaser laser, int pointerId, float2 normalized, bool pressed)
     {
+        UpdateSurfacePointer(VrSource(laser), pointerId, normalized, pressed);
+    }
+
+    // A fingertip on the display surface, under the touch source's own ids.
+    public void UpdateTouchPointer(int pointerId, float2 normalized, bool pressed)
+    {
+        UpdateSurfacePointer(UIInteractionSource.Touch, pointerId, normalized, pressed);
+    }
+
+    public void ClearTouchPointer(int pointerId)
+    {
+        _canvasSlot?.GetComponent<Canvas>()?.ClearPointer(UIInteractionSource.Touch, pointerId, World?.LocalUser);
+    }
+
+    private void UpdateSurfacePointer(UIInteractionSource source, int pointerId, float2 normalized, bool pressed)
+    {
         if (_canvasSlot == null) return;
         var canvas = _canvasSlot.GetComponent<Canvas>();
         if (canvas == null) return;
@@ -563,7 +579,7 @@ public class UserspaceDashboard : UIComponent
         float ly = (0.5f - normalized.y) * CaptureHeight;
         var worldPoint = _canvasSlot.LocalPointToGlobal(new float3(lx, ly, 0f));
         var forward = _canvasSlot.Forward;
-        canvas.UpdatePointer(VrSource(laser), pointerId, worldPoint + forward * 0.5f, -forward, pressed, World?.LocalUser);
+        canvas.UpdatePointer(source, pointerId, worldPoint + forward * 0.5f, -forward, pressed, World?.LocalUser);
     }
 
     public IGrabbable? TryGrabVrPointer(InteractionLaser laser, int pointerId)
@@ -801,7 +817,7 @@ public class UserspaceDashboard : UIComponent
         _dashboard?.AddScreen<SessionScreen>("Session", new color(0.25f, 0.55f, 1f, 1f));
         _dashboard?.AddScreen<SettingsScreen>("Settings", new color(1f, 0.22f, 0.28f, 1f));
         _dashboard?.AddScreen<FileBrowserScreen>("Files", new color(0.70f, 0.66f, 0.32f, 1f));
-        // Reached from the home page's Debug card, the way the reference files it, not from a tab.
+        // Reached from the home page's Debug card, not from a tab.
         _dashboard?.AddScreen<DebugScreen>("Debug", new color(0.45f, 0.78f, 0.55f, 1f), showInNav: false);
         _dashboard?.AddScreen<ExitScreen>("Exit", new color(1f, 0.30f, 0.32f, 1f));
     }

@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -18,13 +18,13 @@ namespace Lumora.Core.Components;
 // out of inspector rows, carried in the hand, then either dropped onto a reference field to assign
 // the element it points at, or activated to open an inspector on that element (and, for asset
 // targets, spawn a usable in-world instance beside it). gesture set:
-//  - PULL a row (grip)          -> a card spawns in the hand pointing at the row's element.
+//  - PULL a row's handle (grip) -> a card spawns in the hand pointing at the row's element.
 //  - PRIMARY press while held    -> activate: open an inspector on the target (+ spawn an asset
 //                                   instance for material/texture/mesh targets), then the card is spent.
 //  - PRIMARY press on a resting card (pointed at, not held) -> same activate, no need to grab first.
 //  - RELEASE onto a ref field    -> the field assigns the element (the field's receiver removes the card).
-//  - RELEASE into empty space    -> the card stays put as a grabbable reference, to re-grab or activate later.
-// the card is non-persistent, so a resting card is gone on reload; it is never auto-discarded on release.
+//  - RELEASE into empty space    -> the temporary card is discarded.
+// Button-created cards expire if left unused; the referenced object is never removed.
 // cards pulled from worn-avatar content are inert on activate (they neither open nor spawn).
 [ComponentCategory("Utility/Inspectors")]
 public class ReferenceProxy : Component, IHeldActivatable
@@ -36,7 +36,12 @@ public class ReferenceProxy : Component, IHeldActivatable
     // be used to duplicate it. Synced so every peer agrees whether a shared card is live. -xlinka
     public readonly Sync<bool> SpawnInstanceOnActivate;
 
+    // Seconds a card nobody is holding survives before it cleans itself up.
+    private const float UnheldLifetime = 10f;
+
     private RayTarget? _rayTarget;
+    private Grabbable? _grabbable;
+    private float _idleTime;
 
     public ReferenceProxy()
     {
@@ -52,13 +57,42 @@ public class ReferenceProxy : Component, IHeldActivatable
         _rayTarget = Slot?.GetComponent<RayTarget>();
         if (_rayTarget != null)
             _rayTarget.Activated += OnRestingActivated;
+        BindRelease();
     }
 
     public override void OnDestroy()
     {
         if (_rayTarget != null)
             _rayTarget.Activated -= OnRestingActivated;
+        if (_grabbable != null)
+            _grabbable.OnLocalReleased -= OnReleased;
         base.OnDestroy();
+    }
+
+    private void BindRelease()
+    {
+        if (_grabbable != null) return;
+        _grabbable = Slot.GetComponent<Grabbable>();
+        if (_grabbable != null) _grabbable.OnLocalReleased += OnReleased;
+    }
+
+    private void OnReleased(IGrabbable released)
+    {
+        // Let reference receivers and held activation finish the release transaction first.
+        World.RunInUpdates(1, () =>
+        {
+            if (!IsDestroyed && !Slot.IsDestroyed && _grabbable?.IsGrabbed != true)
+                Slot.Destroy();
+        });
+    }
+
+    public override void OnUpdate(float delta)
+    {
+        base.OnUpdate(delta);
+        if (_grabbable?.IsGrabbed == true) { _idleTime = 0; return; }
+        _idleTime += delta;
+        if (World.IsAuthority && (_idleTime >= UnheldLifetime || Target.Target == null || Target.Target.IsDestroyed))
+            Slot.Destroy();
     }
 
     // primary press while carried: activate the card, releasing it from the hand first
@@ -269,7 +303,7 @@ public class ReferenceProxy : Component, IHeldActivatable
     }
 
     // Worn-avatar content: the target's owning slot sits under a live user root. A card pulled from it
-    // stays inert on activate, the closest honest match to avatar protection this engine has. -xlinka
+    // stays inert on activate, so it cannot be used to open or duplicate someone's worn avatar. -xlinka
     private static bool IsProtectedElement(IWorldElement? element)
     {
         var (slot, _) = ResolveOwner(element);
@@ -316,6 +350,7 @@ public class ReferenceProxy : Component, IHeldActivatable
 
         var grabbable = slot.AttachComponent<Grabbable>();
         grabbable.Scalable.Value = false;
+        proxy.BindRelease();
 
         // Ray target so a resting card can be clicked open without grabbing it first. Priority sits above
         // the card's canvas (also an interaction target) so the laser resolves the card to this and the
@@ -373,7 +408,7 @@ public class ReferenceProxy : Component, IHeldActivatable
         {
             Slot slot => $"{slot.SlotName.Value} (slot)",
             Component component => $"{component.GetType().Name} on {component.Slot?.SlotName.Value}",
-            ISyncMember member => $"{member.Name} ({SyncMemberEditorBuilder.NiceTypeName(element.GetType())})",
+            ISyncMember member => $"{InspectorUI.MemberDisplayName(member)} ({SyncMemberEditorBuilder.NiceTypeName(element.GetType())})",
             _ => SyncMemberEditorBuilder.NiceTypeName(element.GetType()),
         };
     }

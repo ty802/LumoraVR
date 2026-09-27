@@ -51,8 +51,8 @@ public sealed record VideoServiceRequest(
     CookiesBrowser Cookies);
 
 // One playable format the resolver picked: a direct stream URL plus what is in it. Vcodec/Acodec are
-// yt-dlp's strings (avc1..., mp4a..., "none") so the provider can choose an engine the same way the
-// reference ranking does. IsLive marks a live service stream (Twitch, a YouTube premiere). -xlinka
+// yt-dlp's strings (avc1..., mp4a..., "none") so the provider can choose a decoder engine from the
+// codecs. IsLive marks a live service stream (Twitch, a YouTube premiere). -xlinka
 public sealed record VideoServiceResolution(
     Uri StreamUrl,
     string? Title,

@@ -34,11 +34,10 @@ public partial class DesktopCameraController : Node
     private const float TpMaxPitch        =  1.40f; // nearly top-down
 
     // THIRD-PERSON CAMERA COLLISION
-    // The probe starts this far off the head (user-scaled) so it cannot begin inside the avatar's own
-    // head geometry; the source platform uses the same 5 cm. The standoff is the source's 1 cm, but
-    // never less than the render camera's near plane (read live off HeadOutput below), because a wall
-    // closer to the lens than the near plane is not drawn and the view looks straight through it - the
-    // pull-in would run and the wall would still vanish. -xlinka
+    // The probe starts 5 cm off the head (user-scaled) so it cannot begin inside the avatar's own head
+    // geometry. The standoff is 1 cm, but never less than the render camera's near plane (read live off
+    // HeadOutput below), because a wall closer to the lens than the near plane is not drawn and the view
+    // looks straight through it - the pull-in would run and the wall would still vanish. -xlinka
     private const float TpCollisionRayStart    = 0.05f;
     private const float TpCollisionStandoff    = 0.01f;
     private const float TpCollisionReleaseRate = 8f;   // per second, easing back OUT once the way is clear
@@ -96,6 +95,13 @@ public partial class DesktopCameraController : Node
     // never takes its camera-relative path). Remember where the flags went and clear them there. -xlinka
     private UserInputState? _flaggedState;
 
+    // Set when a switch back to first person is waiting for the camera to land on the head. The flags
+    // stay up until then: dropping ExternalCameraActive the instant F5 is released hides the local head
+    // while the camera is still 3 m behind it, so you watch your own head vanish before the view arrives;
+    // and the head drive reads the same flags for its mode, so it keeps the third-person or frozen head
+    // until the moment first person actually takes over the view. -xlinka
+    private bool _releaseFlagsAfterTransition;
+
     // Free-cam
     private Vector3 _freeCamPos;
     private float   _freeCamYaw;
@@ -123,6 +129,8 @@ public partial class DesktopCameraController : Node
     {
         _headOutput?.ClearPositionOverride();
         _headOutput?.ClearRotationOverride();
+        _headOutput?.CancelViewTransition();
+        ReleaseFlags();
 
         if (_freeCamIndicator != null && GodotObject.IsInstanceValid(_freeCamIndicator))
             _freeCamIndicator.QueueFree();
@@ -180,6 +188,9 @@ public partial class DesktopCameraController : Node
 
     public override void _Process(double delta)
     {
+        if (_releaseFlagsAfterTransition && (_headOutput == null || !_headOutput.IsViewTransitioning))
+            ReleaseFlags();
+
         var camera = Lumora.Core.Engine.Current?.InputInterface?.Actions?.Camera;
         if (camera != null)
         {
@@ -242,32 +253,37 @@ public partial class DesktopCameraController : Node
         _mode      = newMode;
         ActiveMode = newMode;
 
-        // Leave the previous mode on the state it was written to (see _flaggedState), not on whatever
-        // world happens to be focused now.
-        var prevState = IsAlive(_flaggedState) ? _flaggedState : null;
-        if (prev == CameraMode.FreeCam)
-        {
-            prevState?.SetFreeCamActive(false);
-            _pendingFreeCamMouse = Vector2.Zero;
-            if (_freeCamIndicator != null) _freeCamIndicator.Visible = false;
-        }
-        if (prev == CameraMode.ThirdPerson)
-        {
-            prevState?.SetMouseLookSuppressed(false);
-            _pendingTpMouse = Vector2.Zero;
-        }
-        if (prev != CameraMode.FirstPerson)
-            prevState?.SetExternalCameraActive(false);
-        _flaggedState = null;
+        // The view fades from where the camera is now into the new mode's pose; the head drive fades the
+        // head over the same window.
+        _headOutput?.BeginViewTransition();
 
-        var state = UserInputState.ForFocusedLocalUser;
+        _pendingFreeCamMouse = Vector2.Zero;
+        _pendingTpMouse = Vector2.Zero;
+        if (prev == CameraMode.FreeCam && _freeCamIndicator != null)
+            _freeCamIndicator.Visible = false;
 
-        // First-person-only visual overrides (local head hiding) key off this:
-        // any external camera must show the full avatar.
-        if (newMode != CameraMode.FirstPerson && state != null)
+        if (newMode == CameraMode.FirstPerson)
         {
-            state.SetExternalCameraActive(true);
-            _flaggedState = state;
+            // The flags come down when the camera lands on the head (see _releaseFlagsAfterTransition).
+            _releaseFlagsAfterTransition = prev != CameraMode.FirstPerson && IsAlive(_flaggedState);
+            if (!_releaseFlagsAfterTransition)
+                ReleaseFlags();
+        }
+        else
+        {
+            // Leave the previous mode on the state it was written to (see _flaggedState), not on whatever
+            // world happens to be focused now.
+            ReleaseFlags();
+
+            var state = UserInputState.ForFocusedLocalUser;
+
+            // First-person-only visual overrides (local head hiding) key off this:
+            // any external camera must show the full avatar.
+            if (state != null)
+            {
+                state.SetExternalCameraActive(true);
+                _flaggedState = state;
+            }
         }
 
         switch (newMode)
@@ -281,25 +297,37 @@ public partial class DesktopCameraController : Node
             case CameraMode.ThirdPerson:
                 _tpOrbitYaw   = GetCharacterBodyYaw();
                 _tpOrbitPitch = TpDefaultPitch;
-                _pendingTpMouse = Vector2.Zero;
                 // Snap the distance on the first frame instead of easing in from the last session's
                 // value, and drop the cached rig slots so a world change can't pivot on a dead head.
                 _tpDistanceSeeded = false;
                 _tpAnchorRoot     = null;
                 _tpHeadSlot       = null;
                 _tpObstructionLimit = float.PositiveInfinity;
-                state?.SetMouseLookSuppressed(true);
+                _flaggedState?.SetMouseLookSuppressed(true);
                 LumoraLogger.Log("[DesktopCameraController] Third-person (mouse=orbit, scroll=distance)");
                 break;
 
             case CameraMode.FreeCam:
                 SeedFreeCamFromActiveCamera();
                 RefreshFreeCamLabel();
-                state?.SetFreeCamActive(true);
+                _flaggedState?.SetFreeCamActive(true);
                 if (_freeCamIndicator != null) _freeCamIndicator.Visible = true;
                 LumoraLogger.Log("[DesktopCameraController] Free-cam (WASD+mouse, Shift=fast, Space/Ctrl=vertical)");
                 break;
         }
+    }
+
+    // Take every flag this controller raised back off the state it raised them on.
+    private void ReleaseFlags()
+    {
+        _releaseFlagsAfterTransition = false;
+        var state = IsAlive(_flaggedState) ? _flaggedState : null;
+        _flaggedState = null;
+        if (state == null)
+            return;
+        state.SetFreeCamActive(false);
+        state.SetMouseLookSuppressed(false);
+        state.SetExternalCameraActive(false);
     }
 
     // THIRD-PERSON
@@ -365,19 +393,18 @@ public partial class DesktopCameraController : Node
     }
 
     // Pull the camera in front of whatever the orbit ray crosses between the head and the wanted view
-    // point, the way the source platform does: probe from the head toward the view against this
-    // world's solid bodies with the local user's own avatar excluded, and park the camera at
-    // hit.Point + normal * standoff when something is in the way (here projected back onto the orbit
-    // ray, which differs from the source's off-ray point by under a centimetre and keeps the look
+    // point: probe from the head toward the view against this world's solid bodies with the local user's
+    // own avatar excluded, and park the camera at hit.Point + normal * standoff when something is in the
+    // way (projected back onto the orbit ray, which moves it by under a centimetre and keeps the look
     // direction constant). Triggers are not probed, so grabbable sensors never tug the view, and the
     // physics hook already skips bodies it cannot resolve to a slot in this world, which is what keeps
     // every user's CharacterBody3D (parented to the world root with no slot tag) out of the result.
     //
-    // The source snaps both ways. Snapping IN stays: a frame spent behind a wall is a frame of the
-    // world's backface soup. Snapping OUT is what makes a camera jam and pop in doorways and at
-    // corners, where the ray flickers between hit and miss on consecutive frames, so the release eases
-    // back over a few frames instead. Worlds with no query hook (Raycast returns false) keep the free
-    // distance, which is exactly what the camera did before the probe existed. -xlinka
+    // Snapping IN is immediate: a frame spent behind a wall is a frame of the world's backface soup.
+    // Snapping OUT is what makes a camera jam and pop in doorways and at corners, where the ray
+    // flickers between hit and miss on consecutive frames, so the release eases back over a few frames
+    // instead. Worlds with no query hook (Raycast returns false) keep the free distance, which is
+    // exactly what the camera did before the probe existed. -xlinka
     private float ResolveCameraDistance(Vector3 pivot, Vector3 rayDir, float freeDistance, float userScale, float delta)
     {
         float rayStart = TpCollisionRayStart * userScale;
@@ -451,10 +478,10 @@ public partial class DesktopCameraController : Node
     private static bool IsAlive([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] UserInputState? state)
         => state != null && !state.IsDestroyed;
 
-    // Pivot on the head body node, not on the root: the root sits at the feet, and the source
-    // platform orbits the actual head position so pitch 0 looks level with the player's eyes rather
-    // than up at them. Distance rides the root's global scale for the same reason the source scales
-    // its offset - a shrunk or grown user needs a proportional camera, not a fixed 3.5 m. -xlinka
+    // Pivot on the head body node, not on the root: the root sits at the feet, and orbiting the actual
+    // head position is what makes pitch 0 look level with the player's eyes rather than up at them.
+    // Distance rides the root's global scale because a shrunk or grown user needs a proportional
+    // camera, not a fixed 3.5 m. -xlinka
     private bool TryGetOrbitPivot(out Vector3 pivot, out float userScale)
     {
         pivot     = Vector3.Zero;
@@ -477,7 +504,7 @@ public partial class DesktopCameraController : Node
             _tpHeadSlot   = userRoot.HeadSlot;
         }
 
-        var head = _tpHeadSlot;
+        var head = userRoot.GetRegisteredComponent<Lumora.Core.Components.Avatar.AvatarEquipManager>()?.AvatarHead ?? _tpHeadSlot;
         var pivotPos = (head != null && !head.IsDestroyed)
             ? head.GlobalPosition
             : userRoot.Slot.GlobalPosition + new Lumora.Core.Math.float3(0f, TpFallbackEyeHeight, 0f);
@@ -567,4 +594,3 @@ public partial class DesktopCameraController : Node
             _freeCamIndicator.GlobalPosition = _freeCamPos;
     }
 }
-

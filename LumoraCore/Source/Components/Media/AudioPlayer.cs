@@ -1,4 +1,4 @@
-// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
+﻿// Copyright (c) 2026 LUMORAVR LTD. All rights reserved.
 // Licensed under the LumoraVR Source Available License. See LICENSE in the project root.
 
 using System;
@@ -38,6 +38,15 @@ public sealed class AudioPlayer : Component, IPlayable
     // Metres across. Everything else is authored in canvas pixels and scaled to match.
     public readonly Sync<float> PanelWidth;
 
+    // What the clip is, which is what decides the mixer group it is counted against and how far it
+    // carries. Classified from the clip once it loads and then left alone, so a person who sets it by
+    // hand keeps their answer.
+    public readonly Sync<Lumora.Core.Audio.AudioTypeGroup> TypeGroup;
+
+    // False until the clip has been seen once. Replicated so a late joiner does not re-classify a
+    // group somebody already corrected.
+    public readonly Sync<bool> TypeClassified;
+
     // Authored in pixels and then scaled so the panel's width matches PanelWidth, the way the import
     // dialogs do it: layout numbers stay readable and the item can be resized by one field.
     private const float CanvasWidth = 900f;
@@ -50,6 +59,8 @@ public sealed class AudioPlayer : Component, IPlayable
     private const float SeekStep = 5f;
 
     private Slot? _plateSlot;
+    private Slot? _waveformSlot;
+    private Meshes.AudioWaveformMesh? _waveformMesh;
     private Slot? _controlsSlot;
 
     private RoundedQuadMesh? _plateMesh;
@@ -80,6 +91,8 @@ public sealed class AudioPlayer : Component, IPlayable
         Player = new SyncRef<ClipPlayer>(this);
         AudioOutput = new SyncRef<WorldAudioOutput>(this);
         PanelWidth = new Sync<float>(this, 0.6f);
+        TypeGroup = new Sync<Lumora.Core.Audio.AudioTypeGroup>(this, Lumora.Core.Audio.AudioTypeGroup.SoundEffect);
+        TypeClassified = new Sync<bool>(this, false);
     }
 
     public StaticAudioClip? Provider => Clip.Target;
@@ -223,11 +236,11 @@ public sealed class AudioPlayer : Component, IPlayable
             AudioOutput.Target = audio;
         }
         audio.Source.Target = player;
-        audio.AudioTypeGroup.Value = Lumora.Core.Audio.AudioTypeGroup.SoundEffect;
+        audio.AudioTypeGroup.Value = TypeGroup.Value;
         audio.Spatialize.Value = true;
         audio.SpatialBlend.Value = 1f;
         audio.MinDistance.Value = 1f;
-        audio.MaxDistance.Value = 25f;
+        audio.MaxDistance.Value = DistanceFor(TypeGroup.Value);
         audio.RolloffMode.Value = Lumora.Audio.AudioRolloffCurve.LogarithmicFadeOff;
         // A panel somebody carries across the room must not pitch-shift while they walk.
         audio.DopplerLevel.Value = 0f;
@@ -235,6 +248,7 @@ public sealed class AudioPlayer : Component, IPlayable
         BuildFont();
         BuildPlate();
         BuildControls(player, audio);
+        BuildWaveform(audio);
 
         _wired = true;
         UpdateSurfaces();
@@ -264,10 +278,8 @@ public sealed class AudioPlayer : Component, IPlayable
         _plateMesh.CornerSegments.Value = 4;
         _plateMesh.DualSided.Value = false;
 
-        var material = _plateSlot.GetOrAttachComponent<UnlitMaterial>();
-        material.TintColor.Value = ToHDR(DashTheme.Panel);
-        material.Culling.Value = Culling.None;
-        material.BlendMode.Value = BlendMode.Opaque;
+        // Glass, like every other panel body. An opaque slab reads as a placeholder next to them.
+        var material = DashGlass.Attach(_plateSlot);
 
         var renderer = _plateSlot.GetOrAttachComponent<MeshRenderer>();
         renderer.Mesh.Target = _plateMesh;
@@ -275,6 +287,37 @@ public sealed class AudioPlayer : Component, IPlayable
         renderer.ShadowCastMode.Value = ShadowCastMode.Off;
 
         _plateCollider = _plateSlot.GetOrAttachComponent<BoxCollider>();
+    }
+
+    // THE PART THAT MOVES.
+    //
+    // A player that is playing looked exactly like a player that is not: same panel, same buttons,
+    // a number counting up in small type. Sound is the one thing in a room with no shape of its own,
+    // so it is given one - a live trace across the face of the panel, over the plate and under the
+    // controls. It reads the OUTPUT rather than the clip, so it shows what is actually coming out:
+    // paused is a flat line, muted is a flat line, and a loud passage is a loud picture. -xlinka
+    private void BuildWaveform(WorldAudioOutput audio)
+    {
+        _waveformSlot = Slot.FindChildOrAdd("Waveform");
+        // Between the plate and the controls, so the trace reads as being on the panel rather than
+        // floating in front of it.
+        _waveformSlot.LocalPosition.Value = new float3(0f, 0f, -PlateDepth * 0.4f);
+
+        _waveformMesh = _waveformSlot.GetOrAttachComponent<Meshes.AudioWaveformMesh>();
+        _waveformMesh.Source.Target = audio;
+        _waveformMesh.Style.Value = Meshes.WaveformStyle.Waveform;
+        _waveformMesh.Resolution.Value = 128;
+        _waveformMesh.Smoothing.Value = 0.35f;
+
+        var material = _waveformSlot.GetOrAttachComponent<UnlitMaterial>();
+        material.TintColor.Value = ToHDR(DashTheme.Accent);
+        material.Culling.Value = Culling.None;
+        material.BlendMode.Value = BlendMode.Alpha;
+
+        var renderer = _waveformSlot.GetOrAttachComponent<MeshRenderer>();
+        renderer.Mesh.Target = _waveformMesh;
+        renderer.Material.Target = material;
+        renderer.ShadowCastMode.Value = ShadowCastMode.Off;
     }
 
     private void BuildControls(ClipPlayer player, WorldAudioOutput audio)
@@ -287,11 +330,22 @@ public sealed class AudioPlayer : Component, IPlayable
         rect.OffsetMax.Value = new float2(CanvasWidth * 0.5f, CanvasHeight * 0.5f);
         _controlsSlot.GetOrAttachComponent<Canvas>();
 
-        var background = _controlsSlot.GetOrAttachComponent<Image>();
-        background.Tint.Value = DashTheme.Backdrop;
+        // THE HOUSE BACKDROP, not a flat image: rounded, glass-tinted, outlined, the same one every
+        // other panel in the product wears.
+        var background = _controlsSlot.GetComponent<RoundedPanel>() ?? _controlsSlot.AttachComponent<RoundedPanel>();
+        background.Color.Value = DashTheme.GlassBackdrop;
+        background.CornerRadius.Value = DashTheme.RadiusPanel;
+        background.OutlineColor.Value = DashTheme.OutlineStrong;
+        background.OutlineThickness.Value = DashTheme.OutlineWidth;
 
         var content = _controlsSlot.FindChildOrAdd("Content");
         FillRect(content);
+        // ITS OWN CHUNK, and this is what made the panel a black rectangle with nothing on it. The
+        // canvas root carries the backdrop; without a chunk of its own the content is batched into
+        // the root's chunk and drawn underneath the very thing it is supposed to sit on, so every
+        // button, label and meter went behind an opaque panel. The video player hit this and fixed it
+        // there; these two were built from the pattern that predates it. -xlinka
+        content.GetOrAttachComponent<GraphicChunkRoot>();
         if (content.ChildCount > 0)
             return;
 
@@ -455,6 +509,55 @@ public sealed class AudioPlayer : Component, IPlayable
         player.Position = target;
     }
 
+    // A track and a door click are not the same kind of sound and must not be counted against the
+    // same volume. Everything imported used to come in as a sound effect, so turning the effects
+    // slider down muted the music somebody put on, and the music slider did nothing at all.
+    //
+    // The rule is the length: ten seconds or more is a piece of music or a recording, under that is
+    // an effect. A .wav is an effect whatever its length, because that is the format effects arrive
+    // in and a long one is usually a loop.
+    //
+    // Every clip stays spatialized, short ones included. The player is a panel somebody is holding - a
+    // visible object in the room - and a visible object whose sound comes from everywhere at once
+    // reads as a bug. Music gets a much longer carry instead, so it fills a room rather than dying
+    // a few steps from the panel. -xlinka
+    private const float SoundEffectDistance = 25f;
+    private const float MultimediaDistance = 120f;
+    private const double MultimediaSeconds = 10.0;
+
+    private static float DistanceFor(Lumora.Core.Audio.AudioTypeGroup group)
+        => group == Lumora.Core.Audio.AudioTypeGroup.Multimedia ? MultimediaDistance : SoundEffectDistance;
+
+    private void ClassifyClip()
+    {
+        if (TypeClassified.Value || World?.IsAuthority != true)
+            return;
+
+        var clip = Clip.Target?.Asset;
+        if (clip == null || clip.Duration <= 0.0)
+            return;
+
+        bool wav = (Clip.Target?.URL.Value?.AbsolutePath ?? "").EndsWith(".wav", System.StringComparison.OrdinalIgnoreCase);
+        var group = !wav && clip.Duration >= MultimediaSeconds
+            ? Lumora.Core.Audio.AudioTypeGroup.Multimedia
+            : Lumora.Core.Audio.AudioTypeGroup.SoundEffect;
+
+        TypeClassified.Value = true;
+        if (TypeGroup.Value != group)
+            TypeGroup.Value = group;
+        ApplyTypeGroup();
+    }
+
+    private void ApplyTypeGroup()
+    {
+        var audio = AudioOutput.Target;
+        if (audio == null || audio.IsDestroyed)
+            return;
+        var group = TypeGroup.Value;
+        audio.AudioTypeGroup.Value = group;
+        audio.MaxDistance.Value = DistanceFor(group);
+    }
+
     // PER-FRAME
 
     public override void OnCommonUpdate()
@@ -464,6 +567,7 @@ public sealed class AudioPlayer : Component, IPlayable
         if (!_wired)
             Wire();
 
+        ClassifyClip();
         UpdateSurfaces();
 
         _labelPoll -= World?.Time?.Delta ?? 0f;
@@ -495,6 +599,15 @@ public sealed class AudioPlayer : Component, IPlayable
 
         if (_plateCollider != null && !_plateCollider.IsDestroyed)
             _plateCollider.Size.SetValueSilently(new float3(width + PlateMargin * 2f, height + PlateMargin * 2f, 0.02f));
+
+        // The trace spans the panel and stands as tall as the panel's middle band, which is the part
+        // the controls leave empty.
+        if (_waveformMesh != null && !_waveformMesh.IsDestroyed)
+        {
+            _waveformMesh.Width.SetValueSilently(width * 0.94f);
+            _waveformMesh.Height.SetValueSilently(height * 0.42f);
+            _waveformMesh.Thickness.SetValueSilently(System.Math.Max(height * 0.012f, 0.0015f));
+        }
     }
 
     private void UpdateLabels()
@@ -578,6 +691,8 @@ public sealed class AudioPlayer : Component, IPlayable
 
         _plateMesh = _plateSlot?.GetComponent<RoundedQuadMesh>();
         _plateCollider = _plateSlot?.GetComponent<BoxCollider>();
+        _waveformSlot = Slot.FindChild("Waveform", recursive: false);
+        _waveformMesh = _waveformSlot?.GetComponent<Meshes.AudioWaveformMesh>();
         _font = Slot.FindChild("Font", recursive: false)?.GetComponent<FontProvider>();
 
         _titleLabel = FindText("TitleLabel");

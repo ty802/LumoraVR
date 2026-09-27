@@ -44,9 +44,7 @@ public partial class SettingsApplier : Node
 	private float _resolutionScale = 1f;
 	private float? _appliedUserHeight;
 	private int? _appliedBackgroundFps;
-	private int? _appliedTonemap;
-	private float? _appliedExposure;
-	private float? _appliedBloom;
+	private Lumora.Godot.Hooks.SkyEnvironment.PostSettings? _appliedPost;
 	private int? _appliedAntiAliasing;
 	private int? _appliedShadowQuality;
 	private string? _appliedInputDevice;
@@ -142,20 +140,38 @@ public partial class SettingsApplier : Node
 			Lumora.Core.Logging.Logger.Log($"Settings: upscaler -> {EngineSettings.DescribeUpscaler(EngineSettings.Upscaler)}");
 		}
 
-		// Tonemap, white point and glow all live on the same Environment, so one changed value rewrites
-		// the set rather than three separate walks over every claimed environment.
-		if (_appliedTonemap != EngineSettings.Tonemap
-			|| _appliedExposure != EngineSettings.Exposure
-			|| _appliedBloom != EngineSettings.Bloom)
+		// The whole post stack lives on the same Environment, so one changed value rewrites the set
+		// rather than a separate walk over every claimed environment per setting.
+		var post = new Lumora.Godot.Hooks.SkyEnvironment.PostSettings
 		{
-			_appliedTonemap = EngineSettings.Tonemap;
-			_appliedExposure = EngineSettings.Exposure;
-			_appliedBloom = EngineSettings.Bloom;
-			Lumora.Godot.Hooks.SkyEnvironment.ApplyPostSettings(
-				EngineSettings.Tonemap, EngineSettings.Exposure, EngineSettings.Bloom, this);
+			Tonemap = EngineSettings.Tonemap,
+			WhitePoint = EngineSettings.Exposure,
+			Bloom = EngineSettings.Bloom,
+			AmbientOcclusion = EngineSettings.AmbientOcclusion,
+			ScreenSpaceReflections = EngineSettings.ScreenSpaceReflections,
+			ScreenSpaceIndirectLighting = EngineSettings.ScreenSpaceIndirectLighting,
+			Contrast = EngineSettings.Contrast,
+			Saturation = EngineSettings.Saturation,
+		};
+		if (!_appliedPost.HasValue || !_appliedPost.Value.Equals(post))
+		{
+			// The screen-space passes run at the engine's Medium quality with two blur passes unless
+			// told otherwise, and that is where the grain and the crawling on moving bodies comes from:
+			// this occlusion has no temporal filter, only its blur. High with an extra pass is the
+			// cheapest fix, still at half resolution. A global, so once. -xlinka
+			if (!_appliedPost.HasValue && !OS.HasFeature("android"))
+			{
+				RenderingServer.EnvironmentSetSsaoQuality(RenderingServer.EnvironmentSsaoQuality.High, true, 0.5f, 3, 50f, 300f);
+				RenderingServer.EnvironmentSetSsilQuality(RenderingServer.EnvironmentSsilQuality.High, true, 0.5f, 4, 50f, 300f);
+			}
+			_appliedPost = post;
+			Lumora.Godot.Hooks.SkyEnvironment.ApplyPostSettings(in post, this);
 			Lumora.Core.Logging.Logger.Log(
-				$"Settings: tonemap -> {EngineSettings.DescribeTonemap(EngineSettings.Tonemap)} "
-				+ $"(white {EngineSettings.Exposure:0.#}, bloom {EngineSettings.Bloom:0.##})");
+				$"Settings: post -> {EngineSettings.DescribeTonemap(post.Tonemap)} "
+				+ $"(white {post.WhitePoint:0.#}, bloom {post.Bloom:0.##}, ao {post.AmbientOcclusion:0.##}, "
+				+ $"ssil {(post.ScreenSpaceIndirectLighting ? "on" : "off")}, ssr {(post.ScreenSpaceReflections ? "on" : "off")}, "
+				+ $"contrast {post.Contrast:0.00}, saturation {post.Saturation:0.00}); "
+				+ Lumora.Godot.Hooks.SkyEnvironment.DescribeRendering(this));
 		}
 
 		if (_appliedAntiAliasing != EngineSettings.AntiAliasing)
@@ -180,12 +196,15 @@ public partial class SettingsApplier : Node
 		{
 			_appliedShadowQuality = EngineSettings.ShadowQuality;
 			// Desktop preferences must not replace the standalone shadow budget at boot or on Save.
+			// Our soft presets start at Godot's Medium sample count. Soft Low leaves a visible
+			// stipple on avatar shadows without TAA, and the desktop/VR viewports use MSAA.
+			// Keep the stored preset indices: existing Low selections also get the cleaner filter.
 			var quality = OS.HasFeature("android") ? RenderingServer.ShadowQuality.Hard : EngineSettings.ShadowQuality switch
 			{
 				0 => RenderingServer.ShadowQuality.Hard,
-				2 => RenderingServer.ShadowQuality.SoftMedium,
-				3 => RenderingServer.ShadowQuality.SoftHigh,
-				_ => RenderingServer.ShadowQuality.SoftLow,
+				2 => RenderingServer.ShadowQuality.SoftHigh,
+				3 => RenderingServer.ShadowQuality.SoftUltra,
+				_ => RenderingServer.ShadowQuality.SoftMedium,
 			};
 			RenderingServer.PositionalSoftShadowFilterSetQuality(quality);
 			RenderingServer.DirectionalSoftShadowFilterSetQuality(quality);

@@ -167,7 +167,26 @@ public static class EngineSettings
     }
 
     // Peak amplitude a captured frame has to reach before the gate counts it as speech.
-    private static float _noiseGateThreshold = 0.02f;
+    // Spectral suppression ahead of the gate. On by default: a gate alone passes the whole room the
+    // moment it opens, and "I can hear your fan" is the most common thing anyone says about anyone
+    // else's microphone.
+    private static bool _noiseSuppression = true;
+    public static bool NoiseSuppression
+    {
+        get => _noiseSuppression;
+        set => SetValue(ref _noiseSuppression, value);
+    }
+
+    // THE GATE, RETUNED TO THE BAND IT ACTUALLY WORKS IN.
+    //
+    // These four shipped on ranges five to ten times wider than anything usable - hold and release
+    // ran to two seconds where a gate lives under a fifth of one - so the whole working range was
+    // squeezed into the first tenth of the slider and a normal drag threw it straight past. The
+    // ranges top out at 0.2, the band these controls are designed around.
+    //
+    // The release default came down with them: it was 0.2 s, which is a fifth of a second of open
+    // microphone after every phrase. That is exactly the window the room noise rides out on. -xlinka
+    private static float _noiseGateThreshold = 0.015f;
     public static float NoiseGateThreshold
     {
         get => _noiseGateThreshold;
@@ -175,7 +194,7 @@ public static class EngineSettings
     }
 
     // Seconds the gate takes to open. Long enough and the first consonant of every word is gone.
-    private static float _noiseGateAttack = 0.01f;
+    private static float _noiseGateAttack = 0.02f;
     public static float NoiseGateAttack
     {
         get => _noiseGateAttack;
@@ -190,7 +209,7 @@ public static class EngineSettings
         set => SetValue(ref _noiseGateHold, SettingsCatalog.NoiseGateHold.Clamp(value));
     }
 
-    private static float _noiseGateRelease = 0.2f;
+    private static float _noiseGateRelease = 0.02f;
     public static float NoiseGateRelease
     {
         get => _noiseGateRelease;
@@ -198,7 +217,7 @@ public static class EngineSettings
     }
 
     // Peak the normalizer walks the captured signal toward when it is on.
-    private static float _normalizationThreshold = 0.1f;
+    private static float _normalizationThreshold = 0.05f;
     public static float NormalizationThreshold
     {
         get => _normalizationThreshold;
@@ -423,6 +442,20 @@ public static class EngineSettings
 
     // INTERFACE
 
+    public enum GizmoControlStyle
+    {
+        ContextMenu,
+        Cubes,
+        AllGizmo,
+    }
+
+    private static GizmoControlStyle _gizmoControls = GizmoControlStyle.ContextMenu;
+    public static GizmoControlStyle GizmoControls
+    {
+        get => _gizmoControls;
+        set => SetEnum(ref _gizmoControls, Enum.IsDefined(value) ? value : GizmoControlStyle.ContextMenu);
+    }
+
     public enum ReticleShape
     {
         Ring,
@@ -496,6 +529,53 @@ public static class EngineSettings
         set => SetValue(ref _bloom, SettingsCatalog.Bloom.Clamp(value));
     }
 
+    // Ambient occlusion strength, 0 = the pass is off, full by default. Contact shadow is what grounds
+    // a body in a room: without it feet float over the floor and every corner reads as the same flat
+    // ambient. Not available on the standalone renderer, where the applier leaves it off whatever this
+    // says.
+    private static float _ambientOcclusion = 1f;
+    public static float AmbientOcclusion
+    {
+        get => _ambientOcclusion;
+        set => SetValue(ref _ambientOcclusion, SettingsCatalog.AmbientOcclusion.Clamp(value));
+    }
+
+    // Screen-space reflections. Off by default: a full ray march per pixel, and only glossy floors
+    // show it.
+    private static bool _screenSpaceReflections;
+    public static bool ScreenSpaceReflections
+    {
+        get => _screenSpaceReflections;
+        set => SetValue(ref _screenSpaceReflections, value);
+    }
+
+    // Screen-space indirect lighting: diffuse bounce between nearby surfaces, the partner effect to
+    // ambient occlusion in the engine's own guide and one of the two screen-space passes that render
+    // clean in a headset. Off by default; it costs a second half-resolution pass like the occlusion.
+    private static bool _screenSpaceIndirectLighting;
+    public static bool ScreenSpaceIndirectLighting
+    {
+        get => _screenSpaceIndirectLighting;
+        set => SetValue(ref _screenSpaceIndirectLighting, value);
+    }
+
+    // Colour adjustment after the tonemapper. AgX keeps saturated brights but flattens the midtones on
+    // purpose, which reads as bland. A touch of contrast and saturation puts the punch back without
+    // giving up the highlight handling; both at 1 means the pass is skipped entirely.
+    private static float _contrast = 1.1f;
+    public static float Contrast
+    {
+        get => _contrast;
+        set => SetValue(ref _contrast, SettingsCatalog.Contrast.Clamp(value));
+    }
+
+    private static float _saturation = 1.15f;
+    public static float Saturation
+    {
+        get => _saturation;
+        set => SetValue(ref _saturation, SettingsCatalog.Saturation.Clamp(value));
+    }
+
     public static readonly string[] ShadowQualityOptions = { "Hard", "Soft Low", "Soft Medium", "Soft High" };
 
     // The renderer's soft-shadow filter, which nothing in this engine has ever set - so we have been
@@ -564,6 +644,7 @@ public static class EngineSettings
     private const string KeyAudioOutputDevice = "Engine.Audio.OutputDevice";
     private const string KeyMicrophoneMuted = "Engine.Audio.MicrophoneMuted";
     private const string KeyVoiceNormalization = "Engine.Audio.VoiceNormalization";
+    private const string KeyNoiseSuppression = "Engine.Audio.NoiseSuppression";
     private const string KeyNoiseGateThreshold = "Engine.Audio.NoiseGateThreshold";
     private const string KeyNoiseGateAttack = "Engine.Audio.NoiseGateAttack";
     private const string KeyNoiseGateHold = "Engine.Audio.NoiseGateHold";
@@ -587,12 +668,18 @@ public static class EngineSettings
     private const string KeyTonemap = "Engine.Video.Tonemap";
     private const string KeyExposure = "Engine.Video.Exposure";
     private const string KeyBloom = "Engine.Video.Bloom";
+    private const string KeyAmbientOcclusion = "Engine.Video.AmbientOcclusion";
+    private const string KeyScreenSpaceReflections = "Engine.Video.ScreenSpaceReflections";
+    private const string KeyScreenSpaceIndirectLighting = "Engine.Video.ScreenSpaceIndirectLighting";
+    private const string KeyContrast = "Engine.Video.Contrast";
+    private const string KeySaturation = "Engine.Video.Saturation";
     private const string KeyAntiAliasing = "Engine.Video.AntiAliasing";
     private const string KeyShadowQuality = "Engine.Video.ShadowQuality";
     private const string KeyTurnMode = "Engine.Comfort.TurnMode";
     private const string KeySnapTurnAngle = "Engine.Comfort.SnapTurnAngle";
     private const string KeySmoothTurnSpeed = "Engine.Comfort.SmoothTurnSpeed";
     private const string KeyReticleStyle = "Engine.Interface.ReticleStyle";
+    private const string KeyGizmoControls = "Engine.Interface.GizmoControls";
     private const string KeyReticleSize = "Engine.Interface.ReticleSize";
     private const string KeyReticleThickness = "Engine.Interface.ReticleThickness";
 
@@ -620,6 +707,7 @@ public static class EngineSettings
             _audioOutputDevice = Settings.ReadValue(KeyAudioOutputDevice, _audioOutputDevice) ?? string.Empty;
             _microphoneMuted = Settings.ReadValue(KeyMicrophoneMuted, _microphoneMuted);
             _voiceNormalization = Settings.ReadValue(KeyVoiceNormalization, _voiceNormalization);
+            _noiseSuppression = Settings.ReadValue(KeyNoiseSuppression, _noiseSuppression);
             _noiseGateThreshold = SettingsCatalog.NoiseGateThreshold.Clamp(Settings.ReadValue(KeyNoiseGateThreshold, _noiseGateThreshold));
             _noiseGateAttack = SettingsCatalog.NoiseGateAttack.Clamp(Settings.ReadValue(KeyNoiseGateAttack, _noiseGateAttack));
             _noiseGateHold = SettingsCatalog.NoiseGateHold.Clamp(Settings.ReadValue(KeyNoiseGateHold, _noiseGateHold));
@@ -646,12 +734,19 @@ public static class EngineSettings
             _tonemap = System.Math.Clamp(Settings.ReadValue(KeyTonemap, _tonemap), 0, TonemapOptions.Length - 1);
             _exposure = SettingsCatalog.Exposure.Clamp(Settings.ReadValue(KeyExposure, _exposure));
             _bloom = SettingsCatalog.Bloom.Clamp(Settings.ReadValue(KeyBloom, _bloom));
+            _ambientOcclusion = SettingsCatalog.AmbientOcclusion.Clamp(Settings.ReadValue(KeyAmbientOcclusion, _ambientOcclusion));
+            _screenSpaceReflections = Settings.ReadValue(KeyScreenSpaceReflections, _screenSpaceReflections);
+            _screenSpaceIndirectLighting = Settings.ReadValue(KeyScreenSpaceIndirectLighting, _screenSpaceIndirectLighting);
+            _contrast = SettingsCatalog.Contrast.Clamp(Settings.ReadValue(KeyContrast, _contrast));
+            _saturation = SettingsCatalog.Saturation.Clamp(Settings.ReadValue(KeySaturation, _saturation));
             _antiAliasing = SnapAntiAliasing(Settings.ReadValue(KeyAntiAliasing, _antiAliasing));
             _shadowQuality = System.Math.Clamp(Settings.ReadValue(KeyShadowQuality, _shadowQuality), 0, ShadowQualityOptions.Length - 1);
             _turnMode = ReadEnum(KeyTurnMode, _turnMode);
             _snapTurnAngle = SettingsCatalog.SnapTurnAngle.Clamp(Settings.ReadValue(KeySnapTurnAngle, _snapTurnAngle));
             _smoothTurnSpeed = SettingsCatalog.SmoothTurnSpeed.Clamp(Settings.ReadValue(KeySmoothTurnSpeed, _smoothTurnSpeed));
             _reticleStyle = ReadEnum(KeyReticleStyle, _reticleStyle);
+            _gizmoControls = ReadEnum(KeyGizmoControls, GizmoControlStyle.ContextMenu);
+            if (!Enum.IsDefined(_gizmoControls)) _gizmoControls = GizmoControlStyle.ContextMenu;
             _reticleSize = SettingsCatalog.ReticleSize.Clamp(Settings.ReadValue(KeyReticleSize, _reticleSize));
             _reticleThickness = SettingsCatalog.ReticleThickness.Clamp(Settings.ReadValue(KeyReticleThickness, _reticleThickness));
             Changed?.Invoke();
@@ -688,6 +783,7 @@ public static class EngineSettings
             Settings.WriteValue(KeyAudioOutputDevice, _audioOutputDevice);
             Settings.WriteValue(KeyMicrophoneMuted, _microphoneMuted);
             Settings.WriteValue(KeyVoiceNormalization, _voiceNormalization);
+            Settings.WriteValue(KeyNoiseSuppression, _noiseSuppression);
             Settings.WriteValue(KeyNoiseGateThreshold, _noiseGateThreshold);
             Settings.WriteValue(KeyNoiseGateAttack, _noiseGateAttack);
             Settings.WriteValue(KeyNoiseGateHold, _noiseGateHold);
@@ -711,12 +807,18 @@ public static class EngineSettings
             Settings.WriteValue(KeyTonemap, _tonemap);
             Settings.WriteValue(KeyExposure, _exposure);
             Settings.WriteValue(KeyBloom, _bloom);
+            Settings.WriteValue(KeyAmbientOcclusion, _ambientOcclusion);
+            Settings.WriteValue(KeyScreenSpaceReflections, _screenSpaceReflections);
+            Settings.WriteValue(KeyScreenSpaceIndirectLighting, _screenSpaceIndirectLighting);
+            Settings.WriteValue(KeyContrast, _contrast);
+            Settings.WriteValue(KeySaturation, _saturation);
             Settings.WriteValue(KeyAntiAliasing, _antiAliasing);
             Settings.WriteValue(KeyShadowQuality, _shadowQuality);
             Settings.WriteValue(KeyTurnMode, _turnMode.ToString());
             Settings.WriteValue(KeySnapTurnAngle, _snapTurnAngle);
             Settings.WriteValue(KeySmoothTurnSpeed, _smoothTurnSpeed);
             Settings.WriteValue(KeyReticleStyle, _reticleStyle.ToString());
+            Settings.WriteValue(KeyGizmoControls, _gizmoControls.ToString());
             Settings.WriteValue(KeyReticleSize, _reticleSize);
             Settings.WriteValue(KeyReticleThickness, _reticleThickness);
         }
@@ -752,4 +854,3 @@ public static class EngineSettings
         Changed?.Invoke();
     }
 }
-

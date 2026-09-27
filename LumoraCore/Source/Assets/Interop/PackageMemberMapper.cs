@@ -7,6 +7,8 @@ using System.Globalization;
 using Lumora.Core.Math;
 using Lumora.Core.Networking.Sync;
 using Lumora.Core.Persistence;
+using Lumora.Core.Components;
+using Lumora.Core.Components.Avatar;
 
 namespace Lumora.Core.Assets.Interop;
 
@@ -23,13 +25,14 @@ namespace Lumora.Core.Assets.Interop;
 public static class PackageMemberMapper
 {
     // Where the same data lives under a different member name on our side. Keyed by OUR component type
-    // name, then by THEIR member name.
+    // name, then by the PACKAGE's member name.
     //
-    // SkinnedMeshRenderer is the one that matters: theirs derives from their MeshRenderer and so calls
-    // the geometry "Mesh", while ours is its own component and calls it "MeshAsset". Nothing matched,
-    // the mesh was never wired, and every skinned mesh - which on an avatar means the body, the head,
-    // the arms, essentially all of it - rendered nothing at all while the rigid props came through
-    // fine. Ours also takes a single Material where theirs holds a Materials list. -xlinka
+    // SkinnedMeshRenderer is the one that matters: the package type derives from the package's
+    // MeshRenderer and so calls the geometry "Mesh", while ours is its own component and calls it
+    // "MeshAsset". Nothing matched, the mesh was never wired, and every skinned mesh - which on an avatar
+    // means the body, the head, the arms, essentially all of it - rendered nothing at all while the rigid
+    // props came through fine. Ours also takes a single Material where the package holds a Materials
+    // list. -xlinka
     private static readonly Dictionary<string, Dictionary<string, string>> MemberAliases =
         new(StringComparer.Ordinal)
         {
@@ -38,8 +41,8 @@ public static class PackageMemberMapper
                 ["Mesh"] = "MeshAsset",
             },
 
-            // PARTICLE INITIALIZERS. Theirs name every parameter the same way whatever it holds -
-            // Value, or MinValue and MaxValue - while ours name it after the quantity: MinColor,
+            // PARTICLE INITIALIZERS. A package's initializers name every parameter the same way whatever
+            // it holds - Value, or MinValue and MaxValue - while ours name it after the quantity: MinColor,
             // MinSpeed, MinLifetime, MinSize. Not one member lined up, so not one initializer parameter
             // ever imported: every system inherited our defaults, which is white particles at whatever
             // size the component happens to start at. It reads as "the conversion does not do colour",
@@ -71,8 +74,8 @@ public static class PackageMemberMapper
             ["ParticleTrailLifetimeInitializer"] = Range("Lifetime"),
             ["ParticleTrailLifetimeRangeInitializer"] = Range("MinLifetime", "MaxLifetime"),
 
-            // Their Color/MainTexture would collide with the ICommonMaterial properties of the same
-            // names, so the fields carry our usual Albedo* naming and bind through here.
+            // The package's Color/MainTexture would collide with the ICommonMaterial properties of the
+            // same names, so the fields carry our usual Albedo* naming and bind through here.
             ["XiexeToonMaterial"] = new(StringComparer.Ordinal)
             {
                 ["Color"] = "AlbedoColor",
@@ -81,7 +84,7 @@ public static class PackageMemberMapper
             },
 
             // Every other material in the engine calls this member BlendMode and spells the same six
-            // values the source does, so it maps with no help. The two toon materials are the odd ones
+            // values the package does, so it maps with no help. The two toon materials are the odd ones
             // out: they call it AlphaMode over a three-value enum. Nothing matched, so a fur or hair
             // shell authored as Cutout landed on our Opaque default and every alpha card rendered as a
             // solid quad - dark blotches over the body and a hatched block where the tail should be.
@@ -91,18 +94,34 @@ public static class PackageMemberMapper
             {
                 ["BlendMode"] = "AlphaMode",
             },
+
+            // THREE OF A LIGHT'S FIVE INTERESTING MEMBERS NEVER MAPPED. Ours spell the type, the colour
+            // and the shadow mode differently from the package, so every imported light came in as our
+            // default: a WHITE POINT light with hard shadows, whatever the author actually built. A dim
+            // coloured spot tucked behind a prop arrives as a bare bulb lighting the whole room, which
+            // is why imports read as blown out rather than as slightly wrong.
+            //
+            // Both enums already agree value for value - Point/Directional/Spot and None/Hard/Soft - so
+            // the names were the entire problem. Per-type rather than global because "Color" is already
+            // spoken for: on the material families it means AlbedoColor. -xlinka
+            ["Light"] = new(StringComparer.Ordinal)
+            {
+                ["LightType"] = "Type",
+                ["Color"] = "LightColor",
+                ["ShadowType"] = "Shadows",
+            },
         };
 
     // Renames that hold whatever component they appear on.
     private static readonly Dictionary<string, string> GlobalMemberAliases = new(StringComparer.Ordinal)
     {
-        // Theirs names the side to DRAW; ours names the side to CULL. See CullingValues - the values
+        // The package names the side to DRAW; ours names the side to CULL. See CullingValues - the values
         // invert, so this rename alone is not enough.
         ["Sidedness"] = "Culling",
         ["UseVertexColors"] = "UseVertexColor",
 
-        // The particle family, outside the initializers. Both names are unambiguous - nothing else in
-        // either engine carries them - so they sit here rather than in a per-type table.
+        // The particle family, outside the initializers. Both names are unambiguous - no other member in a
+        // package or here carries them - so they sit here rather than in a per-type table.
         //
         // MaxParticleCount is the whole budget: unmapped, every imported system silently kept OUR default
         // instead of the author's, and EmitFromShell is the difference between emitting from a volume and
@@ -111,10 +130,10 @@ public static class PackageMemberMapper
         ["EmitFromShell"] = "FromShell",
     };
 
-    // Enum values that mean something different from what they spell, keyed by THEIR member name.
+    // Enum values that mean something different from what they spell, keyed by the PACKAGE's member name.
     //
-    // Keying by OUR name is wrong and was a real bug: the source has TWO different face-culling members
-    // with OPPOSITE conventions, and both land on our single `Culling`.
+    // Keying by OUR name is wrong and was a real bug: the package format has TWO different face-culling
+    // members with OPPOSITE conventions, and both land on our single `Culling`.
     //
     //   Sidedness { Auto, Front, Back, Double }  - names the face to DRAW  -> inverts
     //   Culling   { Off, Front, Back }           - names the face to CULL  -> matches ours
@@ -128,7 +147,7 @@ public static class PackageMemberMapper
             // Names the face to DRAW: invert into our cull-this-face convention.
             ["Sidedness"] = new(StringComparer.OrdinalIgnoreCase)
             {
-                ["Auto"] = "Back",      // their default: draw front, so cull back
+                ["Auto"] = "Back",      // the package default: draw front, so cull back
                 ["Front"] = "Back",     // draw front == cull back
                 ["Back"] = "Front",     // draw back  == cull front
                 ["Double"] = "None",    // draw both  == cull nothing
@@ -141,7 +160,7 @@ public static class PackageMemberMapper
                 ["Off"] = "None",
             },
 
-            // Their BlendMode has six values; our AlphaMode has three. Only the two toon materials
+            // The package's BlendMode has six values; our AlphaMode has three. Only the two toon materials
             // narrow to it, and for everything else BlendMode maps onto our identical six-value
             // BlendMode and needs none of this - which is exactly why the translation below is tried
             // and not forced. See the parse-or-fall-back in TryConvert. -xlinka
@@ -152,9 +171,23 @@ public static class PackageMemberMapper
                 ["Additive"] = "Blend",
                 ["Multiply"] = "Blend",
             },
+
+            // A collider's type. A package carries static, auto and haptic flavours of a trigger that ours
+            // folds into the one Trigger. Unmapped they failed to parse and kept our default of Static, so
+            // every zone in an imported world came in as a solid invisible wall that blocked people and
+            // lasers. A haptic sampler goes the same way: a sensor, never a wall. -xlinka
+            ["Type"] = new(StringComparer.OrdinalIgnoreCase)
+            {
+                ["StaticTrigger"] = "Trigger",
+                ["StaticTriggerAuto"] = "Trigger",
+                ["HapticTrigger"] = "Trigger",
+                ["HapticStaticTrigger"] = "Trigger",
+                ["HapticStaticTriggerAuto"] = "Trigger",
+                ["HapticSampler"] = "Trigger",
+            },
         };
 
-    // Their Value / MinValue / MaxValue onto whatever this initializer calls the same thing.
+    // The package's Value / MinValue / MaxValue onto whatever this initializer calls the same thing.
     private static Dictionary<string, string> Range(string value) =>
         new(StringComparer.Ordinal) { ["Value"] = value };
 
@@ -182,14 +215,22 @@ public static class PackageMemberMapper
     //            arrive this way, and reading them as text is why a first pass applied no transforms
     //            at all and stacked the whole object at the origin.
     //   colours  an array of numbers with a trailing colour-profile string, which is ignored here.
-    public static void Apply(
+    // Returns how many of the STORED members found a home on ours. The caller uses it to notice a
+    // component that mapped nothing, which is what a wrong alias looks like from the outside.
+    public static int Apply(
         Component component,
         DataTreeDictionary data,
         Action<ISyncRef, string> queueReference,
         Action<object, string, IReadOnlyList<string>> queueReferenceList,
         Func<Uri, Uri?> remapUrl)
     {
-        // Index our members by name once, then walk THEIR stored members - that way an alias can point
+        if (component is DynamicBoneChain chain)
+            ApplyDynamicChain(chain, data, queueReferenceList);
+        if (component is LocalViewOverride view)
+            ApplyViewOverride(view, data, remapUrl);
+        if (component is ParticleForce force)
+            ApplyGravityForce(force, data);
+        // Index our members by name once, then walk the STORED members - that way an alias can point
         // a differently-named member at the right one, which a walk over our members alone cannot do.
         var ours = new Dictionary<string, ISyncMember>(StringComparer.Ordinal);
         for (int i = 0; i < component.SyncMemberCount; i++)
@@ -207,9 +248,12 @@ public static class PackageMemberMapper
             }
         }
 
+        int matched = 0;
         foreach (var pair in data.Children)
         {
             string name = pair.Key;
+            if (component is DynamicBoneChain && name == "Bones")
+                continue;
             if (pair.Value is not DataTreeDictionary holder)
                 continue;
             var node = holder.TryGetNode("Data");
@@ -220,6 +264,7 @@ public static class PackageMemberMapper
             if (!ours.TryGetValue(ourName, out var member))
                 continue;
 
+            matched++;
             try
             {
                 Assign(member, node, ourName, name, queueReference, queueReferenceList, remapUrl);
@@ -229,6 +274,75 @@ public static class PackageMemberMapper
                 // A member that will not take the stored value is left at its default. Never fatal:
                 // one odd field must not cost the whole component.
             }
+        }
+
+        return matched;
+    }
+
+    // A package's GravityForce stores one number and means "down"; ours stores the vector. The alias that
+    // points GravityForce at ParticleForce is only truthful because of this - without it the component
+    // attaches with a zero force and the effect falls at no speed at all.
+    //
+    // Only fires when the stored data actually has a Gravity member, so a real ParticleForce carrying
+    // its own Force vector is untouched.
+    private static void ApplyGravityForce(ParticleForce force, DataTreeDictionary data)
+    {
+        if (data.TryGetNode("Gravity") is not DataTreeDictionary holder)
+            return;
+        if (holder.TryGetNode("Data") is not DataTreeValue value || value.Value == null)
+            return;
+
+        try
+        {
+            float gravity = Convert.ToSingle(value.Value);
+            force.Force.Value = new float3(0f, -gravity, 0f);
+        }
+        catch
+        {
+            // Not a number. Leave the force where it is.
+        }
+    }
+
+    private static void ApplyDynamicChain(DynamicBoneChain chain, DataTreeDictionary data,
+        Action<object, string, IReadOnlyList<string>> queueReferenceList)
+    {
+        DataTreeNode? Read(string name) => (data.TryGetNode(name) as DataTreeDictionary)?.TryGetNode("Data");
+        if (Read("Bones") is DataTreeList bones)
+        {
+            var ids = new List<string>();
+            foreach (var entry in bones.Children)
+            {
+                var record = entry as DataTreeDictionary;
+                if (record?.TryGetNode("Data") is DataTreeDictionary nested)
+                    record = nested;
+                var boneSlot = record?.TryGetNode("BoneSlot") as DataTreeDictionary;
+                var value = boneSlot?.TryGetNode("Data") ?? record?.TryGetNode("Data") ?? entry;
+                if (value is DataTreeValue { Value: string id } && !IsNullId(id) && id.Length > 0)
+                    ids.Add(id);
+            }
+            if (ids.Count > 0)
+                queueReferenceList(chain.Bones, nameof(chain.Bones), ids);
+        }
+        if (Read("DynamicPlayerCollision") is DataTreeValue { Value: bool players })
+            chain.CollideWithPlayers.Value = players;
+        if (Read("IsGrabbable") is DataTreeValue { Value: bool grab })
+            chain.AllowGrab.Value = grab;
+        if (Read("IgnoreGrabOnFirstBone") is DataTreeValue { Value: bool ignoreFirst })
+            chain.GrabFirstBone.Value = !ignoreFirst;
+    }
+
+    private static void ApplyViewOverride(LocalViewOverride view, DataTreeDictionary data, Func<Uri, Uri?> remapUrl)
+    {
+        // Nullable source transforms become a value and an explicit enable flag. Zero scale is a value,
+        // not an absent override: it hides the wearer's head while keeping its shadow. -xlinka
+        Apply("PositionOverride", typeof(float3), value => { view.PositionOverride.Value = (float3)value; view.HasPositionOverride.Value = true; });
+        Apply("RotationOverride", typeof(floatQ), value => { view.RotationOverride.Value = (floatQ)value; view.HasRotationOverride.Value = true; });
+        Apply("ScaleOverride", typeof(float3), value => { view.ScaleOverride.Value = (float3)value; view.HasScaleOverride.Value = true; });
+        void Apply(string name, Type type, Action<object> set)
+        {
+            var node = (data.TryGetNode(name) as DataTreeDictionary)?.TryGetNode("Data");
+            if (node != null && TryConvert(node, type, out var value, remapUrl, name) && value != null)
+                set(value);
         }
     }
 
@@ -250,7 +364,7 @@ public static class PackageMemberMapper
                 return;
             }
 
-            // A LIST arriving at a single reference is the Materials -> Material case: theirs holds a
+            // A LIST arriving at a single reference is the Materials -> Material case: the package holds a
             // list where ours holds one. Take the first entry rather than dropping the material and
             // rendering the mesh untextured.
             if (node is DataTreeList single)
@@ -272,8 +386,8 @@ public static class PackageMemberMapper
         }
 
         // A KEYED bag of members, written as a dictionary of name -> member-shaped holder rather than a
-        // list. The one that matters is the humanoid bone map: their rig stores it as bone name -> slot
-        // id, ours is a SyncObjectDictionary<BodyNode, SyncRef<Slot>>, and every key they write is a
+        // list. The one that matters is the humanoid bone map: a package rig stores it as bone name -> slot
+        // id, ours is a SyncObjectDictionary<BodyNode, SyncRef<Slot>>, and every key a package writes is a
         // BodyNode we already have under the same spelling, eyes included. Without this the rig arrives
         // with an empty map, which is the difference between an avatar you equip and one you re-pick 47
         // bones for by hand. -xlinka
@@ -337,11 +451,92 @@ public static class PackageMemberMapper
 
         var valueProperty = ValueProperty(member.GetType());
         if (valueProperty == null)
+        {
+            // A LIST OF VALUES, which until now fell off the end of this method entirely.
+            //
+            // The branch above catches a list whose entries hold reference ids; anything else landed
+            // here, asked a SyncFieldList for a Value property it has never had, got null, and
+            // returned having written nothing. Silently. BlendShapeWeights is the one that shows:
+            // every imported avatar arrived with its shape keys back at zero, so a body or a garment
+            // shaped by a shape key came in the wrong shape and nothing said why. -xlinka
+            if (node is DataTreeList values)
+                AssignValueList(member, values, remapUrl, theirName);
             return;
+        }
 
         if (TryConvert(node, valueProperty.PropertyType, out var value, remapUrl, theirName))
             valueProperty.SetValue(member, value);
     }
+
+    // Rebuild a sync list of plain values from the package's stored one. Elements arrive member-shaped
+    // ({ ID, Data }), so each one is unwrapped before it is converted to whatever our element holds.
+    private static void AssignValueList(ISyncMember member, DataTreeList list,
+        Func<Uri, Uri?> remapUrl, string theirName)
+    {
+        var found = ResolveValueListShape(member.GetType());
+        if (found == null)
+            return;
+        var shape = found.Value;
+
+        shape.Clear.Invoke(member, null);
+
+        foreach (var entry in list.Children)
+        {
+            // Add() hands back the new element; the value goes on the element's own Value property.
+            var element = shape.Add.Invoke(member, null);
+            if (element == null)
+                continue;
+
+            var payload = entry is DataTreeDictionary holder ? holder.TryGetNode("Data") ?? entry : entry;
+            var elementValue = ValueProperty(element.GetType());
+            if (elementValue == null)
+                continue;
+            if (TryConvert(payload, elementValue.PropertyType, out var converted, remapUrl, theirName))
+                elementValue.SetValue(element, converted);
+        }
+    }
+
+    private readonly struct ValueListShape
+    {
+        public readonly System.Reflection.MethodInfo Add;
+        public readonly System.Reflection.MethodInfo Clear;
+        public ValueListShape(System.Reflection.MethodInfo add, System.Reflection.MethodInfo clear)
+        { Add = add; Clear = clear; }
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, ValueListShape?> _valueListShapes = new();
+
+    // One reflection lookup per member TYPE, like ValueProperty above, for the same reason.
+    private static ValueListShape? ResolveValueListShape(Type memberType) =>
+        _valueListShapes.GetOrAdd(memberType, static t =>
+        {
+            // The parameterless Add() that returns the new element, not SyncFieldList's Add(T).
+            //
+            // WALKED BY HAND rather than asked for once. SyncFieldList<T> declares its own Add(T),
+            // and reflection resolves a name at the first level of the hierarchy that declares it:
+            // the derived Add(T) hides the base Add(), so GetMethod("Add", EmptyTypes) comes back
+            // null on exactly the type this is for. -xlinka
+            System.Reflection.MethodInfo? add = null;
+            System.Reflection.MethodInfo? clear = null;
+            for (var level = t; level != null && (add == null || clear == null); level = level.BaseType)
+            {
+                const System.Reflection.BindingFlags flags =
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance
+                    | System.Reflection.BindingFlags.DeclaredOnly;
+                foreach (var method in level.GetMethods(flags))
+                {
+                    if (method.GetParameters().Length != 0)
+                        continue;
+                    if (add == null && method.Name == "Add" && method.ReturnType != typeof(void))
+                        add = method;
+                    else if (clear == null && method.Name == "Clear")
+                        clear = method;
+                }
+            }
+            if (add == null || clear == null)
+                return null;
+            return new ValueListShape(add, clear);
+        });
 
     // One reflection lookup per member TYPE, not per member per component. An import touches thousands
     // of members and GetProperty is not cheap; uncached it was a measurable part of why importing an
@@ -404,7 +599,7 @@ public static class PackageMemberMapper
     }
 
     // An all-zero id is how a cleared reference is written.
-    private static bool IsNullId(string id)
+    public static bool IsNullId(string id)
     {
         foreach (char c in id)
         {
@@ -430,7 +625,7 @@ public static class PackageMemberMapper
                 return false;
 
             // Translate where the two enums disagree about meaning, not just spelling - but only if the
-            // translation actually exists on the target. One of their member names can land on two
+            // translation actually exists on the target. One package member name can land on two
             // different enums of ours (BlendMode narrows to AlphaMode on the toon materials and maps
             // one-to-one everywhere else), and forcing the translation would drop the value on whichever
             // of the two did not need it. Try the translated name, keep the original as the fallback.
@@ -485,13 +680,23 @@ public static class PackageMemberMapper
         if (node is DataTreeList numbers)
         {
             var parts = ReadNumbers(numbers);
-            return TryBuildVector(parts, target, out value);
+            if (!TryBuildVector(parts, target, out value))
+                return false;
+            // Spatial members cross the handedness boundary here, by NAME, because a package stores a
+            // size, a colour and a position in the same shape. Every rotation is a rotation; a float3
+            // is only reflected when its name says it is a position or a direction. See
+            // PackageHandedness for the lists and the reasoning. -xlinka
+            if (value is floatQ rotation)
+                value = PackageHandedness.Rotation(rotation);
+            else if (value is float3 vector)
+                value = PackageHandedness.Member(theirMemberName, vector);
+            return true;
         }
 
         return false;
     }
 
-    private static float[] ReadNumbers(DataTreeList list)
+    public static float[] ReadNumbers(DataTreeList list)
     {
         var values = new List<float>(list.Count);
         foreach (var entry in list.Children)

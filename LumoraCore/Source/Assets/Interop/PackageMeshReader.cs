@@ -117,25 +117,26 @@ public static class PackageMeshReader
 
         var positions = mesh.RawPositions;
         for (int i = 0; i < vertexCount; i++)
-            positions[i] = r.Float3();
+            positions[i] = PackageHandedness.Point(r.Float3());   // reflected on the way in, see PackageHandedness
 
         if (hasNormals)
         {
             var normals = mesh.RawNormals;
             for (int i = 0; i < vertexCount; i++)
-                normals[i] = r.Float3();
+                normals[i] = PackageHandedness.Point(r.Float3());
         }
         if (hasTangents)
         {
-            // W is the bitangent handedness, and mirroring V below reverses which way the bitangent
-            // runs. Carry the stored sign across unchanged and every normal map on the avatar reads
-            // inverted down one axis - bumps as dents. Blend-shape tangents are deltas of the tangent
-            // DIRECTION only, no handedness, so they are left alone.
+            // W is the bitangent handedness. Two things flip it and they cancel: mirroring V below
+            // reverses which way the bitangent runs, and reflecting the geometry reverses it again
+            // (the bitangent is a cross product, and a mirror negates a cross product on top of
+            // reflecting it). So the stored sign is carried across UNCHANGED, with the direction
+            // reflected like every other vector. Blend-shape tangents are deltas of the direction only.
             var tangents = mesh.RawTangents;
             for (int i = 0; i < vertexCount; i++)
             {
                 var t = r.Float4();
-                tangents[i] = new float4(t.x, t.y, t.z, -t.w);
+                tangents[i] = new float4(-t.x, t.y, t.z, t.w);
             }
         }
         if (hasColors)
@@ -150,10 +151,10 @@ public static class PackageMeshReader
             for (int i = 0; i < vertexCount; i++)
             {
                 // Indices are varints, weights are plain floats - an easy pair to read the wrong way
-                // round. And the indices are SIGNED: an unused influence is written as -1, which their
-                // writer casts to an unsigned varint, so it arrives as 0xFFFF_FFFF_FFFF_FFFF. Taken at
-                // face value that is 1.8e19, and the renderer then sizes its per-bone bounds array from
-                // it - which is the "mesh_get_aabb: bs > sbs" the platform spams every frame. An unused
+                // round. And the indices are SIGNED: an unused influence is written as -1, which the
+                // package writer casts to an unsigned varint, so it arrives as 0xFFFF_FFFF_FFFF_FFFF. Taken
+                // at face value that is 1.8e19, and the renderer then sizes its per-bone bounds array from
+                // it - which is the "mesh_get_aabb: bs > sbs" Godot spams every frame. An unused
                 // influence carries zero weight, so it is safe to fold to bone 0. -xlinka
                 var indices = new float4(
                     BoneIndex(r.VarInt()), BoneIndex(r.VarInt()),
@@ -208,14 +209,13 @@ public static class PackageMeshReader
             var indices = submesh.RawIndices;
             for (int i = 0; i < legacyTriangles * 3; i++)
                 indices[i] = r.Int32();
-            ReverseWinding(indices, legacyTriangles * 3);
             mesh.Submeshes.Add(submesh);
         }
 
         for (int i = 0; i < boneCount; i++)
         {
             string boneName = r.String();
-            var bindPose = r.Float4x4();
+            var bindPose = PackageHandedness.Matrix(r.Float4x4());
             mesh.AddBone(boneName).BindPose = bindPose;
         }
 
@@ -254,12 +254,20 @@ public static class PackageMeshReader
         int total = count * submesh.IndicesPerElement;
         for (int i = 0; i < total; i++)
             indices[i] = r.Int32();
-        if (submesh is PhosTriangleSubmesh)
-            ReverseWinding(indices, total);
         mesh.Submeshes.Add(submesh);
     }
 
-    // Their triangles are wound the opposite way round from ours.
+    // THE WINDING REVERSAL THAT USED TO BE CALLED HERE IS GONE, AND IT WAS NEVER THE FAULT.
+    //
+    // Package triangles did arrive wound the opposite way from ours, and reversing them made the meshes
+    // render right side out. The reason they arrived that way was the missing reflection at the top of
+    // this reader: a mirror flips winding on its own. Reflect the vertices and the stored order is
+    // already ours; reversing it on top turns every mesh inside-out again. The test in the note below
+    // still holds - cross(v1 - v0, v2 - v0) against the vertex normals - it just comes out right now
+    // without help. The function stays, uncalled, for the record. -xlinka
+    //
+    // The old note:
+    // Package triangles are wound the opposite way round from ours.
     //
     // The test that settles it is the triangle's own geometry against its stored vertex normals: take
     // cross(v1 - v0, v2 - v0) and see which way it points. Every mesh in a package has that cross
@@ -296,19 +304,19 @@ public static class PackageMeshReader
             r.Single();
             frame.positions = new float3[vertexCount];
             for (int i = 0; i < vertexCount; i++)
-                frame.positions[i] = r.Float3();
+                frame.positions[i] = PackageHandedness.Point(r.Float3());
 
             if (hasNormals)
             {
                 frame.normals = new float3[vertexCount];
                 for (int i = 0; i < vertexCount; i++)
-                    frame.normals[i] = r.Float3();
+                    frame.normals[i] = PackageHandedness.Point(r.Float3());
             }
             if (hasTangents)
             {
                 frame.tangents = new float3[vertexCount];
                 for (int i = 0; i < vertexCount; i++)
-                    frame.tangents[i] = r.Float3();
+                    frame.tangents[i] = PackageHandedness.Point(r.Float3());
             }
         }
         mesh.BlendShapes.Add(shape);
@@ -339,7 +347,7 @@ public static class PackageMeshReader
         return flag;
     }
 
-    // Matches the writer on the other side: a 7-bit length prefix then UTF-8 bytes for strings, plain
+    // The package format's encoding: a 7-bit length prefix then UTF-8 bytes for strings, plain
     // little-endian for everything else.
     private ref struct Reader
     {

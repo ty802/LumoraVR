@@ -284,8 +284,8 @@ public static class UniversalImporter
 
     // A package is read and measured before anything is built, so this dialog opens on a readout of
     // what would convert rather than on an import button. Deliberately ignores `silent`: there is
-    // nothing safe to do without being asked, because a conversion between engines always drops
-    // something and the user should see what before it happens. -xlinka
+    // nothing safe to do without being asked, because converting a package always drops something
+    // and the user should see what before it happens. -xlinka
     private static void SpawnPackageDialog(List<string> files, World world, float3 position, floatQ rotation, bool silent)
     {
         int index = 0;

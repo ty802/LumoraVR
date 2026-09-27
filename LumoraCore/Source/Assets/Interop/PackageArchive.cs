@@ -10,7 +10,7 @@ using System.Text.Json;
 
 namespace Lumora.Core.Assets.Interop;
 
-// Reader for self-contained shared object packages produced by another social-VR platform.
+// Reader for the self-contained shared object package format.
 //
 // The container is an ordinary zip with a fixed layout:
 //
@@ -62,7 +62,7 @@ public sealed class PackageArchive : IDisposable
         return archive;
     }
 
-    // The signature a "packdb:///<sig>" reference points at, or null for anything else. Foreign graphs
+    // The signature a "packdb:///<sig>" reference points at, or null for anything else. Package graphs
     // also carry http(s) URLs into content servers we deliberately never contact, so a null here is a
     // normal answer meaning "not something this package brought with it".
     public static string? SignatureOf(Uri? uri)

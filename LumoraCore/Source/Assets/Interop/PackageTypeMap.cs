@@ -12,7 +12,7 @@ public enum PackageTypeFate
 {
     // We have a component that does the same job; the instance can be rebuilt.
     Mapped,
-    // Stripped on the way in, by design. Their visual scripting runtime is a whole language and
+    // Stripped on the way in, by design. A package's visual scripting runtime is a whole language and
     // execution model rather than a set of components, and we do not carry it. These are NOT counted
     // as conversion losses: an object arrives without its scripted behaviour but otherwise intact,
     // and reporting hundreds of node types as "missing" buries the gaps that can actually be acted
@@ -34,23 +34,60 @@ public enum PackageTypeFate
 // alias table below only has to carry the cases where we deliberately diverged. -xlinka
 public static class PackageTypeMap
 {
-    // Where we chose a different name for the same job. Left side is their simple name.
+    // Where we chose a different name for the same job. Left side is the package's simple name.
     private static readonly Dictionary<string, string> Aliases = new(StringComparer.Ordinal)
     {
         // Anything whose name already matches resolves by the assembly scan below and needs no entry
         // here; this table is only for the places we deliberately picked a different name.
         // The plain PBS_Metallic / PBS_Specular names match ours exactly and resolve by scan. Only the
-        // variants they spell differently need an entry, and each target below is a component that
+        // variants a package spells differently need an entry, and each target below is a component that
         // actually exists here - an alias pointing at a name we do not have is worse than no alias,
         // because it turns a component we CAN build into a reported loss.
-        ["PBS_DualSidedMetallic"] = "PBS_DualSided",
+        // NOT PBS_DualSided, deliberately. In a package it is PBS_Metallic with Culling=Off and the exact
+        // same member names; ours is a genuinely two-sided material with FrontAlbedoTexture and
+        // BackAlbedoTexture. Pointing one at the other attached a component that could not receive a
+        // single texture the package sent, so the whole garment came in WHITE - and silently, because a
+        // member that does not match is skipped rather than reported. The package sends Culling=Off, so
+        // PBS_Metallic comes out double-sided on its own. -xlinka
+        ["PBS_DualSidedMetallic"] = "PBS_Metallic",
+        ["PBS_DualSidedSpecular"] = "PBS_Specular",
         ["PBS_TriplanarMetallic"] = "PBS_Triplanar",
         ["PBS_VertexColorSpecular"] = "PBS_VertexColor",
         ["PBS_VertexColorMetallic"] = "PBS_VertexColor",
         ["PBSLerpMetallic"] = "PBS_Metallic",
         ["PBS_RimMetallic"] = "PBS_Metallic",
+        // PBS_ColorMaskMetallic is NOT here any more: it resolves to our own component of the same
+        // shape by the assembly scan, four tint slots and all. -xlinka
+        //
+        // APPROXIMATION, not an equivalent. The package's intersection shader has a depth term we cannot
+        // run, but the albedo, normal and specular underneath are the same members, so this keeps the
+        // surface and loses the effect.
+        ["PBS_IntersectSpecular"] = "PBS_Specular",
         // XiexeToonMaterial resolves to our own component of the same name now - it used to fall
         // back to the plain ToonMaterial, which is a different and simpler shading model.
+        // PARTICLES. The package's particle modules and ours cover the same features under different
+        // names; these are the ones where only the name differs, checked field by field against the
+        // source type rather than matched on a hopeful-looking word. -xlinka
+        ["TextureSheetAnimator"] = "ParticleFlipbook",
+        ["RibbonFollowerColorRangeInitializer"] = "ParticleTrailColorRangeInitializer",
+        ["RibbonFollowerWidthRangeInitializer"] = "ParticleTrailWidthRangeInitializer",
+        // A gravity force IS a linear force pointing down. The float a package stores becomes our vector in
+        // PackageMemberMapper, which is the only reason this alias is honest.
+        ["GravityForce"] = "ParticleForce",
+        ["SizeMultiplierByVelocity"] = "ParticleSizeBySpeed",
+        ["SizeModifier"] = "ParticleSizeModifier",
+        ["SizeOffsetByVelocity"] = "ParticleSizeOffsetBySpeed",
+        // A package's pivot is two modules: one stores a per-particle offset and applies it, the other
+        // fills that store from velocity. Nothing else ever writes the store, so ours folds both into
+        // one pass and the storage half below is plumbing. See ParticlePivotBySpeed.
+        ["PivotFromVelocityMagnitude"] = "ParticlePivotBySpeed",
+        // A package's "Constant" initializers are the one-value form of the range ones, and the member
+        // aliases that already turn their `Value` into our named field cover them unchanged.
+        ["UniformSizeConstantInitializer"] = "ParticleUniformSizeInitializer",
+        ["SpeedConstantInitializer"] = "ParticleSpeedInitializer",
+        // StartSize and EndSize by those exact names, both float3.
+        ["SizeOverLifetimeStartEnd"] = "ParticleSizeOverLifetime",
+
         ["AvatarPoseNode"] = "AvatarPoseDriver",
         // The marker that says "this slot is the avatar". Unmapped, an imported avatar arrives with no
         // root at all: the equip pass finds no body-node coverage, leaves Head empty, and the socket
@@ -58,16 +95,23 @@ public static class PackageTypeMap
         // idea under a different name (Node => BodyNode.Root). -xlinka
         ["AvatarRoot"] = "AvatarForm",
         ["BipedRig"] = "HumanoidRig",
-        ["VRIKAvatar"] = "AvatarIK",
-        ["VRIK"] = "AvatarIK",
+        // Deliberately NO alias for a package's IK avatar component onto AvatarIK. Both package IK workers
+        // live in the licensed solver's namespace, so Resolve refuses them as ForeignIK before this
+        // table is consulted; the two aliases that used to sit here were never reached. Mapping them
+        // would also be wrong: their proxy references point at the "Target" CHILD of each pose proxy
+        // (seated on the bone), where ours point at the driven proxy slot itself and add the view
+        // offset on top, so a wired _headProxy would carry the eye-to-bone offset twice. The stored
+        // default pose the package solver carries is read straight out of the graph by the importer
+        // instead, and equip grows a fresh AvatarIK. -xlinka
+        ["RenderTransformOverride"] = "LocalViewOverride",
 
-        // Asset providers: theirs name the concrete asset, ours name the provider role.
+        // Asset providers: a package names the concrete asset, ours name the provider role.
         ["StaticTexture2D"] = "ImageProvider",
         ["StaticMesh"] = "MeshProvider",
         ["StaticFont"] = "FontProvider",
         ["StaticSprite"] = "SpriteProvider",
 
-        // Variables. We dropped their "Dynamic" prefix and named the container a scope.
+        // Variables. Ours drop the package's "Dynamic" prefix and name the container a scope.
         ["DynamicVariableSpace"] = "VariableScope",
         ["DynamicValueVariable"] = "ValueVariable",
         ["DynamicReferenceVariable"] = "ReferenceVariable",
@@ -98,7 +142,7 @@ public static class PackageTypeMap
         ["TrailLifetimeRangeInitializer"] = "ParticleTrailLifetimeRangeInitializer",
         ["TrailLifetimeFromSizeInitializer"] = "ParticleTrailLifetimeFromSizeInitializer",
 
-        // Their "Module" suffix is our bare noun.
+        // The package's "Module" suffix is our bare noun.
         ["ParticleLightsModule"] = "ParticleLights",
         ["ParticleTrailsModule"] = "ParticleTrails",
         ["ParticleRibbonsModule"] = "ParticleRibbons",
@@ -116,7 +160,7 @@ public static class PackageTypeMap
 
     // Components that BELONG TO THE PERSON WEARING THE OBJECT, not to the object.
     //
-    // An avatar authored elsewhere ships its own hand laser, built out of a real component plus the
+    // An imported avatar ships its own hand laser, built out of a real component plus the
     // mesh, material and cursor slots under it. We have that component too, so it imports perfectly -
     // and now the wearer has two lasers fighting over the same hand, one of them owned by an avatar
     // rather than by the user root that is supposed to own it. There is nothing to salvage: the local
@@ -144,8 +188,70 @@ public static class PackageTypeMap
         "Voice Range Visual",
     };
 
+    private static readonly HashSet<string> ParticlePlumbing = new(StringComparer.Ordinal)
+    {
+        // The style is the bag a package system's modules and renderer hang off. Read, not attached.
+        "ParticleStyle",
+        // Integrators. The simulation does this itself.
+        "PositionSimulatorModule",
+        "RotationSimulatorModule",
+        // The storage half of the package's pivot pair. ParticlePivotBySpeed carries the apply, and with no
+        // driver this one's buffer is all zeroes and offsets nothing, so it takes nothing with it.
+        "PivotModule",
+        // Renderers. WireParticleLook reads the mesh, material and texture off these directly.
+        "BillboardParticleRenderer",
+        "MeshParticleRenderer",
+        "LegacyRendererSwitcher",
+        // A renderer that draws nothing, used to keep a system simulating for its trails alone.
+        // Ours needs no stand-in: a system with no mesh and no texture already draws nothing.
+        "NullParticleRenderer",
+    };
+
+    private static bool IsParticlePlumbing(string simple)
+    {
+        if (ParticlePlumbing.Contains(simple))
+            return true;
+        // The package format's forward-migration shims for older particle data: LegacyGravityAdapter,
+        // LegacyTrailsRibbonAdapter, LegacyDistributionAdapter and the rest, plus the nested
+        // ConeEmitter+LegacyDirectionConverter.
+        return simple.StartsWith("Legacy", StringComparison.Ordinal)
+            || simple.EndsWith("+LegacyDirectionConverter", StringComparison.Ordinal);
+    }
+
     public static bool IsGeneratedOrphanSlot(string slotName) =>
         slotName.Length > 0 && GeneratedOrphanSlots.Contains(slotName);
+
+    // Things THIS ENGINE ALREADY PUTS ABOVE EVERY AVATAR, so an imported one is a second copy.
+    //
+    // Different reason from the set above. Those are scaffolding a component built for itself and
+    // left behind when the component did not come across. These are author-built subtrees that work
+    // perfectly well - and that is the problem: we draw a nameplate over every user ourselves, so
+    // importing the author's gets you two, one of them a slab of stripped visual-scripting that no longer
+    // follows anybody.
+    //
+    // Matched on a CONTAINS, case-insensitive, because unlike the set above there is no hardcoded
+    // contract to match exactly - the author named it. That is a blunter instrument and it can catch
+    // a slot that happened to use the word, which is the trade being made deliberately: a duplicate
+    // nameplate is visible on every avatar, and a wrongly-dropped slot called "Nametag" is not. -xlinka
+    private static readonly string[] SuppliedByUsFragments =
+    {
+        "nameplate",
+        "name badge",
+        "nametag",
+        "name tag",
+    };
+
+    public static bool IsSuppliedByUs(string slotName)
+    {
+        if (slotName.Length == 0)
+            return false;
+        foreach (var fragment in SuppliedByUsFragments)
+        {
+            if (slotName.Contains(fragment, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
 
     // Prefixes that identify a whole subsystem rather than one component.
     private const string VisualScriptingMarker = "ProtoFlux";
@@ -177,6 +283,30 @@ public static class PackageTypeMap
             return new Resolution(PackageTypeFate.ForeignIK, SimpleName(encodedName), null);
 
         string simple = SimpleName(encodedName);
+        if (simple.StartsWith("ContextMenu", StringComparison.Ordinal) || simple == "RootContextMenuItem")
+            return new Resolution(PackageTypeFate.Stripped, simple, null);
+        // The package's head-bone helper is a relay for the desktop pose controller: it drives the view
+        // override it sits beside with the unprocessed head pose when the wearer is not in VR. The
+        // override itself maps to LocalViewOverride, and the importer puts the head hide on the head
+        // bone by default, so there is nothing of this one left to carry. Not a loss worth listing.
+        if (simple == "AvatarUserViewHeadOverride")
+            return new Resolution(PackageTypeFate.Stripped, simple, null);
+
+        // PARTICLE PLUMBING THAT CARRIES NOTHING ACROSS, so it is a strip and not a loss.
+        //
+        // Three different kinds of nothing. The package's simulator modules are the integrators that
+        // turn velocity into position and angular velocity into rotation - single-instance, no settings,
+        // and in this engine that arithmetic is the simulation itself rather than a component you can
+        // leave out. The package's renderers and the style that owns them are read directly out of the
+        // source data by WireParticleLook, which is where the mesh, the texture and the blend mode come
+        // from, so attaching them would be a second copy of something already done. And the
+        // Legacy*Adapter family exists purely to migrate older package particle data forward; there is
+        // no older data on this side to migrate.
+        //
+        // Reported as losses these were 21 lines of noise on every avatar import, which is how the
+        // ones that ARE losses got lost in the list. -xlinka
+        if (IsParticlePlumbing(simple))
+            return new Resolution(PackageTypeFate.Stripped, simple, null);
         if (simple.Length == 0)
             return new Resolution(PackageTypeFate.Unsupported, simple, null);
 
@@ -206,7 +336,7 @@ public static class PackageTypeMap
         return new Resolution(PackageTypeFate.Unsupported, simple, null);
     }
 
-    // Their value-type names for the primitives that show up as generic arguments.
+    // The package's value-type names for the primitives that show up as generic arguments.
     private static readonly Dictionary<string, Type> ValueTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         ["bool"] = typeof(bool),
@@ -226,7 +356,7 @@ public static class PackageTypeMap
         ["float4"] = typeof(Math.float4),
         ["floatQ"] = typeof(Math.floatQ),
         ["color"] = typeof(Math.color),
-        // Their high-dynamic-range colour is our colorHDR.
+        // The package's high-dynamic-range colour is our colorHDR.
         ["colorX"] = typeof(Math.colorHDR),
         ["colorHDR"] = typeof(Math.colorHDR),
     };
@@ -307,8 +437,8 @@ public static class PackageTypeMap
                         if (type == null || type.IsAbstract || !componentBase.IsAssignableFrom(type))
                             continue;
                         // Generic components are indexed by their bare name: "ValueVariable`1" is the
-                        // counterpart of a generic on the other side, and the arguments are matched
-                        // separately by whatever rebuilds the instance.
+                        // counterpart of a generic in a package's type table, and the arguments are
+                        // matched separately by whatever rebuilds the instance.
                         var key = type.Name;
                         int tick = key.IndexOf('`');
                         if (tick > 0)

@@ -9,17 +9,18 @@ using System.Text;
 using Helio.UI;
 using Helio.UI.Layout;
 using Lumora.Core.Assets.Interop;
+using Lumora.Core.Components.UI;
 using Lumora.Core.Logging;
 using Lumora.Core.Math;
 
 namespace Lumora.Core.Components.Import;
 
-// Readout for a shared object package from another platform.
+// Readout for a shared object package.
 //
 // The package is read and measured BEFORE anything is built, and the panel shows what would survive
-// and what would not. That split is the point: a conversion between two engines always loses
-// something, and the only honest way to present it is to say what, up front, instead of importing a
-// half-avatar and letting someone work out the holes themselves.
+// and what would not. That split is the point: converting a package always loses something, and the
+// only honest way to present it is to say what, up front, instead of importing a half-avatar and
+// letting someone work out the holes themselves.
 //
 // Nothing here reaches the network. Packages carry every byte they reference, so the readout is
 // produced entirely from the file on disk. -xlinka
@@ -35,11 +36,11 @@ public sealed class PackageImportDialog : ImportDialog
     protected override string TitleText => "Package";
     protected override float2 CanvasSize => new float2(460f, 600f);
 
-    private static readonly color HeadingColor = new color(0.96f, 0.96f, 1f, 1f);
-    private static readonly color BodyColor = new color(0.82f, 0.82f, 0.90f, 1f);
-    private static readonly color GoodColor = new color(0.55f, 0.85f, 0.60f, 1f);
-    private static readonly color LossColor = new color(0.90f, 0.62f, 0.42f, 1f);
-    private static readonly color MutedColor = new color(0.62f, 0.62f, 0.72f, 1f);
+    private static readonly color HeadingColor = DashTheme.Text;
+    private static readonly color BodyColor = DashTheme.Text;
+    private static readonly color GoodColor = DashTheme.Positive;
+    private static readonly color LossColor = DashTheme.Warning;
+    private static readonly color MutedColor = DashTheme.TextDim;
 
     protected override void OpenRoot(UIBuilder ui)
     {
@@ -84,14 +85,15 @@ public sealed class PackageImportDialog : ImportDialog
     private void BuildOutcome(UIBuilder ui)
     {
         var r = _result!;
-        var body = SetupSection(ui, r.Succeeded ? "Imported" : "Import Failed", backButton: false);
+        var section = SetupSection(ui, r.Succeeded ? "Imported" : "Import Failed", backButton: false);
+        var body = ScrollContent(section);
 
         if (!r.Succeeded)
         {
             Line(body, r.FailureReason, 13f, LossColor);
             Spacer(body, 8f);
-            SetupGrid(body);
-            GridButton(body, "Close", () => Slot.Destroy());
+            SetupGrid(section);
+            GridButton(section, "Close", () => Slot.Destroy());
             return;
         }
 
@@ -116,9 +118,9 @@ public sealed class PackageImportDialog : ImportDialog
         Line(body, $"{r.SlotsPruned} empty slots pruned.", 11f, MutedColor);
 
         Spacer(body, 8f);
-        SetupGrid(body);
-        GridButton(body, "Full List To Log", DumpToLog);
-        GridButton(body, "Close", () => Slot.Destroy());
+        SetupGrid(section);
+        GridButton(section, "Log Details", DumpToLog);
+        GridButton(section, "Close", () => Slot.Destroy());
     }
 
     // internal so UniversalImporter can drive a silent package import, the same way it already can for
@@ -243,7 +245,8 @@ public sealed class PackageImportDialog : ImportDialog
     private void BuildReport(UIBuilder ui)
     {
         var report = _report!;
-        var body = SetupSection(ui, "Package Contents", backButton: false);
+        var section = SetupSection(ui, "Package Contents", backButton: false);
+        var body = ScrollContent(section);
 
         Line(body, CleanName(report.Name), 15f, HeadingColor);
         int arrivingSlots = System.Math.Max(0, report.SlotCount - report.PrunableSlots);
@@ -281,10 +284,10 @@ public sealed class PackageImportDialog : ImportDialog
         }
 
         Spacer(body, 8f);
-        SetupGrid(body);
-        GridButton(body, "Import", RunImport, new color(0.35f, 0.62f, 0.42f, 1f));
-        GridButton(body, "Full List To Log", DumpToLog);
-        GridButton(body, "Close", () => Slot.Destroy());
+        ActionButton(section, "Import Package", () => { if (CanInteract) RunImport(); }, primary: true);
+        SetupGrid(section);
+        GridButton(section, "Log Details", DumpToLog);
+        GridButton(section, "Close", () => Slot.Destroy());
     }
 
     private static string Describe(PackageInspection report)
@@ -398,11 +401,15 @@ public sealed class PackageImportDialog : ImportDialog
             return;
 
         float height = size + 7f;
-        ui.PushStyle().MinHeight(height).PreferredHeight(height).FlexibleHeight(0f);
+        ui.PushStyle().MinHeight(height).FlexibleHeight(0f);
         var label = ui.Text(text, size, tint);
+        // Merge the text's measured height with the minimum row height so wrapped names can grow.
+        var layout = label.Slot.GetComponent<LayoutElement>()!;
+        layout.PriorityValue.Value = 0;
+        layout.UseZeroMetrics.Value = true;
         label.HorizontalAlignment.Value = TextHorizontalAlignment.Left;
         label.VerticalAlignment.Value = TextVerticalAlignment.Middle;
-        label.WordWrap.Value = false;
+        label.WordWrap.Value = true;
         ui.PopStyle();
     }
 

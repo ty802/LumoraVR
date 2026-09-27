@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using System.Threading.Tasks;
 using Lumora.Core.Components;
 using Lumora.Core.Components.Avatar;
@@ -117,7 +118,8 @@ public static class PackageObjectImporter
         // Assets first: everything the tree points at must already exist in the local database before a
         // component can be pointed at it.
         var bindPoses = new Dictionary<string, Dictionary<string, float4x4>>(StringComparer.OrdinalIgnoreCase);
-        var assetUrls = await ConvertAssetsAsync(archive, graph, result, bindPoses).ConfigureAwait(false);
+        var bindOrder = new Dictionary<string, float4x4[]>(StringComparer.OrdinalIgnoreCase);
+        var assetUrls = await ConvertAssetsAsync(archive, graph, result, bindPoses, bindOrder).ConfigureAwait(false);
 
         await WorldContext.ToWorld();
         if (parent.IsDestroyed)
@@ -135,6 +137,8 @@ public static class PackageObjectImporter
         var context = new BuildContext(world, typeTable, assetUrls, result);
         foreach (var pair in bindPoses)
             context.MeshBindPoses[pair.Key] = pair.Value;
+        foreach (var pair in bindOrder)
+            context.MeshBindOrder[pair.Key] = pair.Value;
         var root = parent.AddSlot(CleanName(record.Name));
         if (!await BuildSlotAsync(objectNode, root, context))
         {
@@ -148,7 +152,7 @@ public static class PackageObjectImporter
         ResolveLinks(context);
         BuildSkeletons(root, context);
         WireParticleLook(context);
-        FinishAvatar(root, context);
+        FinishAvatar(root, objectNode, context);
 
         // The root's saved Position is wherever the object happened to be standing in the world it was
         // packaged from, and it is meaningless here. The dova dog package carries (-4.27, 12.60,
@@ -157,8 +161,7 @@ public static class PackageObjectImporter
         //
         // Rotation and scale are NOT touched: those are how the author built the thing (this one is
         // scaled 1.25 and yawed about 101 degrees) and dropping them would arrive at the right place
-        // wearing the wrong pose. Only the position is stale. The source platform does the same by
-        // re-stamping GlobalPosition on the slot right after its load returns. -xlinka
+        // wearing the wrong pose. Only the position is stale. -xlinka
         float3 packagedPosition = root.LocalPosition.Value;
         if (packagedPosition != float3.Zero)
         {
@@ -229,22 +232,27 @@ public static class PackageObjectImporter
                 continue;
 
             var resolution = context.Types[index];
+            // THE PASS-THROUGH CAPTURE COMES BEFORE THE STRIP, and that ordering is the whole
+            // feature. A style or a particle renderer is stripped precisely BECAUSE we read its data
+            // here instead of attaching it - so dropping out above this line took the style out of
+            // the table the moment it was marked stripped, and every particle system in the package
+            // reported "no style component to read through" and came in on bare defaults. -xlinka
+            var passData = worker.TryGetNode("Data") as DataTreeDictionary;
+            if (passData != null && PassThroughTypes.Contains(resolution.SimpleName)
+                && (passData.TryGetNode("ID") as DataTreeValue)?.Value?.ToString() is string capturedId
+                && capturedId.Length > 0)
+            {
+                context.PassThrough[capturedId] = passData;
+                context.PassThroughTypes[capturedId] = resolution.SimpleName;
+            }
+
             if (resolution.Fate == PackageTypeFate.Stripped)
             {
                 context.Result.ComponentsStripped++;
                 continue;
             }
 
-            var data = worker.TryGetNode("Data") as DataTreeDictionary;
-
-            // Kept whether or not the component itself survives - the whole point is the links we cannot
-            // otherwise follow.
-            if (data != null && PassThroughTypes.Contains(resolution.SimpleName)
-                && (data.TryGetNode("ID") as DataTreeValue)?.Value?.ToString() is string passId
-                && passId.Length > 0)
-            {
-                context.PassThrough[passId] = data;
-            }
+            var data = passData;
 
             if (resolution.Target == null || data == null)
             {
@@ -281,7 +289,7 @@ public static class PackageObjectImporter
     // from the bones. -xlinka
     // Give an imported particle system its sprite back.
     //
-    // Their look is three components away from the system that owns it:
+    // In a package, a particle system's look is three components away from the system that owns it:
     //
     //     ParticleSystem.Style -> ParticleStyle.Renderer -> <renderer>.Material -> its texture
     //
@@ -303,23 +311,46 @@ public static class PackageObjectImporter
 
             string name = system.Slot?.SlotName.Value ?? "?";
 
-            if (ReadValue(data, "Style") is not string styleId
-                || !context.PassThrough.TryGetValue(styleId, out var style))
+            // A MISSING STYLE IS NOT A REASON TO STOP EITHER, for the same reason a missing renderer
+            // is not: a system whose modules are plain components on its own slot has no style at all,
+            // and giving up here skipped the adoption below that is the ONLY thing that would have
+            // wired them.
+            DataTreeDictionary? style = null;
+            if (ReadValue(data, "Style") is string styleId
+                && context.PassThrough.TryGetValue(styleId, out var foundStyle))
             {
-                Logger.Log($"Package import: particle '{name}' - no style component to read through");
-                continue;
+                style = foundStyle;
             }
 
-            if (ReadValue(style, "Renderer") is not string rendererId
-                || !context.PassThrough.TryGetValue(rendererId, out var renderer))
+            // A MISSING RENDERER IS NOT A REASON TO STOP.
+            //
+            // This used to give up here, and giving up here skipped the module wiring below - so a
+            // system whose style carries no particle renderer at all got NONE of its modules pointed
+            // at it and ran on pure defaults. Trail and ribbon systems are exactly that shape: the
+            // ribbons are the visual, there is no per-particle renderer, and every one of them came
+            // in as a swarm of default beads. The renderer is only needed for the mesh and the
+            // texture further down; everything above it works without one. -xlinka
+            DataTreeDictionary? renderer = null;
+            string rendererType = string.Empty;
+            if (style != null && ReadValue(style, "Renderer") is string rendererId)
             {
-                Logger.Log($"Package import: particle '{name}' - style has no renderer");
-                continue;
+                context.PassThrough.TryGetValue(rendererId, out renderer);
+                context.PassThroughTypes.TryGetValue(rendererId, out var foundType);
+                rendererType = foundType ?? string.Empty;
+            }
+
+            // A NULL RENDERER IS A STATEMENT, not an absence: the author chose to draw no sprite and
+            // let the ribbons or trails be the whole effect. Without honouring it the system falls back
+            // to the default billboard, and a glowing streak from each eye arrives as a string of white
+            // beads - which is exactly what it did. -xlinka
+            if (rendererType == "NullParticleRenderer")
+            {
+                system.RenderParticles.Value = false;
             }
 
             // THE MODULES. Colour, size, lifetime, speed, rotation, gravity, trails, ribbons - all of it.
             //
-            // Their modules do not know which system they belong to: the STYLE owns them as a plain list,
+            // Package modules do not know which system they belong to: the STYLE owns them as a plain list,
             // and not one of them carries a System reference. Ours is the other way round - every
             // ParticleModuleBase has a SyncRef<ParticleSystem> and registers itself with whatever it
             // points at. So there was nothing for the member mapper to map, System stayed null on all 29,
@@ -327,7 +358,8 @@ public static class PackageObjectImporter
             // defaults. That is white particles at a default size, no matter how many member names line
             // up. Walk the style's list and point each one at its system. -xlinka
             int modulesWired = 0;
-            if (style.TryGetNode("Modules") is DataTreeDictionary modulesHolder
+            if (style != null
+                && style.TryGetNode("Modules") is DataTreeDictionary modulesHolder
                 && modulesHolder.TryGetNode("Data") is DataTreeList moduleList)
             {
                 foreach (var entry in moduleList.Children)
@@ -350,12 +382,38 @@ public static class PackageObjectImporter
                     modulesWired++;
                 }
             }
+            // AND THE MODULES THAT NEVER WENT THROUGH A STYLE.
+            //
+            // The list above is only one of the two ways these are authored. The other is modules
+            // sitting as plain components on the SYSTEM'S OWN SLOT, with no style listing them at all,
+            // and this avatar has both shapes in it: the right eye's trail keeps its modules in a
+            // style, the left eye's are siblings of the system. Walking the style alone wired seven
+            // modules on one eye and none on the other, which is exactly what "the eye particles are
+            // wrong" looks like.
+            //
+            // Nothing is claimed twice: a module that already points at a system is left alone, so
+            // this only picks up the ones the style walk did not reach. -xlinka
+            int adopted = 0;
+            var ownSlot = system.Slot;
+            if (ownSlot != null && !ownSlot.IsDestroyed)
+            {
+                foreach (var module in ownSlot.GetComponents<ParticleModuleBase>())
+                {
+                    if (module == null || module.IsDestroyed || module.System.Target != null)
+                        continue;
+                    module.System.Target = system;
+                    adopted++;
+                }
+            }
+
+            modulesWired += adopted;
             context.Result.ParticleModulesWired += modulesWired;
 
             // The MESH the renderer draws per particle. This is the one that matters: most effects on a
             // real avatar are a mesh renderer, not a billboard, and without it every one of them is a ball.
             string meshResult = "none";
-            if (system.ParticleMesh.Target == null && system.ParticleMeshAsset.Target == null
+            if (renderer != null
+                && system.ParticleMesh.Target == null && system.ParticleMeshAsset.Target == null
                 && ReadValue(renderer, "Mesh") is string meshId
                 && context.ById.TryGetValue(meshId, out var meshElement)
                 && meshElement is Component meshComponent && !meshComponent.IsDestroyed)
@@ -381,7 +439,8 @@ public static class PackageObjectImporter
 
             // The sprite, which lives another hop away on the renderer's material.
             string textureResult = "none";
-            if (system.Texture.Target == null
+            if (renderer != null
+                && system.Texture.Target == null
                 && ReadValue(renderer, "Material") is string materialId
                 && context.ById.TryGetValue(materialId, out var materialElement)
                 && materialElement is Component material && !material.IsDestroyed)
@@ -398,8 +457,8 @@ public static class PackageObjectImporter
                     textureResult = material.GetType().Name + " (no texture)";
                 }
 
-                // And the material itself, which is how the source platform draws particles in the first
-                // place - it has no particle shader, only a renderer pointed at ordinary material.
+                // And the material itself, which is what package particles draw with in the first place:
+                // there is no particle shader, only a renderer pointed at ordinary material.
                 if (system.Material.Target == null && material is IAssetProvider<MaterialAsset> materialProvider)
                 {
                     system.Material.Target = materialProvider;
@@ -415,12 +474,16 @@ public static class PackageObjectImporter
                 }
             }
 
-            Logger.Log($"Package import: particle '{name}' - {modulesWired} module(s) wired, "
-                     + $"mesh={meshResult} texture={textureResult}");
+            Logger.Log($"Package import: particle '{name}' - {modulesWired} module(s) wired"
+                     + (adopted > 0 ? $" ({adopted} off its own slot)" : string.Empty) + ", "
+                     + $"mesh={meshResult} texture={textureResult}"
+                     + (renderer == null ? " (no particle renderer; ribbons/trails carry the look)" : string.Empty)
+                     + (style == null ? " (no style; modules taken off the slot)" : string.Empty)
+                     + (rendererType == "NullParticleRenderer" ? " (null renderer; no sprite drawn)" : string.Empty));
         }
     }
 
-    // Their particle materials carry a BlendMode member by that exact name; anything without one keeps
+    // Package particle materials carry a BlendMode member by that exact name; anything without one keeps
     // our additive default.
     private static Assets.BlendMode? BlendModeOf(Component material)
     {
@@ -434,7 +497,7 @@ public static class PackageObjectImporter
         return null;
     }
 
-    // The material's headline map. Their particle materials are usually unlit with a plain Texture, but
+    // The material's headline map. Package particle materials are usually unlit with a plain Texture, but
     // a PBS one names it AlbedoTexture, so the preferred names are tried in order before falling back to
     // whatever texture reference the material happens to carry first.
     private static readonly string[] TextureMemberOrder = { "Texture", "AlbedoTexture", "MainTexture" };
@@ -463,11 +526,11 @@ public static class PackageObjectImporter
     // Leave an imported avatar in the state the creator would have left it in.
     //
     // Everything needed to BE an avatar arrives - rig, skeleton, bone map - but nothing that says it IS
-    // one. The context menu offers "Equip Avatar" only where it finds an AvatarForm, and their marker
-    // component has no counterpart here, so a perfectly good avatar imports and then simply cannot be
+    // one. The context menu offers "Equip Avatar" only where it finds an AvatarForm, and the package's
+    // marker component has no counterpart here, so a perfectly good avatar imports and then simply cannot be
     // worn. The rest of this mirrors AvatarStudio.RunCreate: facing, references, a root grab. Equip
     // itself still does the IK, hand posers and face drivers, so none of that is repeated here.
-    private static void FinishAvatar(Slot root, BuildContext context)
+    private static void FinishAvatar(Slot root, DataTreeDictionary objectNode, BuildContext context)
     {
         HumanoidRig? rig = null;
         foreach (var candidate in root.GetComponentsInChildren<HumanoidRig>())
@@ -486,19 +549,35 @@ public static class PackageObjectImporter
         if (skeleton == null)
             return;
 
-        // The avatar keeps the pose its author left it in, and that is deliberate.
+        // The stance is the creator's STORED default pose, never the pose the slots were saved in.
         //
-        // This used to force the bind pose here, on the theory that calibration wants a clean T-pose.
-        // A bind pose is a RIGGING pose, not a stance: measured on a real avatar its legs are 97%
-        // straight where the authored legs are 87%, and the entire digitigrade bend lives in the
-        // difference - forcing bind stood the cat up like a person. Calibrating in bind and restoring
-        // afterwards is no better, it just moves the damage: the reference points would then be baked
-        // at bone positions the avatar never stands at, and the view would sit where the bind head was.
+        // A package saves the avatar as it was the moment it was packaged, and for a worn avatar that is
+        // the last frame of somebody wearing it: on a real one the hips sat 9 cm lower than the creator
+        // left them, the head was turned 10 degrees off the torso, one foot was yawed 10 degrees out and
+        // the other 20 the opposite way, 35 cm apart on 23 cm hips. Building the facing, the gait
+        // stance, the foot rest yaw and the view out of that pose produced exactly those faults on the
+        // wearer - feet splayed, camera tilted - and none of them are in the avatar. The IK solver a
+        // package carries never uses that pose either: it stores each bone's local pose at creation and
+        // writes it back every frame before solving, so the saved slot pose is nothing but where the
+        // solver last put things. That stored pose travels in the package, and RestoreStoredStance puts
+        // the bones back to it. An avatar that carries no stored pose keeps the pose it was saved in.
         //
-        // Nothing here needs a T-pose anyway. The facing comes from the rig's own ForwardAxis, and the
-        // view/grip references come from bone DIRECTIONS, which a normal standing pose gives perfectly
-        // well. An avatar genuinely saved in a cursed pose is what AvatarIK.ForceTpose is for, and it
-        // stays opt-in. -xlinka
+        // The BIND pose is still not a substitute. It is a rigging pose, not a stance: measured on a
+        // real avatar its legs are 97% straight where the stance legs are 87%, and the entire
+        // digitigrade bend lives in the difference - forcing bind stood the cat up like a person.
+        // Calibrating in bind and restoring afterwards only moves the damage, because the references
+        // would then be baked at bone positions the avatar never stands at. An avatar genuinely saved in
+        // a cursed pose with no stored one is what AvatarIK.ForceTpose is for, and it stays opt-in.
+        // -xlinka
+        int stanceBones = 0;
+        var storedStance = FindStoredStance(objectNode, index =>
+            index >= 0 && index < context.Types.Count ? context.Types[index].SimpleName : null);
+        if (storedStance != null)
+        {
+            stanceBones = RestoreStoredStance(storedStance, id =>
+                context.ById.TryGetValue(id, out var element) && element is Slot slot && !slot.IsDestroyed ? slot : null);
+        }
+
         SoftenAvatarColliders(avatar, context);
 
         if (avatar.GetComponent<AvatarForm>() == null)
@@ -518,14 +597,28 @@ public static class PackageObjectImporter
         var quadrupedIk = Components.Avatar.QuadrupedIK.TryAttachFor(avatar, skeleton, rig);
         if (quadrupedIk == null)
         {
-            // Sides from GEOMETRY before anything trusts the labels. A package from a left-handed source
-            // arrives reflected with its bone names unchanged: on a real avatar every Left_* bone sat on
+            // Sides from GEOMETRY before anything trusts the labels. A left-handed package arrives
+            // reflected with its bone names unchanged: on a real avatar every Left_* bone sat on
             // the physical right and every Right_* on the physical left, arms, legs and eyes alike, so a
             // tool equipped on the right hand raised the arm on the left and crossed the chest to reach
             // it. This resolves physical right from the eyes, toes and knees, none of which carry a
             // label, and swaps whole pairs when the labels disagree. Correct rigs are a logged no-op.
             // -xlinka
             rig.ValidateLimbSides(skeleton);
+
+            // The stored bone map keys this rig and the name pass never runs on a package, so a hand
+            // that shipped without fingers stayed fingerless here: no finger posing, the tool hold rolled
+            // off the holder, and the grip reference below had nothing to take its roll from. Same
+            // geometric pass the model path runs; it only touches a hand with no finger bones. -xlinka
+            rig.DetectHandRigs();
+
+            // The pose proxies were saved where the wearer's headset and controllers last were, and
+            // once the bones are back in the stored stance they no longer sit on their bones. Seated
+            // again from the bones before anything reads them: the view reference is placed from the
+            // head one.
+            int proxies = ReseatPoseProxies(avatar, rig);
+            if (proxies > 0)
+                Logger.Log($"Package import: {proxies} pose prox{(proxies == 1 ? "y" : "ies")} re-seated on the stance bones");
 
             // Facing first, then references: equip resets the root to identity, so a reference baked against
             // a stale frame wears the avatar yawed off the user's forward.
@@ -535,6 +628,11 @@ public static class PackageObjectImporter
             AvatarCalibration.AutoPlaceReferences(avatar, rig, feet: false, pelvis: false);
         }
 
+        // A packaged avatar usually hides the wearer's head already, as a view override that our mapper
+        // keeps. One that arrives without it (or with the override disabled by the desktop pose relay it
+        // hung off) gets ours on the head bone, so nobody wears their new avatar from inside its skull.
+        var headOverride = AvatarCalibration.EnsureHeadViewOverride(avatar, rig);
+
         var grab = avatar.GetComponent<Grabbable>() ?? avatar.AttachComponent<Grabbable>();
         grab.BlockWhenWorn.Value = true;
 
@@ -542,13 +640,140 @@ public static class PackageObjectImporter
         Logger.Log($"Package import: avatar ready to equip - {(quadrupedIk != null ? "QUADRUPED, " : "")}{rig.Bones.Count} rig bones"
                  + (rig.TryGetBone(Lumora.Core.Input.BodyNode.LeftEye) != null || rig.TryGetBone(Lumora.Core.Input.BodyNode.RightEye) != null
                      ? ", eyes mapped" : ", no eye bones")
-                 + $", authored stance kept"
+                 + (stanceBones > 0 ? $", stance restored from the stored default pose ({stanceBones} bones)" : ", no stored stance, saved pose kept")
+                 + (headOverride != null ? $", head hidden from the wearer via '{headOverride.Slot?.SlotName.Value}'" : ", no head bone to hide")
                  + $", {context.Result.CollidersSoftened} collider(s) made query-only");
+    }
+
+    // The package IK solver's bone references, in the order its stored default-pose arrays index them:
+    // array entry i belongs to reference i + 1, the root at index 0 has no stored pose.
+    private static readonly string[] StoredStanceBones =
+    {
+        "root", "pelvis", "spine", "chest", "neck", "head",
+        "leftShoulder", "leftUpperArm", "leftForearm", "leftHand",
+        "rightShoulder", "rightUpperArm", "rightForearm", "rightHand",
+        "leftThigh", "leftCalf", "leftFoot", "leftToes",
+        "rightThigh", "rightCalf", "rightFoot", "rightToes",
+    };
+
+    // The solver data carrying the stored default pose, wherever the IK worker sits in the tree. The
+    // worker itself is never attached (it is the licensed solver), so this reads the graph directly.
+    public static DataTreeDictionary? FindStoredStance(DataTreeDictionary node, Func<int, string?> typeNameOf)
+    {
+        if (node.TryGetNode("Components") is DataTreeNode componentsNode
+            && FindWorkerList(componentsNode) is { } workers)
+        {
+            foreach (var entry in workers)
+            {
+                if (entry is not DataTreeDictionary worker
+                    || worker.TryGetNode("Type") is not DataTreeValue typeValue
+                    || typeNameOf(SafeInt(typeValue)) != "VRIK")
+                    continue;
+                if ((worker.TryGetNode("Data") as DataTreeDictionary)?.TryGetNode("Solver") is DataTreeDictionary solver
+                    && solver.TryGetNode("BoneReferences") is DataTreeDictionary)
+                    return solver;
+            }
+        }
+
+        if (node.TryGetNode("Children") is DataTreeList children)
+        {
+            foreach (var child in children.Children)
+            {
+                if (child is DataTreeDictionary childNode && FindStoredStance(childNode, typeNameOf) is { } found)
+                    return found;
+            }
+        }
+        return null;
+    }
+
+    // Write the stored default pose back onto the bone slots. Returns how many bones were written; zero
+    // with one warning when the data does not have the shape the package IK solver writes, in which case
+    // the pose is left exactly as saved.
+    public static int RestoreStoredStance(DataTreeDictionary solver, Func<string, Slot?> resolveSlot)
+    {
+        if (solver.TryGetNode("BoneReferences") is not DataTreeDictionary references
+            || (solver.TryGetNode("defaultLocalPositions") as DataTreeDictionary)?.TryGetNode("Data") is not DataTreeList positions
+            || (solver.TryGetNode("defaultLocalRotations") as DataTreeDictionary)?.TryGetNode("Data") is not DataTreeList rotations)
+        {
+            Logger.Warn("Package import: the IK worker carries no stored default pose; saved pose kept");
+            return 0;
+        }
+
+        int referenceCount = references.Children.Count - (references.ContainsKey("ID") ? 1 : 0);
+        if (referenceCount != StoredStanceBones.Length
+            || positions.Count != referenceCount - 1 || rotations.Count != referenceCount - 1)
+        {
+            Logger.Warn($"Package import: stored default pose does not match its bone references "
+                      + $"({referenceCount} references, {positions.Count} positions, {rotations.Count} rotations); saved pose kept");
+            return 0;
+        }
+
+        int written = 0;
+        for (int i = 1; i < StoredStanceBones.Length; i++)
+        {
+            if ((references.TryGetNode(StoredStanceBones[i]) as DataTreeDictionary)?.TryGetNode("Data") is not DataTreeValue { Value: string id }
+                || id.Length == 0 || PackageMemberMapper.IsNullId(id))
+                continue;
+            var bone = resolveSlot(id);
+            if (bone == null)
+                continue;
+
+            var position = positions[i - 1] is DataTreeList p ? PackageMemberMapper.ReadNumbers(p) : null;
+            var rotation = rotations[i - 1] is DataTreeList r ? PackageMemberMapper.ReadNumbers(r) : null;
+            if (position is not { Length: >= 3 } || rotation is not { Length: >= 4 })
+                continue;
+
+            // The stored stance is in the same left-handed frame as everything else in the package.
+            bone.LocalPosition.Value = PackageHandedness.Point(new float3(position[0], position[1], position[2]));
+            bone.LocalRotation.Value = PackageHandedness.Rotation(new floatQ(rotation[0], rotation[1], rotation[2], rotation[3]));
+            written++;
+        }
+
+        Logger.Log($"Package import: stance restored from the stored default pose, {written} bones");
+        return written;
+    }
+
+    // Package pose proxies come in pairs: the proxy slot carries the pose node and was seated at the
+    // tracked reference (headset, controller, tracker), and its "Target" child was seated at the bone,
+    // so the bone always equals proxy * Target.local. Re-seating solves that for the proxy:
+    // proxy = bone * Target.local^-1. Proxies without a Target child are left alone, and feet seat on
+    // the toes when the rig has them, which is the bone the package seated them on.
+    public static int ReseatPoseProxies(Slot avatar, HumanoidRig rig)
+    {
+        int seated = 0;
+        foreach (var driver in avatar.GetComponentsInChildren<AvatarPoseDriver>())
+        {
+            if (driver.IsDestroyed || driver.Slot == null || driver.Slot.IsDestroyed)
+                continue;
+
+            Slot? bone = driver.Node.Value switch
+            {
+                Lumora.Core.Input.BodyNode.Head => rig.TryGetBone(Lumora.Core.Input.BodyNode.Head),
+                Lumora.Core.Input.BodyNode.Hips => rig.TryGetBone(Lumora.Core.Input.BodyNode.Hips),
+                Lumora.Core.Input.BodyNode.LeftHand => rig.TryGetBone(Lumora.Core.Input.BodyNode.LeftHand),
+                Lumora.Core.Input.BodyNode.RightHand => rig.TryGetBone(Lumora.Core.Input.BodyNode.RightHand),
+                Lumora.Core.Input.BodyNode.LeftFoot => rig.TryGetBone(Lumora.Core.Input.BodyNode.LeftToes) ?? rig.TryGetBone(Lumora.Core.Input.BodyNode.LeftFoot),
+                Lumora.Core.Input.BodyNode.RightFoot => rig.TryGetBone(Lumora.Core.Input.BodyNode.RightToes) ?? rig.TryGetBone(Lumora.Core.Input.BodyNode.RightFoot),
+                _ => null,
+            };
+            if (bone == null || bone.IsDestroyed)
+                continue;
+
+            var proxy = driver.Slot;
+            var target = proxy.FindChild("Target", recursive: false);
+            if (target == null || target.IsDestroyed)
+                continue;
+
+            proxy.GlobalRotation = bone.GlobalRotation * target.LocalRotation.Value.Inverse;
+            proxy.GlobalPosition += bone.GlobalPosition - target.GlobalPosition;
+            seated++;
+        }
+        return seated;
     }
 
     // An avatar's own colliders are there to be POINTED AT, not walked into.
     //
-    // Their static colliders become StaticBody3D here, which is a wall: an imported avatar standing in
+    // A package's static colliders become StaticBody3D here, which is a wall: an imported avatar standing in
     // the world is a body-shaped lump of level geometry that shoves you around, and wearing it does not
     // help because the wearer collides with their own ribcage. Query-only is the same answer we already
     // reach for on our own generated bone capsules - still hit by the laser, by grab and by touch, never
@@ -629,15 +854,48 @@ public static class PackageObjectImporter
             var binds = BindPosesFor(renderer, context);
             var boneSet = new HashSet<Slot>(bones);
 
+            // POSITION, NOT NAME. renderer.Bones[i] is the mesh's bone i, so pairing them by index is
+            // exact and survives whatever the author called the slot. The name table stays as a
+            // fallback for the case the two lists disagree in length, which would mean the renderer
+            // and the mesh were never a matched pair in the first place.
+            var bindByBone = new Dictionary<Slot, float4x4>();
+            var order = BindOrderFor(renderer, context);
+            if (order != null)
+            {
+                int limit = System.Math.Min(order.Length, renderer.Bones.Count);
+                for (int i = 0; i < limit; i++)
+                {
+                    var bone = renderer.Bones[i];
+                    if (bone != null && !bone.IsDestroyed)
+                        bindByBone[bone] = order[i];
+                }
+                if (order.Length != renderer.Bones.Count)
+                {
+                    Logger.Warn($"Package import: '{renderer.Slot.SlotName.Value}' binds {renderer.Bones.Count} bones "
+                              + $"but its mesh carries {order.Length}; the overlap is paired by position, "
+                              + "the rest fall back to names.");
+                }
+            }
+
+            bool TryBind(Slot? bone, out float4x4 bind)
+            {
+                bind = default;
+                if (bone == null)
+                    return false;
+                if (bindByBone.TryGetValue(bone, out bind))
+                    return true;
+                return binds != null && binds.TryGetValue(bone.SlotName.Value, out bind);
+            }
+
             foreach (var bone in bones)
             {
                 float4x4 rest;
                 string boneName = bone.SlotName.Value;
 
-                if (binds != null && binds.TryGetValue(boneName, out var bind))
+                if (TryBind(bone, out var bind))
                 {
                     var parentBone = NearestBoneAncestor(bone, boneSet);
-                    if (parentBone != null && binds.TryGetValue(parentBone.SlotName.Value, out var parentBind))
+                    if (TryBind(parentBone, out var parentBind))
                         rest = parentBind * bind.Inverse;
                     else
                         rest = bind.Inverse;
@@ -659,19 +917,21 @@ public static class PackageObjectImporter
             context.Result.SkeletonsBuilt++;
             Logger.Log($"Package import: skeleton for '{renderer.Slot.SlotName.Value}' - {bones.Count} bones, "
                      + $"root '{rigRoot.SlotName.Value}' under '{skeletonParent.SlotName.Value}'"
-                     + (binds != null ? ", rests from bind poses" : ", rests from slot transforms (no bind table)"));
+                     + $", {bindByBone.Count}/{bones.Count} rests from bind poses by position"
+                     + (binds != null ? string.Empty : ", no bind table"));
         }
     }
 
     // The bind table for whatever mesh this renderer is actually showing.
     private static Dictionary<string, float4x4>? BindPosesFor(SkinnedMeshRenderer renderer, BuildContext context)
-    {
-        var provider = renderer.MeshAsset.Target;
-        var url = (provider as StaticAssetProvider<MeshDataAsset>)?.URL.Value;
-        if (url == null)
-            return null;
-        return context.MeshBindPoses.GetValueOrDefault(url.OriginalString);
-    }
+        => MeshUrlOf(renderer) is string url ? context.MeshBindPoses.GetValueOrDefault(url) : null;
+
+    // The same table in the mesh's own bone ORDER, which is what the renderer's Bones list is parallel to.
+    private static float4x4[]? BindOrderFor(SkinnedMeshRenderer renderer, BuildContext context)
+        => MeshUrlOf(renderer) is string url ? context.MeshBindOrder.GetValueOrDefault(url) : null;
+
+    private static string? MeshUrlOf(SkinnedMeshRenderer renderer)
+        => ((renderer.MeshAsset.Target as StaticAssetProvider<MeshDataAsset>)?.URL.Value)?.OriginalString;
 
     // The closest ancestor that is also a bone of this skeleton - which is what the skeleton will use
     // as the parent, regardless of how many non-bone slots sit between them.
@@ -755,6 +1015,17 @@ public static class PackageObjectImporter
         // substitutes its own default white-grey, so the thing draws as a big pale untextured blob that
         // rides along wherever the object goes. Counting them told us one existed and nothing about
         // WHICH, and hunting a nameless grey ball through a world is miserable. -xlinka
+        // And every renderer that got NO GEOMETRY, which is the other way to be invisible and the one
+        // the hook's own report cannot cover: with no mesh there is nothing to build, so the line that
+        // would have named it never runs and the object leaves no trace anywhere. -xlinka
+        foreach (var renderer in root.GetComponentsInChildren<MeshRenderer>())
+        {
+            if (renderer.Mesh.Target != null)
+                continue;
+            Logger.Warn($"Package import: renderer '{PathOf(renderer.Slot)}' has NO MESH; "
+                      + $"it has {renderer.Materials.Count} material(s) and will draw nothing");
+        }
+
         foreach (var renderer in root.GetComponentsInChildren<MeshRenderer>())
         {
             if (renderer.Mesh.Target == null || renderer.Materials.Count > 0)
@@ -787,6 +1058,135 @@ public static class PackageObjectImporter
             Logger.Log($"Package import: material '{material.Slot?.SlotName.Value}' {type.Name} "
                      + $"alpha={alpha} culling={cull}");
         }
+
+        AuditRenderers(root);
+        AuditLights(root);
+    }
+
+    // Every light the package brought, grep "LIGHT:".
+    //
+    // A light has no geometry to look at, so a wrong one is only ever diagnosed by its effect on
+    // everything else - and "the import is too bright" has at least four causes that look identical
+    // from across the room. Print what was actually authored. -xlinka
+    private static void AuditLights(Slot root)
+    {
+        foreach (var light in root.GetComponentsInChildren<Light>())
+        {
+            if (light == null || light.IsDestroyed)
+                continue;
+
+            var c = light.LightColor.Value;
+            // Scale, because a light's range is LOCAL: a lamp parented into a bone chain that carries a
+            // scale has an effective range nothing in its own numbers reveals.
+            var scale = light.Slot?.GlobalScale ?? Lumora.Core.Math.float3.One;
+
+            Logger.Log($"LIGHT: '{PathOf(light.Slot)}' type={light.Type.Value}"
+                     + $" colour={c.r:0.##},{c.g:0.##},{c.b:0.##}"
+                     + $" intensity={light.Intensity.Value:0.###}"
+                     + $" range={light.Range.Value:0.##}"
+                     + $" spotAngle={light.SpotAngle.Value:0.#}(full)"
+                     + $" shadows={light.Shadows.Value}"
+                     + $" enabled={light.Enabled}"
+                     + $" scale={scale.x:0.###},{scale.y:0.###},{scale.z:0.###}"
+                     + $" effectiveRange={light.Range.Value * System.Math.Max(scale.x, System.Math.Max(scale.y, scale.z)):0.###}");
+        }
+    }
+
+    // Every renderer under the import keyed by the thing you can point at in the world, grep "RENDER:".
+    //
+    // The material dump above keys on SLOT NAME, and an imported package parks every material it ships
+    // on one slot called 'Assets'. Forty-six lines reading 'Assets' PBS_Metallic answer nothing about
+    // the one prop that is painting itself white, so this walks the other way: renderer first, then the
+    // material actually bound to each of its surfaces.
+    //
+    // Scale sign is in here because a MIRRORED prop reads as a texture bug and is not one. A negative
+    // determinant flips triangle winding, so back faces survive culling and the mesh is seen from the
+    // inside: lettering reads backwards and the shading comes off normals that now point away. Any time
+    // a texture looks right but reversed, check this line before touching the texture pipeline. -xlinka
+    private static void AuditRenderers(Slot root)
+    {
+        var owners = new Dictionary<MaterialAsset, MaterialProvider>();
+        foreach (var provider in root.GetComponentsInChildren<MaterialProvider>())
+        {
+            if (provider == null || provider.IsDestroyed)
+                continue;
+            var asset = provider.Asset;
+            if (asset != null)
+                owners[asset] = provider;
+        }
+
+        foreach (var renderer in root.GetComponentsInChildren<MeshRenderer>())
+        {
+            if (renderer == null || renderer.IsDestroyed || renderer.Slot == null)
+                continue;
+
+            var scale = renderer.Slot.GlobalScale;
+            bool mirrored = scale.x * scale.y * scale.z < 0f;
+
+            var line = new StringBuilder();
+            line.Append("RENDER: '").Append(PathOf(renderer.Slot)).Append("'");
+            line.Append(" mesh=").Append(renderer.Mesh.Target?.GetType().Name ?? "NULL");
+            line.Append(" scale=").Append($"{scale.x:0.###},{scale.y:0.###},{scale.z:0.###}");
+            if (mirrored)
+                line.Append(" MIRRORED");
+            line.Append(" mats=").Append(renderer.Materials.Count);
+
+            for (int i = 0; i < renderer.Materials.Count; i++)
+            {
+                var asset = renderer.Materials.GetElement(i).Target?.Asset;
+                line.Append(" [").Append(i).Append("] ");
+                if (asset == null)
+                {
+                    line.Append("NULL");
+                    continue;
+                }
+                if (!owners.TryGetValue(asset, out var provider) || provider == null)
+                {
+                    line.Append("orphan-asset");
+                    continue;
+                }
+                line.Append(DescribeMaterial(provider));
+            }
+
+            Logger.Log(line.ToString());
+        }
+    }
+
+    // Type, blend, and the two things that decide whether a surface comes out white: the albedo TINT and
+    // whether an albedo texture is bound at all. A bound texture under a blown tint and no texture under
+    // a white tint look identical on screen and want opposite fixes. -xlinka
+    private static string DescribeMaterial(MaterialProvider provider)
+    {
+        var type = provider.GetType();
+        var text = new StringBuilder(type.Name);
+
+        if (type.GetField("BlendMode")?.GetValue(provider) is Sync<Assets.BlendMode> bm)
+            text.Append(" blend=").Append(bm.Value);
+        else if (type.GetField("AlphaMode")?.GetValue(provider) is Sync<AlphaMode> am)
+            text.Append(" blend=").Append(am.Value);
+
+        if (type.GetField("AlbedoColor")?.GetValue(provider) is Sync<colorHDR> albedo)
+        {
+            var c = albedo.Value;
+            text.Append(" tint=").Append($"{c.r:0.##},{c.g:0.##},{c.b:0.##},{c.a:0.##}");
+            if (c.r > 1f || c.g > 1f || c.b > 1f)
+                text.Append("(HDR>1)");
+        }
+
+        if (type.GetField("AlbedoTexture")?.GetValue(provider) is IAssetRef tex)
+            text.Append(" albedoTex=").Append(tex.Target != null ? "set" : "NONE");
+
+        text.Append(provider.IsAssetAvailable ? " ready" : " NOTREADY");
+
+        // The difference between "a texture is assigned" and "a texture is on screen". Everything above
+        // reads the DATA MODEL, which says assigned; this reads whether the upload ever reached the
+        // Godot material. A surface that is assigned, ready, and still listed here is rendering its flat
+        // albedo tint, which on a white tint is indistinguishable from a missing texture. -xlinka
+        var asset = provider.Asset;
+        if (asset != null && asset.HasTexturesStillArriving)
+            text.Append(" NOTONGPU=").Append(asset.TexturesStillArriving);
+
+        return text.ToString();
     }
 
     // Every asset reference on every imported material, one line each, grep "MATREF:".
@@ -826,7 +1226,7 @@ public static class PackageObjectImporter
                 if (target == null)
                 {
                     empty++;
-                    Logger.Log($"MATREF: {owner}.{member} -> empty (authored null)");
+                    Logger.Debug($"MATREF: {owner}.{member} -> empty (authored null)");
                     continue;
                 }
 
@@ -880,7 +1280,7 @@ public static class PackageObjectImporter
         public readonly Dictionary<string, Uri> AssetUrls;
         public readonly PackageImportResult Result;
 
-        // Their element id -> the thing we built for it, so references can be reconnected once the
+        // The package's element id -> the thing we built for it, so references can be reconnected once the
         // whole tree exists. SLOTS go in here as well as components: bone lists on a skinned renderer
         // are slot references, and with only components recorded they resolved to nothing and the mesh
         // stayed in its bind pose. -xlinka
@@ -899,11 +1299,18 @@ public static class PackageObjectImporter
         // that stops at the first unsupported link takes the sprite with it.
         public readonly Dictionary<string, DataTreeDictionary> PassThrough = new(StringComparer.OrdinalIgnoreCase);
 
+        // What each pass-through entry actually IS. The data alone cannot tell a renderer that draws
+        // nothing from one whose material simply failed to resolve, and those mean opposite things.
+        public readonly Dictionary<string, string> PassThroughTypes = new(StringComparer.OrdinalIgnoreCase);
+
         public readonly List<(Components.ParticleSystem System, DataTreeDictionary Data)> ParticleSystems = new();
 
         // Bone name -> bind pose, per converted mesh, keyed by the local asset URL we wrote it to.
         // Captured at decode time because the skeleton has to be built before the provider has
         // finished loading the asset back.
+        public readonly Dictionary<string, float4x4[]> MeshBindOrder =
+            new(StringComparer.OrdinalIgnoreCase);
+
         public readonly Dictionary<string, Dictionary<string, float4x4>> MeshBindPoses =
             new(StringComparer.OrdinalIgnoreCase);
 
@@ -949,6 +1356,27 @@ public static class PackageObjectImporter
                 continue;
             method.Invoke(list, new object[] { target });
             return true;
+        }
+        return false;
+    }
+
+    // Grow a reference list by one empty entry, so the entries after it keep their index. The
+    // parameterless Add() that every sync list has returns the new element already cleared.
+    private static bool AppendEmptySlot(object list)
+    {
+        // Walked by hand: SyncAssetList declares its own Add(IAssetProvider<A>), and reflection
+        // resolves a name at the first level of the hierarchy that declares it - so asking for
+        // Add() with no arguments comes back null on exactly the lists this is for.
+        for (var level = list.GetType(); level != null; level = level.BaseType)
+        {
+            foreach (var method in level.GetMethods(System.Reflection.BindingFlags.Public
+                | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly))
+            {
+                if (method.Name != "Add" || method.GetParameters().Length != 0 || method.ReturnType == typeof(void))
+                    continue;
+                method.Invoke(list, null);
+                return true;
+            }
         }
         return false;
     }
@@ -1016,6 +1444,16 @@ public static class PackageObjectImporter
             if (!context.ById.TryGetValue(link.TargetId, out var target) || target.IsDestroyed)
             {
                 context.Result.ReferencesDangling++;
+
+                // A GAP IN A MATERIAL LIST IS NOT THE SAME AS A SHORTER LIST.
+                //
+                // Materials are matched to submeshes BY POSITION, so skipping one that did not
+                // resolve pulls every material after it up an index and quietly puts the wrong one on
+                // the wrong surface. That is worse than a hole: a mask whose first material used a
+                // shader we cannot build ended up wearing the transparent fresnel meant for its
+                // visor, and read as missing rather than as untextured. Leave an empty slot so
+                // everything after it stays where the author put it. -xlinka
+                try { AppendEmptySlot(link.List); } catch { }
                 continue;
             }
 
@@ -1024,7 +1462,10 @@ public static class PackageObjectImporter
                 if (AppendToList(link.List, target))
                     context.Result.ReferencesResolved++;
                 else
+                {
                     context.Result.ReferencesDangling++;
+                    try { AppendEmptySlot(link.List); } catch { }
+                }
             }
             catch { context.Result.ReferencesDangling++; }
         }
@@ -1033,7 +1474,7 @@ public static class PackageObjectImporter
     // Copy every member whose name and shape line up, and queue the references for the second pass.
     private static void CopyMembers(Component component, DataTreeDictionary data, BuildContext context)
     {
-        PackageMemberMapper.Apply(
+        int matched = PackageMemberMapper.Apply(
             component,
             data,
             (reference, id) => context.RefLinks.Add(new PendingRef(reference, id)),
@@ -1049,6 +1490,38 @@ public static class PackageObjectImporter
                     return null;   // points outside the package; we never fetch those
                 return context.AssetUrls.TryGetValue(signature, out var local) ? local : null;
             });
+
+        // A COMPONENT THAT TOOK NOTHING IS ALMOST ALWAYS A WRONG ALIAS.
+        //
+        // A member whose name does not line up is skipped in silence, which is the right call for one
+        // odd field and completely the wrong one when NOT ONE of them matched: that is an alias
+        // pointing at a component built on a different model, and what you get is an object wearing a
+        // material with no textures on it. It renders white and nothing anywhere says why. This is how
+        // a package's double-sided material sat on an avatar's whole outfit looking like a texture bug.
+        //
+        // The package's bookkeeping members are not counted, so the threshold is about real settings. -xlinka
+        const int SubstantialMemberCount = 4;
+        if (matched == 0 && CountRealMembers(data) >= SubstantialMemberCount)
+        {
+            Logger.Warn($"Package import: {component.GetType().Name} on '{component.Slot?.SlotName.Value}' took "
+                      + $"NONE of the {CountRealMembers(data)} members the package stored for it. "
+                      + "The type mapping points at a component with different member names.");
+        }
+    }
+
+    private static int CountRealMembers(DataTreeDictionary data)
+    {
+        int count = 0;
+        foreach (var pair in data.Children)
+        {
+            if (pair.Key is "ID" or "persistent-ID" or "persistent" or "UpdateOrder" or "Enabled"
+                or "HighPriorityIntegration")
+                continue;
+            if (pair.Key.EndsWith("-ID", StringComparison.Ordinal))
+                continue;
+            count++;
+        }
+        return count;
     }
 
     // Returns false when this slot and everything under it was stripped, so the caller can drop it.
@@ -1074,8 +1547,8 @@ public static class PackageObjectImporter
                 return false;
         }
 
-        // Refused BEFORE anything is built, so the whole subtree goes with it: their laser is a slot with
-        // the component on it and its mesh, cursor and line slots underneath, and dropping only the
+        // Refused BEFORE anything is built, so the whole subtree goes with it: a package's laser is a slot
+        // with the component on it and its mesh, cursor and line slots underneath, and dropping only the
         // component would leave those hanging off the hand doing nothing.
         if (CarriesUserspaceConflict(node, context))
         {
@@ -1091,6 +1564,16 @@ public static class PackageObjectImporter
             context.Result.SlotsConflicting++;
             Logger.Log($"Package import: dropped generated slot '{StripMarkup(generatedName)}' and its subtree; "
                      + "the component that owns it is not ported");
+            return false;
+        }
+
+        // And the same for a nameplate the author built, because we draw one over every user already.
+        if (ReadValue(node, "Name") is string suppliedName
+            && PackageTypeMap.IsSuppliedByUs(StripMarkup(suppliedName)))
+        {
+            context.Result.SlotsConflicting++;
+            Logger.Log($"Package import: dropped '{StripMarkup(suppliedName)}' and its subtree; "
+                     + "this engine supplies its own nameplate");
             return false;
         }
 
@@ -1146,10 +1629,12 @@ public static class PackageObjectImporter
 
     private static void ApplyTransform(DataTreeDictionary node, Slot slot)
     {
+        // Reflected on the way in: the package is left-handed and this engine is not. Scale is a
+        // magnitude per axis and stays as it is. See PackageHandedness.
         if (ReadFloat3(node, "Position") is { } position)
-            slot.LocalPosition.Value = position;
+            slot.LocalPosition.Value = PackageHandedness.Point(position);
         if (ReadFloatQ(node, "Rotation") is { } rotation)
-            slot.LocalRotation.Value = rotation;
+            slot.LocalRotation.Value = PackageHandedness.Rotation(rotation);
         if (ReadFloat3(node, "Scale") is { } scale)
             slot.LocalScale.Value = scale;
     }
@@ -1160,6 +1645,8 @@ public static class PackageObjectImporter
         "ParticleStyle",
         "BillboardParticleRenderer",
         "MeshParticleRenderer",
+        // Captured, not attached: it is read to learn that this system draws no sprite at all.
+        "NullParticleRenderer",
     };
 
     private static bool CarriesUserspaceConflict(DataTreeDictionary node, BuildContext context)
@@ -1211,6 +1698,20 @@ public static class PackageObjectImporter
                 continue;
 
             var resolution = context.Types[index];
+            // THE PASS-THROUGH CAPTURE COMES BEFORE THE STRIP, and that ordering is the whole
+            // feature. A style or a particle renderer is stripped precisely BECAUSE we read its data
+            // here instead of attaching it - so dropping out above this line took the style out of
+            // the table the moment it was marked stripped, and every particle system in the package
+            // reported "no style component to read through" and came in on bare defaults. -xlinka
+            var passData = worker.TryGetNode("Data") as DataTreeDictionary;
+            if (passData != null && PassThroughTypes.Contains(resolution.SimpleName)
+                && (passData.TryGetNode("ID") as DataTreeValue)?.Value?.ToString() is string capturedId
+                && capturedId.Length > 0)
+            {
+                context.PassThrough[capturedId] = passData;
+                context.PassThroughTypes[capturedId] = resolution.SimpleName;
+            }
+
             if (resolution.Fate == PackageTypeFate.Stripped)
             {
                 context.Result.ComponentsStripped++;
@@ -1218,16 +1719,7 @@ public static class PackageObjectImporter
                 continue;
             }
 
-            var data = worker.TryGetNode("Data") as DataTreeDictionary;
-
-            // Same read-through as the loose-asset path. The styles and renderers a particle system
-            // points at live HERE, in the slot tree, so capturing them only over there recovered nothing.
-            if (data != null && PassThroughTypes.Contains(resolution.SimpleName)
-                && (data.TryGetNode("ID") as DataTreeValue)?.Value?.ToString() is string passId
-                && passId.Length > 0)
-            {
-                context.PassThrough[passId] = data;
-            }
+            var data = passData;
 
             if (resolution.Target == null || data == null)
             {
@@ -1243,7 +1735,7 @@ public static class PackageObjectImporter
         return attached;
     }
 
-    // Their component list is a sync list, so the actual entries sit under a nested member rather than
+    // A package's component list is a sync list, so the actual entries sit under a nested member rather than
     // directly on the "Components" node. Find the first list of worker-shaped dictionaries.
     private static DataTreeList? FindWorkerList(DataTreeNode node)
     {
@@ -1311,7 +1803,8 @@ public static class PackageObjectImporter
 
     private static async Task<Dictionary<string, Uri>> ConvertAssetsAsync(
         PackageArchive archive, DataTreeDictionary graph, PackageImportResult result,
-        Dictionary<string, Dictionary<string, float4x4>> bindPoses)
+        Dictionary<string, Dictionary<string, float4x4>> bindPoses,
+        Dictionary<string, float4x4[]> bindOrder)
     {
         await WorldContext.ToBackground();
 
@@ -1351,10 +1844,23 @@ public static class PackageObjectImporter
 
                         if (mesh.BoneCount > 0)
                         {
+                            // BY INDEX FIRST, by name only as a fallback. The renderer's Bones list is
+                            // parallel to the mesh's own bone array - that is what makes skinning work
+                            // at all - so position is the authoritative pairing and a name is only a
+                            // hint. Names are what the author typed on a SLOT and get decorated: the
+                            // radio's bones are "Bone (Col)" in the tree and plain "Bone" in the mesh,
+                            // so every one of them missed, fell back to its slot transform while its
+                            // siblings used bind-derived rests, and the model tore itself apart across
+                            // four hundred metres. -xlinka
+                            var order = new float4x4[mesh.BoneCount];
                             var binds = new Dictionary<string, float4x4>(StringComparer.Ordinal);
                             for (int i = 0; i < mesh.BoneCount; i++)
-                                binds[mesh.GetBoneName(i)] = mesh.GetBoneBindPose(i);
+                            {
+                                order[i] = mesh.GetBoneBindPose(i);
+                                binds[mesh.GetBoneName(i)] = order[i];
+                            }
                             bindPoses[url.OriginalString] = binds;
+                            bindOrder[url.OriginalString] = order;
                         }
                         result.MeshesConverted++;
                         break;

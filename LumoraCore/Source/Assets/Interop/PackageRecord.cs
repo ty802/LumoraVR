@@ -9,10 +9,10 @@ namespace Lumora.Core.Assets.Interop;
 
 // The JSON manifest sitting at the root of a package. Only the fields we actually consume are declared;
 // the rest (ownership, tags, timestamps, cloud bookkeeping) is deliberately ignored, since an offline
-// conversion has no use for another platform's account model. -xlinka
+// conversion has no use for account data. -xlinka
 public sealed class PackageRecord
 {
-    // Their writer emits camelCase but has shipped PascalCase historically, so match case-insensitively
+    // Package writers emit camelCase but have shipped PascalCase historically, so match case-insensitively
     // rather than guessing which vintage produced the file in front of us.
     public static readonly JsonSerializerOptions JsonOptions = new()
     {

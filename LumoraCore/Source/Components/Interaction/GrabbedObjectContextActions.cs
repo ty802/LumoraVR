@@ -17,26 +17,15 @@ public class GrabbedObjectContextActions : ContextMenuItemSource
         if (Slot?.ActiveUserRoot?.ActiveUser != World?.LocalUser)
             return;
 
-        var side = context?.Side;
-        if (side == null)
-            return;
-
-        HandTool? hand = null;
-        foreach (var tool in Slot!.ActiveUserRoot!.Slot.GetComponentsInChildren<HandTool>())
-        {
-            if (tool.Side.Value == side)
-            {
-                hand = tool;
-                break;
-            }
-        }
-
-        var grabber = hand?.Grabber;
-        if (grabber == null || !grabber.IsHoldingObjects)
+        // The hand that opened the menu says what it holds; a context built elsewhere (an inspector
+        // row) names only the side, so the hand is looked up from that. -xlinka
+        var grabber = context?.Grabber ?? FindHandGrabber(context?.Side);
+        if (grabber == null || grabber.IsDestroyed || !grabber.IsHoldingObjects)
             return;
 
         page.AddItem(new ContextMenuItem
         {
+            Group = ContextMenuGroup.Held,
             Label = "Destroy",
             FillColor = new[] { 0.32f, 0.10f, 0.10f, 0.92f },
             OnPressed = _ => DestroyGrabbed(grabber),
@@ -44,6 +33,7 @@ public class GrabbedObjectContextActions : ContextMenuItemSource
 
         page.AddItem(new ContextMenuItem
         {
+            Group = ContextMenuGroup.Held,
             Label = "Duplicate",
             FillColor = new[] { 0.10f, 0.28f, 0.14f, 0.92f },
             OnPressed = _ => DuplicateGrabbed(grabber),
@@ -55,6 +45,7 @@ public class GrabbedObjectContextActions : ContextMenuItemSource
         bool canSave = AnySaveableGrabbed(grabber, out var saveRefusal);
         page.AddItem(new ContextMenuItem
         {
+            Group = ContextMenuGroup.Held,
             Label = canSave ? "Save to Inventory" : saveRefusal ?? "Save Blocked",
             IsEnabled = canSave,
             FillColor = canSave
@@ -77,6 +68,7 @@ public class GrabbedObjectContextActions : ContextMenuItemSource
                 var targetSlot = slot;
                 page.AddItem(new ContextMenuItem
                 {
+                    Group = ContextMenuGroup.Held,
                     Label = "Equip Avatar",
                     FillColor = new[] { 0.14f, 0.30f, 0.18f, 0.92f },
                     OnPressed = _ =>
@@ -88,6 +80,21 @@ public class GrabbedObjectContextActions : ContextMenuItemSource
                 break; // one equip item even if multiple avatars are held
             }
         }
+    }
+
+    private Grabber? FindHandGrabber(Input.Chirality? side)
+    {
+        if (side == null)
+            return null;
+        var userRoot = Slot?.ActiveUserRoot?.Slot;
+        if (userRoot == null)
+            return null;
+        foreach (var tool in userRoot.GetComponentsInChildren<HandTool>())
+        {
+            if (tool.Side.Value == side)
+                return tool.Grabber;
+        }
+        return null;
     }
 
     private void SaveGrabbedToInventory(Grabber grabber)

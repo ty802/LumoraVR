@@ -54,7 +54,7 @@ public class RootContextMenuItem : Component
     public override void OnInit()
     {
         base.OnInit();
-        // Label = "" (string null/empty treated same way, but match original)
+        // Label = "" (null and empty are treated the same way)
         Label.Value     = "";
         IconPath.Value  = "";
         IsEnabled.Value = true;

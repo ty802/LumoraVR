@@ -23,6 +23,10 @@ public class UserScaleContextActions : ContextMenuItemSource
         if (userRoot == null)
             return;
 
+        // Like locomotion: off a VR hand that holds a tool, always there on desktop.
+        if (Engine.Current?.InputInterface?.IsVRActive == true && context?.HandHasTool(userRoot.Slot) == true)
+            return;
+
         if (MathF.Abs(userRoot.GlobalScale - DefaultScale) <= ScaleTolerance)
         {
             var locomotion = userRoot.GetRegisteredComponent<LocomotionController>()
@@ -33,6 +37,7 @@ public class UserScaleContextActions : ContextMenuItemSource
             bool enabled = locomotion.ScalingEnabled.Value;
             page.AddItem(new ContextMenuItem
             {
+                Group = ContextMenuGroup.Self,
                 Label = enabled ? "Scaling Enabled" : "Scaling Disabled",
                 IsToggle = true,
                 IsToggled = enabled,
@@ -46,6 +51,7 @@ public class UserScaleContextActions : ContextMenuItemSource
 
         page.AddItem(new ContextMenuItem
         {
+            Group = ContextMenuGroup.Self,
             Label = "Reset Scale",
             FillColor = new[] { 0.32f, 0.19f, 0.10f, 0.92f },
             OnPressed = _ =>

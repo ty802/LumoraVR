@@ -6,11 +6,13 @@ using Lumora.Core.Input;
 
 namespace Lumora.Core.Components.Interaction;
 
-// Contributes the "Unequip Tool" action when the hand that summoned the menu
-// has a tool item equipped. - xlinka
+// Root actions for the hand that summoned the menu. Create New stays available with any equipped
+// tool, independently of the current selection. - xlinka
 [ComponentCategory("Interaction")]
 public class ToolContextActions : ContextMenuItemSource
 {
+    private CreateNewPanel? _createPanel;
+
     public override void PopulateContextMenu(ContextMenuPage page, ContextMenuContext context)
     {
         if (Slot?.ActiveUserRoot?.ActiveUser != World?.LocalUser)
@@ -39,13 +41,19 @@ public class ToolContextActions : ContextMenuItemSource
         if ((item == null || item.IsDestroyed) && !holdingSomething)
             return;
 
-        // Equip and unequip stay on the ROOT ring. They are the one thing you always want reachable
-        // with a tool in hand, and burying them one level down under "Tool Actions" next to the mode
-        // switches meant two clicks to put a tool away. The per-tool actions still nest. -xlinka
+        // Unequip sits with the equip items; Create New goes with the tool's own actions.
         if (item != null && !item.IsDestroyed)
         {
             page.AddItem(new ContextMenuItem
             {
+                Group = ContextMenuGroup.Tool,
+                Label = "Create New",
+                FillColor = new[] { 0.35f, 0.28f, 0.62f, 0.95f },
+                OnPressed = _ => ToggleCreateNew(),
+            });
+            page.AddItem(new ContextMenuItem
+            {
+                Group = ContextMenuGroup.Equip,
                 Label = "Unequip Tool",
                 FillColor = new[] { 0.30f, 0.22f, 0.12f, 0.92f },
                 OnPressed = _ => hand.EquipToolItem(null),
@@ -69,6 +77,7 @@ public class ToolContextActions : ContextMenuItemSource
             var heldGrabbable = grabbable;
             page.AddItem(new ContextMenuItem
             {
+                Group = ContextMenuGroup.Equip,
                 Label = "Equip Tool",
                 FillColor = new[] { 0.14f, 0.30f, 0.18f, 0.92f },
                 OnPressed = _ =>
@@ -79,5 +88,17 @@ public class ToolContextActions : ContextMenuItemSource
             });
             break; // one equip item even if several tools are held
         }
+    }
+
+    private void ToggleCreateNew()
+    {
+        if (_createPanel is { IsDestroyed: false })
+        {
+            _createPanel.Slot.Destroy();
+            _createPanel = null;
+            return;
+        }
+        if (World?.RootSlot != null)
+            _createPanel = CreateNewPanel.Spawn(World);
     }
 }

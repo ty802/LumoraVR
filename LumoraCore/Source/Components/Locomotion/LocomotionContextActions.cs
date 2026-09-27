@@ -18,6 +18,11 @@ public class LocomotionContextActions : ContextMenuItemSource
         if (Slot?.ActiveUserRoot?.ActiveUser != World?.LocalUser)
             return;
 
+        // A hand holding a tool in VR has the tool's actions on its ring instead. Desktop has one pointer,
+        // so it keeps these.
+        if (Engine.Current?.InputInterface?.IsVRActive == true && context?.HandHasTool(Slot?.ActiveUserRoot?.Slot) == true)
+            return;
+
         var locomotion = Slot?.ActiveUserRoot?.GetRegisteredComponent<LocomotionController>()
                          ?? Slot?.ActiveUserRoot?.Slot?.GetComponent<LocomotionController>();
         if (locomotion == null || locomotion.Modules.Count == 0)
@@ -37,6 +42,7 @@ public class LocomotionContextActions : ContextMenuItemSource
             var captured = module;
             subPage.AddItem(new ContextMenuItem
             {
+                Group = ContextMenuGroup.Self,
                 Label = module.DisplayName,
                 IsToggle = true,
                 IsToggled = isActive,
@@ -50,6 +56,7 @@ public class LocomotionContextActions : ContextMenuItemSource
 
         page.AddItem(new ContextMenuItem
         {
+            Group = ContextMenuGroup.Self,
             Label = "Locomotion",
             FillColor = new[] { 0.13f, 0.16f, 0.24f, 0.92f },
             SubPage = subPage,

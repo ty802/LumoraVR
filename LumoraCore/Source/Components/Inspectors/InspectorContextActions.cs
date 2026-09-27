@@ -29,6 +29,7 @@ public class InspectorContextActions : ContextMenuItemSource
 
         page.AddItem(new ContextMenuItem
         {
+            Group = ContextMenuGroup.Tool,
             Label = "Inspector",
             FillColor = new[] { 0.16f, 0.20f, 0.30f, 0.92f },
             OnPressed = _ => OpenInspector(),

@@ -97,7 +97,7 @@ public abstract class EquippableTool : ToolItem
         }
     }
 
-    // Contribute this tool's entries to the shared Tool Actions submenu. Called on the local client
+    // Contribute this tool's entries to the root ring of the hand holding it. Called on the local client
     // each time the menu opens, so plain delegates are the right shape here - nothing about the page
     // is stored or replicated.
     public virtual void PopulateToolActions(ContextMenuPage page, ContextMenuContext context)

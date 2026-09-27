@@ -22,6 +22,23 @@ public sealed class ContextMenuContext
 
     // which hand summoned the menu - enables stick flick-select
     public Input.Chirality? Side;
+
+    // Whether the summoning hand has a tool equipped. With no hand known, it has none.
+    public bool HandHasTool(Slot? userRoot)
+    {
+        if (Side == null || userRoot == null)
+            return false;
+        foreach (var hand in userRoot.GetComponentsInChildren<Interaction.HandTool>())
+        {
+            if (hand.Side.Value == Side)
+                return hand.ActiveToolItem.Target is { IsDestroyed: false };
+        }
+        return false;
+    }
+
+    // The summoning hand's grabber when it was holding something at open time: the held objects are
+    // the menu's subject then (destroy, duplicate, save, and whatever the items themselves offer). -xlinka
+    public Interaction.Grabber? Grabber;
 }
 
 // The user's radial context menu. Owns the page stack, collects items from
@@ -40,7 +57,10 @@ public class ContextMenuSystem : Component
     private const float CanvasScale = 0.001f;
     private const float CanvasSize = 460f;
     private const float ItemSize = 120f;
-    private const float OpenDistance = 0.35f;
+    // Where the ring opens along the summoning pointer in VR. A hand carrying something on its beam
+    // reads this to keep the load behind the ring while the menu is up. -xlinka
+    public const float OpenDistance = 0.35f;
+    public const float RingRadius = CanvasSize * CanvasScale * 0.5f;
 
     public readonly Sync<bool> IsOpen = null!;
 
@@ -88,6 +108,13 @@ public class ContextMenuSystem : Component
         // REMOTE user's hand; without this gate the observer's own input could open a ghost menu on the
         // remote user's ContextMenuSystem. -xlinka
         if (Slot?.ActiveUserRoot?.ActiveUser != World?.LocalUser)
+        {
+            return;
+        }
+
+        // A hand the dash owns has no world pointer to hang a menu off: the press that summoned it is
+        // on the panel, and the menu would open on the world behind. -xlinka
+        if (IsHandOwnedByUserspace(context?.Side))
         {
             return;
         }
@@ -246,10 +273,27 @@ public class ContextMenuSystem : Component
     public override void OnUpdate(float delta)
     {
         base.OnUpdate(delta);
+        // The summoning hand moved onto the dash: its world laser is quiet now, so nothing could pick an
+        // item or dismiss the ring by pointing away. Close it rather than leave it hanging.
+        if (IsOpen.Value && IsHandOwnedByUserspace(CurrentContext?.Side))
+        {
+            Close();
+            return;
+        }
         UpdateOpenAnimation(delta);
         UpdateOpeningPressGuard();
         UpdateFlickSelect();
         UpdateEdgeClose(delta);
+    }
+
+    // VR only: on desktop the hand tools stand down as a whole while the dash is up and never reach the
+    // menu, and the dash flag there is set hit or no hit.
+    public static bool IsHandOwnedByUserspace(Input.Chirality? side)
+    {
+        if (side == null)
+            return false;
+        var input = Engine.Current?.InputInterface;
+        return input != null && input.IsVRActive && input.IsUserspaceLaserActive(side.Value);
     }
 
     // Open/page-change pop: the canvas scales 0.6 -> 1.0 over ~0.12s with a smoother-step ease. Scale only -
@@ -594,8 +638,8 @@ public class ContextMenuSystem : Component
         _openAnim = 0f;
         _canvasSlot.LocalScale.Value = float3.One * (CanvasScale * 0.6f);
 
-        // Canvas root size comes from a centered RectTransform on the canvas
-        // slot (same convention as PanelShell).
+        // Canvas root size comes from a centered RectTransform on the canvas slot: the ring is laid out
+        // around its middle.
         var rootRect = _canvasSlot.AttachComponent<RectTransform>();
         rootRect.OffsetMin.Value = new float2(-CanvasSize * 0.5f, -CanvasSize * 0.5f);
         rootRect.OffsetMax.Value = new float2(CanvasSize * 0.5f, CanvasSize * 0.5f);
@@ -784,9 +828,14 @@ public class ContextMenuSystem : Component
         // 2. Voice. Fixed, not a source: how loud you are carries in every world and must not depend on
         // a component happening to be attached under the user root. -xlinka
 
-        // 3. Contextual items from ContextMenuItemSource components
-        foreach (var source in CollectComponents<ContextMenuItemSource>()
-                                    .OrderByDescending(s => s.Priority.Value))
+        // 3. Contextual items from ContextMenuItemSource components. Held objects hang under the user
+        // root, so their own sources are collected here too, and keyed ones collapse per
+        // ContextMenuItemSource.SingleItemKey. -xlinka
+        var sources = CollectComponents<ContextMenuItemSource>()
+            .OrderByDescending(s => s.Priority.Value)
+            .ToList();
+        CollapseKeyedSources(sources);
+        foreach (var source in sources)
         {
             try
             {
@@ -798,7 +847,37 @@ public class ContextMenuSystem : Component
             }
         }
 
+        // In group order around the ring; OrderBy is stable, so a source's items stay in its order.
+        var ordered = page.Items.OrderBy(item => (int)item.Group).ToList();
+        page.Items.Clear();
+        page.Items.AddRange(ordered);
         return page;
+    }
+
+    private static void CollapseKeyedSources(List<ContextMenuItemSource> sources)
+    {
+        Dictionary<string, int>? counts = null;
+        foreach (var source in sources)
+        {
+            var key = source.SingleItemKey;
+            if (key == null)
+                continue;
+            counts ??= [];
+            counts[key] = counts.TryGetValue(key, out int n) ? n + 1 : 1;
+        }
+        if (counts == null)
+            return;
+
+        HashSet<string> kept = [];
+        sources.RemoveAll(source =>
+        {
+            var key = source.SingleItemKey;
+            if (key == null || counts[key] <= 1)
+                return false;
+            if (source.KeepFirstSingleItem && kept.Add(key))
+                return false;
+            return true;
+        });
     }
 
     private IEnumerable<T> CollectComponents<T>() where T : Component

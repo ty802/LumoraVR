@@ -25,6 +25,9 @@ public class ContextMenuItem
 
     public float[] LabelColor { get; set; } = { 1f, 1f, 1f, 1f };
 
+    // Where it sits on the root ring; see ContextMenuGroup.
+    public ContextMenuGroup Group { get; set; } = ContextMenuGroup.Content;
+
     // State
 
     public bool IsEnabled { get; set; } = true;
@@ -85,9 +88,8 @@ public class ContextMenuPage
         return this;
     }
 
-    // sub-page behind the root item labelled `label`, created on first use. several sources
-    // contribute tool actions to one page; each asks for the same submenu instead of stacking its
-    // own items on the root ring, so the root stays one entry per topic.
+    // sub-page behind the item labelled `label`, created on first use, so sources adding to one topic
+    // share its entry.
     public ContextMenuPage GetOrAddSubPage(string label, float[] fillColor)
     {
         foreach (var existing in Items)
@@ -129,8 +131,8 @@ public class ContextMenuPage
         float available = 360f - totalGap;
         float slice     = available / Items.Count;
 
-        // Start at top (-90 degrees = 12 o'clock)
-        float angle = -90f;
+        // From nine o'clock, clockwise: left, top, right, bottom.
+        float angle = 180f;
         foreach (var item in Items)
         {
             item.AngleStart = angle + SeparationAngle * 0.5f;

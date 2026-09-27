@@ -35,6 +35,7 @@ public class UndoContextActions : ContextMenuItemSource
 
         page.AddItem(new ContextMenuItem
         {
+            Group = ContextMenuGroup.History,
             Label = Label(UndoLocale.Undo, undo.CanUndo ? undo.NextUndoDescription : LocaleText.Empty, undoDirection: true),
             IsEnabled = undo.CanUndo,
             FillColor = new[] { 0.32f, 0.10f, 0.10f, 0.92f },
@@ -43,6 +44,7 @@ public class UndoContextActions : ContextMenuItemSource
 
         page.AddItem(new ContextMenuItem
         {
+            Group = ContextMenuGroup.History,
             Label = Label(UndoLocale.Redo, undo.CanRedo ? undo.NextRedoDescription : LocaleText.Empty, undoDirection: false),
             IsEnabled = undo.CanRedo,
             FillColor = new[] { 0.10f, 0.16f, 0.32f, 0.92f },

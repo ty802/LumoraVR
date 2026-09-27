@@ -279,12 +279,10 @@ public sealed class DevToolItem : ToolItem, ILaserHitClassifier
         _visualSlot.LocalRotation.Value = floatQ.AxisAngle(float3.Right, -System.MathF.PI * 0.5f);
         _visualSlot.LocalScale.Value = float3.One;
 
-        // The source platform's dev tool: a 5cm truncated cone, 5cm ahead of the tool root, drawn in an
-        // OVERLAY fresnel so it stays visible through the hand holding it and whatever it is pointed
-        // into. Ours was a plain unlit alpha cone in the ordinary pass, which the paw wrapped round it
-        // covered up: in the front-view screenshot it survived as one green pixel-dot at the heel of the
-        // palm and read as "no tool at all". Sizes and the black-to-red fresnel are theirs (red is what
-        // their users see; green is their dev-mode tint). -xlinka
+        // A 5cm truncated cone, 5cm ahead of the tool root, drawn in an OVERLAY fresnel so it stays
+        // visible through the hand holding it and whatever it is pointed into. A plain unlit alpha cone in
+        // the ordinary pass gets covered by the paw wrapped round it: it shows as one pixel-dot at the heel
+        // of the palm and reads as "no tool at all". -xlinka
         var cone = _visualSlot.GetComponent<ConeMesh>() ?? _visualSlot.AttachComponent<ConeMesh>();
         cone.RadiusBase.Value = 0.015f;
         cone.RadiusTop.Value = 0.0025f;
